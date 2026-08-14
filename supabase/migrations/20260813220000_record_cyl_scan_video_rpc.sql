@@ -21,7 +21,7 @@ CREATE OR REPLACE FUNCTION public.record_cyl_scan_video(
   p_scan_id bigint, p_path text, p_frames integer
 )
 RETURNS void
-LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public
+LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
 AS $$
   INSERT INTO public.cyl_scan_videos (scan_id, path, frames)
   VALUES (p_scan_id, p_path, p_frames)
@@ -35,7 +35,12 @@ REVOKE EXECUTE ON FUNCTION public.record_cyl_scan_video(bigint, text, integer)
   FROM PUBLIC, anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.record_cyl_scan_video(bigint, text, integer) TO bloom_workflows;
 
--- Owner left to whoever applies this migration, matching the queue wrappers: it is the role
--- that owns cyl_scan_videos, so the DEFINER can always write the row.
+-- Pinned rather than left to whoever applies this, matching the other cyl DEFINER wrappers
+-- (20260630180000, 20260706170000). cyl_scan_videos has RLS on with policies for
+-- bloom_workflows only, so a DEFINER owned by anyone else raises on the insert — and
+-- _record_video logs that rather than raising, which is precisely the silent failure this
+-- migration exists to end. It also settles the owner for whichever change lands second,
+-- since CREATE OR REPLACE keeps the existing owner and errors if the applier is not it.
+ALTER FUNCTION public.record_cyl_scan_video(bigint, text, integer) OWNER TO postgres;
 
 COMMIT;

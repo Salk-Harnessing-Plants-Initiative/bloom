@@ -214,6 +214,11 @@ def test_generate_scan_video_500_when_no_signed_url(monkeypatch):
             return None  # storage couldn't sign a URL
 
     class _UploadClient:
+        # A real client answers the record lookup; a lookup that errors is now a 503, so a
+        # fake without this would fail here instead of reaching the case under test.
+        def table(self, _name):
+            return _GenQuery([])
+
         @property
         def storage(self):
             bucket = _UploadBucket()
@@ -245,7 +250,11 @@ class _GenQuery:
     def order(self, *a, **k):
         return self
 
-    def limit(self, *a, **k):
+    def limit(self, n=None):
+        # Honoured, not ignored: truncation is detected by asking for one row past the cap,
+        # so a fake that returns everything regardless proves nothing about that boundary.
+        if n is not None:
+            self._rows = self._rows[:n]
         return self
 
     def execute(self):
@@ -402,30 +411,110 @@ def test_an_unclear_existence_check_is_neither_yes_nor_no():
     assert video._stored_video_exists(_Unreachable(), "cyl-videos/5.mp4") is None
 
 
-def test_an_unclear_existence_check_does_not_discard_the_encode(monkeypatch):
-    """Keeping on an unclear probe drops a finished encode and then raises on the same key.
-
-    `_result` signs the very key the probe just failed to sign, and nothing catches that —
-    so the caller pays for the whole encode and gets a bare 500. An unclear answer is not
-    evidence that a better video is stored, so the new encode is uploaded instead.
-    """
-    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
-    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(3)]
-    client = _GenClient(images, recorded_frames=3)
-
-    # Every signing attempt fails for a reason that is not "missing".
+def _blip_signing(monkeypatch):
+    """Make every signing attempt fail for a reason that is not "missing"."""
     def _blip(self, *a, **k):
         raise RuntimeError("storage gateway timed out")
 
     monkeypatch.setattr(_GenBucket, "create_signed_url", _blip)
 
-    with pytest.raises(Exception) as excinfo:
+
+def test_an_unclear_existence_check_never_overwrites(monkeypatch):
+    """The outage that clouds the probe is the one that makes this encode the worse one.
+
+    Frame downloads and the existence probe fail together, so an unclear answer arrives
+    exactly when this run has the fewest frames. Treating it as "nothing is stored" would
+    replace a full rotation with a fragment, in place, on a bucket with no versioning and
+    with no way back. It refuses instead.
+    """
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = [{"object_path": "o0", "frame_number": 0}]
+    client = _GenClient(images, recorded_frames=72)  # a far better video is recorded
+    _blip_signing(monkeypatch)
+
+    with pytest.raises(HTTPException) as excinfo:
         video.generate_scan_video(client, 5)
 
-    # It still fails — the URL genuinely cannot be signed — but only after uploading, so the
-    # encode is not lost and the next request finds the video rather than re-encoding it.
+    assert excinfo.value.status_code == 503
+    assert client.uploads == 0  # the stored 72-frame video is untouched
+
+
+def test_an_unclear_existence_check_refuses_rather_than_keeping(monkeypatch):
+    """Nor does it keep: `_result` would sign the key the probe just failed to sign."""
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(3)]
+    client = _GenClient(images, recorded_frames=3)
+    _blip_signing(monkeypatch)
+
+    with pytest.raises(HTTPException) as excinfo:
+        video.generate_scan_video(client, 5)
+
+    assert excinfo.value.status_code == 503
+    assert client.uploads == 0
+
+
+def test_exactly_at_the_cap_is_not_truncated(monkeypatch):
+    """72 is the cap, not past it — the over-fetch of one row exists to tell those apart."""
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(video.MAX_IMAGES)]
+    result = video.generate_scan_video(_GenClient(images), 5)
+
+    assert result["truncated"] is False
+    assert result["frames"] == video.MAX_IMAGES
+
+
+def test_one_past_the_cap_is_truncated(monkeypatch):
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(video.MAX_IMAGES + 1)]
+    result = video.generate_scan_video(_GenClient(images), 5)
+
+    assert result["truncated"] is True
+    assert result["frames"] == video.MAX_IMAGES
+
+
+def test_a_strictly_better_encode_replaces_the_stored_video(monkeypatch):
+    """The other half of the rule. Without it a scan is frozen on its worst encode forever."""
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(9)]
+    client = _GenClient(images, recorded_frames=3, stored=True)  # 9 frames now vs 3 recorded
+
+    result = video.generate_scan_video(client, 5)
+
+    assert result["regenerated"] is True
+    assert result["frames"] == 9
     assert client.uploads == 1
-    assert "timed out" in str(excinfo.value)
+
+
+def test_a_kept_video_is_never_re_recorded(monkeypatch):
+    """Recording a kept result would write the discarded encode's lower count over the real one."""
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    monkeypatch.setattr(video, "scan_in_experiment", lambda *a, **k: True)
+    images = [{"object_path": "o0", "frame_number": 0}]          # this run manages 1 frame
+    client = _GenClient(images, recorded_frames=72, stored=True)  # a 72-frame video is recorded
+    monkeypatch.setattr(video, "app_client", lambda: client)
+
+    calls: list = []
+    monkeypatch.setattr(video, "_record_video", lambda c, s, r: calls.append(r))
+
+    result = video.generate_experiment_scan_video(1, 5)
+
+    assert result["regenerated"] is False
+    assert client.uploads == 0
+    assert calls == [], "a kept video must not have its recorded frame count rewritten"
+
+
+def test_a_failed_record_lookup_does_not_read_as_no_record(monkeypatch):
+    """"Nothing recorded" is what permits an overwrite, so an error must not report it."""
+    monkeypatch.setattr(video, "VIDEO_TABLE", "cyl_scan_videos")
+
+    class _Broken:
+        def table(self, _name):
+            raise RuntimeError("PostgREST unavailable")
+
+    with pytest.raises(HTTPException) as excinfo:
+        video._recorded_frames(_Broken(), 5)
+
+    assert excinfo.value.status_code == 503
 
 
 def test_a_kept_video_with_no_row_is_recorded_without_a_count(monkeypatch):

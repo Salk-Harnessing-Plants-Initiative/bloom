@@ -19,11 +19,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS = REPO_ROOT / "supabase" / "migrations"
 
-# The column list is optional on purpose: `GRANT UPDATE ON ...` with no columns makes every
-# column updatable, scan_id included, so a pattern that only matched column-scoped grants
-# would miss the broadest possible version of the thing these tests forbid.
+# Both the column list and the verb are matched loosely on purpose. `GRANT UPDATE ON ...` with
+# no columns, and `GRANT ALL ...`, each make every column updatable — scan_id included — so a
+# pattern that only caught column-scoped INSERT/UPDATE would miss the broadest versions of the
+# very thing these tests forbid.
 GRANT = re.compile(
-    r"GRANT\s+(INSERT|UPDATE)\s*(?:\(([^)]*)\))?\s+ON\s+(?:TABLE\s+)?public\.cyl_scan_videos",
+    r"GRANT\s+(INSERT|UPDATE|ALL(?:\s+PRIVILEGES)?)\s*(?:\(([^)]*)\))?\s+ON\s+"
+    r"(?:TABLE\s+)?public\.cyl_scan_videos",
     re.IGNORECASE,
 )
 ALL_COLUMNS = {"scan_id", "path", "frames"}
@@ -38,13 +40,15 @@ def _migration_text() -> str:
 def _granted_columns() -> dict[str, set[str]]:
     """Columns granted for INSERT and for UPDATE, across every migration.
 
-    A grant with no column list reaches every column, so it counts as all of them.
+    A grant with no column list reaches every column, so it counts as all of them, and ALL
+    counts as both verbs.
     """
     granted: dict[str, set[str]] = {"insert": set(), "update": set()}
     for verb, columns in GRANT.findall(_migration_text()):
-        granted[verb.lower()] |= (
-            {c.strip() for c in columns.split(",")} if columns.strip() else ALL_COLUMNS
-        )
+        reached = {c.strip() for c in columns.split(",")} if columns.strip() else ALL_COLUMNS
+        verbs = ("insert", "update") if verb.lower().startswith("all") else (verb.lower(),)
+        for v in verbs:
+            granted[v] |= reached
     return granted
 
 
@@ -79,5 +83,35 @@ def test_the_wrapper_is_not_reachable_by_untrusted_roles():
         re.IGNORECASE | re.DOTALL,
     )
     assert revoke, "EXECUTE on record_cyl_scan_video is never revoked from the default grantees"
-    for role in ("anon", "authenticated"):
-        assert role in revoke.group(0)
+    # PUBLIC first: it is the grant a freshly created function actually carries, so dropping it
+    # from the list would reopen the hole while the named roles still looked covered.
+    for role in ("PUBLIC", "anon", "authenticated", "service_role"):
+        assert role in revoke.group(0), f"EXECUTE is never revoked from {role}"
+
+
+def test_the_wrapper_is_executable_by_the_service_that_needs_it():
+    """Without this grant the call is denied, `_record_video` swallows it, and nothing records.
+
+    The revoke tests assert who may not call it; this asserts who may. Losing the grant would
+    restore the exact production state — videos stored, no rows — with a green suite.
+    """
+    assert re.search(
+        r"GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+public\.record_cyl_scan_video\s*\([^)]*\)\s+"
+        r"TO\s+bloom_workflows",
+        _migration_text(),
+        re.IGNORECASE,
+    ), "bloom_workflows is never granted EXECUTE on record_cyl_scan_video"
+
+
+def test_the_wrapper_has_a_pinned_owner():
+    """A DEFINER owned by the wrong role cannot write the row — and the failure is swallowed.
+
+    cyl_scan_videos has RLS with policies for bloom_workflows only, so an owner without
+    BYPASSRLS or its own grants raises on the insert, `_record_video` logs it, and nothing is
+    recorded: the exact silent failure this wrapper was written to end.
+    """
+    assert re.search(
+        r"ALTER\s+FUNCTION\s+public\.record_cyl_scan_video\s*\([^)]*\)\s+OWNER\s+TO\s+\w+",
+        _migration_text(),
+        re.IGNORECASE,
+    ), "record_cyl_scan_video's owner is left to whoever applies the migration"
