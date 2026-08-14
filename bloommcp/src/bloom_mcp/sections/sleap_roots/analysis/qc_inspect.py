@@ -60,6 +60,7 @@ from sleap_roots_analyze import (
 
 from bloom_mcp.contract import BloomMCPError, OutputLink, Provenance, as_mcp_tool
 from bloom_mcp.data_access import ExperimentReadError
+from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.tools import _ports
 
@@ -433,7 +434,7 @@ def _render_report(
 @as_mcp_tool(
     input_model=QCInspectParams,
     output_model=QCInspectResult,
-    errors=(ExperimentReadError,),
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
 )
 def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectResult:
     """Inspect raw ``experiment`` missingness and recommend a cleanup threshold."""

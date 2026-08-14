@@ -23,7 +23,12 @@ from bloom_mcp.data_access import (
     FakeReader,
     SupabaseReader,
 )
-from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+from bloom_mcp.result_store import (
+    CommitFailedError,
+    FakeResultStore,
+    RunStateError,
+    SupabaseResultStore,
+)
 from bloom_mcp.tools import _ports
 from bloom_mcp.sections.sleap_roots.analysis import qc_inspect as qc_inspect_tool
 from bloom_mcp.sections.sleap_roots.analysis.qc_inspect import (
@@ -406,8 +411,88 @@ def test_delegate_raise_is_structured_without_leaking(injected_ports, monkeypatc
     monkeypatch.setattr(qc_inspect_tool, "apply_data_cleanup_filters", _boom)
     with pytest.raises(BloomMCPError) as exc:
         _run()
+    assert (
+        exc.value.code == "internal_error"
+    )  # pinned, not just "doesn't leak" (#640 review)
     msg = f"{exc.value.message} {exc.value.remedy}"
     assert "secret" not in msg and "/var" not in msg and "db.internal" not in msg
+
+
+# ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
+# (#640: qc_inspect's declared errors=(ExperimentReadError,) swallowed a CommitFailedError/
+# ManifestReadError from store.create_run()/commit() into a generic internal_error ref) ──
+
+
+def test_commit_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "qc_inspect")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "commit failed for qc_inspect" in exc.value.message
+
+
+def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_read(_EXPERIMENT, "qc_inspect")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "manifest read failure" in exc.value.message
+
+
+def test_run_state_error_from_commit_still_maps_to_internal_error(
+    injected_ports, monkeypatch
+):
+    """RunStateError (a handle-misuse/wiring bug, never triggerable via tool input) must
+    stay internal_error even after declaring CommitFailedError/ManifestReadError — proves
+    the errors= tuple wasn't accidentally widened to the full ResultStoreError base
+    (design.md Decision 1; review finding: no test previously exercised this at the tool
+    boundary, only directly against the store)."""
+    _reader, store = injected_ports
+
+    def _boom(run, outputs):
+        raise RunStateError("commit() on an unknown or already-committed run")
+
+    monkeypatch.setattr(store, "commit", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "internal_error"
+
+
+def test_commit_failed_message_excludes_underlying_secret_detail(
+    injected_ports, monkeypatch
+):
+    """Scope: proves `from_exception`'s message construction doesn't reach into a declared
+    exception's `__cause__`/traceback text (via a hand-written `CommitFailedError` built
+    the same way the real static templates are: no interpolation of the chained cause).
+    It does NOT drive the real `supabase_store.py` raise sites themselves under adversarial
+    input — that guarantee instead rests on those sites being static templates, which
+    `test_manifest_schema_error_raises_manifest_incompatible_error` in
+    `test_supabase_result_store.py` now pins directly for the one sibling site
+    (`ManifestIncompatibleError`) that used to interpolate `{exc}` (#660 review)."""
+    _reader, store = injected_ports
+
+    def _boom(run, outputs):
+        try:
+            raise OSError(
+                "permission denied: /var/secrets/bloommcp-key on host db.internal"
+            )
+        except OSError as exc:
+            raise CommitFailedError(
+                "commit failed for qc_inspect/turface_19_raw (transient — retry)"
+            ) from exc
+
+    monkeypatch.setattr(store, "commit", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    msg = f"{exc.value.message} {exc.value.remedy}"
+    assert (
+        "/var/secrets" not in msg
+        and "db.internal" not in msg
+        and "permission denied" not in msg
+    )
 
 
 # ── 3.7 trait_columns validation ────────────────────────────────────────────

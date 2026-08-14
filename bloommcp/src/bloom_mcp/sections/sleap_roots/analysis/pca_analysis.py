@@ -51,6 +51,7 @@ from bloom_mcp.data_access import (
     ExperimentFrame,
     ExperimentReadError,
 )
+from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._consumer_utils import _build_output_frame, snapshot_frame
 from bloom_mcp.tools._plots import close_figures, generate_figures, validate_plot_keys
@@ -224,7 +225,7 @@ def _loadings_frame(pca: PCAResult) -> pd.DataFrame:
 @as_mcp_tool(
     input_model=PCAAnalysisParams,
     output_model=PCAAnalysisResult,
-    errors=(ExperimentReadError,),
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
 )
 def pca_analysis(
     params: PCAAnalysisParams, *, provenance: Provenance
