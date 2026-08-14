@@ -1,0 +1,15 @@
+-- `bloom_workflows` could insert a cyl_scan_videos row but never upsert one.
+--
+-- 20260716000000 granted INSERT on (scan_id, path, frames) and UPDATE on (path, frames).
+-- `_record_video` writes with `upsert(on_conflict="scan_id")`, and PostgREST builds the
+-- DO UPDATE SET clause from every column in the payload — scan_id included. Postgres checks
+-- SET-clause column privileges statically, so the statement was refused with 42501 whether or
+-- not a row actually conflicted.
+--
+-- The failure was silent: `_record_video` swallows its exception and logs a warning, so every
+-- generation stored its MP4 and recorded nothing. That is why the table held zero rows against
+-- 84,748 stored videos until it was backfilled by hand.
+--
+-- Granting UPDATE on scan_id adds no reach: the only value ever written to it is the conflict
+-- key itself, which the row already holds.
+GRANT UPDATE (scan_id, path, frames) ON public.cyl_scan_videos TO bloom_workflows;
