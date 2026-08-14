@@ -47,6 +47,11 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   and `bloomctl/_storage.py`. Queries, CSV columns, path layout and the per-scan loop stay with
   each instrument. No behaviour change to `cyl download`. The storage bucket is now a required
   argument rather than a default, so no command can read another's bucket.
+- A download directory now records which instrument filled it, and a download from the other one
+  is refused instead of resuming into it. The two commands share the directory's layout but not
+  its meaning — scan id 5 is a different row on each — so without this a `plate download` into a
+  `cyl download` directory looked like the same selection and overwrote its log. Directories
+  written before this release carry no instrument and still resume under `cyl download`.
 
 ## [0.1.0a5] - 2026-08-13 — cylinder download reliability
 
