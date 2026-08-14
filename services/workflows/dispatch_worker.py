@@ -96,7 +96,20 @@ def process_one(client) -> bool:
             batch_index,
             exc,
         )
-        fail_batch(client, run_id, batch_index, msg_id, scan_ids, str(exc))
+        try:
+            fail_batch(client, run_id, batch_index, msg_id, scan_ids, str(exc))
+        except Exception as fail_exc:
+            # Symmetric with the complete_batch handling below: a failed
+            # fail_batch RPC just leaves the claim for redelivery (its own
+            # visibility timeout), it must not propagate to run()'s generic
+            # loop handler and lose this batch's run/batch-id context.
+            logger.error(
+                "dispatch_worker: run %s batch %s submission failed and the "
+                "fail RPC also errored; leaving for redelivery: %s",
+                run_id,
+                batch_index,
+                fail_exc,
+            )
         return True
 
     # The Workflow is already submitted — a failed/lost completion RPC must
@@ -160,8 +173,15 @@ def run():
             time.sleep(POLL_INTERVAL)
             try:
                 client = app_client()
-            except Exception:
-                pass
+            except Exception as reconnect_exc:
+                # Reconnect itself failed (e.g. a sustained Supabase outage) —
+                # log it. Without this, an extended outage produces exactly
+                # one log line ever, then silence every POLL_INTERVAL while
+                # the loop keeps retrying with a stale client.
+                logger.error(
+                    "dispatch_worker: reconnect failed, will retry: %s",
+                    reconnect_exc,
+                )
             continue
         if not handled:
             time.sleep(POLL_INTERVAL)

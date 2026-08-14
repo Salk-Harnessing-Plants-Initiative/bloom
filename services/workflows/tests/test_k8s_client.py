@@ -195,6 +195,23 @@ def test_submit_workflow_raises_k8ssubmissionerror_on_4xx_5xx(monkeypatch):
         k8s_client.submit_workflow({"some": "body"})
 
 
+def test_submit_workflow_raises_k8ssubmissionerror_on_2xx_with_unparseable_body(
+    monkeypatch,
+):
+    """A 2xx response whose body doesn't contain metadata.name (a proxy/
+    admission-webhook mutation, or a malformed JSON body) must not escape as
+    a raw KeyError/JSONDecodeError — dispatch_worker's process_one() only
+    catches K8sConfigError/K8sSubmissionError around this call, so anything
+    else would bypass fail_batch entirely and leave the claim to blindly
+    redeliver and resubmit against the real cluster."""
+    resp = _FakeResp(200, {"unexpected": "shape"})
+    monkeypatch.setattr(
+        k8s_client.httpx, "Client", lambda *a, **k: _FakeClient(resp=resp)
+    )
+    with pytest.raises(K8sSubmissionError):
+        k8s_client.submit_workflow({"some": "body"})
+
+
 def test_submit_workflow_raises_k8ssubmissionerror_on_network_error(monkeypatch):
     import httpx as real_httpx
 
@@ -275,6 +292,23 @@ def test_build_workflow_body_includes_required_labels():
     assert labels["submitted-by"] == "bloom-pipeline"
     assert labels["pipeline-run-id"] == "42"
     assert labels["batch-index"] == "3"
+
+
+def test_build_workflow_body_includes_environment_label(monkeypatch):
+    """prod and staging share the same runai-busch-lab namespace and their
+    run_id sequences both start at 1 — without an environment label, a future
+    reconciliation sweep (design.md's Risks) can't tell which database a
+    given pipeline-run-id belongs to."""
+    monkeypatch.setattr(k8s_client, "ENV_LABEL", "staging")
+    body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+    assert body["metadata"]["labels"]["environment"] == "staging"
+
+
+def test_env_label_defaults_to_dev_when_unset(monkeypatch):
+    monkeypatch.delenv("WORKFLOWS_K8S_ENV_LABEL", raising=False)
+    monkeypatch.setattr(k8s_client, "ENV_LABEL", k8s_client._resolve_env_label())
+    assert k8s_client.ENV_LABEL == "dev"
+    k8s_client._validate_config()  # must not raise — env label is never "missing"
 
 
 def test_build_workflow_body_includes_ttl_strategy():

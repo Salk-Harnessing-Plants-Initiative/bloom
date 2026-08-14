@@ -70,6 +70,11 @@ BEGIN
         END,
         completed_at = now()
     WHERE id = p_run_id
+      -- Settle at most once: without this, a redelivery-driven duplicate
+      -- complete()/fail() call for an already-settled run (every scan
+      -- already terminal, so the NOT EXISTS below still holds) would
+      -- silently push completed_at forward again on every replay.
+      AND completed_at IS NULL
       AND NOT EXISTS (
           -- Only settle once every scan in the run has a terminal outcome
           -- (submitted, or failed) — otherwise there's a batch still
@@ -107,6 +112,7 @@ BEGIN
         attempts = attempts + 1,
         updated_at = now()
     WHERE run_id = p_run_id
+      AND batch_index = p_batch_index
       AND scan_id = ANY(p_scan_ids)
       AND argo_workflow_name IS NULL;
 
@@ -180,6 +186,7 @@ BEGIN
     SET argo_workflow_name = p_argo_workflow_name,
         updated_at = now()
     WHERE run_id = p_run_id
+      AND batch_index = p_batch_index
       AND scan_id = ANY(p_scan_ids)
       AND argo_workflow_name IS NULL;
 

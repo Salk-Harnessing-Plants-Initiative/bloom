@@ -11,13 +11,18 @@ the consumer that actually submits each queued batch to Argo as a Kubernetes `Wo
 K8s API server directly — `argo submit`'s Argo Server (`:8888`) is in-cluster-only and unreachable
 from `bloom-dev`, so this goes straight to the K8s API (`:6443`) instead.
 
-The raw-REST-submission approach was **live-validated against the real cluster** during this
-proposal's scoping (not merely designed on paper): a Workflow object was POSTed directly to
+The raw-REST-submission approach — the exact REST resource path, credential, and JSON body shape this
+implementation uses — was **live-validated against the real cluster** during this proposal's scoping
+(not merely designed on paper): a minimal test Workflow (a single `busybox` step, not the real four-
+`WorkflowTemplate` DAG this implementation actually submits — see "Not fixed in this proposal" below)
+was POSTed directly to
 `https://<api-server>:6443/apis/argoproj.io/v1alpha1/namespaces/runai-busch-lab/workflows` using the
 already-provisioned `bloom-pipeline` ServiceAccount's token+CA, Argo's controller picked it up and ran
 it to `Succeeded`, and hand-stamped attribution labels persisted on the object exactly as submitted.
 See `design.md`'s "Live validation" section for the full transcript and the one real constraint it
-surfaced (the submitting identity cannot `delete` its own Workflows).
+surfaced (the submitting identity cannot `delete` its own Workflows). The real DAG shape (the four
+`WorkflowTemplate` references this phase's `k8s_client.py` actually builds) was not itself submitted
+against the real cluster during scoping — see the Risks section in `design.md`.
 
 ## What Changes
 

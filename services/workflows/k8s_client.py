@@ -32,11 +32,21 @@ def _resolve_ttl_seconds() -> int:
     return int(os.environ.get("WORKFLOWS_K8S_TTL_SECONDS", "3600"))
 
 
+def _resolve_env_label() -> str:
+    return os.environ.get("WORKFLOWS_K8S_ENV_LABEL", "dev")
+
+
 TOKEN = os.environ.get("WORKFLOWS_K8S_TOKEN")
 CA_CERT = os.environ.get("WORKFLOWS_K8S_CA_CERT")
 API_URL = os.environ.get("WORKFLOWS_K8S_API_URL")
 NAMESPACE = _resolve_namespace()
 TTL_SECONDS = _resolve_ttl_seconds()
+# prod and staging deliberately share one namespace (see NAMESPACE above) and
+# both run_id sequences start at 1 — this label is what lets a future
+# reconciliation sweep (design.md's Risks) tell which database a given
+# pipeline-run-id belongs to. Plain config, not a credential: same
+# never-"missing" treatment as NAMESPACE/TTL_SECONDS.
+ENV_LABEL = _resolve_env_label()
 
 # The four templates a batch's DAG references, in submission order.
 _TEMPLATE_REFS = [
@@ -106,6 +116,7 @@ def build_workflow_body(run_id, batch_index: int, scan_ids: list[int]) -> dict:
                 "submitted-by": "bloom-pipeline",
                 "pipeline-run-id": str(run_id),
                 "batch-index": str(batch_index),
+                "environment": ENV_LABEL,
             },
         },
         "spec": {
@@ -158,4 +169,18 @@ def submit_workflow(body: dict) -> str:
         )
         raise K8sSubmissionError("Argo Workflow submission failed")
 
-    return resp.json()["metadata"]["name"]
+    try:
+        return resp.json()["metadata"]["name"]
+    except (KeyError, TypeError, ValueError) as exc:
+        # A 2xx response that doesn't carry metadata.name (malformed body, an
+        # unexpected proxy/admission-webhook mutation). Must raise the same
+        # K8sSubmissionError every other failure path raises — an uncaught
+        # exception here would skip process_one()'s except clauses entirely,
+        # leaving the claim to blindly redeliver and resubmit against the
+        # real cluster instead of settling as a failed batch.
+        logger.warning(
+            "k8s_client: submission returned %s but response body was unparseable: %s",
+            resp.status_code,
+            exc,
+        )
+        raise K8sSubmissionError("Argo Workflow submission failed") from exc

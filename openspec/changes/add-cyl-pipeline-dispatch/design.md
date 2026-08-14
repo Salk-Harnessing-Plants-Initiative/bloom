@@ -336,6 +336,38 @@ of this proposal's scope, but worth noting for whoever next touches that file.
   missed retry. The mandatory `pipeline-run-id`/`batch-index` labels are what would let a future
   reconciliation pass (Phase 3, or a dedicated sweep) cross-check "failed in the DB but a matching
   Workflow actually exists in the cluster" before TTL deletion — recorded here so that need isn't lost.
+- **The mirror-image risk — a real, successful submission gets *resubmitted* — is broader than "worker
+  crash," and this proposal has no idempotency check before `submit_workflow` closes it.** Found on
+  PR review: `submit_workflow` has no pre-check (by the same `pipeline-run-id`/`batch-index` labels
+  the risk above already relies on) for whether a batch was already submitted before creating a new
+  Workflow. So it isn't only a crashed worker that can trigger this — any transient failure of the
+  `complete_cyl_pipeline_batch` RPC *itself* (not the worker) after a real K8s submission has the same
+  effect: the pgmq message is never archived, it redelivers after its visibility timeout, and
+  `process_one` submits a **second**, real, GPU-consuming Workflow for the same scan-ids before either
+  side settles. Unlike the risk above, the DB can end up looking perfectly consistent afterward
+  (`argo_workflow_name` set to whichever submission's `complete()` call won the race) — there is no
+  failed status to alert on, just an orphaned first Workflow quietly running to completion and
+  self-deleting via `ttlStrategy`. PR review did close the one purely mechanical trigger for this
+  (`submit_workflow` previously let a 2xx response with an unparseable body raise an uncaught
+  `KeyError` past `process_one`'s except clauses instead of a clean `K8sSubmissionError` — fixed, see
+  `k8s_client.py`), but the RPC-failure trigger remains genuinely open. **Not fixed in this
+  proposal** — the real fix (query the K8s API for an existing Workflow by label before creating one,
+  reusing the same labels the reconciliation-sweep risk above already designates for this purpose) is a
+  meaningful `k8s_client.py`/`dispatch_worker.py` addition, not a one-line guard, and is deferred to the
+  same future reconciliation work as the risk above rather than rushed in under review pressure.
+  Recorded here, explicitly, so it isn't lost or mistaken for "only crashes can cause this."
+- **The real four-`WorkflowTemplate` DAG this phase submits was never itself live-tested against the
+  real cluster — only a minimal placeholder was.** Found on PR review: the "Live validation" section
+  above tested the REST resource path, credential, and JSON body shape using a single-step `busybox`
+  Workflow, not the actual DAG `k8s_client.py`'s `build_workflow_body` constructs (`templateRef`s to
+  `sleap-roots-images-downloader-template` → `sleap-roots-predictor-template` →
+  `sleap-roots-trait-extractor-template` → `sleap-roots-write-back-template`, with the `scan-ids`
+  parameter threaded through). Whether those four `WorkflowTemplate`s are registered exactly as named,
+  accept `scan-ids` the way this phase's `build_workflow_body` passes it, and the DAG's dependency
+  chain is otherwise well-formed for Argo's controller has not been confirmed end-to-end outside unit
+  tests that only assert the Python-side dict shape. **Not fixed in this proposal** — recommend one
+  real DAG submission (dry-run or against a disposable/cheap batch) before this worker is enabled in an
+  environment receiving real trigger traffic.
 - **Deploying the `cyl-pipeline-worker` container ahead of real `WORKFLOWS_K8S_*` secrets is safe in an
   idle environment but destructive in one with live traffic.** With an empty queue the worker never
   reaches the credential check and idles harmlessly. But Phase 1's `POST /workflows/pipeline` is already

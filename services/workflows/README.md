@@ -214,6 +214,10 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 | `WORKFLOWS_K8S_API_URL`        | –                        | `cyl-pipeline-worker` only. K8s API server base URL (`https://<host>:6443`) — a real credential, eagerly required |
 | `WORKFLOWS_K8S_NAMESPACE`      | `runai-busch-lab`        | `cyl-pipeline-worker` only. Single hardcoded namespace for v1 (not a credential — never eagerly required) |
 | `WORKFLOWS_K8S_TTL_SECONDS`    | `3600`                   | `cyl-pipeline-worker` only. `ttlStrategy.secondsAfterCompletion` on every submitted Workflow, since the submitting identity has no `delete` RBAC (not a credential — never eagerly required) |
+| `WORKFLOWS_K8S_ENV_LABEL`      | `dev`                    | `cyl-pipeline-worker` only. `environment` label on every submitted Workflow — prod and staging share the `runai-busch-lab` namespace and both `run_id` sequences start at 1, so this is what disambiguates them for a future reconciliation sweep (not a credential — never eagerly required) |
+| `WORKFLOWS_WORKER_POLL_SECONDS`| `5`                      | `cyl-pipeline-worker` only. Idle sleep between empty-queue polls, and the retry interval for the startup Supabase connection check |
+| `WORKFLOWS_DISPATCH_VT_SECONDS`| `60`                     | `cyl-pipeline-worker` only. pgmq visibility timeout passed to `claim_cyl_pipeline_batch` — how long a claimed batch stays hidden from other claimants before redelivery |
+| `WORKFLOWS_DISPATCH_MAX_READS`| `5`                       | `cyl-pipeline-worker` only. Poison-message threshold passed to `claim_cyl_pipeline_batch` — a batch redelivered more than this many times is dead-lettered (marked failed) instead of claimed again |
 
 > `ffmpeg` must be present in the runtime image — the Dockerfile copies a digest-pinned static `ffmpeg` binary (avoids apt's ffmpeg pulling in vulnerable GPU/TLS libraries).
 > Caller auth is delegated to Supabase (`/auth/v1/user`), so `JWT_SECRET` is **not** needed by this service.

@@ -446,6 +446,11 @@ def _run_status(cur, run_id) -> str:
     return cur.fetchone()[0]
 
 
+def _run_completed_at(cur, run_id):
+    cur.execute(f"SELECT completed_at FROM {RUNS_TABLE} WHERE id = %s", (run_id,))
+    return cur.fetchone()[0]
+
+
 def _scan_rows(cur, run_id):
     cur.execute(
         f"SELECT scan_id, status, argo_workflow_name, attempts, error_message "
@@ -470,6 +475,65 @@ def test_claim_on_empty_queue_returns_nothing(pg_conn):
     with pg_conn.cursor() as cur:
         assert _claim(cur) is None
     pg_conn.rollback()
+
+
+def test_concurrent_claim_never_hands_the_same_batch_to_two_workers(
+    pg_conn, pg_conninfo
+):
+    """Two INDEPENDENT connections (two real workers) claim from a queue with
+    exactly one message at once. Exactly one must receive it; the other must
+    get nothing. The existing sequential claim test above (same open
+    transaction/connection twice) proves the *second call*'s visibility-timeout
+    behavior but not this: that two genuinely concurrent claimants can't both
+    receive pgmq's one read — the actual risk design.md's Risks section flags
+    (duplicate submission cost), mirroring how
+    test_concurrent_complete_of_last_two_batches_settles_run_exactly_once
+    proves the analogous claim for complete()."""
+    import threading
+
+    import psycopg
+
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 1, batch_index=0)
+    pg_conn.commit()  # visible to the two independent connections below
+
+    results = {}
+    barrier = threading.Barrier(2)
+
+    def claimer(key):
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET ROLE bloom_workflows")
+                barrier.wait()  # fire both claims as simultaneously as possible
+                cur.execute(f"SELECT * FROM {CLAIM_FN}(%s, %s)", (60, 5))
+                results[key] = cur.fetchone()
+                cur.execute("RESET ROLE")
+
+    try:
+        threads = [
+            threading.Thread(target=claimer, args=(key,), daemon=True)
+            for key in ("a", "b")
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        claimed = [r for r in results.values() if r is not None]
+        assert len(claimed) == 1, (
+            f"exactly one concurrent claimant must receive the batch, got: {results}"
+        )
+        assert claimed[0] == (run_id, 0, scan_ids, msg_id)
+    finally:
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"DELETE FROM pgmq.q_{QUEUE} WHERE msg_id = %s", (msg_id,))
+                cur.execute(f"DELETE FROM pgmq.a_{QUEUE} WHERE msg_id = %s", (msg_id,))
+                cur.execute(f"DELETE FROM {SCANS_TABLE} WHERE run_id = %s", (run_id,))
+                cur.execute(
+                    "DELETE FROM cyl_scans WHERE id = ANY(%s)", (scan_ids,)
+                )
+                cur.execute(f"DELETE FROM {RUNS_TABLE} WHERE id = %s", (run_id,))
 
 
 def test_claim_redelivers_after_visibility_timeout_expires(pg_conn):
@@ -674,6 +738,41 @@ def test_complete_is_idempotent_on_redelivery(pg_conn):
 
         rows = _scan_rows(cur, run_id)
         assert rows[0][2] == "wf-abc"
+    pg_conn.rollback()
+
+
+def test_settling_twice_does_not_advance_completed_at(pg_conn):
+    """A redelivery-driven duplicate complete() call for an already-settled run
+    (every scan already terminal) must not push completed_at forward again —
+    it's a scientific-traceability timestamp for when the run actually finished,
+    not for when it was last (redundantly) re-settled."""
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 1, batch_index=0)
+        _complete(cur, run_id, 0, msg_id, scan_ids, "wf-abc")
+        first_completed_at = _run_completed_at(cur, run_id)
+        assert first_completed_at is not None
+
+        _complete(cur, run_id, 0, msg_id, scan_ids, "wf-abc")  # redelivery replay
+        assert _run_completed_at(cur, run_id) == first_completed_at
+    pg_conn.rollback()
+
+
+def test_complete_does_not_touch_scans_from_a_different_batch_in_the_same_run(pg_conn):
+    """Defense-in-depth: complete()/fail() filter on scan_id, run_id, AND
+    batch_index — not scan_id/run_id alone. Two batches sharing a run must never
+    let one batch's completion attribute a workflow name to the other's scans,
+    even though cyl_pipeline_run_scans' UNIQUE(run_id, scan_id) already makes
+    scan_ids disjoint across batches in practice."""
+    with pg_conn.cursor() as cur:
+        run_id = _seed_run(cur)
+        _, scan_ids_a, msg_a = _seed_batch(cur, 1, batch_index=0, run_id=run_id)
+        _, scan_ids_b, msg_b = _seed_batch(cur, 1, batch_index=1, run_id=run_id)
+
+        _complete(cur, run_id, 0, msg_a, scan_ids_a, "wf-a")
+
+        rows = {r[0]: r for r in _scan_rows(cur, run_id)}
+        assert rows[scan_ids_a[0]][2] == "wf-a"
+        assert rows[scan_ids_b[0]][2] is None  # batch 1 untouched by batch 0's complete
     pg_conn.rollback()
 
 

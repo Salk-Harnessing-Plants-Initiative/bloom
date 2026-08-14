@@ -73,6 +73,29 @@ def test_process_one_fails_batch_on_k8ssubmissionerror(monkeypatch):
     assert "complete" not in calls
 
 
+def test_process_one_swallows_a_failing_fail_batch_call_and_still_returns_true(
+    monkeypatch,
+):
+    """If fail_batch's own RPC errors (transient network/DB issue), that must
+    not escape process_one — it would bypass this batch's specific log
+    context and hit run()'s generic "loop error, reconnecting" handler
+    instead, symmetric with how a failing complete_batch call is handled."""
+    monkeypatch.setattr(worker, "claim_batch", lambda c: dict(_BATCH))
+    monkeypatch.setattr(worker, "build_workflow_body", lambda *a: {})
+
+    def boom(body):
+        raise K8sSubmissionError("Argo Workflow submission failed")
+
+    monkeypatch.setattr(worker, "submit_workflow", boom)
+
+    def fail_boom(*a):
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(worker, "fail_batch", fail_boom)
+
+    assert worker.process_one(object()) is True
+
+
 def test_process_one_does_not_fail_batch_on_k8sconfigerror(monkeypatch):
     calls = {}
     monkeypatch.setattr(worker, "claim_batch", lambda c: dict(_BATCH))
