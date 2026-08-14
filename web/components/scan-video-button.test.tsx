@@ -29,6 +29,20 @@ function json(body: unknown, status: number) {
 
 const VIDEO_URL = "https://signed.test/cyl-videos/5.mp4?token=a";
 
+// A full upstream success. `download_url` alone is rejected by `isScanVideoResult`, so a
+// partial body drives the error branch — a test using one is not exercising success,
+// whatever its name says.
+const RESULT = {
+  scan_id: 5,
+  experiment_id: 1,
+  frames: 72,
+  frames_expected: 72,
+  truncated: false,
+  regenerated: true,
+  path: "cyl-videos/5.mp4",
+  download_url: VIDEO_URL,
+};
+
 beforeEach(() => {
   vi.useFakeTimers();
 });
@@ -264,8 +278,8 @@ describe("ScanVideoButton on a scan the page is calling incomplete", () => {
     expect(document.body.textContent).toContain("Showing 40 of 72 frames");
   });
 
-  it("encodes once confirmed", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json({ download_url: VIDEO_URL }, 200));
+  it("encodes once confirmed, and shows the finished video", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json(RESULT, 200));
     vi.stubGlobal("fetch", fetchMock);
 
     render(
@@ -276,6 +290,10 @@ describe("ScanVideoButton on a scan the page is calling incomplete", () => {
 
     expect(fetchMock).toHaveBeenCalled();
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
+    // The point of the click: a link to the video that was just made.
+    const link = screen.getByRole("link", { name: "Open video" });
+    expect(link.getAttribute("href")).toBe(VIDEO_URL);
+    expect(document.body.textContent).toContain("Encoded 72 frames");
   });
 
   it("cancel closes the panel and offers Generate again", async () => {
@@ -296,13 +314,42 @@ describe("ScanVideoButton on a scan the page is calling incomplete", () => {
   });
 
   it("goes straight to encoding when the scan looks whole", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json({ download_url: VIDEO_URL }, 200));
+    const fetchMock = vi.fn().mockResolvedValue(json(RESULT, 200));
     vi.stubGlobal("fetch", fetchMock);
 
     render(<ScanVideoButton experimentId={1} scanId={5} />);
     await clickGenerate();
 
     expect(fetchMock).toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Generate anyway" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Open video" }).getAttribute("href")).toBe(
+      VIDEO_URL
+    );
+  });
+
+  it("says what was left out when the encode was partial", async () => {
+    // The summary is the only place a scientist learns the video is short of the scan,
+    // and it renders only on the success path — so it needs a success to be seen at all.
+    const fetchMock = vi.fn().mockResolvedValue(
+      json({ ...RESULT, frames: 60, frames_expected: 72 }, 200)
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    expect(document.body.textContent).toContain("Encoded 60 of 72 frames");
+  });
+
+  it("does not offer to generate again once a video is made", async () => {
+    // Replacing a stored video is not offered, so the button must not come back.
+    const fetchMock = vi.fn().mockResolvedValue(json(RESULT, 200));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    expect(screen.queryByRole("button", { name: "Generate video" })).toBeNull();
   });
 });
 

@@ -585,6 +585,38 @@ def test_a_kept_video_is_never_re_recorded(monkeypatch):
     assert calls == [], "a kept video must not have its recorded frame count rewritten"
 
 
+def test_an_already_null_row_is_not_rewritten_on_every_request(monkeypatch):
+    """A row that already says "unmeasured" is not made more unmeasured by writing it again.
+
+    The first request records the path with no count; the second finds that row and leaves it
+    alone. `frames` reads the same either way, which is why the row's existence is tracked
+    separately — without it every request rewrites the same NULL over itself.
+    """
+    monkeypatch.setattr(video, "VideoWriter", _ExplodingWriter)
+    monkeypatch.setattr(video, "scan_in_experiment", lambda *a, **k: True)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(3)]
+
+    writes: list = []
+    monkeypatch.setattr(video, "_record_video", lambda c, s, r: writes.append(r))
+
+    # First request: nothing recorded yet, so the path is written with no count.
+    first = _GenClient(images, recorded_frames=None, stored=True)
+    monkeypatch.setattr(video, "app_client", lambda: first)
+    video.generate_experiment_scan_video(1, 5)
+    assert len(writes) == 1
+    assert writes[0]["frames"] is None
+
+    # Second request: the row is there, still with a NULL count. Nothing more to say.
+    second = _GenClient(images, recorded_frames=None, stored=True)
+    second._recorded = [{"frames": None}]  # a row exists; its count is unknown
+    monkeypatch.setattr(video, "app_client", lambda: second)
+    result = video.generate_experiment_scan_video(1, 5)
+
+    assert result["regenerated"] is False
+    assert second.uploads == 0
+    assert len(writes) == 1, "the existing NULL row was rewritten"
+
+
 def test_a_failed_record_lookup_does_not_read_as_no_record(monkeypatch):
     """"Nothing recorded" is what permits an overwrite, so an error must not report it."""
     monkeypatch.setattr(video, "VIDEO_TABLE", "cyl_scan_videos")

@@ -15,6 +15,7 @@ import logging
 import os
 import tempfile
 import threading
+from typing import NamedTuple
 
 import numpy as np
 from PIL import Image
@@ -145,15 +146,28 @@ def _confirm_stored_video(vids, key: str, scan_id: int) -> bool:
     return stored
 
 
-def _recorded_frames(client, scan_id: int):
-    """Frame count recorded for this scan, or None when nothing is recorded.
+class RecordedVideo(NamedTuple):
+    """What the record table says about a scan.
+
+    `row_exists` and `frames` are separate because a row with a NULL count and no row at all
+    are different facts that read the same from `frames` alone: one has already been recorded
+    as unmeasured, the other has never been recorded. Collapsing them makes every request
+    rewrite the same NULL over itself.
+    """
+
+    row_exists: bool
+    frames: int | None
+
+
+def _recorded_frames(client, scan_id: int) -> RecordedVideo:
+    """What is recorded for this scan.
 
     A lookup that *failed* is not an absence, and must not be reported as one: "no recorded
     count" is what lets this run replace the stored video, so a transient error would hand
     out that permission by accident. It raises instead.
     """
     if not VIDEO_TABLE:
-        return None
+        return RecordedVideo(row_exists=False, frames=None)
     try:
         rows = (
             client.table(VIDEO_TABLE)
@@ -170,7 +184,9 @@ def _recorded_frames(client, scan_id: int):
             status_code=503,
             detail=f"Could not check the recorded video for scan {scan_id}. Nothing was changed.",
         ) from exc
-    return rows[0].get("frames") if rows else None
+    if not rows:
+        return RecordedVideo(row_exists=False, frames=None)
+    return RecordedVideo(row_exists=True, frames=rows[0].get("frames"))
 
 
 def _signed_url(bucket, path: str) -> str:
@@ -212,7 +228,8 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
     # run cannot beat it whatever it produces — and downloading 72 frames and running ffmpeg
     # to discard the result is pure waste. Every scan whose video predates the record table
     # takes this path on every request.
-    prior_frames = _recorded_frames(client, scan_id)
+    record = _recorded_frames(client, scan_id)
+    prior_frames = record.frames
     if prior_frames is None or frames_expected <= prior_frames:
         if _confirm_stored_video(vids, key, scan_id):
             if prior_frames is None:
@@ -224,9 +241,13 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
                     scan_id, vids, key, frames_expected, frames_expected, truncated,
                     regenerated=False,
                 )
-                # The response carries a number because the client's shape guard requires one
-                # (the web summary suppresses it when regenerated is false); the row must not.
-                kept["stored_frames_unknown"] = True
+                # Recorded once, not on every request: a row already carrying a NULL count
+                # says all this can say, so rewriting it each time changes nothing. Until
+                # something measures the stored file, this scan keeps landing here — that is
+                # the conservative answer, not a resolved one.
+                # The response still carries a number because the client's shape guard
+                # requires one; the web summary suppresses it when regenerated is false.
+                kept["stored_frames_unknown"] = not record.row_exists
                 return kept
             logger.warning(
                 "scan %s: at most %s frames available, recorded %s; keeping the existing video",
