@@ -122,12 +122,20 @@ class _Bucket:
     def download(self, _path):
         return self._data
 
+    def create_signed_url(self, *a, **k):
+        # Nothing stored for this scan, so the pre-encode gate lets the encode run — which
+        # is the part these tests are about.
+        raise RuntimeError("Object not found")
+
 
 class _StorageClient:
-    """Minimal client exposing only storage.from_(bucket).download."""
+    """Minimal client: storage.from_(bucket).download, and no recorded video."""
 
     def __init__(self, data=b""):
         self._bucket = _Bucket(data)
+
+    def table(self, _name):
+        return _GenQuery([])
 
     @property
     def storage(self):
@@ -470,6 +478,80 @@ def test_one_past_the_cap_is_truncated(monkeypatch):
 
     assert result["truncated"] is True
     assert result["frames"] == video.MAX_IMAGES
+
+
+class _ExplodingWriter:
+    """Any use at all is a failure: these tests assert nothing is encoded."""
+
+    def __init__(self, *a, **k):
+        raise AssertionError("encoded a video it had already decided to keep")
+
+
+def test_a_video_this_run_cannot_beat_is_kept_without_encoding(monkeypatch):
+    """The comparison is decidable up front: frames_written can never exceed frames_expected.
+
+    Encoding first and discarding the result costs 72 downloads and an ffmpeg run per request,
+    on every scan whose stored video already matches what the scan can supply.
+    """
+    monkeypatch.setattr(video, "VideoWriter", _ExplodingWriter)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(3)]
+    client = _GenClient(images, recorded_frames=3, stored=True)  # a tie, known in advance
+
+    result = video.generate_scan_video(client, 5)
+
+    assert result["regenerated"] is False
+    assert result["frames"] == 3
+    assert client.uploads == 0
+
+
+def test_a_video_with_no_recorded_count_is_kept_without_encoding(monkeypatch):
+    """The legacy case — nothing to compare against, so the encode could never be used."""
+    monkeypatch.setattr(video, "VideoWriter", _ExplodingWriter)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(3)]
+    client = _GenClient(images, recorded_frames=None, stored=True)
+
+    result = video.generate_scan_video(client, 5)
+
+    assert result["regenerated"] is False
+    assert result["stored_frames_unknown"] is True
+    assert client.uploads == 0
+
+
+def test_a_scan_that_might_beat_the_stored_video_still_encodes(monkeypatch):
+    """The gate must not swallow the case it exists to let through."""
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(9)]
+    client = _GenClient(images, recorded_frames=3, stored=True)  # 9 available vs 3 recorded
+
+    result = video.generate_scan_video(client, 5)
+
+    assert result["regenerated"] is True
+    assert client.uploads == 1
+
+
+def test_frames_lost_during_the_encode_fall_back_to_keeping(monkeypatch):
+    """The pre-encode gate reasons about what is *available*; frames can still be lost after it.
+
+    Nine rows against a recorded five clears the gate, but if five of the downloads fail the
+    encode holds four — worse than what is stored. The rule is applied again on the real count,
+    which is the only reason the post-encode comparison still exists.
+    """
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(9)]
+    client = _GenClient(images, recorded_frames=5, stored=True)
+
+    def _flaky(self, path):
+        if path in {"o0", "o1", "o2", "o3", "o4"}:
+            raise RuntimeError("storage read failed")
+        return _png_bytes()
+
+    monkeypatch.setattr(_GenBucket, "download", _flaky)
+
+    result = video.generate_scan_video(client, 5)
+
+    assert result["regenerated"] is False   # 4 encoded vs 5 recorded -> keep
+    assert result["frames"] == 5            # reports the stored video's count
+    assert client.uploads == 0
 
 
 def test_a_strictly_better_encode_replaces_the_stored_video(monkeypatch):

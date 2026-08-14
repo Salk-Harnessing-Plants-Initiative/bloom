@@ -126,6 +126,25 @@ def _stored_video_exists(vids, key: str) -> bool | None:
         return None
 
 
+def _confirm_stored_video(vids, key: str, scan_id: int) -> bool:
+    """Whether a video is stored at ``key``, refusing the request if storage cannot say.
+
+    Both answers this gates are irreversible in one direction or the other — keep a video
+    that may not be there, or overwrite one that is — so an unclear answer ends the request
+    instead of picking one.
+    """
+    stored = _stored_video_exists(vids, key)
+    if stored is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Could not confirm whether scan {scan_id} already has a video. "
+                "Nothing was changed. Try again shortly."
+            ),
+        )
+    return stored
+
+
 def _recorded_frames(client, scan_id: int):
     """Frame count recorded for this scan, or None when nothing is recorded.
 
@@ -184,6 +203,39 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
             scan_id, MAX_IMAGES, MAX_IMAGES,
         )
     frames_expected = len(images)
+
+    key = f"{VIDEO_PATH_PREFIX}/{scan_id}.mp4"
+    vids = client.storage.from_(VIDEOS_BUCKET)
+
+    # Decided before the encode, not after. `frames_written` can only ever be at most
+    # `frames_expected`, so whenever the stored video already matches that upper bound this
+    # run cannot beat it whatever it produces — and downloading 72 frames and running ffmpeg
+    # to discard the result is pure waste. Every scan whose video predates the record table
+    # takes this path on every request.
+    prior_frames = _recorded_frames(client, scan_id)
+    if prior_frames is None or frames_expected <= prior_frames:
+        if _confirm_stored_video(vids, key, scan_id):
+            if prior_frames is None:
+                logger.warning(
+                    "scan %s: a video is stored with no recorded frame count; keeping it",
+                    scan_id,
+                )
+                kept = _result(
+                    scan_id, vids, key, frames_expected, frames_expected, truncated,
+                    regenerated=False,
+                )
+                # The response carries a number because the client's shape guard requires one
+                # (the web summary suppresses it when regenerated is false); the row must not.
+                kept["stored_frames_unknown"] = True
+                return kept
+            logger.warning(
+                "scan %s: at most %s frames available, recorded %s; keeping the existing video",
+                scan_id, frames_expected, prior_frames,
+            )
+            return _result(
+                scan_id, vids, key, prior_frames, frames_expected, truncated,
+                regenerated=False,
+            )
 
     img_bucket = client.storage.from_(IMAGES_BUCKET)
     frames_written = 0
@@ -245,60 +297,24 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
             scan_id, frames_written, frames_expected, frames_expected - frames_written,
         )
 
-    key = f"{VIDEO_PATH_PREFIX}/{scan_id}.mp4"
-    vids = client.storage.from_(VIDEOS_BUCKET)
-
-    # Only a strictly better encode replaces the canonical asset. A tie keeps the stored
-    # video: the same frame count is not the same frames — rows that finished uploading and
-    # rows that became unreadable cancel out — and overwriting an unversioned object on a
-    # request anyone signed in can make needs a reason beyond "no worse".
-    prior_frames = _recorded_frames(client, scan_id)
-    # The object is checked, not assumed: a row says a video was stored once, not that it is
-    # still there. Probed once, because two calls could disagree and the second would decide.
-    stored = _stored_video_exists(vids, key)
-
-    # Every path below this point either keeps the stored video or overwrites it in place on a
-    # bucket with no versioning. Neither is defensible without knowing whether it is there.
-    if stored is None:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"Could not confirm whether scan {scan_id} already has a video. "
-                "Nothing was changed. Try again shortly."
-            ),
+    # The gate above cleared this run to encode because `frames_expected` beat the recorded
+    # count. Skipped frames can have brought the real total back down to it, so the same rule
+    # is applied again now that the actual number is known. A tie keeps the stored video: the
+    # same frame count is not the same frames — rows that finished uploading and rows that
+    # became unreadable cancel out — and overwriting an unversioned object on a request anyone
+    # signed in can make needs a reason beyond "no worse".
+    if (
+        prior_frames is not None
+        and frames_written <= prior_frames
+        and _confirm_stored_video(vids, key, scan_id)
+    ):
+        logger.warning(
+            "scan %s: new encode has %s frames, recorded %s; keeping the existing video",
+            scan_id, frames_written, prior_frames,
         )
-
-    if stored:
-        if prior_frames is None:
-            # Something is stored and nothing records how long it is, so there is nothing to
-            # compare this encode against. It is recorded on the way out with no count, which
-            # says a video exists without claiming a length for a file nobody measured. The
-            # scan keeps landing here until something measures the stored file.
-            logger.warning(
-                "scan %s: a video is stored with no recorded frame count; keeping it", scan_id
-            )
-            kept = _result(
-                scan_id, vids, key, frames_written, frames_expected, truncated,
-                regenerated=False,
-            )
-            # The response carries a number because the client's shape guard requires one (the
-            # web summary suppresses it when regenerated is false); the row must not.
-            kept["stored_frames_unknown"] = True
-            return kept
-
-        # A tie keeps the stored video: the same frame count is not the same frames — rows that
-        # finished uploading and rows that became unreadable cancel out — and overwriting an
-        # unversioned object on a request anyone signed in can make needs a reason beyond
-        # "no worse".
-        if frames_written <= prior_frames:
-            logger.warning(
-                "scan %s: new encode has %s frames, recorded %s; keeping the existing video",
-                scan_id, frames_written, prior_frames,
-            )
-            return _result(
-                scan_id, vids, key, prior_frames, frames_expected, truncated,
-                regenerated=False,
-            )
+        return _result(
+            scan_id, vids, key, prior_frames, frames_expected, truncated, regenerated=False
+        )
 
     vids.upload(key, video_bytes, {"content-type": "video/mp4", "upsert": "true"})
     return _result(
