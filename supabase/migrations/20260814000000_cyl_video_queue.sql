@@ -24,6 +24,10 @@ BEGIN
   END IF;
 END
 $$;
+-- ALTER FUNCTION ... OWNER TO below needs the applier to be a member of the new
+-- owner, and the new owner to hold CREATE on the function's schema.
+GRANT bloom_video_queue_owner TO CURRENT_USER;
+GRANT CREATE ON SCHEMA public TO bloom_video_queue_owner;
 
 -- 2. The queue -------------------------------------------------------------
 DO $$

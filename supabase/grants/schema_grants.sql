@@ -48,14 +48,10 @@
 GRANT USAGE ON SCHEMA storage TO bloom_user, bloom_admin, bloom_agent, bloom_writer, bloom_workflows;
 GRANT USAGE ON SCHEMA auth TO bloom_writer;
 
--- pgmq access for bloom_video_queue_owner, the SECURITY DEFINER identity behind the
--- cyl-video queue wrappers (20260814000000_cyl_video_queue.sql). pgmq's queue tables
--- are owned by supabase_admin, so these are granted here rather than in the migration,
--- which runs after `supabase db push` downgrades the session role.
+-- The video generation queue, owned by bloom_video_queue_owner.
 GRANT USAGE ON SCHEMA pgmq TO bloom_video_queue_owner;
-GRANT SELECT, INSERT, UPDATE, DELETE
-  ON pgmq.q_cyl_video_generation, pgmq.a_cyl_video_generation
-  TO bloom_video_queue_owner;
+ALTER TABLE pgmq.q_cyl_video_generation OWNER TO bloom_video_queue_owner;
+ALTER TABLE pgmq.a_cyl_video_generation OWNER TO bloom_video_queue_owner;
 GRANT EXECUTE ON FUNCTION
   pgmq.send(text, jsonb), pgmq.read(text, integer, integer),
   pgmq.delete(text, bigint), pgmq.archive(text, bigint)
