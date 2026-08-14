@@ -142,6 +142,18 @@ def test_ttl_defaults_to_3600_when_unset(monkeypatch):
     k8s_client._validate_config()  # must not raise — TTL is never "missing"
 
 
+def test_ttl_falls_back_to_3600_on_a_malformed_value_instead_of_raising(monkeypatch):
+    """A present-but-empty/malformed WORKFLOWS_K8S_TTL_SECONDS (a real
+    docker-compose --env-file misconfiguration, not hypothetical) must not
+    raise ValueError at import time — that would crash dispatch_worker.py
+    before it even installs its SIGTERM/SIGINT handlers."""
+    monkeypatch.setenv("WORKFLOWS_K8S_TTL_SECONDS", "")
+    assert k8s_client._resolve_ttl_seconds() == 3600
+
+    monkeypatch.setenv("WORKFLOWS_K8S_TTL_SECONDS", "not-a-number")
+    assert k8s_client._resolve_ttl_seconds() == 3600
+
+
 # --- CA cert: escaped newlines -> real newlines -> ssl.SSLContext ----------
 
 

@@ -713,6 +713,44 @@ def test_fail_increments_attempts_on_every_scan_in_batch(pg_conn):
     pg_conn.rollback()
 
 
+def test_fail_is_idempotent_on_a_stale_redelivery(pg_conn):
+    """Mirror of complete()'s own idempotency guard: a stale/redelivered
+    fail() call for a scan a prior fail() already recorded (this claim's own
+    poison-message dead-letter, or a different claimant's) must not
+    double-increment attempts or overwrite error_message/updated_at — this
+    phase is terminal-for-now, so a second fail() is always a duplicate
+    signal, never a legitimately different failure."""
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 1, batch_index=0)
+        _fail(cur, run_id, 0, msg_id, scan_ids, "first failure")
+        _fail(cur, run_id, 0, msg_id, scan_ids, "stale second failure")
+
+        rows = _scan_rows(cur, run_id)
+        assert rows[0][1] == "failed"
+        assert rows[0][3] == 1  # attempts not double-incremented
+        assert rows[0][4] == "first failure"  # not overwritten by the stale call
+    pg_conn.rollback()
+
+
+def test_fail_does_not_touch_scans_from_a_different_batch_in_the_same_run(pg_conn):
+    """Mirror of the equivalent complete() test: deliberately calls fail()
+    with a batch_index/scan_ids MISMATCH (batch B's index, batch A's
+    scan_ids) — the only way to actually exercise fail()'s batch_index guard,
+    since two batches' scan_ids are already disjoint by cyl_pipeline_run_scans'
+    UNIQUE(run_id, scan_id)."""
+    with pg_conn.cursor() as cur:
+        run_id = _seed_run(cur)
+        _, scan_ids_a, msg_a = _seed_batch(cur, 1, batch_index=0, run_id=run_id)
+        _, scan_ids_b, msg_b = _seed_batch(cur, 1, batch_index=1, run_id=run_id)
+
+        _fail(cur, run_id, 1, msg_a, scan_ids_a, "boom")  # batch_index mismatch
+
+        rows = {r[0]: r for r in _scan_rows(cur, run_id)}
+        assert rows[scan_ids_a[0]][1] == "queued"  # untouched — mismatch, no update
+        assert rows[scan_ids_b[0]][1] == "queued"  # untouched, as expected
+    pg_conn.rollback()
+
+
 def test_fail_does_not_clobber_a_completed_scan(pg_conn):
     """vt-expiry / deploy race: a batch is completed successfully, then a
     straggler second attempt reports failure for the same batch. The

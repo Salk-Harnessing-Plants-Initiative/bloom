@@ -18,21 +18,32 @@ APP_EMAIL = os.environ.get("WORKFLOWS_SUPABASE_EMAIL")
 APP_PASSWORD = os.environ.get("WORKFLOWS_SUPABASE_PASSWORD")
 
 # supabase-py defaults postgrest_client_timeout to 120s (postgrest/constants.py's
-# DEFAULT_POSTGREST_CLIENT_TIMEOUT), which the dispatch worker's
-# stop_grace_period (docker-compose.{dev,prod}.yml, 30s) doesn't actually cover
-# — a hung claim/complete/fail RPC could still be SIGKILLed mid-request. Unlike
-# bloommcp's own supabase_client.py (which deliberately keeps 120s because its
-# client also serves multi-million-row experiment fetches), every RPC this
-# worker calls (claim_cyl_pipeline_batch/complete_cyl_pipeline_batch/
+# DEFAULT_POSTGREST_CLIENT_TIMEOUT). The dispatch worker's stop_grace_period
+# (docker-compose.{dev,prod}.yml, 30s) doesn't actually cover that — a hung
+# claim/complete/fail RPC could still be SIGKILLed mid-request — and every RPC
+# it calls (claim_cyl_pipeline_batch/complete_cyl_pipeline_batch/
 # fail_cyl_pipeline_batch) is a single-batch, small, indexed operation with no
-# comparable large-payload case to protect — 10s is a safe, generous bound for
-# it, comfortably under the 30s grace period alongside k8s_client's own 15s
-# httpx timeout.
-POSTGREST_TIMEOUT_SECONDS = 10
+# large-payload case to protect, so a tight bound is safe for it specifically.
+# But app_client() is shared with pipeline.py's trigger_pipeline() (up to
+# MAX_SCAN_IDS=5000 scans, up to 200 sequential enqueue_cyl_pipeline_batch
+# calls plus a bulk insert) and video.py — neither has that same small-payload
+# guarantee, so this bound is opt-in per caller, not a new module-wide
+# default; only dispatch_worker.py passes it. Unlike bloommcp's own
+# supabase_client.py (which deliberately keeps the 120s default globally
+# because its one shared client also serves multi-million-row experiment
+# fetches), this service's callers have different enough payload profiles to
+# warrant a per-call override instead of one shared constant.
+DISPATCH_WORKER_POSTGREST_TIMEOUT_SECONDS = 10
 
 
-def app_client():
-    """Return a Supabase client signed in as the workflows app user."""
+def app_client(*, timeout_seconds: float | None = None):
+    """Return a Supabase client signed in as the workflows app user.
+
+    `timeout_seconds`, when given, overrides supabase-py's postgrest_client_timeout
+    default (120s) for every request made through the returned client. Leave unset
+    to keep that default — only dispatch_worker.py's RPCs are small/bounded enough
+    to safely tighten it (see DISPATCH_WORKER_POSTGREST_TIMEOUT_SECONDS above).
+    """
     # Validate config BEFORE importing supabase so a misconfigured service fails
     # fast and cleanly without loading the (heavy) client stack.
     missing = [
@@ -53,11 +64,12 @@ def app_client():
 
     from supabase import ClientOptions, create_client
 
-    client = create_client(
-        SUPABASE_URL,
-        SUPABASE_ANON_KEY,
-        options=ClientOptions(postgrest_client_timeout=POSTGREST_TIMEOUT_SECONDS),
+    options = (
+        ClientOptions(postgrest_client_timeout=timeout_seconds)
+        if timeout_seconds is not None
+        else None
     )
+    client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY, options=options)
     try:
         res = client.auth.sign_in_with_password(
             {"email": APP_EMAIL, "password": APP_PASSWORD}

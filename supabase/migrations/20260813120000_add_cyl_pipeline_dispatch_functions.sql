@@ -92,8 +92,9 @@ REVOKE EXECUTE ON FUNCTION public._settle_cyl_pipeline_run(BIGINT)
     FROM PUBLIC, anon, authenticated;
 
 -- fail: mark every scan in the batch failed (unless already successfully
--- submitted by a complete() call), increment attempts, dead-letter the
--- message, and settle the run. Defined before claim() below so claim's
+-- submitted by a complete() call, or already failed by a prior fail() call —
+-- idempotent, matching complete()'s own guard), increment attempts, dead-letter
+-- the message, and settle the run. Defined before claim() below so claim's
 -- poison-message branch can delegate to it.
 CREATE OR REPLACE FUNCTION public.fail_cyl_pipeline_batch(
     p_run_id BIGINT,
@@ -115,7 +116,13 @@ BEGIN
     WHERE run_id = p_run_id
       AND batch_index = p_batch_index
       AND scan_id = ANY(p_scan_ids)
-      AND argo_workflow_name IS NULL;
+      AND argo_workflow_name IS NULL
+      -- A stale/redelivered fail() call for a scan a prior fail() (this
+      -- claim's own, or a different claimant's) already recorded must not
+      -- double-increment attempts or overwrite error_message/updated_at —
+      -- this phase is terminal-for-now, so a second fail() is always a
+      -- duplicate signal, never a legitimately different failure.
+      AND status != 'failed';
 
     PERFORM pgmq.archive('cyl_pipeline_dispatch', p_msg_id);
 

@@ -29,7 +29,20 @@ def _resolve_namespace() -> str:
 
 
 def _resolve_ttl_seconds() -> int:
-    return int(os.environ.get("WORKFLOWS_K8S_TTL_SECONDS", "3600"))
+    """Never raises — NAMESPACE/TTL_SECONDS/ENV_LABEL are all "never missing"
+    plain config (see module docstring), so a present-but-malformed value
+    (e.g. an empty string from a `docker-compose --env-file` misconfiguration
+    — a real failure mode this repo's tasks.md already warns about for
+    NAMESPACE) must degrade to the same safe default an unset value gets, not
+    raise ValueError at MODULE IMPORT time. An uncaught exception here would
+    crash dispatch_worker.py before it even installs its SIGTERM/SIGINT
+    handlers — exactly the crash-loop-on-startup class of bug
+    _connect_with_retry() was built to prevent for a Supabase outage."""
+    raw = os.environ.get("WORKFLOWS_K8S_TTL_SECONDS", "3600")
+    try:
+        return int(raw)
+    except ValueError:
+        return 3600
 
 
 def _resolve_env_label() -> str:

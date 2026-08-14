@@ -158,6 +158,12 @@ def test_env_disambiguating_values_differ():
         "CADDY_HTTP_LISTEN_PORT", "CADDY_HTTPS_LISTEN_PORT",
         "POSTGRES_HOST_PORT",
         "LANGCHAIN_PROJECT",
+        # WORKFLOWS_K8S_ENV_LABEL's entire purpose (design.md's "fourth
+        # environment label" decision) is disambiguating prod from staging in
+        # the shared runai-busch-lab namespace — a copy-paste accident
+        # collapsing them to the same value would silently defeat it with no
+        # other test catching that.
+        "WORKFLOWS_K8S_ENV_LABEL",
     ):
         assert prod[key] != staging[key], (
             f"{key} identical in prod/staging ({prod[key]!r}); "
