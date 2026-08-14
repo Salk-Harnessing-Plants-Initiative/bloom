@@ -927,6 +927,55 @@ def test_plot_font_fields_ignored_when_include_plots_false(injected_ports):
     assert not any(k.endswith(".png") for k in result.outputs)
 
 
+def test_plot_font_size_just_above_zero_is_accepted():
+    assert (
+        UMAPAnalysisParams(experiment="x.csv", plot_font_size=0.01).plot_font_size
+        == 0.01
+    )
+
+
+def test_plots_subset_with_font_override_never_generates_non_requested_plots(
+    injected_ports, monkeypatch
+):
+    """A plots=[subset] request must generate — and therefore only font-style — the
+    requested catalog plot(s); a non-requested plotter must never even be called, so
+    it can't be affected by the override either."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    called = {"single_trait": 0, "top_traits": 0}
+
+    def _fake_calls(result_dict, frame, trait_cols):
+        def _single_trait():
+            called["single_trait"] += 1
+            fig, ax = plt.subplots()
+            ax.set_title("single trait")
+            return fig
+
+        def _top_traits():  # pragma: no cover - must not run
+            called["top_traits"] += 1
+            raise AssertionError("non-requested plotter was called")
+
+        return {
+            "create_umap_single_trait": _single_trait,
+            "create_umap_colored_by_top_traits": _top_traits,
+        }
+
+    monkeypatch.setattr(umap_analysis_tool, "_umap_plot_calls", _fake_calls)
+
+    result = _run(
+        include_plots=True,
+        plots=["create_umap_single_trait"],
+        plot_font_family="serif",
+    )
+
+    assert called == {"single_trait": 1, "top_traits": 0}
+    png_keys = {k for k in result.outputs if k.endswith(".png")}
+    assert png_keys == {"create_umap_single_trait.png"}
+
+
 # ── explicit cleaned-version selector (#626) ────────────────────────────────
 
 

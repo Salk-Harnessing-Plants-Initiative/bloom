@@ -167,8 +167,12 @@ def _close_figures_opened_directly_via_pyplot():
 
 
 def _styled_figure():
-    """A real Figure with a title, x/y labels, tick labels, and a titled legend —
-    matching create_pca_biplot's real ``ax.legend(title=color_by, ...)`` call shape."""
+    """A real Figure with a title, x/y labels, tick labels, a titled legend, a
+    figure-level suptitle, and a standalone annotation — matching real catalog-plot
+    shapes: ``create_pca_biplot``'s ``ax.legend(title=color_by, ...)``, a
+    ``fig.suptitle`` like ``create_umap_colored_by_top_traits`` sets, and a standalone
+    ``ax.text(...)`` annotation like ``create_pca_scree_plot``'s bar labels / seaborn's
+    ``annot=True`` heatmap cells."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -180,14 +184,18 @@ def _styled_figure():
     ax.set_xlabel("x label")
     ax.set_ylabel("y label")
     ax.legend(title="Genotype")
+    ax.text(0.5, 0.5, "an annotation")
+    fig.suptitle("a suptitle")
     return fig
 
 
 def _all_texts(fig):
     ax = fig.axes[0]
-    texts = [ax.title, ax.xaxis.label, ax.yaxis.label]
+    texts = list(fig.texts)
+    texts.extend([ax.title, ax.xaxis.label, ax.yaxis.label])
     texts.extend(ax.get_xticklabels())
     texts.extend(ax.get_yticklabels())
+    texts.extend(ax.texts)
     legend = ax.get_legend()
     texts.extend(legend.get_texts())
     texts.append(legend.get_title())
@@ -265,6 +273,59 @@ def test_apply_font_style_applies_to_every_axes_on_a_multi_axes_figure():
     assert ax2.title.get_fontfamily() == ["serif"]
 
 
+def test_apply_font_style_covers_figure_level_suptitle():
+    """Regression: create_umap_colored_by_top_traits sets its overall heading via
+    fig.suptitle(title, fontsize=14) — a Text that lives on the Figure itself
+    (fig.texts), not on any Axes. Iterating fig.axes alone never reaches it."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    suptitle = fig.suptitle("overall heading")
+    apply_font_style(fig, font_family="serif", font_size=22)
+    assert suptitle.get_fontfamily() == ["serif"]
+    assert suptitle.get_fontsize() == 22
+
+
+def test_apply_font_style_covers_standalone_annotation_text():
+    """Regression: create_pca_biplot's per-arrow trait-name labels and
+    create_pca_scree_plot's per-bar percentage annotations are both standalone
+    ax.text(...) calls — not the title, an axis label, a tick label, or legend text —
+    so they live in ax.texts and are otherwise invisible to apply_font_style."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    annotation = ax.text(0.5, 0.5, "PC1 (42%)")
+    apply_font_style(fig, font_family="serif", font_size=22)
+    assert annotation.get_fontfamily() == ["serif"]
+    assert annotation.get_fontsize() == 22
+
+
+def test_apply_font_style_covers_seaborn_annot_true_heatmap_cells():
+    """Regression: create_feature_contribution_heatmap draws via
+    sns.heatmap(..., annot=True) — verified directly that seaborn's cell-value text
+    lands in ax.texts (the same standalone-annotation mechanism as the test above),
+    not any of title/axis-label/tick-label/legend."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import seaborn as sns
+
+    fig, ax = plt.subplots()
+    sns.heatmap(np.array([[0.1, 0.2], [0.3, 0.4]]), annot=True, ax=ax)
+    assert len(ax.texts) > 0  # sanity: seaborn really did add standalone cell text
+    apply_font_style(fig, font_family="serif")
+    for text in ax.texts:
+        assert text.get_fontfamily() == ["serif"]
+
+
 def test_generate_figures_forwards_font_kwargs_to_each_figure():
     figures: dict = {}
     generate_figures(
@@ -276,3 +337,26 @@ def test_generate_figures_forwards_font_kwargs_to_each_figure():
     for fig in figures.values():
         assert fig.axes[0].title.get_fontfamily() == ["serif"]
         assert fig.axes[0].title.get_fontsize() == 18
+
+
+def test_generate_figures_records_figure_before_styling(monkeypatch):
+    """Regression: if apply_font_style itself ever raised, the figure must already be
+    recorded into the caller's dict (recorded before styling, not after) so
+    close_figures can still reach it in finally — otherwise it would leak from
+    matplotlib's Agg registry, unrecorded and unreachable."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from bloom_mcp.tools import _plots
+
+    def _boom(fig, *, font_family=None, font_size=None):
+        raise RuntimeError("styling blew up")
+
+    monkeypatch.setattr(_plots, "apply_font_style", _boom)
+
+    figures: dict = {}
+    with pytest.raises(RuntimeError):
+        generate_figures({"a": lambda: plt.figure()}, figures, font_family="serif")
+    assert "a" in figures  # recorded before the (simulated) styling failure

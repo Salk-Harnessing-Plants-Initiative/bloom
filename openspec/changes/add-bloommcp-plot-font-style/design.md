@@ -33,9 +33,10 @@ per-figure post-processing for two reasons:
    text created with default styling; the tools call `matplotlib.use("Agg")` and then
    dispatch to lazily-imported catalog plotters (`_pca_plot_calls`/`_umap_plot_calls`) whose
    internals are opaque to this change. Post-processing every `Text` object on the already-
-   built `Figure` (title, axis labels, tick labels, legend text and title) is deterministic
-   regardless of how the plotter built it, and requires no coordination with
-   `sleap_roots_analyze` internals.
+   built `Figure` — figure-level text (`fig.texts`, including a `fig.suptitle`), and per-`Axes`
+   title, axis labels, tick labels, standalone annotation text (`ax.texts`), and legend text
+   and title — is deterministic regardless of how the plotter built it, and requires no
+   coordination with `sleap_roots_analyze` internals.
 
 ### Applied inside `generate_figures`, immediately after each figure is produced
 
@@ -48,9 +49,8 @@ def generate_figures(
     font_size: float | None = None,
 ) -> None:
     for key, fn in resolved_calls.items():
-        fig = fn()
-        apply_font_style(fig, font_family=font_family, font_size=font_size)
-        figures[key] = fig
+        figures[key] = fn()
+        apply_font_style(figures[key], font_family=font_family, font_size=font_size)
 ```
 
 This keeps `_plots.py` the single place any tool touches the raw `Figure` object between
@@ -60,6 +60,15 @@ mid-generation exception still leaves every already-styled, already-successful f
 `figures` for `close_figures` to reach in `finally` — the same partial-failure guarantee
 `generate_figures` already provides for figure generation itself (see the
 `add-pca-analysis-plots` precedent).
+
+**Recording before styling, not after.** `figures[key] = fn()` runs *before*
+`apply_font_style`, not after — deliberately, not incidentally. If `apply_font_style` ever
+raised (it doesn't today: `set_fontfamily`/`set_fontsize` don't validate, `font_size` is
+already Pydantic-validated `gt=0`, and `ax.title`/`legend.get_title()`/`fig.texts` entries are
+always real `Text` instances), the figure is already in the caller's dict for
+`close_figures` to reach in `finally` — so a hypothetical future styling failure can't leak an
+unrecorded, unreachable figure from matplotlib's `Agg` registry. Recording first costs
+nothing today and removes a latent failure mode later.
 
 ### No-op when both are `None` — preserves the existing test-double contract
 
@@ -82,44 +91,79 @@ def apply_font_style(
 ) -> None:
     if font_family is None and font_size is None:
         return
+    texts = list(fig.texts)
     for ax in fig.axes:
-        texts = [ax.title, ax.xaxis.label, ax.yaxis.label]
+        texts.append(ax.title)
+        texts.append(ax.xaxis.label)
+        texts.append(ax.yaxis.label)
         texts.extend(ax.get_xticklabels())
         texts.extend(ax.get_yticklabels())
+        texts.extend(ax.texts)
         legend = ax.get_legend()
         if legend is not None:
             texts.extend(legend.get_texts())
             texts.append(legend.get_title())
-        for text in texts:
-            if font_family is not None:
-                text.set_fontfamily(font_family)
-            if font_size is not None:
-                text.set_fontsize(font_size)
+    for text in texts:
+        if font_family is not None:
+            text.set_fontfamily(font_family)
+        if font_size is not None:
+            text.set_fontsize(font_size)
 ```
 
-Covers every text element the issue names as examples (tick labels, titles, axis labels) plus
-legend text and the legend's own title, since at least one catalog plot (`create_pca_biplot`)
-renders a legend and leaving it at the old font/size while everything else changes would look
-inconsistent. (The two UMAP catalog plots use colorbars, not `ax.legend()`, for their
-trait-value coloring — `apply_font_style` still reaches a colorbar's own axis label via the
-`fig.axes` iteration below, just not via the legend branch.) `ax.get_legend()` returns `None`
-when the
-axes has no legend — skipped rather than erroring. `legend.get_title()` is unconditionally
-safe to include once a legend exists: matplotlib always attaches a `Text` instance for the
-legend title (empty string when no `title=` was passed to `ax.legend(...)`), so no further
-None-check is needed — verified directly against the installed matplotlib. This matters
-concretely, not just hypothetically: `create_pca_biplot` calls
-`ax.legend(title=color_by, ...)` (`sleap_roots_analyze.visualization`), so the biplot's
-genotype legend has a real title whose font would otherwise silently keep the old
-style while every other text element on the same figure changed. Iterating `fig.axes` (not
-just `fig.gca()`) covers every `Axes` a figure carries — not only side-by-side subplots, but
-also the extra `Axes` a colorbar occupies on the same figure. Concretely (verified against the
-installed `seaborn`/`matplotlib`): `create_feature_contribution_heatmap` (called by
-`pca_analysis` with `plot_type="loadings"`, always a single `Figure`, never the tuple-returning
-`"both"` mode) draws via `sns.heatmap(..., cbar_kws={"label": ...})`, which places its
-colorbar on a second `Axes` matplotlib appends to the same figure — `len(fig.axes) == 2` for
-this call, not 1. Iterating `fig.axes` (not just `fig.gca()`) reaches the colorbar's own
-y-axis label too, not only the main heatmap panel.
+An earlier revision of this function walked only `fig.axes` — title, axis labels, tick
+labels, and legend text/title — and missed two categories of real text that several
+in-scope catalog plots actually draw. Both gaps were caught in review and verified directly
+against the installed `matplotlib`/`seaborn` and the upstream `sleap_roots_analyze` source
+before being fixed here:
+
+- **Figure-level text (`fig.texts`), not reachable via `fig.axes` at all.**
+  `create_umap_colored_by_top_traits` sets its overall heading via
+  `fig.suptitle(title, fontsize=14)` — a `Text` matplotlib records on the *Figure* itself
+  (confirmed: `fig.suptitle(...)` both stores the `Text` at `fig._suptitle` and appends it to
+  the public `fig.texts` list), not on any `Axes`. A function that only iterates `fig.axes`
+  can never reach it, no matter how many `Axes` it inspects. `list(fig.texts)` picks up the
+  suptitle (and any other figure-level `fig.text(...)` calls) once, before the per-`Axes`
+  loop.
+- **Standalone annotation text (`ax.texts`), distinct from title/axis-label/tick-label/legend.**
+  Several catalog plots draw text via freestanding `ax.text(...)` calls that are none of
+  those four categories: `create_pca_biplot`'s per-arrow trait-name labels, and
+  `create_pca_scree_plot`'s per-bar percentage/threshold-crossing annotations (both verified
+  directly in `sleap_roots_analyze.visualization`'s source). The same mechanism also covers
+  `create_feature_contribution_heatmap`'s seaborn `annot=True` cell values — verified
+  empirically that `sns.heatmap(..., annot=True)`'s cell-value text lands in the heatmap
+  `Axes`'s own `ax.texts`, indistinguishable from a hand-written annotation as far as
+  `apply_font_style` is concerned. None of this text is reachable via `ax.title`,
+  `ax.xaxis.label`/`ax.yaxis.label`, `ax.get_xticklabels()`/`get_yticklabels()`, or
+  `ax.get_legend()` — `ax.texts` is the only place it lives.
+
+With both included, `apply_font_style` now reaches every text element on every in-scope
+catalog plot shipped today, not just the four categories the issue named as illustrative
+examples (tick labels, titles, axis labels, legend). Concretely verified per plot: the PCA
+biplot's arrow labels and legend/legend-title (`create_pca_biplot`'s
+`ax.legend(title=color_by, ...)`), the scree plot's bar annotations, the feature-contribution
+heatmap's cell values and its seaborn colorbar `Axes` (a second entry in `fig.axes` — see
+below), and the UMAP top-traits plot's `fig.suptitle`.
+
+`ax.get_legend()` returns `None` when the axes has no legend — skipped rather than erroring.
+`legend.get_title()` is unconditionally safe to include once a legend exists: matplotlib
+always attaches a `Text` instance for the legend title (empty string when no `title=` was
+passed to `ax.legend(...)`), so no further None-check is needed. Iterating `fig.axes` (not
+just `fig.gca()`) also covers every `Axes` a figure carries beyond the first — concretely,
+`create_feature_contribution_heatmap` (called by `pca_analysis` with `plot_type="loadings"`,
+always a single `Figure`, never the tuple-returning `"both"` mode) draws via
+`sns.heatmap(..., cbar_kws={"label": ...})`, which places its colorbar on a second `Axes`
+matplotlib appends to the same figure — `len(fig.axes) == 2` for this call, not 1 — so its
+y-axis label needs the per-`Axes` loop to reach it too, not just the main heatmap panel.
+
+**Manual visual verification.** Because this feature is fundamentally about how a figure
+looks, and the unit tests only assert `Text` font-family/font-size properties rather than
+rendered pixels, a manual pass was run alongside the automated tests: `pca_analysis` and
+`umap_analysis` were called with `include_plots=True` and a font override set, and the
+resulting PNGs for all four PCA catalog plots and both UMAP catalog plots were opened and
+visually confirmed — including the UMAP top-traits plot's overall title, the PCA biplot's
+arrow labels, the scree plot's bar/threshold annotations, and the heatmap's cell numbers —
+every visible piece of text reflects the override, with no remaining mixed-font text on any
+of the six plots.
 
 ### `font_family` is not validated against installed fonts
 
@@ -155,6 +199,12 @@ shouldn't need to unset them just because they temporarily disabled plots.
   negligible overhead added to `generate_figures`.
 - **No family validation**: a typo'd font family degrades to matplotlib's default font
   silently rather than surfacing an error to the caller. Accepted — see the decision above.
+- **`gt=0` admits `float('inf')`**: Pydantic's `gt=0` constraint accepts `inf` (`inf > 0` is
+  `True`), which would produce a degenerate, unreadably huge figure rather than a crash.
+  Accepted for parity with the "no font-family validation" risk above — this change validates
+  only that the caller's value is a sane *shape* (positive), not that the *rendered result* is
+  reasonable; an adversarial or mistaken caller can still request a nonsensical style, the same
+  way an unrecognized `font_family` degrades silently rather than erroring.
 
 ## Open Questions
 

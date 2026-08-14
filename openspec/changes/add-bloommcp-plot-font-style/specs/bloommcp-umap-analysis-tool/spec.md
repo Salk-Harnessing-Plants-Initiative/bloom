@@ -19,19 +19,22 @@ into the same `bloom_mcp.tools._plots.generate_figures` call already used for it
 #### Scenario: A font family override is applied to every generated figure
 
 - **WHEN** `umap_analysis` is called with `include_plots=True` and `plot_font_family="serif"`
-- **THEN** every generated figure's title, axis labels, tick labels, and legend text and
-  title (when a legend is present) have their font family set to `"serif"` — neither of the
-  two UMAP catalog plots (`create_umap_single_trait`, `create_umap_colored_by_top_traits`)
-  currently renders a legend (both use colorbars instead), so this scenario is exercised via
-  the shared `_plots.py` behavior rather than a UMAP-specific legend fixture; see the
-  `bloommcp-pca-analysis-tool` delta for the concrete legend/legend-title coverage
+- **THEN** every generated figure's title, axis labels, tick labels, standalone annotation
+  text, figure-level text, and legend text and title (when present) have their font family
+  set to `"serif"` — concretely, `create_umap_colored_by_top_traits`'s overall
+  `fig.suptitle(...)` heading (figure-level text, not reachable via any `Axes`) is included.
+  Neither UMAP catalog plot (`create_umap_single_trait`, `create_umap_colored_by_top_traits`)
+  currently renders a legend (both use colorbars instead), so legend/legend-title coverage is
+  exercised via the shared `_plots.py` behavior rather than a UMAP-specific legend fixture;
+  see the `bloommcp-pca-analysis-tool` delta for the concrete legend/legend-title coverage
   (`create_pca_biplot` does render one)
 
 #### Scenario: A font size override is applied to every generated figure
 
 - **WHEN** `umap_analysis` is called with `include_plots=True` and `plot_font_size=22`
-- **THEN** every generated figure's title, axis labels, tick labels, and legend text and
-  title (when a legend is present) have their font size set to `22`
+- **THEN** every generated figure's title, axis labels, tick labels, standalone annotation
+  text, figure-level text (including `create_umap_colored_by_top_traits`'s `fig.suptitle`),
+  and legend text and title (when present) have their font size set to `22`
 
 #### Scenario: Both overrides apply together
 

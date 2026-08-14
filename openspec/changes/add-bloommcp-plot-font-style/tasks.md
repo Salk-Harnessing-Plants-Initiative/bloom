@@ -79,13 +79,18 @@
 
 - [x] 3.1 Add `apply_font_style(fig, *, font_family: str | None = None, font_size: float |
   None = None) -> None` to `bloom_mcp/tools/_plots.py`: no-op when both are `None`; otherwise
-  walks `fig.axes` setting font family/size on title, x-label, y-label, tick labels, and — when
-  a legend is present — every legend entry (`legend.get_texts()`) **and the legend's own
-  title** (`legend.get_title()`, always a `Text` instance regardless of whether `title=` was
-  passed to `ax.legend(...)`, so no extra None-check is needed once `legend is not None`)
+  collects `fig.texts` (figure-level text, including a `fig.suptitle`) plus, per `Axes` in
+  `fig.axes`: title, x-label, y-label, tick labels, `ax.texts` (standalone annotation text —
+  covers `create_pca_biplot`'s arrow labels, `create_pca_scree_plot`'s bar annotations, and
+  `create_feature_contribution_heatmap`'s seaborn `annot=True` cell values), and — when a
+  legend is present — every legend entry (`legend.get_texts()`) **and the legend's own title**
+  (`legend.get_title()`, always a `Text` instance regardless of whether `title=` was passed to
+  `ax.legend(...)`, so no extra None-check is needed once `legend is not None`)
 - [x] 3.2 Extend `generate_figures`'s signature with keyword-only `font_family`/`font_size`
-  (both default `None`); call `apply_font_style` on each figure immediately after `fn()`,
-  before recording it into `figures`
+  (both default `None`); record each figure into `figures` **first**, then call
+  `apply_font_style` on it — recording before styling (not after) so a hypothetical future
+  exception from `apply_font_style` can't leak an unrecorded figure past `close_figures`'s
+  `finally`
 - [x] 3.3 Update `generate_figures`'s docstring to mention the font-style post-processing step
   (currently reads "Call each zero-arg plotter callable, recording each result into `figures`."
   — under-describes the function once it also applies the override before recording)
@@ -113,3 +118,44 @@
   locally while missing a lockfile-sync or marker issue CI would catch)
 - [x] 5.3 Run lint/format (`ruff check`, `ruff format --check`, `black --check`) per project
   convention
+
+## 6. PR review round 2 — coverage gaps found by the 5-subagent PR review (#665)
+
+The review confirmed the shared-helper mechanism itself was sound but found real
+`fig.axes`-only coverage gaps against real, in-scope catalog plots — not hypothetical
+future ones — plus a latent figure-leak-on-raise ordering issue and a documentation gap.
+Every blocking/important finding was verified independently against the installed
+matplotlib/seaborn and the upstream `sleap_roots_analyze` source before being fixed.
+
+- [x] 6.1 `apply_font_style` missed `fig.suptitle` (figure-level `Text`, not on any `Axes` —
+  `create_umap_colored_by_top_traits` sets one) and standalone `ax.text(...)` annotations
+  (`create_pca_biplot`'s arrow labels, `create_pca_scree_plot`'s bar annotations, and
+  seaborn's `annot=True` heatmap cells, verified to live in `ax.texts`). Fixed by collecting
+  `fig.texts` once plus `ax.texts` per `Axes`, alongside the existing title/label/tick/legend
+  coverage.
+- [x] 6.2 `generate_figures` recorded a figure into `figures` only *after* styling it — fixed
+  to record first, style second, so a hypothetical future `apply_font_style` exception can't
+  leak an unrecorded figure past `close_figures`'s `finally` (latent risk; nothing in the
+  current code path actually raises today).
+- [x] 6.3 Added regression tests: `test_apply_font_style_covers_figure_level_suptitle`,
+  `test_apply_font_style_covers_standalone_annotation_text`,
+  `test_apply_font_style_covers_seaborn_annot_true_heatmap_cells`,
+  `test_generate_figures_records_figure_before_styling` (all in
+  `test_plots_helpers.py`); `test_plots_subset_with_font_override_never_generates_non_requested_plots`
+  and `test_plot_font_size_just_above_zero_is_accepted` (one per tool, in
+  `test_pca_analysis_tool.py`/`test_umap_analysis_tool.py`)
+- [x] 6.4 Added the silent-font-fallback note to `plot_font_family`'s `Field(description=...)`
+  in both `PCAAnalysisParams`/`UMAPAnalysisParams` (previously only in `design.md`, not
+  visible to a caller — human or LLM agent — at the point they'd need it)
+- [x] 6.5 Added a `design.md` Risks note that `plot_font_size`'s `gt=0` constraint admits
+  `float('inf')` (produces a degenerate figure, not a crash) — parity with the already-accepted
+  no-font-family-validation risk
+- [x] 6.6 Manual visual verification: ran `pca_analysis`/`umap_analysis` with
+  `include_plots=True` and a font override, opened all four PCA catalog plots and both UMAP
+  catalog plots, and visually confirmed every text element — including the UMAP top-traits
+  plot's `fig.suptitle`, the PCA biplot's arrow labels, the scree plot's bar/threshold
+  annotations, and the heatmap's `annot=True` cell numbers — reflects the override
+- [x] 6.7 Updated `design.md` and both delta `spec.md` files to describe the corrected
+  coverage (figure-level text, standalone annotations) and the record-before-style ordering
+- [x] 6.8 Re-ran the full CI-matching suite and lint/format after all fixes — see commit
+  history for exact results
