@@ -241,6 +241,35 @@ def test_select_granted_to_bloom_roles(pg_conn, role):
     pg_conn.rollback()
 
 
+
+def test_a_soft_deleted_species_still_leaves_its_id_on_the_row(pg_conn):
+    """The id says which species went missing. It has to outlive the name.
+
+    `user_read_species` filters `deleted_at IS NULL`, and the join to species is LEFT — so
+    reading species_id from the joined row blanks it at the same moment the name blanks, and
+    the export loses the one value that would say what was omitted. Every other id in the view
+    comes from its base table; this one has to as well.
+    """
+    with pg_conn.cursor() as cur:
+        experiment_id, _ = _seed_experiment(cur)
+        scan_id = _seed_scan(cur, experiment_id)
+        cur.execute("SELECT species_id FROM gravi_experiments WHERE id = %s", (experiment_id,))
+        species_id = cur.fetchone()[0]
+
+        cur.execute("UPDATE species SET deleted_at = now() WHERE id = %s", (species_id,))
+        cur.execute("SET LOCAL ROLE bloom_user")
+        cur.execute(
+            "SELECT species_id, species_name FROM gravi_scans_extended WHERE scan_id = %s",
+            (scan_id,),
+        )
+        row = cur.fetchone()
+        cur.execute("RESET ROLE")
+
+        assert row is not None, "the scan itself must not disappear with its species"
+        assert row[0] == species_id, "species_id was lost along with the species name"
+        assert row[1] is None, "the name is hidden by RLS, as expected"
+    pg_conn.rollback()
+
 def test_bloom_user_can_read_through_the_view(pg_conn):
     # End-to-end through the grant + security_invoker as the read role.
     with pg_conn.cursor() as cur:

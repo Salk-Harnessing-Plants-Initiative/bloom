@@ -40,7 +40,11 @@ WITH (security_invoker = true) AS
         e.id                AS experiment_id,
         e.name              AS experiment_name,
         e.system_name       AS system_name,
-        sp.id               AS species_id,
+        -- From the experiment, not the joined species row: the join is LEFT and
+        -- user_read_species filters soft-deleted rows, so taking it from `sp` would blank
+        -- the id at the same moment it blanks the name — losing the one value that says
+        -- which species went missing. Every other id here comes from its base table.
+        e.species_id        AS species_id,
         sp.common_name      AS species_name,
         sp.genus            AS species_genus,
         sp.species          AS species_species,

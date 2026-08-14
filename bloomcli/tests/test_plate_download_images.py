@@ -357,18 +357,31 @@ def test_worker_count_never_exceeds_the_number_of_captures(tmp_path):
     assert client.bucket.peak <= 2
 
 
-def test_progress_reports_captures_not_frames(tmp_path):
+def test_progress_reports_captures_not_frames(tmp_path, capsys):
+    """A plate run counts captures. Calling them frames describes the wrong experiment.
+
+    The callback carries no noun — it lives in ProgressReporter — so a test that passes a
+    lambda cannot see the word at all. This drives the reporter the CLI actually uses and
+    reads the line it prints.
+    """
+    import bloomctl._download as shared
+
     seen = []
-    client = _Client()
+    report = shared.ProgressReporter(interval=0.0, noun=f"{pd.NOUN}s")
+
+    def _both(phase, done, total, failed=0):
+        seen.append((phase, done, total, failed))
+        report(phase, done, total, failed)
+
     pd.download_images(
-        client,
-        [_scan(1, "P1")],
-        {1: _image(1)},
-        tmp_path,
-        on_progress=lambda *a: seen.append(a),
+        _Client(), [_scan(1, "P1")], {1: _image(1)}, tmp_path, on_progress=_both
     )
+
     assert seen, "progress must be reported"
     assert seen[-1][0] == "downloading"
+    printed = capsys.readouterr().err
+    assert "captures" in printed, f"progress called them something else: {printed!r}"
+    assert "frames" not in printed
 
 
 # --------------------------------------------------------------------------- #
