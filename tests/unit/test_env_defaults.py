@@ -52,6 +52,14 @@ SENSITIVE_INVENTORY = {
     "MINIO_DATA_PATH",
     "WORKFLOWS_SUPABASE_EMAIL",
     "WORKFLOWS_SUPABASE_PASSWORD",
+    # bloom #11 Phase 2 (cyl-pipeline-worker): real credentials for the
+    # bloom-pipeline ServiceAccount. WORKFLOWS_K8S_NAMESPACE/_TTL_SECONDS are
+    # deliberately NOT here — they're plain config values with safe code
+    # defaults, sourced from .env.*.defaults instead (see
+    # openspec/changes/add-cyl-pipeline-dispatch/design.md).
+    "WORKFLOWS_K8S_TOKEN",
+    "WORKFLOWS_K8S_CA_CERT",
+    "WORKFLOWS_K8S_API_URL",
 }
 
 # Patterns that indicate a secret value (not just a key name). Case-insensitive.
