@@ -56,6 +56,13 @@ TOOL_CLASSES = (
     "pca",
     "umap",
     "qc_inspect",
+    # #466: plot_trait_histograms/_boxplots/plot_correlation_matrix converged onto
+    # @as_mcp_tool + ResultStore persistence, each under its own tool class (not the
+    # shared, still-unclaimed "viz" above) — see
+    # openspec/changes/converge-bloommcp-viz-tools/design.md.
+    "trait_histograms",
+    "trait_boxplots",
+    "correlation_matrix",
 )
 
 # Public MCP tool name for each tool_class this loop iterates that maps to a
