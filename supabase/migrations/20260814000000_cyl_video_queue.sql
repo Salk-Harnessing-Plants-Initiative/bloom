@@ -66,12 +66,14 @@ DROP POLICY IF EXISTS cyl_video_jobs_read ON public.cyl_video_jobs;
 CREATE POLICY cyl_video_jobs_read ON public.cyl_video_jobs
   FOR SELECT TO bloom_user, bloom_writer, bloom_admin USING (true);
 GRANT SELECT ON public.cyl_video_jobs TO bloom_user, bloom_writer, bloom_admin;
--- Writes come only from the wrappers below. ALTER DEFAULT PRIVILEGES in
--- 20260414002000_security_groups.sql grants INSERT (and more for bloom_admin) on every
--- new public table, so revoke explicitly rather than relying on the absence of a
--- write policy.
+-- Writes come only from the wrappers below. Default privileges hand every new public
+-- table to the bloom_* roles (20260414002000_security_groups.sql) and to Supabase's own
+-- anon/authenticated/service_role, so revoke explicitly rather than relying on the
+-- absence of a write policy. service_role matters most: it is BYPASSRLS, so a policy
+-- would not stop it.
 REVOKE INSERT, UPDATE, DELETE ON public.cyl_video_jobs
   FROM bloom_user, bloom_writer, bloom_admin;
+REVOKE ALL ON public.cyl_video_jobs FROM anon, authenticated, service_role;
 
 -- The wrappers run as bloom_video_queue_owner, which is neither the table owner nor
 -- BYPASSRLS, so RLS applies to it and a grant alone leaves every statement filtered to

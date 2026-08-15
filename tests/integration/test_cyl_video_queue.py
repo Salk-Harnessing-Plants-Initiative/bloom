@@ -498,10 +498,23 @@ def test_job_status_is_readable_by_session_roles(pg_conn, role):
         pg_conn.rollback()
 
 
+@pytest.mark.parametrize("role", SESSION_ROLES + ["anon", "authenticated", "service_role"])
+def test_roles_hold_no_write_privilege_on_job_status(pg_conn, role):
+    # Asserted from the catalog, not by calling: an INSERT blocked by RLS raises the same
+    # SQLSTATE as one blocked by privilege, so a behavioural test alone would pass even
+    # with the REVOKE removed. bloom_writer is a member of authenticated, so the revoke
+    # has to reach both for this to hold.
+    with pg_conn.cursor() as cur:
+        for privilege in ("INSERT", "UPDATE", "DELETE"):
+            cur.execute(
+                "SELECT has_table_privilege(%s, 'public.cyl_video_jobs', %s)",
+                (role, privilege),
+            )
+            assert cur.fetchone()[0] is False, f"{role} still holds {privilege}"
+
+
 @pytest.mark.parametrize("role", SESSION_ROLES)
 def test_session_roles_cannot_write_job_status(pg_conn, role):
-    # Schema-wide ALTER DEFAULT PRIVILEGES grants INSERT on every new public table, so
-    # this asserts the explicit REVOKE rather than the absence of a write policy.
     try:
         with pg_conn.cursor() as cur:
             scan_id, experiment_id = _seed(cur)
@@ -517,8 +530,9 @@ def test_session_roles_cannot_write_job_status(pg_conn, role):
         pg_conn.rollback()
 
 
-@pytest.mark.parametrize("role", ["anon", "authenticated"])
+@pytest.mark.parametrize("role", ["anon", "authenticated", "service_role"])
 def test_job_status_is_hidden_from_anon_and_authenticated(pg_conn, role):
+    # service_role is BYPASSRLS, so only the REVOKE stops it — a policy would not.
     try:
         with pg_conn.cursor() as cur:
             scan_id, experiment_id = _seed(cur)
@@ -563,24 +577,31 @@ def test_concurrent_enqueue_dedupes_to_one_job(pg_conn, pg_conninfo):
     result = {}
 
     def enqueue_on_b():
-        with psycopg.connect(pg_conninfo) as conn_b, conn_b.cursor() as cur_b:
-            result["b"] = _enqueue(cur_b, scan_id, experiment_id)
-            conn_b.commit()
+        try:
+            with psycopg.connect(pg_conninfo) as conn_b, conn_b.cursor() as cur_b:
+                result["b"] = _enqueue(cur_b, scan_id, experiment_id)
+                conn_b.commit()
+        except Exception as exc:  # surfaced below — otherwise B dies silently
+            result["exc"] = exc
 
     conn_a = psycopg.connect(pg_conninfo)
+    thread = threading.Thread(target=enqueue_on_b)
     try:
         with conn_a.cursor() as cur_a:
             result["a"] = _enqueue(cur_a, scan_id, experiment_id)
 
-            thread = threading.Thread(target=enqueue_on_b)
             thread.start()
             thread.join(timeout=5)
+            if "exc" in result:
+                raise AssertionError(f"B failed instead of blocking: {result['exc']}")
             assert thread.is_alive(), "B should be blocked on the unique index"
 
             conn_a.commit()
             thread.join(timeout=10)
             assert not thread.is_alive(), "B never unblocked after A committed"
 
+        if "exc" in result:
+            raise AssertionError(f"B failed after A committed: {result['exc']}")
         assert result["b"] == result["a"], "the loser must reuse the winner's job"
 
         with pg_conn.cursor() as cur:
@@ -589,8 +610,17 @@ def test_concurrent_enqueue_dedupes_to_one_job(pg_conn, pg_conninfo):
             )
             assert cur.fetchone()[0] == 1
     finally:
+        thread.join(timeout=10)  # never leave B holding a lock the cleanup needs
         conn_a.close()
         with pg_conn.cursor() as cur:
+            cur.execute("SET LOCAL lock_timeout = '10s'")
+            # A committed a pgmq message as well as a row. Left behind, the next run's
+            # first claim would consume it and break every downstream test.
+            cur.execute(
+                "DELETE FROM pgmq.q_cyl_video_generation "
+                "WHERE (message->>'scan_id')::bigint = %s",
+                (scan_id,),
+            )
             cur.execute("DELETE FROM public.cyl_video_jobs WHERE scan_id = %s", (scan_id,))
             cur.execute("DELETE FROM public.cyl_scans WHERE id = %s", (scan_id,))
             cur.execute("DELETE FROM public.cyl_experiments WHERE id = %s", (experiment_id,))
