@@ -1,6 +1,7 @@
 "use client";
 
 import { createClientSupabaseClient } from "@/lib/supabase/client";
+import { VIDEOS_BUCKET, scanVideoPath } from "@/lib/supabase/scan-video-path";
 import { useEffect, useMemo, useState } from "react";
 import { CylScanWithImages } from "@/lib/custom.types";
 import { orderedFrames, usableUrl } from "./plant-scan.helpers";
@@ -28,8 +29,8 @@ async function getVideoUrl(scanId: number) {
   const supabase = createClientSupabaseClient();
 
   const { data } = await supabase.storage
-    .from("videos")
-    .createSignedUrl(`cyl-videos/${scanId}.mp4`, THUMB_URL_TTL);
+    .from(VIDEOS_BUCKET)
+    .createSignedUrl(scanVideoPath(scanId), THUMB_URL_TTL);
 
   return usableUrl(data?.signedUrl);
 }

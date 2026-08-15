@@ -4,8 +4,10 @@
 
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { toPublicStorageUrl } from "@/lib/supabase/storage-url";
+import { VIDEOS_BUCKET, scanVideoPath } from "@/lib/supabase/scan-video-path";
 
-const VIDEOS_BUCKET = "videos";
+export { scanVideoPath };
+
 const VIDEO_URL_TTL = 3600;
 
 // `unknown` exists because the answer gates an irreversible write: upstream
@@ -16,10 +18,6 @@ export type StoredScanVideo =
   | { status: "present"; url: string }
   | { status: "absent" }
   | { status: "unknown"; reason: string };
-
-export function scanVideoPath(scanId: number): string {
-  return `cyl-videos/${scanId}.mp4`;
-}
 
 // Storage reports a missing object as an error, so only a genuine not-found
 // counts as "absent" — anything else (permissions, gateway, timeout) is unknown.

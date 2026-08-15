@@ -37,8 +37,9 @@ DOWNLOAD_URL_TTL = 3600  # 1h signed URL, matching the app-wide convention
 # setup the app user has access to.
 IMAGES_BUCKET = os.environ.get("WORKFLOWS_IMAGES_BUCKET", "images")
 VIDEOS_BUCKET = os.environ.get("WORKFLOWS_VIDEOS_BUCKET", "videos")
-# Path within the videos bucket — must match what Bloom web plays
-# (web/components/plant-scan.tsx -> videos/cyl-videos/{scan_id}.mp4).
+# Path within the videos bucket — must match what Bloom web reads. The web side
+# defines it once in web/lib/supabase/scan-video-path.ts; the two are pinned
+# together by tests/unit/test_cyl_video_path_agreement.py.
 VIDEO_PATH_PREFIX = "cyl-videos"
 # Record table linking scan_id -> stored video path (one row per scan, written
 # through the record_cyl_scan_video wrapper — never upserted; see _record_video).
