@@ -81,6 +81,12 @@
 			reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
 		}
 
+		# Cyl scan actions on bloom-web. `handle`, not `handle_path` — the /api
+		# prefix is part of the Next.js route.
+		handle /api/cyl/* {
+			reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
+		}
+
 		# Supabase API — strip /api prefix, proxy to Kong
 		handle_path /api/* {
 			reverse_proxy kong:{$KONG_PORT}
