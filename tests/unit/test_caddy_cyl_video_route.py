@@ -96,23 +96,25 @@ def test_cyl_api_precedes_api_wildcard():
     )
 
 
-def test_video_route_still_lives_under_api_cyl():
+def test_video_routes_still_live_under_api_cyl():
     """The Caddy rule and the Next.js route tree have to agree — moving one
-    without the other is exactly the break this file exists to catch."""
-    route = (
-        REPO_ROOT
-        / "web"
-        / "app"
-        / "api"
-        / "cyl"
+    without the other is exactly the break this file exists to catch.
+
+    One rule serves both routes: generating a video is experiment-scoped, while
+    asking whether one exists is keyed by scan alone."""
+    web_app = REPO_ROOT / "web" / "app" / "api" / "cyl"
+    routes = [
+        web_app
         / "experiments"
         / "[experimentId]"
         / "scans"
         / "[scanId]"
         / "video"
-        / "route.ts"
-    )
-    assert route.is_file(), (
-        f"expected the scan video route handler at {route.relative_to(REPO_ROOT)}; "
-        "if it moved, update the `handle /api/cyl/*` rule in caddy/Caddyfile"
-    )
+        / "route.ts",
+        web_app / "scans" / "[scanId]" / "video" / "route.ts",
+    ]
+    for route in routes:
+        assert route.is_file(), (
+            f"expected a scan video route handler at {route.relative_to(REPO_ROOT)}; "
+            "if it moved, update the `handle /api/cyl/*` rule in caddy/Caddyfile"
+        )
