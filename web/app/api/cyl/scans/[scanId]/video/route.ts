@@ -19,7 +19,7 @@
 
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/supabase/server";
-import { getStoredScanVideoUrl } from "@/lib/supabase/scan-video";
+import { getStoredScanVideo } from "@/lib/supabase/scan-video";
 import { parseId } from "@/components/scan-video.helpers";
 
 export const dynamic = "force-dynamic";
@@ -47,13 +47,23 @@ export async function GET(
     );
   }
 
-  const downloadUrl = await getStoredScanVideoUrl(scan);
-  if (!downloadUrl) {
+  // A lookup that failed is not an absence. Answering 404 for a storage outage
+  // states as fact that this scan has no video, which is how a complete
+  // rotation comes to be reported as missing — the same conflation
+  // getStoredScanVideo's three-state answer exists to prevent.
+  const stored = await getStoredScanVideo(scan);
+  if (stored.status === "unknown") {
+    return NextResponse.json(
+      { detail: "Could not check whether this scan has a video. Try again shortly." },
+      { status: 503 }
+    );
+  }
+  if (stored.status === "absent") {
     return NextResponse.json(
       { detail: "No video is stored for this scan yet." },
       { status: 404 }
     );
   }
 
-  return NextResponse.json({ download_url: downloadUrl });
+  return NextResponse.json({ download_url: stored.url });
 }

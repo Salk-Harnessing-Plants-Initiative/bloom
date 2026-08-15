@@ -228,6 +228,10 @@ describe("ScanVideoButton on a 409", () => {
     const link = screen.getByRole("link", { name: "Open video" });
     expect(link.getAttribute("href")).toBe(VIDEO_URL);
     expect(screen.queryByRole("alert")).toBeNull();
+    // The adopt is a second call site for the lookup, and the only test that
+    // pinned its URL was the poll — this one would pass against the
+    // experiment-scoped route the lookup no longer has.
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/cyl/scans/5/video");
   });
 
   it("still reports an error if the stored video can't be fetched either", async () => {

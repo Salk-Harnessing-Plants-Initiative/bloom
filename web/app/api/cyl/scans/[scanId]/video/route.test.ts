@@ -16,14 +16,14 @@ vi.mock("@/lib/supabase/server", () => ({
 }));
 
 vi.mock("@/lib/supabase/scan-video", () => ({
-  getStoredScanVideoUrl: vi.fn(),
+  getStoredScanVideo: vi.fn(),
 }));
 
 import { getSession } from "@/lib/supabase/server";
-import { getStoredScanVideoUrl } from "@/lib/supabase/scan-video";
+import { getStoredScanVideo } from "@/lib/supabase/scan-video";
 
 const mockedGetSession = vi.mocked(getSession);
-const mockedStoredVideoUrl = vi.mocked(getStoredScanVideoUrl);
+const mockedStoredVideo = vi.mocked(getStoredScanVideo);
 
 const STORED_URL = "https://storage.test/cyl-videos/5.mp4?token=a";
 
@@ -37,7 +37,7 @@ function callGet(scanId: string) {
 
 beforeEach(() => {
   mockedGetSession.mockResolvedValue({ access_token: "tok" } as never);
-  mockedStoredVideoUrl.mockResolvedValue(null);
+  mockedStoredVideo.mockResolvedValue({ status: "absent" } as never);
   fetchSpy = vi.fn();
   vi.stubGlobal("fetch", fetchSpy);
 });
@@ -60,7 +60,7 @@ describe("module contract", () => {
 
 describe("GET — has the video landed yet?", () => {
   it("returns the stored video's url", async () => {
-    mockedStoredVideoUrl.mockResolvedValue(STORED_URL);
+    mockedStoredVideo.mockResolvedValue({ status: "present", url: STORED_URL } as never);
 
     const res = await callGet("5");
 
@@ -72,8 +72,21 @@ describe("GET — has the video landed yet?", () => {
     expect((await callGet("5")).status).toBe(404);
   });
 
+  it("503s when storage could not say, rather than claiming there is none", async () => {
+    mockedStoredVideo.mockResolvedValue({
+      status: "unknown",
+      reason: "connect ECONNREFUSED kong:8000",
+    } as never);
+
+    const res = await callGet("5");
+
+    expect(res.status).toBe(503);
+    // The reason names the internal gateway — it is for operators, not callers.
+    expect(await res.text()).not.toContain("kong");
+  });
+
   it("never calls the video service", async () => {
-    mockedStoredVideoUrl.mockResolvedValue(STORED_URL);
+    mockedStoredVideo.mockResolvedValue({ status: "present", url: STORED_URL } as never);
 
     await callGet("5");
 
@@ -84,31 +97,31 @@ describe("GET — has the video landed yet?", () => {
     mockedGetSession.mockResolvedValue(null as never);
 
     expect((await callGet("5")).status).toBe(401);
-    expect(mockedStoredVideoUrl).not.toHaveBeenCalled();
+    expect(mockedStoredVideo).not.toHaveBeenCalled();
   });
 
   it("requires an access token, not merely a session object", async () => {
     mockedGetSession.mockResolvedValue({} as never);
 
     expect((await callGet("5")).status).toBe(401);
-    expect(mockedStoredVideoUrl).not.toHaveBeenCalled();
+    expect(mockedStoredVideo).not.toHaveBeenCalled();
   });
 
   it("rejects zero, negative and non-numeric ids", async () => {
     for (const id of ["0", "-1", "abc", "1.5", "", " 5"]) {
       expect((await callGet(id)).status).toBe(400);
     }
-    expect(mockedStoredVideoUrl).not.toHaveBeenCalled();
+    expect(mockedStoredVideo).not.toHaveBeenCalled();
   });
 
   it("rejects a traversal id", async () => {
     expect((await callGet("5/../../health")).status).toBe(400);
-    expect(mockedStoredVideoUrl).not.toHaveBeenCalled();
+    expect(mockedStoredVideo).not.toHaveBeenCalled();
   });
 
   it("looks up the scan actually requested, as an integer", async () => {
     await callGet("42");
 
-    expect(mockedStoredVideoUrl).toHaveBeenCalledWith(42);
+    expect(mockedStoredVideo).toHaveBeenCalledWith(42);
   });
 });

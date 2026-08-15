@@ -66,7 +66,11 @@ export default function ScanVideoButton({
   // The stored video's URL, or "" if there isn't one / we couldn't tell.
   async function storedVideoUrl(): Promise<string> {
     try {
-      const res = await fetch(pollEndpoint);
+      // Bounded like the poll below: this runs while the button is disabled, so
+      // a request that never settles strands it mid-generate with no recovery.
+      const res = await fetch(pollEndpoint, {
+        signal: AbortSignal.timeout(POLL_INTERVAL_MS),
+      });
       if (!res.ok) return "";
       const body = await res.json();
       return typeof body?.download_url === "string"

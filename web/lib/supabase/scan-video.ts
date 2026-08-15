@@ -6,8 +6,6 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { toPublicStorageUrl } from "@/lib/supabase/storage-url";
 import { VIDEOS_BUCKET, scanVideoPath } from "@/lib/supabase/scan-video-path";
 
-export { scanVideoPath };
-
 const VIDEO_URL_TTL = 3600;
 
 // `unknown` exists because the answer gates an irreversible write: upstream

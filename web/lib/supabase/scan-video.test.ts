@@ -3,7 +3,6 @@ import {
   getStoredScanVideo,
   getStoredScanVideoUrl,
   isNotFound,
-  scanVideoPath,
 } from "./scan-video";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
@@ -79,12 +78,6 @@ describe("isNotFound", () => {
     // `statusCode` is compared, not searched for — a message that happens to
     // contain the digits must not decide this.
     expect(isNotFound({ message: "bucket policy 404 rule denied", status: 403 })).toBe(false);
-  });
-});
-
-describe("scanVideoPath", () => {
-  it("matches the key services/workflows/video.py writes", () => {
-    expect(scanVideoPath(4207)).toBe("cyl-videos/4207.mp4");
   });
 });
 

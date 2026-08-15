@@ -1,7 +1,8 @@
 """Config-shape test for the /api/cyl/* edge route.
 
-The on-demand scan video proxy is a Next.js route handler at
-/api/cyl/experiments/{id}/scans/{id}/video. Caddy must send /api/cyl/* to
+Two Next.js route handlers live under /api/cyl: generating a video at
+/api/cyl/experiments/{id}/scans/{id}/video, and asking whether one exists at
+/api/cyl/scans/{id}/video. Caddy must send /api/cyl/* to
 bloom-web, NOT to Kong — /api/* otherwise falls through to the Supabase
 gateway, which owns no /cyl/* route and answers with its basic-auth catch-all.
 The dev stack runs no Caddy, so this only breaks in staging/prod: a unit test
