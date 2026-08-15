@@ -113,9 +113,8 @@ services:
       NEXT_PUBLIC_MCP_URL: ${NEXT_PUBLIC_MCP_URL}
       # Read by web/lib/config/validate-on-boot.ts in production via the
       # Next.js 16 instrumentation hook (web/instrumentation.ts). Required:
-      # boot fails if unset. See openspec/changes/add-ghcr-image-publishing
-      # design.md Decision 13 for format
-      # (<internal_host>=<public_host>[,<internal_host>=<public_host>]*).
+      # boot fails if unset. Format:
+      # <internal_host>=<public_host>[,<internal_host>=<public_host>]*
       # The .env.prod / .env.staging / .env.ci sources MUST set this var.
       SUPABASE_URL_HOSTS_ALLOWED: ${SUPABASE_URL_HOSTS_ALLOWED}
     depends_on:
@@ -200,8 +199,8 @@ services:
       dockerfile: Dockerfile
     read_only: true
     tmpfs:
-      # Size-capped so the temp MP4 can't exhaust host RAM (sized for the full
-      # video × the 2 workers, with headroom).
+      # Size-capped so the temp MP4 can't exhaust host RAM (sized for concurrent encodes
+      # in the one worker, with headroom).
       - /tmp:mode=1777,size=512m
     security_opt:
       - no-new-privileges:true
@@ -229,7 +228,11 @@ services:
       - kong
       - db-prod
     restart: unless-stopped
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "2"]
+    # One worker: the per-scan lock in video.py holds only within a single process, so raising
+    # this reopens the overwrite race it closes. Start here and watch — raise it when this one
+    # is actually saturated, or once the encode moves to a worker container and the database
+    # enforces the serialisation instead, whichever comes first.
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "1"]
 
   # -------------------
   # Bloom MCP Server
