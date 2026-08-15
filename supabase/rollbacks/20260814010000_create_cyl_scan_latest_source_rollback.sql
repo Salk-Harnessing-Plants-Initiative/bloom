@@ -2,8 +2,28 @@
 -- Restores the live-WindowAgg view definition (verbatim from
 -- 20260701000000_cyl_trait_read_source_aware.sql), then drops the trigger, function, and table,
 -- in that order.
+--
+-- *** ROLLBACK ORDER: apply 20260814030000's rollback, then 20260814020000's, THEN this one. ***
+-- refresh_cyl_experiment_trait_counts() (20260814020000) reads cyl_scan_latest_source in its own
+-- PL/pgSQL body -- a reference Postgres's dependency tracker does NOT protect (unlike this
+-- migration's view, which pg_depend DOES protect against DROP). Running this rollback while that
+-- function still exists does not fail loudly at DROP time; it fails later, at the next scheduled
+-- refresh, with "relation cyl_scan_latest_source does not exist". The guard below only checks for
+-- that one function; it does not know about 20260814030000's dependencies transitively, so the
+-- full reverse-chronological order still matters even though the guard makes the 020000 case safe.
 
 BEGIN;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_proc
+        WHERE proname = 'refresh_cyl_experiment_trait_counts'
+    ) THEN
+        RAISE EXCEPTION 'Roll back 20260814020000 (and 20260814030000, if not already done) before this one -- refresh_cyl_experiment_trait_counts() still references cyl_scan_latest_source.';
+    END IF;
+END;
+$$;
 
 CREATE OR REPLACE VIEW public.cyl_scan_traits_source
 WITH (security_invoker = on) AS

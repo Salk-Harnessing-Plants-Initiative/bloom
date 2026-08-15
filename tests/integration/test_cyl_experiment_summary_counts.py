@@ -375,6 +375,28 @@ def test_authenticated_has_execute_grant(pg_conn):
     pg_conn.rollback()
 
 
+@pytest.mark.parametrize(
+    "fn_signature",
+    [
+        "get_experiment_summary_counts(bigint,bigint,text)",
+        "compute_cyl_experiment_summary_counts_live(bigint,bigint,text)",
+    ],
+)
+def test_anon_has_no_execute_grant(pg_conn, fn_signature):
+    """Caught in review: the 20260814030000 rewrite's REVOKE originally only covered PUBLIC, not
+    anon explicitly -- Supabase auto-grants EXECUTE on new public-schema functions to anon, so
+    that alone left anon still able to call both. compute_cyl_experiment_summary_counts_live is
+    SECURITY DEFINER, so anon calling it directly would have run with the definer's elevated
+    privilege, bypassing whatever table grants anon itself lacks -- confirmed exploitable
+    (empirically, against a local Postgres) before this fix."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT has_function_privilege('anon', %s, 'EXECUTE')", (fn_signature,)
+        )
+        assert cur.fetchone()[0] is False
+    pg_conn.rollback()
+
+
 def test_migration_adds_no_write_capability():
     sql = MIGRATION.read_text().lower()
     assert "create policy" not in sql

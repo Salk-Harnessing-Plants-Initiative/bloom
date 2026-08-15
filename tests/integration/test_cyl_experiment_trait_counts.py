@@ -28,6 +28,12 @@ _TS = "20260814020000_create_cyl_experiment_trait_counts"
 MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_TS}.sql"
 ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_TS}_rollback.sql"
 
+# The later migration in this change, whose rollback must run BEFORE this one's -- see the
+# rollback SQL files' own "ROLLBACK ORDER" header comments.
+_REWRITE_TS = "20260814030000_rewrite_get_experiment_summary_counts"
+REWRITE_MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_REWRITE_TS}.sql"
+REWRITE_ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_REWRITE_TS}_rollback.sql"
+
 
 def _sql_body(path: Path) -> str:
     return "\n".join(
@@ -177,6 +183,41 @@ def test_no_trigger_invokes_refresh_on_write(pg_conn):
     pg_conn.rollback()
 
 
+def test_anon_sees_no_rows_despite_real_data_existing(pg_conn):
+    """RLS enabled with no anon policy means SELECT succeeds but is silently filtered to zero
+    rows -- confirmed rather than assumed from the migration's policy list."""
+    with pg_conn.cursor() as cur:
+        experiment_id, _scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "k", traits=[_trait("length", 1.0)])
+        _refresh(cur)
+        cur.execute("SET LOCAL ROLE anon")
+        cur.execute(
+            "SELECT n_traits FROM cyl_experiment_trait_counts WHERE experiment_id=%s",
+            (experiment_id,),
+        )
+        assert cur.fetchall() == []
+        cur.execute("RESET ROLE")
+    pg_conn.rollback()
+
+
+def test_anon_cannot_write_despite_the_raw_table_grant(pg_conn):
+    """Same regression as cyl_scan_latest_source's equivalent test: Supabase's default privileges
+    give anon a raw INSERT grant on this table regardless of any policy; RLS (not the grant) is
+    what actually blocks an unauthenticated caller from writing fabricated counts directly."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT has_table_privilege('anon', 'cyl_experiment_trait_counts', 'INSERT')"
+        )
+        assert cur.fetchone()[0] is True  # the raw grant genuinely exists
+
+        cur.execute("SET LOCAL ROLE anon")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            cur.execute(
+                "INSERT INTO cyl_experiment_trait_counts (experiment_id, n_traits) VALUES (-1, 999)"
+            )
+    pg_conn.rollback()
+
+
 def test_migration_adds_no_read_role_execute_grant(pg_conn):
     with pg_conn.cursor() as cur:
         cur.execute(
@@ -199,13 +240,39 @@ def test_migration_body_is_idempotent(pg_conn):
     pg_conn.rollback()
 
 
-def test_rollback_restores_prior_state(pg_conn):
+def test_rollback_guard_blocks_out_of_order_rollback(pg_conn):
+    """This migration's rollback must refuse to run while get_experiment_summary_counts
+    (20260814030000) still references cyl_experiment_trait_counts -- proves the "ROLLBACK ORDER"
+    guard in the rollback SQL is real, not just a comment. Before this guard existed, rolling this
+    migration back in isolation would drop the table out from under that RPC's unpinned path
+    silently at DROP time, only failing later, at the RPC's next call, with an unhelpful
+    "relation does not exist" -- the guard turns that into an immediate, actionable error instead."""
     with pg_conn.cursor() as cur:
+        with pytest.raises(psycopg.errors.RaiseException, match="Roll back 20260814030000 first"):
+            cur.execute(_sql_body(ROLLBACK))
+    pg_conn.rollback()
+
+
+def test_rollback_restores_prior_state(pg_conn):
+    """Exercises the full, documented order (20260814030000's rollback first, then this one) rather
+    than this migration in isolation -- rolling this one back alone is now guarded against (see the
+    sibling test above)."""
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(REWRITE_ROLLBACK))
         cur.execute(_sql_body(ROLLBACK))
         cur.execute(
             "SELECT count(*) FROM information_schema.tables "
             "WHERE table_name='cyl_experiment_trait_counts'"
         )
         assert cur.fetchone()[0] == 0
+
+        # Re-apply both, in forward order, so the rest of the suite (which assumes this change is
+        # fully live) still works -- and confirm real function behavior is restored, not just the
+        # object's existence.
         cur.execute(_sql_body(MIGRATION))
+        cur.execute(_sql_body(REWRITE_MIGRATION))
+        exp, _scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "orig", traits=[_trait("length", 1.0)])
+        _refresh(cur)
+        assert _n_traits(cur, exp) == 1
     pg_conn.rollback()

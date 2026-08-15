@@ -21,11 +21,28 @@ CREATE TABLE IF NOT EXISTS public.cyl_experiment_trait_counts (
     updated_at    timestamptz NOT NULL DEFAULT now()
 );
 
--- Deliberately no read-role GRANT here: this table backs get_experiment_summary_counts (which
--- reads it as its SECURITY INVOKER owner's own privileges are irrelevant -- the RPC itself is
--- SECURITY INVOKER, so a caller needs SELECT here directly, same reasoning as
--- cyl_scan_latest_source in 20260814010000). Granted below, alongside the refresh function's own
--- narrower grant.
+ALTER TABLE public.cyl_experiment_trait_counts ENABLE ROW LEVEL SECURITY;
+
+-- Matches cyl_scan_traits's own policy set exactly (20260506000001_bloom_role_rls_policies.sql +
+-- its original 20231113203010 creation migration) -- permissive USING (true) for the same four
+-- read roles this table's own GRANT below lists; this table holds only aggregate counts already
+-- derivable by those roles from cyl_scan_traits itself.
+DROP POLICY IF EXISTS admin_all_cyl_experiment_trait_counts ON public.cyl_experiment_trait_counts;
+CREATE POLICY admin_all_cyl_experiment_trait_counts ON public.cyl_experiment_trait_counts
+    FOR ALL TO bloom_admin USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS agent_read_cyl_experiment_trait_counts ON public.cyl_experiment_trait_counts;
+CREATE POLICY agent_read_cyl_experiment_trait_counts ON public.cyl_experiment_trait_counts
+    FOR SELECT TO bloom_agent USING (true);
+DROP POLICY IF EXISTS user_read_cyl_experiment_trait_counts ON public.cyl_experiment_trait_counts;
+CREATE POLICY user_read_cyl_experiment_trait_counts ON public.cyl_experiment_trait_counts
+    FOR SELECT TO bloom_user USING (true);
+DROP POLICY IF EXISTS authenticated_read_cyl_experiment_trait_counts ON public.cyl_experiment_trait_counts;
+CREATE POLICY authenticated_read_cyl_experiment_trait_counts ON public.cyl_experiment_trait_counts
+    FOR SELECT TO authenticated USING (true);
+
+-- This table backs get_experiment_summary_counts (SECURITY INVOKER), so a caller needs SELECT
+-- here directly, same reasoning as cyl_scan_latest_source in 20260814010000. Granted alongside
+-- the refresh function's own, deliberately narrower grant below.
 GRANT SELECT ON public.cyl_experiment_trait_counts
     TO bloom_agent, bloom_user, bloom_admin, authenticated;
 

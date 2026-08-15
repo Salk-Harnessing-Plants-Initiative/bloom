@@ -14,7 +14,12 @@ trait rows in a loop, and a per-row trigger recomputing a whole experiment's agg
 those rows would fire that many full-experiment recomputes for one call. Instead, a
 `refresh_cyl_experiment_trait_counts()` function SHALL recompute every experiment's count in one pass
 (delete-then-reinsert, so an experiment that drops to zero matching traits is removed from the table) and
-SHALL be invoked on a fixed schedule, independent of write volume.
+SHALL be invoked on a fixed schedule, independent of write volume. Row-level security SHALL be enabled on
+this table with the same policy set as `cyl_scan_traits` itself (`bloom_admin` full access,
+`bloom_agent`/`bloom_user`/`authenticated` read-only, all permissive) — an unauthenticated (`anon`) caller
+SHALL NOT be able to read or write this table, regardless of any table-level grant Supabase applies by
+default to new tables. `refresh_cyl_experiment_trait_counts()` itself SHALL NOT be callable by `anon`,
+`authenticated`, or any of the four read roles — only by whatever identity runs the schedule.
 
 #### Scenario: A refresh populates counts matching a live computation
 
@@ -60,3 +65,12 @@ SHALL be invoked on a fixed schedule, independent of write volume.
 - **WHEN** trait data is written to `cyl_scan_traits`
 - **THEN** no trigger on `cyl_scan_traits` invokes `refresh_cyl_experiment_trait_counts()` as a direct
   consequence of that write; the function is invoked only by an external schedule
+
+#### Scenario: An unauthenticated caller cannot read cyl_experiment_trait_counts or invoke its refresh
+
+- **WHEN** an `anon` (unauthenticated) caller selects from `cyl_experiment_trait_counts`, attempts to
+  write to it directly, or attempts to call `refresh_cyl_experiment_trait_counts()`
+- **THEN** the `SELECT` returns zero rows regardless of how much real data exists, any direct write is
+  rejected by row-level security, and the function call is rejected for lacking `EXECUTE` privilege — even
+  though Supabase's default privileges would otherwise grant `anon` both a raw table-level write grant and
+  `EXECUTE` on the newly-created function

@@ -38,7 +38,7 @@ of them.
   by Benfica), run inside the same migration transaction as the schema and the view cutover — not a
   batched, resumable, operator-invoked procedure. This collapses PR #654's two-PR-plus-manual-runbook
   landing plan (and its entire D8 deploy-policy question) into one migration set, one PR. A `LOCK TABLE
-  cyl_scan_traits IN SHARE MODE` held for the backfill's ~2.5s closes a gap this single-transaction
+cyl_scan_traits IN SHARE MODE` held for the backfill's ~2.5s closes a gap this single-transaction
   approach would otherwise have (see `design.md` D3) — concurrent write-back calls briefly block, then
   proceed correctly; nothing is silently missed.
 - **`get_experiment_summary_counts`'s unpinned path is rewritten in two halves, per bloom#656:**
@@ -51,7 +51,7 @@ of them.
 - **The `source_id_`/`run_id_`-pinned branches keep a live join**, via a helper function scoped to just
   that case (simpler than PR #654's version, which also had to serve the unpinned path). Two incidental,
   semantics-preserving cleanups carried over from Benfica's comment: `JOIN accessions` → `accession_id IS
-  NOT NULL`, and the unnecessary `cyl_experiments` join is dropped. **These branches' cost is reasoned
+NOT NULL`, and the unnecessary `cyl_experiments` join is dropped. **These branches' cost is reasoned
   about, not benchmarked** — no caller pins either parameter today, and this sandboxed environment can't
   run `EXPLAIN (ANALYZE, BUFFERS)` against staging; flagged as an explicit open item, matching bloom#656's
   own "unaddressed" flag on this exact question.

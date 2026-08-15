@@ -1,6 +1,10 @@
 -- Manual rollback for 20260814030000_rewrite_get_experiment_summary_counts.sql
 -- Restores the prior (bloom#625) live-join-only function body verbatim -- not a DROP, since the
 -- function itself isn't new, only its body is changing back.
+--
+-- *** ROLLBACK ORDER: apply this one FIRST (before 20260814020000's and 20260814010000's) *** --
+-- nothing else in this change depends on this migration's own objects, so it has no ordering
+-- precondition of its own to check.
 
 BEGIN;
 
@@ -48,7 +52,10 @@ BEGIN
 END;
 $$;
 
-REVOKE EXECUTE ON FUNCTION public.get_experiment_summary_counts(bigint, bigint, text) FROM PUBLIC;
+-- REVOKE also from anon, not just PUBLIC -- preserves the anon-EXECUTE fix this PR made even in
+-- the rolled-back state, rather than regressing back to the pre-existing leak.
+REVOKE EXECUTE ON FUNCTION public.get_experiment_summary_counts(bigint, bigint, text)
+    FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.get_experiment_summary_counts(bigint, bigint, text)
     TO bloom_agent, bloom_user, bloom_admin, authenticated;
 

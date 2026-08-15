@@ -13,9 +13,13 @@
 --
 -- The one-time backfill is a single aggregate query (~2.5s on prod, per Benfica's measurement),
 -- run inside this same migration transaction -- not a batched, operator-invoked procedure like
--- PR #654's. LOCK TABLE cyl_scan_traits IN SHARE MODE blocks concurrent writers (not readers) for
--- that ~2.5s so no write landing during the backfill can fall into the gap between "trigger
--- exists but this write's transaction predates it" and "backfill already ran" -- see design.md D3.
+-- PR #654's. CREATE TRIGGER below already takes a ShareRowExclusiveLock on cyl_scan_traits, held
+-- for the rest of this transaction -- that alone blocks concurrent writers (but not readers: it
+-- doesn't conflict with plain SELECT's AccessShareLock) for the backfill's duration, so no write
+-- landing during the backfill can fall into the gap between "trigger exists but this write's
+-- transaction predates it" and "backfill already ran". The explicit LOCK TABLE statement below is
+-- redundant with that (confirmed empirically -- see design.md D3), kept only as self-documentation
+-- of the safety property in case a future edit reorders these statements.
 --
 -- The view cutover (is_latest via a join instead of a window aggregate) lands in this same
 -- migration, safe specifically because the LOCK TABLE step guarantees the backfill is complete
@@ -30,6 +34,25 @@ CREATE TABLE IF NOT EXISTS public.cyl_scan_latest_source (
     scan_id       bigint PRIMARY KEY REFERENCES public.cyl_scans(id) ON DELETE CASCADE,
     max_source_id bigint
 );
+
+ALTER TABLE public.cyl_scan_latest_source ENABLE ROW LEVEL SECURITY;
+
+-- Matches cyl_scan_traits's own policy set exactly (20260506000001_bloom_role_rls_policies.sql +
+-- its original 20231113203010 creation migration) -- permissive USING (true) for the same four
+-- read roles this table's own GRANT below lists, since this table holds no information beyond
+-- what cyl_scan_traits itself already exposes to those roles.
+DROP POLICY IF EXISTS admin_all_cyl_scan_latest_source ON public.cyl_scan_latest_source;
+CREATE POLICY admin_all_cyl_scan_latest_source ON public.cyl_scan_latest_source
+    FOR ALL TO bloom_admin USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS agent_read_cyl_scan_latest_source ON public.cyl_scan_latest_source;
+CREATE POLICY agent_read_cyl_scan_latest_source ON public.cyl_scan_latest_source
+    FOR SELECT TO bloom_agent USING (true);
+DROP POLICY IF EXISTS user_read_cyl_scan_latest_source ON public.cyl_scan_latest_source;
+CREATE POLICY user_read_cyl_scan_latest_source ON public.cyl_scan_latest_source
+    FOR SELECT TO bloom_user USING (true);
+DROP POLICY IF EXISTS authenticated_read_cyl_scan_latest_source ON public.cyl_scan_latest_source;
+CREATE POLICY authenticated_read_cyl_scan_latest_source ON public.cyl_scan_latest_source
+    FOR SELECT TO authenticated USING (true);
 
 -- cyl_scan_traits_source is security_invoker -- a read role querying it executes this join AS
 -- ITSELF, not as the view owner, so the read roles need direct SELECT on this table too.
@@ -54,7 +77,12 @@ BEGIN
     -- fresh correlated subquery in the SET clause does not fix this either (Postgres fixes one
     -- snapshot for the whole statement before the wait, not after) -- both were reproduced
     -- empirically to go stale; only the lock closed it. Scoped to one scan_id, so this never
-    -- contends with a write to a different scan.
+    -- contends with a write to a different scan. NOTE: advisory locks participate in Postgres's
+    -- deadlock detector -- a single transaction that ever touches multiple scan_ids could deadlock
+    -- against another transaction acquiring the same scan_ids in the opposite order. Today's sole
+    -- writer (insert_cyl_result_envelope) is single-scan-per-call, so this is dormant; a future
+    -- multi-scan batch writer would need to acquire scan_id locks in a consistent (e.g. sorted)
+    -- order to stay safe.
     PERFORM pg_advisory_xact_lock(affected_scan_id);
 
     INSERT INTO public.cyl_scan_latest_source (scan_id, max_source_id)
@@ -74,11 +102,15 @@ CREATE TRIGGER maintain_cyl_scan_latest_source_after_write
     FOR EACH ROW
     EXECUTE FUNCTION public.maintain_cyl_scan_latest_source();
 
--- 3. Block concurrent WRITERS (not readers -- SHARE MODE conflicts with ROW EXCLUSIVE, which
---    INSERT/UPDATE/DELETE need, but not with ACCESS SHARE, which SELECT needs) for the backfill's
---    short duration. Any write-back call that lands during the backfill below simply waits for
---    this transaction to commit, then proceeds normally, now seeing the trigger created above and
---    computing against a snapshot that already includes this backfill's own committed data.
+-- 3. Redundant with the ShareRowExclusiveLock CREATE TRIGGER already took above and is still
+--    holding (locks are held for the rest of the transaction, not released after the statement) --
+--    kept as an explicit, self-documenting assertion of the safety property this migration relies
+--    on, not as the mechanism itself. Any write-back call that lands during the backfill below
+--    simply waits for this transaction to commit, then proceeds normally, now seeing the trigger
+--    created above and computing against a snapshot that already includes this backfill's own
+--    committed data. Concurrent readers are unaffected either way -- SHARE MODE (like
+--    ShareRowExclusiveLock) conflicts with ROW EXCLUSIVE (INSERT/UPDATE/DELETE), not with
+--    AccessShareLock (plain SELECT) -- verified against local Postgres's pg_locks, not assumed.
 LOCK TABLE public.cyl_scan_traits IN SHARE MODE;
 
 -- 4. Backfill -- one aggregate pass, not batched. ON CONFLICT makes this migration body

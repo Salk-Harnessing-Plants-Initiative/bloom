@@ -16,13 +16,13 @@ superseded by this revision, not extended, for two reasons:
 but only 25,264 distinct `scan_id`s; only 9 of 269 experiments have any trait data): a boolean on every
 trait row stores the same fact 1,139x more times than necessary. Her proposal — `cyl_scan_latest_source`,
 one row per scan (`scan_id` PK, `max_source_id`) — holds the same information at table scale, not row
-scale, and its trigger writes to a *different* table, so it never re-fires itself (no recursion guard
+scale, and its trigger writes to a _different_ table, so it never re-fires itself (no recursion guard
 needed) and its one-time backfill is a single `INSERT ... SELECT ... GROUP BY` measured at **2,446ms on
 prod, cold cache** — cheap enough to run inside the migration itself, not as a batched, resumable,
 operator-run procedure gated behind a deploy-policy exception (PR #654's D8).
 
 **[bloom#656](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/656)**, filed against
-PR #654 in parallel: the query *shape* is a second, independent bottleneck. `n_plants` via
+PR #654 in parallel: the query _shape_ is a second, independent bottleneck. `n_plants` via
 `COUNT(DISTINCT ...)` costs 16,520ms for one experiment — 12,927ms of that is dragging 13.8M matched rows
 through the join before deduplicating, not the join itself (60ms). Rewritten as a semi-join (`EXISTS`),
 all experiments at once cost 247ms — **no cache needed at all**. `n_traits` genuinely needs a full scan
@@ -64,8 +64,10 @@ needed" claim is not, and this design does not carry it forward uncorrected.
   tool, no `source_id_`/`run_id_` parameter threaded through any analysis tool. No change to
   `get_experiment_traits`, `get_scan_traits`, or `list_experiment_trait_sources`'s own signatures — they
   read `cyl_scan_traits_source.is_latest` exactly as before; only what's underneath that column changes.
-  No RLS change. Real-time (sub-refresh-interval) freshness for `n_traits` — that tradeoff is deliberate
-  (see D5), not an oversight.
+  No RLS change on any _existing_ table. Real-time (sub-refresh-interval) freshness for `n_traits` —
+  that tradeoff is deliberate (see D5), not an oversight. (The two _new_ tables this change adds do get
+  RLS enabled, matching this repo's own convention for every other `cyl_*` table — see D2a/D5a, added
+  after this proposal's own review found they'd shipped without it.)
 
 ## Decisions
 
@@ -84,7 +86,7 @@ case must still resolve to `is_latest = true` for those rows (unchanged rule, se
 
 **Why this replaces a stored boolean column entirely, not just its backfill:** the boolean design (PR
 #654 D1–D4) needed a batched, resumable backfill procedure specifically because it had to touch all
-28.8M existing rows without holding one transaction open for the duration. A table scoped to *scans*
+28.8M existing rows without holding one transaction open for the duration. A table scoped to _scans_
 (25,264 of them) needs no such batching — its backfill is one aggregate query (D3).
 
 ### D2 — Trigger: per-row upsert, guarded by an advisory lock (verified necessary, not assumed away)
@@ -127,17 +129,17 @@ to recurse into). This part of Benfica's simplification holds and is kept as-is.
 
 **Why the advisory lock, empirically, not just defensively:** reproduced against local Postgres —
 connection B inserts a trait row (`source_id=6`, the true eventual max) and upserts (uncommitted);
-connection A inserts a trait row for the *same new* `scan_id` (`source_id=5`), then attempts its own
+connection A inserts a trait row for the _same new_ `scan_id` (`source_id=5`), then attempts its own
 upsert, which blocks on B's uncommitted row; B commits; A's blocked upsert unblocks and applies
-`SET max_source_id = EXCLUDED.max_source_id` using the value A computed *before* the wait (`5`, since A
+`SET max_source_id = EXCLUDED.max_source_id` using the value A computed _before_ the wait (`5`, since A
 could not see B's uncommitted row when it computed its own proposed value) — final state `5`, not the
 correct `6`. Confirmed this is not fixed by using a fresh correlated subquery in the `SET` clause instead
 of `EXCLUDED` either (same wrong result) — Postgres fixes one snapshot for the whole statement at
 statement start, before the conflict wait, regardless of where in the statement a subquery sits. Adding
-`pg_advisory_xact_lock(affected_scan_id)` *before* the read-then-upsert and rerunning the identical race
+`pg_advisory_xact_lock(affected_scan_id)` _before_ the read-then-upsert and rerunning the identical race
 produced the correct result (`6`): the lock forces A's entire read-then-write to happen as a fresh
-statement *after* B's commit, with a fresh snapshot that sees it. This covers both the shape PR #654's
-own testing already found (two writers racing a *pre-existing* scan) and the brand-new-scan variant,
+statement _after_ B's commit, with a fresh snapshot that sees it. This covers both the shape PR #654's
+own testing already found (two writers racing a _pre-existing_ scan) and the brand-new-scan variant,
 uniformly, since the lock serializes on `scan_id` regardless of whether a row already exists.
 
 **`SECURITY DEFINER` necessity — same reasoning as PR #654's D2, unchanged:** every role that can write
@@ -149,11 +151,36 @@ case a future narrowly-scoped writer role would otherwise be blocked from mainta
 
 **Per-row granularity matches how writes already happen**, same reasoning as PR #654's D2:
 `insert_cyl_result_envelope` inserts one row per trait per `INSERT` in a loop, so a per-row trigger fires
-once per trait — but unlike PR #654's design, each firing here only ever touches *this one scan's* small
+once per trait — but unlike PR #654's design, each firing here only ever touches _this one scan's_ small
 table row (an `O(1)` upsert, not a table-wide recompute), so firing 751 times for one envelope costs 751
 cheap upserts, not 751 full-experiment aggregations. This is the concrete sense in which this design
 avoids bloom#656's per-row-trigger objection without needing a scheduled refresh for `is_latest` itself
 — only `n_traits` (D5) needs one.
+
+**Deadlock note, dormant today but real:** `pg_advisory_xact_lock` participates in Postgres's deadlock
+detector. A single transaction that ever touches multiple `scan_id`s could deadlock against another
+transaction acquiring the same set in the opposite order. Today's sole writer
+(`insert_cyl_result_envelope`) is single-scan-per-call, so this never arises — flagged here (and in the
+trigger function's own comment) so a future multi-scan batch writer acquires `scan_id` locks in a
+consistent order rather than rediscovering this the hard way.
+
+### D2a — RLS: enabled on both new tables, matching every other `cyl_*` table (found in review, not in
+
+the original pass)
+
+**This proposal's own review caught a real gap**: `cyl_scan_latest_source` (this section) and
+`cyl_experiment_trait_counts` (D5) originally shipped with a `GRANT SELECT` to the four read roles but no
+`ALTER TABLE ... ENABLE ROW LEVEL SECURITY` — every other `cyl_*` table in this repo has RLS enabled, even
+where the policy itself is permissive (`USING (true)`). This isn't a cosmetic inconsistency: Supabase's
+default privileges grant **`anon` a raw `INSERT`/`UPDATE`/`DELETE`/`TRUNCATE` grant on every new
+public-schema table**, independent of any policy. Verified directly against a local Postgres — before RLS
+was added, `SET LOCAL ROLE anon; INSERT INTO cyl_scan_latest_source ...` **succeeded**: an unauthenticated
+caller could directly corrupt `is_latest` for any scan. With RLS enabled and only `bloom_admin` (`FOR
+ALL`), `bloom_agent`/`bloom_user`/`authenticated` (`FOR SELECT`) policies defined — matching
+`cyl_scan_traits`'s own exact policy set — the same `INSERT` now fails with `new row violates row-level
+security policy`, and a plain `anon` `SELECT` succeeds but returns zero rows (silently filtered, not
+errored) rather than exposing real data. Both behaviors are asserted directly, not inferred, in
+`test_cyl_scan_latest_source.py`/`test_cyl_experiment_trait_counts.py`'s RLS test sections.
 
 ### D3 — Single migration: schema, trigger, inline backfill, and view cutover together
 
@@ -165,28 +192,38 @@ short enough to run inside the same migration transaction as the schema and the 
 separate operator step and no runbook.
 
 **The one new subtlety a single-transaction backfill introduces, and how it's closed:** between the
-moment `CREATE TRIGGER` takes effect and the moment the backfill's `SELECT` executes, a *concurrent*
+moment `CREATE TRIGGER` takes effect and the moment the backfill's `SELECT` executes, a _concurrent_
 write transaction that began before this migration's DDL is visible to it (i.e., before this migration
 commits) would see neither the new trigger (its own snapshot predates the DDL) nor get captured by the
 backfill (if it commits after the backfill's `SELECT` already ran) — a scan could fall into a gap where
-nothing populates its `cyl_scan_latest_source` row. This is closed by taking a table-level lock that
-blocks concurrent writers (but not readers) for the ~2.5s backfill:
+nothing populates its `cyl_scan_latest_source` row. This is closed by a table-level lock that blocks
+concurrent writers for the ~2.5s backfill — and, verified against `pg_locks` after an initial draft of
+this section incorrectly described the lock mode (see below), concurrent _readers_ are unaffected either
+way:
 
 ```sql
 BEGIN;
 
--- 1. Schema (D1) + trigger (D2) — CREATE TRIGGER itself briefly takes ACCESS EXCLUSIVE on
---    cyl_scan_traits, same as any DDL touching an existing table; catalog-only, sub-millisecond.
+-- 1. Schema (D1) + trigger (D2). CREATE TRIGGER takes a ShareRowExclusiveLock on cyl_scan_traits —
+--    NOT AccessExclusiveLock, an error in an earlier draft of this section caught during review and
+--    corrected after confirming the actual mode against pg_locks directly. This lock is held for the
+--    REST of the transaction (locks aren't released until COMMIT, not "released after the statement"
+--    as that earlier draft also assumed) — which is exactly what makes step 2 below redundant, not
+--    the mechanism protecting the backfill.
 CREATE TABLE public.cyl_scan_latest_source ( ... );
 CREATE FUNCTION public.maintain_cyl_scan_latest_source() ...;
 CREATE TRIGGER maintain_cyl_scan_latest_source_after_write ...;
 
--- 2. Block concurrent WRITERS (not readers — SHARE MODE conflicts with ROW EXCLUSIVE, which
---    INSERT/UPDATE/DELETE need, but not with ACCESS SHARE, which SELECT needs) for the
---    remainder of this transaction. Any write-back RPC call that lands during the backfill
---    below simply waits the ~2.5s for this transaction to commit, then proceeds normally,
---    now seeing the trigger created in step 1 and computing correctly against a snapshot that
---    includes the backfill's own committed data.
+-- 2. Redundant with step 1's still-held ShareRowExclusiveLock (confirmed empirically, not just
+--    reasoned) — kept as an explicit, self-documenting assertion of the safety property this
+--    migration relies on, not as the actual mechanism. Concurrent WRITERS are blocked (SHARE MODE,
+--    like ShareRowExclusiveLock, conflicts with ROW EXCLUSIVE, which INSERT/UPDATE/DELETE need) for
+--    the remainder of this transaction — any write-back RPC call that lands during the backfill
+--    below simply waits the ~2.5s for this transaction to commit, then proceeds normally, now seeing
+--    the trigger created in step 1 and computing correctly against a snapshot that includes the
+--    backfill's own committed data. Concurrent READERS are unaffected (SHARE MODE doesn't conflict
+--    with AccessShareLock, which plain SELECT needs) — verified directly against `pg_locks` and a
+--    concurrent `SELECT`'s actual wall-clock time (0.01s, not blocked) during design review.
 LOCK TABLE public.cyl_scan_traits IN SHARE MODE;
 
 -- 3. Backfill — one aggregate pass, not batched. ON CONFLICT makes this migration body
@@ -257,7 +294,7 @@ the referenced row exists, so this preserves the null-accession-plant exclusion 
 was used, already available via `cyl_waves.experiment_id`).
 
 **Why this needs no `is_latest`/`cyl_scan_latest_source` dependency at all:** `EXISTS` asks "does this
-scan have *any* trait row," not "does it have a *latest* one" — and because every scan with at least one
+scan have _any_ trait row," not "does it have a _latest_ one" — and because every scan with at least one
 `cyl_scan_traits` row has, by the partition-per-`scan_id` rule, exactly one row that is that scan's
 latest, "has any row" and "has a latest row" are the same fact for a plain scan. This is why `n_plants`
 is correct starting the moment this migration lands, independent of whether D1–D3 have finished
@@ -300,7 +337,10 @@ AS $$
     GROUP BY d.experiment_id;
 $$;
 
-REVOKE EXECUTE ON FUNCTION public.refresh_cyl_experiment_trait_counts() FROM PUBLIC;
+-- Supabase auto-grants EXECUTE on new public-schema functions to anon/authenticated/service_role,
+-- so REVOKE ... FROM PUBLIC alone wouldn't close that (see D6's anon-EXECUTE finding for why this
+-- matters more than it sounds).
+REVOKE EXECUTE ON FUNCTION public.refresh_cyl_experiment_trait_counts() FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.refresh_cyl_experiment_trait_counts() TO service_role;
 ```
 
@@ -322,6 +362,14 @@ scheduled run, not the current instant. This is an accepted UI-lag tradeoff (Goa
 underlying trait data is correct and immediately consistent; only this one cached count can lag by up to
 one refresh interval. `updated_at` is exposed in the table (not yet in the RPC's return shape — see Open
 Questions) so this can be surfaced later if staleness ever needs to be visible to a caller.
+
+### D5a — RLS on `cyl_experiment_trait_counts`
+
+Same finding and fix as D2a: `ENABLE ROW LEVEL SECURITY` + the same four-role policy set as
+`cyl_scan_traits` (`bloom_admin` `FOR ALL`; `bloom_agent`/`bloom_user`/`authenticated` `FOR SELECT`, all
+`USING (true)`). Without it, Supabase's default `anon` grant would let an unauthenticated caller `INSERT`
+fabricated `n_traits` values directly into this table — confirmed exploitable before the fix, confirmed
+blocked after, the same way as D2a.
 
 ### D6 — `get_experiment_summary_counts`: live semi-join + cached `n_traits` when unpinned, live helper when pinned
 
@@ -400,6 +448,33 @@ BEGIN
 END; $$;
 ```
 
+```sql
+-- REVOKE also from anon, not just PUBLIC, on both functions — see the finding below.
+REVOKE EXECUTE ON FUNCTION public.compute_cyl_experiment_summary_counts_live(bigint, bigint, text)
+    FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.compute_cyl_experiment_summary_counts_live(bigint, bigint, text)
+    TO bloom_agent, bloom_user, bloom_admin, authenticated;
+
+REVOKE EXECUTE ON FUNCTION public.get_experiment_summary_counts(bigint, bigint, text)
+    FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.get_experiment_summary_counts(bigint, bigint, text)
+    TO bloom_agent, bloom_user, bloom_admin, authenticated;
+```
+
+**Anon-EXECUTE finding, caught in review:** an earlier draft of both `REVOKE` statements above read
+`FROM PUBLIC` only — the same lesson D5 already states for `refresh_cyl_experiment_trait_counts` (Supabase
+auto-grants EXECUTE on new public-schema functions to `anon`/`authenticated`/`service_role`) wasn't applied
+to these two. Verified directly: `SET LOCAL ROLE anon; SELECT * FROM
+compute_cyl_experiment_summary_counts_live(...)` **succeeded** before the fix. This mattered more here than
+a typical over-broad grant would, because `compute_cyl_experiment_summary_counts_live` is `SECURITY
+DEFINER` — an `anon` caller invoking it directly runs with the _definer's_ elevated privilege, bypassing
+whatever table-level grants `anon` itself lacks, rather than being stopped by RLS/grants the way a
+`SECURITY INVOKER` call would be. `get_experiment_summary_counts` itself (`SECURITY INVOKER`) had the same
+gap, inherited unchanged from its original bloom#625 definition — fixed here too since this migration
+already re-touches that function's grants, not left as a separately-scoped pre-existing issue.
+`test_anon_has_no_execute_grant` (parametrized over both functions) asserts this directly via
+`has_function_privilege`.
+
 Unlike PR #654's D7, `compute_cyl_experiment_summary_counts_live` here only ever serves the
 **source/run-pinned** branch — the unpinned "current latest" case is answered directly by the live
 semi-join + cache, so this helper doesn't need an `is_latest`/unpinned disjunct at all, and doesn't
@@ -412,7 +487,7 @@ regress it just because the unpinned path moved elsewhere.
 
 ### D7 — Pinned (`source_id_`/`run_id_`) branches: reasoned, not benchmarked
 
-bloom#656 explicitly flags this as unaddressed — Benfica's measurements all isolate the *default/unpinned*
+bloom#656 explicitly flags this as unaddressed — Benfica's measurements all isolate the _default/unpinned_
 path. This session's own analysis, offered for confirmation rather than asserted as settled: the pinned
 branches use direct equality (`src.source_id = source_id_`) or a subquery already scoped to one
 `(scan_id, trait_id)` pair (the `run_id_` branch) — neither depends on a table-wide `is_latest`
@@ -446,6 +521,23 @@ and this sandboxed environment can't run that benchmark. Carried forward as an e
 - **D8's refresh-scheduling mechanism is unresolved** — this design's correctness doesn't depend on which
   host runs it, but `n_traits` reads stale data indefinitely (not just for one interval) until something
   is actually scheduled to call `refresh_cyl_experiment_trait_counts()`.
+- **A third instance of a testing-methodology gap, this time in the concurrency tests themselves, not just
+  the SQL** — this proposal's own `/review-pr` pass found that the first drafts of
+  `test_concurrent_first_insert_to_same_new_scan_converges_to_true_max` and its rerun sibling had a
+  construction bug that made them pass whether or not `pg_advisory_xact_lock` existed: `cyl_trait_sources.id`
+  is a monotonic identity, and the original tests let the connection that resolves _last_ (after blocking)
+  happen to hold the numerically _higher_ id — so its own pre-block value was already the true max,
+  regardless of the lock. Fixed by minting both ids upfront and assigning the _lower_ one to the
+  last-to-resolve connection, which is the only ordering where a missing lock actually produces a wrong
+  result. Confirmed by temporarily removing the lock and watching both tests fail (5008 instead of the true 5009) before restoring it. Same lesson as the two SQL-level findings above, applied one level up: verify a
+  test actually discriminates pass/fail states, don't assume a plausible-looking construction does.
+- **This proposal's own review found and fixed a real security gap, not a stylistic one**: both new tables
+  (`cyl_scan_latest_source`, `cyl_experiment_trait_counts`) shipped without RLS enabled, and two `EXECUTE`
+  grants (`compute_cyl_experiment_summary_counts_live`, `get_experiment_summary_counts`) shipped without
+  revoking Supabase's default `anon` auto-grant. Both were confirmed exploitable (an unauthenticated `anon`
+  role could `INSERT` directly into either new table, and could call the `SECURITY DEFINER` helper directly)
+  before the fixes landed, and confirmed closed after, via dedicated tests in both files' RLS/grant sections
+  — not caught by CI (RLS gaps and over-broad `EXECUTE` grants don't fail any existing check in this repo).
 
 ## Migration Plan
 
@@ -453,7 +545,7 @@ and this sandboxed environment can't run that benchmark. Carried forward as an e
 no deploy-policy exception to negotiate.
 
 - **M1** — `cyl_scan_latest_source` table (D1) + trigger function/trigger (D2) + `LOCK TABLE ... IN SHARE
-  MODE` + inline backfill (D3) + `cyl_scan_traits_source` view cutover (D3), in that order, in one
+MODE` + inline backfill (D3) + `cyl_scan_traits_source` view cutover (D3), in that order, in one
   transaction.
 - **M2** — `cyl_experiment_trait_counts` table (D5) + `refresh_cyl_experiment_trait_counts()` function,
   plus a one-time initial `SELECT public.refresh_cyl_experiment_trait_counts();` call in the same
@@ -461,11 +553,18 @@ no deploy-policy exception to negotiate.
 - **M3** — `compute_cyl_experiment_summary_counts_live` helper (D6, pinned-branch only) +
   `get_experiment_summary_counts` rewrite (D6).
 
-**Rollback ordering**: M3 before M1 if ever rolled back together (a `PL/pgSQL` function body referencing
-`cyl_experiment_trait_counts`/`cyl_scan_latest_source` is opaque to Postgres's dependency tracker, unlike
-M1's view, which `pg_depend` protects automatically — dropping `cyl_scan_latest_source` while the view
-still reads it fails loudly; dropping tables M2/M3 depend on does not, so rollback scripts must respect
-this order explicitly, not rely on the catalog to enforce it).
+**Rollback ordering**: the real constraint is **M3 → M2 → M1** (not just "M3 before M1" — an earlier
+draft of this note omitted M2, incompletely, which review caught), because a `PL/pgSQL` function body
+referencing `cyl_experiment_trait_counts`/`cyl_scan_latest_source` is opaque to Postgres's dependency
+tracker, unlike M1's view, which `pg_depend` protects automatically — dropping `cyl_scan_latest_source`
+while `refresh_cyl_experiment_trait_counts()` (M2) still reads it, or dropping `cyl_experiment_trait_counts`
+while `get_experiment_summary_counts` (M3) still reads it, does not fail loudly at `DROP` time; it fails
+later, at the next call, with "relation ... does not exist". Rather than relying on an operator reading
+this paragraph mid-incident, each rollback script now enforces its own precondition directly: M1's and
+M2's rollback SQL each `RAISE EXCEPTION` if the migration that depends on it hasn't been rolled back yet
+(checked via `pg_proc`/function-body inspection), rather than silently proceeding into a corrupted state.
+`test_rollback_guard_blocks_out_of_order_rollback` (in both `test_cyl_scan_latest_source.py` and
+`test_cyl_experiment_trait_counts.py`) confirms each guard actually fires.
 
 ## Open Questions
 
@@ -478,7 +577,7 @@ this order explicitly, not rely on the catalog to enforce it).
   rather than assumed — `tasks.md` carries the task either way (writing the workflow YAML if this is
   confirmed; filing a follow-up issue against `workflows` if not).
 - **D7 — pinned-branch cost, not benchmarked.** See D7's own reasoning; needs a real `EXPLAIN (ANALYZE,
-  BUFFERS)` against staging once this lands, not resolved from this sandboxed pass.
+BUFFERS)` against staging once this lands, not resolved from this sandboxed pass.
 - **`n_traits`'s `updated_at` isn't surfaced in `get_experiment_summary_counts`'s return shape.** Whether
   `list_experiments()` should ever show "counts as of X" is a product question out of scope here — the
   column exists in `cyl_experiment_trait_counts` so it's available if that's wanted later, but nothing

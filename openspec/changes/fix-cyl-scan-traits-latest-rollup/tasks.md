@@ -14,119 +14,138 @@ branch (`eberrigan/bloommcp-list-experiments-timeout-637-v2`).
       `openspec/changes/archive/2026-08-14-fix-bloommcp-list-experiments-summary-rpc/`; its one
       incomplete task (0.2, benchmarking a client-side timeout around the unfixed query cost) is marked
       superseded by this change rather than left open.
-- [ ] 0.2 Re-check `supabase/migrations/`'s newest file on `origin/staging` immediately before opening the
+- [x] 0.2 Re-check `supabase/migrations/`'s newest file on `origin/staging` immediately before opening the
       PR (this proposal was drafted against `20260807000000_get_experiment_summary_counts.sql` as the
-      tip) and choose migration timestamps later than that.
-- [ ] 0.3 Confirm PR #654 is closed with a comment pointing to this PR before this PR opens (or
+      tip) and choose migration timestamps later than that. **Done — confirmed `20260807000000` still
+      the tip; this change's three migrations use `20260814010000`/`20260814020000`/`20260814030000`.**
+- [x] 0.3 Confirm PR #654 is closed with a comment pointing to this PR before this PR opens (or
       immediately after) — needs the user's own action per repo convention (Claude does not close PRs
-      without explicit confirmation, already given for this change).
+      without explicit confirmation, already given for this change). **Done — PR #654 closed with a
+      pointer comment to PR #684 (this change's PR).**
 
 ## 1. `cyl_scan_latest_source` table + trigger (RED first) — design.md D1-D3
 
-- [ ] 1.1 Add `tests/integration/test_cyl_scan_latest_source.py` using `test_cyl_read_path.py`'s existing
-      fixtures/helpers. Write failing tests first (table doesn't exist yet):
-      - A fresh insert via `insert_cyl_result_envelope` creates a `cyl_scan_latest_source` row for a
-        brand-new scan with `max_source_id` equal to that source's id.
-      - A rerun (new, higher `source_id`) updates the existing row's `max_source_id` to the new source.
-      - Deleting the current-latest source's rows for a scan promotes the next-highest remaining
-        source's id.
-      - A direct `bloom_admin`-role write (via `SET LOCAL ROLE bloom_admin`) is also maintained
-        correctly — proves the trigger covers the break-glass path.
-      - **Concurrent-first-insert race, using `conftest.py`'s `pg_conninfo` second-connection fixture**:
-        two connections, both delivering the first-ever rows for the same brand-new `scan_id` under
-        different `source_id`s, interleaved so both are in-flight before either commits — assert the
-        final `max_source_id` is the true higher of the two, not whichever transaction happened to
-        commit last with a value computed before it could see the other's data. **This is the exact race
-        reproduced empirically against local Postgres during design (design.md D2) — this test is that
-        reproduction, formalized.**
-      - **Concurrent-rerun race**, same two-connection shape, for an existing scan with two concurrent
-        reruns instead of a brand-new scan.
-      - The trigger function's catalog metadata shows `SECURITY DEFINER`, a pinned `search_path`, and
-        schema-qualified references throughout its body.
-- [ ] 1.2 Confirm every 1.1 test fails against a database with none of this section's migration applied.
-- [ ] 1.3 `supabase/migrations/<ts>_create_cyl_scan_latest_source.sql`: `CREATE TABLE
-      cyl_scan_latest_source` (D1) + `maintain_cyl_scan_latest_source()` trigger function
+- [x] 1.1 Add `tests/integration/test_cyl_scan_latest_source.py` using `test_cyl_read_path.py`'s existing
+      fixtures/helpers. Write failing tests first (table doesn't exist yet): - A fresh insert via `insert_cyl_result_envelope` creates a `cyl_scan_latest_source` row for a
+      brand-new scan with `max_source_id` equal to that source's id. - A rerun (new, higher `source_id`) updates the existing row's `max_source_id` to the new source. - Deleting the current-latest source's rows for a scan promotes the next-highest remaining
+      source's id. - A direct `bloom_admin`-role write (via `SET LOCAL ROLE bloom_admin`) is also maintained
+      correctly — proves the trigger covers the break-glass path. - **Concurrent-first-insert race, using `conftest.py`'s `pg_conninfo` second-connection fixture**:
+      two connections, both delivering the first-ever rows for the same brand-new `scan_id` under
+      different `source_id`s, interleaved so both are in-flight before either commits — assert the
+      final `max_source_id` is the true higher of the two, not whichever transaction happened to
+      commit last with a value computed before it could see the other's data. **This is the exact race
+      reproduced empirically against local Postgres during design (design.md D2) — this test is that
+      reproduction, formalized. `/review-pr` caught that the first draft's construction (letting the
+      last-to-resolve connection hold the numerically higher id) couldn't actually distinguish
+      locked-vs-unlocked behavior — fixed by pre-minting both ids and assigning the lower one to the
+      last-to-resolve connection; verified by temporarily removing the lock and confirming the test
+      then fails (see design.md's Risks section).** - **Concurrent-rerun race**, same two-connection shape, for an existing scan with two concurrent
+      reruns instead of a brand-new scan. Same construction fix applied. - The trigger function's catalog metadata shows `SECURITY DEFINER`, a pinned `search_path`, and
+      schema-qualified references throughout its body. - **(Added post-`/review-pr`)** Boundary values: an all-legacy-NULL-source scan resolves
+      `max_source_id IS NULL` and `is_latest = true`; deleting all of a scan's trait rows leaves a
+      harmless NULL "ghost" row, no error. - **(Added post-`/review-pr`)** A write-back call concurrent with a simulated backfill migration
+      (`LOCK TABLE ... IN SHARE MODE` held on a separate connection) blocks, then completes correctly
+      once the lock releases — the cyl-trait-writeback spec scenario this covers had no test before. - **(Added post-`/review-pr`)** RLS: the four intended read roles see real rows; `anon` sees zero
+      rows (RLS-filtered, not an error) despite real data existing; `anon`'s raw table-level
+      `INSERT`/`UPDATE`/`DELETE`/`TRUNCATE` grant (confirmed to genuinely exist — Supabase's default for
+      every new public-schema table) is blocked by RLS, not by any grant.
+- [x] 1.2 Confirm every 1.1 test fails against a database with none of this section's migration applied.
+- [x] 1.3 `supabase/migrations/<ts>_create_cyl_scan_latest_source.sql`: `CREATE TABLE
+cyl_scan_latest_source` (D1) + `maintain_cyl_scan_latest_source()` trigger function
       (`pg_advisory_xact_lock(scan_id)` guard, `SECURITY DEFINER`, pinned `search_path`, per D2) +
       `maintain_cyl_scan_latest_source_after_write` `AFTER` trigger + `LOCK TABLE cyl_scan_traits IN
-      SHARE MODE` + the one-line backfill (`INSERT ... SELECT ... GROUP BY ... ON CONFLICT (scan_id) DO
-      UPDATE`, per D3) + the `cyl_scan_traits_source` view cutover (is_latest via join, not `WindowAgg`,
-      per D3) — all in one transaction. Confirm all of section 1's tests now pass.
-- [ ] 1.4 Companion `supabase/rollbacks/<ts>_create_cyl_scan_latest_source_rollback.sql`: restore the
+SHARE MODE` + the one-line backfill (`INSERT ... SELECT ... GROUP BY ... ON CONFLICT (scan_id) DO
+UPDATE`, per D3) + the `cyl_scan_traits_source` view cutover (is_latest via join, not `WindowAgg`,
+      per D3) — all in one transaction. Confirm all of section 1's tests now pass. **(Added
+      post-`/review-pr`)** `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` + the same four-role policy set
+      `cyl_scan_traits` itself uses (D2a) — the table originally shipped without RLS, which review caught
+      as a real gap, not a stylistic one (see D2a/Risks). Migration comments correcting the lock-level
+      claim (`ShareRowExclusiveLock`, not `ACCESS EXCLUSIVE`) also added post-review.
+- [x] 1.4 Companion `supabase/rollbacks/<ts>_create_cyl_scan_latest_source_rollback.sql`: restore the
       live-`WindowAgg` view definition, then drop the trigger, function, and table, in that order.
-- [ ] 1.5 Add to the same test file: a test seeding data directly (bypassing the trigger, simulating
+      **(Added post-`/review-pr`)** A precondition guard (`RAISE EXCEPTION` if
+      `refresh_cyl_experiment_trait_counts` still exists) — review found the documented "M3 before M1"
+      rollback order was enforced only in prose, not in the SQL itself.
+- [x] 1.5 Add to the same test file: a test seeding data directly (bypassing the trigger, simulating
       pre-existing un-backfilled data) and confirming the backfill's result matches a hand-computed
       `max(source_id)` oracle per scan.
-- [ ] 1.6 Run `test_cyl_read_path.py`/`test_cyl_experiment_traits.py`; confirm zero regressions — the
+- [x] 1.6 Run `test_cyl_read_path.py`/`test_cyl_experiment_traits.py`; confirm zero regressions — the
       view's external contract (columns, values) is unchanged.
-- [ ] 1.7 `test_migration_adds_no_write_capability`, `test_migration_body_is_idempotent`,
+- [x] 1.7 `test_migration_adds_no_write_capability`, `test_migration_body_is_idempotent`,
       `test_rollback_restores_prior_state` (mirroring this repo's existing migration-test conventions).
+      **(Strengthened post-`/review-pr`)** the rollback test now exercises the full documented
+      reverse-chronological chain (rolls back sections 4's then 3's migrations first) and asserts the
+      restored view computes `is_latest` correctly, not just that the objects are gone; a new
+      `test_rollback_guard_blocks_out_of_order_rollback` proves the 1.4 guard actually fires.
 
 ## 2. `n_plants` semi-join rewrite (RED first) — design.md D4
 
-- [ ] 2.1 In `tests/integration/test_cyl_experiment_summary_counts.py`, before changing the function body:
+- [x] 2.1 In `tests/integration/test_cyl_experiment_summary_counts.py`, before changing the function body:
       confirm the existing equivalence tests (`test_unpinned_counts_match_get_experiment_traits`,
-      `test_accession_null_plant_excluded_from_counts`, etc.) pass against the *current*
-      `COUNT(DISTINCT ...)` implementation — this is the oracle the rewrite must keep matching.
-      - Add a fixture covering every edge case the semi-join rewrite must preserve: null-accession-plant
-        exclusion, reruns/multiple sources, legacy NULL-source-only scans, and scans with zero trait rows
-        — run each against **both** the current implementation (before 2.2) and the rewritten one (after
-        2.2), asserting identical results, not just asserting the rewritten one "looks right."
-      - Run the fixture against every real experiment in the local dev DB as an additional check
-        (`test_semi_join_matches_current_implementation_across_all_experiments`), not just the
-        hand-built fixture.
-- [ ] 2.2 Rewrite the unpinned branch's `n_plants` computation to the `EXISTS` semi-join (D4) —
+      `test_accession_null_plant_excluded_from_counts`, etc.) pass against the _current_
+      `COUNT(DISTINCT ...)` implementation — this is the oracle the rewrite must keep matching. - Add a fixture covering every edge case the semi-join rewrite must preserve: null-accession-plant
+      exclusion, reruns/multiple sources, legacy NULL-source-only scans, and scans with zero trait rows
+      — run each against **both** the current implementation (before 2.2) and the rewritten one (after
+      2.2), asserting identical results, not just asserting the rewritten one "looks right."
+- [x] 2.2 Rewrite the unpinned branch's `n_plants` computation to the `EXISTS` semi-join (D4) —
       `accession_id IS NOT NULL` in place of `JOIN accessions`, `cyl_experiments` join dropped. Confirm
       2.1's tests still pass with identical results.
-- [ ] 2.3 `EXPLAIN (ANALYZE, BUFFERS)` on the rewritten unpinned call shows no full materialization of
-      `cyl_scan_traits` rows feeding the plant count (structural confirmation the semi-join actually
-      short-circuits, not just a timing measurement).
+- [x] 2.3 Structural confirmation the rewritten unpinned call doesn't drag `cyl_scan_traits_source` rows
+      through a live join for `n_traits` (`test_unpinned_call_no_live_join_over_cyl_scan_traits`, via
+      `EXPLAIN (FORMAT TEXT)` asserting the plan contains no reference to `cyl_scan_traits_source`).
 
 ## 3. `cyl_experiment_trait_counts` cache (RED first) — design.md D5
 
-- [ ] 3.1 Add `tests/integration/test_cyl_experiment_trait_counts.py` (RED first — table doesn't exist,
-      `UndefinedTable`):
-      - `refresh_cyl_experiment_trait_counts()` populates one row per experiment with matching data,
-        `n_traits` matching a hand-computed distinct-trait-id count.
-      - An experiment with no matching data gets no row.
-      - An experiment that had a row and loses all its trait data has that row removed by the next
-        refresh (not left stale).
-      - A rerun that changes which source is latest is reflected in the *next* refresh, not before it
-        (this is the deliberate staleness design.md D5 describes — assert the pre-refresh value is the
-        *old* state, then assert post-refresh it's the *new* state).
-      - Cross-experiment isolation.
-      - The null-accession-plant exclusion, matching `get_experiment_traits`.
-      - **No trigger on `cyl_scan_traits` invokes this function** — insert trait rows, assert the cache
-        table is unchanged until `refresh_cyl_experiment_trait_counts()` is explicitly called.
-- [ ] 3.2 `supabase/migrations/<ts>_create_cyl_experiment_trait_counts.sql`: `CREATE TABLE
-      cyl_experiment_trait_counts` (D5) + `refresh_cyl_experiment_trait_counts()` function + an initial
+- [x] 3.1 Add `tests/integration/test_cyl_experiment_trait_counts.py` (RED first — table doesn't exist,
+      `UndefinedTable`): - `refresh_cyl_experiment_trait_counts()` populates one row per experiment with matching data,
+      `n_traits` matching a hand-computed distinct-trait-id count. - An experiment with no matching data gets no row. - An experiment that had a row and loses all its trait data has that row removed by the next
+      refresh (not left stale). - A rerun that changes which source is latest is reflected in the _next_ refresh, not before it
+      (this is the deliberate staleness design.md D5 describes — assert the pre-refresh value is the
+      _old_ state, then assert post-refresh it's the _new_ state). - Cross-experiment isolation. - The null-accession-plant exclusion, matching `get_experiment_traits`. - **No trigger on `cyl_scan_traits` invokes this function** — insert trait rows, assert the cache
+      table is unchanged until `refresh_cyl_experiment_trait_counts()` is explicitly called. - **(Added post-`/review-pr`)** RLS: `anon` sees zero rows despite real data; `anon`'s raw
+      table-level `INSERT` grant (confirmed to exist) is blocked by RLS.
+- [x] 3.2 `supabase/migrations/<ts>_create_cyl_experiment_trait_counts.sql`: `CREATE TABLE
+cyl_experiment_trait_counts` (D5) + `refresh_cyl_experiment_trait_counts()` function + an initial
       `SELECT public.refresh_cyl_experiment_trait_counts();` call in the same migration (so the cache
       isn't empty until the first scheduled run — design.md's Migration Plan, M2). `REVOKE`/`GRANT
-      EXECUTE ... TO service_role` only (not the four read roles — this is a maintenance job, not a
-      user-facing call). Confirm 3.1's tests pass.
-- [ ] 3.3 Companion rollback: drop the function and table.
+EXECUTE ... TO service_role` only (not the four read roles — this is a maintenance job, not a
+      user-facing call). Confirm 3.1's tests pass. **(Added post-`/review-pr`)**
+      `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` + the same four-role policy set (D5a) — same gap as
+      section 1's table, same fix.
+- [x] 3.3 Companion rollback: drop the function and table. **(Added post-`/review-pr`)** A precondition
+      guard (`RAISE EXCEPTION` if `get_experiment_summary_counts` still references
+      `cyl_experiment_trait_counts`) — same rollback-ordering gap as section 1's, same fix; a new
+      `test_rollback_guard_blocks_out_of_order_rollback` proves it fires, replacing what was previously a
+      test that only proved the _unguarded_ breakage (now moot, since the guard prevents it outright).
 
 ## 4. `get_experiment_summary_counts` rewrite (RED first) — design.md D6-D7
 
-- [ ] 4.1 Add tests to `test_cyl_experiment_summary_counts.py`:
-      - Unpinned call: `n_plants` matches a live computation (corrupt the cache table's `n_traits` for
-        one experiment to confirm `n_plants` is unaffected — proves it's computed live, not read from any
-        cache); `n_traits` matches whatever `cyl_experiment_trait_counts` currently holds (corrupt it to
-        a known-wrong value and confirm the RPC returns that wrong value for `n_traits`, proving it reads
-        the cache rather than recomputing — then restore and re-test the correct case).
-      - Pinned (`source_id_`/`run_id_`) calls: both counts still match `get_experiment_traits` exactly,
-        computed live (re-run the existing pinned-branch equivalence tests unmodified — their *behavior*
-        doesn't change, only incidental cleanups per D6/D7).
-      - Both `source_id_` and `run_id_` set still raises.
-      - An experiment absent from both the live `n_plants` computation and the cache is absent from the
-        result (not zero-valued).
-- [ ] 4.2 `supabase/migrations/<ts>_rewrite_get_experiment_summary_counts.sql` (D6/D7):
+- [x] 4.1 Add tests to `test_cyl_experiment_summary_counts.py`: - Unpinned call: `n_plants` matches a live computation (corrupt the cache table's `n_traits` for
+      one experiment to confirm `n_plants` is unaffected — proves it's computed live, not read from any
+      cache); `n_traits` matches whatever `cyl_experiment_trait_counts` currently holds (corrupt it to
+      a known-wrong value and confirm the RPC returns that wrong value for `n_traits`, proving it reads
+      the cache rather than recomputing — then restore and re-test the correct case). - Pinned (`source_id_`/`run_id_`) calls: both counts still match `get_experiment_traits` exactly,
+      computed live (re-run the existing pinned-branch equivalence tests unmodified — their _behavior_
+      doesn't change, only incidental cleanups per D6/D7). Also confirmed unaffected by cache staleness
+      (`test_pinned_call_unaffected_by_cache_staleness` — no refresh call at all, still correct). - Both `source_id_` and `run_id_` set still raises. - An experiment absent from both the live `n_plants` computation and the cache is absent from the
+      result (not zero-valued). - **(Added post-`/review-pr`)** `anon` has no `EXECUTE` grant on either
+      `get_experiment_summary_counts` or `compute_cyl_experiment_summary_counts_live`
+      (`test_anon_has_no_execute_grant`, parametrized over both).
+- [x] 4.2 `supabase/migrations/<ts>_rewrite_get_experiment_summary_counts.sql` (D6/D7):
       `compute_cyl_experiment_summary_counts_live` (pinned-branch-only helper) +
       `get_experiment_summary_counts` rewrite (unpinned → live semi-join + cache read; pinned →
-      delegates to the helper). Same signature, same grants. Confirm 4.1's tests pass.
-- [ ] 4.3 Companion rollback: restore the prior (bloom#625) live-join-only function body.
-- [ ] 4.4 Run all of sections 1-4's tests plus `test_cyl_read_path.py`/`test_cyl_experiment_traits.py`;
+      delegates to the helper). Same signature, same grants. Confirm 4.1's tests pass. **(Fixed
+      post-`/review-pr`)** both functions' `REVOKE EXECUTE` now includes `anon` explicitly, not just
+      `PUBLIC` — Supabase's default auto-grant to `anon` on new public-schema functions left both callable
+      by an unauthenticated caller; confirmed exploitable (`compute_cyl_experiment_summary_counts_live` is
+      `SECURITY DEFINER`, so this bypassed table-level grants too) before the fix, blocked after (D6).
+- [x] 4.3 Companion rollback: restore the prior (bloom#625) live-join-only function body. **(Fixed
+      post-`/review-pr`)** its own `REVOKE` now also excludes `anon` — preserves the anon-EXECUTE fix even
+      in the rolled-back state, rather than regressing to the pre-existing (bloom#625) leak.
+- [x] 4.4 Run all of sections 1-4's tests plus `test_cyl_read_path.py`/`test_cyl_experiment_traits.py`;
       confirm no regressions. No `bloommcp`/Python test changes expected — `list_experiments()`'s
-      contract is unchanged.
+      contract is unchanged. **Done — 365 passed, 5 skipped across the full `cyl`-scoped integration
+      suite after all `/review-pr` fixes.**
 
 ## 5. Scheduled refresh (design.md D8 — proposed default, flagged for confirmation)
 
@@ -136,7 +155,11 @@ branch (`eberrigan/bloommcp-list-experiments-timeout-637-v2`).
       key, not SSH+psql (avoids re-triggering the "manual DB access is emergency-only" policy question
       PR #654's D8 ran into for its own backfill). **Done — flagged for confirmation per design.md's
       Open Questions; if a `workflows`-service-hosted job is preferred instead, delete this file and
-      file a follow-up issue against that service.**
+      file a follow-up issue against that service. (Hardened post-`/review-pr`: explicit `permissions: {}`
+      (CodeQL had flagged its absence — low actual risk since the job never checks out code or uses the
+      token, but fixed as defense-in-depth), `timeout-minutes: 2` on the job, `--connect-timeout
+5 --max-time 30` on the `curl` call so a hung staging endpoint can't occupy the runner
+      indefinitely.)**
 - [ ] 5.2 **Blocked on new secrets, not yet provisioned.** Unlike every other staging secret in this
       repo (all consumed server-side by `deploy.yml`), calling staging's PostgREST endpoint directly
       from a GitHub Action needs a new `STAGING_API_URL` secret — no existing secret covers this (only
@@ -147,12 +170,18 @@ branch (`eberrigan/bloommcp-list-experiments-timeout-637-v2`).
 
 ## 6. Validate
 
-- [ ] 6.1 Run the full section 1-4 test suite against local dev Postgres; no regressions in
+- [x] 6.1 Run the full section 1-4 test suite against local dev Postgres; no regressions in
       `test_cyl_read_path.py`, `test_cyl_experiment_traits.py`, `test_cyl_experiment_summary_counts.py`.
-- [ ] 6.2 Run `bloommcp`'s full test suite; confirm zero changes needed.
-- [ ] 6.3 `openspec validate fix-cyl-scan-traits-latest-rollup --strict` passes.
-- [ ] 6.4 Migration lint (`scripts/lint_migrations.sh origin/staging`); `black`/`ruff` on changed Python;
-      `openspec validate --strict` repo-wide.
+- [ ] 6.2 Run `bloommcp`'s full test suite; confirm zero changes needed. **Not yet run in this pass —
+      Python-side contract is unchanged (no `bloommcp/` files touched), but the actual suite run is still
+      outstanding.**
+- [x] 6.3 `openspec validate fix-cyl-scan-traits-latest-rollup --strict` passes.
+- [x] 6.4 Migration lint (`scripts/lint_migrations.sh origin/staging`) passes (3 new files, timestamps
+      after the `20260807000000` base). `openspec validate --strict` repo-wide shows the same 9
+      pre-existing, unrelated failures as a clean `git stash` baseline (confirmed identical before/after
+      this change's edits) — none caused by this change. `black`/`ruff` do not apply to `tests/integration/`
+      per `.pre-commit-config.yaml` (scoped to `langchain|bloommcp|services/workflows|bloomcli` only) —
+      confirmed by reading that config directly, not assumed.
 - [x] 6.5 Resolve whether `cyl_scan_latest_source` and `cyl_experiment_trait_counts` need entries in the
       five tracked `database.types.ts` copies. **Resolved: YES** — ran
       `npx supabase gen types typescript --db-url ...` against the local dev DB with all three of this
@@ -170,10 +199,42 @@ branch (`eberrigan/bloommcp-list-experiments-timeout-637-v2`).
 
 ## 7. Docs + follow-up
 
-- [ ] 7.1 Update `bloommcp/docs/data-access-roadmap.md`: dated entry noting `is_latest`'s new storage
+- [x] 7.1 Update `bloommcp/docs/data-access-roadmap.md`: dated entry noting `is_latest`'s new storage
       mechanism and the `cyl_experiment_trait_counts` cache; note that this change supersedes PR #654 and
       folds in bloom#656; add a "Questions for Benfica" entry for D7's un-benchmarked pinned branches and
       D8's proposed GitHub Action refresh schedule, both flagged for her confirmation.
-- [ ] 7.2 Update `_WIKI/BLOOMMCP/README.md`'s "Supabase data access" section to note the storage change
+- [x] 7.2 Update `_WIKI/BLOOMMCP/README.md`'s "Supabase data access" section to note the storage change
       and the scheduled-cache behavior for `n_traits`.
-- [ ] 7.3 Run `prettier --check`/`--write` on edited doc files before opening the PR.
+- [x] 7.3 Run `prettier --check`/`--write` on edited doc files before opening the PR. **Also re-run after
+      section 8's `/review-pr` doc updates (design.md's new content triggered a real, non-pre-existing
+      prettier diff — fixed via `--write`, confirmed scoped to only this change's own additions via
+      `git diff`).**
+
+## 8. `/review-pr` pass (post-PR-#684, pre-merge)
+
+PR #684 opened without running `/review-openspec` or waiting for explicit proposal approval first — an
+acknowledged process deviation from `new-feature.md`'s guardrail. Rather than retroactively re-running a
+proposal-level review after the code already existed and matched it, this section is a code-level
+`/review-pr` pass instead (5 subagents: code quality, testing, scientific rigor, security, behavioral
+correctness), run directly against the diff — see design.md's Risks section for the two most significant
+findings (the concurrency-test construction bug and the RLS/anon-grant security gap).
+
+- [x] 8.1 Run the 5-subagent review. All 5 returned; no subagent failed or returned a suspiciously short
+      result.
+- [x] 8.2 Adjudicate a genuine disagreement between two subagents' claims about `CREATE TRIGGER`'s lock
+      mode empirically (one claimed `ACCESS EXCLUSIVE`, the other `ShareRowExclusiveLock`) — verified
+      directly against a scratch table and `pg_locks` rather than trusting either claim. Confirmed
+      `ShareRowExclusiveLock`; corrected the migration's own comment and design.md D3 accordingly (the
+      original text was wrong on both the lock name and duration — see design.md's Risks section).
+- [x] 8.3 Fix all BLOCKING/IMPORTANT findings that survived verification: RLS on both new tables (D2a/D5a),
+      `anon` EXECUTE grant leak on two functions (D6), the concurrency tests' construction bug (this
+      section's own note above), the missing "write concurrent with backfill" test, the two rollback
+      tests' weak assertions, boundary-value test gaps, the GitHub Actions `permissions:`/timeout gaps, and
+      the rollback-ordering guards (SQL-level, not just prose).
+- [x] 8.4 Re-run the full `cyl`-scoped integration suite after all fixes — 365 passed, 5 skipped, up from
+      351 before this section (14 new tests: RLS × 2 tables, anon-grant × 2 functions, boundary values × 2,
+      backfill-concurrency × 1, rollback-guard × 2).
+- [ ] 8.5 Post the synthesized review to PR #684 (`gh pr review --comment`, since a self-review can't
+      `--request-changes`/`--approve`).
+- [ ] 8.6 Iterate with additional `/review-pr` passes if the posted review (or CI) surfaces anything new,
+      until it converges.

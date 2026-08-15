@@ -57,8 +57,15 @@ BEGIN
 END;
 $$;
 
+-- Supabase auto-grants EXECUTE on new public-schema functions to anon/authenticated/service_role,
+-- so PUBLIC alone doesn't close that (same lesson 20260814020000 already applies to
+-- refresh_cyl_experiment_trait_counts) -- and it matters more here: this function is
+-- SECURITY DEFINER, so an anon caller invoking it directly would run with the definer's elevated
+-- privilege, bypassing whatever table-level grants anon itself lacks. Verified empirically
+-- (SET LOCAL ROLE anon; SELECT * FROM compute_cyl_experiment_summary_counts_live(...) succeeded
+-- before this fix) that anon could otherwise call it and read real data.
 REVOKE EXECUTE ON FUNCTION public.compute_cyl_experiment_summary_counts_live(bigint, bigint, text)
-    FROM PUBLIC;
+    FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.compute_cyl_experiment_summary_counts_live(bigint, bigint, text)
     TO bloom_agent, bloom_user, bloom_admin, authenticated;
 
@@ -105,7 +112,12 @@ BEGIN
 END;
 $$;
 
-REVOKE EXECUTE ON FUNCTION public.get_experiment_summary_counts(bigint, bigint, text) FROM PUBLIC;
+-- REVOKE also from anon (not just PUBLIC) -- closing the same Supabase-auto-grant gap fixed above
+-- for compute_cyl_experiment_summary_counts_live; this function's own prior definition
+-- (20260807000000_get_experiment_summary_counts.sql) never closed it either, so this also fixes a
+-- pre-existing leak on the function this migration is already re-touching, not just new surface.
+REVOKE EXECUTE ON FUNCTION public.get_experiment_summary_counts(bigint, bigint, text)
+    FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.get_experiment_summary_counts(bigint, bigint, text)
     TO bloom_agent, bloom_user, bloom_admin, authenticated;
 

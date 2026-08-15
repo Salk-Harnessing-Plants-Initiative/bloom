@@ -25,8 +25,11 @@ name: Refresh cyl_experiment_trait_counts
 on:
   schedule:
     # Every 10 minutes -- inside design.md's proposed 5-15 min window.
-    - cron: "*/10 * * * *"
+    - cron: '*/10 * * * *'
   workflow_dispatch: {}
+
+# This job only makes an outbound curl call -- no checkout, no repo-content access needed.
+permissions: {}
 
 concurrency:
   group: refresh-cyl-experiment-trait-counts
@@ -35,6 +38,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     steps:
       - name: Call refresh_cyl_experiment_trait_counts()
         env:
@@ -45,7 +49,7 @@ jobs:
             echo "::error::STAGING_API_URL and/or STAGING_SERVICE_ROLE_KEY not configured -- see this workflow's own header comment."
             exit 1
           fi
-          status=$(curl -s -o /tmp/refresh_response.json -w "%{http_code}" \
+          status=$(curl -s --connect-timeout 5 --max-time 30 -o /tmp/refresh_response.json -w "%{http_code}" \
             -X POST "${STAGING_API_URL}/rest/v1/rpc/refresh_cyl_experiment_trait_counts" \
             -H "apikey: ${SERVICE_ROLE_KEY}" \
             -H "Authorization: Bearer ${SERVICE_ROLE_KEY}" \

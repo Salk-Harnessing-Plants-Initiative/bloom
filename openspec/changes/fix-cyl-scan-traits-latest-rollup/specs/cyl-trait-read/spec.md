@@ -19,7 +19,7 @@ where the value is computed from changes, so every row of `cyl_scan_traits` cont
 own write path is responsible for keeping `cyl_scan_latest_source` correct on every write (see the
 `cyl-trait-writeback` capability); this view never computes or stores that value itself. The view SHALL
 use `security_invoker`, SHALL be granted `SELECT` to the read roles, and SHALL be the only place the
-latest-selection *rule* is defined; every other read object is built on it. Exposing
+latest-selection _rule_ is defined; every other read object is built on it. Exposing
 `trait_name`/`source_id`/`is_latest` makes the view directly usable for scan-grain reads.
 
 #### Scenario: View exposes the source dimension for each trait row
@@ -100,7 +100,7 @@ in one call.
 - **THEN** both counts agree with the distinct plant/trait counts of `get_experiment_traits`'s rows for
   run `R`, including for an experiment whose run `R` values were later superseded by a newer run
 
-#### Scenario: Supplying both source_id_ and run_id_ is rejected
+#### Scenario: Supplying both source*id* and run*id* is rejected
 
 - **WHEN** `get_experiment_summary_counts` is called with both `source_id_` and `run_id_` non-null
 - **THEN** the call raises an error and returns no rows
@@ -136,3 +136,12 @@ in one call.
 - **THEN** `get_experiment_summary_counts` excludes that plant's scans and traits from `n_plants`/
   `n_traits`, matching `get_experiment_traits`'s own exclusion of the same plant, whether computed live
   (`n_plants`, always; both counts when pinned) or via the refreshed cache (`n_traits`, unpinned)
+
+#### Scenario: An unauthenticated caller cannot execute get_experiment_summary_counts or its live helper
+
+- **WHEN** an `anon` (unauthenticated) caller attempts to call `get_experiment_summary_counts` or the
+  internal `compute_cyl_experiment_summary_counts_live` helper it delegates to for pinned calls
+- **THEN** both calls are rejected for lacking `EXECUTE` privilege — even though Supabase's default
+  privileges would otherwise grant `anon` `EXECUTE` on both, and the helper is `SECURITY DEFINER`, so an
+  `anon` caller invoking it directly would otherwise run with the definer's elevated privilege rather than
+  being stopped by `anon`'s own lack of table-level access

@@ -15,7 +15,11 @@ combined maximum. Pre-existing rows SHALL be backfilled by a single aggregate qu
 (`INSERT ... SELECT scan_id, max(source_id) ... GROUP BY scan_id`) run inside the same migration
 transaction that creates the table and trigger, with concurrent writers to `cyl_scan_traits` blocked
 (not silently missed) for the backfill's short duration so no scan can fall into a gap where neither the
-backfill nor a live trigger firing populates its row.
+backfill nor a live trigger firing populates its row. Row-level security SHALL be enabled on this table
+with the same policy set as `cyl_scan_traits` itself (`bloom_admin` full access, `bloom_agent`/
+`bloom_user`/`authenticated` read-only, all permissive) — an unauthenticated (`anon`) caller SHALL NOT be
+able to read or write this table, regardless of any table-level grant Supabase applies by default to new
+tables.
 
 #### Scenario: A fresh insert sets max_source_id for a new scan
 
@@ -70,3 +74,11 @@ backfill nor a live trigger firing populates its row.
   and then proceeds (seeing the newly-created trigger, which maintains its scan's row correctly), or, if
   it started before the migration and completed before the backfill's own read, is captured directly by
   the backfill
+
+#### Scenario: An unauthenticated caller cannot read or write cyl_scan_latest_source
+
+- **WHEN** an `anon` (unauthenticated) caller selects from or writes to `cyl_scan_latest_source`
+- **THEN** a `SELECT` returns zero rows regardless of how much real data exists, and any
+  `INSERT`/`UPDATE`/`DELETE` is rejected by row-level security — even though Supabase's default privileges
+  grant `anon` a raw table-level `INSERT`/`UPDATE`/`DELETE` on this table, the same as any new
+  public-schema table
