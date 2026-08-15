@@ -45,6 +45,9 @@ export default function ScanVideoButton({
   const [message, setMessage] = useState<string>("");
 
   const endpoint = `/api/cyl/experiments/${experimentId}/scans/${scanId}/video`;
+  // A stored video is keyed by scan alone, so asking whether one has landed
+  // doesn't go through the experiment-scoped generate route.
+  const pollEndpoint = `/api/cyl/scans/${scanId}/video`;
   const busy = status === "generating" || status === "pending";
 
   // A partial scan may be all there will ever be, so this is a confirmation rather than a
@@ -63,7 +66,7 @@ export default function ScanVideoButton({
   // The stored video's URL, or "" if there isn't one / we couldn't tell.
   async function storedVideoUrl(): Promise<string> {
     try {
-      const res = await fetch(endpoint);
+      const res = await fetch(pollEndpoint);
       if (!res.ok) return "";
       const body = await res.json();
       return typeof body?.download_url === "string"
@@ -153,7 +156,7 @@ export default function ScanVideoButton({
       try {
         // Bounded so a request that never settles can't latch inFlight on and
         // silently end the polling.
-        response = await fetch(endpoint, {
+        response = await fetch(pollEndpoint, {
           signal: AbortSignal.timeout(POLL_INTERVAL_MS),
         });
       } catch {
@@ -189,7 +192,7 @@ export default function ScanVideoButton({
       active = false;
       clearInterval(timer);
     };
-  }, [status, endpoint]);
+  }, [status, pollEndpoint]);
 
   return (
     <div className="mt-4">

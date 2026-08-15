@@ -17,10 +17,7 @@
 
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/supabase/server";
-import {
-  getStoredScanVideo,
-  getStoredScanVideoUrl,
-} from "@/lib/supabase/scan-video";
+import { getStoredScanVideo } from "@/lib/supabase/scan-video";
 import { isScanVideoResult, parseId } from "@/components/scan-video.helpers";
 
 export const dynamic = "force-dynamic";
@@ -66,41 +63,10 @@ function parseRouteIds(experimentId: string, scanId: string): RouteIds {
   return { experiment, scan };
 }
 
-/**
- * Whether this scan's video has landed yet.
- *
- * POST can time out at 240s while the encode carries on upstream (the handler
- * there is synchronous, so a client disconnect doesn't cancel it) — which
- * leaves the browser holding a 504 and no handle on the work. This is how it
- * finds out how that ended.
- */
-export async function GET(
-  _request: Request,
-  { params }: { params: Promise<{ experimentId: string; scanId: string }> }
-) {
-  const { experimentId, scanId } = await params;
-
-  const ids = parseRouteIds(experimentId, scanId);
-  if (ids.error) return ids.error;
-
-  const session = await getSession();
-  if (!session?.access_token) {
-    return NextResponse.json(
-      { detail: "Sign in to view this video." },
-      { status: 401 }
-    );
-  }
-
-  const downloadUrl = await getStoredScanVideoUrl(ids.scan);
-  if (!downloadUrl) {
-    return NextResponse.json(
-      { detail: "No video is stored for this scan yet." },
-      { status: 404 }
-    );
-  }
-
-  return NextResponse.json({ download_url: downloadUrl });
-}
+// Reading whether a video has landed lives at /api/cyl/scans/{id}/video: it is
+// keyed by scan alone, and a path carrying an experiment id it never checked
+// would claim a scoping the lookup does not do. Only generation needs the pair,
+// and only generation has something upstream that verifies it.
 
 export async function POST(
   _request: Request,

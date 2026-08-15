@@ -31,27 +31,32 @@ def test_client_info_returns_200(api):
 
 
 # Live counterpart to tests/unit/test_caddy_cyl_video_route.py, which only reads
-# caddy/Caddyfile as text.
-CYL_VIDEO_BAD_ID = "/api/cyl/experiments/abc/scans/abc/video"
-CYL_VIDEO = "/api/cyl/experiments/1/scans/1/video"
+# caddy/Caddyfile as text. Both /api/cyl/* routes are covered: generation is
+# experiment-scoped, the stored-video lookup is keyed by scan alone.
+CYL_GENERATE_BAD_ID = "/api/cyl/experiments/abc/scans/abc/video"
+CYL_VIDEO_BAD_ID = "/api/cyl/scans/abc/video"
+CYL_VIDEO = "/api/cyl/scans/1/video"
 
 
-@pytest.mark.parametrize("method", ["GET", "POST"])
-def test_caddy_routes_cyl_video_to_bloom_web_not_kong(api, method):
+@pytest.mark.parametrize(
+    "method,path",
+    [("POST", CYL_GENERATE_BAD_ID), ("GET", CYL_VIDEO_BAD_ID)],
+)
+def test_caddy_routes_cyl_video_to_bloom_web_not_kong(api, method, path):
     """Caddy sends /api/cyl/* to bloom-web with the /api prefix intact.
 
-    A rejected id is the probe: the route validates ids before the session
+    A rejected id is the probe: both routes validate ids before the session
     lookup, the storage probe and the upstream call, so this needs no cookie,
     no database and no workflows container, and the POST cannot start an
     encode."""
-    status, body = api(CYL_VIDEO_BAD_ID, method=method)
+    status, body = api(path, method=method)
     assert status == 400, (
-        f"{method} {CYL_VIDEO_BAD_ID}: expected 400, got {status} — "
+        f"{method} {path}: expected 400, got {status} — "
         f"401 = Kong's catch-all answered, 404 = reached bloom-web but not the "
         f"route (prefix stripped, or handler moved). Body: {body!r}"
     )
     assert isinstance(body, dict), f"expected JSON object, got {body!r}"
-    assert "positive integers" in str(body.get("detail", "")), (
+    assert "positive integer" in str(body.get("detail", "")), (
         f"400 did not come from the route's id validation: {body!r}"
     )
 
@@ -59,14 +64,21 @@ def test_caddy_routes_cyl_video_to_bloom_web_not_kong(api, method):
 def test_cyl_video_route_refuses_a_signed_out_caller(api):
     """A signed-out caller gets bloom-web's own 401, not Kong's.
 
-    Kong answers 401 too, so the wording is the discriminator. Uses numeric
-    ids — the path shape a browser actually sends."""
+    Kong answers 401 too, so the wording is the discriminator. Uses a numeric
+    id — the path shape a browser actually sends."""
     status, body = api(CYL_VIDEO)
     assert status == 401, f"expected 401 for a signed-out caller, got {status}: {body!r}"
     assert isinstance(body, dict), f"expected the route's JSON refusal, got {body!r}"
     assert str(body.get("detail", "")).startswith("Sign in"), (
         f"401 did not come from the route's signed-out short-circuit: {body!r}"
     )
+
+
+def test_generate_route_does_not_serve_reads(api):
+    """GET on the experiment-scoped route is gone — the lookup it used to do
+    carried an experiment id it never checked."""
+    status, _ = api("/api/cyl/experiments/1/scans/1/video")
+    assert status == 405, f"expected 405 (no GET handler), got {status}"
 
 
 def test_other_api_traffic_still_reaches_kong(api, anon_key):

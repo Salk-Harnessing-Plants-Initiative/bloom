@@ -124,9 +124,12 @@ describe("ScanVideoButton after a 504", () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });
 
-    expect(fetchMock.mock.calls[1][0]).toBe(
+    // Scan-scoped: a stored video is keyed by scan alone, so the poll does not
+    // go through the experiment-scoped generate route.
+    expect(fetchMock.mock.calls[0][0]).toBe(
       "/api/cyl/experiments/7/scans/42/video"
     );
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/cyl/scans/42/video");
   });
 
   it("stops polling once unmounted", async () => {

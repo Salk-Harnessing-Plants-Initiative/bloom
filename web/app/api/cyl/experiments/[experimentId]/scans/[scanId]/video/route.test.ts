@@ -23,18 +23,13 @@ vi.mock("@/lib/supabase/server", () => ({
 
 vi.mock("@/lib/supabase/scan-video", () => ({
   getStoredScanVideo: vi.fn(),
-  getStoredScanVideoUrl: vi.fn(),
 }));
 
 import { getSession } from "@/lib/supabase/server";
-import {
-  getStoredScanVideo,
-  getStoredScanVideoUrl,
-} from "@/lib/supabase/scan-video";
+import { getStoredScanVideo } from "@/lib/supabase/scan-video";
 
 const mockedGetSession = vi.mocked(getSession);
 const mockedStoredVideo = vi.mocked(getStoredScanVideo);
-const mockedStoredVideoUrl = vi.mocked(getStoredScanVideoUrl);
 
 const STORED_URL = "https://storage.test/cyl-videos/5.mp4?token=a";
 
@@ -68,7 +63,6 @@ beforeEach(() => {
   mockedGetSession.mockResolvedValue({ access_token: "tok" } as never);
   // Default: no video stored yet, so generation is allowed.
   mockedStoredVideo.mockResolvedValue({ status: "absent" } as never);
-  mockedStoredVideoUrl.mockResolvedValue(null);
   fetchSpy = vi.fn().mockResolvedValue(upstreamJson(RESULT));
   vi.stubGlobal("fetch", fetchSpy);
 });
@@ -152,56 +146,9 @@ describe("auth", () => {
   });
 });
 
-describe("GET — has the video landed yet?", () => {
-  // POST can 504 while the encode carries on upstream, so this is the only way
-  // the browser learns how that ended. It must never reach the video service.
-  function callGet(experimentId: string, scanId: string) {
-    return routeModule.GET(new Request("http://localhost/api"), {
-      params: Promise.resolve({ experimentId, scanId }),
-    });
-  }
-
-  it("returns the stored video's url", async () => {
-    mockedStoredVideoUrl.mockResolvedValue(STORED_URL);
-
-    const res = await callGet("1", "5");
-
-    expect(res.status).toBe(200);
-    expect((await res.json()).download_url).toBe(
-      "https://storage.test/cyl-videos/5.mp4?token=a"
-    );
-  });
-
-  it("404s while no video is stored, so a poll keeps waiting", async () => {
-    mockedStoredVideoUrl.mockResolvedValue(null);
-
-    expect((await callGet("1", "5")).status).toBe(404);
-  });
-
-  it("never calls the video service", async () => {
-    mockedStoredVideoUrl.mockResolvedValue(STORED_URL);
-
-    await callGet("1", "5");
-
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it("requires a session", async () => {
-    mockedGetSession.mockResolvedValue(null as never);
-
-    expect((await callGet("1", "5")).status).toBe(401);
-    expect(mockedStoredVideoUrl).not.toHaveBeenCalled();
-  });
-
-  it("rejects a traversal id", async () => {
-    expect((await callGet("1", "5/../../health")).status).toBe(400);
-    expect(mockedStoredVideoUrl).not.toHaveBeenCalled();
-  });
-
-  it("looks up the scan actually requested", async () => {
-    await callGet("1", "42");
-
-    expect(mockedStoredVideoUrl).toHaveBeenCalledWith(42);
+describe("reading is not this route's job", () => {
+  it("exposes no GET", () => {
+    expect("GET" in routeModule).toBe(false);
   });
 });
 
