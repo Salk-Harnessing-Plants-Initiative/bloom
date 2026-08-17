@@ -32,9 +32,9 @@ lab, or your experiments:
   scientific data with the same shared permissions regardless of who's identified as making it; the
   `bloommcp_usage` write above is what records that identity, not a new door into anything else.
 
-If you'd rather not connect to the shared server at all — for a fully offline workflow with no
-access to Bloom's live data — skip to [No shared server? Run bloommcp fully
-locally](#no-shared-server-run-bloommcp-fully-locally) below.
+If you'd rather not connect to the shared server at all — so no experiment data leaves your
+machine, and you have no access to Bloom's live data — skip to [No shared server? Run bloommcp
+fully locally](#no-shared-server-run-bloommcp-fully-locally) below.
 
 ## Prerequisite: Salk wifi or VPN
 
@@ -75,10 +75,10 @@ written. There is no self-service lookup for this token today.>`
 ## No shared server? Run bloommcp fully locally
 
 If you'd rather not touch the shared server — for example, to work entirely offline, or to avoid
-the access-scope trade-offs above — bloommcp supports a fully-local mode with no connection to the
-shared server at all: your own input files in, your own output files out, nothing shared with
-anyone else. See [storage-backends.md](storage-backends.md) for how to set
-`BLOOM_STORAGE_BACKEND=local` and run bloommcp this way from Claude Code or Claude Desktop.
+the access-scope trade-offs above — bloommcp supports a fully-local mode: your own input files in,
+your own output files out, and no experiment data leaves your machine. See
+[storage-backends.md](storage-backends.md) for how to set `BLOOM_STORAGE_BACKEND=local` and run
+bloommcp this way from Claude Code or Claude Desktop.
 
 ## One-off analysis without registering data
 

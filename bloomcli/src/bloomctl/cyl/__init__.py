@@ -11,6 +11,7 @@ One file per entity (grouped by entity; verbs live inside each entity):
   - accessions.py           `cyl accessions`                   list accessions per experiment; sample counts
   - qc.py                   `cyl qc`                           list cylinder QC sets
   - _batch.py               shared ScanResult/BatchResult reporting for the batch-* commands (no CLI of its own)
+  - _locks.py               shared file-based lock/lease primitive (acquire_lock, LockContendedError) — used by download_for_predict.py, no CLI of its own
 
 Add a command: new file here, register it below.
 """

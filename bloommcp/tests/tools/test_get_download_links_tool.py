@@ -7,6 +7,7 @@ Re-signs fresh download links for an already-committed run. Mirrors
 from __future__ import annotations
 
 import json
+from typing import Optional
 
 import pandas as pd
 import pytest
@@ -53,11 +54,13 @@ def injected_ports():
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
 
-def _commit_a_run(store: FakeResultStore) -> None:
+def _commit_a_run(store: FakeResultStore, params: Optional[dict] = None) -> None:
     run = store.create_run(
         experiment=_EXPERIMENT,
         tool_class="qc",
-        provenance=Provenance.stamp(tool="qc_clean", params={}, seed=1),
+        provenance=Provenance.stamp(
+            tool="qc_clean", params=params if params is not None else {}, seed=1
+        ),
     )
     (run.staging_dir / "_cleaned.csv").write_bytes(b"cleaned-bytes")
     store.commit(run, {"cleaned": "_cleaned.csv"})
@@ -65,7 +68,7 @@ def _commit_a_run(store: FakeResultStore) -> None:
 
 def test_happy_path_returns_resolved_run_and_output_links(injected_ports):
     _reader, store = injected_ports
-    _commit_a_run(store)
+    _commit_a_run(store, params={"exclude": ["p0"]})
 
     result = get_download_links_mod.get_download_links(_EXPERIMENT, "qc", "latest")
     payload = json.loads(result)
@@ -78,6 +81,96 @@ def test_happy_path_returns_resolved_run_and_output_links(injected_ports):
     assert link["url"]
     assert link["sha256"]
     assert link["size_bytes"] == len(b"cleaned-bytes")
+    # bloom#600, reworked per bloom#622 review (see
+    # add-bloommcp-manifest-download-link's design.md Decision 5):
+    # the resolved run's own params/based_on_version, scoped to this one
+    # run -- not a signed link to the shared manifest.json, which would
+    # have exposed every run for this (experiment, tool_class) pair.
+    assert "manifest_path" not in payload
+    assert "manifest_url" not in payload
+    assert payload["params"] == {"exclude": ["p0"]}
+    assert payload["based_on_version"] == "raw"
+
+
+def test_legacy_run_response_still_carries_its_own_params(injected_ports):
+    """bloom#600, reworked per bloom#622 review: a legacy run with no
+    per-artifact output_keys returns output_links == {} in the JSON (as it
+    already did per #599), but params/based_on_version are still
+    populated -- they are never gated on the outputs' own key-presence
+    check, since they were part of the manifest schema since v2 (unlike
+    seed/agent/environment, v3-only fields absent from this seeded run)."""
+    _reader, store = injected_ports
+    store.seed_v2_run(
+        _EXPERIMENT,
+        "qc",
+        tool="qc_clean",
+        outputs={"cleaned": "_cleaned.csv"},
+        params={"legacy": True},
+        based_on_version="raw",
+    )
+
+    result = get_download_links_mod.get_download_links(_EXPERIMENT, "qc", "latest")
+    payload = json.loads(result)
+
+    assert payload["output_links"] == {}
+    # Real-value equality (PR #622 review finding), not just key-presence --
+    # a broken provenance lookup would otherwise pass unnoticed.
+    assert payload["params"] == {"legacy": True}
+    assert payload["based_on_version"] == "raw"
+
+
+def test_enumerate_via_list_existing_analyses_then_loop_reconstructs_every_runs_params(
+    injected_ports,
+):
+    """bloom#622 review (design.md Decision 6): a single get_download_links
+    call is scoped to exactly one run's params -- but list_existing_analyses
+    (unauthenticated relative to any per-experiment permission, and
+    always-included) already enumerates every historical run_ref for an
+    experiment with no opt-in required. Looping get_download_links once per
+    enumerated ref reconstructs every run's params, not just the one a
+    single call resolves.
+
+    This is accepted, not fixed -- add-bloommcp-manifest-download-link's
+    design.md Decision 6 explains why: this composition (enumerate via
+    list_existing_analyses, then fetch per ref) already applies to
+    output_links -- the actual analysis output data -- since #599; params
+    (analysis configuration metadata, not raw data) doesn't cross a new
+    trust boundary by riding the same, already-accepted composition. This
+    test exists to make that boundary explicit and regression-visible
+    rather than requiring cross-file verification (review Suggestion),
+    not to assert that the composition is somehow prevented.
+    """
+    from bloom_mcp.sections.core import list_existing_analyses as lea_mod
+
+    _reader, store = injected_ports
+    lea_mod._RESPONSE_CACHE.clear()
+
+    for i in range(3):
+        run = store.create_run(
+            experiment=_EXPERIMENT,
+            tool_class="qc",
+            provenance=Provenance.stamp(
+                tool="qc_clean", params={"run_index": i}, seed=i
+            ),
+        )
+        (run.staging_dir / "_cleaned.csv").write_bytes(f"cleaned-{i}".encode())
+        store.commit(run, {"cleaned": "_cleaned.csv"})
+
+    listing = json.loads(lea_mod.list_existing_analyses(_EXPERIMENT))
+    run_refs = [entry["run_ref"] for entry in listing["analyses"]["qc"]]
+    # Every historical run_ref is enumerable in one call, no opt-in required --
+    # this is the pre-existing capability the composition below builds on.
+    assert len(run_refs) == 3
+
+    reconstructed_params = {
+        ref: json.loads(
+            get_download_links_mod.get_download_links(_EXPERIMENT, "qc", ref)
+        )["params"]
+        for ref in run_refs
+    }
+    # Every run's own params, individually scoped per call, is nonetheless
+    # fully reconstructable in aggregate across the N calls.
+    assert {p["run_index"] for p in reconstructed_params.values()} == {0, 1, 2}
 
 
 def test_unknown_experiment_reports_available_experiments(injected_ports):

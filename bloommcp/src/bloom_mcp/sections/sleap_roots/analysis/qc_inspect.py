@@ -60,6 +60,7 @@ from sleap_roots_analyze import (
 
 from bloom_mcp.contract import BloomMCPError, OutputLink, Provenance, as_mcp_tool
 from bloom_mcp.data_access import ExperimentReadError
+from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.tools import _ports
 
@@ -121,6 +122,18 @@ class QCInspectParams(BaseModel):
         default=None,
         description="Optional slug appended to the version directory name.",
     )
+    source_id: Optional[int] = Field(
+        default=None,
+        description="Pin inspection to a specific raw DB source (see "
+        "core_list_experiment_sources). Omit to use the latest source, same "
+        "as today. Mutually exclusive with run_id.",
+    )
+    run_id: Optional[str] = Field(
+        default=None,
+        description="Pin inspection to a specific raw DB source by its "
+        "pipeline run id (see core_list_experiment_sources). Omit to use the "
+        "latest source, same as today. Mutually exclusive with source_id.",
+    )
 
 
 class QCInspectRecommendation(BaseModel):
@@ -175,6 +188,16 @@ class QCInspectResult(BaseModel):
     manifest_path: str
     outputs: dict[str, str]
     output_links: dict[str, OutputLink] = Field(default_factory=dict)
+    source_note: Optional[str] = Field(
+        default=None,
+        description=(
+            "Advisory populated only when the experiment has more than one known "
+            "raw source and neither source_id nor run_id was given: names the "
+            "source actually used and points to core_list_experiment_sources to "
+            "choose a different one. None when a pin was given, or when the "
+            "experiment has zero or one source."
+        ),
+    )
 
 
 def _filter(
@@ -411,7 +434,7 @@ def _render_report(
 @as_mcp_tool(
     input_model=QCInspectParams,
     output_model=QCInspectResult,
-    errors=(ExperimentReadError,),
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
 )
 def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectResult:
     """Inspect raw ``experiment`` missingness and recommend a cleanup threshold."""
@@ -430,7 +453,32 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
     # dependent on whether qc_clean had ever run); #420's own outliers-preferring
     # resolution makes it worse (deterministic once any trim exists, not merely
     # order-dependent), which is what surfaced it during that PR's review.
-    frame = reader.load_experiment(params.experiment, version="raw")
+    frame = reader.load_experiment(
+        params.experiment,
+        version="raw",
+        source_id=params.source_id,
+        run_id=params.run_id,
+    )
+    # #626: mirrors qc_clean's source_note — when neither source_id nor run_id was
+    # given and the experiment has more than one known source, say so explicitly
+    # rather than silently resolving "latest". Reads frame.available_source_count
+    # (stamped from the SAME resolution load_experiment already performed) rather
+    # than a fresh reader.list_sources call.
+    source_note: Optional[str] = None
+    if (
+        params.source_id is None
+        and params.run_id is None
+        and frame.available_source_count is not None
+        and frame.available_source_count > 1
+        and frame.resolved_source is not None
+    ):
+        source_note = (
+            f"{frame.available_source_count} sources available for "
+            f"{params.experiment!r}; used latest "
+            f"(source_id={frame.resolved_source.source_id}). Call "
+            "core_list_experiment_sources to choose a different one."
+        )
+
     if params.trait_columns is not None:
         # An empty list is a caller mistake, not "inspect everything" — reject it
         # explicitly rather than silently falling through to all traits.
@@ -555,4 +603,5 @@ def qc_inspect(params: QCInspectParams, *, provenance: Provenance) -> QCInspectR
         manifest_path=stored.manifest_path,
         outputs=dict(stored.output_keys),
         output_links=stored.output_links,
+        source_note=source_note,
     )

@@ -8,6 +8,84 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Added
+
+- `bloomctl cyl batch-download-for-predict` now writes/merges a
+  `sleap_roots_contracts.RunManifest` (`run_manifest.json`) into `OUT_DIR` after every scan
+  in the invocation is processed, recording every usable (`ok` or `skipped`) `scan_key` — a
+  downstream consumer can read this to know which scans are safely usable, correct even
+  across multiple invocations sharing one `out_dir` (merges rather than overwrites).
+  `pipeline_run_id` is sourced from `ARGO_WORKFLOW_NAME` when set, or a generated
+  `local-<8 hex chars>` placeholder outside Argo. Bumped the `sleap-roots-contracts` floor to
+  `>=0.1.0a7` for `RunManifest`/`RUN_MANIFEST_FILENAME` (#653).
+- `bloomctl cyl batch-download-for-predict` now holds a per-scan lock (scoped to `out_dir/
+  .locks/{scan_key}.lock`) around each scan's skip-check through its sidecar write, and a
+  separate lock around the manifest read-merge-write — closing a race where two invocations
+  targeting the same scan_id could both pass the skip-check and clobber each other's writes
+  (#533). A stale lock (past `--lock-staleness-seconds`, default `900`, new option) is
+  reclaimed rather than permanently wedging the directory.
+
+## [0.1.0a5] - 2026-08-13 — cylinder download reliability
+
+### Fixed
+
+- Installing with `--pre` / `--prerelease=allow` produced a build where no command ran. Those
+  flags are not specific to `bloomctl` — they let every dependency install an unfinished
+  version too, which pulled `httpx 1.0.dev3` (no `Timeout`/`HTTPError`, which postgrest
+  imports) and `supabase 3.0.0a1` (no `create_client`). Install by exact version instead —
+  `uv tool install "bloomctl==0.1.0a5"` — which needs no flag; `httpx` and `supabase` are
+  also capped so the same versions cannot be selected once they ship as stable releases.
+- A full disk ended in a traceback with no summary. The counts are now printed before the log
+  is written, the log is written atomically so a failed write leaves the previous one intact,
+  and the error names the disk as the cause.
+- `scans.csv` is written atomically too. It is rewritten on every run, including a re-run that
+  resumes, and opening it for writing emptied it before the first row was written — so a full
+  disk destroyed the previous run's metadata instead of leaving it in place.
+- A download that runs into a filled quota now stops, as one that fills the disk already did.
+  Shared lab storage is usually quota-limited, where the kernel reports `EDQUOT` and never
+  `ENOSPC`, so such a run kept pulling every remaining frame off the server and discarding it.
+- `cyl download` checks the output directory is writable before signing in, rather than
+  failing after every metadata query has run.
+- A run that stops for want of space no longer reports the frames it had already fetched as
+  missing. It tested "has the disk filled?" before "is this frame already here?", so a resumed
+  run that ran out of space partway listed every remaining frame as `FAIL` — including the
+  ones sitting complete on disk — in the log we ask people to send us.
+- The sweep for temp files left by a killed run now covers the whole output directory.
+  `scans.csv` and `download_log.txt` are written atomically too and leave their temp file
+  beside themselves, where a sweep of `images/` alone never reached it. It takes only temps
+  left untouched for an hour: a temp cannot be told from a live one by name, and the sweep
+  runs at the start of every download, so a second run started into the same directory used
+  to delete the first one's in-flight writes and fail its renames.
+- A failed write names the file that was asked for. It reported the temp file it writes
+  through, so a full disk pointed at a `.dl-*.tmp` the user never chose and which had already
+  been deleted — on screen, and in the `error=` field of every `FAIL` line in the download log.
+- A disk that fills while `scans.csv` or the manifest is being written now says so and what to
+  do about it, rather than ending the run as an unhandled error. The output directory is
+  probed before the metadata queries run, but the disk can fill in the time between.
+- Failures that no command anticipated are reported as one line rather than a stack trace.
+
+### Changed
+
+- `cyl download` creates only the last directory of the output path, and fails if the parent
+  is missing. It used to build the whole chain, so `cyl download /Volumes/LabDrive/run3` with
+  the drive unmounted created that path on the boot disk and filled it with an experiment that
+  was meant to go on the drive.
+
+### Added
+
+- Progress shows the percentage to one decimal, the download rate, and an estimate of the time
+  remaining. Failures that arrived since the last line are marked `(+N)`, so the marker
+  disappearing means they have stopped, and the first failure says that re-running resumes.
+- `~/.bloom/errors.log` records the traceback behind an unexpected failure. Written `0600`
+  alongside the credentials, with the values of `--password` and `--anon-key` redacted and any
+  credentials stripped out of `--api-url`/`--server` — the host is kept, since which server a
+  command was pointed at is worth reading. Opened so that a symlink left at that path is
+  refused rather than written through, which on a shared machine would otherwise let another
+  local user choose the file a traceback lands in. Capped
+  at 256KB: once past it the log is renamed to `errors.log.1` and a fresh one started, keeping
+  the filled log whole rather than discarding half of it, and leaving nothing for a second
+  `bloomctl` failing at the same moment to overwrite.
+
 ## [0.1.0a4] - 2026-08-06
 
 ### Fixed

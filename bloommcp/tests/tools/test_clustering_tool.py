@@ -20,12 +20,15 @@ import json
 import math
 from pathlib import Path
 
+from unittest.mock import MagicMock
+
+import numpy as np
 import pandas as pd
 import pytest
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
-from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+from bloom_mcp.result_store import FakeResultStore, RunStateError, SupabaseResultStore
 from bloom_mcp.tools import _ports
 from bloom_mcp.sections.sleap_roots.analysis import clustering as clustering_tool
 from bloom_mcp.sections.sleap_roots.analysis.clustering import (
@@ -315,9 +318,9 @@ def test_gmm_autoselect_bic_aic_reflect_the_selected_model(injected_ports, monke
     idx = result.n_clusters - 1
     # On this dataset auto-select collapses to n=1 out of the default max_components=5
     # candidates — making the negative assertion unconditional (selected ≠ last candidate).
-    assert (
-        result.n_clusters == 1
-    ), f"expected auto-collapse to n=1, got {result.n_clusters}"
+    assert result.n_clusters == 1, (
+        f"expected auto-collapse to n=1, got {result.n_clusters}"
+    )
     assert len(d["bic_scores"]) == 5  # default max_components=5
     # Corrected values == the selected candidate's per-candidate scores.
     assert result.bic == pytest.approx(d["bic_scores"][idx], abs=_TOL)
@@ -468,6 +471,47 @@ def test_degenerate_fit_does_not_leak_backend_internals(injected_ports, monkeypa
     msg = f"{exc.value.message} {exc.value.remedy}"
     assert "/var" not in msg and "db.internal" not in msg
     assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+# ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
+# (#640: clustering's declared errors=(ExperimentReadError,) swallowed a CommitFailedError/
+# ManifestReadError from store.create_run()/commit() into a generic internal_error ref) ──
+
+
+def test_commit_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "clustering")
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="kmeans", n_clusters=3)
+    assert exc.value.code == "tool_error"
+    assert "commit failed for clustering" in exc.value.message
+
+
+def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_read(_EXPERIMENT, "clustering")
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="kmeans", n_clusters=3)
+    assert exc.value.code == "tool_error"
+    assert "manifest read failure" in exc.value.message
+
+
+def test_run_state_error_from_commit_still_maps_to_internal_error(
+    injected_ports, monkeypatch
+):
+    """RunStateError (a handle-misuse/wiring bug, never triggerable via tool input) must
+    stay internal_error even after declaring CommitFailedError/ManifestReadError — proves
+    the errors= tuple wasn't accidentally widened to the full ResultStoreError base
+    (design.md Decision 1; #660 review: only qc_inspect had this test)."""
+    _reader, store = injected_ports
+
+    def _boom(run, outputs):
+        raise RunStateError("commit() on an unknown or already-committed run")
+
+    monkeypatch.setattr(store, "commit", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="kmeans", n_clusters=3)
+    assert exc.value.code == "internal_error"
 
 
 # ── 3.10 non-finite guard ───────────────────────────────────────────────────
@@ -913,3 +957,441 @@ def test_hierarchical_degenerate_fit_does_not_leak_backend_internals(
     # The raw exception text (file paths, scipy internals) must not appear.
     for fragment in ("site-packages", "hierarchy.py", "internal detail"):
         assert fragment not in exc.value.message
+
+
+# ── explicit cleaned-version selector (#626) ────────────────────────────────
+
+
+def test_version_field_exists():
+    assert "version" in ClusteringParams.model_fields
+
+
+def test_omitting_version_preserves_todays_exact_call(injected_ports):
+    """Spy on load_experiment: the omitted-field case must match today's
+    exact call args, not just produce an equivalent result."""
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run()
+
+    reader.load_experiment.assert_called_once_with(_EXPERIMENT, require_clean=True)
+
+
+def test_explicit_version_is_passed_through(injected_ports):
+    reader, _store = injected_ports
+    reader.add_cleaned_version(_EXPERIMENT, "v2", _final_df(), make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(version="v2")
+
+    reader.load_experiment.assert_called_once_with(
+        _EXPERIMENT, require_clean=True, version="v2"
+    )
+
+
+# ── Plot generation (#601) ───────────────────────────────────────────────────
+
+_ALL_PLOT_KEYS = {"create_cluster_scatter_pca", "create_cluster_size_barplot"}
+
+# One representative call per method, used to parametrize the uniformity checks.
+_METHOD_CALLS = {
+    "kmeans": {"method": "kmeans", "n_clusters": 3},
+    "gmm": {"method": "gmm", "n_components": 3},
+    "hierarchical": {"method": "hierarchical", "n_clusters": 3},
+}
+
+
+def _capture_staged_bytes(store, monkeypatch) -> dict[str, bytes]:
+    """Read each staged PNG artifact's raw bytes at commit time."""
+    captured: dict[str, bytes] = {}
+    real_commit = store.commit
+
+    def _commit(run, outputs):
+        for name in outputs:
+            p = run.staging_dir / name
+            if p.suffix == ".png":
+                captured[name] = p.read_bytes()
+        return real_commit(run, outputs)
+
+    monkeypatch.setattr(store, "commit", _commit)
+    return captured
+
+
+@pytest.mark.parametrize("method_kwargs", _METHOD_CALLS.values(), ids=_METHOD_CALLS)
+def test_default_no_plots_outputs_unchanged(injected_ports, method_kwargs):
+    result = _run(**method_kwargs)
+    assert set(result.outputs) == {"labels.csv", "cluster_result.json"}
+    assert not any(k.endswith(".png") for k in result.outputs)
+
+
+def test_unknown_plot_key_invalid_input_no_run_committed(injected_ports):
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        _run(include_plots=True, plots=["not_a_real_plot"])
+    assert exc.value.code == "invalid_input"
+    assert "not_a_real_plot" in exc.value.message
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+def test_duplicate_plot_key_invalid_input_no_run_committed(injected_ports):
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        _run(
+            include_plots=True,
+            plots=["create_cluster_scatter_pca", "create_cluster_scatter_pca"],
+        )
+    assert exc.value.code == "invalid_input"
+    assert "create_cluster_scatter_pca" in exc.value.message
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+def test_empty_plots_list_is_invalid_input(injected_ports):
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        _run(include_plots=True, plots=[])
+    assert exc.value.code == "invalid_input"
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+def test_include_plots_false_with_plots_param_is_silently_ignored(injected_ports):
+    result = _run(include_plots=False, plots=["create_cluster_scatter_pca"])
+    assert not any(k.endswith(".png") for k in result.outputs)
+    assert set(result.outputs) == {"labels.csv", "cluster_result.json"}
+
+
+@pytest.mark.parametrize("method_kwargs", _METHOD_CALLS.values(), ids=_METHOD_CALLS)
+def test_both_plots_png_round_trip(injected_ports, monkeypatch, method_kwargs):
+    """include_plots=True, plots=None → both PNGs, for all three methods — including
+    hierarchical, whose raw result_dict carries no data_processed key (the central claim
+    this change relies on to make create_cluster_scatter_pca uniform across methods)."""
+    _reader, store = injected_ports
+    if method_kwargs["method"] == "hierarchical":
+        captured_dict: dict = {}
+        real = clustering_tool.hierarchical_cluster_labels
+
+        def _spy(data, **kwargs):
+            d = real(data, **kwargs)
+            captured_dict["result_dict"] = d
+            return d
+
+        monkeypatch.setattr(clustering_tool, "hierarchical_cluster_labels", _spy)
+
+    staged = _capture_staged_bytes(store, monkeypatch)
+    result = _run(include_plots=True, plots=None, **method_kwargs)
+
+    png_keys = {k for k in result.outputs if k.endswith(".png")}
+    assert png_keys == {f"{k}.png" for k in _ALL_PLOT_KEYS}
+    for key in png_keys:
+        assert key in staged, f"staged bytes missing for {key}"
+        assert staged[key][:4] == b"\x89PNG", f"{key} is not a valid PNG"
+
+    if method_kwargs["method"] == "hierarchical":
+        # Canary: documents *why* create_cluster_scatter_pca needs its own internal PCA
+        # call for this method, rather than incidentally passing.
+        assert "data_processed" not in captured_dict["result_dict"]
+
+
+def test_plots_subset_generates_only_requested(injected_ports, monkeypatch):
+    _reader, store = injected_ports
+    requested = ["create_cluster_size_barplot"]
+    staged = _capture_staged_bytes(store, monkeypatch)
+    result = _run(method="kmeans", n_clusters=3, include_plots=True, plots=requested)
+
+    png_keys = {k for k in result.outputs if k.endswith(".png")}
+    assert png_keys == {f"{k}.png" for k in requested}
+    assert set(result.outputs) == {"labels.csv", "cluster_result.json"} | png_keys
+    for key in png_keys:
+        assert staged[key][:4] == b"\x89PNG"
+
+
+def test_plotters_invoked_once_with_correct_args(injected_ports, monkeypatch):
+    """create_cluster_scatter_pca receives the raw result_dict + an internally-computed
+    pca_result; create_cluster_size_barplot receives the typed cluster_labels/n_clusters.
+    """
+    import sleap_roots_analyze
+
+    scatter_calls: list = []
+    bar_calls: list = []
+    real_scatter = sleap_roots_analyze.create_cluster_scatter_pca
+    real_bar = sleap_roots_analyze.create_cluster_size_barplot
+
+    def _spy_scatter(*args, **kwargs):
+        scatter_calls.append((args, kwargs))
+        return real_scatter(*args, **kwargs)
+
+    def _spy_bar(*args, **kwargs):
+        bar_calls.append((args, kwargs))
+        return real_bar(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_cluster_scatter_pca", _spy_scatter)
+    monkeypatch.setattr(sleap_roots_analyze, "create_cluster_size_barplot", _spy_bar)
+
+    result = _run(method="kmeans", n_clusters=3, include_plots=True, plots=None)
+
+    assert len(scatter_calls) == 1
+    assert len(bar_calls) == 1
+    bar_args, _bar_kwargs = bar_calls[0]
+    cluster_labels_arg, n_clusters_arg = bar_args
+    assert n_clusters_arg == result.n_clusters
+    assert len(cluster_labels_arg) == result.n_samples
+    scatter_kwargs = scatter_calls[0][1]
+    assert "pca_result" in scatter_kwargs
+    assert scatter_kwargs["pca_result"] is not None
+
+
+def test_internal_pca_receives_same_trait_selection(injected_ports, monkeypatch):
+    captured: dict = {}
+    import sleap_roots_analyze
+
+    real = sleap_roots_analyze.perform_pca_analysis
+
+    def _spy(data, *a, **k):
+        captured["columns"] = list(data.columns)
+        return real(data, *a, **k)
+
+    monkeypatch.setattr(sleap_roots_analyze, "perform_pca_analysis", _spy)
+
+    subset = _TRAITS[:3]
+    _run(
+        method="kmeans",
+        n_clusters=3,
+        trait_columns=subset,
+        include_plots=True,
+        plots=["create_cluster_scatter_pca"],
+    )
+    assert captured["columns"] == subset
+
+
+@pytest.mark.parametrize("standardize", [True, False])
+def test_internal_pca_receives_the_requested_standardize_flag(
+    injected_ports, monkeypatch, standardize
+):
+    """Blocking bug regression: the internal, non-persisted PCA call used for
+    create_cluster_scatter_pca must honor the same standardize the primary clustering
+    fit was given — otherwise the plotted projection is computed in a different
+    coordinate space than the one actually clustered, and the plot's geometry would
+    disagree with the real fit."""
+    captured: dict = {}
+    import sleap_roots_analyze
+
+    real = sleap_roots_analyze.perform_pca_analysis
+
+    def _spy(data, *a, **k):
+        captured["standardize"] = k.get("standardize")
+        return real(data, *a, **k)
+
+    monkeypatch.setattr(sleap_roots_analyze, "perform_pca_analysis", _spy)
+
+    _run(
+        method="kmeans",
+        n_clusters=3,
+        standardize=standardize,
+        include_plots=True,
+        plots=["create_cluster_scatter_pca"],
+    )
+    assert captured["standardize"] == standardize
+
+
+@pytest.mark.parametrize(
+    "method_kwargs",
+    [_METHOD_CALLS["kmeans"], _METHOD_CALLS["hierarchical"]],
+    ids=["kmeans", "hierarchical"],
+)
+def test_degenerate_internal_pca_is_assumption_violated_no_run_no_leaked_figures(
+    injected_ports, monkeypatch, method_kwargs
+):
+    """A failure inside the internal, non-persisted PCA call surfaces as
+    assumption_violated with no run committed and no leaked figures — exercised for
+    hierarchical specifically, the branch with no data_processed fallback available."""
+    import matplotlib.pyplot as plt
+    import sleap_roots_analyze
+
+    _reader, store = injected_ports
+
+    def _boom(*a, **k):
+        raise ValueError("degenerate selection for PCA")
+
+    monkeypatch.setattr(sleap_roots_analyze, "perform_pca_analysis", _boom)
+
+    with pytest.raises(BloomMCPError) as exc:
+        _run(
+            include_plots=True,
+            plots=["create_cluster_scatter_pca"],
+            **method_kwargs,
+        )
+    assert exc.value.code == "assumption_violated"
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+    assert plt.get_fignums() == []
+
+
+def test_figure_cleanup_get_fignums_empty_on_success(injected_ports):
+    import matplotlib.pyplot as plt
+
+    _run(method="kmeans", n_clusters=3, include_plots=True, plots=None)
+    assert plt.get_fignums() == []
+
+
+def test_figure_cleanup_get_fignums_empty_on_invalid_key(injected_ports):
+    import matplotlib.pyplot as plt
+
+    with pytest.raises(BloomMCPError):
+        _run(method="kmeans", n_clusters=3, include_plots=True, plots=["bad_key"])
+    assert plt.get_fignums() == []
+
+
+def test_figure_cleanup_on_partial_plotter_failure_no_run_committed(
+    injected_ports, monkeypatch
+):
+    """Regression: the SECOND of several requested plotters raising mid-generation must
+    not leak the figure(s) already produced by earlier successful plotters, and must not
+    commit a run — exercises the tool's real try/finally nesting end-to-end."""
+    import matplotlib.pyplot as plt
+
+    _reader, store = injected_ports
+    real = clustering_tool._clustering_plot_calls
+
+    def _boom(*a, **k):
+        raise RuntimeError("second plotter blew up")
+
+    def _patched(result_dict, result, frame, trait_cols, *, standardize):
+        calls = real(result_dict, result, frame, trait_cols, standardize=standardize)
+        calls["create_cluster_size_barplot"] = _boom
+        return calls
+
+    monkeypatch.setattr(clustering_tool, "_clustering_plot_calls", _patched)
+
+    with pytest.raises(BloomMCPError) as exc:
+        _run(
+            method="kmeans",
+            n_clusters=3,
+            include_plots=True,
+            plots=["create_cluster_scatter_pca", "create_cluster_size_barplot"],
+        )
+    # An unwrapped RuntimeError from a plotter is not one of clustering's declared
+    # errors=(ExperimentReadError, CommitFailedError, ManifestReadError), so the
+    # contract envelope maps it to internal_error, not tool_error (BloomMCPError.
+    # from_exception) — spec.md previously claimed tool_error here; this pins the
+    # actual behavior.
+    assert exc.value.code == "internal_error"
+    assert plt.get_fignums() == []
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+def test_default_path_never_executes_an_import_matplotlib_statement(
+    injected_ports, monkeypatch
+):
+    """Regression guard, corrected framing (mirrors umap_analysis's identical fix): this
+    does NOT prove matplotlib is absent from sys.modules — it is already resident via this
+    module's own top-level sleap_roots_analyze import (see the module docstring). What
+    this proves is narrower but still real: the include_plots=False path never itself
+    executes a fresh import matplotlib statement."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "matplotlib", None)
+    _run(method="kmeans", n_clusters=3)  # must not raise ImportError
+
+
+def test_plot_outputs_included_in_schema_round_trip(injected_ports):
+    result = _run(
+        method="kmeans",
+        n_clusters=3,
+        include_plots=True,
+        plots=["create_cluster_scatter_pca"],
+    )
+    again = ClusteringResult.model_validate(json.loads(result.model_dump_json()))
+    assert "create_cluster_scatter_pca.png" in again.outputs
+
+
+def test_create_cluster_size_barplot_on_gmm_single_component_collapse(injected_ports):
+    """GMM's BIC auto-select can collapse to n_clusters=1 (see
+    test_gmm_autoselect_may_collapse_to_one_component) — the bar plot must still succeed
+    with a single bar, not raise or silently omit the plot."""
+    result = _run(
+        method="gmm",
+        n_components=None,
+        include_plots=True,
+        plots=["create_cluster_size_barplot"],
+    )
+    assert result.n_clusters == 1
+    assert "create_cluster_size_barplot.png" in result.outputs
+
+
+def test_plots_ignored_list_with_include_plots_false_no_error(injected_ports):
+    """plots=[] with include_plots=False is not ambiguous (unlike plots=[] with
+    include_plots=True, which IS rejected) — the empty filter never applies."""
+    result = _run(method="kmeans", n_clusters=3, include_plots=False, plots=[])
+    assert not any(k.endswith(".png") for k in result.outputs)
+
+
+def test_internal_pca_linalg_error_is_assumption_violated(injected_ports, monkeypatch):
+    """numpy.linalg.LinAlgError (e.g. a singular matrix during PCA's eigendecomposition)
+    is a genuinely reachable failure mode distinct from ValueError — must be caught by
+    the same narrow, wrapped-function-derived exception tuple, not fall through as an
+    opaque internal_error."""
+    import sleap_roots_analyze
+
+    def _boom(*a, **k):
+        raise np.linalg.LinAlgError("SVD did not converge")
+
+    monkeypatch.setattr(sleap_roots_analyze, "perform_pca_analysis", _boom)
+
+    with pytest.raises(BloomMCPError) as exc:
+        _run(
+            method="kmeans",
+            n_clusters=3,
+            include_plots=True,
+            plots=["create_cluster_scatter_pca"],
+        )
+    assert exc.value.code == "assumption_violated"
+
+
+def test_commit_failure_after_pngs_staged_surfaces_as_tool_error(
+    injected_ports, monkeypatch
+):
+    """The PNGs this change adds are written into run.staging_dir BEFORE commit() is
+    called (same window pca_analysis/umap_analysis already have for their own PNGs) —
+    a commit failure in that window must still surface as a structured tool_error, and
+    the already-staged PNGs must be real (proving the failure happens genuinely after
+    staging, not before)."""
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "clustering")
+
+    staged_at_failure: dict[str, bytes] = {}
+    real_commit = store.commit
+
+    def _commit(run, outputs):
+        for name in outputs:
+            p = run.staging_dir / name
+            if p.suffix == ".png":
+                staged_at_failure[name] = p.read_bytes()
+        return real_commit(run, outputs)
+
+    monkeypatch.setattr(store, "commit", _commit)
+
+    with pytest.raises(BloomMCPError) as exc:
+        _run(
+            method="kmeans",
+            n_clusters=3,
+            include_plots=True,
+            plots=["create_cluster_scatter_pca"],
+        )
+    assert exc.value.code == "tool_error"
+    assert staged_at_failure  # the PNG really was written before commit() raised
+    for content in staged_at_failure.values():
+        assert content[:4] == b"\x89PNG"
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+def test_single_trait_scatter_pca_degrades_gracefully_through_the_tool(injected_ports):
+    """design.md claims create_cluster_scatter_pca renders a placeholder figure (not a
+    raise) when the PCA projection has fewer than 2 components — e.g. a single-trait
+    selection. Proven here through this tool's own wrapping end-to-end, not just against
+    the upstream library directly."""
+    result = _run(
+        method="kmeans",
+        n_clusters=3,
+        trait_columns=_TRAITS[:1],
+        include_plots=True,
+        plots=["create_cluster_scatter_pca"],
+    )
+    assert "create_cluster_scatter_pca.png" in result.outputs

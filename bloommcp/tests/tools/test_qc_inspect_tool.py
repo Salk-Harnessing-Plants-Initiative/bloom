@@ -23,7 +23,12 @@ from bloom_mcp.data_access import (
     FakeReader,
     SupabaseReader,
 )
-from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+from bloom_mcp.result_store import (
+    CommitFailedError,
+    FakeResultStore,
+    RunStateError,
+    SupabaseResultStore,
+)
 from bloom_mcp.tools import _ports
 from bloom_mcp.sections.sleap_roots.analysis import qc_inspect as qc_inspect_tool
 from bloom_mcp.sections.sleap_roots.analysis.qc_inspect import (
@@ -406,8 +411,88 @@ def test_delegate_raise_is_structured_without_leaking(injected_ports, monkeypatc
     monkeypatch.setattr(qc_inspect_tool, "apply_data_cleanup_filters", _boom)
     with pytest.raises(BloomMCPError) as exc:
         _run()
+    assert (
+        exc.value.code == "internal_error"
+    )  # pinned, not just "doesn't leak" (#640 review)
     msg = f"{exc.value.message} {exc.value.remedy}"
     assert "secret" not in msg and "/var" not in msg and "db.internal" not in msg
+
+
+# ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
+# (#640: qc_inspect's declared errors=(ExperimentReadError,) swallowed a CommitFailedError/
+# ManifestReadError from store.create_run()/commit() into a generic internal_error ref) ──
+
+
+def test_commit_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "qc_inspect")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "commit failed for qc_inspect" in exc.value.message
+
+
+def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_read(_EXPERIMENT, "qc_inspect")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "manifest read failure" in exc.value.message
+
+
+def test_run_state_error_from_commit_still_maps_to_internal_error(
+    injected_ports, monkeypatch
+):
+    """RunStateError (a handle-misuse/wiring bug, never triggerable via tool input) must
+    stay internal_error even after declaring CommitFailedError/ManifestReadError — proves
+    the errors= tuple wasn't accidentally widened to the full ResultStoreError base
+    (design.md Decision 1; review finding: no test previously exercised this at the tool
+    boundary, only directly against the store)."""
+    _reader, store = injected_ports
+
+    def _boom(run, outputs):
+        raise RunStateError("commit() on an unknown or already-committed run")
+
+    monkeypatch.setattr(store, "commit", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "internal_error"
+
+
+def test_commit_failed_message_excludes_underlying_secret_detail(
+    injected_ports, monkeypatch
+):
+    """Scope: proves `from_exception`'s message construction doesn't reach into a declared
+    exception's `__cause__`/traceback text (via a hand-written `CommitFailedError` built
+    the same way the real static templates are: no interpolation of the chained cause).
+    It does NOT drive the real `supabase_store.py` raise sites themselves under adversarial
+    input — that guarantee instead rests on those sites being static templates, which
+    `test_manifest_schema_error_raises_manifest_incompatible_error` in
+    `test_supabase_result_store.py` now pins directly for the one sibling site
+    (`ManifestIncompatibleError`) that used to interpolate `{exc}` (#660 review)."""
+    _reader, store = injected_ports
+
+    def _boom(run, outputs):
+        try:
+            raise OSError(
+                "permission denied: /var/secrets/bloommcp-key on host db.internal"
+            )
+        except OSError as exc:
+            raise CommitFailedError(
+                "commit failed for qc_inspect/turface_19_raw (transient — retry)"
+            ) from exc
+
+    monkeypatch.setattr(store, "commit", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    msg = f"{exc.value.message} {exc.value.remedy}"
+    assert (
+        "/var/secrets" not in msg
+        and "db.internal" not in msg
+        and "permission denied" not in msg
+    )
 
 
 # ── 3.7 trait_columns validation ────────────────────────────────────────────
@@ -941,3 +1026,93 @@ def test_source_csv_honors_local_root_only_mode(tmp_path, monkeypatch):
 
     assert captured["source_csv"] == raw_path
     assert captured["source_csv"].exists()
+
+
+# ── explicit source pin (#626) ──────────────────────────────────────────────
+# The multi-source test double (FakeReader + a bolted-on SourceSelectable
+# surface) lives in the root tests/conftest.py as make_multi_source_fake_reader
+# — it was duplicated near-verbatim across this file, test_qc_clean_tool.py,
+# and test_ports.py before being consolidated there.
+
+
+@pytest.fixture
+def multi_source_ports(make_multi_source_fake_reader):
+    reader = make_multi_source_fake_reader([9, 10])
+    store = FakeResultStore()
+    reader.add_experiment(_EXPERIMENT, _raw_df())
+    _ports.configure(reader=reader, store=store)
+    try:
+        yield reader, store
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+def test_source_id_and_run_id_fields_exist():
+    assert "source_id" in QCInspectParams.model_fields
+    assert "run_id" in QCInspectParams.model_fields
+
+
+def test_omitting_both_source_params_preserves_todays_behavior(injected_ports):
+    """No behavior change beyond accepting (and ignoring, when None) the two
+    new fields — same recommendation oracle as before this change, plus a
+    source_note that must stay None on a single-source (FakeReader) experiment."""
+    result = _run()
+    assert result.n_samples == 187
+    assert result.source_note is None
+
+
+def test_explicit_source_pin_changes_which_source_is_inspected(multi_source_ports):
+    _reader, _store = multi_source_ports
+    result_9 = _run(source_id=9)
+    result_10 = _run(source_id=10)
+    # Both resolve (no error) — proving the pin actually reached load_experiment
+    # rather than being silently dropped.
+    assert result_9.n_samples > 0
+    assert result_10.n_samples > 0
+    # A pin was given, so there is nothing to advise.
+    assert result_9.source_note is None
+    assert result_10.source_note is None
+
+
+def test_multi_source_experiment_with_no_pin_gets_an_advisory_note(multi_source_ports):
+    result = _run()
+    assert result.source_note is not None
+    assert "2 sources" in result.source_note
+    assert "core_list_experiment_sources" in result.source_note
+    assert "10" in result.source_note  # the resolved (max) source_id
+
+
+def test_pinned_source_is_traceable_from_the_committed_runs_provenance(
+    multi_source_ports,
+):
+    """Mirrors qc_clean's own test of the same name: design.md's traceability
+    guarantee (frame.resolved_source flows into store.create_run(source=...))
+    is documented as applying to BOTH qc_clean and qc_inspect, but before this
+    fix only qc_clean had a test locking it in. Found in PR #644 review."""
+    _reader, store = multi_source_ports
+    _run(source_id=9)
+
+    stored = store.get_run(_EXPERIMENT, "qc_inspect", "latest")
+    assert stored.source_id == 9
+    assert stored.source_name == "run-9"
+
+
+def test_both_source_id_and_run_id_given_is_rejected(multi_source_ports):
+    with pytest.raises(BloomMCPError) as exc:
+        _run(source_id=9, run_id="p10")
+    assert (
+        "source_id" in exc.value.message.lower()
+        or "run_id" in exc.value.message.lower()
+    )
+
+
+def test_source_pin_matching_nothing_is_rejected(multi_source_ports):
+    with pytest.raises(BloomMCPError):
+        _run(source_id=404)
+
+
+def test_source_pinning_unsupported_on_fakereader_surfaces_as_bloommcperror(
+    injected_ports,
+):
+    with pytest.raises(BloomMCPError):
+        _run(source_id=7)
