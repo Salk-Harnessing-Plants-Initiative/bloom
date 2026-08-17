@@ -102,6 +102,7 @@ SECURITY_HEADERS = {
     "Content-Security-Policy": "frame-ancestors 'none'",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
 }
 
 # Every handler declared under `handle @main`, one route each. Status is

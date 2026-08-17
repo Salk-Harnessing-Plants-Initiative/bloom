@@ -93,6 +93,28 @@ Every HTTP response Caddy serves SHALL carry a `Permissions-Policy` denying `cam
 - **WHEN** a user activates fullscreen on the embedded OrthoBrowser iframe, which is marked `allowFullScreen`
 - **THEN** fullscreen still works, because the policy omits `fullscreen` and its default of `self` continues to apply
 
+### Requirement: Cross-Origin Popup Isolation
+
+Every HTTP response Caddy serves SHALL carry `Cross-Origin-Opener-Policy: same-origin-allow-popups`, so a document on another origin that opens Bloom in a new window cannot retain a scriptable reference to it.
+
+#### Scenario: A cross-origin opener is severed
+
+- **WHEN** a page on another origin opens a Bloom URL with `window.open`
+- **THEN** the opener holds no scriptable reference to the resulting window
+- **AND** it cannot read from or navigate that window
+
+#### Scenario: Windows a covered surface opens itself still work
+
+- **WHEN** a covered hostname opens a window of its own
+- **THEN** that window keeps its opener relationship
+- **AND** the console UIs this block also covers are unaffected, because the policy restricts being opened rather than opening
+
+#### Scenario: The restriction is distinct from frame denial
+
+- **WHEN** the anti-framing headers are compared with this one
+- **THEN** those govern embedding a Bloom page in a frame
+- **AND** this governs holding a window reference to it, which framing headers do not address
+
 ### Requirement: Uniform Coverage From A Single Declaration
 
 The security headers SHALL be declared once at site level, ahead of the per-host routing matchers, so every hostname Caddy serves inherits them from that one declaration rather than a per-host copy.

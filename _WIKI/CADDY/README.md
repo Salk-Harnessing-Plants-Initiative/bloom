@@ -92,6 +92,7 @@ Caddy sets five response headers on every request it serves. They are declared o
 | `Content-Security-Policy: frame-ancestors 'none'`       | The same, in the standards-track form; `X-Frame-Options` covers older clients        |
 | `Referrer-Policy: strict-origin-when-cross-origin`      | Experiment identifiers in URLs leaking to third parties via `Referer`                |
 | `Permissions-Policy: camera=(), microphone=(), geolocation=()` | Use of browser features bloom does not need                                   |
+| `Cross-Origin-Opener-Policy: same-origin-allow-popups`  | A site that opens bloom in a popup being able to script that window                 |
 
 ### Why site level, not per host
 

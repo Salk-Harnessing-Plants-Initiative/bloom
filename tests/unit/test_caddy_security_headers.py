@@ -45,6 +45,7 @@ EXPECTED_HEADERS = {
     "Content-Security-Policy": "frame-ancestors 'none'",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
 }
 
 # `header` as a standalone directive, never `header_up`, `header_down` or
