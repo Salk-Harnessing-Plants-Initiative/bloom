@@ -5,6 +5,7 @@ from __future__ import annotations
 from click.testing import CliRunner
 from test_plate_download_paths import IMAGE, SCAN
 
+import bloomctl._download as shared_dl
 import bloomctl.auth as auth
 import bloomctl.plate.download as pd
 from bloomctl.cli import cli
@@ -365,7 +366,8 @@ def test_a_capped_fetch_says_the_newest_captures_are_missing(tmp_path, monkeypat
     """Ordered by scan_id, a cap drops the most recent captures across every plate at once.
 
     That looks exactly like an experiment that stopped early, so silence is the one thing
-    this must not do.
+    this must not do. It also cannot tell that case from an experiment holding exactly this
+    many scans, so it must not assert captures are missing either.
     """
     _signed_in(monkeypatch)
     monkeypatch.setattr(pd, "fetch_plate_scans", lambda *a, **k: [SCAN, SCAN, SCAN])
@@ -374,8 +376,68 @@ def test_a_capped_fetch_says_the_newest_captures_are_missing(tmp_path, monkeypat
 
     result = _run(str(tmp_path / "out"), "--experiment-id", "12", "--limit", "3", "--meta-only")
 
-    assert "capped at --limit 3" in result.output
-    assert "most recent captures are missing" in result.output
+    assert "exactly --limit 3" in result.output
+    assert "nothing is missing" in result.output, "stated as fact what it cannot distinguish"
+    assert "needs its own directory" in result.output, "advised raising --limit in place"
+
+
+def test_scan_id_never_warns_about_the_limit(tmp_path, monkeypatch):
+    """--scan-id fetches one named row and applies no cap, so the warning is always false there.
+
+    It fired whenever --limit happened to be 1, telling a scientist their complete download
+    was missing its newest captures.
+    """
+    _signed_in(monkeypatch)
+    monkeypatch.setattr(pd, "fetch_plate_scan", lambda c, sid: SCAN)
+    monkeypatch.setattr(pd, "fetch_plate_images", lambda c, ids: {1: IMAGE})
+    monkeypatch.setattr(pd, "fetch_plate_sections", lambda c, ids: [])
+
+    result = _run(str(tmp_path / "out"), "--scan-id", "1", "--limit", "1", "--meta-only")
+
+    assert result.exit_code == 0
+    assert "--limit" not in result.output
+
+
+def test_no_scans_is_an_error_without_a_limit_warning_above_it(tmp_path, monkeypatch):
+    """`--limit 0` matched the cap at zero rows, so the warning printed above the error."""
+    _signed_in(monkeypatch)
+    monkeypatch.setattr(pd, "fetch_plate_scans", lambda *a, **k: [])
+
+    result = _run(str(tmp_path / "out"), "--experiment-id", "12", "--limit", "0", "--meta-only")
+
+    assert result.exit_code != 0
+    assert "No scans matched" in result.output
+    assert "exactly --limit" not in result.output
+
+
+def test_a_run_that_dies_writing_the_csv_still_leaves_the_directory_claimed(tmp_path, monkeypatch):
+    """The manifest is written first, so the directory is stamped before any other file exists.
+
+    With the CSV first there was a window holding plates.csv and no manifest — and no images/,
+    so `holds_an_unidentified_download` was False. A `cyl download` into that directory then
+    succeeded, ending with plates.csv and scans.csv side by side under a cyl stamp.
+    """
+    _signed_in(monkeypatch)
+    _one_scan(monkeypatch)
+    monkeypatch.setattr(pd, "write_plates_csv", _dies)
+    out = tmp_path / "out"
+
+    assert _run(str(out), "--experiment-id", "12", "--meta-only").exit_code != 0
+
+    assert (out / pd.MANIFEST_NAME).exists(), "died before claiming the directory"
+    assert not (out / "plates.csv").exists()
+
+    # The stamp is what a later cyl run reads, and it now refuses this directory.
+    import bloomctl.cyl.download as cd
+
+    mismatch = shared_dl.describe_manifest_mismatch(
+        shared_dl.read_manifest(out), cd.download_selector(experiment_id=12), method=cd.METHOD
+    )
+    assert "method was 'plate', now 'cyl'" in mismatch
+
+
+def _dies(*a, **k):
+    raise OSError(5, "killed mid-write")
 
 
 def test_the_output_path_is_checked_before_anything_else_runs(tmp_path, monkeypatch):

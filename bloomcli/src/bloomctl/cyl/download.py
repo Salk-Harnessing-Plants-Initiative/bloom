@@ -642,8 +642,11 @@ def download(
     csv_path = out / "scans.csv"
     # The writability probe ran before the metadata queries; the disk can fill in between.
     try:
-        write_scans_csv(rows, csv_path)
+        # Manifest first: it is small and written atomically, so it claims the directory before
+        # any other file exists. A run killed after the CSV but before the stamp would otherwise
+        # leave a directory the other method can still claim.
         write_manifest(out, selector, method=METHOD)
+        write_scans_csv(rows, csv_path)
     except OSError as exc:
         raise write_failed(Path(exc.filename or csv_path), exc) from exc
     click.echo(f"Wrote {len(rows)} scans -> {csv_path}")

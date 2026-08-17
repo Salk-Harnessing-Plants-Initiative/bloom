@@ -652,6 +652,8 @@ def download(
         if scan is None:
             raise click.ClickException(f"Scan {scan_id} not found.")
         scans = [scan]
+        # --scan-id fetches one named row; fetch_plate_scan takes no cap, so nothing was dropped.
+        maybe_capped = False
     else:
         scans = _queried(
             "the scans for this experiment",
@@ -664,21 +666,25 @@ def download(
                 limit=limit,
             ),
         )
-
-    if len(scans) == limit:
-        # Hit the cap. Ordered by scan_id, which ascends with capture time, so the captures
-        # dropped are the most recent ones — across every plate at once. That reads exactly
-        # like an experiment that stopped early, which is why it has to be said out loud.
-        click.echo(
-            f"Warning: results capped at --limit {limit}; the most recent captures are "
-            f"missing. Narrow the selection, or raise --limit.",
-            err=True,
-        )
+        maybe_capped = len(scans) == limit
 
     if not scans:
         raise click.ClickException(
             "No scans matched, so there is nothing to download. Check the experiment and any "
             "--plate-id / --wave-number / --session-id filters."
+        )
+
+    if maybe_capped:
+        # Ordered by scan_id, which ascends with capture time, so anything dropped is the most
+        # recent — across every plate at once, which reads exactly like an experiment that
+        # stopped early. Indistinguishable from an experiment holding exactly this many scans,
+        # so the wording has to leave that open rather than assert captures are missing.
+        click.echo(
+            f"Warning: this run returned exactly --limit {limit} scans. If the experiment holds "
+            f"more, the most recent captures were dropped; if that is the whole experiment, "
+            f"nothing is missing. A larger --limit is a different selection and needs its own "
+            f"directory.",
+            err=True,
         )
 
     images = _queried(
@@ -713,8 +719,11 @@ def download(
     csv_path = out / "plates.csv"
     # The writability probe ran before the metadata queries; the disk can fill in between.
     try:
-        write_plates_csv(rows, csv_path)
+        # Manifest first: it is small and written atomically, so it claims the directory before
+        # any other file exists. A run killed after the CSV but before the stamp would otherwise
+        # leave a directory the other method can still claim.
         write_manifest(out, selector, method=METHOD)
+        write_plates_csv(rows, csv_path)
     except OSError as exc:
         raise write_failed(Path(exc.filename or csv_path), exc) from exc
     click.echo(f"Wrote {len(rows)} scans -> {csv_path}")
