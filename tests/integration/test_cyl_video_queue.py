@@ -184,14 +184,109 @@ def test_complete_does_not_clobber_a_settled_job(pg_conn):
                 "SELECT public.fail_cyl_video_job(%s, %s, %s)", (job_id, msg_id, "boom")
             )
 
-            # A late second worker completing the same job must not resurrect it.
+            # A late second worker completing the same job must not resurrect it,
+            # and must be told its write was rejected.
             cur.execute(
                 "SELECT public.complete_cyl_video_job(%s, %s, %s)",
                 (job_id, msg_id, "cyl-videos/late.mp4"),
             )
+            assert cur.fetchone()[0] is False
             job = _job(cur, job_id)
             assert job["status"] == "failed"
             assert job["path"] is None
+    finally:
+        pg_conn.rollback()
+
+
+@pytest.mark.parametrize(
+    "wrapper, payload",
+    [
+        ("complete_cyl_video_job", "cyl-videos/stolen.mp4"),
+        ("fail_cyl_video_job", "stolen"),
+    ],
+)
+def test_settling_one_job_cannot_dispose_of_another_jobs_message(
+    pg_conn, wrapper, payload
+):
+    """A msg_id belonging to a different job must not be destroyed.
+
+    Disposing on msg_id alone lets any caller delete an unrelated message. The victim
+    job then stays non-terminal holding the partial unique index with no message left
+    to redeliver, so its scan can never be enqueued again and nothing reaps it.
+    """
+    try:
+        with pg_conn.cursor() as cur:
+            # Claim the settler first, so it is legitimately 'processing' while the
+            # victim below stays 'queued' with its message still at the queue head.
+            other_scan, experiment_id = _seed(cur)
+            other_job = _enqueue(cur, other_scan, experiment_id)
+            _claim(cur)
+
+            victim_scan = _new_scan(cur)
+            victim_job = _enqueue(cur, victim_scan, experiment_id)
+            cur.execute(
+                "SELECT msg_id FROM public.cyl_video_jobs WHERE id = %s", (victim_job,)
+            )
+            victim_msg = cur.fetchone()[0]
+
+            # Settle the other job but name the victim's message.
+            cur.execute(
+                f"SELECT public.{wrapper}(%s, %s, %s)", (other_job, victim_msg, payload)
+            )
+            assert cur.fetchone()[0] is False, "a mismatched msg_id must be refused"
+
+            cur.execute(
+                "SELECT count(*) FROM pgmq.q_cyl_video_generation WHERE msg_id = %s",
+                (victim_msg,),
+            )
+            assert cur.fetchone()[0] == 1, "the victim's message was destroyed"
+            assert _job(cur, victim_job)["status"] == "queued"
+
+            # The victim's scan must still be enqueueable rather than wedged forever.
+            cur.execute(
+                "SELECT count(*) FROM public.cyl_video_jobs WHERE scan_id = %s AND status = 'queued'",
+                (victim_scan,),
+            )
+            assert cur.fetchone()[0] == 1
+    finally:
+        pg_conn.rollback()
+
+
+@pytest.mark.parametrize("wrapper", ["complete_cyl_video_job", "fail_cyl_video_job"])
+def test_settling_with_a_null_msg_id_is_refused(pg_conn, wrapper):
+    """pgmq.archive/delete with a NULL msg_id is a silent no-op, so the guard must
+    reject the pair before the job is settled against a message still in the queue."""
+    try:
+        with pg_conn.cursor() as cur:
+            scan_id, experiment_id = _seed(cur)
+            job_id = _enqueue(cur, scan_id, experiment_id)
+            _, _, _, msg_id = _claim(cur)
+
+            cur.execute(f"SELECT public.{wrapper}(%s, NULL, %s)", (job_id, "x"))
+            assert cur.fetchone()[0] is False
+
+            assert _job(cur, job_id)["status"] == "processing"
+            cur.execute(
+                "SELECT count(*) FROM pgmq.q_cyl_video_generation WHERE msg_id = %s",
+                (msg_id,),
+            )
+            assert cur.fetchone()[0] == 1
+    finally:
+        pg_conn.rollback()
+
+
+@pytest.mark.parametrize(
+    "wrapper, payload", [("complete_cyl_video_job", "cyl-videos/1.mp4"), ("fail_cyl_video_job", "boom")]
+)
+def test_settling_a_claimed_job_reports_success(pg_conn, wrapper, payload):
+    try:
+        with pg_conn.cursor() as cur:
+            scan_id, experiment_id = _seed(cur)
+            job_id = _enqueue(cur, scan_id, experiment_id)
+            _, _, _, msg_id = _claim(cur)
+
+            cur.execute(f"SELECT public.{wrapper}(%s, %s, %s)", (job_id, msg_id, payload))
+            assert cur.fetchone()[0] is True
     finally:
         pg_conn.rollback()
 

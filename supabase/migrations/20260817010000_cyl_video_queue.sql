@@ -94,12 +94,17 @@ CREATE POLICY cyl_scan_videos_queue_definer ON public.cyl_scan_videos
 -- SECURITY DEFINER so they run as bloom_video_queue_owner (which can reach pgmq);
 -- bloom_workflows only ever gets EXECUTE. search_path is pinned to avoid capture.
 
--- CREATE OR REPLACE cannot change a RETURNS TABLE shape, and a different arity creates a
--- second overload rather than replacing. Drop first so this migration applies cleanly to a
--- database carrying an earlier draft of these functions, and so a later column addition
--- doesn't hit the same wall. EXECUTE grants and the owner pin are re-applied below.
+-- CREATE OR REPLACE cannot change a return type, and a different arity creates a second
+-- overload rather than replacing. Drop first so this migration applies cleanly to a database
+-- carrying an earlier draft of these functions. EXECUTE grants and the owner pin are
+-- re-applied below. Each drop names the hazard it covers:
+--   RETURNS TABLE reshape — the two below are dropped at their current signature.
 DROP FUNCTION IF EXISTS public.claim_cyl_video_job(integer, integer);
 DROP FUNCTION IF EXISTS public.cyl_video_queue_stats();
+--   void -> boolean, so the caller can tell a rejected transition from a successful one.
+DROP FUNCTION IF EXISTS public.complete_cyl_video_job(uuid, bigint, text);
+DROP FUNCTION IF EXISTS public.fail_cyl_video_job(uuid, bigint, text);
+--   earlier drafts that differed in arity, which would survive as extra overloads.
 DROP FUNCTION IF EXISTS public.fail_cyl_video_job(uuid, bigint, text, integer);
 
 -- enqueue: idempotent per scan — reuse an in-flight job instead of piling up.
@@ -219,31 +224,45 @@ $$;
 
 -- complete: record the path, drop the message. Guard on 'processing' so a late second
 -- worker can't clobber a job another worker already settled.
+--
+-- p_msg_id is matched against the job's own msg_id, and the message is only disposed of
+-- when the transition actually happened. Disposing on p_msg_id alone would let any caller
+-- destroy an unrelated message: the job it names stays non-terminal, holds the partial
+-- unique index, and its scan can never be enqueued again. Returns whether the job settled,
+-- so a caller whose write was rejected can tell.
 CREATE OR REPLACE FUNCTION public.complete_cyl_video_job(p_job_id uuid, p_msg_id bigint, p_path text)
-RETURNS void
+RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pgmq
 AS $$
 BEGIN
   UPDATE public.cyl_video_jobs
   SET status = 'complete', path = p_path, completed_at = now()
-  WHERE id = p_job_id AND status = 'processing';
+  WHERE id = p_job_id AND msg_id = p_msg_id AND status = 'processing';
+  IF NOT FOUND THEN
+    RETURN false;
+  END IF;
   PERFORM pgmq.delete('cyl_video_generation', p_msg_id);
+  RETURN true;
 END;
 $$;
 
 -- fail: mark the job 'failed' and dead-letter its message. Terminal — retry is
--- deferred to the queue-hardening work.
+-- deferred to the queue-hardening work. Same msg_id/job_id pairing as complete above.
 CREATE OR REPLACE FUNCTION public.fail_cyl_video_job(
   p_job_id uuid, p_msg_id bigint, p_error text
 )
-RETURNS void
+RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pgmq
 AS $$
 BEGIN
   UPDATE public.cyl_video_jobs
-  SET status = 'failed', error = p_error, completed_at = now()
-  WHERE id = p_job_id AND status = 'processing';
+  SET status = 'failed', error = left(p_error, 2000), completed_at = now()
+  WHERE id = p_job_id AND msg_id = p_msg_id AND status = 'processing';
+  IF NOT FOUND THEN
+    RETURN false;
+  END IF;
   PERFORM pgmq.archive('cyl_video_generation', p_msg_id);
+  RETURN true;
 END;
 $$;
 
