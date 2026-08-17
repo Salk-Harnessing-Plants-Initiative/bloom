@@ -19,7 +19,16 @@ END
 $$;
 -- Both are needed by the ALTER FUNCTION ... OWNER TO block in section 5. The CREATE is
 -- revoked again at the end of that section.
-GRANT bloom_video_queue_owner TO CURRENT_USER;
+--
+-- The grantee is interpolated rather than written as the CURRENT_USER keyword: on
+-- supabase/postgres 15.x the keyword form of GRANT <role> TO CURRENT_USER (and
+-- SESSION_USER) terminates the backend when the session has done SET SESSION ROLE, which
+-- is how `supabase db push` applies migrations. format('%I') resolves to the same role.
+DO $$
+BEGIN
+  EXECUTE format('GRANT bloom_video_queue_owner TO %I', current_user);
+END
+$$;
 GRANT CREATE ON SCHEMA public TO bloom_video_queue_owner;
 
 -- 2. The queue -------------------------------------------------------------
