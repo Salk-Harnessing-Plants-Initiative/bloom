@@ -25,6 +25,24 @@ WRAPPERS = [
 DEFINER_ROLE = "bloom_video_queue_owner"
 SESSION_ROLES = ["bloom_user", "bloom_writer", "bloom_admin"]
 
+# One call per wrapper, so authorisation is asserted against all five rather than
+# whichever one happens to be convenient. Arguments are placeholders — EXECUTE is
+# checked before the body runs, so these never reach the queue.
+_NIL_UUID = "00000000-0000-0000-0000-000000000000"
+WRAPPER_CALLS = [
+    ("enqueue_cyl_video", "SELECT public.enqueue_cyl_video(1, 1)"),
+    ("claim_cyl_video_job", "SELECT * FROM public.claim_cyl_video_job(120, 5)"),
+    (
+        "complete_cyl_video_job",
+        f"SELECT public.complete_cyl_video_job('{_NIL_UUID}'::uuid, 1, 'x')",
+    ),
+    (
+        "fail_cyl_video_job",
+        f"SELECT public.fail_cyl_video_job('{_NIL_UUID}'::uuid, 1, 'x')",
+    ),
+    ("cyl_video_queue_stats", "SELECT * FROM public.cyl_video_queue_stats()"),
+]
+
 JOB_COLUMNS = ["status", "scan_id", "experiment_id", "msg_id", "path", "error"]
 
 
@@ -548,27 +566,71 @@ def test_the_definer_role_is_not_reachable_from_a_jwt(pg_conn):
 
 
 @pytest.mark.parametrize("role", ["anon", "authenticated", "service_role"] + SESSION_ROLES)
-def test_wrappers_are_denied_to_every_non_workflows_role(pg_conn, role):
-    # Assert by calling, not by reading the catalog — catalog privileges and actual
-    # call behaviour diverge (overloads, role chains).
+@pytest.mark.parametrize("wrapper, call", WRAPPER_CALLS, ids=[w for w, _ in WRAPPER_CALLS])
+def test_wrappers_are_denied_to_every_non_workflows_role(pg_conn, role, wrapper, call):
+    # Every wrapper, not just enqueue: claim/complete/fail all mutate state and are
+    # reachable over /rest/v1/rpc, so a grant on any one of them is the whole hole.
+    # match= pins the failure to the function's EXECUTE privilege — an RLS denial or a
+    # missing table privilege raises the same SQLSTATE and would satisfy a bare raises().
     try:
         with pg_conn.cursor() as cur:
             cur.execute("SAVEPOINT authz")
             cur.execute(f"SET LOCAL ROLE {role}")
-            with pytest.raises(psycopg.errors.InsufficientPrivilege):
-                cur.execute("SELECT public.enqueue_cyl_video(1, 1)")
+            with pytest.raises(
+                psycopg.errors.InsufficientPrivilege,
+                match=f"permission denied for function {wrapper}",
+            ):
+                cur.execute(call)
             cur.execute("ROLLBACK TO SAVEPOINT authz")
     finally:
         pg_conn.rollback()
 
 
-def test_wrappers_are_executable_by_bloom_workflows(pg_conn):
-    for wrapper in WRAPPERS:
+@pytest.mark.parametrize("wrapper", WRAPPERS)
+def test_public_holds_no_execute_on_the_wrappers(pg_conn, wrapper):
+    # has_function_privilege() counts grants made to PUBLIC, and EXECUTE to PUBLIC is the
+    # default for every new function. So asserting bloom_workflows "has EXECUTE" passes
+    # even with every GRANT/REVOKE in the migration deleted. This is the assertion that
+    # does not: PUBLIC must hold nothing, which is only true because of the REVOKEs.
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT has_function_privilege('public', %s, 'EXECUTE')", (wrapper,))
+        assert cur.fetchone()[0] is False, f"{wrapper} is executable by PUBLIC"
+
+
+def test_bloom_workflows_can_drive_a_job_end_to_end(pg_conn):
+    """The only sanctioned caller must actually be able to run the whole lifecycle.
+
+    Every other authorisation test here is negative or catalog-based; this is the one
+    that fails if the EXECUTE grants are wrong, and it also proves the SECURITY DEFINER
+    hop into pgmq works for a caller that holds no pgmq privileges of its own.
+    """
+    try:
         with pg_conn.cursor() as cur:
+            scan_id, experiment_id = _seed(cur)
+
+            cur.execute("SAVEPOINT wf")
+            cur.execute("SET LOCAL ROLE bloom_workflows")
+            job_id = _enqueue(cur, scan_id, experiment_id)
+            claimed_job, claimed_scan, _, msg_id = _claim(cur)
+            assert claimed_job == job_id
+            assert claimed_scan == scan_id
+
+            path = f"cyl-videos/{scan_id}.mp4"
             cur.execute(
-                "SELECT has_function_privilege('bloom_workflows', %s, 'EXECUTE')", (wrapper,)
+                "SELECT public.complete_cyl_video_job(%s, %s, %s)", (job_id, msg_id, path)
             )
-            assert cur.fetchone()[0] is True, f"bloom_workflows cannot execute {wrapper}"
+            assert cur.fetchone()[0] is True
+
+            cur.execute("SELECT queued, processing FROM public.cyl_video_queue_stats()")
+            assert cur.fetchone() == (0, 0)
+            cur.execute("RESET ROLE")
+
+            job = _job(cur, job_id)
+            assert job["status"] == "complete"
+            assert job["path"] == path
+            cur.execute("ROLLBACK TO SAVEPOINT wf")
+    finally:
+        pg_conn.rollback()
 
 
 def test_bloom_roles_are_not_bypassrls(pg_conn):
@@ -622,7 +684,14 @@ def test_session_roles_cannot_write_job_status(pg_conn, role):
             scan_id, experiment_id = _seed(cur)
             cur.execute("SAVEPOINT w")
             cur.execute(f"SET LOCAL ROLE {role}")
-            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            # match= is load-bearing: with the REVOKE removed the INSERT still fails,
+            # but on RLS ("new row violates row-level security policy") rather than on
+            # privilege — the same SQLSTATE, so a bare raises() passes either way and
+            # this test would not notice the grant coming back.
+            with pytest.raises(
+                psycopg.errors.InsufficientPrivilege,
+                match="permission denied for table cyl_video_jobs",
+            ):
                 cur.execute(
                     "INSERT INTO public.cyl_video_jobs (scan_id, experiment_id) VALUES (%s, %s)",
                     (scan_id, experiment_id),
