@@ -211,12 +211,14 @@ CONSOLE_HOSTS = ["studio.localhost", "minio.localhost"]
 # CSP is deliberately absent: browsers enforce every CSP header present, so
 # MinIO's own policy arriving beside `frame-ancestors 'none'` is an
 # intersection, not an override.
-DIVERGENCE_SENSITIVE_HEADERS = {
-    "Referrer-Policy",
-    "Permissions-Policy",
-    "Cross-Origin-Opener-Policy",
-    "Cross-Origin-Resource-Policy",
-}
+DIVERGENCE_SENSITIVE_HEADERS = {"Referrer-Policy", "Permissions-Policy"}
+
+# Stricter still: these two are voided by ANY duplicate, not just a divergent one.
+# Repeated field lines are joined with a comma, and `same-origin, same-origin`
+# matches none of CORP's three legal values, while COOP must parse as a single
+# structured-field item and a list is a parse failure. Either way the browser
+# falls back to no policy, so "present" is not enough — it must be alone.
+SINGLE_VALUE_HEADERS = {"Cross-Origin-Opener-Policy", "Cross-Origin-Resource-Policy"}
 
 
 @pytest.fixture(scope="module")
@@ -250,7 +252,14 @@ def test_security_headers_on_console_hostnames(console_responses, host, name, va
         f"{name} for {host} is {received!r}; the edge value {value!r} is absent, "
         "so the site-level declaration is not reaching this hostname"
     )
-    if name in DIVERGENCE_SENSITIVE_HEADERS:
+    if name in SINGLE_VALUE_HEADERS:
+        assert received == [value], (
+            f"{name} for {host} arrived as {received!r} — this header must appear "
+            "exactly once. Duplicates are joined with a comma, which parses as "
+            "neither a valid value nor a single structured-field item, so the "
+            "policy is dropped entirely even when both copies agree"
+        )
+    elif name in DIVERGENCE_SENSITIVE_HEADERS:
         divergent = [v for v in received if v != value]
         assert not divergent, (
             f"{name} for {host} also arrived as {divergent!r} — a divergent duplicate "

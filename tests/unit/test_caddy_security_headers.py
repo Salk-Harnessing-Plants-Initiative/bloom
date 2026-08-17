@@ -52,6 +52,10 @@ EXPECTED_HEADERS = {
 # `header` as a standalone directive, never `header_up`, `header_down` or
 # `request_header`.
 _HEADER_TOKEN = re.compile(r"(?<![\w.-])header(?![\w.-])")
+# `header_down` inside a `reverse_proxy` body sets a response header for that
+# route alone. Caddy appends it after the site-level set, so it downgrades one
+# hostname with every other assertion here still green.
+_HEADER_DOWN_TOKEN = re.compile(r"(?<![\w.-])header_down(?![\w.-])")
 
 
 def _header_directives(text: str) -> list[tuple[int, str, str]]:
@@ -96,8 +100,12 @@ def _declared_headers(block: str) -> dict[str, str]:
         line = line.strip()
         if not line:
             continue
-        name, _, value = line.partition(" ")
-        declared[name] = _unquote(value)
+        parts = line.split(None, 1)
+        # A leading +, - or > is Caddy's add / delete / defer prefix, not part of
+        # the field name. Splitting on whitespace rather than a single space also
+        # tolerates a tab-separated directive.
+        name = parts[0].lstrip("+->")
+        declared[name] = _unquote(parts[1]) if len(parts) > 1 else ""
     return declared
 
 
@@ -167,10 +175,28 @@ def test_headers_not_scoped_inside_a_single_host_block():
     are rejected at any depth inside a host block.
     """
     stripped = _strip_comments(_text())
-    for matcher in (r"handle\s+@main\b", r"handle\s+@studio\b", r"handle\s+@minio\b"):
-        block = _block_after(stripped, matcher)
-        if block is None:
-            continue
+    site = _site_block(stripped)
+    assert site is not None, "missing site block in caddy/Caddyfile"
+
+    # Derived, not hardcoded: renaming `@studio` to `@studio_ui` would otherwise
+    # make `_block_after` return None and this guard skip that host silently.
+    names = re.findall(r"^\s*@(\w+)\s+host\b", site, re.MULTILINE)
+    assert names, "no `@name host` matchers found in the site block"
+
+    for name in names:
+        block = _block_after(stripped, rf"handle\s+@{re.escape(name)}\b")
+        assert block is not None, (
+            f"`@{name} host` is declared but no `handle @{name}` block was found — "
+            "the per-host guard below would skip it silently"
+        )
+        matcher = f"handle @{name}"
+        for down in _HEADER_DOWN_TOKEN.finditer(_mask_quoted(block)):
+            line = block[down.start():].splitlines()[0].strip()
+            managed = _touches_managed(line)
+            assert managed is None, (
+                f"`{matcher}` sets {managed} via `header_down` ({line!r}) — Caddy appends "
+                "it after the site-level value, so this host ends up with two values"
+            )
         for _depth, form, body in _header_directives(block):
             managed = _touches_managed(body)
             assert managed is None, (
