@@ -7,6 +7,7 @@ flight at once, and cleanup of temp files.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -592,6 +593,24 @@ def test_a_corrupt_manifest_is_treated_as_missing(tmp_path):
 
 def test_the_manifest_records_which_method_wrote_it(tmp_path):
     shared_dl.write_manifest(tmp_path, {"experiment_id": 12}, method=dl.METHOD)
+    # Read the literal key out of the JSON rather than through METHOD_KEY: the name is an
+    # on-disk contract across releases, and going through the constant follows a rename with it.
+    # Renamed, every stamped plate manifest reads as unstamped — which resolves to cyl, so a
+    # plate directory starts refusing its own resume.
+    written = json.loads((tmp_path / shared_dl.MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert written["method"] == "cyl"
+
+
+def test_the_selector_cannot_displace_the_method_stamp(tmp_path):
+    """The stamp is the writer's own record. A selector carrying the same key must not win.
+
+    Neither command has a --method option today, so this is latent — but the guard's whole
+    premise is that the field is not caller data, and a future method whose selector gained
+    such a column would disable it with the suite still green.
+    """
+    shared_dl.write_manifest(
+        tmp_path, {"experiment_id": 12, shared_dl.METHOD_KEY: "attacker"}, method=dl.METHOD
+    )
     assert shared_dl.read_manifest(tmp_path)[shared_dl.METHOD_KEY] == "cyl"
 
 
@@ -613,7 +632,9 @@ def test_two_methods_are_a_mismatch_even_when_every_shared_key_agrees(tmp_path):
     mismatch = shared_dl.describe_manifest_mismatch(
         recorded, plate_selector, method=plate_dl.METHOD
     )
-    assert "method" in mismatch and "cyl" in mismatch and "plate" in mismatch
+    # The literal phrase, not the parts: swapping the two reports the directory's method and the
+    # run's backwards, and "cyl" and "plate" both still appear.
+    assert "method was 'cyl', now 'plate'" in mismatch
 
 
 def test_a_manifest_from_before_the_method_was_recorded_is_a_cyl_download(tmp_path):

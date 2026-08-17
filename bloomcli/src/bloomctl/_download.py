@@ -101,7 +101,8 @@ def contained_dest(out_dir: Path, relative: str) -> Path:
 # can tell whether the frames already there belong to what it is about to download.
 MANIFEST_NAME = ".bloomctl-download.json"
 
-# Which scan method wrote the manifest, recorded alongside the selection rather than inside it.
+# Which scan method wrote the manifest. Shares the flat namespace with the selector keys, so it
+# is written last and no selector key of this name can displace it.
 METHOD_KEY = "method"
 
 # Manifests written before the method was recorded can only have come from `cyl download`.
@@ -121,7 +122,8 @@ def read_manifest(out_dir: Path) -> dict[str, Any] | None:
 def write_manifest(out_dir: Path, identity: dict[str, Any], *, method: str) -> None:
     """Record what this directory holds, so a later run can check before resuming into it."""
     path = Path(out_dir) / MANIFEST_NAME
-    stamped = {METHOD_KEY: method, **identity}
+    # Stamped last: the method is this writer's own record, never a value the selector supplied.
+    stamped = {**identity, METHOD_KEY: method}
     body = json.dumps(stamped, indent=2, sort_keys=True, default=str) + "\n"
     atomic_write_bytes(path, body.encode("utf-8"))
 
