@@ -112,6 +112,7 @@ SECURITY_HEADERS = {
 HEADER_ROUTES = [
     "/api/client-info",  # exact path -> bloom-web
     "/api/oauth/consent",  # exact path -> bloom-web
+    "/api/cyl/scans/1/video",  # /api/cyl/* -> bloom-web (prefix preserved)
     "/api/auth/v1/health",  # /api/* -> kong (prefix stripped)
     "/langchain/models",  # /langchain/* -> agent (prefix preserved)
     "/.well-known/oauth-protected-resource/bloommcp/mcp",  # RFC 9728 -> bloommcp
