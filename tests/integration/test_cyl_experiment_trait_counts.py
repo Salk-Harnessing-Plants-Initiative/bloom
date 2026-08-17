@@ -188,6 +188,22 @@ def test_no_trigger_invokes_refresh_on_write(pg_conn):
     pg_conn.rollback()
 
 
+def test_refresh_function_search_path_is_pinned(pg_conn):
+    """No regression test previously guarded this -- caught in round-4 review: unlike
+    maintain_cyl_scan_latest_source (test_cyl_scan_latest_source.py's
+    test_trigger_function_metadata), this SECURITY DEFINER function had no test confirming its
+    `SET search_path` survives a future edit."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT prosecdef, proconfig FROM pg_proc "
+            "WHERE proname = 'refresh_cyl_experiment_trait_counts'"
+        )
+        prosecdef, proconfig = cur.fetchone()
+        assert prosecdef is True
+        assert any(c.startswith("search_path=") for c in (proconfig or []))
+    pg_conn.rollback()
+
+
 def test_concurrent_refreshes_do_not_raise_duplicate_key(pg_conninfo, pg_conn):
     """Caught in round-2 review, reproduced empirically against a local Postgres before the fix:
     refresh_cyl_experiment_trait_counts()'s DELETE-then-INSERT had no lock/ON CONFLICT, so two

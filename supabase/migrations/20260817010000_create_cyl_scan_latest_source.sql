@@ -97,6 +97,15 @@ BEGIN
     -- Lock acquisition order is sorted (lower scan_id first), not NEW-then-OLD, so two concurrent
     -- cross-scan reassignments moving rows in opposite directions (txn 1: A->B, txn 2: B->A)
     -- can't deadlock each other by each locking their own "new" scan first.
+    --
+    -- A plain DELETE (v_new_scan IS NULL, v_old_scan IS NOT NULL) also takes THIS branch, not the
+    -- ELSIF below -- IS DISTINCT FROM treats NULL as distinct from any non-NULL value, so it's
+    -- always true for a DELETE. This is correct only because least()/greatest() ignore NULL
+    -- arguments (collapsing v_lo/v_hi to the single real scan id, same as the ELSIF branch would
+    -- lock), and the IF v_new_scan IS NOT NULL guard below correctly skips recomputing a
+    -- nonexistent new scan. Found in round-4 review: fragile, not wrong -- a future edit assuming
+    -- both v_lo/v_hi are real, distinct scan ids here (e.g. a log line naming both) would silently
+    -- misbehave for every plain DELETE.
     IF v_old_scan IS NOT NULL AND v_old_scan IS DISTINCT FROM v_new_scan THEN
         v_lo := least(v_new_scan, v_old_scan);
         v_hi := greatest(v_new_scan, v_old_scan);
@@ -140,9 +149,16 @@ $$;
 -- SECURITY DEFINER function has the anon revoke" should not find this one as the sole exception.
 REVOKE EXECUTE ON FUNCTION public.maintain_cyl_scan_latest_source() FROM PUBLIC, anon, authenticated;
 
--- Postgres has no CREATE TRIGGER IF NOT EXISTS; DROP+CREATE keeps this migration re-runnable.
-DROP TRIGGER IF EXISTS maintain_cyl_scan_latest_source_after_write ON public.cyl_scan_traits;
-CREATE TRIGGER maintain_cyl_scan_latest_source_after_write
+-- CREATE OR REPLACE TRIGGER (PG14+; this repo runs PG15), not DROP TRIGGER IF EXISTS + CREATE --
+-- found in a fourth review round: DROP TRIGGER IF EXISTS on a trigger that DOES already exist
+-- (i.e. this migration being re-run, which this repo's own idempotency-test convention exercises)
+-- takes AccessExclusiveLock, not ShareRowExclusiveLock -- confirmed via pg_locks and a concurrent
+-- SELECT that blocked for the remainder of the re-run's transaction, contradicting this migration's
+-- own "concurrent readers are unaffected" claim below. CREATE OR REPLACE TRIGGER replacing an
+-- existing trigger takes only ShareRowExclusiveLock (confirmed the same way, concurrent SELECT
+-- unblocked) -- same lock CREATE TRIGGER alone always took, on both a first application (no prior
+-- trigger to replace) and a re-run (replacing the one this migration itself created).
+CREATE OR REPLACE TRIGGER maintain_cyl_scan_latest_source_after_write
     AFTER INSERT OR UPDATE OR DELETE ON public.cyl_scan_traits
     FOR EACH ROW
     EXECUTE FUNCTION public.maintain_cyl_scan_latest_source();

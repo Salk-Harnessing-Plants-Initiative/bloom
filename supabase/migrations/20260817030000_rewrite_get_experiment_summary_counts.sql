@@ -81,6 +81,12 @@ CREATE OR REPLACE FUNCTION public.get_experiment_summary_counts(
 LANGUAGE plpgsql
 STABLE
 SECURITY INVOKER
+-- Not exploitable today (every reference in this body is already schema-qualified, and SECURITY
+-- INVOKER carries no privilege-escalation vector regardless) -- pinned anyway for consistency with
+-- every other function this change adds/rewrites, and because Supabase's security linter flags an
+-- unpinned search_path on any function as "Function Search Path Mutable" regardless of exploitability.
+-- Found in round-4 review; this function (and its bloom#625 predecessor) had been the one exception.
+SET search_path = pg_catalog, public, pg_temp
 AS $$
 BEGIN
     IF source_id_ IS NOT NULL AND run_id_ IS NOT NULL THEN

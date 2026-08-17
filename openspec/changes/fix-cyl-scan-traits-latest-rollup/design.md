@@ -179,14 +179,29 @@ cheap upserts, not 751 full-experiment aggregations. This is the concrete sense 
 avoids bloom#656's per-row-trigger objection without needing a scheduled refresh for `is_latest` itself
 — only `n_traits` (D5) needs one.
 
-**Deadlock note, dormant today but real:** `pg_advisory_xact_lock` participates in Postgres's deadlock
-detector. A single transaction that ever touches multiple `scan_id`s across _separate_ trigger firings
-(e.g. a future multi-scan batch writer inserting for several scans in one transaction) could deadlock
-against another transaction acquiring the same set in the opposite order. Today's sole writer
-(`insert_cyl_result_envelope`) is single-scan-per-call, so this never arises. This is a different,
-broader risk than D2b's cross-scan `UPDATE` case (which the sorted-lock-order fix below closes for a
-_single_ trigger firing needing both locks at once) — a future multi-scan batch writer would still need
-to acquire `scan_id` locks in a consistent order across its own separate statements to stay safe.
+**Deadlock note, reachable TODAY via the break-glass path, not just a future automated writer.**
+`pg_advisory_xact_lock` participates in Postgres's deadlock detector. A single transaction that ever
+touches multiple `scan_id`s across _separate_ trigger firings — e.g. a future multi-scan batch writer
+inserting for several scans in one transaction — could deadlock against another transaction acquiring the
+same set in the opposite order. `insert_cyl_result_envelope`, the sole _automated_ writer, is
+single-scan-per-call, so this never arises through that path. This is a different, broader risk than D2b's
+cross-scan `UPDATE` case (which the sorted-lock-order fix below closes for a _single_ trigger firing
+needing both locks at once) — a future multi-scan batch writer would still need to acquire `scan_id` locks
+in a consistent order across its own separate statements to stay safe.
+
+**Found in a fourth review round: this is not purely hypothetical.** `bloom_admin`'s break-glass path
+already supports reassigning multiple, independent rows across two _different_ scan pairs within one
+transaction — the exact shape `test_multi_row_cross_scan_update_recomputes_both_scans` exercises for one
+pair extends trivially to two: an operator doing a batch of independent corrections in one sitting could
+naturally produce two transactions each touching two disjoint scan-id pairs in the opposite order (txn 1:
+`scan_5→scan_10` then `scan_3→scan_7`; txn 2: `scan_3→scan_7` then `scan_5→scan_10`), a genuine circular
+wait. Sorted acquisition only orders the two locks _within a single firing_ (D2b); it does not impose a
+transaction-wide order across separate firings for different pairs. **Accepted, not fixed**: Postgres's
+deadlock detector aborts one of the two transactions with a clear `DeadlockDetected` error rather than
+corrupting data, and the operator simply retries the failed correction — a transaction-wide multi-pair
+lock-ordering scheme would close this but adds real complexity for a failure mode that already fails safe
+and is self-healing via retry. No test currently exercises this two-pair shape; adding one is a reasonable
+follow-up but not a merge blocker given the failure mode is safe.
 
 ### D2b — Cross-scan `UPDATE`: both scans must be recomputed, not just `NEW.scan_id` (found in a second
 
@@ -423,6 +438,17 @@ scheduled run, not the current instant. This is an accepted UI-lag tradeoff (Goa
 underlying trait data is correct and immediately consistent; only this one cached count can lag by up to
 one refresh interval. `updated_at` is exposed in the table (not yet in the RPC's return shape — see Open
 Questions) so this can be surfaced later if staleness ever needs to be visible to a caller.
+
+**"Bounded to one refresh interval" assumes the schedule is actually running — found in a fourth review
+round to currently NOT be true.** D8's `STAGING_API_URL` secret is not yet provisioned (tasks.md 5.2,
+still unchecked), so the scheduled workflow cannot make its one authenticated call yet. Until that secret
+is added and the workflow's first successful run is confirmed (5.3), `n_traits` is frozen at whatever the
+migration's one-time `SELECT public.refresh_cyl_experiment_trait_counts();` computed at deploy time --
+staleness is currently **unbounded**, not "up to 10 minutes," and no caller-facing surface
+(`list_available_experiments`'s `trait_columns`/`total_columns`, in particular) currently indicates this.
+This is a real operational dependency this change cannot close in its own commits (it needs a human to add
+the GitHub secret) -- flagged here so it isn't lost, and tracked as a hard pre-close gate on bloom#637
+(tasks.md 5.2/5.3), not merely a nice-to-have.
 
 ### D5b — Concurrent refreshes: unguarded DELETE+INSERT raced, confirmed exploitable and fixed (found in
 

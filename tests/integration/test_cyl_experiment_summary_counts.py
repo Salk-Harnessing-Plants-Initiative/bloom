@@ -401,6 +401,24 @@ def test_anon_has_no_execute_grant(pg_conn, fn_signature):
     pg_conn.rollback()
 
 
+@pytest.mark.parametrize(
+    "fn_name",
+    ["get_experiment_summary_counts", "compute_cyl_experiment_summary_counts_live"],
+)
+def test_function_search_path_is_pinned(pg_conn, fn_name):
+    """No regression test previously guarded either function's `SET search_path` -- caught in
+    round-4 review, matching test_cyl_scan_latest_source.py's existing
+    test_trigger_function_metadata precedent for the trigger function. get_experiment_summary_counts
+    itself was the one function in this change without a pinned search_path until round 4 (not
+    exploitable -- every reference in its body is already schema-qualified, and it's SECURITY
+    INVOKER -- but pinned anyway for consistency with every other function this change touches)."""
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT proconfig FROM pg_proc WHERE proname = %s", (fn_name,))
+        (proconfig,) = cur.fetchone()
+        assert any(c.startswith("search_path=") for c in (proconfig or []))
+    pg_conn.rollback()
+
+
 def test_migration_adds_no_write_capability():
     sql = MIGRATION.read_text().lower()
     assert "create policy" not in sql

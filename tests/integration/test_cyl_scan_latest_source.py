@@ -347,54 +347,66 @@ def test_concurrent_opposite_direction_cross_scan_reassignments_do_not_deadlock(
                 row_2_id = cur.fetchone()[0]
             pg_conn.commit()  # scans/rows must be visible to both connections below
 
-            barrier = threading.Barrier(2)
-            results = {}
+            # Own try/finally per attempt, not just the outer one -- found in round-4 review:
+            # without this, an assertion failure below (e.g. exactly what happens if the sorted-
+            # lock fix this test exists to guard ever regresses) would propagate past the cleanup
+            # calls straight to the outer `finally` (which only closes the connections), permanently
+            # leaking this attempt's two seeded experiments into the local dev DB -- since
+            # `pg_conn.commit()` above already committed them before the race even starts.
+            try:
+                barrier = threading.Barrier(2)
+                results = {}
 
-            def _run_a():
-                try:
-                    cur_a = conn_a.cursor()
-                    barrier.wait(timeout=5.0)
-                    # A moves row_1 scan_1 -> scan_2.
-                    cur_a.execute(
-                        "UPDATE cyl_scan_traits SET scan_id=%s WHERE id=%s", (scan_2, row_1_id)
-                    )
-                    conn_a.commit()
-                    results["a"] = None
-                except Exception as exc:  # noqa: BLE001 -- captured for the assertion below, not swallowed
-                    conn_a.rollback()
-                    results["a"] = exc
+                def _run_a():
+                    try:
+                        cur_a = conn_a.cursor()
+                        barrier.wait(timeout=5.0)
+                        # A moves row_1 scan_1 -> scan_2.
+                        cur_a.execute(
+                            "UPDATE cyl_scan_traits SET scan_id=%s WHERE id=%s",
+                            (scan_2, row_1_id),
+                        )
+                        conn_a.commit()
+                        results["a"] = None
+                    except Exception as exc:  # noqa: BLE001 -- captured for the assertion below, not swallowed
+                        conn_a.rollback()
+                        results["a"] = exc
 
-            def _run_b():
-                try:
-                    cur_b = conn_b.cursor()
-                    barrier.wait(timeout=5.0)
-                    # B moves row_2 scan_2 -> scan_1 -- the opposite direction, same two scans.
-                    cur_b.execute(
-                        "UPDATE cyl_scan_traits SET scan_id=%s WHERE id=%s", (scan_1, row_2_id)
-                    )
-                    conn_b.commit()
-                    results["b"] = None
-                except Exception as exc:  # noqa: BLE001
-                    conn_b.rollback()
-                    results["b"] = exc
+                def _run_b():
+                    try:
+                        cur_b = conn_b.cursor()
+                        barrier.wait(timeout=5.0)
+                        # B moves row_2 scan_2 -> scan_1 -- the opposite direction, same two scans.
+                        cur_b.execute(
+                            "UPDATE cyl_scan_traits SET scan_id=%s WHERE id=%s",
+                            (scan_1, row_2_id),
+                        )
+                        conn_b.commit()
+                        results["b"] = None
+                    except Exception as exc:  # noqa: BLE001
+                        conn_b.rollback()
+                        results["b"] = exc
 
-            a_thread = threading.Thread(target=_run_a)
-            b_thread = threading.Thread(target=_run_b)
-            a_thread.start()
-            b_thread.start()
-            a_thread.join(timeout=15.0)
-            b_thread.join(timeout=15.0)
+                a_thread = threading.Thread(target=_run_a)
+                b_thread = threading.Thread(target=_run_b)
+                a_thread.start()
+                b_thread.start()
+                a_thread.join(timeout=15.0)
+                b_thread.join(timeout=15.0)
 
-            assert results.get("a") is None, f"attempt {attempt}: txn A failed: {results.get('a')}"
-            assert results.get("b") is None, f"attempt {attempt}: txn B failed: {results.get('b')}"
+                assert results.get("a") is None, f"attempt {attempt}: txn A failed: {results.get('a')}"
+                assert results.get("b") is None, f"attempt {attempt}: txn B failed: {results.get('b')}"
 
-            with pg_conn.cursor() as cur:
-                # The two rows swapped scans: scan_1 now holds row_2's source, scan_2 holds row_1's.
-                assert _max_source(cur, scan_1) == source_2
-                assert _max_source(cur, scan_2) == source_1
-                _cleanup_seeded_experiment(cur, experiment_id_1)
-                _cleanup_seeded_experiment(cur, experiment_id_2)
-            pg_conn.commit()
+                with pg_conn.cursor() as cur:
+                    # The two rows swapped scans: scan_1 now holds row_2's source, scan_2 holds
+                    # row_1's.
+                    assert _max_source(cur, scan_1) == source_2
+                    assert _max_source(cur, scan_2) == source_1
+            finally:
+                with pg_conn.cursor() as cur:
+                    _cleanup_seeded_experiment(cur, experiment_id_1)
+                    _cleanup_seeded_experiment(cur, experiment_id_2)
+                pg_conn.commit()
     finally:
         conn_a.close()
         conn_b.close()
@@ -645,13 +657,21 @@ def test_concurrent_first_insert_to_same_new_scan_converges_to_true_max(pg_conni
 
         b_thread = threading.Thread(target=_run_b)
         b_thread.start()
-        assert not b_done.wait(timeout=0.5)  # B is genuinely blocked on A's advisory lock
+        # B is blocked here -- but by Postgres's native wait-on-uncommitted-conflicting-tuple
+        # behavior (both inserts' ON CONFLICT (scan_id) target the SAME row), NOT by the advisory
+        # lock -- that would happen even with pg_advisory_xact_lock removed entirely. Found in
+        # round-4 review: this line doesn't prove the lock is necessary; the true_max assertion
+        # below does (a missing lock lets B's post-wait UPDATE compute a stale, wrong value).
+        assert not b_done.wait(timeout=0.5)
 
         conn_a.commit()
-        assert b_done.wait(timeout=5.0)  # B proceeds once A releases the lock
+        assert b_done.wait(timeout=5.0)  # B proceeds once A commits, releasing the conflicting row
         b_thread.join()
 
         with pg_conn.cursor() as cur:
+            # This is the assertion that actually discriminates locked from unlocked: a missing
+            # advisory lock lets B's UPDATE clause compute against a pre-wait snapshot, converging
+            # to the wrong (lower) value instead of the true max -- see design.md's Context section.
             assert _max_source(cur, scan_id) == true_max
     finally:
         with pg_conn.cursor() as cur:
@@ -695,6 +715,9 @@ def test_concurrent_rerun_of_existing_scan_converges_to_true_max(pg_conninfo, pg
 
         b_thread = threading.Thread(target=_run_b)
         b_thread.start()
+        # See the sibling test above: this proves B is blocked, but by Postgres's native
+        # uncommitted-conflicting-tuple wait, not by the advisory lock -- the true_max assertion
+        # below is what actually discriminates locked from unlocked.
         assert not b_done.wait(timeout=0.5)
 
         conn_a.commit()

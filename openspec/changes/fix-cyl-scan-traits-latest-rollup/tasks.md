@@ -277,7 +277,7 @@ round 1's fixes were already committed and instructed to verify them fresh rathe
       `cyl_plants`/`cyl_scans`/`cyl_images` permanently committed in the local dev DB. Verified flat
       row counts across repeated runs, not just "the code looks like it deletes things." - `refresh_cyl_experiment_trait_counts()`'s `DISTINCT trait_id` (vs. the other two counting paths'
       `DISTINCT trait_name`) equivalence documented with a comment noting the `cyl_traits.name NOT NULL
-    UNIQUE` assumption it depends on. - `test_read_roles_can_call_function`'s `count(*) IS NOT NULL` assertion (trivially always true)
+  UNIQUE` assumption it depends on. - `test_read_roles_can_call_function`'s `count(*) IS NOT NULL` assertion (trivially always true)
       replaced with an assertion on the actual `(n_plants, n_traits)` row content.
 - [x] 9.4 Re-run the full `cyl`-scoped integration suite after all fixes — 369 passed, 5 skipped, up from
       365 after round 1 (4 net new tests: cross-scan `UPDATE`, concurrent-refresh race, plus fixes to
@@ -338,5 +338,88 @@ and instructed to verify them fresh rather than trust the summary, and to find o
       369 after round 2 (5 net new tests: `TRUNCATE`-denial × 2, opposite-direction cross-scan deadlock × 1,
       multi-row cross-scan × 1, cleanup-helper self-check × 1; the refresh-concurrency strengthening added
       assertions to an existing test rather than a new one).
-- [ ] 10.5 Post round 3's synthesized review to PR #684 — same GitHub-posting blocker as 8.5/9.5; shown to
-      the user directly instead.
+- [x] 10.5 Post round 3's synthesized review to PR #684. **First attempt hit `HTTP 503: No server is
+    currently available` on `gh pr review` — a transient GitHub API outage, not the local
+      permission-classifier block that stopped 8.5/9.5.** Confirmed via a lightweight `gh pr view` read
+      succeeding immediately after, ruling out an auth/permission cause. A second attempt (at the user's
+      request) succeeded; posted as a `COMMENTED` review, confirmed via `gh pr view --json reviews`.
+
+## 11. Fourth `/review-pr` round — verify rounds 1–3's fixes hold up, find what they missed
+
+Same discipline as rounds 2/3: each of the 5 subagents was told rounds 1–3's fixes were already committed
+and instructed to verify them fresh rather than trust the summary, and to find only NEW issues. CI showed
+two failing checks (`Analyze (python)`, `Pinned Images CVE Summary`) at review start — both traced to the
+same `HTTP 503` GitHub API outage seen in 10.5 (CodeQL's `init` step and a PR-comment-posting step,
+respectively), confirmed unrelated to this PR's content, not treated as findings.
+
+- [x] 11.1 Run the 5-subagent review. All 5 returned; no subagent failed or returned a suspiciously short
+      result.
+- [x] 11.2 Verify the two most significant new findings empirically before fixing: - The behavioral-correctness subagent claimed `DROP TRIGGER IF EXISTS` takes `AccessExclusiveLock`
+      and blocks readers even on "the very first real production deploy." Reproduced independently
+      against a local Postgres and found this characterization WRONG: dropping a NONEXISTENT trigger
+      (the actual first-deploy case) takes zero lock at all (confirmed via `pg_locks` and an unblocked
+      concurrent `SELECT`, 0.47s). The AccessExclusiveLock + reader-blocking (confirmed: 5.7s blocked
+      `SELECT`) only occurs when dropping an EXISTING trigger — i.e. a migration RE-RUN, which this
+      repo's own `test_migration_body_is_idempotent` convention already exercises (and which local dev
+      iteration can hit), not the real one-time production deploy. The underlying gap was still real and
+      worth fixing given a strictly better replacement exists. - The testing subagent's claim that `test_concurrent_opposite_direction_cross_scan_reassignments_do_not_deadlock`
+      (round 3) leaks seeded rows on assertion failure — confirmed by reading the test directly: its
+      cleanup calls sat in the loop's normal-flow body, not a `finally`. Confirmed empirically: forced a
+      failing assertion, and the seeded experiment count in the dev DB grew (73 -> 74) instead of staying
+      flat, proving the leak.
+- [x] 11.3 Fix everything that survived verification: - `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER` replaced with a single `CREATE OR REPLACE TRIGGER`
+      (PG14+; this repo runs PG15) in `20260817010000`. Verified empirically: `CREATE OR REPLACE TRIGGER`
+      replacing an EXISTING trigger takes only `ShareRowExclusiveLock` (confirmed via `pg_locks` and an
+      unblocked concurrent `SELECT`, 0.48s) — the same lock a bare `CREATE TRIGGER` always took, on both
+      a first application and a re-run. Re-ran `test_migration_body_is_idempotent` and the full
+      `test_cyl_scan_latest_source.py` suite after the fix — all passing. - `test_concurrent_opposite_direction_cross_scan_reassignments_do_not_deadlock`'s per-attempt cleanup
+      moved into its own `try/finally`, not just the outer one. Verified the fix: forced the same failing
+      assertion again and confirmed the seeded-experiment count stayed flat (no leak) despite the test
+      failing as expected; removed the forced failure and confirmed the test (and the full file, 26
+      tests) passes again. - **`database.types.ts` gap (flagged independently by two subagents, code-quality and scientific-rigor,
+      and already a documented-but-undone task from section 6.5): all five tracked copies still had zero
+      references to either new table or either new function, across all 3 prior rounds.** Ran
+      `make gen-types` against the local dev DB to see the correct current shape, but did NOT commit its
+      raw output directly — the full regeneration pulled in ~1400 lines of UNRELATED schema drift per
+      file (`cyl_plant_search`, `cyl_experiment_accessions`, `bloommcp_usage`, gravi-scan functions, etc.
+      — all from migrations already merged to the repo weeks before this PR, just never previously
+      synced into these tracked files). Instead hand-edited only this PR's own two tables + two functions
+      into all five files, in each file's own existing style, referencing only relations already present
+      in that file (omitting FK relationship entries the raw regeneration suggested toward relations,
+      like `cyl_plant_search`, that don't yet appear in a given tracked copy) — matching this repo's own
+      established precedent for `database.types.ts` (`add-bulk-trait-read-rpc`,
+      `add-cyl-trait-source-provenance`: hand-edit the specific addition, don't blindly regenerate).
+      Verified with `tsc --noEmit --skipLibCheck` on each file (clean) and a brace-balance check.
+      **Running `prettier --write` on these files was tried and reverted** — it reformatted ~1400
+      unrelated lines per file, confirming (via the Makefile's own `gen-types` target, which never
+      invokes prettier) that these files are not normally prettier-formatted; the final diff is a clean
+      93/93/93/93/86-line addition across the five files, not a reformat. - Two `SET search_path`/`prosecdef` regression tests added
+      (`test_refresh_function_search_path_is_pinned`,
+      parametrized `test_function_search_path_is_pinned`), matching
+      `test_cyl_scan_latest_source.py`'s existing `test_trigger_function_metadata` precedent — neither
+      `refresh_cyl_experiment_trait_counts` nor `compute_cyl_experiment_summary_counts_live`/
+      `get_experiment_summary_counts` had one before. `get_experiment_summary_counts` itself gained a
+      pinned `search_path` (the one function in this change without one — not exploitable, since every
+      reference in its body is already schema-qualified and it's `SECURITY INVOKER`, but pinned for
+      consistency and to satisfy Supabase's linter). Verified: removed the pin, confirmed the new test
+      fails; restored it, confirmed it passes. - Two misleading test comments fixed (`test_concurrent_first_insert_to_same_new_scan_converges_to_true_max`
+      and its rerun sibling): both claimed `assert not b_done.wait(...)` proves B is "genuinely blocked
+      on A's advisory lock" — actually true, but for the wrong reason. Both inserts' `ON CONFLICT
+    (scan_id)` target the SAME row, so Postgres's native uncommitted-conflicting-tuple wait would
+      block B even with the advisory lock removed entirely; the advisory lock's actual job (proven by the
+      downstream `true_max` assertion) is ensuring the post-wait value is CORRECT, not that B waits at
+      all. Comments corrected to point at the assertion that actually discriminates locked from unlocked. - A comment added to the trigger documenting that a plain `DELETE` takes the cross-scan branch by
+      an accidental (if currently harmless) NULL-handling quirk of `IS DISTINCT FROM`/`least`/`greatest`,
+      not by design intent — flagged so a future edit assuming both `v_lo`/`v_hi` are always real,
+      distinct scan ids doesn't silently misbehave for the DELETE case. - `design.md` updated: D5 (`n_traits`'s staleness section) now states plainly that the "bounded to one
+      refresh interval" claim assumes the schedule is actually running, which it currently is NOT (D8's
+      `STAGING_API_URL` secret still unprovisioned per tasks.md 5.2/5.3, unchanged from before this
+      round) — staleness is presently unbounded, frozen at the migration's one-time initial population.
+      The existing "Deadlock note" (D2) updated to acknowledge the multi-scan-pair deadlock shape is
+      reachable TODAY via `bloom_admin`'s break-glass path (not just a hypothetical future automated
+      writer) — accepted as a safe, self-healing (Postgres aborts one side; operator retries) risk, not
+      fixed with a transaction-wide lock-ordering scheme.
+- [x] 11.4 Re-run the full `cyl`-scoped integration suite after all fixes — 377 passed, 5 skipped, up from
+      374 after round 3 (3 net new tests: the two `search_path` regression tests, one of them
+      parametrized over 2 functions).
+- [ ] 11.5 Post round 4's synthesized review to PR #684.
