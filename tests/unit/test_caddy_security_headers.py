@@ -66,12 +66,17 @@ def _header_directives(text: str) -> list[tuple[int, str, str]]:
     for match in _HEADER_TOKEN.finditer(masked):
         start = match.start()
         depth = masked.count("{", 0, start) - masked.count("}", 0, start)
-        rest = masked[match.end() :]
-        if re.match(r"[ \t]*\{", rest):
+        line_end = masked.find("\n", match.end())
+        rest_of_line = masked[match.end() : line_end if line_end != -1 else len(masked)]
+        # Caddy allows an optional matcher before the brace — `header @m { ... }`
+        # or `header /path/* { ... }` — so the block form cannot be recognised by
+        # what immediately follows the token. The line ending in `{` is what
+        # distinguishes it.
+        if rest_of_line.rstrip().endswith("{"):
             body = _block_after(text[start:], r"header\b")
             if body is not None:
                 found.append((depth, "block", body))
-        elif re.match(r"[ \t]+\S", rest):
+        elif rest_of_line.strip():
             found.append((depth, "single", text[start:].splitlines()[0].strip()))
     return found
 
@@ -79,7 +84,7 @@ def _header_directives(text: str) -> list[tuple[int, str, str]]:
 def _unquote(value: str) -> str:
     """Strip one layer of Caddy quoting, so `"x"`, `` `x` `` and `x` compare equal."""
     value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'`":
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"`":
         return value[1:-1]
     return value
 
@@ -101,6 +106,12 @@ def _touches_managed(directive: str) -> str | None:
     for name in EXPECTED_HEADERS:
         if re.search(rf"(?<!\w)-?{re.escape(name)}(?![\w-])", directive, re.IGNORECASE):
             return name
+    # `-Field*` deletes by prefix and `-*` deletes everything, so a wildcard is
+    # the cheapest way to drop a header without ever naming it.
+    for prefix in re.findall(r"(?<!\w)-([\w-]*)\*", directive):
+        for name in EXPECTED_HEADERS:
+            if name.lower().startswith(prefix.lower()):
+                return name
     return None
 
 

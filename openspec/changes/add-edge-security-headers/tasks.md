@@ -4,7 +4,7 @@
 - [x] 0.2 Confirm storage objects are consumed in ways `nosniff` does not block: species illustrations via signed URL with image transform (`illustration.tsx`), videos uploaded with an explicit `video/mp4`. Note one path is a top-level navigation rather than a subresource — `experiment-log-images` attachments render as `<a target="_blank">` (`geneCandidatesPage/Progress.tsx`), uploaded without an explicit `contentType`, so an object whose type resolves to `text/plain` will download rather than display under `nosniff`. Expected and correct; recorded so it is not debugged cold. See 3.5
 - [x] 0.3 Confirm client-side exports use `Blob` + `createObjectURL` (`blob:` URLs), which never traverse Caddy
 - [x] 0.4 Confirm bloomctl never inspects `Content-Type` — no references in `bloomcli/src`; the header cannot affect non-browser clients, which do not sniff
-- [x] 0.5 Measure Supabase Studio and MinIO console bundles against the image pins prod runs — Studio `2026.03.30-sha-12a43e5`: 92/92 assets correctly typed; MinIO `RELEASE.2025-01-20T14-49-07Z`: 3/3 correctly typed; neither serves nor dynamically creates an `<iframe>`. Both safe under all five headers measured, which is what makes site-level coverage viable. `Cross-Origin-Opener-Policy` was added afterwards and not re-measured against the consoles — `same-origin-allow-popups` was chosen precisely so it cannot affect them, since it restricts being opened rather than opening
+- [x] 0.5 Measure Supabase Studio and MinIO console bundles against the image pins prod runs — Studio `2026.03.30-sha-12a43e5`: 92/92 assets correctly typed; MinIO `RELEASE.2025-01-20T14-49-07Z`: 3/3 correctly typed; neither serves nor dynamically creates an `<iframe>`. Both safe under all five headers measured, which is what makes site-level coverage viable. `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy` were both added afterwards and neither was re-measured against the consoles. `same-origin-allow-popups` was chosen precisely so COOP cannot affect them, since it restricts being opened rather than opening; CORP likewise governs who may load a console's resources, not what a console may load. So the measurement covers five of the seven headers, and the two later ones are argued rather than measured
 
 ## 1. Implementation
 
@@ -28,13 +28,13 @@
 - [x] 2.8 `tests/unit/test_caddy_security_headers.py` — pins site-level placement by brace-matched depth and asserts values verbatim, so relocating the block inside a `handle` or weakening a value (`SAMEORIGIN` for `DENY`, `'unsafe-inline'` creeping into the CSP) fails CI. Both Caddy spellings are recognised — the `header { ... }` block and the single-line `header <Field> <value>` / `header -<Field>` — since a one-line override or deletion downgrades the policy exactly as a relocated block does. Verified by mutation: seven downgrade shapes each fail, four legal edits (trailing comments, backtick quoting, an unrelated added header) each still pass
 - [x] 2.9 `tests/integration/test_api_endpoints.py` — asserts each header reaches the client with its exact value and no *differing* duplicate, across every handler class and each upstream Kong fans out to (GoTrue, PostgREST, storage-api), plus a guard that HSTS is still absent. Every-value-matches rather than a count: a byte-identical duplicate from an upstream changes nothing a browser observes, while a differing one is the real last-wins regression and still fails
 
-### Accepted limitation
+### Console coverage — closed, not accepted
 
-- [x] 2.10 CI cannot exercise 2.3, and this is accepted rather than tracked as work. It sets `CADDY_SITE_ADDRESSES` to a single host, so Studio and MinIO requests never enter the site block, and `HEADER_ROUTES` lists only main-hostname paths — the site-level contract is therefore pinned as config shape (2.8) and never as behaviour. Weighed and accepted because:
-  - The regression that matters — a security header set under a host matcher, in either the block or the single-line form — is caught by 2.8's depth assertions.
-  - A dropped hostname in `CADDY_SITE_ADDRESSES` is caught by `test_studio_reachable`. Caddy answers a non-matching Host from an empty fallback server (`200 OK`, `Content-Length: 0`), so that test asserts a non-empty body; a status-only assertion would have passed either way, which is what it used to do.
-  - What remains is a console upstream emitting a *differing* value for a last-wins header. It requires an image bump that changes a value, on a surface with #108 item 6 as backstop. The `nosniff` risk is covered instead by making re-measurement a precondition when a pin moves. Both console images are digest-pinned, so a re-pushed tag cannot move either without this repo changing.
-  - A multi-hostname CI value would change the environment shape for every test in that job, which is a poor trade for the above.
+- [x] 2.10 Originally recorded as an accepted limitation: CI set `CADDY_SITE_ADDRESSES` to a single host, so Studio and MinIO requests never entered the site block and the site-level contract was pinned as config shape (2.8) but never as behaviour. That reasoning rested on three premises, two of which did not survive checking — a dropped hostname was said to be self-detecting, when Caddy answers an unmatched Host with an empty `200` that the only Studio test passed against; and console image bumps were said to be digest-pinned, which was false for `minio/minio`. Rather than re-argue it, the gap was closed:
+  - `.github/workflows/pr-checks.yml` now serves all three hostnames, matching the committed `.env.ci`, which already listed them.
+  - `test_security_headers_on_console_hostnames` asserts every header in the block on both console hostnames, with credentials so the assertion lands on the console itself rather than on a gate's error page.
+  - `test_studio_requires_kong_basic_auth` asserts a body, so the empty-fallback `200` can no longer pass.
+  - Both console images are digest-pinned, so a re-pushed tag cannot move either without this repo changing.
 
 ### Measured, not assumed
 
@@ -44,7 +44,7 @@
 
 - [ ] 3.1 `add-edge-hsts` — HSTS, landing with the public-exposure work
 - [ ] 3.2 `add-edge-csp` — nonce-based CSP `script-src`, requiring Next.js middleware
-- [ ] 3.3 Re-measure the console images under every header in the block whenever the Studio or MinIO pin moves — the standing precondition that replaces multi-hostname CI coverage (see 2.10)
+- [ ] 3.3 Re-measure the console images under every header in the block whenever the Studio or MinIO pin moves. CI now asserts the headers arrive on both consoles (2.10); what it cannot check is whether a new console image *breaks* under them, which is what this precondition covers
 - [ ] 3.4 Studio access control — pre-existing gap, mitigated but not fixed by the anti-framing headers; #108 item 6's IP allowlist is the durable backstop. Detail in the private tracker
 - [ ] 3.5 `Content-Disposition` hardening for user-uploaded objects served via `/api/storage/v1/object/public/*` — `nosniff` does not address an attacker-declared `Content-Type`, so this is its own change rather than something the header block covers (named here because 3.1 and 3.2 are, and this was previously a non-goal with no follow-up)
 - [x] 3.6 Digest-pin the console images — done in this change. `minio/minio` and `supabase/studio` were both tag-only, so a re-pushed tag could move either without this repo changing, which would silently bypass 3.3's re-measurement precondition

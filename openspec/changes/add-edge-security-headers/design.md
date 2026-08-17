@@ -98,5 +98,5 @@ The header restricts others loading our resources, not us loading theirs, so the
 
 ## Open Questions
 
-- Should CI exercise the multi-hostname claim? Asked and answered: no. CI sets `CADDY_SITE_ADDRESSES` to a single host, so Studio and MinIO requests never enter the site block, and `HEADER_ROUTES` lists only main-hostname paths — the contract is pinned as config shape but never as behaviour. Accepted, because the regression that matters is caught by the depth assertions, and a dropped hostname is caught by `test_studio_reachable`, which asserts a body rather than a bare 200. A multi-hostname CI value would change the environment shape for every test in that job. See task 2.10.
+- Should CI exercise the multi-hostname claim? Asked, answered no, then reversed on review. It turned out to cost one line — the committed `.env.ci` already listed all three hostnames and the workflow was overwriting it with one. CI now serves all three and asserts every header on both consoles. See task 2.10.
 - Does Studio's access-control gap warrant its own fix? The anti-framing headers mitigate a symptom, not the cause. Pre-existing and filed separately — #108 item 6's IP allowlist is the durable backstop.

@@ -196,17 +196,40 @@ def test_hsts_not_yet_set(header_responses):
 # assertion above still passes. Hardcoded to match the Studio tests below.
 CONSOLE_HOSTS = ["studio.localhost", "minio.localhost"]
 
-# Headers whose duplicates resolve last-wins, so an upstream emitting a
-# different value silently replaces the edge policy. CSP is deliberately not
-# here: browsers enforce every CSP present, so MinIO's own policy arriving
-# beside `frame-ancestors 'none'` is an intersection, not an override.
-LAST_WINS_HEADERS = {"Referrer-Policy", "Permissions-Policy"}
+# Headers where an upstream duplicate with a *different* value is worse than the
+# edge value alone, so presence is not enough to assert.
+#
+# `Referrer-Policy` and `Permissions-Policy` resolve last-wins — the upstream
+# value silently replaces ours. The two cross-origin policies are worse than
+# that: they fail open rather than last-wins. A duplicated `Cross-Origin-
+# Resource-Policy` combines to `same-origin, cross-origin`, which matches no
+# valid value, so the policy is discarded and the load allowed. A duplicated
+# `Cross-Origin-Opener-Policy` parses as a list where a single item is required,
+# and a parse failure falls back to `unsafe-none`. In both cases the protection
+# disappears entirely, which a presence-only check reports as healthy.
+#
+# CSP is deliberately absent: browsers enforce every CSP header present, so
+# MinIO's own policy arriving beside `frame-ancestors 'none'` is an
+# intersection, not an override.
+DIVERGENCE_SENSITIVE_HEADERS = {
+    "Referrer-Policy",
+    "Permissions-Policy",
+    "Cross-Origin-Opener-Policy",
+    "Cross-Origin-Resource-Policy",
+}
 
 
 @pytest.fixture(scope="module")
-def console_responses(api_headers):
-    """Root of each console hostname, fetched once."""
-    return {host: api_headers("/", host=host) for host in CONSOLE_HOSTS}
+def console_responses(api_headers, dashboard_auth):
+    """Root of each console hostname, fetched once.
+
+    Credentials are sent because the Studio hostname sits behind Kong's gate.
+    Without them the assertions would land on Kong's 401 — which does carry the
+    edge headers, so they would still pass, while no longer observing a single
+    Studio-served response. That is precisely the surface a divergent upstream
+    duplicate would appear on.
+    """
+    return {host: api_headers("/", host=host, extra_headers=dashboard_auth) for host in CONSOLE_HOSTS}
 
 
 @pytest.mark.parametrize("host", CONSOLE_HOSTS)
@@ -227,11 +250,11 @@ def test_security_headers_on_console_hostnames(console_responses, host, name, va
         f"{name} for {host} is {received!r}; the edge value {value!r} is absent, "
         "so the site-level declaration is not reaching this hostname"
     )
-    if name in LAST_WINS_HEADERS:
+    if name in DIVERGENCE_SENSITIVE_HEADERS:
         divergent = [v for v in received if v != value]
         assert not divergent, (
-            f"{name} for {host} also arrived as {divergent!r} — this header "
-            "resolves last-wins, so the upstream value overrides the edge"
+            f"{name} for {host} also arrived as {divergent!r} — a divergent duplicate "
+            "of this header removes or overrides the edge policy rather than adding to it"
         )
 
 

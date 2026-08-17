@@ -26,9 +26,9 @@
 #              (2-SAN cert: apex + wildcard)
 #     staging: `https://*.bloom.salk.edu`
 #              (1 wildcard covering all staging subdomains)
-#     CI:      `http://localhost, http://studio.localhost`
+#     CI:      `http://localhost, http://studio.localhost, http://minio.localhost`
 #              (forces HTTP-only — no TLS, no ACME, no Let's Encrypt call. The
-#              Studio host is listed so a `Host: studio.localhost` request enters
+#              console hosts are listed so a `Host: studio.localhost` request enters
 #              this block instead of Caddy's unrouted-host fallback, which
 #              answers a blank 200 and made the old Studio test unable to fail.)
 #

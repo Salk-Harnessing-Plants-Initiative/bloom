@@ -17,16 +17,16 @@ from __future__ import annotations
 import re
 
 from tests.unit._caddyfile_helpers import (
-    REPO_ROOT,
     block_after as _block_after,
     main_block as _main_block,
+    strip_comments as _strip_comments,
     text as _text,
 )
 
 
 def _client_info_block(text: str) -> str | None:
     """The body of the `handle /api/client-info { ... }` directive within @main."""
-    main = _main_block(text)
+    main = _main_block(_strip_comments(text))
     if main is None:
         return None
     return _block_after(main, r"handle\s+/api/client-info\b")
@@ -47,7 +47,7 @@ def test_client_info_routed_to_bloom_web_not_kong():
 
 
 def test_client_info_match_is_exact_not_wildcard():
-    main = _main_block(_text())
+    main = _main_block(_strip_comments(_text()))
     assert main is not None, "missing `handle @main` block in caddy/Caddyfile"
     # exact path only — no prefix/wildcard, and no handle_path (which would strip
     # the prefix and break the Next.js route match).
@@ -59,7 +59,7 @@ def test_client_info_precedes_api_wildcard():
     """The exact route must sit ahead of the /api/* -> kong catch-all (documents
     intent; Caddy specificity makes ordering cosmetic, but the source order is
     the contract a reviewer reads)."""
-    main = _main_block(_text())
+    main = _main_block(_strip_comments(_text()))
     assert main is not None, "missing `handle @main` block in caddy/Caddyfile"
     ci = re.search(r"handle\s+/api/client-info\b", main)
     wildcard = re.search(r"handle_path\s+/api/\*", main)
@@ -70,7 +70,7 @@ def test_client_info_precedes_api_wildcard():
 
 
 def test_other_api_traffic_still_goes_to_kong():
-    main = _main_block(_text())
+    main = _main_block(_strip_comments(_text()))
     assert main is not None, "missing `handle @main` block in caddy/Caddyfile"
     m = re.search(r"handle_path\s+/api/\*\s*\{(.*?)reverse_proxy\s+kong", main, re.DOTALL)
     assert m, "the /api/* -> kong handler must remain unchanged"
