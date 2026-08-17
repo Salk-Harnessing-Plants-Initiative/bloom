@@ -109,11 +109,18 @@ SECURITY_HEADERS = {
 # chain, so a proxied 200, a synthetic 404 and an upstream-error 502 must all
 # carry them. Asserting on status here would make the test brittle against
 # stack configuration; asserting on headers alone is the actual contract.
+#
+# `handle_path /api/*` is one Caddy handler but many upstreams — Kong fans out
+# to GoTrue, PostgREST and storage-api. Since a duplicate originates upstream,
+# not at the edge, each is probed separately: covering only GoTrue would leave
+# the paths serving trait tables, stored objects and signed URLs unguarded.
 HEADER_ROUTES = [
     "/api/client-info",  # exact path -> bloom-web
     "/api/oauth/consent",  # exact path -> bloom-web
     "/api/cyl/scans/1/video",  # /api/cyl/* -> bloom-web (prefix preserved)
-    "/api/auth/v1/health",  # /api/* -> kong (prefix stripped)
+    "/api/auth/v1/health",  # /api/* -> kong -> gotrue
+    "/api/rest/v1/",  # /api/* -> kong -> postgrest
+    "/api/storage/v1/bucket",  # /api/* -> kong -> storage-api
     "/langchain/models",  # /langchain/* -> agent (prefix preserved)
     "/.well-known/oauth-protected-resource/bloommcp/mcp",  # RFC 9728 -> bloommcp
     "/bloommcp/mcp",  # /bloommcp/* -> bloommcp (prefix stripped)
@@ -127,13 +134,11 @@ HEADER_ROUTES = [
 def header_responses(api_headers):
     """Fetch each route exactly once and reuse the headers across assertions.
 
-    Deliberately not one request per (route, header) pair. Two of these routes
-    reach bloommcp, whose `IdentityMiddleware` records a usage row per request
-    on a background thread (`bloommcp/src/bloom_mcp/usage.py`). Those writes
-    land after the response returns, so surplus requests here surface later as
-    inflated counts in `test_bloommcp_usage_rpc.py`, which measures a delta in
-    `bloommcp_usage` for the shared `anonymous` identity. Fetching once keeps
-    this suite's footprint at one request per route.
+    Deliberately not one request per (route, header) pair: the parametrisation
+    below expands to one case per header per route, and re-requesting for each
+    would multiply this suite's HTTP footprint against every upstream in the
+    stack for no added coverage. The contract is per-route, so one fetch per
+    route is the whole of it.
     """
     return {path: api_headers(path) for path in HEADER_ROUTES}
 
@@ -141,26 +146,30 @@ def header_responses(api_headers):
 @pytest.mark.parametrize("path", HEADER_ROUTES)
 @pytest.mark.parametrize("name,value", sorted(SECURITY_HEADERS.items()))
 def test_security_headers_present(header_responses, path, name, value):
-    """Each security header reaches the client exactly once, with its exact
-    value, on every handler class under the main hostname.
+    """Each security header reaches the client with its exact value, and with
+    no differing duplicate, on every handler class under the main hostname.
 
     `get_all` rather than `in`: Caddy sets these before the handler chain and
-    `reverse_proxy` then adds whatever the upstream sent, so a header both
-    emit arrives twice. Two of them resolve last-wins, meaning a duplicate
-    from an upstream silently downgrades the edge policy — a presence-only
-    check reports that broken state as healthy. No upstream sets these today
-    (verified across bloom-web, Kong, GoTrue, storage-api and langchain), so
-    this is the guard for the day one of them starts.
+    `reverse_proxy` then *adds* whatever the upstream sent, so a header both
+    emit arrives twice. Referrer-Policy and Permissions-Policy resolve
+    last-wins, meaning a differing duplicate from an upstream silently
+    downgrades the edge policy — a presence-only check reports that broken
+    state as healthy.
+
+    The assertion is every-value-matches rather than a count. An upstream that
+    starts emitting a byte-identical `nosniff` changes nothing a browser can
+    observe, and failing CI for it would be a false alarm; an upstream that
+    emits a *different* value is the real regression, and that still fails.
+    No upstream sets any of these today, across all seven behind the routes
+    above — this is the guard for the day one of them starts.
     """
     received = header_responses[path].get_all(name)
     assert received, f"{name} missing from the response to {path}"
-    assert len(received) == 1, (
-        f"{name} returned {len(received)} times for {path}: {received!r} — "
-        "an upstream is also setting it; Referrer-Policy and Permissions-Policy "
-        "resolve last-wins, so a duplicate can silently weaken the edge policy"
-    )
-    assert received[0] == value, (
-        f"{name} for {path} is {received[0]!r}, expected {value!r}"
+    divergent = [v for v in received if v != value]
+    assert not divergent, (
+        f"{name} for {path} returned {received!r}; {divergent!r} differs from the "
+        f"edge value {value!r} — an upstream is overriding it, and Referrer-Policy "
+        "and Permissions-Policy resolve last-wins"
     )
 
 
@@ -370,3 +379,8 @@ def test_studio_reachable_with_credentials():
         pytest.skip("DASHBOARD_USERNAME/DASHBOARD_PASSWORD not set in the environment")
     with urllib.request.urlopen(_studio_request(creds), timeout=10) as resp:
         assert resp.status == 200
+        body = resp.read()
+    assert body, (
+        "studio.localhost returned an empty 200 — Caddy's no-matching-site "
+        "fallback, not Studio. The hostname is missing from CADDY_SITE_ADDRESSES."
+    )

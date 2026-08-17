@@ -116,7 +116,10 @@ def api_response_headers(path: str, api_key: str = None):
     check, cannot see that.
 
     HTTP errors are returned rather than raised: the headers are asserted on
-    Caddy-generated 404s and 502s too.
+    Caddy-generated 404s and 502s too. A transport failure (Caddy down, DNS,
+    timeout) is re-raised naming the route — callers fetch several routes into
+    one fixture, so an unlabelled URLError there surfaces as every dependent
+    test erroring with a traceback pointing at the fixture, not the route.
     """
     url = f"{BASE_URL}{path}"
     headers = {}
@@ -130,6 +133,8 @@ def api_response_headers(path: str, api_key: str = None):
             return resp.headers
     except urllib.error.HTTPError as e:
         return e.headers
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise AssertionError(f"could not reach {url}: {e}") from e
 
 
 @pytest.fixture

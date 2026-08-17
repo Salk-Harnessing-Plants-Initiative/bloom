@@ -4,146 +4,168 @@ Caddy must set the security headers ONCE at site level — after the `tls`
 block and before the per-host `@main`/`@studio`/`@minio` matchers — so every
 hostname the stack serves inherits them from a single declaration.
 
-Site level, not per-host, is the contract being pinned here. Reaching Supabase
-Studio through Caddy does not traverse Kong, so Kong's `basic-auth` on the
-`dashboard` route does not apply to that path; the anti-framing headers are
-the only thing standing between an off-network attacker and an on-network
-browser being used to frame an internal admin console. A well-meaning refactor
-that moves this block inside `handle @main` would silently drop that, with no
-error and no failing request.
+Site level, not per-host, is the contract being pinned here. The administrative
+console hostnames have their own tracked access-control work, so the anti-framing
+headers are load-bearing there in a way they are not on the main hostname. A
+well-meaning refactor that moves this block inside `handle @main` would silently
+drop them, with no error and no failing request.
 
-Assertions locate the block by brace-matched depth rather than substring
-search, so it cannot false-pass by living inside a nested `handle` (the same
-reason `test_caddy_client_info_route.py` scopes to `handle @main`).
+Assertions locate directives by brace-matched depth rather than substring
+search, so they cannot false-pass by living inside a nested `handle` (the same
+reason `test_caddy_client_info_route.py` scopes to `handle @main`). Both Caddy
+spellings are recognised — the `header { ... }` block and the single-line
+`header <Field> <value>` / `header -<Field>` — because a guard that sees only
+the block form reports green on exactly the downgrade it exists to catch.
 
 For the live end-to-end assertion — headers actually present on responses,
-exactly once, with exact values — see
+with exact values — see
 tests/integration/test_api_endpoints.py::test_security_headers_present.
 """
 
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-CADDYFILE = REPO_ROOT / "caddy" / "Caddyfile"
+from tests.unit._caddyfile_helpers import (
+    block_after as _block_after,
+    mask_quoted as _mask_quoted,
+    site_block as _site_block,
+    strip_comments as _strip_comments,
+    text as _text,
+)
 
-# The exact directives the edge must emit. Values are asserted verbatim: a
-# weakened value (SAMEORIGIN for DENY, unsafe-inline creeping into the CSP)
-# would pass any presence-only check while changing what the browser enforces.
+# The exact header values the edge must emit, as they appear on the wire. Values
+# are asserted verbatim: a weakened value (SAMEORIGIN for DENY, unsafe-inline
+# creeping into the CSP) would pass any presence-only check while changing what
+# the browser enforces. Caddyfile quoting is normalised away before comparing,
+# so these match SECURITY_HEADERS in the integration test byte for byte.
 EXPECTED_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
-    "Content-Security-Policy": "\"frame-ancestors 'none'\"",
+    "Content-Security-Policy": "frame-ancestors 'none'",
     "Referrer-Policy": "strict-origin-when-cross-origin",
-    "Permissions-Policy": '"camera=(), microphone=(), geolocation=()"',
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 }
 
-
-def _text() -> str:
-    return CADDYFILE.read_text(encoding="utf-8")
-
-
-def _strip_comments(text: str) -> str:
-    """Drop `#` comment lines so prose mentioning a directive can't satisfy an
-    assertion about the directive itself."""
-    return "\n".join(
-        line for line in text.splitlines() if not line.strip().startswith("#")
-    )
+# `header` as a standalone directive, never `header_up`, `header_down` or
+# `request_header`.
+_HEADER_TOKEN = re.compile(r"(?<![\w.-])header(?![\w.-])")
 
 
-def _block_after(text: str, header_pattern: str) -> str | None:
-    """Body of the first `<header> {` directive, sliced by matching braces."""
-    header = re.search(header_pattern, text)
-    if not header:
-        return None
-    open_brace = text.find("{", header.end())
-    if open_brace == -1:
-        return None
-    depth = 0
-    for i in range(open_brace, len(text)):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return text[open_brace + 1 : i]
+def _header_directives(text: str) -> list[tuple[int, str, str]]:
+    """Every `header` directive in `text`, as `(depth, form, body)`.
+
+    `form` is `"block"` or `"single"`; `body` is the block body or the directive
+    line. `depth` is brace depth relative to `text`, so callers can tell a
+    site-level declaration (0) from one nested inside a `handle` (>0).
+    """
+    masked = _mask_quoted(text)
+    found: list[tuple[int, str, str]] = []
+    for match in _HEADER_TOKEN.finditer(masked):
+        start = match.start()
+        depth = masked.count("{", 0, start) - masked.count("}", 0, start)
+        rest = masked[match.end() :]
+        if re.match(r"[ \t]*\{", rest):
+            body = _block_after(text[start:], r"header\b")
+            if body is not None:
+                found.append((depth, "block", body))
+        elif re.match(r"[ \t]+\S", rest):
+            found.append((depth, "single", text[start:].splitlines()[0].strip()))
+    return found
+
+
+def _unquote(value: str) -> str:
+    """Strip one layer of Caddy quoting, so `"x"`, `` `x` `` and `x` compare equal."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'`":
+        return value[1:-1]
+    return value
+
+
+def _declared_headers(block: str) -> dict[str, str]:
+    """`{Field: value}` from a `header` block body, quoting normalised."""
+    declared = {}
+    for line in block.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        name, _, value = line.partition(" ")
+        declared[name] = _unquote(value)
+    return declared
+
+
+def _touches_managed(directive: str) -> str | None:
+    """The security header this directive sets or deletes, if any."""
+    for name in EXPECTED_HEADERS:
+        if re.search(rf"(?<!\w)-?{re.escape(name)}(?![\w-])", directive, re.IGNORECASE):
+            return name
     return None
 
 
-def _site_block(text: str) -> str | None:
-    """Body of the `{$CADDY_SITE_ADDRESSES} { ... }` site block."""
-    return _block_after(text, r"\{\$CADDY_SITE_ADDRESSES\}")
-
-
-def _top_level_header_blocks(site_body: str) -> list[str]:
-    """Bodies of every `header { ... }` declared at depth 0 of the site block.
-
-    Depth-aware on purpose: a `header` nested inside `handle @main { ... }`
-    sits at depth 1 and must NOT be returned, otherwise this test would pass
-    for exactly the regression it exists to catch.
-    """
-    blocks: list[str] = []
-    depth = 0
-    i = 0
-    while i < len(site_body):
-        char = site_body[i]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-        elif depth == 0 and site_body.startswith("header", i):
-            before = site_body[i - 1] if i else "\n"
-            after = site_body[i + len("header") :]
-            if not before.isalnum() and re.match(r"\s*\{", after):
-                body = _block_after(site_body[i:], r"header\b")
-                if body is not None:
-                    blocks.append(body)
-        i += 1
-    return blocks
+def _site_level_blocks(site: str) -> list[str]:
+    return [body for depth, form, body in _header_directives(site)
+            if depth == 0 and form == "block"]
 
 
 def test_header_block_declared_once_at_site_level():
     site = _site_block(_strip_comments(_text()))
     assert site is not None, "missing `{$CADDY_SITE_ADDRESSES}` site block in caddy/Caddyfile"
 
-    blocks = _top_level_header_blocks(site)
+    directives = _header_directives(site)
+    blocks = [body for depth, form, body in directives if depth == 0 and form == "block"]
     assert len(blocks) == 1, (
         f"expected exactly one site-level `header` block, found {len(blocks)}. "
         "Security headers must be declared once so every hostname inherits them."
+    )
+
+    strays = [
+        line
+        for depth, form, line in directives
+        if depth == 0 and form == "single" and _touches_managed(line)
+    ]
+    assert not strays, (
+        f"a security header is also set by a single-line directive at site level: {strays!r} "
+        "— Caddy applies both and the later one wins, so this silently overrides the block"
     )
 
 
 def test_all_security_headers_present_with_exact_values():
     site = _site_block(_strip_comments(_text()))
     assert site is not None, "missing site block in caddy/Caddyfile"
-    blocks = _top_level_header_blocks(site)
+    blocks = _site_level_blocks(site)
     assert blocks, "no site-level `header` block found in caddy/Caddyfile"
-    block = blocks[0]
 
+    declared = _declared_headers(blocks[0])
     for name, value in EXPECTED_HEADERS.items():
-        assert re.search(
-            rf"^\s*{re.escape(name)}\s+{re.escape(value)}\s*$", block, re.MULTILINE
-        ), f"`{name} {value}` missing from the site-level header block"
+        assert name in declared, f"`{name}` missing from the site-level header block"
+        assert declared[name] == value, (
+            f"`{name}` is {declared[name]!r} in caddy/Caddyfile, expected {value!r}"
+        )
 
 
 def test_headers_not_scoped_inside_a_single_host_block():
-    """Guards the specific regression: moving the block inside `handle @main`.
+    """Guards the specific regression: a security header set per-host.
 
-    That would leave the main application covered — so every smoke test and
-    every manual `curl` against the app still passes — while silently dropping
-    the headers from Studio and the MinIO console.
+    Moving the block inside `handle @main` would leave the main application
+    covered — so every smoke test and every manual `curl` against the app still
+    passes — while silently dropping the headers from the console hostnames.
+    A single-line `header X-Frame-Options SAMEORIGIN`, or a deleting
+    `header -X-Frame-Options`, does the same damage in one line, so both forms
+    are rejected at any depth inside a host block.
     """
     stripped = _strip_comments(_text())
     for matcher in (r"handle\s+@main\b", r"handle\s+@studio\b", r"handle\s+@minio\b"):
         block = _block_after(stripped, matcher)
         if block is None:
             continue
-        assert not re.search(r"^\s*header\s*\{", block, re.MULTILINE), (
-            f"a `header` block is declared inside `{matcher}` — security headers "
-            "belong at site level so all hostnames inherit them"
-        )
+        for _depth, form, body in _header_directives(block):
+            managed = _touches_managed(body)
+            assert managed is None, (
+                f"`{matcher}` contains a {form} `header` directive touching {managed} "
+                f"({body.strip().splitlines()[0]!r}) — the security headers belong at "
+                "site level so every hostname inherits them; a per-host directive "
+                "overrides the edge for that host alone, with no error"
+            )
 
 
 def test_header_block_precedes_the_host_matchers():
@@ -186,12 +208,16 @@ def test_csp_carries_no_script_src_without_nonces():
     """
     site = _site_block(_strip_comments(_text()))
     assert site is not None, "missing site block in caddy/Caddyfile"
-    blocks = _top_level_header_blocks(site)
+    blocks = _site_level_blocks(site)
     assert blocks, "no site-level header block found"
-    csp = re.search(r"^\s*Content-Security-Policy\s+(.+)$", blocks[0], re.MULTILINE)
-    assert csp, "Content-Security-Policy missing from the header block"
-    value = csp.group(1)
+
+    value = _declared_headers(blocks[0]).get("Content-Security-Policy")
+    assert value, "Content-Security-Policy missing from the header block"
     assert "unsafe-inline" not in value, (
         "a CSP with `unsafe-inline` would not block an injected handler — "
         "script-src needs Next.js nonces and belongs in its own change"
+    )
+    assert "script-src" not in value, (
+        "script-src requires Next.js nonce middleware to be worth anything; "
+        "it belongs in its own change, not smuggled in beside frame-ancestors"
     )
