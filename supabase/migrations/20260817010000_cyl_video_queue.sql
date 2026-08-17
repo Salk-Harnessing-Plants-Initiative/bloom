@@ -1,22 +1,15 @@
 -- Queued cyl-scan video generation: a pgmq queue, a job status table, and the
 -- SECURITY DEFINER wrappers that are the only way to reach either.
 --
--- The workflows service (role bloom_workflows, reached through PostgREST — no direct
--- DB connection) cannot touch pgmq. It calls these public wrappers instead, so no
--- pgmq grants or PostgREST schema exposure are needed.
---
 -- Flow: enqueue -> (row 'queued' + pgmq.send) -> claim (pgmq.read + row 'processing')
 -- -> complete (row 'complete' + pgmq.delete) or fail (row 'failed' + pgmq.archive).
 --
--- This migration ships the schema only. The enqueue route, the worker, and the
--- compose service follow in later changes; nothing calls these functions yet.
+-- Schema only. The route, worker and compose service follow; nothing calls these yet.
 
 BEGIN;
 
 -- 1. Definer identity ------------------------------------------------------
--- The wrappers run as this role, not as the caller and not as a superuser. It is
--- NOT granted to authenticator, so no JWT can ever assume it — that is the whole
--- difference from bloom_workflows, which only ever gets EXECUTE.
+-- Not granted to authenticator, so no JWT can assume it.
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bloom_video_queue_owner') THEN
@@ -24,9 +17,8 @@ BEGIN
   END IF;
 END
 $$;
--- ALTER FUNCTION ... OWNER TO below needs the applier to be a member of the new
--- owner, and the new owner to hold CREATE on the function's schema. The CREATE is
--- revoked again at the end of section 5, once the ownership transfer has used it.
+-- Both are needed by the ALTER FUNCTION ... OWNER TO block in section 5. The CREATE is
+-- revoked again at the end of that section.
 GRANT bloom_video_queue_owner TO CURRENT_USER;
 GRANT CREATE ON SCHEMA public TO bloom_video_queue_owner;
 
@@ -39,14 +31,9 @@ BEGIN
 END
 $$;
 
--- Table-level access to the queue's own storage, transactional with the pgmq.create
--- above. Safe to do here: the applier just created these tables, so it owns them and can
--- always grant on them. USAGE on the pgmq *schema* is the one piece that cannot live
--- here — the schema is owned by supabase_admin, and a grant from any other role silently
--- no-ops (issue #333) — so it stays in supabase/grants/schema_grants.sql.
---
--- Grants, not ownership: the wrappers only send/read/archive/delete, and ownership would
--- additionally confer DROP, TRUNCATE, ALTER and CREATE POLICY on the queue's storage.
+-- Grants, not ownership: the wrappers only send/read/archive/delete. USAGE on the pgmq
+-- schema lives in supabase/grants/schema_grants.sql — supabase_admin owns that schema,
+-- and a grant from any other role silently no-ops (#333).
 GRANT SELECT, INSERT, UPDATE, DELETE
   ON pgmq.q_cyl_video_generation TO bloom_video_queue_owner;
 GRANT SELECT, INSERT ON pgmq.a_cyl_video_generation TO bloom_video_queue_owner;
@@ -67,39 +54,30 @@ CREATE TABLE IF NOT EXISTS public.cyl_video_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_cyl_video_jobs_scan ON public.cyl_video_jobs(scan_id);
 CREATE INDEX IF NOT EXISTS idx_cyl_video_jobs_status ON public.cyl_video_jobs(status);
--- At most one active job per scan — the DB enforces the dedupe that enqueue's
--- check-then-insert can't guarantee under concurrent calls.
+-- At most one active job per scan — the dedupe enqueue's check-then-insert can't
+-- guarantee under concurrent calls.
 CREATE UNIQUE INDEX IF NOT EXISTS cyl_video_jobs_one_active_per_scan
   ON public.cyl_video_jobs(scan_id) WHERE status IN ('queued', 'processing');
 ALTER TABLE public.cyl_video_jobs ENABLE ROW LEVEL SECURITY;
 
--- Let a client poll job status. Real sessions hold bloom_user/writer/admin from the
--- JWT hook, so the read policy targets those roles.
+-- Let a client poll job status. Sessions hold bloom_user/writer/admin from the JWT hook.
 DROP POLICY IF EXISTS cyl_video_jobs_read ON public.cyl_video_jobs;
 CREATE POLICY cyl_video_jobs_read ON public.cyl_video_jobs
   FOR SELECT TO bloom_user, bloom_writer, bloom_admin USING (true);
--- Column-scoped on purpose: `error` carries whatever the render pipeline raised, which
--- in practice means filesystem paths, hostnames and object keys, and `path` is the
--- storage key that cyl_scan_videos deliberately withholds from these same roles
--- (20260716000000). Polling needs neither. Revoke first so a re-apply narrowing this
--- list cannot leave a wider whole-table grant behind.
+-- Column-scoped: `error` carries raw pipeline output and `path` is the storage key
+-- cyl_scan_videos withholds from these roles (20260716000000). Polling needs neither.
 REVOKE SELECT ON public.cyl_video_jobs FROM bloom_user, bloom_writer, bloom_admin;
 GRANT SELECT (id, scan_id, experiment_id, status, created_at, started_at, completed_at)
   ON public.cyl_video_jobs TO bloom_user, bloom_writer, bloom_admin;
--- Writes come only from the wrappers below. Default privileges hand every new public
--- table to the bloom_* roles (20260414002000_security_groups.sql) and to Supabase's own
--- anon/authenticated/service_role, so revoke explicitly rather than relying on the
--- absence of a write policy. service_role matters most: it is BYPASSRLS, so a policy
--- would not stop it. bloom_agent is the LLM-facing role and gets default-privilege
--- SELECT like the rest, so it is revoked here too rather than left fail-closed only by
--- the absence of a matching policy.
+-- Writes come only from the wrappers. Default privileges grant every new public table to
+-- the bloom_* roles (20260414002000) and to anon/authenticated/service_role, so revoke
+-- explicitly — service_role is BYPASSRLS, which no policy would stop.
 REVOKE INSERT, UPDATE, DELETE ON public.cyl_video_jobs
   FROM bloom_user, bloom_writer, bloom_admin;
 REVOKE ALL ON public.cyl_video_jobs FROM anon, authenticated, service_role, bloom_agent;
 
--- The wrappers run as bloom_video_queue_owner, which is neither the table owner nor
--- BYPASSRLS, so RLS applies to it and a grant alone leaves every statement filtered to
--- nothing. It needs its own policy on each table the wrappers touch.
+-- The definer role is neither table owner nor BYPASSRLS, so RLS applies to it and it
+-- needs a policy on each table the wrappers touch, not just a grant.
 GRANT SELECT, INSERT, UPDATE ON public.cyl_video_jobs TO bloom_video_queue_owner;
 DROP POLICY IF EXISTS cyl_video_jobs_definer ON public.cyl_video_jobs;
 CREATE POLICY cyl_video_jobs_definer ON public.cyl_video_jobs
@@ -111,10 +89,8 @@ DROP POLICY IF EXISTS cyl_scan_videos_queue_definer ON public.cyl_scan_videos;
 CREATE POLICY cyl_scan_videos_queue_definer ON public.cyl_scan_videos
   FOR SELECT TO bloom_video_queue_owner USING (true);
 
--- enqueue walks scan -> plant -> wave to check the caller's experiment_id against the
--- one the scan actually belongs to. Read-only and column-scoped to just the join keys:
--- these tables carry the phenotyping data itself, and the queue has no business seeing
--- any of it. All three have RLS on, so each needs a policy as well as the grant.
+-- enqueue walks scan -> plant -> wave to verify experiment_id. Column-scoped to the join
+-- keys only: these tables carry the phenotyping data itself.
 GRANT SELECT (id, plant_id) ON public.cyl_scans TO bloom_video_queue_owner;
 GRANT SELECT (id, wave_id) ON public.cyl_plants TO bloom_video_queue_owner;
 GRANT SELECT (id, experiment_id) ON public.cyl_waves TO bloom_video_queue_owner;
@@ -132,17 +108,12 @@ CREATE POLICY cyl_waves_queue_definer ON public.cyl_waves
 -- SECURITY DEFINER so they run as bloom_video_queue_owner (which can reach pgmq);
 -- bloom_workflows only ever gets EXECUTE. search_path is pinned to avoid capture.
 
--- CREATE OR REPLACE cannot change a return type, and a different arity creates a second
--- overload rather than replacing. Drop first so this migration applies cleanly to a database
--- carrying an earlier draft of these functions. EXECUTE grants and the owner pin are
--- re-applied below. Each drop names the hazard it covers:
---   RETURNS TABLE reshape — the two below are dropped at their current signature.
+-- CREATE OR REPLACE cannot change a return type, and a differing arity adds an overload
+-- rather than replacing. Drop first so an earlier draft cannot survive.
 DROP FUNCTION IF EXISTS public.claim_cyl_video_job(integer, integer);
 DROP FUNCTION IF EXISTS public.cyl_video_queue_stats();
---   void -> boolean, so the caller can tell a rejected transition from a successful one.
 DROP FUNCTION IF EXISTS public.complete_cyl_video_job(uuid, bigint, text);
 DROP FUNCTION IF EXISTS public.fail_cyl_video_job(uuid, bigint, text);
---   earlier drafts that differed in arity, which would survive as extra overloads.
 DROP FUNCTION IF EXISTS public.fail_cyl_video_job(uuid, bigint, text, integer);
 
 -- enqueue: idempotent per scan — reuse an in-flight job instead of piling up.
@@ -154,11 +125,8 @@ DECLARE
   v_job_id uuid;
   v_msg_id bigint;
 BEGIN
-  -- experiment_id is NOT NULL and FK'd, which advertises an attribution the FK alone
-  -- does not check: it proves the experiment exists, not that it is this scan's. The
-  -- chain scan -> plant -> wave -> experiment is nullable at every hop, so the column
-  -- cannot simply be derived — but where the chain does resolve, a caller that
-  -- disagrees with it is passing a mis-attribution into a provenance table.
+  -- The FK proves the experiment exists, not that it is this scan's. Every hop is
+  -- nullable, so reject only where the chain resolves and disagrees.
   IF EXISTS (
     SELECT 1
     FROM public.cyl_scans s
@@ -186,8 +154,7 @@ BEGIN
     RETURN NULL;  -- already generated; nothing enqueued
   END IF;
 
-  -- If a concurrent enqueue won the race for this scan, the partial unique index
-  -- raises unique_violation — reuse the winner's job.
+  -- A concurrent enqueue that won the race trips the partial unique index — reuse its job.
   BEGIN
     INSERT INTO public.cyl_video_jobs (scan_id, experiment_id, status)
     VALUES (p_scan_id, p_experiment_id, 'queued')
@@ -198,8 +165,7 @@ BEGIN
     WHERE scan_id = p_scan_id AND status IN ('queued', 'processing')
     ORDER BY created_at DESC
     LIMIT 1;
-    -- NULL here means the winner settled between the conflict and this re-select;
-    -- the caller treats that as "nothing queued" rather than a phantom job.
+    -- NULL means the winner settled in between; the caller reads that as nothing queued.
     RETURN v_job_id;
   END;
 
@@ -232,9 +198,8 @@ BEGIN
     RETURN;  -- empty queue
   END IF;
 
-  -- A malformed payload must not abort the statement: that would roll back pgmq's
-  -- read_ct increment, leaving the message at the queue head where the poison guard
-  -- below can never reach it.
+  -- Caught, not raised: aborting here would roll back pgmq's read_ct increment and pin
+  -- the message at the queue head, out of reach of the poison guard below.
   BEGIN
     v_job_id := (r.message->>'job_id')::uuid;
     v_scan_id := (r.message->>'scan_id')::bigint;
@@ -245,13 +210,11 @@ BEGIN
     RETURN;
   END;
 
-  -- Poison-message guard: dead-letter a message delivered too many times. read_ct is
-  -- pgmq's per-delivery counter, so this catches a worker that keeps crashing before
-  -- it can call fail_cyl_video_job.
+  -- Poison-message guard: dead-letter a message delivered too many times.
   IF r.read_ct > p_max_reads THEN
     RAISE WARNING 'cyl_video_job % dead-lettered after % deliveries (poison message)',
       v_job_id, r.read_ct;
-    -- Guard on the non-terminal states: a job that already settled keeps its outcome.
+    -- Non-terminal states only: a job that already settled keeps its outcome.
     UPDATE public.cyl_video_jobs
     SET status = 'failed',
         error = format('dead-lettered after %s deliveries', r.read_ct),
@@ -261,15 +224,9 @@ BEGIN
     RETURN;  -- poison message — do not hand it to the worker again
   END IF;
 
-  -- Mark processing from a non-terminal state. 'processing' is accepted on purpose:
-  -- it is how a job whose worker died mid-render is recovered once its message
-  -- becomes visible again. The cost is that a lease expiring under a still-live
-  -- worker double-renders, so the visibility timeout must exceed a worst-case render.
-  --
-  -- started_at is set once and then left alone: it means "when work on this job first
-  -- began", not "when it was last handed out". Stamping it forward on every re-claim
-  -- would reset the clock a staleness check runs on, so a job redelivered every p_vt
-  -- seconds could never appear old enough for one to fire.
+  -- 'processing' is accepted on purpose: it recovers a job whose worker died mid-render
+  -- once the message becomes visible again. started_at is kept, so it means when work
+  -- first began and a staleness check's clock is not reset by every redelivery.
   UPDATE public.cyl_video_jobs
   SET status = 'processing', started_at = COALESCE(started_at, now())
   WHERE id = v_job_id AND status IN ('queued', 'processing');
@@ -283,14 +240,9 @@ BEGIN
 END;
 $$;
 
--- complete: record the path, drop the message. Guard on 'processing' so a late second
--- worker can't clobber a job another worker already settled.
---
--- p_msg_id is matched against the job's own msg_id, and the message is only disposed of
--- when the transition actually happened. Disposing on p_msg_id alone would let any caller
--- destroy an unrelated message: the job it names stays non-terminal, holds the partial
--- unique index, and its scan can never be enqueued again. Returns whether the job settled,
--- so a caller whose write was rejected can tell.
+-- complete: record the path, drop the message. Matching msg_id to the job keeps a
+-- mismatched pair from destroying an unrelated message and wedging its scan forever;
+-- the boolean tells a caller whose transition was rejected.
 CREATE OR REPLACE FUNCTION public.complete_cyl_video_job(p_job_id uuid, p_msg_id bigint, p_path text)
 RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pgmq
@@ -307,8 +259,8 @@ BEGIN
 END;
 $$;
 
--- fail: mark the job 'failed' and dead-letter its message. Terminal — retry is
--- deferred to the queue-hardening work. Same msg_id/job_id pairing as complete above.
+-- fail: mark the job 'failed' and dead-letter its message. Terminal — retry is deferred
+-- to the queue-hardening work. Same msg_id/job_id pairing as complete.
 CREATE OR REPLACE FUNCTION public.fail_cyl_video_job(
   p_job_id uuid, p_msg_id bigint, p_error text
 )
@@ -327,10 +279,8 @@ BEGIN
 END;
 $$;
 
--- Backlog for the worker's log. bloom_workflows cannot read cyl_video_jobs (the read
--- policy and grant target the session roles only), so counts come through a wrapper
--- like everything else the worker touches. 'failed' is included so a queue that is
--- silently discarding work is distinguishable from an idle one.
+-- Backlog for the worker's log. bloom_workflows cannot read cyl_video_jobs directly, so
+-- counts come through a wrapper like everything else it touches.
 CREATE OR REPLACE FUNCTION public.cyl_video_queue_stats()
 RETURNS TABLE(queued bigint, processing bigint, failed bigint, oldest_queued_seconds double precision)
 LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public
@@ -345,20 +295,17 @@ AS $$
 $$;
 
 -- 5. Definer identity and EXECUTE ------------------------------------------
--- Pin the owner explicitly. Left unset, a SECURITY DEFINER function inherits whoever
--- applied the migration — in practice supabase_admin, a superuser — so these five
--- would run with unrestricted database access to insert a row and send a message.
+-- Left unset, a SECURITY DEFINER function inherits whoever applied the migration — in
+-- practice a superuser.
 ALTER FUNCTION public.enqueue_cyl_video(bigint, bigint) OWNER TO bloom_video_queue_owner;
 ALTER FUNCTION public.claim_cyl_video_job(integer, integer) OWNER TO bloom_video_queue_owner;
 ALTER FUNCTION public.complete_cyl_video_job(uuid, bigint, text) OWNER TO bloom_video_queue_owner;
 ALTER FUNCTION public.fail_cyl_video_job(uuid, bigint, text) OWNER TO bloom_video_queue_owner;
 ALTER FUNCTION public.cyl_video_queue_stats() OWNER TO bloom_video_queue_owner;
 
--- Lock EXECUTE to bloom_workflows only. These are SECURITY DEFINER on the
--- PostgREST-exposed public schema, so any client-reachable grant lets anon/
--- authenticated call them via /rest/v1/rpc, bypassing the API's auth and scan
--- validation. Supabase grants EXECUTE to PUBLIC *and* anon/authenticated by default,
--- so revoke all of them before granting the one sanctioned caller.
+-- Lock EXECUTE to bloom_workflows. These sit in the PostgREST-exposed public schema, so
+-- any client-reachable grant lets anon/authenticated call them via /rest/v1/rpc. Supabase
+-- grants EXECUTE to PUBLIC and anon/authenticated by default, so revoke before granting.
 REVOKE EXECUTE ON FUNCTION public.enqueue_cyl_video(bigint, bigint) FROM PUBLIC, anon, authenticated, service_role;
 REVOKE EXECUTE ON FUNCTION public.claim_cyl_video_job(integer, integer) FROM PUBLIC, anon, authenticated, service_role;
 REVOKE EXECUTE ON FUNCTION public.complete_cyl_video_job(uuid, bigint, text) FROM PUBLIC, anon, authenticated, service_role;
@@ -371,11 +318,7 @@ GRANT EXECUTE ON FUNCTION public.complete_cyl_video_job(uuid, bigint, text) TO b
 GRANT EXECUTE ON FUNCTION public.fail_cyl_video_job(uuid, bigint, text) TO bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.cyl_video_queue_stats() TO bloom_workflows;
 
--- Hand back the DDL right granted in section 1. The role only ever needed it so the
--- ALTER FUNCTION ... OWNER TO statements above could land; leaving it would give the
--- identity every wrapper executes as CREATE on the PostgREST-exposed schema. Safe to
--- re-apply: CREATE OR REPLACE FUNCTION checks CREATE against the applier, not the
--- owner, and ALTER ... OWNER TO short-circuits when the owner already matches.
+-- Hand back section 1's DDL right, needed only for the ownership transfer above.
 REVOKE CREATE ON SCHEMA public FROM bloom_video_queue_owner;
 
 COMMIT;
