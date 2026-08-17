@@ -61,11 +61,13 @@ SHALL be rejected when more than one `--trait` is supplied.
 - **WHEN** the caller supplies two `--trait` flags together with `--min`
 - **THEN** the command exits non-zero explaining that `--min` / `--max` apply to a single predicate
 
-#### Scenario: Ambiguous trait name fails loudly
+#### Scenario: A trait under more than one source reads the latest
 
 - **WHEN** `--trait NAME` matches trait names under more than one source
-- **THEN** the command exits non-zero listing the candidate sources
-- **AND** nothing is emitted
+- **THEN** the predicate is evaluated against the latest source, following
+  `cyl_scan_traits_source`'s `is_latest = max(source_id)` rule and bloommcp's default from #644
+- **AND** the source that was read is named in the output, so no value is anonymous
+- **AND** the command does not fail — choosing a source is out of scope here, tracked in #626
 
 ### Requirement: Trait selection is restricted by the shared selectors
 

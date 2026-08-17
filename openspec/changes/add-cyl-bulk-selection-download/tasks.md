@@ -1,15 +1,29 @@
-## PR 1 — `cyl accessions sample-counts` counts distinct barcodes
+## PR 1 — finish the download extraction (#674)
 
-- [ ] 1.1 Migration redefining `cyl_accession_sample_counts` to `count(DISTINCT qr_code)` and
-      renaming the output column `plant_count` → `barcode_count`, keeping `security_invoker` and the
-      existing grants (`anon` revoked).
-- [ ] 1.2 Rename the CLI column header `Plants` → `Barcodes` and state the unit in the help text.
-- [ ] 1.3 Tests: a barcode spanning waves counts once; NULL-barcode plant rows count zero; per-species
-      grouping unchanged.
-- [ ] 1.4 Regenerate `web/lib/database.types.ts` for the renamed column.
-- [ ] 1.5 Update the `cyl_accession_sample_counts` assertions in
-      `tests/integration/test_cyl_read_model_views.py` for the new column name and semantics.
-- [ ] 1.6 Note the number change in `CHANGELOG.md` — figures drop where barcodes span waves.
+Pure refactor. Cyl's existing tests are the oracle: they pass **unchanged, with no assertion
+edited**. No behaviour change to `cyl download`.
+
+- [ ] 1.1 `find_frame_collisions` becomes a wrapper around `find_collisions`, passing `dest_of` and
+      `describe`; the clash wording is preserved exactly, because cyl's tests assert it.
+- [ ] 1.2 `download_frame` becomes: compute dest, call `download_to`, map `Fetched` → `FrameResult`.
+      `download_to` takes `expected_size: int | None = None`; `None` is cyl's case, since
+      `cyl_images` records no size (#672).
+- [ ] 1.3 Replace the containment check pasted inline in `image_dest` with a `contained_dest` call.
+- [ ] 1.4 Replace `download_selector`'s dict comprehension with `selector_of`.
+- [ ] 1.5 Pass `bucket` explicitly rather than relying on `download_frame`'s hardcoded
+      `IMAGES_BUCKET`, so cyl gets #650's required-`bucket` property from the mechanism instead of
+      from a constant.
+- [ ] 1.6 Stop importing the private `_path_key` across the package boundary.
+- [ ] 1.7 Add a containment test against the **shared** guard: today only cyl's inline copy is
+      covered, so blanking the shared one leaves the suite green (744 passed).
+- [ ] 1.8 Move `_queried` out of `plate/download.py` into `_postgrest.py` and wrap `fetch_scan`,
+      `fetch_scans` and `fetch_genotypes`, so a PostgREST failure stops reaching cyl users as a
+      traceback. Catch `httpx.TransportError` alongside `APIError` — a read timeout is currently raw
+      on both paths.
+- [ ] 1.9 Parameterise `RETRY_HINT` by `noun`, so a plate run stops printing "1/3 captures"
+      immediately above "Some frames are failing".
+- [ ] 1.10 Correct `_download.py`'s docstring: it forbids naming columns, then names `qr_code`,
+      `date_scanned`, `frame_number` and `scans.csv`.
 
 ## PR 2a — shared selection layer
 
@@ -55,52 +69,53 @@
 - [ ] 3.6 Tests: multi-barcode download, multi-experiment `scans.csv`, empty selection, dry run,
       threshold gate both ways.
 
-## PR 4 — `cyl traits list`
+## PR 4 — traits alongside images
 
-- [ ] 4.1 Migration: trait aggregate query returning name, source, scan count, min and max for the
+- [ ] 4.1 Add `--with-traits` writing `traits.csv` for the resolved scan set via the source-aware
+      trait views, keyed on `scan_id`.
+- [ ] 4.2 Add `--traits-only`; reject combination with `--meta-only`.
+- [ ] 4.3 Report the count of selected scans that had no trait rows.
+- [ ] 4.4 Tests: join integrity between `traits.csv` and `scans.csv`, traits-only skips images,
+      conflicting-flag rejection.
+
+## PR 5 — `cyl traits list`
+
+- [ ] 5.1 Migration: trait aggregate query returning name, source, scan count, min and max for the
       supplied filters — same permission model, caps and grants as `cyl_plant_search_query` (#516),
       and the same column shape as `get_experiment_traits`. Leave `get_experiment_traits` unmodified:
       widening it would overload it and break its parity and grant tests.
-- [ ] 4.2 Add `cyl traits list` accepting the shared selectors; report one row per trait per source.
-- [ ] 4.3 Preserve fractional values; do not round.
-- [ ] 4.4 `--output csv|json`; human text on stderr.
-- [ ] 4.5 Confirm the aggregate is callable from the web client with no backend change.
-- [ ] 4.6 Tests: per-experiment ranges, fractional values, range across more rows than one page,
+- [ ] 5.2 Add `cyl traits list` accepting the shared selectors; report one row per trait per source.
+- [ ] 5.3 Preserve fractional values; do not round.
+- [ ] 5.4 `--output csv|json`; human text on stderr.
+- [ ] 5.5 Confirm the aggregate is callable from the web client with no backend change.
+- [ ] 5.6 Tests: per-experiment ranges, fractional values, range across more rows than one page,
       per-source rows not merged, clean stdout.
 
-## PR 5 — `cyl traits select` and `--trait` on `cyl download`
+## PR 6 — `cyl traits select` and `--trait` on `cyl download`
 
-- [ ] 5.1 Add a migration for a trait-predicate saved query — "scans whose trait X falls in a range"
+- [ ] 6.1 Add a migration for a trait-predicate saved query — "scans whose trait X falls in a range"
       — mirroring `cyl_plant_search_query` (#516): `SECURITY INVOKER`, filter and row caps, grants to
       `authenticated` / `bloom_user` / `bloom_admin` / `bloom_agent`, `anon` revoked.
-- [ ] 5.2 Confirm the new query is callable from the web client with no backend change, so web bulk
+- [ ] 6.2 Confirm the new query is callable from the web client with no backend change, so web bulk
       download is a front-end task later. Record the check in the PR.
-- [ ] 5.3 Add repeatable `--trait NAME[:MIN][:MAX]` with open-ended bounds; accept `--min` / `--max`
+- [ ] 6.3 Add repeatable `--trait NAME[:MIN][:MAX]` with open-ended bounds; accept `--min` / `--max`
       only for a single predicate and reject them otherwise.
-- [ ] 5.4 Intersect multiple predicates.
-- [ ] 5.5 Accept the shared selectors (`--barcodes-file`, `--barcodes`, `--accession`, `--species`,
+- [ ] 6.4 Intersect multiple predicates.
+- [ ] 6.5 Accept the shared selectors (`--barcodes-file`, `--barcodes`, `--accession`, `--species`,
       `--experiment-id`) as a pre-filter, passed to the same query in one request.
-- [ ] 5.6 Add `--grain scan|barcode` (default `scan`) and `--match any|all` for barcode grain;
+- [ ] 6.6 Add `--grain scan|barcode` (default `scan`) and `--match any|all` for barcode grain;
       reject `--match` at scan grain.
-- [ ] 5.7 Emit `qr_code` and `scan_id` at both grains; barcode grain also reports `scans_matched`
+- [ ] 6.7 Emit `qr_code` and `scan_id` at both grains; barcode grain also reports `scans_matched`
       and `scans_total`.
-- [ ] 5.8 Fail with candidate sources listed when a trait name is ambiguous across sources.
-- [ ] 5.9 Add the same `--trait` predicate to `cyl download`, routed through the same query — no
+- [ ] 6.8 Read the latest source when a trait name spans several, and name the source read in the
+      output. No `--source` flag — choosing one is tracked in #626.
+- [ ] 6.9 Add the same `--trait` predicate to `cyl download`, routed through the same query — no
       second implementation.
-- [ ] 5.10 Keep trait selection independent of trait output: `--trait` selects, `--with-traits` /
+- [ ] 6.10 Keep trait selection independent of trait output: `--trait` selects, `--with-traits` /
       `--traits-only` decide files written.
-- [ ] 5.11 Tests: single range, open bounds, intersecting predicates, barcode-list pre-filter, both
+- [ ] 6.11 Tests: single range, open bounds, intersecting predicates, barcode-list pre-filter, both
       grains, `--match all`, ambiguity failure, round-trip into download, `--trait` on download
       resolving the same set as `traits select`, and selection/output independence.
-
-## PR 6 — traits alongside images
-
-- [ ] 6.1 Add `--with-traits` writing `traits.csv` for the resolved scan set via the source-aware
-      trait views, keyed on `scan_id`.
-- [ ] 6.2 Add `--traits-only`; reject combination with `--meta-only`.
-- [ ] 6.3 Report the count of selected scans that had no trait rows.
-- [ ] 6.4 Tests: join integrity between `traits.csv` and `scans.csv`, traits-only skips images,
-      conflicting-flag rejection.
 
 ## Every PR — docs and checks
 

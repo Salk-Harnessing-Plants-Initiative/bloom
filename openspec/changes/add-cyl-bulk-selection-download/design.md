@@ -114,24 +114,28 @@ would get before fetching it.
 
 ## The plan for each command
 
-### `cyl accessions sample-counts` — count distinct barcodes
+### `cyl accessions sample-counts` — left alone
 
-Today it uses `count(*)` over `cyl_plants`. That is a plant-row count, not a barcode count.
-`cyl_plants` is unique on `(wave_id, qr_code)`, not on `qr_code`, so a barcode used in three waves is
-counted three times. `qr_code` is nullable, so barcode-less rows are counted too. Neither shows in
-the output — a row reading `307` gives no way to tell what it is 307 of.
+An earlier draft changed the view to `count(DISTINCT qr_code)` and renamed the output column
+`plant_count` → `barcode_count`, on the premise that a barcode used in three waves was one sample
+counted three times.
 
-Change the view to `count(DISTINCT qr_code)`, and rename the output column `plant_count` →
-`barcode_count`, with the CLI header going `Plants` → `Barcodes`.
+The premise was wrong, and the reasoning is worth keeping because the mistake is easy to repeat.
+`cyl_plants` is unique on `(wave_id, qr_code)` — the **pair**
+(`20230724171639_add_uniqueness_contraints.sql:5`). A barcode reappearing in a later wave is a
+*different plant that reuses the tag*, not the same plant rescanned;
+`refactor-supabase-reader-db-tier2/design.md` (D5) already reached this conclusion, describing tag
+reuse across waves as "an ordinary operational occurrence". So `count(DISTINCT qr_code)` would have
+merged genuinely distinct plants into one figure — a silent under-count, and a worse error than the
+one it was meant to fix. `count(*)` is already correct under that constraint.
 
-The rename is the point. Changing what a number means while leaving its name alone is how someone
-ends up comparing an old figure against a new one and trusting the difference. Renaming makes the
-change announce itself.
+What is left is narrower: `qr_code` is nullable, so barcode-less rows do sit in the total, and the
+output gives no way to see it. That is real, independent of everything else here, and should be
+measured before anything changes — the answer may simply be to report the null count beside the
+total. It ships on its own, not in this change.
 
-Reported numbers will drop wherever barcodes span waves. The view keeps its existing permissions and
-grants; nothing about the table changes. `web/lib/database.types.ts` is regenerated and the
-`cyl_accession_sample_counts` assertions in `tests/integration/test_cyl_read_model_views.py` are
-updated.
+Nothing in this proposal touches the view, so #496 can add its per-experiment sibling view without
+either blocking the other.
 
 ### `cyl search` — select by identity
 
@@ -307,7 +311,32 @@ emits `scan_id` so the download pipeline works without a flag. Barcode grain rep
 next to `scans_total`, so a plant qualifying on 1 of 12 scans looks different from one qualifying on
 all 12.
 
-**A trait name matching several sources** is an error listing the candidates, not a silent pick.
+**A trait name matching several sources** reads the latest source. No flag, no prompt, no error.
+
+An earlier draft made this an error listing the candidate sources, full stop — naming the problem
+and then offering no way through it, which leaves the trait commands unusable on exactly the
+experiments that have been reprocessed. Latest is the right default and it is not a new invention:
+`cyl_scan_traits_source` defines `is_latest = max(source_id)` per scan
+(`20260701000000_cyl_trait_read_source_aware.sql:38`), `cyl_scan_traits_latest` is the canonical
+latest-per-scan surface built on it, and bloommcp settled the same question the same way in #644
+(merged 2026-08-13) — `version: str = "latest"`, with unpinned resolving to the experiment-wide max
+`source_id` (`supabase_reader.py:257`). Reading latest means a superseded rerun never wins by
+accident, which is the property the sleap-roots reprocessing model depends on.
+
+**Choosing a source is deliberately not built here.** No `--source` flag, no `cyl traits
+list-sources`, no ambiguity ladder. Two reasons:
+
+- On staging, 9 of 224 experiments carry any trait data and **only 2 have more than one source**
+  (#626, checked 2026-08-07). A selection UI — flags, discovery command, stderr notices, error
+  paths — is a lot of surface for a case that arises twice.
+- Where it does matter, the shape is already decided elsewhere: #626 / #644 gave bloommcp
+  `list_sources()` / `resolve_source()` over the `list_experiment_trait_sources` RPC (#546 / PR
+  #548), and `get_experiment_traits` already accepts `source_id_` / `run_id_` for pinning. When the
+  CLI needs it, it wires to that rather than growing a second convention — tracked against #626, not
+  reopened here.
+
+The commands **say which source they read** in their output, so a value is never anonymous even
+though the choice was not offered.
 
 **It prints ids rather than downloading,** keeping selection and fetching composable and avoiding a
 second copy of the download logic to keep in step.
@@ -329,14 +358,30 @@ One command per PR.
 
 | PR | Command | Depends on |
 |---|---|---|
-| 1 | `cyl accessions sample-counts` counts distinct barcodes | — |
+| 1 | Finish the download extraction (#674) | — |
 | 2 | `cyl search` | — |
-| 3 | `cyl download` takes lists | 2 |
-| 4 | `cyl traits list` | 2 |
-| 5 | `cyl traits select`, and `--trait` on `cyl download` | 3, 4 |
-| 6 | `cyl download --with-traits` / `--traits-only` | 5 |
+| 3 | `cyl download` takes lists | 1, 2 |
+| 4 | `cyl download --with-traits` / `--traits-only` | 3 |
+| 5 | `cyl traits list` | 2 |
+| 6 | `cyl traits select`, and `--trait` on `cyl download` | 3, 5 |
 
-**PR 1** is a view redefinition plus tests. Nothing depends on it, so it can go first and alone.
+**PR 1 is #674, and it comes first because this change rewrites the command it is about.** PR #650
+extracted the download mechanism into `bloomctl/_download.py` and wired `plate download` to it, but
+deliberately left `cyl download` on its own copies of `contained_dest`, `download_to`,
+`find_collisions` and `selector_of` so its behaviour could not regress mid-flight. Rewriting cyl's
+selectors on top of that split means either editing both copies of the mechanism or letting them
+diverge further — and #674 already records what the split costs: two disk-full messages inside one
+PR, and a containment guard whose only test covers cyl's inline copy, so blanking the *shared* one
+leaves 744 tests green. Doing the merge first means everything below lands on one mechanism.
+
+It is a pure refactor — cyl's existing tests are the oracle and must pass unchanged, with no
+assertion edited. Nothing else here depends on it in the API sense, but everything touching
+`cyl download` is cheaper after it.
+
+**The accession-count view change is not in this sequence.** An earlier draft opened with
+`count(*)` → `count(DISTINCT qr_code)`; that premise was wrong (see "Accession counts say what they
+count"), and what remains — whether null-barcode rows should be reported — is a separate question
+that ships on its own.
 
 **PR 2** builds the piece that turns filters into a set of plants by calling #516's query, and puts
 `search` on top. Everything later reuses that piece. It touches no existing command, and it settles
@@ -345,15 +390,18 @@ early whether #516's query carries what the CLI needs.
 **PR 3** carries the only breaking change — filters stacking instead of excluding — so it stays on
 its own.
 
-**PR 4** adds the trait aggregate: names, counts, minimum and maximum for the current filter. It
+**PR 4 is images-and-traits-together, and it comes early.** It only writes traits for whatever PR 3
+already resolved — it needs no part of the trait-selection machinery below it, so making it wait on
+that was sequencing by theme rather than by dependency. It is one of the two things the original
+feedback actually asked for, so it ships as soon as it can.
+
+**PR 5** adds the trait aggregate: names, counts, minimum and maximum for the current filter. It
 comes before `traits select` because a range cannot be chosen until you can see one. It depends on
 PR 2 for the filters, not on PR 3, so it can be reviewed in parallel.
 
-**PR 5** adds the range predicate to both `traits select` and `download`, using the one query built
+**PR 6** adds the range predicate to both `traits select` and `download`, using the one query built
 here. Keeping them together means the predicate is defined once and cannot drift between the two
 commands.
-
-**PR 6** is worth having only once selection by trait exists.
 
 After PR 6, giving the website bulk download is a front-end job, because every query it needs is
 already shared. That is a separate change.

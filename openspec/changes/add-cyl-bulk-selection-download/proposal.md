@@ -31,18 +31,28 @@ production — they are simply unreachable from the command line.
 
 ## What Changes
 
-### Accession counts report distinct barcodes
+### Accession counts say what they count
 
-- `cyl_accession_sample_counts` currently uses `count(*)` over `cyl_plants`. Change it to
-  `count(DISTINCT qr_code)` so `cyl accessions sample-counts` reports **distinct barcodes** per
-  accession per species.
-- Today's number is a plant-row count, which is not the same thing. `cyl_plants` is unique on
-  `(wave_id, qr_code)`, not on `qr_code`, so one barcode appearing in several waves is counted once
-  per wave. `qr_code` is also nullable, so barcode-less plant rows inflate the total. Neither is
-  visible in the output — a row reading `307` gives no way to tell whether that is 307 barcodes.
-- **Visible change:** counts will drop for any accession where a barcode spans multiple waves or
-  where plants have no barcode. The new number is the answer to "how many barcodes does this
-  accession have", which is what the column is read as.
+- **`count(*)` stays.** An earlier draft proposed `count(DISTINCT qr_code)` on
+  `cyl_accession_sample_counts`, on the premise that one barcode across several waves is one sample
+  counted repeatedly. That premise is wrong.
+  `20230724171639_add_uniqueness_contraints.sql:5` makes `cyl_plants` unique on
+  `(wave_id, qr_code)`, so a barcode reappearing in a later wave is **a different plant that reuses
+  the tag**, not the same one rescanned — `refactor-supabase-reader-db-tier2/design.md` (D5) already
+  settled this, calling tag reuse across waves "an ordinary operational occurrence". Collapsing on
+  `qr_code` alone would silently merge distinct plants into one number, which is a worse error than
+  the one it set out to fix. `count(*)` is already the correct distinct-sample count under that
+  constraint.
+- **The narrow question that remains is null barcodes.** `qr_code` is nullable, so barcode-less
+  plant rows are included in the total, and the output gives no way to see it. That is a real but
+  much smaller issue than the draft claimed, it is independent of this change, and it should be
+  measured before anything is altered — the fix may be nothing more than reporting the null count
+  alongside the total. **Split out and settled separately; no view change ships in this proposal.**
+- **The column keeps the name `plant_count`.** Renaming it to `barcode_count` only made sense under
+  the abandoned semantics; a plant count is what it is and what it should say.
+- **Visible change: none.** `cyl accessions sample-counts` returns exactly what it returns today.
+  The draft would have dropped counts for every accession whose barcodes span multiple waves —
+  a silent, unannounced change to a number scientists already cite.
 
 ### Bulk and subset selection for `cyl download`
 
@@ -68,6 +78,12 @@ production — they are simply unreachable from the command line.
 - Trait names come from the existing `cyl_scan_trait_names` view; the aggregate and the
   experiment-scoping are new. A name under several sources is reported per source, never merged into
   one range.
+- **Trait reads take the latest source, and say which one they took.** No `--source` flag and no
+  `list-sources` command in this change: only 2 of 224 experiments have more than one source (#626,
+  2026-08-07), and where choosing does matter the shape is already settled — #644 (merged) gave
+  bloommcp `list_sources()` / `resolve_source()` over the `list_experiment_trait_sources` RPC, and
+  `get_experiment_traits` already takes `source_id_` / `run_id_`. The CLI wires to that when it needs
+  it rather than growing a second convention. Tracked against #626.
 - **`get_experiment_traits` is left untouched.** It already exists, is `SECURITY INVOKER`, is granted
   to the read roles, and returns per-scan trait rows for one experiment (`scan_id`, `plant_qr_code`,
   `accession_name`, `trait_name`, `source_id`, `trait_value`). The CLI does not call it. It is not
@@ -155,12 +171,15 @@ production — they are simply unreachable from the command line.
 
 ### Needs coordinating — open and overlapping
 
-- **#496** — per-experiment `sample-counts`. **Direct conflict:** #496's design says *"Do not modify
-  the existing `cyl_accession_sample_counts` view"* and adds a per-experiment sibling view alongside
-  it. This proposal does modify that view — `count(*)` → `count(DISTINCT qr_code)`, and the column
-  renamed `plant_count` → `barcode_count`. The two need settling together: if the count is wrong it
-  is wrong in both views, so #496's new view should carry the same semantics and column name rather
-  than inheriting the old ones. **Decide before either is implemented.**
+- **#496** — per-experiment `sample-counts`. **No longer a conflict.** An earlier draft of this
+  proposal redefined `cyl_accession_sample_counts` (`count(*)` → `count(DISTINCT qr_code)`, column
+  renamed `plant_count` → `barcode_count`), which collided head-on with #496's *"Do not modify the
+  existing `cyl_accession_sample_counts` view"*. That redefinition is gone, so #496 can add its
+  `cyl_experiment_accession_sample_counts` sibling view as designed, and neither blocks the other.
+  The one thing to keep aligned: the sibling view should count the same way the global one does —
+  `count(*)` over `cyl_plants`, which is already the correct distinct-sample count under
+  `cyl_plants_uniqueness UNIQUE (wave_id, qr_code)` — so the two views cannot come to disagree about
+  what "count" means. Nothing to decide before either is implemented.
 - **#482** — web bulk selection/download. Unblocked by this work: every query added here is a shared
   read model, so #482 becomes a front-end task with no new backend.
 - **#501** — rep-ID search. Out of scope here; #501 already establishes there is no replicate-ID
@@ -186,30 +205,24 @@ production — they are simply unreachable from the command line.
 - **Affected code:** `bloomcli/src/bloomctl/cyl/download.py` (selector resolution, `fetch_scans`
   scalar→list), `bloomcli/src/bloomctl/cyl/_select.py`, new `search.py` and `traits.py` command
   modules, `bloomcli/src/bloomctl/cyl/datasets.py` (trait join).
-- **Migrations (four):**
-  1. Redefine `cyl_accession_sample_counts` to `count(DISTINCT qr_code)`. View-only change; no table
-     or column is altered, and the existing grants and `security_invoker` setting are preserved.
-  2. A **separate** rollup query returning DISTINCT experiments, accessions or species across the
+- **Migrations (three):**
+  1. A **separate** rollup query returning DISTINCT experiments, accessions or species across the
      whole match — what `--show` reads. `cyl_plant_search_query` is **not** modified: adding a
      defaulted parameter creates a function overload rather than replacing it, and PostgREST resolves
      RPCs by the named arguments supplied, so an overload risks ambiguous resolution for the live web
      search box. A separate function carries no risk to #516 at all.
-  3. A trait aggregate query returning each trait's name, source, scan count, minimum and maximum for
+  2. A trait aggregate query returning each trait's name, source, scan count, minimum and maximum for
      the supplied filters — what `cyl traits list` reads.
-  4. A trait-predicate query ("scans whose trait X falls in a range") — what `cyl traits select` and
+  3. A trait-predicate query ("scans whose trait X falls in a range") — what `cyl traits select` and
      `cyl download --trait` both read.
 
-  Migrations 2–4 use the same `SECURITY INVOKER` model and role grants as `cyl_plant_search_query`,
-  so the web can call them too.
+  All three use the same `SECURITY INVOKER` model and role grants as `cyl_plant_search_query`, so the
+  web can call them too.
   Selection and search themselves need no migration — `cyl_plant_search`, `cyl_plant_search_query`
   (#516), and the source-aware trait views already exist on `main`.
-- **BREAKING (reported numbers):** `cyl accessions sample-counts` will report smaller figures for any
-  accession whose barcodes span waves or whose plants lack barcodes. To stop the change being silent,
-  the view's output column is renamed `plant_count` → `barcode_count` and the CLI column header
-  `Plants` → `Barcodes`, so old and new numbers cannot be compared without noticing. This requires
-  regenerating `web/lib/database.types.ts` and updating the `cyl_accession_sample_counts` assertions
-  in `tests/integration/test_cyl_read_model_views.py`. No web code selects the column today; the
-  `plant_count` key in `langchain/tools/cyl_tools.py` is unrelated and is not read from this view.
+- **No reported number changes.** `cyl accessions sample-counts` is untouched, so nothing that is
+  already published moves. The one breaking change in this proposal is `cyl download`'s selectors
+  intersecting instead of excluding each other (PR 3).
 - **Reusability constraint:** any database view or function added here is a shared read model, not a
   CLI helper. Acceptance test for each one — *could the web app do a bulk download using this
   without new backend work?* If not, it is in the wrong layer.
