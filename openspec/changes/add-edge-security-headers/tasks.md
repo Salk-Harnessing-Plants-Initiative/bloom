@@ -31,7 +31,7 @@
 - [x] 2.10 CI cannot exercise 2.3, and this is accepted rather than tracked as work. It sets `CADDY_SITE_ADDRESSES` to a single host, so Studio and MinIO requests never enter the site block, and `HEADER_ROUTES` lists only main-hostname paths — the site-level contract is therefore pinned as config shape (2.8) and never as behaviour. Weighed and accepted because:
   - The regression that matters — a security header set under a host matcher, in either the block or the single-line form — is caught by 2.8's depth assertions.
   - A dropped hostname in `CADDY_SITE_ADDRESSES` is caught by `test_studio_reachable`. Caddy answers a non-matching Host from an empty fallback server (`200 OK`, `Content-Length: 0`), so that test asserts a non-empty body; a status-only assertion would have passed either way, which is what it used to do.
-  - What remains is a console upstream emitting a *differing* value for a last-wins header. It requires an image bump that changes a value, on a surface with #108 item 6 as backstop. The `nosniff` risk is covered instead by making re-measurement a precondition when a pin moves — note `minio/minio` is pinned by tag, not digest (unlike `minio/mc` beside it), so a re-pushed tag moves that image without moving the pin.
+  - What remains is a console upstream emitting a *differing* value for a last-wins header. It requires an image bump that changes a value, on a surface with #108 item 6 as backstop. The `nosniff` risk is covered instead by making re-measurement a precondition when a pin moves. Both console images are digest-pinned, so a re-pushed tag cannot move either without this repo changing.
   - A multi-hostname CI value would change the environment shape for every test in that job, which is a poor trade for the above.
 
 ### Measured, not assumed
@@ -45,4 +45,4 @@
 - [ ] 3.3 Re-measure the console images under all five headers whenever the Studio or MinIO pin moves — the standing precondition that replaces multi-hostname CI coverage (see 2.10)
 - [ ] 3.4 Studio access control — pre-existing gap, mitigated but not fixed by the anti-framing headers; #108 item 6's IP allowlist is the durable backstop. Detail in the private tracker
 - [ ] 3.5 `Content-Disposition` hardening for user-uploaded objects served via `/api/storage/v1/object/public/*` — `nosniff` does not address an attacker-declared `Content-Type`, so this is its own change rather than something the header block covers (named here because 3.1 and 3.2 are, and this was previously a non-goal with no follow-up)
-- [ ] 3.6 Digest-pin `minio/minio`, matching the convention `minio/mc` already uses, so 3.3's re-measurement precondition cannot be bypassed by a re-pushed tag
+- [x] 3.6 Digest-pin the console images — done in this change. `minio/minio` and `supabase/studio` were both tag-only, so a re-pushed tag could move either without this repo changing, which would silently bypass 3.3's re-measurement precondition
