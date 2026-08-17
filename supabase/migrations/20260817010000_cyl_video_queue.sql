@@ -25,7 +25,8 @@ BEGIN
 END
 $$;
 -- ALTER FUNCTION ... OWNER TO below needs the applier to be a member of the new
--- owner, and the new owner to hold CREATE on the function's schema.
+-- owner, and the new owner to hold CREATE on the function's schema. The CREATE is
+-- revoked again at the end of section 5, once the ownership transfer has used it.
 GRANT bloom_video_queue_owner TO CURRENT_USER;
 GRANT CREATE ON SCHEMA public TO bloom_video_queue_owner;
 
@@ -289,6 +290,13 @@ GRANT EXECUTE ON FUNCTION public.claim_cyl_video_job(integer, integer) TO bloom_
 GRANT EXECUTE ON FUNCTION public.complete_cyl_video_job(uuid, bigint, text) TO bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.fail_cyl_video_job(uuid, bigint, text) TO bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.cyl_video_queue_stats() TO bloom_workflows;
+
+-- Hand back the DDL right granted in section 1. The role only ever needed it so the
+-- ALTER FUNCTION ... OWNER TO statements above could land; leaving it would give the
+-- identity every wrapper executes as CREATE on the PostgREST-exposed schema. Safe to
+-- re-apply: CREATE OR REPLACE FUNCTION checks CREATE against the applier, not the
+-- owner, and ALTER ... OWNER TO short-circuits when the owner already matches.
+REVOKE CREATE ON SCHEMA public FROM bloom_video_queue_owner;
 
 -- The definer role's access to pgmq's own tables lives in
 -- supabase/grants/schema_grants.sql: pgmq's queue tables are owned by supabase_admin,
