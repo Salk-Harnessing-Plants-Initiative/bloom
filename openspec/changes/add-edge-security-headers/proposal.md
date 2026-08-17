@@ -15,6 +15,7 @@ This change covers only the headers that carry no runtime risk. HSTS and CSP `sc
   - `Referrer-Policy: strict-origin-when-cross-origin` — stop experiment paths leaking in `Referer`
   - `Permissions-Policy: camera=(), microphone=(), geolocation=()` — disable unused browser features
   - `Cross-Origin-Opener-Policy: same-origin-allow-popups` — stop a page that opens Bloom in a popup from scripting that window
+  - `Cross-Origin-Resource-Policy: same-origin` — stop another site loading Bloom's images and files into its pages
 - No changes to any service, client, or request path. These are response headers; callers send nothing new and non-browser callers (bloomctl, MCP clients, Kong) ignore them.
 
 **Not in this change**, each for a specific reason:

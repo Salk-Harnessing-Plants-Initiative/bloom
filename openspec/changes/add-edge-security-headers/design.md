@@ -66,6 +66,16 @@ The anti-framing headers cover embedding; neither covers a page that opens Bloom
 `allow-popups` rather than the stricter `same-origin` because this block also covers Studio and the MinIO console. It severs the link when another site opens one of ours — the attack — while leaving popups those consoles open themselves working, so no measurement of third-party UIs is required to ship it safely. bloom-web calls `window.open` nowhere, so the two values are identical for it.
 *Alternatives considered:* `same-origin`, which additionally enables cross-origin isolation. Rejected as unnecessary — nothing here needs `SharedArrayBuffer` — and it would put unmeasured constraints on two consoles this project does not build.
 
+**Decision: `Cross-Origin-Resource-Policy: same-origin`.**
+Stops another site loading Bloom's images and files into its own pages. Deferred at first, on the grounds that `web/next.config.js` lists image sources on `api.bloom.salk.edu` and `api.bloom-staging.salkhpi.org`, which `same-origin` would block. Checked rather than assumed, and the concern does not hold:
+
+- Those entries are `remotePatterns`, which apply only to Next.js `<Image>`. Storage images do not use it — `plant-image.tsx` has the `next/image` import commented out and renders a plain `<img>`, and `illustration.tsx` does the same. No runtime code references either `api.*` host.
+- Both deployments report storage on the origin they are served from. `/api/client-info` returns `https://bloom.salk.edu/api` on prod and `https://staging.bloom.salk.edu:8443/api` on staging — same scheme, host and port as the app in each case.
+- Loading the staging login page issued 30 requests — HTML, fonts, every JS and CSS chunk, 11 images — all from the app's own origin.
+
+The header restricts others loading our resources, not us loading theirs, so the outbound OrthoBrowser iframe and JBrowse's S3 data are unaffected at any value.
+*Alternatives considered:* `same-site`, which would also permit subdomains. Unnecessary given the measurement, and strictly weaker. An origin allow-list is not possible — the header takes only `same-origin`, `same-site` or `cross-origin`; per-origin control belongs in CSP `img-src` on the consuming page.
+
 **Decision: `Permissions-Policy` restricts only `camera`, `microphone`, `geolocation`.**
 `fullscreen` is deliberately left enabled: the OrthoBrowser iframe sets `allowFullScreen`, and restricting it would break that page.
 *Alternatives considered:* a broader deny-list covering every powerful feature. Rejected — the marginal benefit is near zero, and each additional entry is another chance to break a working surface.

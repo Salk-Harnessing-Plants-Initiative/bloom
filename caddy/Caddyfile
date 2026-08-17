@@ -79,6 +79,8 @@
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
 		# Stops a site that opens Bloom in a popup from scripting that window.
 		Cross-Origin-Opener-Policy same-origin-allow-popups
+		# Stops other sites embedding our images; everything we serve is same-origin.
+		Cross-Origin-Resource-Policy same-origin
 	}
 
 	# -------------------

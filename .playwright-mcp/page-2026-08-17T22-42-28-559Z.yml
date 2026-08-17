@@ -1,0 +1,102 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e4]:
+      - img "Wheat" [ref=e5]
+      - tooltip "Wheat":
+        - strong: Wheat
+    - generic [ref=e6]:
+      - img "Amaranth" [ref=e7]
+      - tooltip "Amaranth":
+        - strong: Amaranth
+    - generic [ref=e8]:
+      - img "Spinach" [ref=e9]
+      - tooltip "Spinach":
+        - strong: Spinach
+    - generic [ref=e10]:
+      - img "Alfalfa" [ref=e11]
+      - tooltip "Alfalfa":
+        - strong: Alfalfa
+    - generic [ref=e12]:
+      - img "Rice" [ref=e13]
+      - tooltip "Rice":
+        - strong: Rice
+    - generic [ref=e14]:
+      - img "Pennycress" [ref=e15]
+      - tooltip "Pennycress":
+        - strong: Pennycress
+    - generic [ref=e16]:
+      - img "Soybean" [ref=e17]
+      - tooltip "Soybean":
+        - strong: Soybean
+    - generic [ref=e18]:
+      - img "Sorghum" [ref=e19]
+      - tooltip "Sorghum":
+        - strong: Sorghum
+    - generic [ref=e20]:
+      - img "Tomato" [ref=e21]
+      - tooltip "Tomato":
+        - strong: Tomato
+    - generic [ref=e22]:
+      - img "Canola" [ref=e23]
+      - tooltip "Canola":
+        - strong: Canola
+    - generic:
+      - link "SALK HPI ↗" [ref=e24] [cursor=pointer]:
+        - /url: https://www.salk.edu/harnessing-plants-initiative/
+      - generic:
+        - generic:
+          - generic:
+            - img "Bloom"
+            - generic: Bloom
+          - paragraph: THE DATA PLATFORM
+          - heading "From the Salk Harnessing Plants Initiative." [level=1]:
+            - text: From the
+            - emphasis: Salk
+            - text: Harnessing Plants Initiative.
+          - paragraph: Phenotyping scans, single-cell expression, gene candidates, and eight years of field work from the Salk Harnessing Plants Initiative.
+        - generic [ref=e25]:
+          - heading "Sign in to Bloom" [level=2] [ref=e26]
+          - paragraph [ref=e27]:
+            - text: No account yet?
+            - button "Sign up" [ref=e28] [cursor=pointer]
+          - generic [ref=e29]: Salk email
+          - generic [ref=e30]:
+            - textbox "Salk email" [ref=e31]:
+              - /placeholder: your-login
+            - generic [ref=e32]: "@salk.edu"
+          - generic [ref=e33]: Password
+          - textbox "Password" [ref=e35]
+          - generic [ref=e36]:
+            - generic [ref=e37] [cursor=pointer]:
+              - checkbox "Keep me signed in" [checked] [ref=e38]
+              - text: Keep me signed in
+            - link "Forgot password?" [ref=e39] [cursor=pointer]:
+              - /url: /forgot-password
+          - button "Sign in" [ref=e40] [cursor=pointer]
+      - generic [ref=e41]:
+        - generic [ref=e42]:
+          - generic [ref=e43]: "16"
+          - generic [ref=e44]:
+            - generic [ref=e45]: SPECIES
+            - generic [ref=e46]: Engineered for deeper roots, more suberin
+        - generic [ref=e47]:
+          - generic [ref=e48]: "235"
+          - generic [ref=e49]: EXPERIMENTS
+        - generic [ref=e51]:
+          - generic [ref=e52]: "131"
+          - generic [ref=e53]:
+            - generic [ref=e54]: GENE CANDIDATES
+            - generic [ref=e55]: Orthologs, progress, notes
+        - generic [ref=e56]:
+          - generic [ref=e57]: "11"
+          - generic [ref=e58]:
+            - generic [ref=e59]: EXPRESSION ATLASES
+            - generic [ref=e60]: Single-cell RNA · UMAPs, DE
+      - generic:
+        - generic: © 2026 Salk Institute · HPI
+        - generic:
+          - link "About HPI" [ref=e61] [cursor=pointer]:
+            - /url: https://www.salk.edu/harnessing-plants-initiative/
+          - link "Support" [ref=e62] [cursor=pointer]:
+            - /url: mailto:dbutler@salk.edu?subject=Bloom%20support
+  - alert [ref=e63]

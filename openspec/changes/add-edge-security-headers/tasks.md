@@ -10,6 +10,7 @@
 
 - [x] 1.1 Add a site-level `header` block to `caddy/Caddyfile`, after the `tls` directive and ahead of the `@main`/`@studio`/`@minio` matchers, setting `X-Content-Type-Options`, `X-Frame-Options`, `Content-Security-Policy: frame-ancestors 'none'`, `Referrer-Policy`, and `Permissions-Policy`
 - [x] 1.3 Add `Cross-Origin-Opener-Policy: same-origin-allow-popups`. `allow-popups` rather than `same-origin` because the block also covers Studio and the MinIO console: it severs the link when another site opens one of ours, which is the attack, while leaving popups those consoles open themselves working. bloom-web calls `window.open` nowhere, so the two values are identical for it
+- [x] 1.4 Add `Cross-Origin-Resource-Policy: same-origin`, after confirming against both running deployments that storage is served from the application's own origin, so nothing Bloom displays is cross-origin
 - [x] 1.2 Comment the block with why HSTS is absent and why `fullscreen` is omitted from `Permissions-Policy`, so neither omission reads as an oversight
 
 ## 2. Verification

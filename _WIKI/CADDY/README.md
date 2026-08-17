@@ -83,7 +83,7 @@ basic-auth gate existed: the Studio hostname has to be listed for a request carr
 
 ## Security headers
 
-Caddy sets six response headers on every request it serves. They are declared once as a `header` block at site level — after the `tls` directive, before the `@main` / `@studio` / `@minio` host matchers — so all three hostnames inherit them from that single declaration.
+Caddy sets seven response headers on every request it serves. They are declared once as a `header` block at site level — after the `tls` directive, before the `@main` / `@studio` / `@minio` host matchers — so all three hostnames inherit them from that single declaration.
 
 | Header                                                  | What it prevents                                                                    |
 | ------------------------------------------------------- | ----------------------------------------------------------------------------------- |
@@ -93,6 +93,7 @@ Caddy sets six response headers on every request it serves. They are declared on
 | `Referrer-Policy: strict-origin-when-cross-origin`      | Experiment identifiers in URLs leaking to third parties via `Referer`                |
 | `Permissions-Policy: camera=(), microphone=(), geolocation=()` | Use of browser features bloom does not need                                   |
 | `Cross-Origin-Opener-Policy: same-origin-allow-popups`  | A site that opens bloom in a popup being able to script that window                 |
+| `Cross-Origin-Resource-Policy: same-origin`             | Another site loading bloom's images and files into its own pages                    |
 
 ### Why site level, not per host
 

@@ -115,6 +115,25 @@ Every HTTP response Caddy serves SHALL carry `Cross-Origin-Opener-Policy: same-o
 - **THEN** those govern embedding a Bloom page in a frame
 - **AND** this governs holding a window reference to it, which framing headers do not address
 
+### Requirement: Cross-Origin Resource Restriction
+
+Every HTTP response Caddy serves SHALL carry `Cross-Origin-Resource-Policy: same-origin`, so a page on another origin cannot load a Bloom-served file into itself.
+
+#### Scenario: Another origin cannot embed a Bloom-served file
+
+- **WHEN** a page on another origin references a Bloom image or file as a subresource
+- **THEN** the browser refuses to load it
+
+#### Scenario: Bloom's own images continue to load
+
+- **WHEN** a Bloom page displays a stored image
+- **THEN** it loads, because storage is served from the same origin as the application in every environment
+
+#### Scenario: Outbound loads are unaffected
+
+- **WHEN** a Bloom page loads a resource hosted by a third party
+- **THEN** the header does not apply, because it governs who may load Bloom's resources rather than what Bloom may load
+
 ### Requirement: Uniform Coverage From A Single Declaration
 
 The security headers SHALL be declared once at site level, ahead of the per-host routing matchers, so every hostname Caddy serves inherits them from that one declaration rather than a per-host copy.
