@@ -114,11 +114,11 @@ The security headers SHALL be declared once at site level, ahead of the per-host
 - **THEN** it carries the same five headers as the main hostname
 - **AND** no separate declaration is needed to achieve that
 
-#### Scenario: Console coverage closes a gap Kong does not
+#### Scenario: Console coverage is deliberate, not incidental
 
-- **WHEN** the reason for covering Supabase Studio is reviewed
-- **THEN** it rests on Studio being reachable through Caddy without traversing Kong, so Kong's `basic-auth` on the `dashboard` route does not apply to that path
-- **AND** the anti-framing headers are therefore what stops an off-network attacker using an on-network browser to frame an internal console
+- **WHEN** the reason for covering the administrative console hostnames is reviewed
+- **THEN** it rests on those consoles having their own tracked access-control work, so edge headers carry more weight there than on the main hostname
+- **AND** covering them is therefore a deliberate part of this decision rather than a side effect of site-level placement
 
 #### Scenario: Moving the block under a host matcher is a regression
 

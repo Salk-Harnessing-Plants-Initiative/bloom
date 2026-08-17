@@ -27,7 +27,7 @@ The driver is issue #108 item 1, brought forward by the plan to expose bloom-web
 **Decision: Declare the headers once at site level, covering all three hostnames.**
 One `header` block after the `tls` directive and ahead of the `@main`/`@studio`/`@minio` matchers, so every hostname inherits it from a single declaration.
 
-The deciding factor is Supabase Studio. Reaching it through Caddy does not traverse Kong, so Kong's `basic-auth` on the `dashboard` route does not apply to that path — the anti-framing headers are the only thing standing between an off-network attacker and an on-network browser being used to frame an internal admin console. Scoping the block to the main hostname would leave that gap open while looking complete.
+The deciding factor is Supabase Studio. It is an administrative console whose access control is tracked separately (#108 item 6), so the anti-framing headers are load-bearing there in a way they are not on the main hostname. Scoping the block to the main hostname would leave that gap open while looking complete.
 
 The consoles were measured before being covered, because `nosniff` causes a browser to *hard-refuse* a script whose `Content-Type` is not a JavaScript type, or a stylesheet that is not `text/css` — extending coverage to a UI we do not build would otherwise be unsafe to assume. Against the image pins prod actually runs, both are clean:
 
@@ -43,9 +43,9 @@ For bloom-web the same risk was checked and eliminated (see the pre-flight in `t
 Site level also means Caddy applies the headers ahead of the handler chain, so synthetic responses and upstream-error responses carry them too — a per-route copy would have to remember each one.
 
 *Alternatives considered:*
-- *A `header` block inside `handle @main`* — the original shape of this change, rejected on review. It leaves Studio and MinIO bare, which matters precisely because Studio bypasses Kong's auth, and it needs a comment justifying an exclusion that the measurement above shows is unnecessary. Site level deletes both the gap and the explanation.
+- *A `header` block inside `handle @main`* — the original shape of this change, rejected on review. It leaves Studio and MinIO bare, which matters precisely because those consoles have their own tracked access-control work, and it needs a comment justifying an exclusion that the measurement above shows is unnecessary. Site level deletes both the gap and the explanation.
 - *Site-level placement minus `nosniff` for the console hostnames* — moot given the measurement; it existed only to route around a risk that turned out not to exist.
-- *Relying on the Cloudflare Tunnel instead* — the tunnel maps only bloom-web's hostname, so the consoles are not publicly routable today. Rejected as a reason to omit the headers: it is a control that can change without anyone revisiting this file, and the headers cost nothing to apply.
+- *Relying on network-level reachability limits instead* — rejected as a reason to omit the headers: that is a control which can change without anyone revisiting this file, and the headers cost nothing to apply.
 
 **Decision: Include `Content-Security-Policy: frame-ancestors 'none'` alongside `X-Frame-Options`.**
 `frame-ancestors` is the standards-track directive; XFO is the legacy one that older clients still honour. Sending both covers each population, and neither depends on the nonce work that blocks `script-src`.
@@ -82,5 +82,5 @@ The header governs who may frame Bloom, not what Bloom may frame. `web/app/app/o
 
 ## Open Questions
 
-- Should CI exercise the multi-hostname claim? Asked and answered: no. CI sets `CADDY_SITE_ADDRESSES` to a single host, so Studio and MinIO requests never enter the site block, and `HEADER_ROUTES` lists only main-hostname paths — the contract is pinned as config shape but never as behaviour. Accepted, because the regression that matters is caught by the brace-depth assertion, a dropped wildcard would take the consoles offline rather than silently bare, and the residual case needs a value-changing image bump on a surface the tunnel never maps. A multi-hostname CI value would change the environment shape for every test in that job. See task 2.10.
-- Does Studio's Kong-bypass warrant its own fix? The anti-framing headers mitigate the symptom; the underlying gap is that reaching Studio through Caddy skips Kong's `basic-auth` on the `dashboard` route. Pre-existing and filed separately — #108 item 6's IP allowlist is the durable backstop.
+- Should CI exercise the multi-hostname claim? Asked and answered: no. CI sets `CADDY_SITE_ADDRESSES` to a single host, so Studio and MinIO requests never enter the site block, and `HEADER_ROUTES` lists only main-hostname paths — the contract is pinned as config shape but never as behaviour. Accepted, because the regression that matters is caught by the depth assertions, and a dropped hostname is caught by `test_studio_reachable`, which asserts a body rather than a bare 200. A multi-hostname CI value would change the environment shape for every test in that job. See task 2.10.
+- Does Studio's access-control gap warrant its own fix? The anti-framing headers mitigate a symptom, not the cause. Pre-existing and filed separately — #108 item 6's IP allowlist is the durable backstop.
