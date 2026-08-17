@@ -93,6 +93,14 @@ CREATE POLICY cyl_scan_videos_queue_definer ON public.cyl_scan_videos
 -- SECURITY DEFINER so they run as bloom_video_queue_owner (which can reach pgmq);
 -- bloom_workflows only ever gets EXECUTE. search_path is pinned to avoid capture.
 
+-- CREATE OR REPLACE cannot change a RETURNS TABLE shape, and a different arity creates a
+-- second overload rather than replacing. Drop first so this migration applies cleanly to a
+-- database carrying an earlier draft of these functions, and so a later column addition
+-- doesn't hit the same wall. EXECUTE grants and the owner pin are re-applied below.
+DROP FUNCTION IF EXISTS public.claim_cyl_video_job(integer, integer);
+DROP FUNCTION IF EXISTS public.cyl_video_queue_stats();
+DROP FUNCTION IF EXISTS public.fail_cyl_video_job(uuid, bigint, text, integer);
+
 -- enqueue: idempotent per scan — reuse an in-flight job instead of piling up.
 CREATE OR REPLACE FUNCTION public.enqueue_cyl_video(p_scan_id bigint, p_experiment_id bigint)
 RETURNS uuid
