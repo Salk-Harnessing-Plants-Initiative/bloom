@@ -1,0 +1,86 @@
+## Context
+
+Caddy fronts every hostname in the stack from a single site block whose listen addresses come from `CADDY_SITE_ADDRESSES`. Per-hostname routing happens inside that block via `@matcher host X` + `handle @matcher` for `DOMAIN_MAIN`, `DOMAIN_STUDIO`, and `DOMAIN_MINIO`.
+
+Two of those hostnames serve third-party UIs we do not control (Supabase Studio, MinIO console). One serves bloom-web plus several non-browser API surfaces (`/api/*` → Kong, `/langchain/*`, `/bloommcp/*`, `/workflows/*`).
+
+The driver is issue #108 item 1, brought forward by the plan to expose bloom-web beyond Salk's network. Today an attacker who steals a session cannot use it, because they cannot reach Bloom. That is the control currently doing the work; these headers begin replacing it.
+
+## Goals / Non-Goals
+
+**Goals**
+
+- Set the five security headers on every hostname Caddy serves, from a single declaration, having verified each surface against them.
+- Carry no risk of refusing an asset on any surface, rather than deferring that risk to a post-deploy check.
+- Keep the change revertible with no client-side residue.
+- Establish the `edge-security-headers` capability that HSTS and CSP will extend.
+
+**Non-Goals**
+
+- CSP `script-src` and HSTS (separate changes, deliberately). `frame-ancestors` ships here; it is the one CSP directive that needs no nonce work.
+- Fixing the DOM XSS sink at `web/components/expression-multigene-dotplot.tsx:276`, where a D3 datum is interpolated into `innerHTML`. That is a real bug, not a header concern, and is tracked separately — CSP should not be used to paper over it.
+- `Content-Disposition` hardening for user-uploaded objects served via `/api/storage/v1/*`. `nosniff` does not address attacker-declared `Content-Type`; that needs its own change.
+- Rate limiting (#108 item 2) and Studio/MinIO access control (#108 item 6).
+
+## Decisions
+
+**Decision: Declare the headers once at site level, covering all three hostnames.**
+One `header` block after the `tls` directive and ahead of the `@main`/`@studio`/`@minio` matchers, so every hostname inherits it from a single declaration.
+
+The deciding factor is Supabase Studio. Reaching it through Caddy does not traverse Kong, so Kong's `basic-auth` on the `dashboard` route does not apply to that path — the anti-framing headers are the only thing standing between an off-network attacker and an on-network browser being used to frame an internal admin console. Scoping the block to the main hostname would leave that gap open while looking complete.
+
+The consoles were measured before being covered, because `nosniff` causes a browser to *hard-refuse* a script whose `Content-Type` is not a JavaScript type, or a stylesheet that is not `text/css` — extending coverage to a UI we do not build would otherwise be unsafe to assume. Against the image pins prod actually runs, both are clean:
+
+| Surface | Image | Result |
+| --- | --- | --- |
+| Supabase Studio | `2026.03.30-sha-12a43e5` | 92/92 assets correctly typed (`application/javascript`, `text/css`) |
+| MinIO console | `RELEASE.2025-01-20T14-49-07Z` | 3/3 correctly typed |
+
+Neither serves nor dynamically creates an `<iframe>`, so `X-Frame-Options: DENY` does not break them either.
+
+For bloom-web the same risk was checked and eliminated (see the pre-flight in `tasks.md`): no dynamic script or stylesheet loading exists, Next.js types its own assets correctly, storage objects are consumed as images, and client-side exports never traverse Caddy.
+
+Site level also means Caddy applies the headers ahead of the handler chain, so synthetic responses and upstream-error responses carry them too — a per-route copy would have to remember each one.
+
+*Alternatives considered:*
+- *A `header` block inside `handle @main`* — the original shape of this change, rejected on review. It leaves Studio and MinIO bare, which matters precisely because Studio bypasses Kong's auth, and it needs a comment justifying an exclusion that the measurement above shows is unnecessary. Site level deletes both the gap and the explanation.
+- *Site-level placement minus `nosniff` for the console hostnames* — moot given the measurement; it existed only to route around a risk that turned out not to exist.
+- *Relying on the Cloudflare Tunnel instead* — the tunnel maps only bloom-web's hostname, so the consoles are not publicly routable today. Rejected as a reason to omit the headers: it is a control that can change without anyone revisiting this file, and the headers cost nothing to apply.
+
+**Decision: Include `Content-Security-Policy: frame-ancestors 'none'` alongside `X-Frame-Options`.**
+`frame-ancestors` is the standards-track directive; XFO is the legacy one that older clients still honour. Sending both covers each population, and neither depends on the nonce work that blocks `script-src`.
+
+On the MinIO hostname this arrives beside the console's own CSP. Browsers enforce every CSP header present, admitting only what all of them allow, so the pair is strictly more restrictive than either alone — `frame-ancestors 'none'` holds and MinIO's `default-src`/`script-src` policy is untouched. This is the one duplicated header whose two values differ; the other three duplicate byte-identically.
+
+**Decision: Set the headers at the edge, not in `next.config.js`.**
+Caddy covers Studio and MinIO too; Next.js would cover only bloom-web.
+*Alternatives considered:* Next.js `headers()`, rejected as strictly narrower coverage for the same effort.
+
+**Decision: `X-Frame-Options: DENY`, not `SAMEORIGIN`.**
+The header governs who may frame Bloom, not what Bloom may frame. `web/app/app/orthofinder/page.tsx:32` embeds an external OrthoBrowser — that is outbound and unaffected. No bloom-web page frames another bloom-web page, so `DENY` costs nothing over `SAMEORIGIN` and closes same-origin framing chains as well.
+*Alternatives considered:* `SAMEORIGIN`, which would be the safer default if Studio or MinIO self-frames. Chosen against because the failure is immediate, obvious, and revertible; see Risks.
+
+**Decision: `Permissions-Policy` restricts only `camera`, `microphone`, `geolocation`.**
+`fullscreen` is deliberately left enabled: the OrthoBrowser iframe sets `allowFullScreen`, and restricting it would break that page.
+*Alternatives considered:* a broader deny-list covering every powerful feature. Rejected — the marginal benefit is near zero, and each additional entry is another chance to break a working surface.
+
+## Risks / Trade-offs
+
+- **Third-party consoles breaking under `nosniff` or `DENY`.** The headers now do reach them, so this is a live risk rather than a hypothetical one. → Measured clean against the pins production runs (table above), and re-measurement is required if either pin moves — the spec makes that a precondition rather than a suggestion.
+- **A future refactor moves the block under a host matcher.** Studio and MinIO would silently lose every header, with no error and no failing request — the failure is invisible from the outside. → `tests/unit/test_caddy_security_headers.py` locates the block by brace-matched depth and fails if it moves inside a nested `handle`.
+- **An upstream starts emitting one of these headers with a different value.** `Referrer-Policy` and `Permissions-Policy` resolve last-wins, so an upstream's value would silently override the edge's, and a presence-only check would report that broken state as healthy. → The integration test asserts with `get_all` and pins exact values, so a divergent duplicate fails rather than passing quietly.
+- **`Permissions-Policy` has uneven browser support and a syntax that changed during standardisation.** → Unsupported browsers ignore it; the syntax used here is the current structured form. Low impact either way given it is the weakest of the five.
+- **These headers create an impression of coverage they do not provide.** They do not address server-side compromise (e.g. a CVE reached through 443), which is what actually happened to this host previously. → Recorded here explicitly; the mitigations for that class are image patching, surface reduction, and rate limiting, none of which this change touches.
+
+## Migration Plan
+
+1. Merge; Caddy picks the config up on reload — no image rebuild required.
+2. Verify all five headers are present on the main hostname (`curl -I`).
+3. Verify they are present on the Studio and MinIO hostnames too, confirming the site-level declaration is inherited rather than main-only.
+4. Confirm bloom-web renders normally, with no blocked script or stylesheet errors in the browser console.
+5. **Rollback:** revert the commit and reload. No client-cached state, so rollback is immediate and complete.
+
+## Open Questions
+
+- Should CI exercise the multi-hostname claim? It cannot today: CI sets `CADDY_SITE_ADDRESSES` to a single host, so Studio and MinIO requests never enter the site block, and `HEADER_ROUTES` lists only main-hostname paths. The site-level contract is pinned as config shape but never as behaviour. Closing that means a multi-hostname CI value plus studio/minio `Host` coverage in the integration test — a change to CI's environment shape, so tracked separately rather than folded in here.
+- Does Studio's Kong-bypass warrant its own fix? The anti-framing headers mitigate the symptom; the underlying gap is that reaching Studio through Caddy skips Kong's `basic-auth` on the `dashboard` route. Pre-existing and filed separately — #108 item 6's IP allowlist is the durable backstop.
