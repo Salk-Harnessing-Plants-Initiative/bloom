@@ -122,18 +122,18 @@ The security headers SHALL be declared once at site level, ahead of the per-host
 #### Scenario: Every route on the main hostname carries the headers
 
 - **WHEN** any path on the main application hostname is served, whether by bloom-web, Kong, the LangChain agent, bloommcp, or the workflows API
-- **THEN** the response carries all five security headers
+- **THEN** the response carries every security header in the block
 - **AND** they originate from a single declaration rather than a per-route copy
 
 #### Scenario: Responses Caddy generates itself are covered
 
 - **WHEN** Caddy answers with a synthetic status of its own, or with an error because an upstream is unreachable
-- **THEN** the response still carries all five headers, because they are applied ahead of the handler chain
+- **THEN** the response still carries every header in the block, because they are applied ahead of the handler chain
 
 #### Scenario: The console hostnames are covered too
 
 - **WHEN** a response is served for the Supabase Studio or MinIO console hostname
-- **THEN** it carries the same five headers as the main hostname
+- **THEN** it carries the same headers as the main hostname
 - **AND** no separate declaration is needed to achieve that
 
 #### Scenario: Console coverage is deliberate, not incidental

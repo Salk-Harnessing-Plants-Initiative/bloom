@@ -4,7 +4,7 @@
 - [x] 0.2 Confirm storage objects are consumed in ways `nosniff` does not block: species illustrations via signed URL with image transform (`illustration.tsx`), videos uploaded with an explicit `video/mp4`. Note one path is a top-level navigation rather than a subresource — `experiment-log-images` attachments render as `<a target="_blank">` (`geneCandidatesPage/Progress.tsx`), uploaded without an explicit `contentType`, so an object whose type resolves to `text/plain` will download rather than display under `nosniff`. Expected and correct; recorded so it is not debugged cold. See 3.5
 - [x] 0.3 Confirm client-side exports use `Blob` + `createObjectURL` (`blob:` URLs), which never traverse Caddy
 - [x] 0.4 Confirm bloomctl never inspects `Content-Type` — no references in `bloomcli/src`; the header cannot affect non-browser clients, which do not sniff
-- [x] 0.5 Measure Supabase Studio and MinIO console bundles against the image pins prod runs — Studio `2026.03.30-sha-12a43e5`: 92/92 assets correctly typed; MinIO `RELEASE.2025-01-20T14-49-07Z`: 3/3 correctly typed; neither serves nor dynamically creates an `<iframe>`. Both safe under all five headers, which is what makes site-level coverage viable
+- [x] 0.5 Measure Supabase Studio and MinIO console bundles against the image pins prod runs — Studio `2026.03.30-sha-12a43e5`: 92/92 assets correctly typed; MinIO `RELEASE.2025-01-20T14-49-07Z`: 3/3 correctly typed; neither serves nor dynamically creates an `<iframe>`. Both safe under all five headers measured, which is what makes site-level coverage viable. `Cross-Origin-Opener-Policy` was added afterwards and not re-measured against the consoles — `same-origin-allow-popups` was chosen precisely so it cannot affect them, since it restricts being opened rather than opening
 
 ## 1. Implementation
 
@@ -15,8 +15,8 @@
 ## 2. Verification
 
 - [x] 2.1 Validate Caddyfile syntax — `caddy validate` against the project's own image built from `caddy/Dockerfile` (the stock image cannot parse `tls { dns cloudflare }`): **Valid configuration**
-- [x] 2.2 Confirm all five headers are present on `DOMAIN_MAIN` — 5/5, verified against a running Caddy
-- [x] 2.3 Confirm all five are present on `DOMAIN_STUDIO` and `DOMAIN_MINIO` too, proving the site-level declaration is inherited rather than main-only — 5/5 on both
+- [x] 2.2 Confirm the headers are present on `DOMAIN_MAIN` — 5/5 verified by hand against a running Caddy; `Cross-Origin-Opener-Policy` landed later and is covered by 2.9's live assertions rather than a second manual pass
+- [x] 2.3 Confirm they are present on `DOMAIN_STUDIO` and `DOMAIN_MINIO` too, proving the site-level declaration is inherited rather than main-only — 5/5 on both by hand, and now asserted for every header in the block by the console tests in CI
 - [x] 2.4 Confirm coverage spans every handler declared under `handle @main`, not just the root — 5/5 headers on `/`, `/api/client-info`, `/api/oauth/consent`, `/api/cyl/*`, `/api/auth/v1/*`, `/langchain/*`, `/bloommcp/*`, `/workflows/health`, `/workflows/*`, and the RFC 9728 discovery path; applied on synthetic 404s and upstream-error responses too
 - [x] 2.5 Confirm bloom-web loads with no blocked script or stylesheet errors in the browser console — `/login` and `/app` against a prod-shaped stack: 55 resources, 13 JS bundles, 687 CSS rules applied, zero refused or empty transfers
 - [x] 2.6 Confirm the OrthoFinder page still renders its embedded OrthoBrowser iframe and that fullscreen still works — `index.html`, `pure.js`, `impure.js` and `metadata.json` all 200 from `resources.michael.salk.edu`; `document.featurePolicy.allowsFeature('fullscreen')` is `true`, confirming the deliberate omission of `fullscreen` is what preserves `allowFullScreen`
@@ -43,7 +43,7 @@
 
 - [ ] 3.1 `add-edge-hsts` — HSTS, landing with the public-exposure work
 - [ ] 3.2 `add-edge-csp` — nonce-based CSP `script-src`, requiring Next.js middleware
-- [ ] 3.3 Re-measure the console images under all five headers whenever the Studio or MinIO pin moves — the standing precondition that replaces multi-hostname CI coverage (see 2.10)
+- [ ] 3.3 Re-measure the console images under every header in the block whenever the Studio or MinIO pin moves — the standing precondition that replaces multi-hostname CI coverage (see 2.10)
 - [ ] 3.4 Studio access control — pre-existing gap, mitigated but not fixed by the anti-framing headers; #108 item 6's IP allowlist is the durable backstop. Detail in the private tracker
 - [ ] 3.5 `Content-Disposition` hardening for user-uploaded objects served via `/api/storage/v1/object/public/*` — `nosniff` does not address an attacker-declared `Content-Type`, so this is its own change rather than something the header block covers (named here because 3.1 and 3.2 are, and this was previously a non-goal with no follow-up)
 - [x] 3.6 Digest-pin the console images — done in this change. `minio/minio` and `supabase/studio` were both tag-only, so a re-pushed tag could move either without this repo changing, which would silently bypass 3.3's re-measurement precondition

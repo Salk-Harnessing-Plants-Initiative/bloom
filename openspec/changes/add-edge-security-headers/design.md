@@ -10,7 +10,7 @@ The driver is issue #108 item 1, brought forward by the plan to expose bloom-web
 
 **Goals**
 
-- Set the five security headers on every hostname Caddy serves, from a single declaration, having verified each surface against them.
+- Set the security headers on every hostname Caddy serves, from a single declaration, having verified each surface against them.
 - Carry no risk of refusing an asset on any surface, rather than deferring that risk to a post-deploy check.
 - Keep the change revertible with no client-side residue.
 - Establish the `edge-security-headers` capability that HSTS and CSP will extend.
@@ -60,6 +60,12 @@ Caddy covers Studio and MinIO too; Next.js would cover only bloom-web.
 The header governs who may frame Bloom, not what Bloom may frame. `web/app/app/orthofinder/page.tsx:32` embeds an external OrthoBrowser — that is outbound and unaffected. No bloom-web page frames another bloom-web page, so `DENY` costs nothing over `SAMEORIGIN` and closes same-origin framing chains as well.
 *Alternatives considered:* `SAMEORIGIN`, which would be the safer default if Studio or MinIO self-frames. Chosen against because the failure is immediate, obvious, and revertible; see Risks.
 
+**Decision: `Cross-Origin-Opener-Policy: same-origin-allow-popups`, not `same-origin`.**
+The anti-framing headers cover embedding; neither covers a page that opens Bloom with `window.open` and keeps a scriptable handle to that window. COOP severs that handle.
+
+`allow-popups` rather than the stricter `same-origin` because this block also covers Studio and the MinIO console. It severs the link when another site opens one of ours — the attack — while leaving popups those consoles open themselves working, so no measurement of third-party UIs is required to ship it safely. bloom-web calls `window.open` nowhere, so the two values are identical for it.
+*Alternatives considered:* `same-origin`, which additionally enables cross-origin isolation. Rejected as unnecessary — nothing here needs `SharedArrayBuffer` — and it would put unmeasured constraints on two consoles this project does not build.
+
 **Decision: `Permissions-Policy` restricts only `camera`, `microphone`, `geolocation`.**
 `fullscreen` is deliberately left enabled: the OrthoBrowser iframe sets `allowFullScreen`, and restricting it would break that page.
 *Alternatives considered:* a broader deny-list covering every powerful feature. Rejected — the marginal benefit is near zero, and each additional entry is another chance to break a working surface.
@@ -69,13 +75,13 @@ The header governs who may frame Bloom, not what Bloom may frame. `web/app/app/o
 - **Third-party consoles breaking under `nosniff` or `DENY`.** The headers now do reach them, so this is a live risk rather than a hypothetical one. → Measured clean against the pins production runs (table above), and re-measurement is required if either pin moves — the spec makes that a precondition rather than a suggestion.
 - **A future refactor moves the block under a host matcher.** Studio and MinIO would silently lose every header, with no error and no failing request — the failure is invisible from the outside. → `tests/unit/test_caddy_security_headers.py` locates the block by brace-matched depth and fails if it moves inside a nested `handle`.
 - **An upstream starts emitting one of these headers with a different value.** `Referrer-Policy` and `Permissions-Policy` resolve last-wins, so an upstream's value would silently override the edge's, and a presence-only check would report that broken state as healthy. → The integration test asserts with `get_all` and pins exact values, so a divergent duplicate fails rather than passing quietly.
-- **`Permissions-Policy` has uneven browser support and a syntax that changed during standardisation.** → Unsupported browsers ignore it; the syntax used here is the current structured form. Low impact either way given it is the weakest of the five.
+- **`Permissions-Policy` has uneven browser support and a syntax that changed during standardisation.** → Unsupported browsers ignore it; the syntax used here is the current structured form. Low impact either way given it is the weakest of the set.
 - **These headers create an impression of coverage they do not provide.** They do not address server-side compromise (e.g. a CVE reached through 443), which is what actually happened to this host previously. → Recorded here explicitly; the mitigations for that class are image patching, surface reduction, and rate limiting, none of which this change touches.
 
 ## Migration Plan
 
 1. Merge; Caddy picks the config up on reload — no image rebuild required.
-2. Verify all five headers are present on the main hostname (`curl -I`).
+2. Verify every header in the block is present on the main hostname (`curl -I`).
 3. Verify they are present on the Studio and MinIO hostnames too, confirming the site-level declaration is inherited rather than main-only.
 4. Confirm bloom-web renders normally, with no blocked script or stylesheet errors in the browser console.
 5. **Rollback:** revert the commit and reload. No client-cached state, so rollback is immediate and complete.

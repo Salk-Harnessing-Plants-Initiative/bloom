@@ -211,7 +211,7 @@ def console_responses(api_headers):
 @pytest.mark.parametrize("host", CONSOLE_HOSTS)
 @pytest.mark.parametrize("name,value", sorted(SECURITY_HEADERS.items()))
 def test_security_headers_on_console_hostnames(console_responses, host, name, value):
-    """The consoles inherit all five headers from the site-level declaration.
+    """The consoles inherit every header in the block from the site-level declaration.
 
     This is the assertion the config-shape test cannot make: that the block
     genuinely reaches hostnames other than the main one. The MinIO console

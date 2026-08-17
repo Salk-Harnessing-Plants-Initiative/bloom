@@ -83,7 +83,7 @@ basic-auth gate existed: the Studio hostname has to be listed for a request carr
 
 ## Security headers
 
-Caddy sets five response headers on every request it serves. They are declared once as a `header` block at site level — after the `tls` directive, before the `@main` / `@studio` / `@minio` host matchers — so all three hostnames inherit them from that single declaration.
+Caddy sets six response headers on every request it serves. They are declared once as a `header` block at site level — after the `tls` directive, before the `@main` / `@studio` / `@minio` host matchers — so all three hostnames inherit them from that single declaration.
 
 | Header                                                  | What it prevents                                                                    |
 | ------------------------------------------------------- | ----------------------------------------------------------------------------------- |
