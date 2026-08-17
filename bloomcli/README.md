@@ -241,6 +241,15 @@ bloomctl cyl download ./check --experiment-id 42 --plant-qr-code QR-1   # one pl
 bloomctl cyl download ./full  --experiment-id 42                        # everything
 ```
 
+**And one scan method per directory.** `cyl download` and `plate download` refuse each other's
+directories, reported as `method was 'cyl', now 'plate'`. The two record different things — a
+`scans.csv` against a `plates.csv`, frames against captures — and their ids are separate
+sequences, so the same number means different rows. Give each method its own directory.
+
+> **A directory written by bloomctl 0.1.0a5 or earlier carries no method.** It reads as a
+> `cyl download`, which is what it can only have been, so those directories keep resuming
+> under `cyl` and are refused by `plate`.
+
 > **If the directory was written by bloomctl 0.1.0a3 or earlier**, download the experiment again
 > into a new directory. Those releases wrote frames non-atomically, so an interrupted run could
 > leave a truncated file behind, and resume treats any non-empty file as complete.
@@ -304,7 +313,7 @@ out/
   plates.csv                 one row per scan, with an image_path column
   plate_sections.csv         one row per (section, plant QR) — only if the plates carry metadata
   download_log.txt           one line per capture, plus a summary
-  .bloomctl-download.json    which selection this directory holds
+  .bloomctl-download.json    which selection and scan method this directory holds
   images/
     Wave3/
       PLATE-001/

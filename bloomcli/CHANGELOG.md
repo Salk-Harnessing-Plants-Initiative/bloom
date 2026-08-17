@@ -45,13 +45,24 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   cylinder command: object fetching and retry, atomic writes, resume, bounded concurrency,
   disk-full handling, collision detection, progress and logging moved to `bloomctl/_download.py`
   and `bloomctl/_storage.py`. Queries, CSV columns, path layout and the per-scan loop stay with
-  each method. No behaviour change to `cyl download`. The storage bucket is now a required
-  argument rather than a default, so no command can read another's bucket.
+  each method. The storage bucket is now a required argument rather than a default, so no
+  command can read another's bucket. `cyl download`'s observable behaviour is unchanged apart
+  from the genotype batching noted below.
+- `cyl download` fetches genotypes in batches rather than as a single `in_()` query. An
+  experiment with enough accessions built a request URL long enough for PostgREST to reject,
+  failing the whole download; the batched form cannot. The output is identical.
 - A download directory now records which scan method filled it, and a download from the other
   is refused instead of resuming into it. The two commands share the directory's layout but not
   its meaning — scan id 5 is a different row on each — so without this a `plate download` into a
   `cyl download` directory looked like the same selection and overwrote its log. Directories
   written before this release carry no method and still resume under `cyl download`.
+- Both commands write the manifest before the CSV. A run killed between the two left a directory
+  holding one method's CSV with no manifest and no `images/` — which the other command accepted,
+  ending with `plates.csv` and `scans.csv` side by side under one stamp.
+- `plate download`'s `--limit` warning no longer fires on the `--scan-id` path, which applies no
+  cap, and no longer prints above `No scans matched` for `--limit 0`. Its wording now matches
+  what it can distinguish: returning exactly `--limit` rows may mean the newest captures were
+  dropped, or may be the whole experiment, and it says so rather than asserting the first.
 
 ## [0.1.0a5] - 2026-08-13 — cylinder download reliability
 
