@@ -22,6 +22,8 @@ import click
 from pydantic import ValidationError
 from sleap_roots_contracts import RUN_MANIFEST_FILENAME, RunManifest
 
+from .._download import DownloadResult, FrameResult
+from .._storage import atomic_write_bytes, download_object
 from ..credentials import DEFAULT_PROFILE
 from ._batch import BatchResult, ScanResult, format_json, format_summary
 from ._locks import (
@@ -31,8 +33,7 @@ from ._locks import (
     LockContendedError,
     acquire_lock,
 )
-from ._storage import atomic_write_bytes, download_object
-from .download import DownloadResult, FrameResult, fetch_images, fetch_scan
+from .download import IMAGES_BUCKET, fetch_images, fetch_scan
 
 # Matches sleap_roots_predict.batch._IMAGE_EXTENSIONS — the exact set discover_scans
 # globs for, so clearing the stage directory removes anything predict would pick up.
@@ -239,7 +240,7 @@ def download_frames_for_predict(
         object_path = image.get("object_path", "")
         result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
         try:
-            data = download_object(client, object_path)
+            data = download_object(client, object_path, bucket=IMAGES_BUCKET)
             atomic_write_bytes(frame_dest_for_predict(scan_dir, image), data)
             result.ok = True
             frame_bytes.append(data)

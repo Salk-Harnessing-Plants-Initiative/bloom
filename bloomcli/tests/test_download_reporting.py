@@ -12,6 +12,20 @@ import bloomctl.cyl.download as dl
 from bloomctl.cli import cli
 
 
+def test_format_progress_counts_what_the_caller_names():
+    """The unit of work is the caller's to name: a rotation has frames, a session has captures."""
+    assert "captures" in dl.format_progress("downloading", 3, 10, noun="captures")
+    assert "frames" not in dl.format_progress("downloading", 3, 10, noun="captures")
+    # Listing is always scans, whatever the items are called.
+    assert "scans" in dl.format_progress("listing", 1, 2, noun="captures")
+
+
+def test_the_reporter_passes_its_noun_through(capsys):
+    dl.ProgressReporter(interval=0.0, noun="captures")("downloading", 1, 2)
+    printed = capsys.readouterr().err
+    assert "captures" in printed and "frames" not in printed
+
+
 def test_progress_line_reads_as_frames_and_a_percentage():
     assert dl.format_progress("downloading", 12480, 413926) == "12,480/413,926 frames (3.0%)"
     assert dl.format_progress("listing", 5750, 5750) == "Listing frames: 5,750/5,750 scans (100.0%)"
