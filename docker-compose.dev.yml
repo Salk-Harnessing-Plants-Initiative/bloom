@@ -253,7 +253,7 @@ services:
     restart: unless-stopped
 
   studio:
-    image: supabase/studio:2026.03.30-sha-12a43e5
+    image: supabase/studio:2025.06.30-sha-6f5982d
     restart: unless-stopped
     networks:
       - supanet
@@ -469,7 +469,7 @@ services:
   minio-init:
     networks:
       - supanet
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    image: minio/mc:RELEASE.2025-01-17T23-25-50Z
     depends_on:
       - supabase-minio
     entrypoint: ["/bin/sh", "/usr/local/bin/init/create-buckets.sh"]
@@ -482,7 +482,7 @@ services:
   storage:
     networks:
       - supanet
-    image: supabase/storage-api:v1.48.14
+    image: supabase/storage-api:v1.25.7
     restart: unless-stopped
     ports:
       - "${STORAGE_PORT}:5000"
@@ -536,7 +536,7 @@ services:
       IMGPROXY_URL: http://imgproxy:5001
 
   imgproxy:
-    image: darthsim/imgproxy:v3.31.1
+    image: darthsim/imgproxy:v3.8.0
     restart: unless-stopped
     networks:
       - supanet
@@ -560,7 +560,7 @@ services:
       IMGPROXY_ENABLE_WEBP_DETECTION: ${IMGPROXY_ENABLE_WEBP_DETECTION}
 
   meta:
-    image: supabase/postgres-meta:v0.96.2
+    image: supabase/postgres-meta:v0.91.6
     restart: unless-stopped
     networks:
       - supanet
@@ -663,7 +663,7 @@ services:
       TRY_IT_OUT_ENABLED: true
 
   supavisor:
-    image: supabase/supavisor:2.7.4
+    image: supabase/supavisor:2.5.7
     restart: unless-stopped
     networks:
       - supanet
