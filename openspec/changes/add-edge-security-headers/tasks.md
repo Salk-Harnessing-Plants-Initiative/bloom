@@ -26,9 +26,13 @@
 - [x] 2.8 `tests/unit/test_caddy_security_headers.py` — pins site-level placement by brace-matched depth and asserts values verbatim, so relocating the block inside a `handle` or weakening a value (`SAMEORIGIN` for `DENY`, `'unsafe-inline'` creeping into the CSP) fails CI
 - [x] 2.9 `tests/integration/test_api_endpoints.py` — asserts each header reaches the client exactly once with its exact value across every handler class, plus a guard that HSTS is still absent
 
-### Known coverage gap
+### Accepted limitation
 
-- [ ] 2.10 CI cannot exercise 2.3: it sets `CADDY_SITE_ADDRESSES` to a single host, so Studio and MinIO requests never enter the site block, and `HEADER_ROUTES` lists only main-hostname paths. Closing it needs a multi-hostname CI value plus studio/minio `Host` coverage — a change to CI's environment shape, tracked separately
+- [x] 2.10 CI cannot exercise 2.3, and this is accepted rather than tracked as work. It sets `CADDY_SITE_ADDRESSES` to a single host, so Studio and MinIO requests never enter the site block, and `HEADER_ROUTES` lists only main-hostname paths — the site-level contract is therefore pinned as config shape (2.8) and never as behaviour. Weighed and accepted because:
+  - The regression that matters — the block moving under a host matcher — is caught by 2.8's brace-depth assertion.
+  - A dropped wildcard in `CADDY_SITE_ADDRESSES` is not a silent failure: Studio and MinIO would stop being served entirely and return an empty `Content-Length: 0` fallback, which is self-detecting.
+  - What remains is a console upstream emitting a *differing* value for a last-wins header. It requires an image bump that changes a value, and bumps here are digest-pinned and reviewed; the surface is a console the tunnel never maps, with #108 item 6 as backstop. The `nosniff` risk is covered instead by making re-measurement a precondition when a pin moves.
+  - A multi-hostname CI value would change the environment shape for every test in that job, which is a poor trade for the above.
 
 ### Measured, not assumed
 
@@ -38,5 +42,5 @@
 
 - [ ] 3.1 `add-edge-hsts` — HSTS, landing with the public-exposure work
 - [ ] 3.2 `add-edge-csp` — nonce-based CSP `script-src`, requiring Next.js middleware
-- [ ] 3.3 Multi-hostname CI coverage for the site-level contract (see 2.10)
+- [ ] 3.3 Re-measure the console images under all five headers whenever the Studio or MinIO pin moves — the standing precondition that replaces multi-hostname CI coverage (see 2.10)
 - [ ] 3.4 Studio reachable through Caddy without traversing Kong's `basic-auth` on the `dashboard` route — pre-existing, mitigated but not fixed by the anti-framing headers; #108 item 6's IP allowlist is the durable backstop
