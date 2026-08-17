@@ -39,6 +39,18 @@ BEGIN
 END
 $$;
 
+-- Table-level access to the queue's own storage, transactional with the pgmq.create
+-- above. Safe to do here: the applier just created these tables, so it owns them and can
+-- always grant on them. USAGE on the pgmq *schema* is the one piece that cannot live
+-- here — the schema is owned by supabase_admin, and a grant from any other role silently
+-- no-ops (issue #333) — so it stays in supabase/grants/schema_grants.sql.
+--
+-- Grants, not ownership: the wrappers only send/read/archive/delete, and ownership would
+-- additionally confer DROP, TRUNCATE, ALTER and CREATE POLICY on the queue's storage.
+GRANT SELECT, INSERT, UPDATE, DELETE
+  ON pgmq.q_cyl_video_generation TO bloom_video_queue_owner;
+GRANT SELECT, INSERT ON pgmq.a_cyl_video_generation TO bloom_video_queue_owner;
+
 -- 3. Status table ----------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.cyl_video_jobs (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -360,10 +372,5 @@ GRANT EXECUTE ON FUNCTION public.cyl_video_queue_stats() TO bloom_workflows;
 -- re-apply: CREATE OR REPLACE FUNCTION checks CREATE against the applier, not the
 -- owner, and ALTER ... OWNER TO short-circuits when the owner already matches.
 REVOKE CREATE ON SCHEMA public FROM bloom_video_queue_owner;
-
--- The definer role's access to pgmq's own tables lives in
--- supabase/grants/schema_grants.sql: pgmq's queue tables are owned by supabase_admin,
--- and `supabase db push` downgrades the session role, so an in-migration grant here
--- would silently no-op.
 
 COMMIT;
