@@ -1,0 +1,13 @@
+[Unit]
+Description=Run bloom-box-object-backup-__ENV_NAME__ weekly (Saturday 02:00 server time)
+Documentation=https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/staging/_WIKI/SCHEDULEDJOBS/box-object-backup.md
+
+[Timer]
+# Saturday, ahead of the Sunday Postgres dump: objects land on Box first, so
+# every row in the following dump has bytes behind it.
+OnCalendar=Sat 02:00
+Persistent=true
+Unit=bloom-box-object-backup-__ENV_NAME__.service
+
+[Install]
+WantedBy=timers.target

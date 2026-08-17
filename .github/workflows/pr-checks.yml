@@ -175,6 +175,12 @@ jobs:
       - name: Run workflows service tests
         run: cd services/workflows && uv run --frozen --extra test pytest tests/ -v --tb=short
 
+      - name: Run scheduled-jobs tests
+        # These sit next to the job they cover and are named `*_test.py`, so
+        # the root pytest config (testpaths=tests, python_files=test_*.py)
+        # never collects them — point pytest at the directory explicitly.
+        run: uv run --extra test pytest scheduled-jobs/ -o python_files='*_test.py' -v --tb=short
+
       - name: Build bloom_mcp wheel and import in a clean env
         run: |
           cd bloommcp
