@@ -5,7 +5,13 @@ _transform: true
 ### Consumers / Users
 ###
 consumers:
+  # Credentials for the basic-auth plugin on the `dashboard` service. Without
+  # them the plugin has nothing to match and rejects every request, so the
+  # Studio route is unreachable rather than gated.
   - username: DASHBOARD
+    basicauth_credentials:
+      - username: $DASHBOARD_USERNAME
+        password: $DASHBOARD_PASSWORD
   - username: anon
     keyauth_credentials:
       - key: $SUPABASE_ANON_KEY
