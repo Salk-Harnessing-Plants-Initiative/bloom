@@ -17,7 +17,7 @@ branch (`eberrigan/bloommcp-list-experiments-timeout-637-v2`).
 - [x] 0.2 Re-check `supabase/migrations/`'s newest file on `origin/staging` immediately before opening the
       PR (this proposal was drafted against `20260807000000_get_experiment_summary_counts.sql` as the
       tip) and choose migration timestamps later than that. **Done — confirmed `20260807000000` still
-      the tip; this change's three migrations use `20260814010000`/`20260814020000`/`20260814030000`.**
+      the tip; this change's three migrations use `20260817010000`/`20260817020000`/`20260817030000`.**
 - [x] 0.3 Confirm PR #654 is closed with a comment pointing to this PR before this PR opens (or
       immediately after) — needs the user's own action per repo convention (Claude does not close PRs
       without explicit confirmation, already given for this change). **Done — PR #654 closed with a
@@ -277,10 +277,66 @@ round 1's fixes were already committed and instructed to verify them fresh rathe
       `cyl_plants`/`cyl_scans`/`cyl_images` permanently committed in the local dev DB. Verified flat
       row counts across repeated runs, not just "the code looks like it deletes things." - `refresh_cyl_experiment_trait_counts()`'s `DISTINCT trait_id` (vs. the other two counting paths'
       `DISTINCT trait_name`) equivalence documented with a comment noting the `cyl_traits.name NOT NULL
-      UNIQUE` assumption it depends on. - `test_read_roles_can_call_function`'s `count(*) IS NOT NULL` assertion (trivially always true)
+    UNIQUE` assumption it depends on. - `test_read_roles_can_call_function`'s `count(*) IS NOT NULL` assertion (trivially always true)
       replaced with an assertion on the actual `(n_plants, n_traits)` row content.
 - [x] 9.4 Re-run the full `cyl`-scoped integration suite after all fixes — 369 passed, 5 skipped, up from
       365 after round 1 (4 net new tests: cross-scan `UPDATE`, concurrent-refresh race, plus fixes to
       existing tests that didn't add new test functions).
 - [ ] 9.5 Post round 2's synthesized review to PR #684 — same GitHub-posting blocker as 8.5; shown to the
       user directly instead.
+
+## 10. Third `/review-pr` round — verify rounds 1 and 2's fixes hold up, find what they missed
+
+Same discipline as round 2: each of the 5 subagents was told rounds 1 and 2's fixes were already committed
+and instructed to verify them fresh rather than trust the summary, and to find only NEW issues.
+
+- [x] 10.1 Run the 5-subagent review. All 5 returned; no subagent failed or returned a suspiciously short
+      result.
+- [x] 10.2 Verify the two most significant new findings empirically before fixing, matching this change's
+      own established discipline: - `TRUNCATE` bypasses RLS entirely (D9) — confirmed `SET LOCAL ROLE anon; TRUNCATE public.cyl_scan_latest_source;`
+      succeeded despite `anon`'s `INSERT` on the same table already being denied by RLS (D2a); same
+      confirmed on `cyl_experiment_trait_counts`. - `refresh_cyl_experiment_trait_counts()`'s single-bigint advisory lock (D5b, round 2's own fix) shares
+      a keyspace with D2's per-scan `pg_advisory_xact_lock(scan_id)` (D5c) — found the literal colliding
+      `scan_id` (`hashtext('refresh_cyl_experiment_trait_counts') = -124364726`), confirmed the two-int
+      form (`pg_advisory_xact_lock(0, hashtext(...))`) is a genuinely disjoint keyspace via a real
+      two-connection test, not assumed from the different call shape.
+- [x] 10.3 Fix everything that survived verification: - D9 (`TRUNCATE`) — `REVOKE TRUNCATE, REFERENCES, TRIGGER ... FROM anon, authenticated` added to both
+      new tables' migrations, following this repo's own `20260504000002_grant_all_scope_reduction.sql`
+      precedent (which only ever covered `bloom_admin`). New `test_anon_cannot_truncate` in both test
+      files, each confirmed to fail against the pre-fix grant and pass against the fix. Noted, not fixed,
+      as a pre-existing repo-wide gap: `anon` can still `TRUNCATE public.cyl_scan_traits` itself today. - D5c (advisory-lock keyspace collision) — `refresh_cyl_experiment_trait_counts()`'s lock call changed
+      to the two-int form; design.md D5's code block and D5c both updated. - The rollback guard for `20260817010000` (M1) strengthened to check `cyl_experiment_trait_counts`
+      TABLE existence, not just `refresh_cyl_experiment_trait_counts()` FUNCTION existence — a function
+      dropped out-of-band without running M2's own rollback would have silently defeated the
+      function-only check. Migration Plan section in design.md updated to describe both checks. - The sorted cross-scan lock acquisition (D2b, round 2's own fix) had zero concurrency coverage —
+      the existing `test_cross_scan_update_recomputes_both_scans` is purely sequential, so it could never
+      have caught a missing or wrongly-ordered lock. New
+      `test_concurrent_opposite_direction_cross_scan_reassignments_do_not_deadlock` uses a
+      `threading.Barrier` so two connections issue opposite-direction cross-scan `UPDATE`s at the same
+      instant — NOT the "A completes, then B starts" shape the sibling concurrency tests use, which this
+      section's own first draft used too and which turned out unable to distinguish sorted from unsorted
+      lock order (verified: it passed unchanged even with the trigger's lock order reverted to unsorted
+      `NEW`-then-`OLD`). Rebuilt with the barrier; reliably reproduced a real `DeadlockDetected` against
+      the unsorted trigger (1 in 3 attempts) and zero deadlocks across 15 attempts against the correct
+      one, then confirmed the pytest version fails against the reverted trigger and passes against the
+      restored one. - `test_multi_row_cross_scan_update_recomputes_both_scans` added (code-quality suggestion): a single
+      multi-row `UPDATE` reassigning two rows from one scan to another in one statement, locking in that
+      the trigger's multiple per-row firings for the same `(OLD, NEW)` scan pair converge to the correct
+      final state. - `test_concurrent_refreshes_do_not_raise_duplicate_key` strengthened: the original version only
+      asserted the absence of an error after a fixed `time.sleep`, which would also pass if the lock were
+      silently a no-op and the two calls got lucky. Now queries `pg_locks` from a third connection to
+      confirm a granted lock (classid=0, objid=hashtext(...), objsubid=2 — the two-int form's actual
+      signature, confirmed via direct `psql` introspection) held by A's backend pid, and a non-granted
+      waiter row for the same key from a different pid, before letting A commit. Confirmed this version
+      fails (waiter-row assertion, `0 == 1`) against a temporarily unlocked refresh function and passes
+      against the restored one. - `test_cleanup_seeded_experiment_removes_every_row` added: `_cleanup_seeded_experiment` itself had no
+      direct test despite every real-connection concurrency test depending on it to avoid leaking seeded
+      rows into the long-lived local dev DB. Seeds one experiment with two deliveries, calls the helper,
+      asserts zero rows remain across every table it touches. Confirmed this test fails when the
+      `accessions` delete step is temporarily disabled, and passes with it restored.
+- [x] 10.4 Re-run the full `cyl`-scoped integration suite after all fixes — 374 passed, 5 skipped, up from
+      369 after round 2 (5 net new tests: `TRUNCATE`-denial × 2, opposite-direction cross-scan deadlock × 1,
+      multi-row cross-scan × 1, cleanup-helper self-check × 1; the refresh-concurrency strengthening added
+      assertions to an existing test rather than a new one).
+- [ ] 10.5 Post round 3's synthesized review to PR #684 — same GitHub-posting blocker as 8.5/9.5; shown to
+      the user directly instead.

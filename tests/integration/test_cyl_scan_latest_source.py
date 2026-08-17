@@ -28,17 +28,17 @@ from tests.integration.test_cyl_read_path import (  # noqa: E402
 )
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-_TS = "20260814010000_create_cyl_scan_latest_source"
+_TS = "20260817010000_create_cyl_scan_latest_source"
 MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_TS}.sql"
 ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_TS}_rollback.sql"
 
 # The two later migrations in this change, whose rollbacks must run BEFORE this one's -- this
 # file's own rollback test exercises the full documented order, not just this migration in
 # isolation (see the rollback SQL files' own "ROLLBACK ORDER" header comments).
-_TRAIT_COUNTS_TS = "20260814020000_create_cyl_experiment_trait_counts"
+_TRAIT_COUNTS_TS = "20260817020000_create_cyl_experiment_trait_counts"
 TRAIT_COUNTS_MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_TRAIT_COUNTS_TS}.sql"
 TRAIT_COUNTS_ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_TRAIT_COUNTS_TS}_rollback.sql"
-_REWRITE_TS = "20260814030000_rewrite_get_experiment_summary_counts"
+_REWRITE_TS = "20260817030000_rewrite_get_experiment_summary_counts"
 REWRITE_MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_REWRITE_TS}.sql"
 REWRITE_ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_REWRITE_TS}_rollback.sql"
 
@@ -96,6 +96,57 @@ def _max_source(cur, scan_id):
     )
     row = cur.fetchone()
     return row[0] if row else None
+
+
+# --------------------------------------------------------------------------- #
+# Test helper self-check
+# --------------------------------------------------------------------------- #
+
+
+def test_cleanup_seeded_experiment_removes_every_row(pg_conn):
+    """`_cleanup_seeded_experiment` is itself untested -- round-3 review flagged this: every
+    real-connection concurrency test below depends on it to avoid leaking seeded
+    species/experiments/waves/accessions/plants/scans/images/traits into the long-lived local dev
+    DB (it commits rather than rolling back), so a silent gap in its own delete-order coverage
+    would go unnoticed until the dev DB accumulated orphans across many test runs. Seeds one
+    experiment with two trait-bearing deliveries (so cyl_scan_traits and cyl_scan_latest_source
+    both have real rows to remove), calls the helper directly, and asserts zero rows remain
+    across every table it touches."""
+    with pg_conn.cursor() as cur:
+        experiment_id, scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "orig", traits=[_trait("length", 1.0)])
+        _deliver(cur, imgs, "reproc", traits=[_trait("length", 2.0)])
+
+        cur.execute("SELECT species_id FROM cyl_experiments WHERE id=%s", (experiment_id,))
+        species_id = cur.fetchone()[0]
+        cur.execute(
+            "SELECT DISTINCT p.accession_id FROM cyl_plants p "
+            "JOIN cyl_waves w ON w.id = p.wave_id WHERE w.experiment_id=%s",
+            (experiment_id,),
+        )
+        accession_ids = [r[0] for r in cur.fetchall() if r[0] is not None]
+
+        # Sanity check: there's real data to clean up before we assert it's gone.
+        assert _max_source(cur, scan_id) is not None
+        cur.execute("SELECT count(*) FROM cyl_scan_traits WHERE scan_id=%s", (scan_id,))
+        assert cur.fetchone()[0] > 0
+
+        _cleanup_seeded_experiment(cur, experiment_id)
+
+        cur.execute("SELECT count(*) FROM cyl_scan_traits WHERE scan_id=%s", (scan_id,))
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM cyl_scan_latest_source WHERE scan_id=%s", (scan_id,))
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM cyl_scans WHERE id=%s", (scan_id,))
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM cyl_experiments WHERE id=%s", (experiment_id,))
+        assert cur.fetchone()[0] == 0
+        for accession_id in accession_ids:
+            cur.execute("SELECT count(*) FROM accessions WHERE id=%s", (accession_id,))
+            assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM species WHERE id=%s", (species_id,))
+        assert cur.fetchone()[0] == 0
+    pg_conn.rollback()
 
 
 # --------------------------------------------------------------------------- #
@@ -217,6 +268,138 @@ def test_cross_scan_update_recomputes_both_scans(pg_conn):
     pg_conn.rollback()
 
 
+def test_multi_row_cross_scan_update_recomputes_both_scans(pg_conn):
+    """A single UPDATE statement can reassign MULTIPLE rows' scan_id at once (e.g. a bulk
+    correction), not just one -- code-quality round-3 finding: the sequential single-row test above
+    only ever exercises the trigger firing exactly once. A single multi-row UPDATE fires the
+    FOR EACH ROW trigger once per affected row, all queued to run at end-of-statement over the
+    fully-mutated heap (not immediately per row -- see design.md's note on AFTER-trigger timing);
+    this test locks in that the redundant, repeated recomputes those multiple firings produce for
+    the SAME (scan_a, scan_b) pair still converge to the correct final state, not a stale
+    intermediate one."""
+    with pg_conn.cursor() as cur:
+        _, scan_a, imgs_a = _seed_experiment_scan(cur)
+        _, scan_b, imgs_b = _seed_experiment_scan(cur)
+        # scan_a: three sources -- one stays, two get reassigned to scan_b in ONE statement.
+        keep_source = _deliver(cur, imgs_a, "keep", traits=[_trait("length", 1.0)])
+        move_source_1 = _deliver(cur, imgs_a, "move1", traits=[_trait("length", 2.0)])
+        move_source_2 = _deliver(cur, imgs_a, "move2", traits=[_trait("length", 3.0)])
+        assert _max_source(cur, scan_a) == move_source_2
+
+        b_source = _deliver(cur, imgs_b, "b", traits=[_trait("length", 4.0)])
+        assert _max_source(cur, scan_b) == b_source
+
+        # Reassign BOTH move_source_1 and move_source_2 rows from scan_a to scan_b in one statement
+        # -- the trigger fires twice, both times with the identical (OLD=scan_a, NEW=scan_b) pair.
+        cur.execute("SET LOCAL ROLE bloom_admin")
+        cur.execute(
+            "UPDATE cyl_scan_traits SET scan_id=%s "
+            "WHERE scan_id=%s AND source_id IN (%s, %s)",
+            (scan_b, scan_a, move_source_1, move_source_2),
+        )
+        cur.execute("RESET ROLE")
+
+        # scan_a's only remaining row is keep_source.
+        assert _max_source(cur, scan_a) == keep_source
+        # scan_b now holds its own source plus both reassigned ones -- the true max across all three.
+        assert _max_source(cur, scan_b) == max(b_source, move_source_1, move_source_2)
+    pg_conn.rollback()
+
+
+def test_concurrent_opposite_direction_cross_scan_reassignments_do_not_deadlock(pg_conninfo, pg_conn):
+    """The trigger's sorted lock acquisition (least/greatest of OLD/NEW scan_id, added for D2b's
+    cross-scan fix) exists specifically so two concurrent cross-scan reassignments moving rows in
+    OPPOSITE directions between the same two scans cannot deadlock each other -- caught in
+    round-3 review as having zero concurrency coverage (test_cross_scan_update_recomputes_both_scans
+    above is purely sequential, so it could not have caught a missing or wrongly-ordered lock
+    acquisition; only a real two-connection interleaving can).
+
+    Uses a `threading.Barrier` so both connections issue their UPDATE at (as close to) the same
+    instant as possible -- NOT "A runs to completion, then B starts", which can only ever prove B
+    blocks on a lock A already holds and can never produce a genuine circular wait. This distinction
+    matters here specifically: an early version of this test used the sequential construction and
+    passed unchanged even after the trigger's lock order was deliberately reverted to unsorted
+    NEW-then-OLD (verified against a local Postgres) -- because that construction can never let two
+    connections each grab a *different* first lock before requesting the other's. Rebuilding it
+    with a barrier and repeating several times reliably reproduced a genuine
+    `DeadlockDetected: Process ... waits for ... advisory lock ...; blocked by process ...` under the
+    unsorted trigger (reproduced empirically: 1 deadlock in 3 barrier-synced attempts), and produced
+    zero deadlocks across 15 attempts against the correct sorted implementation -- confirming this
+    construction actually discriminates sorted from unsorted, unlike the sequential one."""
+    conn_a = psycopg.connect(pg_conninfo)
+    conn_b = psycopg.connect(pg_conninfo)
+    try:
+        for attempt in range(5):
+            with pg_conn.cursor() as cur:
+                experiment_id_1, scan_1, imgs_1 = _seed_experiment_scan(cur)
+                experiment_id_2, scan_2, imgs_2 = _seed_experiment_scan(cur)
+                source_1 = _deliver(cur, imgs_1, f"s1-{attempt}", traits=[_trait("length", 1.0)])
+                source_2 = _deliver(cur, imgs_2, f"s2-{attempt}", traits=[_trait("length", 2.0)])
+                cur.execute(
+                    "SELECT id FROM cyl_scan_traits WHERE scan_id=%s AND source_id=%s",
+                    (scan_1, source_1),
+                )
+                row_1_id = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT id FROM cyl_scan_traits WHERE scan_id=%s AND source_id=%s",
+                    (scan_2, source_2),
+                )
+                row_2_id = cur.fetchone()[0]
+            pg_conn.commit()  # scans/rows must be visible to both connections below
+
+            barrier = threading.Barrier(2)
+            results = {}
+
+            def _run_a():
+                try:
+                    cur_a = conn_a.cursor()
+                    barrier.wait(timeout=5.0)
+                    # A moves row_1 scan_1 -> scan_2.
+                    cur_a.execute(
+                        "UPDATE cyl_scan_traits SET scan_id=%s WHERE id=%s", (scan_2, row_1_id)
+                    )
+                    conn_a.commit()
+                    results["a"] = None
+                except Exception as exc:  # noqa: BLE001 -- captured for the assertion below, not swallowed
+                    conn_a.rollback()
+                    results["a"] = exc
+
+            def _run_b():
+                try:
+                    cur_b = conn_b.cursor()
+                    barrier.wait(timeout=5.0)
+                    # B moves row_2 scan_2 -> scan_1 -- the opposite direction, same two scans.
+                    cur_b.execute(
+                        "UPDATE cyl_scan_traits SET scan_id=%s WHERE id=%s", (scan_1, row_2_id)
+                    )
+                    conn_b.commit()
+                    results["b"] = None
+                except Exception as exc:  # noqa: BLE001
+                    conn_b.rollback()
+                    results["b"] = exc
+
+            a_thread = threading.Thread(target=_run_a)
+            b_thread = threading.Thread(target=_run_b)
+            a_thread.start()
+            b_thread.start()
+            a_thread.join(timeout=15.0)
+            b_thread.join(timeout=15.0)
+
+            assert results.get("a") is None, f"attempt {attempt}: txn A failed: {results.get('a')}"
+            assert results.get("b") is None, f"attempt {attempt}: txn B failed: {results.get('b')}"
+
+            with pg_conn.cursor() as cur:
+                # The two rows swapped scans: scan_1 now holds row_2's source, scan_2 holds row_1's.
+                assert _max_source(cur, scan_1) == source_2
+                assert _max_source(cur, scan_2) == source_1
+                _cleanup_seeded_experiment(cur, experiment_id_1)
+                _cleanup_seeded_experiment(cur, experiment_id_2)
+            pg_conn.commit()
+    finally:
+        conn_a.close()
+        conn_b.close()
+
+
 def test_direct_bloom_admin_write_is_maintained(pg_conn):
     with pg_conn.cursor() as cur:
         _, scan_id, _imgs = _seed_experiment_scan(cur)
@@ -316,6 +499,25 @@ def test_anon_cannot_write_despite_the_raw_table_grant(pg_conn):
             cur.execute(
                 "INSERT INTO cyl_scan_latest_source (scan_id, max_source_id) VALUES (-1, 1)"
             )
+    pg_conn.rollback()
+
+
+def test_anon_cannot_truncate(pg_conn):
+    """RLS does NOT govern TRUNCATE -- a Postgres limitation, not a policy gap -- so the INSERT
+    denial above does not imply TRUNCATE is also blocked. Caught in round-3 review: confirmed
+    `SET LOCAL ROLE anon; TRUNCATE public.cyl_scan_latest_source;` succeeded before the explicit
+    `REVOKE TRUNCATE ... FROM anon, authenticated` was added. Blast radius was real:
+    cyl_scan_traits_source INNER JOINs this table, so truncating it would have zeroed out
+    is_latest for every scan system-wide, not just this change's own new counts."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT has_table_privilege('anon', 'cyl_scan_latest_source', 'TRUNCATE')"
+        )
+        assert cur.fetchone()[0] is False
+
+        cur.execute("SET LOCAL ROLE anon")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            cur.execute("TRUNCATE public.cyl_scan_latest_source")
     pg_conn.rollback()
 
 
@@ -581,11 +783,11 @@ def test_migration_body_is_idempotent(pg_conn):
 
 
 def test_rollback_guard_blocks_out_of_order_rollback(pg_conn):
-    """This migration's rollback must refuse to run while 20260814020000's
+    """This migration's rollback must refuse to run while 20260817020000's
     refresh_cyl_experiment_trait_counts() still references cyl_scan_latest_source -- proves the
     "ROLLBACK ORDER" guard in the rollback SQL is real, not just a comment."""
     with pg_conn.cursor() as cur:
-        with pytest.raises(psycopg.errors.RaiseException, match="Roll back 20260814020000"):
+        with pytest.raises(psycopg.errors.RaiseException, match="Roll back 20260817020000"):
             cur.execute(_sql_body(ROLLBACK))
     pg_conn.rollback()
 

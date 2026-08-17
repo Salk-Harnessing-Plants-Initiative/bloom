@@ -85,3 +85,10 @@ default to new tables. `refresh_cyl_experiment_trait_counts()` itself SHALL NOT 
   rejected by row-level security, and the function call is rejected for lacking `EXECUTE` privilege — even
   though Supabase's default privileges would otherwise grant `anon` both a raw table-level write grant and
   `EXECUTE` on the newly-created function
+
+#### Scenario: An unauthenticated caller cannot TRUNCATE cyl_experiment_trait_counts
+
+- **WHEN** an `anon` (unauthenticated) caller attempts `TRUNCATE public.cyl_experiment_trait_counts`
+- **THEN** the statement is rejected for lacking `TRUNCATE` privilege — row-level security does not govern
+  `TRUNCATE` at all (a Postgres limitation, not a policy gap), so this privilege must be revoked explicitly
+  the same way as `cyl_scan_latest_source`'s equivalent scenario

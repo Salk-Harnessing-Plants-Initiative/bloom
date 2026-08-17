@@ -1,7 +1,7 @@
 """
 Integration tests for the aggregate summary-counts function, originally added by bloom#625
 (`fix-bloommcp-list-experiments-summary-rpc`) and rewritten by bloom#637/bloom#656
-(`fix-cyl-scan-traits-latest-rollup`, `20260814030000_rewrite_get_experiment_summary_counts.sql`).
+(`fix-cyl-scan-traits-latest-rollup`, `20260817030000_rewrite_get_experiment_summary_counts.sql`).
 
 `get_experiment_summary_counts(experiment_id_ DEFAULT NULL, source_id_ DEFAULT NULL, run_id_ DEFAULT
 NULL)`'s two counts now have different cost profiles when unpinned (both `source_id_`/`run_id_` NULL):
@@ -41,7 +41,7 @@ _TS = "20260807000000_get_experiment_summary_counts"
 MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_TS}.sql"
 ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_TS}_rollback.sql"
 
-_REWRITE_TS = "20260814030000_rewrite_get_experiment_summary_counts"
+_REWRITE_TS = "20260817030000_rewrite_get_experiment_summary_counts"
 REWRITE_MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_REWRITE_TS}.sql"
 REWRITE_ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_REWRITE_TS}_rollback.sql"
 
@@ -387,7 +387,7 @@ def test_authenticated_has_execute_grant(pg_conn):
     ],
 )
 def test_anon_has_no_execute_grant(pg_conn, fn_signature):
-    """Caught in review: the 20260814030000 rewrite's REVOKE originally only covered PUBLIC, not
+    """Caught in review: the 20260817030000 rewrite's REVOKE originally only covered PUBLIC, not
     anon explicitly -- Supabase auto-grants EXECUTE on new public-schema functions to anon, so
     that alone left anon still able to call both. compute_cyl_experiment_summary_counts_live is
     SECURITY DEFINER, so anon calling it directly would have run with the definer's elevated

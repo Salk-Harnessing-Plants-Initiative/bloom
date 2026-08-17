@@ -377,8 +377,9 @@ AS $$
 BEGIN
     -- D5b: serializes concurrent refreshes -- reproduced empirically (see D5b) that two
     -- overlapping calls raise "duplicate key value violates unique constraint
-    -- cyl_experiment_trait_counts_pkey" without this.
-    PERFORM pg_advisory_xact_lock(hashtext('refresh_cyl_experiment_trait_counts'));
+    -- cyl_experiment_trait_counts_pkey" without this. Two-int form, not single-bigint -- see D5c
+    -- for why sharing D2's per-scan keyspace is a real (if narrow) risk, confirmed disjoint after.
+    PERFORM pg_advisory_xact_lock(0, hashtext('refresh_cyl_experiment_trait_counts'));
 
     DELETE FROM public.cyl_experiment_trait_counts;
     INSERT INTO public.cyl_experiment_trait_counts (experiment_id, n_traits, updated_at)
@@ -443,6 +444,31 @@ with the lock in place produced no error.
 **A fixed lock key is correct here, unlike D2's per-scan `pg_advisory_xact_lock(scan_id)`**, because this
 function always rebuilds the _whole_ table in one pass — there is no finer-grained key (no single
 `experiment_id`) to scope the lock to; every call needs to exclude every other call, full stop.
+
+### D5c — Advisory-lock keyspace collision: the refresh function's lock shared D2's keyspace (found in
+
+a third review round)
+
+**A third `/review-pr` round questioned an assumption the second round's own fix (D5b) never checked**:
+`pg_advisory_xact_lock(hashtext('refresh_cyl_experiment_trait_counts'))` (single-bigint form) and D2's
+per-scan `pg_advisory_xact_lock(scan_id)` (also single-bigint form) share **the same global advisory-lock
+keyspace** — Postgres's single-argument `pg_advisory_xact_lock(key bigint)` has one flat namespace per
+database, with no partitioning by caller or purpose. `hashtext(...)` can return any 4-byte signed int, so
+in principle it could collide with a real `scan_id`, spuriously serializing this function's whole-table
+refresh against one unrelated scan's write (and vice versa) — a correctness-neutral but real availability
+risk (an unlucky refresh could block on, or block, an unrelated write for no reason tied to actual data
+contention).
+
+Not just reasoned about: found the literal colliding `scan_id` for this function's fixed key
+(`hashtext('refresh_cyl_experiment_trait_counts')` evaluates to `-124364726`) and confirmed empirically,
+via two real connections, that a `pg_advisory_xact_lock(-124364726)` (single-bigint, simulating a scan with
+that id) and the refresh function's own lock call **did** contend for the same key before the fix — and,
+after switching to the two-int form `pg_advisory_xact_lock(0, hashtext(...))`, confirmed the opposite: a
+second connection could still acquire `pg_advisory_xact_lock(-124364726)` (single-bigint) immediately while
+the two-int lock was held elsewhere, and vice versa. Postgres's two-argument form is a **genuinely disjoint
+keyspace** from the single-argument form (visible in `pg_locks` as `objsubid = 2` vs `objsubid = 1` for the
+same numeric key) — not merely a different-looking call that happens to avoid this particular collision by
+luck. Fixed by changing D5's lock call to `pg_advisory_xact_lock(0, hashtext(...))`.
 
 ### D5a — RLS on `cyl_experiment_trait_counts`
 
@@ -579,6 +605,34 @@ caller pins `source_id_`/`run_id_` today, so there's been no operational pressur
 and this sandboxed environment can't run that benchmark. Carried forward as an explicit open item
 (Open Questions), not resolved here.
 
+### D9 — RLS does not govern `TRUNCATE`: both new tables retained a raw grant despite RLS (found in a
+
+third review round)
+
+**A third `/review-pr` round questioned whether D2a/D5a's RLS fix was actually complete**, and found it
+wasn't: RLS in Postgres governs `SELECT`/`INSERT`/`UPDATE`/`DELETE`, but **not `TRUNCATE`** — this is a
+structural Postgres limitation, not a policy gap that a `FOR ALL`/`FOR TRUNCATE` policy could close (no
+such policy command type exists). Supabase's default privileges separately grant `anon`/`authenticated` a
+raw `TRUNCATE`/`REFERENCES`/`TRIGGER` grant on every new public-schema table, and D2a/D5a's RLS fix — which
+closed `INSERT`/`UPDATE`/`DELETE` and `SELECT` — left that grant untouched on both `cyl_scan_latest_source`
+and `cyl_experiment_trait_counts`.
+
+Confirmed exploitable, not assumed: `SET LOCAL ROLE anon; TRUNCATE public.cyl_scan_latest_source;`
+succeeded before this fix, despite `anon`'s `INSERT` on the same table already being correctly denied by
+RLS (D2a) — a stark illustration of why "RLS is enabled and `INSERT` is denied" does not imply "this table
+is locked down." The blast radius is worse than a table-local data-loss bug: `cyl_scan_traits_source`
+inner-joins `cyl_scan_latest_source` (D3), so truncating it would zero out `is_latest` for **every scan
+system-wide**, breaking `get_scan_traits`/`get_experiment_traits` for the whole table, not just this
+change's own two new tables.
+
+Fixed with an explicit `REVOKE TRUNCATE, REFERENCES, TRIGGER ... FROM anon, authenticated` on both new
+tables, following this repo's own precedent (`20260504000002_grant_all_scope_reduction.sql`, which made the
+exact same fix for `bloom_admin` on a different set of tables, but never extended it to `anon`/
+`authenticated` on any table). **This is a pre-existing, repo-wide gap this migration does not attempt to
+close beyond its own two new tables** — confirmed `anon` can still `TRUNCATE public.cyl_scan_traits` itself
+today, unrelated to anything this proposal changes, and out of scope for it; worth a separate, repo-wide
+follow-up.
+
 ## Risks / Trade-offs
 
 - **The single-transaction backfill's write-blocking window (D3) is new operational surface with no
@@ -632,6 +686,26 @@ and this sandboxed environment can't run that benchmark. Carried forward as an e
   what its name claims. Two independent review passes each found real bugs the other missed — this is not
   evidence either pass was thorough enough to be the last one needed, only that adversarial re-review of
   this kind of concurrency-heavy, security-adjacent change keeps paying off past the first round.
+- **A THIRD `/review-pr` round found a real bug in each of the previous two rounds' own fixes**: D2a/D5a's
+  RLS fix (round 1) didn't cover `TRUNCATE` (D9) — a structural Postgres limitation the RLS fix could not
+  have closed even in principle, confirmed exploitable on both new tables before the fix; D5b's advisory
+  lock (round 2) shared a keyspace with D2's per-scan lock (D5c), confirmed via the literal colliding
+  `scan_id` value, not just argued from the forms looking different; and the rollback guard's function-only
+  existence check (round 1) was a narrower invariant than a table-existence check, closed in the Migration
+  Plan section above. **A second instance of the round-2 testing-methodology lesson, this time one level up
+  from D2b's own bug**: the first draft of this round's cross-scan-deadlock test used the same "A runs to
+  completion, then B starts" construction as the existing sequential test, and it passed unchanged even
+  after the trigger's lock order was deliberately reverted to unsorted `NEW`-then-`OLD` — because that
+  construction can only ever prove B blocks on a lock A already holds, never a genuine circular wait between
+  two in-flight transactions. Rebuilt with a `threading.Barrier` so both connections issue their conflicting
+  `UPDATE`s at the same instant; this reliably reproduced a real `DeadlockDetected` error against the
+  unsorted trigger (1 in 3 attempts) and zero deadlocks across 15 attempts against the correct one — the
+  same lesson as round 2's monotonic-id construction bug, recurring in a different shape: a concurrency
+  test's construction has to be checked for whether it can actually distinguish the buggy and fixed
+  behavior, not just whether it "looks like" a concurrency test. Three independent review rounds have now
+  each found real bugs the prior rounds missed, including bugs in the prior rounds' own remediations —
+  strong evidence this class of change keeps rewarding another adversarial pass longer than intuition
+  suggests, not evidence that three rounds is enough to stop.
 
 ## Migration Plan
 
@@ -655,13 +729,21 @@ while `refresh_cyl_experiment_trait_counts()` (M2) still reads it, or dropping `
 while `get_experiment_summary_counts` (M3) still reads it, does not fail loudly at `DROP` time; it fails
 later, at the next call, with "relation ... does not exist". Rather than relying on an operator reading
 this paragraph mid-incident, each rollback script now enforces its own precondition directly: M1's and
-M2's rollback SQL each `RAISE EXCEPTION` if the migration that depends on it hasn't been rolled back yet
-(checked via `pg_proc`/function-body inspection), rather than silently proceeding into a corrupted state.
-`test_rollback_guard_blocks_out_of_order_rollback` (in both `test_cyl_scan_latest_source.py` and
-`test_cyl_experiment_trait_counts.py`) confirms each guard actually fires. Both guards' catalog queries
-are anchored with `AND pronamespace = 'public'::regnamespace` (added in the second review round) so they
-can't be fooled by a same-named function in a different schema, even though no such collision exists
-today.
+M2's rollback SQL each `RAISE EXCEPTION` if the migration that depends on it hasn't been rolled back yet,
+rather than silently proceeding into a corrupted state. `test_rollback_guard_blocks_out_of_order_rollback`
+(in both `test_cyl_scan_latest_source.py` and `test_cyl_experiment_trait_counts.py`) confirms each guard
+actually fires. Both guards' catalog queries are anchored with `AND pronamespace = 'public'::regnamespace`
+(added in the second review round) so they can't be fooled by a same-named function in a different schema,
+even though no such collision exists today.
+
+**M1's guard checks table existence, not just function existence (found in a third review round).** The
+original guard checked only whether `refresh_cyl_experiment_trait_counts()` (M2's function) still existed
+in `pg_proc` — a narrower, less robust invariant than checking whether `cyl_experiment_trait_counts` (M2's
+table) still exists. If the function were ever removed out-of-band (e.g. a manual `DROP FUNCTION` without
+running M2's own rollback), a function-only check would see "absent" and let M1's rollback proceed even
+though M2's table (and M3's RPC, if not yet rolled back) still depend on `cyl_scan_latest_source`
+transitively. The guard now checks `EXISTS (... pg_proc ...) OR EXISTS (... pg_tables ...)` — the table is
+the more durable signal that M2 hasn't actually been rolled back.
 
 ## Open Questions
 

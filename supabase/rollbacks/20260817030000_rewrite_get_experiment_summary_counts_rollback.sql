@@ -1,8 +1,8 @@
--- Manual rollback for 20260814030000_rewrite_get_experiment_summary_counts.sql
+-- Manual rollback for 20260817030000_rewrite_get_experiment_summary_counts.sql
 -- Restores the prior (bloom#625) live-join-only function body verbatim -- not a DROP, since the
 -- function itself isn't new, only its body is changing back.
 --
--- *** ROLLBACK ORDER: apply this one FIRST (before 20260814020000's and 20260814010000's) *** --
+-- *** ROLLBACK ORDER: apply this one FIRST (before 20260817020000's and 20260817010000's) *** --
 -- nothing else in this change depends on this migration's own objects, so it has no ordering
 -- precondition of its own to check.
 

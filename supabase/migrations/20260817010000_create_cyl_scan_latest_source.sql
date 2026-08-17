@@ -25,7 +25,7 @@
 -- migration, safe specifically because the LOCK TABLE step guarantees the backfill is complete
 -- and no writer's data is unaccounted for by the time this commits.
 --
--- Manual rollback: supabase/rollbacks/20260814010000_create_cyl_scan_latest_source_rollback.sql
+-- Manual rollback: supabase/rollbacks/20260817010000_create_cyl_scan_latest_source_rollback.sql
 
 BEGIN;
 
@@ -58,6 +58,19 @@ CREATE POLICY authenticated_read_cyl_scan_latest_source ON public.cyl_scan_lates
 -- ITSELF, not as the view owner, so the read roles need direct SELECT on this table too.
 GRANT SELECT ON public.cyl_scan_latest_source
     TO bloom_agent, bloom_user, bloom_admin, authenticated;
+
+-- RLS does NOT govern TRUNCATE (a Postgres limitation, not a policy gap) -- Supabase's default
+-- privileges give anon/authenticated a raw TRUNCATE grant on every new public-schema table
+-- regardless of the RLS policies above, confirmed exploitable directly (SET LOCAL ROLE anon;
+-- TRUNCATE public.cyl_scan_latest_source; succeeded before this fix). Blast radius is
+-- repo-wide, not scoped to this table: cyl_scan_traits_source INNER JOINs this table, so
+-- truncating it would zero out is_latest for every scan, breaking get_scan_traits/
+-- get_experiment_traits system-wide. Matches this repo's own precedent
+-- (20260504000002_grant_all_scope_reduction.sql, which made the same fix for bloom_admin but
+-- never extended it to anon/authenticated on any table -- confirmed anon can still TRUNCATE
+-- cyl_scan_traits itself today, a pre-existing, repo-wide gap this migration does not attempt
+-- to close beyond its own two new tables).
+REVOKE TRUNCATE, REFERENCES, TRIGGER ON public.cyl_scan_latest_source FROM anon, authenticated;
 
 -- 2. Trigger: per-row upsert guarded by an advisory lock. Writes to a DIFFERENT table than the
 --    one it's triggered on, so it never re-fires itself -- no recursion guard needed (unlike a

@@ -1,7 +1,7 @@
--- Manual rollback for 20260814020000_create_cyl_experiment_trait_counts.sql
+-- Manual rollback for 20260817020000_create_cyl_experiment_trait_counts.sql
 --
--- *** ROLLBACK ORDER: apply 20260814030000's rollback FIRST. ***
--- get_experiment_summary_counts (20260814030000)'s unpinned path reads cyl_experiment_trait_counts
+-- *** ROLLBACK ORDER: apply 20260817030000's rollback FIRST. ***
+-- get_experiment_summary_counts (20260817030000)'s unpinned path reads cyl_experiment_trait_counts
 -- from its own PL/pgSQL body -- a reference Postgres's dependency tracker does NOT protect (unlike
 -- a view). Dropping this table while that RPC still reads it does not fail at DROP time; the guard
 -- below turns that into an immediate, loud error instead -- confirmed via
@@ -17,7 +17,7 @@ BEGIN
           AND pronamespace = 'public'::regnamespace
           AND prosrc LIKE '%cyl_experiment_trait_counts%'
     ) THEN
-        RAISE EXCEPTION 'Roll back 20260814030000 first -- get_experiment_summary_counts still references cyl_experiment_trait_counts.';
+        RAISE EXCEPTION 'Roll back 20260817030000 first -- get_experiment_summary_counts still references cyl_experiment_trait_counts.';
     END IF;
 END;
 $$;

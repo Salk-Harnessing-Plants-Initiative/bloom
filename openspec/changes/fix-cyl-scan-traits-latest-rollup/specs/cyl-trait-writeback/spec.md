@@ -95,3 +95,11 @@ tables.
   `INSERT`/`UPDATE`/`DELETE` is rejected by row-level security — even though Supabase's default privileges
   grant `anon` a raw table-level `INSERT`/`UPDATE`/`DELETE` on this table, the same as any new
   public-schema table
+
+#### Scenario: An unauthenticated caller cannot TRUNCATE cyl_scan_latest_source
+
+- **WHEN** an `anon` (unauthenticated) caller attempts `TRUNCATE public.cyl_scan_latest_source`
+- **THEN** the statement is rejected for lacking `TRUNCATE` privilege — row-level security does not govern
+  `TRUNCATE` at all (a Postgres limitation, not a policy gap), so this privilege must be revoked explicitly;
+  without it, `anon` could truncate this table despite already being correctly denied `INSERT` by RLS,
+  zeroing out `is_latest` for every scan system-wide via `cyl_scan_traits_source`'s join to this table

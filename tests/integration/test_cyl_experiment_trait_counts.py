@@ -29,13 +29,13 @@ from tests.integration.test_cyl_scan_latest_source import (  # noqa: E402
 )
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-_TS = "20260814020000_create_cyl_experiment_trait_counts"
+_TS = "20260817020000_create_cyl_experiment_trait_counts"
 MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_TS}.sql"
 ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_TS}_rollback.sql"
 
 # The later migration in this change, whose rollback must run BEFORE this one's -- see the
 # rollback SQL files' own "ROLLBACK ORDER" header comments.
-_REWRITE_TS = "20260814030000_rewrite_get_experiment_summary_counts"
+_REWRITE_TS = "20260817030000_rewrite_get_experiment_summary_counts"
 REWRITE_MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_REWRITE_TS}.sql"
 REWRITE_ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_REWRITE_TS}_rollback.sql"
 
@@ -195,11 +195,24 @@ def test_concurrent_refreshes_do_not_raise_duplicate_key(pg_conninfo, pg_conn):
     call's DELETE found nothing left to delete (the first call's rows are new tuples outside its
     snapshot after the first commits), so its INSERT collided on the experiment_id PK with rows
     the first call had already committed ("duplicate key value violates unique constraint
-    cyl_experiment_trait_counts_pkey"). pg_advisory_xact_lock(hashtext(...)) now serializes calls.
+    cyl_experiment_trait_counts_pkey"). pg_advisory_xact_lock(0, hashtext(...)) now serializes calls.
 
     Uses two real connections with explicit interleaving (not just "call it twice sequentially"),
-    since the race only manifests when the second call's DELETE runs concurrently with the
-    first's still-open transaction."""
+    since the race only manifests when the second call's DELETE runs concurrently with the first's
+    still-open transaction.
+
+    Round-3 review flagged the original version of this test: it used a fixed `time.sleep(0.1)`
+    before starting B and only ever asserted the ABSENCE of an error, which would also pass if the
+    lock were silently a no-op and the two calls simply got lucky not to race on this particular
+    run (timing-dependent, not a proof of blocking). Strengthened two ways: (1) B's call runs
+    directly (not via a thread) up to the point where it must block, and `pg_locks` is queried
+    from a third, independent connection to confirm a NON-granted waiter row exists for the SAME
+    lock key (classid=0, objid=hashtext('refresh_cyl_experiment_trait_counts'), objsubid=2 -- the
+    two-int form's signature, confirmed via direct psql introspection) held by A's own backend pid
+    -- proving B is blocked on THIS lock, not just blocked on something; (2) a `b_done` event
+    (rather than a fixed sleep) proves B was still blocked immediately before A commits and
+    unblocked immediately after, matching the sibling concurrency tests' pattern in
+    test_cyl_scan_latest_source.py."""
     with pg_conn.cursor() as cur:
         experiment_id, _scan_id, imgs = _seed_experiment_scan(cur)
         _deliver(cur, imgs, "orig", traits=[_trait("length", 1.0)])
@@ -208,12 +221,15 @@ def test_concurrent_refreshes_do_not_raise_duplicate_key(pg_conninfo, pg_conn):
     conn_a = psycopg.connect(pg_conninfo)
     conn_b = psycopg.connect(pg_conninfo)
     try:
-        errors = {}
+        cur_a = conn_a.cursor()
+        cur_a.execute("SELECT pg_backend_pid()")
+        a_pid = cur_a.fetchone()[0]
+        # A's call is uncontested (B hasn't started), so it completes and stays open, holding the
+        # advisory lock until we commit below.
+        cur_a.execute("SELECT public.refresh_cyl_experiment_trait_counts()")
 
-        def _run_a():
-            conn_a.execute("SELECT public.refresh_cyl_experiment_trait_counts()")
-            time.sleep(0.5)  # hold A's transaction open so B's call genuinely overlaps it
-            conn_a.commit()
+        errors = {}
+        b_done = threading.Event()
 
         def _run_b():
             try:
@@ -222,13 +238,34 @@ def test_concurrent_refreshes_do_not_raise_duplicate_key(pg_conninfo, pg_conn):
             except Exception as e:  # noqa: BLE001 -- capturing for the assertion below
                 errors["b"] = e
                 conn_b.rollback()
+            finally:
+                b_done.set()
 
-        a_thread = threading.Thread(target=_run_a)
-        a_thread.start()
-        time.sleep(0.1)  # let A start (and, pre-fix, get past its DELETE) before B starts
         b_thread = threading.Thread(target=_run_b)
         b_thread.start()
-        a_thread.join()
+        assert not b_done.wait(timeout=0.5)  # B genuinely blocked, not just slow
+
+        with pg_conn.cursor() as cur:
+            # A holds the lock, granted; some OTHER backend (B) is waiting on the SAME lock key.
+            cur.execute(
+                "SELECT count(*) FROM pg_locks "
+                "WHERE locktype='advisory' AND classid=0 "
+                "  AND objid=hashtext('refresh_cyl_experiment_trait_counts') AND objsubid=2 "
+                "  AND granted AND pid=%s",
+                (a_pid,),
+            )
+            assert cur.fetchone()[0] == 1, "A should hold the two-int advisory lock, granted"
+            cur.execute(
+                "SELECT count(*) FROM pg_locks "
+                "WHERE locktype='advisory' AND classid=0 "
+                "  AND objid=hashtext('refresh_cyl_experiment_trait_counts') AND objsubid=2 "
+                "  AND NOT granted AND pid != %s",
+                (a_pid,),
+            )
+            assert cur.fetchone()[0] == 1, "B should be waiting on the SAME advisory lock key as A"
+
+        conn_a.commit()
+        assert b_done.wait(timeout=5.0)  # B proceeds once A releases the lock
         b_thread.join()
 
         assert errors == {}, f"concurrent refresh raised: {errors}"
@@ -279,6 +316,21 @@ def test_anon_cannot_write_despite_the_raw_table_grant(pg_conn):
     pg_conn.rollback()
 
 
+def test_anon_cannot_truncate(pg_conn):
+    """RLS does NOT govern TRUNCATE -- same fix and reasoning as cyl_scan_latest_source's
+    equivalent test (caught in round-3 review)."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT has_table_privilege('anon', 'cyl_experiment_trait_counts', 'TRUNCATE')"
+        )
+        assert cur.fetchone()[0] is False
+
+        cur.execute("SET LOCAL ROLE anon")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            cur.execute("TRUNCATE public.cyl_experiment_trait_counts")
+    pg_conn.rollback()
+
+
 def test_migration_adds_no_read_role_execute_grant(pg_conn):
     with pg_conn.cursor() as cur:
         cur.execute(
@@ -289,7 +341,7 @@ def test_migration_adds_no_read_role_execute_grant(pg_conn):
         assert cur.fetchone()[0] == 0
         # 'anon' is a distinct grantee from 'PUBLIC' in role_routine_grants -- the IN-list above
         # does not imply anon is covered. Caught in round-2 review: this is exactly the property
-        # the REVOKE ... FROM PUBLIC, anon, authenticated (20260814020000...sql) exists to
+        # the REVOKE ... FROM PUBLIC, anon, authenticated (20260817020000...sql) exists to
         # guarantee, and a future edit that dropped anon from that REVOKE would leave this test
         # still passing at 0 while anon silently regained EXECUTE.
         cur.execute(
@@ -312,19 +364,19 @@ def test_migration_body_is_idempotent(pg_conn):
 
 def test_rollback_guard_blocks_out_of_order_rollback(pg_conn):
     """This migration's rollback must refuse to run while get_experiment_summary_counts
-    (20260814030000) still references cyl_experiment_trait_counts -- proves the "ROLLBACK ORDER"
+    (20260817030000) still references cyl_experiment_trait_counts -- proves the "ROLLBACK ORDER"
     guard in the rollback SQL is real, not just a comment. Before this guard existed, rolling this
     migration back in isolation would drop the table out from under that RPC's unpinned path
     silently at DROP time, only failing later, at the RPC's next call, with an unhelpful
     "relation does not exist" -- the guard turns that into an immediate, actionable error instead."""
     with pg_conn.cursor() as cur:
-        with pytest.raises(psycopg.errors.RaiseException, match="Roll back 20260814030000 first"):
+        with pytest.raises(psycopg.errors.RaiseException, match="Roll back 20260817030000 first"):
             cur.execute(_sql_body(ROLLBACK))
     pg_conn.rollback()
 
 
 def test_rollback_restores_prior_state(pg_conn):
-    """Exercises the full, documented order (20260814030000's rollback first, then this one) rather
+    """Exercises the full, documented order (20260817030000's rollback first, then this one) rather
     than this migration in isolation -- rolling this one back alone is now guarded against (see the
     sibling test above)."""
     with pg_conn.cursor() as cur:
