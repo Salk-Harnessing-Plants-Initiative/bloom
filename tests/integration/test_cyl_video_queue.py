@@ -409,6 +409,37 @@ def test_an_expired_lease_redelivers_the_same_job(pg_conn):
         pg_conn.rollback()
 
 
+def test_a_re_claim_preserves_the_original_start_time(pg_conn):
+    """started_at means "when work first began", not "when it was last handed out".
+
+    Stamping it forward on every redelivery resets the clock any staleness check runs
+    on, so a job redelivered every p_vt seconds could never look old enough to alert.
+    """
+    try:
+        with pg_conn.cursor() as cur:
+            scan_id, experiment_id = _seed(cur)
+            job_id = _enqueue(cur, scan_id, experiment_id)
+
+            _claim(cur, vt=0)
+
+            # Backdate rather than compare two now() readings: now() is transaction-stable,
+            # so both claims in this transaction would return the same instant and the
+            # assertion would hold even against an unconditional overwrite.
+            origin = "2020-01-01 00:00:00+00"
+            cur.execute(
+                "UPDATE public.cyl_video_jobs SET started_at = %s WHERE id = %s",
+                (origin, job_id),
+            )
+
+            _claim(cur, vt=0)
+            cur.execute(
+                "SELECT started_at FROM public.cyl_video_jobs WHERE id = %s", (job_id,)
+            )
+            assert cur.fetchone()[0].isoformat() == "2020-01-01T00:00:00+00:00"
+    finally:
+        pg_conn.rollback()
+
+
 def test_claim_dead_letters_a_poison_message(pg_conn):
     try:
         with pg_conn.cursor() as cur:

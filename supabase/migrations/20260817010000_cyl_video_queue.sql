@@ -265,8 +265,13 @@ BEGIN
   -- it is how a job whose worker died mid-render is recovered once its message
   -- becomes visible again. The cost is that a lease expiring under a still-live
   -- worker double-renders, so the visibility timeout must exceed a worst-case render.
+  --
+  -- started_at is set once and then left alone: it means "when work on this job first
+  -- began", not "when it was last handed out". Stamping it forward on every re-claim
+  -- would reset the clock a staleness check runs on, so a job redelivered every p_vt
+  -- seconds could never appear old enough for one to fire.
   UPDATE public.cyl_video_jobs
-  SET status = 'processing', started_at = now()
+  SET status = 'processing', started_at = COALESCE(started_at, now())
   WHERE id = v_job_id AND status IN ('queued', 'processing');
   IF NOT FOUND THEN
     -- Terminal job with a stray live message — archive rather than re-run it.
