@@ -66,15 +66,24 @@ ALTER TABLE public.cyl_video_jobs ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS cyl_video_jobs_read ON public.cyl_video_jobs;
 CREATE POLICY cyl_video_jobs_read ON public.cyl_video_jobs
   FOR SELECT TO bloom_user, bloom_writer, bloom_admin USING (true);
-GRANT SELECT ON public.cyl_video_jobs TO bloom_user, bloom_writer, bloom_admin;
+-- Column-scoped on purpose: `error` carries whatever the render pipeline raised, which
+-- in practice means filesystem paths, hostnames and object keys, and `path` is the
+-- storage key that cyl_scan_videos deliberately withholds from these same roles
+-- (20260716000000). Polling needs neither. Revoke first so a re-apply narrowing this
+-- list cannot leave a wider whole-table grant behind.
+REVOKE SELECT ON public.cyl_video_jobs FROM bloom_user, bloom_writer, bloom_admin;
+GRANT SELECT (id, scan_id, experiment_id, status, created_at, started_at, completed_at)
+  ON public.cyl_video_jobs TO bloom_user, bloom_writer, bloom_admin;
 -- Writes come only from the wrappers below. Default privileges hand every new public
 -- table to the bloom_* roles (20260414002000_security_groups.sql) and to Supabase's own
 -- anon/authenticated/service_role, so revoke explicitly rather than relying on the
 -- absence of a write policy. service_role matters most: it is BYPASSRLS, so a policy
--- would not stop it.
+-- would not stop it. bloom_agent is the LLM-facing role and gets default-privilege
+-- SELECT like the rest, so it is revoked here too rather than left fail-closed only by
+-- the absence of a matching policy.
 REVOKE INSERT, UPDATE, DELETE ON public.cyl_video_jobs
   FROM bloom_user, bloom_writer, bloom_admin;
-REVOKE ALL ON public.cyl_video_jobs FROM anon, authenticated, service_role;
+REVOKE ALL ON public.cyl_video_jobs FROM anon, authenticated, service_role, bloom_agent;
 
 -- The wrappers run as bloom_video_queue_owner, which is neither the table owner nor
 -- BYPASSRLS, so RLS applies to it and a grant alone leaves every statement filtered to

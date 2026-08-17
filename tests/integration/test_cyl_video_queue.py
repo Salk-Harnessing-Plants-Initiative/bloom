@@ -662,7 +662,69 @@ def test_job_status_is_readable_by_session_roles(pg_conn, role):
         pg_conn.rollback()
 
 
-@pytest.mark.parametrize("role", SESSION_ROLES + ["anon", "authenticated", "service_role"])
+@pytest.mark.parametrize("role", SESSION_ROLES)
+@pytest.mark.parametrize("column", ["error", "path"])
+def test_session_roles_cannot_read_the_sensitive_columns(pg_conn, role, column):
+    """`error` holds raw pipeline output (paths, hostnames, object keys) and `path` is
+    the storage key cyl_scan_videos withholds from these same roles. Polling job status
+    needs neither, so the grant is column-scoped rather than whole-table."""
+    try:
+        with pg_conn.cursor() as cur:
+            scan_id, experiment_id = _seed(cur)
+            _enqueue(cur, scan_id, experiment_id)
+
+            cur.execute("SAVEPOINT cols")
+            cur.execute(f"SET LOCAL ROLE {role}")
+            with pytest.raises(
+                psycopg.errors.InsufficientPrivilege,
+                match=f"permission denied for table cyl_video_jobs|column {column}",
+            ):
+                cur.execute(f"SELECT {column} FROM public.cyl_video_jobs")
+            cur.execute("ROLLBACK TO SAVEPOINT cols")
+    finally:
+        pg_conn.rollback()
+
+
+@pytest.mark.parametrize("role", SESSION_ROLES)
+def test_session_roles_can_still_poll_job_status(pg_conn, role):
+    # The column grant must not break the polling use case it exists to serve.
+    try:
+        with pg_conn.cursor() as cur:
+            scan_id, experiment_id = _seed(cur)
+            _enqueue(cur, scan_id, experiment_id)
+
+            cur.execute("SAVEPOINT poll")
+            cur.execute(f"SET LOCAL ROLE {role}")
+            cur.execute(
+                "SELECT status, scan_id, experiment_id, created_at "
+                "FROM public.cyl_video_jobs WHERE scan_id = %s",
+                (scan_id,),
+            )
+            assert cur.fetchone()[0] == "queued"
+            cur.execute("ROLLBACK TO SAVEPOINT poll")
+    finally:
+        pg_conn.rollback()
+
+
+def test_the_error_column_is_length_capped(pg_conn):
+    # p_error is written straight from the worker; an unbounded traceback in a polled
+    # table is both a leak surface and a storage problem.
+    try:
+        with pg_conn.cursor() as cur:
+            scan_id, experiment_id = _seed(cur)
+            job_id = _enqueue(cur, scan_id, experiment_id)
+            _, _, _, msg_id = _claim(cur)
+            cur.execute(
+                "SELECT public.fail_cyl_video_job(%s, %s, %s)", (job_id, msg_id, "x" * 5000)
+            )
+            assert len(_job(cur, job_id)["error"]) == 2000
+    finally:
+        pg_conn.rollback()
+
+
+@pytest.mark.parametrize(
+    "role", SESSION_ROLES + ["anon", "authenticated", "service_role", "bloom_agent"]
+)
 def test_roles_hold_no_write_privilege_on_job_status(pg_conn, role):
     # Asserted from the catalog, not by calling: an INSERT blocked by RLS raises the same
     # SQLSTATE as one blocked by privilege, so a behavioural test alone would pass even
