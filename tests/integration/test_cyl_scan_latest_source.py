@@ -51,6 +51,45 @@ def _sql_body(path: Path) -> str:
     )
 
 
+def _cleanup_seeded_experiment(cur, experiment_id):
+    """Delete every row `_seed_experiment_scan` (plus any `_deliver`/`_mint_source_and_trait`
+    calls against it) created, in dependency order. The real-connection concurrency tests below
+    commit rather than roll back, so without this their seeded species/experiments/waves/
+    accessions/plants/scans/images accumulate permanently in a long-lived local dev DB across
+    every run -- caught in round-2 review. Does not clean up `cyl_trait_sources`/`cyl_traits`
+    rows (smaller footprint, harder to attribute precisely without tracking ids per call)."""
+    cur.execute("SELECT species_id FROM cyl_experiments WHERE id=%s", (experiment_id,))
+    row = cur.fetchone()
+    species_id = row[0] if row else None
+    cur.execute(
+        "SELECT DISTINCT p.accession_id FROM cyl_plants p "
+        "JOIN cyl_waves w ON w.id = p.wave_id WHERE w.experiment_id=%s",
+        (experiment_id,),
+    )
+    accession_ids = [r[0] for r in cur.fetchall() if r[0] is not None]
+    # cyl_scan_traits/cyl_scan_latest_source have NO further FK from cyl_scans in the CASCADE
+    # direction (cyl_scan_traits.scan_id is NO ACTION) -- must be emptied first, or the
+    # cyl_experiments delete below fails with a foreign-key violation instead of cascading.
+    cur.execute(
+        "DELETE FROM cyl_scan_traits WHERE scan_id IN "
+        "(SELECT s.id FROM cyl_scans s JOIN cyl_plants p ON p.id = s.plant_id "
+        " JOIN cyl_waves w ON w.id = p.wave_id WHERE w.experiment_id=%s)",
+        (experiment_id,),
+    )
+    cur.execute(
+        "DELETE FROM cyl_scan_latest_source WHERE scan_id IN "
+        "(SELECT s.id FROM cyl_scans s JOIN cyl_plants p ON p.id = s.plant_id "
+        " JOIN cyl_waves w ON w.id = p.wave_id WHERE w.experiment_id=%s)",
+        (experiment_id,),
+    )
+    # Cascades to cyl_waves -> cyl_plants -> cyl_scans -> cyl_images.
+    cur.execute("DELETE FROM cyl_experiments WHERE id=%s", (experiment_id,))
+    if accession_ids:
+        cur.execute("DELETE FROM accessions WHERE id = ANY(%s)", (accession_ids,))
+    if species_id is not None:
+        cur.execute("DELETE FROM species WHERE id=%s", (species_id,))
+
+
 def _max_source(cur, scan_id):
     cur.execute(
         "SELECT max_source_id FROM cyl_scan_latest_source WHERE scan_id=%s", (scan_id,)
@@ -123,12 +162,58 @@ def test_all_null_source_scan_has_null_max_source(pg_conn):
 def test_deleting_all_rows_leaves_null_max_source_no_error(pg_conn):
     """A scan whose last trait row is deleted has nothing left to aggregate -- max(source_id) over
     zero rows is NULL, and the trigger's upsert must not error (the ghost row it leaves behind is
-    harmless: cyl_scan_traits_source's inner join has nothing left to match against it)."""
+    harmless: cyl_scan_traits_source's inner join has nothing left to match against it).
+
+    Asserts the row count separately from `_max_source`'s return value: `_max_source` returns
+    `None` both when the row exists with `max_source_id = NULL` (the claim this test makes) and
+    when no row exists at all (e.g. a buggy trigger that DELETEs on an empty aggregate instead of
+    upserting NULL) -- caught in round-2 review as the same class of non-discriminating assertion
+    round 1 was fixed for elsewhere."""
     with pg_conn.cursor() as cur:
         _, scan_id, imgs = _seed_experiment_scan(cur)
         _deliver(cur, imgs, "orig", traits=[_trait("length", 1.0)])
         cur.execute("DELETE FROM cyl_scan_traits WHERE scan_id=%s", (scan_id,))
-        assert _max_source(cur, scan_id) is None  # no error, row still present with NULL
+        cur.execute(
+            "SELECT count(*) FROM cyl_scan_latest_source WHERE scan_id=%s", (scan_id,)
+        )
+        assert cur.fetchone()[0] == 1  # the ghost row exists...
+        assert _max_source(cur, scan_id) is None  # ...with max_source_id = NULL, not absent
+    pg_conn.rollback()
+
+
+def test_cross_scan_update_recomputes_both_scans(pg_conn):
+    """A row's scan_id can be reassigned (bloom_admin correcting a mis-attributed trait row) --
+    caught in round-2 review: the trigger's original `COALESCE(NEW.scan_id, OLD.scan_id)` only
+    ever recomputed NEW.scan_id on an UPDATE (never NULL), silently leaving the OLD scan's row
+    stale. If the reassigned row held the old scan's max_source_id, every remaining row for that
+    scan would evaluate is_latest = false until an unrelated future write touched it again."""
+    with pg_conn.cursor() as cur:
+        _, scan_a, imgs_a = _seed_experiment_scan(cur)
+        _, scan_b, imgs_b = _seed_experiment_scan(cur)
+        # scan_a: two sources: an older one (stays) and a newer one (gets reassigned to scan_b).
+        old_source = _deliver(cur, imgs_a, "old", traits=[_trait("length", 1.0)])
+        new_source = _deliver(cur, imgs_a, "new", traits=[_trait("length", 2.0)])
+        assert _max_source(cur, scan_a) == new_source
+
+        # scan_b already has its own source (minted after new_source, so numerically higher --
+        # the test's assertions below don't depend on which of b_source/new_source is greater).
+        b_source = _deliver(cur, imgs_b, "b", traits=[_trait("length", 3.0)])
+        assert _max_source(cur, scan_b) == b_source
+
+        # Reassign the new_source row from scan_a to scan_b (a break-glass correction).
+        cur.execute("SET LOCAL ROLE bloom_admin")
+        cur.execute(
+            "UPDATE cyl_scan_traits SET scan_id=%s WHERE scan_id=%s AND source_id=%s",
+            (scan_b, scan_a, new_source),
+        )
+        cur.execute("RESET ROLE")
+
+        # scan_a's remaining row is old_source -- its max_source_id must fall back to it, not
+        # stay stuck at the now-departed new_source.
+        assert _max_source(cur, scan_a) == old_source
+        # scan_b now has two sources (its own + the reassigned one) -- max_source_id must reflect
+        # the true max across both, not just its own original source.
+        assert _max_source(cur, scan_b) == max(b_source, new_source)
     pg_conn.rollback()
 
 
@@ -172,7 +257,19 @@ def test_trigger_function_metadata(pg_conn):
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("role", ["bloom_agent", "bloom_user", "bloom_admin"])
+@pytest.mark.parametrize(
+    "role",
+    [
+        "bloom_agent",
+        "bloom_user",
+        "bloom_admin",
+        "authenticated",
+        # bloom_writer has no policy of its own on this table -- it inherits bloom_user's via
+        # `GRANT bloom_user TO bloom_writer` (20260519130000_add_bloom_writer_role.sql). Verified
+        # here rather than just asserted, per round-2 review.
+        "bloom_writer",
+    ],
+)
 def test_intended_read_roles_see_real_rows(pg_conn, role):
     with pg_conn.cursor() as cur:
         _, scan_id, imgs = _seed_experiment_scan(cur)
@@ -318,7 +415,7 @@ def test_concurrent_first_insert_to_same_new_scan_converges_to_true_max(pg_conni
     caught in review; verify by temporarily removing `pg_advisory_xact_lock` from
     `maintain_cyl_scan_latest_source()` and confirming this test then fails)."""
     with pg_conn.cursor() as cur:
-        _, scan_id, imgs = _seed_experiment_scan(cur)
+        experiment_id, scan_id, imgs = _seed_experiment_scan(cur)
         # Minted in this order so the names match actual numeric ordering (cyl_trait_sources.id
         # is a monotonic identity -- whichever is minted first gets the lower id).
         source_low, trait_low = _mint_source_and_trait(cur, "low")
@@ -356,8 +453,7 @@ def test_concurrent_first_insert_to_same_new_scan_converges_to_true_max(pg_conni
             assert _max_source(cur, scan_id) == true_max
     finally:
         with pg_conn.cursor() as cur:
-            cur.execute("DELETE FROM cyl_scan_traits WHERE scan_id=%s", (scan_id,))
-            cur.execute("DELETE FROM cyl_scan_latest_source WHERE scan_id=%s", (scan_id,))
+            _cleanup_seeded_experiment(cur, experiment_id)
         pg_conn.commit()
         conn_a.close()
         conn_b.close()
@@ -370,7 +466,7 @@ def test_concurrent_rerun_of_existing_scan_converges_to_true_max(pg_conninfo, pg
     the numerically LOWER new source_id must be the one that blocks and resolves last, or this
     test cannot distinguish locked from unlocked behavior."""
     with pg_conn.cursor() as cur:
-        _, scan_id, imgs = _seed_experiment_scan(cur)
+        experiment_id, scan_id, imgs = _seed_experiment_scan(cur)
         original_source = _deliver(cur, imgs, "orig", traits=[_trait("length", 1.0)])
         # Minted in this order so the names match actual numeric ordering (see the sibling test
         # above for why this matters).
@@ -407,8 +503,7 @@ def test_concurrent_rerun_of_existing_scan_converges_to_true_max(pg_conninfo, pg
             assert _max_source(cur, scan_id) == true_max
     finally:
         with pg_conn.cursor() as cur:
-            cur.execute("DELETE FROM cyl_scan_traits WHERE scan_id=%s", (scan_id,))
-            cur.execute("DELETE FROM cyl_scan_latest_source WHERE scan_id=%s", (scan_id,))
+            _cleanup_seeded_experiment(cur, experiment_id)
         pg_conn.commit()
         conn_a.close()
         conn_b.close()
@@ -416,12 +511,20 @@ def test_concurrent_rerun_of_existing_scan_converges_to_true_max(pg_conninfo, pg
 
 def test_write_concurrent_with_backfill_migration_is_not_lost(pg_conninfo, pg_conn):
     """cyl-trait-writeback spec scenario: 'A write concurrent with the backfill migration is not
-    lost'. Simulates the migration's own LOCK TABLE ... IN SHARE MODE step (design.md D3) by
-    holding that lock on a separate connection while a write-back-shaped INSERT lands concurrently
-    -- the write must block (not silently proceed against a stale trigger-free state) and, once the
-    lock is released, complete and be correctly reflected in cyl_scan_latest_source."""
+    lost'.
+
+    What this test actually verifies (narrower than its name, corrected in round-2 review): that
+    `LOCK TABLE cyl_scan_traits IN SHARE MODE` genuinely blocks a concurrent write-back-shaped
+    INSERT, and that the write completes correctly once the lock releases. It does NOT reconstruct
+    the specific migration-application hazard design.md D3 describes (a writer transaction whose
+    snapshot predates `CREATE TRIGGER` itself) -- this test DB already has the trigger installed
+    for the whole suite, so there's no "trigger doesn't exist yet" state left to simulate without
+    tearing down and replaying the actual migration inside the test. That gap is real but accepted:
+    the generic locking behavior this test does verify is the mechanism design.md's argument
+    depends on, even though the full end-to-end migration-application race isn't independently
+    replayed here."""
     with pg_conn.cursor() as cur:
-        _, scan_id, imgs = _seed_experiment_scan(cur)
+        experiment_id, scan_id, imgs = _seed_experiment_scan(cur)
     pg_conn.commit()
 
     lock_conn = psycopg.connect(pg_conninfo)
@@ -452,8 +555,7 @@ def test_write_concurrent_with_backfill_migration_is_not_lost(pg_conninfo, pg_co
             assert _max_source(cur, scan_id) == source_holder["id"]
     finally:
         with pg_conn.cursor() as cur:
-            cur.execute("DELETE FROM cyl_scan_traits WHERE scan_id=%s", (scan_id,))
-            cur.execute("DELETE FROM cyl_scan_latest_source WHERE scan_id=%s", (scan_id,))
+            _cleanup_seeded_experiment(cur, experiment_id)
         pg_conn.commit()
         lock_conn.close()
         writer_conn.close()

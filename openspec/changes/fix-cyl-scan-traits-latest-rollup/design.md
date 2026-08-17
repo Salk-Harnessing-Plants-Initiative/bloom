@@ -99,17 +99,39 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE
-    affected_scan_id bigint := COALESCE(NEW.scan_id, OLD.scan_id);
+    v_new_scan bigint := NEW.scan_id;  -- NULL on DELETE
+    v_old_scan bigint := OLD.scan_id;  -- NULL on INSERT
+    v_lo       bigint;
+    v_hi       bigint;
 BEGIN
-    -- Serializes concurrent writers to the SAME scan_id — see the Context section's empirical
-    -- finding. Scoped to one scan_id, so this never contends with a write to a different scan.
-    PERFORM pg_advisory_xact_lock(affected_scan_id);
+    -- A scan-reassigning UPDATE (OLD.scan_id <> NEW.scan_id) affects TWO scans -- see D2b for why
+    -- this needs its own branch, added post-review. Lock order is sorted (lower id first), not
+    -- NEW-then-OLD, so two concurrent cross-scan reassignments moving rows in opposite directions
+    -- can't deadlock each other.
+    IF v_old_scan IS NOT NULL AND v_old_scan IS DISTINCT FROM v_new_scan THEN
+        v_lo := least(v_new_scan, v_old_scan);
+        v_hi := greatest(v_new_scan, v_old_scan);
+        PERFORM pg_advisory_xact_lock(v_lo);
+        PERFORM pg_advisory_xact_lock(v_hi);
+    ELSIF v_new_scan IS NOT NULL THEN
+        -- Serializes concurrent writers to the SAME scan_id — see the Context section's empirical
+        -- finding.
+        PERFORM pg_advisory_xact_lock(v_new_scan);
+    ELSE
+        PERFORM pg_advisory_xact_lock(v_old_scan);
+    END IF;
 
-    INSERT INTO public.cyl_scan_latest_source (scan_id, max_source_id)
-    SELECT affected_scan_id, max(source_id)
-    FROM public.cyl_scan_traits
-    WHERE scan_id = affected_scan_id
-    ON CONFLICT (scan_id) DO UPDATE SET max_source_id = EXCLUDED.max_source_id;
+    IF v_new_scan IS NOT NULL THEN
+        INSERT INTO public.cyl_scan_latest_source (scan_id, max_source_id)
+        SELECT v_new_scan, max(source_id) FROM public.cyl_scan_traits WHERE scan_id = v_new_scan
+        ON CONFLICT (scan_id) DO UPDATE SET max_source_id = EXCLUDED.max_source_id;
+    END IF;
+
+    IF v_old_scan IS NOT NULL AND v_old_scan IS DISTINCT FROM v_new_scan THEN
+        INSERT INTO public.cyl_scan_latest_source (scan_id, max_source_id)
+        SELECT v_old_scan, max(source_id) FROM public.cyl_scan_traits WHERE scan_id = v_old_scan
+        ON CONFLICT (scan_id) DO UPDATE SET max_source_id = EXCLUDED.max_source_id;
+    END IF;
 
     RETURN NULL;  -- AFTER trigger; return value is ignored
 END;
@@ -158,11 +180,42 @@ avoids bloom#656's per-row-trigger objection without needing a scheduled refresh
 — only `n_traits` (D5) needs one.
 
 **Deadlock note, dormant today but real:** `pg_advisory_xact_lock` participates in Postgres's deadlock
-detector. A single transaction that ever touches multiple `scan_id`s could deadlock against another
-transaction acquiring the same set in the opposite order. Today's sole writer
-(`insert_cyl_result_envelope`) is single-scan-per-call, so this never arises — flagged here (and in the
-trigger function's own comment) so a future multi-scan batch writer acquires `scan_id` locks in a
-consistent order rather than rediscovering this the hard way.
+detector. A single transaction that ever touches multiple `scan_id`s across _separate_ trigger firings
+(e.g. a future multi-scan batch writer inserting for several scans in one transaction) could deadlock
+against another transaction acquiring the same set in the opposite order. Today's sole writer
+(`insert_cyl_result_envelope`) is single-scan-per-call, so this never arises. This is a different,
+broader risk than D2b's cross-scan `UPDATE` case (which the sorted-lock-order fix below closes for a
+_single_ trigger firing needing both locks at once) — a future multi-scan batch writer would still need
+to acquire `scan_id` locks in a consistent order across its own separate statements to stay safe.
+
+### D2b — Cross-scan `UPDATE`: both scans must be recomputed, not just `NEW.scan_id` (found in a second
+
+review round, not the first)
+
+**A second `/review-pr` round caught what the first round's fixes missed:** the trigger's original
+`affected_scan_id := COALESCE(NEW.scan_id, OLD.scan_id)` only ever resolves to `NEW.scan_id` for an
+`UPDATE` (never `NULL`), so a row whose `scan_id` itself changes — e.g. `bloom_admin`'s break-glass access
+correcting a mis-attributed trait row — only ever got the _new_ scan recomputed. The _old_ scan's
+`cyl_scan_latest_source` row silently kept whatever `max_source_id` it had before the reassignment. If the
+reassigned row held that old scan's current max, every remaining row for that scan would evaluate
+`is_latest = false` — the scan effectively vanishes from `get_scan_traits`/`get_experiment_traits`/
+`n_traits` — until some unrelated future write happens to touch that scan again. This is a genuine
+data-integrity bug, not staleness: nothing about it self-corrects on a schedule the way D5's `n_traits`
+cache does.
+
+Reproduced directly: seeded two scans, delivered two sources to scan A (older `old_source`, newer
+`new_source`), delivered scan B's own source, then `UPDATE cyl_scan_traits SET scan_id = B WHERE scan_id =
+A AND source_id = new_source` (reassigning A's newest row to B). Against the original trigger, scan A's
+`max_source_id` stayed stuck at the now-departed `new_source` instead of falling back to `old_source`
+(`test_cross_scan_update_recomputes_both_scans` fails with exactly this value against the unpatched
+function — confirmed by temporarily redeploying it). The fix (D2's code block above) recomputes both
+`NEW.scan_id` and `OLD.scan_id` whenever they differ, with sorted lock acquisition (lower scan_id first)
+so two concurrent cross-scan reassignments moving rows in opposite directions (`A→B` and `B→A`
+simultaneously) can't deadlock each other by each locking their own "new" scan first.
+
+Not caught by the first review round's fixes, nor by any test written before this round — the existing
+concurrency/boundary tests only ever exercised same-scan `UPDATE`s (correcting a value or `source_id`) and
+straightforward insert/delete, never a `scan_id`-changing one.
 
 ### D2a — RLS: enabled on both new tables, matching every other `cyl_*` table (found in review, not in
 
@@ -317,10 +370,16 @@ CREATE TABLE public.cyl_experiment_trait_counts (
 
 CREATE OR REPLACE FUNCTION public.refresh_cyl_experiment_trait_counts()
 RETURNS void
-LANGUAGE sql
+LANGUAGE plpgsql  -- not plain SQL: PERFORM (D5b's advisory lock) needs PL/pgSQL
 SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
 AS $$
+BEGIN
+    -- D5b: serializes concurrent refreshes -- reproduced empirically (see D5b) that two
+    -- overlapping calls raise "duplicate key value violates unique constraint
+    -- cyl_experiment_trait_counts_pkey" without this.
+    PERFORM pg_advisory_xact_lock(hashtext('refresh_cyl_experiment_trait_counts'));
+
     DELETE FROM public.cyl_experiment_trait_counts;
     INSERT INTO public.cyl_experiment_trait_counts (experiment_id, n_traits, updated_at)
     SELECT d.experiment_id, count(*), now()
@@ -335,6 +394,7 @@ AS $$
         WHERE cst.trait_id IS NOT NULL
     ) d
     GROUP BY d.experiment_id;
+END;
 $$;
 
 -- Supabase auto-grants EXECUTE on new public-schema functions to anon/authenticated/service_role,
@@ -362,6 +422,27 @@ scheduled run, not the current instant. This is an accepted UI-lag tradeoff (Goa
 underlying trait data is correct and immediately consistent; only this one cached count can lag by up to
 one refresh interval. `updated_at` is exposed in the table (not yet in the RPC's return shape — see Open
 Questions) so this can be surfaced later if staleness ever needs to be visible to a caller.
+
+### D5b — Concurrent refreshes: unguarded DELETE+INSERT raced, confirmed exploitable and fixed (found in
+
+a second review round)
+
+**The first pass of this function had no concurrency control at all** — a bare `DELETE FROM
+cyl_experiment_trait_counts; INSERT INTO ... SELECT ... GROUP BY`, no lock, no `ON CONFLICT`. A second
+`/review-pr` round asked what happens under two overlapping calls (e.g. a manual `workflow_dispatch`
+overlapping the cron schedule, or any future second caller of this function); reproduced directly against
+a local Postgres rather than reasoned about: two connections each call the function, the first holds its
+transaction open, the second's call runs concurrently — the second's `DELETE` finds nothing to delete
+(the first's rows are new tuples outside its snapshot, since they don't exist until the first commits),
+so its `INSERT` collides on the `experiment_id` primary key with the first's already-committed rows:
+`duplicate key value violates unique constraint "cyl_experiment_trait_counts_pkey"`. Confirmed reproduced
+before the fix, confirmed resolved after adding `pg_advisory_xact_lock(hashtext('refresh_cyl_experiment_trait_counts'))`
+as the function's first statement (D5's code block above) — re-running the identical two-connection race
+with the lock in place produced no error.
+
+**A fixed lock key is correct here, unlike D2's per-scan `pg_advisory_xact_lock(scan_id)`**, because this
+function always rebuilds the _whole_ table in one pass — there is no finer-grained key (no single
+`experiment_id`) to scope the lock to; every call needs to exclude every other call, full stop.
 
 ### D5a — RLS on `cyl_experiment_trait_counts`
 
@@ -538,6 +619,19 @@ and this sandboxed environment can't run that benchmark. Carried forward as an e
   role could `INSERT` directly into either new table, and could call the `SECURITY DEFINER` helper directly)
   before the fixes landed, and confirmed closed after, via dedicated tests in both files' RLS/grant sections
   — not caught by CI (RLS gaps and over-broad `EXECUTE` grants don't fail any existing check in this repo).
+- **A SECOND `/review-pr` round, run specifically to check whether the first round's fixes actually held up
+  under fresh adversarial scrutiny, found three more genuine bugs the first round missed**: the cross-scan
+  `UPDATE` trigger gap (D2b), the unguarded concurrent-refresh race (D5b), and the trigger function's own
+  missing (if practically inert) `anon` `EXECUTE` revoke — plus a real, if narrower, security hardening item
+  (D8's HTTPS validation for `STAGING_API_URL`, added below) and several test-quality issues (a grant-check
+  test that omitted the one role it existed to check, a boundary test that couldn't distinguish "row exists
+  with NULL" from "row absent," orphaned rows accumulating across the real-connection concurrency tests'
+  commits). **The pattern across both rounds is consistent**: every genuinely new finding came from either
+  reproducing a claim directly against Postgres rather than reasoning about it, or from re-deriving a test's
+  discriminating power by hand rather than trusting that a plausible-looking construction actually tests
+  what its name claims. Two independent review passes each found real bugs the other missed — this is not
+  evidence either pass was thorough enough to be the last one needed, only that adversarial re-review of
+  this kind of concurrency-heavy, security-adjacent change keeps paying off past the first round.
 
 ## Migration Plan
 
@@ -564,7 +658,10 @@ this paragraph mid-incident, each rollback script now enforces its own precondit
 M2's rollback SQL each `RAISE EXCEPTION` if the migration that depends on it hasn't been rolled back yet
 (checked via `pg_proc`/function-body inspection), rather than silently proceeding into a corrupted state.
 `test_rollback_guard_blocks_out_of_order_rollback` (in both `test_cyl_scan_latest_source.py` and
-`test_cyl_experiment_trait_counts.py`) confirms each guard actually fires.
+`test_cyl_experiment_trait_counts.py`) confirms each guard actually fires. Both guards' catalog queries
+are anchored with `AND pronamespace = 'public'::regnamespace` (added in the second review round) so they
+can't be fooled by a same-named function in a different schema, even though no such collision exists
+today.
 
 ## Open Questions
 
@@ -575,7 +672,11 @@ M2's rollback SQL each `RAISE EXCEPTION` if the migration that depends on it has
   CVE-scan workflows on every PR, so the pattern is precedented, and it needs zero new application code).
   This design proposes the **scheduled GitHub Action** as the default, flagged here for confirmation
   rather than assumed — `tasks.md` carries the task either way (writing the workflow YAML if this is
-  confirmed; filing a follow-up issue against `workflows` if not).
+  confirmed; filing a follow-up issue against `workflows` if not). The workflow validates
+  `STAGING_API_URL` starts with `https://` before making the call (added in the second review round) —
+  a plain `http://` URL would send `SERVICE_ROLE_KEY` (a full-bypass-RLS credential) in cleartext on
+  every scheduled run; this doesn't resolve the secret's provisioning, just guards against it being
+  misconfigured once it exists.
 - **D7 — pinned-branch cost, not benchmarked.** See D7's own reasoning; needs a real `EXPLAIN (ANALYZE,
 BUFFERS)` against staging once this lands, not resolved from this sandboxed pass.
 - **`n_traits`'s `updated_at` isn't surfaced in `get_experiment_summary_counts`'s return shape.** Whether

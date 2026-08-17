@@ -53,7 +53,23 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
 AS $$
 BEGIN
+    -- Serializes concurrent refreshes (e.g. an overlapping workflow_dispatch + scheduled run) --
+    -- without this, two concurrent calls' DELETE+INSERT race: the second call's DELETE sees
+    -- nothing left to delete (the first call's rows are new tuples outside its snapshot after the
+    -- first commits), so its INSERT collides on the experiment_id PK with the first's already-
+    -- committed rows ("duplicate key value violates unique constraint
+    -- cyl_experiment_trait_counts_pkey") -- reproduced empirically against a local Postgres, not
+    -- assumed. A fixed lock key is correct here (unlike the per-scan trigger's
+    -- pg_advisory_xact_lock(scan_id)) because this function always rebuilds the WHOLE table, not
+    -- one row -- there is no finer-grained key to lock on.
+    PERFORM pg_advisory_xact_lock(hashtext('refresh_cyl_experiment_trait_counts'));
+
     DELETE FROM public.cyl_experiment_trait_counts;
+    -- Counts DISTINCT trait_id, not trait_name (unlike compute_cyl_experiment_summary_counts_live
+    -- and the pre-existing bloom#625 function, both of which count trait_name) -- equivalent today
+    -- only because cyl_traits.name is NOT NULL UNIQUE (20241114231724_create_cyl_traits.sql), a
+    -- bijection with id. If that uniqueness constraint is ever relaxed, this would silently diverge
+    -- from the other two counting paths.
     INSERT INTO public.cyl_experiment_trait_counts (experiment_id, n_traits, updated_at)
     SELECT d.experiment_id, count(*), now()
     FROM (

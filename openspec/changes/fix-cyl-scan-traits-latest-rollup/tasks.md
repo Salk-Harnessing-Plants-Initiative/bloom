@@ -235,6 +235,52 @@ findings (the concurrency-test construction bug and the RLS/anon-grant security 
       351 before this section (14 new tests: RLS × 2 tables, anon-grant × 2 functions, boundary values × 2,
       backfill-concurrency × 1, rollback-guard × 2).
 - [ ] 8.5 Post the synthesized review to PR #684 (`gh pr review --comment`, since a self-review can't
-      `--request-changes`/`--approve`).
-- [ ] 8.6 Iterate with additional `/review-pr` passes if the posted review (or CI) surfaces anything new,
-      until it converges.
+      `--request-changes`/`--approve`). **Blocked**: the posting attempt was denied by the local auto-mode
+      permission classifier (not a GitHub-side restriction) — the full synthesized review was shown to the
+      user directly in-conversation instead. Still outstanding if GitHub-side posting is wanted later.
+- [x] 8.6 Iterate with additional `/review-pr` passes if the posted review (or CI) surfaces anything new,
+      until it converges. **Done — see section 9**: a second round found three more genuine bugs the first
+      missed (D2b, D5b, plus several test-quality items), all fixed. A third round has not yet been run;
+      nothing outstanding as of this pass suggests one is needed, but that's exactly what the first two
+      rounds also looked like before the next one found something real.
+
+## 9. Second `/review-pr` round — verify round 1's fixes hold up, find what round 1 missed
+
+Explicitly framed as adversarial re-verification, not a rubber-stamp: each of the 5 subagents was told
+round 1's fixes were already committed and instructed to verify them fresh rather than trust the summary.
+
+- [x] 9.1 Run the 5-subagent review. All 5 returned; CI (`gh pr checks`) showed all 27 checks green,
+      including `Docker Compose Health Check` and CodeQL (confirming round 1's `permissions: {}` fix
+      actually resolved the CodeQL finding, not just silenced the comment thread — the lingering
+      `github-advanced-security` PR comment was confirmed stale, not a live finding).
+- [x] 9.2 Verify the two most significant new findings empirically before fixing, matching this change's
+      own established discipline: - `refresh_cyl_experiment_trait_counts()`'s concurrent-call race (D5b) — reproduced directly
+      (`UniqueViolation` on `cyl_experiment_trait_counts_pkey`), fixed with
+      `pg_advisory_xact_lock(hashtext(...))`, re-verified the fix closes it. - The cross-scan `UPDATE` trigger gap (D2b) — reproduced directly via
+      `test_cross_scan_update_recomputes_both_scans` failing against the original (unpatched) trigger
+      function (scan A stuck at the departed source instead of falling back), fixed, re-verified passing.
+- [x] 9.3 Fix everything that survived verification: - D2b (cross-scan `UPDATE`) and D5b (concurrent refresh race) — both BLOCKING, both fixed with a
+      new test each, both confirmed to fail against the pre-fix code and pass against the fix. - The trigger function's own missing `anon` `EXECUTE` revoke (practically inert, fixed for
+      consistency with every other `SECURITY DEFINER` function this change adds). - `test_migration_adds_no_read_role_execute_grant` (in `test_cyl_experiment_trait_counts.py`)
+      omitted `anon` from its own IN-list check — added an explicit `has_function_privilege('anon', ...)`
+      assertion, the same pattern the sibling test in `test_cyl_experiment_summary_counts.py` already
+      used correctly. - `test_deleting_all_rows_leaves_null_max_source_no_error` couldn't distinguish "row exists with
+      `max_source_id = NULL`" from "row absent" — added an explicit row-count assertion. - Rollback guards (both files) anchored with `AND pronamespace = 'public'::regnamespace`. - The scheduled workflow validates `STAGING_API_URL` is `https://` before calling it, and `curl`
+      gained `-S` (surface connection-level failures, not just HTTP-level ones). - The "write concurrent with backfill" test's docstring corrected to describe what it actually
+      verifies (generic `LOCK TABLE` blocking behavior) rather than overclaiming it replays the specific
+      migration-application hazard design.md D3 describes. - RLS role-parametrized tests extended to cover `bloom_writer`/`authenticated` (previously only
+      `bloom_agent`/`bloom_user`/`bloom_admin`), verifying `bloom_writer`'s policy inheritance via
+      `GRANT bloom_user TO bloom_writer` rather than just assuming it. - The three real-connection concurrency tests (plus the new refresh-concurrency test) now clean up
+      every row `_seed_experiment_scan`/`_mint_source_and_trait` created via a new
+      `_cleanup_seeded_experiment` helper, instead of only deleting `cyl_scan_traits`/
+      `cyl_scan_latest_source` and leaving `species`/`cyl_experiments`/`cyl_waves`/`accessions`/
+      `cyl_plants`/`cyl_scans`/`cyl_images` permanently committed in the local dev DB. Verified flat
+      row counts across repeated runs, not just "the code looks like it deletes things." - `refresh_cyl_experiment_trait_counts()`'s `DISTINCT trait_id` (vs. the other two counting paths'
+      `DISTINCT trait_name`) equivalence documented with a comment noting the `cyl_traits.name NOT NULL
+      UNIQUE` assumption it depends on. - `test_read_roles_can_call_function`'s `count(*) IS NOT NULL` assertion (trivially always true)
+      replaced with an assertion on the actual `(n_plants, n_traits)` row content.
+- [x] 9.4 Re-run the full `cyl`-scoped integration suite after all fixes — 369 passed, 5 skipped, up from
+      365 after round 1 (4 net new tests: cross-scan `UPDATE`, concurrent-refresh race, plus fixes to
+      existing tests that didn't add new test functions).
+- [ ] 9.5 Post round 2's synthesized review to PR #684 — same GitHub-posting blocker as 8.5; shown to the
+      user directly instead.

@@ -11,6 +11,8 @@ LOCAL ONLY: the `pg_conn` fixture connects to 127.0.0.1 on POSTGRES_HOST_PORT as
 """
 
 import re
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,9 @@ from tests.integration.test_cyl_read_path import (  # noqa: E402
     _deliver,
     _seed_experiment_scan,
     _trait,
+)
+from tests.integration.test_cyl_scan_latest_source import (  # noqa: E402
+    _cleanup_seeded_experiment,
 )
 
 REPO_ROOT = Path(__file__).parent.parent.parent
@@ -183,6 +188,62 @@ def test_no_trigger_invokes_refresh_on_write(pg_conn):
     pg_conn.rollback()
 
 
+def test_concurrent_refreshes_do_not_raise_duplicate_key(pg_conninfo, pg_conn):
+    """Caught in round-2 review, reproduced empirically against a local Postgres before the fix:
+    refresh_cyl_experiment_trait_counts()'s DELETE-then-INSERT had no lock/ON CONFLICT, so two
+    overlapping calls (e.g. an overlapping workflow_dispatch + scheduled run) raced -- the second
+    call's DELETE found nothing left to delete (the first call's rows are new tuples outside its
+    snapshot after the first commits), so its INSERT collided on the experiment_id PK with rows
+    the first call had already committed ("duplicate key value violates unique constraint
+    cyl_experiment_trait_counts_pkey"). pg_advisory_xact_lock(hashtext(...)) now serializes calls.
+
+    Uses two real connections with explicit interleaving (not just "call it twice sequentially"),
+    since the race only manifests when the second call's DELETE runs concurrently with the
+    first's still-open transaction."""
+    with pg_conn.cursor() as cur:
+        experiment_id, _scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "orig", traits=[_trait("length", 1.0)])
+    pg_conn.commit()
+
+    conn_a = psycopg.connect(pg_conninfo)
+    conn_b = psycopg.connect(pg_conninfo)
+    try:
+        errors = {}
+
+        def _run_a():
+            conn_a.execute("SELECT public.refresh_cyl_experiment_trait_counts()")
+            time.sleep(0.5)  # hold A's transaction open so B's call genuinely overlaps it
+            conn_a.commit()
+
+        def _run_b():
+            try:
+                conn_b.execute("SELECT public.refresh_cyl_experiment_trait_counts()")
+                conn_b.commit()
+            except Exception as e:  # noqa: BLE001 -- capturing for the assertion below
+                errors["b"] = e
+                conn_b.rollback()
+
+        a_thread = threading.Thread(target=_run_a)
+        a_thread.start()
+        time.sleep(0.1)  # let A start (and, pre-fix, get past its DELETE) before B starts
+        b_thread = threading.Thread(target=_run_b)
+        b_thread.start()
+        a_thread.join()
+        b_thread.join()
+
+        assert errors == {}, f"concurrent refresh raised: {errors}"
+
+        with pg_conn.cursor() as cur:
+            assert _n_traits(cur, experiment_id) == 1
+    finally:
+        conn_a.close()
+        conn_b.close()
+        with pg_conn.cursor() as cur:
+            _cleanup_seeded_experiment(cur, experiment_id)
+            cur.execute("SELECT public.refresh_cyl_experiment_trait_counts()")
+        pg_conn.commit()
+
+
 def test_anon_sees_no_rows_despite_real_data_existing(pg_conn):
     """RLS enabled with no anon policy means SELECT succeeds but is silently filtered to zero
     rows -- confirmed rather than assumed from the migration's policy list."""
@@ -226,6 +287,15 @@ def test_migration_adds_no_read_role_execute_grant(pg_conn):
             "AND grantee IN ('bloom_agent', 'bloom_user', 'authenticated', 'PUBLIC')"
         )
         assert cur.fetchone()[0] == 0
+        # 'anon' is a distinct grantee from 'PUBLIC' in role_routine_grants -- the IN-list above
+        # does not imply anon is covered. Caught in round-2 review: this is exactly the property
+        # the REVOKE ... FROM PUBLIC, anon, authenticated (20260814020000...sql) exists to
+        # guarantee, and a future edit that dropped anon from that REVOKE would leave this test
+        # still passing at 0 while anon silently regained EXECUTE.
+        cur.execute(
+            "SELECT has_function_privilege('anon', 'refresh_cyl_experiment_trait_counts()', 'EXECUTE')"
+        )
+        assert cur.fetchone()[0] is False
     pg_conn.rollback()
 
 

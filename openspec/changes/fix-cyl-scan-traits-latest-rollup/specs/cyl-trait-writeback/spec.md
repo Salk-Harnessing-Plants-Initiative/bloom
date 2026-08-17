@@ -8,10 +8,14 @@ cyl_scans(id) ON DELETE CASCADE`, `max_source_id BIGINT`) holding, for every sca
 `is_latest` column is defined against (see the `cyl-trait-read` capability). This table SHALL be kept
 correct by a trigger on `cyl_scan_traits` covering every write path that can change what "latest" means
 for a scan — inserts, updates, and deletes — regardless of whether the write came through the write-back
-RPC or `bloom_admin`'s break-glass direct-table access. The maintaining write SHALL be serialized per
-`scan_id` (e.g. via an advisory lock scoped to `scan_id`) so that two concurrent writers delivering data
-for the same scan cannot leave `max_source_id` reflecting only one writer's data instead of the true
-combined maximum. Pre-existing rows SHALL be backfilled by a single aggregate query
+RPC or `bloom_admin`'s break-glass direct-table access. An `UPDATE` that reassigns a row's `scan_id` to a
+different scan SHALL recompute `max_source_id` for BOTH the row's new scan and its former scan — not only
+the new one — since a row moving away from a scan can change that scan's own maximum just as much as a
+row arriving does. The maintaining write SHALL be serialized per `scan_id` (e.g. via an advisory lock
+scoped to `scan_id`; a cross-scan reassignment acquiring both scans' locks in a fixed, e.g. sorted, order
+to avoid deadlocking against another reassignment moving rows in the opposite direction) so that two
+concurrent writers delivering data for the same scan cannot leave `max_source_id` reflecting only one
+writer's data instead of the true combined maximum. Pre-existing rows SHALL be backfilled by a single aggregate query
 (`INSERT ... SELECT scan_id, max(source_id) ... GROUP BY scan_id`) run inside the same migration
 transaction that creates the table and trigger, with concurrent writers to `cyl_scan_traits` blocked
 (not silently missed) for the backfill's short duration so no scan can fall into a gap where neither the
@@ -44,6 +48,15 @@ tables.
 - **WHEN** `bloom_admin` inserts, updates, or deletes `cyl_scan_traits` rows directly (bypassing the
   write-back RPC)
 - **THEN** `cyl_scan_latest_source` is still maintained correctly for the affected scan
+
+#### Scenario: Reassigning a row's scan_id recomputes both the old and new scan
+
+- **WHEN** a row holding a scan's current `max_source_id` is `UPDATE`d to a different `scan_id` (e.g. a
+  `bloom_admin` correction of a mis-attributed trait row), and the former scan still has other rows
+  remaining
+- **THEN** the former scan's `max_source_id` falls back to the true maximum of its remaining rows (not
+  left stuck at the departed value), and the new scan's `max_source_id` reflects the true maximum across
+  its own existing rows plus the newly-arrived one
 
 #### Scenario: Concurrent writers to the same new scan converge to the true maximum
 

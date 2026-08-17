@@ -19,6 +19,7 @@ BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_proc
         WHERE proname = 'refresh_cyl_experiment_trait_counts'
+          AND pronamespace = 'public'::regnamespace
     ) THEN
         RAISE EXCEPTION 'Roll back 20260814020000 (and 20260814030000, if not already done) before this one -- refresh_cyl_experiment_trait_counts() still references cyl_scan_latest_source.';
     END IF;

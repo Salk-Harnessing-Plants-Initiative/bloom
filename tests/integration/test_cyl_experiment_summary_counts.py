@@ -350,14 +350,18 @@ def test_pinned_call_unaffected_by_cache_staleness(pg_conn):
 
 @pytest.mark.parametrize("role", _READ_ROLES)
 def test_read_roles_can_call_function(pg_conn, role):
+    """`count(*)` never returns NULL even for a zero-row result -- asserting `is not None` against
+    it is trivially always true regardless of whether `role` could actually call the function
+    correctly (caught in round-2 review). Assert the real row content instead."""
     with pg_conn.cursor() as cur:
         exp, _, imgs = _seed_experiment_scan(cur)
         _deliver(cur, imgs, "k", traits=[_trait("length", 1.0)])
+        _refresh_trait_counts(cur)
         cur.execute(f"SET LOCAL ROLE {role}")
         cur.execute(
-            "SELECT count(*) FROM get_experiment_summary_counts(%s, NULL, NULL)", (exp,)
+            "SELECT n_plants, n_traits FROM get_experiment_summary_counts(%s, NULL, NULL)", (exp,)
         )
-        assert cur.fetchone()[0] is not None
+        assert cur.fetchone() == (1, 1)
         cur.execute("RESET ROLE")
     pg_conn.rollback()
 

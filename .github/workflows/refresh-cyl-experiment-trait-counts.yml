@@ -49,7 +49,14 @@ jobs:
             echo "::error::STAGING_API_URL and/or STAGING_SERVICE_ROLE_KEY not configured -- see this workflow's own header comment."
             exit 1
           fi
-          status=$(curl -s --connect-timeout 5 --max-time 30 -o /tmp/refresh_response.json -w "%{http_code}" \
+          case "${STAGING_API_URL}" in
+            https://*) ;;
+            *)
+              echo "::error::STAGING_API_URL must be https:// -- a plain http:// URL would send SERVICE_ROLE_KEY (a full-bypass-RLS credential) in cleartext on every scheduled run."
+              exit 1
+              ;;
+          esac
+          status=$(curl -s -S --connect-timeout 5 --max-time 30 -o /tmp/refresh_response.json -w "%{http_code}" \
             -X POST "${STAGING_API_URL}/rest/v1/rpc/refresh_cyl_experiment_trait_counts" \
             -H "apikey: ${SERVICE_ROLE_KEY}" \
             -H "Authorization: Bearer ${SERVICE_ROLE_KEY}" \

@@ -69,31 +69,63 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE
-    affected_scan_id bigint := COALESCE(NEW.scan_id, OLD.scan_id);
+    v_new_scan bigint := NEW.scan_id;  -- NULL on DELETE
+    v_old_scan bigint := OLD.scan_id;  -- NULL on INSERT
+    v_lo       bigint;
+    v_hi       bigint;
 BEGIN
-    -- Serializes concurrent writers to the SAME scan_id. Without this, two connections racing
-    -- to upsert the same scan_id can converge to the WRONG max_source_id: `EXCLUDED` in an
-    -- `ON CONFLICT DO UPDATE` is fixed at proposal time, before a conflict wait completes, and a
-    -- fresh correlated subquery in the SET clause does not fix this either (Postgres fixes one
-    -- snapshot for the whole statement before the wait, not after) -- both were reproduced
-    -- empirically to go stale; only the lock closed it. Scoped to one scan_id, so this never
-    -- contends with a write to a different scan. NOTE: advisory locks participate in Postgres's
-    -- deadlock detector -- a single transaction that ever touches multiple scan_ids could deadlock
-    -- against another transaction acquiring the same scan_ids in the opposite order. Today's sole
-    -- writer (insert_cyl_result_envelope) is single-scan-per-call, so this is dormant; a future
-    -- multi-scan batch writer would need to acquire scan_id locks in a consistent (e.g. sorted)
-    -- order to stay safe.
-    PERFORM pg_advisory_xact_lock(affected_scan_id);
+    -- Reassigning a row's scan_id (an UPDATE where scan_id itself changes -- e.g. bloom_admin's
+    -- break-glass access correcting a mis-attributed row) affects TWO scans, not one: COALESCE
+    -- alone would only ever recompute NEW.scan_id (never NULL on an UPDATE), silently leaving
+    -- OLD.scan_id's row stale -- potentially making every remaining row for that scan evaluate
+    -- is_latest = false until an unrelated future write happens to touch it again. Found in
+    -- review, not in the original pass; both scans are recomputed below when they differ.
+    --
+    -- Lock acquisition order is sorted (lower scan_id first), not NEW-then-OLD, so two concurrent
+    -- cross-scan reassignments moving rows in opposite directions (txn 1: A->B, txn 2: B->A)
+    -- can't deadlock each other by each locking their own "new" scan first.
+    IF v_old_scan IS NOT NULL AND v_old_scan IS DISTINCT FROM v_new_scan THEN
+        v_lo := least(v_new_scan, v_old_scan);
+        v_hi := greatest(v_new_scan, v_old_scan);
+        PERFORM pg_advisory_xact_lock(v_lo);
+        PERFORM pg_advisory_xact_lock(v_hi);
+    ELSIF v_new_scan IS NOT NULL THEN
+        -- Serializes concurrent writers to the SAME scan_id. Without this, two connections racing
+        -- to upsert the same scan_id can converge to the WRONG max_source_id: `EXCLUDED` in an
+        -- `ON CONFLICT DO UPDATE` is fixed at proposal time, before a conflict wait completes, and
+        -- a fresh correlated subquery in the SET clause does not fix this either (Postgres fixes
+        -- one snapshot for the whole statement before the wait, not after) -- both were reproduced
+        -- empirically to go stale; only the lock closed it.
+        PERFORM pg_advisory_xact_lock(v_new_scan);
+    ELSE
+        PERFORM pg_advisory_xact_lock(v_old_scan);
+    END IF;
 
-    INSERT INTO public.cyl_scan_latest_source (scan_id, max_source_id)
-    SELECT affected_scan_id, max(source_id)
-    FROM public.cyl_scan_traits
-    WHERE scan_id = affected_scan_id
-    ON CONFLICT (scan_id) DO UPDATE SET max_source_id = EXCLUDED.max_source_id;
+    IF v_new_scan IS NOT NULL THEN
+        INSERT INTO public.cyl_scan_latest_source (scan_id, max_source_id)
+        SELECT v_new_scan, max(source_id)
+        FROM public.cyl_scan_traits
+        WHERE scan_id = v_new_scan
+        ON CONFLICT (scan_id) DO UPDATE SET max_source_id = EXCLUDED.max_source_id;
+    END IF;
+
+    IF v_old_scan IS NOT NULL AND v_old_scan IS DISTINCT FROM v_new_scan THEN
+        INSERT INTO public.cyl_scan_latest_source (scan_id, max_source_id)
+        SELECT v_old_scan, max(source_id)
+        FROM public.cyl_scan_traits
+        WHERE scan_id = v_old_scan
+        ON CONFLICT (scan_id) DO UPDATE SET max_source_id = EXCLUDED.max_source_id;
+    END IF;
 
     RETURN NULL;  -- AFTER trigger; return value is ignored
 END;
 $$;
+
+-- Practically inert (Postgres refuses to invoke a RETURNS trigger function outside trigger
+-- context, regardless of EXECUTE grants), but closed for consistency with every other
+-- SECURITY DEFINER function this change adds -- a future audit scanning for "every new
+-- SECURITY DEFINER function has the anon revoke" should not find this one as the sole exception.
+REVOKE EXECUTE ON FUNCTION public.maintain_cyl_scan_latest_source() FROM PUBLIC, anon, authenticated;
 
 -- Postgres has no CREATE TRIGGER IF NOT EXISTS; DROP+CREATE keeps this migration re-runnable.
 DROP TRIGGER IF EXISTS maintain_cyl_scan_latest_source_after_write ON public.cyl_scan_traits;

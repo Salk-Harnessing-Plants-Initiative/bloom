@@ -14,7 +14,10 @@ trait rows in a loop, and a per-row trigger recomputing a whole experiment's agg
 those rows would fire that many full-experiment recomputes for one call. Instead, a
 `refresh_cyl_experiment_trait_counts()` function SHALL recompute every experiment's count in one pass
 (delete-then-reinsert, so an experiment that drops to zero matching traits is removed from the table) and
-SHALL be invoked on a fixed schedule, independent of write volume. Row-level security SHALL be enabled on
+SHALL be invoked on a fixed schedule, independent of write volume. Concurrent invocations SHALL be
+serialized (e.g. via a fixed-key advisory lock, since the refresh always rebuilds the whole table rather
+than one identifiable row) so that two overlapping calls cannot race the delete-then-reinsert into a
+primary-key conflict. Row-level security SHALL be enabled on
 this table with the same policy set as `cyl_scan_traits` itself (`bloom_admin` full access,
 `bloom_agent`/`bloom_user`/`authenticated` read-only, all permissive) — an unauthenticated (`anon`) caller
 SHALL NOT be able to read or write this table, regardless of any table-level grant Supabase applies by
@@ -65,6 +68,14 @@ default to new tables. `refresh_cyl_experiment_trait_counts()` itself SHALL NOT 
 - **WHEN** trait data is written to `cyl_scan_traits`
 - **THEN** no trigger on `cyl_scan_traits` invokes `refresh_cyl_experiment_trait_counts()` as a direct
   consequence of that write; the function is invoked only by an external schedule
+
+#### Scenario: Concurrent refresh calls do not raise a duplicate-key error
+
+- **WHEN** two calls to `refresh_cyl_experiment_trait_counts()` overlap (e.g. a manual invocation landing
+  while a scheduled one is still in flight), with both transactions in flight before either commits
+- **THEN** neither call raises an error, and after both complete `cyl_experiment_trait_counts` holds a
+  single, consistent, correct row per experiment with matching data — not a primary-key violation from
+  the second call's `INSERT` colliding with the first's already-committed rows
 
 #### Scenario: An unauthenticated caller cannot read cyl_experiment_trait_counts or invoke its refresh
 

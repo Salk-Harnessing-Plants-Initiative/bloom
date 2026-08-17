@@ -3,10 +3,9 @@
 -- *** ROLLBACK ORDER: apply 20260814030000's rollback FIRST. ***
 -- get_experiment_summary_counts (20260814030000)'s unpinned path reads cyl_experiment_trait_counts
 -- from its own PL/pgSQL body -- a reference Postgres's dependency tracker does NOT protect (unlike
--- a view). Dropping this table while that RPC still reads it does not fail at DROP time; every
--- subsequent unpinned call to get_experiment_summary_counts fails instead, at runtime, with
--- "relation cyl_experiment_trait_counts does not exist" -- confirmed via
--- test_rolling_back_out_of_order_breaks_get_experiment_summary_counts.
+-- a view). Dropping this table while that RPC still reads it does not fail at DROP time; the guard
+-- below turns that into an immediate, loud error instead -- confirmed via
+-- test_rollback_guard_blocks_out_of_order_rollback.
 
 BEGIN;
 
@@ -15,6 +14,7 @@ BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_proc
         WHERE proname = 'get_experiment_summary_counts'
+          AND pronamespace = 'public'::regnamespace
           AND prosrc LIKE '%cyl_experiment_trait_counts%'
     ) THEN
         RAISE EXCEPTION 'Roll back 20260814030000 first -- get_experiment_summary_counts still references cyl_experiment_trait_counts.';
