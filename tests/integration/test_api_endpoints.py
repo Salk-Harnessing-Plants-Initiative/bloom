@@ -188,6 +188,108 @@ def test_hsts_not_yet_set(header_responses):
     )
 
 
+# The console hostnames, matched by Host alone against the same Caddy. Covered
+# because site-level declaration is the whole point of the design: a `header`
+# block moved under `handle @main` leaves these bare while every main-hostname
+# assertion above still passes. Hardcoded to match the Studio tests below.
+CONSOLE_HOSTS = ["studio.localhost", "minio.localhost"]
+
+# Headers whose duplicates resolve last-wins, so an upstream emitting a
+# different value silently replaces the edge policy. CSP is deliberately not
+# here: browsers enforce every CSP present, so MinIO's own policy arriving
+# beside `frame-ancestors 'none'` is an intersection, not an override.
+LAST_WINS_HEADERS = {"Referrer-Policy", "Permissions-Policy"}
+
+
+@pytest.fixture(scope="module")
+def console_responses(api_headers):
+    """Root of each console hostname, fetched once."""
+    return {host: api_headers("/", host=host) for host in CONSOLE_HOSTS}
+
+
+@pytest.mark.parametrize("host", CONSOLE_HOSTS)
+@pytest.mark.parametrize("name,value", sorted(SECURITY_HEADERS.items()))
+def test_security_headers_on_console_hostnames(console_responses, host, name, value):
+    """The consoles inherit all five headers from the site-level declaration.
+
+    This is the assertion the config-shape test cannot make: that the block
+    genuinely reaches hostnames other than the main one. The MinIO console
+    emits four of these itself, so duplicates are expected there — hence
+    presence of the edge value rather than sole occupancy, with the stricter
+    no-divergence check reserved for the headers where a duplicate actually
+    overrides.
+    """
+    received = console_responses[host].get_all(name)
+    assert received, f"{name} missing from the response for {host}"
+    assert value in received, (
+        f"{name} for {host} is {received!r}; the edge value {value!r} is absent, "
+        "so the site-level declaration is not reaching this hostname"
+    )
+    if name in LAST_WINS_HEADERS:
+        divergent = [v for v in received if v != value]
+        assert not divergent, (
+            f"{name} for {host} also arrived as {divergent!r} — this header "
+            "resolves last-wins, so the upstream value overrides the edge"
+        )
+
+
+# Live counterpart to tests/unit/test_caddy_cyl_video_route.py, which only reads
+# caddy/Caddyfile as text. Both /api/cyl/* routes are covered: generation is
+# experiment-scoped, the stored-video lookup is keyed by scan alone.
+CYL_GENERATE_BAD_ID = "/api/cyl/experiments/abc/scans/abc/video"
+CYL_VIDEO_BAD_ID = "/api/cyl/scans/abc/video"
+CYL_VIDEO = "/api/cyl/scans/1/video"
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [("POST", CYL_GENERATE_BAD_ID), ("GET", CYL_VIDEO_BAD_ID)],
+)
+def test_caddy_routes_cyl_video_to_bloom_web_not_kong(api, method, path):
+    """Caddy sends /api/cyl/* to bloom-web with the /api prefix intact.
+
+    A rejected id is the probe: both routes validate ids before the session
+    lookup, the storage probe and the upstream call, so this needs no cookie,
+    no database and no workflows container, and the POST cannot start an
+    encode."""
+    status, body = api(path, method=method)
+    assert status == 400, (
+        f"{method} {path}: expected 400, got {status} — "
+        f"401 = Kong's catch-all answered, 404 = reached bloom-web but not the "
+        f"route (prefix stripped, or handler moved). Body: {body!r}"
+    )
+    assert isinstance(body, dict), f"expected JSON object, got {body!r}"
+    assert "positive integer" in str(body.get("detail", "")), (
+        f"400 did not come from the route's id validation: {body!r}"
+    )
+
+
+def test_cyl_video_route_refuses_a_signed_out_caller(api):
+    """A signed-out caller gets bloom-web's own 401, not Kong's.
+
+    Kong answers 401 too, so the wording is the discriminator. Uses a numeric
+    id — the path shape a browser actually sends."""
+    status, body = api(CYL_VIDEO)
+    assert status == 401, f"expected 401 for a signed-out caller, got {status}: {body!r}"
+    assert isinstance(body, dict), f"expected the route's JSON refusal, got {body!r}"
+    assert str(body.get("detail", "")).startswith("Sign in"), (
+        f"401 did not come from the route's signed-out short-circuit: {body!r}"
+    )
+
+
+def test_generate_route_does_not_serve_reads(api):
+    """GET on the experiment-scoped route is gone — the lookup it used to do
+    carried an experiment id it never checked."""
+    status, _ = api("/api/cyl/experiments/1/scans/1/video")
+    assert status == 405, f"expected 405 (no GET handler), got {status}"
+
+
+def test_other_api_traffic_still_reaches_kong(api, anon_key):
+    """The /api/cyl/* exception must not divert the rest of /api/* to bloom-web."""
+    status, _ = api("/api/auth/v1/health", api_key=anon_key)
+    assert status == 200, f"/api/auth/v1/health must still reach Kong, got {status}"
+
+
 # --- Kong Routing Tests ---
 
 def test_kong_routes_auth(api, anon_key):

@@ -104,7 +104,7 @@ def api_request(
             return e.code, content
 
 
-def api_response_headers(path: str, api_key: str = None):
+def api_response_headers(path: str, api_key: str = None, host: str = None):
     """Return the response headers for a GET, including on error responses.
 
     Returns the raw `http.client.HTTPMessage`, not a dict, so repeated headers
@@ -120,12 +120,18 @@ def api_response_headers(path: str, api_key: str = None):
     timeout) is re-raised naming the route — callers fetch several routes into
     one fixture, so an unlabelled URLError there surfaces as every dependent
     test erroring with a traceback pointing at the fixture, not the route.
+
+    `host` overrides the Host header, so the console hostnames can be reached
+    over the same connection — they resolve to the same Caddy either way, and
+    which site block serves the request is decided by Host alone.
     """
     url = f"{BASE_URL}{path}"
     headers = {}
     if api_key:
         headers["apikey"] = api_key
         headers["Authorization"] = f"Bearer {api_key}"
+    if host:
+        headers["Host"] = host
 
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
@@ -134,7 +140,7 @@ def api_response_headers(path: str, api_key: str = None):
     except urllib.error.HTTPError as e:
         return e.headers
     except (urllib.error.URLError, TimeoutError) as e:
-        raise AssertionError(f"could not reach {url}: {e}") from e
+        raise AssertionError(f"could not reach {url} (Host: {host or 'default'}): {e}") from e
 
 
 @pytest.fixture
