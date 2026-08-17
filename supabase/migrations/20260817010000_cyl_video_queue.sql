@@ -94,9 +94,26 @@ CREATE POLICY cyl_video_jobs_definer ON public.cyl_video_jobs
   FOR ALL TO bloom_video_queue_owner USING (true) WITH CHECK (true);
 
 -- enqueue reads this to skip a scan that already has a video.
-GRANT SELECT ON public.cyl_scan_videos TO bloom_video_queue_owner;
+GRANT SELECT (scan_id) ON public.cyl_scan_videos TO bloom_video_queue_owner;
 DROP POLICY IF EXISTS cyl_scan_videos_queue_definer ON public.cyl_scan_videos;
 CREATE POLICY cyl_scan_videos_queue_definer ON public.cyl_scan_videos
+  FOR SELECT TO bloom_video_queue_owner USING (true);
+
+-- enqueue walks scan -> plant -> wave to check the caller's experiment_id against the
+-- one the scan actually belongs to. Read-only and column-scoped to just the join keys:
+-- these tables carry the phenotyping data itself, and the queue has no business seeing
+-- any of it. All three have RLS on, so each needs a policy as well as the grant.
+GRANT SELECT (id, plant_id) ON public.cyl_scans TO bloom_video_queue_owner;
+GRANT SELECT (id, wave_id) ON public.cyl_plants TO bloom_video_queue_owner;
+GRANT SELECT (id, experiment_id) ON public.cyl_waves TO bloom_video_queue_owner;
+DROP POLICY IF EXISTS cyl_scans_queue_definer ON public.cyl_scans;
+CREATE POLICY cyl_scans_queue_definer ON public.cyl_scans
+  FOR SELECT TO bloom_video_queue_owner USING (true);
+DROP POLICY IF EXISTS cyl_plants_queue_definer ON public.cyl_plants;
+CREATE POLICY cyl_plants_queue_definer ON public.cyl_plants
+  FOR SELECT TO bloom_video_queue_owner USING (true);
+DROP POLICY IF EXISTS cyl_waves_queue_definer ON public.cyl_waves;
+CREATE POLICY cyl_waves_queue_definer ON public.cyl_waves
   FOR SELECT TO bloom_video_queue_owner USING (true);
 
 -- 4. Wrapper functions -----------------------------------------------------
@@ -125,6 +142,24 @@ DECLARE
   v_job_id uuid;
   v_msg_id bigint;
 BEGIN
+  -- experiment_id is NOT NULL and FK'd, which advertises an attribution the FK alone
+  -- does not check: it proves the experiment exists, not that it is this scan's. The
+  -- chain scan -> plant -> wave -> experiment is nullable at every hop, so the column
+  -- cannot simply be derived — but where the chain does resolve, a caller that
+  -- disagrees with it is passing a mis-attribution into a provenance table.
+  IF EXISTS (
+    SELECT 1
+    FROM public.cyl_scans s
+    JOIN public.cyl_plants p ON p.id = s.plant_id
+    JOIN public.cyl_waves  w ON w.id = p.wave_id
+    WHERE s.id = p_scan_id
+      AND w.experiment_id IS NOT NULL
+      AND w.experiment_id IS DISTINCT FROM p_experiment_id
+  ) THEN
+    RAISE EXCEPTION 'scan % does not belong to experiment %', p_scan_id, p_experiment_id
+      USING ERRCODE = 'check_violation';
+  END IF;
+
   SELECT id INTO v_job_id
   FROM public.cyl_video_jobs
   WHERE scan_id = p_scan_id AND status IN ('queued', 'processing')

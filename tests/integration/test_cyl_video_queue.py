@@ -53,14 +53,40 @@ def _new_experiment(cur) -> int:
     return cur.fetchone()[0]
 
 
-def _new_scan(cur) -> int:
-    """Create a throwaway cyl_scans row (all columns nullable) and return its id."""
-    cur.execute("INSERT INTO public.cyl_scans DEFAULT VALUES RETURNING id")
+def _new_scan(cur, experiment_id=None) -> int:
+    """Create a throwaway cyl_scans row and return its id.
+
+    With an experiment_id, the full scan -> plant -> wave -> experiment chain is built
+    so the scan genuinely belongs to that experiment. Without one the scan is an orphan
+    (plant_id NULL), which is a real shape in this schema — every hop is nullable.
+    """
+    if experiment_id is None:
+        cur.execute("INSERT INTO public.cyl_scans DEFAULT VALUES RETURNING id")
+        return cur.fetchone()[0]
+
+    cur.execute(
+        "INSERT INTO public.cyl_waves (experiment_id) VALUES (%s) RETURNING id",
+        (experiment_id,),
+    )
+    wave_id = cur.fetchone()[0]
+    cur.execute(
+        "INSERT INTO public.cyl_plants (wave_id) VALUES (%s) RETURNING id", (wave_id,)
+    )
+    plant_id = cur.fetchone()[0]
+    cur.execute(
+        "INSERT INTO public.cyl_scans (plant_id) VALUES (%s) RETURNING id", (plant_id,)
+    )
     return cur.fetchone()[0]
 
 
 def _seed(cur) -> tuple[int, int]:
-    return _new_scan(cur), _new_experiment(cur)
+    """A scan that actually belongs to the experiment it is paired with.
+
+    Pairing an orphan scan with an unrelated experiment would make every lifecycle test
+    assert on a mis-attributed job, and a swapped-argument regression would pass.
+    """
+    experiment_id = _new_experiment(cur)
+    return _new_scan(cur, experiment_id), experiment_id
 
 
 def _job(cur, job_id):
@@ -116,6 +142,38 @@ def test_enqueue_skips_when_video_already_exists(pg_conn):
                 (scan_id,),
             )
             assert cur.fetchone()[0] == 0
+    finally:
+        pg_conn.rollback()
+
+
+def test_enqueue_rejects_an_experiment_the_scan_does_not_belong_to(pg_conn):
+    """The FK proves the experiment exists, not that it is this scan's.
+
+    Mis-attribution to a *real* experiment is the failure mode that matters in a
+    provenance table, and it is the one the FK cannot see.
+    """
+    try:
+        with pg_conn.cursor() as cur:
+            scan_id, experiment_id = _seed(cur)
+            other_experiment = _new_experiment(cur)
+
+            with pytest.raises(
+                psycopg.errors.CheckViolation, match="does not belong to experiment"
+            ):
+                _enqueue(cur, scan_id, other_experiment)
+    finally:
+        pg_conn.rollback()
+
+
+def test_enqueue_allows_a_scan_with_no_experiment_chain(pg_conn):
+    # Every hop (scan.plant_id, plant.wave_id, wave.experiment_id) is nullable, so an
+    # unlinked scan is a real shape. It must stay enqueueable rather than be rejected
+    # by a check that can't resolve it.
+    try:
+        with pg_conn.cursor() as cur:
+            orphan_scan = _new_scan(cur)
+            experiment_id = _new_experiment(cur)
+            assert _enqueue(cur, orphan_scan, experiment_id) is not None
     finally:
         pg_conn.rollback()
 
