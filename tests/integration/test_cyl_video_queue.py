@@ -7,7 +7,9 @@ Seeds throwaway cyl_experiments/cyl_scans rows and rolls back, so nothing persis
 must commit and cleans up after itself.
 """
 
+import sys
 import threading
+import warnings
 
 import psycopg
 import pytest
@@ -318,7 +320,12 @@ def test_an_unparseable_message_is_archived_not_left_at_the_head(pg_conn):
 def test_queue_stats_counts_each_state(pg_conn):
     try:
         with pg_conn.cursor() as cur:
-            cur.execute("DELETE FROM public.cyl_video_jobs")  # rolled back below
+            # Both deletes are rolled back below. Clearing the queue is what makes
+            # the two blind claims deterministic: a message left committed by the
+            # concurrency test is otherwise what the first claim consumes, leaving
+            # the fail path a no-op and failing this test for an unrelated reason.
+            cur.execute("DELETE FROM public.cyl_video_jobs")
+            cur.execute("DELETE FROM pgmq.q_cyl_video_generation")
             scan_id, experiment_id = _seed(cur)
             _enqueue(cur, scan_id, experiment_id)
 
@@ -563,6 +570,28 @@ def test_bloom_workflows_cannot_read_job_status_directly(pg_conn):
 # --- concurrency -----------------------------------------------------------
 
 
+def _cleanup_concurrent_enqueue(conn, scan_id, experiment_id):
+    """Undo the one test that commits, leaving no committed state behind.
+
+    Rolls back first: a failed assertion can leave the transaction aborted, in
+    which case every DELETE below would raise before deleting anything.
+    """
+    conn.rollback()
+    with conn.cursor() as cur:
+        cur.execute("SET LOCAL lock_timeout = '10s'")
+        # A committed a pgmq message as well as a row. Left behind, the next run's
+        # first claim would consume it and break every downstream test.
+        cur.execute(
+            "DELETE FROM pgmq.q_cyl_video_generation "
+            "WHERE (message->>'scan_id')::bigint = %s",
+            (scan_id,),
+        )
+        cur.execute("DELETE FROM public.cyl_video_jobs WHERE scan_id = %s", (scan_id,))
+        cur.execute("DELETE FROM public.cyl_scans WHERE id = %s", (scan_id,))
+        cur.execute("DELETE FROM public.cyl_experiments WHERE id = %s", (experiment_id,))
+    conn.commit()
+
+
 def test_concurrent_enqueue_dedupes_to_one_job(pg_conn, pg_conninfo):
     """Force the unique_violation branch rather than hoping to race into it.
 
@@ -584,9 +613,15 @@ def test_concurrent_enqueue_dedupes_to_one_job(pg_conn, pg_conninfo):
         except Exception as exc:  # surfaced below — otherwise B dies silently
             result["exc"] = exc
 
-    conn_a = psycopg.connect(pg_conninfo)
-    thread = threading.Thread(target=enqueue_on_b)
+    conn_a = None
+    # Daemon: if B never unblocks, the interpreter must still be able to exit.
+    # A non-daemon thread would hang CPython at shutdown and kill the CI job on
+    # the workflow timeout with no failing test named.
+    thread = threading.Thread(target=enqueue_on_b, daemon=True)
     try:
+        # Inside the try, so a connect failure still reaches the cleanup below —
+        # the seeded scan and experiment are already committed by this point.
+        conn_a = psycopg.connect(pg_conninfo)
         with conn_a.cursor() as cur_a:
             result["a"] = _enqueue(cur_a, scan_id, experiment_id)
 
@@ -610,18 +645,19 @@ def test_concurrent_enqueue_dedupes_to_one_job(pg_conn, pg_conninfo):
             )
             assert cur.fetchone()[0] == 1
     finally:
-        thread.join(timeout=10)  # never leave B holding a lock the cleanup needs
-        conn_a.close()
-        with pg_conn.cursor() as cur:
-            cur.execute("SET LOCAL lock_timeout = '10s'")
-            # A committed a pgmq message as well as a row. Left behind, the next run's
-            # first claim would consume it and break every downstream test.
-            cur.execute(
-                "DELETE FROM pgmq.q_cyl_video_generation "
-                "WHERE (message->>'scan_id')::bigint = %s",
-                (scan_id,),
+        # Whether an assertion is already propagating decides how a cleanup
+        # failure is reported: raising here would replace the real diagnosis.
+        failing = sys.exc_info()[0] is not None
+        if thread.is_alive():  # never leave B holding a lock the cleanup needs
+            thread.join(timeout=10)
+        if conn_a is not None:
+            conn_a.close()
+        try:
+            _cleanup_concurrent_enqueue(pg_conn, scan_id, experiment_id)
+        except Exception as cleanup_exc:
+            if not failing:
+                raise
+            warnings.warn(
+                f"cleanup left rows behind after a failing assertion: {cleanup_exc}",
+                stacklevel=2,
             )
-            cur.execute("DELETE FROM public.cyl_video_jobs WHERE scan_id = %s", (scan_id,))
-            cur.execute("DELETE FROM public.cyl_scans WHERE id = %s", (scan_id,))
-            cur.execute("DELETE FROM public.cyl_experiments WHERE id = %s", (experiment_id,))
-        pg_conn.commit()
