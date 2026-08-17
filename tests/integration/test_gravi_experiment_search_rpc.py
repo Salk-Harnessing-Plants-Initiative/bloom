@@ -19,7 +19,7 @@ import pytest
 psycopg = pytest.importorskip("psycopg")
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-_TS = "20260811000100_add_gravi_experiment_search"
+_TS = "20260817000100_add_gravi_experiment_search"
 MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_TS}.sql"
 SIG = "gravi_experiment_search(text, text, integer)"
 

@@ -21,7 +21,7 @@ MIGRATION = (
     REPO_ROOT
     / "supabase"
     / "migrations"
-    / "20260811000000_create_gravi_scans_extended_view.sql"
+    / "20260817000000_create_gravi_scans_extended_view.sql"
 )
 
 # Every column the CLI reads off the view. Named here so a dropped column fails loudly
