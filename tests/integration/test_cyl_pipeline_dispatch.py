@@ -383,6 +383,594 @@ def test_enqueue_execute_denied_to_anon_authenticated_public(pg_conn):
 
 
 # --------------------------------------------------------------------------- #
+# 1.7 — claim/complete/fail wrapper functions (Phase 2 of bloom #11/#404: the
+# dispatch worker that actually submits batches to Argo). These three functions
+# extend the same cyl_pipeline_dispatch queue Phase 1's enqueue_cyl_pipeline_batch
+# already writes to; see design.md for the run-completion aggregation rationale.
+# --------------------------------------------------------------------------- #
+
+CLAIM_FN = "claim_cyl_pipeline_batch"
+COMPLETE_FN = "complete_cyl_pipeline_batch"
+FAIL_FN = "fail_cyl_pipeline_batch"
+
+
+def _enqueue(cur, run_id: int, batch_index: int, scan_ids: list[int]) -> int:
+    """Enqueue as bloom_workflows, matching the real call path; returns msg_id."""
+    cur.execute("SET LOCAL ROLE bloom_workflows")
+    cur.execute(f"SELECT {ENQUEUE_FN}(%s, %s, %s)", (run_id, batch_index, scan_ids))
+    msg_id = cur.fetchone()[0]
+    cur.execute("RESET ROLE")
+    return msg_id
+
+
+def _seed_batch(cur, n_scans: int, batch_index: int = 0, run_id: int | None = None):
+    """Seed n scans + their cyl_pipeline_run_scans rows for one batch under a
+    (new, or given) run, enqueue that batch, and return (run_id, scan_ids, msg_id)."""
+    if run_id is None:
+        run_id = _seed_run(cur)
+    scan_ids = [_seed_scan(cur) for _ in range(n_scans)]
+    for sid in scan_ids:
+        _seed_run_scan(cur, run_id, sid, batch_index=batch_index)
+    msg_id = _enqueue(cur, run_id, batch_index, scan_ids)
+    return run_id, scan_ids, msg_id
+
+
+def _claim(cur, *, vt: int = 60, max_reads: int = 5):
+    cur.execute("SET LOCAL ROLE bloom_workflows")
+    cur.execute(f"SELECT * FROM {CLAIM_FN}(%s, %s)", (vt, max_reads))
+    row = cur.fetchone()
+    cur.execute("RESET ROLE")
+    return row  # (run_id, batch_index, scan_ids, msg_id) or None
+
+
+def _complete(cur, run_id, batch_index, msg_id, scan_ids, workflow_name):
+    cur.execute("SET LOCAL ROLE bloom_workflows")
+    cur.execute(
+        f"SELECT {COMPLETE_FN}(%s, %s, %s, %s, %s)",
+        (run_id, batch_index, msg_id, scan_ids, workflow_name),
+    )
+    cur.execute("RESET ROLE")
+
+
+def _fail(cur, run_id, batch_index, msg_id, scan_ids, error):
+    cur.execute("SET LOCAL ROLE bloom_workflows")
+    cur.execute(
+        f"SELECT {FAIL_FN}(%s, %s, %s, %s, %s)",
+        (run_id, batch_index, msg_id, scan_ids, error),
+    )
+    cur.execute("RESET ROLE")
+
+
+def _run_status(cur, run_id) -> str:
+    cur.execute(f"SELECT status FROM {RUNS_TABLE} WHERE id = %s", (run_id,))
+    return cur.fetchone()[0]
+
+
+def _run_completed_at(cur, run_id):
+    cur.execute(f"SELECT completed_at FROM {RUNS_TABLE} WHERE id = %s", (run_id,))
+    return cur.fetchone()[0]
+
+
+def _scan_rows(cur, run_id):
+    cur.execute(
+        f"SELECT scan_id, status, argo_workflow_name, attempts, error_message "
+        f"FROM {SCANS_TABLE} WHERE run_id = %s ORDER BY scan_id",
+        (run_id,),
+    )
+    return cur.fetchall()
+
+
+def test_claim_returns_enqueued_batch_and_hides_it(pg_conn):
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 2, batch_index=3)
+        claimed = _claim(cur)
+        assert claimed == (run_id, 3, scan_ids, msg_id)
+        # A second immediate claim is hidden by the first claim's visibility
+        # timeout.
+        assert _claim(cur) is None
+    pg_conn.rollback()
+
+
+def test_claim_on_empty_queue_returns_nothing(pg_conn):
+    with pg_conn.cursor() as cur:
+        assert _claim(cur) is None
+    pg_conn.rollback()
+
+
+def test_concurrent_claim_never_hands_the_same_batch_to_two_workers(
+    pg_conn, pg_conninfo
+):
+    """Two INDEPENDENT connections (two real workers) claim from a queue with
+    exactly one message at once. Exactly one must receive it; the other must
+    get nothing. The existing sequential claim test above (same open
+    transaction/connection twice) proves the *second call*'s visibility-timeout
+    behavior but not this: that two genuinely concurrent claimants can't both
+    receive pgmq's one read — the actual risk design.md's Risks section flags
+    (duplicate submission cost), mirroring how
+    test_concurrent_complete_of_last_two_batches_settles_run_exactly_once
+    proves the analogous claim for complete()."""
+    import threading
+
+    import psycopg
+
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 1, batch_index=0)
+    pg_conn.commit()  # visible to the two independent connections below
+
+    results = {}
+    barrier = threading.Barrier(2)
+
+    def claimer(key):
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET ROLE bloom_workflows")
+                barrier.wait()  # fire both claims as simultaneously as possible
+                cur.execute(f"SELECT * FROM {CLAIM_FN}(%s, %s)", (60, 5))
+                results[key] = cur.fetchone()
+                cur.execute("RESET ROLE")
+
+    try:
+        threads = [
+            threading.Thread(target=claimer, args=(key,), daemon=True)
+            for key in ("a", "b")
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        claimed = [r for r in results.values() if r is not None]
+        assert len(claimed) == 1, (
+            f"exactly one concurrent claimant must receive the batch, got: {results}"
+        )
+        assert claimed[0] == (run_id, 0, scan_ids, msg_id)
+    finally:
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"DELETE FROM pgmq.q_{QUEUE} WHERE msg_id = %s", (msg_id,))
+                cur.execute(f"DELETE FROM pgmq.a_{QUEUE} WHERE msg_id = %s", (msg_id,))
+                cur.execute(f"DELETE FROM {SCANS_TABLE} WHERE run_id = %s", (run_id,))
+                cur.execute(
+                    "DELETE FROM cyl_scans WHERE id = ANY(%s)", (scan_ids,)
+                )
+                cur.execute(f"DELETE FROM {RUNS_TABLE} WHERE id = %s", (run_id,))
+
+
+def test_claim_redelivers_after_visibility_timeout_expires(pg_conn):
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 1, batch_index=0)
+        first = _claim(cur, vt=60)
+        assert first is not None
+        # Force the visibility timeout to have already elapsed rather than
+        # sleeping in a test — matches PR #469's technique for manipulating
+        # pgmq's underlying message columns directly.
+        cur.execute(
+            f"UPDATE pgmq.q_{QUEUE} SET vt = now() - interval '1 second' "
+            f"WHERE msg_id = %s",
+            (msg_id,),
+        )
+        second = _claim(cur, vt=60)
+        assert second == (run_id, 0, scan_ids, msg_id)
+    pg_conn.rollback()
+
+
+def test_claim_dead_letters_past_max_reads(pg_conn):
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 2, batch_index=0)
+        cur.execute(
+            f"UPDATE pgmq.q_{QUEUE} SET read_ct = 10 WHERE msg_id = %s", (msg_id,)
+        )
+        result = _claim(cur, max_reads=5)
+        assert result is None
+
+        rows = _scan_rows(cur, run_id)
+        assert {r[1] for r in rows} == {"failed"}, "every scan in the batch is failed"
+
+        cur.execute(
+            f"SELECT count(*) FROM pgmq.a_{QUEUE} WHERE msg_id = %s", (msg_id,)
+        )
+        assert cur.fetchone()[0] == 1, "the message was archived, not merely hidden"
+    pg_conn.rollback()
+
+
+def test_claim_dead_letter_of_last_batch_settles_the_run(pg_conn):
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 1, batch_index=0)
+        cur.execute(
+            f"UPDATE pgmq.q_{QUEUE} SET read_ct = 10 WHERE msg_id = %s", (msg_id,)
+        )
+        assert _claim(cur, max_reads=5) is None
+        assert _run_status(cur, run_id) == "failed", (
+            "a run whose only/last batch is dead-lettered by claim itself "
+            "must still settle — not stay stuck at queued/submitted forever"
+        )
+    pg_conn.rollback()
+
+
+def test_complete_records_workflow_name_on_every_scan_in_batch(pg_conn):
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 3, batch_index=0)
+        _complete(cur, run_id, 0, msg_id, scan_ids, "wf-abc123")
+
+        rows = _scan_rows(cur, run_id)
+        assert {r[2] for r in rows} == {"wf-abc123"}
+        assert _claim(cur) is None, "the message was deleted, not just hidden"
+    pg_conn.rollback()
+
+
+def test_complete_marks_run_submitted_when_last_batch_settles(pg_conn):
+    with pg_conn.cursor() as cur:
+        run_id = _seed_run(cur)
+        _, scan_ids_a, msg_a = _seed_batch(cur, 1, batch_index=0, run_id=run_id)
+        _, scan_ids_b, msg_b = _seed_batch(cur, 1, batch_index=1, run_id=run_id)
+
+        _complete(cur, run_id, 0, msg_a, scan_ids_a, "wf-a")
+        assert _run_status(cur, run_id) == "queued", "batch 1 is still outstanding"
+
+        _complete(cur, run_id, 1, msg_b, scan_ids_b, "wf-b")
+        assert _run_status(cur, run_id) == "submitted"
+    pg_conn.rollback()
+
+
+def test_concurrent_complete_of_last_two_batches_settles_run_exactly_once(
+    pg_conn, pg_conninfo
+):
+    """Two INDEPENDENT connections complete a run's last two outstanding
+    batches at once. The run-completion aggregation must settle to
+    'submitted' exactly once — this is the actual proof for design.md's
+    "aggregate inside the SQL function" decision; a sequential test cannot
+    exercise the race it exists to prevent."""
+    import threading
+
+    with pg_conn.cursor() as cur:
+        run_id = _seed_run(cur)
+        _, scan_ids_a, msg_a = _seed_batch(cur, 1, batch_index=0, run_id=run_id)
+        _, scan_ids_b, msg_b = _seed_batch(cur, 1, batch_index=1, run_id=run_id)
+    pg_conn.commit()  # visible to the two independent connections below
+
+    results = {}
+    barrier = threading.Barrier(2)
+
+    def completer(key, batch_index, msg_id, scan_ids, name):
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET ROLE bloom_workflows")
+                barrier.wait()  # fire both completions as simultaneously as possible
+                cur.execute(
+                    f"SELECT {COMPLETE_FN}(%s, %s, %s, %s, %s)",
+                    (run_id, batch_index, msg_id, scan_ids, name),
+                )
+                cur.execute("RESET ROLE")
+                results[key] = True
+
+    try:
+        threads = [
+            threading.Thread(
+                target=completer, args=("a", 0, msg_a, scan_ids_a, "wf-a"), daemon=True
+            ),
+            threading.Thread(
+                target=completer, args=("b", 1, msg_b, scan_ids_b, "wf-b"), daemon=True
+            ),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        assert results == {"a": True, "b": True}
+
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT status FROM {RUNS_TABLE} WHERE id = %s", (run_id,))
+                assert cur.fetchone()[0] == "submitted", (
+                    "no lost update — the run settles to 'submitted' exactly once"
+                )
+    finally:
+        # Rows (and any pgmq message a failed assertion above left unsettled)
+        # are committed via independent connections, so clean up explicitly
+        # — respecting FK order — rather than relying on rollback. Matches PR
+        # #469's own cleanup for the same class of concurrency test.
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                for msg_id in (msg_a, msg_b):
+                    cur.execute(
+                        f"DELETE FROM pgmq.q_{QUEUE} WHERE msg_id = %s", (msg_id,)
+                    )
+                    cur.execute(
+                        f"DELETE FROM pgmq.a_{QUEUE} WHERE msg_id = %s", (msg_id,)
+                    )
+                cur.execute(f"DELETE FROM {SCANS_TABLE} WHERE run_id = %s", (run_id,))
+                cur.execute(
+                    f"DELETE FROM cyl_scans WHERE id = ANY(%s)",
+                    (scan_ids_a + scan_ids_b,),
+                )
+                cur.execute(f"DELETE FROM {RUNS_TABLE} WHERE id = %s", (run_id,))
+
+
+def test_fail_marks_batch_scans_failed_and_dead_letters(pg_conn):
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 2, batch_index=0)
+        _fail(cur, run_id, 0, msg_id, scan_ids, "boom")
+
+        rows = _scan_rows(cur, run_id)
+        assert {r[1] for r in rows} == {"failed"}
+        assert {r[4] for r in rows} == {"boom"}
+
+        cur.execute(
+            f"SELECT count(*) FROM pgmq.a_{QUEUE} WHERE msg_id = %s", (msg_id,)
+        )
+        assert cur.fetchone()[0] == 1
+        assert _claim(cur) is None, "archived, not redeliverable"
+    pg_conn.rollback()
+
+
+def test_fail_increments_attempts_on_every_scan_in_batch(pg_conn):
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 2, batch_index=0)
+        _fail(cur, run_id, 0, msg_id, scan_ids, "boom")
+        rows = _scan_rows(cur, run_id)
+        assert {r[3] for r in rows} == {1}
+    pg_conn.rollback()
+
+
+def test_fail_is_idempotent_on_a_stale_redelivery(pg_conn):
+    """Mirror of complete()'s own idempotency guard: a stale/redelivered
+    fail() call for a scan a prior fail() already recorded (this claim's own
+    poison-message dead-letter, or a different claimant's) must not
+    double-increment attempts or overwrite error_message/updated_at — this
+    phase is terminal-for-now, so a second fail() is always a duplicate
+    signal, never a legitimately different failure."""
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 1, batch_index=0)
+        _fail(cur, run_id, 0, msg_id, scan_ids, "first failure")
+        _fail(cur, run_id, 0, msg_id, scan_ids, "stale second failure")
+
+        rows = _scan_rows(cur, run_id)
+        assert rows[0][1] == "failed"
+        assert rows[0][3] == 1  # attempts not double-incremented
+        assert rows[0][4] == "first failure"  # not overwritten by the stale call
+    pg_conn.rollback()
+
+
+def test_fail_does_not_touch_scans_from_a_different_batch_in_the_same_run(pg_conn):
+    """Mirror of the equivalent complete() test: deliberately calls fail()
+    with a batch_index/scan_ids MISMATCH (batch B's index, batch A's
+    scan_ids) — the only way to actually exercise fail()'s batch_index guard,
+    since two batches' scan_ids are already disjoint by cyl_pipeline_run_scans'
+    UNIQUE(run_id, scan_id)."""
+    with pg_conn.cursor() as cur:
+        run_id = _seed_run(cur)
+        _, scan_ids_a, msg_a = _seed_batch(cur, 1, batch_index=0, run_id=run_id)
+        _, scan_ids_b, msg_b = _seed_batch(cur, 1, batch_index=1, run_id=run_id)
+
+        _fail(cur, run_id, 1, msg_a, scan_ids_a, "boom")  # batch_index mismatch
+
+        rows = {r[0]: r for r in _scan_rows(cur, run_id)}
+        assert rows[scan_ids_a[0]][1] == "queued"  # untouched — mismatch, no update
+        assert rows[scan_ids_b[0]][1] == "queued"  # untouched, as expected
+    pg_conn.rollback()
+
+
+def test_fail_does_not_clobber_a_completed_scan(pg_conn):
+    """vt-expiry / deploy race: a batch is completed successfully, then a
+    straggler second attempt reports failure for the same batch. The
+    argo_workflow_name-guarded fail must NOT flip an already-submitted scan
+    back to 'failed' — that would strand a real, running Workflow as if it
+    never got submitted."""
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 1, batch_index=0)
+        _complete(cur, run_id, 0, msg_id, scan_ids, "wf-real")
+        _fail(cur, run_id, 0, msg_id, scan_ids, "late failure")
+
+        rows = _scan_rows(cur, run_id)
+        assert rows[0][1] == "queued"  # status untouched — never flipped to failed
+        assert rows[0][2] == "wf-real"  # the real submission is preserved
+    pg_conn.rollback()
+
+
+def test_complete_does_not_clobber_a_failed_scan(pg_conn):
+    """Mirror of test_fail_does_not_clobber_a_completed_scan: a batch is
+    dead-lettered failed (e.g. by claim's own poison-message path after a
+    redelivery), then a delayed straggler complete() call for that same
+    message reports success. complete() must NOT resurrect an already-failed
+    scan by writing argo_workflow_name onto it — that would produce a
+    self-contradictory row (status='failed' with a real workflow name) that a
+    future reconciliation sweep checking argo_workflow_name IS NULL AND
+    status = 'failed' would misread as already resolved."""
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 1, batch_index=0)
+        _fail(cur, run_id, 0, msg_id, scan_ids, "dead-lettered")
+        _complete(cur, run_id, 0, msg_id, scan_ids, "wf-straggler")
+
+        rows = _scan_rows(cur, run_id)
+        assert rows[0][1] == "failed"  # status untouched — stays failed
+        assert rows[0][2] is None  # the straggler's workflow name is not recorded
+    pg_conn.rollback()
+
+
+def test_complete_is_idempotent_on_redelivery(pg_conn):
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 1, batch_index=0)
+        _complete(cur, run_id, 0, msg_id, scan_ids, "wf-abc")
+        _complete(cur, run_id, 0, msg_id, scan_ids, "wf-abc")  # must not raise
+
+        rows = _scan_rows(cur, run_id)
+        assert rows[0][2] == "wf-abc"
+    pg_conn.rollback()
+
+
+def test_settling_twice_does_not_advance_completed_at(pg_conn, pg_conninfo):
+    """A redelivery-driven duplicate complete() call for an already-settled run
+    (every scan already terminal) must not push completed_at forward again —
+    it's a scientific-traceability timestamp for when the run actually finished,
+    not for when it was last (redundantly) re-settled. Each complete() call runs
+    in its own committed, independent connection (not pg_conn's single open
+    transaction) — completed_at = now() is fixed at transaction START in
+    Postgres, so two calls sharing one transaction would trivially return the
+    same value regardless of whether the AND completed_at IS NULL guard exists;
+    only genuinely separate transactions can distinguish the fix from its
+    absence."""
+    import time
+
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 1, batch_index=0)
+    pg_conn.commit()  # visible to the two independent connections below
+
+    try:
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET ROLE bloom_workflows")
+                cur.execute(
+                    f"SELECT {COMPLETE_FN}(%s, %s, %s, %s, %s)",
+                    (run_id, 0, msg_id, scan_ids, "wf-abc"),
+                )
+                cur.execute("RESET ROLE")
+
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT completed_at FROM {RUNS_TABLE} WHERE id = %s", (run_id,))
+                first_completed_at = cur.fetchone()[0]
+        assert first_completed_at is not None
+
+        time.sleep(0.05)  # guarantee a distinguishable now() if the guard were absent
+
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET ROLE bloom_workflows")
+                cur.execute(  # redelivery replay, a genuinely separate transaction
+                    f"SELECT {COMPLETE_FN}(%s, %s, %s, %s, %s)",
+                    (run_id, 0, msg_id, scan_ids, "wf-abc"),
+                )
+                cur.execute("RESET ROLE")
+
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT completed_at FROM {RUNS_TABLE} WHERE id = %s", (run_id,))
+                assert cur.fetchone()[0] == first_completed_at
+    finally:
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"DELETE FROM pgmq.q_{QUEUE} WHERE msg_id = %s", (msg_id,))
+                cur.execute(f"DELETE FROM pgmq.a_{QUEUE} WHERE msg_id = %s", (msg_id,))
+                cur.execute(f"DELETE FROM {SCANS_TABLE} WHERE run_id = %s", (run_id,))
+                cur.execute("DELETE FROM cyl_scans WHERE id = ANY(%s)", (scan_ids,))
+                cur.execute(f"DELETE FROM {RUNS_TABLE} WHERE id = %s", (run_id,))
+
+
+def test_complete_does_not_touch_scans_from_a_different_batch_in_the_same_run(pg_conn):
+    """Defense-in-depth: complete()/fail() filter on scan_id, run_id, AND
+    batch_index — not scan_id/run_id alone. Deliberately calls complete() with a
+    batch_index/scan_ids MISMATCH (batch B's index, batch A's scan_ids) — the
+    only way to actually exercise the batch_index guard, since two batches'
+    scan_ids are already disjoint by cyl_pipeline_run_scans' UNIQUE(run_id,
+    scan_id) and so could never distinguish "filtered by batch_index" from
+    "filtered by scan_id alone" if called with matching, non-mismatched args."""
+    with pg_conn.cursor() as cur:
+        run_id = _seed_run(cur)
+        _, scan_ids_a, msg_a = _seed_batch(cur, 1, batch_index=0, run_id=run_id)
+        _, scan_ids_b, msg_b = _seed_batch(cur, 1, batch_index=1, run_id=run_id)
+
+        # batch_index=1 (batch B's) paired with batch A's scan_ids/msg_id — must
+        # match nothing, since scan_ids_a's rows actually have batch_index=0.
+        _complete(cur, run_id, 1, msg_a, scan_ids_a, "wf-a")
+
+        rows = {r[0]: r for r in _scan_rows(cur, run_id)}
+        assert rows[scan_ids_a[0]][2] is None  # batch_index mismatch -> no update
+        assert rows[scan_ids_b[0]][2] is None  # untouched, as expected
+    pg_conn.rollback()
+
+
+def test_run_marked_partial_when_batches_mixed(pg_conn):
+    with pg_conn.cursor() as cur:
+        run_id = _seed_run(cur)
+        _, scan_ids_a, msg_a = _seed_batch(cur, 1, batch_index=0, run_id=run_id)
+        _, scan_ids_b, msg_b = _seed_batch(cur, 1, batch_index=1, run_id=run_id)
+
+        _complete(cur, run_id, 0, msg_a, scan_ids_a, "wf-a")
+        _fail(cur, run_id, 1, msg_b, scan_ids_b, "boom")
+
+        assert _run_status(cur, run_id) == "partial"
+    pg_conn.rollback()
+
+
+def test_run_marked_failed_when_all_batches_fail(pg_conn):
+    with pg_conn.cursor() as cur:
+        run_id, scan_ids, msg_id = _seed_batch(cur, 1, batch_index=0)
+        _fail(cur, run_id, 0, msg_id, scan_ids, "boom")
+        assert _run_status(cur, run_id) == "failed"
+    pg_conn.rollback()
+
+
+def test_wrappers_denied_to_public_and_session_roles(pg_conn):
+    with pg_conn.cursor() as cur:
+        sigs = [
+            f"{CLAIM_FN}(integer, integer)",
+            f"{COMPLETE_FN}(bigint, integer, bigint, bigint[], text)",
+            f"{FAIL_FN}(bigint, integer, bigint, bigint[], text)",
+        ]
+        denied = (
+            "anon",
+            "authenticated",
+            "public",
+            "bloom_user",
+            "bloom_writer",
+            "bloom_admin",
+        )
+        for sig in sigs:
+            for role in denied:
+                cur.execute(
+                    "SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, sig)
+                )
+                assert cur.fetchone()[0] is False, f"{role} must NOT execute {sig}"
+            cur.execute(
+                "SELECT has_function_privilege('bloom_workflows', %s, 'EXECUTE')",
+                (sig,),
+            )
+            assert cur.fetchone()[0] is True, f"bloom_workflows must execute {sig}"
+    pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# 1.8 — Phase 2 migration idempotency + rollback fidelity
+# --------------------------------------------------------------------------- #
+
+_MIGRATION_2_GLOB = "*_add_cyl_pipeline_dispatch_functions.sql"
+_ROLLBACK_2_GLOB = "*_add_cyl_pipeline_dispatch_functions_rollback.sql"
+MIGRATION_2 = _find_one("migrations", _MIGRATION_2_GLOB)
+ROLLBACK_2 = _find_one("rollbacks", _ROLLBACK_2_GLOB)
+
+
+def test_phase2_migration_body_is_idempotent(pg_conn):
+    if MIGRATION_2 is None:
+        pytest.skip("Phase 2 migration not written yet")
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(MIGRATION_2))
+        cur.execute("SELECT 1 FROM pg_proc WHERE proname = %s", (CLAIM_FN,))
+        assert cur.fetchone() is not None
+    pg_conn.rollback()
+
+
+def test_phase2_rollback_removes_new_functions_only(pg_conn):
+    if MIGRATION_2 is None or ROLLBACK_2 is None:
+        pytest.skip("Phase 2 migration/rollback not written yet")
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(ROLLBACK_2))
+
+        for fn in (CLAIM_FN, COMPLETE_FN, FAIL_FN):
+            cur.execute("SELECT 1 FROM pg_proc WHERE proname = %s", (fn,))
+            assert cur.fetchone() is None, f"rollback did not drop {fn}"
+
+        # Phase 1's own function/queue/table must be untouched.
+        cur.execute("SELECT 1 FROM pg_proc WHERE proname = %s", (ENQUEUE_FN,))
+        assert cur.fetchone() is not None, "rollback must not drop enqueue_cyl_pipeline_batch"
+        cur.execute(
+            "SELECT queue_name FROM pgmq.list_queues() WHERE queue_name = %s", (QUEUE,)
+        )
+        assert cur.fetchone() is not None, "rollback must not drop the pgmq queue"
+    pg_conn.rollback()  # restore the schema — leave the DB untouched
+
+
+# --------------------------------------------------------------------------- #
 # 1.6 — Migration idempotency + rollback fidelity
 # --------------------------------------------------------------------------- #
 
