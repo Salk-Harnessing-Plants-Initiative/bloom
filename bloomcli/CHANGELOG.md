@@ -63,6 +63,15 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   cap, and no longer prints above `No scans matched` for `--limit 0`. Its wording now matches
   what it can distinguish: returning exactly `--limit` rows may mean the newest captures were
   dropped, or may be the whole experiment, and it says so rather than asserting the first.
+- `cyl download` now uses the shared mechanism for the last four pieces it still duplicated —
+  containment, object fetching, collision detection and the selector — so both commands get the
+  required-bucket guarantee from the mechanism rather than from a hardcoded constant. Its
+  observable behaviour is unchanged; its tests pass unedited.
+- A failed metadata read in `cyl download` — permission denied, an unapplied migration, a read
+  timeout — is now a sentence naming the read that failed, not a Python traceback. Its three
+  queries were the ones still unwrapped. A read timeout is reported on both commands' paths.
+- `plate download`'s retry hint names captures rather than frames, so a failing run no longer
+  prints `1/3 captures` immediately above a sentence about frames.
 
 ## [0.1.0a5] - 2026-08-13 — cylinder download reliability
 

@@ -104,3 +104,63 @@ def test_fetch_in_batches_lets_the_caller_finish_the_chain():
         lambda batch: _Chained([], None).in_("id", batch).is_("deleted_at", "null"), [1, 2, 3]
     )
     assert calls == [("deleted_at", "null")]
+
+
+# --- turning a query failure into a sentence ---------------------------------
+
+
+def test_a_server_error_names_the_query_that_failed():
+    import click
+    import pytest
+    from postgrest import APIError
+
+    from bloomctl._postgrest import queried
+
+    def denied():
+        raise APIError({"message": "permission denied for view cyl_scans_extended"})
+
+    with pytest.raises(click.ClickException) as caught:
+        queried("this experiment's scans", denied)
+
+    message = str(caught.value)
+    assert "this experiment's scans" in message, "the message must say which read failed"
+    assert "permission denied for view cyl_scans_extended" in message
+    assert "Traceback" not in message
+
+
+def test_a_read_timeout_is_a_sentence_too():
+    """A TransportError carries no message at all, so it needs recognising by type."""
+    import click
+    import httpx
+    import pytest
+
+    from bloomctl._postgrest import queried
+
+    def times_out():
+        raise httpx.ReadTimeout("")
+
+    with pytest.raises(click.ClickException) as caught:
+        queried("the accession names", times_out)
+
+    message = str(caught.value)
+    assert "the accession names" in message
+    assert "check your connection" in message
+
+
+def test_an_unrelated_failure_is_left_alone():
+    """Only server and transport failures are translated; a bug keeps its own traceback."""
+    import pytest
+
+    from bloomctl._postgrest import queried
+
+    def has_a_bug():
+        raise KeyError("scan_id")
+
+    with pytest.raises(KeyError):
+        queried("this scan", has_a_bug)
+
+
+def test_a_successful_read_passes_its_value_through():
+    from bloomctl._postgrest import queried
+
+    assert queried("anything", lambda: [{"scan_id": 1}]) == [{"scan_id": 1}]

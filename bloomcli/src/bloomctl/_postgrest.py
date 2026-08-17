@@ -59,3 +59,34 @@ def fetch_in_batches(
     for batch in id_batches(ids, budget):
         rows += build(batch).execute().data or []
     return rows
+
+
+def queried(what: str, call: Callable[[], Any]) -> Any:
+    """Run one metadata query, reporting a server or connection failure as a message naming
+    ``what`` rather than as a traceback."""
+    import click
+    from postgrest import APIError
+
+    try:
+        return call()
+    except APIError as exc:
+        detail = getattr(exc, "message", None) or str(exc)
+        raise click.ClickException(f"Could not read {what} from Bloom: {detail}") from exc
+    except Exception as exc:
+        if not _is_transport_error(exc):
+            raise
+        raise click.ClickException(
+            f"Could not reach Bloom while reading {what} ({type(exc).__name__}) — "
+            f"check your connection and retry"
+        ) from exc
+
+
+def _is_transport_error(exc: BaseException) -> bool:
+    """True for a connection-level httpx failure, recognised by type because it often carries
+    no message to match against."""
+    try:
+        import httpx
+
+        return isinstance(exc, httpx.TransportError)
+    except (ImportError, AttributeError):  # pragma: no cover - httpx ships with supabase
+        return False
