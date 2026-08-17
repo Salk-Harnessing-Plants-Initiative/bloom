@@ -14,8 +14,10 @@ edited**. No behaviour change to `cyl download`.
       `IMAGES_BUCKET`, so cyl gets #650's required-`bucket` property from the mechanism instead of
       from a constant.
 - [ ] 1.6 Stop importing the private `_path_key` across the package boundary.
-- [ ] 1.7 Add a containment test against the **shared** guard: today only cyl's inline copy is
-      covered, so blanking the shared one leaves the suite green (744 passed).
+- [ ] 1.7 Confirm cyl's containment test lands on the **shared** guard once the fold is done.
+      #674 says blanking that guard leaves the suite green at 744 passed; measured against staging
+      at 798 it already fails plate's test, so that claim is stale — plate is covered, and cyl's
+      inline copy was the untested duplicate. After the fold, blanking it fails both.
 - [ ] 1.8 Move `_queried` out of `plate/download.py` into `_postgrest.py` and wrap `fetch_scan`,
       `fetch_scans` and `fetch_genotypes`, so a PostgREST failure stops reaching cyl users as a
       traceback. Catch `httpx.TransportError` alongside `APIError` — a read timeout is currently raw
