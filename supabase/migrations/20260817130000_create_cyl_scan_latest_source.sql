@@ -25,7 +25,7 @@
 -- migration, safe specifically because the LOCK TABLE step guarantees the backfill is complete
 -- and no writer's data is unaccounted for by the time this commits.
 --
--- Manual rollback: supabase/rollbacks/20260817010000_create_cyl_scan_latest_source_rollback.sql
+-- Manual rollback: supabase/rollbacks/20260817130000_create_cyl_scan_latest_source_rollback.sql
 
 BEGIN;
 
@@ -58,6 +58,19 @@ CREATE POLICY authenticated_read_cyl_scan_latest_source ON public.cyl_scan_lates
 -- ITSELF, not as the view owner, so the read roles need direct SELECT on this table too.
 GRANT SELECT ON public.cyl_scan_latest_source
     TO bloom_agent, bloom_user, bloom_admin, authenticated;
+
+-- The FOR ALL policy above is NOT backed by a matching table-level grant without this: found in
+-- round-5 review that bloom_admin had only SELECT here (verified against
+-- information_schema.role_table_grants), not the INSERT/UPDATE/DELETE cyl_scan_traits itself has.
+-- Root cause is a role mismatch, not this migration alone -- cyl_scan_traits's own bloom_admin CRUD
+-- grant was made by the `postgres` role (predating this repo's default-privileges convention,
+-- 20260414002000_security_groups.sql's `ALTER DEFAULT PRIVILEGES ... GRANT ALL ON TABLES TO
+-- bloom_admin`, itself scoped to whichever role ran that migration), while this table is created by
+-- whatever role applies migrations in this environment (`supabase_admin` locally) -- a different
+-- creator, so the default-privileges rule never fires for it. Fails closed (bloom_admin has LESS
+-- access than the policy implies, not more) rather than being exploitable, but an explicit grant
+-- here is strictly safer than depending on which role happens to run this migration.
+GRANT INSERT, UPDATE, DELETE ON public.cyl_scan_latest_source TO bloom_admin;
 
 -- RLS does NOT govern TRUNCATE (a Postgres limitation, not a policy gap) -- Supabase's default
 -- privileges give anon/authenticated a raw TRUNCATE grant on every new public-schema table

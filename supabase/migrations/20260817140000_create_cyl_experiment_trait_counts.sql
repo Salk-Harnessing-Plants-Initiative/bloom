@@ -1,7 +1,7 @@
 -- bloom#637 / bloom#656 (supersedes PR #654's rollup table): cache n_traits per experiment,
 -- refreshed on a schedule rather than a per-write trigger.
 --
--- n_plants needs no cache at all (see 20260817030000's get_experiment_summary_counts rewrite --
+-- n_plants needs no cache at all (see 20260817150000's get_experiment_summary_counts rewrite --
 -- a live EXISTS semi-join is 247ms for every experiment, per @blm3886's bloom#656 measurement).
 -- n_traits genuinely needs caching (a full scan, 6.6s, no shortcut available) -- but PR #654's
 -- per-row AFTER trigger is the wrong refresh shape: one write-back upload inserts on the order of
@@ -11,7 +11,7 @@
 -- refresh_cyl_experiment_trait_counts() does one full, unconditional rebuild per call, so its cost
 -- is fixed regardless of ingest volume.
 --
--- Manual rollback: supabase/rollbacks/20260817020000_create_cyl_experiment_trait_counts_rollback.sql
+-- Manual rollback: supabase/rollbacks/20260817140000_create_cyl_experiment_trait_counts_rollback.sql
 
 BEGIN;
 
@@ -41,13 +41,19 @@ CREATE POLICY authenticated_read_cyl_experiment_trait_counts ON public.cyl_exper
     FOR SELECT TO authenticated USING (true);
 
 -- This table backs get_experiment_summary_counts (SECURITY INVOKER), so a caller needs SELECT
--- here directly, same reasoning as cyl_scan_latest_source in 20260817010000. Granted alongside
+-- here directly, same reasoning as cyl_scan_latest_source in 20260817130000. Granted alongside
 -- the refresh function's own, deliberately narrower grant below.
 GRANT SELECT ON public.cyl_experiment_trait_counts
     TO bloom_agent, bloom_user, bloom_admin, authenticated;
 
+-- Same fix and reasoning as cyl_scan_latest_source in 20260817130000 (found in round-5 review):
+-- the FOR ALL policy above is otherwise not backed by a matching table-level grant, since this
+-- table is created by a different role than whichever one cyl_scan_traits's own bloom_admin CRUD
+-- grant traces back to, and this repo's default-privileges rule for bloom_admin never fires here.
+GRANT INSERT, UPDATE, DELETE ON public.cyl_experiment_trait_counts TO bloom_admin;
+
 -- RLS does NOT govern TRUNCATE -- same fix and reasoning as cyl_scan_latest_source in
--- 20260817010000 (confirmed exploitable there; applied here defensively, same table shape).
+-- 20260817130000 (confirmed exploitable there; applied here defensively, same table shape).
 REVOKE TRUNCATE, REFERENCES, TRIGGER ON public.cyl_experiment_trait_counts FROM anon, authenticated;
 
 CREATE OR REPLACE FUNCTION public.refresh_cyl_experiment_trait_counts()
@@ -68,7 +74,7 @@ BEGIN
     -- one row -- there is no finer-grained key to lock on.
     --
     -- The two-bigint form, not the single-bigint form: pg_advisory_xact_lock(scan_id) (the
-    -- trigger, 20260817010000) and a single-bigint pg_advisory_xact_lock(hashtext(...)) here
+    -- trigger, 20260817130000) and a single-bigint pg_advisory_xact_lock(hashtext(...)) here
     -- would share the SAME global advisory-lock keyspace -- hashtext() can return any int4, so it
     -- could in principle collide with a real scan_id, spuriously serializing this whole-table
     -- refresh against one unrelated scan's write. Confirmed empirically that the two-bigint form

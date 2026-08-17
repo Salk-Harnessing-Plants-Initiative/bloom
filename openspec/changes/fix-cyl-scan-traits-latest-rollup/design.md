@@ -56,7 +56,9 @@ needed" claim is not, and this design does not carry it forward uncorrected.
   verified by tests, not assumed. Every live write path to `cyl_scan_traits` (the write-back RPC and
   `bloom_admin`'s break-glass access) keeps it correct without relying on the writer to know about it.
   `n_plants` is correct and live for every call (no staleness). `n_traits` is cheap to read, with an
-  explicit, bounded, documented staleness window (one refresh interval) that is a UI-lag tradeoff, not a
+  explicit, documented staleness window bounded to one refresh interval **once the schedule described in
+  D5/D8 is actually running — see D5's current-state caveat, added in round 4: as of this writing the
+  schedule isn't running yet, so this bound does not currently hold** — that is a UI-lag tradeoff, not a
   data-integrity one — the underlying trait data itself is never inconsistent, only this one summary
   count can lag.
 - **Non-Goals:** re-deriving or changing `is_latest`'s selection semantics (per-`scan_id` partition grain,

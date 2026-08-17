@@ -14,6 +14,7 @@ clean up via explicit `DELETE` (their effects are committed, not rolled back).
 
 import re
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -28,17 +29,17 @@ from tests.integration.test_cyl_read_path import (  # noqa: E402
 )
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-_TS = "20260817010000_create_cyl_scan_latest_source"
+_TS = "20260817130000_create_cyl_scan_latest_source"
 MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_TS}.sql"
 ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_TS}_rollback.sql"
 
 # The two later migrations in this change, whose rollbacks must run BEFORE this one's -- this
 # file's own rollback test exercises the full documented order, not just this migration in
 # isolation (see the rollback SQL files' own "ROLLBACK ORDER" header comments).
-_TRAIT_COUNTS_TS = "20260817020000_create_cyl_experiment_trait_counts"
+_TRAIT_COUNTS_TS = "20260817140000_create_cyl_experiment_trait_counts"
 TRAIT_COUNTS_MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_TRAIT_COUNTS_TS}.sql"
 TRAIT_COUNTS_ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_TRAIT_COUNTS_TS}_rollback.sql"
-_REWRITE_TS = "20260817030000_rewrite_get_experiment_summary_counts"
+_REWRITE_TS = "20260817150000_rewrite_get_experiment_summary_counts"
 REWRITE_MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_REWRITE_TS}.sql"
 REWRITE_ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_REWRITE_TS}_rollback.sql"
 
@@ -412,6 +413,122 @@ def test_concurrent_opposite_direction_cross_scan_reassignments_do_not_deadlock(
         conn_b.close()
 
 
+def test_concurrent_multi_pair_cross_scan_reassignments_can_deadlock_and_recover(pg_conninfo, pg_conn):
+    """The sorted lock order (D2b) only orders the two locks WITHIN one trigger firing -- it does
+    NOT impose a transaction-wide lock order across separate firings touching DIFFERENT scan pairs.
+    design.md's "Deadlock note" documents this as an accepted, self-healing risk reachable TODAY via
+    `bloom_admin`'s multi-row break-glass path, not just a hypothetical future writer: two
+    transactions, each reassigning rows across the SAME two disjoint scan-id pairs but in OPPOSITE
+    pair order, can genuinely deadlock. Round-5 review found this reproduces deterministically (not
+    probabilistically, unlike the single-pair opposite-direction test above) and added this test to
+    lock in the accepted behavior: Postgres's deadlock detector aborts exactly one transaction with
+    a clear error, the other commits, and the resulting data is fully correct and consistent --
+    not a hang, not silent corruption.
+
+    Txn A reassigns pair {scan_1, scan_2} first, then pair {scan_3, scan_4}. Txn B reassigns the
+    same two pairs in the OPPOSITE order: {scan_3, scan_4} first, then {scan_1, scan_2}. Barrier-
+    synced so both issue their first UPDATE at (as close to) the same instant, matching the shape
+    an operator's batch of independent corrections could naturally produce in one sitting."""
+    with pg_conn.cursor() as cur:
+        experiment_ids = []
+        scan_ids = []
+        row_ids = []
+        source_ids = []
+        for i in range(4):
+            experiment_id, scan_id, imgs = _seed_experiment_scan(cur)
+            source_id = _deliver(cur, imgs, f"s{i}", traits=[_trait("length", float(i))])
+            cur.execute(
+                "SELECT id FROM cyl_scan_traits WHERE scan_id=%s AND source_id=%s",
+                (scan_id, source_id),
+            )
+            row_id = cur.fetchone()[0]
+            experiment_ids.append(experiment_id)
+            scan_ids.append(scan_id)
+            row_ids.append(row_id)
+            source_ids.append(source_id)
+        scan_1, scan_2, scan_3, scan_4 = scan_ids
+        row_1, row_2, row_3, row_4 = row_ids
+    pg_conn.commit()  # scans/rows must be visible to both connections below
+
+    conn_a = psycopg.connect(pg_conninfo)
+    conn_b = psycopg.connect(pg_conninfo)
+    try:
+        barrier = threading.Barrier(2)
+        results = {}
+
+        def _run_a():
+            try:
+                cur_a = conn_a.cursor()
+                barrier.wait(timeout=5.0)
+                cur_a.execute(
+                    "UPDATE cyl_scan_traits SET scan_id=%s WHERE id=%s", (scan_2, row_1)
+                )
+                cur_a.execute(
+                    "UPDATE cyl_scan_traits SET scan_id=%s WHERE id=%s", (scan_4, row_3)
+                )
+                conn_a.commit()
+                results["a"] = None
+            except Exception as exc:  # noqa: BLE001 -- captured for the assertions below
+                conn_a.rollback()
+                results["a"] = exc
+
+        def _run_b():
+            try:
+                cur_b = conn_b.cursor()
+                barrier.wait(timeout=5.0)
+                # Opposite pair order from txn A -- {3,4} first, then {1,2}.
+                cur_b.execute(
+                    "UPDATE cyl_scan_traits SET scan_id=%s WHERE id=%s", (scan_3, row_4)
+                )
+                cur_b.execute(
+                    "UPDATE cyl_scan_traits SET scan_id=%s WHERE id=%s", (scan_1, row_2)
+                )
+                conn_b.commit()
+                results["b"] = None
+            except Exception as exc:  # noqa: BLE001
+                conn_b.rollback()
+                results["b"] = exc
+
+        a_thread = threading.Thread(target=_run_a)
+        b_thread = threading.Thread(target=_run_b)
+        a_thread.start()
+        b_thread.start()
+        a_thread.join(timeout=15.0)
+        b_thread.join(timeout=15.0)
+
+        # Exactly one transaction must fail with a deadlock error, and the other must succeed --
+        # the "accepted, self-healing" behavior design.md documents, not a hang or silent corruption.
+        outcomes = {"a": results.get("a"), "b": results.get("b")}
+        failures = [v for v in outcomes.values() if v is not None]
+        successes = [v for v in outcomes.values() if v is None]
+        assert len(failures) == 1, f"expected exactly one failure, got: {outcomes}"
+        assert len(successes) == 1, f"expected exactly one success, got: {outcomes}"
+        assert isinstance(failures[0], psycopg.errors.DeadlockDetected), failures[0]
+
+        with pg_conn.cursor() as cur:
+            # Regardless of which transaction won, every scan's cyl_scan_latest_source row must
+            # match a fresh max(source_id) computation over cyl_scan_traits -- no corruption, no
+            # missing row, no value stuck from a half-applied reassignment.
+            for scan_id in scan_ids:
+                cur.execute(
+                    "SELECT max(source_id) FROM cyl_scan_traits WHERE scan_id=%s", (scan_id,)
+                )
+                (true_max,) = cur.fetchone()
+                assert _max_source(cur, scan_id) == true_max
+            # All 4 rows still exist somewhere among the 4 scans -- reassigned, not lost.
+            cur.execute(
+                "SELECT count(*) FROM cyl_scan_traits WHERE scan_id = ANY(%s)", (scan_ids,)
+            )
+            assert cur.fetchone()[0] == 4
+    finally:
+        with pg_conn.cursor() as cur:
+            for experiment_id in experiment_ids:
+                _cleanup_seeded_experiment(cur, experiment_id)
+        pg_conn.commit()
+        conn_a.close()
+        conn_b.close()
+
+
 def test_direct_bloom_admin_write_is_maintained(pg_conn):
     with pg_conn.cursor() as cur:
         _, scan_id, _imgs = _seed_experiment_scan(cur)
@@ -426,6 +543,39 @@ def test_direct_bloom_admin_write_is_maintained(pg_conn):
             "INSERT INTO cyl_scan_traits (scan_id, source_id, trait_id, value) "
             "VALUES (%s, %s, %s, %s)",
             (scan_id, source_id, trait_id, 1.23),
+        )
+        cur.execute("RESET ROLE")
+        assert _max_source(cur, scan_id) == source_id
+    pg_conn.rollback()
+
+
+def test_bloom_admin_can_write_directly_to_cyl_scan_latest_source(pg_conn):
+    """The `FOR ALL TO bloom_admin` RLS policy is not automatically backed by a matching
+    table-level grant -- found in round-5 review: `bloom_admin` had only `SELECT` here (confirmed
+    via `information_schema.role_table_grants`), not the `INSERT`/`UPDATE`/`DELETE` `cyl_scan_traits`
+    itself has, because this table is created by a different role than whichever one gave
+    `cyl_scan_traits` its bloom_admin CRUD grant, and this repo's default-privileges rule for
+    `bloom_admin` never fires for a table created by that other role. Failed closed (bloom_admin had
+    LESS access than the policy implied, not more), but `test_direct_bloom_admin_write_is_maintained`
+    above never caught it -- it writes to `cyl_scan_traits` and lets the trigger (SECURITY DEFINER)
+    do the actual write to this table, never exercising bloom_admin's OWN direct grant on it. This
+    test bypasses the trigger entirely and writes straight to `cyl_scan_latest_source` as
+    `bloom_admin`, the way an operator's break-glass correction actually would."""
+    with pg_conn.cursor() as cur:
+        _, scan_id, imgs = _seed_experiment_scan(cur)
+        source_id = _deliver(cur, imgs, "orig", traits=[_trait("length", 1.0)])
+
+        cur.execute("SET LOCAL ROLE bloom_admin")
+        cur.execute(
+            "UPDATE cyl_scan_latest_source SET max_source_id = %s WHERE scan_id = %s",
+            (source_id, scan_id),
+        )
+        assert cur.rowcount == 1
+        cur.execute("DELETE FROM cyl_scan_latest_source WHERE scan_id = %s", (scan_id,))
+        assert cur.rowcount == 1
+        cur.execute(
+            "INSERT INTO cyl_scan_latest_source (scan_id, max_source_id) VALUES (%s, %s)",
+            (scan_id, source_id),
         )
         cur.execute("RESET ROLE")
         assert _max_source(cur, scan_id) == source_id
@@ -805,12 +955,77 @@ def test_migration_body_is_idempotent(pg_conn):
     pg_conn.rollback()
 
 
+def test_recreating_the_trigger_does_not_block_concurrent_reads(pg_conninfo, pg_conn):
+    """Guards the round-4 fix directly -- found in round-5 review that no test would have caught a
+    revert of `CREATE OR REPLACE TRIGGER` back to `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER`:
+    `test_migration_body_is_idempotent` re-runs the whole migration but only asserts the table and
+    trigger still exist by name, never checking what lock was held while re-creating the trigger.
+    `DROP TRIGGER IF EXISTS` on an EXISTING trigger (i.e. this exact re-run scenario) takes
+    AccessExclusiveLock and blocks a plain concurrent SELECT for the rest of the transaction --
+    confirmed in round 4 via pg_locks and timing, and re-confirmed here as a permanent regression
+    guard rather than a one-off manual check. `CREATE OR REPLACE TRIGGER` takes only
+    ShareRowExclusiveLock, which does not conflict with a concurrent SELECT's AccessShareLock.
+
+    Holds the trigger-recreation statement open (uncommitted) on one connection, times a plain
+    `SELECT` on `cyl_scan_traits` from another, and asserts it completes quickly -- if this
+    statement were reverted to `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER`, the concurrent SELECT
+    would hang until the migrator's transaction ended, and this test would fail the wait-timeout
+    below instead of silently passing."""
+    migrator_conn = psycopg.connect(pg_conninfo)
+    try:
+        # Must match the migration's own statement (20260817130000) -- re-creating an EXISTING
+        # trigger, the case round 4 found to matter (a brand-new trigger has nothing to conflict
+        # with regardless of which form is used).
+        migrator_conn.execute(
+            "CREATE OR REPLACE TRIGGER maintain_cyl_scan_latest_source_after_write "
+            "AFTER INSERT OR UPDATE OR DELETE ON public.cyl_scan_traits "
+            "FOR EACH ROW EXECUTE FUNCTION public.maintain_cyl_scan_latest_source()"
+        )
+        # Left open (uncommitted) -- holds whatever lock the statement above took for the
+        # remainder of this test, the same way a real migration's transaction would.
+
+        reader_done = threading.Event()
+
+        def _run_reader():
+            with pg_conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM cyl_scan_traits")
+                cur.fetchone()
+            reader_done.set()
+
+        reader_thread = threading.Thread(target=_run_reader)
+        reader_thread.start()
+        assert reader_done.wait(timeout=2.0), (
+            "concurrent SELECT was blocked -- looks like AccessExclusiveLock, not "
+            "ShareRowExclusiveLock (i.e. DROP TRIGGER IF EXISTS regressed back in)"
+        )
+        reader_thread.join()
+    finally:
+        migrator_conn.rollback()
+        migrator_conn.close()
+
+
 def test_rollback_guard_blocks_out_of_order_rollback(pg_conn):
-    """This migration's rollback must refuse to run while 20260817020000's
+    """This migration's rollback must refuse to run while 20260817140000's
     refresh_cyl_experiment_trait_counts() still references cyl_scan_latest_source -- proves the
     "ROLLBACK ORDER" guard in the rollback SQL is real, not just a comment."""
     with pg_conn.cursor() as cur:
-        with pytest.raises(psycopg.errors.RaiseException, match="Roll back 20260817020000"):
+        with pytest.raises(psycopg.errors.RaiseException, match="Roll back 20260817140000"):
+            cur.execute(_sql_body(ROLLBACK))
+    pg_conn.rollback()
+
+
+def test_rollback_guard_table_check_branch_is_load_bearing(pg_conn):
+    """The guard above can't tell whether its function-existence check or its table-existence
+    check is what actually fires -- in the normal baseline state, both `refresh_cyl_experiment_
+    trait_counts()` and `cyl_experiment_trait_counts` exist simultaneously, so a guard containing
+    ONLY the (round-2-era) function check would pass that same test identically. Found in round-5
+    review. This test isolates the round-3 fix's actual value: drops the function directly,
+    leaving the table intact (simulating a function dropped out-of-band without running
+    20260817140000's own rollback), and confirms the guard still raises -- which only the
+    table-existence branch can be responsible for once the function is gone."""
+    with pg_conn.cursor() as cur:
+        cur.execute("DROP FUNCTION public.refresh_cyl_experiment_trait_counts()")
+        with pytest.raises(psycopg.errors.RaiseException, match="Roll back 20260817140000"):
             cur.execute(_sql_body(ROLLBACK))
     pg_conn.rollback()
 

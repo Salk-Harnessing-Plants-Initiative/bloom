@@ -17,7 +17,7 @@ branch (`eberrigan/bloommcp-list-experiments-timeout-637-v2`).
 - [x] 0.2 Re-check `supabase/migrations/`'s newest file on `origin/staging` immediately before opening the
       PR (this proposal was drafted against `20260807000000_get_experiment_summary_counts.sql` as the
       tip) and choose migration timestamps later than that. **Done — confirmed `20260807000000` still
-      the tip; this change's three migrations use `20260817010000`/`20260817020000`/`20260817030000`.**
+      the tip; this change's three migrations use `20260817130000`/`20260817140000`/`20260817150000`.**
 - [x] 0.3 Confirm PR #654 is closed with a comment pointing to this PR before this PR opens (or
       immediately after) — needs the user's own action per repo convention (Claude does not close PRs
       without explicit confirmation, already given for this change). **Done — PR #654 closed with a
@@ -277,7 +277,7 @@ round 1's fixes were already committed and instructed to verify them fresh rathe
       `cyl_plants`/`cyl_scans`/`cyl_images` permanently committed in the local dev DB. Verified flat
       row counts across repeated runs, not just "the code looks like it deletes things." - `refresh_cyl_experiment_trait_counts()`'s `DISTINCT trait_id` (vs. the other two counting paths'
       `DISTINCT trait_name`) equivalence documented with a comment noting the `cyl_traits.name NOT NULL
-  UNIQUE` assumption it depends on. - `test_read_roles_can_call_function`'s `count(*) IS NOT NULL` assertion (trivially always true)
+UNIQUE` assumption it depends on. - `test_read_roles_can_call_function`'s `count(*) IS NOT NULL` assertion (trivially always true)
       replaced with an assertion on the actual `(n_plants, n_traits)` row content.
 - [x] 9.4 Re-run the full `cyl`-scoped integration suite after all fixes — 369 passed, 5 skipped, up from
       365 after round 1 (4 net new tests: cross-scan `UPDATE`, concurrent-refresh race, plus fixes to
@@ -305,7 +305,7 @@ and instructed to verify them fresh rather than trust the summary, and to find o
       precedent (which only ever covered `bloom_admin`). New `test_anon_cannot_truncate` in both test
       files, each confirmed to fail against the pre-fix grant and pass against the fix. Noted, not fixed,
       as a pre-existing repo-wide gap: `anon` can still `TRUNCATE public.cyl_scan_traits` itself today. - D5c (advisory-lock keyspace collision) — `refresh_cyl_experiment_trait_counts()`'s lock call changed
-      to the two-int form; design.md D5's code block and D5c both updated. - The rollback guard for `20260817010000` (M1) strengthened to check `cyl_experiment_trait_counts`
+      to the two-int form; design.md D5's code block and D5c both updated. - The rollback guard for `20260817130000` (M1) strengthened to check `cyl_experiment_trait_counts`
       TABLE existence, not just `refresh_cyl_experiment_trait_counts()` FUNCTION existence — a function
       dropped out-of-band without running M2's own rollback would have silently defeated the
       function-only check. Migration Plan section in design.md updated to describe both checks. - The sorted cross-scan lock acquisition (D2b, round 2's own fix) had zero concurrency coverage —
@@ -339,7 +339,7 @@ and instructed to verify them fresh rather than trust the summary, and to find o
       multi-row cross-scan × 1, cleanup-helper self-check × 1; the refresh-concurrency strengthening added
       assertions to an existing test rather than a new one).
 - [x] 10.5 Post round 3's synthesized review to PR #684. **First attempt hit `HTTP 503: No server is
-    currently available` on `gh pr review` — a transient GitHub API outage, not the local
+  currently available` on `gh pr review` — a transient GitHub API outage, not the local
       permission-classifier block that stopped 8.5/9.5.** Confirmed via a lightweight `gh pr view` read
       succeeding immediately after, ruling out an auth/permission cause. A second attempt (at the user's
       request) succeeded; posted as a `COMMENTED` review, confirmed via `gh pr view --json reviews`.
@@ -368,7 +368,7 @@ respectively), confirmed unrelated to this PR's content, not treated as findings
       failing assertion, and the seeded experiment count in the dev DB grew (73 -> 74) instead of staying
       flat, proving the leak.
 - [x] 11.3 Fix everything that survived verification: - `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER` replaced with a single `CREATE OR REPLACE TRIGGER`
-      (PG14+; this repo runs PG15) in `20260817010000`. Verified empirically: `CREATE OR REPLACE TRIGGER`
+      (PG14+; this repo runs PG15) in `20260817130000`. Verified empirically: `CREATE OR REPLACE TRIGGER`
       replacing an EXISTING trigger takes only `ShareRowExclusiveLock` (confirmed via `pg_locks` and an
       unblocked concurrent `SELECT`, 0.48s) — the same lock a bare `CREATE TRIGGER` always took, on both
       a first application and a re-run. Re-ran `test_migration_body_is_idempotent` and the full
@@ -405,7 +405,7 @@ respectively), confirmed unrelated to this PR's content, not treated as findings
       fails; restored it, confirmed it passes. - Two misleading test comments fixed (`test_concurrent_first_insert_to_same_new_scan_converges_to_true_max`
       and its rerun sibling): both claimed `assert not b_done.wait(...)` proves B is "genuinely blocked
       on A's advisory lock" — actually true, but for the wrong reason. Both inserts' `ON CONFLICT
-    (scan_id)` target the SAME row, so Postgres's native uncommitted-conflicting-tuple wait would
+  (scan_id)` target the SAME row, so Postgres's native uncommitted-conflicting-tuple wait would
       block B even with the advisory lock removed entirely; the advisory lock's actual job (proven by the
       downstream `true_max` assertion) is ensuring the post-wait value is CORRECT, not that B waits at
       all. Comments corrected to point at the assertion that actually discriminates locked from unlocked. - A comment added to the trigger documenting that a plain `DELETE` takes the cross-scan branch by
@@ -422,4 +422,79 @@ respectively), confirmed unrelated to this PR's content, not treated as findings
 - [x] 11.4 Re-run the full `cyl`-scoped integration suite after all fixes — 377 passed, 5 skipped, up from
       374 after round 3 (3 net new tests: the two `search_path` regression tests, one of them
       parametrized over 2 functions).
-- [ ] 11.5 Post round 4's synthesized review to PR #684.
+- [x] 11.5 Post round 4's synthesized review to PR #684. Posted successfully (`COMMENTED`, confirmed
+      via `gh pr view --json reviews`) — no GitHub-side blocker this round.
+
+## 12. Fifth `/review-pr` round — verify rounds 1–4's fixes hold up, find what they missed
+
+Same discipline as rounds 2–4: each of the 5 subagents was told rounds 1–4's fixes were already
+committed and instructed to verify them fresh rather than trust the summary, and to find only NEW
+issues.
+
+- [x] 12.1 Run the 5-subagent review. All 5 returned; no subagent failed or returned a suspiciously
+      short result. Two subagents (code quality, security) explicitly found nothing new at
+      BLOCKING/IMPORTANT severity after 4 prior rounds — the first time a round has produced a
+      "holds up clean" result from more than one reviewer simultaneously.
+- [x] 12.2 Verify the most significant new findings empirically before fixing: - `bloom_admin`'s `FOR ALL` RLS policy on both new tables was backed by only a `SELECT` grant, not
+      the `INSERT`/`UPDATE`/`DELETE` `cyl_scan_traits` itself has — confirmed via
+      `information_schema.role_table_grants` directly against the dev DB. Traced the root cause:
+      `cyl_scan_traits`'s bloom_admin CRUD grant was made by the `postgres` role (grantor,
+      confirmed via the same catalog view), while these two new tables were created by
+      `supabase_admin` — a different role whose default-privileges configuration for
+      `bloom_admin` doesn't include CRUD the way `postgres`'s does. Fails closed (bloom_admin has
+      LESS access than the policy implies, not more), not exploitable — but confirmed genuinely
+      inert for writes, not just a documentation mismatch. - `test_unpinned_call_no_live_join_over_cyl_scan_traits`'s `EXPLAIN`-based assertion was claimed
+      to be structurally incapable of proving what it claims — reproduced directly:
+      `EXPLAIN (FORMAT TEXT) SELECT * FROM get_experiment_summary_counts(...)` and
+      `EXPLAIN (FORMAT TEXT) SELECT * FROM compute_cyl_experiment_summary_counts_live(...)`
+      (whose body DOES directly join `cyl_scan_traits_source`) both produce the identical opaque
+      `Function Scan on ...` line — Postgres never exposes a PL/pgSQL function's internal query
+      plan through `EXPLAIN` on the caller's side, confirmed with `VERBOSE, ANALYZE` too. The
+      assertion would pass identically whether the unpinned path reads the cache or was reverted
+      to the exact live-join regression bloom#637/#656 exist to prevent. - No test guards the round-4 `CREATE OR REPLACE TRIGGER` fix — confirmed by grepping the whole
+      `tests/integration/` tree for `AccessExclusive`/`ShareRowExclusive`/`pg_locks`: zero matches
+      in `test_cyl_scan_latest_source.py`. `test_migration_body_is_idempotent` re-runs the
+      migration but only asserts the table/trigger exist by name, never what lock was held. - `test_rollback_guard_blocks_out_of_order_rollback`'s two-branch `OR` guard (round 3's fix) was
+      claimed to be untestable as-is, since both branches are simultaneously true in the normal
+      baseline state. Confirmed by temporarily reverting the guard to its function-only,
+      round-2-era form and re-running the existing test unchanged — it still passed, proving it
+      genuinely cannot distinguish which branch fires.
+- [x] 12.3 Fix everything that survived verification: - `GRANT INSERT, UPDATE, DELETE ON public.cyl_scan_latest_source/cyl_experiment_trait_counts TO
+      bloom_admin` added to both migrations, matching `cyl_scan_traits`'s own capability and the
+      RLS policy's stated intent. Two new tests
+      (`test_bloom_admin_can_write_directly_to_cyl_scan_latest_source`,
+      `test_bloom_admin_can_write_directly_to_cyl_experiment_trait_counts`) write straight to
+      each table AS `bloom_admin`, bypassing the trigger/refresh-function entirely (unlike the
+      existing `test_direct_bloom_admin_write_is_maintained`, which writes to `cyl_scan_traits`
+      and lets a `SECURITY DEFINER` trigger do the actual write, never exercising bloom_admin's
+      own grant). Confirmed both fail against a `REVOKE`d grant and pass against the fix. - `test_unpinned_call_no_live_join_over_cyl_scan_traits` deleted outright — its real property
+      (unpinned `n_traits` reads the cache, not a live join) is already correctly proven by
+      content, not plan shape, by the two sibling tests immediately above it
+      (`test_unpinned_n_plants_is_unaffected_by_a_corrupted_cache`,
+      `test_unpinned_n_traits_reads_the_cache_not_a_live_recompute`) — a demonstrably broken
+      assertion that gives false confidence is worse than no test when the real property is
+      already covered elsewhere. - `test_recreating_the_trigger_does_not_block_concurrent_reads` added: holds the migration's
+      exact `CREATE OR REPLACE TRIGGER` statement open (uncommitted) on one connection, times a
+      concurrent plain `SELECT` on `cyl_scan_traits` from another, asserts it completes within
+      2s. Confirmed this test fails (times out) when the statement is temporarily reverted to
+      `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER`, and passes with the fix restored. - `test_rollback_guard_table_check_branch_is_load_bearing` added: drops
+      `refresh_cyl_experiment_trait_counts()` directly (leaving `cyl_experiment_trait_counts` the
+      table intact) and confirms the rollback guard still raises — isolating the table-check
+      branch specifically. Confirmed this test fails against the function-only (round-2-era)
+      guard and passes against the current OR'd guard. - `test_concurrent_multi_pair_cross_scan_reassignments_can_deadlock_and_recover` added: two
+      disjoint scan-id pairs, reassigned by two transactions in opposite pair order, barrier-
+      synced. Confirmed deterministic (5/5 runs reproduced the deadlock, exactly one transaction
+      failing with `DeadlockDetected` and the other committing correctly) — unlike the existing
+      single-pair test, which is only probabilistic. Locks in design.md's "accepted, self-healing"
+      claim about this risk as an actual regression-tested behavior, not just an assertion. - `web/types/database.types.ts`'s `cyl_scan_latest_source` hand-edit (round 4) switched from
+      double- to single-quoted string literals, matching this file's own dominant style and its
+      own `cyl_experiment_trait_counts` addition 320 lines above it — the only hand-edited block
+      in any of the 5 tracked copies that had drifted from its file's convention. - `design.md`'s Goals section corrected: it unconditionally claimed `n_traits` staleness is
+      "bounded... one refresh interval," directly contradicting D5's own round-4-added caveat
+      that this bound does not currently hold (the refresh schedule isn't running yet). The Goals
+      bullet now points to D5's caveat explicitly instead of asserting the bound unconditionally.
+- [x] 12.4 Re-run the full `cyl`-scoped integration suite after all fixes — 381 passed, 5 skipped, up
+      from 377 after round 4 (net +4: two bloom_admin direct-write tests, the
+      `CREATE OR REPLACE TRIGGER` lock test, the rollback-guard branch-isolation test, and the
+      multi-pair deadlock test, minus the one deleted trivially-true `EXPLAIN` test).
+- [ ] 12.5 Post round 5's synthesized review to PR #684.

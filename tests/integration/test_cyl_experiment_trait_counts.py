@@ -29,13 +29,13 @@ from tests.integration.test_cyl_scan_latest_source import (  # noqa: E402
 )
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-_TS = "20260817020000_create_cyl_experiment_trait_counts"
+_TS = "20260817140000_create_cyl_experiment_trait_counts"
 MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_TS}.sql"
 ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_TS}_rollback.sql"
 
 # The later migration in this change, whose rollback must run BEFORE this one's -- see the
 # rollback SQL files' own "ROLLBACK ORDER" header comments.
-_REWRITE_TS = "20260817030000_rewrite_get_experiment_summary_counts"
+_REWRITE_TS = "20260817150000_rewrite_get_experiment_summary_counts"
 REWRITE_MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_REWRITE_TS}.sql"
 REWRITE_ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_REWRITE_TS}_rollback.sql"
 
@@ -347,6 +347,37 @@ def test_anon_cannot_truncate(pg_conn):
     pg_conn.rollback()
 
 
+def test_bloom_admin_can_write_directly_to_cyl_experiment_trait_counts(pg_conn):
+    """Same gap and fix as cyl_scan_latest_source's equivalent test (found in round-5 review):
+    the `FOR ALL TO bloom_admin` RLS policy had no matching table-level grant backing it --
+    bloom_admin had only SELECT here, confirmed via information_schema.role_table_grants, because
+    this table is created by a different role than whichever one gave cyl_scan_traits its
+    bloom_admin CRUD grant, and this repo's default-privileges rule for bloom_admin never fires for
+    a table created by that other role. No existing test caught this since refresh_cyl_experiment_
+    trait_counts() itself is SECURITY DEFINER and writes as its owner, not as bloom_admin."""
+    with pg_conn.cursor() as cur:
+        experiment_id, _scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "orig", traits=[_trait("length", 1.0)])
+
+        cur.execute("SET LOCAL ROLE bloom_admin")
+        cur.execute(
+            "INSERT INTO cyl_experiment_trait_counts (experiment_id, n_traits) VALUES (%s, %s)",
+            (experiment_id, 1),
+        )
+        assert cur.rowcount == 1
+        cur.execute(
+            "UPDATE cyl_experiment_trait_counts SET n_traits = %s WHERE experiment_id = %s",
+            (2, experiment_id),
+        )
+        assert cur.rowcount == 1
+        cur.execute(
+            "DELETE FROM cyl_experiment_trait_counts WHERE experiment_id = %s", (experiment_id,)
+        )
+        assert cur.rowcount == 1
+        cur.execute("RESET ROLE")
+    pg_conn.rollback()
+
+
 def test_migration_adds_no_read_role_execute_grant(pg_conn):
     with pg_conn.cursor() as cur:
         cur.execute(
@@ -357,7 +388,7 @@ def test_migration_adds_no_read_role_execute_grant(pg_conn):
         assert cur.fetchone()[0] == 0
         # 'anon' is a distinct grantee from 'PUBLIC' in role_routine_grants -- the IN-list above
         # does not imply anon is covered. Caught in round-2 review: this is exactly the property
-        # the REVOKE ... FROM PUBLIC, anon, authenticated (20260817020000...sql) exists to
+        # the REVOKE ... FROM PUBLIC, anon, authenticated (20260817140000...sql) exists to
         # guarantee, and a future edit that dropped anon from that REVOKE would leave this test
         # still passing at 0 while anon silently regained EXECUTE.
         cur.execute(
@@ -380,19 +411,19 @@ def test_migration_body_is_idempotent(pg_conn):
 
 def test_rollback_guard_blocks_out_of_order_rollback(pg_conn):
     """This migration's rollback must refuse to run while get_experiment_summary_counts
-    (20260817030000) still references cyl_experiment_trait_counts -- proves the "ROLLBACK ORDER"
+    (20260817150000) still references cyl_experiment_trait_counts -- proves the "ROLLBACK ORDER"
     guard in the rollback SQL is real, not just a comment. Before this guard existed, rolling this
     migration back in isolation would drop the table out from under that RPC's unpinned path
     silently at DROP time, only failing later, at the RPC's next call, with an unhelpful
     "relation does not exist" -- the guard turns that into an immediate, actionable error instead."""
     with pg_conn.cursor() as cur:
-        with pytest.raises(psycopg.errors.RaiseException, match="Roll back 20260817030000 first"):
+        with pytest.raises(psycopg.errors.RaiseException, match="Roll back 20260817150000 first"):
             cur.execute(_sql_body(ROLLBACK))
     pg_conn.rollback()
 
 
 def test_rollback_restores_prior_state(pg_conn):
-    """Exercises the full, documented order (20260817030000's rollback first, then this one) rather
+    """Exercises the full, documented order (20260817150000's rollback first, then this one) rather
     than this migration in isolation -- rolling this one back alone is now guarded against (see the
     sibling test above)."""
     with pg_conn.cursor() as cur:

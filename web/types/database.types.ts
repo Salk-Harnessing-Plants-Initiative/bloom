@@ -640,18 +640,18 @@ export interface Database {
         }
         Relationships: [
           {
-            foreignKeyName: "cyl_scan_latest_source_scan_id_fkey"
-            columns: ["scan_id"]
+            foreignKeyName: 'cyl_scan_latest_source_scan_id_fkey'
+            columns: ['scan_id']
             isOneToOne: true
-            referencedRelation: "cyl_scans"
-            referencedColumns: ["id"]
+            referencedRelation: 'cyl_scans'
+            referencedColumns: ['id']
           },
           {
-            foreignKeyName: "cyl_scan_latest_source_scan_id_fkey"
-            columns: ["scan_id"]
+            foreignKeyName: 'cyl_scan_latest_source_scan_id_fkey'
+            columns: ['scan_id']
             isOneToOne: true
-            referencedRelation: "cyl_scans_extended"
-            referencedColumns: ["scan_id"]
+            referencedRelation: 'cyl_scans_extended'
+            referencedColumns: ['scan_id']
           },
         ]
       }

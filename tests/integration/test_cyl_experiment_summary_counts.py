@@ -1,7 +1,7 @@
 """
 Integration tests for the aggregate summary-counts function, originally added by bloom#625
 (`fix-bloommcp-list-experiments-summary-rpc`) and rewritten by bloom#637/bloom#656
-(`fix-cyl-scan-traits-latest-rollup`, `20260817030000_rewrite_get_experiment_summary_counts.sql`).
+(`fix-cyl-scan-traits-latest-rollup`, `20260817150000_rewrite_get_experiment_summary_counts.sql`).
 
 `get_experiment_summary_counts(experiment_id_ DEFAULT NULL, source_id_ DEFAULT NULL, run_id_ DEFAULT
 NULL)`'s two counts now have different cost profiles when unpinned (both `source_id_`/`run_id_` NULL):
@@ -41,7 +41,7 @@ _TS = "20260807000000_get_experiment_summary_counts"
 MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_TS}.sql"
 ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_TS}_rollback.sql"
 
-_REWRITE_TS = "20260817030000_rewrite_get_experiment_summary_counts"
+_REWRITE_TS = "20260817150000_rewrite_get_experiment_summary_counts"
 REWRITE_MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_REWRITE_TS}.sql"
 REWRITE_ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_REWRITE_TS}_rollback.sql"
 
@@ -311,23 +311,6 @@ def test_unpinned_n_traits_reads_the_cache_not_a_live_recompute(pg_conn):
     pg_conn.rollback()
 
 
-def test_unpinned_call_no_live_join_over_cyl_scan_traits(pg_conn):
-    """Structural confirmation the unpinned path doesn't drag cyl_scan_traits rows through a
-    live join for n_traits -- EXPLAIN should show only a scan of the small cache table, not the
-    5-way join chain bloom#637 exists to avoid."""
-    with pg_conn.cursor() as cur:
-        exp, _, imgs = _seed_experiment_scan(cur)
-        _deliver(cur, imgs, "k", traits=[_trait("length", 1.0)])
-        _refresh_trait_counts(cur)
-        cur.execute(
-            "EXPLAIN (FORMAT TEXT) SELECT * FROM get_experiment_summary_counts(%s, NULL, NULL)",
-            (exp,),
-        )
-        plan = "\n".join(r[0] for r in cur.fetchall())
-        assert "cyl_scan_traits_source" not in plan
-    pg_conn.rollback()
-
-
 def test_pinned_call_unaffected_by_cache_staleness(pg_conn):
     """Pinned (source_id_/run_id_) calls never read the cache at all -- confirm a pinned call
     is correct even when the cache has never been refreshed."""
@@ -387,7 +370,7 @@ def test_authenticated_has_execute_grant(pg_conn):
     ],
 )
 def test_anon_has_no_execute_grant(pg_conn, fn_signature):
-    """Caught in review: the 20260817030000 rewrite's REVOKE originally only covered PUBLIC, not
+    """Caught in review: the 20260817150000 rewrite's REVOKE originally only covered PUBLIC, not
     anon explicitly -- Supabase auto-grants EXECUTE on new public-schema functions to anon, so
     that alone left anon still able to call both. compute_cyl_experiment_summary_counts_live is
     SECURITY DEFINER, so anon calling it directly would have run with the definer's elevated

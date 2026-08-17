@@ -9,7 +9,7 @@
 -- two incidental, semantics-preserving cleanups Benfica's comment noted: `JOIN accessions` ->
 -- `accession_id IS NOT NULL`, and the unnecessary `cyl_experiments` join dropped.
 --
--- Manual rollback: supabase/rollbacks/20260817030000_rewrite_get_experiment_summary_counts_rollback.sql
+-- Manual rollback: supabase/rollbacks/20260817150000_rewrite_get_experiment_summary_counts_rollback.sql
 
 BEGIN;
 
@@ -58,7 +58,7 @@ END;
 $$;
 
 -- Supabase auto-grants EXECUTE on new public-schema functions to anon/authenticated/service_role,
--- so PUBLIC alone doesn't close that (same lesson 20260817020000 already applies to
+-- so PUBLIC alone doesn't close that (same lesson 20260817140000 already applies to
 -- refresh_cyl_experiment_trait_counts) -- and it matters more here: this function is
 -- SECURITY DEFINER, so an anon caller invoking it directly would run with the definer's elevated
 -- privilege, bypassing whatever table-level grants anon itself lacks. Verified empirically
