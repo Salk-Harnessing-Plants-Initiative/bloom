@@ -228,3 +228,88 @@ def test_species_without_name_rejected(tmp_path):
     )
     assert res.exit_code != 0
     assert "only applies with --experiment-name" in res.output.lower()
+
+
+# --- every metadata read names itself when it fails --------------------------
+#
+# `queried` wraps each read so the message says which one failed. Testing `queried`
+# in isolation does not prove the call sites use it, so these drive the CLI.
+
+
+def _raises(exc):
+    def _boom(*a, **k):
+        raise exc
+
+    return _boom
+
+
+def test_a_failed_scans_read_names_itself(tmp_path, monkeypatch):
+    from postgrest import APIError
+
+    _auth(monkeypatch)
+    monkeypatch.setattr(
+        dl, "fetch_scans", _raises(APIError({"message": "permission denied for view cyl_scans"}))
+    )
+
+    res = CliRunner().invoke(
+        cli, ["cyl", "download", str(tmp_path / "out"), "--experiment-id", "17957"]
+    )
+
+    assert res.exit_code != 0
+    assert isinstance(res.exception, SystemExit), "the APIError escaped click unhandled"
+    assert "this experiment's scans" in res.output, "the message must say which read failed"
+    assert "permission denied for view cyl_scans" in res.output
+
+
+def test_a_failed_scan_read_names_itself(tmp_path, monkeypatch):
+    from postgrest import APIError
+
+    _auth(monkeypatch)
+    _no_download(monkeypatch)
+    monkeypatch.setattr(
+        dl, "fetch_scan", _raises(APIError({"message": "permission denied for view cyl_scans"}))
+    )
+
+    res = CliRunner().invoke(cli, ["cyl", "download", str(tmp_path / "out"), "--scan-id", "77"])
+
+    assert res.exit_code != 0
+    assert isinstance(res.exception, SystemExit), "the APIError escaped click unhandled"
+    assert "this scan" in res.output
+    assert "permission denied for view cyl_scans" in res.output
+
+
+def test_a_failed_genotype_read_names_itself(tmp_path, monkeypatch):
+    from postgrest import APIError
+
+    _auth(monkeypatch)
+    monkeypatch.setattr(dl, "fetch_scans", lambda *a, **k: [SCAN])
+    monkeypatch.setattr(
+        dl, "fetch_genotypes", _raises(APIError({"message": "relation accessions does not exist"}))
+    )
+
+    res = CliRunner().invoke(
+        cli, ["cyl", "download", str(tmp_path / "out"), "--experiment-id", "17957"]
+    )
+
+    assert res.exit_code != 0
+    assert isinstance(res.exception, SystemExit), "the APIError escaped click unhandled"
+    assert "the accession names" in res.output
+    assert "relation accessions does not exist" in res.output
+
+
+def test_a_read_timeout_resolving_a_name_is_a_sentence(tmp_path, monkeypatch):
+    """The name search is the first read of a session, and it was the last one left bare."""
+    import httpx
+
+    _auth(monkeypatch)
+    _no_download(monkeypatch)
+    monkeypatch.setattr(dl, "search_experiments", _raises(httpx.ReadTimeout("")))
+
+    res = CliRunner().invoke(
+        cli, ["cyl", "download", str(tmp_path / "out"), "--experiment-name", "wave1"]
+    )
+
+    assert res.exit_code != 0
+    assert isinstance(res.exception, SystemExit), "the ReadTimeout escaped click unhandled"
+    assert "the experiment names" in res.output
+    assert "check your connection" in res.output

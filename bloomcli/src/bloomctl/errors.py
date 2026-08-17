@@ -64,7 +64,7 @@ def explain(exc: BaseException) -> str:
     if isinstance(message, str) and message:
         return message
 
-    if _is_network_error(exc):
+    if is_network_error(exc):
         return f"could not reach Bloom ({type(exc).__name__}) — check your connection and retry"
 
     return str(exc) or type(exc).__name__
@@ -83,7 +83,7 @@ def _describe(exc: BaseException) -> str:
         return type(exc).__name__
 
 
-def _is_network_error(exc: BaseException) -> bool:
+def is_network_error(exc: BaseException) -> bool:
     """True for a connection-level httpx failure.
 
     Recognised by type: a dropped connection or a timeout often carries no message at all,

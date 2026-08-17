@@ -541,12 +541,10 @@ def download(
         raise click.ClickException(str(exc)) from exc
 
     if experiment_name is not None:  # resolve the name to a concrete id (server-side search)
-        from postgrest import APIError
-
-        try:
-            found = search_experiments(client, experiment_name, species=species)
-        except APIError as exc:  # e.g. the RPC's >200-char guard, or a permission error
-            raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc
+        found = queried(  # e.g. the RPC's >200-char guard, a permission error, a read timeout
+            "the experiment names",
+            lambda: search_experiments(client, experiment_name, species=species),
+        )
         outcome = classify(found)
         if isinstance(outcome, NoMatch):
             scope = f" for species {species!r}" if species else ""

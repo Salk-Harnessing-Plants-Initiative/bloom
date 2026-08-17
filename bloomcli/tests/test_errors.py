@@ -531,7 +531,7 @@ def _in_fresh_python(body: str, *, broken: str = ""):
 def test_a_half_built_httpx_does_not_escape_the_handler():
     """`httpx 1.0.dev3` imported fine and dropped names this CLI used — that is #629.
 
-    `_is_network_error` reaches for `httpx.TransportError`; guarding only ImportError
+    `is_network_error` reaches for `httpx.TransportError`; guarding only ImportError
     let the AttributeError out of the handler as a stack trace.
     """
     done = _in_fresh_python(

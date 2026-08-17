@@ -64,12 +64,14 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   what it can distinguish: returning exactly `--limit` rows may mean the newest captures were
   dropped, or may be the whole experiment, and it says so rather than asserting the first.
 - `cyl download` now uses the shared mechanism for the last four pieces it still duplicated —
-  containment, object fetching, collision detection and the selector — so both commands get the
-  required-bucket guarantee from the mechanism rather than from a hardcoded constant. Its
-  observable behaviour is unchanged; its tests pass unedited.
-- A failed metadata read in `cyl download` — permission denied, an unapplied migration, a read
-  timeout — is now a sentence naming the read that failed, not a Python traceback. Its three
-  queries were the ones still unwrapped. A read timeout is reported on both commands' paths.
+  containment, object fetching, collision detection and the selector. Its observable behaviour is
+  unchanged; its tests pass unedited.
+- A failed metadata read now names the read that failed — "Could not read this experiment's scans
+  from Bloom", then the server's own sentence — rather than the server's sentence alone, which
+  said nothing about what the command had been doing. It also exits without writing a traceback
+  to the error log, which an expected server condition never warranted. Every read on both
+  commands now goes through this, including the experiment-name search — the first query of a
+  session, and the last one still bare.
 - `plate download`'s retry hint names captures rather than frames, so a failing run no longer
   prints `1/3 captures` immediately above a sentence about frames.
 

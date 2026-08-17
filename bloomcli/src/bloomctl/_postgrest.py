@@ -62,31 +62,26 @@ def fetch_in_batches(
 
 
 def queried(what: str, call: Callable[[], Any]) -> Any:
-    """Run one metadata query, reporting a server or connection failure as a message naming
-    ``what`` rather than as a traceback."""
+    """Run one metadata query, naming the read in the message when the server refuses it.
+
+    The entry point already turns anything unhandled into a sentence, so what this adds is
+    *which* read failed — and an expected server condition exits without writing a traceback
+    to the error log. A failure that is neither the server's nor the network's is left alone,
+    because that log entry is how it gets diagnosed.
+    """
     import click
     from postgrest import APIError
+
+    from .errors import explain, is_network_error
 
     try:
         return call()
     except APIError as exc:
-        detail = getattr(exc, "message", None) or str(exc)
-        raise click.ClickException(f"Could not read {what} from Bloom: {detail}") from exc
+        raise click.ClickException(f"Could not read {what} from Bloom: {explain(exc)}") from exc
     except Exception as exc:
-        if not _is_transport_error(exc):
+        if not is_network_error(exc):
             raise
         raise click.ClickException(
             f"Could not reach Bloom while reading {what} ({type(exc).__name__}) — "
             f"check your connection and retry"
         ) from exc
-
-
-def _is_transport_error(exc: BaseException) -> bool:
-    """True for a connection-level httpx failure, recognised by type because it often carries
-    no message to match against."""
-    try:
-        import httpx
-
-        return isinstance(exc, httpx.TransportError)
-    except (ImportError, AttributeError):  # pragma: no cover - httpx ships with supabase
-        return False

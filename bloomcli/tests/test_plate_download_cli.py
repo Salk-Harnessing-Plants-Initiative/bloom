@@ -610,3 +610,18 @@ def test_an_unknown_scan_id_exits_non_zero(tmp_path, monkeypatch):
 
     assert result.exit_code != 0
     assert "404" in result.output
+
+
+def test_the_retry_hint_names_captures_on_a_plate_run(tmp_path, monkeypatch):
+    """Driven through the command, because the noun is chosen where the command builds the
+    reporter — a test that builds its own cannot see that choice."""
+    from test_plate_download_images import _Client
+
+    client = _Client(fail_on=[IMAGE["object_path"]])
+    _signed_in(monkeypatch, client=client)
+    _one_scan(monkeypatch)
+
+    res = _run(str(tmp_path / "out"), "--experiment-id", "12")
+
+    assert "Some captures are failing" in res.output
+    assert "frames" not in res.output
