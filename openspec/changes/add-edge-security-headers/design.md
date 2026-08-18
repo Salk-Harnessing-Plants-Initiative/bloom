@@ -36,7 +36,7 @@ The consoles were measured before being covered, because `nosniff` causes a brow
 | Supabase Studio | `2026.03.30-sha-12a43e5` | 92/92 assets correctly typed (`application/javascript`, `text/css`) |
 | MinIO console | `RELEASE.2025-01-20T14-49-07Z` | 3/3 correctly typed |
 
-Neither serves nor dynamically creates an `<iframe>`, so `X-Frame-Options: DENY` does not break them either.
+Both create `<iframe>` elements, but none that `X-Frame-Options: DENY` can reach. Studio's are `about:blank` or point at a third-party CDN. MinIO's object-preview frame does load a same-origin URL — which `DENY` would block — but the branch is unreachable in `RELEASE.2025-01-20T14-49-07Z`: it renders only when the object type is not none/image/pdf/audio/video, and the classifier can return nothing else. That is the specific thing to re-check when the pin moves, not the presence of an iframe.
 
 For bloom-web the same risk was checked and eliminated (see the pre-flight in `tasks.md`): no dynamic script or stylesheet loading exists, Next.js types its own assets correctly, storage objects are consumed as images, and client-side exports never traverse Caddy.
 

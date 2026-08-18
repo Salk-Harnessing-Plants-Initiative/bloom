@@ -101,10 +101,10 @@ def _declared_headers(block: str) -> dict[str, str]:
         if not line:
             continue
         parts = line.split(None, 1)
-        # A leading +, - or > is Caddy's add / delete / defer prefix, not part of
-        # the field name. Splitting on whitespace rather than a single space also
-        # tolerates a tab-separated directive.
-        name = parts[0].lstrip("+->")
+        # A leading + is Caddy's add prefix, not part of the field name. `-` and
+        # `>` are rejected outright by test_site_block_is_unconditional_and_sets_only.
+        # Splitting on whitespace also tolerates a tab-separated directive.
+        name = parts[0].lstrip("+")
         declared[name] = _unquote(parts[1]) if len(parts) > 1 else ""
     return declared
 
@@ -164,47 +164,67 @@ def test_all_security_headers_present_with_exact_values():
         )
 
 
-def test_headers_not_scoped_inside_a_single_host_block():
-    """Guards the specific regression: a security header set per-host.
+def test_headers_not_set_below_site_level():
+    """No security header may be set or deleted anywhere below site level.
 
-    Moving the block inside `handle @main` would leave the main application
-    covered — so every smoke test and every manual `curl` against the app still
-    passes — while silently dropping the headers from the console hostnames.
-    A single-line `header X-Frame-Options SAMEORIGIN`, or a deleting
-    `header -X-Frame-Options`, does the same damage in one line, so both forms
-    are rejected at any depth inside a host block.
+    Scans every nested block rather than an enumerated list of hostnames, so a
+    renamed matcher (`@studio` to `@studio-ui`), a `handle_errors`, or a bare
+    `handle /path/*` container cannot slip past by not being on the list. A
+    `header_down` inside a `reverse_proxy` body counts too: Caddy appends it
+    after the site-level set, leaving that host with two values.
     """
-    stripped = _strip_comments(_text())
-    site = _site_block(stripped)
+    site = _site_block(_strip_comments(_text()))
     assert site is not None, "missing site block in caddy/Caddyfile"
 
-    # Derived, not hardcoded: renaming `@studio` to `@studio_ui` would otherwise
-    # make `_block_after` return None and this guard skip that host silently.
-    names = re.findall(r"^\s*@(\w+)\s+host\b", site, re.MULTILINE)
-    assert names, "no `@name host` matchers found in the site block"
-
-    for name in names:
-        block = _block_after(stripped, rf"handle\s+@{re.escape(name)}\b")
-        assert block is not None, (
-            f"`@{name} host` is declared but no `handle @{name}` block was found — "
-            "the per-host guard below would skip it silently"
+    for depth, form, body in _header_directives(site):
+        if depth == 0:
+            continue
+        managed = _touches_managed(body)
+        assert managed is None, (
+            f"a nested {form} `header` directive touches {managed} "
+            f"({body.strip().splitlines()[0]!r}) — the security headers belong at "
+            "site level so every hostname inherits them; anything below overrides "
+            "the edge for one host alone, with no error"
         )
-        matcher = f"handle @{name}"
-        for down in _HEADER_DOWN_TOKEN.finditer(_mask_quoted(block)):
-            line = block[down.start():].splitlines()[0].strip()
-            managed = _touches_managed(line)
-            assert managed is None, (
-                f"`{matcher}` sets {managed} via `header_down` ({line!r}) — Caddy appends "
-                "it after the site-level value, so this host ends up with two values"
-            )
-        for _depth, form, body in _header_directives(block):
-            managed = _touches_managed(body)
-            assert managed is None, (
-                f"`{matcher}` contains a {form} `header` directive touching {managed} "
-                f"({body.strip().splitlines()[0]!r}) — the security headers belong at "
-                "site level so every hostname inherits them; a per-host directive "
-                "overrides the edge for that host alone, with no error"
-            )
+
+    for down in _HEADER_DOWN_TOKEN.finditer(_mask_quoted(site)):
+        line = site[down.start():].splitlines()[0].strip()
+        managed = _touches_managed(line)
+        assert managed is None, (
+            f"a `header_down` sets {managed} ({line!r}) — Caddy appends it after "
+            "the site-level value, so that route ends up with two values"
+        )
+
+
+def test_site_block_is_unconditional_and_sets_only():
+    """The site-level block must set, never defer and never delete.
+
+    A `>` prefix on any field — or an explicit `defer` — defers the whole block
+    until after the handler chain, which skips responses Caddy generates itself.
+    An upstream-error 502 would then carry no security headers at all, which is
+    the opposite of the stated contract. A `-` deletion inside the block removes
+    a header the same block is meant to set.
+    """
+    site = _site_block(_strip_comments(_text()))
+    assert site is not None, "missing site block in caddy/Caddyfile"
+    blocks = _site_level_blocks(site)
+    assert blocks, "no site-level `header` block found"
+
+    for line in (l.strip() for l in blocks[0].splitlines()):
+        if not line:
+            continue
+        assert not line.startswith(">"), (
+            f"{line!r} defers the whole block — deferred headers are skipped on "
+            "responses Caddy generates itself, so a 502 would carry none of them"
+        )
+        assert line.split()[0] != "defer", (
+            "`defer` skips responses Caddy generates itself, so upstream-error "
+            "responses would carry no security headers"
+        )
+        assert not line.startswith("-"), (
+            f"{line!r} deletes a header inside the block that sets them; a "
+            "wildcard like `-*` removes every one while each name still reads present"
+        )
 
 
 def test_header_block_precedes_the_host_matchers():
