@@ -177,6 +177,28 @@ def test_accession_null_plant_excluded_from_counts(pg_conn):
     pg_conn.rollback()
 
 
+def test_scan_with_no_trait_rows_excluded_from_n_plants(pg_conn):
+    """Flagged in an external PR review as untested: n_plants's live rewrite (D4) filters on
+    `EXISTS (SELECT 1 FROM cyl_scan_traits t WHERE t.scan_id = s.id)` specifically so a plant whose
+    scan has never been delivered any trait data isn't counted -- unlike the null-accession test
+    above (which exercises the `accession_id IS NOT NULL` filter), this exercises the EXISTS
+    semi-join itself. A second plant with a VALID accession but zero cyl_scan_traits rows (no
+    `_deliver` call at all, not even a rerun) must not inflate n_plants."""
+    with pg_conn.cursor() as cur:
+        exp, wave = _seed_experiment(cur)
+        _, imgs_with_traits = _seed_scan_in(cur, wave)
+        _seed_scan_in(cur, wave)  # a second, valid-accession scan -- deliberately never delivered
+        _deliver(cur, imgs_with_traits, "ok", traits=[_trait("A", 1.0)])
+
+        _refresh_trait_counts(cur)
+        rows = _get_summary_counts(cur, exp)
+        assert len(rows) == 1
+        _, n_plants, n_traits = rows[0]
+        assert (n_plants, n_traits) == (1, 1)  # the trait-less scan's plant is excluded
+        _assert_matches_get_experiment_traits(cur, exp)
+    pg_conn.rollback()
+
+
 def test_pin_source_matches_get_experiment_traits(pg_conn):
     with pg_conn.cursor() as cur:
         exp, _, imgs = _seed_experiment_scan(cur)
@@ -326,6 +348,57 @@ def test_pinned_call_unaffected_by_cache_staleness(pg_conn):
     pg_conn.rollback()
 
 
+def test_n_traits_updated_at_reflects_cache_staleness(pg_conn):
+    """Raised in round 4's review and again by an external review in round 6 without either round
+    actually closing it: n_traits's own staleness (design.md D5) was invisible to any caller of
+    this RPC. `n_traits_updated_at` closes that -- unpinned, it must match
+    `cyl_experiment_trait_counts.updated_at` exactly (so a caller can tell how stale the count is);
+    pinned, it must be NULL (always live, no cache to be stale against, and NULL rather than
+    `now()` specifically so a caller can't mistake a live read for a just-refreshed cache)."""
+    with pg_conn.cursor() as cur:
+        exp, _, imgs = _seed_experiment_scan(cur)
+        old = _deliver(cur, imgs, "old", traits=[_trait("length", 1.0)])
+        _refresh_trait_counts(cur)
+
+        cur.execute(
+            "SELECT experiment_id, n_plants, n_traits, n_traits_updated_at "
+            "FROM get_experiment_summary_counts(%s, NULL, NULL)",
+            (exp,),
+        )
+        _, _, _, unpinned_updated_at = cur.fetchone()
+        assert unpinned_updated_at is not None
+        cur.execute(
+            "SELECT updated_at FROM cyl_experiment_trait_counts WHERE experiment_id=%s", (exp,)
+        )
+        assert unpinned_updated_at == cur.fetchone()[0]
+
+        cur.execute(
+            "SELECT experiment_id, n_plants, n_traits, n_traits_updated_at "
+            "FROM get_experiment_summary_counts(%s, %s, NULL)",
+            (exp, old),
+        )
+        _, _, _, pinned_updated_at = cur.fetchone()
+        assert pinned_updated_at is None
+    pg_conn.rollback()
+
+
+def test_n_traits_updated_at_is_null_when_never_refreshed(pg_conn):
+    """An experiment whose cache row has never been populated (no refresh has run since this
+    experiment's data landed) must report `n_traits_updated_at IS NULL`, not some fallback value
+    that would misleadingly imply a refresh already happened."""
+    with pg_conn.cursor() as cur:
+        exp, _, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "k", traits=[_trait("length", 1.0)])
+        # No _refresh_trait_counts call at all.
+        cur.execute(
+            "SELECT n_traits, n_traits_updated_at FROM get_experiment_summary_counts(%s, NULL, NULL)",
+            (exp,),
+        )
+        n_traits, updated_at = cur.fetchone()
+        assert (n_traits, updated_at) == (0, None)
+    pg_conn.rollback()
+
+
 # --------------------------------------------------------------------------- #
 # Requirement: Bulk read grants match the existing per-trait read surface
 # --------------------------------------------------------------------------- #
@@ -441,6 +514,14 @@ def test_get_experiment_summary_counts_reachable_over_postgrest(api, service_rol
 
 def test_migration_body_is_idempotent(pg_conn):
     with pg_conn.cursor() as cur:
+        # This test's whole DB already has the REWRITE migration (20260817150000) applied, which
+        # changed get_experiment_summary_counts's return shape (added n_traits_updated_at) --
+        # Postgres refuses to CREATE OR REPLACE a function across a return-type change, so this
+        # bloom#625 migration's own 3-column CREATE OR REPLACE would fail here with "cannot change
+        # return type" unless the function is reset to a droppable state first. Testing-environment
+        # coupling only (a fresh production deploy applies this migration before the rewrite ever
+        # exists, so this ordering issue never arises there) -- found in round-6 review.
+        cur.execute("DROP FUNCTION IF EXISTS public.get_experiment_summary_counts(bigint, bigint, text)")
         cur.execute(_sql_body(MIGRATION))  # re-apply on already-applied state
         cur.execute(
             "SELECT count(*) FROM pg_proc WHERE proname='get_experiment_summary_counts' "

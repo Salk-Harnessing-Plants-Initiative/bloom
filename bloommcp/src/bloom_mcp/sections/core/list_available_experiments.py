@@ -23,10 +23,18 @@ def list_available_experiments() -> str:
     lines = [f"Available experiments ({len(experiments)} total):\n"]
 
     for exp in experiments:
+        # Traits count is read from a scheduled-refresh cache (design.md D5, bloom#637) rather
+        # than computed live, so it can lag the actual trait data by an unbounded amount until
+        # the refresh schedule is provisioned -- surfaced here rather than presented as current.
+        traits_note = (
+            f" (as of {exp.trait_columns_updated_at})"
+            if exp.trait_columns_updated_at
+            else " (never refreshed)"
+        )
         lines.append(
             f"  {exp.filename}\n"
             f"    Experiment: {exp.experiment_name}\n"
-            f"    Samples: {exp.rows}, Traits: {exp.trait_columns}, "
+            f"    Samples: {exp.rows}, Traits: {exp.trait_columns}{traits_note}, "
             f"Total columns: {exp.total_columns}\n"
             f"    Genotype column: {exp.genotype_col or 'not detected'}\n"
             f"    Sample ID column: {exp.sample_id_col or 'not detected'}"

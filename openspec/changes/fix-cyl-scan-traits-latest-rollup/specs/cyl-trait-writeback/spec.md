@@ -73,6 +73,14 @@ tables.
 - **THEN** after both commit, that scan's `cyl_scan_latest_source` row holds the higher of the two new
   `source_id`s
 
+#### Scenario: Concurrent writers to different scans do not block each other
+
+- **WHEN** two concurrent transactions each write trait rows for two DIFFERENT, unrelated `scan_id`s,
+  with one transaction's write held open (uncommitted) while the other's runs
+- **THEN** the second transaction's write completes without waiting on the first — the advisory lock
+  serializing writes is scoped to each individual `scan_id`, not broadened to something coarser (a fixed
+  key, or the whole table) that would serialize unrelated scans against each other
+
 #### Scenario: The one-time backfill matches a live per-scan computation
 
 - **WHEN** the backfill runs against pre-existing `cyl_scan_traits` data

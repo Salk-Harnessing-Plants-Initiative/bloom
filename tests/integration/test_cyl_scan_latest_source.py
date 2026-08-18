@@ -14,7 +14,6 @@ clean up via explicit `DELETE` (their effects are committed, not rolled back).
 
 import re
 import threading
-import time
 import uuid
 from pathlib import Path
 
@@ -628,6 +627,57 @@ def test_intended_read_roles_see_real_rows(pg_conn, role):
     pg_conn.rollback()
 
 
+@pytest.mark.parametrize("role", ["bloom_agent", "bloom_user"])
+def test_select_only_roles_without_a_raw_grant_cannot_write(pg_conn, role):
+    """Symmetric with round-5's `bloom_admin` finding, flagged in round-6 review: `bloom_admin`'s
+    `FOR ALL` policy turned out to have no matching table-level grant behind it, discovered only
+    because a dedicated direct-write test existed for `bloom_admin` but not for the roles that
+    are SUPPOSED to be read-only. This asserts the inverse for `bloom_agent`/`bloom_user`
+    specifically: confirmed via `information_schema.role_table_grants` (not assumed) that neither
+    has any raw table-level write grant at all, so their `UPDATE` fails outright with
+    `InsufficientPrivilege` -- unlike `authenticated`/`bloom_writer` (see the sibling test below),
+    which DO retain a raw grant and are instead blocked by RLS filtering the row out silently."""
+    with pg_conn.cursor() as cur:
+        _, scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "k", traits=[_trait("length", 1.0)])
+        cur.execute(f"SET LOCAL ROLE {role}")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            cur.execute(
+                "UPDATE cyl_scan_latest_source SET max_source_id = NULL WHERE scan_id=%s",
+                (scan_id,),
+            )
+        # No RESET ROLE here -- the failed statement above aborted the whole transaction
+        # (standard Postgres semantics), so any further statement on this connection would raise
+        # InFailedSqlTransaction until the rollback below, matching the established pattern in
+        # test_anon_cannot_write_despite_the_raw_table_grant.
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize("role", ["authenticated", "bloom_writer"])
+def test_select_only_roles_with_a_raw_grant_write_zero_rows(pg_conn, role):
+    """Same intent as the sibling test above, for the two SELECT-only roles that DO retain
+    Supabase's default raw table-level write grant (confirmed empirically: their `UPDATE` doesn't
+    error at all) -- RLS is what actually stops them here, by filtering the target row out of
+    their policy scope entirely, the same silent-filtering shape already established for `anon` in
+    `test_anon_cannot_write_despite_the_raw_table_grant`. `UPDATE 0` (not an exception) is the
+    correct, expected outcome; an exception here would mean the grant was unexpectedly revoked,
+    not a security improvement."""
+    with pg_conn.cursor() as cur:
+        _, scan_id, imgs = _seed_experiment_scan(cur)
+        src = _deliver(cur, imgs, "k", traits=[_trait("length", 1.0)])
+        cur.execute(f"SET LOCAL ROLE {role}")
+        cur.execute(
+            "UPDATE cyl_scan_latest_source SET max_source_id = NULL WHERE scan_id=%s",
+            (scan_id,),
+        )
+        assert cur.rowcount == 0
+        cur.execute("RESET ROLE")
+        # The row is untouched -- RLS filtered the UPDATE's own target selection, not just its
+        # visibility afterward.
+        assert _max_source(cur, scan_id) == src
+    pg_conn.rollback()
+
+
 def test_anon_sees_no_rows_despite_real_data_existing(pg_conn):
     """RLS enabled with no anon policy means SELECT succeeds but is silently filtered to zero
     rows -- not an error, but confirm it actually happens rather than assuming it from the
@@ -826,6 +876,92 @@ def test_concurrent_first_insert_to_same_new_scan_converges_to_true_max(pg_conni
     finally:
         with pg_conn.cursor() as cur:
             _cleanup_seeded_experiment(cur, experiment_id)
+        pg_conn.commit()
+        conn_a.close()
+        conn_b.close()
+
+
+def test_concurrent_writes_to_different_scans_do_not_block_each_other(pg_conninfo, pg_conn):
+    """Flagged in an external PR review as untested: nothing previously proved
+    `pg_advisory_xact_lock(scan_id)` is genuinely scoped PER SCAN rather than accidentally
+    coarsened to something broader (e.g. a single fixed key, or the whole table) -- every existing
+    concurrency test above deliberately contends on the SAME scan_id (or the same pair of scan_ids
+    for cross-scan reassignment) to prove the lock's necessity; none of them prove the lock leaves
+    genuinely unrelated scans alone. Two independent scans, two independent connections, one held
+    open (uncommitted) while the other inserts concurrently -- if the lock were ever broadened to
+    key on something other than scan_id, the second insert would block here.
+
+    Round-6 review (twice, independently) caught that this test's own first draft only ever
+    resolved connection A before the outer cleanup ran: if B stayed blocked for any reason OTHER
+    than A's now-released lock (e.g. a lock coarsened to something A never touches), `conn_b`
+    would still be left open with `scan_2`'s rows uncommitted, and the outer cleanup's DELETE on
+    `scan_2` would deadlock against it -- the exact same class of self-deadlock bug this test's
+    first draft already fixed on the A side, just recurring on the B side. Closed by capturing B's
+    backend pid upfront and, if B is still alive after a second join following A's commit, killing
+    that backend directly via `pg_terminate_backend` (safe to call cross-thread since it acts on
+    the server-side connection, not on `conn_b`'s Python object) so its transaction rolls back and
+    any locks it holds are released before cleanup ever runs."""
+    with pg_conn.cursor() as cur:
+        experiment_id_1, scan_1, imgs_1 = _seed_experiment_scan(cur)
+        experiment_id_2, scan_2, imgs_2 = _seed_experiment_scan(cur)
+        source_1, trait_1 = _mint_source_and_trait(cur, "s1")
+        source_2, trait_2 = _mint_source_and_trait(cur, "s2")
+    pg_conn.commit()
+
+    conn_a = psycopg.connect(pg_conninfo)
+    conn_b = psycopg.connect(pg_conninfo)
+    try:
+        cur_a = conn_a.cursor()
+        cur_b = conn_b.cursor()
+        cur_b.execute("SELECT pg_backend_pid()")
+        (b_pid,) = cur_b.fetchone()
+
+        # A holds scan_1's advisory lock open (uncommitted) for the rest of this test.
+        _insert_trait_row(cur_a, scan_1, source_1, trait_1)
+
+        b_done = threading.Event()
+        b_error = {}
+
+        def _run_b():
+            try:
+                # B writes to a COMPLETELY DIFFERENT scan -- must not contend with A's lock at all.
+                _insert_trait_row(cur_b, scan_2, source_2, trait_2)
+                conn_b.commit()
+            except Exception as exc:  # noqa: BLE001 -- captured for the assertion below, not swallowed
+                b_error["error"] = exc
+            finally:
+                b_done.set()
+
+        b_thread = threading.Thread(target=_run_b)
+        b_thread.start()
+        try:
+            not_blocked = b_done.wait(timeout=2.0)
+        finally:
+            # Resolve A's transaction unconditionally, before anything else -- releases scan_1's
+            # advisory lock. If B is only blocked on that lock (the exact regression this test
+            # targets), it can now finish on its own; harmless no-op otherwise.
+            conn_a.commit()
+
+        b_thread.join(timeout=5.0)
+        if b_thread.is_alive():
+            with pg_conn.cursor() as cur:
+                cur.execute("SELECT pg_terminate_backend(%s)", (b_pid,))
+            pg_conn.commit()
+            b_thread.join(timeout=5.0)
+
+        assert not_blocked, (
+            "B blocked on an unrelated scan's write -- the advisory lock is not properly "
+            "scoped to scan_id"
+        )
+        assert b_error.get("error") is None, f"B failed with an unexpected error: {b_error['error']}"
+
+        with pg_conn.cursor() as cur:
+            assert _max_source(cur, scan_1) == source_1
+            assert _max_source(cur, scan_2) == source_2
+    finally:
+        with pg_conn.cursor() as cur:
+            _cleanup_seeded_experiment(cur, experiment_id_1)
+            _cleanup_seeded_experiment(cur, experiment_id_2)
         pg_conn.commit()
         conn_a.close()
         conn_b.close()

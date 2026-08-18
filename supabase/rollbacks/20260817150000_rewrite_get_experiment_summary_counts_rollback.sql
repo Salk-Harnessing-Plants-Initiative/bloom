@@ -1,6 +1,5 @@
 -- Manual rollback for 20260817150000_rewrite_get_experiment_summary_counts.sql
--- Restores the prior (bloom#625) live-join-only function body verbatim -- not a DROP, since the
--- function itself isn't new, only its body is changing back.
+-- Restores the prior (bloom#625) live-join-only function body verbatim.
 --
 -- *** ROLLBACK ORDER: apply this one FIRST (before 20260817140000's and 20260817130000's) *** --
 -- nothing else in this change depends on this migration's own objects, so it has no ordering
@@ -8,7 +7,12 @@
 
 BEGIN;
 
-CREATE OR REPLACE FUNCTION public.get_experiment_summary_counts(
+-- DROP FUNCTION first, not CREATE OR REPLACE alone -- the forward migration's return shape now
+-- has 4 columns (n_traits_updated_at added), and Postgres refuses to CREATE OR REPLACE a function
+-- across a return-type change. This restores bloom#625's original 3-column shape regardless of
+-- which shape is currently installed.
+DROP FUNCTION IF EXISTS public.get_experiment_summary_counts(bigint, bigint, text);
+CREATE FUNCTION public.get_experiment_summary_counts(
     experiment_id_ bigint DEFAULT NULL,
     source_id_     bigint DEFAULT NULL,
     run_id_        text   DEFAULT NULL

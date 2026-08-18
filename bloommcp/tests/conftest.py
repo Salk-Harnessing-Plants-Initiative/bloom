@@ -257,6 +257,11 @@ class FakeSupabaseDB:
                         "experiment_id": eid,
                         "n_plants": len({r["plant_id"] for r in rows}),
                         "n_traits": len({r["trait_name"] for r in rows}),
+                        # bloom#637: NULL for a pinned call (always live, no cache), a fixed
+                        # ISO-8601 string otherwise (mirrors cyl_experiment_trait_counts.updated_at).
+                        "n_traits_updated_at": (
+                            None if (source_id or run_id) else "2026-01-01T00:00:00+00:00"
+                        ),
                     }
                 )
             return result

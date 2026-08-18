@@ -438,19 +438,34 @@ query does not read `cyl_scan_traits_source` at all so its cost isn't affected b
 **The staleness window is explicit, not incidental:** between refreshes, `n_traits` reflects the last
 scheduled run, not the current instant. This is an accepted UI-lag tradeoff (Goals/Non-Goals) — the
 underlying trait data is correct and immediately consistent; only this one cached count can lag by up to
-one refresh interval. `updated_at` is exposed in the table (not yet in the RPC's return shape — see Open
-Questions) so this can be surfaced later if staleness ever needs to be visible to a caller.
+one refresh interval. `updated_at` is exposed in the table and, as of round 6, in
+`get_experiment_summary_counts`'s own return shape (`n_traits_updated_at`) and in
+`list_available_experiments`'s printed output (`bloommcp/src/bloom_mcp/sections/core/list_available_experiments.py`)
+-- see the round-6 note directly below for why this was closed rather than deferred a third time.
 
 **"Bounded to one refresh interval" assumes the schedule is actually running — found in a fourth review
 round to currently NOT be true.** D8's `STAGING_API_URL` secret is not yet provisioned (tasks.md 5.2,
 still unchecked), so the scheduled workflow cannot make its one authenticated call yet. Until that secret
 is added and the workflow's first successful run is confirmed (5.3), `n_traits` is frozen at whatever the
 migration's one-time `SELECT public.refresh_cyl_experiment_trait_counts();` computed at deploy time --
-staleness is currently **unbounded**, not "up to 10 minutes," and no caller-facing surface
-(`list_available_experiments`'s `trait_columns`/`total_columns`, in particular) currently indicates this.
-This is a real operational dependency this change cannot close in its own commits (it needs a human to add
-the GitHub secret) -- flagged here so it isn't lost, and tracked as a hard pre-close gate on bloom#637
-(tasks.md 5.2/5.3), not merely a nice-to-have.
+staleness is currently **unbounded**, not "up to 10 minutes." This is a real operational dependency this
+change cannot close in its own commits (it needs a human to add the GitHub secret) -- flagged here so it
+isn't lost, and tracked as a hard pre-close gate on bloom#637 (tasks.md 5.2/5.3), not merely a
+nice-to-have.
+
+**Round 6: the caller-facing visibility gap this same paragraph flagged in round 4 is now closed, not
+deferred a third time.** An external PR-comment review re-raised exactly this point -- `n_traits`'s
+staleness was still invisible where a scientist actually sees it, two rounds after it was first
+identified. Given the STAGING_API_URL gap above means staleness is currently _unbounded_, not a bounded
+UI-lag nicety, leaving it invisible a third time was judged no longer a neutral deferral. Closed by
+adding `n_traits_updated_at` to `get_experiment_summary_counts`'s `RETURNS TABLE` (`NULL` for a pinned
+call, which has no cache to be stale against; the cache row's own `updated_at`, or `NULL` if never
+populated, for an unpinned call) and threading it through `ExperimentSummary.trait_columns_updated_at` to
+`list_available_experiments`'s printed `Traits: {n} (as of {ts})` / `(never refreshed)` output. Changing
+the RPC's `RETURNS TABLE` shape required `DROP FUNCTION` before `CREATE FUNCTION` in both the forward
+migration and its rollback (Postgres refuses `CREATE OR REPLACE FUNCTION` across a return-type change) --
+this also surfaced (and fixed) a latent gap in this migration's own idempotency tests, which had never
+exercised a shape-changing re-application before.
 
 ### D5b — Concurrent refreshes: unguarded DELETE+INSERT raced, confirmed exploitable and fixed (found in
 
@@ -789,11 +804,9 @@ the more durable signal that M2 hasn't actually been rolled back.
   misconfigured once it exists.
 - **D7 — pinned-branch cost, not benchmarked.** See D7's own reasoning; needs a real `EXPLAIN (ANALYZE,
 BUFFERS)` against staging once this lands, not resolved from this sandboxed pass.
-- **`n_traits`'s `updated_at` isn't surfaced in `get_experiment_summary_counts`'s return shape.** Whether
-  `list_experiments()` should ever show "counts as of X" is a product question out of scope here — the
-  column exists in `cyl_experiment_trait_counts` so it's available if that's wanted later, but nothing
-  reads it today.
-- **Whether `cyl_scan_latest_source` and `cyl_experiment_trait_counts` need entries in the five tracked
-  `database.types.ts` copies** — resolve the same way PR #654's tasks.md 0.4 did: run `supabase gen types`
-  against a local DB with this change's migrations applied and diff against the tracked copies, don't
-  assume either way.
+- ~~`n_traits`'s `updated_at` isn't surfaced in `get_experiment_summary_counts`'s return shape.~~
+  **Resolved in round 6** — see D5's own note above; `n_traits_updated_at` is now part of the RPC's
+  return shape and `list_available_experiments`'s printed output.
+- ~~Whether `cyl_scan_latest_source` and `cyl_experiment_trait_counts` need entries in the five tracked
+  `database.types.ts` copies~~ **Resolved in round 4** — hand-edited into all five copies, matching PR
+  #654's own precedent for this exact question.

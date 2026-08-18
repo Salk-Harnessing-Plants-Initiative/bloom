@@ -61,6 +61,37 @@ def _n_traits(cur, experiment_id):
     return row[0] if row else None
 
 
+def test_cyl_traits_name_is_unique_not_null(pg_conn):
+    """Canary, not a functional test of this change: `refresh_cyl_experiment_trait_counts()`
+    counts `DISTINCT trait_id`, while the live pinned path
+    (`compute_cyl_experiment_summary_counts_live`) counts `DISTINCT trait_name` -- the two are
+    equivalent today ONLY because `cyl_traits.name` is `NOT NULL UNIQUE` (a bijection with `id`),
+    a fact both functions' own comments already document but that nothing previously asserted.
+    Flagged in round-6 review: if this constraint is ever relaxed (e.g. to allow renamed/duplicate
+    trait labels), the two counting paths would silently diverge with no test failing to announce
+    it. This test is that tripwire -- it has nothing to do with this change's own new behavior,
+    only with keeping a documented assumption honest."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*) FROM pg_constraint
+            WHERE conrelid = 'cyl_traits'::regclass
+              AND contype = 'u'
+              AND conkey = (
+                  SELECT array_agg(attnum) FROM pg_attribute
+                  WHERE attrelid = 'cyl_traits'::regclass AND attname = 'name'
+              )
+            """
+        )
+        assert cur.fetchone()[0] >= 1, "cyl_traits.name is no longer UNIQUE"
+        cur.execute(
+            "SELECT attnotnull FROM pg_attribute "
+            "WHERE attrelid = 'cyl_traits'::regclass AND attname = 'name'"
+        )
+        assert cur.fetchone()[0] is True, "cyl_traits.name is no longer NOT NULL"
+    pg_conn.rollback()
+
+
 def _live_n_traits(cur, experiment_id):
     """Hand-computed oracle, independent of the cache: distinct latest-source trait ids for
     plants with a non-null accession, for one experiment."""
@@ -329,6 +360,49 @@ def test_anon_cannot_write_despite_the_raw_table_grant(pg_conn):
             cur.execute(
                 "INSERT INTO cyl_experiment_trait_counts (experiment_id, n_traits) VALUES (-1, 999)"
             )
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize("role", ["bloom_agent", "bloom_user"])
+def test_select_only_roles_without_a_raw_grant_cannot_write(pg_conn, role):
+    """Symmetric with round-5's `bloom_admin` finding (and this table's own
+    `test_bloom_admin_can_write_directly_to_cyl_experiment_trait_counts`), flagged in round-6
+    review: confirms the inverse for `bloom_agent`/`bloom_user` -- neither has any raw table-level
+    write grant at all, so their `UPDATE` fails outright with `InsufficientPrivilege`, unlike
+    `authenticated`/`bloom_writer` (see the sibling test below), which retain a raw grant and are
+    instead blocked by RLS filtering the row out silently."""
+    with pg_conn.cursor() as cur:
+        experiment_id, _scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "k", traits=[_trait("length", 1.0)])
+        cur.execute(f"SET LOCAL ROLE {role}")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            cur.execute(
+                "UPDATE cyl_experiment_trait_counts SET n_traits = 0 WHERE experiment_id=%s",
+                (experiment_id,),
+            )
+        # No RESET ROLE -- the failed statement aborted the whole transaction; cleanup is the
+        # pg_conn.rollback() below, matching test_anon_cannot_write_despite_the_raw_table_grant.
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize("role", ["authenticated", "bloom_writer"])
+def test_select_only_roles_with_a_raw_grant_write_zero_rows(pg_conn, role):
+    """Same intent as the sibling test above, for the two SELECT-only roles that DO retain
+    Supabase's default raw table-level write grant -- RLS filters the target row out of their
+    policy scope entirely, the same silent-filtering shape already established for `anon` above.
+    `UPDATE 0` (not an exception) is the correct, expected outcome."""
+    with pg_conn.cursor() as cur:
+        experiment_id, _scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "k", traits=[_trait("length", 1.0)])
+        _refresh(cur)
+        cur.execute(f"SET LOCAL ROLE {role}")
+        cur.execute(
+            "UPDATE cyl_experiment_trait_counts SET n_traits = 0 WHERE experiment_id=%s",
+            (experiment_id,),
+        )
+        assert cur.rowcount == 0
+        cur.execute("RESET ROLE")
+        assert _n_traits(cur, experiment_id) == 1
     pg_conn.rollback()
 
 

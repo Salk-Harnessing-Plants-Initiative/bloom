@@ -55,21 +55,25 @@ latest-selection _rule_ is defined; every other read object is built on it. Expo
 ### Requirement: Aggregate experiment summary counts
 
 Bloom SHALL provide `get_experiment_summary_counts(experiment_id_ BIGINT DEFAULT NULL, source_id_ BIGINT
-DEFAULT NULL, run_id_ TEXT DEFAULT NULL)` returning `(experiment_id, n_plants, n_traits)` rows. With
-`source_id_` and `run_id_` both `NULL` (the "current latest" case, pinned to one experiment or covering
-every experiment), `n_plants` SHALL be computed live as the count of distinct plants whose accession is
-non-null and at least one of whose scans has any `cyl_scan_traits` row, and `n_traits` SHALL be read from
-a maintained cache of distinct latest-source trait counts per experiment, refreshed on an interval rather
-than recomputed on every call — so `n_traits` MAY lag newly-written trait data by up to one refresh
-interval, while `n_plants` is always current. With either `source_id_` or `run_id_` set, both counts
-SHALL be computed live against that pinned source/run selection, matching
-`get_experiment_traits(experiment_id_, source_id_, run_id_)`'s own selection semantics, with no caching.
-With `experiment_id_ NULL`, the function SHALL return one row per experiment that has at least one
-matching trait row under the given source/run selection — an experiment with none SHALL be absent from
-the result set, not present with zero-valued counts. Supplying both `source_id_` and `run_id_` SHALL
-raise an error, matching `get_experiment_traits`'s existing mutual-exclusion guard. Results SHALL be
-scoped to `experiment_id_` when given; with `experiment_id_ NULL`, results SHALL cover every experiment
-in one call.
+DEFAULT NULL, run_id_ TEXT DEFAULT NULL)` returning `(experiment_id, n_plants, n_traits,
+n_traits_updated_at)` rows. With `source_id_` and `run_id_` both `NULL` (the "current latest" case, pinned
+to one experiment or covering every experiment), `n_plants` SHALL be computed live as the count of
+distinct plants whose accession is non-null and at least one of whose scans has any `cyl_scan_traits`
+row, and `n_traits` SHALL be read from a maintained cache of distinct latest-source trait counts per
+experiment, refreshed on an interval rather than recomputed on every call — so `n_traits` MAY lag
+newly-written trait data by up to one refresh interval once that refresh schedule is actually running,
+while `n_plants` is always current. `n_traits_updated_at` SHALL report that cache row's own last-refreshed
+timestamp for the unpinned case (or `NULL` if the cache has never been populated for that experiment), so
+a caller can determine how stale `n_traits` actually is rather than assuming a fixed bound. With either
+`source_id_` or `run_id_` set, both counts SHALL be computed live against that pinned source/run
+selection, matching `get_experiment_traits(experiment_id_, source_id_, run_id_)`'s own selection
+semantics, with no caching, and `n_traits_updated_at` SHALL be `NULL` (a pinned call is always live, with
+no cache staleness to report). With `experiment_id_ NULL`, the function SHALL return one row per
+experiment that has at least one matching trait row under the given source/run selection — an experiment
+with none SHALL be absent from the result set, not present with zero-valued counts. Supplying both
+`source_id_` and `run_id_` SHALL raise an error, matching `get_experiment_traits`'s existing
+mutual-exclusion guard. Results SHALL be scoped to `experiment_id_` when given; with `experiment_id_
+NULL`, results SHALL cover every experiment in one call.
 
 #### Scenario: Unpinned n_plants matches get_experiment_traits' latest semantics, live
 
@@ -136,6 +140,33 @@ in one call.
 - **THEN** `get_experiment_summary_counts` excludes that plant's scans and traits from `n_plants`/
   `n_traits`, matching `get_experiment_traits`'s own exclusion of the same plant, whether computed live
   (`n_plants`, always; both counts when pinned) or via the refreshed cache (`n_traits`, unpinned)
+
+#### Scenario: A plant with an accession but a scan with zero trait rows is excluded from n_plants
+
+- **WHEN** an experiment has a plant with a valid, non-null accession, but that plant's scan has never
+  had any `cyl_scan_traits` row delivered for it
+- **THEN** the unpinned `n_plants` count excludes that plant, the same way a null-accession plant is
+  excluded — a valid accession alone is not sufficient; the plant's scan must have matching trait data
+
+#### Scenario: n_traits_updated_at reports the cache's own staleness, not a fixed assumption
+
+- **WHEN** `get_experiment_summary_counts(experiment_id_)` is called unpinned, after at least one refresh
+  has populated that experiment's cache row
+- **THEN** `n_traits_updated_at` equals that cache row's own `updated_at` timestamp exactly, so a caller
+  can determine precisely how stale `n_traits` is rather than assuming any fixed bound
+
+#### Scenario: n_traits_updated_at is NULL when the cache has never been populated
+
+- **WHEN** `get_experiment_summary_counts(experiment_id_)` is called unpinned for an experiment whose
+  trait-count cache row has never been populated by any refresh
+- **THEN** `n_traits_updated_at` is `NULL`, distinct from a real timestamp, so a caller cannot mistake an
+  unrefreshed count for a recently-refreshed one
+
+#### Scenario: n_traits_updated_at is NULL for a pinned call
+
+- **WHEN** `get_experiment_summary_counts` is called with `source_id_` or `run_id_` set
+- **THEN** `n_traits_updated_at` is `NULL` — a pinned call is always computed live, with no cache
+  involved, so there is no staleness to report
 
 #### Scenario: An unauthenticated caller cannot execute get_experiment_summary_counts or its live helper
 

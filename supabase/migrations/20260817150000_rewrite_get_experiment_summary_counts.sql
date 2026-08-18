@@ -69,14 +69,30 @@ REVOKE EXECUTE ON FUNCTION public.compute_cyl_experiment_summary_counts_live(big
 GRANT EXECUTE ON FUNCTION public.compute_cyl_experiment_summary_counts_live(bigint, bigint, text)
     TO bloom_agent, bloom_user, bloom_admin, authenticated;
 
-CREATE OR REPLACE FUNCTION public.get_experiment_summary_counts(
+-- DROP FUNCTION first, not CREATE OR REPLACE alone -- this revision adds a column to the return
+-- shape, and Postgres refuses to CREATE OR REPLACE a function across a return-type change ("cannot
+-- change return type of existing function"). This makes the migration idempotently re-runnable
+-- regardless of whether the previously-installed version is bloom#625's original 3-column shape
+-- or an earlier run of this same 4-column one -- found when this migration's own idempotency
+-- coverage (test_migration_body_is_idempotent, test_rewrite_rollback_restores_prior_body) started
+-- failing against a local dev DB that had the 3-column shape installed first.
+DROP FUNCTION IF EXISTS public.get_experiment_summary_counts(bigint, bigint, text);
+CREATE FUNCTION public.get_experiment_summary_counts(
     experiment_id_ bigint DEFAULT NULL,
     source_id_     bigint DEFAULT NULL,
     run_id_        text   DEFAULT NULL
 ) RETURNS TABLE (
-    experiment_id bigint,
-    n_plants      int,
-    n_traits      int
+    experiment_id       bigint,
+    n_plants            int,
+    n_traits            int,
+    -- Surfaces n_traits's own staleness (design.md D5) -- raised in round 4's review, then again
+    -- by an external review in round 6, without either round actually closing it; closed here.
+    -- NULL for a pinned (source_id_/run_id_) call, which is always live and has no cache to be
+    -- stale against; otherwise cyl_experiment_trait_counts.updated_at, or NULL if this
+    -- experiment's cache row has never been populated at all (no refresh has run yet, or it has
+    -- zero matching traits -- see D2's "absent means zero" convention, same reasoning applies to
+    -- an absent timestamp).
+    n_traits_updated_at timestamptz
 )
 LANGUAGE plpgsql
 STABLE
@@ -95,9 +111,10 @@ BEGIN
 
     IF source_id_ IS NULL AND run_id_ IS NULL THEN
         -- "Current latest" case: n_plants live (cheap semi-join), n_traits from the
-        -- scheduled-refresh cache (may lag up to one refresh interval -- design.md D5).
+        -- scheduled-refresh cache (may lag up to one refresh interval once D8's schedule is
+        -- actually running -- currently unbounded, see design.md D5's caveat).
         RETURN QUERY
-        SELECT p.experiment_id, p.n_plants, COALESCE(c.n_traits, 0)::int
+        SELECT p.experiment_id, p.n_plants, COALESCE(c.n_traits, 0)::int, c.updated_at
         FROM (
             SELECT w.experiment_id, count(DISTINCT p.id)::int AS n_plants
             FROM public.cyl_waves  w
@@ -112,9 +129,12 @@ BEGIN
     END IF;
 
     -- source_id_/run_id_ pin: neither the live semi-join nor the n_traits cache covers an
-    -- arbitrary historical pin -- delegate to the shared live helper.
+    -- arbitrary historical pin -- delegate to the shared live helper. Always live, so there's no
+    -- cache staleness to report -- NULL, not the current time (which would misleadingly imply a
+    -- refresh just happened).
     RETURN QUERY
-    SELECT * FROM public.compute_cyl_experiment_summary_counts_live(experiment_id_, source_id_, run_id_);
+    SELECT c.experiment_id, c.n_plants, c.n_traits, NULL::timestamptz
+    FROM public.compute_cyl_experiment_summary_counts_live(experiment_id_, source_id_, run_id_) c;
 END;
 $$;
 
