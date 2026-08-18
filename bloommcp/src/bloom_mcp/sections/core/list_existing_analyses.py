@@ -58,6 +58,20 @@ TOOL_CLASSES = (
     "qc_inspect",
 )
 
+# Public MCP tool name for each tool_class this loop iterates that maps to a
+# current tool (bloom#664 item 3) — so a `list_runs` failure names the tool an
+# agent actually invoked, not its internal storage-namespacing string. The 3
+# retired/legacy entries above (`dimred`, `outlier`, `viz`) have no current
+# tool and are deliberately absent here; `_TOOL_CLASS_TO_PUBLIC_NAME.get(...)`
+# falls back to the raw tool_class for those.
+_TOOL_CLASS_TO_PUBLIC_NAME: dict[str, str] = {
+    QC_TOOL_CLASS: "qc_clean",
+    "stats": "descriptive_stats",
+    "clustering": "clustering",
+    OUTLIERS_TOOL_CLASS: "remove_outliers",
+    "correlation": "cross_experiment_correlations",
+}
+
 # Tiny per-experiment response cache. Each list_existing_analyses call walks
 # N tool classes, each doing one storage GET; in a single LLM session the
 # tool gets called repeatedly with the same filename, so a 30-second TTL
@@ -125,7 +139,8 @@ def list_existing_analyses(experiment: str) -> str:
         try:
             runs = store.list_runs(experiment, tool_class)
         except Exception as exc:  # noqa: BLE001 - aggregate, never fail the whole call
-            errors.append(f"{tool_class}: {exc}")
+            public_name = _TOOL_CLASS_TO_PUBLIC_NAME.get(tool_class, tool_class)
+            errors.append(f"{public_name}: {safe_error_text(exc)}")
             continue
         if runs:
             by_tool_class[tool_class] = [dataclasses.asdict(r) for r in runs]

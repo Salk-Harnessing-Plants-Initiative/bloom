@@ -473,6 +473,26 @@ def test_degenerate_fit_does_not_leak_backend_internals(injected_ports, monkeypa
     assert store.list_runs(_EXPERIMENT, "clustering") == []
 
 
+def test_undeclared_delegate_raise_is_scrubbed(injected_ports, monkeypatch):
+    """bloom#664 item 2: a delegate exception type outside the `(ValueError,
+    RuntimeError)` except clause above falls through undeclared to
+    `internal_error` — pinned, not just "doesn't leak" (mirrors the #660
+    qc_inspect/qc_clean/remove_outliers pattern, closing the coverage gap for
+    this tool)."""
+    _reader, store = injected_ports
+
+    def _boom(*a, **k):
+        raise KeyError("secret path /var/secrets/key and host db.internal")
+
+    monkeypatch.setattr(clustering_tool, "perform_kmeans_clustering", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="kmeans", n_clusters=3)
+    assert exc.value.code == "internal_error"
+    msg = f"{exc.value.message} {exc.value.remedy}"
+    assert "/var" not in msg and "db.internal" not in msg
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
 # ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
 # (#640: clustering's declared errors=(ExperimentReadError,) swallowed a CommitFailedError/
 # ManifestReadError from store.create_run()/commit() into a generic internal_error ref) ──
