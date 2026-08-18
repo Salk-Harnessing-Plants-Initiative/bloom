@@ -678,6 +678,27 @@ def test_delegate_omitting_a_trait_entirely_is_also_surfaced(
     assert result.n_failed == 1
 
 
+def test_undeclared_delegate_raise_is_scrubbed(injected_ports, monkeypatch):
+    """bloom#664 item 2: unlike its sibling write-and-link tools, this tool has
+    no except clause around its delegate call at all — a generic exception
+    from `calculate_trait_statistics` falls through undeclared to
+    `internal_error` and must not leak backend internals. No leak test existed
+    for this tool before (mirrors the #660 qc_inspect/qc_clean/remove_outliers
+    pattern, closing the coverage gap)."""
+    _reader, store = injected_ports
+
+    def _boom(*a, **k):
+        raise RuntimeError("secret path /var/secrets/key and host db.internal")
+
+    monkeypatch.setattr(descriptive_stats_tool, "calculate_trait_statistics", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "internal_error"
+    msg = f"{exc.value.message} {exc.value.remedy}"
+    assert "/var" not in msg and "db.internal" not in msg
+    assert store.list_runs(_EXPERIMENT, "stats") == []
+
+
 # ── 3.11 composition via the real ports over the in-memory object store ─────
 
 
