@@ -538,6 +538,11 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
 - Ingests every `{scan_key}.result.json` file directly under `envelopes_dir`
   (non-recursive — the flat layout `trait_extractor.extract_batch`'s
   output produces), via the same validation + RPC path as `ingest-result`.
+  If `envelopes_dir` contains a `run_manifest.json`, discovery is scoped to
+  its `scan_keys`: out-of-scope files are excluded (and logged at debug
+  level), and a declared `scan_key` with no matching file is reported as a
+  batch failure. With no manifest present, discovery is fully unscoped, as
+  above.
 - **Isolates per-envelope failures** — an unreadable/malformed file, a
   contract-validation failure, or a mapped RPC error is recorded and reported,
   but does not abort the rest of the batch.
@@ -552,7 +557,9 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
 - `--json` prints one entry per envelope (`scan_key`, `status`, `error`) as a
   JSON array; without it, a human-readable summary plus one line per failure.
 - **Exit code:** non-zero if any envelope in the batch failed; zero if every
-  envelope succeeded, was a no-op re-delivery, or the directory was empty.
+  envelope succeeded, was a no-op re-delivery, or the directory was empty
+  (a directory containing only a manifest with no matching files is not the
+  empty case — it exits non-zero).
 
 Auth: same saved login profile as `ingest-result` (must have write access).
 
