@@ -10,6 +10,14 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Added
 
+- `bloomctl cyl download-for-predict` / `batch-download-for-predict` now fetch a scan's frames
+  through a configurable worker pool (`-n`/`--workers`, 1-64, default 8) instead of one at a
+  time — the same pattern PR #623 already applied to `cyl download` (#652). `--workers 1` runs
+  sequentially with no pool at all. The per-frame worker is built on the same shared `download_to`
+  primitive `plate download` already uses (rather than re-deriving download/atomic-write/retry
+  logic), so it also gains `download_to`'s disk-full protection for the first time — at any
+  `--workers` value, including `--workers 1`, a full disk or spent quota now stops further
+  queued frames instead of letting each one independently fail.
 - `bloomctl cyl batch-download-for-predict` now writes/merges a
   `sleap_roots_contracts.RunManifest` (`run_manifest.json`) into `OUT_DIR` after every scan
   in the invocation is processed, recording every usable (`ok` or `skipped`) `scan_key` — a
