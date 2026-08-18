@@ -25,24 +25,6 @@ WRAPPERS = [
 DEFINER_ROLE = "bloom_video_queue_owner"
 SESSION_ROLES = ["bloom_user", "bloom_writer", "bloom_admin"]
 
-# One call per wrapper, so authorisation is asserted against all five rather than
-# whichever one happens to be convenient. Arguments are placeholders — EXECUTE is
-# checked before the body runs, so these never reach the queue.
-_NIL_UUID = "00000000-0000-0000-0000-000000000000"
-WRAPPER_CALLS = [
-    ("enqueue_cyl_video", "SELECT public.enqueue_cyl_video(1, 1)"),
-    ("claim_cyl_video_job", "SELECT * FROM public.claim_cyl_video_job(120, 5)"),
-    (
-        "complete_cyl_video_job",
-        f"SELECT public.complete_cyl_video_job('{_NIL_UUID}'::uuid, 1, 'x')",
-    ),
-    (
-        "fail_cyl_video_job",
-        f"SELECT public.fail_cyl_video_job('{_NIL_UUID}'::uuid, 1, 'x')",
-    ),
-    ("cyl_video_queue_stats", "SELECT * FROM public.cyl_video_queue_stats()"),
-]
-
 JOB_COLUMNS = ["status", "scan_id", "experiment_id", "msg_id", "path", "error"]
 
 
@@ -655,24 +637,25 @@ def test_the_definer_role_is_not_reachable_from_a_jwt(pg_conn):
 
 
 @pytest.mark.parametrize("role", ["anon", "authenticated", "service_role"] + SESSION_ROLES)
-@pytest.mark.parametrize("wrapper, call", WRAPPER_CALLS, ids=[w for w, _ in WRAPPER_CALLS])
-def test_wrappers_are_denied_to_every_non_workflows_role(pg_conn, role, wrapper, call):
-    # Every wrapper, not just enqueue: claim/complete/fail all mutate state and are
-    # reachable over /rest/v1/rpc, so a grant on any one of them is the whole hole.
-    # match= pins the failure to the function's EXECUTE privilege — an RLS denial or a
-    # missing table privilege raises the same SQLSTATE and would satisfy a bare raises().
-    try:
-        with pg_conn.cursor() as cur:
-            cur.execute("SAVEPOINT authz")
-            cur.execute(f"SET LOCAL ROLE {role}")
-            with pytest.raises(
-                psycopg.errors.InsufficientPrivilege,
-                match=f"permission denied for function {wrapper}",
-            ):
-                cur.execute(call)
-            cur.execute("ROLLBACK TO SAVEPOINT authz")
-    finally:
-        pg_conn.rollback()
+@pytest.mark.parametrize("wrapper", WRAPPERS)
+def test_wrappers_are_denied_to_every_non_workflows_role(pg_conn, role, wrapper):
+    """No role but bloom_workflows may execute a wrapper.
+
+    Asserted from the catalog rather than by calling. Do NOT "improve" this into a
+    behavioural call: on supabase/postgres 15.14 (the staging/prod image) a
+    `permission denied for function` error SIGSEGVs the backend when the current role is
+    one of supautils.hint_roles — anon, authenticated, service_role — taking the whole
+    cluster into recovery. The dev image 15.8 is immune, so it passes locally and fails
+    only in CI.
+
+    This assertion cannot pass vacuously the way a positive one would:
+    has_function_privilege() counts grants made to PUBLIC, so it returns true whether
+    EXECUTE was granted to the role directly or left at the PUBLIC default. For a denial,
+    counting both is exactly right.
+    """
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, wrapper))
+        assert cur.fetchone()[0] is False, f"{role} can execute {wrapper}"
 
 
 @pytest.mark.parametrize("wrapper", WRAPPERS)
