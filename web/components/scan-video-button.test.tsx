@@ -1,0 +1,380 @@
+// @vitest-environment jsdom
+/**
+ * The 504 recovery path, which no helper test can reach.
+ *
+ * A slow encode outlives our request: the proxy returns 504 while the upstream
+ * handler — synchronous, so a client disconnect doesn't cancel it — carries on
+ * and writes the video. Nothing hands the browser that outcome, so the button
+ * polls GET until the video appears. Before the poll existed, `pending` was
+ * terminal and only a page reload recovered.
+ */
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  act,
+  cleanup,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
+
+import ScanVideoButton from "./scan-video-button";
+
+function json(body: unknown, status: number) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+const VIDEO_URL = "https://signed.test/cyl-videos/5.mp4?token=a";
+
+// A full upstream success. `download_url` alone is rejected by `isScanVideoResult`, so a
+// partial body drives the error branch — a test using one is not exercising success,
+// whatever its name says.
+const RESULT = {
+  scan_id: 5,
+  experiment_id: 1,
+  frames: 72,
+  frames_expected: 72,
+  truncated: false,
+  regenerated: true,
+  path: "cyl-videos/5.mp4",
+  download_url: VIDEO_URL,
+};
+
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  // Real timers before `cleanup`: unmounting runs effect teardown, and doing that while
+  // fake timers are still installed leaves trees behind. A leaked tree is another test's
+  // button in the document, which is what `screen` queries.
+  vi.useRealTimers();
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+async function clickGenerate() {
+  await act(async () => {
+    screen.getByRole("button").click();
+  });
+}
+
+async function click(name: string) {
+  await act(async () => {
+    screen.getByRole("button", { name }).click();
+  });
+}
+
+describe("ScanVideoButton after a 504", () => {
+  it("recovers on its own once the encode lands", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json({ detail: "still encoding" }, 504))
+      .mockResolvedValue(json({ download_url: VIDEO_URL }, 200));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    // The POST timed out; no link yet.
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getByRole("button").textContent).toContain("Still encoding");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    const link = screen.getByRole("link", { name: "Open video" });
+    expect(link.getAttribute("href")).toBe(VIDEO_URL);
+  });
+
+  it("keeps waiting while the video is not there yet", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json({ detail: "still encoding" }, 504))
+      .mockResolvedValue(json({ detail: "not yet" }, 404));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    // Still polling, still no link — and not reported as a failure.
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button").textContent).toContain("Still encoding");
+  });
+
+  it("polls the scan's own video endpoint", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json({ detail: "still encoding" }, 504))
+      .mockResolvedValue(json({ download_url: VIDEO_URL }, 200));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={7} scanId={42} />);
+    await clickGenerate();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    // Scan-scoped: a stored video is keyed by scan alone, so the poll does not
+    // go through the experiment-scoped generate route.
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/cyl/experiments/7/scans/42/video"
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/cyl/scans/42/video");
+  });
+
+  it("stops polling once unmounted", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json({ detail: "still encoding" }, 504))
+      .mockResolvedValue(json({ detail: "not yet" }, 404));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { unmount } = render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    const afterFirstPoll = fetchMock.mock.calls.length;
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+
+    expect(fetchMock.mock.calls.length).toBe(afterFirstPoll);
+  });
+});
+
+describe("ScanVideoButton when the poll runs out of patience", () => {
+  it("stops offering Generate, so a second encode can't start", async () => {
+    // The encode is still running upstream; re-offering the button here is
+    // exactly how one scan ends up with two concurrent encodes.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json({ detail: "still encoding" }, 504))
+      .mockResolvedValue(json({ detail: "not yet" }, 404));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11 * 60_000);
+    });
+
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByText(/taking longer than expected/)).toBeTruthy();
+
+    // And it has genuinely stopped asking.
+    const settled = fetchMock.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(fetchMock.mock.calls.length).toBe(settled);
+  });
+
+  it("measures elapsed time, not completed polls", async () => {
+    // Every poll answers slowly, so a tick-counting budget would never reach
+    // the limit and the give-up would never fire.
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      if (init?.method === "POST") {
+        return Promise.resolve(json({ detail: "still encoding" }, 504));
+      }
+      return new Promise((resolve) =>
+        setTimeout(() => resolve(json({ detail: "not yet" }, 404)), 9_000)
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11 * 60_000);
+    });
+
+    expect(screen.getByText(/taking longer than expected/)).toBeTruthy();
+  });
+});
+
+describe("ScanVideoButton on a 409", () => {
+  it("adopts the stored video instead of naming one it doesn't show", async () => {
+    // Reachable from a second tab, or after the poll gave up and the encode
+    // then landed. Telling the reader to "open the stored one" while showing
+    // no link is a dead end.
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      if (init?.method === "POST") {
+        return Promise.resolve(
+          json({ detail: "This scan already has a video." }, 409)
+        );
+      }
+      return Promise.resolve(json({ download_url: VIDEO_URL }, 200));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    const link = screen.getByRole("link", { name: "Open video" });
+    expect(link.getAttribute("href")).toBe(VIDEO_URL);
+    expect(screen.queryByRole("alert")).toBeNull();
+    // The adopt is a second call site for the lookup, and the only test that
+    // pinned its URL was the poll — this one would pass against the
+    // experiment-scoped route the lookup no longer has.
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/cyl/scans/5/video");
+  });
+
+  it("still reports an error if the stored video can't be fetched either", async () => {
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      if (init?.method === "POST") {
+        return Promise.resolve(json({ detail: "already has a video" }, 409));
+      }
+      return Promise.resolve(json({ detail: "nope" }, 404));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    expect(screen.getByRole("alert").textContent).toContain("already has a video");
+  });
+});
+
+describe("ScanVideoButton when a video already exists", () => {
+  it("offers only the link — a stored video is not regenerated", () => {
+    // Upstream can only refuse a worse encode when `cyl_scan_videos` records the stored
+    // video's frame count, and it records none in prod. Until that is backfilled, replacing
+    // one is unguardable, so the product does not offer it.
+    //
+    // Queried through this render's own container, not `screen`: an absence assertion over
+    // the whole document passes or fails on what other tests left behind.
+    const { container } = render(
+      <ScanVideoButton experimentId={1} scanId={5} initialVideoUrl={VIDEO_URL} />
+    );
+
+    expect(within(container).getByRole("link", { name: "Open video" })).toBeTruthy();
+    expect(within(container).queryByRole("button")).toBeNull();
+  });
+});
+
+describe("ScanVideoButton on a scan the page is calling incomplete", () => {
+  const WARNING = "Showing 40 of 72 frames — 32 not available.";
+
+  it("asks first, quoting what the viewer says", async () => {
+    // The button and the frame viewer render as unrelated siblings, so nothing else stops
+    // a user encoding a rotation the page is simultaneously flagging as partial.
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ScanVideoButton experimentId={1} scanId={5} completenessWarning={WARNING} />
+    );
+    await click("Generate video");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Showing 40 of 72 frames");
+  });
+
+  it("encodes once confirmed, and shows the finished video", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json(RESULT, 200));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ScanVideoButton experimentId={1} scanId={5} completenessWarning={WARNING} />
+    );
+    await click("Generate video");
+    await click("Generate anyway");
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
+    // The point of the click: a link to the video that was just made.
+    const link = screen.getByRole("link", { name: "Open video" });
+    expect(link.getAttribute("href")).toBe(VIDEO_URL);
+    expect(document.body.textContent).toContain("Encoded 72 frames");
+  });
+
+  it("cancel closes the panel and offers Generate again", async () => {
+    // The only way out of `confirming` — the main button is hidden while it is open, so a
+    // broken Cancel strands the user with no way to dismiss it and no way to generate.
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ScanVideoButton experimentId={1} scanId={5} completenessWarning={WARNING} />
+    );
+    await click("Generate video");
+    await click("Cancel");
+
+    expect(screen.getByRole("button", { name: "Generate video" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Generate anyway" })).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("goes straight to encoding when the scan looks whole", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json(RESULT, 200));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Generate anyway" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Open video" }).getAttribute("href")).toBe(
+      VIDEO_URL
+    );
+  });
+
+  it("says what was left out when the encode was partial", async () => {
+    // The summary is the only place a scientist learns the video is short of the scan,
+    // and it renders only on the success path — so it needs a success to be seen at all.
+    const fetchMock = vi.fn().mockResolvedValue(
+      json({ ...RESULT, frames: 60, frames_expected: 72 }, 200)
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    expect(document.body.textContent).toContain("Encoded 60 of 72 frames");
+  });
+
+  it("does not offer to generate again once a video is made", async () => {
+    // Replacing a stored video is not offered, so the button must not come back.
+    const fetchMock = vi.fn().mockResolvedValue(json(RESULT, 200));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    expect(screen.queryByRole("button", { name: "Generate video" })).toBeNull();
+  });
+});
+
+describe("ScanVideoButton on a malformed success", () => {
+  it("reports an error instead of freezing on a null body", async () => {
+    // A 2xx whose body doesn't parse used to throw past setStatus, leaving the
+    // button disabled on "Generating video…" forever.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response("<html>ok</html>", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ScanVideoButton experimentId={1} scanId={5} />);
+    await clickGenerate();
+
+    expect(screen.getByRole("alert").textContent).toContain("unexpected");
+    expect((screen.getByRole("button") as HTMLButtonElement).disabled).toBe(
+      false
+    );
+  });
+});

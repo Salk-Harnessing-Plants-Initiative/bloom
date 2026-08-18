@@ -31,10 +31,31 @@ consumed cleaned version, and returns a cluster summary + links (never the label
 
 The legacy ``run_clustering_workflow`` tool and the vendored ``bloom_mcp.clustering``
 module this tool once coexisted alongside were retired by ``devendor-bloommcp-analysis``.
+
+**Optional plots (#601, reusing #426's shared helper).** ``include_plots=True`` generates
+figures via the two catalog plotters in ``_clustering_plot_calls`` (``plots`` narrows the
+selection; omit for both) and persists them as additional ``*.png`` entries in the existing
+``outputs`` field — no new result field. Both catalog keys work identically regardless of
+``method``: ``create_cluster_scatter_pca`` needs a PCA projection, but
+``hierarchical_cluster_labels`` (unlike ``perform_kmeans_clustering``/
+``perform_gmm_clustering``) does not return the ``data_processed`` array the plotter falls
+back to when no ``pca_result`` is supplied — so this tool always computes its own, via an
+internal, non-persisted ``perform_pca_analysis`` call over the same certified-clean trait
+selection already used for clustering (mirrors ``umap_analysis``'s
+``create_umap_colored_by_top_traits`` precedent; never committed as its own versioned run).
+Figure construction is delegated entirely to ``bloom_mcp.tools._plots`` (validate/generate/
+close), reused verbatim with no modification. This module's own top-level
+``sleap_roots_analyze`` import already pulls in ``matplotlib`` transitively (via that
+package's ``cluster_visualization`` submodule) — the same as ``pca_analysis``/
+``umap_analysis`` — so the lazy plotter import inside ``_clustering_plot_calls`` avoids a
+*second*, redundant import on the ``include_plots=True`` path, but does not itself keep
+matplotlib out of ``sys.modules`` on the default path; no Tier-0 import-clean guarantee is
+claimed here.
 """
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from pathlib import Path
 from typing import Literal
@@ -59,13 +80,23 @@ from bloom_mcp.data_access import (
 )
 from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools._plots import close_figures, generate_figures, validate_plot_keys
 from bloom_mcp.tools._qc_shared import _finite_or_none, _validate_trait_subset
+
+logger = logging.getLogger(__name__)
 
 _TOOL_CLASS = "clustering"
 _LABELS_NAME = "labels.csv"
 _RESULT_NAME = "cluster_result.json"
 # Transient snapshot for input_sha256 only — intentionally not committed as an artifact.
 _INPUT_SNAPSHOT_NAME = "input.csv"
+
+# Valid plot keys — two upstream plotters, uniform across all three methods (see the
+# module docstring's "Optional plots" section for why create_cluster_scatter_pca always
+# computes its own PCA projection rather than relying on the raw result_dict).
+_CLUSTERING_CATALOG_KEYS: frozenset[str] = frozenset(
+    {"create_cluster_scatter_pca", "create_cluster_size_barplot"}
+)
 
 
 class ClusteringParams(BaseModel):
@@ -156,6 +187,21 @@ class ClusteringParams(BaseModel):
     user_label: str | None = Field(
         default=None,
         description="Optional slug appended to the version directory name.",
+    )
+    include_plots: bool = Field(
+        default=False,
+        description="If true, generate and persist clustering plots as run artifacts. "
+        "Returned as additional entries in outputs (object-key links). When false "
+        "(default), no figures are generated (though matplotlib may already be resident "
+        "in the process via this module's own sleap_roots_analyze import — see the "
+        "module docstring; this flag does not control that).",
+    )
+    plots: list[str] | None = Field(
+        default=None,
+        description="Subset of plot keys to generate; omit (None) to generate both "
+        "available plots when include_plots=True. Ignored when include_plots=False. "
+        "Valid keys: create_cluster_scatter_pca, create_cluster_size_barplot. Both work "
+        "identically regardless of method.",
     )
 
 
@@ -292,6 +338,72 @@ def _gmm_selected_scores(
         if 0 <= idx < len(bic_scores) and 0 <= idx < len(aic_scores):
             bic, aic = float(bic_scores[idx]), float(aic_scores[idx])
     return bic, aic
+
+
+def _clustering_plot_calls(
+    result_dict: dict,
+    result: ClusterResult,
+    frame: ExperimentFrame,
+    trait_cols: list[str],
+    *,
+    standardize: bool,
+) -> dict:
+    """Return zero-arg callables for each catalog plot key, lazily importing plotters.
+
+    Plotters are imported here (not at module level) to avoid a second, redundant import
+    on the ``include_plots=True`` path — this does NOT keep matplotlib out of
+    ``sys.modules`` on the default path (see the module docstring).
+
+    ``create_cluster_scatter_pca`` always receives an explicit ``pca_result`` computed via
+    an internal, non-persisted ``perform_pca_analysis`` call over the exact same
+    certified-clean trait selection already used for clustering — sidestepping the raw
+    ``result_dict``'s ``data_processed`` key, which ``hierarchical_cluster_labels`` does
+    not return (unlike ``perform_kmeans_clustering``/``perform_gmm_clustering``). This
+    keeps the catalog key usable identically for all three methods. ``standardize`` is
+    forwarded from ``params.standardize`` so the plotted projection is computed in the
+    same coordinate space actually clustered — passing the delegate's own default here
+    instead would silently re-standardize (or fail to) a selection the caller explicitly
+    asked to cluster on raw (or standardized) values, making the plot geometry disagree
+    with the real fit.
+    """
+    from sleap_roots_analyze import (
+        create_cluster_scatter_pca,
+        create_cluster_size_barplot,
+        perform_pca_analysis,
+    )
+
+    def _scatter_pca():
+        try:
+            pca_result_dict = perform_pca_analysis(
+                frame.df[trait_cols], standardize=standardize
+            )
+        except (ValueError, np.linalg.LinAlgError) as exc:
+            logger.debug(
+                "internal perform_pca_analysis call for create_cluster_scatter_pca "
+                "failed, translating to assumption_violated: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            raise BloomMCPError(
+                code="assumption_violated",
+                message=(
+                    "Could not compute the PCA projection for "
+                    "create_cluster_scatter_pca — the certified-clean trait selection "
+                    "is degenerate for PCA."
+                ),
+                remedy=(
+                    "Select a broader set of numeric trait columns, or omit "
+                    "create_cluster_scatter_pca from plots, then retry."
+                ),
+            ) from None
+        return create_cluster_scatter_pca(result_dict, pca_result=pca_result_dict)
+
+    return {
+        "create_cluster_scatter_pca": _scatter_pca,
+        "create_cluster_size_barplot": lambda: create_cluster_size_barplot(
+            np.asarray(result_dict["cluster_labels"]), int(result.n_clusters)
+        ),
+    }
 
 
 @as_mcp_tool(
@@ -499,23 +611,58 @@ def clustering(
     if params.method == "hierarchical":
         prov_update["seed"] = None
     prov = provenance.model_copy(update=prov_update)
-    with tempfile.TemporaryDirectory(prefix="clustering_input_") as _tmp:
-        source_snapshot = Path(_tmp) / _INPUT_SNAPSHOT_NAME
-        frame.df.to_csv(source_snapshot, index=False)
-        run = store.create_run(
-            experiment=params.experiment,
-            tool_class=_TOOL_CLASS,
-            provenance=prov,
-            user_label=params.user_label,
-            source_csv=source_snapshot,
-            source=frame.resolved_source,
-        )
-        _labels_frame(result, frame).to_csv(run.staging_dir / _LABELS_NAME, index=False)
-        (run.staging_dir / _RESULT_NAME).write_text(result.to_json())
-        stored = store.commit(
-            run,
-            {_LABELS_NAME: _LABELS_NAME, _RESULT_NAME: _RESULT_NAME},
-        )
+
+    # Optional plots — validate keys and generate figures BEFORE create_run so an unknown
+    # key fails as invalid_input with no run committed. The try/finally wraps the whole
+    # persistence region (including the tempdir) so figures are always closed even when
+    # the tempdir entry or store operations fail (mirrors pca_analysis/umap_analysis).
+    figures: dict = {}
+    try:
+        if params.include_plots:
+            import matplotlib
+
+            matplotlib.use("Agg")
+            validate_plot_keys(params.plots, _CLUSTERING_CATALOG_KEYS)
+            calls = _clustering_plot_calls(
+                result_dict,
+                result,
+                frame,
+                trait_cols,
+                standardize=params.standardize,
+            )
+            keys_to_generate = (
+                list(params.plots)
+                if params.plots is not None
+                else sorted(_CLUSTERING_CATALOG_KEYS)
+            )
+            generate_figures({k: calls[k] for k in keys_to_generate}, figures)
+
+        with tempfile.TemporaryDirectory(prefix="clustering_input_") as _tmp:
+            source_snapshot = Path(_tmp) / _INPUT_SNAPSHOT_NAME
+            frame.df.to_csv(source_snapshot, index=False)
+            run = store.create_run(
+                experiment=params.experiment,
+                tool_class=_TOOL_CLASS,
+                provenance=prov,
+                user_label=params.user_label,
+                source_csv=source_snapshot,
+                source=frame.resolved_source,
+            )
+            _labels_frame(result, frame).to_csv(
+                run.staging_dir / _LABELS_NAME, index=False
+            )
+            (run.staging_dir / _RESULT_NAME).write_text(result.to_json())
+            outputs: dict[str, str] = {
+                _LABELS_NAME: _LABELS_NAME,
+                _RESULT_NAME: _RESULT_NAME,
+            }
+            for name, fig in figures.items():
+                rel = f"{name}.png"
+                fig.savefig(run.staging_dir / rel, bbox_inches="tight")
+                outputs[rel] = rel
+            stored = store.commit(run, outputs)
+    finally:
+        close_figures(figures)
 
     return ClusteringResult(
         experiment=params.experiment,
