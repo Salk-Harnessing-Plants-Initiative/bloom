@@ -79,11 +79,13 @@ def _site_block() -> str:
     raise AssertionError("unbalanced braces in the site block")
 
 
-def test_site_block_ends_with_a_refusing_fall_through():
-    """A bare `handle` must come last, so unrouted hostnames are refused.
+def test_site_block_has_a_refusing_fall_through():
+    """A bare `handle` in the site block, refusing hostnames with no route.
 
-    Last specifically: Caddy runs the first matching `handle`, so a fall-through
-    placed above a host block would swallow that hostname's traffic.
+    Position in the file does not matter: Caddy's adapter sorts a matcher-less
+    `handle` after every matched one regardless of where it is written, so this
+    asserts existence and value, not placement. Keeping it last is a readability
+    convention, not a correctness requirement.
     """
     site = _site_block()
     matches = list(re.finditer(r"^\thandle\s*\{", site, re.MULTILINE))
@@ -92,12 +94,6 @@ def test_site_block_ends_with_a_refusing_fall_through():
         "with no route would fall out and get Caddy's implicit empty 200"
     )
     assert len(matches) == 1, f"expected one fall-through, found {len(matches)}"
-
-    after = site[matches[0].end() :]
-    assert not re.search(r"^\thandle\s+@", after, re.MULTILINE), (
-        "a per-host `handle @...` is declared after the fall-through; Caddy takes "
-        "the first match, so that hostname would be refused instead of routed"
-    )
 
     masked = _mask_quoted(site)
     depth, body_start = 1, matches[0].end()

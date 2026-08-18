@@ -55,6 +55,17 @@
 #                         secrets.
 # =============================================================================
 
+# Refuse a request whose Host does not match the certificate it was served
+# under. SNI and the Host header are independent, so without this a scanner can
+# present a cert-covered SNI with any Host it likes, enter the site block, and
+# fall out of it — which is the empty 200 this file otherwise fixes below.
+# Mismatches get 421, which browsers handle by retrying on a fresh connection.
+{
+	servers {
+		strict_sni_host
+	}
+}
+
 {$CADDY_SITE_ADDRESSES} {
 	# Multi-SAN cert covering all the subjects listed in CADDY_SITE_ADDRESSES,
 	# issued via ACME DNS-01 against Cloudflare's API. Prod's cert carries
@@ -215,7 +226,7 @@
 	# -------------------
 	# The wildcard in CADDY_SITE_ADDRESSES means the certificate covers every
 	# one-level subdomain, so Caddy accepts any *.bloom.salk.edu name. Ones
-	# with no handle above would otherwise fall out of this block and get
+	# with no handle here would otherwise fall out of this block and get
 	# Caddy's implicit empty `200 OK` — a success code for a page we do not
 	# serve, which reads as healthy to anything checking only the status.
 	handle {

@@ -125,8 +125,9 @@ Two catch-alls make an unserved name say so, rather than look healthy:
 | --- | --- | --- |
 | Bare `handle` at the end of the `{$CADDY_SITE_ADDRESSES}` block | A wildcard-covered name with no `handle @host` above it | `404 not reachable` |
 | `:80` site block | A name matching no site address at all, over plain HTTP | `404 not reachable` |
+| `strict_sni_host` (global) | A Host header that does not match the certificate the connection was served under | `421` |
 
-**Ordering matters.** Caddy runs the *first* matching `handle`, so the bare `handle` must stay last in the site block — placed above `@main`, `@studio` or `@minio` it would swallow that hostname's traffic. `tests/unit/test_caddy_unrouted_host.py` pins that ordering.
+**Position in the file does not matter.** Caddy's adapter sorts a matcher-less `handle` after every matched one, whatever order they are written in, so the fall-through cannot swallow a routed hostname. Keeping it last is a readability convention.
 
 **Routed hostnames keep their HTTP-to-HTTPS redirect.** Automatic HTTPS generates a per-host redirect route on port 80 that takes precedence over the `:80` catch-all, so `http://bloom.salk.edu/` still answers `308`. Only names outside the wildcard fall through to the 404 — before the `:80` block they received a 308 to an HTTPS URL whose handshake would then fail.
 
