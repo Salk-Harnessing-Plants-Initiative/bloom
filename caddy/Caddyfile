@@ -227,9 +227,15 @@
 # Hostnames matching no site address
 # -------------------
 # Over HTTPS these are already refused at the handshake, since no certificate
-# covers them. Plain HTTP has no such step, so they land on Caddy's implicit
-# empty `200` instead. Known hostnames are unaffected — Caddy matches the more
-# specific site block first, so they keep their HTTP-to-HTTPS redirect.
+# covers them. Plain HTTP has no such step, and what they get instead depends
+# on the scheme in CADDY_SITE_ADDRESSES: with `https://` (prod, staging) Caddy's
+# automatic redirect answers them with a 308 to a URL whose handshake will then
+# fail; with `http://` (CI) they get Caddy's implicit empty `200`. Neither is a
+# useful answer for a name we do not serve.
+#
+# Routed hostnames are unaffected. Automatic HTTPS generates a per-host redirect
+# route on :80 for each of them, and those take precedence over this block, so
+# they keep their HTTP-to-HTTPS redirect.
 :80 {
 	respond "not reachable" 404
 }

@@ -25,17 +25,54 @@ def _text() -> str:
     return CADDYFILE.read_text(encoding="utf-8")
 
 
+def _mask_quoted(text: str) -> str:
+    """Blank out quoted spans, preserving length so indices still line up.
+
+    Brace math runs over the masked copy: a `{` inside a header value is data,
+    not a block delimiter. Only `"` and backtick delimit a Caddy token — an
+    apostrophe is literal, and quote state resets at each newline so an
+    unbalanced quote costs one line rather than the rest of the file.
+    """
+    out = list(text)
+    quote = None
+    for i, char in enumerate(text):
+        if char == "\n":
+            quote = None
+        elif quote:
+            out[i] = " "
+            if char == quote:
+                quote = None
+        elif char in '"`':
+            quote = char
+            out[i] = " "
+    return "".join(out)
+
+
+def _strip_comments(text: str) -> str:
+    """Drop `#` comments, trailing as well as whole-line.
+
+    Without this, prose mentioning `{$CADDY_SITE_ADDRESSES}` above the block
+    matches first, and a stray `}` inside a comment truncates the slice.
+    """
+    lines = []
+    for line in text.splitlines():
+        cut = _mask_quoted(line).find("#")
+        lines.append(line if cut == -1 else line[:cut])
+    return "\n".join(lines)
+
+
 def _site_block() -> str:
     """Body of the `{$CADDY_SITE_ADDRESSES} { ... }` block, by matching braces."""
-    text = _text()
-    header = re.search(r"\{\$CADDY_SITE_ADDRESSES\}", text)
+    text = _strip_comments(_text())
+    masked = _mask_quoted(text)
+    header = re.search(r"\{\$CADDY_SITE_ADDRESSES\}", masked)
     assert header, "missing `{$CADDY_SITE_ADDRESSES}` site block in caddy/Caddyfile"
-    open_brace = text.find("{", header.end())
+    open_brace = masked.find("{", header.end())
     depth = 0
-    for i in range(open_brace, len(text)):
-        if text[i] == "{":
+    for i in range(open_brace, len(masked)):
+        if masked[i] == "{":
             depth += 1
-        elif text[i] == "}":
+        elif masked[i] == "}":
             depth -= 1
             if depth == 0:
                 return text[open_brace + 1 : i]
@@ -62,9 +99,17 @@ def test_site_block_ends_with_a_refusing_fall_through():
         "the first match, so that hostname would be refused instead of routed"
     )
 
-    body = site[matches[0].end() : matches[0].end() + 200]
-    assert re.search(r"respond\s+.*\b404\b", body), (
-        f"the fall-through must refuse with 404, found: {body.splitlines()[0]!r}"
+    masked = _mask_quoted(site)
+    depth, body_start = 1, matches[0].end()
+    for i in range(body_start, len(masked)):
+        depth += (masked[i] == "{") - (masked[i] == "}")
+        if depth == 0:
+            body = site[body_start:i]
+            break
+    else:
+        raise AssertionError("unbalanced braces in the fall-through block")
+    assert re.search(r"^\s*respond\s+.+\s+404\s*$", body, re.MULTILINE), (
+        f"the fall-through must refuse with a 404 and a reason phrase, found: {body.strip()!r}"
     )
 
 
