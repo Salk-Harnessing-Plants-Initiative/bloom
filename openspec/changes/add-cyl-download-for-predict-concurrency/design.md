@@ -153,3 +153,56 @@ follow-up, not fixed in this change.
   to compare against at frame-fetch time; this is a harmless no-op, not a partially-adopted
   feature, since resume for this command already happens one level up (`scan_is_already_staged`'s
   whole-scan skip check).
+
+## Post-PR-review hardening (found via `/review-pr` on #698, fixed same PR)
+
+A 5-lens adversarial review after the initial implementation landed found two real bugs, both
+now fixed in the same PR, plus pre-existing gaps this change does not touch.
+
+- **`_download_one_frame_for_predict`'s post-write `dest.read_bytes()` was unguarded, contradicting
+  its own "never raises" docstring.** `download_to` is careful to catch every filesystem/network
+  failure internally, but the read-back step added by this change (see "bytes for the checksum"
+  above) had no equivalent guard — an `OSError` on the read (a disk fault, a permissions change, an
+  AV lock on Windows) would propagate out of a worker thread, through `fetch_all`/`run_bounded`'s
+  `future.result()`, and — for the single-scan `download-for-predict` command specifically, which
+  has no enclosing `try/except` around this call the way `stage_one_scan` does — surface as a raw
+  traceback instead of a clean `click.ClickException`. Fixed by wrapping the read in its own
+  `try/except OSError`, converting a read-back failure into an ordinary failed `FrameResult` (no
+  bytes), the same "never raise, record and continue" discipline every other failure mode in this
+  function already follows. Covered by
+  `test_post_write_read_failure_is_a_failed_result_not_a_raised_exception` (monkeypatches
+  `Path.read_bytes` to fail for one frame; confirmed RED against the pre-fix code — the exception
+  propagated exactly as predicted — before the fix landed).
+- **`DownloadResult.disk_full` was never set on the value `download_frames_for_predict` returns,
+  unlike `cyl download`'s and `plate download`'s identical orchestrators (both do
+  `DownloadResult(frames, disk_full=stop.is_set())`).** Consequence: even after this change added
+  real disk-full fail-fast behavior (see "Disk-full stop is a consequence of reuse" above), neither
+  calling command's failure message ever said so — an operator hitting a full disk saw the same
+  generic "N of M frames failed to download" wording as any other transient failure, with none of
+  `cyl download`'s/`plate download`'s "the disk filled up or the storage quota was spent" framing.
+  Fixed two ways: (1) `download_frames_for_predict` now returns
+  `DownloadResult(frames, disk_full=stop.is_set())`; (2) both call sites
+  (`download_for_predict`'s `click.ClickException` and `stage_one_scan`'s `ScanResult` error text)
+  now prepend the same cause string `cyl download`/`plate download` already use, conditioned on
+  `result.disk_full`. Covered by
+  `test_disk_full_is_surfaced_on_the_result_and_in_both_commands_error_messages` (confirmed RED
+  against the pre-fix code on both the field and the message text before the fix landed).
+
+Findings surfaced but deliberately not fixed in this PR, since they predate it and are not
+introduced or worsened by it (flagged here so a future change has the context, not silently
+dropped):
+
+- `frame_dest_for_predict` has no equivalent of `image_dest`'s explicit path-containment guard
+  (`os.path.normpath` + `isabs`/`pardir` check via the shared `contained_dest` helper). Not
+  currently exploitable — `cyl_images.frame_number` is a Postgres `INT` column (PostgREST always
+  serializes it as a JSON integer) and `Path(...).suffix` can never contain a separator — but the
+  safety rests entirely on that DB-schema invariant rather than a runtime check in the code that
+  uses it, unlike the sibling command. Worth hardening as a follow-up.
+- `download_for_predict` (the single-scan command) has no lock at all — only `stage_one_scan`
+  (the batch path) acquires one. Predates this change; frame-level concurrency raises the blast
+  radius of two concurrent single-scan invocations racing the same `scan_id`/`out_dir` (more
+  threads now interleaving writes instead of two sequential ones), but the underlying gap (no lock
+  on this command at all) is unchanged by this PR, not introduced by it.
+- A `SIGINT`/`KeyboardInterrupt` mid-batch still skips the `RunManifest` write for every scan
+  already staged in that invocation (`stage_one_scan`'s `except Exception` doesn't catch
+  `BaseException`). Predates this change; unaffected by it.

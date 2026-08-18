@@ -259,7 +259,12 @@ def _download_one_frame_for_predict(
     result.ok, result.skipped, result.error, result.note = fetched
     if not result.ok:
         return result, None
-    return result, dest.read_bytes()
+    try:
+        return result, dest.read_bytes()
+    except OSError as exc:  # written successfully but couldn't be read back; never raise
+        result.ok = False
+        result.error = f"downloaded but could not read it back for the checksum: {exc}"
+        return result, None
 
 
 def download_frames_for_predict(
@@ -295,7 +300,7 @@ def download_frames_for_predict(
     )
     frames = [frame for frame, _ in outcomes]
     frame_bytes = [data for _, data in outcomes if data is not None]
-    return DownloadResult(frames), frame_bytes
+    return DownloadResult(frames, disk_full=stop.is_set()), frame_bytes
 
 
 # --- command ----------------------------------------------------------------
@@ -351,8 +356,9 @@ def download_for_predict(scan_id: int, out_dir: Path, profile: str, workers: int
     )
 
     if result.failed:
+        cause = "the disk filled up or the storage quota was spent; " if result.disk_full else ""
         raise click.ClickException(
-            f"{result.failed} of {result.total} frames failed to download — "
+            f"{cause}{result.failed} of {result.total} frames failed to download — "
             f"frames downloaded this run remain in {scan_dir}; no sidecar written."
         )
 
@@ -413,10 +419,16 @@ def stage_one_scan(
                 client, scan, images, scan_dir, workers=workers
             )
             if result.failed:
+                cause = (
+                    "the disk filled up or the storage quota was spent; "
+                    if result.disk_full
+                    else ""
+                )
                 return ScanResult(
                     scan_key,
                     "failed",
-                    f"{result.failed} of {result.total} frames failed to download for scan {scan_id}.",
+                    f"{cause}{result.failed} of {result.total} frames failed to download "
+                    f"for scan {scan_id}.",
                 )
 
             sidecar = build_sidecar(scan, images, frame_bytes, params)

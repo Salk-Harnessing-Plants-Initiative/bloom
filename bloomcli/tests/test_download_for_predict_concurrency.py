@@ -89,6 +89,27 @@ def test_download_failure_returns_no_bytes_and_leaves_no_temp_file(tmp_path):
     assert list(tmp_path.glob(".dl-*")) == []
 
 
+def test_post_write_read_failure_is_a_failed_result_not_a_raised_exception(tmp_path, monkeypatch):
+    """review finding: `dest.read_bytes()` after a successful write was unguarded, contradicting
+    this function's own "never raises" docstring — a transient post-write read failure (disk
+    fault, permissions change, an AV lock on Windows) would otherwise escape as a raw exception."""
+    image = {"id": 1001, "frame_number": 0, "object_path": "cyl-images/a.png"}
+    real_read_bytes = Path.read_bytes
+
+    def _fail_read_bytes(self):
+        if self.name == "0.png":
+            raise OSError("simulated post-write read failure")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _fail_read_bytes)
+
+    result, frame_bytes = dfp._download_one_frame_for_predict(_FakeClient(), SCAN, image, tmp_path)
+
+    assert result.ok is False
+    assert frame_bytes is None
+    assert "could not read it back" in result.error
+
+
 # --- 2. Bounded concurrent pool via fetch_all --------------------------------
 
 
@@ -450,6 +471,30 @@ def test_disk_full_stops_further_sequential_frames(tmp_path, monkeypatch):
     assert result.frames[1].ok is False
     assert result.frames[2].ok is False
     assert "nowhere left to write" in result.frames[2].error
+
+
+def test_disk_full_is_surfaced_on_the_result_and_in_both_commands_error_messages(
+    tmp_path, monkeypatch
+):
+    """review finding: `DownloadResult.disk_full` was never set here, unlike `cyl download`'s
+    and `plate download`'s identical orchestrators — so an operator hitting a full disk saw the
+    same generic message as any other transient failure, with no "disk filled up" wording."""
+    images = _images(2)
+
+    def _always_fail(path, data):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(shared_dl, "atomic_write_bytes", _always_fail)
+    client = _FakeClient()
+
+    result, _ = dfp.download_frames_for_predict(client, SCAN, images, tmp_path, workers=1)
+    assert result.disk_full is True
+
+    monkeypatch.setattr(dfp, "fetch_scan", lambda c, scan_id: {**SCAN, "scan_id": scan_id})
+    monkeypatch.setattr(dfp, "fetch_images", lambda c, scan_id: _images(2))
+    scan_result = dfp.stage_one_scan(client, 1, tmp_path)
+    assert scan_result.status == "failed"
+    assert "disk filled up" in scan_result.error
 
 
 def test_disk_full_during_concurrency_does_not_abort_an_already_inflight_frame(
