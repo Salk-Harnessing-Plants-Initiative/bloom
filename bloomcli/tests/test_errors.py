@@ -548,6 +548,22 @@ def test_a_half_built_httpx_does_not_escape_the_handler():
     assert "Traceback" not in done.stderr
 
 
+def test_a_half_built_httpx_does_not_break_the_download_retry():
+    """`is_retryable` runs inside `download_object`'s own except, so a predicate that raises
+    replaces the storage error and skips the retry — every frame fails instead of one."""
+    done = _in_fresh_python(
+        "from bloomctl import _storage\n"
+        "print('RETRYABLE:', _storage.is_retryable(ConnectionResetError('reset')))\n",
+        broken=(
+            "import sys, types\n"
+            "sys.modules['httpx'] = types.ModuleType('httpx')\n"
+        ),
+    )
+
+    assert "RETRYABLE: False" in done.stdout, done.stdout + done.stderr
+    assert "AttributeError" not in done.stderr
+
+
 class _Hostile(Exception):
     """An exception that raises while being described — `explain()` calls str() on it."""
 

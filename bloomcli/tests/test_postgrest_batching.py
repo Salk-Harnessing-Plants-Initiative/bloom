@@ -164,3 +164,87 @@ def test_a_successful_read_passes_its_value_through():
     from bloomctl._postgrest import queried
 
     assert queried("anything", lambda: [{"scan_id": 1}]) == [{"scan_id": 1}]
+
+
+def test_an_error_body_with_no_wording_does_not_render_the_whole_body():
+    """`str(APIError)` is the body itself — hint and details carry connection strings and SQL."""
+    import click
+    import pytest
+    from postgrest import APIError
+
+    from bloomctl._postgrest import queried
+
+    def denied():
+        raise APIError(
+            {
+                "message": "",
+                "code": "42501",
+                "hint": "connect as postgres://bloom_agent@10.0.3.14:5432/bloom",
+                "details": "SELECT * FROM cyl_images WHERE scan_id = 77",
+            }
+        )
+
+    with pytest.raises(click.ClickException) as caught:
+        queried("this scan", denied)
+
+    message = str(caught.value)
+    assert message == "Could not read this scan from Bloom: Bloom rejected the request (code 42501)"
+    assert "postgres://" not in message
+    assert "SELECT" not in message
+
+
+def test_a_server_error_reads_as_a_sentence_not_a_dict():
+    import click
+    import pytest
+    from postgrest import APIError
+
+    from bloomctl._postgrest import queried
+
+    def denied():
+        raise APIError({"message": "permission denied for view cyl_scans_extended"})
+
+    with pytest.raises(click.ClickException) as caught:
+        queried("this experiment's scans", denied)
+
+    assert str(caught.value) == (
+        "Could not read this experiment's scans from Bloom: "
+        "permission denied for view cyl_scans_extended"
+    )
+
+
+def test_a_message_the_server_raised_for_the_user_is_passed_on_as_written():
+    """`RAISE EXCEPTION` in an RPC is someone writing to the scientist — usually about what they
+    typed. Prefixing it with "Could not read … from Bloom" blames Bloom for their own input."""
+    import click
+    import pytest
+    from postgrest import APIError
+
+    from bloomctl._postgrest import queried
+
+    def too_long():
+        raise APIError({"message": "search query too long (max 200 characters)", "code": "P0001"})
+
+    with pytest.raises(click.ClickException) as caught:
+        queried("the experiment names", too_long)
+
+    assert str(caught.value) == "search query too long (max 200 characters)"
+    assert "the experiment names" not in str(caught.value)
+
+
+def test_a_database_error_still_names_the_read():
+    """Only P0001 is a sentence for the user; a permission error is not."""
+    import click
+    import pytest
+    from postgrest import APIError
+
+    from bloomctl._postgrest import queried
+
+    def denied():
+        raise APIError({"message": "permission denied for view cyl_scans", "code": "42501"})
+
+    with pytest.raises(click.ClickException) as caught:
+        queried("the experiment names", denied)
+
+    assert str(caught.value) == (
+        "Could not read the experiment names from Bloom: permission denied for view cyl_scans"
+    )

@@ -61,6 +61,11 @@ def fetch_in_batches(
     return rows
 
 
+# SQLSTATE for a PL/pgSQL RAISE EXCEPTION: a message someone wrote for a user to read, so it
+# is passed on as written rather than reported as a failed read.
+RAISED_FOR_THE_USER = "P0001"
+
+
 def queried(what: str, call: Callable[[], Any]) -> Any:
     """Run one metadata query, naming the read in the message when the server refuses it.
 
@@ -77,6 +82,8 @@ def queried(what: str, call: Callable[[], Any]) -> Any:
     try:
         return call()
     except APIError as exc:
+        if getattr(exc, "code", None) == RAISED_FOR_THE_USER:
+            raise click.ClickException(explain(exc)) from exc
         raise click.ClickException(f"Could not read {what} from Bloom: {explain(exc)}") from exc
     except Exception as exc:
         if not is_network_error(exc):

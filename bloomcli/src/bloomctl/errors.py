@@ -67,6 +67,11 @@ def explain(exc: BaseException) -> str:
     if is_network_error(exc):
         return f"could not reach Bloom ({type(exc).__name__}) — check your connection and retry"
 
+    # An API error carrying no wording: its str() is the whole body, hint and details included.
+    code = getattr(exc, "code", None)
+    if code and hasattr(exc, "message"):
+        return f"Bloom rejected the request (code {code})"
+
     return str(exc) or type(exc).__name__
 
 

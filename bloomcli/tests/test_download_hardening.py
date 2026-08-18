@@ -192,6 +192,33 @@ def test_an_unlisted_scan_is_not_counted_as_one_failed_frame(tmp_path, monkeypat
     assert result.incomplete  # ...but the dataset is still not complete
 
 
+def test_an_unlisted_scan_records_a_sentence_not_the_error_body(tmp_path, monkeypatch):
+    """The log is the file we ask people to send us; a PostgREST body carries a connection
+    string in `hint` and the failing statement in `details`."""
+    from postgrest import APIError
+
+    def _fetch_images(client, scan_id):
+        raise APIError(
+            {
+                "message": "",
+                "code": "42501",
+                "hint": "connect as postgres://bloom_agent@10.0.3.14:5432/bloom",
+                "details": "SELECT * FROM cyl_images WHERE scan_id = 1",
+            }
+        )
+
+    monkeypatch.setattr(dl, "fetch_images", _fetch_images)
+
+    result = dl.download_images(_Client(), [SCAN], tmp_path, workers=1)
+    log = tmp_path / "log.txt"
+    dl.write_download_log(result, log)
+    written = log.read_text()
+
+    assert "list images: Bloom rejected the request (code 42501)" in written
+    assert "postgres://" not in written
+    assert "SELECT" not in written
+
+
 # --- bounded submission -----------------------------------------------------
 
 
