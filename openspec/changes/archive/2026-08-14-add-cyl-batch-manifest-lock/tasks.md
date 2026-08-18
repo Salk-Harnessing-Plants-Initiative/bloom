@@ -286,7 +286,7 @@ test confirming the bump actually worked, not a RED test in the usual sense.
       `docs/bloom-integration/roadmap.md` ("Cross-repo correctness: manifest-scoped processing"
       section) per that repo's own close-the-loop convention — a follow-up action in that repo,
       not a task in this one.
-- [ ] 7.9 Run `openspec archive add-cyl-batch-manifest-lock` once deployed.
+- [x] 7.9 Run `openspec archive add-cyl-batch-manifest-lock` once deployed.
 
 ## 8. Post-PR-review hardening (found via `/review-pr` on #655, fixed same PR)
 
