@@ -158,15 +158,26 @@ def test_security_headers_present(header_responses, path, name, value):
     downgrades the edge policy — a presence-only check reports that broken
     state as healthy.
 
-    The assertion is every-value-matches rather than a count. An upstream that
-    starts emitting a byte-identical `nosniff` changes nothing a browser can
-    observe, and failing CI for it would be a false alarm; an upstream that
-    emits a *different* value is the real regression, and that still fails.
+    For most of these the assertion is every-value-matches rather than a count:
+    an upstream emitting a byte-identical `nosniff` changes nothing a browser
+    can observe, so failing CI for it would be a false alarm, while a *different*
+    value is the real regression and still fails. The two cross-origin policies
+    in SINGLE_VALUE_HEADERS are the exception — any duplicate voids them, so
+    they are held to exactly one occurrence on every route here as well as on
+    the consoles.
     No upstream sets any of these today, across all seven behind the routes
     above — this is the guard for the day one of them starts.
     """
     received = header_responses[path].get_all(name)
     assert received, f"{name} missing from the response to {path}"
+    if name in SINGLE_VALUE_HEADERS:
+        assert received == [value], (
+            f"{name} for {path} arrived as {received!r} — this header must appear "
+            "exactly once. Duplicate field lines are joined with a comma, which "
+            "parses as neither a legal value nor a single structured-field item, "
+            "so the browser drops the policy even when both copies agree"
+        )
+        return
     divergent = [v for v in received if v != value]
     assert not divergent, (
         f"{name} for {path} returned {received!r}; {divergent!r} differs from the "

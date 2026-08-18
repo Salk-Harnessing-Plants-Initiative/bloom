@@ -673,10 +673,11 @@ jobs:
           echo "CADDY_HTTPS_LISTEN_PORT=443" >> .env.ci
           # http:// scheme forces HTTP-only — Caddy parses the tls block but
           # never requests a cert (no automatic HTTPS for http:// addresses).
-          # All three hostnames, matching .env.ci and production's wildcard. A
-          # single address would leave Studio and MinIO unmatched, and Caddy
-          # answers an unmatched Host from an empty fallback server — a 200 with
-          # no body, which reads as healthy to any status-only assertion.
+          # All three hostnames, mirroring production's wildcard. A single
+          # address would leave Studio and MinIO unmatched, and Caddy answers an
+          # unmatched Host from an empty fallback server — a 200 with no body,
+          # which reads as healthy to any status-only assertion. This file is
+          # generated here, so this line is the only source of truth for it.
           echo "CADDY_SITE_ADDRESSES=http://localhost, http://studio.localhost, http://minio.localhost" >> .env.ci
           # 40-char placeholder satisfies the caddy-dns/cloudflare plugin's
           # token-format check at startup. No real Cloudflare API call is ever

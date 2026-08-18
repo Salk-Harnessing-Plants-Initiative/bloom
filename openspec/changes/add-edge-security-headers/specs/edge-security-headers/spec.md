@@ -172,3 +172,4 @@ The security headers SHALL be declared once at site level, ahead of the per-host
 - **WHEN** an upstream emits a header the edge also sets, so the client receives it twice
 - **THEN** the duplication is asserted against explicitly, not hidden by a presence-only check
 - **AND** any header whose duplicate values differ is recorded, since headers that resolve last-wins would let an upstream silently override the edge
+- **AND** for the two cross-origin policies, any duplicate at all is a failure, because repeated values join into something the browser cannot parse and the policy is dropped even when both copies agree

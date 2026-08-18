@@ -112,7 +112,7 @@ Site level also means Caddy applies the headers ahead of the handler chain, so r
 
 Two test layers guard the block, and both must stay in step with it:
 
-* [tests/unit/test_caddy_security_headers.py](../../tests/unit/test_caddy_security_headers.py) — pins site-level placement by brace depth and asserts each value verbatim. It rejects both Caddy spellings of a per-host override (`header { ... }` and the single-line `header <Field> <value>` / `header -<Field>`), since either one silently downgrades the policy for that host alone.
+* [tests/unit/test_caddy_security_headers.py](../../tests/unit/test_caddy_security_headers.py) — pins site-level placement by brace depth and asserts each value verbatim. It rejects all three Caddy spellings of a per-host override — the `header { ... }` block (with or without a matcher), the single-line `header <Field> <value>` / `header -<Field>` (wildcard deletions such as `-X-Frame-*` and `-*` included), and a `header_down` inside a `reverse_proxy` body — since each silently downgrades the policy for that host alone. The host list is derived from the site block, so renaming a matcher cannot make the guard skip a host.
 * [tests/integration/test_api_endpoints.py](../../tests/integration/test_api_endpoints.py) — asserts the headers on the live wire across every handler under the main hostname, each upstream Kong fans out to, and both console hostnames.
 
 ## Cert persistence across redeploys
