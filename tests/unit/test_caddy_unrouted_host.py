@@ -115,9 +115,32 @@ def test_plain_http_rejects_unmatched_hostnames():
     HTTPS refuses these at the handshake; plain HTTP would otherwise answer the
     same empty 200.
     """
-    text = _text()
+    text = _strip_comments(_text())
     block = re.search(r"^:80\s*\{(.*?)^\}", text, re.MULTILINE | re.DOTALL)
     assert block, "no `:80 { ... }` block — unmatched hostnames over plain HTTP get an empty 200"
-    assert re.search(r"respond\s+.*\b404\b", block.group(1)), (
-        "the :80 block must refuse with 404"
+    # Anchored: a bare `respond <body> 404` and nothing else. An unanchored search
+    # accepts `respond "404 in the text" 200`, and a path token would scope the
+    # refusal to one path while everything else still gets the empty 200.
+    assert re.search(r"^\s*respond\s+.+\s+404\s*$", block.group(1), re.MULTILINE), (
+        f"the :80 block must refuse every path with a 404, found: {block.group(1).strip()!r}"
+    )
+
+
+def test_https_rejects_hostnames_matching_no_site_address():
+    """A `:443` block, mirroring the `:80` one.
+
+    A Host outside every site address never enters the site block, so the
+    fall-through cannot catch it — it falls out of the server and Caddy answers
+    with an empty 200. Reaching this over HTTPS needs a certificate-covered SNI,
+    but Host is independent of SNI, so presenting a name we serve and then asking
+    for anything else gets there.
+    """
+    text = _strip_comments(_text())
+    block = re.search(r"^:443\s*\{(.*?)^\}", text, re.MULTILINE | re.DOTALL)
+    assert block, (
+        "no `:443 { ... }` block — a Host outside every site address would fall "
+        "out of the server and get Caddy's implicit empty 200"
+    )
+    assert re.search(r"^\s*respond\s+.+\s+404\s*$", block.group(1), re.MULTILINE), (
+        f"the :443 block must refuse every path with a 404, found: {block.group(1).strip()!r}"
     )

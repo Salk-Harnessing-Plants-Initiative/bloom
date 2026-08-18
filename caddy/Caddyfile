@@ -26,11 +26,14 @@
 #              (2-SAN cert: apex + wildcard)
 #     staging: `https://*.bloom.salk.edu`
 #              (1 wildcard covering all staging subdomains)
-#     CI:      `http://localhost, http://studio.localhost, http://minio.localhost`
+#     CI:      `http://localhost, http://studio.localhost, http://minio.localhost,
+#              http://unrouted.localhost`
 #              (forces HTTP-only — no TLS, no ACME, no Let's Encrypt call. The
 #              console hosts are listed so a `Host: studio.localhost` request enters
-#              this block instead of Caddy's unrouted-host fallback, which
-#              answers a blank 200 and made the old Studio test unable to fail.)
+#              this block instead of Caddy's unrouted-host fallback, which answers a
+#              blank 200 and made the old Studio test unable to fail.
+#              `unrouted.localhost` is served on purpose with no route, so tests can
+#              reach the site block's fall-through.)
 #
 #   Prod and staging both issue their certs via the Salk-DNS CNAME:
 #     _acme-challenge.bloom.salk.edu -> _acme-challenge.bloom-acme.talmolab.org
@@ -54,17 +57,6 @@
 #                         deploy time from PROD_/STAGING_CLOUDFLARE_API_TOKEN
 #                         secrets.
 # =============================================================================
-
-# Refuse a request whose Host does not match the certificate it was served
-# under. SNI and the Host header are independent, so without this a scanner can
-# present a cert-covered SNI with any Host it likes, enter the site block, and
-# fall out of it — which is the empty 200 this file otherwise fixes below.
-# Mismatches get 421, which browsers handle by retrying on a fresh connection.
-{
-	servers {
-		strict_sni_host
-	}
-}
 
 {$CADDY_SITE_ADDRESSES} {
 	# Multi-SAN cert covering all the subjects listed in CADDY_SITE_ADDRESSES,
@@ -236,6 +228,26 @@
 
 # -------------------
 # Hostnames matching no site address
+# -------------------
+# A Host outside every site address never enters the site block above — it
+# matches no route on the server and falls out of it, which Caddy answers with
+# an empty `200`. Over HTTPS that needs a certificate-covered SNI to reach at
+# all, but the Host header is independent of SNI, so a client can present a
+# name we do serve and then ask for anything.
+#
+# A catch-all on each listener refuses those. `strict_sni_host` would also do
+# it, by requiring Host == SNI — but it compares against the SNI rather than
+# what the certificate covers, so two hostnames sharing our wildcard cert
+# mismatch each other. `studio.` and `minio.` share a certificate and an IP,
+# which is exactly when browsers coalesce HTTP/2 connections onto one socket;
+# a coalesced request would get 421, and Safari does not retry. Not worth it
+# for a request that reaches no backend either way.
+:443 {
+	respond "not reachable" 404
+}
+
+# -------------------
+# Hostnames matching no site address, over plain HTTP
 # -------------------
 # Over HTTPS these are already refused at the handshake, since no certificate
 # covers them. Plain HTTP has no such step, and what they get instead depends

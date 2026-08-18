@@ -62,8 +62,9 @@ def test_hostname_outside_every_site_address_is_refused(base_url, host):
 @pytest.mark.parametrize("host", ["localhost", "studio.localhost", "minio.localhost"])
 def test_routed_hostnames_are_not_swallowed(base_url, host):
     """A routed hostname must still reach its handler, not the fall-through."""
-    status, _ = _get(base_url, host)
-    assert status != 404, (
-        f"{host} is a routed hostname but was refused — the fall-through is "
-        "matching ahead of the per-host handle blocks"
+    status, body = _get(base_url, host)
+    assert status < 400, (
+        f"{host} is a routed hostname but answered {status} with {len(body)} bytes. "
+        "A 404 means the fall-through matched ahead of the per-host handle blocks; "
+        "a 5xx means the handler was reached but its upstream is down."
     )

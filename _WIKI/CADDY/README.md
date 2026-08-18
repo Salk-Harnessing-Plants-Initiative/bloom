@@ -124,8 +124,7 @@ Two catch-alls make an unserved name say so, rather than look healthy:
 | Where | Covers | Answer |
 | --- | --- | --- |
 | Bare `handle` at the end of the `{$CADDY_SITE_ADDRESSES}` block | A wildcard-covered name with no `handle @host` above it | `404 not reachable` |
-| `:80` site block | A name matching no site address at all, over plain HTTP | `404 not reachable` |
-| `strict_sni_host` (global) | A Host header that does not match the certificate the connection was served under | `421` |
+| `:80` and `:443` site blocks | A name matching no site address at all — it never enters the site block, so the fall-through cannot catch it | `404 not reachable` |
 
 **Position in the file does not matter.** Caddy's adapter sorts a matcher-less `handle` after every matched one, whatever order they are written in, so the fall-through cannot swallow a routed hostname. Keeping it last is a readability convention.
 
