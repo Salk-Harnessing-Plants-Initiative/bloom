@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+from sleap_roots_contracts import RunManifest
 
 import bloomctl.cli as climod
 import bloomctl.cyl.ingest as ing
@@ -935,15 +936,24 @@ def _write_envelope(directory, scan_key):
     return path
 
 
+def _write_run_manifest(directory, *, scan_keys, pipeline_run_id="wf-test"):
+    """Write a valid run_manifest.json (bloom #678 — write-back's manifest-scoped discovery)."""
+    manifest = RunManifest(pipeline_run_id=pipeline_run_id, scan_keys=scan_keys)
+    (directory / ing.RUN_MANIFEST_FILENAME).write_text(manifest.model_dump_json(), encoding="utf-8")
+
+
 def test_discover_envelopes_returns_sorted_paths(tmp_path):
     _write_envelope(tmp_path, "scan_b")
     _write_envelope(tmp_path, "scan_a")
-    paths = ing.discover_envelopes(tmp_path)
-    assert [p.name for p in paths] == ["scan_a.result.json", "scan_b.result.json"]
+    discovered = ing.discover_envelopes(tmp_path)
+    assert [p.name for p in discovered.paths] == ["scan_a.result.json", "scan_b.result.json"]
+    assert discovered.missing_scan_keys == []
 
 
 def test_discover_envelopes_empty_dir_returns_empty_list(tmp_path):
-    assert ing.discover_envelopes(tmp_path) == []
+    discovered = ing.discover_envelopes(tmp_path)
+    assert discovered.paths == []
+    assert discovered.missing_scan_keys == []
 
 
 def test_discover_envelopes_missing_dir_raises(tmp_path):
@@ -963,8 +973,110 @@ def test_discover_envelopes_is_non_recursive(tmp_path):
     nested = tmp_path / "subdir"
     nested.mkdir()
     _write_envelope(nested, "scan_nested")
-    paths = ing.discover_envelopes(tmp_path)
-    assert [p.name for p in paths] == ["scan_top.result.json"]
+    discovered = ing.discover_envelopes(tmp_path)
+    assert [p.name for p in discovered.paths] == ["scan_top.result.json"]
+
+
+# --- batch: run_manifest.json-scoped discovery (bloom #678) ------------------
+
+
+def test_discover_envelopes_scopes_to_run_manifest(tmp_path):
+    _write_envelope(tmp_path, "scan_1")
+    _write_envelope(tmp_path, "scan_2")
+    _write_run_manifest(tmp_path, scan_keys=["scan_1"])
+
+    discovered = ing.discover_envelopes(tmp_path)
+
+    assert [p.name for p in discovered.paths] == ["scan_1.result.json"]
+
+
+def test_discover_envelopes_no_run_manifest_is_fully_unscoped(tmp_path):
+    _write_envelope(tmp_path, "scan_1")
+    _write_envelope(tmp_path, "scan_2")
+
+    discovered = ing.discover_envelopes(tmp_path)
+
+    assert [p.name for p in discovered.paths] == ["scan_1.result.json", "scan_2.result.json"]
+    assert discovered.missing_scan_keys == []
+
+
+def test_discover_envelopes_missing_run_manifest_scan_key_is_reported(tmp_path):
+    _write_envelope(tmp_path, "scan_1")
+    _write_run_manifest(tmp_path, scan_keys=["scan_1", "scan_2"])
+
+    discovered = ing.discover_envelopes(tmp_path)
+
+    assert [p.name for p in discovered.paths] == ["scan_1.result.json"]
+    assert discovered.missing_scan_keys == ["scan_2"]
+
+
+def test_discover_envelopes_excluded_file_logs_debug(tmp_path, caplog):
+    _write_envelope(tmp_path, "scan_1")
+    _write_envelope(tmp_path, "scan_2")
+    _write_run_manifest(tmp_path, scan_keys=["scan_1"])
+
+    with caplog.at_level("DEBUG", logger="bloomctl.cyl.ingest"):
+        ing.discover_envelopes(tmp_path)
+
+    debug_records = [r for r in caplog.records if r.levelname == "DEBUG"]
+    assert len(debug_records) == 1
+    assert "scan_2" in debug_records[0].message
+
+
+def test_discover_envelopes_no_exclusion_logs_no_debug_line(tmp_path, caplog):
+    _write_envelope(tmp_path, "scan_1")
+    _write_run_manifest(tmp_path, scan_keys=["scan_1"])
+
+    with caplog.at_level("DEBUG", logger="bloomctl.cyl.ingest"):
+        ing.discover_envelopes(tmp_path)
+
+    assert [r for r in caplog.records if r.levelname == "DEBUG"] == []
+
+
+def test_discover_envelopes_multiple_excluded_files_log_one_aggregated_line(tmp_path, caplog):
+    _write_envelope(tmp_path, "scan_1")
+    _write_envelope(tmp_path, "scan_2")
+    _write_envelope(tmp_path, "scan_3")
+    _write_run_manifest(tmp_path, scan_keys=["scan_1"])
+
+    with caplog.at_level("DEBUG", logger="bloomctl.cyl.ingest"):
+        ing.discover_envelopes(tmp_path)
+
+    debug_records = [r for r in caplog.records if r.levelname == "DEBUG"]
+    assert len(debug_records) == 1
+    assert "scan_2" in debug_records[0].message
+    assert "scan_3" in debug_records[0].message
+
+
+def test_discover_envelopes_malformed_run_manifest_json_raises(tmp_path):
+    _write_envelope(tmp_path, "scan_1")
+    (tmp_path / ing.RUN_MANIFEST_FILENAME).write_text("{ not json", encoding="utf-8")
+
+    with pytest.raises(ing.EnvelopeError):
+        ing.discover_envelopes(tmp_path)
+
+
+def test_discover_envelopes_run_manifest_wrong_schema_raises(tmp_path):
+    _write_envelope(tmp_path, "scan_1")
+    (tmp_path / ing.RUN_MANIFEST_FILENAME).write_text(
+        json.dumps({"pipeline_run_id": "wf-test"}), encoding="utf-8"
+    )
+
+    with pytest.raises(ing.EnvelopeError):
+        ing.discover_envelopes(tmp_path)
+
+
+def test_discover_envelopes_unreadable_run_manifest_raises(tmp_path, monkeypatch):
+    _write_envelope(tmp_path, "scan_1")
+    _write_run_manifest(tmp_path, scan_keys=["scan_1"])
+
+    def _boom(self, *args, **kwargs):
+        raise OSError("simulated permission error")
+
+    monkeypatch.setattr(Path, "read_text", _boom)
+
+    with pytest.raises(ing.EnvelopeError):
+        ing.discover_envelopes(tmp_path)
 
 
 def test_ingest_one_envelope_malformed_json_file(tmp_path):
@@ -1311,9 +1423,9 @@ def test_batch_ingest_oracle_matches_extract_batch_output_shape(tmp_path, monkey
     # extract_batch's own output_dir is flat: {scan_key}.result.json directly, no nesting —
     # discover_envelopes' non-recursive glob must match that, not a nested layout.
     _write_envelope(tmp_path, "scan_1")
-    paths = ing.discover_envelopes(tmp_path)
-    assert len(paths) == 1
-    assert paths[0].parent == tmp_path
+    discovered = ing.discover_envelopes(tmp_path)
+    assert len(discovered.paths) == 1
+    assert discovered.paths[0].parent == tmp_path
 
 
 def test_batch_ingest_cli_malformed_envelope_file_is_isolated(monkeypatch, tmp_path):
@@ -1351,6 +1463,101 @@ def test_batch_ingest_cli_nonexistent_dir_makes_no_call(monkeypatch, tmp_path):
 
     assert result.exit_code != 0
     assert not called["auth"]
+
+
+# --- batch: run_manifest.json-scoped discovery wiring (bloom #678) -----------
+
+
+def test_batch_ingest_result_missing_run_manifest_scan_key_is_reported_failed_json(
+    monkeypatch, tmp_path
+):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    _write_envelope(tmp_path, "scan_1")
+    _write_run_manifest(tmp_path, scan_keys=["scan_1", "scan_9"])
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code != 0
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_1"]["status"] == "ok"
+    assert payload["scan_9"]["status"] == "failed"
+    assert "scan_9" in payload["scan_9"]["error"]
+
+
+def test_batch_ingest_result_missing_run_manifest_scan_key_is_reported_failed_default_output(
+    monkeypatch, tmp_path
+):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    _write_envelope(tmp_path, "scan_1")
+    _write_run_manifest(tmp_path, scan_keys=["scan_1", "scan_9"])
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert "scan_9" in result.output
+
+
+def test_batch_ingest_cli_malformed_run_manifest_makes_no_auth_call(monkeypatch, tmp_path):
+    called = {"auth": False}
+    monkeypatch.setattr(
+        climod, "_authed_client", lambda p: called.__setitem__("auth", True) or object()
+    )
+    _write_envelope(tmp_path, "scan_1")
+    (tmp_path / ing.RUN_MANIFEST_FILENAME).write_text("{ not json", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert not called["auth"]
+
+
+def test_batch_ingest_result_missing_scan_key_alone_makes_no_auth_call(monkeypatch, tmp_path):
+    called = {"auth": False}
+    monkeypatch.setattr(
+        climod, "_authed_client", lambda p: called.__setitem__("auth", True) or object()
+    )
+    _write_run_manifest(tmp_path, scan_keys=["scan_1", "scan_2"])
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code != 0
+    assert not called["auth"]
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_1"]["status"] == "failed"
+    assert payload["scan_2"]["status"] == "failed"
+
+
+def test_batch_ingest_result_mixed_present_and_missing_scan_keys(monkeypatch, tmp_path):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    _write_envelope(tmp_path, "scan_1")
+    _write_run_manifest(tmp_path, scan_keys=["scan_1", "scan_2"])
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code != 0
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_1"]["status"] == "ok"
+    assert payload["scan_2"]["status"] == "failed"
+
+
+def test_batch_ingest_cli_run_manifest_present_all_scan_keys_ingest_successfully(
+    monkeypatch, tmp_path
+):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    _write_envelope(tmp_path, "scan_1")
+    _write_envelope(tmp_path, "scan_2")
+    _write_run_manifest(tmp_path, scan_keys=["scan_1", "scan_2"])
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert len(payload) == 2
+    assert all(entry["status"] == "ok" for entry in payload)
 
 
 def test_batch_ingest_cli_noop_reported_as_skipped(monkeypatch, tmp_path):
