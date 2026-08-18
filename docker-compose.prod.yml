@@ -234,6 +234,59 @@ services:
     # enforces the serialisation instead, whichever comes first.
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "1"]
 
+  # Consumes the cyl_pipeline_dispatch pgmq queue (bloom #11/#404 Phase 2) and
+  # submits each claimed batch to Argo as a Kubernetes Workflow CRD. Same image
+  # as workflows; scale by replicas (pgmq's claim is concurrency-safe).
+  #
+  # Deploy-sequencing note: do not start this service in an environment where
+  # POST /workflows/pipeline is already live (real triggers enqueuing real
+  # batches) until WORKFLOWS_K8S_TOKEN/_CA_CERT/_API_URL are genuinely set —
+  # see openspec/changes/add-cyl-pipeline-dispatch/design.md's Risks.
+  cyl-pipeline-worker:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      # Real credentials for the bloom-pipeline ServiceAccount. TOKEN/CA_CERT/
+      # API_URL are true secrets (SENSITIVE_INVENTORY); NAMESPACE/TTL_SECONDS
+      # are plain config values with safe code defaults, sourced from the
+      # committed .env.*.defaults files instead.
+      WORKFLOWS_K8S_TOKEN: ${WORKFLOWS_K8S_TOKEN}
+      WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
+      WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
+      WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE}
+      WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS}
+      # Disambiguates which environment's DB a pipeline-run-id belongs to —
+      # prod and staging share the runai-busch-lab namespace above and both
+      # run_id sequences start at 1 (see k8s_client.py's ENV_LABEL).
+      WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL}
+    networks:
+      - supanet
+    depends_on:
+      - kong
+      - db-prod
+    restart: unless-stopped
+    # _stop() (dispatch_worker.py) deliberately lets an in-flight batch finish
+    # before exiting — the K8s submission POST alone has a 15s httpx timeout
+    # (k8s_client.py), plus the claim/complete/fail RPC round trips. Docker's
+    # 10s default would routinely SIGKILL mid-submission on an ordinary
+    # `compose down`/redeploy, defeating that design and risking exactly the
+    # "successful-submission-recorded-as-failed" case design.md's Risks
+    # section already flags for crashes.
+    stop_grace_period: 30s
+    command: ["python", "dispatch_worker.py"]
+
   # -------------------
   # Bloom MCP Server
   # -------------------
