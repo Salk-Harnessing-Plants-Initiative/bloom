@@ -184,14 +184,16 @@ sources = client.rpc("list_experiment_trait_sources", {"experiment_id_": 42}).ex
 via one aggregate call; with all three arguments `NULL` it covers every experiment in a single round
 trip, same latest/`source_id`/`run_id` selection as `get_experiment_traits` — see the `cyl-trait-read`
 spec for the definition (not restated here). With no `source_id_`/`run_id_` pin, `n_plants` is always
-live but `n_traits` is read from a cache refreshed on a schedule (once daily, not per write —
-bloom#637/bloom#656), so it can lag newly-written trait data by up to one refresh interval once
-that schedule is actually running (see `design.md` D8/D5 for the current staleness caveat — the
-GitHub Action's `schedule:` trigger only fires from the default branch, so staleness stays
-unbounded on staging until this workflow is promoted there, AND the workflow only ever targets
-staging's host — production's cache gets populated once, at deploy time, and never refreshed
-again until a separate production-targeted refresh path exists). A pinned call is fully live for
-both counts.
+live but `n_traits` is read from a cache (not per write — bloom#637/bloom#656), refreshed
+on demand only via a manually-dispatched GitHub Action
+(`.github/workflows/refresh-cyl-experiment-trait-counts.yml`, `environment: staging|production`)
+rather than an automatic schedule — staging doesn't need frequent automatic refreshes, and
+GitHub Actions `schedule:` triggers only fire from the repo's default branch anyway, so one
+would have sat inert on `staging` (see `design.md` D8 for the full reasoning). Staleness is
+therefore unbounded until someone dispatches a refresh for the environment in question;
+production is expected to get its own automatic cadence eventually
+([bloom#708](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/708)). A pinned
+call is fully live for both counts.
 
 See [`_WIKI/SUPABASE/README.md`](../SUPABASE/README.md) for the full
 role / RLS picture.

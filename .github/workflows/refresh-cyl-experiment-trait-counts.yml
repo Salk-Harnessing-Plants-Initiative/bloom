@@ -3,44 +3,48 @@ name: Refresh cyl_experiment_trait_counts
 # bloom#637 / bloom#656 (fix-cyl-scan-traits-latest-rollup, design.md D5/D8): n_traits in
 # get_experiment_summary_counts's unpinned path is cached in cyl_experiment_trait_counts rather
 # than recomputed live (a full scan, 6.6s at prod scale, no shortcut available). The cache is
-# refreshed on a fixed schedule instead of a per-write trigger, because one write-back upload
-# inserts on the order of hundreds of trait rows in a loop -- a per-row trigger would fire that
-# many full-experiment recomputes for one upload.
+# refreshed on demand rather than a per-write trigger, because one write-back upload inserts on
+# the order of hundreds of trait rows in a loop -- a per-row trigger would fire that many
+# full-experiment recomputes for one upload.
 #
-# pg_cron isn't installed in this stack, so this schedule lives here instead -- a proposed
-# default per design.md's Open Questions (D8), not a confirmed operational decision. Calls the
-# refresh function as an ordinary PostgREST RPC (the same surface every other caller in this repo
-# uses), rather than SSH+psql, so it doesn't touch the "manual DB access is emergency-only"
-# deploy policy design.md's predecessor (PR #654) ran into for its own backfill.
+# pg_cron isn't installed in this stack, so this lives here instead. No `on: schedule` trigger,
+# deliberately -- two reasons: (1) staging has low write volume and doesn't need frequent
+# automatic refreshes right now; (2) `schedule:` triggers only ever fire from the workflow file's
+# copy on the repo's DEFAULT branch, so a cron here would sit inert on staging until promoted to
+# main anyway (a real gap found in this PR's own review -- see design.md D8). Manual
+# `workflow_dispatch`, by contrast, can be run against any branch/ref holding this file right now.
+# Calls the refresh function as an ordinary PostgREST RPC (the same surface every other caller in
+# this repo uses), rather than SSH+psql, so it doesn't touch the "manual DB access is
+# emergency-only" deploy policy design.md's predecessor (PR #654) ran into for its own backfill.
 #
-# Runs once daily, not every 5-15 min as design.md's original proposal had it -- staging has low
-# write volume and no caller currently depends on sub-daily freshness, so a daily refresh is a
-# cheaper default; `workflow_dispatch` below still allows an on-demand manual run any time a fresher
-# count is needed sooner (e.g. right after a bulk write-back upload).
+# `environment` (mirrors deploy.yml's own input) selects which host/secret pair to call --
+# STAGING_API_URL/PROD_API_URL are both hardcoded literals (the same public, stable hostnames
+# already committed as each environment's own .env.*.defaults API_EXTERNAL_URL, and documented
+# non-sensitive by the Committed Defaults contract, tests/unit/test_env_defaults.py), and
+# STAGING_SERVICE_ROLE_KEY/PROD_SERVICE_ROLE_KEY are the real secrets, both already provisioned
+# before this workflow existed. This job also deliberately never checks out the repo (see
+# `permissions: {}` below), so it can't read either .env.*.defaults file at runtime; hardcoded
+# literals are simpler than adding checkout just to read one line out of each.
 #
-# STAGING_API_URL is hardcoded below rather than a GitHub secret: it's the same value as
-# API_EXTERNAL_URL in .env.staging.defaults, already committed to this repo and already
-# documented as non-sensitive by the Committed Defaults contract (tests/unit/test_env_defaults.py)
-# -- there's nothing to protect by putting a public, stable hostname behind a secret. This job
-# also deliberately never checks out the repo (see `permissions: {}` below), so it can't read
-# .env.staging.defaults at runtime either; a literal is simpler than adding checkout just to read
-# one line out of a file. secrets.STAGING_SERVICE_ROLE_KEY is the actual sensitive credential here
-# and stays a real secret (already exists -- used by deploy.yml).
-#
-# If a workflows-service-hosted job is preferred instead of a GitHub Action (the other option
-# design.md D8 names), delete this file and file a follow-up issue against that service instead.
+# Production is expected to eventually need an automatic (scheduled) refresh once its write
+# volume grows -- tracked as bloom#708, not added speculatively here.
 
 on:
-  schedule:
-    # Once daily at 06:00 UTC (~10pm PT / 11pm PDT the prior day) -- off-hours for the lab.
-    - cron: '0 6 * * *'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to refresh'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
 
 # This job only makes an outbound curl call -- no checkout, no repo-content access needed.
 permissions: {}
 
-# With a once-daily cadence, schedule-vs-schedule overlap is essentially impossible; this mainly
-# guards a manual workflow_dispatch racing another dispatch or the daily run. Safe to cancel: the
+# Guards against two dispatches for the same environment racing each other. Safe to cancel: the
 # refresh RPC is a single statement in one transaction, so an aborted client connection (what
 # cancelling this job's curl call amounts to) rolls it back cleanly -- no partial state either way.
 concurrency:
@@ -54,25 +58,39 @@ jobs:
     steps:
       - name: Call refresh_cyl_experiment_trait_counts()
         env:
-          # Public, stable staging hostname -- see this workflow's own header comment for why
-          # this is a literal and not a secret. Must match .env.staging.defaults's
-          # API_EXTERNAL_URL (tests/unit/test_refresh_workflow_staging_api_url_shape.py enforces it).
+          ENVIRONMENT: ${{ github.event.inputs.environment }}
           STAGING_API_URL: https://staging.bloom.salk.edu:8443/api
-          SERVICE_ROLE_KEY: ${{ secrets.STAGING_SERVICE_ROLE_KEY }}
+          PROD_API_URL: https://bloom.salk.edu/api
+          STAGING_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SERVICE_ROLE_KEY }}
+          PROD_SERVICE_ROLE_KEY: ${{ secrets.PROD_SERVICE_ROLE_KEY }}
         run: |
+          case "${ENVIRONMENT}" in
+            staging)
+              API_URL="${STAGING_API_URL}"
+              SERVICE_ROLE_KEY="${STAGING_SERVICE_ROLE_KEY}"
+              ;;
+            production)
+              API_URL="${PROD_API_URL}"
+              SERVICE_ROLE_KEY="${PROD_SERVICE_ROLE_KEY}"
+              ;;
+            *)
+              echo "::error::Unknown environment '${ENVIRONMENT}' -- expected staging or production."
+              exit 1
+              ;;
+          esac
           if [ -z "${SERVICE_ROLE_KEY}" ]; then
-            echo "::error::STAGING_SERVICE_ROLE_KEY not configured -- see this workflow's own header comment."
+            echo "::error::No service-role key configured for environment '${ENVIRONMENT}' -- see this workflow's own header comment."
             exit 1
           fi
-          case "${STAGING_API_URL}" in
+          case "${API_URL}" in
             https://*) ;;
             *)
-              echo "::error::STAGING_API_URL must be https:// -- a plain http:// URL would send SERVICE_ROLE_KEY (a full-bypass-RLS credential) in cleartext on every scheduled run."
+              echo "::error::API_URL must be https:// -- a plain http:// URL would send SERVICE_ROLE_KEY (a full-bypass-RLS credential) in cleartext on every run."
               exit 1
               ;;
           esac
           status=$(curl -s -S --connect-timeout 5 --max-time 30 -o /tmp/refresh_response.json -w "%{http_code}" \
-            -X POST "${STAGING_API_URL}/rest/v1/rpc/refresh_cyl_experiment_trait_counts" \
+            -X POST "${API_URL}/rest/v1/rpc/refresh_cyl_experiment_trait_counts" \
             -H "apikey: ${SERVICE_ROLE_KEY}" \
             -H "Authorization: Bearer ${SERVICE_ROLE_KEY}" \
             -H "Content-Type: application/json" \

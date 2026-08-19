@@ -73,18 +73,19 @@ act on without reading the whole doc. Everything else here is optional context.
    - The `source_id_`/`run_id_`-pinned branches' cost is _reasoned about_, not benchmarked
      (design.md D7) — no caller pins either parameter today, and this pass couldn't run
      `EXPLAIN (ANALYZE, BUFFERS)` against staging at `experiment_id=1` scale.
-   - `n_traits`'s refresh schedule shipped as a GitHub Action (design.md D8), not a
+   - `n_traits`'s refresh runs as a manually-dispatched GitHub Action (design.md D8), not a
      `workflows`-service job — the other option she'd named on the predecessor PR's thread. It
-     needs no secret provisioning (the base URL is a hardcoded, non-sensitive literal; the
-     `STAGING_SERVICE_ROLE_KEY` it uses already existed) — but its `schedule:` trigger only fires
-     from whatever copy of the workflow file lives on the repo's default branch, and this PR merges
-     to `staging`, not `main`. Staleness stays unbounded on staging until a later promotion PR lands
-     the workflow file on `main` — ideally as part of one of your regular `staging -> main`
-     promotion PRs, rather than a separate ask. **Separately, and not fixed by that promotion**: the
-     workflow only ever calls staging's PostgREST endpoint — production's cache would still only get
-     the migration's one-time initial population and never refresh again. That's a real design
-     decision (a second workflow, or an environment-conditional one) tracked as tasks.md 5.5, likely
-     worth its own follow-up issue rather than folding into this PR.
+     needs no secret provisioning (both base URLs are hardcoded, non-sensitive literals; both
+     service-role keys it uses already existed). Deliberately no `on: schedule` trigger — staging
+     doesn't need frequent automatic refreshes, and `schedule:` only ever fires from the repo's
+     default branch anyway, so one would have sat inert on `staging` regardless. An `environment`
+     input (`staging`/`production`, mirroring `deploy.yml`'s own convention) lets the same
+     `workflow_dispatch` call target either host — closing what would otherwise have been a
+     permanent gap for production (it's a genuinely separate Supabase instance the original
+     staging-only version never touched). Production is expected to eventually need its own
+     automatic (scheduled) cadence once its write volume grows — tracked as
+     [bloom#708](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/708), not
+     guessed at here.
 
 Separately, not blocking this roadmap: issue #406 (verified per-user identity + a
 `bloommcp_usage` table) is still awaiting your reply to the two design questions from my

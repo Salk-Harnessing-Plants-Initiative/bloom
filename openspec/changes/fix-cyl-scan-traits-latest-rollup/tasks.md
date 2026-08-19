@@ -147,56 +147,53 @@ EXECUTE ... TO service_role` only (not the four read roles — this is a mainten
       contract is unchanged. **Done — 365 passed, 5 skipped across the full `cyl`-scoped integration
       suite after all `/review-pr` fixes.**
 
-## 5. Scheduled refresh (design.md D8 — GitHub Action confirmed, interval settled at once daily)
+## 5. On-demand refresh, both environments (design.md D8 — redesigned post-round-8)
 
-- [x] 5.1 Add a scheduled GitHub Actions workflow
-      (`.github/workflows/refresh-cyl-experiment-trait-counts.yml`, `on: schedule`) that calls
+- [x] 5.1 Add a GitHub Actions workflow
+      (`.github/workflows/refresh-cyl-experiment-trait-counts.yml`) that calls
       `refresh_cyl_experiment_trait_counts()` via the PostgREST RPC endpoint using a service-role key,
       not SSH+psql (avoids re-triggering the "manual DB access is emergency-only" policy question PR
-      #654's D8 ran into for its own backfill). **Done — the scheduled-GitHub-Action approach itself is
-      confirmed (see design.md D8); the interval was reconsidered after this workflow shipped and
-      changed from the originally-proposed 5–15 min window to `cron: '0 6 * * *'` (once daily) — staging
-      has low write volume and no caller currently depends on sub-daily freshness, and
-      `workflow_dispatch` still allows an on-demand manual run any time a fresher count is needed sooner.
-      (Hardened post-`/review-pr`: explicit `permissions: {}` (CodeQL had flagged its absence — low
-      actual risk since the job never checks out code or uses the token, but fixed as
-      defense-in-depth), `timeout-minutes: 2` on the job, `--connect-timeout 5 --max-time 30` on the
-      `curl` call so a hung staging endpoint can't occupy the runner indefinitely.)**
-- [x] 5.2 **No `STAGING_API_URL` secret needed after all.** The originally-considered new secret was
-      reconsidered: the value is the same public, stable hostname already committed as
-      `API_EXTERNAL_URL` in `.env.staging.defaults` and already documented non-sensitive by the
-      Committed Defaults contract (`tests/unit/test_env_defaults.py`) — nothing about it needs
-      secret-store protection. Hardcoded as a literal in the workflow instead (this job deliberately
-      never checks out the repo, so it can't read `.env.staging.defaults` at runtime either).
-      `STAGING_SERVICE_ROLE_KEY` — the one actual credential this job needs — already existed, from
-      `deploy.yml`'s own use, so no secret provisioning is required at all. Guarded by
-      `tests/unit/test_refresh_workflow_staging_api_url_shape.py`, which fails if the literal drifts
-      from `.env.staging.defaults` or if a `secrets.STAGING_API_URL` reference reappears.
-- [ ] 5.3 Verify the workflow's one authenticated call succeeds against staging (`workflow_dispatch` is
-      wired for a manual first run) — no longer blocked on any secret provisioning per 5.2. Note: this
-      only proves the call logic works; it does NOT prove the automatic daily schedule is live — see 5.4.
-- [ ] 5.4 **Found in round 7, new gate.** This PR's base is `staging`, not `main` (this repo's default
-      branch, confirmed via `gh repo view`). GitHub Actions `schedule:` triggers only fire from the
-      workflow file's copy on the default branch. So merging this PR does NOT make the daily refresh live
-      — `n_traits` staleness stays unbounded until a later promotion PR carries this workflow file to
-      `main`. **Round 8 correction:** the fast path for this is NOT `promote-security-to-main.yml`'s bot
-      (security/CVE-scoped only, would never pick up this PR) — it's this repo's separate manual
-      `staging -> main` promotion practice, run by @blm3886 roughly every 1-2 weeks (e.g. #667, #627,
-      #607). Ask her to fold this workflow file into her next promotion PR, rather than waiting passively.
-      Confirm that promotion has happened (and, ideally, that a scheduled run has actually fired on `main`)
-      before treating `design.md`'s "bounded to one refresh interval" claim as true for **staging** — see
-      5.5 for why production needs a separate confirmation entirely.
-- [ ] 5.5 **Found in round 8, new gate — distinct from 5.4.** Even once promoted to `main`, this workflow's
-      `STAGING_API_URL` is a hardcoded literal pointing at `staging.bloom.salk.edu` — it never calls
-      production's host (`.env.prod.defaults`'s `API_EXTERNAL_URL=https://bloom.salk.edu/api`, a genuinely
-      separate Supabase instance). `deploy.yml`'s `deploy-production` job applies this PR's migrations to
-      production on push to `main`, including the one-time inline
-      `SELECT public.refresh_cyl_experiment_trait_counts();` — so production's cache is populated exactly
-      once, at deploy time, and never refreshed again by any existing mechanism, independent of 5.4. This
-      is a permanent gap for production, not "unbounded until promoted." Not fixed in this PR — needs a
-      real design decision (a second, production-targeted workflow, or an environment-conditional/matrix
-      job) before bloom#637 can be considered closed for production, not just staging. Recommend filing a
-      dedicated follow-up issue rather than scope-creeping this PR further.
+      #654's D8 ran into for its own backfill). **Redesigned after rounds 7-8's findings (see below):
+      no `on: schedule` trigger at all — `workflow_dispatch`-only, with an `environment` choice input
+      (`staging`/`production`, mirroring `deploy.yml`'s own convention). Staging doesn't need frequent
+      automatic refreshes right now, and a schedule would have sat inert pre-promotion anyway (5.4's
+      original finding); manual dispatch works against any branch immediately, no promotion needed.
+      (Hardened post-`/review-pr`: explicit `permissions: {}`, `timeout-minutes: 2` on the job,
+      `--connect-timeout 5 --max-time 30` on the `curl` call so a hung endpoint can't occupy the runner
+      indefinitely.)**
+- [x] 5.2 **No `STAGING_API_URL`/`PROD_API_URL` secrets needed.** Both values are the same public, stable
+      hostnames already committed as each environment's own `API_EXTERNAL_URL` in
+      `.env.staging.defaults`/`.env.prod.defaults`, and already documented non-sensitive by the Committed
+      Defaults contract (`tests/unit/test_env_defaults.py`) — nothing about either needs secret-store
+      protection. Hardcoded as literals in the workflow instead (this job deliberately never checks out
+      the repo, so it can't read either `.env.*.defaults` file at runtime).
+      `STAGING_SERVICE_ROLE_KEY`/`PROD_SERVICE_ROLE_KEY` — the actual credentials this job needs — both
+      already existed as secrets before this workflow was added, so no new provisioning is required at
+      all. Guarded by `tests/unit/test_refresh_workflow_shape.py`, which fails if either literal drifts
+      from its `.env.*.defaults` or if a `secrets.STAGING_API_URL`/`secrets.PROD_API_URL` reference
+      reappears.
+- [ ] 5.3 Verify the workflow's authenticated call succeeds against staging via `workflow_dispatch`
+      (`environment: staging`) — no longer blocked on any secret provisioning or branch promotion, since
+      manual dispatch works against this branch right now.
+- [x] 5.4 **Found in round 7 — resolved by redesign, not by promotion.** GitHub Actions `schedule:`
+      triggers only fire from the workflow file's copy on the repo's default branch, so a cron here would
+      have sat inert on `staging` until a separate promotion PR landed it on `main`. Rather than chase
+      that promotion for a cadence staging doesn't currently need, `on: schedule` was dropped entirely —
+      `workflow_dispatch` fires against any branch/ref holding the file, no promotion required. Nothing
+      left to confirm here; this gate is closed by construction, not by an operational step.
+- [x] 5.5 **Found in round 8 — resolved by an `environment` input, not a second workflow.** The original
+      staging-only version would never have refreshed production's cache even once promoted (a genuinely
+      separate host per `.env.prod.defaults`'s `API_EXTERNAL_URL`, and `deploy.yml` only ever populates it
+      once, at deploy time, via the migration's inline call). Closed by adding a `choice` input,
+      `environment` (`staging`/`production`), that resolves to the right hardcoded URL/secret pair inside
+      the run script — no new secrets needed (`PROD_SERVICE_ROLE_KEY` already existed). Verify the
+      workflow's authenticated call also succeeds against production via `workflow_dispatch`
+      (`environment: production`) once this PR is live there.
+- [ ] 5.6 **Follow-up filed, not this PR's job:** [bloom#708](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/708)
+      tracks adding an automatic (scheduled) trigger for production once its write volume grows enough
+      that on-demand dispatch stops being sufficient. Deliberately not spec'd here — the right interval
+      depends on production write cadence at the time, not staging's (which no longer has an automatic
+      cadence at all, per 5.4).
 
 ## 6. Validate
 
@@ -490,7 +487,7 @@ issues.
       round-2-era form and re-running the existing test unchanged — it still passed, proving it
       genuinely cannot distinguish which branch fires.
 - [x] 12.3 Fix everything that survived verification: - `GRANT INSERT, UPDATE, DELETE ON public.cyl_scan_latest_source/cyl_experiment_trait_counts TO
-  bloom_admin` added to both migrations, matching `cyl_scan_traits`'s own capability and the
+bloom_admin` added to both migrations, matching `cyl_scan_traits`'s own capability and the
       RLS policy's stated intent. Two new tests
       (`test_bloom_admin_can_write_directly_to_cyl_scan_latest_source`,
       `test_bloom_admin_can_write_directly_to_cyl_experiment_trait_counts`) write straight to
@@ -544,10 +541,10 @@ subagents informed of the triage results so they wouldn't re-litigate settled po
       claim: swapping in the OLD, pre-this-PR view definition (which has zero dependency on
       `cyl_scan_latest_source`) reproduces the IDENTICAL failure for `bloom_workflows` — it never
       had a `GRANT SELECT` on this view, before or after this PR. A code search (`services/workflows/
-  pipeline.py`/`video.py`, the only code authenticating as this role) confirmed it never reads
+pipeline.py`/`video.py`, the only code authenticating as this role) confirmed it never reads
       this view or the trait-reading RPCs at all — its only trait-table access is a narrow,
       column-scoped dedup check (`cyl_scan_traits(scan_id, source_id)`, `cyl_trait_sources(id,
-  metadata)`), already correctly granted. Pre-existing, out-of-scope, not a regression — not
+metadata)`), already correctly granted. Pre-existing, out-of-scope, not a regression — not
       fixed. - **`STAGING_API_URL` secret unprovisioned** — already tracked (tasks.md 5.2/5.3, design.md D5's
       round-4 caveat); restated by the external review, not a new finding.
 - [x] 13.2 Fix the external review's 2 correctly-identified, previously-unfixed issues: - Unused `import time` in `test_cyl_scan_latest_source.py` (a leftover from an earlier draft of a

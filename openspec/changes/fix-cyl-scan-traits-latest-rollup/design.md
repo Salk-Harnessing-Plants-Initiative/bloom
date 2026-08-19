@@ -55,16 +55,19 @@ needed" claim is not, and this design does not carry it forward uncorrected.
   whose value never disagrees with a fresh `max(source_id)` computation, for any scan, at any time —
   verified by tests, not assumed. Every live write path to `cyl_scan_traits` (the write-back RPC and
   `bloom_admin`'s break-glass access) keeps it correct without relying on the writer to know about it.
-  `n_plants` is correct and live for every call (no staleness). `n_traits` is cheap to read, with an
-  explicit, documented staleness window bounded to one refresh interval **once the schedule described in
-  D5/D8 is actually running — which, as of round 8, has no path to happening automatically via this PR
-  alone.** The schedule can't fire until a separate promotion PR lands this workflow file on the repo's
-  default branch (round 7), and even then it only ever refreshes staging's cache — production's would stay
-  frozen at the migration's one-time initial population indefinitely, since no existing job targets
-  production's host (round 8; see D5/D8 below for both gaps in full). That is a UI-lag tradeoff, not a
-  data-integrity one — the underlying trait data itself is never inconsistent, only this one summary count
-  can lag — but the lag is presently unbounded on both environments, not "up to one refresh interval," and
-  closing it requires action outside this PR's own commits.
+  `n_plants` is correct and live for every call (no staleness). `n_traits` is cheap to read, with its
+  staleness bounded by how often `refresh_cyl_experiment_trait_counts()` is actually called — **by
+  design, that's on-demand (`workflow_dispatch`) rather than an automatic schedule, for either
+  environment, as of this PR.** Round 7 found an automatic `schedule:` trigger can't fire until a
+  separate promotion PR lands the workflow file on the repo's default branch, and round 8 found it would
+  only ever refresh staging's cache regardless — a second, environment-targeting gap. Rather than chase
+  promotion to fix a schedule staging doesn't currently need, the schedule was dropped entirely (see
+  D5/D8): manual dispatch works against any branch right now, closing the promotion gap, and an
+  `environment` input closes the production-targeting gap with no new secrets. Production is expected
+  to eventually need its own automatic cadence once write volume there grows — tracked as bloom#708, not
+  guessed at here. That is a UI-lag tradeoff, not a data-integrity one — the underlying trait data itself
+  is never inconsistent, only this one summary count can lag, and only until someone dispatches a
+  refresh.
 - **Non-Goals:** re-deriving or changing `is_latest`'s selection semantics (per-`scan_id` partition grain,
   `IS NOT DISTINCT FROM` legacy-NULL handling — unchanged from the live `cyl-trait-read` spec). No new MCP
   tool, no `source_id_`/`run_id_` parameter threaded through any analysis tool. No change to
@@ -870,9 +873,22 @@ the more durable signal that M2 hasn't actually been rolled back.
   production's cache gets populated exactly once, at deploy time, and never again, independent of whether
   5.4's branch-promotion gate is ever satisfied. This is a stronger claim than "unbounded until promoted":
   for production specifically, it is permanently frozen unless a second, environment-aware refresh path is
-  added. Not fixed in this PR — tracked as a new gate, tasks.md 5.5, and likely its own follow-up issue
-  rather than a same-PR patch, since it's a real design decision (second workflow file vs. an
-  environment-conditional/matrix job) not a mechanical fix.
+  added.
+
+  **Resolved (post-round-8, user-directed redesign): both gaps closed by dropping the schedule
+  entirely, not by chasing promotion.** The user's own framing cut through both findings at once —
+  staging isn't going to need frequent automatic refreshes, so there's no reason to carry a `schedule:`
+  trigger that (per the round-7 finding) can't fire pre-promotion anyway. `on: schedule` is removed;
+  the workflow is now `workflow_dispatch`-only, which — unlike `schedule:` — fires against _any_
+  branch/ref holding the file, no promotion required. That fully closes 5.4 (nothing left to promote
+  for this to work). The round-8 production gap is closed the same way `deploy.yml` already solves an
+  identical problem: a `choice` input, `environment` (`staging`/`production`, mirroring `deploy.yml`'s
+  own convention), selects which hardcoded URL/secret pair the run script resolves to
+  (`PROD_API_URL`/`PROD_SERVICE_ROLE_KEY` added alongside the staging pair — `PROD_SERVICE_ROLE_KEY`
+  already existed as a secret, so no new provisioning either). Production is expected to eventually
+  need its own automatic cadence once its write volume grows past what on-demand dispatch can keep up
+  with — tracked as a dedicated follow-up, bloom#708, rather than speculatively adding a cron trigger
+  now for a cadence nobody has picked yet.
 
 - **D7 — pinned-branch cost, not benchmarked.** See D7's own reasoning; needs a real `EXPLAIN (ANALYZE,
 BUFFERS)` against staging once this lands, not resolved from this sandboxed pass.

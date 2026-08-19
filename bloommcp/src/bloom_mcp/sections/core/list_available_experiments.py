@@ -10,12 +10,13 @@ from typing import Optional
 
 from bloom_mcp.tools import _ports
 
-# design.md D8 (bloom#637 round 8): the shipped refresh schedule can't fire until
-# promoted to the default branch (round 7), and only ever targets staging's host,
-# never production's (round 8) -- so a cache row can go quiet indefinitely with no
-# signal beyond a timestamp that keeps looking like ordinary bounded lag. Elapsed
-# time past a couple of nominal (daily) refresh intervals is flagged explicitly
-# rather than printed as a plain "as of" timestamp.
+# design.md D8 (bloom#637): the refresh workflow is on-demand only (`workflow_dispatch`,
+# no `on: schedule`) for both environments as of this change -- staging doesn't need
+# frequent automatic refreshes, and production's own automatic cadence is a tracked
+# follow-up (bloom#708), not yet built. So a cache row can go quiet indefinitely with no
+# signal beyond a timestamp that keeps looking like ordinary bounded lag. Elapsed time
+# past a couple of days is flagged explicitly rather than printed as a plain "as of"
+# timestamp, since nothing refreshes it automatically.
 _STALE_AFTER = timedelta(days=2)
 
 
@@ -40,7 +41,7 @@ def _traits_note(updated_at: Optional[str], *, now: Optional[datetime] = None) -
     if elapsed > _STALE_AFTER:
         return (
             f" (as of {updated_at}, {elapsed.days}d ago -- "
-            f"refresh schedule may not be running)"
+            f"trait counts refresh on demand only, not automatically)"
         )
     return f" (as of {updated_at})"
 
