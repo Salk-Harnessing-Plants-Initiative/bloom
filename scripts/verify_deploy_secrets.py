@@ -137,6 +137,23 @@ def load_secret_names(path: Path) -> dict[str, set[str]] | None:
     return names
 
 
+def hint_for(form: str) -> str:
+    """Remediation for a rejected reference.
+
+    `$$` is compose's escape for a literal `$`, so the braced form is not a variable
+    the env file can supply — suggesting `${NAME}` would move expansion from the
+    container to the deploy host and quietly change what the container runs.
+    """
+    name = form.lstrip("$").strip("{}").upper()
+    if form.startswith("$$"):
+        return (
+            "$$ is compose's escape for a literal $, not a variable the env file "
+            f"supplies. Write $${name} if the container should expand it, "
+            f"or ${{{name}}} if the deploy should."
+        )
+    return f"Use ${{{name}}} instead."
+
+
 class Failures:
     """Collects failures so one run reports every problem, not just the first."""
 
@@ -232,7 +249,7 @@ def main(argv: list[str]) -> int:
         failures.add(
             f"{args.compose}:{number}: {form} is not a plain ${{UPPERCASE}} reference, "
             "so the required-keys check reads it wrongly",
-            f"Use ${{{form.lstrip('$').strip('{}').upper()}}} instead.",
+            hint_for(form),
         )
 
     required = compose_required_keys(compose_text)

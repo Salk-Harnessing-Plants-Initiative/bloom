@@ -341,3 +341,17 @@ def test_a_secret_present_only_in_the_other_environment_still_fails(tree, capsys
                                              "STAGING_API_TOKEN", "STAGING_JWT_JWKS"]}
     assert run(tree, secrets) == 1
     assert "PROD_API_TOKEN" in capsys.readouterr().err
+
+
+def test_escaped_reference_is_not_told_to_drop_its_escape():
+    """`$$` is compose's escape for a literal `$`. Suggesting `${NAME}` would move
+    expansion from the container to the deploy host and change what the container
+    runs — while CI went green, because the author did as the message said."""
+    hint = vds.hint_for("$${HOME}")
+    assert "$$HOME" in hint
+    assert not hint.startswith("Use ${HOME}")
+
+
+def test_unescaped_forms_keep_the_direct_suggestion():
+    assert vds.hint_for("$BARE") == "Use ${BARE} instead."
+    assert vds.hint_for("${lower}") == "Use ${LOWER} instead."
