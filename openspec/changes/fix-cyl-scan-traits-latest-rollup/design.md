@@ -57,10 +57,14 @@ needed" claim is not, and this design does not carry it forward uncorrected.
   `bloom_admin`'s break-glass access) keeps it correct without relying on the writer to know about it.
   `n_plants` is correct and live for every call (no staleness). `n_traits` is cheap to read, with an
   explicit, documented staleness window bounded to one refresh interval **once the schedule described in
-  D5/D8 is actually running — see D5's current-state caveat, added in round 4: as of this writing the
-  schedule isn't running yet, so this bound does not currently hold** — that is a UI-lag tradeoff, not a
-  data-integrity one — the underlying trait data itself is never inconsistent, only this one summary
-  count can lag.
+  D5/D8 is actually running — which, as of round 8, has no path to happening automatically via this PR
+  alone.** The schedule can't fire until a separate promotion PR lands this workflow file on the repo's
+  default branch (round 7), and even then it only ever refreshes staging's cache — production's would stay
+  frozen at the migration's one-time initial population indefinitely, since no existing job targets
+  production's host (round 8; see D5/D8 below for both gaps in full). That is a UI-lag tradeoff, not a
+  data-integrity one — the underlying trait data itself is never inconsistent, only this one summary count
+  can lag — but the lag is presently unbounded on both environments, not "up to one refresh interval," and
+  closing it requires action outside this PR's own commits.
 - **Non-Goals:** re-deriving or changing `is_latest`'s selection semantics (per-`scan_id` partition grain,
   `IS NOT DISTINCT FROM` legacy-NULL handling — unchanged from the live `cyl-trait-read` spec). No new MCP
   tool, no `source_id_`/`run_id_` parameter threaded through any analysis tool. No change to
@@ -452,8 +456,8 @@ The one remaining credential, `STAGING_SERVICE_ROLE_KEY`, already existed before
 (`deploy.yml`'s own use) — so no secret provisioning blocks this schedule anymore. But round 7 found a
 second, larger gap the secret framing had been masking: this PR's base branch is `staging`, and GitHub
 Actions `schedule:` triggers only ever fire from the copy of the workflow file on the repository's
-**default branch** (`main` — see this repo's own `promote-security-to-main.yml`, whose header states the
-identical fact and notes that `staging -> main` promotion "can sit there for weeks"). So merging this PR
+**default branch** (`main` — GitHub Actions' own documented behavior, and this repo's
+`promote-security-to-main.yml` states the identical fact for its own scheduled bot). So merging this PR
 lands the workflow on `staging` only; the daily cron stays inert until a later promotion PR carries it to
 `main`. `workflow_dispatch` (tasks.md 5.3) can confirm the call logic works when run against `staging`,
 but proves nothing about whether the automatic daily schedule is live — those are two different facts.
@@ -461,6 +465,29 @@ Until the workflow is actually promoted to `main`, `n_traits` is frozen at whate
 one-time `SELECT public.refresh_cyl_experiment_trait_counts();` computed at deploy time -- staleness is
 currently **unbounded**, not "up to a day." Tracked as a pre-close gate on bloom#637 alongside tasks.md
 5.3 and 5.4 (promotion to `main` confirmed), not merely a nice-to-have.
+
+**Round 8: promotion to `main` is not itself sufficient — the workflow only ever targets staging, on
+production too.** `.github/workflows/refresh-cyl-experiment-trait-counts.yml`'s `STAGING_API_URL` is a
+hardcoded literal pointing at `staging.bloom.salk.edu` (D8, above). Production is a genuinely separate
+host — `.env.prod.defaults` sets `API_EXTERNAL_URL=https://bloom.salk.edu/api`, a different Supabase
+instance — and `deploy.yml`'s `deploy-production` job applies this PR's migrations there too on push to
+`main`, including the one-time inline `refresh_cyl_experiment_trait_counts()` call. So even after
+promotion, production's cache gets populated exactly once (at deploy time) and **never refreshed again**
+by any existing mechanism, regardless of the branch-promotion status above — a stronger, permanent-not-
+just-unbounded-until-promoted claim, and specific to production, which is where the live `bloommcp-prod`
+MCP endpoint (`bloommcp/docs/connecting-claude-code.md`) actually serves real researchers. Fixing this
+requires either a second, production-targeted workflow or parameterizing the existing one by environment
+— a real design decision (which secret, which trigger, whether it's a matrix job) this review round
+surfaces but does not resolve; tracked as tasks.md 5.5, a new gate distinct from 5.4's branch-promotion
+check.
+
+Correction to the earlier promotion-timeline citation: `promote-security-to-main.yml`'s bot is scoped
+strictly to security/CVE-pattern commits (`scripts/promote_security_to_main.sh`'s `_subject_is_security`/
+`_commit_is_pure_cve_surface` checks) and would never pick up this PR's own commits or a new non-security
+workflow file. The actual, faster path is this repo's separate, manual `staging -> main` promotion
+practice — periodic "chore: promote staging to main" PRs, most recently authored by @blm3886 (this PR's
+own approver) roughly every 1-2 weeks (e.g. #667, #627, #607). Tasks.md 5.4 should be read as "ask Benfica
+to fold this workflow file into her next promotion PR," not as a passive multi-week wait.
 
 **Round 6: the caller-facing visibility gap this same paragraph flagged in round 4 is now closed, not
 deferred a third time.** An external PR-comment review re-raised exactly this point -- `n_traits`'s
@@ -822,15 +849,30 @@ the more durable signal that M2 hasn't actually been rolled back.
   actually live yet.** This PR's base branch is `staging`. GitHub Actions `schedule:` triggers only ever
   fire from the workflow file's copy on the repository's **default branch** — confirmed both as documented
   GitHub Actions behavior and against this repo's own precedent: `.github/workflows/promote-security-to-main.yml`
-  states outright, "Scheduled runs use the workflow file on the default branch," and that same file's header
-  describes this team's `feature -> staging -> (periodic promotion PR) -> main` flow, where staging-merged
-  work "can sit there for weeks" before reaching `main`. `gh repo view` confirms `main` is this repo's
-  default branch. So merging this PR lands `refresh-cyl-experiment-trait-counts.yml` on `staging` only —
-  the daily cron stays inert, and `n_traits` staleness stays unbounded, until a later promotion PR carries
-  the workflow file to `main`. `workflow_dispatch` (tasks.md 5.3) can be run against `staging` today to
-  confirm the call logic itself works, but that's a materially different fact from "the automatic schedule
-  is live," and no round before this one distinguished the two. Tracked as tasks.md 5.4 (promotion to
-  `main` confirmed) — a new, explicit pre-close gate for bloom#637, not implied by 5.3 passing.
+  states outright, "Scheduled runs use the workflow file on the default branch." `gh repo view` confirms
+  `main` is this repo's default branch. So merging this PR lands `refresh-cyl-experiment-trait-counts.yml`
+  on `staging` only — the daily cron stays inert, and `n_traits` staleness stays unbounded, until a later
+  promotion PR carries the workflow file to `main`. `workflow_dispatch` (tasks.md 5.3) can be run against
+  `staging` today to confirm the call logic itself works, but that's a materially different fact from "the
+  automatic schedule is live," and no round before this one distinguished the two. Tracked as tasks.md 5.4
+  (promotion to `main` confirmed) — a new, explicit pre-close gate for bloom#637, not implied by 5.3
+  passing. (Round 8 correction: the promotion path is not the security bot's periodic sweep — that bot is
+  scoped only to security/CVE commits and would never select this PR's own changes. It's this repo's
+  separate, manual `staging -> main` promotion practice, run by @blm3886 roughly every 1-2 weeks — a
+  faster, named path than "can sit there for weeks" implied.)
+
+  **Found in round 8: branch promotion alone still doesn't close the gap — the workflow never targets
+  production.** `STAGING_API_URL` is a hardcoded literal pointing at `staging.bloom.salk.edu`; production
+  runs on a different host (`.env.prod.defaults`'s `API_EXTERNAL_URL=https://bloom.salk.edu/api`, a
+  distinct Supabase instance), and no workflow anywhere in this repo ever calls
+  `refresh_cyl_experiment_trait_counts()` against it. `deploy.yml`'s `deploy-production` job does apply
+  this PR's migrations to production on push to `main` — including the one-time inline refresh call — so
+  production's cache gets populated exactly once, at deploy time, and never again, independent of whether
+  5.4's branch-promotion gate is ever satisfied. This is a stronger claim than "unbounded until promoted":
+  for production specifically, it is permanently frozen unless a second, environment-aware refresh path is
+  added. Not fixed in this PR — tracked as a new gate, tasks.md 5.5, and likely its own follow-up issue
+  rather than a same-PR patch, since it's a real design decision (second workflow file vs. an
+  environment-conditional/matrix job) not a mechanical fix.
 
 - **D7 — pinned-branch cost, not benchmarked.** See D7's own reasoning; needs a real `EXPLAIN (ANALYZE,
 BUFFERS)` against staging once this lands, not resolved from this sandboxed pass.

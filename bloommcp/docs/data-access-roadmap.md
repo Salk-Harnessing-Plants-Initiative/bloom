@@ -78,8 +78,13 @@ act on without reading the whole doc. Everything else here is optional context.
      needs no secret provisioning (the base URL is a hardcoded, non-sensitive literal; the
      `STAGING_SERVICE_ROLE_KEY` it uses already existed) — but its `schedule:` trigger only fires
      from whatever copy of the workflow file lives on the repo's default branch, and this PR merges
-     to `staging`, not `main`. Staleness stays unbounded until a later promotion PR lands the
-     workflow file on `main` (design.md D8).
+     to `staging`, not `main`. Staleness stays unbounded on staging until a later promotion PR lands
+     the workflow file on `main` — ideally as part of one of your regular `staging -> main`
+     promotion PRs, rather than a separate ask. **Separately, and not fixed by that promotion**: the
+     workflow only ever calls staging's PostgREST endpoint — production's cache would still only get
+     the migration's one-time initial population and never refresh again. That's a real design
+     decision (a second workflow, or an environment-conditional one) tracked as tasks.md 5.5, likely
+     worth its own follow-up issue rather than folding into this PR.
 
 Separately, not blocking this roadmap: issue #406 (verified per-user identity + a
 `bloommcp_usage` table) is still awaiting your reply to the two design questions from my

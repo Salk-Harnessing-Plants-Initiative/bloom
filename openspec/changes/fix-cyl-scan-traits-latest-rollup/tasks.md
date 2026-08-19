@@ -177,13 +177,26 @@ EXECUTE ... TO service_role` only (not the four read roles — this is a mainten
       only proves the call logic works; it does NOT prove the automatic daily schedule is live — see 5.4.
 - [ ] 5.4 **Found in round 7, new gate.** This PR's base is `staging`, not `main` (this repo's default
       branch, confirmed via `gh repo view`). GitHub Actions `schedule:` triggers only fire from the
-      workflow file's copy on the default branch (see `.github/workflows/promote-security-to-main.yml`'s
-      own header comment for this repo's precedent, and its note that `staging -> main` promotion "can
-      sit there for weeks"). So merging this PR does NOT make the daily refresh live — `n_traits`
-      staleness stays unbounded until a later promotion PR carries this workflow file to `main`. Confirm
-      that promotion has happened (and, ideally, that a scheduled run has actually fired on `main`) before
-      treating `design.md`'s "bounded to one refresh interval" claim as true, and before closing bloom#637
-      on the strength of `n_traits` freshness alone.
+      workflow file's copy on the default branch. So merging this PR does NOT make the daily refresh live
+      — `n_traits` staleness stays unbounded until a later promotion PR carries this workflow file to
+      `main`. **Round 8 correction:** the fast path for this is NOT `promote-security-to-main.yml`'s bot
+      (security/CVE-scoped only, would never pick up this PR) — it's this repo's separate manual
+      `staging -> main` promotion practice, run by @blm3886 roughly every 1-2 weeks (e.g. #667, #627,
+      #607). Ask her to fold this workflow file into her next promotion PR, rather than waiting passively.
+      Confirm that promotion has happened (and, ideally, that a scheduled run has actually fired on `main`)
+      before treating `design.md`'s "bounded to one refresh interval" claim as true for **staging** — see
+      5.5 for why production needs a separate confirmation entirely.
+- [ ] 5.5 **Found in round 8, new gate — distinct from 5.4.** Even once promoted to `main`, this workflow's
+      `STAGING_API_URL` is a hardcoded literal pointing at `staging.bloom.salk.edu` — it never calls
+      production's host (`.env.prod.defaults`'s `API_EXTERNAL_URL=https://bloom.salk.edu/api`, a genuinely
+      separate Supabase instance). `deploy.yml`'s `deploy-production` job applies this PR's migrations to
+      production on push to `main`, including the one-time inline
+      `SELECT public.refresh_cyl_experiment_trait_counts();` — so production's cache is populated exactly
+      once, at deploy time, and never refreshed again by any existing mechanism, independent of 5.4. This
+      is a permanent gap for production, not "unbounded until promoted." Not fixed in this PR — needs a
+      real design decision (a second, production-targeted workflow, or an environment-conditional/matrix
+      job) before bloom#637 can be considered closed for production, not just staging. Recommend filing a
+      dedicated follow-up issue rather than scope-creeping this PR further.
 
 ## 6. Validate
 
@@ -477,7 +490,7 @@ issues.
       round-2-era form and re-running the existing test unchanged — it still passed, proving it
       genuinely cannot distinguish which branch fires.
 - [x] 12.3 Fix everything that survived verification: - `GRANT INSERT, UPDATE, DELETE ON public.cyl_scan_latest_source/cyl_experiment_trait_counts TO
-    bloom_admin` added to both migrations, matching `cyl_scan_traits`'s own capability and the
+  bloom_admin` added to both migrations, matching `cyl_scan_traits`'s own capability and the
       RLS policy's stated intent. Two new tests
       (`test_bloom_admin_can_write_directly_to_cyl_scan_latest_source`,
       `test_bloom_admin_can_write_directly_to_cyl_experiment_trait_counts`) write straight to
@@ -531,10 +544,10 @@ subagents informed of the triage results so they wouldn't re-litigate settled po
       claim: swapping in the OLD, pre-this-PR view definition (which has zero dependency on
       `cyl_scan_latest_source`) reproduces the IDENTICAL failure for `bloom_workflows` — it never
       had a `GRANT SELECT` on this view, before or after this PR. A code search (`services/workflows/
-    pipeline.py`/`video.py`, the only code authenticating as this role) confirmed it never reads
+  pipeline.py`/`video.py`, the only code authenticating as this role) confirmed it never reads
       this view or the trait-reading RPCs at all — its only trait-table access is a narrow,
       column-scoped dedup check (`cyl_scan_traits(scan_id, source_id)`, `cyl_trait_sources(id,
-    metadata)`), already correctly granted. Pre-existing, out-of-scope, not a regression — not
+  metadata)`), already correctly granted. Pre-existing, out-of-scope, not a regression — not
       fixed. - **`STAGING_API_URL` secret unprovisioned** — already tracked (tasks.md 5.2/5.3, design.md D5's
       round-4 caveat); restated by the external review, not a new finding.
 - [x] 13.2 Fix the external review's 2 correctly-identified, previously-unfixed issues: - Unused `import time` in `test_cyl_scan_latest_source.py` (a leftover from an earlier draft of a

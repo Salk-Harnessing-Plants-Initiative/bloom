@@ -33,6 +33,7 @@ This test does three things:
 from __future__ import annotations
 
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -138,7 +139,14 @@ def test_https_guard_still_present_in_script() -> None:
 
 
 def _https_guard_snippet() -> str:
-    """Extract the `case "${STAGING_API_URL}" in ... esac` guard as standalone shell."""
+    """Extract the `case "${STAGING_API_URL}" in ... esac` guard as standalone shell.
+
+    Non-greedy `.*?esac` stops at the FIRST `esac`, so this assumes the guard
+    has no nested `case`/`esac` of its own -- true today (a single, flat
+    case block). If a future edit nests one inside a branch here, this would
+    hand back a truncated, unbalanced snippet and fail with a bash syntax
+    error rather than a clear message.
+    """
     script = _step(_load_workflow())["run"]
     match = re.search(r'case "\$\{STAGING_API_URL\}" in.*?esac', script, re.DOTALL)
     assert match, "could not locate the STAGING_API_URL case/esac guard in the run script"
@@ -162,7 +170,11 @@ def test_https_guard_actually_rejects_non_https(url: str, should_reject: bool) -
     `case`/`esac` logic against both a bad and the real value.
     """
     snippet = _https_guard_snippet()
-    script = f'STAGING_API_URL="{url}"\n{snippet}\necho "GUARD_PASSED"'
+    # shlex.quote, not manual "{url}" interpolation: these parametrize values are
+    # fixed literals with no exploit path today, but this exact f-string-into-shell
+    # pattern is easy to copy-paste into a context where the embedded value isn't
+    # a hardcoded literal -- quote it properly so that copy never becomes unsafe.
+    script = f"STAGING_API_URL={shlex.quote(url)}\n{snippet}\necho \"GUARD_PASSED\""
     result = subprocess.run(
         [BASH, "-c", script],
         capture_output=True,
@@ -176,6 +188,10 @@ def test_https_guard_actually_rejects_non_https(url: str, should_reject: bool) -
             f"stdout={result.stdout!r} stderr={result.stderr!r}"
         )
         assert "must be https://" in result.stdout, result.stdout
+        assert "GUARD_PASSED" not in result.stdout, (
+            "guard rejected the URL but execution still reached the trailing "
+            f"echo -- the case arm's exit didn't actually stop the script: {result.stdout!r}"
+        )
     else:
         assert result.returncode == 0, (
             f"guard should have accepted {url!r} but exited "

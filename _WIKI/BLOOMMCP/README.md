@@ -188,7 +188,10 @@ live but `n_traits` is read from a cache refreshed on a schedule (once daily, no
 bloom#637/bloom#656), so it can lag newly-written trait data by up to one refresh interval once
 that schedule is actually running (see `design.md` D8/D5 for the current staleness caveat — the
 GitHub Action's `schedule:` trigger only fires from the default branch, so staleness stays
-unbounded until this workflow is promoted there). A pinned call is fully live for both counts.
+unbounded on staging until this workflow is promoted there, AND the workflow only ever targets
+staging's host — production's cache gets populated once, at deploy time, and never refreshed
+again until a separate production-targeted refresh path exists). A pinned call is fully live for
+both counts.
 
 See [`_WIKI/SUPABASE/README.md`](../SUPABASE/README.md) for the full
 role / RLS picture.
