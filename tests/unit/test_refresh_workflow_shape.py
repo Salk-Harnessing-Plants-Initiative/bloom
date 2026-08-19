@@ -20,17 +20,29 @@ is round-by-round:
   the round-8 gap with no new secret provisioning (``PROD_SERVICE_ROLE_KEY`` already existed).
   A scheduled trigger for production specifically is tracked as a future follow-up
   (bloom#708), not carried here speculatively.
+- Round 9 found two gaps in that redesign itself: the job's ``concurrency.group`` wasn't
+  scoped by environment (a staging dispatch and a production dispatch could cancel each
+  other, despite touching entirely independent databases), and the job declared no
+  ``environment:`` key, so it never went through this repo's GitHub Environment approval
+  gates (required reviewers/wait timers) that ``deploy.yml``'s own staging/production jobs
+  do. Both fixed; the ``environment`` input's ``default: 'staging'`` was also removed --
+  forcing an explicit choice every dispatch, rather than silently refreshing staging when
+  someone meant to pick production.
 
-This test does four things:
+This test does five things:
 
 1. Asserts there is no ``on: schedule`` trigger at all, and that ``workflow_dispatch`` has a
-   required ``environment`` choice input (``staging``/``production``, default ``staging``).
+   required ``environment`` choice input (``staging``/``production``, no default).
 2. Asserts neither ``STAGING_API_URL`` nor ``PROD_API_URL`` is a GitHub secret reference, and
    that each hardcoded literal matches its own environment's ``.env.*.defaults`` value -- so
    they can never silently drift apart.
 3. Asserts both service-role keys are still sourced from real secrets, and that the run
    script actually resolves the right URL/key pair for whichever environment is dispatched.
-4. Actually EXECUTES the extracted https:// guard under bash (round-7 review finding:
+4. Asserts the job's ``environment:`` key and ``concurrency.group`` are both scoped by the
+   dispatched environment (round 9 fixes) -- so this job goes through the same approval
+   gates ``deploy.yml`` does, and a dispatch against one environment can never cancel an
+   unrelated in-flight dispatch against the other.
+5. Actually EXECUTES the extracted https:// guard under bash (round-7 review finding:
    asserting the guard's error string appears in the script text proves the text is
    present, not that the shell logic behaves -- mirrors the technique in
    ``tests/unit/test_deploy_kong_reload_on_config_change.py``'s
@@ -112,14 +124,45 @@ def test_no_schedule_trigger_only_workflow_dispatch() -> None:
 
 
 def test_workflow_dispatch_has_environment_choice_input() -> None:
-    """Mirrors deploy.yml's own environment-input convention."""
+    """Mirrors deploy.yml's own environment-input convention, minus its default.
+
+    No `default` (round 9): a dispatch with no explicit choice should force the
+    dispatcher to pick, not silently land on staging when production was intended.
+    """
     inputs = _on_block(_load_workflow())["workflow_dispatch"]["inputs"]
     env_input = inputs.get("environment")
     assert env_input is not None, "workflow_dispatch must declare an `environment` input"
     assert env_input.get("type") == "choice"
     assert env_input.get("required") is True
     assert set(env_input.get("options", [])) == {"staging", "production"}
-    assert env_input.get("default") == "staging"
+    assert "default" not in env_input, (
+        "environment input must have no default -- every dispatch should require an "
+        f"explicit choice; got default={env_input.get('default')!r}"
+    )
+
+
+def test_job_has_environment_protection_gate() -> None:
+    """The job's environment: key must track the dispatched environment (round 9 fix).
+
+    Without this, the job never goes through this repo's GitHub Environment approval
+    rules (required reviewers, wait timers) that deploy.yml's own staging/production
+    jobs already go through -- anyone able to dispatch could hit either database with
+    zero approval otherwise.
+    """
+    job = _load_workflow()["jobs"][JOB]
+    assert job.get("environment") == "${{ github.event.inputs.environment }}", (
+        f"job must set environment: ${{{{ github.event.inputs.environment }}}} so "
+        f"dispatches are gated the same way deploy.yml's are; got {job.get('environment')!r}"
+    )
+
+
+def test_concurrency_group_is_scoped_by_environment() -> None:
+    """A staging dispatch must not be able to cancel an in-flight production one (round 9 fix)."""
+    concurrency = _load_workflow()["concurrency"]
+    assert "${{ github.event.inputs.environment }}" in str(concurrency.get("group", "")), (
+        "concurrency.group must include the environment input, or dispatches against "
+        f"different environments can cancel each other; got {concurrency.get('group')!r}"
+    )
 
 
 def test_api_urls_are_hardcoded_and_match_each_environments_env_defaults() -> None:
@@ -171,6 +214,28 @@ def _environment_dispatch_script() -> str:
     return _step(_load_workflow())["run"]
 
 
+_CURL_MARKER = "status=$(curl"
+
+
+def _script_before_curl_call() -> str:
+    """The run script up to (not including) the real `curl` call.
+
+    Used to build test harnesses that exercise the environment/URL resolution logic
+    without actually making a network request. Asserts the marker was found --
+    without this, `str.split` on a missing separator returns the ORIGINAL string
+    unchanged (not an error), which would silently hand back the full script
+    including the live curl call, making a test harness fire a real HTTPS request
+    against staging/production instead of failing loudly (round 9 finding).
+    """
+    script = _environment_dispatch_script()
+    assert _CURL_MARKER in script, (
+        f"could not find {_CURL_MARKER!r} in the run script -- if it was reformatted, "
+        "update this marker rather than silently including the real curl call in a "
+        "test harness"
+    )
+    return script.split(_CURL_MARKER, 1)[0]
+
+
 def _https_guard_snippet() -> str:
     """Extract the API_URL https:// `case ... esac` guard as standalone shell.
 
@@ -202,10 +267,9 @@ def test_environment_input_resolves_to_the_right_url_and_key(
     API_URL/SERVICE_ROLE_KEY match the expected environment -- not just that the
     case statement's text mentions both branches.
     """
-    script = _environment_dispatch_script()
-    # Stop the script right after resolution, before the real curl call, by cutting
-    # everything from the first `status=$(curl` onward and echoing what was resolved.
-    cut = script.split("status=$(curl", 1)[0]
+    # Stop the script right after resolution, before the real curl call, and echo
+    # what was resolved.
+    cut = _script_before_curl_call()
     harness = (
         f'ENVIRONMENT={shlex.quote(environment)}\n'
         f'STAGING_API_URL="https://staging.bloom.salk.edu:8443/api"\n'
@@ -233,9 +297,14 @@ def test_environment_input_resolves_to_the_right_url_and_key(
 
 
 def test_unknown_environment_fails_loudly() -> None:
-    """An unexpected ENVIRONMENT value (should never happen given the choice input) still errors."""
-    script = _environment_dispatch_script()
-    cut = script.split("status=$(curl", 1)[0]
+    """An unexpected ENVIRONMENT value still errors loudly.
+
+    The `type: choice` dropdown blocks this in the web UI, but the workflow_dispatch
+    REST API (what `gh workflow run -f environment=...` calls) does not enforce
+    `choice` constraints server-side -- a typo'd manual dispatch can genuinely reach
+    this branch, not just a hypothetical future bug.
+    """
+    cut = _script_before_curl_call()
     harness = (
         'ENVIRONMENT="not-a-real-environment"\n'
         f'STAGING_API_URL="https://staging.bloom.salk.edu:8443/api"\n'

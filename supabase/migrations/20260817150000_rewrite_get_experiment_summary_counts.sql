@@ -1,5 +1,5 @@
 -- bloom#637 / bloom#656 (supersedes PR #654's D7): rewrite get_experiment_summary_counts's
--- unpinned path as a live EXISTS semi-join (n_plants) + a scheduled-refresh cache read
+-- unpinned path as a live EXISTS semi-join (n_plants) + an on-demand-refresh cache read
 -- (n_traits), per @blm3886's bloom#656 measurements -- n_plants via COUNT(DISTINCT ...) cost
 -- 16.5s for one experiment (12.9s of that just dragging 13.8M rows through the join before
 -- deduping); the EXISTS rewrite costs 247ms for ALL experiments and needs no cache.
@@ -110,9 +110,9 @@ BEGIN
     END IF;
 
     IF source_id_ IS NULL AND run_id_ IS NULL THEN
-        -- "Current latest" case: n_plants live (cheap semi-join), n_traits from the
-        -- scheduled-refresh cache (may lag up to one refresh interval once D8's schedule is
-        -- actually running -- currently unbounded, see design.md D5's caveat).
+        -- "Current latest" case: n_plants live (cheap semi-join), n_traits from a cache
+        -- refreshed on demand only (design.md D8) -- unbounded staleness until someone
+        -- dispatches a refresh; see design.md D5's caveat.
         RETURN QUERY
         SELECT p.experiment_id, p.n_plants, COALESCE(c.n_traits, 0)::int, c.updated_at
         FROM (

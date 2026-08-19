@@ -24,10 +24,21 @@ name: Refresh cyl_experiment_trait_counts
 # STAGING_SERVICE_ROLE_KEY/PROD_SERVICE_ROLE_KEY are the real secrets, both already provisioned
 # before this workflow existed. This job also deliberately never checks out the repo (see
 # `permissions: {}` below), so it can't read either .env.*.defaults file at runtime; hardcoded
-# literals are simpler than adding checkout just to read one line out of each.
+# literals are simpler than adding checkout just to read one line out of each. No default on the
+# `environment` input -- forces an explicit choice every dispatch, rather than silently refreshing
+# staging when someone meant to pick production.
+#
+# The job-level `environment:` below (round 9 finding) makes this dispatch subject to whichever
+# approval rules this repo's GitHub "staging"/"production" Environments carry (required reviewers,
+# wait timers) -- the same gate deploy.yml's own production/staging jobs already go through.
+# Without it, this job could fire an RLS-bypass RPC at either database with zero approval, unlike
+# every other path that reaches them.
 #
 # Production is expected to eventually need an automatic (scheduled) refresh once its write
-# volume grows -- tracked as bloom#708, not added speculatively here.
+# volume grows -- tracked as bloom#708, not added speculatively here. Until then, there is no
+# fixed owner or cadence for dispatching this manually -- whoever runs a bulk write-back upload
+# and wants a fresher `n_traits` count sooner than "whenever someone next dispatches" should just
+# run it themselves afterward.
 
 on:
   workflow_dispatch:
@@ -35,7 +46,6 @@ on:
       environment:
         description: 'Environment to refresh'
         required: true
-        default: 'staging'
         type: choice
         options:
           - staging
@@ -44,16 +54,19 @@ on:
 # This job only makes an outbound curl call -- no checkout, no repo-content access needed.
 permissions: {}
 
-# Guards against two dispatches for the same environment racing each other. Safe to cancel: the
-# refresh RPC is a single statement in one transaction, so an aborted client connection (what
-# cancelling this job's curl call amounts to) rolls it back cleanly -- no partial state either way.
+# Scoped by environment (round 9 fix) -- previously a single shared group meant a staging dispatch
+# and a production dispatch could cancel each other, even though they touch entirely independent
+# databases and never actually race. Safe to cancel within the SAME environment: the refresh RPC
+# is a single statement in one transaction, so an aborted client connection (what cancelling this
+# job's curl call amounts to) rolls it back cleanly -- no partial state either way.
 concurrency:
-  group: refresh-cyl-experiment-trait-counts
+  group: refresh-cyl-experiment-trait-counts-${{ github.event.inputs.environment }}
   cancel-in-progress: true
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
     timeout-minutes: 2
     steps:
       - name: Call refresh_cyl_experiment_trait_counts()

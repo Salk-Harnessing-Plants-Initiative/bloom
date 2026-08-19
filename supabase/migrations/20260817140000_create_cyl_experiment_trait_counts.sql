@@ -1,15 +1,16 @@
 -- bloom#637 / bloom#656 (supersedes PR #654's rollup table): cache n_traits per experiment,
--- refreshed on a schedule rather than a per-write trigger.
+-- refreshed on demand rather than a per-write trigger.
 --
 -- n_plants needs no cache at all (see 20260817150000's get_experiment_summary_counts rewrite --
 -- a live EXISTS semi-join is 247ms for every experiment, per @blm3886's bloom#656 measurement).
 -- n_traits genuinely needs caching (a full scan, 6.6s, no shortcut available) -- but PR #654's
 -- per-row AFTER trigger is the wrong refresh shape: one write-back upload inserts on the order of
 -- hundreds of trait rows in a loop, so a per-row trigger would fire that many full-experiment
--- recomputes for one upload. This table is refreshed by an external schedule instead (see
--- openspec/changes/fix-cyl-scan-traits-latest-rollup/tasks.md section 5 for the scheduling job) --
--- refresh_cyl_experiment_trait_counts() does one full, unconditional rebuild per call, so its cost
--- is fixed regardless of ingest volume.
+-- recomputes for one upload. This table is refreshed by a manually-dispatched GitHub Action
+-- instead (see openspec/changes/fix-cyl-scan-traits-latest-rollup/tasks.md section 5 -- no
+-- automatic schedule for either environment as of this migration; bloom#708 tracks adding one for
+-- production later) -- refresh_cyl_experiment_trait_counts() does one full, unconditional rebuild
+-- per call, so its cost is fixed regardless of ingest volume.
 --
 -- Manual rollback: supabase/rollbacks/20260817140000_create_cyl_experiment_trait_counts_rollback.sql
 
@@ -63,7 +64,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
 AS $$
 BEGIN
-    -- Serializes concurrent refreshes (e.g. an overlapping workflow_dispatch + scheduled run) --
+    -- Serializes concurrent refreshes (e.g. two overlapping workflow_dispatch calls) --
     -- without this, two concurrent calls' DELETE+INSERT race: the second call's DELETE sees
     -- nothing left to delete (the first call's rows are new tuples outside its snapshot after the
     -- first commits), so its INSERT collides on the experiment_id PK with the first's already-
@@ -112,7 +113,7 @@ $$;
 REVOKE EXECUTE ON FUNCTION public.refresh_cyl_experiment_trait_counts() FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.refresh_cyl_experiment_trait_counts() TO service_role;
 
--- One-time initial population so the cache isn't empty until the first scheduled run fires.
+-- One-time initial population so the cache isn't empty before anyone dispatches a refresh.
 SELECT public.refresh_cyl_experiment_trait_counts();
 
 COMMIT;

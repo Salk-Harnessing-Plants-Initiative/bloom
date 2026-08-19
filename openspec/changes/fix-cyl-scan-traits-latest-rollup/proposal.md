@@ -75,15 +75,20 @@ NOT NULL`, and the unnecessary `cyl_experiments` join is dropped. **These branch
 - Affected code:
   - `supabase/migrations/` (3 new migrations — see `design.md`'s Migration Plan) + `supabase/rollbacks/`
     companions.
-  - A new scheduled job invoking `refresh_cyl_experiment_trait_counts()` — a GitHub Actions workflow file
-    (`.github/workflows/refresh-cyl-experiment-trait-counts.yml`, per `design.md` D8).
+  - A manually-dispatched refresh job invoking `refresh_cyl_experiment_trait_counts()` — a GitHub
+    Actions workflow file (`.github/workflows/refresh-cyl-experiment-trait-counts.yml`, per
+    `design.md` D8), `workflow_dispatch`-only with an `environment` (staging/production) input, no
+    automatic schedule for either environment as of this PR (bloom#708 tracks production's future
+    automatic cadence).
   - `tests/integration/` — new/rewritten test files for the trigger, inline backfill, the semi-join
     rewrite, the cache table, and the rewritten `get_experiment_summary_counts`; no `bloommcp`/Python
     changes.
-  - `tests/unit/test_refresh_workflow_staging_api_url_shape.py` (new) — locks the refresh workflow's
-    shape: `STAGING_API_URL` hardcoded and matching `.env.staging.defaults`, no `STAGING_API_URL`
-    secret, `STAGING_SERVICE_ROLE_KEY` still a real secret, `permissions: {}`/no checkout, once-daily
-    schedule.
+  - `tests/unit/test_refresh_workflow_shape.py` (new) — locks the refresh workflow's shape: no
+    `on: schedule` trigger, a required `environment` choice input with no default, both
+    `STAGING_API_URL`/`PROD_API_URL` hardcoded and matching their own `.env.*.defaults`, both
+    service-role keys still real secrets, the environment-to-URL/key resolution actually executed
+    under bash, `permissions: {}`/no checkout, a job-level `environment:` gate matching the
+    dispatched environment, and a `concurrency.group` scoped by environment.
   - `bloommcp/docs/data-access-roadmap.md` / `_WIKI/BLOOMMCP/README.md` (docs only).
 - Backward compatible: additive at the schema layer; the view's external contract and
   `get_experiment_summary_counts`'s signature/result shape are unchanged.

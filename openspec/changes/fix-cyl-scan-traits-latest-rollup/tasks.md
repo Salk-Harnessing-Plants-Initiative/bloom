@@ -186,14 +186,33 @@ EXECUTE ... TO service_role` only (not the four read roles — this is a mainten
       separate host per `.env.prod.defaults`'s `API_EXTERNAL_URL`, and `deploy.yml` only ever populates it
       once, at deploy time, via the migration's inline call). Closed by adding a `choice` input,
       `environment` (`staging`/`production`), that resolves to the right hardcoded URL/secret pair inside
-      the run script — no new secrets needed (`PROD_SERVICE_ROLE_KEY` already existed). Verify the
-      workflow's authenticated call also succeeds against production via `workflow_dispatch`
-      (`environment: production`) once this PR is live there.
-- [ ] 5.6 **Follow-up filed, not this PR's job:** [bloom#708](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/708)
+      the run script — no new secrets needed (`PROD_SERVICE_ROLE_KEY` already existed).
+- [ ] 5.6 Verify the workflow's authenticated call also succeeds against production via
+      `workflow_dispatch` (`environment: production`) once this PR is live there — separate from 5.3's
+      staging verification.
+- [ ] 5.7 **Follow-up filed, not this PR's job:** [bloom#708](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/708)
       tracks adding an automatic (scheduled) trigger for production once its write volume grows enough
       that on-demand dispatch stops being sufficient. Deliberately not spec'd here — the right interval
       depends on production write cadence at the time, not staging's (which no longer has an automatic
       cadence at all, per 5.4).
+- [x] 5.8 **Found in round 9 — two real gaps in the redesign itself, both fixed.** (1)
+      `concurrency.group` was a single string shared by both environments, so a `staging` dispatch and a
+      `production` dispatch could cancel each other despite touching independent databases — fixed by
+      including `${{ github.event.inputs.environment }}` in the group name. (2) The job declared no
+      `environment:` key, so it bypassed this repo's GitHub Environment approval rules entirely (confirmed
+      via the GitHub API that both `staging`/`production` Environments here carry `required_reviewers`,
+      the same gate `deploy.yml`'s own jobs opt into) — anyone able to dispatch could have fired an
+      RLS-bypass RPC at production with zero approval. Fixed by adding
+      `environment: ${{ github.event.inputs.environment }}` to the job (confirmed no environment-scoped
+      secret shadows either service-role key, so this only adds the approval gate). Also removed the
+      `environment` input's `default: 'staging'` — forces an explicit choice every dispatch rather than
+      silently refreshing staging when production was intended. All three guarded by new/updated tests
+      in `tests/unit/test_refresh_workflow_shape.py`.
+- [ ] 5.9 **Found in round 9, not a bug, not fixed here:** this redesign has no named operational owner
+      or cadence for dispatching a refresh, for either environment — a real (if lower-severity) trade
+      against the old, broken-but-aspirational daily schedule. Not spec'd here since it's a process
+      question, not a code one; the workflow's own header comment now at least suggests dispatching after
+      a bulk write-back upload rather than leaving it fully implicit.
 
 ## 6. Validate
 

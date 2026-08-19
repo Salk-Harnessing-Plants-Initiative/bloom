@@ -238,7 +238,7 @@ def test_refresh_function_search_path_is_pinned(pg_conn):
 def test_concurrent_refreshes_do_not_raise_duplicate_key(pg_conninfo, pg_conn):
     """Caught in round-2 review, reproduced empirically against a local Postgres before the fix:
     refresh_cyl_experiment_trait_counts()'s DELETE-then-INSERT had no lock/ON CONFLICT, so two
-    overlapping calls (e.g. an overlapping workflow_dispatch + scheduled run) raced -- the second
+    overlapping calls (e.g. two concurrent workflow_dispatch runs) raced -- the second
     call's DELETE found nothing left to delete (the first call's rows are new tuples outside its
     snapshot after the first commits), so its INSERT collided on the experiment_id PK with rows
     the first call had already committed ("duplicate key value violates unique constraint

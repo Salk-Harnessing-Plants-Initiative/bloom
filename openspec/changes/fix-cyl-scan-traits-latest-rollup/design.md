@@ -28,8 +28,8 @@ through the join before deduplicating, not the join itself (60ms). Rewritten as 
 all experiments at once cost 247ms — **no cache needed at all**. `n_traits` genuinely needs a full scan
 (6,623ms) and does need caching, but PR #654's per-row `AFTER` trigger is the wrong refresh shape: one
 write-back upload inserts ~751 trait rows in a loop, so a per-row trigger fires ~751 full-experiment
-recomputes for one upload. A scheduled refresh (interval settled at once daily -- see D8) costs the same
-6.6s regardless of ingest volume, and runs where nothing is waiting on it.
+recomputes for one upload. A dispatched-on-demand refresh (see D8 -- no automatic schedule as of this
+design) costs the same 6.6s regardless of ingest volume, and runs where nothing is waiting on it.
 
 Between them, these two reviews eliminate essentially all of PR #654's operational complexity: no
 batched/resumable backfill, no operator runbook, no D8 deploy-policy carve-out, no three-way
@@ -433,8 +433,9 @@ GRANT EXECUTE ON FUNCTION public.refresh_cyl_experiment_trait_counts() TO servic
 experiment that drops to zero matching traits disappears from the cache, matching the "absent if zero"
 contract). **Deliberately not scoped to `EXECUTE ... TO bloom_agent, bloom_user, bloom_admin,
 authenticated`** the way read RPCs are — this is a maintenance job, not a user-facing call; the only
-identity expected to invoke it is whatever runs the schedule (D8), so granting it more broadly would
-let any authenticated caller trigger a repeated 6.6s full rebuild for no benefit to them.
+identity expected to invoke it is whoever/whatever dispatches a refresh (D8 -- currently manual, no
+automatic caller), so granting it more broadly would let any authenticated caller trigger a repeated
+6.6s full rebuild for no benefit to them.
 
 **Why the join to `cyl_scan_latest_source` instead of filtering `cst.is_latest`:** `is_latest` is no
 longer a stored per-row column (D1) — it's a derived comparison. This refresh query does the same
@@ -732,10 +733,12 @@ follow-up.
   memory.
 - **`n_traits`'s staleness window (D5) is a real, user-visible behavior change** from PR #654's per-write
   trigger design (which was always current, just expensive) — `list_experiments()` can now show a
-  slightly-stale trait count for up to one refresh interval after new data lands. Documented as accepted
+  trait count that's stale by an amount bounded only by how often someone dispatches a refresh (no
+  automatic schedule for either environment, per D8's round-9 redesign). Documented as accepted
   (Goals/Non-Goals), but flagged here as a genuine behavior change a reviewer should weigh, not a free
   optimization.
-- **D8's refresh-scheduling mechanism is unresolved** — this design's correctness doesn't depend on which
+- **(Historical, round 1-era note; D8 has since been resolved — see D8 itself for the current, redesigned
+  mechanism.) D8's refresh-scheduling mechanism is unresolved** — this design's correctness doesn't depend on which
   host runs it, but `n_traits` reads stale data indefinitely (not just for one interval) until something
   is actually scheduled to call `refresh_cyl_experiment_trait_counts()`.
 - **A third instance of a testing-methodology gap, this time in the concurrency tests themselves, not just
@@ -799,7 +802,7 @@ MODE` + inline backfill (D3) + `cyl_scan_traits_source` view cutover (D3), in th
   transaction.
 - **M2** — `cyl_experiment_trait_counts` table (D5) + `refresh_cyl_experiment_trait_counts()` function,
   plus a one-time initial `SELECT public.refresh_cyl_experiment_trait_counts();` call in the same
-  migration (so the cache isn't empty until the first scheduled run fires — see D8).
+  migration (so the cache isn't empty before anyone dispatches a refresh — see D8).
 - **M3** — `compute_cyl_experiment_summary_counts_live` helper (D6, pinned-branch only) +
   `get_experiment_summary_counts` rewrite (D6).
 
@@ -846,7 +849,8 @@ the more durable signal that M2 hasn't actually been rolled back.
   GitHub secret — it's the same public, stable hostname already committed as `API_EXTERNAL_URL` in
   `.env.staging.defaults`, so there's nothing sensitive to store; `STAGING_SERVICE_ROLE_KEY` (the actual
   credential) already existed pre-change, so this schedule needs no secret provisioning at all
-  (`tests/unit/test_refresh_workflow_staging_api_url_shape.py` guards both facts).
+  (`tests/unit/test_refresh_workflow_shape.py` — renamed and broadened in round 9's redesign below —
+  guards both facts).
 
   **Found in round 7: "resolved" only covers which mechanism runs the refresh, not whether it's
   actually live yet.** This PR's base branch is `staging`. GitHub Actions `schedule:` triggers only ever
@@ -889,6 +893,34 @@ the more durable signal that M2 hasn't actually been rolled back.
   need its own automatic cadence once its write volume grows past what on-demand dispatch can keep up
   with — tracked as a dedicated follow-up, bloom#708, rather than speculatively adding a cron trigger
   now for a cadence nobody has picked yet.
+
+  **Found in round 9: the redesign itself shipped with two real gaps, both since fixed.** (1)
+  `concurrency.group` was a single static string shared by both environments — with
+  `cancel-in-progress: true`, a `staging` dispatch and a `production` dispatch could cancel each
+  other, even though they touch entirely independent databases and never actually race (each
+  environment's own calls are already serialized by the RPC's own `pg_advisory_xact_lock`). Fixed
+  by including `${{ github.event.inputs.environment }}` in the group name. (2) The job declared no
+  `environment:` key at all, so it never went through this repo's GitHub Environment approval rules
+  — confirmed via the GitHub API that both `staging` and `production` Environments here carry
+  `required_reviewers` (and `production` also a 5-minute `wait_timer`), the same gate `deploy.yml`'s
+  own staging/production jobs already opt into via their own job-level `environment:` key. Without
+  it, anyone able to dispatch this workflow could fire an RLS-bypass RPC at either database — most
+  concerningly production — with zero human approval, unlike every other path that reaches them.
+  Fixed by adding `environment: ${{ github.event.inputs.environment }}` to the job (confirmed no
+  environment-scoped secret shadows `STAGING_SERVICE_ROLE_KEY`/`PROD_SERVICE_ROLE_KEY`, so this adds
+  the approval gate without changing which secret value resolves). Also removed the `environment`
+  input's `default: 'staging'` — a dispatcher who forgets to change the dropdown before this fix
+  would have silently refreshed staging while believing they'd refreshed production, with nothing
+  surfacing the mistake; every dispatch now requires an explicit choice.
+
+  **Also found in round 9, not a bug but a real, now-explicit gap: this redesign has no named
+  operational owner or cadence for either environment.** Before, there was at least an aspirational
+  (if broken) daily schedule; now `n_traits` staleness is bounded purely by how often a human
+  remembers to dispatch a refresh, and neither this design nor bloom#708 names who that should be or
+  how often. Not fixed here — bloom#708 already tracks giving production its own automatic cadence
+  once write volume justifies one; until then, whoever runs a bulk write-back upload and wants a
+  fresher count sooner than "whenever someone next dispatches" should just dispatch it themselves
+  (now noted in the workflow's own header comment).
 
 - **D7 — pinned-branch cost, not benchmarked.** See D7's own reasoning; needs a real `EXPLAIN (ANALYZE,
 BUFFERS)` against staging once this lands, not resolved from this sandboxed pass.
