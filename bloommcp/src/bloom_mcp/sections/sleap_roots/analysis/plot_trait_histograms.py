@@ -30,12 +30,13 @@ from sleap_roots_analyze.visualization import (
     create_trait_histograms_batched,
 )
 
-from bloom_mcp.contract import BloomMCPError, Provenance, RunLinks, as_mcp_tool
+from bloom_mcp.contract import Provenance, RunLinks, as_mcp_tool
 from bloom_mcp.data_access import ExperimentReadError
+from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools._qc_shared import _validate_experiment_name, _validate_trait_subset
+from bloom_mcp.tools._qc_shared import _validate_experiment_name
 
-from ._viz_shared import TRAIT_BATCH_THRESHOLD
+from ._viz_shared import TRAIT_BATCH_THRESHOLD, resolve_trait_columns
 
 _TOOL_CLASS = "trait_histograms"
 _PNG_STEM = "trait_histograms"
@@ -73,43 +74,24 @@ class PlotTraitHistogramsResult(RunLinks):
     )
 
 
-def _resolve_trait_cols(frame, params: "PlotTraitHistogramsParams") -> list[str]:
-    if params.trait_columns is not None:
-        if not params.trait_columns:
-            raise BloomMCPError(
-                code="invalid_input",
-                message=f"trait_columns for {params.experiment!r} was given as an empty list.",
-                remedy="Omit trait_columns to plot all detected traits, or name at least one "
-                "trait column.",
-            )
-        _validate_trait_subset(frame, params.trait_columns, params.experiment)
-    trait_cols = list(params.trait_columns or frame.trait_cols)
-    if not trait_cols:
-        raise BloomMCPError(
-            code="invalid_input",
-            message=f"No numeric trait columns detected in {params.experiment!r}.",
-            remedy="Check the experiment has numeric trait columns, or pass trait_columns "
-            "explicitly.",
-        )
-    return trait_cols
-
-
 @as_mcp_tool(
     input_model=PlotTraitHistogramsParams,
     output_model=PlotTraitHistogramsResult,
-    errors=(ExperimentReadError,),
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
 )
 def plot_trait_histograms(
     params: PlotTraitHistogramsParams, *, provenance: Provenance
 ) -> PlotTraitHistogramsResult:
-    """Render histograms for ``experiment``'s trait distributions and persist them."""
+    """Render histograms for ``experiment``'s **raw, uncleaned** trait distributions and
+    persist them. No QC cleaning has been applied — this is a pre-clean EDA view, the same
+    category as ``qc_inspect``."""
     reader = _ports.reader()
     store = _ports.store()
 
     _validate_experiment_name(params.experiment)
 
     frame = reader.load_experiment(params.experiment, version="raw")
-    trait_cols = _resolve_trait_cols(frame, params)
+    trait_cols = resolve_trait_columns(frame, params.trait_columns, params.experiment)
     batched = len(trait_cols) > TRAIT_BATCH_THRESHOLD
 
     prov = provenance.model_copy(update={"based_on_version": frame.source})

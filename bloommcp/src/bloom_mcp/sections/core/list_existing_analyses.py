@@ -80,6 +80,13 @@ _TOOL_CLASS_TO_PUBLIC_NAME: dict[str, str] = {
     "pca": "pca_analysis",
     "umap": "umap_analysis",
     "qc_inspect": "qc_inspect",
+    # #466 — same rationale as pca/umap/qc_inspect above: without an entry here a
+    # list_runs failure for one of these 3 would leak the raw tool_class string
+    # instead of the public tool name (test_every_non_legacy_tool_class_has_a_public_
+    # name_mapping, added by #671, guards this for every future TOOL_CLASSES addition).
+    "trait_histograms": "plot_trait_histograms",
+    "trait_boxplots": "plot_trait_boxplots",
+    "correlation_matrix": "plot_correlation_matrix",
 }
 
 # Tiny per-experiment response cache. Each list_existing_analyses call walks

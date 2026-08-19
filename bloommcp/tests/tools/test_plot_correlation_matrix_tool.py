@@ -19,7 +19,10 @@ import pytest
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
-from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+from bloom_mcp.result_store import (
+    FakeResultStore,
+    SupabaseResultStore,
+)
 from bloom_mcp.tools import _ports
 from bloom_mcp.sections.sleap_roots.analysis import (
     plot_correlation_matrix as plot_correlation_matrix_tool,
@@ -140,6 +143,21 @@ def test_non_numeric_trait_column_is_invalid_input(injected_ports):
     assert exc.value.code == "invalid_input"
 
 
+def test_duplicate_trait_columns_is_invalid_input(injected_ports):
+    """A duplicate is NOT harmless here (unlike qc_clean/qc_inspect's non-certified
+    validation): it would silently count a self-correlation (r=1.0) as a "strong positive
+    correlation" in a permanent, provenance-stamped ResultStore artifact (#466 review).
+    """
+    df = _raw_df()
+    from bloom_mcp import experiment_utils as eu
+
+    trait = eu.detect_columns(df)["trait_cols"][0]
+    with pytest.raises(BloomMCPError) as exc:
+        _run(trait_columns=[trait, trait])
+    assert exc.value.code == "invalid_input"
+    assert trait in exc.value.message
+
+
 def test_metadata_only_frame_with_no_traits_is_invalid_input():
     df = pd.DataFrame(
         {"Barcode": ["b0", "b1"], "geno": ["g1", "g2"], "note": ["x", "y"]}
@@ -223,8 +241,27 @@ def test_source_content_addressed_in_manifest(injected_ports):
     _reader, store = injected_ports
     _run()
     stored = store.get_run(_EXPERIMENT, "correlation_matrix", "latest")
-    assert stored.input_validation is None or True  # no input_validation for this tool
+    assert stored.input_validation is None  # no input_validation for this tool
     assert stored.output_sha256  # every committed output is hashed
+
+
+def test_zero_variance_trait_excluded_from_counts_and_reported(injected_ports):
+    """A constant (zero-variance) trait's Pearson correlation against every other trait is
+    NaN, which counts toward neither strong_positive_correlations nor
+    strong_negative_correlations (NaN > 0.7 is False) — the result must name it explicitly
+    rather than silently under-reporting (#466 review)."""
+    df = _raw_df()
+    df["constant_trait"] = 1.0
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, df)
+    _ports.configure(reader=reader, store=FakeResultStore())
+    try:
+        result = plot_correlation_matrix(
+            PlotCorrelationMatrixParams(experiment=_EXPERIMENT)
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    assert "constant_trait" in result.zero_variance_traits
 
 
 def test_reads_raw_even_when_a_cleaned_version_already_exists():
@@ -328,10 +365,43 @@ def test_render_failure_cleans_staging_and_commits_nothing(injected_ports, monke
     assert not captured["staging_dir"].exists()
 
 
-def test_commit_failure_cleans_staging_and_commits_nothing(injected_ports):
+def test_commit_failure_cleans_staging_and_commits_nothing(injected_ports, monkeypatch):
     _reader, store = injected_ports
+    captured = {}
+    real_create = store.create_run
+
+    def _spy_create(*a, **k):
+        run = real_create(*a, **k)
+        captured["staging_dir"] = run.staging_dir
+        return run
+
+    monkeypatch.setattr(store, "create_run", _spy_create)
     store.fail_next_commit(_EXPERIMENT, "correlation_matrix")
 
     with pytest.raises(BloomMCPError):
         _run()
     assert store.list_runs(_EXPERIMENT, "correlation_matrix") == []
+    assert not captured["staging_dir"].exists()
+
+
+# ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
+# (#640/#466 review: errors=(ExperimentReadError,) alone swallowed a CommitFailedError/
+# ManifestReadError from store.create_run()/commit() into a generic internal_error ref) ──
+
+
+def test_commit_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "correlation_matrix")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "commit failed for correlation_matrix" in exc.value.message
+
+
+def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_read(_EXPERIMENT, "correlation_matrix")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "manifest read failure" in exc.value.message

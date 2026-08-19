@@ -16,7 +16,10 @@ import pytest
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
-from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+from bloom_mcp.result_store import (
+    FakeResultStore,
+    SupabaseResultStore,
+)
 from bloom_mcp.tools import _ports
 from bloom_mcp.sections.sleap_roots.analysis import _viz_shared
 from bloom_mcp.sections.sleap_roots.analysis import (
@@ -185,6 +188,23 @@ def test_unknown_trait_column_is_invalid_input_naming_it(injected_ports):
     assert "NoSuchTrait" in exc.value.message
 
 
+def test_non_numeric_trait_column_is_invalid_input(injected_ports):
+    with pytest.raises(BloomMCPError) as exc:
+        _run(trait_columns=["geno"])
+    assert exc.value.code == "invalid_input"
+
+
+def test_duplicate_trait_columns_is_invalid_input(injected_ports):
+    df = _raw_df()
+    from bloom_mcp import experiment_utils as eu
+
+    trait = eu.detect_columns(df)["trait_cols"][0]
+    with pytest.raises(BloomMCPError) as exc:
+        _run(trait_columns=[trait, trait])
+    assert exc.value.code == "invalid_input"
+    assert trait in exc.value.message
+
+
 def test_metadata_only_frame_with_no_traits_is_invalid_input():
     df = pd.DataFrame(
         {"Barcode": ["b0", "b1"], "geno": ["g1", "g2"], "note": ["x", "y"]}
@@ -207,6 +227,7 @@ def test_metadata_only_frame_with_no_traits_is_invalid_input():
         "/etc/passwd",
         "sub/dir/x.csv",
         "..\\..\\app\\.env",
+        "sub\\dir\\x.csv",
         "..",
         ".",
         "",
@@ -325,9 +346,41 @@ def test_render_failure_cleans_staging_and_commits_nothing(injected_ports, monke
     assert not captured["staging_dir"].exists()
 
 
-def test_commit_failure_cleans_staging_and_commits_nothing(injected_ports):
+def test_commit_failure_cleans_staging_and_commits_nothing(injected_ports, monkeypatch):
     _reader, store = injected_ports
+    captured = {}
+    real_create = store.create_run
+
+    def _spy_create(*a, **k):
+        run = real_create(*a, **k)
+        captured["staging_dir"] = run.staging_dir
+        return run
+
+    monkeypatch.setattr(store, "create_run", _spy_create)
     store.fail_next_commit(_EXPERIMENT, "trait_histograms")
     with pytest.raises(BloomMCPError):
         _run()
     assert store.list_runs(_EXPERIMENT, "trait_histograms") == []
+    assert not captured["staging_dir"].exists()
+
+
+# ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
+# (#640/#466 review) ──────────────────────────────────────────────────────────
+
+
+def test_commit_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "trait_histograms")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "commit failed for trait_histograms" in exc.value.message
+
+
+def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_read(_EXPERIMENT, "trait_histograms")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "manifest read failure" in exc.value.message

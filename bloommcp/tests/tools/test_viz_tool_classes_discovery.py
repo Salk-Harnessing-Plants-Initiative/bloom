@@ -86,3 +86,28 @@ def test_committed_runs_from_all_3_tools_are_discoverable(injected_ports):
         analyses["correlation_matrix"][0],
     ):
         assert entry["version_dir"].startswith("v1")
+
+
+def test_interleaved_calls_across_tools_advance_independent_version_lineages(
+    injected_ports,
+):
+    """Stronger than the v1-only check above: calling the 3 tools out of order and more
+    than once must not interleave their version counters — each tool_class's lineage
+    advances only on its own calls (#466 review: the v1-only assertion is structurally
+    safe per the store's (experiment, tool_class) keying, but was previously untested as
+    such)."""
+    plot_trait_boxplots(PlotTraitBoxplotsParams(experiment=_EXPERIMENT))
+    plot_correlation_matrix(PlotCorrelationMatrixParams(experiment=_EXPERIMENT))
+    plot_trait_histograms(PlotTraitHistogramsParams(experiment=_EXPERIMENT))
+    plot_correlation_matrix(PlotCorrelationMatrixParams(experiment=_EXPERIMENT))
+    plot_trait_boxplots(PlotTraitBoxplotsParams(experiment=_EXPERIMENT))
+
+    payload = json.loads(list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT))
+    analyses = payload["analyses"]
+
+    assert [e["version_dir"][:2] for e in analyses["trait_boxplots"]] == ["v1", "v2"]
+    assert [e["version_dir"][:2] for e in analyses["correlation_matrix"]] == [
+        "v1",
+        "v2",
+    ]
+    assert [e["version_dir"][:2] for e in analyses["trait_histograms"]] == ["v1"]
