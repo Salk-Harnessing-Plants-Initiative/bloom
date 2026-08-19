@@ -13,15 +13,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
 import click
+from pydantic import ValidationError
+from sleap_roots_contracts import RUN_MANIFEST_FILENAME, RunManifest
 
 from ..credentials import DEFAULT_PROFILE
 from ._batch import BatchResult, ScanResult, format_json, format_summary
+
+logger = logging.getLogger(__name__)
 
 
 class EnvelopeError(Exception):
@@ -71,18 +76,83 @@ def load_envelope(source: str, *, stdin: TextIO | None = None) -> dict[str, Any]
     return data
 
 
-def discover_envelopes(envelopes_dir: str | Path) -> list[Path]:
-    """Non-recursive glob for ``*.result.json`` directly under ``envelopes_dir``, sorted.
+@dataclass
+class DiscoveredEnvelopes:
+    """Result of scoping envelope discovery to an optional ``run_manifest.json`` (bloom #678).
 
-    Matches the flat layout ``trait_extractor.extractor.extract_batch``'s
-    ``output_dir`` produces (one ``{scan_key}.result.json`` per scan, no nesting). Raises
-    ``EnvelopeError`` if ``envelopes_dir`` doesn't exist or isn't a directory; an empty-but-present
-    directory returns ``[]`` (the empty-batch no-op case, not an error).
+    ``paths``: in-scope ``*.result.json`` files to ingest, sorted. ``missing_scan_keys``:
+    manifest-declared scan_keys with no matching file, sorted.
+    """
+
+    paths: list[Path]
+    missing_scan_keys: list[str]
+
+
+def discover_envelopes(envelopes_dir: str | Path) -> DiscoveredEnvelopes:
+    """Non-recursive glob for ``*.result.json`` directly under ``envelopes_dir``, sorted,
+    scoped to a ``run_manifest.json`` when one is present.
+
+    Matches the flat layout ``trait_extractor.extractor.extract_batch``'s ``output_dir``
+    produces (one ``{scan_key}.result.json`` per scan, no nesting). If
+    ``envelopes_dir / RUN_MANIFEST_FILENAME`` exists, only files whose filename stem is in
+    the manifest's ``scan_keys`` are returned, and any declared scan_key with no matching
+    file is reported via ``DiscoveredEnvelopes.missing_scan_keys``. With no manifest,
+    discovery is fully unscoped (identical to the pre-manifest behavior). Raises
+    ``EnvelopeError`` if ``envelopes_dir`` doesn't exist or isn't a directory, or if a
+    present manifest is unreadable or fails to parse; an empty-but-present directory with no
+    manifest returns ``DiscoveredEnvelopes([], [])`` (the empty-batch no-op case, not an
+    error).
     """
     path = Path(envelopes_dir)
     if not path.is_dir():
         raise EnvelopeError(f"envelopes directory does not exist or is not a directory: {path}")
-    return sorted(path.glob("*.result.json"))
+
+    all_paths = sorted(path.glob("*.result.json"))
+
+    manifest_path = path / RUN_MANIFEST_FILENAME
+    try:
+        manifest_text = manifest_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return DiscoveredEnvelopes(paths=all_paths, missing_scan_keys=[])
+    except OSError as exc:
+        # Covers a directory (or other non-file entry) at manifest_path
+        # (IsADirectoryError), a permission-denied stat/read (PermissionError), and any
+        # other read failure — all "can't read this as a manifest," same as a parse
+        # failure below. Deliberately not a pre-check via .exists()/.is_file(): those
+        # only swallow ENOENT-class errors, not EACCES, so a permission-denied stat
+        # would otherwise escape uncaught instead of failing loud with a readable error.
+        raise EnvelopeError(
+            f"{manifest_path} exists but is not a valid RunManifest: {exc}"
+        ) from exc
+
+    try:
+        manifest = RunManifest.model_validate_json(manifest_text)
+    except ValidationError as exc:
+        raise EnvelopeError(
+            f"{manifest_path} exists but is not a valid RunManifest: {exc}"
+        ) from exc
+
+    scoped_keys = set(manifest.scan_keys)
+    in_scope: list[Path] = []
+    excluded: list[str] = []
+    seen_keys: set[str] = set()
+    for p in all_paths:
+        stem = p.name.removesuffix(".result.json")
+        if stem in scoped_keys:
+            in_scope.append(p)
+            seen_keys.add(stem)
+        else:
+            excluded.append(stem)
+
+    if excluded:
+        logger.debug(
+            "Excluded %d envelope(s) outside run_manifest.json scope: %s",
+            len(excluded),
+            sorted(excluded),
+        )
+
+    missing_scan_keys = sorted(scoped_keys - seen_keys)
+    return DiscoveredEnvelopes(paths=in_scope, missing_scan_keys=missing_scan_keys)
 
 
 def validate_envelope(data: dict[str, Any]) -> None:
@@ -657,27 +727,62 @@ def batch_ingest_result(
     predictions_dir: Path | None,
 ) -> None:
     """Ingest every {scan_key}.result.json file directly under ENVELOPES_DIR — the batch
-    sibling of `ingest-result`. Isolates per-envelope failures (one bad envelope doesn't abort
-    the batch); exits non-zero if any envelope failed."""
+    sibling of `ingest-result`. If ENVELOPES_DIR contains a run_manifest.json, only the files
+    it lists are ingested and a declared scan_key with no matching file is reported as a
+    failure — unless a differently-named file's own content actually reports that scan_key
+    (a filename/body mismatch), in which case the real outcome wins and the failure is
+    dropped; with no manifest, every file is ingested (unchanged). Isolates per-envelope
+    failures (one bad envelope doesn't abort the batch); exits non-zero if any envelope
+    failed."""
     try:
-        envelope_paths = discover_envelopes(envelopes_dir)
+        discovered = discover_envelopes(envelopes_dir)
     except EnvelopeError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    if not envelope_paths:
+    missing_results = [
+        ScanResult(
+            key,
+            "failed",
+            f"run_manifest.json lists scan_key {key!r} but no {key}.result.json was found "
+            f"in {envelopes_dir}",
+        )
+        for key in discovered.missing_scan_keys
+    ]
+
+    if not discovered.paths and not missing_results:
         click.echo("No envelope files found; nothing to ingest.")
         return
 
-    from ..cli import _authed_client
+    if discovered.paths:
+        from ..cli import _authed_client
 
-    client = _authed_client(profile)
-
-    batch_result = BatchResult(
-        [
+        client = _authed_client(profile)
+        ingest_results = [
             ingest_one_envelope(client, path, predictions_dir=predictions_dir, profile=profile)
-            for path in envelope_paths
+            for path in discovered.paths
         ]
-    )
+        # ingest_one_envelope relabels its result by the envelope body's own scan_key once
+        # read, which can differ from the filename discover_envelopes matched against the
+        # manifest. Drop a "missing" entry for any key that was, in fact, actually ingested —
+        # otherwise the same scan_key could appear twice with contradictory ok/failed statuses.
+        ingested_scan_keys = {r.scan_key for r in ingest_results}
+        collided_keys = sorted(
+            r.scan_key for r in missing_results if r.scan_key in ingested_scan_keys
+        )
+        if collided_keys:
+            logger.debug(
+                "Dropped %d manifest-declared-missing entry/entries superseded by an "
+                "actual ingest result under the same scan_key (filename/body scan_key "
+                "mismatch): %s",
+                len(collided_keys),
+                collided_keys,
+            )
+        missing_results = [r for r in missing_results if r.scan_key not in ingested_scan_keys]
+        scan_results = ingest_results + missing_results
+    else:
+        scan_results = missing_results
+
+    batch_result = BatchResult(scan_results)
 
     if as_json:
         click.echo(format_json(batch_result))
