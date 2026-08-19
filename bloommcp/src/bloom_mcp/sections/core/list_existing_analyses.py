@@ -30,6 +30,20 @@ from bloom_mcp.tools import _ports
 # (the producers, `qc_clean.py`/`remove_outliers.py`, do too) rather than
 # re-typing the literal — a typo here would silently hide trimmed runs from
 # this tool's output, exactly the drift class #420 is about.
+#
+# `pca`, `umap`, `qc_inspect` are added as plain re-typed literals, not
+# imported single-sourced constants like `QC_TOOL_CLASS`/`OUTLIERS_TOOL_CLASS`
+# above: importing each producer's own `_TOOL_CLASS` (`pca_analysis.py`,
+# `umap_analysis.py`, `qc_inspect.py` in `sections/sleap_roots/analysis`) from
+# this file would invert the intended dependency direction between
+# `sections/core` (foundational, session-bootstrap tools this file belongs to)
+# and `sections/sleap_roots/analysis` (the granular analysis tools) — `core`
+# tools are meant to be usable before any analysis tool is even known to
+# exist, not to import from them (the same reasoning `fix-bloommcp-error-
+# redaction-followups/design.md` Decision 1 applies to its own tool_class ->
+# public-name lookup). bloom#669: these 3 were previously missing entirely, so
+# no run history or `list_runs` failure for any of them was ever discoverable
+# via this tool.
 TOOL_CLASSES = (
     QC_TOOL_CLASS,
     "stats",
@@ -39,6 +53,9 @@ TOOL_CLASSES = (
     OUTLIERS_TOOL_CLASS,
     "viz",
     "correlation",
+    "pca",
+    "umap",
+    "qc_inspect",
 )
 
 # Public MCP tool name for each tool_class this loop iterates that maps to a
@@ -53,6 +70,9 @@ _TOOL_CLASS_TO_PUBLIC_NAME: dict[str, str] = {
     "clustering": "clustering",
     OUTLIERS_TOOL_CLASS: "remove_outliers",
     "correlation": "cross_experiment_correlations",
+    "pca": "pca_analysis",
+    "umap": "umap_analysis",
+    "qc_inspect": "qc_inspect",
 }
 
 # Tiny per-experiment response cache. Each list_existing_analyses call walks
