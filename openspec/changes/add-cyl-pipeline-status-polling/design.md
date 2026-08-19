@@ -415,7 +415,8 @@ container) already rejects in favor of one script/one job/one container.
   reconciliation-sweep gap (Non-Goals) — a `LIST`-based reconciliation pass keyed on
   `pipeline-run-id`/`batch-index`/`environment` labels is the real fix, not something this by-name-`GET`
   phase can close. Recorded here rather than solved; operationally mitigated the same way as the
-  all-404'd case: keep the poll interval well under the TTL.
+  all-404'd case: keep the poll interval well under the TTL. Filed as
+  [bloom #706](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/706).
 - **Unbounded candidate-list growth** (found `/review-pr` round 2): `_fetch_candidate_runs` has no
   `LIMIT`/pagination — every currently-`'submitted'`/`'running'`/`'partial'` run across the whole
   deployment is re-swept, and re-`GET`'s every one of its distinct workflow names, on every cycle. At
