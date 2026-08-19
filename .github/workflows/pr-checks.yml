@@ -135,6 +135,48 @@ jobs:
       - name: Run env-defaults unit tests
         run: uv run --extra test pytest tests/unit/test_env_defaults.py -v --tb=short
 
+  # Verified every var in compose file that requires secrets to be present in Github is present so deployment doesnt fail with secrect not found.
+  verify-deploy-secrets:
+    name: Verify deploy secrets exist
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Collect secret names
+        id: collect
+        env:
+          GH_TOKEN: ${{ secrets.SECRETS_AUDIT_TOKEN }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::notice::SECRETS_AUDIT_TOKEN is not set — checking wiring only."
+            exit 0
+          fi
+          # Names only. `actions/secrets` and `environments/*/secrets` never
+          # return values, so nothing secret passes through this step.
+          repo=$(gh api "repos/${GITHUB_REPOSITORY}/actions/secrets" --paginate -q '.secrets[].name')
+          for env in production staging; do
+            envsec=$(gh api "repos/${GITHUB_REPOSITORY}/environments/${env}/secrets" --paginate -q '.secrets[].name')
+            printf '%s\n%s\n' "$repo" "$envsec" | sort -u > "names.${env}"
+          done
+          python3 - <<'EOF' > secrets.json
+          import json
+          out = {}
+          for env in ("production", "staging"):
+              with open(f"names.{env}") as fh:
+                  out[env] = [n for n in fh.read().split() if n]
+          print(json.dumps(out))
+          EOF
+          echo "have_secrets=true" >> "$GITHUB_OUTPUT"
+
+      - name: Verify every compose-required var is backed
+        run: |
+          args="--compose docker-compose.prod.yml --deploy .github/workflows/deploy.yml"
+          if [ "${{ steps.collect.outputs.have_secrets }}" = "true" ]; then
+            args="$args --secrets-json secrets.json"
+          fi
+          python3 scripts/verify_deploy_secrets.py $args
+
   # Scans Python dependencies for known CVEs via lockfile export
   python-audit:
     name: Python Security Audit for CVEs
