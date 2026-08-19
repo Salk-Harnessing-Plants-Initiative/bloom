@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 import k8s_client
-from k8s_client import K8sConfigError, K8sSubmissionError
+from k8s_client import K8sConfigError, K8sStatusError, K8sSubmissionError
 
 
 class _FakeResp:
@@ -44,6 +44,14 @@ class _FakeClient:
         self._capture["url"] = url
         self._capture["headers"] = headers
         self._capture["json"] = json
+        self._capture["kwargs"] = kwargs
+        if self._raise_exc is not None:
+            raise self._raise_exc
+        return self._resp
+
+    def get(self, url, headers=None, **kwargs):
+        self._capture["url"] = url
+        self._capture["headers"] = headers
         self._capture["kwargs"] = kwargs
         if self._raise_exc is not None:
             raise self._raise_exc
@@ -350,3 +358,86 @@ def test_build_workflow_body_dag_references_all_four_templates_in_order():
     assert deps[1] == [tasks[0]["name"]]
     assert deps[2] == [tasks[1]["name"]]
     assert deps[3] == [tasks[2]["name"]]
+
+
+# --- get_workflow_status: status-polling (bloom #11 Phase 3) ----------------
+
+
+def test_get_workflow_status_returns_the_phase_on_success(monkeypatch):
+    resp = _FakeResp(200, {"status": {"phase": "Succeeded"}})
+    monkeypatch.setattr(
+        k8s_client.httpx, "Client", lambda *a, **k: _FakeClient(resp=resp)
+    )
+    assert k8s_client.get_workflow_status("wf-abc") == "Succeeded"
+
+
+def test_get_workflow_status_returns_none_on_404(monkeypatch):
+    resp = _FakeResp(404, {}, text="not found")
+    monkeypatch.setattr(
+        k8s_client.httpx, "Client", lambda *a, **k: _FakeClient(resp=resp)
+    )
+    assert k8s_client.get_workflow_status("wf-gone") is None
+
+
+def test_get_workflow_status_raises_k8sstatuserror_on_5xx(monkeypatch):
+    resp = _FakeResp(500, text="internal error")
+    monkeypatch.setattr(
+        k8s_client.httpx, "Client", lambda *a, **k: _FakeClient(resp=resp)
+    )
+    with pytest.raises(K8sStatusError):
+        k8s_client.get_workflow_status("wf-abc")
+
+
+def test_get_workflow_status_raises_k8sstatuserror_on_network_error(monkeypatch):
+    import httpx as real_httpx
+
+    monkeypatch.setattr(
+        k8s_client.httpx,
+        "Client",
+        lambda *a, **k: _FakeClient(
+            raise_exc=real_httpx.ConnectError("connection refused")
+        ),
+    )
+    with pytest.raises(K8sStatusError):
+        k8s_client.get_workflow_status("wf-abc")
+
+
+def test_get_workflow_status_error_message_is_generic_not_raw(monkeypatch):
+    resp = _FakeResp(
+        500, text="Internal Server Error at https://10.7.30.173:6443/secret-detail"
+    )
+    monkeypatch.setattr(
+        k8s_client.httpx, "Client", lambda *a, **k: _FakeClient(resp=resp)
+    )
+    with pytest.raises(K8sStatusError) as exc:
+        k8s_client.get_workflow_status("wf-abc")
+    message = str(exc.value)
+    assert "10.7.30.173" not in message
+    assert "Internal Server Error" not in message
+
+
+def test_get_workflow_status_requires_config_before_any_network_call(monkeypatch):
+    monkeypatch.setattr(k8s_client, "TOKEN", None)
+    calls = {"requested": False}
+    monkeypatch.setattr(
+        k8s_client.httpx, "Client", lambda *a, **k: calls.update(requested=True)
+    )
+    with pytest.raises(K8sConfigError):
+        k8s_client.get_workflow_status("wf-abc")
+    assert calls["requested"] is False
+
+
+def test_get_workflow_status_requests_the_exact_resource_path(monkeypatch):
+    capture = {}
+    resp = _FakeResp(200, {"status": {"phase": "Running"}})
+    monkeypatch.setattr(
+        k8s_client.httpx,
+        "Client",
+        lambda *a, **k: _FakeClient(resp=resp, capture=capture),
+    )
+    k8s_client.get_workflow_status("sleap-roots-pipeline-abc12")
+    assert capture["url"] == (
+        "https://10.7.30.173:6443/apis/argoproj.io/v1alpha1/namespaces/"
+        "runai-busch-lab/workflows/sleap-roots-pipeline-abc12"
+    )
+    assert capture["headers"]["Authorization"] == "Bearer test-token"

@@ -81,6 +81,13 @@ class K8sSubmissionError(Exception):
     server URL or other internal detail."""
 
 
+class K8sStatusError(Exception):
+    """A genuine status-check attempt (get_workflow_status) failed for a
+    reason other than the Workflow simply not existing (non-404 non-2xx, or
+    network-level). Same sanitized-message convention as
+    K8sSubmissionError — never the raw response body or exception text."""
+
+
 def _validate_config() -> None:
     missing = [
         name
@@ -197,3 +204,43 @@ def submit_workflow(body: dict) -> str:
             exc,
         )
         raise K8sSubmissionError("Argo Workflow submission failed") from exc
+
+
+def get_workflow_status(name: str) -> str | None:
+    """GET a single Workflow's real phase (Pending/Running/Succeeded/Failed/
+    Error) by name. Returns None on 404 — the Workflow no longer exists (most
+    often ttlStrategy already cleaned it up, an expected condition, not a
+    failure). Raises K8sStatusError for any other non-2xx response or
+    network-level failure, with a fixed, generic message — the real detail is
+    logged server-side only."""
+    _validate_config()
+    url = f"{API_URL}/apis/argoproj.io/v1alpha1/namespaces/{NAMESPACE}/workflows/{name}"
+
+    try:
+        with httpx.Client(verify=_ssl_context(), timeout=15.0) as client:
+            resp = client.get(
+                url,
+                headers={"Authorization": f"Bearer {TOKEN}"},
+            )
+    except Exception as exc:
+        logger.warning("k8s_client: status check request failed: %s", exc)
+        raise K8sStatusError("Argo Workflow status check failed") from exc
+
+    if resp.status_code == 404:
+        return None
+
+    if resp.status_code // 100 != 2:
+        logger.warning(
+            "k8s_client: status check rejected (%s): %s", resp.status_code, resp.text
+        )
+        raise K8sStatusError("Argo Workflow status check failed")
+
+    try:
+        return resp.json()["status"]["phase"]
+    except (KeyError, TypeError, ValueError) as exc:
+        logger.warning(
+            "k8s_client: status check returned %s but response body was unparseable: %s",
+            resp.status_code,
+            exc,
+        )
+        raise K8sStatusError("Argo Workflow status check failed") from exc
