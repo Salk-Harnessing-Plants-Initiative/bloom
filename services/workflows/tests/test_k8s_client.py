@@ -107,6 +107,24 @@ def test_missing_token_raises_k8sconfigerror_before_any_network_call(monkeypatch
     assert calls["posted"] is False
 
 
+def test_k8sconfigerror_message_is_caller_neutral_not_dispatch_worker_specific(
+    monkeypatch,
+):
+    """Found during /review-pr: _validate_config() is shared by
+    submit_workflow (dispatch worker) and get_workflow_status (status
+    poller), but its message used to hardcode "dispatch worker not
+    configured" — misleading whoever is on call when the status poller, not
+    the dispatch worker, is what's actually misconfigured. Assert both call
+    sites raise a message that doesn't name either specific caller."""
+    monkeypatch.setattr(k8s_client, "TOKEN", None)
+    with pytest.raises(K8sConfigError) as exc_submit:
+        k8s_client.submit_workflow({})
+    with pytest.raises(K8sConfigError) as exc_status:
+        k8s_client.get_workflow_status("wf-abc")
+    assert "dispatch worker" not in str(exc_submit.value).lower()
+    assert "dispatch worker" not in str(exc_status.value).lower()
+
+
 def test_missing_ca_cert_raises_k8sconfigerror_before_any_network_call(monkeypatch):
     monkeypatch.setattr(k8s_client, "CA_CERT", None)
     calls = {"posted": False}

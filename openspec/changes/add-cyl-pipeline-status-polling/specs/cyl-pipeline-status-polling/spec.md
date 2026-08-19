@@ -44,14 +44,21 @@ called first, raising `K8sConfigError` before any network call if credentials ar
 `services/workflows/status_poller.py` SHALL run as a separate, standalone process (its own
 docker-compose service, `cyl-status-poller`) with its own poll loop
 (`WORKFLOWS_STATUS_POLL_SECONDS`, default `15`), distinct from `dispatch_worker.py`. Each cycle, it
-SHALL select every `cyl_pipeline_runs` row whose `status` is `'submitted'` or `'running'`, and for each
-such run: collect the distinct `argo_workflow_name` values from that run's `cyl_pipeline_run_scans`
-rows, call `get_workflow_status` for each, compute the run's rollup status (see the rollup requirement
-below), and — if the computed status differs from the run's current status, or unconditionally; either
-is acceptable since the write RPC is itself idempotent-safe — call `update_cyl_pipeline_run_status`
-with the result. It SHALL handle `SIGTERM`/`SIGINT` gracefully (finish the in-flight sweep before
-exiting, do not start a new one), and SHALL retry its startup Supabase connection with backoff rather
-than crash on a transient outage, matching `dispatch_worker.py`'s established conventions for both.
+SHALL select every `cyl_pipeline_runs` row whose `status` is `'submitted'`, `'running'`, or `'partial'`
+(a `'partial'` run may still have genuinely-dispatched batches whose real Argo outcome hasn't been
+checked — see the `'partial'`-inclusion scenario below), and for each such run: collect the distinct
+`argo_workflow_name` values from that run's `cyl_pipeline_run_scans` rows, call `get_workflow_status`
+for each, compute the run's rollup status (see the rollup requirement below), and — if the computed
+status differs from the run's current status, or unconditionally; either is acceptable since the write
+RPC is itself idempotent-safe — call `update_cyl_pipeline_run_status` with the result, **except** when
+the computed status is `'complete'` and any of this cycle's workflow lookups returned `None` (404) —
+see the rollup requirement's "withheld complete" rule. It SHALL isolate a failure fetching or updating
+any one run (a K8s error, a DB-read error, or a failed write) to that run alone, never aborting the
+rest of the cycle's candidates, and SHALL isolate a failure fetching the candidate list itself to that
+cycle alone (retrying next cycle, not crashing). It SHALL handle `SIGTERM`/`SIGINT` gracefully (finish
+the in-flight sweep before exiting, do not start a new one), and SHALL retry its startup Supabase
+connection with backoff rather than crash on a transient outage, matching `dispatch_worker.py`'s
+established conventions for both.
 
 #### Scenario: A run with one workflow still Running stays running
 
@@ -65,10 +72,19 @@ than crash on a transient outage, matching `dispatch_worker.py`'s established co
 
 #### Scenario: A run with no distinct workflows to check is left alone
 
-- **WHEN** a candidate run (status `'submitted'` or `'running'`) has no `cyl_pipeline_run_scans` rows
-  with a non-null `argo_workflow_name` (should not happen given Phase 2's own invariants, but the
-  poller must not error if it does)
+- **WHEN** a candidate run (status `'submitted'`, `'running'`, or `'partial'`) has no
+  `cyl_pipeline_run_scans` rows with a non-null `argo_workflow_name` (should not happen given Phase 2's
+  own invariants, but the poller must not error if it does)
 - **THEN** the poller does not call `update_cyl_pipeline_run_status` for that run this cycle
+
+#### Scenario: A `'partial'` run's genuinely-dispatched batches are checked, not skipped
+
+- **WHEN** a candidate run's current `status` is `'partial'` (Phase 2's dispatch-level outcome — some
+  scans failed to dispatch, some succeeded) and it has at least one `cyl_pipeline_run_scans` row with a
+  non-null `argo_workflow_name`
+- **THEN** the poller calls `get_workflow_status` for that workflow the same as it would for a
+  `'submitted'`/`'running'` run — it is not excluded from checking merely because its current status is
+  already `'partial'`
 
 #### Scenario: A workflow that 404s is skipped, not treated as terminal
 
@@ -77,14 +93,28 @@ than crash on a transient outage, matching `dispatch_worker.py`'s established co
 - **AND** if it was the only workflow the run had left to check, the run's status is left unchanged
   this cycle rather than guessed
 
+#### Scenario: A 404 among otherwise-Succeeded siblings withholds a `'complete'` conclusion, not writes one
+
+- **WHEN** a run has two batches, one whose workflow returns `Succeeded` this cycle and one whose
+  workflow returns `None` (404 — TTL-expired before ever being observed as terminal)
+- **THEN** the poller does NOT call `update_cyl_pipeline_run_status` with `'complete'` for that run
+  this cycle, even though the *observed* phases alone would satisfy rule (2) — a workflow whose real
+  outcome was never confirmed must not be silently treated as if it had succeeded
+
 #### Scenario: A failure checking one run does not abort the sweep for other runs
 
-- **WHEN** a sweep cycle has two or more candidate runs, and checking the first run's workflow(s)
-  raises `K8sStatusError` or `K8sConfigError`, or the `update_cyl_pipeline_run_status` call for that
-  run itself fails
+- **WHEN** a sweep cycle has two or more candidate runs, and checking the first run's workflow(s) or
+  reading its `cyl_pipeline_run_scans` rows raises any exception (a K8s error, a DB-read error), or the
+  `update_cyl_pipeline_run_status` call for that run itself fails
 - **THEN** the sweep still checks and, where warranted, updates every other candidate run in the same
-  cycle — a problem isolated to one run's K8s lookups or DB write must not silently skip the rest of
-  that cycle's candidates
+  cycle — a problem isolated to one run's K8s lookups, DB read, or DB write must not silently skip the
+  rest of that cycle's candidates
+
+#### Scenario: A failure fetching the candidate list itself does not crash the poller
+
+- **WHEN** the query that fetches this cycle's candidate runs (`_fetch_candidate_runs`) itself raises
+- **THEN** the current sweep cycle ends without checking any run (equivalent to finding zero
+  candidates), and the next scheduled cycle retries — the process does not crash or exit
 
 #### Scenario: SIGTERM lets the in-flight sweep finish
 
@@ -106,16 +136,23 @@ The rollup SHALL compute a run's status, in order, from the *effective phase* of
 scans: `'Failed'` for a scan whose dispatch itself failed (`cyl_pipeline_run_scans.status = 'failed'`
 AND `argo_workflow_name IS NULL`), otherwise the real Argo phase of that scan's batch's workflow
 (looked up via `get_workflow_status`, or excluded from this cycle's computation per the
-`404`-handling scenario above). Rule: (0) if the effective-phase list is empty (every workflow this
-cycle was excluded per the `404`-handling scenario, or there were no `argo_workflow_name`s and no
-dispatch failures to begin with), the rollup concludes nothing — no `update_cyl_pipeline_run_status`
-call is made this cycle; this is a real, distinct outcome, not a vacuous match falling through to rule
-(2). Otherwise: (1) if any effective phase is `Pending` or `Running`, the run's status is `'running'`;
-(2) otherwise, if every effective phase is `Succeeded`, the run's status is `'complete'`;
-(3) otherwise, if no effective phase is `Succeeded`, the run's status is `'failed'`; (4) otherwise (a
-mix of `Succeeded` and non-`Succeeded` terminal phases), the run's status is `'partial'`. This
-generalizes `_settle_cyl_pipeline_run`'s existing three-way split (which only ever considered dispatch
-outcome) by adding the `'running'` branch on top of the same terminal-outcome structure.
+`404`-handling scenario above — the poller SHALL separately track whether *any* workflow was excluded
+this cycle this way, distinct from the phase list itself). Rule: (0) if the effective-phase list is
+empty (every workflow this cycle was excluded per the `404`-handling scenario, or there were no
+`argo_workflow_name`s and no dispatch failures to begin with), the rollup concludes nothing — no
+`update_cyl_pipeline_run_status` call is made this cycle; this is a real, distinct outcome, not a
+vacuous match falling through to rule (2). Otherwise: (1) if any effective phase is `Pending` or
+`Running`, the run's status is `'running'`; (2) otherwise, if every effective phase is `Succeeded`,
+the run's status is `'complete'` — **unless any workflow was excluded via a 404 this cycle, in which
+case the rollup withholds this conclusion and makes no call at all** (an unconfirmed workflow could
+have failed; `'complete'` must never be an unverified guess); (3) otherwise, if no effective phase is
+`Succeeded`, the run's status is `'failed'`; (4) otherwise (a mix of `Succeeded` and non-`Succeeded`
+terminal phases), the run's status is `'partial'`. Rules (3) and (4) are NOT withheld by an excluded
+workflow — once at least one effective phase is a confirmed non-`Succeeded` terminal outcome, the true
+aggregate can never be `'complete'` regardless of the excluded workflow's real fate, so concluding
+`'failed'`/`'partial'` remains safe even with incomplete information. This generalizes
+`_settle_cyl_pipeline_run`'s existing three-way split (which only ever considered dispatch outcome) by
+adding the `'running'` branch on top of the same terminal-outcome structure.
 
 #### Scenario: One batch still running holds the whole run at running, even if others finished
 
@@ -155,23 +192,38 @@ outcome) by adding the `'running'` branch on top of the same terminal-outcome st
   match vacuously against an empty list)
 - **AND** no `update_cyl_pipeline_run_status` call is made for that run this cycle
 
+#### Scenario: A confirmed failure is still concluded despite one unresolved sibling workflow
+
+- **WHEN** a run has one batch whose dispatch itself failed (an effective `'Failed'` phase) and one
+  other batch whose workflow returns `None` (404) this cycle
+- **THEN** the rollup concludes `'partial'` (or `'failed'`, if no `Succeeded` phase is present at all)
+  and calls `update_cyl_pipeline_run_status` with that result — the presence of an unresolved workflow
+  does NOT withhold a `'failed'`/`'partial'` conclusion the way it withholds `'complete'`, since a
+  confirmed non-`Succeeded` outcome already rules out the run ever being a full success
+
 ### Requirement: `update_cyl_pipeline_run_status` writes the rollup result under least privilege
 
 The database SHALL provide `update_cyl_pipeline_run_status(p_run_id bigint, p_status text) RETURNS
 void`, `SECURITY DEFINER`, validating `p_status` is one of `'running'|'complete'|'failed'|'partial'`
 (raising an error otherwise), and updating `cyl_pipeline_runs` only when the row's current `status` is
-`'submitted'` or `'running'` — a run already `'queued'` (never dispatched) or already terminal is left
-untouched. On a transition into a terminal status (`'complete'`/`'failed'`/`'partial'`) where
-`completed_at` is still `NULL`, it SHALL be set to `now()`. `EXECUTE` SHALL be revoked from `PUBLIC`,
-`anon`, and `authenticated`, and granted only to `bloom_workflows` — the same triple-revoke/single-grant
-pattern every other `SECURITY DEFINER` wrapper in this program uses.
+`'submitted'`, `'running'`, or `'partial'` — a run already `'queued'` (never dispatched) or already
+`'complete'`/`'failed'` is left untouched. On a transition into a terminal status
+(`'complete'`/`'failed'`/`'partial'`), `completed_at` SHALL be set to `now()` **unconditionally** —
+every call that reaches this branch advances it, not only the first (Phase 2's own dispatch-settle
+write already sets `completed_at` for the common `'submitted'` case before this function is ever
+called, so a guard that only fires when `completed_at IS NULL` would never actually run in production;
+see `design.md`'s `completed_at` decision for why the previous `IS NULL` guard was wrong, and why an
+always-fresh timestamp is preferred over comparing against the run's previous stored `status` value).
+`EXECUTE` SHALL be revoked from `PUBLIC`, `anon`, and `authenticated`, and granted only to
+`bloom_workflows` — the same triple-revoke/single-grant pattern every other `SECURITY DEFINER` wrapper
+in this program uses.
 
 #### Scenario: bloom_workflows can update a submitted run to running
 
 - **WHEN** a session with role `bloom_workflows` calls `update_cyl_pipeline_run_status` with a
   `p_run_id` currently `'submitted'` and `p_status = 'running'`
 - **THEN** the call succeeds and the run's `status` becomes `'running'`
-- **AND** `completed_at` remains `NULL`
+- **AND** `completed_at` remains unchanged (`'running'` is not a terminal status)
 
 #### Scenario: Transitioning into a terminal status sets completed_at
 
@@ -179,10 +231,26 @@ pattern every other `SECURITY DEFINER` wrapper in this program uses.
   `completed_at` is currently `NULL`
 - **THEN** `completed_at` is set to the current time
 
-#### Scenario: A run already terminal is left untouched
+#### Scenario: A stale, dispatch-time completed_at is overwritten with the real completion time
+
+- **WHEN** `update_cyl_pipeline_run_status` is called with a terminal `p_status` for a run whose
+  `completed_at` is already set to an earlier timestamp (e.g. stamped by Phase 2's own dispatch-settle
+  write when the run first became `'submitted'`, long before the pipeline itself finished)
+- **THEN** `completed_at` is overwritten to the current time, reflecting when this real conclusion was
+  actually reached — not left frozen at the earlier, dispatch-time value
+
+#### Scenario: A `'partial'` run can be re-confirmed, advancing completed_at again
+
+- **WHEN** `update_cyl_pipeline_run_status` is called with `p_status = 'partial'` for a run whose
+  current `status` is already `'partial'`
+- **THEN** the call succeeds (the guard's allowed source states include `'partial'`) and `completed_at`
+  is advanced to the current time again — an accepted, documented consequence of `'partial'` runs
+  remaining pollable (see `design.md`), not a bug
+
+#### Scenario: A run already complete or failed is left untouched
 
 - **WHEN** `update_cyl_pipeline_run_status` is called for a run whose current `status` is already
-  `'complete'`, `'failed'`, or `'partial'`
+  `'complete'` or `'failed'`
 - **THEN** the call completes without error
 - **AND** the run's `status` and `completed_at` are unchanged
 
@@ -195,16 +263,10 @@ pattern every other `SECURITY DEFINER` wrapper in this program uses.
   submitted
 
 This path is not reachable via the poller in production — its own candidate-selection query only ever
-considers `'submitted'`/`'running'` runs (see the poller requirement above), so a `'queued'` run is
-never passed to this function by anything except a direct call. This scenario exists to pin the
+considers `'submitted'`/`'running'`/`'partial'` runs (see the poller requirement above), so a `'queued'`
+run is never passed to this function by anything except a direct call. This scenario exists to pin the
 function's own defense-in-depth guard, exercised by calling the RPC directly (as the integration test
 does), not by adding a redundant "skip if queued" check inside the poller itself.
-
-#### Scenario: An already-set completed_at is never overwritten
-
-- **WHEN** `update_cyl_pipeline_run_status` is called with a terminal `p_status` for a run whose
-  `completed_at` is already set to a real timestamp
-- **THEN** `completed_at` retains its original value, unchanged
 
 #### Scenario: A nonexistent run id is a harmless no-op
 

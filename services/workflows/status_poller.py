@@ -23,7 +23,7 @@ import os
 import signal
 import time
 
-from k8s_client import K8sConfigError, K8sStatusError, get_workflow_status
+from k8s_client import get_workflow_status
 from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS
 from supabase_client import app_client as _app_client
 
@@ -85,27 +85,35 @@ def rollup(effective_phases: list[str]) -> str | None:
 
 def _fetch_candidate_runs(client) -> list[dict]:
     """Every run still eligible for real-outcome polling — dispatch already
-    fully or partially succeeded ('submitted'), or a prior sweep already
-    started progressing it ('running'). A 'queued' run was never dispatched;
-    anything already 'complete'/'failed'/'partial' is terminal."""
+    fully or partially succeeded ('submitted'), a prior sweep already started
+    progressing it ('running'), or Phase 2 settled it to 'partial' (some
+    scans failed to dispatch, but others may still have genuinely-dispatched
+    batches whose real Argo outcome hasn't been checked yet — see design.md's
+    "'partial' runs are included in the polling candidate set" decision,
+    found during /review-pr round 1). A 'queued' run was never dispatched;
+    anything already 'complete'/'failed' is fully terminal."""
     return (
         client.table("cyl_pipeline_runs")
         .select("id")
-        .in_("status", ["submitted", "running"])
+        .in_("status", ["submitted", "running", "partial"])
         .execute()
         .data
         or []
     )
 
 
-def _fetch_effective_phases(client, run_id) -> list[str]:
+def _fetch_effective_phases(client, run_id) -> tuple[list[str], bool]:
     """One run's effective-phase list: 'Failed' for each scan whose dispatch
     itself failed (status='failed', argo_workflow_name IS NULL), plus the
     real Argo phase of each distinct argo_workflow_name among the run's
-    scans (a 404/None result is excluded, not guessed — see
-    get_workflow_status). A K8sConfigError/K8sStatusError from
-    get_workflow_status propagates to the caller, which is responsible for
-    leaving this run unsettled and moving on to the next candidate."""
+    scans. Also returns any_unknown: True if any workflow this cycle
+    returned None (404) from get_workflow_status and was excluded from
+    phases rather than guessed. sweep_once uses any_unknown to withhold a
+    'complete' conclusion when the evidence is incomplete (found during
+    /review-pr round 1 — see design.md's "a partial 404 must not let the
+    rollup conclude 'complete'" decision). A K8sConfigError/K8sStatusError
+    from get_workflow_status propagates to the caller, which is responsible
+    for leaving this run unsettled and moving on to the next candidate."""
     rows = (
         client.table("cyl_pipeline_run_scans")
         .select("argo_workflow_name, status")
@@ -125,12 +133,15 @@ def _fetch_effective_phases(client, run_id) -> list[str]:
     workflow_names = sorted(
         {r["argo_workflow_name"] for r in rows if r.get("argo_workflow_name")}
     )
+    any_unknown = False
     for name in workflow_names:
         phase = get_workflow_status(name)
-        if phase is not None:
-            phases.append(phase)
+        if phase is None:
+            any_unknown = True
+            continue
+        phases.append(phase)
 
-    return phases
+    return phases, any_unknown
 
 
 def update_run_status(client, run_id, status: str) -> None:
@@ -141,14 +152,28 @@ def update_run_status(client, run_id, status: str) -> None:
 
 def sweep_once(client) -> None:
     """One full cycle: check every candidate run, updating those with a
-    concluded rollup status. A failure checking or updating one run (a
-    transient K8s API blip, a K8sConfigError, a lost RPC) is isolated to that
-    run — it must not abort the cycle for the rest of the candidates."""
-    for run in _fetch_candidate_runs(client):
+    concluded rollup status. A failure checking or updating one run (a K8s
+    error, a DB-read error, or a lost RPC write) is isolated to that run — it
+    must not abort the cycle for the rest of the candidates. A failure
+    fetching the candidate list itself is isolated to this cycle — the next
+    scheduled cycle retries rather than crashing the process (found during
+    /review-pr round 1 — see design.md's "DB-read failures inside a sweep
+    are isolated" decision)."""
+    try:
+        candidates = _fetch_candidate_runs(client)
+    except Exception as exc:
+        logger.warning(
+            "status_poller: failed to fetch candidate runs this cycle, will "
+            "retry next cycle: %s",
+            exc,
+        )
+        return
+
+    for run in candidates:
         run_id = run["id"]
         try:
-            phases = _fetch_effective_phases(client, run_id)
-        except (K8sConfigError, K8sStatusError) as exc:
+            phases, any_unknown = _fetch_effective_phases(client, run_id)
+        except Exception as exc:
             logger.warning(
                 "status_poller: run %s status check failed, leaving unsettled "
                 "for the next cycle: %s",
@@ -159,6 +184,14 @@ def sweep_once(client) -> None:
 
         status = rollup(phases)
         if status is None:
+            continue
+        if status == "complete" and any_unknown:
+            logger.warning(
+                "status_poller: run %s has an unresolved (404'd) workflow "
+                "this cycle — withholding 'complete' rather than concluding "
+                "it from incomplete information",
+                run_id,
+            )
             continue
 
         try:

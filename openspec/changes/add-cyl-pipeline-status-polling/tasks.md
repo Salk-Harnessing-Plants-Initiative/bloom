@@ -345,3 +345,74 @@ a real submitted Workflow) was not performed — stated explicitly, not claimed.
       seed a run whose batch was actually submitted, let the poller observe it, confirm the DB status
       progresses as expected. If no live cluster credential is available in this environment, say so
       explicitly rather than claiming this was verified.
+
+## 9. Round-1 `/review-pr` findings (applied post-merge-of-PR-#701's-review, same branch)
+
+> Five parallel subagent lenses (code quality, testing, scientific rigor/data integrity, security,
+> behavioural correctness) reviewed PR #701 and found 3 BLOCKING, cross-validated correctness bugs plus
+> 7 IMPORTANT gaps. Fixed via TDD in one round on the same branch — see `design.md`'s five new
+> "Decision (fix, `/review-pr` round 1)" entries for the full reasoning behind each.
+
+- [x] 9.1 **BLOCKING — `completed_at` frozen at dispatch-settle time.** Failing integration test first
+      (`test_update_overwrites_a_dispatch_time_completed_at_with_real_completion_time`, replacing the
+      now-incorrect `test_update_does_not_overwrite_completed_at_if_already_set`): seed a run at
+      `'running'` with `completed_at` already set (simulating Phase 2's dispatch-time stamp); call
+      `update_cyl_pipeline_run_status(..., 'complete')`; assert `completed_at` advances to a new, later
+      value. Confirm red, then fix the migration: drop the `AND completed_at IS NULL` guard —
+      `completed_at = now()` unconditionally whenever `p_status` is terminal.
+- [x] 9.2 **BLOCKING — `'partial'` runs never re-examined.** Failing tests first:
+      `test_sweep_selects_submitted_running_and_partial_runs` (extend the existing candidate-selection
+      test with a `'partial'` row, assert it's included); a new integration test seeding a `'partial'`
+      run with a real dispatched batch and confirming `update_cyl_pipeline_run_status` accepts a call
+      against it. Confirm red, then fix: widen `_fetch_candidate_runs`'s `.in_("status", [...])` to
+      include `'partial'`; widen the migration's `WHERE status IN (...)` guard to match.
+- [x] 9.3 **BLOCKING — a TTL-expired workflow can silently produce a false `'complete'`.** Failing tests
+      first: `test_sweep_withholds_complete_when_a_workflow_is_unresolved_this_cycle` (one workflow
+      `Succeeded`, one `None`/404 — assert `update_run_status` is NOT called);
+      `test_sweep_still_concludes_failed_or_partial_despite_an_unresolved_workflow` (a dispatch-failed
+      scan plus one 404'd workflow — assert the call to `update_run_status` still fires, with
+      `'partial'`/`'failed'`). Confirm red, then fix: `_fetch_effective_phases` now returns
+      `(phases, any_unknown)`; `sweep_once` withholds a `'complete'` conclusion specifically when
+      `any_unknown` is `True`, but not `'failed'`/`'partial'` conclusions. Update the three existing
+      callers of `_fetch_effective_phases` in `test_status_poller.py` to unpack the new tuple return.
+- [x] 9.4 **IMPORTANT — DB-read failures not isolated per-run.** Failing tests first:
+      `test_sweep_isolates_a_generic_exception_fetching_phases_from_the_rest` (a plain `RuntimeError`
+      from `_fetch_effective_phases`, not just `K8sConfigError`/`K8sStatusError` — assert the next run
+      still gets checked); `test_sweep_continues_when_fetch_candidate_runs_raises` (mock
+      `_fetch_candidate_runs` to raise — assert `sweep_once` returns without propagating). Confirm red,
+      then fix: widen `sweep_once`'s per-run `except` clause from `(K8sConfigError, K8sStatusError)` to
+      bare `Exception`; wrap the `_fetch_candidate_runs(client)` call itself in a `try`/`except` that
+      logs and returns on failure.
+- [x] 9.5 **IMPORTANT — vacuously-passing `run_id`-filter test.** Add a distractor row for a different
+      `run_id` to at least `test_rollup_treats_dispatch_failed_scan_as_effective_failed_phase`'s fake
+      table, and assert it's excluded from the result — proving `.eq("run_id", ...)` is actually
+      exercised, not just present in rows that all happen to already match.
+- [x] 9.6 **IMPORTANT — mis-attributed error message.** `k8s_client._validate_config()`'s message
+      changes from `"dispatch worker not configured: ..."` to a caller-neutral
+      `"K8s client not configured: ..."` — shared by both `submit_workflow` and `get_workflow_status`.
+      Re-run `test_k8s_client.py` in full to confirm no test asserts the old literal text (none do —
+      existing tests only assert the missing-variable name is present).
+- [x] 9.7 **IMPORTANT — missing `stop_grace_period` on `cyl-status-poller`.** Add `stop_grace_period:
+      60s` to both `docker-compose.dev.yml` and `docker-compose.prod.yml`'s `cyl-status-poller` blocks
+      — larger than `cyl-pipeline-worker`'s `30s` because one sweep can issue one `get_workflow_status`
+      GET per distinct workflow name across *every* candidate run, not a single call per claim; add a
+      comment explaining this so a future reader doesn't assume blind copy-paste.
+- [x] 9.8 Update `openspec/changes/add-cyl-pipeline-status-polling/design.md` (five new "Decision (fix,
+      `/review-pr` round 1)" entries, Risks section) and `specs/cyl-pipeline-status-polling/spec.md`
+      (widened poller/rollup/RPC requirement text, new and corrected scenarios) to reflect all of the
+      above **before** writing the failing tests in 9.1-9.4, per OpenSpec convention (spec describes
+      intended behavior; tests then implementation follow it) — done first, ahead of 9.1-9.4 in
+      execution order even though numbered after for narrative grouping.
+- [x] 9.9 Re-run the full suite: `services/workflows` unit tests, `tests/integration/
+      test_cyl_pipeline_status_polling.py`, `openspec validate --strict`, `ruff check`/`black --check`
+      on every changed file. Confirm no regressions. Push as a new commit
+      (`fix(#11): apply round-1 /review-pr findings — completed_at, unresolved-workflow safety, partial
+      re-poll, error isolation`) on the same PR branch, matching this repo's established
+      `fix(#NNN): apply round-N /review-pr findings` convention.
+- [x] 9.10 **Not fixed in this round, by design** — the CI `Docker Compose Health Check` deadlock is a
+      pre-existing CI-ordering gap (bloom PR #253 fixed the identical class of race for `realtime`/
+      `kong` specifically, never extended to the `workflows` family) that this PR modestly contributes
+      to (a second concurrently-connecting service in the same vulnerable window) but does not own the
+      root cause of. Re-run the CI job after pushing 9.9's commit; file a follow-up issue extending
+      #253's fix to `workflows`/`cyl-pipeline-worker`/`cyl-status-poller` rather than attempting a
+      CI-workflow-ordering change inside this already-large fix round.

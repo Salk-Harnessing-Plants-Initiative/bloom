@@ -105,11 +105,22 @@ def test_rollup_treats_dispatch_failed_scan_as_effective_failed_phase(monkeypatc
         cyl_pipeline_run_scans=[
             {"run_id": 1, "argo_workflow_name": None, "status": "failed"},
             {"run_id": 1, "argo_workflow_name": "wf-a", "status": "queued"},
+            # Distractor row for a DIFFERENT run — proves .eq("run_id", ...)
+            # actually filters, rather than this test passing vacuously
+            # because every seeded row happens to already belong to run 1.
+            {"run_id": 2, "argo_workflow_name": "wf-other-run", "status": "queued"},
         ]
     )
-    monkeypatch.setattr(worker, "get_workflow_status", lambda name: "Succeeded")
-    phases = worker._fetch_effective_phases(client, run_id=1)
+    checked = []
+    monkeypatch.setattr(
+        worker,
+        "get_workflow_status",
+        lambda name: checked.append(name) or "Succeeded",
+    )
+    phases, any_unknown = worker._fetch_effective_phases(client, run_id=1)
+    assert checked == ["wf-a"], "must not look up a workflow belonging to another run"
     assert sorted(phases) == ["Failed", "Succeeded"]
+    assert any_unknown is False
     assert worker.rollup(phases) == "partial"
 
 
@@ -125,8 +136,9 @@ def test_run_with_no_workflow_names_and_no_dispatch_failures_is_left_unchanged(
     monkeypatch.setattr(
         worker, "get_workflow_status", lambda name: called.update(get_status=True)
     )
-    phases = worker._fetch_effective_phases(client, run_id=1)
+    phases, any_unknown = worker._fetch_effective_phases(client, run_id=1)
     assert phases == []
+    assert any_unknown is False
     assert called["get_status"] is False
 
 
@@ -140,26 +152,55 @@ def test_rollup_skips_a_404d_workflow_rather_than_guessing(monkeypatch):
     monkeypatch.setattr(
         worker, "get_workflow_status", lambda name: checked.append(name) or None
     )
-    phases = worker._fetch_effective_phases(client, run_id=1)
+    phases, any_unknown = worker._fetch_effective_phases(client, run_id=1)
     assert checked == ["wf-gone"], "the workflow name must actually be looked up"
     assert phases == []
+    assert any_unknown is True
     assert worker.rollup(phases) is None
+
+
+def test_a_404_alongside_an_observed_succeeded_sibling_is_flagged_as_unknown(
+    monkeypatch,
+):
+    """Distinct from the all-404 case above: one workflow IS observed
+    (Succeeded) this cycle, and a sibling batch's workflow 404s. any_unknown
+    must still be True even though phases is non-empty — sweep_once relies on
+    this flag to avoid concluding 'complete' from incomplete information."""
+    client = _FakeClient(
+        cyl_pipeline_run_scans=[
+            {"run_id": 1, "argo_workflow_name": "wf-a", "status": "queued"},
+            {"run_id": 1, "argo_workflow_name": "wf-b-gone", "status": "queued"},
+        ]
+    )
+    monkeypatch.setattr(
+        worker,
+        "get_workflow_status",
+        lambda name: None if name == "wf-b-gone" else "Succeeded",
+    )
+    phases, any_unknown = worker._fetch_effective_phases(client, run_id=1)
+    assert phases == ["Succeeded"]
+    assert any_unknown is True
 
 
 # --- _fetch_candidate_runs: real query logic against a fake client ---------
 
 
-def test_sweep_selects_only_submitted_and_running_runs():
+def test_sweep_selects_submitted_running_and_partial_runs():
     client = _FakeClient(
         cyl_pipeline_runs=[
             {"id": 1, "status": "queued"},
             {"id": 2, "status": "submitted"},
             {"id": 3, "status": "running"},
             {"id": 4, "status": "complete"},
+            {"id": 5, "status": "partial"},
         ]
     )
     runs = worker._fetch_candidate_runs(client)
-    assert {r["id"] for r in runs} == {2, 3}
+    assert {r["id"] for r in runs} == {2, 3, 5}, (
+        "'partial' runs may still have genuinely-dispatched batches whose "
+        "real Argo outcome hasn't been checked — they must not be excluded "
+        "from polling merely because Phase 2 already marked them terminal"
+    )
 
 
 # --- sweep_once: the full per-cycle loop ------------------------------------
@@ -168,7 +209,9 @@ def test_sweep_selects_only_submitted_and_running_runs():
 def test_sweep_calls_update_with_the_computed_status(monkeypatch):
     calls = []
     monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
-    monkeypatch.setattr(worker, "_fetch_effective_phases", lambda c, r: ["Succeeded"])
+    monkeypatch.setattr(
+        worker, "_fetch_effective_phases", lambda c, r: (["Succeeded"], False)
+    )
     monkeypatch.setattr(
         worker, "update_run_status", lambda c, r, s: calls.append((r, s))
     )
@@ -196,13 +239,36 @@ def test_sweep_isolates_a_k8sstatuserror_on_one_run_from_the_rest(monkeypatch):
     def fake_fetch(client, run_id):
         if run_id == 1:
             raise K8sStatusError("Argo Workflow status check failed")
-        return ["Succeeded"]
+        return (["Succeeded"], False)
 
     monkeypatch.setattr(worker, "_fetch_effective_phases", fake_fetch)
     monkeypatch.setattr(
         worker, "update_run_status", lambda c, r, s: calls.append((r, s))
     )
     worker.sweep_once(object())
+    assert calls == [(2, "complete")]
+
+
+def test_sweep_isolates_a_generic_exception_fetching_phases_from_the_rest(monkeypatch):
+    """Found during /review-pr: the per-run try/except originally only caught
+    (K8sConfigError, K8sStatusError) — a generic DB-level exception (a
+    transient PostgREST error, a timeout, the deadlock class this repo's own
+    CI hit) must be isolated the same way, not just K8s-specific errors."""
+    calls = []
+    monkeypatch.setattr(
+        worker, "_fetch_candidate_runs", lambda c: [{"id": 1}, {"id": 2}]
+    )
+
+    def fake_fetch(client, run_id):
+        if run_id == 1:
+            raise RuntimeError("connection reset by peer")
+        return (["Succeeded"], False)
+
+    monkeypatch.setattr(worker, "_fetch_effective_phases", fake_fetch)
+    monkeypatch.setattr(
+        worker, "update_run_status", lambda c, r, s: calls.append((r, s))
+    )
+    worker.sweep_once(object())  # must not raise
     assert calls == [(2, "complete")]
 
 
@@ -228,12 +294,33 @@ def test_sweep_leaves_a_run_unsettled_on_k8sconfigerror_and_continues_to_the_nex
     assert fetch_attempts == [1, 2], "both runs must still be attempted this cycle"
 
 
+def test_sweep_continues_when_fetch_candidate_runs_raises(monkeypatch):
+    """Found during /review-pr: _fetch_candidate_runs itself (the loop's own
+    iterable) had no guard at all — a transient failure there must not crash
+    the process; it should be equivalent to finding zero candidates this
+    cycle, with the next scheduled cycle retrying."""
+
+    def boom(client):
+        raise RuntimeError("PostgREST unreachable")
+
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", boom)
+
+    def assert_not_called(*a, **k):
+        raise AssertionError("must not be reached if candidates can't be fetched")
+
+    monkeypatch.setattr(worker, "_fetch_effective_phases", assert_not_called)
+    monkeypatch.setattr(worker, "update_run_status", assert_not_called)
+    worker.sweep_once(object())  # must not raise
+
+
 def test_sweep_logs_and_continues_when_update_call_fails(monkeypatch):
     calls = []
     monkeypatch.setattr(
         worker, "_fetch_candidate_runs", lambda c: [{"id": 1}, {"id": 2}]
     )
-    monkeypatch.setattr(worker, "_fetch_effective_phases", lambda c, r: ["Succeeded"])
+    monkeypatch.setattr(
+        worker, "_fetch_effective_phases", lambda c, r: (["Succeeded"], False)
+    )
 
     def fake_update(client, run_id, status):
         if run_id == 1:
@@ -243,6 +330,48 @@ def test_sweep_logs_and_continues_when_update_call_fails(monkeypatch):
     monkeypatch.setattr(worker, "update_run_status", fake_update)
     worker.sweep_once(object())  # must not raise
     assert calls == [(2, "complete")], "the second run must still be updated"
+
+
+def test_sweep_withholds_complete_when_a_workflow_is_unresolved_this_cycle(
+    monkeypatch,
+):
+    """Found during /review-pr: a workflow that TTL-expires before ever being
+    observed as terminal must not let the run be silently marked 'complete'
+    from the remaining, incomplete evidence."""
+    calls = []
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
+    monkeypatch.setattr(
+        worker, "_fetch_effective_phases", lambda c, r: (["Succeeded"], True)
+    )
+    monkeypatch.setattr(
+        worker, "update_run_status", lambda c, r, s: calls.append((r, s))
+    )
+    worker.sweep_once(object())
+    assert calls == [], (
+        "must not conclude 'complete' while a sibling workflow's real "
+        "outcome was never confirmed this cycle"
+    )
+
+
+def test_sweep_still_concludes_failed_or_partial_despite_an_unresolved_workflow(
+    monkeypatch,
+):
+    """A confirmed non-Succeeded phase already rules out 'complete' regardless
+    of what an unresolved sibling workflow turns out to have been — 'partial'/
+    'failed' conclusions are safe to write even with incomplete information,
+    unlike 'complete'."""
+    calls = []
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
+    monkeypatch.setattr(
+        worker,
+        "_fetch_effective_phases",
+        lambda c, r: (["Failed", "Succeeded"], True),
+    )
+    monkeypatch.setattr(
+        worker, "update_run_status", lambda c, r, s: calls.append((r, s))
+    )
+    worker.sweep_once(object())
+    assert calls == [(1, "partial")]
 
 
 # --- run(): connection retry, signal handling -------------------------------
@@ -265,7 +394,7 @@ def test_signal_during_sweep_lets_it_finish_before_exiting(monkeypatch):
         # does not interrupt the current sweep, so this run's update still
         # completes.
         worker._stop(15, None)
-        return ["Succeeded"]
+        return (["Succeeded"], False)
 
     monkeypatch.setattr(worker, "_fetch_effective_phases", fake_fetch_phases)
     monkeypatch.setattr(

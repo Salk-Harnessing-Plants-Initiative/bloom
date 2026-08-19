@@ -203,6 +203,12 @@ services:
     depends_on:
       - db-dev
       - kong
+    # Larger than cyl-pipeline-worker's 30s (found during /review-pr round 1,
+    # not a blind copy): one sweep can issue one get_workflow_status GET per
+    # distinct workflow name across EVERY candidate run this cycle, not a
+    # single call per claim, so 30s isn't necessarily enough headroom for
+    # _stop()'s documented "let the in-flight sweep finish" guarantee.
+    stop_grace_period: 60s
     restart: unless-stopped
 
   bloommcp:

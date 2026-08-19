@@ -19,8 +19,13 @@
 -- computation happens in Python" decision for why that's safe despite Phase
 -- 2's own "aggregate in SQL" precedent. This function is a thin, guarded
 -- writer: it validates the target status, and only ever updates a run
--- currently 'submitted' or 'running' — a run still 'queued' (never
--- dispatched) or already terminal is left untouched.
+-- currently 'submitted', 'running', or 'partial' — a run still 'queued'
+-- (never dispatched) or already fully terminal ('complete'/'failed') is
+-- left untouched. 'partial' is included as a source state (not just a
+-- target) because Phase 2's own dispatch-level 'partial' can still have
+-- genuinely-dispatched batches whose real Argo outcome hasn't been checked
+-- yet — see design.md's "'partial' runs are included in the polling
+-- candidate set" decision (found during /review-pr round 1).
 --
 -- No table/column changes — the CHECK constraint already allows every value
 -- this function writes. No new bloom_workflows table grant — same
@@ -47,23 +52,31 @@ BEGIN
 
     UPDATE public.cyl_pipeline_runs
     SET status = p_status,
-        -- Only stamp completed_at the first time a run reaches a terminal
-        -- status — a later call for the same already-terminal run is a
-        -- no-op per the WHERE clause below anyway, but this guards
-        -- completed_at specifically in case that guard is ever loosened.
+        -- Stamp completed_at unconditionally on every real terminal
+        -- conclusion, not only the first (found during /review-pr round 1:
+        -- Phase 2's own dispatch-settle write already sets completed_at for
+        -- the common 'submitted' case before this function is ever called,
+        -- so a "first time only" guard here would never actually fire in
+        -- production — it would silently freeze completed_at at dispatch
+        -- time forever instead of reflecting when the pipeline itself
+        -- finished). A 'partial' run reconfirmed as 'partial' advances
+        -- completed_at again each time — an accepted, documented
+        -- consequence of 'partial' remaining a pollable source state below,
+        -- not a bug: see design.md.
         completed_at = CASE
             WHEN p_status IN ('complete', 'failed', 'partial')
-                 AND completed_at IS NULL
             THEN now()
             ELSE completed_at
         END
     WHERE id = p_run_id
       -- A run still 'queued' was never dispatched — this function has
-      -- nothing to say about it. A run already 'complete'/'failed'/'partial'
-      -- is terminal and must not be reopened by a stale/redelivered poll
-      -- cycle. Only 'submitted' (Phase 2's dispatch-succeeded outcome) and
-      -- 'running' (this function's own prior write) are ever eligible.
-      AND status IN ('submitted', 'running');
+      -- nothing to say about it. A run already 'complete'/'failed' is fully
+      -- terminal and must not be reopened by a stale/redelivered poll cycle.
+      -- 'submitted' (Phase 2's dispatch-succeeded outcome), 'running' (this
+      -- function's own prior write), and 'partial' (Phase 2's mixed dispatch
+      -- outcome, which may still have real batches in flight) are all
+      -- eligible.
+      AND status IN ('submitted', 'running', 'partial');
 END;
 $$;
 

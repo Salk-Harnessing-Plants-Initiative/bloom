@@ -117,22 +117,29 @@ def test_update_marks_running_run_complete_and_sets_completed_at(pg_conn):
     pg_conn.rollback()
 
 
-def test_update_does_not_overwrite_completed_at_if_already_set(pg_conn):
+def test_update_overwrites_a_stale_dispatch_time_completed_at_with_real_completion_time(
+    pg_conn,
+):
+    """Found during /review-pr: Phase 2's own _settle_cyl_pipeline_run stamps
+    completed_at the moment dispatch merely settles to 'submitted' -- long
+    before the pipeline itself actually finishes. update_cyl_pipeline_run_status
+    must overwrite that stale value with the real completion time, not
+    preserve it (the old 'never overwrite' behavior silently froze
+    completed_at at dispatch time forever)."""
     with pg_conn.cursor() as cur:
         run_id = _seed_run(cur, status="running")
-        _update_status(cur, run_id, "complete")
-        _, first_completed_at = _run_row(cur, run_id)
-
-        # A run already terminal won't actually be re-updated by the guard
-        # below, but this pins the completed_at-preservation behavior
-        # independently of that guard: force the row back to a re-updatable
-        # status without touching completed_at, then update again.
         cur.execute(
-            f"UPDATE {RUNS_TABLE} SET status = 'running' WHERE id = %s", (run_id,)
+            f"UPDATE {RUNS_TABLE} SET completed_at = '2020-01-01T00:00:00+00' "
+            f"WHERE id = %s",
+            (run_id,),
         )
         _update_status(cur, run_id, "complete")
-        _, second_completed_at = _run_row(cur, run_id)
-        assert second_completed_at == first_completed_at
+        _, completed_at = _run_row(cur, run_id)
+        assert completed_at is not None
+        assert completed_at.year > 2020, (
+            "completed_at must be overwritten with the real completion time, "
+            "not left frozen at the earlier (dispatch-time) stamp"
+        )
     pg_conn.rollback()
 
 
@@ -143,6 +150,32 @@ def test_update_is_a_noop_on_a_run_already_terminal(pg_conn):
         status, completed_at = _run_row(cur, run_id)
         assert status == "failed"
         assert completed_at is None
+    pg_conn.rollback()
+
+
+def test_update_accepts_partial_as_a_source_state_and_advances_completed_at(pg_conn):
+    """Found during /review-pr: Phase 2 can settle a run straight to 'partial'
+    (some scans dispatch-failed, some succeeded) while it still has
+    genuinely-dispatched batches whose real Argo outcome hasn't been checked.
+    The poller must be able to re-examine such a run, so 'partial' is now an
+    eligible source state (not just a terminal target) -- and each real
+    reconfirmation advances completed_at, an accepted consequence of 'partial'
+    runs remaining pollable (see design.md)."""
+    with pg_conn.cursor() as cur:
+        run_id = _seed_run(cur, status="partial")
+        cur.execute(
+            f"UPDATE {RUNS_TABLE} SET completed_at = '2020-01-01T00:00:00+00' "
+            f"WHERE id = %s",
+            (run_id,),
+        )
+        _update_status(cur, run_id, "partial")
+        status, completed_at = _run_row(cur, run_id)
+        assert status == "partial"
+        assert completed_at is not None
+        assert completed_at.year > 2020, (
+            "a 'partial' run's completed_at must advance on each real "
+            "reconfirmation, not stay frozen at the first dispatch-time stamp"
+        )
     pg_conn.rollback()
 
 
@@ -201,8 +234,9 @@ def test_concurrent_update_calls_leave_the_run_in_a_valid_terminal_state(
     exact technique from test_cyl_pipeline_dispatch.py: seed + commit via
     pg_conn (so the row is visible to both independent pg_conninfo
     connections), then race two threads. The guard `WHERE status IN
-    ('submitted','running')` means whichever call lands first wins and the
-    second is a no-op — never a corrupted intermediate state. Because the seed
+    ('submitted','running','partial')` means whichever call lands first wins
+    and the second is a no-op — never a corrupted intermediate state. Because
+    the seed
     row is committed outside the normal per-test rollback, it's cleaned up
     explicitly in a finally block."""
     with pg_conn.cursor() as cur:

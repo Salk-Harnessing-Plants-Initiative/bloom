@@ -99,9 +99,7 @@ def _validate_config() -> None:
         if not val
     ]
     if missing:
-        raise K8sConfigError(
-            f"dispatch worker not configured: missing {', '.join(missing)}"
-        )
+        raise K8sConfigError(f"K8s client not configured: missing {', '.join(missing)}")
 
 
 def _ssl_context() -> ssl.SSLContext:

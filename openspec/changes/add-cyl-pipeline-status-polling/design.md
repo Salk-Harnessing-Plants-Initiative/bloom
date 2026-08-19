@@ -147,6 +147,132 @@ validate one config value against another across two different services' env blo
   name); treat it as `Failed` (pessimistic) — rejected, equally capable of being wrong for the common
   case (it finished successfully and TTL'd out before the first poll happened to land).
 
+### Decision (fix, `/review-pr` round 1): a *partial* 404 must not let the rollup conclude `'complete'`
+
+The decision above only reasoned about the *all*-404'd case (safe: rule (0) concludes nothing). Found
+on review — a real, silent-corruption bug, not just a stuck-run inconvenience: if a run has two
+batches, A `Succeeded` (observed this cycle) and B TTL-expired before ever being observed as terminal
+(404 → excluded per the decision above), `effective_phases` ends up `["Succeeded"]` — B is simply
+*absent*, not zeroed or flagged — and rule (2)'s `all(p == "Succeeded" ...)` is vacuously true over
+what remains. The run gets written `'complete'` even though B's real outcome (possibly a failure) was
+never actually confirmed. This requires no misconfiguration at all, only that sibling batches within
+one run finish at different times relative to `ttlStrategy`'s window — an ordinary occurrence, not an
+edge case.
+
+**Fix**: `_fetch_effective_phases` now returns `(phases, any_unknown)` — `any_unknown` is `True` if
+*any* workflow this cycle returned `None` (404). `sweep_once` computes `rollup(phases)` as before, but
+if the result is `'complete'` **and** `any_unknown` is `True`, it withholds the conclusion this cycle
+(logs a warning, makes no RPC call) rather than writing it. `'failed'`/`'partial'` conclusions are
+**not** withheld under the same condition: if the *observed* phases already include a real `Failed`,
+the true aggregate can never be `'complete'` regardless of what the missing workflow turns out to be,
+so `'failed'`/`'partial'` remain safe conclusions even with an unknown entry present — only `'complete'`
+is an unsafe over-claim of full success built from incomplete information.
+
+- Alternatives considered: track *which specific* workflow is unknown and reconcile it via a
+  label-based `LIST` before concluding — rejected for this fix; that's the same deferred
+  reconciliation-sweep machinery the Non-Goals section already defers (no name to look up an
+  already-vanished Workflow by), and withholding the conclusion is a correct, minimal stopgap that
+  requires no new K8s API surface. A future reconciliation sweep can still resolve these runs; this fix
+  only prevents them from being wrongly marked `'complete'` in the meantime.
+
+### Decision (fix, `/review-pr` round 1): `'partial'` runs are included in the polling candidate set
+
+Found on review — a real coverage bug: `_fetch_candidate_runs` originally selected only
+`status IN ('submitted', 'running')`. But Phase 2's `_settle_cyl_pipeline_run` can settle a run
+straight to `'partial'` the moment it has *any* dispatch-failed scan alongside *any*
+successfully-dispatched one — and `'partial'` is itself already a terminal value from Phase 2's own
+three-way split. Because it was excluded from the candidate query, the scans that **did** reach Argo
+in such a run were never polled at all — permanently freezing the run at "partial" regardless of
+whether that dispatched portion later succeeds or genuinely fails at the pipeline level. This directly
+defeats this phase's own purpose for exactly the population of runs where the real outcome matters
+most (a run that's already known to have some real, running work in flight).
+
+**Fix**: `_fetch_candidate_runs` now selects `status IN ('submitted', 'running', 'partial')`, and
+`update_cyl_pipeline_run_status`'s guard is widened to match (`WHERE status IN ('submitted', 'running',
+'partial')`). Dispatch-failed scans still contribute an effective `'Failed'` phase (unchanged), so a
+`'partial'` run's rollup can never conclude `'complete'` (rule (2) can never be satisfied while a
+`'Failed'` entry is present) — it will resolve to `'partial'` again (a mix) or `'failed'` (if the
+dispatched portion also failed for real), reflecting the *real*, pipeline-level outcome instead of the
+frozen dispatch-time guess.
+
+**Known, accepted trade-off — not fixed here**: once a `'partial'` run's dispatched batches are fully
+resolved (no more `Pending`/`Running` among them), the run keeps satisfying the candidate query forever
+(there is no per-workflow "already confirmed, stop re-checking" marker — that needs per-scan status
+tracking, deferred to [bloom #696](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/696)).
+Every subsequent cycle will recompute the same `'partial'` conclusion and call `update_run_status`
+again — harmless to the *status* value (idempotent recompute, same as every other candidate), but see
+the `completed_at` decision below for the one place this repeated re-write is user-visible.
+
+- Alternatives considered: add a distinct status value for "dispatch-partial, pipeline-outcome
+  pending" — rejected as unnecessary schema/CHECK-constraint churn for a distinction the existing
+  effective-phase computation already captures correctly; only the *candidate selection* needed
+  fixing, not the status vocabulary.
+
+### Decision (fix, `/review-pr` round 1): `completed_at` always advances on a real terminal conclusion
+
+Found on review — a real, cross-validated bug: Phase 2's `_settle_cyl_pipeline_run` unconditionally
+stamps `completed_at = now()` the instant a run's *dispatch* outcome settles — including the common
+`'submitted'` branch, where dispatch merely succeeded and Argo hasn't even started running yet. This
+phase's original `update_cyl_pipeline_run_status` only stamped `completed_at` `WHEN ... completed_at
+IS NULL` — but by the time this poller ever calls it, that column is already non-NULL from Phase 2's
+own dispatch-time write. Net effect: `completed_at` silently froze near `created_at` forever, never
+advancing to when the pipeline actually finished — directly contradicting this whole phase's purpose.
+
+**Fix**: the `IS NULL` guard is removed. `update_cyl_pipeline_run_status` now stamps
+`completed_at = now()` unconditionally whenever `p_status` is a real terminal value
+(`'complete'`/`'failed'`/`'partial'`), on every call that reaches that branch — not just the first.
+This is safe for `'submitted'`/`'running'`-sourced runs (each transitions into a terminal state at
+most once, since the outer `WHERE` excludes already-terminal rows from matching again) and, per the
+`'partial'`-candidate decision above, means a `'partial'` run's `completed_at` **can** advance more
+than once — each poll cycle that reconfirms `'partial'` (or resolves it to `'failed'`) bumps
+`completed_at` forward to that cycle's time. This is an accepted, documented consequence of the
+`'partial'`-repolling trade-off above, not a new bug: the *status* value is always correct; only
+`completed_at`, for this one status, reflects "the last cycle that confirmed this outcome" rather than
+"the first" until bloom #696's per-scan tracking closes the "stop re-checking" gap.
+
+- Alternatives considered: only stamp `completed_at` when `p_status IS DISTINCT FROM` the run's current
+  stored `status` — rejected; a `'partial'` run whose dispatched batches finish for real can resolve to
+  the *same* `'partial'` value it already had (a mix that stays a mix), and comparing against the old
+  value would silently skip stamping `completed_at` for exactly that case — reintroducing a milder
+  version of the same bug this fix closes, just for `'partial'` specifically.
+
+### Decision (fix, `/review-pr` round 1): DB-read failures inside a sweep are isolated the same as K8s/write failures
+
+Found on review: `sweep_once`'s per-run `try`/`except` originally only caught `(K8sConfigError,
+K8sStatusError)` around `_fetch_effective_phases`, and `_fetch_candidate_runs` itself (the loop's own
+iterable) had no guard at all — a generic DB-level exception (a transient PostgREST error, a timeout
+against the tight `SINGLE_ROW_RPC_TIMEOUT_SECONDS`, or the exact deadlock class this PR's own CI run
+hit) would propagate uncaught, aborting the rest of that cycle's candidates (or, for
+`_fetch_candidate_runs`, the entire cycle) — inconsistent with the PR's own stated "a problem isolated
+to one run... must not silently skip the rest of that cycle's candidates," which only ever covered the
+K8s/write side.
+
+**Fix**: `_fetch_effective_phases`'s per-run exception handling is widened from
+`(K8sConfigError, K8sStatusError)` to a bare `Exception`, matching the write side's existing broad
+catch. `_fetch_candidate_runs` is now called inside `sweep_once`'s own `try`/`except`; a failure there
+logs a warning and returns immediately (equivalent to "no candidates this cycle"), leaving every run to
+be re-attempted next cycle rather than crashing the whole sweep. Neither change alters `run()`'s
+outer-loop reconnect behavior — this only narrows the window where a purely transient DB blip escapes
+per-cycle isolation.
+
+### Decision (fix, `/review-pr` round 1): `K8sConfigError`'s message no longer says "dispatch worker"
+
+Found on review: `k8s_client._validate_config()` is shared by `submit_workflow` (the dispatch worker)
+and this phase's `get_workflow_status` (the status poller), but its message was hardcoded to
+`"dispatch worker not configured: ..."` — misleading whoever is on call when the *status poller*, not
+the dispatch worker, is the one actually misconfigured. Fixed to a caller-neutral
+`"K8s client not configured: ..."`.
+
+### Decision (fix, `/review-pr` round 1): `cyl-status-poller` gets its own, larger `stop_grace_period`
+
+Found on review: the new compose service had no `stop_grace_period` override (Docker's 10s default),
+unlike its sibling `cyl-pipeline-worker` (`30s`, sized for one K8s POST + one RPC per claim).
+`status_poller.py`'s `_stop()` is documented and tested to let an in-flight sweep finish — but one
+sweep can issue **one `get_workflow_status` GET per distinct workflow name across every candidate run**
+this cycle, not a single call, so `cyl-pipeline-worker`'s 30s isn't necessarily enough headroom either.
+Set to `60s` in both compose files, with a comment explaining the N-calls-per-sweep reasoning so a
+future reader doesn't assume it was copied from the sibling service without thought.
+
 ### Decision: `status_poller.py` is a separate process from `dispatch_worker.py`
 
 The two have genuinely different triggers: `dispatch_worker.py` reacts to new pgmq messages (event-
@@ -174,10 +300,14 @@ container) already rejects in favor of one script/one job/one container.
   per run) — acceptable at today's `BATCH_SIZE=25`-chunked, low-concurrency usage; revisit the `LIST`
   alternative if real usage grows enough to make this a meaningful K8s API load.
 - **`update_cyl_pipeline_run_status`'s guard silently no-ops on a run that raced past `'submitted'`/
-  `'running'` between the poller's read and its write** (e.g. an operator manually corrected a run's
-  status out-of-band in the same window) — an accepted, narrow window; the next poll cycle simply
-  excludes that run from its candidate set once its status is actually terminal, so this self-heals
-  rather than requiring a retry.
+  `'running'`/`'partial'` between the poller's read and its write** (e.g. an operator manually corrected
+  a run's status out-of-band in the same window) — an accepted, narrow window; the next poll cycle
+  simply excludes that run from its candidate set once its status is actually terminal, so this
+  self-heals rather than requiring a retry.
+- **A `'partial'` run's `completed_at` can advance more than once, and the run itself is polled
+  forever once its dispatched batches are fully resolved** — see the `'partial'`-candidate and
+  `completed_at` decisions above. Cosmetic/wasted-work, not a data-integrity bug: the `status` value
+  itself is always correct.
 
 ## Migration Plan
 
