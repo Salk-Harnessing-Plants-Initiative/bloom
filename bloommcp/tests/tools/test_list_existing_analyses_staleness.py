@@ -323,8 +323,12 @@ def test_pca_umap_qc_inspect_list_runs_failure_is_individually_reported(
     tool_class_errors = [
         e for e in response["errors"] if not e.startswith("trim_staleness: ")
     ]
+    # Public tool names (test_every_non_legacy_tool_class_has_a_public_name_mapping
+    # requires all 3 to be mapped), not the raw tool_class strings, per
+    # test_tool_class_error_entry_uses_public_tool_name's established contract.
     for tool_class in targeted:
-        assert any(e.startswith(f"{tool_class}: ") for e in tool_class_errors)
+        public_name = list_existing_analyses_mod._TOOL_CLASS_TO_PUBLIC_NAME[tool_class]
+        assert any(e.startswith(f"{public_name}: ") for e in tool_class_errors)
     assert len(tool_class_errors) == len(targeted)
 
 

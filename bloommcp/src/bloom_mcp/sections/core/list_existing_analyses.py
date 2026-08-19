@@ -70,6 +70,9 @@ _TOOL_CLASS_TO_PUBLIC_NAME: dict[str, str] = {
     "clustering": "clustering",
     OUTLIERS_TOOL_CLASS: "remove_outliers",
     "correlation": "cross_experiment_correlations",
+    "pca": "pca_analysis",
+    "umap": "umap_analysis",
+    "qc_inspect": "qc_inspect",
 }
 
 # Tiny per-experiment response cache. Each list_existing_analyses call walks
