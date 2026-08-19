@@ -45,14 +45,15 @@ def test_app_client_defaults_to_no_timeout_override(monkeypatch):
 
 
 def test_app_client_passes_an_explicit_postgrest_timeout_when_given(monkeypatch):
-    """dispatch_worker.py's wrapped app_client() opts into this explicitly —
-    only it has the small-batch guarantee that makes a tight bound safe."""
+    """dispatch_worker.py's and status_poller.py's wrapped app_client() calls
+    opt into this explicitly — only they have the small-payload guarantee
+    that makes a tight bound safe."""
     fake_client = MagicMock()
     fake_client.auth.sign_in_with_password.return_value = MagicMock(session=object())
 
     with patch("supabase.create_client", return_value=fake_client) as mock_create:
         result = supabase_client.app_client(
-            timeout_seconds=supabase_client.DISPATCH_WORKER_POSTGREST_TIMEOUT_SECONDS
+            timeout_seconds=supabase_client.SINGLE_ROW_RPC_TIMEOUT_SECONDS
         )
 
     assert result is fake_client
@@ -60,10 +61,10 @@ def test_app_client_passes_an_explicit_postgrest_timeout_when_given(monkeypatch)
     options = kwargs["options"]
     assert (
         options.postgrest_client_timeout
-        == supabase_client.DISPATCH_WORKER_POSTGREST_TIMEOUT_SECONDS
+        == supabase_client.SINGLE_ROW_RPC_TIMEOUT_SECONDS
     )
     assert (
-        supabase_client.DISPATCH_WORKER_POSTGREST_TIMEOUT_SECONDS < 30
+        supabase_client.SINGLE_ROW_RPC_TIMEOUT_SECONDS < 30
     )  # under stop_grace_period
 
 
