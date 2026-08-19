@@ -332,3 +332,32 @@ def trigger_pipeline(body: dict, user_id: str) -> dict:
         "scan_count": scan_count,
         "reused_count": reused_count,
     }
+
+
+def get_run(run_id: int) -> dict:
+    """Plain DB read of a run's current state (bloom #11 Phase 3) — does NOT
+    itself query Argo/K8s; live reconciliation is exclusively the status
+    poller's job (services/workflows/status_poller.py). Returns whatever the
+    poller last wrote, not a value computed during this request."""
+    client = app_client()
+    run_rows = (
+        client.table("cyl_pipeline_runs")
+        .select("*")
+        .eq("id", run_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not run_rows:
+        raise HTTPException(status_code=404, detail=f"pipeline run {run_id} not found")
+
+    scan_rows = (
+        client.table("cyl_pipeline_run_scans")
+        .select("*")
+        .eq("run_id", run_id)
+        .execute()
+        .data
+        or []
+    )
+    return {"run": run_rows[0], "scans": scan_rows}
