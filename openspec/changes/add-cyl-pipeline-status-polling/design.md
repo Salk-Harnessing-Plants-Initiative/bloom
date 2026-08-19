@@ -366,6 +366,98 @@ a `Failed`/`Error` phase) plumbed through `_fetch_effective_phases` into the RPC
 scope, not a one-line addition, and this proposal's own by-name, phase-only `GET` doesn't currently even
 fetch that field. Deferred rather than expanded into this round's fix pass.
 
+### Decision (fix, `/review-pr` round 3): the same-value write-skip only applies to `'running'`, not `'partial'`
+
+Found on review — a real, cross-validated regression in round 2's own "repeated same-value reconfirmation
+no longer rewrites the row" fix (above): `_fetch_candidate_runs`'s `status` column cannot distinguish
+*why* a candidate row is currently `'partial'`. `'partial'` is reachable two structurally different ways —
+(a) Phase 2's `_settle_cyl_pipeline_run` dispatch-time guess (some scans never dispatched, others did, real
+Argo outcome not yet checked at all), or (b) this poller's own prior real confirmation that the run's true
+pipeline-level outcome is `'partial'` — and the column only ever stores the string, not which of the two
+produced it. The round-2 fix's own premise ("the computed and known values only match once the run has
+already fully stabilized at that exact value") is simply false for `'partial'`: it is both the pre-poll
+dispatch baseline *and* a valid confirmed-rollup conclusion, so a same-string match does not imply
+"already checked before."
+
+Concretely: a run with one dispatch-failed scan (contributes an effective `'Failed'` phase, unconditionally)
+and one genuinely-dispatched scan settles to `'partial'` at dispatch time (Phase 2). The very *first* real
+sweep, once the dispatched scan's workflow reaches `Succeeded`, computes `rollup(["Failed", "Succeeded"])
+== "partial"` — the correct, final, real-outcome value. But `"partial" == known_status ("partial")`, so
+round 2's skip silently discards this write entirely: no RPC call, no `completed_at` advance, no log line.
+`completed_at` stays frozen at Phase 2's original dispatch-time stamp forever — exactly the bug the round-1
+"`completed_at` always advances on a real terminal conclusion" fix was written to close, reintroduced by
+round 2 via a different mechanism, for what is the *typical* resolution path for a dispatch-`'partial'` run
+(a dispatch-partial rollup can only ever end at `'partial'` or `'failed'`, never `'complete'` — so
+`'partial'`-again is the common case, not a rare one).
+
+`'running'` does not have this ambiguity: Phase 2's own dispatch-settle function never writes `'running'`
+under any circumstance (its three-way split only ever produces `'submitted'`/`'partial'`/`'failed'`) — the
+*only* writer of `'running'` is this poller's own `update_cyl_pipeline_run_status` call. A candidate row
+whose `known_status` is `'running'` was therefore, unambiguously, written by a prior real poller
+confirmation, so skipping an identical `'running'`-again write is genuinely safe.
+
+**Fix**: the skip now only fires when `known_status == "running"` (not a general equality check). A
+`'partial'`-sourced candidate always writes when its computed status is a real conclusion, restoring
+round 1's original behavior for that case — reintroducing the already-documented, already-accepted
+cosmetic `completed_at`-churn trade-off for a `'partial'` run that keeps getting re-confirmed identically
+forever (see the round-1 `'partial'`-candidate decision's own "known, accepted trade-off" note), which is
+a correctness-neutral cost, unlike the data-loss this fix closes. A debug-level log line is added on the
+skip path so an on-call engineer investigating a `'running'` run's apparent inactivity has evidence the
+poller did check it and found no change, rather than silence indistinguishable from the run never being
+polled at all.
+
+- Alternatives considered: add new DB state (e.g. a `status_confirmed_at`/"last poller-checked" marker
+  distinct from `completed_at`) to make the skip safe for `'partial'` too — rejected for this fix as a
+  real schema change overlapping with the already-deferred per-scan tracking work (bloom #696), not a
+  one-line correction; revisit there if the `'partial'`-churn cosmetic cost above ever becomes a real
+  operational concern. Skip only when `status != 'partial'` generically (i.e., check the *computed* value
+  rather than the *known* value) — rejected; this is logically equivalent to the `known_status == "running"`
+  check adopted (since the two skip-eligible values are only ever `'running'`/`'partial'` per the rollup
+  rule and candidate query), but naming the condition by the one value that's actually safe is clearer than
+  naming it by the one value that's excluded.
+
+### Decision (fix, `/review-pr` round 3): `run()`'s two reconnect paths reset `consecutive_error_cycles` consistently
+
+Found on review — the outer `except Exception` path (a genuinely-unexpected bug inside `sweep_once`'s own
+control flow) unconditionally reset `consecutive_error_cycles = 0` even when the nested `app_client()`
+reconnect attempt inside that same branch itself failed, while the proactive-reconnect path (3 consecutive
+unclean cycles) only reset the counter on a *successful* reconnect. Traced through by hand and confirmed
+this asymmetry was behaviorally benign (the outer path unconditionally retries `app_client()` again next
+cycle regardless of the counter's value, so losing the "streak" count didn't delay recovery) — but it is an
+unexplained inconsistency in code whose entire purpose is careful per-cycle streak bookkeeping, and nothing
+in the round-2 write-up justified it. **Fix**: both paths now reset the counter only when the reconnect
+attempt actually succeeds, matching the invariant "the counter reflects consecutive cycles since the last
+confirmed-good client," consistently.
+
+### Decision: `dispatch_worker.py`'s identical reconnect-effectively-dead risk is out of scope for this PR
+
+Found on review (`/review-pr` round 3): `dispatch_worker.py`'s `process_one()` already catches
+`claim_batch`'s exceptions internally and returns `False` rather than re-raising — the same shape
+`sweep_once` had before round 2's fix, and `run()`'s reconnect-on-exception logic there has the identical
+"almost nothing left to catch" problem this proposal's round-2 fix closed for `status_poller.py`. This is a
+**pre-existing** characteristic of already-shipped Phase 2 code (`dispatch_worker.py`'s `process_one`/`run`
+shape predates this proposal entirely; this PR's only touch to that file is the unrelated
+`SINGLE_ROW_RPC_TIMEOUT_SECONDS` rename), not a regression introduced here — matching this program's
+established convention of filing a genuinely separate-scope structural gap as its own follow-up issue
+rather than expanding an already-large, already-multi-round fix pass. Filed as
+[bloom #710](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/710).
+
+### Decision: `stop_grace_period: 60s`'s justification does not fully cover the round-2 proactive-reconnect's `app_client()` call — accepted, not fixed
+
+Found on review (`/review-pr` round 3): the round-1 `stop_grace_period: 60s` decision (above) justified
+that duration purely in terms of "N `get_workflow_status` GETs per sweep." Round 2 added a second call site
+for `app_client()` inside the main loop itself (the proactive-reconnect branch) — and `app_client()`'s
+sign-in call goes through supabase-py's GoTrue/auth client, which `SINGLE_ROW_RPC_TIMEOUT_SECONDS` does
+**not** bound (that timeout only wires into the PostgREST client, confirmed by reading the installed
+supabase-py source's `_init_postgrest_client`/`_init_supabase_auth_client` split). A slow Supabase auth
+endpoint at exactly the moment `SIGTERM` arrives during a proactive reconnect could in principle stall
+shutdown longer than the 60s grace period prices in. This exposure already existed via the pre-existing
+outer-exception reconnect path (also an unbounded `app_client()` call), so round 2 did not introduce a new
+kind of risk, only a second call site for an existing one — httpx's own default per-phase connect/read
+timeouts bound the realistic worst case even without an explicit override. Recorded here as an accepted,
+narrow risk rather than fixed — a real fix would mean explicitly configuring the GoTrue client's own
+timeout, which is a `supabase_client.py`-wide change well beyond this fix round's scope.
+
 ### Decision: `status_poller.py` is a separate process from `dispatch_worker.py`
 
 The two have genuinely different triggers: `dispatch_worker.py` reacts to new pgmq messages (event-
@@ -400,10 +492,19 @@ container) already rejects in favor of one script/one job/one container.
 - **A `'partial'` run's `completed_at` can advance more than once, and the run itself is polled
   forever once its dispatched batches are fully resolved** — see the `'partial'`-candidate and
   `completed_at` decisions above. Cosmetic/wasted-work, not a data-integrity bug: the `status` value
-  itself is always correct. The round-2 same-value-skip fix stops the repeated `completed_at` bump once
-  a run's conclusion stabilizes, but the run remains in the candidate query (and keeps costing one
-  `GET` per distinct workflow name per cycle) forever — closing that fully needs the per-scan tracking
-  deferred to bloom #696.
+  itself is always correct. The round-3 fix (above) restricts the same-value write-skip to `'running'`
+  only, since `'partial'` can't be trusted to mean "already poller-confirmed" — so a `'partial'` run's
+  `completed_at` keeps advancing every cycle it's reconfirmed, same as before round 2's optimization
+  existed. The run also remains in the candidate query (and keeps costing one `GET` per distinct
+  workflow name per cycle) forever — closing either of these fully needs the per-scan tracking deferred
+  to bloom #696.
+- **`dispatch_worker.py` has the same reconnect-logic-effectively-dead risk this proposal's round-2 fix
+  closed for `status_poller.py`, left unfixed** (found `/review-pr` round 3) — see the "out of scope for
+  this PR" decision above. Filed as
+  [bloom #710](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/710).
+- **`stop_grace_period: 60s`'s justification doesn't fully cover the round-2 proactive-reconnect's
+  `app_client()` call**, which isn't bounded by `SINGLE_ROW_RPC_TIMEOUT_SECONDS` — see the accepted-risk
+  decision above (found `/review-pr` round 3).
 - **A workflow confirmed-observed once, then 404'd on a later cycle, can permanently block `'complete'`**
   (found `/review-pr` round 2): the 404-is-unknown decision above only reasons about a workflow *never*
   observed as terminal before it TTL's out. But nothing prevents this poller from observing, say,

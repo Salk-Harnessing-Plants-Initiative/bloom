@@ -216,11 +216,25 @@ def sweep_once(client) -> bool:
                 run_id,
             )
             continue
-        if status == known_status:
+        if status == known_status == "running":
             # Nothing has changed since the last confirmed conclusion — skip
-            # the write entirely rather than re-stamping completed_at (or
-            # just re-writing an identical value) for a run whose outcome has
-            # already stabilized (found during /review-pr round 2).
+            # the write entirely rather than re-writing an identical value
+            # for a run whose outcome has already stabilized (found during
+            # /review-pr round 2). Only safe for 'running': Phase 2's
+            # dispatch-settle never writes 'running' itself, so a known
+            # status of 'running' unambiguously means this poller already
+            # confirmed it. 'partial' is NOT eligible for this skip — Phase
+            # 2's dispatch-settle *can* produce 'partial' as a pre-poll
+            # guess never yet checked by this poller, so a same-string match
+            # there doesn't mean "already confirmed" and would silently
+            # discard the run's first real conclusion (found during
+            # /review-pr round 3 — see design.md's "the same-value
+            # write-skip only applies to 'running'" decision).
+            logger.debug(
+                "status_poller: run %s reconfirmed 'running', no change — "
+                "skipping the write",
+                run_id,
+            )
             continue
 
         try:
@@ -280,12 +294,18 @@ def run():
             time.sleep(POLL_INTERVAL)
             try:
                 client = app_client()
+                # Only reset the streak on an actual successful reconnect —
+                # matching the proactive-reconnect path below. Found during
+                # /review-pr round 3: this used to reset unconditionally,
+                # even when the reconnect attempt itself failed, which was
+                # inconsistent (if behaviorally benign, since this path
+                # already retries app_client() every cycle regardless).
+                consecutive_error_cycles = 0
             except Exception as reconnect_exc:
                 logger.error(
                     "status_poller: reconnect failed, will retry: %s",
                     reconnect_exc,
                 )
-            consecutive_error_cycles = 0
             continue
 
         if clean:

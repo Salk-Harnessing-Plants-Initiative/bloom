@@ -482,3 +482,62 @@ a real submitted Workflow) was not performed — stated explicitly, not claimed.
       every changed file. Confirm no regressions. Push as a new commit
       (`fix(#11): apply round-2 /review-pr findings — reconnect regression, redundant-write skip,
       stale docs`) on the same PR branch.
+
+## 11. Round-3 `/review-pr` findings (applied on the same branch, post round-2 fix commits)
+
+> A third full 5-subagent review pass cross-validated (two independent lenses — code quality and
+> scientific rigor — found the same bug) a genuine regression in round 2's own same-value-skip fix, plus
+> a counter-reset inconsistency in round 2's reconnect logic, a stale comment, an unfixed sibling-file
+> gap, and several untested-but-benign exception paths. See `design.md`'s new "Decision (fix, `/review-pr`
+> round 3)" entries for the full reasoning behind each.
+
+- [x] 11.1 **BLOCKING (regression) — the round-2 same-value write-skip silently discards a
+      dispatch-`'partial'` run's first real confirmation, not just harmless repeats.**
+      `_fetch_candidate_runs`'s `status` column can't distinguish Phase 2's dispatch-time `'partial'`
+      guess (never yet checked by this poller) from a prior real `'partial'` confirmation by this poller
+      itself — both are the literal string `'partial'`. Failing test first:
+      `test_sweep_still_writes_a_dispatch_settled_partial_runs_first_real_confirmation` (candidate row
+      `status: 'partial'`, phases `["Failed", "Succeeded"]` — rollup computes `'partial'` again — assert
+      the write STILL happens). Confirm red (the round-2 test this replaces asserted the opposite:
+      `test_sweep_skips_the_write_when_computed_status_matches_the_known_status` was itself the bug,
+      certifying the regression as intended behavior), then fix: the skip now only fires when
+      `status == known_status == "running"` — the one value Phase 2's dispatch-settle never writes
+      itself, so a known `'running'` is unambiguous. Renamed the surviving 'running' test to
+      `test_sweep_skips_the_write_when_a_running_run_is_reconfirmed_running`. Added a debug log line on
+      the skip path (previously silent).
+- [x] 11.2 **IMPORTANT — inconsistent `consecutive_error_cycles` reset semantics between `run()`'s two
+      reconnect paths.** The outer-exception path (sweep_once itself raising) unconditionally reset the
+      counter to 0 even when its own nested reconnect attempt failed; the proactive-reconnect path only
+      reset on success. Confirmed behaviorally benign today, but inconsistent in code whose whole purpose
+      is streak bookkeeping. Failing test first:
+      `test_run_does_not_reset_the_error_streak_when_the_outer_exceptions_own_reconnect_fails` (builds a
+      streak of 2, then an outer-exception cycle with a failing reconnect, then one more unclean cycle —
+      asserts a 2nd proactive reconnect fires on schedule, which only happens if the streak survived).
+      Confirm red, then fix: move `consecutive_error_cycles = 0` inside the outer path's nested `try`,
+      after the `app_client()` call succeeds — matching the proactive-reconnect path's existing shape.
+- [x] 11.3 **IMPORTANT — stale comment in `supabase_client.py`** claimed both workers share a 30s
+      `stop_grace_period`; the status poller's is actually 60s (round-1 fix). Corrected the comment to
+      name both values distinctly.
+- [x] 11.4 Added coverage for two previously-untested-but-correct exception paths in `run()`'s reconnect
+      machinery (found by two independent reviewers as the least-covered code in the PR):
+      `test_run_survives_a_failed_proactive_reconnect_and_keeps_retrying` (app_client() raising inside
+      the 3-consecutive-unclean-cycles branch — confirmed by inspection by reviewers that Python never
+      partially rebinds `client` on a failed assignment, but nothing exercised it) and
+      `test_run_reconnects_when_sweep_once_itself_raises_unexpectedly` (no test previously made
+      `sweep_once` itself raise, as opposed to returning `False`, to exercise the outer `except`). Both
+      passed without any implementation change — pure coverage additions confirming existing behavior.
+- [x] 11.5 Documentation-only fixes (no behavior change beyond 11.1-11.2 above): corrected
+      `design.md`'s round-2 same-value-skip decision and the poller requirement's spec text (both
+      described the skip generally rather than `'running'`-only); added a new spec scenario pinning the
+      dispatch-`'partial'`-first-confirmation-still-writes behavior; corrected `services/workflows/
+      README.md`'s description of the skip to match; updated the round-2 Risks bullet about
+      `'partial'`-run `completed_at` churn to reflect that the same-value skip no longer applies to
+      `'partial'` at all (so the churn trade-off is unchanged from round 1, not newly mitigated).
+- [x] 11.6 Filed follow-up issues: [bloom #710](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/710)
+      for `dispatch_worker.py`'s identical (but pre-existing, out-of-scope-for-this-PR)
+      reconnect-effectively-dead risk; documented (not filed separately, low real-world likelihood) the
+      `stop_grace_period`/GoTrue-sign-in-timeout gap as an accepted risk in `design.md`.
+- [x] 11.7 Re-run the full suite: `services/workflows` unit tests, `tests/integration/
+      test_cyl_pipeline_status_polling.py`, `openspec validate --strict`. Confirm no regressions. Push as
+      a new commit (`fix(#11): apply round-3 /review-pr findings — partial-run write-skip regression,
+      reconnect counter consistency`) on the same PR branch.

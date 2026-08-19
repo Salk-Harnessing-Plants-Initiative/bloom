@@ -18,8 +18,9 @@ APP_EMAIL = os.environ.get("WORKFLOWS_SUPABASE_EMAIL")
 APP_PASSWORD = os.environ.get("WORKFLOWS_SUPABASE_PASSWORD")
 
 # supabase-py defaults postgrest_client_timeout to 120s (postgrest/constants.py's
-# DEFAULT_POSTGREST_CLIENT_TIMEOUT). The dispatch worker's and status poller's
-# stop_grace_period (docker-compose.{dev,prod}.yml, 30s) doesn't actually cover
+# DEFAULT_POSTGREST_CLIENT_TIMEOUT). Neither the dispatch worker's
+# stop_grace_period (30s) nor the status poller's own, larger one (60s, sized
+# for its own N-GETs-per-sweep worst case — see design.md) actually covers
 # that — a hung RPC could still be SIGKILLed mid-request — and every RPC either
 # calls (claim_cyl_pipeline_batch/complete_cyl_pipeline_batch/
 # fail_cyl_pipeline_batch/update_cyl_pipeline_run_status) is a single-row,

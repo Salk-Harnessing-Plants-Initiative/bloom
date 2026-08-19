@@ -49,9 +49,12 @@ SHALL select every `cyl_pipeline_runs` row whose `status` is `'submitted'`, `'ru
 checked — see the `'partial'`-inclusion scenario below), and for each such run: collect the distinct
 `argo_workflow_name` values from that run's `cyl_pipeline_run_scans` rows, call `get_workflow_status`
 for each, compute the run's rollup status (see the rollup requirement below), and — if the computed
-status differs from the run's current, already-known status — a computed status that exactly matches
-the candidate row's current status is a no-op this cycle (no RPC call, no `completed_at` bump; see the
-"unchanged conclusion" scenario below) — call `update_cyl_pipeline_run_status` with the result, **except**
+status differs from the run's current, already-known status — a computed status of `'running'` that
+exactly matches a candidate row's already-known `'running'` status is a no-op this cycle (no RPC call);
+`'partial'` is NOT eligible for this skip, since a `'partial'` known-status may be Phase 2's own
+dispatch-time guess rather than a prior real confirmation by this poller, and skipping it would silently
+discard the run's first genuine outcome (see the "unchanged conclusion" and "first real confirmation"
+scenarios below) — call `update_cyl_pipeline_run_status` with the result, **except**
 when the computed status is `'complete'` and any of this cycle's workflow lookups returned `None` (404) —
 see the rollup requirement's "withheld complete" rule. It SHALL isolate a failure fetching or updating
 any one run (a K8s error, a DB-read error, or a failed write) to that run alone, never aborting the
@@ -122,12 +125,22 @@ matching `dispatch_worker.py`'s established conventions for both.
 - **THEN** the current sweep cycle ends without checking any run (equivalent to finding zero
   candidates), and the next scheduled cycle retries — the process does not crash or exit
 
-#### Scenario: A computed status matching the run's current status is a no-op
+#### Scenario: A computed status matching a known-'running' status is a no-op
 
-- **WHEN** a candidate run's already-known `status` is `'partial'` and this cycle's rollup also computes
-  `'partial'` (no new evidence changed the outcome)
+- **WHEN** a candidate run's already-known `status` is `'running'` (a value only this poller itself ever
+  writes — Phase 2's dispatch-settle never produces it) and this cycle's rollup also computes `'running'`
+  (no new evidence changed the outcome)
 - **THEN** the poller does NOT call `update_cyl_pipeline_run_status` for that run this cycle
-- **AND** `completed_at` is not touched (it does not advance on a reconfirmation of an unchanged value)
+
+#### Scenario: A dispatch-settled `'partial'` run's first real confirmation still writes, even though the computed value matches the known string
+
+- **WHEN** a candidate run's already-known `status` is `'partial'` (Phase 2's dispatch-time settle — this
+  poller has not yet confirmed any real Argo outcome for it) and this cycle's rollup computes `'partial'`
+  as the run's real, final pipeline-level outcome
+- **THEN** the poller DOES call `update_cyl_pipeline_run_status` with `'partial'` — a `'partial'`
+  candidate's known status cannot be trusted to mean "already confirmed by this poller," unlike
+  `'running'`, since Phase 2's own dispatch-settle can also produce `'partial'` as a pre-poll guess (found
+  `/review-pr` round 3, correcting a round-2 regression that silently discarded exactly this write)
 
 #### Scenario: Three consecutive unclean cycles trigger a proactive reconnect
 

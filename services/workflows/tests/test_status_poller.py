@@ -430,13 +430,46 @@ def test_sweep_once_returns_false_when_an_update_call_fails(monkeypatch):
 # --- round 2: skip a write that would just reconfirm an unchanged status ----
 
 
-def test_sweep_skips_the_write_when_computed_status_matches_the_known_status(
+def test_sweep_skips_the_write_when_a_running_run_is_reconfirmed_running(
     monkeypatch,
 ):
-    """Found during /review-pr round 2: a 'partial' run whose dispatched
-    batches are all already resolved keeps satisfying the candidate query
-    forever and, before this fix, re-wrote the identical 'partial' conclusion
-    (and bumped completed_at) every single cycle."""
+    """Found during /review-pr round 2: a run repeatedly reconfirmed
+    'running' keeps satisfying the candidate query and, before this fix,
+    re-wrote the identical 'running' conclusion every single cycle.
+    'running' is safe to skip because Phase 2's dispatch-settle never writes
+    it — the only writer of 'running' is this poller's own prior
+    confirmation, so a known_status of 'running' unambiguously means
+    "already checked before" (unlike 'partial' — see the next test, added
+    during /review-pr round 3 after this test's original 'partial' version
+    was found to silently discard a run's first real confirmation)."""
+    calls = []
+    monkeypatch.setattr(
+        worker, "_fetch_candidate_runs", lambda c: [{"id": 1, "status": "running"}]
+    )
+    monkeypatch.setattr(
+        worker, "_fetch_effective_phases", lambda c, r: (["Running"], False)
+    )
+    monkeypatch.setattr(
+        worker, "update_run_status", lambda c, r, s: calls.append((r, s))
+    )
+    worker.sweep_once(object())
+    assert calls == [], "must not re-write a status that hasn't actually changed"
+
+
+def test_sweep_still_writes_a_dispatch_settled_partial_runs_first_real_confirmation(
+    monkeypatch,
+):
+    """Found during /review-pr round 3: a regression in round 2's own
+    same-value-skip fix. _fetch_candidate_runs's 'status' column can't tell
+    apart Phase 2's dispatch-time 'partial' guess (never yet checked by this
+    poller) from a prior real 'partial' confirmation by this poller itself —
+    both look identical: known_status == 'partial'. Before this fix, the very
+    FIRST real sweep of a dispatch-'partial' run (one dispatch-failed scan,
+    one dispatched scan that later Succeeds) would compute 'partial' again
+    and silently skip the write — freezing completed_at at the dispatch-time
+    stamp forever, exactly the bug round 1's completed_at fix closed. Unlike
+    'running', 'partial' must always write regardless of the known status,
+    since it cannot be trusted to mean "already poller-confirmed"."""
     calls = []
     monkeypatch.setattr(
         worker, "_fetch_candidate_runs", lambda c: [{"id": 1, "status": "partial"}]
@@ -450,7 +483,11 @@ def test_sweep_skips_the_write_when_computed_status_matches_the_known_status(
         worker, "update_run_status", lambda c, r, s: calls.append((r, s))
     )
     worker.sweep_once(object())
-    assert calls == [], "must not re-write a status that hasn't actually changed"
+    assert calls == [(1, "partial")], (
+        "a dispatch-settled 'partial' run's first real confirmation must "
+        "still write, even though the computed value matches the known "
+        "dispatch-time string"
+    )
 
 
 def test_sweep_still_writes_when_computed_status_differs_from_known_status(
@@ -677,6 +714,129 @@ def test_run_does_not_reconnect_after_a_single_isolated_error(monkeypatch):
 
     assert sweep_calls["n"] == 4
     assert reconnects["n"] == 1, "only the initial connect — no proactive reconnect"
+
+
+def test_run_survives_a_failed_proactive_reconnect_and_keeps_retrying(monkeypatch):
+    """Found during /review-pr round 3: no test previously exercised
+    app_client() itself raising inside the 3-consecutive-unclean-cycles
+    proactive-reconnect branch. Confirmed by hand that Python never
+    partially rebinds `client` on a failed assignment (`client =
+    app_client()`), so the poller must keep the old client and keep
+    retrying rather than crashing or ending up with an unbound `client`."""
+    connect_attempts = {"n": 0}
+
+    def flaky_app_client():
+        connect_attempts["n"] += 1
+        if connect_attempts["n"] == 1:
+            return object()  # the initial startup connect succeeds
+        if connect_attempts["n"] == 2:
+            raise RuntimeError("Supabase still unreachable")  # 1st reconnect fails
+        return object()  # 2nd reconnect attempt succeeds
+
+    monkeypatch.setattr(worker, "app_client", flaky_app_client)
+    monkeypatch.setattr(worker.time, "sleep", lambda s: None)
+
+    sweep_calls = {"n": 0}
+
+    def fake_sweep_once(client):
+        sweep_calls["n"] += 1
+        if sweep_calls["n"] >= 4:
+            worker._running = False
+        return False  # every cycle is unclean
+
+    monkeypatch.setattr(worker, "sweep_once", fake_sweep_once)
+
+    worker.run()  # must not raise / must not crash on the failed reconnect
+
+    assert sweep_calls["n"] == 4
+    # startup connect + failed reconnect attempt (cycle 3) + successful
+    # reconnect attempt (cycle 4, since the counter wasn't reset by the
+    # failed attempt and immediately re-triggers the threshold again)
+    assert connect_attempts["n"] == 3
+
+
+def test_run_reconnects_when_sweep_once_itself_raises_unexpectedly(monkeypatch):
+    """Found during /review-pr round 3: no test made sweep_once itself raise
+    (as opposed to returning False) to exercise run()'s outer except —
+    the residual path meant to cover a genuinely-unexpected bug inside
+    sweep_once's own control flow (not one of its internally-isolated
+    per-run/per-cycle errors)."""
+    client_calls = {"n": 0}
+
+    def fake_app_client():
+        client_calls["n"] += 1
+        return object()
+
+    monkeypatch.setattr(worker, "app_client", fake_app_client)
+    monkeypatch.setattr(worker.time, "sleep", lambda s: None)
+
+    sweep_calls = {"n": 0}
+
+    def fake_sweep_once(client):
+        sweep_calls["n"] += 1
+        worker._running = False
+        raise KeyError("id")  # a genuinely-unexpected bug, not an isolated error
+
+    monkeypatch.setattr(worker, "sweep_once", fake_sweep_once)
+
+    worker.run()  # must not raise
+
+    assert sweep_calls["n"] == 1
+    # One call to connect on startup, plus one reconnect from the outer
+    # except's own recovery path.
+    assert client_calls["n"] == 2
+
+
+def test_run_does_not_reset_the_error_streak_when_the_outer_exceptions_own_reconnect_fails(
+    monkeypatch,
+):
+    """Found during /review-pr round 3: the outer except (sweep_once itself
+    raising) used to unconditionally reset consecutive_error_cycles to 0
+    even when its own nested reconnect attempt failed — inconsistent with
+    the proactive-reconnect path, which only resets on a successful
+    reconnect. Confirmed behaviorally benign in practice (the outer path
+    retries app_client() every cycle regardless of the counter), but fixed
+    for consistency. This test builds a counter of 2 via two isolated-error
+    cycles, then has sweep_once raise with a FAILING reconnect (which must
+    NOT reset the counter back to 0), then one more isolated-error cycle —
+    which should reach the threshold (2 -> 3) and trigger a second, this
+    time successful, proactive reconnect. Under the old unconditional-reset
+    behavior, the streak would restart at 0 after the raise and this 4th
+    cycle would only bring it to 1, never reconnecting."""
+    connect_attempts = {"n": 0}
+
+    def flaky_app_client():
+        connect_attempts["n"] += 1
+        if connect_attempts["n"] == 1:
+            return object()  # startup connect succeeds
+        if connect_attempts["n"] == 2:
+            raise RuntimeError("still down")  # cycle 3's outer-except reconnect fails
+        return object()  # cycle 4's proactive reconnect succeeds
+
+    monkeypatch.setattr(worker, "app_client", flaky_app_client)
+    monkeypatch.setattr(worker.time, "sleep", lambda s: None)
+
+    sweep_calls = {"n": 0}
+
+    def fake_sweep_once(client):
+        sweep_calls["n"] += 1
+        if sweep_calls["n"] in (1, 2):
+            return False  # two isolated-error cycles build the streak to 2
+        if sweep_calls["n"] == 3:
+            raise KeyError("id")  # outer except fires; its own reconnect fails
+        worker._running = False
+        return False  # cycle 4: unclean again — streak should now reach 3
+
+    monkeypatch.setattr(worker, "sweep_once", fake_sweep_once)
+
+    worker.run()
+
+    assert sweep_calls["n"] == 4
+    # startup + cycle 3's failed outer-except reconnect + cycle 4's
+    # successful proactive reconnect — the 3rd connect attempt is reachable
+    # only if the streak survived the failed reconnect at cycle 3 instead
+    # of being reset to 0.
+    assert connect_attempts["n"] == 3
 
 
 # --- POLL_INTERVAL default ---------------------------------------------------

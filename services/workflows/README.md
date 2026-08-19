@@ -158,11 +158,19 @@ to conclude something that differs from the run's already-known status,
 writes the result via `update_cyl_pipeline_run_status`, progressing the run
 to `'running'`/`'complete'` (or a real-outcome `'failed'`/`'partial'`) —
 values `claim`/`complete`/`fail_cyl_pipeline_batch` (Phase 2) never reach,
-since those only ever describe dispatch outcome. A computed conclusion that
-merely reconfirms the run's current status is a no-op (no write, no
-`completed_at` bump) — a `'partial'` run whose dispatched batches are all
-already resolved would otherwise satisfy this candidate query and be
-re-written identically forever.
+since those only ever describe dispatch outcome. A computed conclusion of
+`'running'` that merely reconfirms a run already known to be `'running'` is a
+no-op (no write) — `'running'` is the only status value this poller ever
+writes itself, so a known status of `'running'` unambiguously means a prior
+sweep already confirmed it. This same-value skip does **not** apply to
+`'partial'`: Phase 2's own dispatch-settle can *also* produce `'partial'` as a
+pre-poll guess this poller hasn't yet checked, so a `'partial'`-sourced
+candidate always writes its computed conclusion — even when that conclusion
+happens to be `'partial'` again — to avoid silently discarding a run's first
+real confirmation. A `'partial'` run whose dispatched batches are all already
+resolved does keep satisfying this candidate query and gets re-written
+identically forever (a documented, cosmetic trade-off — see `design.md`), but
+that's a strictly better failure mode than losing the first real write.
 
 The rollup rule that maps a run's per-workflow phases to one status is
 specified normatively in the `cyl-pipeline-status-polling` OpenSpec capability
