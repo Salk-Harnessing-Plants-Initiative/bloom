@@ -45,9 +45,9 @@ cyl_scan_traits IN SHARE MODE` held for the backfill's ~2.5s closes a gap this s
   `n_plants` becomes a live `EXISTS` semi-join (247ms for all experiments, per Benfica's measurement) —
   **no cache at all**, since it needs no `is_latest` dependency (existence of any trait row for a scan
   implies existence of that scan's latest row). `n_traits` genuinely needs caching (6.6s, no shortcut) —
-  a new `cyl_experiment_trait_counts` table, refreshed by a scheduled job (proposed default: a GitHub
-  Action every 5–15 min, flagged for confirmation — see `design.md`'s Open Questions), not PR #654's
-  per-row trigger (which would fire hundreds of full-experiment recomputes for one write-back upload).
+  a new `cyl_experiment_trait_counts` table, refreshed by a scheduled job (a GitHub Action, running once
+  daily — see `design.md` D8), not PR #654's per-row trigger (which would fire hundreds of
+  full-experiment recomputes for one write-back upload).
 - **The `source_id_`/`run_id_`-pinned branches keep a live join**, via a helper function scoped to just
   that case (simpler than PR #654's version, which also had to serve the unpinned path). Two incidental,
   semantics-preserving cleanups carried over from Benfica's comment: `JOIN accessions` → `accession_id IS
@@ -76,10 +76,14 @@ NOT NULL`, and the unnecessary `cyl_experiments` join is dropped. **These branch
   - `supabase/migrations/` (3 new migrations — see `design.md`'s Migration Plan) + `supabase/rollbacks/`
     companions.
   - A new scheduled job invoking `refresh_cyl_experiment_trait_counts()` — a GitHub Actions workflow file
-    if D8's proposed default is confirmed, or a `workflows`-service follow-up issue if not.
+    (`.github/workflows/refresh-cyl-experiment-trait-counts.yml`, per `design.md` D8).
   - `tests/integration/` — new/rewritten test files for the trigger, inline backfill, the semi-join
     rewrite, the cache table, and the rewritten `get_experiment_summary_counts`; no `bloommcp`/Python
     changes.
+  - `tests/unit/test_refresh_workflow_staging_api_url_shape.py` (new) — locks the refresh workflow's
+    shape: `STAGING_API_URL` hardcoded and matching `.env.staging.defaults`, no `STAGING_API_URL`
+    secret, `STAGING_SERVICE_ROLE_KEY` still a real secret, `permissions: {}`/no checkout, once-daily
+    schedule.
   - `bloommcp/docs/data-access-roadmap.md` / `_WIKI/BLOOMMCP/README.md` (docs only).
 - Backward compatible: additive at the schema layer; the view's external contract and
   `get_experiment_summary_counts`'s signature/result shape are unchanged.

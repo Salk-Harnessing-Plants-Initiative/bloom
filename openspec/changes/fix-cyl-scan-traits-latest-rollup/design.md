@@ -28,8 +28,8 @@ through the join before deduplicating, not the join itself (60ms). Rewritten as 
 all experiments at once cost 247ms — **no cache needed at all**. `n_traits` genuinely needs a full scan
 (6,623ms) and does need caching, but PR #654's per-row `AFTER` trigger is the wrong refresh shape: one
 write-back upload inserts ~751 trait rows in a loop, so a per-row trigger fires ~751 full-experiment
-recomputes for one upload. A scheduled refresh (every 5–15 min) costs the same 6.6s regardless of
-ingest volume, and runs where nothing is waiting on it.
+recomputes for one upload. A scheduled refresh (interval settled at once daily -- see D8) costs the same
+6.6s regardless of ingest volume, and runs where nothing is waiting on it.
 
 Between them, these two reviews eliminate essentially all of PR #654's operational complexity: no
 batched/resumable backfill, no operator runbook, no D8 deploy-policy carve-out, no three-way
@@ -444,19 +444,22 @@ one refresh interval. `updated_at` is exposed in the table and, as of round 6, i
 -- see the round-6 note directly below for why this was closed rather than deferred a third time.
 
 **"Bounded to one refresh interval" assumes the schedule is actually running — found in a fourth review
-round to currently NOT be true.** D8's `STAGING_API_URL` secret is not yet provisioned (tasks.md 5.2,
-still unchecked), so the scheduled workflow cannot make its one authenticated call yet. Until that secret
-is added and the workflow's first successful run is confirmed (5.3), `n_traits` is frozen at whatever the
-migration's one-time `SELECT public.refresh_cyl_experiment_trait_counts();` computed at deploy time --
-staleness is currently **unbounded**, not "up to 10 minutes." This is a real operational dependency this
-change cannot close in its own commits (it needs a human to add the GitHub secret) -- flagged here so it
-isn't lost, and tracked as a hard pre-close gate on bloom#637 (tasks.md 5.2/5.3), not merely a
-nice-to-have.
+round to currently NOT be true, since narrowed by removing the blocker rather than closed by provisioning
+it.** The `STAGING_API_URL` secret this paragraph originally flagged as unprovisioned turned out to be
+unnecessary entirely: the value is the same public, stable hostname already committed as
+`API_EXTERNAL_URL` in `.env.staging.defaults`, so it's hardcoded as a literal in the workflow instead of
+a secret (tasks.md 5.2). The one remaining credential, `STAGING_SERVICE_ROLE_KEY`, already existed before
+this change (`deploy.yml`'s own use) — so no secret provisioning blocks this schedule anymore. What's
+still open is narrower: the workflow's first successful run against staging hasn't been confirmed yet
+(tasks.md 5.3, `workflow_dispatch` is wired for exactly this). Until that's confirmed, `n_traits` is
+frozen at whatever the migration's one-time `SELECT public.refresh_cyl_experiment_trait_counts();`
+computed at deploy time -- staleness is currently **unbounded**, not "up to a day." Tracked as a
+pre-close gate on bloom#637 (tasks.md 5.3), not merely a nice-to-have.
 
 **Round 6: the caller-facing visibility gap this same paragraph flagged in round 4 is now closed, not
 deferred a third time.** An external PR-comment review re-raised exactly this point -- `n_traits`'s
 staleness was still invisible where a scientist actually sees it, two rounds after it was first
-identified. Given the STAGING_API_URL gap above means staleness is currently _unbounded_, not a bounded
+identified. Given the STAGING*API_URL gap above means staleness is currently \_unbounded*, not a bounded
 UI-lag nicety, leaving it invisible a third time was judged no longer a neutral deferral. Closed by
 adding `n_traits_updated_at` to `get_experiment_summary_counts`'s `RETURNS TABLE` (`NULL` for a pinned
 call, which has no cache to be stale against; the cache row's own `updated_at`, or `NULL` if never
@@ -790,18 +793,24 @@ the more durable signal that M2 hasn't actually been rolled back.
 
 ## Open Questions
 
-- **D8 — refresh-scheduling host, genuinely unresolved.** `pg_cron` isn't installed in this stack. Two
-  candidates named so far: the `workflows` service (already running, would need new application code to
+- **D8 — refresh-scheduling host: resolved as a scheduled GitHub Action; interval settled at once
+  daily, not the originally-proposed 5–15 min window.** `pg_cron` isn't installed in this stack. Two
+  candidates were named: the `workflows` service (already running, would need new application code to
   poll on an interval) or a scheduled GitHub Action (`on: schedule`, calling the refresh function's
   PostgREST RPC endpoint with the `service_role` key — this repo already has scheduled Actions, e.g. the
   CVE-scan workflows on every PR, so the pattern is precedented, and it needs zero new application code).
-  This design proposes the **scheduled GitHub Action** as the default, flagged here for confirmation
-  rather than assumed — `tasks.md` carries the task either way (writing the workflow YAML if this is
-  confirmed; filing a follow-up issue against `workflows` if not). The workflow validates
+  The **scheduled GitHub Action** shipped as the default (`.github/workflows/refresh-cyl-experiment-trait-counts.yml`).
+  The interval was reconsidered after the workflow shipped: staging has low write volume and no caller
+  currently depends on sub-daily freshness, so `cron: '0 6 * * *'` (once daily) is the actual schedule,
+  not the 5–15 min window this design originally reasoned about above — `workflow_dispatch` still allows
+  an on-demand manual run any time a fresher count is needed sooner. The workflow validates
   `STAGING_API_URL` starts with `https://` before making the call (added in the second review round) —
   a plain `http://` URL would send `SERVICE_ROLE_KEY` (a full-bypass-RLS credential) in cleartext on
-  every scheduled run; this doesn't resolve the secret's provisioning, just guards against it being
-  misconfigured once it exists.
+  every scheduled run. `STAGING_API_URL` itself is hardcoded as a literal in the workflow rather than a
+  GitHub secret — it's the same public, stable hostname already committed as `API_EXTERNAL_URL` in
+  `.env.staging.defaults`, so there's nothing sensitive to store; `STAGING_SERVICE_ROLE_KEY` (the actual
+  credential) already existed pre-change, so this schedule needs no secret provisioning at all
+  (`tests/unit/test_refresh_workflow_staging_api_url_shape.py` guards both facts).
 - **D7 — pinned-branch cost, not benchmarked.** See D7's own reasoning; needs a real `EXPLAIN (ANALYZE,
 BUFFERS)` against staging once this lands, not resolved from this sandboxed pass.
 - ~~`n_traits`'s `updated_at` isn't surfaced in `get_experiment_summary_counts`'s return shape.~~

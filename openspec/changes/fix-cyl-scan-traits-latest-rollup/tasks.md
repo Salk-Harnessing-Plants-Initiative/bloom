@@ -147,26 +147,33 @@ EXECUTE ... TO service_role` only (not the four read roles — this is a mainten
       contract is unchanged. **Done — 365 passed, 5 skipped across the full `cyl`-scoped integration
       suite after all `/review-pr` fixes.**
 
-## 5. Scheduled refresh (design.md D8 — proposed default, flagged for confirmation)
+## 5. Scheduled refresh (design.md D8 — GitHub Action confirmed, interval settled at once daily)
 
 - [x] 5.1 Add a scheduled GitHub Actions workflow
-      (`.github/workflows/refresh-cyl-experiment-trait-counts.yml`, `on: schedule`, every 10 min) that
-      calls `refresh_cyl_experiment_trait_counts()` via the PostgREST RPC endpoint using a service-role
-      key, not SSH+psql (avoids re-triggering the "manual DB access is emergency-only" policy question
-      PR #654's D8 ran into for its own backfill). **Done — flagged for confirmation per design.md's
-      Open Questions; if a `workflows`-service-hosted job is preferred instead, delete this file and
-      file a follow-up issue against that service. (Hardened post-`/review-pr`: explicit `permissions: {}`
-      (CodeQL had flagged its absence — low actual risk since the job never checks out code or uses the
-      token, but fixed as defense-in-depth), `timeout-minutes: 2` on the job, `--connect-timeout
-5 --max-time 30` on the `curl` call so a hung staging endpoint can't occupy the runner
-      indefinitely.)**
-- [ ] 5.2 **Blocked on new secrets, not yet provisioned.** Unlike every other staging secret in this
-      repo (all consumed server-side by `deploy.yml`), calling staging's PostgREST endpoint directly
-      from a GitHub Action needs a new `STAGING_API_URL` secret — no existing secret covers this (only
-      `STAGING_SERVICE_ROLE_KEY` already exists, from `deploy.yml`'s own use). Add `STAGING_API_URL`
-      before this schedule can actually run; the workflow fails loudly (not silently) if it's missing.
-- [ ] 5.3 Verify the workflow's one authenticated call succeeds against staging once 5.2's secret is
-      added, before relying on the schedule (`workflow_dispatch` is wired for a manual first run).
+      (`.github/workflows/refresh-cyl-experiment-trait-counts.yml`, `on: schedule`) that calls
+      `refresh_cyl_experiment_trait_counts()` via the PostgREST RPC endpoint using a service-role key,
+      not SSH+psql (avoids re-triggering the "manual DB access is emergency-only" policy question PR
+      #654's D8 ran into for its own backfill). **Done — the scheduled-GitHub-Action approach itself is
+      confirmed (see design.md D8); the interval was reconsidered after this workflow shipped and
+      changed from the originally-proposed 5–15 min window to `cron: '0 6 * * *'` (once daily) — staging
+      has low write volume and no caller currently depends on sub-daily freshness, and
+      `workflow_dispatch` still allows an on-demand manual run any time a fresher count is needed sooner.
+      (Hardened post-`/review-pr`: explicit `permissions: {}` (CodeQL had flagged its absence — low
+      actual risk since the job never checks out code or uses the token, but fixed as
+      defense-in-depth), `timeout-minutes: 2` on the job, `--connect-timeout 5 --max-time 30` on the
+      `curl` call so a hung staging endpoint can't occupy the runner indefinitely.)**
+- [x] 5.2 **No `STAGING_API_URL` secret needed after all.** The originally-considered new secret was
+      reconsidered: the value is the same public, stable hostname already committed as
+      `API_EXTERNAL_URL` in `.env.staging.defaults` and already documented non-sensitive by the
+      Committed Defaults contract (`tests/unit/test_env_defaults.py`) — nothing about it needs
+      secret-store protection. Hardcoded as a literal in the workflow instead (this job deliberately
+      never checks out the repo, so it can't read `.env.staging.defaults` at runtime either).
+      `STAGING_SERVICE_ROLE_KEY` — the one actual credential this job needs — already existed, from
+      `deploy.yml`'s own use, so no secret provisioning is required at all. Guarded by
+      `tests/unit/test_refresh_workflow_staging_api_url_shape.py`, which fails if the literal drifts
+      from `.env.staging.defaults` or if a `secrets.STAGING_API_URL` reference reappears.
+- [ ] 5.3 Verify the workflow's one authenticated call succeeds against staging (`workflow_dispatch` is
+      wired for a manual first run) — no longer blocked on any secret provisioning per 5.2.
 
 ## 6. Validate
 
@@ -460,7 +467,7 @@ issues.
       round-2-era form and re-running the existing test unchanged — it still passed, proving it
       genuinely cannot distinguish which branch fires.
 - [x] 12.3 Fix everything that survived verification: - `GRANT INSERT, UPDATE, DELETE ON public.cyl_scan_latest_source/cyl_experiment_trait_counts TO
-    bloom_admin` added to both migrations, matching `cyl_scan_traits`'s own capability and the
+bloom_admin` added to both migrations, matching `cyl_scan_traits`'s own capability and the
       RLS policy's stated intent. Two new tests
       (`test_bloom_admin_can_write_directly_to_cyl_scan_latest_source`,
       `test_bloom_admin_can_write_directly_to_cyl_experiment_trait_counts`) write straight to
@@ -514,10 +521,10 @@ subagents informed of the triage results so they wouldn't re-litigate settled po
       claim: swapping in the OLD, pre-this-PR view definition (which has zero dependency on
       `cyl_scan_latest_source`) reproduces the IDENTICAL failure for `bloom_workflows` — it never
       had a `GRANT SELECT` on this view, before or after this PR. A code search (`services/workflows/
-      pipeline.py`/`video.py`, the only code authenticating as this role) confirmed it never reads
+  pipeline.py`/`video.py`, the only code authenticating as this role) confirmed it never reads
       this view or the trait-reading RPCs at all — its only trait-table access is a narrow,
       column-scoped dedup check (`cyl_scan_traits(scan_id, source_id)`, `cyl_trait_sources(id,
-      metadata)`), already correctly granted. Pre-existing, out-of-scope, not a regression — not
+  metadata)`), already correctly granted. Pre-existing, out-of-scope, not a regression — not
       fixed. - **`STAGING_API_URL` secret unprovisioned** — already tracked (tasks.md 5.2/5.3, design.md D5's
       round-4 caveat); restated by the external review, not a new finding.
 - [x] 13.2 Fix the external review's 2 correctly-identified, previously-unfixed issues: - Unused `import time` in `test_cyl_scan_latest_source.py` (a leftover from an earlier draft of a
