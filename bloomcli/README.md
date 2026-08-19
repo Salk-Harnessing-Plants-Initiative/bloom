@@ -389,10 +389,11 @@ command co-locates frames with a `scan_metadata.json` sidecar so
 pipeline stage-in, not as a replacement for `cyl download`.
 
 ```
-bloomctl cyl download-for-predict <scan-id> <out>   [-p/--profile PROFILE]
+bloomctl cyl download-for-predict <scan-id> <out>   [-p/--profile PROFILE] [-n/--workers N]
 ```
 
-- Writes frames to `<out>/scan_<scan_id>/<frame_number><ext>`.
+- Writes frames to `<out>/scan_<scan_id>/<frame_number><ext>`, up to `--workers` frames at once
+  (1-64, default 8, `1` = sequential — same range/default as `cyl download`'s own `--workers`).
 - Authors `<out>/scan_<scan_id>/scan_<scan_id>.scan_metadata.json` with:
   - `scan_key` — `scan_<scan_id>` (matches the filename stem).
   - `params` — `{species, mode, age}`, resolved via `sleap-roots-contracts`
@@ -423,14 +424,16 @@ per-batch pipeline's `download-all` Argo task.
 ```
 bloomctl cyl batch-download-for-predict <out_dir>
   (--scan-ids-file <scan_ids.json | -> | --scan-ids 1,2,3)
-  [-p/--profile PROFILE] [--json] [--lock-staleness-seconds N]
+  [-p/--profile PROFILE] [--json] [--lock-staleness-seconds N] [-n/--workers N]
 ```
 
 - Exactly one of `--scan-ids-file` (a JSON array of integer scan_ids, read from
   a path or stdin when the value is `-`) or `--scan-ids` (a comma-separated
   list, for ad hoc manual use) is required.
 - Stages every `scan_id` into `<out_dir>/scan_<scan_id>/`, identical to what
-  `download-for-predict` writes for one scan.
+  `download-for-predict` writes for one scan — each scan's frames download up to `--workers`
+  at once (1-64, default 8, `1` = sequential), same as the single-scan command; scans
+  themselves are still staged one at a time.
 - **Isolates per-scan failures** — one bad scan (not found, no frames, a
   metadata-resolution failure, a partial frame-download failure, or lock
   contention with another live invocation) is recorded and reported, but does
