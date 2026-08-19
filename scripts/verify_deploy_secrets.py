@@ -154,11 +154,12 @@ def main(argv: list[str]) -> int:
     blocks, _unexpected, _unclosed, _duplicates = discover_blocks(args.deploy)
     failures = Failures()
 
-    for number, form, line in nonstandard_refs(args.compose.read_text(encoding="utf-8")):
+    # The offending line is deliberately not echoed: it is arbitrary file content.
+    for number, form, _line in nonstandard_refs(args.compose.read_text(encoding="utf-8")):
         failures.add(
             f"{args.compose}:{number}: {form} is not a plain ${{UPPERCASE}} reference, "
             "so the required-keys check reads it wrongly",
-            f"Use ${{{form.lstrip('$').strip('{}').upper()}}} instead — {line}",
+            f"Use ${{{form.lstrip('$').strip('{}').upper()}}} instead.",
         )
 
     for env_name, github_env in ENVIRONMENTS.items():
