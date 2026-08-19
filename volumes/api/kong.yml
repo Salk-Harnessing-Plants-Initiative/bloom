@@ -5,9 +5,7 @@ _transform: true
 ### Consumers / Users
 ###
 consumers:
-  # Credentials for the basic-auth plugin on the `dashboard` service. Without
-  # them the plugin has nothing to match and rejects every request, so the
-  # Studio route is unreachable rather than gated.
+  # Credentials for the basic-auth plugin on the `dashboard` service.
   - username: DASHBOARD
     basicauth_credentials:
       - username: $DASHBOARD_USERNAME
@@ -32,14 +30,6 @@ acls:
     group: admin
   - consumer: bloom_agent
     group: bloom_agent
-
-###
-### Dashboard credentials
-###
-basicauth_credentials:
-  - consumer: DASHBOARD
-    username: $DASHBOARD_USERNAME
-    password: $DASHBOARD_PASSWORD
 
 ###
 ### API Routes

@@ -8,7 +8,11 @@ Prerequisites:
 Run: python -m pytest tests/integration/test_api_endpoints.py -v
 """
 
+import base64
+import os
+
 import pytest
+import urllib.error
 import urllib.request
 
 pytestmark = pytest.mark.integration
@@ -246,8 +250,35 @@ def test_bloom_web_returns_html(api):
     assert "<!DOCTYPE html>" in body or "<html" in body or "next" in str(body).lower()
 
 
-def test_studio_reachable():
-    """Supabase Studio responds through Caddy subdomain."""
+def _studio_request(credentials: tuple[str, str] | None = None):
+    """A request for the Studio hostname, optionally carrying basic-auth."""
     req = urllib.request.Request("http://localhost/", headers={"Host": "studio.localhost"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    if credentials:
+        token = base64.b64encode(":".join(credentials).encode()).decode()
+        req.add_header("Authorization", f"Basic {token}")
+    return req
+
+
+def test_studio_requires_credentials():
+    """Studio's UI is gated by Kong's basic-auth, not served directly by Caddy.
+
+    Asserting the 401 is the point: an unauthenticated 200 here is what the
+    Caddyfile produced before the UI catch-all was routed through Kong, and it
+    is indistinguishable from a working stack unless the status is checked.
+    """
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(_studio_request(), timeout=10)
+    assert excinfo.value.code == 401, (
+        f"expected 401 from Kong's basic-auth, got {excinfo.value.code} — "
+        "a 200 means the request never reached Kong (check CADDY_SITE_ADDRESSES "
+        "covers the Studio hostname, or the @studio catch-all still proxies studio: directly)"
+    )
+
+
+def test_studio_reachable_with_credentials():
+    """The gate opens for the DASHBOARD consumer's credentials."""
+    creds = (os.environ.get("DASHBOARD_USERNAME", ""), os.environ.get("DASHBOARD_PASSWORD", ""))
+    if not all(creds):
+        pytest.skip("DASHBOARD_USERNAME/DASHBOARD_PASSWORD not set in the environment")
+    with urllib.request.urlopen(_studio_request(creds), timeout=10) as resp:
         assert resp.status == 200

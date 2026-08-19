@@ -80,9 +80,9 @@ def test_studio_ui_is_proxied_through_kong():
 def test_dashboard_consumer_has_basic_auth_credentials():
     """Kong's `basic-auth` plugin needs a credential on the DASHBOARD consumer.
 
-    Declared bare, the consumer gives the plugin nothing to match, so every
-    request is rejected — Studio becomes unreachable rather than gated, and the
-    failure looks identical to a correctly-locked-down deployment.
+    Without one the plugin has nothing to match and rejects every request, so
+    Studio becomes unreachable rather than gated — a failure that looks
+    identical to a correctly-locked-down deployment.
     """
     kong = KONG_CONFIG.read_text(encoding="utf-8")
     # Stop at the next *consumer* (two-space indent), not at the nested
@@ -102,4 +102,43 @@ def test_dashboard_consumer_has_basic_auth_credentials():
     assert "$DASHBOARD_USERNAME" in body and "$DASHBOARD_PASSWORD" in body, (
         "credentials must reference $DASHBOARD_USERNAME/$DASHBOARD_PASSWORD — Kong's "
         "entrypoint expands them from the environment, so hardcoding would commit a secret"
+    )
+
+
+def test_dashboard_credential_is_declared_exactly_once():
+    """Kong accepts credentials nested under a consumer *or* as a top-level
+    `basicauth_credentials:` list keyed by `consumer:`. Declaring both is valid
+    YAML and boots without complaint — Kong silently keeps one and discards the
+    other, so a password change to the losing block is a no-op that looks applied.
+    """
+    kong = KONG_CONFIG.read_text(encoding="utf-8")
+
+    top_level = re.findall(r"^basicauth_credentials:", kong, re.MULTILINE)
+    assert not top_level, (
+        "a top-level `basicauth_credentials:` block duplicates the credential nested "
+        "under the DASHBOARD consumer; Kong keeps only one, so edits to the other "
+        "silently do nothing"
+    )
+
+    declarations = re.findall(r"basicauth_credentials:", kong)
+    assert len(declarations) == 1, (
+        f"expected exactly one `basicauth_credentials:` declaration, found {len(declarations)}"
+    )
+
+
+def test_dashboard_service_still_has_the_basic_auth_plugin():
+    """The credential is inert unless the `dashboard` service actually enables
+    the plugin — losing the plugin would leave Studio open with the credential
+    still present and the config still looking correct.
+    """
+    kong = KONG_CONFIG.read_text(encoding="utf-8")
+    service = re.search(
+        r"^  - name:\s*dashboard\b(.*?)(?=^  - name:|^###|\Z)",
+        kong,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert service, "no `dashboard` service in volumes/api/kong.yml"
+    assert "basic-auth" in service.group(1), (
+        "the `dashboard` service no longer enables the `basic-auth` plugin, so the "
+        "DASHBOARD credential gates nothing"
     )
