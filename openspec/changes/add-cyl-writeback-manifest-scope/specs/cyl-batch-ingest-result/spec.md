@@ -39,12 +39,25 @@ requirement's existing behavior.
 - **THEN** the command exits non-zero with a readable error before ingesting any envelope, and
   makes no RPC calls
 
+#### Scenario: A run_manifest.json path occupied by a non-file entry fails loud
+
+- **WHEN** `envelopes_dir / "run_manifest.json"` exists but is a directory (or other non-file
+  entry), not a regular file
+- **THEN** the command exits non-zero with a readable error before ingesting any envelope, and
+  makes no RPC calls — this is distinct from the "no run_manifest.json is present" case, which
+  falls back to fully unscoped discovery rather than failing
+
 ### Requirement: A manifest-declared scan_key with no matching file is a reported batch failure
 
 The command SHALL record a manifest-declared scan_key with no corresponding
 `{scan_key}.result.json` file in `envelopes_dir` as `failed` in the batch result, with an error
 message naming the missing scan_key, and SHALL count it toward the batch's non-zero exit code —
-without requiring an authenticated client if no other envelope in the batch needs one.
+without requiring an authenticated client if no other envelope in the batch needs one. If an
+ingested envelope's own content-derived scan_key (which can differ from its file's name) coincides
+with a manifest-declared scan_key that had no identically-named file, the command SHALL NOT report
+that scan_key as both a failure (via this requirement) and a successful or skipped outcome in the
+same batch result — the actual ingest outcome SHALL take precedence, and the failure entry for that
+scan_key SHALL be omitted.
 
 #### Scenario: A missing manifest-declared scan_key is reported failed
 
@@ -68,6 +81,15 @@ without requiring an authenticated client if no other envelope in the batch need
   `envelopes_dir` contains only `scan_1.result.json`
 - **THEN** `scan_1` is ingested normally via the RPC, `scan_2` is reported `failed` as missing in
   the same batch result, and the command exits non-zero
+
+#### Scenario: A filename/body scan_key mismatch does not produce a duplicate contradictory entry
+
+- **WHEN** a manifest lists `scan_A` and `scan_B`, `envelopes_dir` contains only
+  `scan_A.result.json`, and that file's own `provenance.scan_key` is `scan_B` (so
+  `ingest_one_envelope` reports its outcome under `scan_B`, not `scan_A`)
+- **THEN** the batch result contains exactly one entry for `scan_B`, reflecting its actual ingest
+  outcome (e.g. `ok`) — not also a separate `failed` entry for `scan_B` from the manifest's missing-
+  scan_key check
 
 ## MODIFIED Requirements
 

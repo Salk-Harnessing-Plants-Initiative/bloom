@@ -187,17 +187,51 @@ only, no shared state with 2+3). Section 5 is verification, not a commit.
       exit-code bullet (currently says "zero if... the directory was empty") needs the
       manifest-present-all-missing case called out as non-zero, not the empty case.
 
-## 5. Verify
+## 6. Post-review fixes: scan_key collision + manifest-as-directory hard-fail
 
-- [x] 5.1 Full `bloomcli` test suite passes, matching CI exactly: `uv run --extra test pytest
+Found by the `/review-pr` team on PR #697 (behavioural-correctness pass), independently reproduced
+against the real code before being accepted as BLOCKING. This section lands as its own commit on
+the same branch/PR — it's a correctness fix to code from section 2/3, not a new capability, so it
+doesn't need its own OpenSpec change.
+
+- [x] 6.1 RED: `test_batch_ingest_result_body_scan_key_mismatch_resolves_to_single_entry` — a
+      manifest lists `scan_A` and `scan_B`; `envelopes_dir` contains only `scan_A.result.json`,
+      whose own `provenance.scan_key` (and traits) is `scan_B`; assert the final batch result
+      (`--json` output) contains exactly one entry keyed `scan_B`, with status `ok` (its real,
+      stubbed-successful ingest outcome) — not also a separate `failed` entry for `scan_B` from the
+      manifest's missing-scan_key check. Confirm this reproduces the bug (RED) against the
+      pre-fix code before implementing 6.3.
+- [x] 6.2 RED: `test_discover_envelopes_run_manifest_as_directory_raises` — `run_manifest.json`
+      exists as a directory (`mkdir` instead of a file) in `envelopes_dir`; assert `EnvelopeError`,
+      not a silent fall-through to unscoped discovery.
+- [x] 6.3 GREEN: in `batch_ingest_result`, after computing `ingest_results` (only reachable when
+      `discovered.paths` is non-empty), filter `missing_results` to drop any entry whose
+      `scan_key` coincides with a key `ingest_results` actually reported, per design.md's
+      "reconcile missing_scan_keys against actual ingest results" decision:
+      `ingested_scan_keys = {r.scan_key for r in ingest_results}`,
+      `missing_results = [r for r in missing_results if r.scan_key not in ingested_scan_keys]`.
+- [x] 6.4 GREEN: in `discover_envelopes`, distinguish "manifest path doesn't exist" (fall back to
+      unscoped, unchanged) from "manifest path exists but isn't a regular file" (raise
+      `EnvelopeError`, matching the malformed-manifest-fails-loud precedent), per design.md's
+      "`run_manifest.json` existing as a non-file entry fails loud" decision.
+- [x] 6.5 Confirm 6.1 and 6.2 pass; confirm the full existing suite (sections 1-3's tests) still
+      passes unchanged — this fix only removes a contradictory duplicate entry and hardens one
+      fallthrough check, it doesn't change any already-tested behavior.
+- [x] 6.6 Correct PR #697's own description: it claimed "26 new/updated tests," the real count
+      (verified independently during review) is 15 new + 4 modified = 19 (now 21 + 5 after this
+      section's 2 new tests). Edit the PR description in place, don't leave the stale number.
+
+## 7. Verify
+
+- [x] 7.1 Full `bloomcli` test suite passes, matching CI exactly: `uv run --extra test pytest
       tests/ -m "not integration" -v --tb=short` from `bloomcli/`.
-- [x] 5.2 `ruff check .` clean for changed files, from `bloomcli/` — this is the only
+- [x] 7.2 `ruff check .` clean for changed files, from `bloomcli/` — this is the only
       formatting/lint hook actually scoped to include `bloomcli/` in `.pre-commit-config.yaml`
       (`black` and `ruff-format` are scoped to `langchain/`, `bloommcp/`, `services/workflows/`
       only). Note this isn't a per-PR CI gate today (`pr-checks.yml` has no Python lint job; `ruff`
       runs only via local pre-commit and in `release-bloomcli.yml` at actual release time) — run it
       anyway since it's the project's own local convention for this package.
-- [x] 5.3 `openspec validate add-cyl-writeback-manifest-scope --strict` still passes.
-- [x] 5.4 Manual sanity check: run `bloomctl cyl batch-ingest-result` against a hand-built directory
+- [x] 7.3 `openspec validate add-cyl-writeback-manifest-scope --strict` still passes.
+- [x] 7.4 Manual sanity check: run `bloomctl cyl batch-ingest-result` against a hand-built directory
       with a `run_manifest.json` and a mix of present/missing scan_keys, confirm the reported output
       matches what the tests assert.

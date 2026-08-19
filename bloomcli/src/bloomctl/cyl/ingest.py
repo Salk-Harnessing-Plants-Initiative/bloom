@@ -110,6 +110,8 @@ def discover_envelopes(envelopes_dir: str | Path) -> DiscoveredEnvelopes:
     all_paths = sorted(path.glob("*.result.json"))
 
     manifest_path = path / RUN_MANIFEST_FILENAME
+    if manifest_path.exists() and not manifest_path.is_file():
+        raise EnvelopeError(f"{manifest_path} exists but is not a file")
     if not manifest_path.is_file():
         return DiscoveredEnvelopes(paths=all_paths, missing_scan_keys=[])
 
@@ -743,10 +745,17 @@ def batch_ingest_result(
         from ..cli import _authed_client
 
         client = _authed_client(profile)
-        scan_results = [
+        ingest_results = [
             ingest_one_envelope(client, path, predictions_dir=predictions_dir, profile=profile)
             for path in discovered.paths
-        ] + missing_results
+        ]
+        # ingest_one_envelope relabels its result by the envelope body's own scan_key once
+        # read, which can differ from the filename discover_envelopes matched against the
+        # manifest. Drop a "missing" entry for any key that was, in fact, actually ingested —
+        # otherwise the same scan_key could appear twice with contradictory ok/failed statuses.
+        ingested_scan_keys = {r.scan_key for r in ingest_results}
+        missing_results = [r for r in missing_results if r.scan_key not in ingested_scan_keys]
+        scan_results = ingest_results + missing_results
     else:
         scan_results = missing_results
 

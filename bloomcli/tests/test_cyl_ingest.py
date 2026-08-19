@@ -1079,6 +1079,14 @@ def test_discover_envelopes_unreadable_run_manifest_raises(tmp_path, monkeypatch
         ing.discover_envelopes(tmp_path)
 
 
+def test_discover_envelopes_run_manifest_as_directory_raises(tmp_path):
+    _write_envelope(tmp_path, "scan_1")
+    (tmp_path / ing.RUN_MANIFEST_FILENAME).mkdir()
+
+    with pytest.raises(ing.EnvelopeError):
+        ing.discover_envelopes(tmp_path)
+
+
 def test_ingest_one_envelope_malformed_json_file(tmp_path):
     path = tmp_path / "bad.result.json"
     path.write_text("{ not json", encoding="utf-8")
@@ -1558,6 +1566,28 @@ def test_batch_ingest_cli_run_manifest_present_all_scan_keys_ingest_successfully
     payload = json.loads(result.output)
     assert len(payload) == 2
     assert all(entry["status"] == "ok" for entry in payload)
+
+
+def test_batch_ingest_result_body_scan_key_mismatch_resolves_to_single_entry(
+    monkeypatch, tmp_path
+):
+    """Review finding: discover_envelopes' missing_scan_keys is filename-derived, while
+    ingest_one_envelope relabels by the envelope body's own provenance.scan_key. Without
+    reconciliation, the same scan_key could appear twice in one batch with contradictory
+    ok/failed statuses, silently shadowing a real successful write-back."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    # File is named scan_A.result.json, but its own body claims scan_key = scan_B.
+    mismatched = _envelope_for("scan_B")
+    (tmp_path / "scan_A.result.json").write_text(json.dumps(mismatched), encoding="utf-8")
+    _write_run_manifest(tmp_path, scan_keys=["scan_A", "scan_B"])
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    payload = json.loads(result.output)
+    assert len(payload) == 1
+    assert payload[0]["scan_key"] == "scan_B"
+    assert payload[0]["status"] == "ok"
 
 
 def test_batch_ingest_cli_noop_reported_as_skipped(monkeypatch, tmp_path):

@@ -111,6 +111,65 @@ This keeps three cases distinct and each independently testable: (1) truly nothi
 is empty but a manifest still landed there) → no auth, but still a non-empty failing `BatchResult`
 and exit 1, not the no-op message.
 
+## Decision: reconcile missing_scan_keys against actual ingest results before assembling BatchResult
+
+**Bug found in `/review-pr` and independently reproduced against the real code before this decision
+was written** (not a hypothetical): `discover_envelopes` computes `missing_scan_keys` purely from
+**filename stems**. `ingest_one_envelope` separately re-labels its own `ScanResult` using the
+envelope's **body** content once read (`data.get("provenance", {}).get("scan_key")` overrides the
+filename-derived fallback — this re-labeling is pre-existing behavior, unrelated to this change).
+These are two different sources of truth for "what scan_key is this," and the original
+implementation of `batch_ingest_result` concatenated both lists with no reconciliation.
+
+Concrete reproduction: a manifest declares `scan_keys=["scan_A", "scan_B"]`; only
+`scan_A.result.json` exists on disk, but its body's `provenance.scan_key` says `"scan_B"`.
+`discover_envelopes` correctly (by filename) computes `paths=["scan_A.result.json"]`,
+`missing_scan_keys=["scan_B"]` (no file is named `scan_B.result.json`). But `ingest_one_envelope`
+relabels its result to `scan_key="scan_B"` once it reads the body, and a stubbed successful RPC
+produces `ScanResult("scan_B", "ok")`. The unreconciled batch was
+`[ScanResult("scan_B","ok"), ScanResult("scan_B","failed")]` — the same key twice with contradictory
+statuses. Any `--json` consumer keying by `scan_key` (this module's own tests use exactly
+`{entry["scan_key"]: entry for entry in ...}`) would see the `"failed"` entry — which lands second —
+silently overwrite the real `"ok"` entry, hiding a successful database write behind a false failure.
+
+**Fix**: after computing `ingest_results` (only reachable when `discovered.paths` is non-empty), drop
+any `missing_results` entry whose key coincides with a key `ingest_results` actually reported:
+
+```python
+ingested_scan_keys = {r.scan_key for r in ingest_results}
+missing_results = [r for r in missing_results if r.scan_key not in ingested_scan_keys]
+scan_results = ingest_results + missing_results
+```
+
+**Scope of this fix, stated explicitly**: this resolves the mechanical contradiction (the same key
+never appears twice with conflicting status in one `BatchResult`) by letting the real, actually-
+observed outcome win. It does **not** newly detect or validate the underlying filename/body
+mismatch itself — `discover_envelopes` still only checks file *existence* by name, never envelope
+*content*, exactly as before this fix. Content-level validation is `ingest_one_envelope`'s job
+(contract validation, RPC-side checks), unaffected by this change. This is a deliberate scope
+boundary matching the existing "filename-stem filtering, not envelope-body scan_key filtering"
+decision above — that decision already accepted a filename/body mismatch as possible and pre-
+existing; this fix only ensures such a mismatch can never surface as a self-contradictory batch
+result, not that it gets flagged as its own new failure mode.
+
+## Decision: `run_manifest.json` existing as a non-file entry fails loud, not silently unscoped
+
+Also found in review: `manifest_path.is_file()` returning `False` was used as the sole signal for
+"no manifest, fall back to unscoped" — which is correct when the path simply doesn't exist, but
+also silently (and wrongly) applies if a directory (or other non-file entry) happens to occupy that
+path, e.g. from a botched deploy step. Since the entire point of this change is to stop silent
+stale-file contamination, a manifest-shaped path that can't actually be read as a manifest should
+fail loud — matching the existing "malformed manifest fails loud" precedent for bad JSON/schema —
+rather than silently degrading to the least-safe (fully unscoped) behavior with no signal at all.
+Distinguished from "absent" by checking `.exists()` before falling back:
+
+```python
+if manifest_path.exists() and not manifest_path.is_file():
+    raise EnvelopeError(f"{manifest_path} exists but is not a file")
+if not manifest_path.is_file():
+    return DiscoveredEnvelopes(paths=all_paths, missing_scan_keys=[])
+```
+
 ## Decision: a malformed OR unreadable manifest both fail loud, matching the cited precedent exactly
 
 `download_for_predict.py:407-414`'s existing "corrupt existing manifest fails loud" precedent
