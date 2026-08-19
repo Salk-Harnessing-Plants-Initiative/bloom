@@ -141,9 +141,10 @@ class ExperimentSummary:
     sample_id_col: Optional[str]
     # `trait_columns`'s freshness -- bloom#637: it's read from a scheduled-refresh cache
     # (design.md D5), not computed live, so it can lag behind the actual trait data by an
-    # unbounded amount until the refresh schedule is provisioned. ISO-8601 string (as returned by
-    # PostgREST), or `None` if never refreshed yet, or if this row came from a live (pinned) call
-    # that doesn't use the cache at all.
+    # unbounded amount until the refresh workflow is actually running (its `schedule:` trigger
+    # only fires from the repo's default branch -- see design.md D8 for the current gap). ISO-8601
+    # string (as returned by PostgREST), or `None` if never refreshed yet, or if this row came from
+    # a live (pinned) call that doesn't use the cache at all.
     trait_columns_updated_at: Optional[str] = None
 
 

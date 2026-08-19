@@ -303,6 +303,20 @@ export interface Database {
             referencedRelation: 'cyl_scans_extended'
             referencedColumns: ['experiment_id']
           },
+          {
+            foreignKeyName: 'cyl_experiment_trait_counts_experiment_id_fkey'
+            columns: ['experiment_id']
+            isOneToOne: true
+            referencedRelation: 'cyl_trait_by_experiment_wave'
+            referencedColumns: ['experiment_id']
+          },
+          {
+            foreignKeyName: 'cyl_experiment_trait_counts_experiment_id_fkey'
+            columns: ['experiment_id']
+            isOneToOne: true
+            referencedRelation: 'recent_experiments_by_cyl_scanner'
+            referencedColumns: ['experiment_id']
+          },
         ]
       }
       cyl_image_traits: {
@@ -1686,6 +1700,7 @@ export interface Database {
           experiment_id: number
           n_plants: number
           n_traits: number
+          n_traits_updated_at: string | null
         }[]
       }
       get_scans_without_videos: {

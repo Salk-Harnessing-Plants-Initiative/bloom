@@ -25,7 +25,8 @@ def list_available_experiments() -> str:
     for exp in experiments:
         # Traits count is read from a scheduled-refresh cache (design.md D5, bloom#637) rather
         # than computed live, so it can lag the actual trait data by an unbounded amount until
-        # the refresh schedule is provisioned -- surfaced here rather than presented as current.
+        # the refresh workflow is actually running on the default branch (design.md D8) --
+        # surfaced here rather than presented as current.
         traits_note = (
             f" (as of {exp.trait_columns_updated_at})"
             if exp.trait_columns_updated_at

@@ -184,9 +184,11 @@ sources = client.rpc("list_experiment_trait_sources", {"experiment_id_": 42}).ex
 via one aggregate call; with all three arguments `NULL` it covers every experiment in a single round
 trip, same latest/`source_id`/`run_id` selection as `get_experiment_traits` — see the `cyl-trait-read`
 spec for the definition (not restated here). With no `source_id_`/`run_id_` pin, `n_plants` is always
-live but `n_traits` is read from a cache refreshed on a schedule (every ~10 min, not per write —
-bloom#637/bloom#656), so it can lag newly-written trait data by up to one refresh interval; a pinned
-call is fully live for both counts.
+live but `n_traits` is read from a cache refreshed on a schedule (once daily, not per write —
+bloom#637/bloom#656), so it can lag newly-written trait data by up to one refresh interval once
+that schedule is actually running (see `design.md` D8/D5 for the current staleness caveat — the
+GitHub Action's `schedule:` trigger only fires from the default branch, so staleness stays
+unbounded until this workflow is promoted there). A pinned call is fully live for both counts.
 
 See [`_WIKI/SUPABASE/README.md`](../SUPABASE/README.md) for the full
 role / RLS picture.

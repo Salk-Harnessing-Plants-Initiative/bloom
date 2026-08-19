@@ -444,22 +444,28 @@ one refresh interval. `updated_at` is exposed in the table and, as of round 6, i
 -- see the round-6 note directly below for why this was closed rather than deferred a third time.
 
 **"Bounded to one refresh interval" assumes the schedule is actually running — found in a fourth review
-round to currently NOT be true, since narrowed by removing the blocker rather than closed by provisioning
-it.** The `STAGING_API_URL` secret this paragraph originally flagged as unprovisioned turned out to be
-unnecessary entirely: the value is the same public, stable hostname already committed as
-`API_EXTERNAL_URL` in `.env.staging.defaults`, so it's hardcoded as a literal in the workflow instead of
-a secret (tasks.md 5.2). The one remaining credential, `STAGING_SERVICE_ROLE_KEY`, already existed before
-this change (`deploy.yml`'s own use) — so no secret provisioning blocks this schedule anymore. What's
-still open is narrower: the workflow's first successful run against staging hasn't been confirmed yet
-(tasks.md 5.3, `workflow_dispatch` is wired for exactly this). Until that's confirmed, `n_traits` is
-frozen at whatever the migration's one-time `SELECT public.refresh_cyl_experiment_trait_counts();`
-computed at deploy time -- staleness is currently **unbounded**, not "up to a day." Tracked as a
-pre-close gate on bloom#637 (tasks.md 5.3), not merely a nice-to-have.
+round to currently NOT be true, and round 7 found the gap is bigger than "not yet confirmed."** The
+`STAGING_API_URL` secret this paragraph originally flagged as unprovisioned turned out to be unnecessary
+entirely: the value is the same public, stable hostname already committed as `API_EXTERNAL_URL` in
+`.env.staging.defaults`, so it's hardcoded as a literal in the workflow instead of a secret (tasks.md 5.2).
+The one remaining credential, `STAGING_SERVICE_ROLE_KEY`, already existed before this change
+(`deploy.yml`'s own use) — so no secret provisioning blocks this schedule anymore. But round 7 found a
+second, larger gap the secret framing had been masking: this PR's base branch is `staging`, and GitHub
+Actions `schedule:` triggers only ever fire from the copy of the workflow file on the repository's
+**default branch** (`main` — see this repo's own `promote-security-to-main.yml`, whose header states the
+identical fact and notes that `staging -> main` promotion "can sit there for weeks"). So merging this PR
+lands the workflow on `staging` only; the daily cron stays inert until a later promotion PR carries it to
+`main`. `workflow_dispatch` (tasks.md 5.3) can confirm the call logic works when run against `staging`,
+but proves nothing about whether the automatic daily schedule is live — those are two different facts.
+Until the workflow is actually promoted to `main`, `n_traits` is frozen at whatever the migration's
+one-time `SELECT public.refresh_cyl_experiment_trait_counts();` computed at deploy time -- staleness is
+currently **unbounded**, not "up to a day." Tracked as a pre-close gate on bloom#637 alongside tasks.md
+5.3 and 5.4 (promotion to `main` confirmed), not merely a nice-to-have.
 
 **Round 6: the caller-facing visibility gap this same paragraph flagged in round 4 is now closed, not
 deferred a third time.** An external PR-comment review re-raised exactly this point -- `n_traits`'s
 staleness was still invisible where a scientist actually sees it, two rounds after it was first
-identified. Given the STAGING*API_URL gap above means staleness is currently \_unbounded*, not a bounded
+identified. Given the gap above means staleness is currently _unbounded_, not a bounded
 UI-lag nicety, leaving it invisible a third time was judged no longer a neutral deferral. Closed by
 adding `n_traits_updated_at` to `get_experiment_summary_counts`'s `RETURNS TABLE` (`NULL` for a pinned
 call, which has no cache to be stale against; the cache row's own `updated_at`, or `NULL` if never
@@ -811,6 +817,21 @@ the more durable signal that M2 hasn't actually been rolled back.
   `.env.staging.defaults`, so there's nothing sensitive to store; `STAGING_SERVICE_ROLE_KEY` (the actual
   credential) already existed pre-change, so this schedule needs no secret provisioning at all
   (`tests/unit/test_refresh_workflow_staging_api_url_shape.py` guards both facts).
+
+  **Found in round 7: "resolved" only covers which mechanism runs the refresh, not whether it's
+  actually live yet.** This PR's base branch is `staging`. GitHub Actions `schedule:` triggers only ever
+  fire from the workflow file's copy on the repository's **default branch** — confirmed both as documented
+  GitHub Actions behavior and against this repo's own precedent: `.github/workflows/promote-security-to-main.yml`
+  states outright, "Scheduled runs use the workflow file on the default branch," and that same file's header
+  describes this team's `feature -> staging -> (periodic promotion PR) -> main` flow, where staging-merged
+  work "can sit there for weeks" before reaching `main`. `gh repo view` confirms `main` is this repo's
+  default branch. So merging this PR lands `refresh-cyl-experiment-trait-counts.yml` on `staging` only —
+  the daily cron stays inert, and `n_traits` staleness stays unbounded, until a later promotion PR carries
+  the workflow file to `main`. `workflow_dispatch` (tasks.md 5.3) can be run against `staging` today to
+  confirm the call logic itself works, but that's a materially different fact from "the automatic schedule
+  is live," and no round before this one distinguished the two. Tracked as tasks.md 5.4 (promotion to
+  `main` confirmed) — a new, explicit pre-close gate for bloom#637, not implied by 5.3 passing.
+
 - **D7 — pinned-branch cost, not benchmarked.** See D7's own reasoning; needs a real `EXPLAIN (ANALYZE,
 BUFFERS)` against staging once this lands, not resolved from this sandboxed pass.
 - ~~`n_traits`'s `updated_at` isn't surfaced in `get_experiment_summary_counts`'s return shape.~~

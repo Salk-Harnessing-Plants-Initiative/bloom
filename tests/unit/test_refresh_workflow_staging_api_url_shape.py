@@ -11,7 +11,7 @@ the repo (``permissions: {}``, an outbound-curl-only job), so it can't just
 read ``.env.staging.defaults`` at runtime either; the value is hardcoded as a
 literal in the workflow YAML instead.
 
-This test does two things:
+This test does three things:
 
 1. Asserts the workflow no longer references ``secrets.STAGING_API_URL`` at
    all, and that the literal it hardcodes in its place matches
@@ -21,10 +21,20 @@ This test does two things:
    https:// guard, ``permissions: {}``, no checkout step, the once-daily
    schedule) so an unrelated future edit can't quietly widen this job's
    permissions or reintroduce the secret dependency it just shed.
+3. Actually EXECUTES the extracted ``case "${STAGING_API_URL}" in ... esac``
+   guard under bash (round-7 review finding: asserting the guard's error
+   string appears in the script text proves the text is present, not that the
+   shell logic behaves -- mirrors the technique in
+   ``tests/unit/test_deploy_kong_reload_on_config_change.py``'s
+   ``TestKongfileChangedFailSafeDefault``). Confirms it rejects a plain
+   ``http://`` value and accepts the real ``https://`` literal.
 """
 
 from __future__ import annotations
 
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -34,6 +44,24 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "refresh-cyl-experiment-trait-counts.yml"
 STAGING_DEFAULTS = REPO_ROOT / ".env.staging.defaults"
 JOB = "refresh"
+
+# See test_deploy_kong_reload_on_config_change.py's identical helper: `bash` can
+# resolve to the WSL launcher shim rather than a real POSIX shell on some Windows
+# dev machines, depending on which process's PATH is being searched.
+_GIT_BASH_CANDIDATES = [
+    r"C:\Program Files\Git\bin\bash.exe",
+    r"C:\Program Files\Git\usr\bin\bash.exe",
+]
+
+
+def _bash_executable() -> str:
+    for candidate in _GIT_BASH_CANDIDATES:
+        if Path(candidate).exists():
+            return candidate
+    return shutil.which("bash") or "bash"
+
+
+BASH = _bash_executable()
 
 
 def _parse_env(path: Path) -> dict[str, str]:
@@ -107,6 +135,53 @@ def test_https_guard_still_present_in_script() -> None:
         "place as a defensive check against a future careless edit to the "
         "hardcoded literal."
     )
+
+
+def _https_guard_snippet() -> str:
+    """Extract the `case "${STAGING_API_URL}" in ... esac` guard as standalone shell."""
+    script = _step(_load_workflow())["run"]
+    match = re.search(r'case "\$\{STAGING_API_URL\}" in.*?esac', script, re.DOTALL)
+    assert match, "could not locate the STAGING_API_URL case/esac guard in the run script"
+    return match.group(0)
+
+
+@pytest.mark.parametrize(
+    "url, should_reject",
+    [
+        ("http://staging.bloom.salk.edu:8443/api", True),
+        ("staging.bloom.salk.edu:8443/api", True),
+        ("https://staging.bloom.salk.edu:8443/api", False),
+    ],
+)
+def test_https_guard_actually_rejects_non_https(url: str, should_reject: bool) -> None:
+    """Executes the extracted guard under bash -- proves behavior, not just text presence.
+
+    A future edit could change the hardcoded literal to a plain http:// URL and
+    every other test in this file would still pass (they only check that the
+    guard's error STRING exists somewhere in the script). This runs the actual
+    `case`/`esac` logic against both a bad and the real value.
+    """
+    snippet = _https_guard_snippet()
+    script = f'STAGING_API_URL="{url}"\n{snippet}\necho "GUARD_PASSED"'
+    result = subprocess.run(
+        [BASH, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    if should_reject:
+        assert result.returncode != 0, (
+            f"guard should have rejected {url!r} (non-https) but exited 0: "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        assert "must be https://" in result.stdout, result.stdout
+    else:
+        assert result.returncode == 0, (
+            f"guard should have accepted {url!r} but exited "
+            f"{result.returncode}: stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        assert "GUARD_PASSED" in result.stdout, result.stdout
 
 
 def test_job_still_has_no_checkout_and_empty_permissions() -> None:

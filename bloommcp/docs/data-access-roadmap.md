@@ -73,10 +73,13 @@ act on without reading the whole doc. Everything else here is optional context.
    - The `source_id_`/`run_id_`-pinned branches' cost is _reasoned about_, not benchmarked
      (design.md D7) — no caller pins either parameter today, and this pass couldn't run
      `EXPLAIN (ANALYZE, BUFFERS)` against staging at `experiment_id=1` scale.
-   - `n_traits`'s refresh schedule is proposed as a GitHub Action (design.md D8) rather than a
-     `workflows`-service job — the other option she'd named on the predecessor PR's thread. The
-     workflow file (`.github/workflows/refresh-cyl-experiment-trait-counts.yml`) also needs a new
-     `STAGING_API_URL` secret provisioned before its schedule can actually run.
+   - `n_traits`'s refresh schedule shipped as a GitHub Action (design.md D8), not a
+     `workflows`-service job — the other option she'd named on the predecessor PR's thread. It
+     needs no secret provisioning (the base URL is a hardcoded, non-sensitive literal; the
+     `STAGING_SERVICE_ROLE_KEY` it uses already existed) — but its `schedule:` trigger only fires
+     from whatever copy of the workflow file lives on the repo's default branch, and this PR merges
+     to `staging`, not `main`. Staleness stays unbounded until a later promotion PR lands the
+     workflow file on `main` (design.md D8).
 
 Separately, not blocking this roadmap: issue #406 (verified per-user identity + a
 `bloommcp_usage` table) is still awaiting your reply to the two design questions from my

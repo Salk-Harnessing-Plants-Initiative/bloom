@@ -173,7 +173,17 @@ EXECUTE ... TO service_role` only (not the four read roles — this is a mainten
       `tests/unit/test_refresh_workflow_staging_api_url_shape.py`, which fails if the literal drifts
       from `.env.staging.defaults` or if a `secrets.STAGING_API_URL` reference reappears.
 - [ ] 5.3 Verify the workflow's one authenticated call succeeds against staging (`workflow_dispatch` is
-      wired for a manual first run) — no longer blocked on any secret provisioning per 5.2.
+      wired for a manual first run) — no longer blocked on any secret provisioning per 5.2. Note: this
+      only proves the call logic works; it does NOT prove the automatic daily schedule is live — see 5.4.
+- [ ] 5.4 **Found in round 7, new gate.** This PR's base is `staging`, not `main` (this repo's default
+      branch, confirmed via `gh repo view`). GitHub Actions `schedule:` triggers only fire from the
+      workflow file's copy on the default branch (see `.github/workflows/promote-security-to-main.yml`'s
+      own header comment for this repo's precedent, and its note that `staging -> main` promotion "can
+      sit there for weeks"). So merging this PR does NOT make the daily refresh live — `n_traits`
+      staleness stays unbounded until a later promotion PR carries this workflow file to `main`. Confirm
+      that promotion has happened (and, ideally, that a scheduled run has actually fired on `main`) before
+      treating `design.md`'s "bounded to one refresh interval" claim as true, and before closing bloom#637
+      on the strength of `n_traits` freshness alone.
 
 ## 6. Validate
 
@@ -467,7 +477,7 @@ issues.
       round-2-era form and re-running the existing test unchanged — it still passed, proving it
       genuinely cannot distinguish which branch fires.
 - [x] 12.3 Fix everything that survived verification: - `GRANT INSERT, UPDATE, DELETE ON public.cyl_scan_latest_source/cyl_experiment_trait_counts TO
-bloom_admin` added to both migrations, matching `cyl_scan_traits`'s own capability and the
+    bloom_admin` added to both migrations, matching `cyl_scan_traits`'s own capability and the
       RLS policy's stated intent. Two new tests
       (`test_bloom_admin_can_write_directly_to_cyl_scan_latest_source`,
       `test_bloom_admin_can_write_directly_to_cyl_experiment_trait_counts`) write straight to
@@ -521,10 +531,10 @@ subagents informed of the triage results so they wouldn't re-litigate settled po
       claim: swapping in the OLD, pre-this-PR view definition (which has zero dependency on
       `cyl_scan_latest_source`) reproduces the IDENTICAL failure for `bloom_workflows` — it never
       had a `GRANT SELECT` on this view, before or after this PR. A code search (`services/workflows/
-  pipeline.py`/`video.py`, the only code authenticating as this role) confirmed it never reads
+    pipeline.py`/`video.py`, the only code authenticating as this role) confirmed it never reads
       this view or the trait-reading RPCs at all — its only trait-table access is a narrow,
       column-scoped dedup check (`cyl_scan_traits(scan_id, source_id)`, `cyl_trait_sources(id,
-  metadata)`), already correctly granted. Pre-existing, out-of-scope, not a regression — not
+    metadata)`), already correctly granted. Pre-existing, out-of-scope, not a regression — not
       fixed. - **`STAGING_API_URL` secret unprovisioned** — already tracked (tasks.md 5.2/5.3, design.md D5's
       round-4 caveat); restated by the external review, not a new finding.
 - [x] 13.2 Fix the external review's 2 correctly-identified, previously-unfixed issues: - Unused `import time` in `test_cyl_scan_latest_source.py` (a leftover from an earlier draft of a

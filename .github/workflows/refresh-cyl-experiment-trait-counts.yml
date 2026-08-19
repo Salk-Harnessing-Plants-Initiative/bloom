@@ -39,6 +39,10 @@ on:
 # This job only makes an outbound curl call -- no checkout, no repo-content access needed.
 permissions: {}
 
+# With a once-daily cadence, schedule-vs-schedule overlap is essentially impossible; this mainly
+# guards a manual workflow_dispatch racing another dispatch or the daily run. Safe to cancel: the
+# refresh function's own pg_advisory_xact_lock plus Postgres transaction semantics mean a
+# cancelled run can't leave partial state.
 concurrency:
   group: refresh-cyl-experiment-trait-counts
   cancel-in-progress: true

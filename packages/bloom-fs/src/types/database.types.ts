@@ -3686,7 +3686,12 @@ export type Database = {
       }
       get_experiment_summary_counts: {
         Args: { experiment_id_?: number; run_id_?: string; source_id_?: number }
-        Returns: { experiment_id: number; n_plants: number; n_traits: number }[]
+        Returns: {
+          experiment_id: number
+          n_plants: number
+          n_traits: number
+          n_traits_updated_at: string | null
+        }[]
       }
       get_orthogroup_info: {
         Args: { query_protein_uid: string; result_protein_uids: string[] }
