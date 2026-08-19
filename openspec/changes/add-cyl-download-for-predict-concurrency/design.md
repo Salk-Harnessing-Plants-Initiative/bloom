@@ -166,13 +166,21 @@ now fixed in the same PR, plus pre-existing gaps this change does not touch.
   AV lock on Windows) would propagate out of a worker thread, through `fetch_all`/`run_bounded`'s
   `future.result()`, and — for the single-scan `download-for-predict` command specifically, which
   has no enclosing `try/except` around this call the way `stage_one_scan` does — surface as a raw
-  traceback instead of a clean `click.ClickException`. Fixed by wrapping the read in its own
-  `try/except OSError`, converting a read-back failure into an ordinary failed `FrameResult` (no
-  bytes), the same "never raise, record and continue" discipline every other failure mode in this
-  function already follows. Covered by
-  `test_post_write_read_failure_is_a_failed_result_not_a_raised_exception` (monkeypatches
-  `Path.read_bytes` to fail for one frame; confirmed RED against the pre-fix code — the exception
-  propagated exactly as predicted — before the fix landed).
+  traceback instead of a clean `click.ClickException`. The pre-fix blast radius was worse than "one
+  frame fails": `run_bounded`'s `wait(pending, return_when=FIRST_COMPLETED)` can return several done
+  futures per iteration, and calling `.result()` on each in a loop means a raised exception on one
+  aborts the loop with *other, already-completed* futures in that same batch never collected —
+  their bytes are correctly on disk, but their outcomes are silently discarded, not just the
+  triggering frame's. Fixed by wrapping the read in its own `try/except OSError`, converting a
+  read-back failure into an ordinary failed `FrameResult` (no bytes), the same "never raise, record
+  and continue" discipline every other failure mode in this function already follows — this also
+  means `run_bounded`'s loop never sees a raised exception here in the first place, closing the
+  discarded-sibling-results issue too, not just the crash. Covered by
+  `test_post_write_read_failure_is_a_failed_result_not_a_raised_exception` (direct call; confirmed
+  RED against the pre-fix code — the exception propagated exactly as predicted — before the fix
+  landed) and, added in a second review round,
+  `test_a_read_back_failure_in_the_pool_does_not_affect_sibling_frames` (`workers=4`, proving
+  isolation through the real pool, not just the per-frame helper in isolation).
 - **`DownloadResult.disk_full` was never set on the value `download_frames_for_predict` returns,
   unlike `cyl download`'s and `plate download`'s identical orchestrators (both do
   `DownloadResult(frames, disk_full=stop.is_set())`).** Consequence: even after this change added
@@ -186,7 +194,23 @@ now fixed in the same PR, plus pre-existing gaps this change does not touch.
   now prepend the same cause string `cyl download`/`plate download` already use, conditioned on
   `result.disk_full`. Covered by
   `test_disk_full_is_surfaced_on_the_result_and_in_both_commands_error_messages` (confirmed RED
-  against the pre-fix code on both the field and the message text before the fix landed).
+  against the pre-fix code on both the field and the message text before the fix landed;
+  exercises `stage_one_scan`'s message directly) and, added in a second review round,
+  `test_cli_disk_full_error_message_names_the_cause` (the other call site — `download_for_predict`'s
+  own `click.ClickException` — exercised end to end through the real CLI via `CliRunner`, not just
+  `stage_one_scan`'s).
+- **Diagnostic value of the read-back-failure message is currently limited (found in a second
+  review round, not fixed here — pre-existing, not introduced by this PR).** Neither
+  `download_for_predict` nor `stage_one_scan` surfaces individual `FrameResult.error` text anywhere
+  in their output — both only report the aggregate `"{cause}{failed} of {total} frames failed to
+  download"`. Unlike `cyl download`, which writes a per-frame `download_log.txt` via
+  `write_download_log`, this command has no equivalent. So the specific message this fix adds
+  (`"downloaded but could not read it back for the checksum: {exc}"`) is computed but never shown to
+  an operator — indistinguishable in every user-visible surface from an ordinary storage-download
+  failure. This predates this PR (the command never had per-frame logging) and isn't a regression,
+  but it undercuts this fix's own diagnostic intent. Worth a follow-up: either a
+  `write_download_log`-style per-frame log for this command, or per-frame errors surfaced in
+  `--json` batch output.
 
 Findings surfaced but deliberately not fixed in this PR, since they predate it and are not
 introduced or worsened by it (flagged here so a future change has the context, not silently
@@ -199,10 +223,19 @@ dropped):
   safety rests entirely on that DB-schema invariant rather than a runtime check in the code that
   uses it, unlike the sibling command. Worth hardening as a follow-up.
 - `download_for_predict` (the single-scan command) has no lock at all — only `stage_one_scan`
-  (the batch path) acquires one. Predates this change; frame-level concurrency raises the blast
-  radius of two concurrent single-scan invocations racing the same `scan_id`/`out_dir` (more
-  threads now interleaving writes instead of two sequential ones), but the underlying gap (no lock
-  on this command at all) is unchanged by this PR, not introduced by it.
+  (the batch path) acquires one. Predates this change and is unchanged by it — worth being precise
+  about the severity, corrected in a second review round: two racing sequential (pre-PR,
+  `workers=1`-equivalent) invocations could already interleave one's `clear_scan_dir` `rmtree` with
+  the other's in-progress writes, an already-unbounded/non-atomic corruption risk, not a mild one.
+  Frame-level concurrency changes the *interleaving pattern* (more simultaneous filesystem
+  operations per invocation) while also *shortening* each invocation's total wall-clock exposure
+  window — these partially offset rather than straightforwardly compounding. The honest framing is
+  "the failure pattern changes, the severity ceiling does not," not "raises the blast radius."
+  Incidentally, this PR's `dest.read_bytes()` fix above also means the specific TOCTOU where a
+  racing invocation's `clear_scan_dir` deletes a just-written frame between its write and read-back
+  now degrades to a clean failed `FrameResult` (a `FileNotFoundError`/`OSError` the new
+  `try/except` catches) rather than a crash — a side benefit, not a fix for the underlying
+  missing-lock race, which still ends the run in a failure either way.
 - A `SIGINT`/`KeyboardInterrupt` mid-batch still skips the `RunManifest` write for every scan
   already staged in that invocation (`stage_one_scan`'s `except Exception` doesn't catch
   `BaseException`). Predates this change; unaffected by it.

@@ -110,6 +110,30 @@ def test_post_write_read_failure_is_a_failed_result_not_a_raised_exception(tmp_p
     assert "could not read it back" in result.error
 
 
+def test_a_read_back_failure_in_the_pool_does_not_affect_sibling_frames(tmp_path, monkeypatch):
+    """review finding: the direct-call test above proves the failure is caught, but not that it
+    stays isolated when routed through the real concurrent pool (workers>1) — mirrors the
+    existing sibling-frame-isolation pattern already used for storage and disk-full failures."""
+    images = _images(4)
+    real_read_bytes = Path.read_bytes
+
+    def _fail_read_bytes_for_frame_2(self):
+        if self.name == "2.png":
+            raise OSError("simulated post-write read failure")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _fail_read_bytes_for_frame_2)
+
+    result, frame_bytes = dfp.download_frames_for_predict(
+        _FakeClient(), SCAN, images, tmp_path, workers=4
+    )
+
+    assert result.ok == 3 and result.failed == 1
+    assert len(frame_bytes) == 3
+    assert result.frames[2].ok is False and "could not read it back" in result.frames[2].error
+    assert all(f.ok for i, f in enumerate(result.frames) if i != 2)
+
+
 # --- 2. Bounded concurrent pool via fetch_all --------------------------------
 
 
@@ -495,6 +519,24 @@ def test_disk_full_is_surfaced_on_the_result_and_in_both_commands_error_messages
     scan_result = dfp.stage_one_scan(client, 1, tmp_path)
     assert scan_result.status == "failed"
     assert "disk filled up" in scan_result.error
+
+
+def test_cli_disk_full_error_message_names_the_cause(tmp_path, monkeypatch):
+    """review finding: the test above covers `stage_one_scan`'s (batch path) message, but the
+    single-scan `download-for-predict` command's own `click.ClickException` — the other call
+    site this fix touches — was never exercised end to end through the actual CLI."""
+    _patch_common(monkeypatch, images=_images(2))
+
+    def _always_fail(path, data):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(shared_dl, "atomic_write_bytes", _always_fail)
+    out = tmp_path / "out"
+
+    result = CliRunner().invoke(cli, ["cyl", "download-for-predict", "1", str(out)])
+
+    assert result.exit_code != 0
+    assert "disk filled up" in result.output
 
 
 def test_disk_full_during_concurrency_does_not_abort_an_already_inflight_frame(
