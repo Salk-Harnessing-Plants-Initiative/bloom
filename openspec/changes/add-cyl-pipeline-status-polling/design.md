@@ -46,6 +46,8 @@ per-scan `cyl_pipeline_run_scans.status` is in scope.
   it. See "Decision: poll interval vs. TTL" below.
 - The Bloom web UI status panel (`Realtime` subscription per the canonical design's §10) — no UI
   proposal exists yet to build against.
+- Populating `cyl_pipeline_runs.error_message` from a failed workflow's real Argo status — see the
+  round-2 fix decision below; `update_cyl_pipeline_run_status` writes `status`/`completed_at` only.
 
 ## Decisions
 
@@ -273,6 +275,97 @@ this cycle, not a single call, so `cyl-pipeline-worker`'s 30s isn't necessarily 
 Set to `60s` in both compose files, with a comment explaining the N-calls-per-sweep reasoning so a
 future reader doesn't assume it was copied from the sibling service without thought.
 
+### Decision (fix, `/review-pr` round 2): `run()` reconnects after consecutive error cycles, not by catching `sweep_once`'s own exceptions
+
+Found on review — a regression introduced by the round-1 "DB-read failures are isolated" fix above:
+widening `sweep_once`'s per-run and per-cycle catches to a bare `Exception` means `sweep_once` itself
+now almost never raises — every realistic failure mode (a K8s error, a DB-read error, a lost RPC write)
+is caught and logged *inside* `sweep_once`, not re-raised. But `run()`'s reconnect logic lives entirely
+in its own `except Exception` around the `sweep_once(client)` call — the exact mechanism meant to catch
+"the Supabase client session has genuinely died" now has almost nothing left to catch. If the client
+session dies for real (not a transient blip), the poller loops forever, logging a warning every cycle,
+never reconnecting.
+
+**Fix**: `sweep_once` now returns `bool` — `True` if the cycle completed with no errors at any candidate
+or the candidate-fetch step, `False` if any error was caught and isolated during the cycle (the per-run
+`continue`/early-`return` paths already added in round 1 now set a local `ok = False` instead of silently
+swallowing that information). `run()` tracks `consecutive_error_cycles`; a clean cycle resets it to `0`,
+an unclean one increments it, and once it reaches `_MAX_CONSECUTIVE_ERROR_CYCLES` (`3`), `run()`
+proactively fetches a fresh `app_client()` and resets the counter — the same self-healing behavior the
+pre-round-1 code got "for free" via propagation, now made explicit since propagation no longer happens.
+The outer `try`/`except Exception` around `sweep_once(client)` itself is kept (not removed) — it now
+covers only a genuinely-unexpected bug *inside* `sweep_once`'s own control flow (e.g. a `KeyError` on
+`run["id"]`), a narrower but still real residual case, and reconnects immediately on that path exactly
+as before.
+
+Three consecutive cycles (not one) was chosen deliberately: a single isolated error (one run's transient
+K8s blip) must not trigger a reconnect — that would reintroduce needless reconnect churn for exactly the
+transient-error case round 1's isolation fix was built to tolerate. Only a *sustained* run of unclean
+cycles — consistent with a genuinely dead session rather than one unlucky candidate — should force a
+fresh connection.
+
+- Alternatives considered: have each isolated `except` block re-raise a dedicated sentinel exception
+  after logging, letting the outer `except Exception` catch that — rejected; it re-couples per-run
+  isolation to the outer loop's control flow (the first isolated error in a cycle would still abort the
+  rest of that cycle's candidates, the exact bug round 1 fixed) unless every call site is restructured to
+  finish the cycle before raising, which is just a more convoluted way of building the same boolean this
+  fix returns directly. Reconnecting on the very first unclean cycle — rejected as too aggressive; most
+  unclean cycles are exactly the transient, single-run blips isolation is designed to ride out without
+  disturbing the rest of the sweep.
+
+### Decision (fix, `/review-pr` round 2): repeated same-value `'partial'`/`'running'` reconfirmation no longer rewrites the row
+
+Found on review — a real, if cosmetic, consequence of the round-1 `'partial'`-candidate fix: a
+`'partial'` run whose dispatched batches are all already resolved keeps satisfying
+`_fetch_candidate_runs`'s query forever (documented already as an accepted trade-off), and every cycle
+re-writes the *same* `'partial'` conclusion — which, per the `completed_at` decision above, bumps
+`completed_at` forward every single cycle indefinitely. That's a real, user-visible correctness issue for
+`completed_at` specifically (it should reflect when the run's outcome was last *confirmed to have
+changed*, not merely "the last time a poller happened to look"), not just wasted RPC calls.
+
+**Fix**: `_fetch_candidate_runs` now also selects `status` (not just `id`). `sweep_once` compares the
+freshly computed rollup `status` against the candidate row's already-known `status`; if they match, the
+cycle treats this run as unchanged and skips the `update_run_status` call entirely (no RPC write, no
+`completed_at` bump, no log line) rather than re-confirming a conclusion nothing about. A real
+transition — including `'submitted'`/`'running'` sourced into any terminal value, and a `'partial'` run
+whose outcome *changes* to `'failed'` or resolves to a still-different `'partial'` mix in some
+theoretical future multi-value scheme — still writes normally, since the computed and known values only
+match once the run has already fully stabilized at that exact value.
+
+- Alternatives considered: skip the write only for `'partial'` specifically (narrower fix, matching the
+  round-1 trade-off note's literal scope) — rejected in favor of the general same-value skip above; a
+  `'running'`-sourced run reconfirmed `'running'` cycle after cycle (still in progress, no new evidence)
+  gets the identical wasted-write treatment today, and the general fix is no more complex than a
+  status-specific one.
+
+### Decision (fix, `/review-pr` round 2): `'partial'` **can** roll up to `'running'` — corrected wording, no code change
+
+The round-1 `'partial'`-candidate decision's own prose ("it will resolve to `'partial'` again... or
+`'failed'`") is factually incomplete, found on review: the rollup rule's ordering (rule (1), any
+`Pending`/`Running` phase, is checked *before* the terminal rules) means a `'partial'` run with at least
+one dispatched batch still genuinely in flight rolls up to `'running'`, not only `'partial'`/`'failed'`.
+This is already correct, intended behavior per the rule as originally approved — a `'partial'` run's
+dispatched-and-actually-running batches must be able to progress to `'running'` like any other candidate,
+otherwise `'partial'` would be a dead end for the in-flight portion. Corrected here as a documentation-only
+fix; no test or implementation change, since the rollup function already returns `'running'` correctly in
+this case and existing tests (`rollup(["Running"]) == "running"`, etc.) already cover the rule ordering —
+the gap was only ever in this file's own prose, not in the code or its test coverage for the general rule.
+Follow-up: a new sweep-level test drives this exact transition end-to-end for `'partial'`-sourced runs
+specifically (see tasks.md's round-2 section) since no existing test exercised a `'partial'`-candidate row
+resolving to `'running'` at the `sweep_once` level, only the pure `rollup()` function in isolation.
+
+### Decision (fix, `/review-pr` round 2): `error_message` is explicitly out of scope, added to Non-Goals
+
+Found on review: `cyl_pipeline_runs.error_message` (populated by Phase 2's dispatch-time settle) is never
+touched by `update_cyl_pipeline_run_status` — a `'failed'`/`'partial'` conclusion this poller writes
+carries no explanation of *which* workflow failed or why, unlike a dispatch-time failure. This was an
+oversight of omission (never decided against, just never decided at all) rather than a considered
+Non-Goal — added explicitly below so it reads as a deliberate deferral, not a gap nobody noticed. A real
+fix needs a place to put "workflow X failed" text derived from Argo's own status (e.g. `status.message` on
+a `Failed`/`Error` phase) plumbed through `_fetch_effective_phases` into the RPC as a new parameter — real
+scope, not a one-line addition, and this proposal's own by-name, phase-only `GET` doesn't currently even
+fetch that field. Deferred rather than expanded into this round's fix pass.
+
 ### Decision: `status_poller.py` is a separate process from `dispatch_worker.py`
 
 The two have genuinely different triggers: `dispatch_worker.py` reacts to new pgmq messages (event-
@@ -307,7 +400,37 @@ container) already rejects in favor of one script/one job/one container.
 - **A `'partial'` run's `completed_at` can advance more than once, and the run itself is polled
   forever once its dispatched batches are fully resolved** — see the `'partial'`-candidate and
   `completed_at` decisions above. Cosmetic/wasted-work, not a data-integrity bug: the `status` value
-  itself is always correct.
+  itself is always correct. The round-2 same-value-skip fix stops the repeated `completed_at` bump once
+  a run's conclusion stabilizes, but the run remains in the candidate query (and keeps costing one
+  `GET` per distinct workflow name per cycle) forever — closing that fully needs the per-scan tracking
+  deferred to bloom #696.
+- **A workflow confirmed-observed once, then 404'd on a later cycle, can permanently block `'complete'`**
+  (found `/review-pr` round 2): the 404-is-unknown decision above only reasons about a workflow *never*
+  observed as terminal before it TTL's out. But nothing prevents this poller from observing, say,
+  `Running` on cycle N, then 404 on cycle N+1 if `WORKFLOWS_STATUS_POLL_SECONDS` and
+  `WORKFLOWS_K8S_TTL_SECONDS` are close enough together that a workflow can go terminal *and* TTL-expire
+  entirely between two consecutive sweeps — `any_unknown` is set every such cycle, permanently withholding
+  `'complete'` for a run that may have genuinely finished successfully, with nothing to ever re-observe the
+  vanished workflow's real outcome. This is a strictly harder version of the already-deferred
+  reconciliation-sweep gap (Non-Goals) — a `LIST`-based reconciliation pass keyed on
+  `pipeline-run-id`/`batch-index`/`environment` labels is the real fix, not something this by-name-`GET`
+  phase can close. Recorded here rather than solved; operationally mitigated the same way as the
+  all-404'd case: keep the poll interval well under the TTL.
+- **Unbounded candidate-list growth** (found `/review-pr` round 2): `_fetch_candidate_runs` has no
+  `LIMIT`/pagination — every currently-`'submitted'`/`'running'`/`'partial'` run across the whole
+  deployment is re-swept, and re-`GET`'s every one of its distinct workflow names, on every cycle. At
+  today's low submission volume this is negligible; revisit alongside the existing "N `GET`s per run per
+  cycle" risk above if real usage grows enough to make full-table candidate scans or per-cycle K8s API
+  call volume a real cost.
+- **Concurrent poller replicas could flap a `'partial'`/`'running'` value between two barely-different
+  snapshots** (found `/review-pr` round 2): the Python-rollup decision above already accepts that two
+  overlapping cycles (single replica) racing to write is harmless (idempotent recompute, phases move
+  monotonically). Multiple *replicas* polling the same run concurrently is a materially different case
+  only in volume, not in kind — each replica's write is still an idempotent recompute from its own
+  `get_workflow_status` snapshot, so a genuine flap would require Argo itself to report inconsistent
+  phases for the same workflow to two near-simultaneous callers, not a defect in this poller's own logic.
+  Not relevant at today's single-replica deployment (see the matching Open Question below); recorded here
+  since round-2 review raised it as a hypothetical worth having on record before it's ever load-bearing.
 
 ## Migration Plan
 

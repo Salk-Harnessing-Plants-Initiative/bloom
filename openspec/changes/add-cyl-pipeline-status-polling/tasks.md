@@ -416,3 +416,69 @@ a real submitted Workflow) was not performed — stated explicitly, not claimed.
       root cause of. Re-run the CI job after pushing 9.9's commit; file a follow-up issue extending
       #253's fix to `workflows`/`cyl-pipeline-worker`/`cyl-status-poller` rather than attempting a
       CI-workflow-ordering change inside this already-large fix round.
+
+## 10. Round-2 `/review-pr` findings (applied on the same branch, post round-1 fix commit)
+
+> A second full 5-subagent review pass re-verified round 1's fixes (all confirmed durable, no
+> regressions in that fix logic itself) and found one genuine regression *introduced by* round 1's own
+> DB-read-isolation fix, plus several documentation/coverage gaps. See `design.md`'s new "Decision (fix,
+> `/review-pr` round 2)" entries for the full reasoning behind each.
+
+- [x] 10.1 **BLOCKING (regression) — `run()`'s reconnect path is now unreachable in practice.**
+      Broadening `sweep_once`'s catches to isolate per-run/per-cycle errors (round-1's own 9.4 fix) means
+      `sweep_once` itself almost never raises anymore — `run()`'s only reconnect mechanism (its
+      `except Exception` around `sweep_once(client)`) has nothing left to catch for the realistic
+      failure modes (K8s errors, DB errors) it exists to handle. If the Supabase client session actually
+      dies, the poller loops forever without reconnecting. Failing tests first: a test asserting
+      `sweep_once` returns `False` when a per-run error is isolated and `True` on a fully clean cycle
+      (`test_sweep_once_returns_false_when_a_run_has_an_isolated_error`,
+      `test_sweep_once_returns_true_on_a_clean_cycle`); a `run()`-level test that drives 3 consecutive
+      unclean cycles (via monkeypatching `sweep_once`) and asserts `app_client` is called again after
+      the 3rd, not before (`test_run_reconnects_after_three_consecutive_unclean_cycles`); a companion
+      test asserting a single unclean cycle followed by a clean one does *not* trigger a reconnect
+      (`test_run_does_not_reconnect_after_a_single_isolated_error`). Confirm red, then fix: `sweep_once`
+      returns `bool` (clean vs. unclean this cycle); `run()` tracks `consecutive_error_cycles`, resets to
+      `0` on a clean cycle, and proactively reconnects (fresh `app_client()`, counter reset) once it
+      reaches `3`. The outer `try`/`except Exception` around the `sweep_once(client)` call itself stays,
+      covering only a genuinely-unexpected bug inside `sweep_once`'s own control flow.
+- [x] 10.2 **IMPORTANT — a repeatedly-reconfirmed `'partial'`/`'running'` run bumps `completed_at` (or
+      just re-writes) forever.** Failing test first:
+      `test_sweep_skips_the_write_when_computed_status_matches_the_known_status` (candidate row carries
+      `status: 'partial'`, rollup also computes `'partial'` — assert `update_run_status` is NOT called).
+      Confirm red, then fix: `_fetch_candidate_runs` selects `status` alongside `id`; `sweep_once` skips
+      the `update_run_status` call (and its log line) when the computed status equals the candidate row's
+      already-known status.
+- [x] 10.3 **IMPORTANT — no test drives a `'partial'`-sourced run resolving to `'running'` at the sweep
+      level.** The pure `rollup()` function already covers the rule ordering, but nothing exercised it
+      through `sweep_once` for a `'partial'`-candidate row specifically. Add
+      `test_sweep_partial_run_with_a_still_running_workflow_resolves_to_running` (candidate row
+      `status: 'partial'`, `_fetch_effective_phases` returns `(["Running"], False)` — assert
+      `update_run_status` is called with `'running'`).
+- [x] 10.4 **IMPORTANT — no test drives `K8sStatusError` through the real, unmocked
+      `_fetch_effective_phases`.** Every existing K8sStatusError-isolation test monkeypatches
+      `_fetch_effective_phases` wholesale rather than letting the real function's own
+      `get_workflow_status` call raise. Add
+      `test_sweep_isolates_a_real_k8sstatuserror_from_get_workflow_status` in `test_status_poller.py`:
+      seed `_fetch_candidate_runs`/the scans query to return one workflow name, monkeypatch
+      `k8s_client.get_workflow_status` (as imported into `status_poller`) to raise `K8sStatusError`
+      directly, and assert `sweep_once` isolates it (returns `False`, does not call `update_run_status`,
+      does not propagate).
+- [x] 10.5 Documentation-only fixes (no behavior change, no new tests needed beyond 10.1-10.4 above):
+      correct `design.md`'s `'partial'`-candidate decision to acknowledge `'running'` as a reachable
+      rollup outcome (see the new round-2 decision entry); add `error_message` to `design.md`'s Non-Goals
+      as an explicit, considered deferral rather than an unnoticed gap; add the permanent-stall-from-a-
+      later-404, unbounded-candidate-growth, and concurrent-replica-flapping risks to `design.md`'s Risks
+      section; fix `services/workflows/README.md`'s candidate-set description (still said
+      `'submitted'`/`'running'` only, omitting `'partial'`); fix `_WIKI/SUPABASE/README.md`'s guard
+      description (still said the RPC "can't reopen an already-terminal run" without acknowledging
+      `'partial'` is deliberately not terminal); fix `k8s_client.py`'s `_resolve_ttl_seconds()` docstring
+      to cite `status_poller.py` alongside `dispatch_worker.py`.
+- [x] 10.6 File a follow-up issue for the permanent-stall structural gap (a workflow confirmed-observed
+      once then 404'd on a later cycle can block `'complete'` forever) — a strictly harder version of the
+      already-deferred reconciliation-sweep gap, needing the same label-based `LIST` machinery, not
+      something this by-name-`GET` phase can close.
+- [x] 10.7 Re-run the full suite: `services/workflows` unit tests, `tests/integration/
+      test_cyl_pipeline_status_polling.py`, `openspec validate --strict`, `ruff check`/`black --check` on
+      every changed file. Confirm no regressions. Push as a new commit
+      (`fix(#11): apply round-2 /review-pr findings — reconnect regression, redundant-write skip,
+      stale docs`) on the same PR branch.

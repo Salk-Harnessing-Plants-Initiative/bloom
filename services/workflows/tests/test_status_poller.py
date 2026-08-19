@@ -374,6 +374,156 @@ def test_sweep_still_concludes_failed_or_partial_despite_an_unresolved_workflow(
     assert calls == [(1, "partial")]
 
 
+# --- round 2: sweep_once's clean/unclean return value ------------------------
+
+
+def test_sweep_once_returns_true_on_a_fully_clean_cycle(monkeypatch):
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
+    monkeypatch.setattr(
+        worker, "_fetch_effective_phases", lambda c, r: (["Succeeded"], False)
+    )
+    monkeypatch.setattr(worker, "update_run_status", lambda c, r, s: None)
+    assert worker.sweep_once(object()) is True
+
+
+def test_sweep_once_returns_false_when_fetching_candidates_raises(monkeypatch):
+    def boom(client):
+        raise RuntimeError("PostgREST unreachable")
+
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", boom)
+    assert worker.sweep_once(object()) is False
+
+
+def test_sweep_once_returns_false_when_a_run_has_an_isolated_error(monkeypatch):
+    """Found during /review-pr round 2: sweep_once's per-run isolation (round
+    1's own fix) means it no longer raises for a caught K8s/DB error — but
+    run()'s reconnect logic needs SOME signal that this cycle wasn't clean.
+    A second, error-free run in the same cycle must not mask the first run's
+    error in the returned value."""
+    monkeypatch.setattr(
+        worker, "_fetch_candidate_runs", lambda c: [{"id": 1}, {"id": 2}]
+    )
+
+    def fake_fetch(client, run_id):
+        if run_id == 1:
+            raise RuntimeError("transient DB blip")
+        return (["Succeeded"], False)
+
+    monkeypatch.setattr(worker, "_fetch_effective_phases", fake_fetch)
+    monkeypatch.setattr(worker, "update_run_status", lambda c, r, s: None)
+    assert worker.sweep_once(object()) is False
+
+
+def test_sweep_once_returns_false_when_an_update_call_fails(monkeypatch):
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
+    monkeypatch.setattr(
+        worker, "_fetch_effective_phases", lambda c, r: (["Succeeded"], False)
+    )
+
+    def fake_update(client, run_id, status):
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(worker, "update_run_status", fake_update)
+    assert worker.sweep_once(object()) is False
+
+
+# --- round 2: skip a write that would just reconfirm an unchanged status ----
+
+
+def test_sweep_skips_the_write_when_computed_status_matches_the_known_status(
+    monkeypatch,
+):
+    """Found during /review-pr round 2: a 'partial' run whose dispatched
+    batches are all already resolved keeps satisfying the candidate query
+    forever and, before this fix, re-wrote the identical 'partial' conclusion
+    (and bumped completed_at) every single cycle."""
+    calls = []
+    monkeypatch.setattr(
+        worker, "_fetch_candidate_runs", lambda c: [{"id": 1, "status": "partial"}]
+    )
+    monkeypatch.setattr(
+        worker,
+        "_fetch_effective_phases",
+        lambda c, r: (["Failed", "Succeeded"], False),
+    )
+    monkeypatch.setattr(
+        worker, "update_run_status", lambda c, r, s: calls.append((r, s))
+    )
+    worker.sweep_once(object())
+    assert calls == [], "must not re-write a status that hasn't actually changed"
+
+
+def test_sweep_still_writes_when_computed_status_differs_from_known_status(
+    monkeypatch,
+):
+    calls = []
+    monkeypatch.setattr(
+        worker, "_fetch_candidate_runs", lambda c: [{"id": 1, "status": "submitted"}]
+    )
+    monkeypatch.setattr(
+        worker, "_fetch_effective_phases", lambda c, r: (["Running"], False)
+    )
+    monkeypatch.setattr(
+        worker, "update_run_status", lambda c, r, s: calls.append((r, s))
+    )
+    worker.sweep_once(object())
+    assert calls == [(1, "running")]
+
+
+def test_sweep_partial_run_with_a_still_running_workflow_resolves_to_running(
+    monkeypatch,
+):
+    """No existing test drove a 'partial'-candidate row all the way to
+    'running' through sweep_once — only the pure rollup() function covered
+    the rule ordering in isolation (found during /review-pr round 2)."""
+    calls = []
+    monkeypatch.setattr(
+        worker, "_fetch_candidate_runs", lambda c: [{"id": 1, "status": "partial"}]
+    )
+    monkeypatch.setattr(
+        worker, "_fetch_effective_phases", lambda c, r: (["Running"], False)
+    )
+    monkeypatch.setattr(
+        worker, "update_run_status", lambda c, r, s: calls.append((r, s))
+    )
+    worker.sweep_once(object())
+    assert calls == [(1, "running")]
+
+
+# --- round 2: a real (unmocked) K8sStatusError from get_workflow_status -----
+
+
+def test_sweep_isolates_a_real_k8sstatuserror_from_get_workflow_status(monkeypatch):
+    """Found during /review-pr round 2: every existing K8sStatusError
+    isolation test monkeypatched _fetch_effective_phases wholesale rather
+    than letting the real function's own get_workflow_status call raise —
+    this exercises the real call path."""
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
+    client = _FakeClient(
+        cyl_pipeline_run_scans=[
+            {"run_id": 1, "argo_workflow_name": "wf-a", "status": "queued"},
+        ]
+    )
+
+    def fake_candidates(c):
+        return [{"id": 1}]
+
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", fake_candidates)
+
+    def fake_get_status(name):
+        raise K8sStatusError("Argo Workflow status check failed")
+
+    monkeypatch.setattr(worker, "get_workflow_status", fake_get_status)
+
+    def assert_not_called(*a, **k):
+        raise AssertionError("must not write anything when the status check failed")
+
+    monkeypatch.setattr(worker, "update_run_status", assert_not_called)
+
+    result = worker.sweep_once(client)  # must not raise
+    assert result is False
+
+
 # --- run(): connection retry, signal handling -------------------------------
 
 
@@ -463,6 +613,70 @@ def test_signal_while_waiting_to_connect_exits_cleanly(monkeypatch):
 
     assert attempts["n"] == 1  # tried once, then stopped retrying after the signal
     assert candidates_called["called"] is False
+
+
+# --- round 2: run() reconnects after consecutive unclean sweep cycles -------
+
+
+def test_run_reconnects_after_three_consecutive_unclean_cycles(monkeypatch):
+    """Found during /review-pr round 2: round 1's own per-run error isolation
+    fix means sweep_once almost never raises anymore, silently disabling
+    run()'s only reconnect mechanism. run() must now detect a run of unclean
+    cycles itself and proactively fetch a fresh client."""
+    client_calls = {"n": 0}
+
+    def fake_app_client():
+        client_calls["n"] += 1
+        return object()
+
+    monkeypatch.setattr(worker, "app_client", fake_app_client)
+    monkeypatch.setattr(worker.time, "sleep", lambda s: None)
+
+    sweep_calls = {"n": 0}
+
+    def fake_sweep_once(client):
+        sweep_calls["n"] += 1
+        if sweep_calls["n"] >= 3:
+            worker._running = False
+        return False  # every cycle is unclean
+
+    monkeypatch.setattr(worker, "sweep_once", fake_sweep_once)
+
+    worker.run()
+
+    assert sweep_calls["n"] == 3
+    # One call to connect on startup, plus one proactive reconnect once the
+    # 3rd consecutive unclean cycle is reached.
+    assert client_calls["n"] == 2
+
+
+def test_run_does_not_reconnect_after_a_single_isolated_error(monkeypatch):
+    reconnects = {"n": 0}
+
+    def counting_app_client():
+        reconnects["n"] += 1
+        return object()
+
+    monkeypatch.setattr(worker, "app_client", counting_app_client)
+    monkeypatch.setattr(worker.time, "sleep", lambda s: None)
+
+    sweep_calls = {"n": 0}
+
+    def fake_sweep_once(client):
+        sweep_calls["n"] += 1
+        if sweep_calls["n"] >= 4:
+            worker._running = False
+            return True
+        # cycle 1 unclean, cycle 2 clean, cycle 3 unclean, cycle 4 clean —
+        # never 3 IN A ROW, so no reconnect should ever fire.
+        return sweep_calls["n"] % 2 == 0
+
+    monkeypatch.setattr(worker, "sweep_once", fake_sweep_once)
+
+    worker.run()
+
+    assert sweep_calls["n"] == 4
+    assert reconnects["n"] == 1, "only the initial connect — no proactive reconnect"
 
 
 # --- POLL_INTERVAL default ---------------------------------------------------

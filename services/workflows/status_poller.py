@@ -2,14 +2,16 @@
 Pipeline status poller (bloom #11 Phase 3).
 
 Periodically re-checks every `cyl_pipeline_runs` row still `'submitted'`/
-`'running'`, fetches the real Argo Workflow phase for each of that run's
-distinct `argo_workflow_name`s via k8s_client.get_workflow_status, computes
-the run's rollup status (see the rollup rule below), and writes it via the
-`update_cyl_pipeline_run_status` SECURITY DEFINER RPC. Distinct from
-`dispatch_worker.py`: that worker reacts to new pgmq messages (event-driven);
-this poller runs on a fixed wall-clock cadence regardless of dispatch
-activity, sweeping every currently-active run. Runs as the least-privilege
-bloom_workflows app user — no direct DB connection.
+`'running'`/`'partial'`, fetches the real Argo Workflow phase for each of
+that run's distinct `argo_workflow_name`s via k8s_client.get_workflow_status,
+computes the run's rollup status (see the rollup rule below), and writes it
+via the `update_cyl_pipeline_run_status` SECURITY DEFINER RPC — skipping the
+write entirely when the computed status already matches the run's known
+status, so a stable conclusion doesn't get needlessly re-confirmed forever.
+Distinct from `dispatch_worker.py`: that worker reacts to new pgmq messages
+(event-driven); this poller runs on a fixed wall-clock cadence regardless of
+dispatch activity, sweeping every currently-active run. Runs as the
+least-privilege bloom_workflows app user — no direct DB connection.
 
 Deploy: a container off the workflows image with `command: python
 status_poller.py`.
@@ -51,6 +53,12 @@ def _resolve_poll_interval() -> float:
 
 POLL_INTERVAL = _resolve_poll_interval()
 
+# Number of consecutive unclean sweep cycles (see sweep_once's return value)
+# before run() proactively reconnects rather than continuing to reuse a
+# client whose session may have genuinely died — see design.md's "run()
+# reconnects after consecutive error cycles" decision (/review-pr round 2).
+_MAX_CONSECUTIVE_ERROR_CYCLES = 3
+
 _running = True
 
 
@@ -91,10 +99,14 @@ def _fetch_candidate_runs(client) -> list[dict]:
     batches whose real Argo outcome hasn't been checked yet — see design.md's
     "'partial' runs are included in the polling candidate set" decision,
     found during /review-pr round 1). A 'queued' run was never dispatched;
-    anything already 'complete'/'failed' is fully terminal."""
+    anything already 'complete'/'failed' is fully terminal. Also selects
+    `status` (not just `id`) so sweep_once can skip re-writing a conclusion
+    that hasn't actually changed (found during /review-pr round 2 — see
+    design.md's "repeated same-value reconfirmation no longer rewrites the
+    row" decision)."""
     return (
         client.table("cyl_pipeline_runs")
-        .select("id")
+        .select("id, status")
         .in_("status", ["submitted", "running", "partial"])
         .execute()
         .data
@@ -150,7 +162,7 @@ def update_run_status(client, run_id, status: str) -> None:
     ).execute()
 
 
-def sweep_once(client) -> None:
+def sweep_once(client) -> bool:
     """One full cycle: check every candidate run, updating those with a
     concluded rollup status. A failure checking or updating one run (a K8s
     error, a DB-read error, or a lost RPC write) is isolated to that run — it
@@ -158,7 +170,16 @@ def sweep_once(client) -> None:
     fetching the candidate list itself is isolated to this cycle — the next
     scheduled cycle retries rather than crashing the process (found during
     /review-pr round 1 — see design.md's "DB-read failures inside a sweep
-    are isolated" decision)."""
+    are isolated" decision).
+
+    Returns True if the cycle completed with no isolated errors, False
+    otherwise — run() uses this to detect a possibly-dead client session and
+    force a reconnect after enough consecutive unclean cycles, since an
+    isolated error caught here no longer propagates to trigger run()'s own
+    exception-based reconnect the way it did before per-run isolation existed
+    (found during /review-pr round 2 — see design.md's "run() reconnects
+    after consecutive error cycles" decision)."""
+    ok = True
     try:
         candidates = _fetch_candidate_runs(client)
     except Exception as exc:
@@ -167,10 +188,11 @@ def sweep_once(client) -> None:
             "retry next cycle: %s",
             exc,
         )
-        return
+        return False
 
     for run in candidates:
         run_id = run["id"]
+        known_status = run.get("status")
         try:
             phases, any_unknown = _fetch_effective_phases(client, run_id)
         except Exception as exc:
@@ -180,6 +202,7 @@ def sweep_once(client) -> None:
                 run_id,
                 exc,
             )
+            ok = False
             continue
 
         status = rollup(phases)
@@ -193,6 +216,12 @@ def sweep_once(client) -> None:
                 run_id,
             )
             continue
+        if status == known_status:
+            # Nothing has changed since the last confirmed conclusion — skip
+            # the write entirely rather than re-stamping completed_at (or
+            # just re-writing an identical value) for a run whose outcome has
+            # already stabilized (found during /review-pr round 2).
+            continue
 
         try:
             update_run_status(client, run_id, status)
@@ -204,9 +233,12 @@ def sweep_once(client) -> None:
                 status,
                 exc,
             )
+            ok = False
             continue
 
         logger.info("status_poller: run %s -> %s", run_id, status)
+
+    return ok
 
 
 def _connect_with_retry():
@@ -236,11 +268,14 @@ def run():
         logger.info("status poller stopped before connecting")
         return
     logger.info("status poller started (poll=%ss)", POLL_INTERVAL)
+    consecutive_error_cycles = 0
     while _running:
         try:
-            sweep_once(client)
+            clean = sweep_once(client)
         except Exception as exc:
-            # A loop-level error (e.g. an expired session) — reconnect and retry.
+            # A genuinely-unexpected bug inside sweep_once's own control flow
+            # (not one of the per-run/per-cycle errors sweep_once already
+            # catches and reports via its return value) — reconnect and retry.
             logger.exception("status_poller: sweep error, reconnecting: %s", exc)
             time.sleep(POLL_INTERVAL)
             try:
@@ -250,7 +285,30 @@ def run():
                     "status_poller: reconnect failed, will retry: %s",
                     reconnect_exc,
                 )
+            consecutive_error_cycles = 0
             continue
+
+        if clean:
+            consecutive_error_cycles = 0
+        else:
+            consecutive_error_cycles += 1
+            if consecutive_error_cycles >= _MAX_CONSECUTIVE_ERROR_CYCLES:
+                logger.warning(
+                    "status_poller: %d consecutive sweep cycles had isolated "
+                    "errors, reconnecting proactively in case the client "
+                    "session is dead",
+                    consecutive_error_cycles,
+                )
+                try:
+                    client = app_client()
+                    consecutive_error_cycles = 0
+                except Exception as reconnect_exc:
+                    logger.error(
+                        "status_poller: proactive reconnect failed, will "
+                        "retry: %s",
+                        reconnect_exc,
+                    )
+
         if _running:
             time.sleep(POLL_INTERVAL)
     logger.info("status poller stopped")

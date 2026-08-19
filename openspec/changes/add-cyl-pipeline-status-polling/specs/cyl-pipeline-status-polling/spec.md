@@ -49,16 +49,22 @@ SHALL select every `cyl_pipeline_runs` row whose `status` is `'submitted'`, `'ru
 checked — see the `'partial'`-inclusion scenario below), and for each such run: collect the distinct
 `argo_workflow_name` values from that run's `cyl_pipeline_run_scans` rows, call `get_workflow_status`
 for each, compute the run's rollup status (see the rollup requirement below), and — if the computed
-status differs from the run's current status, or unconditionally; either is acceptable since the write
-RPC is itself idempotent-safe — call `update_cyl_pipeline_run_status` with the result, **except** when
-the computed status is `'complete'` and any of this cycle's workflow lookups returned `None` (404) —
+status differs from the run's current, already-known status — a computed status that exactly matches
+the candidate row's current status is a no-op this cycle (no RPC call, no `completed_at` bump; see the
+"unchanged conclusion" scenario below) — call `update_cyl_pipeline_run_status` with the result, **except**
+when the computed status is `'complete'` and any of this cycle's workflow lookups returned `None` (404) —
 see the rollup requirement's "withheld complete" rule. It SHALL isolate a failure fetching or updating
 any one run (a K8s error, a DB-read error, or a failed write) to that run alone, never aborting the
 rest of the cycle's candidates, and SHALL isolate a failure fetching the candidate list itself to that
-cycle alone (retrying next cycle, not crashing). It SHALL handle `SIGTERM`/`SIGINT` gracefully (finish
-the in-flight sweep before exiting, do not start a new one), and SHALL retry its startup Supabase
-connection with backoff rather than crash on a transient outage, matching `dispatch_worker.py`'s
-established conventions for both.
+cycle alone (retrying next cycle, not crashing). Because this per-run/per-cycle isolation means a single
+sweep essentially never lets an exception propagate out of it, the poller's outer loop SHALL track
+whether each cycle completed cleanly (no isolated errors) and, after `3` consecutive unclean cycles,
+proactively obtain a fresh Supabase client rather than continuing to reuse a client whose session may
+have genuinely died — since a caught-and-isolated error no longer reaches the outer loop's own
+reconnect-on-exception handling the way it did before per-run isolation existed. It SHALL handle
+`SIGTERM`/`SIGINT` gracefully (finish the in-flight sweep before exiting, do not start a new one), and
+SHALL retry its startup Supabase connection with backoff rather than crash on a transient outage,
+matching `dispatch_worker.py`'s established conventions for both.
 
 #### Scenario: A run with one workflow still Running stays running
 
@@ -115,6 +121,25 @@ established conventions for both.
 - **WHEN** the query that fetches this cycle's candidate runs (`_fetch_candidate_runs`) itself raises
 - **THEN** the current sweep cycle ends without checking any run (equivalent to finding zero
   candidates), and the next scheduled cycle retries — the process does not crash or exit
+
+#### Scenario: A computed status matching the run's current status is a no-op
+
+- **WHEN** a candidate run's already-known `status` is `'partial'` and this cycle's rollup also computes
+  `'partial'` (no new evidence changed the outcome)
+- **THEN** the poller does NOT call `update_cyl_pipeline_run_status` for that run this cycle
+- **AND** `completed_at` is not touched (it does not advance on a reconfirmation of an unchanged value)
+
+#### Scenario: Three consecutive unclean cycles trigger a proactive reconnect
+
+- **WHEN** three sweep cycles in a row each have at least one isolated error (a K8s error, a DB-read
+  error, or a failed write for some candidate run, or a failure fetching the candidate list itself)
+- **THEN** the poller obtains a fresh Supabase client before starting the next cycle, rather than
+  continuing to reuse the same client indefinitely
+
+#### Scenario: A single isolated error does not trigger a reconnect
+
+- **WHEN** one sweep cycle has an isolated error but the immediately following cycle completes cleanly
+- **THEN** the poller does not reconnect — the consecutive-unclean-cycle count resets on the clean cycle
 
 #### Scenario: SIGTERM lets the in-flight sweep finish
 
@@ -191,6 +216,14 @@ adding the `'running'` branch on top of the same terminal-outcome structure.
 - **THEN** the rollup does not conclude `'complete'` (rule (2)'s "every phase is `Succeeded`" must not
   match vacuously against an empty list)
 - **AND** no `update_cyl_pipeline_run_status` call is made for that run this cycle
+
+#### Scenario: A `'partial'` run's still-running dispatched batch resolves to `'running'`, not stuck at `'partial'`
+
+- **WHEN** a candidate run's current `status` is `'partial'` and its one genuinely-dispatched batch's
+  workflow real phase is `Running` this cycle
+- **THEN** the rollup computes `'running'` (rule (1) is checked before the terminal rules, so a
+  `'partial'`-sourced run's in-flight work is not a dead end) and the poller calls
+  `update_cyl_pipeline_run_status` with `'running'`
 
 #### Scenario: A confirmed failure is still concluded despite one unresolved sibling workflow
 

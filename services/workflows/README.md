@@ -148,14 +148,21 @@ distinct from `dispatch_worker.py` above — deployed as its own
 to new pgmq messages, this poller runs on a fixed wall-clock cadence
 (`WORKFLOWS_STATUS_POLL_SECONDS`, default 15s) regardless of dispatch
 activity, sweeping every `cyl_pipeline_runs` row still `'submitted'`/
-`'running'`. For each such run it fetches the real Argo phase of every
-distinct `argo_workflow_name` among that run's scans
-(`k8s_client.get_workflow_status` — a read-only `GET`, not the `create`
-`dispatch_worker.py` does) and, once it has enough evidence to conclude
-something, writes the result via `update_cyl_pipeline_run_status`, progressing
-the run to `'running'`/`'complete'` (or a real-outcome `'failed'`/`'partial'`)
-— values `claim`/`complete`/`fail_cyl_pipeline_batch` (Phase 2) never reach,
-since those only ever describe dispatch outcome.
+`'running'`/`'partial'` (a `'partial'` run may still have genuinely-dispatched
+batches whose real Argo outcome hasn't been checked yet — it is not excluded
+merely because Phase 2 already settled its dispatch outcome). For each such
+run it fetches the real Argo phase of every distinct `argo_workflow_name`
+among that run's scans (`k8s_client.get_workflow_status` — a read-only `GET`,
+not the `create` `dispatch_worker.py` does) and, once it has enough evidence
+to conclude something that differs from the run's already-known status,
+writes the result via `update_cyl_pipeline_run_status`, progressing the run
+to `'running'`/`'complete'` (or a real-outcome `'failed'`/`'partial'`) —
+values `claim`/`complete`/`fail_cyl_pipeline_batch` (Phase 2) never reach,
+since those only ever describe dispatch outcome. A computed conclusion that
+merely reconfirms the run's current status is a no-op (no write, no
+`completed_at` bump) — a `'partial'` run whose dispatched batches are all
+already resolved would otherwise satisfy this candidate query and be
+re-written identically forever.
 
 The rollup rule that maps a run's per-workflow phases to one status is
 specified normatively in the `cyl-pipeline-status-polling` OpenSpec capability

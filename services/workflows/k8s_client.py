@@ -35,8 +35,9 @@ def _resolve_ttl_seconds() -> int:
     — a real failure mode this repo's tasks.md already warns about for
     NAMESPACE) must degrade to the same safe default an unset value gets, not
     raise ValueError at MODULE IMPORT time. An uncaught exception here would
-    crash dispatch_worker.py before it even installs its SIGTERM/SIGINT
-    handlers — exactly the crash-loop-on-startup class of bug
+    crash dispatch_worker.py (or status_poller.py, this module's second
+    consumer) before it even installs its SIGTERM/SIGINT handlers — exactly
+    the crash-loop-on-startup class of bug each service's own
     _connect_with_retry() was built to prevent for a Supabase outage."""
     raw = os.environ.get("WORKFLOWS_K8S_TTL_SECONDS", "3600")
     try:
