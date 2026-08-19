@@ -1116,3 +1116,25 @@ def test_source_pinning_unsupported_on_fakereader_surfaces_as_bloommcperror(
 ):
     with pytest.raises(BloomMCPError):
         _run(source_id=7)
+
+
+# ── discoverable via list_existing_analyses (bloom#669) ─────────────────────
+
+
+def test_discoverable_via_list_existing_analyses(injected_ports):
+    """Live discoverability, mirroring the same pattern
+    remove_outliers/cross_experiment_correlations use for their own registered class."""
+    from bloom_mcp.sections.core import (
+        list_existing_analyses as list_existing_analyses_mod,
+    )
+
+    list_existing_analyses_mod._RESPONSE_CACHE.clear()
+    try:
+        _run()
+        response = json.loads(
+            list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
+        )
+    finally:
+        list_existing_analyses_mod._RESPONSE_CACHE.clear()
+
+    assert "qc_inspect" in response["analyses"]
