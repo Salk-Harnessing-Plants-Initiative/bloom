@@ -514,7 +514,7 @@ jobs:
 
             failed=0
             _probe() {
-              local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\"
+              local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\" expected=\"\${4:-}\"
               # Retry up to 3 times on connection failure (status 000). Normal
               # path: Caddy serves a cached Let's Encrypt cert verified by the
               # earlier Layer 2 step — should respond instantly. Break-glass
@@ -531,7 +531,18 @@ jobs:
                 [ \"\$status\" != \"000\" ] && break
                 sleep 2
               done
-              if [ \"\$status\" -lt 200 ] || [ \"\$status\" -ge 400 ]; then
+              if [ -n \"\$expected\" ]; then
+                # Exact-status probe: the specific code IS the assertion. An
+                # unauthenticated 401 proves the Kong basic-auth gate sits in front of
+                # Studio. The range check below would pass on the 200 Studio returns when
+                # Caddy proxies it directly -- i.e. exactly when the gate is missing.
+                if [ \"\$status\" != \"\$expected\" ]; then
+                  echo \"::error::Smoke test failed on \$host\$path (HTTP \$status, expected \$expected)\"
+                  failed=1
+                else
+                  echo \"  \$host\$path -> \$status (expected \$expected)\"
+                fi
+              elif [ \"\$status\" -lt 200 ] || [ \"\$status\" -ge 400 ]; then
                 echo \"::error::Smoke test failed on \$host\$path (HTTP \$status)\"
                 failed=1
               else
@@ -540,6 +551,10 @@ jobs:
             }
 
             _probe \"\$DOMAIN_MAIN\"   \"/\"
+            # Unauthenticated first: this is the probe that proves the gate exists.
+            # Without it, a deploy where the Caddy reload never applied serves Studio
+            # directly, answers 200 to the credentialed probe below, and passes.
+            _probe \"\$DOMAIN_STUDIO\" \"/\" \"\" 401
             _probe \"\$DOMAIN_STUDIO\" \"/\" \"\$STUDIO_AUTH\"
             _probe \"\$DOMAIN_MINIO\"  \"/\"
             _probe \"\$DOMAIN_MAIN\"   \"/api/rest/v1/\" \"apikey: \$ANON_KEY\"
@@ -1199,7 +1214,7 @@ jobs:
 
             failed=0
             _probe() {
-              local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\"
+              local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\" expected=\"\${4:-}\"
               # Retry up to 3 times on connection failure (status 000). Normal
               # path: Caddy serves a cached Let's Encrypt cert verified by the
               # earlier Layer 2 step — should respond instantly. Break-glass
@@ -1216,7 +1231,18 @@ jobs:
                 [ \"\$status\" != \"000\" ] && break
                 sleep 2
               done
-              if [ \"\$status\" -lt 200 ] || [ \"\$status\" -ge 400 ]; then
+              if [ -n \"\$expected\" ]; then
+                # Exact-status probe: the specific code IS the assertion. An
+                # unauthenticated 401 proves the Kong basic-auth gate sits in front of
+                # Studio. The range check below would pass on the 200 Studio returns when
+                # Caddy proxies it directly -- i.e. exactly when the gate is missing.
+                if [ \"\$status\" != \"\$expected\" ]; then
+                  echo \"::error::Smoke test failed on \$host\$path (HTTP \$status, expected \$expected)\"
+                  failed=1
+                else
+                  echo \"  \$host\$path -> \$status (expected \$expected)\"
+                fi
+              elif [ \"\$status\" -lt 200 ] || [ \"\$status\" -ge 400 ]; then
                 echo \"::error::Smoke test failed on \$host\$path (HTTP \$status)\"
                 failed=1
               else
@@ -1225,6 +1251,10 @@ jobs:
             }
 
             _probe \"\$DOMAIN_MAIN\"   \"/\"
+            # Unauthenticated first: this is the probe that proves the gate exists.
+            # Without it, a deploy where the Caddy reload never applied serves Studio
+            # directly, answers 200 to the credentialed probe below, and passes.
+            _probe \"\$DOMAIN_STUDIO\" \"/\" \"\" 401
             _probe \"\$DOMAIN_STUDIO\" \"/\" \"\$STUDIO_AUTH\"
             _probe \"\$DOMAIN_MINIO\"  \"/\"
             _probe \"\$DOMAIN_MAIN\"   \"/api/rest/v1/\" \"apikey: \$ANON_KEY\"
