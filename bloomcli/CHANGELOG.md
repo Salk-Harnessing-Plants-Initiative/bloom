@@ -39,6 +39,14 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   download still succeeds and the log carries a `note=`, so an object that will be re-fetched on
   every run is diagnosable instead of silently repeating.
 
+### Fixed
+
+- `bloomctl cyl batch-ingest-result`'s envelope discovery is now scoped to a `run_manifest.json`
+  in `envelopes_dir` when one is present: only the `.result.json` files it lists are ingested
+  (a leftover file from a stale or concurrently-staging run is excluded, not silently
+  re-ingested), and a manifest-declared `scan_key` with no matching file is reported as a batch
+  failure rather than a silent gap. With no manifest present, discovery is unchanged (#678).
+
 ### Changed
 
 - The download mechanism is now shared between scan methods rather than living inside the
