@@ -32,10 +32,10 @@ requirement's existing behavior.
   ingested, exactly as if this requirement did not exist (covers both manual/dev CLI use with no
   manifest, and the case where an upstream manifest-writing stage has not yet been deployed)
 
-#### Scenario: A malformed manifest fails loud before any file is ingested
+#### Scenario: A malformed or unreadable manifest fails loud before any file is ingested
 
-- **WHEN** `envelopes_dir` contains a `run_manifest.json` that is not valid JSON, or does not
-  conform to the `RunManifest` schema
+- **WHEN** `envelopes_dir` contains a `run_manifest.json` that is not valid JSON, does not conform
+  to the `RunManifest` schema, or cannot be read (e.g. a permission error)
 - **THEN** the command exits non-zero with a readable error before ingesting any envelope, and
   makes no RPC calls
 

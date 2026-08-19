@@ -110,14 +110,24 @@ def discover_envelopes(envelopes_dir: str | Path) -> DiscoveredEnvelopes:
     all_paths = sorted(path.glob("*.result.json"))
 
     manifest_path = path / RUN_MANIFEST_FILENAME
-    if manifest_path.exists() and not manifest_path.is_file():
-        raise EnvelopeError(f"{manifest_path} exists but is not a file")
-    if not manifest_path.is_file():
+    try:
+        manifest_text = manifest_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return DiscoveredEnvelopes(paths=all_paths, missing_scan_keys=[])
+    except OSError as exc:
+        # Covers a directory (or other non-file entry) at manifest_path
+        # (IsADirectoryError), a permission-denied stat/read (PermissionError), and any
+        # other read failure — all "can't read this as a manifest," same as a parse
+        # failure below. Deliberately not a pre-check via .exists()/.is_file(): those
+        # only swallow ENOENT-class errors, not EACCES, so a permission-denied stat
+        # would otherwise escape uncaught instead of failing loud with a readable error.
+        raise EnvelopeError(
+            f"{manifest_path} exists but is not a valid RunManifest: {exc}"
+        ) from exc
 
     try:
-        manifest = RunManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, ValidationError) as exc:
+        manifest = RunManifest.model_validate_json(manifest_text)
+    except ValidationError as exc:
         raise EnvelopeError(
             f"{manifest_path} exists but is not a valid RunManifest: {exc}"
         ) from exc
@@ -719,7 +729,9 @@ def batch_ingest_result(
     """Ingest every {scan_key}.result.json file directly under ENVELOPES_DIR — the batch
     sibling of `ingest-result`. If ENVELOPES_DIR contains a run_manifest.json, only the files
     it lists are ingested and a declared scan_key with no matching file is reported as a
-    failure; with no manifest, every file is ingested (unchanged). Isolates per-envelope
+    failure — unless a differently-named file's own content actually reports that scan_key
+    (a filename/body mismatch), in which case the real outcome wins and the failure is
+    dropped; with no manifest, every file is ingested (unchanged). Isolates per-envelope
     failures (one bad envelope doesn't abort the batch); exits non-zero if any envelope
     failed."""
     try:
@@ -754,6 +766,17 @@ def batch_ingest_result(
         # manifest. Drop a "missing" entry for any key that was, in fact, actually ingested —
         # otherwise the same scan_key could appear twice with contradictory ok/failed statuses.
         ingested_scan_keys = {r.scan_key for r in ingest_results}
+        collided_keys = sorted(
+            r.scan_key for r in missing_results if r.scan_key in ingested_scan_keys
+        )
+        if collided_keys:
+            logger.debug(
+                "Dropped %d manifest-declared-missing entry/entries superseded by an "
+                "actual ingest result under the same scan_key (filename/body scan_key "
+                "mismatch): %s",
+                len(collided_keys),
+                collided_keys,
+            )
         missing_results = [r for r in missing_results if r.scan_key not in ingested_scan_keys]
         scan_results = ingest_results + missing_results
     else:

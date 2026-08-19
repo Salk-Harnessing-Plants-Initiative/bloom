@@ -541,8 +541,10 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
   If `envelopes_dir` contains a `run_manifest.json`, discovery is scoped to
   its `scan_keys`: out-of-scope files are excluded (and logged at debug
   level), and a declared `scan_key` with no matching file is reported as a
-  batch failure. With no manifest present, discovery is fully unscoped, as
-  above.
+  batch failure — unless a differently-named file's own content actually
+  reports that scan_key (a filename/body mismatch), in which case the real
+  outcome wins and the failure is dropped. With no manifest present,
+  discovery is fully unscoped, as above.
 - **Isolates per-envelope failures** — an unreadable/malformed file, a
   contract-validation failure, or a mapped RPC error is recorded and reported,
   but does not abort the rest of the batch.

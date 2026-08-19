@@ -152,34 +152,55 @@ decision above — that decision already accepted a filename/body mismatch as po
 existing; this fix only ensures such a mismatch can never surface as a self-contradictory batch
 result, not that it gets flagged as its own new failure mode.
 
-## Decision: `run_manifest.json` existing as a non-file entry fails loud, not silently unscoped
+## Decision: distinguish "absent" from "can't be read as a manifest" via EAFP, not exists()/is_file() pre-checks
 
-Also found in review: `manifest_path.is_file()` returning `False` was used as the sole signal for
-"no manifest, fall back to unscoped" — which is correct when the path simply doesn't exist, but
-also silently (and wrongly) applies if a directory (or other non-file entry) happens to occupy that
-path, e.g. from a botched deploy step. Since the entire point of this change is to stop silent
-stale-file contamination, a manifest-shaped path that can't actually be read as a manifest should
-fail loud — matching the existing "malformed manifest fails loud" precedent for bad JSON/schema —
-rather than silently degrading to the least-safe (fully unscoped) behavior with no signal at all.
-Distinguished from "absent" by checking `.exists()` before falling back:
+Two related bugs were found across two review rounds, both stemming from the same root cause and
+both now fixed by the same restructuring:
+
+1. **Round 2 initial fix**: `manifest_path.is_file()` returning `False` was originally used as the
+   sole signal for "no manifest, fall back to unscoped" — correct when the path simply doesn't
+   exist, but also silently (and wrongly) applied if a directory (or other non-file entry)
+   occupied that path (e.g. a botched deploy step). Since the entire point of this change is to
+   stop silent stale-file contamination, a manifest-shaped path that can't actually be read as a
+   manifest should fail loud, matching the "malformed manifest fails loud" precedent for bad
+   JSON/schema, not silently degrade to the least-safe (fully unscoped) behavior.
+2. **Found in the very next review round**: the first fix for (1) added `manifest_path.exists()`
+   as a pre-check before falling back — but `Path.exists()`/`.is_file()` only swallow ENOENT-class
+   errno values (confirmed against CPython's `pathlib._IGNORED_ERRNOS`), not `EACCES`. A
+   permission-denied stat on `run_manifest.json` — plausible on the shared, multi-writer pipeline
+   directory this whole feature exists to harden — would propagate as a raw, uncaught
+   `PermissionError` instead of the readable `EnvelopeError` this fix commit's own goal was to
+   guarantee. Doubling the number of unguarded stat calls (from one `is_file()` to an
+   `exists()`+`is_file()` pair) doubled the surface area of the gap rather than closing it.
+
+**Final fix**: don't pre-check with `exists()`/`is_file()` at all — attempt `read_text()` directly
+and dispatch on the exception, which also matches `download_for_predict.py:407-414`'s existing
+"corrupt existing manifest fails loud" precedent (`except (OSError, ValidationError)`, not
+`ValidationError` alone — a manifest can exist but fail to *read*, independent of its *content*
+being malformed):
 
 ```python
-if manifest_path.exists() and not manifest_path.is_file():
-    raise EnvelopeError(f"{manifest_path} exists but is not a file")
-if not manifest_path.is_file():
+try:
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+except FileNotFoundError:
     return DiscoveredEnvelopes(paths=all_paths, missing_scan_keys=[])
+except OSError as exc:
+    # Covers a directory at manifest_path (IsADirectoryError), a permission-denied
+    # read (PermissionError), and any other read failure — one code path, not a
+    # pre-check that can itself raise unguarded.
+    raise EnvelopeError(f"{manifest_path} exists but is not a valid RunManifest: {exc}") from exc
+
+try:
+    manifest = RunManifest.model_validate_json(manifest_text)
+except ValidationError as exc:
+    raise EnvelopeError(f"{manifest_path} exists but is not a valid RunManifest: {exc}") from exc
 ```
 
-## Decision: a malformed OR unreadable manifest both fail loud, matching the cited precedent exactly
-
-`download_for_predict.py:407-414`'s existing "corrupt existing manifest fails loud" precedent
-catches `(OSError, ValidationError)` together, not `ValidationError` alone — a manifest file can
-exist but fail to *read* (permission error, transient filesystem issue) independently of its
-*content* being malformed. `discover_envelopes` catches the same pair and re-raises both as
-`EnvelopeError`, so `batch_ingest_result`'s existing `except EnvelopeError` handling (which already
-turns this into a clean `click.ClickException` before any RPC call) covers both cases uniformly.
-Catching only `ValidationError` would let a bare `OSError` escape as an unhandled traceback instead
-of the readable error the "malformed manifest fails loud" spec scenario promises.
+This is not just shorter — it's more correct than the stat-then-read sequence it replaces: `FileNotFoundError`
+is caught at the exact point of use (the actual attempt to read), with no separate `exists()`/`is_file()` calls
+that could themselves raise an uncaught error or, in principle, race against a concurrent filesystem change
+between the check and the read (TOCTOU). Every failure mode (absent, directory, permission-denied, malformed
+JSON, wrong schema) now funnels through exactly two `except` clauses, both already covered by tests.
 
 ## Note: the new debug-log line has no real operator-facing visibility yet
 

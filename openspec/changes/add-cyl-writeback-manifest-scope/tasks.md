@@ -218,8 +218,28 @@ doesn't need its own OpenSpec change.
       passes unchanged — this fix only removes a contradictory duplicate entry and hardens one
       fallthrough check, it doesn't change any already-tested behavior.
 - [x] 6.6 Correct PR #697's own description: it claimed "26 new/updated tests," the real count
-      (verified independently during review) is 15 new + 4 modified = 19 (now 21 + 5 after this
-      section's 2 new tests). Edit the PR description in place, don't leave the stale number.
+      (verified independently during review) was 15 new + 4 modified = 19; after this section's 2
+      tests, 17 new + 4 modified = 21. Edit the PR description in place, don't leave the stale
+      number.
+- [x] 6.7 Second round of `/review-pr` on the fix commit found `Path.exists()`/`.is_file()` only
+      swallow ENOENT-class errno values, not `EACCES` — a permission-denied stat on
+      `run_manifest.json` would escape 6.4's fix as a raw, uncaught `PermissionError` instead of
+      the readable error it was meant to guarantee. RED:
+      `test_discover_envelopes_permission_error_reading_run_manifest_raises` (monkeypatch
+      `Path.read_text` to raise `PermissionError`). GREEN: replace the `exists()`/`is_file()`
+      pre-check pair entirely with a direct `read_text()` attempt, dispatching on
+      `FileNotFoundError` (absent → unscoped fallback, unchanged) vs. any other `OSError`
+      (directory, permission error, etc. → `EnvelopeError`) — see design.md's updated "distinguish
+      'absent' from 'can't be read as a manifest' via EAFP" decision. Also (same round): added a
+      debug-log line for the 6.3 collision-drop case (mirroring the exclusion-log pattern, so a
+      dropped filename doesn't vanish from the record with zero trace) with test
+      `test_batch_ingest_result_collision_drop_logs_debug`; added
+      `test_batch_ingest_result_mismatch_resolved_alongside_a_genuinely_missing_key` (a resolved
+      mismatch and a separate, genuinely-missing key in the same batch — confirms 6.3's filter only
+      drops the collided entry); added the missing `exit_code == 0` assertion to 6.1's test; updated
+      `batch_ingest_result`'s docstring and `README.md`'s discovery bullet to mention the
+      reconciliation exception (flagged as documentation drift by the same review round). 17 new +
+      4 modified from section 2/3 → 20 new + 4 modified = 24 total after this task.
 
 ## 7. Verify
 

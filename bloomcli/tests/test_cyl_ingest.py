@@ -1087,6 +1087,27 @@ def test_discover_envelopes_run_manifest_as_directory_raises(tmp_path):
         ing.discover_envelopes(tmp_path)
 
 
+def test_discover_envelopes_permission_error_reading_run_manifest_raises(tmp_path, monkeypatch):
+    """Review finding: Path.exists()/.is_file() only swallow ENOENT-class errors, not
+    EACCES — a pre-check built on those (the original implementation of this fix) would
+    let a permission-denied stat escape as a raw, uncaught PermissionError instead of
+    failing loud with a readable EnvelopeError. Fixed by reading the manifest directly
+    (FileNotFoundError -> absent/unscoped, any other OSError -> EnvelopeError) instead of
+    pre-checking with exists()/is_file(). This test pins the observable contract —
+    PermissionError specifically, not just a generic OSError stand-in — regardless of
+    which internal call raises it."""
+    _write_envelope(tmp_path, "scan_1")
+    _write_run_manifest(tmp_path, scan_keys=["scan_1"])
+
+    def _boom(self, *args, **kwargs):
+        raise PermissionError("simulated permission error")
+
+    monkeypatch.setattr(Path, "read_text", _boom)
+
+    with pytest.raises(ing.EnvelopeError):
+        ing.discover_envelopes(tmp_path)
+
+
 def test_ingest_one_envelope_malformed_json_file(tmp_path):
     path = tmp_path / "bad.result.json"
     path.write_text("{ not json", encoding="utf-8")
@@ -1584,10 +1605,51 @@ def test_batch_ingest_result_body_scan_key_mismatch_resolves_to_single_entry(
 
     result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
 
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert len(payload) == 1
     assert payload[0]["scan_key"] == "scan_B"
     assert payload[0]["status"] == "ok"
+
+
+def test_batch_ingest_result_collision_drop_logs_debug(monkeypatch, tmp_path, caplog):
+    """The exclusion path (out-of-scope files) logs at debug level; the collision-drop
+    path (a resolved filename/body mismatch) should too, for the same operator-trail
+    reason — otherwise the dropped filename disappears from the record entirely."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    mismatched = _envelope_for("scan_B")
+    (tmp_path / "scan_A.result.json").write_text(json.dumps(mismatched), encoding="utf-8")
+    _write_run_manifest(tmp_path, scan_keys=["scan_A", "scan_B"])
+
+    with caplog.at_level("DEBUG", logger="bloomctl.cyl.ingest"):
+        result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code == 0, result.output
+    debug_records = [r for r in caplog.records if r.levelname == "DEBUG"]
+    assert len(debug_records) == 1
+    assert "scan_B" in debug_records[0].message
+
+
+def test_batch_ingest_result_mismatch_resolved_alongside_a_genuinely_missing_key(
+    monkeypatch, tmp_path
+):
+    """A resolved filename/body mismatch (scan_C, via scan_A.result.json) coexisting with
+    a separate, genuinely-missing manifest key (scan_D, no file at all) in the same batch
+    — the reconciliation must only drop the collided entry, not the unrelated one."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    mismatched = _envelope_for("scan_C")
+    (tmp_path / "scan_A.result.json").write_text(json.dumps(mismatched), encoding="utf-8")
+    _write_run_manifest(tmp_path, scan_keys=["scan_A", "scan_C", "scan_D"])
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code != 0
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_C"]["status"] == "ok"
+    assert payload["scan_D"]["status"] == "failed"
+    assert len(payload) == 2
 
 
 def test_batch_ingest_cli_noop_reported_as_skipped(monkeypatch, tmp_path):
