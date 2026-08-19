@@ -20,6 +20,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+sys.dont_write_bytecode = True
+
 spec = importlib.util.spec_from_file_location(
     "verify_deploy_secrets", SCRIPTS / "verify_deploy_secrets.py"
 )
@@ -58,6 +60,8 @@ jobs:
 """
 
 DEFAULTS = "# comment\nREGION=us-west-2\n"
+
+EOF = "          # _EOF_MARKER_"
 
 ALL_PRESENT = {
     "production": ["PROD_API_TOKEN", "PROD_JWT_JWKS"],
@@ -188,7 +192,7 @@ def test_non_standard_references_are_rejected(line, form):
     regex never sees; `$${VAR}` is a literal it wrongly counts. Each would make
     the check silently wrong, so the file is held to plain ${UPPERCASE}."""
     found = vds.nonstandard_refs(COMPOSE + line + "\n")
-    assert [f for _n, f, _l in found] == [form]
+    assert [f for _n, f in found] == [form]
 
 
 def test_plain_uppercase_references_are_accepted():
@@ -211,3 +215,129 @@ def test_the_real_compose_file_holds_the_convention():
     ${UPPERCASE}; nothing but this enforces that."""
     compose = REPO_ROOT / "docker-compose.prod.yml"
     assert vds.nonstandard_refs(compose.read_text(encoding="utf-8")) == []
+
+
+# --- agreement with validate_env.sh on whether a key is SUPPLIED ---------------
+# validate_env.sh:76 accepts `^KEY=[^[:space:]#].*`. Checking the name alone passed
+# all five inputs below while the deploy rejected every one of them.
+
+
+@pytest.mark.parametrize(
+    "defaults, reason",
+    [
+        ("NEEDED=\n", "empty value"),
+        ("NEEDED=#TODO\n", "comment placeholder"),
+        ("NEEDED= \n", "whitespace value"),
+        ("  NEEDED=x\n", "indented, so not anchored at column 0"),
+    ],
+)
+def test_defaults_entry_without_a_usable_value_is_not_supplied(defaults, reason):
+    assert vds.defaults_keys(defaults) == set(), reason
+
+
+def test_defaults_entry_with_a_value_is_supplied():
+    assert vds.defaults_keys("NEEDED=real\n") == {"NEEDED"}
+
+
+def _body(*lines):
+    return [(n, line) for n, line in enumerate(lines, start=1)]
+
+
+def test_heredoc_key_with_an_empty_value_is_not_supplied():
+    """`ALPHA=` parses as a key with no secret ref, so the existence loop never ran
+    and it passed even in full mode — while the deploy rejected the file."""
+    supplied, _after = vds.block_entries(_body("          ALPHA=", "          " + vds.EOF_MARKER))
+    assert supplied == {}
+
+
+def test_heredoc_key_indented_past_the_block_margin_is_not_supplied():
+    """The YAML block scalar strips only the block's own indent, so the surplus
+    survives into the env file and breaks validate_env.sh's column-0 anchor."""
+    supplied, _after = vds.block_entries(
+        _body("          ALPHA=${{ secrets.X }}", "            BETA=${{ secrets.Y }}",
+              "          " + vds.EOF_MARKER)
+    )
+    assert set(supplied) == {"ALPHA"}
+
+
+def test_key_below_the_eof_marker_is_reported():
+    """validate_env.sh requires the marker to be the last line and rejects the whole
+    file as truncated; appending below it is the natural way to add a secret."""
+    _supplied, after = vds.block_entries(
+        _body("          " + vds.EOF_MARKER, "          LATE=${{ secrets.X }}")
+    )
+    assert after == ["LATE"]
+
+
+def test_duplicate_heredoc_key_keeps_the_last_ref():
+    """`cat >>` writes both lines and the last wins at deploy time."""
+    supplied, _after = vds.block_entries(
+        _body("          A=${{ secrets.FIRST }}", "          A=${{ secrets.SECOND }}",
+              "          " + vds.EOF_MARKER)
+    )
+    assert supplied["A"] == ["SECOND"]
+
+
+# --- input validation: every unusable input is exit 2, never exit 1 ------------
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ["not json", "[]", "null", '{"production": null}', '{"production": "PROD_API_TOKEN"}',
+     '{"production": [1, 2]}', '{"production": []}'],
+)
+def test_malformed_secrets_json_is_a_usage_error(tree, payload):
+    """Exit 1 would make a broken generator step indistinguishable from a real
+    finding; a bare string would degrade into a set of characters."""
+    path = tree / "secrets.json"
+    path.write_text(payload)
+    assert vds.main([
+        "--compose", str(tree / "docker-compose.prod.yml"),
+        "--deploy", str(tree / "deploy.yml"),
+        "--defaults-dir", str(tree),
+        "--secrets-json", str(path),
+    ]) == 2
+
+
+def test_missing_input_file_is_a_usage_error(tree):
+    assert vds.main([
+        "--compose", str(tree / "nope.yml"), "--deploy", str(tree / "deploy.yml"),
+        "--defaults-dir", str(tree),
+    ]) == 2
+
+
+def test_missing_defaults_file_is_reported_before_any_environment_runs(tree, capsys):
+    """Returning 2 mid-loop discarded findings already emitted and skipped staging."""
+    (tree / ".env.staging.defaults").unlink()
+    assert run(tree, ALL_PRESENT) == 2
+    assert "problem(s) found" not in capsys.readouterr().err
+
+
+# --- the lint must not pre-empt itself ----------------------------------------
+
+
+def test_compose_written_entirely_with_unbraced_refs_names_the_mistake(tree, capsys):
+    """This yields zero required keys; reporting 'no ${VAR} references found' would
+    hide the exact error the lint exists to name."""
+    (tree / "docker-compose.prod.yml").write_text(
+        "services:\n  x:\n    environment:\n      A: $ALPHA\n"
+    )
+    assert run(tree, ALL_PRESENT) == 1
+    assert "$ALPHA" in capsys.readouterr().err
+
+
+def test_a_trailing_comment_is_not_a_finding():
+    """Compose does not interpolate comments; failing a PR over a margin note sent
+    the author to 'fix' it into a real deploy failure."""
+    assert vds.nonstandard_refs("      C: ${GAMMA}  # set $HOME first\n") == []
+
+
+# --- environments are looked up independently ---------------------------------
+
+
+def test_a_secret_present_only_in_the_other_environment_still_fails(tree, capsys):
+    """Guards against collapsing the two environments into one pooled set."""
+    secrets = {"production": [], "staging": ["PROD_API_TOKEN", "PROD_JWT_JWKS",
+                                             "STAGING_API_TOKEN", "STAGING_JWT_JWKS"]}
+    assert run(tree, secrets) == 1
+    assert "PROD_API_TOKEN" in capsys.readouterr().err
