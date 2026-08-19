@@ -136,3 +136,57 @@
       old `filename=`/`traits=` signature.
 - [x] 7.2 `uv run ruff check` / `uv run black --check` clean on every touched file.
 - [x] 7.3 `openspec validate converge-bloommcp-viz-tools --strict` passes.
+
+## 8. PR review fixes
+
+Branch was rebased onto `origin/staging` (this repo's actual active integration branch for
+bloommcp — confirmed by 14/15 recent merged PRs — not `origin/main`, which the branch was
+originally, incorrectly created from). PR review then found the 3 new tools didn't match
+`staging`'s current sibling shape, plus several test/behavior gaps:
+
+- [x] 8.1 **Blocking**: declare `errors=(ExperimentReadError, CommitFailedError,
+      ManifestReadError)` on all 3 tools, matching every sibling's post-#640 shape (staging had
+      landed #660's fix while this branch was based on stale `main`). Add
+      `test_commit_failure_surfaces_as_tool_error` / `test_manifest_read_failure_surfaces_as_
+      tool_error` per tool file, mirroring `qc_inspect`'s regression tests.
+- [x] 8.2 Register all 3 new tool classes in `list_existing_analyses._TOOL_CLASS_TO_PUBLIC_NAME`
+      (bloom#671, landed on staging while this branch was based on stale `main`) — without this,
+      `test_every_non_legacy_tool_class_has_a_public_name_mapping` fails and a `list_runs` failure
+      for one of these 3 leaks its raw tool_class string.
+- [x] 8.3 Extract the 3 tools' duplicated `_resolve_trait_cols` into one shared
+      `_viz_shared.resolve_trait_columns`, additionally rejecting duplicate trait names (silent
+      miscounting risk for `plot_correlation_matrix`'s permanently-stored strong-correlation
+      counts). Add `test_duplicate_trait_columns_is_invalid_input` per tool file.
+- [x] 8.4 `plot_correlation_matrix` reports `zero_variance_traits` (constant/all-NaN selected
+      traits, whose Pearson correlation is `NaN` and so silently doesn't count toward either
+      strong-correlation field). Add `test_zero_variance_trait_excluded_from_counts_and_reported`.
+- [x] 8.5 Disclose raw/uncleaned data explicitly in each tool's function docstring (mirrors
+      `qc_inspect`'s "Inspect raw experiment missingness" framing) — previously only discoverable
+      post-hoc via `result.source == "raw"`.
+- [x] 8.6 Fix the tautological `assert stored.input_validation is None or True` in
+      `test_plot_correlation_matrix_tool.py` (the `or True` made it always pass regardless of the
+      left side) to a real assertion.
+- [x] 8.7 Close `plot_trait_boxplots`'s test-parity gap with `plot_trait_histograms`: add the
+      exact batching-boundary test, the non-numeric-trait-column test, and the
+      reads-raw-despite-cleaned-version test (tasks.md §4.1 had checked off parity that wasn't
+      actually written).
+- [x] 8.8 Align the path-traversal payload list across all 3 test files to the same 8 cases
+      (histograms/boxplots were missing the `sub\dir\x.csv` variant `correlation_matrix` had).
+- [x] 8.9 Strengthen `test_committed_runs_from_all_3_tools_are_discoverable` with an interleaved
+      cross-tool-class test proving independent per-class version-lineage progression, not just
+      that each starts at v1.
+- [x] 8.10 Add a staging-dir-removed assertion to each tool's `test_commit_failure_cleans_
+      staging_and_commits_nothing` (previously only the render-failure test checked this).
+- [x] 8.11 design.md: document the `errors=` fix, the `_TOOL_CLASS_TO_PUBLIC_NAME` addition, the
+      `resolve_trait_columns` extraction + duplicate rejection, `zero_variance_traits`, and an
+      explicit deferred note that `source_id`/`run_id` pinning (bloom#626, landed on staging
+      mid-flight) is intentionally not threaded through these 3 tools.
+- [x] 8.12 Re-run the full suite + ruff/black + `openspec validate --strict` against the
+      rebased-onto-staging tree.
+
+Not chased (disclosed, non-blocking per the review itself): a delegate-internal figure leak if
+`create_trait_histograms_batched`/`create_trait_boxplots_by_genotype_batched` raise partway
+through creating a batch's figures — this tool's own `finally: for fig in figures: plt.close(fig)`
+cannot reach figures the delegate created and abandoned before raising, since `figures` is never
+assigned until the (all-or-nothing) delegate call returns. Pre-existing, delegate-internal, and
+not unique to these 3 tools' wrapper.

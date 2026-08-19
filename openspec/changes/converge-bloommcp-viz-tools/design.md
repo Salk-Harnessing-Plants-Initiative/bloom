@@ -164,12 +164,15 @@ contract):
   reports a plotted-trait/page count instead, and every page is independently linked.
 
 - **Decision: `trait_columns: Optional[list[str]]` replaces `traits: str` (comma-separated),
-  validated via `_qc_shared._validate_trait_subset(..., require_certified=False)`** — the same
-  non-certified strictness level `qc_clean`/`qc_inspect` already use for a raw (not
-  cleaned-consumer) frame: existence + numeric, empty list means "all detected traits". This is
-  a **behavior change** from `_viz_shared.parse_traits`, which silently drops an unknown/typo'd
-  trait name rather than rejecting it — the new behavior surfaces the mistake instead of quietly
-  plotting fewer traits than requested.
+  validated (via the shared `_viz_shared.resolve_trait_columns`, see below) at the same
+  non-certified strictness level `qc_clean`/`qc_inspect` use for a raw (not cleaned-consumer)
+  frame: existence + numeric.** This is a **behavior change** from `_viz_shared.parse_traits`,
+  which silently drops an unknown/typo'd trait name rather than rejecting it — the new behavior
+  surfaces the mistake instead of quietly plotting fewer traits than requested. An explicit empty
+  list is additionally rejected (see above) and a duplicate name is additionally rejected (see the
+  `resolve_trait_columns` Decision below) — two strictnesses `_qc_shared._validate_trait_subset`'s
+  shared non-certified branch does not itself enforce, since it stays permissive for
+  `qc_clean`/`qc_inspect`.
 
 - **Decision: the bare-filename guard moves to `_qc_shared._validate_experiment_name`
   (raises `BloomMCPError`, code `invalid_input`), not `_viz_shared.validate_filename`
@@ -187,7 +190,46 @@ contract):
 - **Decision: register the 3 new classes in both `manifest.CANONICAL_TOOL_CLASSES` and
   `list_existing_analyses.TOOL_CLASSES`.** Without this, a run these tools persist would be
   invisible to `list_existing_analyses` — a regression relative to every other persisting tool in
-  the folder, and a dead end for an agent trying to find a prior plot.
+  the folder, and a dead end for an agent trying to find a prior plot. Also add each to
+  `_TOOL_CLASS_TO_PUBLIC_NAME` (bloom#671's mapping, guarded by
+  `test_every_non_legacy_tool_class_has_a_public_name_mapping`) so a `list_runs` failure for one
+  of these 3 names the public tool, not the raw tool_class string.
+
+- **Decision: declare `errors=(ExperimentReadError, CommitFailedError, ManifestReadError)`,
+  matching every sibling tool's post-#640 shape.** `store.create_run()`/`commit()` can genuinely
+  raise either of the latter two; a tool that declares only `ExperimentReadError` swallows them
+  into a bare `internal_error` correlation ref instead of the store's own already-actionable
+  `tool_error` message — exactly the bug #640 fixed on the other 8 tools. Each of the 3 files gets
+  its own `test_commit_failure_surfaces_as_tool_error` / `test_manifest_read_failure_surfaces_as_
+  tool_error`, mirroring `qc_inspect`'s regression tests.
+
+- **Decision: extract the 3 tools' near-identical trait-resolution logic into one shared
+  `_viz_shared.resolve_trait_columns(frame, trait_columns, experiment)`, and reject duplicate
+  names there.** Each tool independently reimplemented "validate + fall back to all detected
+  traits + reject an empty result" as its own private `_resolve_trait_cols` — drift risk the same
+  `_qc_shared` extraction pattern already exists to prevent. Duplicates are additionally rejected
+  here (not in `_qc_shared._validate_trait_subset`'s shared non-certified branch, which stays
+  permissive for `qc_clean`/`qc_inspect`, where a duplicate is harmless): for
+  `plot_correlation_matrix` specifically, a duplicated trait name produces a self-correlation
+  (r=1.0) that would silently count as a "strong positive correlation" in a permanent,
+  provenance-stamped `ResultStore` artifact — not a transient string, so a silent miscount here is
+  worse than in the tools that tolerate it today.
+
+- **Decision: `plot_correlation_matrix` reports `zero_variance_traits` in its result.** Pearson
+  correlation against a constant or all-NaN trait is `NaN`, and `NaN > 0.7` is `False`, so such a
+  trait's pairs silently drop out of both `strong_positive_correlations`/
+  `strong_negative_correlations` with no signal — realistic specifically because this tool reads
+  raw, uncleaned data (no QC has removed a zero-variance trait yet). Naming the affected traits
+  explicitly is cheap (one `std()` pass already available) and turns a silent undercount into a
+  disclosed one.
+
+- **Deferred: `source_id`/`run_id` pinning (bloom#626) is NOT threaded through these 3 tools,**
+  even though `qc_clean`/`qc_inspect`/the other raw-frame readers gained it on `staging` while
+  this change was in flight. `ExperimentReader.load_experiment`'s `source_id`/`run_id` kwargs
+  default to `None`, so omitting them is fully valid — these 3 tools simply use the reader's
+  default single-source resolution. Threading them through is a genuine follow-up (matching
+  `qc_clean`/`qc_inspect`'s shape exactly), left out here to keep this change a wrapper-layer
+  convergence rather than also picking up an unrelated, still-progressing feature.
 
 ## Risks / Trade-offs
 

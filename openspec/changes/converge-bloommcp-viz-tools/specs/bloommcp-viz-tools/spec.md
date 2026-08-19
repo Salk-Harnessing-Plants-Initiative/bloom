@@ -62,6 +62,13 @@ columns is rejected, not silently plotted as an empty figure.
 - **WHEN** `trait_columns` is omitted and the experiment has no detected numeric trait columns
 - **THEN** the tool raises `BloomMCPError(code="invalid_input")` and no run is persisted
 
+#### Scenario: Duplicate trait name is rejected, not silently double-counted
+
+- **WHEN** `trait_columns` names the same trait more than once
+- **THEN** the tool raises `BloomMCPError(code="invalid_input")` naming the duplicated column,
+  rather than proceeding with a repeated selection (for `plot_correlation_matrix`, an unchecked
+  duplicate would otherwise count a self-correlation as a "strong positive correlation")
+
 ### Requirement: Path-Safety Guard Before Any Read
 
 Each tool SHALL reject a non-bare `experiment` identifier (containing a path separator, `..`, or
@@ -109,6 +116,29 @@ run output (never returned as an inline blob); the result SHALL expose it via `o
   through a multi-page batched persist)
 - **THEN** no partial run is discoverable via `list_existing_analyses`, and any staging directory
   created for the attempt is cleaned up
+
+#### Scenario: A ResultStore write-path failure is a structured, actionable error
+
+- **WHEN** `ResultStore.create_run`/`commit` raises `CommitFailedError` or `ManifestReadError`
+  (a transient storage/manifest failure, not a caller mistake)
+- **THEN** the tool raises `BloomMCPError(code="tool_error")` carrying the store's own actionable
+  message, not a generic `internal_error` correlation ref (each tool declares both exception
+  types in its `@as_mcp_tool(errors=...)`, matching every sibling tool in the folder)
+
+### Requirement: Zero-Variance Traits Disclosed In Correlation Counts
+
+`plot_correlation_matrix`'s result SHALL report `zero_variance_traits`: the selected traits that
+are constant or entirely NaN in the raw data. Such a trait's Pearson correlation against every
+other trait is `NaN`, which counts toward neither `strong_positive_correlations` nor
+`strong_negative_correlations` — this field discloses which traits are silently excluded rather
+than leaving the counts to look complete.
+
+#### Scenario: A constant trait is named, not silently excluded
+
+- **WHEN** a selected trait has zero variance (or is entirely NaN) in the raw data
+- **THEN** it appears in the result's `zero_variance_traits`, and neither
+  `strong_positive_correlations` nor `strong_negative_correlations` includes any pair involving
+  it
 
 ### Requirement: Paginated Figure Persistence
 
