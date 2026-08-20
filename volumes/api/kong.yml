@@ -268,11 +268,23 @@ services:
     url: http://studio:3000/
     # Caddy proxied Studio with no read timeout at all before it was routed
     # through Kong, and Kong's service default is 60s -- short enough to 504 a
-    # SQL-editor query, a deep table page, or a CSV export over cyl_scan_traits.
-    # 300s matches the MinIO console's transport bound in caddy/Caddyfile.
-    connect_timeout: 60000
-    write_timeout: 300000
-    read_timeout: 300000
+    # SQL-editor query or a deep table page over cyl_scan_traits.
+    #
+    # Set ABOVE the database's own bound, not equal to it: migration
+    # 20240904033106 sets statement_timeout to 5min database-wide and
+    # supabase_admin (the role pg-meta connects as) has no override, so every
+    # Studio query is already capped at 300s. Kong starts its clock earlier, so
+    # an equal bound guarantees Kong's opaque 504 pre-empts Postgres's readable
+    # "canceling statement due to statement timeout". 330s leaves 30s of margin,
+    # which makes a 504 here mean something OTHER than the query is stuck.
+    #
+    # connect_timeout is a TCP connect to studio:3000 on the same bridge network
+    # -- single-digit ms when Studio is up, so a short bound fails fast instead
+    # of hanging every request for a minute when it is down. 60000 was Kong's
+    # own default restated, i.e. no bound at all in practice.
+    connect_timeout: 5000
+    write_timeout: 330000
+    read_timeout: 330000
     routes:
       - name: dashboard-all
         strip_path: true
