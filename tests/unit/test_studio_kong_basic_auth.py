@@ -91,15 +91,34 @@ def _studio_block() -> str | None:
     return None if open_brace == -1 else _braced(uncommented, open_brace)
 
 
+def _normalise_upstream(token: str) -> str:
+    """An upstream token with any scheme prefix removed.
+
+    `http://kong:{$KONG_PORT}` and `h2c://kong:{$KONG_PORT}` are legitimate ways
+    to reach the same gate, so comparing raw tokens would reject valid config.
+    The scheme is irrelevant to the question this file asks, which is only
+    *which host* the traffic reaches.
+    """
+    return re.sub(r"^[a-z0-9+.-]+://", "", token)
+
+
 def _reverse_proxy_upstreams(block: str) -> list[str]:
     """Every upstream named by a `reverse_proxy` directive in `block`.
 
     Only a *trailing* `{` is stripped (it opens the directive's option block).
     Slicing at the first `{` instead would truncate `kong:{$KONG_PORT}` to
-    `kong:` and let any port through. A directive naming no upstream inline
-    yields `""`, which fails the allowlist — Caddy allows the upstream to be
-    given inside the block via `to ...`, and this repo never does, so that
-    shape is rejected rather than parsed.
+    `kong:` and let any port through.
+
+    A leading inline matcher is dropped, not treated as an upstream:
+    `reverse_proxy /_next/* kong:{$KONG_PORT}` and `reverse_proxy @ws kong:...`
+    are idiomatic Caddy, and reporting `/_next/*` as a bypass would be a false
+    alarm dressed as a security failure.
+
+    A directive naming no upstream inline yields `""`, which fails the
+    allowlist — Caddy allows the upstream to be given inside the block via
+    `to ...`, and this repo never does, so that shape is rejected rather than
+    parsed. Multiple upstreams on one line are each returned, so a
+    load-balanced `kong:... studio:...` pair fails on the studio token.
     """
     upstreams = []
     for line in block.splitlines():
@@ -109,7 +128,12 @@ def _reverse_proxy_upstreams(block: str) -> list[str]:
         rest = m.group(1).strip()
         if rest.endswith("{"):
             rest = rest[:-1].strip()
-        upstreams.extend(rest.split() or [""])
+        tokens = rest.split()
+        # Caddy allows one matcher token before the upstreams: a path (`/x/*`),
+        # a named matcher (`@name`), or the wildcard (`*`).
+        if tokens and (tokens[0].startswith(("/", "@")) or tokens[0] == "*"):
+            tokens = tokens[1:]
+        upstreams.extend([_normalise_upstream(t) for t in tokens] or [""])
     return upstreams
 
 
@@ -183,8 +207,11 @@ def test_studio_has_exactly_one_catch_all_reaching_kong():
 
     body = _braced(studio, catch_alls[0])
     assert body is not None, "unbalanced braces in the Studio catch-all block"
-    assert re.search(r"reverse_proxy\s+kong:\{\$KONG_PORT\}", body), (
-        "the Studio UI catch-all must proxy `kong:{$KONG_PORT}` so unmatched paths "
+    # Reuse the same parser as the allowlist so a legitimate `http://kong:...`
+    # or `h2c://kong:...` is accepted here too, rather than passing one test and
+    # failing the other on a scheme prefix that changes nothing about the gate.
+    assert KONG_UPSTREAM in _reverse_proxy_upstreams(body), (
+        f"the Studio UI catch-all must proxy `{KONG_UPSTREAM}` so unmatched paths "
         f"are gated rather than unrouted; found: {body.strip()!r}"
     )
 
@@ -271,7 +298,52 @@ def test_dashboard_service_still_has_the_basic_auth_plugin():
         "the `dashboard` service's `basic-auth` plugin is declared but disabled "
         "(`enabled: false`), which leaves Studio served unauthenticated"
     )
-    assert not any("anonymous" in (p.get("config") or {}) for p in basic_auth), (
+    # Truthiness, not key presence: Kong's basic-auth gates on `if conf.anonymous`,
+    # so an explicit `anonymous:` (YAML null) is its safe default and spelling it
+    # out to document intent must not fail this test.
+    assert not any((p.get("config") or {}).get("anonymous") for p in basic_auth), (
         "the `dashboard` service's `basic-auth` plugin sets `anonymous`, so Kong "
         "forwards credential-less requests as that consumer instead of returning 401"
     )
+
+
+def test_dashboard_timeout_exceeds_the_database_statement_timeout():
+    """Kong's bound on Studio must sit ABOVE the database's own.
+
+    Kong starts its clock when it finishes writing the request to studio:3000;
+    Postgres starts its `statement_timeout` clock only once the backend begins
+    executing, several hops later. So at equal bounds Kong always fires first
+    and the operator gets an opaque 504 instead of Postgres's readable
+    cancellation message — the exact case the bound exists to make legible.
+
+    Pinned against the migration rather than a hardcoded number: if the
+    database bound is ever changed, this fails loudly instead of silently
+    losing the property.
+    """
+    migration = (
+        REPO_ROOT
+        / "supabase"
+        / "migrations"
+        / "20240904033106_create_fix_create_cyl_dataset_function_again.sql"
+    )
+    assert migration.exists(), f"migration moved or renamed: {migration.name}"
+
+    m = re.search(
+        r"alter\s+database\s+postgres\s+set\s+statement_timeout\s+TO\s+'(\d+)min'",
+        migration.read_text(encoding="utf-8"),
+        re.IGNORECASE,
+    )
+    assert m, (
+        "the database-level statement_timeout is no longer set by this migration — "
+        "re-derive the dashboard service's timeouts against wherever it now lives"
+    )
+    db_bound_ms = int(m.group(1)) * 60 * 1000
+
+    service = _dashboard_service(_kong_config())
+    assert service, "no `dashboard` service in volumes/api/kong.yml"
+    for key in ("read_timeout", "write_timeout"):
+        assert service.get(key, 60000) > db_bound_ms, (
+            f"the `dashboard` service's {key} ({service.get(key, 60000)}ms) must exceed "
+            f"the database's {db_bound_ms}ms statement_timeout, or Kong's 504 pre-empts "
+            "Postgres's readable 'canceling statement due to statement timeout'"
+        )
