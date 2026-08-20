@@ -272,45 +272,15 @@ services:
   - name: dashboard
     _comment: 'Studio: /* -> http://studio:3000/*'
     url: http://studio:3000/
-    # Caddy proxied Studio with no read timeout at all before it was routed
-    # through Kong, and Kong's service default is 60s -- short enough to 504 a
-    # SQL-editor query or a deep table page over cyl_scan_traits.
-    #
-    # These are nginx proxy_read_timeout / proxy_send_timeout: they bound the
-    # IDLE GAP between successive reads from studio:3000, not total request
-    # duration. For a SQL-editor query, which returns nothing until the DB
-    # answers, the gap is the whole query -- so here it behaves as a total bound.
-    #
-    # Set ABOVE the database's own bound, not equal to it. Migration
-    # 20240904033106_create_fix_create_cyl_dataset_function_again.sql sets
-    # statement_timeout to 5min database-wide, and supabase_admin (the role
-    # pg-meta connects as) has no override in this repo's migrations, so every
-    # Studio query is already capped at 300s. Kong starts its clock earlier, so
-    # an equal bound guarantees Kong's opaque 504 pre-empts Postgres's readable
-    # cancellation message. 330s leaves 30s of margin -- enough to absorb
-    # pg-meta pool-wait -- which makes a 504 here mean something OTHER than the
-    # query is stuck.
-    #
-    # connect_timeout is a TCP connect to studio:3000 on the same bridge
-    # network, single-digit ms when Studio is up. 60000 was Kong's own default
-    # restated. retries is pinned to 1 because Kong's default of 5 would turn a
-    # blackholed upstream into 5 x connect_timeout before the caller hears back.
-    connect_timeout: 5000
+    # Routing Studio through Kong puts it behind Kong's 60s service default,
+    # where Caddy imposed none. 330s sits above the database's own 300s
+    # statement_timeout (migration 20240904033106) so a slow query surfaces
+    # Postgres's readable cancellation rather than an opaque gateway 504.
     write_timeout: 330000
     read_timeout: 330000
-    retries: 1
     routes:
       - name: dashboard-all
         strip_path: true
-        # Caddy preserves the client Host header; Kong does not, and defaults to
-        # rewriting it to the upstream (studio:3000). Studio previously saw the
-        # real hostname because Caddy proxied it directly, so without this any
-        # absolute URL Next.js derives from the request - a redirect Location,
-        # new URL(request.url), the image optimiser - would point at
-        # http://studio:3000/, which no browser can follow. The smoke probe
-        # cannot catch that: it accepts any 2xx/3xx and does not follow
-        # redirects, so a broken Location passes green.
-        preserve_host: true
         paths:
           - /
     plugins:
