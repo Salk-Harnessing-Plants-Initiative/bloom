@@ -26,12 +26,13 @@ named by `to` inside a `reverse_proxy` option block, an `import`ed snippet, or a
 `header_up Authorization` that makes the gate transparent. Each of those was
 demonstrated in review to reach studio:3000 while these tests pass.
 
-The control for that class is behavioural, not static: `deploy.yml`'s smoke test
-probes the Studio hostname unauthenticated on `/` and on
-`/api/platform/pg-meta/query` and requires an exact 401. That asks the running
-server, so no config spelling evades it — and it is the only one of the two that
-runs on a deploy, since this file's job is pull_request-only. Whole-file route
-coverage belongs to a separate route-inventory guard, not here.
+The control for that class is behavioural, not static: CI's Docker Compose
+Health Check boots the full prod-shaped stack and asserts 401 unauthenticated
+and 200 with credentials. That asks a running server, so no config spelling
+evades it — but it probes `/` only, so a route added above the catch-all that
+serves some other path directly is caught by neither layer. The deploy's smoke
+probe sends credentials and so cannot see a missing gate at all. Whole-file
+route coverage belongs to a separate route-inventory guard, not here.
 
 These tests guard declarative config only, which is why they run without Docker.
 
