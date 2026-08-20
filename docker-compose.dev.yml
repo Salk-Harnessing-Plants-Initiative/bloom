@@ -253,7 +253,7 @@ services:
     restart: unless-stopped
 
   studio:
-    image: supabase/studio:2025.06.30-sha-6f5982d
+    image: supabase/studio:2026.03.30-sha-12a43e5
     restart: unless-stopped
     networks:
       - supanet
@@ -273,7 +273,8 @@ services:
     environment:
       STUDIO_PG_META_URL: http://meta:8080
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-
+      # Required from studio 2026.03.30 onward; without it the container exits on boot.
+      EDGE_FUNCTIONS_MANAGEMENT_FOLDER: /tmp/edge-functions
       DEFAULT_ORGANIZATION_NAME: ${STUDIO_DEFAULT_ORGANIZATION}
       DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
@@ -328,6 +329,7 @@ services:
       timeout: 5s
       interval: 5s
       retries: 3
+      start_period: 20s
     depends_on:
       db-dev:
         condition: service_healthy
@@ -427,6 +429,7 @@ services:
       timeout: 5s
       interval: 5s
       retries: 3
+      start_period: 60s
     environment:
       PORT: 4000
       DB_HOST: ${POSTGRES_HOST}
@@ -466,7 +469,7 @@ services:
   minio-init:
     networks:
       - supanet
-    image: minio/mc:RELEASE.2025-01-17T23-25-50Z
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on:
       - supabase-minio
     entrypoint: ["/bin/sh", "/usr/local/bin/init/create-buckets.sh"]
@@ -479,7 +482,7 @@ services:
   storage:
     networks:
       - supanet
-    image: supabase/storage-api:v1.25.7
+    image: supabase/storage-api:v1.48.14
     restart: unless-stopped
     ports:
       - "${STORAGE_PORT}:5000"
@@ -498,6 +501,7 @@ services:
       timeout: 5s
       interval: 5s
       retries: 3
+      start_period: 30s
     depends_on:
       db-dev:
         condition: service_healthy
@@ -532,7 +536,7 @@ services:
       IMGPROXY_URL: http://imgproxy:5001
 
   imgproxy:
-    image: darthsim/imgproxy:v3.8.0
+    image: darthsim/imgproxy:v3.31.1
     restart: unless-stopped
     networks:
       - supanet
@@ -548,6 +552,7 @@ services:
       timeout: 5s
       interval: 5s
       retries: 3
+      start_period: 20s
     environment:
       IMGPROXY_BIND: ":5001"
       IMGPROXY_LOCAL_FILESYSTEM_ROOT: /
@@ -555,7 +560,7 @@ services:
       IMGPROXY_ENABLE_WEBP_DETECTION: ${IMGPROXY_ENABLE_WEBP_DETECTION}
 
   meta:
-    image: supabase/postgres-meta:v0.91.6
+    image: supabase/postgres-meta:v0.96.2
     restart: unless-stopped
     networks:
       - supanet
@@ -574,7 +579,22 @@ services:
   # connections to DataDog. See: https://github.com/supabase/cli/issues/3254
 
   db-dev:
-    image: supabase/postgres:15.8.1.060
+    # Pinned to the same tag as docker-compose.prod.yml. Behaviour that differs between
+    # Postgres builds is otherwise invisible locally and only surfaces in the one CI job
+    # that builds from the prod compose file. See issue #692.
+    #
+    # Upgrading an existing checkout requires clearing TWO things once, or the container
+    # restart-loops on `configuration file "/etc/postgresql/postgresql.conf" contains errors`:
+    #
+    #   make dev-down
+    #   rm -rf ./volumes/db/data              # bind mount; both tags are PG 15, so the
+    #                                         # cluster is otherwise never re-initialised
+    #   docker volume rm bloom_v2_dev_db-config   # holds supautils.conf et al. written by
+    #                                             # the OLD image; the new one rejects it
+    #
+    # The db-config volume is the non-obvious one — it survives `docker compose down` and is
+    # shared by every worktree using the bloom_v2_dev project name.
+    image: supabase/postgres:15.14.1.104
     restart: unless-stopped
     volumes:
       - ./volumes/db/_supabase.sh:/docker-entrypoint-initdb.d/96-_supabase.sh:Z
@@ -606,6 +626,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 60s
     environment:
       POSTGRES_HOST: /var/run/postgresql
       PGPORT: ${POSTGRES_PORT}
@@ -640,7 +661,7 @@ services:
       TRY_IT_OUT_ENABLED: true
 
   supavisor:
-    image: supabase/supavisor:2.5.7
+    image: supabase/supavisor:2.7.4
     restart: unless-stopped
     networks:
       - supanet
@@ -662,6 +683,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 60s
     depends_on:
       db-dev:
         condition: service_healthy

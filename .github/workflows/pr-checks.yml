@@ -101,6 +101,24 @@ jobs:
       - name: Verify prod/staging env parity
         run: uv run --python 3.11 python scripts/verify_env_parity.py .github/workflows/deploy.yml
 
+  # Guards dev/prod image parity (issue #692): docker-compose.dev.yml must pin the same
+  # image versions as docker-compose.prod.yml, so production-only behaviour is reproducible
+  # locally and in dev-stack-smoke rather than surfacing only in compose-health-check.
+  # Implementation: scripts/verify_image_parity.py. Unit tests for that script run in the
+  # `python-audit` job alongside the rest of tests/unit/ — do NOT duplicate pytest here.
+  verify-image-parity:
+    name: Verify dev/prod image parity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+
+      - name: Verify dev/prod image parity
+        run: uv run --python 3.11 python scripts/verify_image_parity.py
+
   # Guards the Committed Defaults contract: no secrets leak into the defaults
   # files, prod/staging key sets are identical, disambiguating values differ,
   # and every ${VAR} in docker-compose.prod.yml has a source.
