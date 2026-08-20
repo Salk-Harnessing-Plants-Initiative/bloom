@@ -15,9 +15,23 @@ other test in the repo.
 
 That assertion is an allowlist (every upstream must BE Kong), not a denylist on
 `studio:`. An earlier denylist form was removed because `reverse_proxy
-http://studio:3000` walked straight past it — but the fix for an evadable denylist
-is to invert it, not to drop the coverage: an allowlist rejects every spelling of
-every non-Kong destination, including ones nobody has thought of yet.
+http://studio:3000` walked straight past it; inverting it means a new *spelling* of
+a destination fails by default instead of needing to be enumerated.
+
+Scope, stated precisely because an over-claim here is worse than no test: this
+guards `reverse_proxy` directives lexically inside the FIRST `handle @studio` block
+of this one file, located by regex and sliced by naive brace counting. It does NOT
+see a sibling matcher bound to the same hostname outside that block, an upstream
+named by `to` inside a `reverse_proxy` option block, an `import`ed snippet, or a
+`header_up Authorization` that makes the gate transparent. Each of those was
+demonstrated in review to reach studio:3000 while these tests pass.
+
+The control for that class is behavioural, not static: `deploy.yml`'s smoke test
+probes the Studio hostname unauthenticated on `/` and on
+`/api/platform/pg-meta/query` and requires an exact 401. That asks the running
+server, so no config spelling evades it — and it is the only one of the two that
+runs on a deploy, since this file's job is pull_request-only. Whole-file route
+coverage belongs to a separate route-inventory guard, not here.
 
 These tests guard declarative config only, which is why they run without Docker.
 

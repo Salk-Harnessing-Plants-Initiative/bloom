@@ -555,6 +555,15 @@ jobs:
             # Without it, a deploy where the Caddy reload never applied serves Studio
             # directly, answers 200 to the credentialed probe below, and passes.
             _probe \"\$DOMAIN_STUDIO\" \"/\" \"\" 401
+            # A second unauthenticated probe on a path that is NOT the root. Every
+            # bypass found in review lives off /: a sibling host matcher outside the
+            # audited Caddy block, a `to` upstream inside a reverse_proxy option
+            # block, an imported snippet. Config-shape unit tests cannot see those
+            # (and do not run on this workflow at all -- pr-checks.yml is
+            # pull_request-only), so this request is the gate's real regression test.
+            # /api/platform/pg-meta/query is Studio's arbitrary-SQL endpoint, which
+            # makes it the path that matters most if the gate is ever missing.
+            _probe \"\$DOMAIN_STUDIO\" \"/api/platform/pg-meta/query\" \"\" 401
             _probe \"\$DOMAIN_STUDIO\" \"/\" \"\$STUDIO_AUTH\"
             _probe \"\$DOMAIN_MINIO\"  \"/\"
             _probe \"\$DOMAIN_MAIN\"   \"/api/rest/v1/\" \"apikey: \$ANON_KEY\"
@@ -1255,6 +1264,15 @@ jobs:
             # Without it, a deploy where the Caddy reload never applied serves Studio
             # directly, answers 200 to the credentialed probe below, and passes.
             _probe \"\$DOMAIN_STUDIO\" \"/\" \"\" 401
+            # A second unauthenticated probe on a path that is NOT the root. Every
+            # bypass found in review lives off /: a sibling host matcher outside the
+            # audited Caddy block, a `to` upstream inside a reverse_proxy option
+            # block, an imported snippet. Config-shape unit tests cannot see those
+            # (and do not run on this workflow at all -- pr-checks.yml is
+            # pull_request-only), so this request is the gate's real regression test.
+            # /api/platform/pg-meta/query is Studio's arbitrary-SQL endpoint, which
+            # makes it the path that matters most if the gate is ever missing.
+            _probe \"\$DOMAIN_STUDIO\" \"/api/platform/pg-meta/query\" \"\" 401
             _probe \"\$DOMAIN_STUDIO\" \"/\" \"\$STUDIO_AUTH\"
             _probe \"\$DOMAIN_MINIO\"  \"/\"
             _probe \"\$DOMAIN_MAIN\"   \"/api/rest/v1/\" \"apikey: \$ANON_KEY\"
