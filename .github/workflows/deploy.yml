@@ -772,11 +772,11 @@ jobs:
                 fi
               fi
               # Reload caddy onto the reverted Caddyfile if this deploy changed it —
-              # the reset restored the file, but only `caddy reload` re-reads it.
+              # the reset restored the file, but only caddy reload re-reads it.
               if [ \"${{ steps.pull_prod.outputs.caddyfile_changed }}\" = \"true\" ]; then
                 echo 'caddy/Caddyfile changed during this deploy — reloading caddy so the reverted config takes effect'
                 if ! timeout 60 docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T caddy caddy reload --config /etc/caddy/Caddyfile; then
-                  echo '::warning::caddy reload during rollback failed — caddy may still be serving the failed deploy config, verify manually on the deploy host'
+                  echo '::error::caddy reload during rollback failed — the Caddyfile on disk was reverted but caddy is STILL SERVING the config from the failed deploy. Retry on the deploy host with: docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T caddy caddy reload --config /etc/caddy/Caddyfile'
                 fi
               fi
               if [ \"\$kong_rollback_ok\" = \"true\" ]; then
@@ -1416,11 +1416,11 @@ jobs:
                 fi
               fi
               # Reload caddy onto the reverted Caddyfile if this deploy changed it —
-              # the reset restored the file, but only `caddy reload` re-reads it.
+              # the reset restored the file, but only caddy reload re-reads it.
               if [ \"${{ steps.pull_staging.outputs.caddyfile_changed }}\" = \"true\" ]; then
                 echo 'caddy/Caddyfile changed during this deploy — reloading caddy so the reverted config takes effect'
                 if ! timeout 60 docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T caddy caddy reload --config /etc/caddy/Caddyfile; then
-                  echo '::warning::caddy reload during rollback failed — caddy may still be serving the failed deploy config, verify manually on the deploy host'
+                  echo '::error::caddy reload during rollback failed — the Caddyfile on disk was reverted but caddy is STILL SERVING the config from the failed deploy. Retry on the deploy host with: docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T caddy caddy reload --config /etc/caddy/Caddyfile'
                 fi
               fi
               if [ \"\$kong_rollback_ok\" = \"true\" ]; then
