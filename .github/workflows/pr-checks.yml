@@ -673,7 +673,7 @@ jobs:
           echo "CADDY_HTTPS_LISTEN_PORT=443" >> .env.ci
           # http:// scheme forces HTTP-only — Caddy parses the tls block but
           # never requests a cert (no automatic HTTPS for http:// addresses).
-          echo "CADDY_SITE_ADDRESSES=http://localhost" >> .env.ci
+          echo "CADDY_SITE_ADDRESSES=http://localhost, http://studio.localhost" >> .env.ci
           # 40-char placeholder satisfies the caddy-dns/cloudflare plugin's
           # token-format check at startup. No real Cloudflare API call is ever
           # made in CI because port 443 isn't bound.
@@ -922,6 +922,10 @@ jobs:
           fi
         env:
           TEST_BASE_URL: http://localhost
+          # Same placeholder pair written into .env.ci above, so the Studio
+          # basic-auth test authenticates against the credential Kong loaded.
+          DASHBOARD_USERNAME: ci-admin
+          DASHBOARD_PASSWORD: ci-changeme
           ANON_KEY: ${{ secrets.CI_ANON_KEY }}
           SERVICE_ROLE_KEY: ${{ secrets.CI_SERVICE_ROLE_KEY }}
           POSTGRES_USER: supabase_admin
