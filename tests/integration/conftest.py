@@ -5,6 +5,7 @@ Tests run against the live compose stack via nginx on port 80.
 Requires: docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
 """
 
+import base64
 import os
 import pytest
 import urllib.request
@@ -40,6 +41,23 @@ ANON_KEY = os.environ.get("ANON_KEY", _env.get("ANON_KEY", ""))
 SERVICE_ROLE_KEY = os.environ.get("SERVICE_ROLE_KEY", _env.get("SERVICE_ROLE_KEY", ""))
 # `null` and `[]` are the compose defaults for an unprovisioned stack, not a JWKS.
 JWT_JWKS = os.environ.get("JWT_JWKS", _env.get("JWT_JWKS", "")).strip()
+
+# Kong's basic-auth credentials for the Studio route. Sent unconditionally by the
+# tests that reach a console hostname: a server that does not require auth ignores
+# the header, so this holds whether or not the gate is in place.
+DASHBOARD_USERNAME = os.environ.get("DASHBOARD_USERNAME", _env.get("DASHBOARD_USERNAME", ""))
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", _env.get("DASHBOARD_PASSWORD", ""))
+
+
+@pytest.fixture(scope="session")
+def dashboard_auth():
+    """`Authorization` header for Kong's basic-auth gate, or `{}` if unconfigured."""
+    if not (DASHBOARD_USERNAME and DASHBOARD_PASSWORD):
+        return {}
+    token = base64.b64encode(
+        f"{DASHBOARD_USERNAME}:{DASHBOARD_PASSWORD}".encode()
+    ).decode()
+    return {"Authorization": f"Basic {token}"}
 
 
 @pytest.fixture
