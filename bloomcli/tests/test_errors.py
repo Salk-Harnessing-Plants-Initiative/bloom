@@ -572,7 +572,7 @@ class _Hostile(Exception):
 
 
 def test_an_exception_that_cannot_describe_itself_still_gets_one_line():
-    assert errors._describe(_Hostile()) == "_Hostile"
+    assert errors.describe(_Hostile()) == "_Hostile"
 
 
 def test_a_failure_that_cannot_describe_itself_still_leaves_main_cleanly(

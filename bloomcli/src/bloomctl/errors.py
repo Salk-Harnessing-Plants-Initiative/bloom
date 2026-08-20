@@ -75,7 +75,7 @@ def explain(exc: BaseException) -> str:
     return str(exc) or type(exc).__name__
 
 
-def _describe(exc: BaseException) -> str:
+def describe(exc: BaseException) -> str:
     """``explain(exc)``, falling back to the type name if describing it raises.
 
     `explain` runs `str()` and `getattr` on an exception this module has never seen, and
@@ -256,7 +256,7 @@ def main(args: Any = None) -> int:
 
         cli(args=args)
     except Exception as exc:
-        click.echo(f"Error: {_describe(exc)}", err=True)
+        click.echo(f"Error: {describe(exc)}", err=True)
         log = record(exc, sys.argv)
         if log is not None:  # not `log.exists()`: a touched file with no traceback in it
             click.echo(f"Details written to {log}", err=True)

@@ -55,7 +55,7 @@ from .._storage import (
     sweep_orphan_temps,
 )
 from ..credentials import DEFAULT_PROFILE
-from ..errors import explain
+from ..errors import describe
 
 # Cylinder frames live in the `images` bucket. Passed explicitly on every fetch — the shared
 # storage helper has no default, so no command can read another method's bucket by omission.
@@ -311,7 +311,7 @@ def _list_scan_frames(
             None,
             "",
             ok=False,
-            error=f"list images: {explain(exc)}",
+            error=f"list images: {describe(exc)}",
             unlisted=True,
         )
 

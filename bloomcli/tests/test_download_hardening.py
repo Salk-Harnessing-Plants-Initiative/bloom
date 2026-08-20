@@ -219,6 +219,29 @@ def test_an_unlisted_scan_records_a_sentence_not_the_error_body(tmp_path, monkey
     assert "SELECT" not in written
 
 
+def test_an_unlisted_scan_survives_an_error_that_cannot_describe_itself(tmp_path, monkeypatch):
+    """This handler is the reason one unreadable scan costs one log line rather than the run.
+    Describing the failure must not become a second failure that nothing catches."""
+
+    class _Hostile(Exception):
+        @property
+        def code(self):
+            raise RuntimeError("the code property blew up")
+
+    def _fetch_images(client, scan_id):
+        if scan_id == 1:
+            raise _Hostile()
+        return _images(2)
+
+    monkeypatch.setattr(dl, "fetch_images", _fetch_images)
+
+    result = dl.download_images(_Client(), [SCAN, SCAN_B], tmp_path, workers=1)
+
+    assert result.scans_unlisted == 1
+    assert result.ok == 2, "the other scan's frames still downloaded"
+    assert "_Hostile" in [f.error.replace("list images: ", "") for f in result.frames if f.unlisted][0]
+
+
 # --- bounded submission -----------------------------------------------------
 
 
