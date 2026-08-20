@@ -266,6 +266,13 @@ services:
   - name: dashboard
     _comment: 'Studio: /* -> http://studio:3000/*'
     url: http://studio:3000/
+    # Caddy proxied Studio with no read timeout at all before it was routed
+    # through Kong, and Kong's service default is 60s -- short enough to 504 a
+    # SQL-editor query, a deep table page, or a CSV export over cyl_scan_traits.
+    # 300s matches the MinIO console's transport bound in caddy/Caddyfile.
+    connect_timeout: 60000
+    write_timeout: 300000
+    read_timeout: 300000
     routes:
       - name: dashboard-all
         strip_path: true
