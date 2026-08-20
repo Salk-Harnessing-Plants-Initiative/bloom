@@ -307,6 +307,33 @@ def test_dashboard_service_still_has_the_basic_auth_plugin():
     )
 
 
+# The database-level statement_timeout as it stands today. Scanned from the
+# migrations rather than assumed, and pinned here so that a migration changing
+# it fails this test instead of silently invalidating the Kong bound derived
+# from it. Raising it is a legitimate change — see the failure message.
+EXPECTED_DB_STATEMENT_TIMEOUT_MS = 5 * 60 * 1000
+
+
+def _database_statement_timeout_ms() -> tuple[str, int] | None:
+    """The effective database-level `statement_timeout`, and the migration setting it.
+
+    Scans every migration and takes the last in filename (timestamp) order,
+    because migrations are append-only: the way this value changes is a NEW
+    migration, never an edit to an applied one.
+    """
+    found = None
+    pattern = re.compile(
+        r"alter\s+database\s+postgres\s+set\s+statement_timeout\s*(?:TO|=)\s*'(\d+)\s*(min|s|ms)'",
+        re.IGNORECASE,
+    )
+    for path in sorted((REPO_ROOT / "supabase" / "migrations").glob("*.sql")):
+        m = pattern.search(path.read_text(encoding="utf-8"))
+        if m:
+            scale = {"min": 60_000, "s": 1_000, "ms": 1}[m.group(2).lower()]
+            found = (path.name, int(m.group(1)) * scale)
+    return found
+
+
 def test_dashboard_timeout_exceeds_the_database_statement_timeout():
     """Kong's bound on Studio must sit ABOVE the database's own.
 
@@ -316,34 +343,44 @@ def test_dashboard_timeout_exceeds_the_database_statement_timeout():
     and the operator gets an opaque 504 instead of Postgres's readable
     cancellation message — the exact case the bound exists to make legible.
 
-    Pinned against the migration rather than a hardcoded number: if the
-    database bound is ever changed, this fails loudly instead of silently
-    losing the property.
+    Two numbers in two files with a required relationship and nothing else
+    linking them. This is that link.
     """
-    migration = (
-        REPO_ROOT
-        / "supabase"
-        / "migrations"
-        / "20240904033106_create_fix_create_cyl_dataset_function_again.sql"
+    found = _database_statement_timeout_ms()
+    assert found, (
+        "no migration sets a database-level statement_timeout any more. The Kong "
+        "`dashboard` service's read/write timeouts in volumes/api/kong.yml were "
+        "derived from it — re-derive them against wherever the bound now lives, or "
+        "delete this test if there is no longer a database bound to sit above."
     )
-    assert migration.exists(), f"migration moved or renamed: {migration.name}"
+    migration_name, db_bound_ms = found
 
-    m = re.search(
-        r"alter\s+database\s+postgres\s+set\s+statement_timeout\s+TO\s+'(\d+)min'",
-        migration.read_text(encoding="utf-8"),
-        re.IGNORECASE,
+    assert db_bound_ms == EXPECTED_DB_STATEMENT_TIMEOUT_MS, (
+        f"the database statement_timeout changed: {migration_name} sets it to "
+        f"{db_bound_ms}ms, but this test expects {EXPECTED_DB_STATEMENT_TIMEOUT_MS}ms.\n"
+        "\n"
+        "If that change is deliberate, it is not enough on its own — three other "
+        "places carry a value derived from it and must move together:\n"
+        f"  1. volumes/api/kong.yml — the `dashboard` service's read_timeout and "
+        f"write_timeout must stay ABOVE {db_bound_ms}ms, or Kong's opaque 504 "
+        "pre-empts Postgres's readable 'canceling statement due to statement "
+        "timeout' at exactly the boundary the bound exists to make legible.\n"
+        "  2. _WIKI/SUPABASE/README.md — the Studio query-bounds table.\n"
+        "  3. EXPECTED_DB_STATEMENT_TIMEOUT_MS in this file.\n"
+        "\n"
+        "Update all four, in the same change."
     )
-    assert m, (
-        "the database-level statement_timeout is no longer set by this migration — "
-        "re-derive the dashboard service's timeouts against wherever it now lives"
-    )
-    db_bound_ms = int(m.group(1)) * 60 * 1000
 
     service = _dashboard_service(_kong_config())
     assert service, "no `dashboard` service in volumes/api/kong.yml"
     for key in ("read_timeout", "write_timeout"):
-        assert service.get(key, 60000) > db_bound_ms, (
-            f"the `dashboard` service's {key} ({service.get(key, 60000)}ms) must exceed "
-            f"the database's {db_bound_ms}ms statement_timeout, or Kong's 504 pre-empts "
-            "Postgres's readable 'canceling statement due to statement timeout'"
+        actual = service.get(key, 60000)
+        assert actual > db_bound_ms, (
+            f"the `dashboard` service's {key} is {actual}ms, which does not exceed the "
+            f"database's {db_bound_ms}ms statement_timeout (set by {migration_name}).\n"
+            "Kong starts its clock earlier than Postgres does, so at or below that "
+            "bound Kong's opaque 504 always wins and the readable Postgres "
+            "cancellation message never reaches the SQL editor.\n"
+            f"Raise {key} in volumes/api/kong.yml above {db_bound_ms}ms, and update "
+            "the numbers quoted in _WIKI/SUPABASE/README.md."
         )
