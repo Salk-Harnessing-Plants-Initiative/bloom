@@ -302,6 +302,15 @@ services:
     routes:
       - name: dashboard-all
         strip_path: true
+        # Caddy preserves the client Host header; Kong does not, and defaults to
+        # rewriting it to the upstream (studio:3000). Studio previously saw the
+        # real hostname because Caddy proxied it directly, so without this any
+        # absolute URL Next.js derives from the request - a redirect Location,
+        # new URL(request.url), the image optimiser - would point at
+        # http://studio:3000/, which no browser can follow. The smoke probe
+        # cannot catch that: it accepts any 2xx/3xx and does not follow
+        # redirects, so a broken Location passes green.
+        preserve_host: true
         paths:
           - /
     plugins:
