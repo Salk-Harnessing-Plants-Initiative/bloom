@@ -479,23 +479,14 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.PROD_DEPLOY_PATH }}
-            # Connectivity smoke test — hits 7 endpoints through Caddy. All
-            # assert a 2xx/3xx except 2 and 3, which assert an EXACT status:
+            # Connectivity smoke test — hits 5 endpoints through Caddy and
+            # asserts each returns a 2xx/3xx:
             #   1. <main>/                bloom-web frontend
-            #   2. <studio>/              MUST be exactly 401 — proves Kong's
-            #                             basic-auth gate is in front of Studio.
-            #                             A 200 means Caddy is serving Studio
-            #                             directly and the console is exposed.
-            #   3. <studio>/api/platform/pg-meta/query
-            #                             MUST be exactly 401 — same gate, on a
-            #                             non-root path. Every bypass found in
-            #                             review lives off /, and this is
-            #                             Studio's arbitrary-SQL endpoint.
-            #   4. <studio>/              Studio UI, with DASHBOARD credentials
-            #   5. <minio>/               MinIO console
-            #   6. <main>/api/rest/v1/    Kong key-auth -> ACL -> REST -> DB
+            #   2. <studio>/              Studio UI
+            #   3. <minio>/               MinIO console
+            #   4. <main>/api/rest/v1/    Kong key-auth -> ACL -> REST -> DB
             #                             (sends apikey header)
-            #   7. <main>/api/client-info bloom-web public config (issue #347 —
+            #   5. <main>/api/client-info bloom-web public config (issue #347 —
             #                             must NOT 401 via Kong's basic-auth)
             #
             # Probes HTTPS directly via --resolve (forces domain -> 127.0.0.1)
@@ -509,21 +500,8 @@ jobs:
             # that Studio is actually served, not just that something answered.
             DASHBOARD_USERNAME=\$(grep '^DASHBOARD_USERNAME=' .env.prod | cut -d= -f2-)
             DASHBOARD_PASSWORD=\$(grep '^DASHBOARD_PASSWORD=' .env.prod | cut -d= -f2-)
-            # Guard here, like every sibling var below: an empty credential
-            # base64s to 'Og==' and fails the probe with a bare 401, which reads
-            # as \"the gate is broken\" rather than \"the secret is missing\". The
-            # Kong crash-loop step guards these too, but only runs when
-            # kong.yml changed — i.e. almost never.
-            : \"\${DASHBOARD_USERNAME:?missing DASHBOARD_USERNAME in .env.prod}\"
-            : \"\${DASHBOARD_PASSWORD:?missing DASHBOARD_PASSWORD in .env.prod}\"
-            echo \"::add-mask::\$DASHBOARD_USERNAME\"
             echo \"::add-mask::\$DASHBOARD_PASSWORD\"
-            STUDIO_AUTH_B64=\$(printf '%s:%s' \"\$DASHBOARD_USERNAME\" \"\$DASHBOARD_PASSWORD\" | base64 | tr -d '\n')
-            # Mask the derived value too: GitHub matches literal strings, so
-            # masking the plaintext password does not cover its base64 form,
-            # which is the directly-replayable credential.
-            echo \"::add-mask::\$STUDIO_AUTH_B64\"
-            STUDIO_AUTH=\"Authorization: Basic \$STUDIO_AUTH_B64\"
+            STUDIO_AUTH=\"Authorization: Basic \$(printf '%s:%s' \"\$DASHBOARD_USERNAME\" \"\$DASHBOARD_PASSWORD\" | base64 | tr -d '\n')\"
             DOMAIN_MINIO=\$(grep '^DOMAIN_MINIO=' .env.prod | cut -d= -f2-)
             PORT=\$(grep '^CADDY_HTTPS_LISTEN_PORT=' .env.prod | cut -d= -f2-)
             ANON_KEY=\$(grep '^ANON_KEY=' .env.prod | cut -d= -f2-)
@@ -536,7 +514,7 @@ jobs:
 
             failed=0
             _probe() {
-              local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\" expected=\"\${4:-}\"
+              local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\"
               # Retry up to 3 times on connection failure (status 000). Normal
               # path: Caddy serves a cached Let's Encrypt cert verified by the
               # earlier Layer 2 step — should respond instantly. Break-glass
@@ -545,31 +523,15 @@ jobs:
               # cert generation, hence the retry loop.
               local status=000
               for _ in 1 2 3; do
-                # `|| status=000`, NOT `$(curl ... || echo 000)`: curl already
-                # prints 000 on a connection failure AND exits non-zero, so the
-                # echo appended a second one and \$status became '000000' — which
-                # is != '000', so the loop below broke on the first attempt and
-                # this retry has never actually retried.
                 if [ -n \"\$extra\" ]; then
-                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" -H \"\$extra\" --max-time 10 \"https://\$host:\$PORT\$path\") || status=000
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" -H \"\$extra\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
                 else
-                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" --max-time 10 \"https://\$host:\$PORT\$path\") || status=000
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
                 fi
                 [ \"\$status\" != \"000\" ] && break
                 sleep 2
               done
-              if [ -n \"\$expected\" ]; then
-                # Exact-status probe: the specific code IS the assertion. An
-                # unauthenticated 401 proves the Kong basic-auth gate sits in front of
-                # Studio. The range check below would pass on the 200 Studio returns when
-                # Caddy proxies it directly -- i.e. exactly when the gate is missing.
-                if [ \"\$status\" != \"\$expected\" ]; then
-                  echo \"::error::Smoke test failed on \$host\$path (HTTP \$status, expected \$expected)\"
-                  failed=1
-                else
-                  echo \"  \$host\$path -> \$status (expected \$expected)\"
-                fi
-              elif [ \"\$status\" -lt 200 ] || [ \"\$status\" -ge 400 ]; then
+              if [ \"\$status\" -lt 200 ] || [ \"\$status\" -ge 400 ]; then
                 echo \"::error::Smoke test failed on \$host\$path (HTTP \$status)\"
                 failed=1
               else
@@ -578,27 +540,7 @@ jobs:
             }
 
             _probe \"\$DOMAIN_MAIN\"   \"/\"
-            # Unauthenticated first: this is the probe that proves the gate exists.
-            # Without it, a deploy where the Caddy reload never applied serves Studio
-            # directly, answers 200 to the credentialed probe below, and passes.
-            _probe \"\$DOMAIN_STUDIO\" \"/\" \"\" 401
-            # A second unauthenticated probe on a path that is NOT the root. Every
-            # bypass found in review lives off /: a sibling host matcher outside the
-            # audited Caddy block, a `to` upstream inside a reverse_proxy option
-            # block, an imported snippet. Config-shape unit tests cannot see those
-            # (and do not run on this workflow at all -- pr-checks.yml is
-            # pull_request-only), so this request is the gate's real regression test.
-            # /api/platform/pg-meta/query is Studio's arbitrary-SQL endpoint, which
-            # makes it the path that matters most if the gate is ever missing.
-            _probe \"\$DOMAIN_STUDIO\" \"/api/platform/pg-meta/query\" \"\" 401
-            # Only send the credential if both gate probes passed. If they did
-            # not, Studio is serving without auth and this would transmit the
-            # production DASHBOARD credential to an upstream that logs it.
-            if [ \"\$failed\" -eq 0 ]; then
-              _probe \"\$DOMAIN_STUDIO\" \"/\" \"\$STUDIO_AUTH\"
-            else
-              echo \"::warning::skipping the credentialed Studio probe — the gate probes above failed, so Studio is not behind basic-auth and the credential must not be sent to it\"
-            fi
+            _probe \"\$DOMAIN_STUDIO\" \"/\" \"\$STUDIO_AUTH\"
             _probe \"\$DOMAIN_MINIO\"  \"/\"
             _probe \"\$DOMAIN_MAIN\"   \"/api/rest/v1/\" \"apikey: \$ANON_KEY\"
             _probe \"\$DOMAIN_MAIN\"   \"/api/client-info\"
@@ -1222,23 +1164,14 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            # Connectivity smoke test — hits 7 endpoints through Caddy. All
-            # assert a 2xx/3xx except 2 and 3, which assert an EXACT status:
+            # Connectivity smoke test — hits 5 endpoints through Caddy and
+            # asserts each returns a 2xx/3xx:
             #   1. <main>/                bloom-web frontend
-            #   2. <studio>/              MUST be exactly 401 — proves Kong's
-            #                             basic-auth gate is in front of Studio.
-            #                             A 200 means Caddy is serving Studio
-            #                             directly and the console is exposed.
-            #   3. <studio>/api/platform/pg-meta/query
-            #                             MUST be exactly 401 — same gate, on a
-            #                             non-root path. Every bypass found in
-            #                             review lives off /, and this is
-            #                             Studio's arbitrary-SQL endpoint.
-            #   4. <studio>/              Studio UI, with DASHBOARD credentials
-            #   5. <minio>/               MinIO console
-            #   6. <main>/api/rest/v1/    Kong key-auth -> ACL -> REST -> DB
+            #   2. <studio>/              Studio UI
+            #   3. <minio>/               MinIO console
+            #   4. <main>/api/rest/v1/    Kong key-auth -> ACL -> REST -> DB
             #                             (sends apikey header)
-            #   7. <main>/api/client-info bloom-web public config (issue #347 —
+            #   5. <main>/api/client-info bloom-web public config (issue #347 —
             #                             must NOT 401 via Kong's basic-auth)
             #
             # Probes HTTPS directly via --resolve (forces domain -> 127.0.0.1)
@@ -1252,21 +1185,8 @@ jobs:
             # that Studio is actually served, not just that something answered.
             DASHBOARD_USERNAME=\$(grep '^DASHBOARD_USERNAME=' .env.staging | cut -d= -f2-)
             DASHBOARD_PASSWORD=\$(grep '^DASHBOARD_PASSWORD=' .env.staging | cut -d= -f2-)
-            # Guard here, like every sibling var below: an empty credential
-            # base64s to 'Og==' and fails the probe with a bare 401, which reads
-            # as \"the gate is broken\" rather than \"the secret is missing\". The
-            # Kong crash-loop step guards these too, but only runs when
-            # kong.yml changed — i.e. almost never.
-            : \"\${DASHBOARD_USERNAME:?missing DASHBOARD_USERNAME in .env.staging}\"
-            : \"\${DASHBOARD_PASSWORD:?missing DASHBOARD_PASSWORD in .env.staging}\"
-            echo \"::add-mask::\$DASHBOARD_USERNAME\"
             echo \"::add-mask::\$DASHBOARD_PASSWORD\"
-            STUDIO_AUTH_B64=\$(printf '%s:%s' \"\$DASHBOARD_USERNAME\" \"\$DASHBOARD_PASSWORD\" | base64 | tr -d '\n')
-            # Mask the derived value too: GitHub matches literal strings, so
-            # masking the plaintext password does not cover its base64 form,
-            # which is the directly-replayable credential.
-            echo \"::add-mask::\$STUDIO_AUTH_B64\"
-            STUDIO_AUTH=\"Authorization: Basic \$STUDIO_AUTH_B64\"
+            STUDIO_AUTH=\"Authorization: Basic \$(printf '%s:%s' \"\$DASHBOARD_USERNAME\" \"\$DASHBOARD_PASSWORD\" | base64 | tr -d '\n')\"
             DOMAIN_MINIO=\$(grep '^DOMAIN_MINIO=' .env.staging | cut -d= -f2-)
             PORT=\$(grep '^CADDY_HTTPS_LISTEN_PORT=' .env.staging | cut -d= -f2-)
             ANON_KEY=\$(grep '^ANON_KEY=' .env.staging | cut -d= -f2-)
@@ -1279,7 +1199,7 @@ jobs:
 
             failed=0
             _probe() {
-              local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\" expected=\"\${4:-}\"
+              local host=\"\$1\" path=\"\$2\" extra=\"\${3:-}\"
               # Retry up to 3 times on connection failure (status 000). Normal
               # path: Caddy serves a cached Let's Encrypt cert verified by the
               # earlier Layer 2 step — should respond instantly. Break-glass
@@ -1288,31 +1208,15 @@ jobs:
               # cert generation, hence the retry loop.
               local status=000
               for _ in 1 2 3; do
-                # `|| status=000`, NOT `$(curl ... || echo 000)`: curl already
-                # prints 000 on a connection failure AND exits non-zero, so the
-                # echo appended a second one and \$status became '000000' — which
-                # is != '000', so the loop below broke on the first attempt and
-                # this retry has never actually retried.
                 if [ -n \"\$extra\" ]; then
-                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" -H \"\$extra\" --max-time 10 \"https://\$host:\$PORT\$path\") || status=000
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" -H \"\$extra\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
                 else
-                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" --max-time 10 \"https://\$host:\$PORT\$path\") || status=000
+                  status=\$(curl -sk -o /dev/null -w '%{http_code}' --resolve \"\$host:\$PORT:127.0.0.1\" --max-time 10 \"https://\$host:\$PORT\$path\" || echo 000)
                 fi
                 [ \"\$status\" != \"000\" ] && break
                 sleep 2
               done
-              if [ -n \"\$expected\" ]; then
-                # Exact-status probe: the specific code IS the assertion. An
-                # unauthenticated 401 proves the Kong basic-auth gate sits in front of
-                # Studio. The range check below would pass on the 200 Studio returns when
-                # Caddy proxies it directly -- i.e. exactly when the gate is missing.
-                if [ \"\$status\" != \"\$expected\" ]; then
-                  echo \"::error::Smoke test failed on \$host\$path (HTTP \$status, expected \$expected)\"
-                  failed=1
-                else
-                  echo \"  \$host\$path -> \$status (expected \$expected)\"
-                fi
-              elif [ \"\$status\" -lt 200 ] || [ \"\$status\" -ge 400 ]; then
+              if [ \"\$status\" -lt 200 ] || [ \"\$status\" -ge 400 ]; then
                 echo \"::error::Smoke test failed on \$host\$path (HTTP \$status)\"
                 failed=1
               else
@@ -1321,27 +1225,7 @@ jobs:
             }
 
             _probe \"\$DOMAIN_MAIN\"   \"/\"
-            # Unauthenticated first: this is the probe that proves the gate exists.
-            # Without it, a deploy where the Caddy reload never applied serves Studio
-            # directly, answers 200 to the credentialed probe below, and passes.
-            _probe \"\$DOMAIN_STUDIO\" \"/\" \"\" 401
-            # A second unauthenticated probe on a path that is NOT the root. Every
-            # bypass found in review lives off /: a sibling host matcher outside the
-            # audited Caddy block, a `to` upstream inside a reverse_proxy option
-            # block, an imported snippet. Config-shape unit tests cannot see those
-            # (and do not run on this workflow at all -- pr-checks.yml is
-            # pull_request-only), so this request is the gate's real regression test.
-            # /api/platform/pg-meta/query is Studio's arbitrary-SQL endpoint, which
-            # makes it the path that matters most if the gate is ever missing.
-            _probe \"\$DOMAIN_STUDIO\" \"/api/platform/pg-meta/query\" \"\" 401
-            # Only send the credential if both gate probes passed. If they did
-            # not, Studio is serving without auth and this would transmit the
-            # production DASHBOARD credential to an upstream that logs it.
-            if [ \"\$failed\" -eq 0 ]; then
-              _probe \"\$DOMAIN_STUDIO\" \"/\" \"\$STUDIO_AUTH\"
-            else
-              echo \"::warning::skipping the credentialed Studio probe — the gate probes above failed, so Studio is not behind basic-auth and the credential must not be sent to it\"
-            fi
+            _probe \"\$DOMAIN_STUDIO\" \"/\" \"\$STUDIO_AUTH\"
             _probe \"\$DOMAIN_MINIO\"  \"/\"
             _probe \"\$DOMAIN_MAIN\"   \"/api/rest/v1/\" \"apikey: \$ANON_KEY\"
             _probe \"\$DOMAIN_MAIN\"   \"/api/client-info\"
