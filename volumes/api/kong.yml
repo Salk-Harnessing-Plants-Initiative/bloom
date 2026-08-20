@@ -5,7 +5,13 @@ _transform: true
 ### Consumers / Users
 ###
 consumers:
-  # Credentials for the basic-auth plugin on the `dashboard` service.
+  # Credentials for the basic-auth plugin on the 'dashboard' service.
+  #
+  # Keep this file free of shell metacharacters, comments included. The kong
+  # container's entrypoint pipes it through an eval before Kong ever parses it
+  # (see docker-compose.prod.yml), so backticks and command-substitution syntax
+  # in a COMMENT are executed as shell at every container start, and double
+  # quotes silently vanish from the rendered config. Use single quotes.
   - username: DASHBOARD
     basicauth_credentials:
       - username: $DASHBOARD_USERNAME
@@ -207,7 +213,7 @@ services:
       - name: cors
 
   # ─── DORMANT ROUTES (commented out) ───────────────────────────────────
-  # The `functions` (Supabase Edge Functions) and `analytics` (Logflare)
+  # The 'functions' (Supabase Edge Functions) and 'analytics' (Logflare)
   # services are NOT in docker-compose.prod.yml — they were never wired
   # in for this stack. Without an actual container behind the hostname,
   # Kong returns 502 Bad Gateway for any client that hits these paths
@@ -216,8 +222,8 @@ services:
   #
   # The route definitions are retained here as a commented-out reference
   # so they're trivially restorable if/when we decide to add either
-  # service: uncomment the block, add the matching `functions` /
-  # `analytics` service to docker-compose.prod.yml, redeploy.
+  # service: uncomment the block, add the matching 'functions' /
+  # 'analytics' service to docker-compose.prod.yml, redeploy.
   #
   # ----------------------------------------------------------------------
 
@@ -270,21 +276,29 @@ services:
     # through Kong, and Kong's service default is 60s -- short enough to 504 a
     # SQL-editor query or a deep table page over cyl_scan_traits.
     #
-    # Set ABOVE the database's own bound, not equal to it: migration
-    # 20240904033106 sets statement_timeout to 5min database-wide and
-    # supabase_admin (the role pg-meta connects as) has no override, so every
+    # These are nginx proxy_read_timeout / proxy_send_timeout: they bound the
+    # IDLE GAP between successive reads from studio:3000, not total request
+    # duration. For a SQL-editor query, which returns nothing until the DB
+    # answers, the gap is the whole query -- so here it behaves as a total bound.
+    #
+    # Set ABOVE the database's own bound, not equal to it. Migration
+    # 20240904033106_create_fix_create_cyl_dataset_function_again.sql sets
+    # statement_timeout to 5min database-wide, and supabase_admin (the role
+    # pg-meta connects as) has no override in this repo's migrations, so every
     # Studio query is already capped at 300s. Kong starts its clock earlier, so
     # an equal bound guarantees Kong's opaque 504 pre-empts Postgres's readable
-    # "canceling statement due to statement timeout". 330s leaves 30s of margin,
-    # which makes a 504 here mean something OTHER than the query is stuck.
+    # cancellation message. 330s leaves 30s of margin -- enough to absorb
+    # pg-meta pool-wait -- which makes a 504 here mean something OTHER than the
+    # query is stuck.
     #
-    # connect_timeout is a TCP connect to studio:3000 on the same bridge network
-    # -- single-digit ms when Studio is up, so a short bound fails fast instead
-    # of hanging every request for a minute when it is down. 60000 was Kong's
-    # own default restated, i.e. no bound at all in practice.
+    # connect_timeout is a TCP connect to studio:3000 on the same bridge
+    # network, single-digit ms when Studio is up. 60000 was Kong's own default
+    # restated. retries is pinned to 1 because Kong's default of 5 would turn a
+    # blackholed upstream into 5 x connect_timeout before the caller hears back.
     connect_timeout: 5000
     write_timeout: 330000
     read_timeout: 330000
+    retries: 1
     routes:
       - name: dashboard-all
         strip_path: true
