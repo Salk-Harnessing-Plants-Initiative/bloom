@@ -31,9 +31,9 @@
 ### Console coverage — closed, not accepted
 
 - [x] 2.10 Originally recorded as an accepted limitation: CI set `CADDY_SITE_ADDRESSES` to a single host, so Studio and MinIO requests never entered the site block and the site-level contract was pinned as config shape (2.8) but never as behaviour. That reasoning rested on three premises, two of which did not survive checking — a dropped hostname was said to be self-detecting, when Caddy answers an unmatched Host with an empty `200` that the only Studio test passed against; and console image bumps were said to be digest-pinned, which was false for `minio/minio`. Rather than re-argue it, the gap was closed:
-  - `.github/workflows/pr-checks.yml` now serves all three hostnames, matching the committed `.env.ci`, which already listed them.
+  - `.github/workflows/pr-checks.yml` now serves all three hostnames. It generates `.env.ci` from scratch, so that line is the only source of truth for the value.
   - `test_security_headers_on_console_hostnames` asserts every header in the block on both console hostnames, with credentials so the assertion lands on the console itself rather than on a gate's error page.
-  - `test_studio_requires_kong_basic_auth` asserts a body, so the empty-fallback `200` can no longer pass.
+  - `test_studio_reachable_with_credentials` asserts a non-empty body, so Caddy's empty-fallback `200` can no longer pass, and `test_studio_requires_credentials` asserts the unauthenticated `401`.
   - Both console images are digest-pinned, so a re-pushed tag cannot move either without this repo changing.
 
 ### Measured, not assumed

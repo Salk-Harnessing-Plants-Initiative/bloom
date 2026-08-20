@@ -98,5 +98,5 @@ The header restricts others loading our resources, not us loading theirs, so the
 
 ## Open Questions
 
-- Should CI exercise the multi-hostname claim? Asked, answered no, then reversed on review. It turned out to cost one line — the committed `.env.ci` already listed all three hostnames and the workflow was overwriting it with one. CI now serves all three and asserts every header on both consoles. See task 2.10.
+- Should CI exercise the multi-hostname claim? Asked, answered no, then reversed on review. It turned out to cost one line — the workflow generates `.env.ci` itself and was writing a single hostname into it. CI now serves all three and asserts every header on both consoles. See task 2.10.
 - Does Studio's access-control gap warrant its own fix? The anti-framing headers mitigate a symptom, not the cause. Pre-existing and filed separately — #108 item 6's IP allowlist is the durable backstop.
