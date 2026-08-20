@@ -71,7 +71,13 @@ The Caddyfile site block opens with `{$CADDY_SITE_ADDRESSES}`, which expands per
 | ------- | ------------------------------------------------------------ | ------------------------------------------------------ |
 | prod    | `https://bloom.salk.edu, https://*.bloom.salk.edu`         | One cert with 2 SANs (apex + wildcard)                  |
 | staging | `https://*.bloom.salk.edu`                                 | One cert with 1 SAN (wildcard covering all staging subdomains) |
-| CI      | `http://localhost`                                         | No cert —`http://` scheme disables ACME entirely    |
+| CI      | `http://localhost, http://studio.localhost`                | No cert —`http://` scheme disables ACME entirely    |
+
+CI lists the Studio hostname as a second address so the Studio basic-auth test can
+reach the `@studio` block at all. With only `http://localhost`, a request carrying
+`Host: studio.localhost` never enters the site block, lands in Caddy's unrouted-host
+fallback, and gets a blank `200` — which is why the old Studio reachability test
+passed both before and after the gate existed.
 
 ## Cert persistence across redeploys
 
@@ -141,6 +147,39 @@ The token is consumed at runtime by the `caddy-dns/cloudflare` plugin via the `C
 All staging hostnames sit under `bloom.salk.edu` so the wildcard `*.bloom.salk.edu` covers them.
 
 > **DNS note:** browser access to `staging.bloom.salk.edu` requires the name to resolve. Salk's wildcard A record for `*.bloom.salk.edu` covers it from inside the Salk network (or on Salk VPN). From outside, you'll need a temporary `/etc/hosts` entry pointing the hostname at the bloom server's IP, or an explicit Salk DNS record.
+
+### Studio terminates at Kong, not at Caddy
+
+`DOMAIN_STUDIO` is the one hostname here whose UI does **not** end at its own
+container. Caddy's `@studio` catch-all proxies `kong:{$KONG_PORT}`, and Kong's
+`dashboard` service applies its `basic-auth` plugin before forwarding to
+`studio:3000`. Supabase Studio has no authentication of its own, so that plugin is
+the only thing in front of the console. Reaching it needs the `DASHBOARD` credential
+(`DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` in `.env.{prod,staging}` on the deploy
+host, populated from the `PROD_/STAGING_DASHBOARD_*` deploy secrets).
+
+Three things to know before debugging this hostname:
+
+- **Kong is in Studio's availability path.** Kong down, or holding a config that
+  failed to load, means Studio is unreachable even when Studio itself is fine.
+- **A healthy `studio` container is not evidence Studio is reachable.** Its
+  healthcheck hits `http://studio:3000/api/platform/profile` from inside its own
+  container and traverses neither Caddy nor Kong. Probe end-to-end through the
+  hostname instead of trusting `docker compose ps`.
+- **Studio requests are bounded at 330s** by the `dashboard` service's
+  `read_timeout` (`volumes/api/kong.yml`). Before it was routed through Kong there
+  was no bound at all. Postgres cancels at 300s first, so a 504 at 330s means
+  something other than a slow query — and note a 504 does **not** cancel the
+  statement; the backend keeps running.
+
+The `/auth/*`, `/rest/*`, `/storage/*` and `/realtime/*` prefixes on this same
+hostname are separate `handle_path` blocks reaching their own key-auth Kong
+services. They do **not** pass through `basic-auth`, and they keep Kong's 60s
+default rather than the 330s above.
+
+Editing `volumes/api/kong.yml` needs a `docker compose restart kong`, not a
+`kong reload`: the container's entrypoint expands the env-var placeholders into
+`kong.yml` only at container start, so a reload re-applies the stale rendered file.
 
 ## Hostname history
 

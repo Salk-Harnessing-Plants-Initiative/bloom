@@ -8,7 +8,9 @@
 #   {DOMAIN_MAIN}/api/*        → kong (Supabase API gateway, /api prefix stripped)
 #   {DOMAIN_MAIN}/langchain/*  → langchain-agent (FastAPI, prefix preserved)
 #   {DOMAIN_MAIN}/bloommcp/*   → bloommcp (MCP server, /bloommcp prefix stripped)
-#   {DOMAIN_STUDIO}            → studio (Supabase Studio)
+#   {DOMAIN_STUDIO}            → kong → studio (Supabase Studio, gated by Kong's
+#                              `dashboard` service basic-auth — Studio has none of
+#                              its own, so Kong is in its availability path)
 #   {DOMAIN_MINIO}             → minio console
 #
 # TLS strategy:
@@ -24,8 +26,11 @@
 #              (2-SAN cert: apex + wildcard)
 #     staging: `https://*.bloom.salk.edu`
 #              (1 wildcard covering all staging subdomains)
-#     CI:      `http://localhost`
-#              (forces HTTP-only — no TLS, no ACME, no Let's Encrypt call)
+#     CI:      `http://localhost, http://studio.localhost`
+#              (forces HTTP-only — no TLS, no ACME, no Let's Encrypt call. The
+#              Studio host is listed so a `Host: studio.localhost` request enters
+#              this block instead of Caddy's unrouted-host fallback, which
+#              answers a blank 200 and made the old Studio test unable to fail.)
 #
 #   Prod and staging both issue their certs via the Salk-DNS CNAME:
 #     _acme-challenge.bloom.salk.edu -> _acme-challenge.bloom-acme.talmolab.org
