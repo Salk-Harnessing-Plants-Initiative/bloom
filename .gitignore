@@ -148,3 +148,9 @@ skills-lock.json
 
 # Serena MCP local memory (removed from tracking 2026-07 — no longer used)
 .serena/
+
+# Playwright MCP browser session artifacts
+.playwright-mcp/
+
+# Local issue drafts, not for the repo
+ISSUE_DRAFT_*.md
