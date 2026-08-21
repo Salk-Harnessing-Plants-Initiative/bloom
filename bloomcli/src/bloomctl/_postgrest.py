@@ -59,3 +59,36 @@ def fetch_in_batches(
     for batch in id_batches(ids, budget):
         rows += build(batch).execute().data or []
     return rows
+
+
+# SQLSTATE for a PL/pgSQL RAISE EXCEPTION: a message someone wrote for a user to read, so it
+# is passed on as written rather than reported as a failed read.
+RAISED_FOR_THE_USER = "P0001"
+
+
+def queried(what: str, call: Callable[[], Any]) -> Any:
+    """Run one metadata query, naming the read in the message when the server refuses it.
+
+    The entry point already turns anything unhandled into a sentence, so what this adds is
+    *which* read failed — and an expected server condition exits without writing a traceback
+    to the error log. A failure that is neither the server's nor the network's is left alone,
+    because that log entry is how it gets diagnosed.
+    """
+    import click
+    from postgrest import APIError
+
+    from .errors import explain, is_network_error
+
+    try:
+        return call()
+    except APIError as exc:
+        if getattr(exc, "code", None) == RAISED_FOR_THE_USER:
+            raise click.ClickException(explain(exc)) from exc
+        raise click.ClickException(f"Could not read {what} from Bloom: {explain(exc)}") from exc
+    except Exception as exc:
+        if not is_network_error(exc):
+            raise
+        raise click.ClickException(
+            f"Could not reach Bloom while reading {what} ({type(exc).__name__}) — "
+            f"check your connection and retry"
+        ) from exc
