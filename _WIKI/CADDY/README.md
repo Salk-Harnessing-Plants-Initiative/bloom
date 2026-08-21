@@ -16,6 +16,7 @@ One `caddy` container per environment(staging and prod), built from a project-ow
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Image build                    | [caddy/Dockerfile](../../caddy/Dockerfile) — two-stage `xcaddy build` with `caddy-dns/cloudflare` linked in                                            |
 | Routing + TLS config           | [caddy/Caddyfile](../../caddy/Caddyfile)                                                                                                                    |
+| Security headers               | Site-level `header` block in [caddy/Caddyfile](../../caddy/Caddyfile) — see [Security headers](#security-headers)                                          |
 | Container declaration          | `caddy` service in [docker-compose.prod.yml](../../docker-compose.prod.yml)                                                                               |
 | Per-env site addresses + token | `CADDY_SITE_ADDRESSES` + `CLOUDFLARE_API_TOKEN` in [.env.prod.defaults](../../.env.prod.defaults) and [.env.staging.defaults](../../.env.staging.defaults) |
 | Deploy-time secret injection   | `PROD_/STAGING_CLOUDFLARE_API_TOKEN` heredocs in [.github/workflows/deploy.yml](../../.github/workflows/deploy.yml)                                       |
@@ -71,13 +72,74 @@ The Caddyfile site block opens with `{$CADDY_SITE_ADDRESSES}`, which expands per
 | ------- | ------------------------------------------------------------ | ------------------------------------------------------ |
 | prod    | `https://bloom.salk.edu, https://*.bloom.salk.edu`         | One cert with 2 SANs (apex + wildcard)                  |
 | staging | `https://*.bloom.salk.edu`                                 | One cert with 1 SAN (wildcard covering all staging subdomains) |
-| CI      | `http://localhost, http://studio.localhost`                | No cert —`http://` scheme disables ACME entirely    |
+| CI      | `http://localhost, http://studio.localhost, http://minio.localhost` | No cert —`http://` scheme disables ACME entirely    |
 
-CI lists the Studio hostname as a second address so the Studio basic-auth test can
-reach the `@studio` block at all. With only `http://localhost`, a request carrying
-`Host: studio.localhost` never enters the site block, lands in Caddy's unrouted-host
-fallback, and gets a blank `200` — which is why the old Studio reachability test
-passed both before and after the gate existed.
+CI lists all three hostnames on purpose. A Host that matches no site address is answered by
+Caddy's empty fallback server — a `200 OK` with no body — so a single-address CI would serve
+nothing on the console hostnames while still looking healthy to any check that only asserts a
+status code. That is also why the old Studio reachability test passed both before and after the
+basic-auth gate existed: the Studio hostname has to be listed for a request carrying
+`Host: studio.localhost` to enter the site block and reach `@studio` at all.
+
+## Security headers
+
+Caddy sets seven response headers on every request it serves. They are declared once as a `header` block at site level — after the `tls` directive, before the `@main` / `@studio` / `@minio` host matchers — so all three hostnames inherit them from that single declaration.
+
+| Header                                                  | What it prevents                                                                    |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `X-Content-Type-Options: nosniff`                       | A browser re-interpreting a response as HTML or script against its declared `Content-Type` |
+| `X-Frame-Options: DENY`                                 | Clickjacking — another origin invisibly framing bloom to harvest authenticated clicks |
+| `Content-Security-Policy: frame-ancestors 'none'`       | The same, in the standards-track form; `X-Frame-Options` covers older clients        |
+| `Referrer-Policy: strict-origin-when-cross-origin`      | Experiment identifiers in URLs leaking to third parties via `Referer`                |
+| `Permissions-Policy: camera=(), microphone=(), geolocation=()` | Use of browser features bloom does not need                                   |
+| `Cross-Origin-Opener-Policy: same-origin-allow-popups`  | A site that opens bloom in a popup being able to script that window                 |
+| `Cross-Origin-Resource-Policy: same-origin`             | Another site loading bloom's images and files into its own pages                    |
+
+### Why site level, not per host
+
+Studio and the MinIO console are third-party UIs this project does not build, and their access control is tracked separately. Declaring the block inside `handle @main` would cover the application while leaving those two bare — a gap that produces no error and no failing request, so nothing would surface it.
+
+Site level also means Caddy applies the headers ahead of the handler chain, so responses Caddy generates itself (a synthetic `404`, an upstream-error `502`) carry them too.
+
+### Two deliberate omissions
+
+* **HSTS is not set.** Browsers cache it for its full `max-age` and it cannot be withdrawn server-side, so an accidental rollout is far harder to undo than anything else here. It lands with the public-exposure work, not incidentally.
+* **CSP declares `frame-ancestors` only, no `script-src`.** Next.js emits inline hydration scripts, so a `script-src` without nonces would need `'unsafe-inline'` — which would not block an injected event handler and would be protection in name only. Doing it properly needs nonce middleware in bloom-web.
+
+### If you change this block
+
+`nosniff` makes browsers *hard-refuse* a script served with a non-JavaScript `Content-Type`, or a stylesheet that is not `text/css`. Before extending coverage to a new surface, check that its assets are correctly typed — this was measured against the Studio and MinIO images before those hostnames were covered, and should be re-checked whenever either image pin moves.
+
+Two test layers guard the block, and both must stay in step with it:
+
+* [tests/unit/test_caddy_security_headers.py](../../tests/unit/test_caddy_security_headers.py) — pins site-level placement by brace depth and asserts each value verbatim. It rejects all three Caddy spellings of a per-host override — the `header { ... }` block (with or without a matcher), the single-line `header <Field> <value>` / `header -<Field>` (wildcard deletions such as `-X-Frame-*` and `-*` included), and a `header_down` inside a `reverse_proxy` body — since each silently downgrades the policy for that host alone. The host list is derived from the site block, so renaming a matcher cannot make the guard skip a host.
+* [tests/integration/test_api_endpoints.py](../../tests/integration/test_api_endpoints.py) — asserts the headers on the live wire across every handler under the main hostname, each upstream Kong fans out to, and both console hostnames.
+
+## Hostnames with no route
+
+`CADDY_SITE_ADDRESSES` carries a wildcard on prod and staging, so the certificate covers every one-level subdomain of `bloom.salk.edu`. Caddy will therefore complete the TLS handshake for *any* such name — `nonexistent.bloom.salk.edu` included — even though only the three hostnames in the table below have a route.
+
+Two catch-alls make an unserved name say so, rather than look healthy:
+
+| Where | Covers | Answer |
+| --- | --- | --- |
+| Bare `handle` at the end of the `{$CADDY_SITE_ADDRESSES}` block | A wildcard-covered name with no `handle @host` above it | `404 not reachable` |
+| `:80` and `:443` site blocks | A name matching no site address at all — it never enters the site block, so the fall-through cannot catch it | `404 not reachable` |
+
+**Position in the file does not matter.** Caddy's adapter sorts a matcher-less `handle` after every matched one, whatever order they are written in, so the fall-through cannot swallow a routed hostname. Keeping it last is a readability convention.
+
+**Routed hostnames keep their HTTP-to-HTTPS redirect.** Automatic HTTPS generates a per-host redirect route on port 80 that takes precedence over the `:80` catch-all, so `http://bloom.salk.edu/` still answers `308`. Only names outside the wildcard fall through to the 404 — before the `:80` block they received a 308 to an HTTPS URL whose handshake would then fail.
+
+**Names outside the wildcard never reach a route over HTTPS.** They are refused at the handshake, because no certificate we hold covers them:
+
+```bash
+curl --resolve "evil.example.com:443:<host-ip>" https://evil.example.com/
+# -> TLS handshake fails, connection closed
+```
+
+The same applies to a deeper name such as `deep.sub.bloom.salk.edu`: a wildcard covers exactly one label, and so does the certificate.
+
+**Adding a subdomain?** Give it a `handle @host` block *above* the fall-through, and add it to the Hostnames table. Forgetting the route no longer produces a misleading `200` — the name returns 404 until it is routed.
 
 ## Cert persistence across redeploys
 

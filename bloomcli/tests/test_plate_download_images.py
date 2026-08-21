@@ -361,8 +361,9 @@ def test_progress_reports_captures_not_frames(tmp_path, capsys):
     """A plate run counts captures. Calling them frames describes the wrong experiment.
 
     The callback carries no noun — it lives in ProgressReporter — so a test that passes a
-    lambda cannot see the word at all. This drives the reporter the CLI actually uses and
-    reads the line it prints.
+    lambda cannot see the word at all. This builds its own reporter to read the progress line;
+    that the *command* builds one with the same noun is pinned at the CLI level, in
+    `test_plate_download_cli.py::test_the_retry_hint_names_captures_on_a_plate_run`.
     """
     import bloomctl._download as shared
 

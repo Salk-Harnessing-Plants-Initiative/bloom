@@ -26,11 +26,14 @@
 #              (2-SAN cert: apex + wildcard)
 #     staging: `https://*.bloom.salk.edu`
 #              (1 wildcard covering all staging subdomains)
-#     CI:      `http://localhost, http://studio.localhost`
+#     CI:      `http://localhost, http://studio.localhost, http://minio.localhost,
+#              http://unrouted.localhost`
 #              (forces HTTP-only — no TLS, no ACME, no Let's Encrypt call. The
-#              Studio host is listed so a `Host: studio.localhost` request enters
-#              this block instead of Caddy's unrouted-host fallback, which
-#              answers a blank 200 and made the old Studio test unable to fail.)
+#              console hosts are listed so a `Host: studio.localhost` request enters
+#              this block instead of Caddy's unrouted-host fallback, which answers a
+#              blank 200 and made the old Studio test unable to fail.
+#              `unrouted.localhost` is served on purpose with no route, so tests can
+#              reach the site block's fall-through.)
 #
 #   Prod and staging both issue their certs via the Salk-DNS CNAME:
 #     _acme-challenge.bloom.salk.edu -> _acme-challenge.bloom-acme.talmolab.org
@@ -63,6 +66,24 @@
 	tls {
 		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
 		dns_challenge_override_domain _acme-challenge.bloom-acme.talmolab.org
+	}
+
+	# Security headers — set once here so every hostname below inherits them.
+	# HSTS is deliberately absent: browsers cache it for its full max-age and
+	# it cannot be withdrawn server-side.
+	header {
+		X-Content-Type-Options nosniff
+		# frame-ancestors is the standards-track form; XFO covers older clients.
+		X-Frame-Options DENY
+		Content-Security-Policy "frame-ancestors 'none'"
+		Referrer-Policy strict-origin-when-cross-origin
+		# fullscreen omitted on purpose — its default (self) keeps the
+		# OrthoBrowser iframe's allowFullScreen working.
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		# Stops a site that opens Bloom in a popup from scripting that window.
+		Cross-Origin-Opener-Policy same-origin-allow-popups
+		# Stops other sites embedding our images; everything we serve is same-origin.
+		Cross-Origin-Resource-Policy same-origin
 	}
 
 	# -------------------
@@ -191,6 +212,55 @@
 			}
 		}
 	}
+
+	# -------------------
+	# Hostnames with no route
+	# -------------------
+	# The wildcard in CADDY_SITE_ADDRESSES means the certificate covers every
+	# one-level subdomain, so Caddy accepts any *.bloom.salk.edu name. Ones
+	# with no handle here would otherwise fall out of this block and get
+	# Caddy's implicit empty `200 OK` — a success code for a page we do not
+	# serve, which reads as healthy to anything checking only the status.
+	handle {
+		respond "not reachable" 404
+	}
+}
+
+# -------------------
+# Hostnames matching no site address
+# -------------------
+# A Host outside every site address never enters the site block above — it
+# matches no route on the server and falls out of it, which Caddy answers with
+# an empty `200`. Over HTTPS that needs a certificate-covered SNI to reach at
+# all, but the Host header is independent of SNI, so a client can present a
+# name we do serve and then ask for anything.
+#
+# A catch-all on each listener refuses those. `strict_sni_host` would also do
+# it, by requiring Host == SNI — but it compares against the SNI rather than
+# what the certificate covers, so two hostnames sharing our wildcard cert
+# mismatch each other. `studio.` and `minio.` share a certificate and an IP,
+# which is exactly when browsers coalesce HTTP/2 connections onto one socket;
+# a coalesced request would get 421, and Safari does not retry. Not worth it
+# for a request that reaches no backend either way.
+:443 {
+	respond "not reachable" 404
+}
+
+# -------------------
+# Hostnames matching no site address, over plain HTTP
+# -------------------
+# Over HTTPS these are already refused at the handshake, since no certificate
+# covers them. Plain HTTP has no such step, and what they get instead depends
+# on the scheme in CADDY_SITE_ADDRESSES: with `https://` (prod, staging) Caddy's
+# automatic redirect answers them with a 308 to a URL whose handshake will then
+# fail; with `http://` (CI) they get Caddy's implicit empty `200`. Neither is a
+# useful answer for a name we do not serve.
+#
+# Routed hostnames are unaffected. Automatic HTTPS generates a per-host redirect
+# route on :80 for each of them, and those take precedence over this block, so
+# they keep their HTTP-to-HTTPS redirect.
+:80 {
+	respond "not reachable" 404
 }
 
 # -------------------
@@ -200,5 +270,17 @@
 # not published in docker-compose). Bind to :2021 on a fresh listener
 # so it doesn't collide with the public 80/443 block above.
 :2021 {
-	respond /caddy-health "ok" 200
+	# Both arms are `handle` blocks on purpose: Caddy sorts `handle` ahead of a
+	# bare `respond`, so a matcher-less handle beside a bare respond would
+	# swallow the health path itself.
+	handle /caddy-health {
+		respond "ok" 200
+	}
+
+	# Same trap as the site block — without this, every other path falls out and
+	# gets Caddy's implicit empty 200. The compose healthcheck targets
+	# /caddy-health; a typo there would otherwise still report healthy.
+	handle {
+		respond "not reachable" 404
+	}
 }

@@ -79,6 +79,27 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   cap, and no longer prints above `No scans matched` for `--limit 0`. Its wording now matches
   what it can distinguish: returning exactly `--limit` rows may mean the newest captures were
   dropped, or may be the whole experiment, and it says so rather than asserting the first.
+- `cyl download` now uses the shared mechanism for the last four pieces it still duplicated —
+  containment, object fetching, collision detection and the selector. Its download behaviour is
+  unchanged, apart from the read-failure messages below; its tests pass unedited.
+- A failed metadata read now names the read that failed — "Could not read this experiment's scans
+  from Bloom", then the server's own sentence — rather than the server's sentence alone, which
+  said nothing about what the command had been doing. It also exits without writing a traceback
+  to the error log, which an expected server condition never warranted. Every read that ends the
+  run goes through this on both commands, including the experiment-name search. The per-scan frame
+  listing keeps its own handling — one unreadable scan must not end a run — and is reported in the
+  download log as before.
+- A message the server raised for a user to read is passed on as written, without that prefix. A
+  PL/pgSQL `RAISE EXCEPTION` is someone's sentence, not a failed read: the search's own
+  "search query too long (max 200 characters)" is the user's input to fix, and framing it as a
+  read failure sends them to check the network instead. This applies to any such message from
+  either command, where before only the name search on `plate` was exempt.
+- An error the server sends without any wording no longer reaches the terminal or the download log
+  as its own raw body. The body carries `hint` and `details`, which is where PostgREST puts the
+  connection string and the failing statement, and `download_log.txt` is the file we ask people to
+  send us. Such a failure now reads `Bloom rejected the request (code 42501)`.
+- `plate download`'s retry hint names captures rather than frames, so a failing run no longer
+  prints `1/3 captures` immediately above a sentence about frames.
 
 ## [0.1.0a5] - 2026-08-13 — cylinder download reliability
 
