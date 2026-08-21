@@ -115,6 +115,32 @@ Two test layers guard the block, and both must stay in step with it:
 * [tests/unit/test_caddy_security_headers.py](../../tests/unit/test_caddy_security_headers.py) — pins site-level placement by brace depth and asserts each value verbatim. It rejects all three Caddy spellings of a per-host override — the `header { ... }` block (with or without a matcher), the single-line `header <Field> <value>` / `header -<Field>` (wildcard deletions such as `-X-Frame-*` and `-*` included), and a `header_down` inside a `reverse_proxy` body — since each silently downgrades the policy for that host alone. The host list is derived from the site block, so renaming a matcher cannot make the guard skip a host.
 * [tests/integration/test_api_endpoints.py](../../tests/integration/test_api_endpoints.py) — asserts the headers on the live wire across every handler under the main hostname, each upstream Kong fans out to, and both console hostnames.
 
+## Hostnames with no route
+
+`CADDY_SITE_ADDRESSES` carries a wildcard on prod and staging, so the certificate covers every one-level subdomain of `bloom.salk.edu`. Caddy will therefore complete the TLS handshake for *any* such name — `nonexistent.bloom.salk.edu` included — even though only the three hostnames in the table below have a route.
+
+Two catch-alls make an unserved name say so, rather than look healthy:
+
+| Where | Covers | Answer |
+| --- | --- | --- |
+| Bare `handle` at the end of the `{$CADDY_SITE_ADDRESSES}` block | A wildcard-covered name with no `handle @host` above it | `404 not reachable` |
+| `:80` and `:443` site blocks | A name matching no site address at all — it never enters the site block, so the fall-through cannot catch it | `404 not reachable` |
+
+**Position in the file does not matter.** Caddy's adapter sorts a matcher-less `handle` after every matched one, whatever order they are written in, so the fall-through cannot swallow a routed hostname. Keeping it last is a readability convention.
+
+**Routed hostnames keep their HTTP-to-HTTPS redirect.** Automatic HTTPS generates a per-host redirect route on port 80 that takes precedence over the `:80` catch-all, so `http://bloom.salk.edu/` still answers `308`. Only names outside the wildcard fall through to the 404 — before the `:80` block they received a 308 to an HTTPS URL whose handshake would then fail.
+
+**Names outside the wildcard never reach a route over HTTPS.** They are refused at the handshake, because no certificate we hold covers them:
+
+```bash
+curl --resolve "evil.example.com:443:<host-ip>" https://evil.example.com/
+# -> TLS handshake fails, connection closed
+```
+
+The same applies to a deeper name such as `deep.sub.bloom.salk.edu`: a wildcard covers exactly one label, and so does the certificate.
+
+**Adding a subdomain?** Give it a `handle @host` block *above* the fall-through, and add it to the Hostnames table. Forgetting the route no longer produces a misleading `200` — the name returns 404 until it is routed.
+
 ## Cert persistence across redeploys
 
 The `caddy` service mounts two named volumes:
