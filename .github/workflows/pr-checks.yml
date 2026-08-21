@@ -167,7 +167,7 @@ jobs:
           fi
           api() {
             gh api "$1" --paginate -q '.secrets[].name' \
-              || { echo "::error::SECRETS_AUDIT_TOKEN cannot read $1 — it needs Secrets and Environments read access."; exit 1; }
+              || { echo "::error::SECRETS_AUDIT_TOKEN cannot read $1 — grant it Secrets: Read-only and Environments: Read-only on the repo, and Secrets: Read-only on the organisation." >&2; exit 1; }
           }
           # Organisation secrets shared with this repo resolve at deploy time too, so
           # omitting them would report a var backed by one as missing.
