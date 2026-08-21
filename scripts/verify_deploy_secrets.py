@@ -73,35 +73,38 @@ def defaults_keys(defaults_text: str) -> set[str]:
     }
 
 
-def block_entries(body: list[tuple[int, str]]) -> tuple[dict[str, list[str]], list[str]]:
-    """Keys a deploy.yml heredoc supplies, and keys written below the EOF marker.
+def block_entries(body: list[tuple[int, str]]) -> tuple[dict[str, list[str]], str | None]:
+    """Keys a deploy.yml heredoc supplies, and its last line when that is not the marker.
 
     Lines are dedented by the block's own indent, matching what the YAML block scalar
     does at deploy time, so a line indented deeper than its neighbours is caught here
     rather than at env assembly.
+
+    The marker is compared as the block's last line, character for character, because
+    that is what validate_env.sh tests with `tail -n1`. Scanning only for keys written
+    below it misses a deleted marker, a comment or blank line after it, a valueless
+    `KEY=`, and a trailing space on the marker itself — each fails every deploy.
     """
     raw = [line for _number, line in body]
     indents = [len(line) - len(line.lstrip()) for line in raw if line.strip()]
     margin = min(indents) if indents else 0
 
     supplied: dict[str, list[str]] = {}
-    after_marker: list[str] = []
-    seen_marker = False
+    dedented_lines: list[str] = []
     for line in raw:
         dedented = line[margin:] if line[:margin].isspace() or not line[:margin] else line
+        dedented_lines.append(dedented)
         if dedented.strip() == EOF_MARKER:
-            seen_marker = True
             continue
         match = SUPPLIED_KEY.match(dedented)
         if not match:
             continue
-        key = match.group(1)
-        if seen_marker:
-            after_marker.append(key)
         # A duplicate LHS is written twice by `cat >>`; the last one wins at deploy
         # time, so later refs replace earlier ones rather than being discarded.
-        supplied[key] = SECRET_REF.findall(dedented)
-    return supplied, after_marker
+        supplied[match.group(1)] = SECRET_REF.findall(dedented)
+
+    last_line = dedented_lines[-1] if dedented_lines else ""
+    return supplied, None if last_line == EOF_MARKER else last_line
 
 
 def load_secret_names(path: Path) -> dict[str, set[str]] | None:
@@ -179,18 +182,19 @@ def check_environment(
     required: set[str],
     supplied_by_defaults: set[str],
     supplied_by_block: dict[str, list[str]],
-    after_marker: list[str],
+    bad_last_line: str | None,
     known_secrets: set[str] | None,
     failures: Failures,
 ) -> None:
     """Check one environment's heredoc covers everything compose requires."""
     github_env = ENVIRONMENTS[env_name]
 
-    for key in sorted(after_marker):
+    if bad_last_line is not None:
         failures.add(
-            f"{key} is written below {EOF_MARKER} in deploy.yml's .env.{env_name} block",
-            "validate_env.sh requires that marker to be the file's last line and rejects "
-            "the whole env file as truncated. Move the key above it.",
+            f"deploy.yml's .env.{env_name} block ends with {bad_last_line!r}, not {EOF_MARKER}",
+            "validate_env.sh requires that marker to be the assembled file's last line, "
+            "exactly, and rejects the whole env file as truncated. Every deploy fails "
+            "until nothing follows it.",
         )
 
     for key in sorted(required - supplied_by_defaults):
@@ -286,7 +290,7 @@ def main(argv: list[str]) -> int:
             continue
 
         _start_line, body = blocks[env_name]
-        supplied_by_block, after_marker = block_entries(body)
+        supplied_by_block, bad_last_line = block_entries(body)
         defaults_path = args.defaults_dir / f".env.{env_name}.defaults"
 
         check_environment(
@@ -294,7 +298,7 @@ def main(argv: list[str]) -> int:
             required,
             defaults_keys(defaults_path.read_text(encoding="utf-8")),
             supplied_by_block,
-            after_marker,
+            bad_last_line,
             known.get(github_env) if known is not None else None,
             failures,
         )

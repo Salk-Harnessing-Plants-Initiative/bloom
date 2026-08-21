@@ -260,13 +260,41 @@ def test_heredoc_key_indented_past_the_block_margin_is_not_supplied():
     assert set(supplied) == {"ALPHA"}
 
 
-def test_key_below_the_eof_marker_is_reported():
-    """validate_env.sh requires the marker to be the last line and rejects the whole
-    file as truncated; appending below it is the natural way to add a secret."""
-    _supplied, after = vds.block_entries(
-        _body("          " + vds.EOF_MARKER, "          LATE=${{ secrets.X }}")
+@pytest.mark.parametrize(
+    "trailing",
+    [
+        "          LATE=${{ secrets.X }}",
+        "          LATE=",
+        "          # rotated 2026-08-19",
+        "",
+    ],
+    ids=["key", "valueless key", "comment", "blank line"],
+)
+def test_anything_after_the_eof_marker_is_reported(trailing):
+    """validate_env.sh greps `tail -n1` for the marker, so anything following it makes
+    every deploy reject the assembled file as truncated."""
+    _supplied, bad_last = vds.block_entries(
+        _body("          " + vds.EOF_MARKER, trailing)
     )
-    assert after == ["LATE"]
+    assert bad_last == trailing[10:]
+
+
+def test_marker_with_a_trailing_space_is_reported():
+    """The shell anchors on `^# _EOF_MARKER_$`; a trailing space is as fatal as none."""
+    _supplied, bad_last = vds.block_entries(_body("          " + vds.EOF_MARKER + " "))
+    assert bad_last == vds.EOF_MARKER + " "
+
+
+def test_missing_eof_marker_is_reported():
+    _supplied, bad_last = vds.block_entries(_body("          A=${{ secrets.X }}"))
+    assert bad_last == "A=${{ secrets.X }}"
+
+
+def test_block_ending_in_the_marker_is_clean():
+    _supplied, bad_last = vds.block_entries(
+        _body("          A=${{ secrets.X }}", "          " + vds.EOF_MARKER)
+    )
+    assert bad_last is None
 
 
 def test_duplicate_heredoc_key_keeps_the_last_ref():

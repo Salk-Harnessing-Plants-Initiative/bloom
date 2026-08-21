@@ -159,15 +159,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN}" ]; then
-            # A warning, not a notice: this is the difference between the job
-            # verifying secrets exist and only checking they are referenced, and
-            # a notice does not surface on the checks summary a reviewer reads.
-            echo "::warning::SECRETS_AUDIT_TOKEN is not set — secret existence was NOT verified, only wiring."
-            exit 0
+            # Passing here would silently return this job to checking wiring only.
+            echo "::error::SECRETS_AUDIT_TOKEN is not set — secret existence cannot be verified. Create it as a fine-grained PAT with repository Secrets: Read-only and Environments: Read-only, then re-run." >&2
+            exit 1
           fi
           api() {
             gh api "$1" --paginate -q '.secrets[].name' \
-              || { echo "::error::SECRETS_AUDIT_TOKEN cannot read $1 — grant it Secrets: Read-only and Environments: Read-only on the repo, and Secrets: Read-only on the organisation." >&2; exit 1; }
+              || { echo "::error::SECRETS_AUDIT_TOKEN cannot read $1 — it is a fine-grained PAT and needs repository Secrets: Read-only plus Environments: Read-only (the environment endpoints are gated by Environments, not Secrets). Add organisation Secrets: Read-only only if that alone does not clear it." >&2; exit 1; }
           }
           # Organisation secrets shared with this repo resolve at deploy time too, so
           # omitting them would report a var backed by one as missing.
