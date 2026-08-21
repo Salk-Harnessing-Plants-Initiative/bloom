@@ -35,10 +35,10 @@ name: Refresh cyl_experiment_trait_counts
 # every other path that reaches them.
 #
 # Production is expected to eventually need an automatic (scheduled) refresh once its write
-# volume grows -- tracked as bloom#708, not added speculatively here. Until then, there is no
-# fixed owner or cadence for dispatching this manually -- whoever runs a bulk write-back upload
-# and wants a fresher `n_traits` count sooner than "whenever someone next dispatches" should just
-# run it themselves afterward.
+# volume grows -- tracked as bloom#708, not added speculatively here. Until then: `staging` needs
+# no fixed cadence at all -- dispatch it (environment: staging) as needed for testing, whenever a
+# fresher count would help. `production` stays on-demand only until bloom#708 ships; that issue is
+# where its automatic cadence belongs, not an ad hoc interim process here.
 
 on:
   workflow_dispatch:

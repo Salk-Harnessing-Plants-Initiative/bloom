@@ -913,14 +913,14 @@ the more durable signal that M2 hasn't actually been rolled back.
   would have silently refreshed staging while believing they'd refreshed production, with nothing
   surfacing the mistake; every dispatch now requires an explicit choice.
 
-  **Also found in round 9, not a bug but a real, now-explicit gap: this redesign has no named
-  operational owner or cadence for either environment.** Before, there was at least an aspirational
-  (if broken) daily schedule; now `n_traits` staleness is bounded purely by how often a human
-  remembers to dispatch a refresh, and neither this design nor bloom#708 names who that should be or
-  how often. Not fixed here — bloom#708 already tracks giving production its own automatic cadence
-  once write volume justifies one; until then, whoever runs a bulk write-back upload and wants a
-  fresher count sooner than "whenever someone next dispatches" should just dispatch it themselves
-  (now noted in the workflow's own header comment).
+  **Also found in round 9 -- no named operational owner or cadence -- resolved by the user's own
+  direction, not by adding process machinery.** `staging` needs neither an owner nor a fixed cadence
+  at all: dispatch it manually, as needed, whenever testing calls for a fresher count -- unlike
+  production, staging was never going to need a reliable automatic refresh in the first place (see
+  the Context section's original framing of low staging write volume). `production` stays on-demand
+  only until bloom#708's automatic-refresh follow-up ships; no interim manual-dispatch owner is being
+  named for it either, since giving it a real automatic cadence is exactly what that issue is for,
+  not a gap to paper over with an ad hoc human process in the meantime.
 
 - **D7 — pinned-branch cost, not benchmarked.** See D7's own reasoning; needs a real `EXPLAIN (ANALYZE,
 BUFFERS)` against staging once this lands, not resolved from this sandboxed pass.

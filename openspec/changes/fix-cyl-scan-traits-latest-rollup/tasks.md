@@ -173,8 +173,9 @@ EXECUTE ... TO service_role` only (not the four read roles — this is a mainten
       from its `.env.*.defaults` or if a `secrets.STAGING_API_URL`/`secrets.PROD_API_URL` reference
       reappears.
 - [ ] 5.3 Verify the workflow's authenticated call succeeds against staging via `workflow_dispatch`
-      (`environment: staging`) — no longer blocked on any secret provisioning or branch promotion, since
-      manual dispatch works against this branch right now.
+      (`environment: staging`) — no longer blocked on any secret provisioning or branch promotion, but
+      per the user's own direction, do this **after this PR merges**, not before — no reason to dispatch
+      against a not-yet-merged branch's copy of the workflow when merging first costs nothing.
 - [x] 5.4 **Found in round 7 — resolved by redesign, not by promotion.** GitHub Actions `schedule:`
       triggers only fire from the workflow file's copy on the repo's default branch, so a cron here would
       have sat inert on `staging` until a separate promotion PR landed it on `main`. Rather than chase
@@ -208,11 +209,11 @@ EXECUTE ... TO service_role` only (not the four read roles — this is a mainten
       `environment` input's `default: 'staging'` — forces an explicit choice every dispatch rather than
       silently refreshing staging when production was intended. All three guarded by new/updated tests
       in `tests/unit/test_refresh_workflow_shape.py`.
-- [ ] 5.9 **Found in round 9, not a bug, not fixed here:** this redesign has no named operational owner
-      or cadence for dispatching a refresh, for either environment — a real (if lower-severity) trade
-      against the old, broken-but-aspirational daily schedule. Not spec'd here since it's a process
-      question, not a code one; the workflow's own header comment now at least suggests dispatching after
-      a bulk write-back upload rather than leaving it fully implicit.
+- [x] 5.9 **Found in round 9 (no named owner/cadence), resolved by the user's own direction:**
+      **staging** needs no fixed cadence or owner at all — dispatch it manually, as needed, whenever
+      testing calls for a fresher count. **production** stays on-demand only until bloom#708's
+      automatic-refresh follow-up ships; no interim manual-dispatch owner is being named for it either,
+      since that's exactly what #708 is for. Nothing further to spec here.
 
 ## 6. Validate
 
