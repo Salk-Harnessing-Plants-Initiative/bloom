@@ -10,6 +10,14 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Added
 
+- `bloomctl cyl download-for-predict` / `batch-download-for-predict` now fetch a scan's frames
+  through a configurable worker pool (`-n`/`--workers`, 1-64, default 8) instead of one at a
+  time — the same pattern PR #623 already applied to `cyl download` (#652). `--workers 1` runs
+  sequentially with no pool at all. The per-frame worker is built on the same shared `download_to`
+  primitive `plate download` already uses (rather than re-deriving download/atomic-write/retry
+  logic), so it also gains `download_to`'s disk-full protection for the first time — at any
+  `--workers` value, including `--workers 1`, a full disk or spent quota now stops further
+  queued frames instead of letting each one independently fail.
 - `bloomctl cyl batch-download-for-predict` now writes/merges a
   `sleap_roots_contracts.RunManifest` (`run_manifest.json`) into `OUT_DIR` after every scan
   in the invocation is processed, recording every usable (`ok` or `skipped`) `scan_key` — a
@@ -18,12 +26,80 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   `pipeline_run_id` is sourced from `ARGO_WORKFLOW_NAME` when set, or a generated
   `local-<8 hex chars>` placeholder outside Argo. Bumped the `sleap-roots-contracts` floor to
   `>=0.1.0a7` for `RunManifest`/`RUN_MANIFEST_FILENAME` (#653).
-- `bloomctl cyl batch-download-for-predict` now holds a per-scan lock (scoped to `out_dir/
-  .locks/{scan_key}.lock`) around each scan's skip-check through its sidecar write, and a
-  separate lock around the manifest read-merge-write — closing a race where two invocations
+- `bloomctl cyl batch-download-for-predict` now holds a per-scan lock (scoped to
+  `out_dir/.locks/{scan_key}.lock`) around each scan's skip-check through its sidecar write,
+  and a separate lock around the manifest read-merge-write — closing a race where two invocations
   targeting the same scan_id could both pass the skip-check and clobber each other's writes
   (#533). A stale lock (past `--lock-staleness-seconds`, default `900`, new option) is
   reclaimed rather than permanently wedging the directory.
+- `bloomctl plate download` — pull a plate (GraviScan) experiment or single scan out of Bloom:
+  `plates.csv`, `plate_sections.csv`, and the plate images. Selected the same way as
+  `cyl download` (`--experiment-id` / `--scan-id` / `--experiment-name` with `--species`), and
+  narrowed with `--plate-id`, `--wave-number` or `--session-id`. Until now there was no way to
+  get plate images out in bulk — a continuous session is one image per plate per cycle, which is
+  thousands of files, and the only route was clicking through the web UI one at a time.
+  An ambiguous `--experiment-name` lists each candidate's rig, because plate experiments are
+  unique on _(species, name, system)_ and one name can legitimately exist on two rigs.
+  Needs the `gravi_scans_extended` view and `gravi_experiment_search` function on the server.
+- Plate resume verifies size. `gravi_images` records `file_size_bytes` where `cyl_images` does
+  not, so a file is skipped only when its size matches the database — a truncated file is
+  re-fetched rather than treated as complete forever. When the recorded size is itself wrong the
+  download still succeeds and the log carries a `note=`, so an object that will be re-fetched on
+  every run is diagnosable instead of silently repeating.
+
+### Fixed
+
+- `bloomctl cyl batch-ingest-result`'s envelope discovery is now scoped to a `run_manifest.json`
+  in `envelopes_dir` when one is present: only the `.result.json` files it lists are ingested
+  (a leftover file from a stale or concurrently-staging run is excluded, not silently
+  re-ingested), and a manifest-declared `scan_key` with no matching file is reported as a batch
+  failure rather than a silent gap. With no manifest present, discovery is unchanged (#678).
+
+### Changed
+
+- The download mechanism is now shared between scan methods rather than living inside the
+  cylinder command: object fetching and retry, atomic writes, resume, bounded concurrency,
+  disk-full handling, collision detection, progress and logging moved to `bloomctl/_download.py`
+  and `bloomctl/_storage.py`. Queries, CSV columns, path layout and the per-scan loop stay with
+  each method. The storage bucket is now a required argument rather than a default, so no
+  command can read another's bucket. `cyl download`'s observable behaviour is unchanged apart
+  from the genotype batching noted below.
+- `cyl download` fetches genotypes in batches rather than as a single `in_()` query. An
+  experiment with enough accessions built a request URL long enough for PostgREST to reject,
+  failing the whole download; the batched form cannot. The output is identical.
+- A download directory now records which scan method filled it, and a download from the other
+  is refused instead of resuming into it. The two commands share the directory's layout but not
+  its meaning — scan id 5 is a different row on each — so without this a `plate download` into a
+  `cyl download` directory looked like the same selection and overwrote its log. Directories
+  written before this release carry no method and still resume under `cyl download`.
+- Both commands write the manifest before the CSV. A run killed between the two left a directory
+  holding one method's CSV with no manifest and no `images/` — which the other command accepted,
+  ending with `plates.csv` and `scans.csv` side by side under one stamp.
+- `plate download`'s `--limit` warning no longer fires on the `--scan-id` path, which applies no
+  cap, and no longer prints above `No scans matched` for `--limit 0`. Its wording now matches
+  what it can distinguish: returning exactly `--limit` rows may mean the newest captures were
+  dropped, or may be the whole experiment, and it says so rather than asserting the first.
+- `cyl download` now uses the shared mechanism for the last four pieces it still duplicated —
+  containment, object fetching, collision detection and the selector. Its download behaviour is
+  unchanged, apart from the read-failure messages below; its tests pass unedited.
+- A failed metadata read now names the read that failed — "Could not read this experiment's scans
+  from Bloom", then the server's own sentence — rather than the server's sentence alone, which
+  said nothing about what the command had been doing. It also exits without writing a traceback
+  to the error log, which an expected server condition never warranted. Every read that ends the
+  run goes through this on both commands, including the experiment-name search. The per-scan frame
+  listing keeps its own handling — one unreadable scan must not end a run — and is reported in the
+  download log as before.
+- A message the server raised for a user to read is passed on as written, without that prefix. A
+  PL/pgSQL `RAISE EXCEPTION` is someone's sentence, not a failed read: the search's own
+  "search query too long (max 200 characters)" is the user's input to fix, and framing it as a
+  read failure sends them to check the network instead. This applies to any such message from
+  either command, where before only the name search on `plate` was exempt.
+- An error the server sends without any wording no longer reaches the terminal or the download log
+  as its own raw body. The body carries `hint` and `details`, which is where PostgREST puts the
+  connection string and the failing statement, and `download_log.txt` is the file we ask people to
+  send us. Such a failure now reads `Bloom rejected the request (code 42501)`.
+- `plate download`'s retry hint names captures rather than frames, so a failing run no longer
+  prints `1/3 captures` immediately above a sentence about frames.
 
 ## [0.1.0a5] - 2026-08-13 — cylinder download reliability
 
@@ -159,9 +235,9 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Added
 
-- `bloomctl cyl download` can select the experiment by name: `--experiment-name
-  "<text>"` resolves a single experiment by a case-insensitive substring match on its
-  name, then downloads it; `--species` narrows an ambiguous name. The match runs
+- `bloomctl cyl download` can select the experiment by name:
+  `--experiment-name "<text>"` resolves a single experiment by a case-insensitive substring
+  match on its name, then downloads it; `--species` narrows an ambiguous name. The match runs
   server-side via the new `cyl_experiment_search` RPC (a `SECURITY INVOKER` function
   taking the query as a bound parameter, trigram-indexed so it scales), so the CLI
   never fetches the whole table and the query can't alter the SQL. The typed

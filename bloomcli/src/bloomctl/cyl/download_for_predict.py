@@ -14,6 +14,7 @@ import math
 import os
 import shutil
 import sys
+import threading
 from pathlib import Path
 from typing import Any, TextIO
 from uuid import uuid4
@@ -22,6 +23,15 @@ import click
 from pydantic import ValidationError
 from sleap_roots_contracts import RUN_MANIFEST_FILENAME, RunManifest
 
+from .._download import (
+    DEFAULT_WORKERS,
+    MAX_WORKERS,
+    DownloadResult,
+    FrameResult,
+    download_to,
+    fetch_all,
+)
+from .._storage import atomic_write_bytes
 from ..credentials import DEFAULT_PROFILE
 from ._batch import BatchResult, ScanResult, format_json, format_summary
 from ._locks import (
@@ -31,8 +41,7 @@ from ._locks import (
     LockContendedError,
     acquire_lock,
 )
-from ._storage import atomic_write_bytes, download_object
-from .download import DownloadResult, FrameResult, fetch_images, fetch_scan
+from .download import IMAGES_BUCKET, fetch_images, fetch_scan
 
 # Matches sleap_roots_predict.batch._IMAGE_EXTENSIONS — the exact set discover_scans
 # globs for, so clearing the stage directory removes anything predict would pick up.
@@ -224,29 +233,74 @@ def scan_is_already_staged(scan_dir: Path, scan_key: str) -> bool:
 # --- supabase / storage I/O -------------------------------------------------
 
 
+def _download_one_frame_for_predict(
+    client: Any,
+    scan: dict[str, Any],
+    image: dict[str, Any],
+    scan_dir: Path,
+    *,
+    stop: threading.Event | None = None,
+) -> tuple[FrameResult, bytes | None]:
+    """Download one frame into the predict layout; never raises (safe to call from a worker
+    thread), mirroring ``download_plate_image``'s dest-resolution guard around ``download_to``.
+
+    ``stop`` is set when the disk fills; frames not yet started are recorded failed without
+    being fetched (``download_to``'s own behavior — see `cyl download`'s/`plate download`'s
+    identical orchestrators).
+    """
+    object_path = image.get("object_path", "")
+    result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
+    try:
+        dest = frame_dest_for_predict(scan_dir, image)
+    except (KeyError, TypeError) as exc:  # a bare key or pathlib error explains nothing
+        result.error = f"malformed cyl_images row: {exc}"
+        return result, None
+    fetched = download_to(client, object_path, dest, bucket=IMAGES_BUCKET, stop=stop)
+    result.ok, result.skipped, result.error, result.note = fetched
+    if not result.ok:
+        return result, None
+    try:
+        return result, dest.read_bytes()
+    except OSError as exc:  # written successfully but couldn't be read back; never raise
+        result.ok = False
+        result.error = f"downloaded but could not read it back for the checksum: {exc}"
+        return result, None
+
+
 def download_frames_for_predict(
-    client: Any, scan: dict[str, Any], images: list[dict[str, Any]], scan_dir: Path
+    client: Any,
+    scan: dict[str, Any],
+    images: list[dict[str, Any]],
+    scan_dir: Path,
+    *,
+    workers: int = DEFAULT_WORKERS,
 ) -> tuple[DownloadResult, list[bytes]]:
     """Download every frame for one scan into the nested predict layout.
 
-    Returns the aggregate result plus each successfully-downloaded frame's bytes
-    in DB frame_number order (for the checksum) — a failed frame contributes no
-    bytes entry, mirroring ``download.py``'s per-frame failure isolation.
+    Frames are fetched by up to ``workers`` threads at once — the same bounded pool
+    ``download_images`` uses for the sibling `cyl download` command (PR #623, bloom #652).
+    ``workers <= 1`` runs one at a time, on the calling thread, with no pool at all.
+
+    Returns the aggregate result plus each successfully-downloaded frame's bytes in DB
+    frame_number order (for the checksum) — a failed frame contributes no bytes entry.
+    `fetch_all` returns outcomes in ``images`` order regardless of which thread finishes
+    first, so this ordering holds under concurrency the same way it held for the old
+    sequential loop.
+
+    A ``stop`` Event is created for every call, regardless of ``workers`` — once one frame's
+    write fails because the disk is full or the quota is spent, every frame not yet started
+    (including under ``workers=1``, where this stops the very next queued frame) is recorded
+    failed without being fetched, rather than each independently attempting and failing.
     """
-    frames: list[FrameResult] = []
-    frame_bytes: list[bytes] = []
-    for image in images:
-        object_path = image.get("object_path", "")
-        result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
-        try:
-            data = download_object(client, object_path)
-            atomic_write_bytes(frame_dest_for_predict(scan_dir, image), data)
-            result.ok = True
-            frame_bytes.append(data)
-        except Exception as exc:  # per-frame: record and continue
-            result.error = str(exc)
-        frames.append(result)
-    return DownloadResult(frames), frame_bytes
+    stop = threading.Event()
+    outcomes = fetch_all(
+        images,
+        lambda image: _download_one_frame_for_predict(client, scan, image, scan_dir, stop=stop),
+        workers=workers,
+    )
+    frames = [frame for frame, _ in outcomes]
+    frame_bytes = [data for _, data in outcomes if data is not None]
+    return DownloadResult(frames, disk_full=stop.is_set()), frame_bytes
 
 
 # --- command ----------------------------------------------------------------
@@ -262,7 +316,15 @@ def download_frames_for_predict(
     show_default=True,
     help="Credentials profile to use.",
 )
-def download_for_predict(scan_id: int, out_dir: Path, profile: str) -> None:
+@click.option(
+    "-n",
+    "--workers",
+    type=click.IntRange(min=1, max=MAX_WORKERS),
+    default=DEFAULT_WORKERS,
+    show_default=True,
+    help=f"Concurrent frame downloads (I/O-bound, 1-{MAX_WORKERS}). 1 = sequential.",
+)
+def download_for_predict(scan_id: int, out_dir: Path, profile: str, workers: int) -> None:
     """Stage one cylinder scan (SCAN_ID) into OUT_DIR in the layout
     sleap_roots_predict.discover_scans expects — frames co-located with a
     scan_metadata.json sidecar. Distinct from `cyl download`'s scans.csv layout."""
@@ -289,11 +351,14 @@ def download_for_predict(scan_id: int, out_dir: Path, profile: str) -> None:
     if removed:
         click.echo(f"Cleared {len(removed)} existing file(s) from a previous run: {scan_dir}")
 
-    result, frame_bytes = download_frames_for_predict(client, scan, images, scan_dir)
+    result, frame_bytes = download_frames_for_predict(
+        client, scan, images, scan_dir, workers=workers
+    )
 
     if result.failed:
+        cause = "the disk filled up or the storage quota was spent; " if result.disk_full else ""
         raise click.ClickException(
-            f"{result.failed} of {result.total} frames failed to download — "
+            f"{cause}{result.failed} of {result.total} frames failed to download — "
             f"frames downloaded this run remain in {scan_dir}; no sidecar written."
         )
 
@@ -311,6 +376,7 @@ def stage_one_scan(
     scan_id: Any,
     out_dir: Path,
     staleness_seconds: float = DEFAULT_LOCK_STALENESS_SECONDS,
+    workers: int = DEFAULT_WORKERS,
 ) -> ScanResult:
     """Stage one scan, isolating any failure into a `ScanResult` instead of raising.
 
@@ -349,12 +415,20 @@ def stage_one_scan(
                 return ScanResult(scan_key, "failed", f"Scan {scan_id}: {exc}")
 
             clear_scan_dir(scan_dir)
-            result, frame_bytes = download_frames_for_predict(client, scan, images, scan_dir)
+            result, frame_bytes = download_frames_for_predict(
+                client, scan, images, scan_dir, workers=workers
+            )
             if result.failed:
+                cause = (
+                    "the disk filled up or the storage quota was spent; "
+                    if result.disk_full
+                    else ""
+                )
                 return ScanResult(
                     scan_key,
                     "failed",
-                    f"{result.failed} of {result.total} frames failed to download for scan {scan_id}.",
+                    f"{cause}{result.failed} of {result.total} frames failed to download "
+                    f"for scan {scan_id}.",
                 )
 
             sidecar = build_sidecar(scan, images, frame_bytes, params)
@@ -474,6 +548,14 @@ def write_run_manifest(out_dir: Path, result: BatchResult, *, staleness_seconds:
     "and reclaimable. Must be strictly positive: 0 (or negative) would treat a lock's age "
     "as always past the threshold, reclaiming even a lock held a moment ago.",
 )
+@click.option(
+    "-n",
+    "--workers",
+    type=click.IntRange(min=1, max=MAX_WORKERS),
+    default=DEFAULT_WORKERS,
+    show_default=True,
+    help=f"Concurrent frame downloads per scan (I/O-bound, 1-{MAX_WORKERS}). 1 = sequential.",
+)
 @click.pass_context
 def batch_download_for_predict(
     ctx: click.Context,
@@ -483,12 +565,16 @@ def batch_download_for_predict(
     profile: str,
     as_json: bool,
     lock_staleness_seconds: float,
+    workers: int,
 ) -> None:
     """Stage every scan_id (from --scan-ids-file, a JSON array file or - for stdin, or
     --scan-ids, a comma-separated list) into OUT_DIR, one nested {scan_key}/ directory per
     scan — the batch sibling of `download-for-predict`. Isolates per-scan failures, including
     lock contention on a scan (one bad or contended scan doesn't abort the batch); exits
     non-zero if any scan failed.
+
+    Each scan's frames download via up to `--workers` concurrent threads (bloom #652); scans
+    themselves are still staged one at a time.
 
     After every scan is processed, writes/merges a `sleap_roots_contracts.RunManifest`
     recording every usable (`ok` or `skipped`) scan_key into OUT_DIR, under a lock separate
@@ -538,7 +624,9 @@ def batch_download_for_predict(
 
     result = BatchResult(
         [
-            stage_one_scan(client, scan_id, out_dir, staleness_seconds=lock_staleness_seconds)
+            stage_one_scan(
+                client, scan_id, out_dir, staleness_seconds=lock_staleness_seconds, workers=workers
+            )
             for scan_id in scan_ids
         ]
     )

@@ -104,7 +104,9 @@ def login(
     click.echo(f"Logged in as {email}. Credentials saved to {path}.")
 
 
-# Data-type command groups, one file per command (see bloomctl/cyl).
+# Data-type command groups, one file per command (see bloomctl/cyl, bloomctl/plate).
 from .cyl import cyl  # noqa: E402  (registered after `cli` is defined)
+from .plate import plate  # noqa: E402
 
 cli.add_command(cyl)
+cli.add_command(plate)

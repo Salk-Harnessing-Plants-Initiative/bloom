@@ -5,6 +5,7 @@ Tests run against the live compose stack via nginx on port 80.
 Requires: docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
 """
 
+import base64
 import os
 import pytest
 import urllib.request
@@ -40,6 +41,23 @@ ANON_KEY = os.environ.get("ANON_KEY", _env.get("ANON_KEY", ""))
 SERVICE_ROLE_KEY = os.environ.get("SERVICE_ROLE_KEY", _env.get("SERVICE_ROLE_KEY", ""))
 # `null` and `[]` are the compose defaults for an unprovisioned stack, not a JWKS.
 JWT_JWKS = os.environ.get("JWT_JWKS", _env.get("JWT_JWKS", "")).strip()
+
+# Kong's basic-auth credentials for the Studio route. Sent unconditionally by the
+# tests that reach a console hostname: a server that does not require auth ignores
+# the header, so this holds whether or not the gate is in place.
+DASHBOARD_USERNAME = os.environ.get("DASHBOARD_USERNAME", _env.get("DASHBOARD_USERNAME", ""))
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", _env.get("DASHBOARD_PASSWORD", ""))
+
+
+@pytest.fixture(scope="session")
+def dashboard_auth():
+    """`Authorization` header for Kong's basic-auth gate, or `{}` if unconfigured."""
+    if not (DASHBOARD_USERNAME and DASHBOARD_PASSWORD):
+        return {}
+    token = base64.b64encode(
+        f"{DASHBOARD_USERNAME}:{DASHBOARD_PASSWORD}".encode()
+    ).decode()
+    return {"Authorization": f"Basic {token}"}
 
 
 @pytest.fixture
@@ -104,10 +122,63 @@ def api_request(
             return e.code, content
 
 
+def api_response_headers(path: str, api_key: str = None, host: str = None, extra_headers: dict = None):
+    """Return the response headers for a GET, including on error responses.
+
+    Returns the raw `http.client.HTTPMessage`, not a dict, so repeated headers
+    stay distinguishable via `.get_all()`. That distinction is the point: Caddy
+    sets its headers before the handler chain and `reverse_proxy` then *adds*
+    the upstream's, so a header both sides emit arrives twice. Where the two
+    values differ, `Referrer-Policy` and `Permissions-Policy` resolve
+    last-wins — the upstream silently overrides the edge. A dict, or an `in`
+    check, cannot see that.
+
+    HTTP errors are returned rather than raised: the headers are asserted on
+    Caddy-generated 404s and 502s too. A transport failure (Caddy down, DNS,
+    timeout) is re-raised naming the route — callers fetch several routes into
+    one fixture, so an unlabelled URLError there surfaces as every dependent
+    test erroring with a traceback pointing at the fixture, not the route.
+
+    `host` overrides the Host header, so the console hostnames can be reached
+    over the same connection — they resolve to the same Caddy either way, and
+    which site block serves the request is decided by Host alone. `extra_headers`
+    carries credentials where a hostname is gated, so an assertion lands on the
+    surface itself rather than on the gate's error page.
+    """
+    url = f"{BASE_URL}{path}"
+    headers = {}
+    if api_key:
+        headers["apikey"] = api_key
+        headers["Authorization"] = f"Bearer {api_key}"
+    if host:
+        headers["Host"] = host
+    if extra_headers:
+        headers.update(extra_headers)
+
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.headers
+    except urllib.error.HTTPError as e:
+        return e.headers
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise AssertionError(f"could not reach {url} (Host: {host or 'default'}): {e}") from e
+
+
 @pytest.fixture
 def api():
     """Fixture that returns the api_request helper."""
     return api_request
+
+
+@pytest.fixture(scope="session")
+def api_headers():
+    """Fixture that returns the api_response_headers helper.
+
+    Session-scoped so module-scoped fixtures can depend on it and fetch each
+    route once, rather than once per assertion.
+    """
+    return api_response_headers
 
 
 # -----------------------------------------------------------------------------

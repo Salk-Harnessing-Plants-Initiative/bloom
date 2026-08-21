@@ -7,14 +7,18 @@ flight at once, and cleanup of temp files.
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 
 import pytest
 from test_download_metadata import SCAN
 from test_download_session_resume import _Client, _images
 
-import bloomctl.cyl._storage as storage
+import bloomctl._download as shared_dl
+import bloomctl._storage as storage
 import bloomctl.cyl.download as dl
+import bloomctl.plate.download as plate_dl
 
 SCAN_B = {**SCAN, "scan_id": 2, "qr_code": "QR-2"}
 
@@ -188,6 +192,56 @@ def test_an_unlisted_scan_is_not_counted_as_one_failed_frame(tmp_path, monkeypat
     assert result.incomplete  # ...but the dataset is still not complete
 
 
+def test_an_unlisted_scan_records_a_sentence_not_the_error_body(tmp_path, monkeypatch):
+    """The log is the file we ask people to send us; a PostgREST body carries a connection
+    string in `hint` and the failing statement in `details`."""
+    from postgrest import APIError
+
+    def _fetch_images(client, scan_id):
+        raise APIError(
+            {
+                "message": "",
+                "code": "42501",
+                "hint": "connect as postgres://bloom_agent@10.0.3.14:5432/bloom",
+                "details": "SELECT * FROM cyl_images WHERE scan_id = 1",
+            }
+        )
+
+    monkeypatch.setattr(dl, "fetch_images", _fetch_images)
+
+    result = dl.download_images(_Client(), [SCAN], tmp_path, workers=1)
+    log = tmp_path / "log.txt"
+    dl.write_download_log(result, log)
+    written = log.read_text()
+
+    assert "list images: Bloom rejected the request (code 42501)" in written
+    assert "postgres://" not in written
+    assert "SELECT" not in written
+
+
+def test_an_unlisted_scan_survives_an_error_that_cannot_describe_itself(tmp_path, monkeypatch):
+    """This handler is the reason one unreadable scan costs one log line rather than the run.
+    Describing the failure must not become a second failure that nothing catches."""
+
+    class _Hostile(Exception):
+        @property
+        def code(self):
+            raise RuntimeError("the code property blew up")
+
+    def _fetch_images(client, scan_id):
+        if scan_id == 1:
+            raise _Hostile()
+        return _images(2)
+
+    monkeypatch.setattr(dl, "fetch_images", _fetch_images)
+
+    result = dl.download_images(_Client(), [SCAN, SCAN_B], tmp_path, workers=1)
+
+    assert result.scans_unlisted == 1
+    assert result.ok == 2, "the other scan's frames still downloaded"
+    assert "_Hostile" in [f.error.replace("list images: ", "") for f in result.frames if f.unlisted][0]
+
+
 # --- bounded submission -----------------------------------------------------
 
 
@@ -195,7 +249,7 @@ def test_futures_in_flight_stay_bounded(tmp_path, monkeypatch):
     """Queueing every frame at once would cost hundreds of MB before the first one arrives."""
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(500))
     in_flight = []
-    real_submit = dl.ThreadPoolExecutor.submit
+    real_submit = shared_dl.ThreadPoolExecutor.submit
     live = {"n": 0, "peak": 0}
 
     def _tracking_submit(self, fn, *a, **k):
@@ -205,7 +259,7 @@ def test_futures_in_flight_stay_bounded(tmp_path, monkeypatch):
         future.add_done_callback(lambda _f: live.__setitem__("n", live["n"] - 1))
         return future
 
-    monkeypatch.setattr(dl.ThreadPoolExecutor, "submit", _tracking_submit)
+    monkeypatch.setattr(shared_dl.ThreadPoolExecutor, "submit", _tracking_submit)
 
     result = dl.download_images(_Client(), [SCAN], tmp_path, workers=4)
 
@@ -266,16 +320,27 @@ def test_the_sweep_leaves_a_second_run_s_live_temps_alone(tmp_path):
     assert in_flight.exists()
 
 
-def test_the_probe_file_is_named_so_the_sweep_can_collect_it(tmp_path):
-    """`ensure_writable` writes a probe; a hard kill in that window leaves it behind."""
-    dl.ensure_writable(tmp_path / "out")
-    probe = next((tmp_path / "out").glob(".dl-probe-*.tmp"), None) or (
-        tmp_path / "out" / ".dl-probe-deadbeef.tmp"
-    )
-    probe.write_bytes(b"bloomctl write test")
+def test_the_probe_file_is_named_so_the_sweep_can_collect_it(tmp_path, monkeypatch):
+    """`ensure_writable` writes a probe; a hard kill in that window leaves it behind.
+
+    The probe's name and the sweep's glob are coupled with nothing enforcing it, so this has to
+    sweep the *real* probe. Naming one here instead would only ever exercise the sweep, and a
+    rename on either side would go unnoticed.
+
+    The kill is simulated by suppressing the unlink for the duration of the call, which is the
+    state a killed process leaves: the probe written, the cleanup never reached.
+    """
+    out = tmp_path / "out"
+    with monkeypatch.context() as killed:
+        killed.setattr(Path, "unlink", lambda self, **kwargs: None)
+        dl.ensure_writable(out)
+
+    left = list(out.iterdir())
+    assert len(left) == 1, f"expected ensure_writable to leave just its probe, found {left}"
+    probe = left[0]
     os.utime(probe, (0, 0))
 
-    assert storage.sweep_orphan_temps(tmp_path / "out") == 1
+    assert storage.sweep_orphan_temps(out) == 1
     assert not probe.exists()
 
 
@@ -330,7 +395,7 @@ def test_two_qr_codes_differing_only_by_case_are_caught(tmp_path):
 
     clashes = dl.find_frame_collisions(tmp_path, work)
 
-    if dl.filesystem_folds_case(tmp_path):
+    if shared_dl.filesystem_folds_case(tmp_path):
         assert clashes, "these land on one file here, so they must be reported"
     else:
         assert not clashes, "these are genuinely different files here, so must not be"
@@ -553,14 +618,14 @@ def test_selecting_by_name_then_by_id_is_the_same_download():
                                    plant_age_min=0, plant_age_max=1000, limit=100000)
     by_id = dl.download_selector(experiment_id=42, scan_id=None, plant_qr_code=None,
                                  plant_age_min=0, plant_age_max=1000, limit=100000)
-    assert dl.describe_manifest_mismatch(by_name, by_id) == ""
+    assert dl.describe_manifest_mismatch(by_name, by_id, method=dl.METHOD) == ""
 
 
 def test_an_empty_directory_needs_no_manifest(tmp_path):
     """Every first download starts here, so this must not be treated as suspicious."""
     assert not dl.holds_an_unidentified_download(tmp_path)
     assert dl.read_manifest(tmp_path) is None
-    assert dl.describe_manifest_mismatch(None, {"experiment_id": 1}) == ""
+    assert dl.describe_manifest_mismatch(None, {"experiment_id": 1}, method="cyl") == ""
 
 
 def test_a_directory_with_images_but_no_manifest_is_refused(tmp_path):
@@ -574,6 +639,70 @@ def test_a_corrupt_manifest_is_treated_as_missing(tmp_path):
     (tmp_path / "images").mkdir()
     (tmp_path / dl.MANIFEST_NAME).write_text("not json", encoding="utf-8")
     assert dl.holds_an_unidentified_download(tmp_path)
+
+
+def test_the_manifest_records_which_method_wrote_it(tmp_path):
+    shared_dl.write_manifest(tmp_path, {"experiment_id": 12}, method=dl.METHOD)
+    # Read the literal key out of the JSON rather than through METHOD_KEY: the name is an
+    # on-disk contract across releases, and going through the constant follows a rename with it.
+    # Renamed, every stamped plate manifest reads as unstamped — which resolves to cyl, so a
+    # plate directory starts refusing its own resume.
+    written = json.loads((tmp_path / shared_dl.MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert written["method"] == "cyl"
+
+
+def test_the_selector_cannot_displace_the_method_stamp(tmp_path):
+    """The stamp is the writer's own record. A selector carrying the same key must not win.
+
+    Neither command has a --method option today, so this is latent — but the guard's whole
+    premise is that the field is not caller data, and a future method whose selector gained
+    such a column would disable it with the suite still green.
+    """
+    shared_dl.write_manifest(
+        tmp_path, {"experiment_id": 12, shared_dl.METHOD_KEY: "attacker"}, method=dl.METHOD
+    )
+    assert shared_dl.read_manifest(tmp_path)[shared_dl.METHOD_KEY] == "cyl"
+
+
+def test_two_methods_are_a_mismatch_even_when_every_shared_key_agrees(tmp_path):
+    """The selectors don't overlap, so absent keys read as equal and both ids are just 12.
+
+    Without the method the two look like one download, and the second run resumes into the
+    first one's tree — overwriting its log and leaving two methods' images under one root.
+    """
+    cyl_selector = dl.download_selector(experiment_id=12, scan_id=None, plant_qr_code=None,
+                                        plant_age_min=0, plant_age_max=1000, limit=100000)
+    shared_dl.write_manifest(tmp_path, cyl_selector, method=dl.METHOD)
+    recorded = shared_dl.read_manifest(tmp_path)
+
+    plate_selector = plate_dl.download_selector(experiment_id=12, scan_id=None, plate_id=None,
+                                                wave_number=None, session_id=None, limit=100000)
+    assert all(recorded.get(key) == value for key, value in plate_selector.items())
+
+    mismatch = shared_dl.describe_manifest_mismatch(
+        recorded, plate_selector, method=plate_dl.METHOD
+    )
+    # The literal phrase, not the parts: swapping the two reports the directory's method and the
+    # run's backwards, and "cyl" and "plate" both still appear.
+    assert "method was 'cyl', now 'plate'" in mismatch
+
+
+def test_a_manifest_from_before_the_method_was_recorded_is_a_cyl_download(tmp_path):
+    """0.1.0a5 directories carry no method. They must still resume under cyl, and must
+    still refuse plate — reading them as neither would strand every one in the wild."""
+    unstamped = {"experiment_id": 12, "scan_id": None, "plant_qr_code": None,
+                 "plant_age_min": 0, "plant_age_max": 1000, "limit": 100000}
+    assert shared_dl.METHOD_KEY not in unstamped
+
+    assert shared_dl.describe_manifest_mismatch(
+        unstamped, dict(unstamped), method=dl.METHOD
+    ) == ""
+
+    plate_selector = plate_dl.download_selector(experiment_id=12, scan_id=None, plate_id=None,
+                                                wave_number=None, session_id=None, limit=100000)
+    assert "method" in shared_dl.describe_manifest_mismatch(
+        unstamped, plate_selector, method=plate_dl.METHOD
+    )
 
 
 def test_the_cli_refuses_a_directory_whose_manifest_went_missing(tmp_path, monkeypatch):

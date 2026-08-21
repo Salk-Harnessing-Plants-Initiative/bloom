@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import tsconfigPaths from "vite-tsconfig-paths";
 
@@ -5,11 +6,10 @@ import tsconfigPaths from "vite-tsconfig-paths";
  * Vitest config for the web/ workspace.
  *
  * - environment: node — these are pure data-shaping / utility tests; nothing
- *   needs jsdom by default. Per-file `// @vitest-environment jsdom` directive
- *   overrides this for the route-handler and React-component tests added by
- *   openspec/changes/add-ghcr-image-publishing (e.g. app/api/config/route.test.ts
- *   and lib/config/use-public-config.test.tsx) without flipping the workspace
- *   default.
+ *   needs jsdom by default. A per-file `// @vitest-environment jsdom` directive
+ *   overrides this for the route-handler and React-component tests (the
+ *   runtime-config suites and the scan viewer/video components) without
+ *   flipping the workspace default.
  * - tsconfigPaths plugin resolves `@/…` imports from web/tsconfig.json so test
  *   files can use the same path aliases as the rest of the codebase.
  * - include defaults to colocated `*.test.ts` / `*.test.tsx` files under
@@ -27,9 +27,8 @@ import tsconfigPaths from "vite-tsconfig-paths";
  *   (not the default `threads` pool which shares state via worker_threads).
  *   Existing colocated tests (lib/queries/*.test.ts,
  *   components/.../format-times.test.ts) don't mutate process.env, so
- *   the switch is safe and the new openspec tests need the cross-file
- *   isolation. See openspec/changes/add-ghcr-image-publishing
- *   tasks.md §1.2.
+ *   the switch is safe, and the runtime-config tests need the cross-file
+ *   isolation.
  * - exclude adds lib/**\/__fixtures__/** so helper modules like
  *   lib/config/__fixtures__/jwt.ts aren't auto-discovered as tests.
  */
@@ -41,6 +40,23 @@ const plugins = [tsconfigPaths()] as any;
 
 export default defineConfig({
   plugins,
+  // web/ pins react exactly while the workspace root hoists a newer patch, so
+  // two copies exist. @testing-library/react installs at the root and binds to
+  // the root copy; a component importing web/'s copy would then render against
+  // a different react than the renderer, and every hook reads a null
+  // dispatcher. Point both at the root copy so there is one react in a test
+  // run. (Tests therefore run a patch ahead of what Next builds — the fix that
+  // removes the split is relaxing web/'s exact pin, which is an app-dependency
+  // change, not a test one.)
+  resolve: {
+    dedupe: ["react", "react-dom"],
+    alias: {
+      react: fileURLToPath(new URL("../node_modules/react", import.meta.url)),
+      "react-dom": fileURLToPath(
+        new URL("../node_modules/react-dom", import.meta.url)
+      ),
+    },
+  },
   test: {
     environment: "node",
     pool: "forks",

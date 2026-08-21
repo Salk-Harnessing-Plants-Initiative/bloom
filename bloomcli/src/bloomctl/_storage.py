@@ -1,5 +1,8 @@
 """Storage helpers for the download commands: fetching objects and writing them to disk.
 
+Shared by every scan method. Nothing here knows which one is calling — the bucket is always
+supplied by the caller, so no default can send one method's download at another's bucket.
+
 The client refreshes its auth token on a background timer. A bucket handle captures the
 token it was created with, so a handle kept for a whole download stops working once that
 token is replaced. Every download here resolves its own handle, which is cheap — it's a
@@ -14,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-IMAGES_BUCKET = "images"
+from .errors import is_network_error
 
 # Storage answers a caller whose token has expired with a 404 "Bucket not found" — it won't
 # confirm that a private bucket exists to someone who can't read it. A genuinely absent object
@@ -50,19 +53,6 @@ def status_of(error: BaseException) -> int | None:
         return None
 
 
-def _is_transport_error(error: BaseException) -> bool:
-    """True for a network-level httpx failure.
-
-    These have to be recognised by type: a timeout or a dropped connection carries no message
-    at all (`str(httpx.ReadTimeout())` is empty), so there is nothing to match text against.
-    """
-    try:
-        import httpx
-    except ImportError:  # pragma: no cover - httpx is a hard dependency of supabase
-        return False
-    return isinstance(error, httpx.TransportError)
-
-
 def is_retryable(error: BaseException) -> bool:
     """True for failures a second attempt could plausibly fix.
 
@@ -76,7 +66,7 @@ def is_retryable(error: BaseException) -> bool:
     status = status_of(error)
     if status is not None:
         return status == 429 or 500 <= status <= 599
-    return _is_transport_error(error)
+    return is_network_error(error)
 
 
 def describe_storage_error(error: BaseException) -> StorageError:
@@ -91,8 +81,11 @@ def describe_storage_error(error: BaseException) -> StorageError:
     return StorageError(detail)
 
 
-def download_object(client: Any, object_path: str, *, bucket: str = IMAGES_BUCKET) -> bytes:
-    """Download one object's bytes.
+def download_object(client: Any, object_path: str, *, bucket: str) -> bytes:
+    """Download one object's bytes from ``bucket``.
+
+    ``bucket`` is required rather than defaulted: each method keeps its images in its own
+    bucket, and a default here would let a missing argument read the wrong one.
 
     Resolves the bucket handle on every call so a long run keeps working after the client
     renews its token. Retries once if the failure looks like an expired token or a transient
@@ -180,14 +173,20 @@ def sweep_orphan_temps(out_dir: Path) -> int:
     return removed
 
 
-def already_downloaded(path: Path) -> bool:
-    """True if ``path`` already holds this frame, so a resumed run can skip fetching it.
+def already_downloaded(path: Path, expected_size: int | None = None) -> bool:
+    """True if ``path`` already holds this object, so a resumed run can skip fetching it.
 
-    All this can say is that the file isn't empty. It won't catch one left truncated by
-    `0.1.0a3`, which wrote frames without the temp-file step — download those afresh into
-    a new directory. `cyl_images` records no length to check against; #657 tracks adding
-    one at upload, as `gravi_images` already does.
+    Given ``expected_size`` this is a real completeness check, and a truncated file is
+    fetched again rather than treated as done forever. Without it, all this can say is that
+    the file isn't empty — which won't catch one left truncated by `0.1.0a3`, which wrote
+    frames without the temp-file step; download those afresh into a new directory.
+
+    `gravi_images` records a length to check against, so plate downloads pass one.
+    `cyl_images` does not; #657 tracks adding it at upload.
     """
     if not path.is_file():
         return False
-    return path.stat().st_size > 0
+    size = path.stat().st_size
+    if expected_size is not None:
+        return size == expected_size
+    return size > 0

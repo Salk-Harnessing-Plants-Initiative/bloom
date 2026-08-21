@@ -942,12 +942,18 @@ def test_out_of_range_parameters_rejected(injected_ports, bad_kwargs):
 
 
 def test_no_error_leaks_backend_internals(injected_ports, monkeypatch):
+    """bloom#664 item 2: this tool has no except clause around its delegate
+    calls at all, so this undeclared exception already falls through to
+    `internal_error` today — pin the code explicitly (not just "doesn't
+    leak"), closing the coverage gap the #660 review left for this tool."""
+
     def _boom(*a, **k):
         raise RuntimeError("secret path /var/secrets/key and host db.internal")
 
     monkeypatch.setattr(xcorr_tool, "calculate_genotype_means", _boom)
     with pytest.raises(BloomMCPError) as exc:
         _run()
+    assert exc.value.code == "internal_error"
     msg = f"{exc.value.message} {exc.value.remedy}"
     assert "/var" not in msg and "db.internal" not in msg
 

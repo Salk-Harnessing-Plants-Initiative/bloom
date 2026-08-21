@@ -120,6 +120,9 @@ jobs:
           MINIO_ROOT_PASSWORD=${{ secrets.PROD_MINIO_PASSWORD }}
           WORKFLOWS_SUPABASE_EMAIL=${{ secrets.PROD_WORKFLOWS_SUPABASE_EMAIL }}
           WORKFLOWS_SUPABASE_PASSWORD=${{ secrets.PROD_WORKFLOWS_SUPABASE_PASSWORD }}
+          WORKFLOWS_K8S_TOKEN=${{ secrets.PROD_WORKFLOWS_K8S_TOKEN }}
+          WORKFLOWS_K8S_CA_CERT=${{ secrets.PROD_WORKFLOWS_K8S_CA_CERT }}
+          WORKFLOWS_K8S_API_URL=${{ secrets.PROD_WORKFLOWS_K8S_API_URL }}
           DASHBOARD_USERNAME=${{ secrets.PROD_DASHBOARD_USERNAME }}
           DASHBOARD_PASSWORD=${{ secrets.PROD_DASHBOARD_PASSWORD }}
           BLOOMMCP_API_KEY=${{ secrets.PROD_BLOOMMCP_API_KEY }}
@@ -492,6 +495,13 @@ jobs:
             # dance that fails when the redirect target port isn't published.
             DOMAIN_MAIN=\$(grep '^DOMAIN_MAIN=' .env.prod | cut -d= -f2-)
             DOMAIN_STUDIO=\$(grep '^DOMAIN_STUDIO=' .env.prod | cut -d= -f2-)
+            # Studio sits behind Kong's basic-auth, so an unauthenticated probe
+            # correctly returns 401. Send the credentials so this still checks
+            # that Studio is actually served, not just that something answered.
+            DASHBOARD_USERNAME=\$(grep '^DASHBOARD_USERNAME=' .env.prod | cut -d= -f2-)
+            DASHBOARD_PASSWORD=\$(grep '^DASHBOARD_PASSWORD=' .env.prod | cut -d= -f2-)
+            echo \"::add-mask::\$DASHBOARD_PASSWORD\"
+            STUDIO_AUTH=\"Authorization: Basic \$(printf '%s:%s' \"\$DASHBOARD_USERNAME\" \"\$DASHBOARD_PASSWORD\" | base64 | tr -d '\n')\"
             DOMAIN_MINIO=\$(grep '^DOMAIN_MINIO=' .env.prod | cut -d= -f2-)
             PORT=\$(grep '^CADDY_HTTPS_LISTEN_PORT=' .env.prod | cut -d= -f2-)
             ANON_KEY=\$(grep '^ANON_KEY=' .env.prod | cut -d= -f2-)
@@ -530,7 +540,7 @@ jobs:
             }
 
             _probe \"\$DOMAIN_MAIN\"   \"/\"
-            _probe \"\$DOMAIN_STUDIO\" \"/\"
+            _probe \"\$DOMAIN_STUDIO\" \"/\" \"\$STUDIO_AUTH\"
             _probe \"\$DOMAIN_MINIO\"  \"/\"
             _probe \"\$DOMAIN_MAIN\"   \"/api/rest/v1/\" \"apikey: \$ANON_KEY\"
             _probe \"\$DOMAIN_MAIN\"   \"/api/client-info\"
@@ -858,6 +868,9 @@ jobs:
           MINIO_ROOT_PASSWORD=${{ secrets.STAGING_MINIO_PASSWORD }}
           WORKFLOWS_SUPABASE_EMAIL=${{ secrets.STAGING_WORKFLOWS_SUPABASE_EMAIL }}
           WORKFLOWS_SUPABASE_PASSWORD=${{ secrets.STAGING_WORKFLOWS_SUPABASE_PASSWORD }}
+          WORKFLOWS_K8S_TOKEN=${{ secrets.STAGING_WORKFLOWS_K8S_TOKEN }}
+          WORKFLOWS_K8S_CA_CERT=${{ secrets.STAGING_WORKFLOWS_K8S_CA_CERT }}
+          WORKFLOWS_K8S_API_URL=${{ secrets.STAGING_WORKFLOWS_K8S_API_URL }}
           DASHBOARD_USERNAME=${{ secrets.STAGING_DASHBOARD_USERNAME }}
           DASHBOARD_PASSWORD=${{ secrets.STAGING_DASHBOARD_PASSWORD }}
           BLOOMMCP_API_KEY=${{ secrets.STAGING_BLOOMMCP_API_KEY }}
@@ -1167,6 +1180,13 @@ jobs:
             # dance that fails when the redirect target port isn't published.
             DOMAIN_MAIN=\$(grep '^DOMAIN_MAIN=' .env.staging | cut -d= -f2-)
             DOMAIN_STUDIO=\$(grep '^DOMAIN_STUDIO=' .env.staging | cut -d= -f2-)
+            # Studio sits behind Kong's basic-auth, so an unauthenticated probe
+            # correctly returns 401. Send the credentials so this still checks
+            # that Studio is actually served, not just that something answered.
+            DASHBOARD_USERNAME=\$(grep '^DASHBOARD_USERNAME=' .env.staging | cut -d= -f2-)
+            DASHBOARD_PASSWORD=\$(grep '^DASHBOARD_PASSWORD=' .env.staging | cut -d= -f2-)
+            echo \"::add-mask::\$DASHBOARD_PASSWORD\"
+            STUDIO_AUTH=\"Authorization: Basic \$(printf '%s:%s' \"\$DASHBOARD_USERNAME\" \"\$DASHBOARD_PASSWORD\" | base64 | tr -d '\n')\"
             DOMAIN_MINIO=\$(grep '^DOMAIN_MINIO=' .env.staging | cut -d= -f2-)
             PORT=\$(grep '^CADDY_HTTPS_LISTEN_PORT=' .env.staging | cut -d= -f2-)
             ANON_KEY=\$(grep '^ANON_KEY=' .env.staging | cut -d= -f2-)
@@ -1205,7 +1225,7 @@ jobs:
             }
 
             _probe \"\$DOMAIN_MAIN\"   \"/\"
-            _probe \"\$DOMAIN_STUDIO\" \"/\"
+            _probe \"\$DOMAIN_STUDIO\" \"/\" \"\$STUDIO_AUTH\"
             _probe \"\$DOMAIN_MINIO\"  \"/\"
             _probe \"\$DOMAIN_MAIN\"   \"/api/rest/v1/\" \"apikey: \$ANON_KEY\"
             _probe \"\$DOMAIN_MAIN\"   \"/api/client-info\"
