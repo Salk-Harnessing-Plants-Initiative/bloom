@@ -20,6 +20,12 @@ DOCKERFILE = REPO_ROOT / "bloomcli" / "Dockerfile"
 DOCKERIGNORE = REPO_ROOT / "bloomcli" / ".dockerignore"
 UV_LOCK = REPO_ROOT / "bloomcli" / "uv.lock"
 
+# Matches `apt-get install`/`apt install`, with or without flags in between
+# (e.g. `apt-get -y install`, `apt-get --no-install-recommends install`), and
+# survives a Dockerfile line-continuation split (`apt-get \` + newline +
+# `install`) once continuations are joined below.
+_APT_INSTALL = re.compile(r"\bapt(?:-get)?\s+(?:-\S+\s+)*install\b")
+
 
 def _lines() -> list[str]:
     return DOCKERFILE.read_text(encoding="utf-8").splitlines()
@@ -55,7 +61,8 @@ def test_uv_binary_is_copied_in_digest_pinned():
 
 def test_no_apt_get_install():
     text = DOCKERFILE.read_text(encoding="utf-8")
-    assert "apt-get install" not in text
+    joined = re.sub(r"\\\r?\n", " ", text)
+    assert not _APT_INSTALL.search(joined)
 
 
 def test_non_root_user_before_entrypoint():

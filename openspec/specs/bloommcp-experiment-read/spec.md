@@ -5,7 +5,7 @@ TBD - created by archiving change add-bloommcp-persistence-ports. Update Purpose
 ## Requirements
 ### Requirement: ExperimentReader Port
 
-The system SHALL define a backend-agnostic `ExperimentReader` port exposing `load_experiment(name, version, require_clean)` and `list_experiments()`, where `load_experiment` returns an `ExperimentFrame` carrying the experiment frame, **adapter-declared** column roles (trait vs metadata columns), and a source label. Column roles SHALL be declared by the adapter, not re-inferred by callers, so a future adapter sourcing tidy/long rows can satisfy the contract without reproducing dtype-based detection. Consumers SHALL depend only on this port — never on `supabase`, `experiment_utils`, or `storage/` primitives directly — for reading experiment data.
+The system SHALL define a backend-agnostic `ExperimentReader` port exposing `load_experiment(name, version, require_clean)` and `list_experiments()`, where `load_experiment` returns an `ExperimentFrame` carrying the experiment frame, **adapter-declared** column roles (trait vs metadata columns), and a source label. Column roles SHALL be declared by the adapter, not re-inferred by callers, so a future adapter sourcing tidy/long rows can satisfy the contract without reproducing dtype-based detection. Consumers SHALL depend only on this port — never on `supabase`, `experiment_utils`, or `storage/` primitives directly — for reading experiment data. `list_experiments()` SHALL enumerate every available experiment in a bounded, small number of backend round trips regardless of experiment count — not one round trip per experiment — and any per-experiment counts it reports SHALL agree with what `load_experiment` would derive for that same experiment under the same latest-source-selection semantics.
 
 #### Scenario: Load an experiment returns a frame with declared roles
 
@@ -32,15 +32,20 @@ The system SHALL define a backend-agnostic `ExperimentReader` port exposing `loa
 - **WHEN** `load_experiment(name)` is called for a name the reader cannot resolve in any tier
 - **THEN** the reader surfaces a structured not-found condition with no raw Supabase or filesystem traceback, bucket name, or connection string leaked to the caller
 
-#### Scenario: A resolvable-but-unreadable committed version is a caller-safe error, not a leaked exception
-
-- **WHEN** `load_experiment(name, version=...)` resolves a manifest entry that names a real, committed version, but reading that entry — the manifest lookup itself, its recorded output key, its version directory, or the file download — raises a storage or filesystem exception partway through
-- **THEN** the reader converts that exception into a structured error before it reaches the caller, never letting a raw exception, filesystem path, or storage traceback escape
-
 #### Scenario: List experiments enumerates available inputs
 
-- **WHEN** a consumer calls `list_experiments()`
-- **THEN** it returns the available experiments (each identified by name) and returns an empty list — not an error — when none are available
+- **WHEN** a consumer calls `list_experiments()` against a backend with N available experiments
+- **THEN** it returns the available experiments (each identified by name), returns an empty list — not an error — when none are available, and does so using a number of backend round trips that does not scale with N (one bulk summary call, not one call per experiment)
+
+#### Scenario: Listed counts match load_experiment's latest-selection semantics
+
+- **WHEN** `list_experiments()` reports `rows`/`trait_columns` for an experiment that also has data reachable via `load_experiment`
+- **THEN** those counts equal the number of distinct sample identities and distinct trait columns `load_experiment(str(experiment_id))` would derive for that same experiment under its default (latest-source) selection
+
+#### Scenario: An experiment with no reachable trait data is listed with zero counts, not excluded
+
+- **WHEN** `list_experiments()` enumerates an experiment that exists in the backend's experiment table but has no trait data reachable under the default (latest) source selection
+- **THEN** that experiment still appears in the returned list, with `rows=0` and `trait_columns=0`, rather than being silently omitted
 
 #### Scenario: Single-experiment read consumers go through the port
 
@@ -113,4 +118,24 @@ The system SHALL provide an in-memory `FakeReader` adapter implementing `Experim
 
 - **WHEN** a test calls `FakeReader.fail_next_load(name, version=...)` and then `load_experiment(name, version=...)`
 - **THEN** that call raises `ExperimentReadError`, then the hook clears itself so a subsequent call for the same `(name, version)` resolves normally
+
+### Requirement: Bounded backend query timeout
+
+The `SupabaseReader` adapter's underlying PostgREST/RPC client SHALL apply a deliberately chosen,
+overridable timeout to every query and RPC call, rather than relying solely on the client library's
+undeclared package default. A caller SHALL be able to override the timeout for a specific client
+instance; when not overridden, a module-level default applies. A query that exceeds the timeout SHALL
+fail with a clear, structured error rather than hanging indefinitely from the caller's perspective.
+
+#### Scenario: A blocked or slow query fails loudly instead of hanging
+
+- **WHEN** a PostgREST/RPC call takes longer than the configured timeout to respond
+- **THEN** the call raises a timeout-shaped error within approximately that bound, rather than blocking
+  the caller indefinitely
+
+#### Scenario: The timeout is overridable per client instance
+
+- **WHEN** a caller requests the PostgREST client with an explicit timeout override
+- **THEN** that override applies to queries made through that client instance, distinct from the
+  module-level default used when no override is given
 

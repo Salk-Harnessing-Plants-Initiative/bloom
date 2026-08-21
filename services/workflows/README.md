@@ -231,7 +231,7 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 
 ## Provisioning (per environment)
 
-1. Create the Supabase auth user (Studio → Authentication, or the Auth Admin API) with an email + password.
+1. Create the Supabase auth user (Studio → Authentication, or the Auth Admin API) with an email + password. Studio is behind Kong's basic-auth, so the Studio route needs the `DASHBOARD` credential (the deploy secrets `PROD_/STAGING_DASHBOARD_USERNAME` and `_PASSWORD`); without it, use the Auth Admin API.
 2. Flag it as the workflows identity in its **service-role-only** `raw_app_meta_data` — e.g. the Auth Admin API (`PUT /admin/users/{id}` with `app_metadata: { "is_workflows": true }`) or `UPDATE auth.users SET raw_app_meta_data = COALESCE(raw_app_meta_data, '{}'::jsonb) || '{"is_workflows": true}' WHERE email = '…';`. On login, `custom_access_token_hook` maps this flag to a `bloom_workflows` role claim, so the token is scoped to the migration's grants rather than broad `authenticated`. (Setting `auth.users.role` directly does **not** work — the hook overwrites the claim.)
 3. Set the deploy secrets `PROD_/STAGING_WORKFLOWS_SUPABASE_EMAIL` and `_PASSWORD`.
 4. For `cyl-pipeline-worker` (Phase 2): set the deploy secrets

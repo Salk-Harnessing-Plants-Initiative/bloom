@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import csv
 import io
-import os
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -33,29 +32,30 @@ from .._download import (
     DownloadResult,
     FrameResult,
     ProgressReporter,
-    _path_key,
+    contained_dest,
     describe_manifest_mismatch,
+    download_to,
     ensure_writable,
     fetch_all,
-    filesystem_folds_case,
+    find_collisions,
     format_duration,
     format_progress,
     format_rate,
     holds_an_unidentified_download,
     read_manifest,
     safe_component,
+    selector_of,
     write_download_log,
     write_failed,
     write_manifest,
 )
-from .._postgrest import fetch_in_batches
+from .._postgrest import fetch_in_batches, queried
 from .._storage import (
-    already_downloaded,
     atomic_write_bytes,
-    download_object,
     sweep_orphan_temps,
 )
 from ..credentials import DEFAULT_PROFILE
+from ..errors import describe
 
 # Cylinder frames live in the `images` bucket. Passed explicitly on every fetch — the shared
 # storage helper has no default, so no command can read another method's bucket by omission.
@@ -78,17 +78,20 @@ __all__ = [  # re-exported so callers and tests reach the mechanism through this
     "RATE_WINDOW_SAMPLES",
     "RETRY_HINT",
     "atomic_write_bytes",
+    "contained_dest",
     "describe_manifest_mismatch",
     "download",
+    "download_to",
     "ensure_writable",
     "fetch_all",
-    "filesystem_folds_case",
+    "find_collisions",
     "format_duration",
     "format_progress",
     "format_rate",
     "holds_an_unidentified_download",
     "read_manifest",
     "safe_component",
+    "selector_of",
     "write_download_log",
     "write_failed",
     "write_manifest",
@@ -158,41 +161,30 @@ def write_scans_csv(rows: list[dict[str, Any]], path: Path) -> None:
     writer.writerows(rows)
     atomic_write_bytes(path, buffer.getvalue().encode("utf-8"))
 
-def download_selector(**options: Any) -> dict[str, Any]:
-    """The options that decide which scans a run downloads.
+# Which scans a run downloads. `experiment_id` is resolved, so name and id are one download.
+SELECTOR_KEYS = (
+    "experiment_id",
+    "scan_id",
+    "plant_qr_code",
+    "plant_age_min",
+    "plant_age_max",
+    "limit",
+)
 
-    `experiment_id` is the resolved id, so selecting the same experiment by name on one run
-    and by id on the next still counts as the same download.
-    """
-    return {
-        key: options.get(key)
-        for key in (
-            "experiment_id",
-            "scan_id",
-            "plant_qr_code",
-            "plant_age_min",
-            "plant_age_max",
-            "limit",
-        )
-    }
+
+def download_selector(**options: Any) -> dict[str, Any]:
+    """The options that decide which scans a run downloads."""
+    return selector_of(SELECTOR_KEYS, options)
 
 def image_dest(out_dir: Path, scan: dict[str, Any], image: dict[str, Any]) -> Path:
     """Destination for one frame, preserving its real extension.
 
-    Raises ValueError if the path would land outside ``out_dir`` — a second check behind
-    `safe_component`, so nothing can reach a write outside the output directory.
-
-    The check is on the path as written, without consulting the filesystem. Resolving it would
-    follow symlinks, which would reject the perfectly ordinary case of `images/` pointing at
-    another disk.
+    Raises ValueError if the path would land outside ``out_dir``.
     """
     ext = Path(image["object_path"]).suffix or ".png"
     ext = "." + safe_component(ext.lstrip(".") or "png")
     relative = f"{scan_relative_dir(scan)}/{safe_component(image['frame_number'])}{ext}"
-    normalized = os.path.normpath(relative)
-    if os.path.isabs(normalized) or normalized.split(os.sep)[0] == os.pardir:
-        raise ValueError(f"refusing to write outside {out_dir}: {relative}")
-    return Path(out_dir) / normalized
+    return contained_dest(out_dir, relative)
 
 def fetch_scans(
     client: Any,
@@ -284,26 +276,21 @@ def download_frame(
     """
     object_path = image.get("object_path", "")
     result = FrameResult(scan.get("scan_id"), image.get("frame_number"), object_path, ok=False)
+
     try:
         dest = image_dest(out_dir, scan, image)
-        if already_downloaded(dest):
-            result.ok = True
-            result.skipped = True
-            return result
-        if stop is not None and stop.is_set():
-            result.error = "nowhere left to write — nothing further was downloaded"
-            return result
-        atomic_write_bytes(dest, download_object(client, object_path, bucket=IMAGES_BUCKET))
-        result.ok = True
     except (KeyError, TypeError) as exc:  # a bare key or pathlib error explains nothing
         result.error = f"malformed cyl_images row: {exc}"
-    except OSError as exc:
-        # A full disk isn't this frame's problem, it's every remaining frame's.
-        if exc.errno in OUT_OF_SPACE and stop is not None:
-            stop.set()
+        return result
+    except Exception as exc:  # containment refusal, and anything else per-frame
         result.error = str(exc)
-    except Exception as exc:  # per-frame: record and continue
-        result.error = str(exc)
+        return result
+
+    # cyl_images records no size, so the resume check can only say the file isn't empty.
+    fetched = download_to(
+        client, object_path, dest, bucket=IMAGES_BUCKET, expected_size=None, stop=stop
+    )
+    result.ok, result.skipped, result.error, result.note = fetched
     return result
 
 def _list_scan_frames(
@@ -324,7 +311,7 @@ def _list_scan_frames(
             None,
             "",
             ok=False,
-            error=f"list images: {exc}",
+            error=f"list images: {describe(exc)}",
             unlisted=True,
         )
 
@@ -337,31 +324,15 @@ def find_frame_collisions(
     empty in the database — and two rows with an empty value are not caught by a uniqueness
     constraint. Two rows can therefore share a filename, and without this check the second is
     quietly skipped as already-downloaded and its image never arrives.
-
-    The comparison is on the real destination path, compared the way this filesystem compares
-    names: on macOS `st0-001` and `ST0-001` are two database values but one file, so matching
-    the raw strings would miss exactly the collisions that matter. On a case-sensitive
-    filesystem they are genuinely different files and are left alone.
     """
-    fold = filesystem_folds_case(Path(out_dir))
-    seen: dict[str, tuple[Any, Any, Path]] = {}
-    clashes: list[str] = []
-    for scan, image in work:
-        try:
-            dest = image_dest(out_dir, scan, image)
-        except (KeyError, TypeError, ValueError):
-            continue  # malformed row; reported per-frame during the download
-        key = _path_key(dest, fold)
-        owner = (scan.get("scan_id"), image.get("frame_number"))
-        if key in seen:
-            first_scan, first_frame, first_dest = seen[key]
-            clashes.append(
-                f"scan {first_scan!r} frame {first_frame!r} ({first_dest}) and scan {owner[0]!r} "
-                f"frame {owner[1]!r} ({dest}) are the same file"
-            )
-        else:
-            seen[key] = (*owner, dest)
-    return clashes
+    return find_collisions(
+        out_dir,
+        work,
+        dest_of=lambda pair: image_dest(out_dir, pair[0], pair[1]),
+        describe=lambda pair: (
+            f"scan {pair[0].get('scan_id')!r} frame {pair[1].get('frame_number')!r}"
+        ),
+    )
 
 def download_images(
     client: Any,
@@ -571,12 +542,10 @@ def download(
         raise click.ClickException(str(exc)) from exc
 
     if experiment_name is not None:  # resolve the name to a concrete id (server-side search)
-        from postgrest import APIError
-
-        try:
-            found = search_experiments(client, experiment_name, species=species)
-        except APIError as exc:  # e.g. the RPC's >200-char guard, or a permission error
-            raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc
+        found = queried(  # e.g. the RPC's >200-char guard, a permission error, a read timeout
+            "the experiment names",
+            lambda: search_experiments(client, experiment_name, species=species),
+        )
         outcome = classify(found)
         if isinstance(outcome, NoMatch):
             scope = f" for species {species!r}" if species else ""
@@ -594,20 +563,26 @@ def download(
         click.echo(f"Matched: {outcome.match.label} (id {experiment_id})", err=True)
 
     if scan_id is not None:
-        scan = fetch_scan(client, scan_id)
+        scan = queried("this scan", lambda: fetch_scan(client, scan_id))
         if scan is None:
             raise click.ClickException(f"Scan {scan_id} not found.")
         scans = [scan]
     else:
-        scans = fetch_scans(
-            client,
-            experiment_id,
-            plant_qr_code=plant_qr_code,
-            plant_age_min=plant_age_min,
-            plant_age_max=plant_age_max,
-            limit=limit,
+        scans = queried(
+            "this experiment's scans",
+            lambda: fetch_scans(
+                client,
+                experiment_id,
+                plant_qr_code=plant_qr_code,
+                plant_age_min=plant_age_min,
+                plant_age_max=plant_age_max,
+                limit=limit,
+            ),
         )
-    genotypes = fetch_genotypes(client, [s.get("accession_id") for s in scans])
+    genotypes = queried(
+        "the accession names",
+        lambda: fetch_genotypes(client, [s.get("accession_id") for s in scans]),
+    )
     rows = [build_scan_row(s, genotypes.get(s.get("accession_id"))) for s in scans]
 
     if not scans:

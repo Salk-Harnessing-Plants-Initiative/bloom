@@ -8,7 +8,11 @@ Prerequisites:
 Run: python -m pytest tests/integration/test_api_endpoints.py -v
 """
 
+import base64
+import os
+
 import pytest
+import urllib.error
 import urllib.request
 
 pytestmark = pytest.mark.integration
@@ -28,6 +32,202 @@ def test_client_info_returns_200(api):
     assert isinstance(body, dict), f"expected JSON object, got {body!r}"
     assert body.get("api_url"), "client-info api_url must be non-null"
     assert body.get("anon_key"), "client-info anon_key must be non-null"
+
+
+# --- Edge security headers (issue #108 item 1) ------------------------------
+# Set once at site level in caddy/Caddyfile so every hostname inherits them.
+# The config-shape counterpart is tests/unit/test_caddy_security_headers.py;
+# these assert the live wire.
+
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
+    "Cross-Origin-Resource-Policy": "same-origin",
+}
+
+# Every handler declared under `handle @main`, one route each. Status is
+# deliberately irrelevant — Caddy applies the headers ahead of the handler
+# chain, so a proxied 200, a synthetic 404 and an upstream-error 502 must all
+# carry them. Asserting on status here would make the test brittle against
+# stack configuration; asserting on headers alone is the actual contract.
+#
+# `handle_path /api/*` is one Caddy handler but many upstreams — Kong fans out
+# to GoTrue, PostgREST and storage-api. Since a duplicate originates upstream,
+# not at the edge, each is probed separately: covering only GoTrue would leave
+# the paths serving trait tables, stored objects and signed URLs unguarded.
+HEADER_ROUTES = [
+    "/api/client-info",  # exact path -> bloom-web
+    "/api/oauth/consent",  # exact path -> bloom-web
+    "/api/cyl/scans/1/video",  # /api/cyl/* -> bloom-web (prefix preserved)
+    "/api/auth/v1/health",  # /api/* -> kong -> gotrue
+    "/api/rest/v1/",  # /api/* -> kong -> postgrest
+    "/api/storage/v1/bucket",  # /api/* -> kong -> storage-api
+    "/langchain/models",  # /langchain/* -> agent (prefix preserved)
+    "/.well-known/oauth-protected-resource/bloommcp/mcp",  # RFC 9728 -> bloommcp
+    "/bloommcp/mcp",  # /bloommcp/* -> bloommcp (prefix stripped)
+    "/workflows/health",  # Caddy's own `respond 404`
+    "/workflows/runs",  # /workflows/* -> workflows
+    "/",  # catch-all -> bloom-web
+]
+
+
+@pytest.fixture(scope="module")
+def header_responses(api_headers):
+    """Fetch each route exactly once and reuse the headers across assertions.
+
+    Deliberately not one request per (route, header) pair: the parametrisation
+    below expands to one case per header per route, and re-requesting for each
+    would multiply this suite's HTTP footprint against every upstream in the
+    stack for no added coverage. The contract is per-route, so one fetch per
+    route is the whole of it.
+    """
+    return {path: api_headers(path) for path in HEADER_ROUTES}
+
+
+@pytest.mark.parametrize("path", HEADER_ROUTES)
+@pytest.mark.parametrize("name,value", sorted(SECURITY_HEADERS.items()))
+def test_security_headers_present(header_responses, path, name, value):
+    """Each security header reaches the client with its exact value, and with
+    no differing duplicate, on every handler class under the main hostname.
+
+    `get_all` rather than `in`: Caddy sets these before the handler chain and
+    `reverse_proxy` then *adds* whatever the upstream sent, so a header both
+    emit arrives twice. Referrer-Policy and Permissions-Policy resolve
+    last-wins, meaning a differing duplicate from an upstream silently
+    downgrades the edge policy — a presence-only check reports that broken
+    state as healthy.
+
+    For most of these the assertion is every-value-matches rather than a count:
+    an upstream emitting a byte-identical `nosniff` changes nothing a browser
+    can observe, so failing CI for it would be a false alarm, while a *different*
+    value is the real regression and still fails. The two cross-origin policies
+    in SINGLE_VALUE_HEADERS are the exception — any duplicate voids them, so
+    they are held to exactly one occurrence on every route here as well as on
+    the consoles.
+    No upstream sets any of these today, across all seven behind the routes
+    above — this is the guard for the day one of them starts.
+    """
+    received = header_responses[path].get_all(name)
+    assert received, f"{name} missing from the response to {path}"
+    if name in SINGLE_VALUE_HEADERS:
+        assert received == [value], (
+            f"{name} for {path} arrived as {received!r} — this header must appear "
+            "exactly once. Duplicate field lines are joined with a comma, which "
+            "parses as neither a legal value nor a single structured-field item, "
+            "so the browser drops the policy even when both copies agree"
+        )
+        return
+    divergent = [v for v in received if v != value]
+    assert not divergent, (
+        f"{name} for {path} returned {received!r}; {divergent!r} differs from the "
+        f"edge value {value!r} — an upstream is overriding it, and Referrer-Policy "
+        "and Permissions-Policy resolve last-wins"
+    )
+
+
+def test_hsts_not_yet_set(header_responses):
+    """HSTS is deliberately absent until the exposure work.
+
+    Asserted on the wire, not only in config: browsers cache it for its full
+    `max-age` and it cannot be withdrawn server-side, so an accidental
+    rollout is materially harder to undo than any other header here — it has
+    to expire out of every client that ever saw it.
+    """
+    received = header_responses["/api/client-info"].get_all("Strict-Transport-Security")
+    assert not received, (
+        f"Strict-Transport-Security is being sent ({received!r}) — it is "
+        "browser-cached and cannot be withdrawn server-side"
+    )
+
+
+# The console hostnames, matched by Host alone against the same Caddy. Covered
+# because site-level declaration is the whole point of the design: a `header`
+# block moved under `handle @main` leaves these bare while every main-hostname
+# assertion above still passes. Hardcoded to match the Studio tests below.
+CONSOLE_HOSTS = ["studio.localhost", "minio.localhost"]
+
+# Headers where an upstream duplicate with a *different* value is worse than the
+# edge value alone, so presence is not enough to assert.
+#
+# `Referrer-Policy` and `Permissions-Policy` resolve last-wins — the upstream
+# value silently replaces ours. The two cross-origin policies are worse than
+# that: they fail open rather than last-wins. A duplicated `Cross-Origin-
+# Resource-Policy` combines to `same-origin, cross-origin`, which matches no
+# valid value, so the policy is discarded and the load allowed. A duplicated
+# `Cross-Origin-Opener-Policy` parses as a list where a single item is required,
+# and a parse failure falls back to `unsafe-none`. In both cases the protection
+# disappears entirely, which a presence-only check reports as healthy.
+#
+# CSP is deliberately absent: browsers enforce every CSP header present, so
+# MinIO's own policy arriving beside `frame-ancestors 'none'` is an
+# intersection, not an override.
+DIVERGENCE_SENSITIVE_HEADERS = {"Referrer-Policy", "Permissions-Policy"}
+
+# Stricter still: these two are voided by ANY duplicate, not just a divergent one.
+# Repeated field lines are joined with a comma, and `same-origin, same-origin`
+# matches none of CORP's three legal values, while COOP must parse as a single
+# structured-field item and a list is a parse failure. Either way the browser
+# falls back to no policy, so "present" is not enough — it must be alone.
+SINGLE_VALUE_HEADERS = {"Cross-Origin-Opener-Policy", "Cross-Origin-Resource-Policy"}
+
+
+@pytest.fixture(scope="module")
+def console_responses(api_headers, dashboard_auth):
+    """Root of each console hostname, fetched once.
+
+    Credentials are sent because the Studio hostname sits behind Kong's gate.
+    Without them the assertions would land on Kong's 401 — which does carry the
+    edge headers, so they would still pass, while no longer observing a single
+    Studio-served response. That is precisely the surface a divergent upstream
+    duplicate would appear on.
+
+    Skips rather than degrades when the credentials are unset: without this the
+    suite stays green while silently measuring Kong's gate instead of the console.
+    """
+    if not dashboard_auth:
+        pytest.skip(
+            "DASHBOARD_USERNAME/DASHBOARD_PASSWORD unset — the Studio hostname would "
+            "answer Kong's 401, which carries the edge headers, so these assertions "
+            "would pass without observing a console-served response"
+        )
+    return {host: api_headers("/", host=host, extra_headers=dashboard_auth) for host in CONSOLE_HOSTS}
+
+
+@pytest.mark.parametrize("host", CONSOLE_HOSTS)
+@pytest.mark.parametrize("name,value", sorted(SECURITY_HEADERS.items()))
+def test_security_headers_on_console_hostnames(console_responses, host, name, value):
+    """The consoles inherit every header in the block from the site-level declaration.
+
+    This is the assertion the config-shape test cannot make: that the block
+    genuinely reaches hostnames other than the main one. The MinIO console
+    emits four of these itself, so duplicates are expected there — hence
+    presence of the edge value rather than sole occupancy, with the stricter
+    no-divergence check reserved for the headers where a duplicate actually
+    overrides.
+    """
+    received = console_responses[host].get_all(name)
+    assert received, f"{name} missing from the response for {host}"
+    assert value in received, (
+        f"{name} for {host} is {received!r}; the edge value {value!r} is absent, "
+        "so the site-level declaration is not reaching this hostname"
+    )
+    if name in SINGLE_VALUE_HEADERS:
+        assert received == [value], (
+            f"{name} for {host} arrived as {received!r} — this header must appear "
+            "exactly once. Duplicates are joined with a comma, which parses as "
+            "neither a valid value nor a single structured-field item, so the "
+            "policy is dropped entirely even when both copies agree"
+        )
+    elif name in DIVERGENCE_SENSITIVE_HEADERS:
+        divergent = [v for v in received if v != value]
+        assert not divergent, (
+            f"{name} for {host} also arrived as {divergent!r} — a divergent duplicate "
+            "of this header removes or overrides the edge policy rather than adding to it"
+        )
 
 
 # Live counterpart to tests/unit/test_caddy_cyl_video_route.py, which only reads
@@ -246,8 +446,40 @@ def test_bloom_web_returns_html(api):
     assert "<!DOCTYPE html>" in body or "<html" in body or "next" in str(body).lower()
 
 
-def test_studio_reachable():
-    """Supabase Studio responds through Caddy subdomain."""
+def _studio_request(credentials: tuple[str, str] | None = None):
+    """A request for the Studio hostname, optionally carrying basic-auth."""
     req = urllib.request.Request("http://localhost/", headers={"Host": "studio.localhost"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    if credentials:
+        token = base64.b64encode(":".join(credentials).encode()).decode()
+        req.add_header("Authorization", f"Basic {token}")
+    return req
+
+
+def test_studio_requires_credentials():
+    """Studio's UI is gated by Kong's basic-auth, not served directly by Caddy.
+
+    Asserting the 401 is the point: an unauthenticated 200 here is what the
+    Caddyfile produced before the UI catch-all was routed through Kong, and it
+    is indistinguishable from a working stack unless the status is checked.
+    """
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(_studio_request(), timeout=10)
+    assert excinfo.value.code == 401, (
+        f"expected 401 from Kong's basic-auth, got {excinfo.value.code} — "
+        "a 200 means the request never reached Kong (check CADDY_SITE_ADDRESSES "
+        "covers the Studio hostname, or the @studio catch-all still proxies studio: directly)"
+    )
+
+
+def test_studio_reachable_with_credentials():
+    """The gate opens for the DASHBOARD consumer's credentials."""
+    creds = (os.environ.get("DASHBOARD_USERNAME", ""), os.environ.get("DASHBOARD_PASSWORD", ""))
+    if not all(creds):
+        pytest.skip("DASHBOARD_USERNAME/DASHBOARD_PASSWORD not set in the environment")
+    with urllib.request.urlopen(_studio_request(creds), timeout=10) as resp:
         assert resp.status == 200
+        body = resp.read()
+    assert body, (
+        "studio.localhost returned an empty 200 — Caddy's no-matching-site "
+        "fallback, not Studio. The hostname is missing from CADDY_SITE_ADDRESSES."
+    )

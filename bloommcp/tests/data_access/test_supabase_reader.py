@@ -277,6 +277,8 @@ def test_list_experiments_enumerates_database_experiments(
     assert summary.trait_columns == 2
     assert summary.genotype_col == "genotype"
     assert summary.sample_id_col == "sample_id"
+    # bloom#637: trait_columns's own staleness, threaded from the RPC's n_traits_updated_at.
+    assert summary.trait_columns_updated_at == "2026-01-01T00:00:00+00:00"
     # The whole point of this change: one bulk RPC call, not one per experiment.
     assert fake_supabase_db.rpc_calls.count("get_experiment_summary_counts") == 1
     assert "get_experiment_traits" not in fake_supabase_db.rpc_calls
@@ -297,6 +299,8 @@ def test_list_experiments_reports_zero_counts_for_experiment_with_no_traits(
     assert set(summaries) == {"42", "43"}
     assert summaries["43"].rows == 0
     assert summaries["43"].trait_columns == 0
+    # Missing from the bulk RPC's result entirely -- defaults to None, not a fabricated timestamp.
+    assert summaries["43"].trait_columns_updated_at is None
 
 
 def test_list_experiments_raises_when_summary_counts_rpc_fails(

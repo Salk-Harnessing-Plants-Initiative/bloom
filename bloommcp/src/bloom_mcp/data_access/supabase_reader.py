@@ -331,7 +331,9 @@ class SupabaseReader:
                 # absent from counts_by_id, not zero-valued (design.md D2),
                 # so a missing entry here defaults to zero rather than being
                 # excluded from the listing.
-                counts = counts_by_id.get(experiment_id, {"n_plants": 0, "n_traits": 0})
+                counts = counts_by_id.get(
+                    experiment_id, {"n_plants": 0, "n_traits": 0, "n_traits_updated_at": None}
+                )
                 summary = ExperimentSummary(
                     filename=filename,
                     stem=filename,
@@ -341,6 +343,7 @@ class SupabaseReader:
                     experiment_name=str(row.get("name") or filename),
                     genotype_col=_GENOTYPE_COL,
                     sample_id_col=_SAMPLE_ID_COL,
+                    trait_columns_updated_at=counts.get("n_traits_updated_at"),
                 )
             except Exception:
                 logger.warning(

@@ -10,6 +10,14 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Added
 
+- `bloomctl cyl download-for-predict` / `batch-download-for-predict` now fetch a scan's frames
+  through a configurable worker pool (`-n`/`--workers`, 1-64, default 8) instead of one at a
+  time — the same pattern PR #623 already applied to `cyl download` (#652). `--workers 1` runs
+  sequentially with no pool at all. The per-frame worker is built on the same shared `download_to`
+  primitive `plate download` already uses (rather than re-deriving download/atomic-write/retry
+  logic), so it also gains `download_to`'s disk-full protection for the first time — at any
+  `--workers` value, including `--workers 1`, a full disk or spent quota now stops further
+  queued frames instead of letting each one independently fail.
 - `bloomctl cyl batch-download-for-predict` now writes/merges a
   `sleap_roots_contracts.RunManifest` (`run_manifest.json`) into `OUT_DIR` after every scan
   in the invocation is processed, recording every usable (`ok` or `skipped`) `scan_key` — a
@@ -39,6 +47,14 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   download still succeeds and the log carries a `note=`, so an object that will be re-fetched on
   every run is diagnosable instead of silently repeating.
 
+### Fixed
+
+- `bloomctl cyl batch-ingest-result`'s envelope discovery is now scoped to a `run_manifest.json`
+  in `envelopes_dir` when one is present: only the `.result.json` files it lists are ingested
+  (a leftover file from a stale or concurrently-staging run is excluded, not silently
+  re-ingested), and a manifest-declared `scan_key` with no matching file is reported as a batch
+  failure rather than a silent gap. With no manifest present, discovery is unchanged (#678).
+
 ### Changed
 
 - The download mechanism is now shared between scan methods rather than living inside the
@@ -63,6 +79,27 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   cap, and no longer prints above `No scans matched` for `--limit 0`. Its wording now matches
   what it can distinguish: returning exactly `--limit` rows may mean the newest captures were
   dropped, or may be the whole experiment, and it says so rather than asserting the first.
+- `cyl download` now uses the shared mechanism for the last four pieces it still duplicated —
+  containment, object fetching, collision detection and the selector. Its download behaviour is
+  unchanged, apart from the read-failure messages below; its tests pass unedited.
+- A failed metadata read now names the read that failed — "Could not read this experiment's scans
+  from Bloom", then the server's own sentence — rather than the server's sentence alone, which
+  said nothing about what the command had been doing. It also exits without writing a traceback
+  to the error log, which an expected server condition never warranted. Every read that ends the
+  run goes through this on both commands, including the experiment-name search. The per-scan frame
+  listing keeps its own handling — one unreadable scan must not end a run — and is reported in the
+  download log as before.
+- A message the server raised for a user to read is passed on as written, without that prefix. A
+  PL/pgSQL `RAISE EXCEPTION` is someone's sentence, not a failed read: the search's own
+  "search query too long (max 200 characters)" is the user's input to fix, and framing it as a
+  read failure sends them to check the network instead. This applies to any such message from
+  either command, where before only the name search on `plate` was exempt.
+- An error the server sends without any wording no longer reaches the terminal or the download log
+  as its own raw body. The body carries `hint` and `details`, which is where PostgREST puts the
+  connection string and the failing statement, and `download_log.txt` is the file we ask people to
+  send us. Such a failure now reads `Bloom rejected the request (code 42501)`.
+- `plate download`'s retry hint names captures rather than frames, so a failing run no longer
+  prints `1/3 captures` immediately above a sentence about frames.
 
 ## [0.1.0a5] - 2026-08-13 — cylinder download reliability
 
