@@ -553,8 +553,11 @@ class TestRollbackRestoresKongConfig:
         assert re.search(r"kong_rollback_ok=false", run), (
             "at least one bad-path branch must flip the flag to false"
         )
+        # `(?: && \[...\])*` tolerates later blocks adding their own conjunct
+        # (PR #712 added `caddy_rollback_ok`) while still pinning that kong's is
+        # required and that only `&&` — never `||` — may extend the condition.
         assert re.search(
-            r'if \[ \\"\\\$kong_rollback_ok\\" = \\"true\\" \]; then\s*\n\s*echo \'Rollback complete — previous version restored and healthy\'',
+            r'if \[ \\"\\\$kong_rollback_ok\\" = \\"true\\" \](?: && \[[^\]]*\])*; then\s*\n\s*echo \'Rollback complete — previous version restored and healthy\'',
             run,
         ), "the clean success message must be gated behind kong_rollback_ok"
         assert re.search(
@@ -593,6 +596,13 @@ class TestRollbackKongHealthGating:
         fi_idx = run.index("fi", newline_idx) + 2
         snippet = run[start:fi_idx]
         snippet = snippet.replace(kongfile_changed_expr, kongfile_changed_value)
+        # The slice also spans the Caddy block that PR #712 added between the Kong
+        # block and the summary. Its own expression has to be substituted or bash
+        # aborts that line with `bad substitution`, leaving caddy_rollback_ok unset
+        # and every summary assertion below reading a branch nobody chose. 'false'
+        # keeps Caddy out of the way of these Kong-focused cases.
+        snippet = re.sub(r"\$\{\{ steps\.\w+\.outputs\.caddyfile_changed \}\}", "false", snippet)
+        assert "${{" not in snippet, f"unsubstituted GitHub expression in snippet: {snippet!r}"
         # Unescape the SSH heredoc's `\$`/`\"` escaping so this runs as
         # standalone bash, exactly as it would on the remote host.
         snippet = snippet.replace('\\"', '"').replace("\\$", "$")
