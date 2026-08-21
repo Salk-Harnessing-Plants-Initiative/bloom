@@ -6,8 +6,12 @@ Periodically re-checks every `cyl_pipeline_runs` row still `'submitted'`/
 that run's distinct `argo_workflow_name`s via k8s_client.get_workflow_status,
 computes the run's rollup status (see the rollup rule below), and writes it
 via the `update_cyl_pipeline_run_status` SECURITY DEFINER RPC — skipping the
-write entirely when the computed status already matches the run's known
-status, so a stable conclusion doesn't get needlessly re-confirmed forever.
+write entirely when the computed status already matches a known `'running'`
+status, so a stable in-progress run doesn't get needlessly re-confirmed
+forever (this skip does NOT apply to `'partial'`: Phase 2's dispatch-settle
+can also produce `'partial'` as a pre-poll guess this poller hasn't yet
+checked, so a `'partial'`-sourced candidate always writes its computed
+conclusion — see design.md's round-3 fix).
 Distinct from `dispatch_worker.py`: that worker reacts to new pgmq messages
 (event-driven); this poller runs on a fixed wall-clock cadence regardless of
 dispatch activity, sweeping every currently-active run. Runs as the

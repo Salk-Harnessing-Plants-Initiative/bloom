@@ -541,3 +541,20 @@ a real submitted Workflow) was not performed — stated explicitly, not claimed.
       test_cyl_pipeline_status_polling.py`, `openspec validate --strict`. Confirm no regressions. Push as
       a new commit (`fix(#11): apply round-3 /review-pr findings — partial-run write-skip regression,
       reconnect counter consistency`) on the same PR branch.
+
+## 12. Round-4 `/review-pr` findings (applied on the same branch, post round-3 fix commit)
+
+> A fourth full 5-subagent review pass specifically re-verified round 3's fix for a further regression
+> (the pattern of "this round's fix breaks something else" had repeated twice in a row: round 1's fix
+> regressed in round 2, round 2's fix regressed in round 3). All 5 lenses confirmed round 3's fix is
+> correct with no new regression — security came back clean for the third consecutive round. Exactly one
+> cosmetic finding surfaced: a stale module docstring.
+
+- [x] 12.1 **Cosmetic, no behavior change** — `status_poller.py`'s module docstring (top of file) still
+      described round 2's superseded general same-value skip ("skipping the write entirely when the
+      computed status already matches the run's known status") rather than round 3's narrowed
+      `'running'`-only behavior — the exact same class of staleness round 3 fixed in `supabase_client.py`
+      and `README.md`, just missed in this one spot. Fixed directly (documentation-only, no test needed).
+- [x] 12.2 Re-run the full suite: `services/workflows` unit tests, `openspec validate --strict`. Confirm
+      no regressions. Push as a new commit (`docs(#11): fix stale module docstring in status_poller.py —
+      round-4 /review-pr finding`) on the same PR branch.
