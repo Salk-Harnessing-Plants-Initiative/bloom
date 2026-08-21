@@ -203,12 +203,18 @@ def test_a_server_error_surfaces_its_message(tmp_path, monkeypatch):
     _signed_in(monkeypatch)
 
     def _boom(*a, **k):
-        raise APIError({"message": "search query too long (max 200 characters)"})
+        # P0001 is a RAISE EXCEPTION — a sentence written for the user, so it is passed
+        # on as-is. Without the code this exercises the wrapping path instead.
+        raise APIError({"message": "search query too long (max 200 characters)", "code": "P0001"})
 
     monkeypatch.setattr(pd, "search_experiments", _boom)
     result = _run(str(tmp_path / "out"), "--experiment-name", "x" * 201)
     assert result.exit_code != 0
     assert "too long" in result.output
+    assert "Could not read" not in result.output, (
+        "the server's own sentence must reach the user unprefixed — a read-failure "
+        "framing sends them to check the network over their own input"
+    )
 
 
 # --------------------------------------------------------------------------- #
