@@ -47,6 +47,22 @@ import supabase
 BUCKET = "bloommcp-data"
 INPUT_PREFIX = "bloommcp_input/"
 
+# supabase-py 2.31.0 defaults ClientOptions.postgrest_client_timeout to 120s even with no
+# override (postgrest/constants.py's DEFAULT_POSTGREST_CLIENT_TIMEOUT) -- a generous, un-chosen
+# bound nobody set deliberately. This module makes that bound an explicit, overridable constant
+# instead of leaving it implicit -- but keeps it at the SAME 120s value for now, deliberately.
+#
+# A tighter default was considered (and briefly shipped) but reverted: this client also serves
+# load_experiment's single-experiment get_experiment_traits fetch (supabase_reader.py), and this
+# PR's own investigation names that exact call -- for experiment_id=1's 13.8M cyl_scan_traits rows
+# -- as the likely dominant cost of the original hang. Lowering the *global* default below 120s
+# with no benchmark data would risk turning a slow-but-successful large-experiment load into a
+# hard failure, which is a worse outcome than the multi-minute hang this change exists to fix.
+# Lowering it is gated on benchmarking that call against realistic large-experiment data (see
+# openspec fix-bloommcp-list-experiments-summary-rpc design.md D5, task 0.2 -- not done from this
+# sandboxed dev environment, which has no staging access and no 13.8M-row local fixture).
+_DEFAULT_POSTGREST_TIMEOUT_SECONDS = 120
+
 
 def _require_env() -> tuple[str, str]:
     """Read and validate the Supabase env, returning ``(url, key)``.
@@ -96,7 +112,7 @@ def _validate_name(name: str) -> None:
         )
 
 
-def get_postgrest_client() -> supabase.Client:
+def get_postgrest_client(*, timeout_seconds: float | None = None) -> supabase.Client:
     """Return a fresh Supabase client authenticated as bloom_agent.
 
     PostgREST and Storage access flow through the same client. The
@@ -107,9 +123,26 @@ def get_postgrest_client() -> supabase.Client:
 
     A new client is constructed per call so the JWT does not live as
     module-level state and rotation requires no in-process reload.
+
+    `timeout_seconds`, when given, overrides `_DEFAULT_POSTGREST_TIMEOUT_SECONDS`
+    for every request made through the returned client. Unlike
+    `get_storage_client` (whose un-overridden default is storage3's own,
+    unchanged, default), the un-overridden case here still builds
+    `ClientOptions` explicitly -- this module's own default currently equals
+    supabase-py's package default value (120s, see the module-level
+    constant's docstring for why it hasn't been lowered yet), but is now an
+    explicit, named, overridable setting rather than an implicit library
+    default nobody chose.
     """
     url, key = _require_env()
-    return supabase.create_client(url, key)
+    options = supabase.ClientOptions(
+        postgrest_client_timeout=(
+            timeout_seconds
+            if timeout_seconds is not None
+            else _DEFAULT_POSTGREST_TIMEOUT_SECONDS
+        )
+    )
+    return supabase.create_client(url, key, options=options)
 
 
 def read_input_csv(name: str) -> pd.DataFrame:
@@ -157,7 +190,7 @@ def call_rpc(function_name: str, params: dict) -> list[dict]:
 
 # ─── Generic storage helpers ──────────────────────────────────────────────────
 #
-# These six helpers are the storage primitives SupabaseResultStore uses to
+# These eight helpers are the storage primitives SupabaseResultStore uses to
 # store the versioned-output catalog. They take an object `key` that
 # includes any prefix structure (e.g. `bloommcp_output/qc_my_exp/v1_.../_cleaned.csv`)
 
@@ -198,7 +231,7 @@ def get_storage_client(*, timeout_seconds: float | None = None):
     return supabase.create_client(url, key, options=options).storage.from_(BUCKET)
 
 
-# The six helpers below delegate to the process's active storage backend
+# The eight helpers below delegate to the process's active storage backend
 # (`bloom_mcp.storage_backend`), selected by `BLOOM_STORAGE_BACKEND` (default
 # `supabase`). Their names + signatures are unchanged, so every caller and the
 # `fake_supabase_storage` test fixture (which monkeypatches these module-level
@@ -280,3 +313,13 @@ def create_signed_url(key: str, expires_in: int) -> str:
     from bloom_mcp.storage_backend import active_backend
 
     return active_backend().create_signed_url(key, expires_in)
+
+
+def get_object_size(key: str) -> int:
+    """Return the real byte size of the object at `key` (bloom#599).
+
+    Raises if `key` has no backing object — never returns a fabricated `0`.
+    """
+    from bloom_mcp.storage_backend import active_backend
+
+    return active_backend().get_object_size(key)

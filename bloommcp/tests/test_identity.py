@@ -9,6 +9,7 @@ Supabase (see conftest).
 
 from __future__ import annotations
 
+import time
 import uuid
 
 import jwt
@@ -17,6 +18,7 @@ import pytest
 from bloom_mcp.identity import (
     IdentityConfigError,
     IdentityVerificationError,
+    _oauth_subject_from_scope,
     verify_identity_header,
 )
 
@@ -31,7 +33,12 @@ def _token(
     algorithm="HS256",
     **extra_claims,
 ):
-    payload = {"sub": sub, **extra_claims}
+    # `exp` defaults to a valid future timestamp — verify_identity_header now
+    # requires the claim to exist (`options={"require": ["exp"]}`), matching
+    # test_auth_oauth.py's `_oauth_token()` convention. Passing `exp=...`
+    # (e.g. `_token(exp=0)`, test_expired_token_is_rejected) overrides it via
+    # the dict-merge below.
+    payload = {"sub": sub, "exp": int(time.time()) + 3600, **extra_claims}
     if audience is not None:
         payload["aud"] = audience
     return jwt.encode(payload, secret, algorithm=algorithm)
@@ -53,6 +60,18 @@ def test_expired_token_is_rejected(monkeypatch):
     expired = _token(exp=0)  # epoch 0 — always expired
     with pytest.raises(IdentityVerificationError):
         verify_identity_header(expired)
+
+
+def test_token_with_no_exp_claim_is_rejected(monkeypatch):
+    """PyJWT only validates `exp`'s *value* if present — it does not require
+    the claim to exist. Without `options={"require": ["exp"]}`, an otherwise
+    valid token with no `exp` claim at all would verify as never-expiring."""
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+    no_exp = jwt.encode(
+        {"sub": A_UUID, "aud": "authenticated"}, SECRET, algorithm="HS256"
+    )
+    with pytest.raises(IdentityVerificationError):
+        verify_identity_header(no_exp)
 
 
 def test_wrong_audience_is_rejected(monkeypatch):
@@ -158,3 +177,60 @@ def test_jwt_secret_unset_but_header_present_raises_config_error(monkeypatch):
 def test_jwt_secret_unset_and_header_absent_is_fine(monkeypatch):
     monkeypatch.delenv("JWT_SECRET", raising=False)
     assert verify_identity_header(None) is None
+
+
+# ─── OAuth AccessToken fallback (`_oauth_subject_from_scope`) ────────────────
+# add-bloommcp-oauth-usage-attribution: a second identity source for
+# IdentityMiddleware's usage recording, consulted only when no
+# X-Bloom-Identity header resolved one. Real mcp SDK classes are used for the
+# "found a subject"/"no subject" cases so this test can't drift from what
+# `BearerAuthBackend` actually writes into `scope["user"]`
+# (mcp.server.auth.middleware.bearer_auth) — the access_token=None case uses a
+# minimal stand-in since `AuthenticatedUser.__init__` reads `auth_info.client_id`
+# immediately and cannot be constructed with `auth_info=None`.
+
+
+def _authenticated_user(subject=None):
+    from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+    from mcp.server.auth.provider import AccessToken
+
+    token = AccessToken(token="t", client_id="c", scopes=[], subject=subject)
+    return AuthenticatedUser(token)
+
+
+def test_oauth_subject_from_scope_returns_the_access_tokens_subject():
+    scope = {"user": _authenticated_user(subject=A_UUID)}
+    assert _oauth_subject_from_scope(scope) == A_UUID
+
+
+def test_oauth_subject_from_scope_returns_none_with_no_user_key():
+    assert _oauth_subject_from_scope({}) is None
+
+
+def test_oauth_subject_from_scope_returns_none_for_unauthenticated_user():
+    from starlette.authentication import UnauthenticatedUser
+
+    assert _oauth_subject_from_scope({"user": UnauthenticatedUser()}) is None
+
+
+def test_oauth_subject_from_scope_returns_none_for_a_plain_object():
+    assert _oauth_subject_from_scope({"user": object()}) is None
+
+
+def test_oauth_subject_from_scope_returns_none_when_access_token_is_none():
+    class _NoToken:
+        access_token = None
+
+    assert _oauth_subject_from_scope({"user": _NoToken()}) is None
+
+
+def test_oauth_subject_from_scope_returns_none_for_api_key_shaped_token():
+    """Matches `ApiKeyVerifier`'s real shape: an `AccessToken` with no
+    `subject` — the shared key never names an individual."""
+    scope = {"user": _authenticated_user(subject=None)}
+    assert _oauth_subject_from_scope(scope) is None
+
+
+def test_oauth_subject_from_scope_returns_none_for_empty_subject():
+    scope = {"user": _authenticated_user(subject="")}
+    assert _oauth_subject_from_scope(scope) is None

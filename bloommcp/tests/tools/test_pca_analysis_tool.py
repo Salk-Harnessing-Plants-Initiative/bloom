@@ -18,6 +18,7 @@ import asyncio
 import io
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -25,7 +26,7 @@ import sleap_roots_analyze
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
-from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+from bloom_mcp.result_store import FakeResultStore, RunStateError, SupabaseResultStore
 from bloom_mcp.tools import _ports
 from bloom_mcp.sections.sleap_roots.analysis import pca_analysis as pca_analysis_tool
 from bloom_mcp.sections.sleap_roots.analysis.pca_analysis import (
@@ -218,6 +219,66 @@ def test_degenerate_fit_is_structured_without_leaking(injected_ports, monkeypatc
     msg = f"{exc.value.message} {exc.value.remedy}"
     assert "/var" not in msg and "db.internal" not in msg
     assert store.list_runs(_EXPERIMENT, "pca") == []  # nothing persisted
+
+
+def test_undeclared_delegate_raise_is_scrubbed(injected_ports, monkeypatch):
+    """bloom#664 item 2: a delegate exception type outside the `ValueError`-only
+    except clause above falls through undeclared to `internal_error` — pinned,
+    not just "doesn't leak" (mirrors the #660 qc_inspect/qc_clean/remove_outliers
+    pattern, closing the coverage gap for this tool)."""
+    _reader, store = injected_ports
+
+    def _boom(*a, **k):
+        raise RuntimeError("secret path /var/secrets/key and host db.internal")
+
+    monkeypatch.setattr(pca_analysis_tool, "perform_pca_analysis", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "internal_error"
+    msg = f"{exc.value.message} {exc.value.remedy}"
+    assert "/var" not in msg and "db.internal" not in msg
+    assert store.list_runs(_EXPERIMENT, "pca") == []
+
+
+# ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
+# (#640: pca_analysis's declared errors=(ExperimentReadError,) swallowed a CommitFailedError/
+# ManifestReadError from store.create_run()/commit() into a generic internal_error ref) ──
+
+
+def test_commit_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "pca")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "commit failed for pca" in exc.value.message
+
+
+def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_read(_EXPERIMENT, "pca")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "manifest read failure" in exc.value.message
+
+
+def test_run_state_error_from_commit_still_maps_to_internal_error(
+    injected_ports, monkeypatch
+):
+    """RunStateError (a handle-misuse/wiring bug, never triggerable via tool input) must
+    stay internal_error even after declaring CommitFailedError/ManifestReadError — proves
+    the errors= tuple wasn't accidentally widened to the full ResultStoreError base
+    (design.md Decision 1; #660 review: only qc_inspect had this test)."""
+    _reader, store = injected_ports
+
+    def _boom(run, outputs):
+        raise RunStateError("commit() on an unknown or already-committed run")
+
+    monkeypatch.setattr(store, "commit", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "internal_error"
 
 
 def test_real_delegate_degenerate_selection_is_assumption_violated(injected_ports):
@@ -782,3 +843,161 @@ def test_plot_outputs_included_in_schema_round_trip(injected_ports):
     result = _run(include_plots=True, plots=["create_pca_scree_plot"])
     again = PCAAnalysisResult.model_validate(json.loads(result.model_dump_json()))
     assert "create_pca_scree_plot.png" in again.outputs
+
+
+# ── Font-style override (#661) ───────────────────────────────────────────────
+
+
+def test_plot_font_family_and_size_forwarded_and_applied(injected_ports, monkeypatch):
+    """plot_font_family/plot_font_size flow from PCAAnalysisParams through
+    generate_figures and are applied to the generated figure before it's saved."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    captured = {}
+
+    def _fake_calls(result_dict, pca, frame, threshold, **kwargs):
+        def _make():
+            fig, ax = plt.subplots()
+            ax.set_title("t")
+            ax.set_xlabel("x")
+            captured["fig"] = fig
+            return fig
+
+        return {"create_pca_scree_plot": _make}
+
+    monkeypatch.setattr(pca_analysis_tool, "_pca_plot_calls", _fake_calls)
+
+    _run(
+        include_plots=True,
+        plots=["create_pca_scree_plot"],
+        plot_font_family="serif",
+        plot_font_size=22,
+    )
+
+    fig = captured["fig"]
+    assert fig.axes[0].title.get_fontfamily() == ["serif"]
+    assert fig.axes[0].title.get_fontsize() == 22
+
+
+def test_plot_font_size_non_positive_is_invalid_input(injected_ports):
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        pca_analysis(
+            {
+                "experiment": _EXPERIMENT,
+                "trait_columns": _TRAITS,
+                "plot_font_size": 0,
+            }
+        )
+    assert exc.value.code == "invalid_input"
+    assert store.list_runs(_EXPERIMENT, "pca") == []
+
+
+def test_plot_font_fields_ignored_when_include_plots_false(injected_ports):
+    result = _run(include_plots=False, plot_font_family="serif", plot_font_size=22)
+    assert not any(k.endswith(".png") for k in result.outputs)
+    assert set(result.outputs) == {"loadings.csv", "scores.csv", "pca_result.json"}
+
+
+def test_plot_font_size_just_above_zero_is_accepted():
+    assert (
+        PCAAnalysisParams(experiment="x.csv", plot_font_size=0.01).plot_font_size
+        == 0.01
+    )
+
+
+def test_plots_subset_with_font_override_never_generates_non_requested_plots(
+    injected_ports, monkeypatch
+):
+    """A plots=[subset] request must generate — and therefore only font-style — the
+    requested catalog plot(s); a non-requested plotter must never even be called, so
+    it can't be affected by the override either."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    called = {"scree": 0, "biplot": 0}
+
+    def _fake_calls(result_dict, pca, frame, threshold, **kwargs):
+        def _scree():
+            called["scree"] += 1
+            fig, ax = plt.subplots()
+            ax.set_title("scree")
+            return fig
+
+        def _biplot():  # pragma: no cover - must not run
+            called["biplot"] += 1
+            raise AssertionError("non-requested plotter was called")
+
+        return {
+            "create_pca_scree_plot": _scree,
+            "create_pca_biplot": _biplot,
+            "create_feature_contribution_plot": _biplot,
+            "create_feature_contribution_heatmap": _biplot,
+        }
+
+    monkeypatch.setattr(pca_analysis_tool, "_pca_plot_calls", _fake_calls)
+
+    result = _run(
+        include_plots=True,
+        plots=["create_pca_scree_plot"],
+        plot_font_family="serif",
+    )
+
+    assert called == {"scree": 1, "biplot": 0}
+    png_keys = {k for k in result.outputs if k.endswith(".png")}
+    assert png_keys == {"create_pca_scree_plot.png"}
+
+
+# ── explicit cleaned-version selector (#626) ────────────────────────────────
+
+
+def test_version_field_exists():
+    assert "version" in PCAAnalysisParams.model_fields
+
+
+def test_omitting_version_preserves_todays_exact_call(injected_ports):
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run()
+
+    reader.load_experiment.assert_called_once_with(_EXPERIMENT, require_clean=True)
+
+
+def test_explicit_version_is_passed_through(injected_ports):
+    reader, _store = injected_ports
+    reader.add_cleaned_version(_EXPERIMENT, "v2", _final_df(), make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(version="v2")
+
+    reader.load_experiment.assert_called_once_with(
+        _EXPERIMENT, require_clean=True, version="v2"
+    )
+
+
+# ── discoverable via list_existing_analyses (bloom#669) ─────────────────────
+
+
+def test_discoverable_via_list_existing_analyses(injected_ports):
+    """Live discoverability, mirroring the same pattern
+    remove_outliers/cross_experiment_correlations use for their own registered class."""
+    from bloom_mcp.sections.core import (
+        list_existing_analyses as list_existing_analyses_mod,
+    )
+
+    list_existing_analyses_mod._RESPONSE_CACHE.clear()
+    try:
+        _run()
+        response = json.loads(
+            list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
+        )
+    finally:
+        list_existing_analyses_mod._RESPONSE_CACHE.clear()
+
+    assert "pca" in response["analyses"]

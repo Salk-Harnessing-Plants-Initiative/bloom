@@ -113,9 +113,8 @@ services:
       NEXT_PUBLIC_MCP_URL: ${NEXT_PUBLIC_MCP_URL}
       # Read by web/lib/config/validate-on-boot.ts in production via the
       # Next.js 16 instrumentation hook (web/instrumentation.ts). Required:
-      # boot fails if unset. See openspec/changes/add-ghcr-image-publishing
-      # design.md Decision 13 for format
-      # (<internal_host>=<public_host>[,<internal_host>=<public_host>]*).
+      # boot fails if unset. Format:
+      # <internal_host>=<public_host>[,<internal_host>=<public_host>]*
       # The .env.prod / .env.staging / .env.ci sources MUST set this var.
       SUPABASE_URL_HOSTS_ALLOWED: ${SUPABASE_URL_HOSTS_ALLOWED}
     depends_on:
@@ -200,8 +199,8 @@ services:
       dockerfile: Dockerfile
     read_only: true
     tmpfs:
-      # Size-capped so the temp MP4 can't exhaust host RAM (sized for the full
-      # video × the 2 workers, with headroom).
+      # Size-capped so the temp MP4 can't exhaust host RAM (sized for concurrent encodes
+      # in the one worker, with headroom).
       - /tmp:mode=1777,size=512m
     security_opt:
       - no-new-privileges:true
@@ -229,7 +228,64 @@ services:
       - kong
       - db-prod
     restart: unless-stopped
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "2"]
+    # One worker: the per-scan lock in video.py holds only within a single process, so raising
+    # this reopens the overwrite race it closes. Start here and watch — raise it when this one
+    # is actually saturated, or once the encode moves to a worker container and the database
+    # enforces the serialisation instead, whichever comes first.
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "1"]
+
+  # Consumes the cyl_pipeline_dispatch pgmq queue (bloom #11/#404 Phase 2) and
+  # submits each claimed batch to Argo as a Kubernetes Workflow CRD. Same image
+  # as workflows; scale by replicas (pgmq's claim is concurrency-safe).
+  #
+  # Deploy-sequencing note: do not start this service in an environment where
+  # POST /workflows/pipeline is already live (real triggers enqueuing real
+  # batches) until WORKFLOWS_K8S_TOKEN/_CA_CERT/_API_URL are genuinely set —
+  # see openspec/changes/add-cyl-pipeline-dispatch/design.md's Risks.
+  cyl-pipeline-worker:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      # Real credentials for the bloom-pipeline ServiceAccount. TOKEN/CA_CERT/
+      # API_URL are true secrets (SENSITIVE_INVENTORY); NAMESPACE/TTL_SECONDS
+      # are plain config values with safe code defaults, sourced from the
+      # committed .env.*.defaults files instead.
+      WORKFLOWS_K8S_TOKEN: ${WORKFLOWS_K8S_TOKEN}
+      WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
+      WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
+      WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE}
+      WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS}
+      # Disambiguates which environment's DB a pipeline-run-id belongs to —
+      # prod and staging share the runai-busch-lab namespace above and both
+      # run_id sequences start at 1 (see k8s_client.py's ENV_LABEL).
+      WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL}
+    networks:
+      - supanet
+    depends_on:
+      - kong
+      - db-prod
+    restart: unless-stopped
+    # _stop() (dispatch_worker.py) deliberately lets an in-flight batch finish
+    # before exiting — the K8s submission POST alone has a 15s httpx timeout
+    # (k8s_client.py), plus the claim/complete/fail RPC round trips. Docker's
+    # 10s default would routinely SIGKILL mid-submission on an ordinary
+    # `compose down`/redeploy, defeating that design and risking exactly the
+    # "successful-submission-recorded-as-failed" case design.md's Risks
+    # section already flags for crashes.
+    stop_grace_period: 30s
+    command: ["python", "dispatch_worker.py"]
 
   # -------------------
   # Bloom MCP Server
@@ -268,6 +324,15 @@ services:
       # actually carries the header), so this has no effect until a client
       # sends that header.
       JWT_SECRET: ${JWT_SECRET}
+      # OAuth login for external MCP clients. The URLs are set per environment
+      # in the defaults files; whether a login can actually complete is
+      # governed by GOTRUE_OAUTH_SERVER_ENABLED on the auth service. Where that
+      # is false, bloommcp still serves its discovery document but no client
+      # can register, so the flow ends in a clean 404 rather than a broken
+      # login. The API-key path is unaffected either way.
+      BLOOMMCP_PUBLIC_URL: ${BLOOMMCP_PUBLIC_URL:-}
+      BLOOMMCP_OAUTH_AUTHORIZATION_SERVER: ${BLOOMMCP_OAUTH_AUTHORIZATION_SERVER:-}
+      BLOOMMCP_OAUTH_JWKS_URI: ${BLOOMMCP_OAUTH_JWKS_URI:-}
       # numba AOT cache. bloommcp imports umap-learn, which uses
       # @numba.jit(cache=True); without this env var, numba tries to write
       # to site-packages/__pycache__/ and fails under read_only: true.
@@ -372,6 +437,21 @@ services:
       # Custom access token hook — assigns bloom_user/bloom_admin role via JWT
       GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_ENABLED: "true"
       GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_URI: "pg-functions://postgres/public/custom_access_token_hook"
+
+      # OAuth 2.1 server — lets MCP clients log in as a real user via bloom-web
+      # OAuth discovery must advertise absolute URLs. Without an issuer GoTrue
+      # emits relative endpoints a conforming client cannot resolve — discovery
+      # returns 200 and the flow dead-ends before registration.
+      # Asymmetric signing keys, required for ID tokens (the `openid`
+      # scope) — a shared HS256 secret cannot sign one. Empty array
+      # keeps GoTrue on the legacy secret, which is the default here.
+      GOTRUE_JWT_KEYS: ${JWT_KEYS:-[]}
+      GOTRUE_API_EXTERNAL_URL: ${API_EXTERNAL_URL}
+      GOTRUE_JWT_ISSUER: ${API_EXTERNAL_URL}/auth/v1
+      GOTRUE_OAUTH_SERVER_ENABLED: ${GOTRUE_OAUTH_SERVER_ENABLED:-false}
+      GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH: ${GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH:-/oauth/consent}
+      GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION: ${GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION:-false}
+      GOTRUE_OAUTH_SERVER_AUTHORIZATION_TTL: ${GOTRUE_OAUTH_SERVER_AUTHORIZATION_TTL:-600s}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:9999/health"]
       interval: 10s
@@ -395,7 +475,7 @@ services:
       PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
       PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS}
       PGRST_DB_ANON_ROLE: anon
-      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_JWT_SECRET: ${JWT_JWKS:-${JWT_SECRET}}
       PGRST_DB_USE_LEGACY_GUCS: "false"
       PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
       PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY}
@@ -432,7 +512,11 @@ services:
       DB_NAME: ${POSTGRES_DB}
       DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime'
       DB_ENC_KEY: ${DB_ENC_KEY}
+      # Realtime takes the JWKS via its own API_JWT_JWKS, not API_JWT_SECRET (#646).
+      # Default is `null`, not empty: seeds.exs guards with `if v, do: Jason.decode!(v)`
+      # and "" is truthy in Elixir, so an empty value crashes the boot seed.
       API_JWT_SECRET: ${JWT_SECRET}
+      API_JWT_JWKS: ${JWT_JWKS:-null}
       SECRET_KEY_BASE: ${SECRET_KEY_BASE}
       ERL_AFLAGS: -proto_dist inet_tcp
       RLIMIT_NOFILE: "10000"
@@ -454,7 +538,10 @@ services:
   # MinIO
   # -------------------
   supabase-minio:
-    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
+    # Digest-pinned: the edge security headers reach this console, and the
+    # standing precondition is to re-measure its assets whenever the image
+    # moves. A tag can be re-pushed without this file changing; a digest cannot.
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z@sha256:ed9be66eb5f2636c18289c34c3b725ddf57815f2777c77b5938543b78a44f144
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -514,7 +601,12 @@ services:
       ANON_KEY: ${ANON_KEY}
       SERVICE_KEY: ${SERVICE_ROLE_KEY}
       POSTGREST_URL: http://rest:3000
+      # storage-api reads asymmetric keys from JWT_JWKS only — it treats
+      # PGRST_JWT_SECRET as an opaque symmetric secret, so the JWKS must not go
+      # there. Without JWT_JWKS its accepted-alg list stays HS256-only and every
+      # ES256 session token is refused (#646).
       PGRST_JWT_SECRET: ${JWT_SECRET}
+      JWT_JWKS: ${JWT_JWKS:-null}
       DATABASE_URL: postgres://supabase_storage_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
       # 500 MB cap for GraviScan jpegs (single sensor image). Per-bucket
       # `storage.buckets.file_size_limit` further constrains where stricter caps are needed.
@@ -622,6 +714,8 @@ services:
       CLUSTER_POSTGRES: true
       SECRET_KEY_BASE: ${SECRET_KEY_BASE}
       VAULT_ENC_KEY: ${VAULT_ENC_KEY}
+      # Supavisor has no documented JWKS input, so it keeps the symmetric secret
+      # it used before the asymmetric migration rather than an unreadable blob (#646).
       API_JWT_SECRET: ${JWT_SECRET}
       METRICS_JWT_SECRET: ${JWT_SECRET}
       REGION: local
@@ -650,7 +744,8 @@ services:
   # Supabase Studio
   # -------------------
   studio:
-    image: supabase/studio:2026.03.30-sha-12a43e5
+    # Digest-pinned for the same reason as supabase-minio above.
+    image: supabase/studio:2026.03.30-sha-12a43e5@sha256:d73df17a81b897bb61326b3160b29558ca4c2cdbe32d25b7bb11e15a2cd13488
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

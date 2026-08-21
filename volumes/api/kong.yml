@@ -5,7 +5,17 @@ _transform: true
 ### Consumers / Users
 ###
 consumers:
+  # Credentials for the basic-auth plugin on the 'dashboard' service.
+  #
+  # Keep this file free of shell metacharacters, comments included. The kong
+  # container's entrypoint pipes it through an eval before Kong ever parses it
+  # (see docker-compose.prod.yml), so backticks and command-substitution syntax
+  # in a COMMENT are executed as shell at every container start, and double
+  # quotes silently vanish from the rendered config. Use single quotes.
   - username: DASHBOARD
+    basicauth_credentials:
+      - username: $DASHBOARD_USERNAME
+        password: $DASHBOARD_PASSWORD
   - username: anon
     keyauth_credentials:
       - key: $SUPABASE_ANON_KEY
@@ -26,14 +36,6 @@ acls:
     group: admin
   - consumer: bloom_agent
     group: bloom_agent
-
-###
-### Dashboard credentials
-###
-basicauth_credentials:
-  - consumer: DASHBOARD
-    username: $DASHBOARD_USERNAME
-    password: $DASHBOARD_PASSWORD
 
 ###
 ### API Routes
@@ -65,6 +67,26 @@ services:
         strip_path: true
         paths:
           - /auth/v1/authorize
+    plugins:
+      - name: cors
+  - name: auth-v1-open-well-known
+    _comment: 'OIDC discovery: read before the client has any key, so not behind key-auth'
+    url: http://auth:9999/.well-known
+    routes:
+      - name: auth-v1-open-well-known
+        strip_path: true
+        paths:
+          - /auth/v1/.well-known
+    plugins:
+      - name: cors
+  - name: auth-v1-open-oauth
+    _comment: 'OAuth 2.1: register, authorize, token, consent. GoTrue enforces the user Bearer on consent.'
+    url: http://auth:9999/oauth
+    routes:
+      - name: auth-v1-open-oauth
+        strip_path: true
+        paths:
+          - /auth/v1/oauth
     plugins:
       - name: cors
 
@@ -191,7 +213,7 @@ services:
       - name: cors
 
   # ─── DORMANT ROUTES (commented out) ───────────────────────────────────
-  # The `functions` (Supabase Edge Functions) and `analytics` (Logflare)
+  # The 'functions' (Supabase Edge Functions) and 'analytics' (Logflare)
   # services are NOT in docker-compose.prod.yml — they were never wired
   # in for this stack. Without an actual container behind the hostname,
   # Kong returns 502 Bad Gateway for any client that hits these paths
@@ -200,8 +222,8 @@ services:
   #
   # The route definitions are retained here as a commented-out reference
   # so they're trivially restorable if/when we decide to add either
-  # service: uncomment the block, add the matching `functions` /
-  # `analytics` service to docker-compose.prod.yml, redeploy.
+  # service: uncomment the block, add the matching 'functions' /
+  # 'analytics' service to docker-compose.prod.yml, redeploy.
   #
   # ----------------------------------------------------------------------
 
@@ -250,6 +272,12 @@ services:
   - name: dashboard
     _comment: 'Studio: /* -> http://studio:3000/*'
     url: http://studio:3000/
+    # Routing Studio through Kong puts it behind Kong's 60s service default,
+    # where Caddy imposed none. 330s sits above the database's own 300s
+    # statement_timeout (migration 20240904033106) so a slow query surfaces
+    # Postgres's readable cancellation rather than an opaque gateway 504.
+    write_timeout: 330000
+    read_timeout: 330000
     routes:
       - name: dashboard-all
         strip_path: true

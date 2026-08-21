@@ -75,19 +75,45 @@ The system SHALL provide a `SupabaseResultStore` adapter implementing `ResultSto
 - **WHEN** an artifact upload or manifest write raises mid-commit
 - **THEN** the adapter surfaces a structured error (no traceback leak), cleans up the staging directory, and does not leave the manifest advanced to a partially-written version; the inherited single-writer / no-CAS limitation (concurrent commits may clobber an entry) is documented, not silently relied upon
 
+#### Scenario: A generic manifest read failure during create_run, list_runs, or get_run surfaces a structured error
+
+- **WHEN** the underlying manifest read (`AnalysisDir.read_manifest`/`list_versions`/`get_version`) raises any exception other than `ManifestSchemaError` — a storage/network blip, but also a corrupt/shape-invalid `manifest.json` or a permanent permission denial — during `create_run`, `list_runs`, or `get_run`
+- **THEN** the adapter catches it at that call site, logs the original exception server-side (no host path/URL leak — the raised error's own message is exc-free), and raises a `ManifestReadError` instead of letting the raw exception escape, without claiming the failure is transient or safe to retry; this guard is independent per call site and does not depend on `commit()`'s own hardened try/except or on any particular caller's error handling
+
+#### Scenario: A schema-incompatible manifest during create_run, list_runs, or get_run surfaces a distinguishable structured error
+
+- **WHEN** the underlying manifest read raises `ManifestSchemaError` (the manifest's schema version is missing or newer than this server understands) during `create_run`, `list_runs`, or `get_run`
+- **THEN** the adapter catches it at that call site, logs it server-side, and raises `ManifestIncompatibleError` — a subclass of `ManifestReadError`, so every existing `except ManifestReadError`/`except ResultStoreError`/`except Exception` still catches it, while a caller that needs to distinguish "storage flaked" from "manifest schema unsupported" can `isinstance()`-check for the narrower type
+
 ### Requirement: FakeResultStore Adapter
 
-The system SHALL provide an in-memory `FakeResultStore` adapter implementing `ResultStore`, behaviourally equivalent to `SupabaseResultStore` for observable outcomes, so the full write path is testable with no live Supabase.
+The system SHALL provide an in-memory `FakeResultStore` adapter implementing `ResultStore`, behaviourally equivalent to `SupabaseResultStore` for observable outcomes — including its commit-failure and duplicate-version-id failure semantics, not only its happy path — so the full write path, including failure handling, is testable with no live Supabase.
 
 #### Scenario: In-memory create and commit without Supabase
 
 - **WHEN** a test calls `create_run` then `commit` on `FakeResultStore`
 - **THEN** it records a versioned run with provenance and artifact links retrievable via `list_runs`/`get_run`, with no network or Supabase access
 
+#### Scenario: Fake simulates a mid-commit failure with the same retry contract as Supabase
+
+- **WHEN** a test injects a commit failure on `FakeResultStore` (via its failure-injection hook, at any point up to and including after every output is recorded) and calls `commit`
+- **THEN** the call raises, nothing partial is recorded (`list_runs` for that experiment/tool is unaffected), the run handle remains open and its staging directory intact, and calling `commit` again on the same handle succeeds — the same contract `SupabaseResultStore.commit` provides on a real upload or manifest-write failure
+
+#### Scenario: Fake reallocates on an immediate duplicate-id collision, like Supabase
+
+- **WHEN** a test injects a version-id collision on `FakeResultStore` (simulating another writer having already claimed the id `create_run` allocated) and calls `commit`
+- **THEN** the fake reallocates to the next free id before recording the run, so the committed run lands on a distinct id from the collision and neither run's recorded outputs/hashes are overwritten — the same contract `SupabaseResultStore.commit`'s pre-upload reallocation guard provides
+
+#### Scenario: Fake fails safely, without recording anything, when reallocation is exhausted or a collision is detected late
+
+- **WHEN** a test injects a version-id collision on `FakeResultStore` that either (a) persists across every bounded reallocation attempt, or (b) only becomes visible after the fake's pre-record check has already passed (a "late" collision, analogous to another writer's commit landing during this commit's in-flight window)
+- **THEN** the fake raises a structured failure with nothing recorded and no partial state, and the run remains retryable exactly as `SupabaseResultStore.commit` behaves on retry-exhaustion or a late/pre-write collision
+
 #### Scenario: Fake and Supabase adapters agree on observable behaviour
 
-- **WHEN** the same scenario set (create→commit→get_run latest; per-artifact hash/key fill; not-found; lifecycle misuse) runs against both `FakeResultStore` and `SupabaseResultStore` (on a monkeypatched boundary)
-- **THEN** both produce equivalent observable results, and all logical storage keys use `/` separators regardless of host OS
+- **WHEN** a shared scenario set — create→commit→get_run latest; per-artifact hash/key fill; not-found; lifecycle misuse; v2-manifest back-compat; injected commit-failure retry; the realistic (sequential-interleaving) duplicate-id reallocation — runs against both `FakeResultStore` and `SupabaseResultStore` (on a monkeypatched boundary) from one shared scenario body
+- **THEN** both produce equivalent observable results on every scenario, including the failure-injection and collision cases, with assertions covering each backend's non-shared logic (version/directory namespacing, `latest` resolution, id reallocation) rather than only the shared `hash_outputs` output, and all logical storage keys use `/` separators regardless of host OS
+- **AND** the exhaustion and late-collision edge cases described in the prior scenario are verified equivalently, but independently, on each backend — each adapter's own test suite proves the same "nothing recorded, safely retryable" contract without requiring a single shared harness capable of forcing both backends into that edge case identically
 
 ### Requirement: Workflows Repointed to the ResultStore Port
 
@@ -175,4 +201,89 @@ gate's presence and ordering so it cannot be silently deleted or hollowed out.
   job runs `make migrate-local` before `make bloommcp-smoke` and retains an
   `if: always()` stack-teardown step — failing the PR if the gate is removed, reordered
   before migration, or stripped of cleanup
+
+### Requirement: Per-Output Signed Links And Size At Commit
+
+`ResultStore.commit(run, outputs)` SHALL return a `StoredRun` whose `output_links: dict[str,
+OutputLink]` carries one entry per `outputs` entry, keyed identically, each an `OutputLink` with
+the artifact's storage `key`, a signed/served `url` from the active `StorageBackend`'s
+`create_signed_url`, its `sha256` (matching `output_sha256`), and its non-negative `size_bytes`
+(a legitimate zero-byte artifact is not rejected — only an empty `outputs` dict is). This field
+SHALL be populated only by `commit` — `get_run` and `list_runs` SHALL return `output_links` as an
+empty dict (including when the resolved run was recorded before this capability existed, e.g. a
+legacy v2 manifest entry with no `output_sha256`/`output_keys`), so that resolving or listing
+potentially many historical runs never eagerly generates signed URLs for artifacts other than the
+one a caller's own `commit` call just produced. A failure to generate or extract a usable signed
+URL for any output — including a signing-client response that carries none of its expected URL
+keys — SHALL fail the whole `commit` call (surfacing as `CommitFailedError`, following the same
+best-effort-cleanup path an upload failure already takes) rather than committing with a partial or
+`None` URL. None of `output_links` SHALL be persisted into the manifest `VersionEntry` — it is
+computed at request time from data already in hand (the freshly hashed staged bytes, the freshly
+uploaded key) and a fresh signing call, so existing manifest/provenance fields and cross-backend
+manifest-byte-identity are unaffected.
+
+Before signing any output, `commit` SHALL verify that every key it is about to sign falls within
+the prefix `commit` itself computed for this run (`{output_root}/{tool_class}_{stem}/
+{version_dir}/`) — the same prefix its own `key_for` closure used to build every `output_keys`
+entry and to upload the corresponding bytes moments earlier. A key outside that prefix indicates a
+structural bug (never a caller-input condition, since `outputs` names only relative paths within
+the run's own staging directory) and SHALL fail the whole `commit` call via the same
+`CommitFailedError` fail-closed/cleanup path a signing failure already takes — never a bare
+signed URL for an unverified key. This guarantee SHALL hold identically for `FakeResultStore`,
+which SHALL compute and check the equivalent prefix from its own `key_for` construction, so a test
+against the fake exercises the same structural guarantee the real adapter provides.
+
+#### Scenario: Commit returns a signed link per output
+
+- **WHEN** a consumer writes outputs into the run's staging directory and calls
+  `commit(run, outputs)`
+- **THEN** the returned `StoredRun.output_links` has one entry per `outputs` entry, each
+  carrying a non-empty `url`, the same `sha256` as `output_sha256` for that name, and a
+  non-negative `size_bytes`
+
+#### Scenario: get_run and list_runs do not carry signed links
+
+- **WHEN** `get_run(experiment, tool_class, run_ref)` or `list_runs(experiment, tool_class)` is
+  called for a previously committed run — including a legacy run recorded before this
+  capability existed (e.g. a v2 manifest entry with no `output_sha256`/`output_keys`)
+- **THEN** the returned `StoredRun`(s) have `output_links == {}`, regardless of how many
+  historical versions or outputs exist
+
+#### Scenario: A signing failure fails the whole commit
+
+- **WHEN** the active backend's `create_signed_url` raises, or returns a response with no
+  extractable URL, for any one output during `commit`
+- **THEN** `commit` raises `CommitFailedError`, best-effort cleans up any objects already
+  uploaded for this call, and records no new version — mirroring an upload failure
+
+#### Scenario: The fake store returns a shape-equivalent link without touching a real backend
+
+- **WHEN** `FakeResultStore.commit(...)` is called
+- **THEN** the returned `StoredRun.output_links` has the same keys, `sha256`, and `size_bytes` a
+  real commit would produce, with a synthesized (non-network) URL — no call to
+  `storage_backend.active_backend()` is made
+
+#### Scenario: Manifest bytes are unaffected
+
+- **WHEN** a run commits and `output_links` is populated on the returned `StoredRun`
+- **THEN** the written `manifest.json`'s `VersionEntry` for this run contains no `output_links`,
+  URL, or size key, and every other field matches the same commit's pre-change golden/fixture
+  manifest byte-for-byte (no schema version change)
+
+#### Scenario: A key outside this run's own prefix is never signed
+
+- **WHEN** `commit` is (by test injection — no legitimate call path produces this) about to sign a
+  key that does not start with this run's own `{output_root}/{tool_class}_{stem}/{version_dir}/`
+  prefix
+- **THEN** `commit` raises (never calling `create_signed_url` for that key), the failure surfaces
+  as `CommitFailedError` via the same fail-closed/cleanup path a signing failure already takes,
+  and no version is recorded
+
+#### Scenario: Every real call site's keys satisfy the scoping check
+
+- **WHEN** any of the 8 consumer tools (`qc_clean`, `qc_inspect`, `pca_analysis`,
+  `remove_outliers`, `descriptive_stats`, `cross_experiment_correlations`, `umap_analysis`,
+  `clustering`) commits a run through either `SupabaseResultStore` or `FakeResultStore`
+- **THEN** the scoping check passes for every output with no behavior change from before this
+  requirement — the existing test suite for each tool requires no modification
 

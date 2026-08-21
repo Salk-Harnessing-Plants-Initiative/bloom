@@ -1,0 +1,116 @@
+name: Refresh cyl_experiment_trait_counts
+
+# bloom#637 / bloom#656 (fix-cyl-scan-traits-latest-rollup, design.md D5/D8): n_traits in
+# get_experiment_summary_counts's unpinned path is cached in cyl_experiment_trait_counts rather
+# than recomputed live (a full scan, 6.6s at prod scale, no shortcut available). The cache is
+# refreshed on demand rather than a per-write trigger, because one write-back upload inserts on
+# the order of hundreds of trait rows in a loop -- a per-row trigger would fire that many
+# full-experiment recomputes for one upload.
+#
+# pg_cron isn't installed in this stack, so this lives here instead. No `on: schedule` trigger,
+# deliberately -- two reasons: (1) staging has low write volume and doesn't need frequent
+# automatic refreshes right now; (2) `schedule:` triggers only ever fire from the workflow file's
+# copy on the repo's DEFAULT branch, so a cron here would sit inert on staging until promoted to
+# main anyway (a real gap found in this PR's own review -- see design.md D8). Manual
+# `workflow_dispatch`, by contrast, can be run against any branch/ref holding this file right now.
+# Calls the refresh function as an ordinary PostgREST RPC (the same surface every other caller in
+# this repo uses), rather than SSH+psql, so it doesn't touch the "manual DB access is
+# emergency-only" deploy policy design.md's predecessor (PR #654) ran into for its own backfill.
+#
+# `environment` (mirrors deploy.yml's own input) selects which host/secret pair to call --
+# STAGING_API_URL/PROD_API_URL are both hardcoded literals (the same public, stable hostnames
+# already committed as each environment's own .env.*.defaults API_EXTERNAL_URL, and documented
+# non-sensitive by the Committed Defaults contract, tests/unit/test_env_defaults.py), and
+# STAGING_SERVICE_ROLE_KEY/PROD_SERVICE_ROLE_KEY are the real secrets, both already provisioned
+# before this workflow existed. This job also deliberately never checks out the repo (see
+# `permissions: {}` below), so it can't read either .env.*.defaults file at runtime; hardcoded
+# literals are simpler than adding checkout just to read one line out of each. No default on the
+# `environment` input -- forces an explicit choice every dispatch, rather than silently refreshing
+# staging when someone meant to pick production.
+#
+# The job-level `environment:` below (round 9 finding) makes this dispatch subject to whichever
+# approval rules this repo's GitHub "staging"/"production" Environments carry (required reviewers,
+# wait timers) -- the same gate deploy.yml's own production/staging jobs already go through.
+# Without it, this job could fire an RLS-bypass RPC at either database with zero approval, unlike
+# every other path that reaches them.
+#
+# Production is expected to eventually need an automatic (scheduled) refresh once its write
+# volume grows -- tracked as bloom#708, not added speculatively here. Until then: `staging` needs
+# no fixed cadence at all -- dispatch it (environment: staging) as needed for testing, whenever a
+# fresher count would help. `production` stays on-demand only until bloom#708 ships; that issue is
+# where its automatic cadence belongs, not an ad hoc interim process here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to refresh'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+
+# This job only makes an outbound curl call -- no checkout, no repo-content access needed.
+permissions: {}
+
+# Scoped by environment (round 9 fix) -- previously a single shared group meant a staging dispatch
+# and a production dispatch could cancel each other, even though they touch entirely independent
+# databases and never actually race. Safe to cancel within the SAME environment: the refresh RPC
+# is a single statement in one transaction, so an aborted client connection (what cancelling this
+# job's curl call amounts to) rolls it back cleanly -- no partial state either way.
+concurrency:
+  group: refresh-cyl-experiment-trait-counts-${{ github.event.inputs.environment }}
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    timeout-minutes: 2
+    steps:
+      - name: Call refresh_cyl_experiment_trait_counts()
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment }}
+          STAGING_API_URL: https://staging.bloom.salk.edu:8443/api
+          PROD_API_URL: https://bloom.salk.edu/api
+          STAGING_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SERVICE_ROLE_KEY }}
+          PROD_SERVICE_ROLE_KEY: ${{ secrets.PROD_SERVICE_ROLE_KEY }}
+        run: |
+          case "${ENVIRONMENT}" in
+            staging)
+              API_URL="${STAGING_API_URL}"
+              SERVICE_ROLE_KEY="${STAGING_SERVICE_ROLE_KEY}"
+              ;;
+            production)
+              API_URL="${PROD_API_URL}"
+              SERVICE_ROLE_KEY="${PROD_SERVICE_ROLE_KEY}"
+              ;;
+            *)
+              echo "::error::Unknown environment '${ENVIRONMENT}' -- expected staging or production."
+              exit 1
+              ;;
+          esac
+          if [ -z "${SERVICE_ROLE_KEY}" ]; then
+            echo "::error::No service-role key configured for environment '${ENVIRONMENT}' -- see this workflow's own header comment."
+            exit 1
+          fi
+          case "${API_URL}" in
+            https://*) ;;
+            *)
+              echo "::error::API_URL must be https:// -- a plain http:// URL would send SERVICE_ROLE_KEY (a full-bypass-RLS credential) in cleartext on every run."
+              exit 1
+              ;;
+          esac
+          status=$(curl -s -S --connect-timeout 5 --max-time 30 -o /tmp/refresh_response.json -w "%{http_code}" \
+            -X POST "${API_URL}/rest/v1/rpc/refresh_cyl_experiment_trait_counts" \
+            -H "apikey: ${SERVICE_ROLE_KEY}" \
+            -H "Authorization: Bearer ${SERVICE_ROLE_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          echo "HTTP ${status}"
+          cat /tmp/refresh_response.json
+          if [ "$status" != "200" ] && [ "$status" != "204" ]; then
+            echo "::error::refresh_cyl_experiment_trait_counts call failed (HTTP ${status})"
+            exit 1
+          fi

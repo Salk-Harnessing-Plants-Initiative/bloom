@@ -73,12 +73,23 @@ def cyl_experiment_scan_video(
     """
     enforce_rate_limit(user_id)
     result = generate_experiment_scan_video(experiment_id, scan_id)
-    logger.info(
-        "Generated video for experiment %s scan %s (%d frames)",
-        experiment_id,
-        scan_id,
-        result["frames"],
-    )
+    # Split, because most requests for a scan that already has a video generate nothing. Saying
+    # "Generated" either way, with a count describing the scan rather than the stored file,
+    # would make the operator log assert work that never happened — and this log is the only
+    # signal for exactly the cases the keep guards exist to handle.
+    if result.get("regenerated", True):
+        logger.info(
+            "Generated video for experiment %s scan %s (%d frames)",
+            experiment_id,
+            scan_id,
+            result["frames"],
+        )
+    else:
+        logger.info(
+            "Kept the stored video for experiment %s scan %s",
+            experiment_id,
+            scan_id,
+        )
     return {"experiment_id": experiment_id, **result}
 
 

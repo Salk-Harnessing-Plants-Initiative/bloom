@@ -27,6 +27,11 @@ COMPOSE_FILE = REPO_ROOT / "docker-compose.prod.yml"
 SENSITIVE_INVENTORY = {
     "POSTGRES_PASSWORD",
     "JWT_SECRET",
+    # Both hold key material. JWT_JWKS looks like public keys but embeds
+    # JWT_SECRET as a symmetric JWK so pre-migration tokens keep
+    # verifying, so it is every bit as sensitive as the private half.
+    "JWT_KEYS",
+    "JWT_JWKS",
     "ANON_KEY",
     "SERVICE_ROLE_KEY",
     "DB_ENC_KEY",
@@ -47,6 +52,14 @@ SENSITIVE_INVENTORY = {
     "MINIO_DATA_PATH",
     "WORKFLOWS_SUPABASE_EMAIL",
     "WORKFLOWS_SUPABASE_PASSWORD",
+    # bloom #11 Phase 2 (cyl-pipeline-worker): real credentials for the
+    # bloom-pipeline ServiceAccount. WORKFLOWS_K8S_NAMESPACE/_TTL_SECONDS are
+    # deliberately NOT here — they're plain config values with safe code
+    # defaults, sourced from .env.*.defaults instead (see
+    # openspec/changes/add-cyl-pipeline-dispatch/design.md).
+    "WORKFLOWS_K8S_TOKEN",
+    "WORKFLOWS_K8S_CA_CERT",
+    "WORKFLOWS_K8S_API_URL",
 }
 
 # Patterns that indicate a secret value (not just a key name). Case-insensitive.
@@ -145,6 +158,12 @@ def test_env_disambiguating_values_differ():
         "CADDY_HTTP_LISTEN_PORT", "CADDY_HTTPS_LISTEN_PORT",
         "POSTGRES_HOST_PORT",
         "LANGCHAIN_PROJECT",
+        # WORKFLOWS_K8S_ENV_LABEL's entire purpose (design.md's "fourth
+        # environment label" decision) is disambiguating prod from staging in
+        # the shared runai-busch-lab namespace — a copy-paste accident
+        # collapsing them to the same value would silently defeat it with no
+        # other test catching that.
+        "WORKFLOWS_K8S_ENV_LABEL",
     ):
         assert prod[key] != staging[key], (
             f"{key} identical in prod/staging ({prod[key]!r}); "
@@ -314,7 +333,11 @@ def test_validator_accepts_real_defaults_plus_fake_secrets(
     accepts it.
     """
     compose_text = COMPOSE_FILE.read_text()
-    referenced = set(re.findall(r"\$\{([A-Z_][A-Z0-9_]*)\}", compose_text))
+    # Matches `${VAR}` and `${VAR:-default}` alike, as validate_env.sh does
+    # (scripts/validate_env.sh:69). A narrower pattern here would skip
+    # defaulted vars the validator still requires, so the fixture would
+    # omit them and this test would fail for the wrong reason.
+    referenced = set(re.findall(r"\$\{([A-Z_][A-Z0-9_]*)", compose_text))
     FILTERED = {"COMPOSE_PROJECT_NAME", "NEXT_PUBLIC_SUPABASE_COOKIE_NAME"}
     required = referenced - FILTERED
 

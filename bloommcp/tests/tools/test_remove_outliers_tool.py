@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -24,7 +25,7 @@ from sleap_roots_analyze import clean_traits_for_analysis
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.experiment_utils import detect_columns
-from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+from bloom_mcp.result_store import FakeResultStore, RunStateError, SupabaseResultStore
 from bloom_mcp.tools import _ports
 from bloom_mcp.sections.sleap_roots.analysis import (
     remove_outliers as remove_outliers_tool,
@@ -185,6 +186,59 @@ def test_isolation_forest_golden_trim_counts_and_barcodes_match_recorded_snapsho
     assert sorted(result.outlier_barcodes) == _GOLDEN_IFOREST["outlier_barcodes"]
     assert result.fit_is_trustworthy is None
     assert result.goodness_of_fit is None
+
+
+# ── explicit cleaned-version selector (#626) ────────────────────────────────
+
+
+def test_version_field_exists():
+    assert "version" in RemoveOutliersParams.model_fields
+
+
+def test_omitting_version_still_defaults_to_latest_qc_not_latest(injected_ports):
+    """remove_outliers's own default is version="latest_qc" (not the Protocol's
+    generic "latest") — omitting the new field must preserve that exact call,
+    not silently switch defaults. Uses method="isolation_forest" (turface_19's
+    mahalanobis default is gated as untrustworthy — see
+    test_mahalanobis_default_untrustworthy_fit_is_gated_not_persisted) so the
+    spy assertion runs after a real success, not a caught exception."""
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(method="isolation_forest", seed=42)
+
+    reader.load_experiment.assert_called_once_with(
+        _EXPERIMENT, require_clean=True, version="latest_qc"
+    )
+
+
+def test_explicit_version_overrides_the_latest_qc_default(injected_ports):
+    reader, _store = injected_ports
+    reader.add_cleaned_version(_EXPERIMENT, "v2", _cleaned_df(), make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(method="isolation_forest", seed=42, version="v2")
+
+    reader.load_experiment.assert_called_once_with(
+        _EXPERIMENT, require_clean=True, version="v2"
+    )
+
+
+def test_explicit_version_latest_is_treated_the_same_as_omitting_it(injected_ports):
+    """An explicit version="latest" is NOT a deliberate override of this tool's
+    own "latest_qc" default -- it's the bare Protocol default, passed through
+    unchanged it would resolve the generic outliers-preferring "latest" instead
+    of the plain clean, silently trimming from this tool's own prior output
+    rather than the fresh qc_clean (the exact hazard "latest_qc" exists to
+    prevent). Found in PR #644 review; no test exercised this before."""
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(method="isolation_forest", seed=42, version="latest")
+
+    reader.load_experiment.assert_called_once_with(
+        _EXPERIMENT, require_clean=True, version="latest_qc"
+    )
 
 
 def test_persisted_trimmed_table_has_output_rows_and_no_nans(injected_ports):
@@ -575,6 +629,49 @@ def test_undeclared_delegate_raise_is_scrubbed(injected_ports, monkeypatch):
     assert exc.value.code == "internal_error"
     msg = f"{exc.value.message} {exc.value.remedy}"
     assert "secret" not in msg and "/var" not in msg and "db.internal" not in msg
+
+
+# ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
+# (#640: remove_outliers's declared errors=(ExperimentReadError,) swallowed a
+# CommitFailedError/ManifestReadError from store.create_run()/commit() into a generic
+# internal_error ref) ── method="isolation_forest" because turface_19's mahalanobis
+# default is gated as an untrustworthy fit (#419) before create_run is ever reached.
+
+
+def test_commit_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "outliers")
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="isolation_forest")
+    assert exc.value.code == "tool_error"
+    assert "commit failed for outliers" in exc.value.message
+
+
+def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_read(_EXPERIMENT, "outliers")
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="isolation_forest")
+    assert exc.value.code == "tool_error"
+    assert "manifest read failure" in exc.value.message
+
+
+def test_run_state_error_from_commit_still_maps_to_internal_error(
+    injected_ports, monkeypatch
+):
+    """RunStateError (a handle-misuse/wiring bug, never triggerable via tool input) must
+    stay internal_error even after declaring CommitFailedError/ManifestReadError — proves
+    the errors= tuple wasn't accidentally widened to the full ResultStoreError base
+    (design.md Decision 1; #660 review: only qc_inspect had this test)."""
+    _reader, store = injected_ports
+
+    def _boom(run, outputs):
+        raise RunStateError("commit() on an unknown or already-committed run")
+
+    monkeypatch.setattr(store, "commit", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="isolation_forest")
+    assert exc.value.code == "internal_error"
 
 
 # ── 3.9 method-surface validation + isolation_forest happy path ─────────────

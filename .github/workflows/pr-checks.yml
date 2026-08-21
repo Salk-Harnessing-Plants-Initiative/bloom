@@ -101,6 +101,24 @@ jobs:
       - name: Verify prod/staging env parity
         run: uv run --python 3.11 python scripts/verify_env_parity.py .github/workflows/deploy.yml
 
+  # Guards dev/prod image parity (issue #692): docker-compose.dev.yml must pin the same
+  # image versions as docker-compose.prod.yml, so production-only behaviour is reproducible
+  # locally and in dev-stack-smoke rather than surfacing only in compose-health-check.
+  # Implementation: scripts/verify_image_parity.py. Unit tests for that script run in the
+  # `python-audit` job alongside the rest of tests/unit/ — do NOT duplicate pytest here.
+  verify-image-parity:
+    name: Verify dev/prod image parity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+
+      - name: Verify dev/prod image parity
+        run: uv run --python 3.11 python scripts/verify_image_parity.py
+
   # Guards the Committed Defaults contract: no secrets leak into the defaults
   # files, prod/staging key sets are identical, disambiguating values differ,
   # and every ${VAR} in docker-compose.prod.yml has a source.
@@ -660,7 +678,15 @@ jobs:
           echo "CADDY_HTTPS_LISTEN_PORT=443" >> .env.ci
           # http:// scheme forces HTTP-only — Caddy parses the tls block but
           # never requests a cert (no automatic HTTPS for http:// addresses).
-          echo "CADDY_SITE_ADDRESSES=http://localhost" >> .env.ci
+          # Four hostnames, mirroring production's wildcard. A single address
+          # would leave Studio and MinIO unmatched, and Caddy answers an unmatched
+          # Host from an empty fallback server — a 200 with no body, which reads as
+          # healthy to any status-only assertion. `unrouted.localhost` is served but
+          # deliberately has no handle block, so it is the one host that reaches the
+          # site block's fall-through — the path that fixes the wildcard case on
+          # prod. This file is generated here, so this line is the only source of
+          # truth for it.
+          echo "CADDY_SITE_ADDRESSES=http://localhost, http://studio.localhost, http://minio.localhost, http://unrouted.localhost" >> .env.ci
           # 40-char placeholder satisfies the caddy-dns/cloudflare plugin's
           # token-format check at startup. No real Cloudflare API call is ever
           # made in CI because port 443 isn't bound.
@@ -682,6 +708,28 @@ jobs:
           echo "DB_ENC_KEY=${{ secrets.CI_DB_ENC_KEY }}" >> .env.ci
           echo "LANGCHAIN_POSTGRES_URL=postgresql://supabase_admin:${{ secrets.CI_POSTGRES_PASSWORD }}@db-prod:5432/postgres" >> .env.ci
           echo "BLOOM_AGENT_KEY=${{ secrets.CI_BLOOM_AGENT_KEY }}" >> .env.ci
+
+      # #646 was invisible to CI because CI never provisioned an asymmetric pair:
+      # GoTrue signed HS256, so no job ever produced the ES256 token Storage
+      # refused, and the stack booted identically whether the JWKS reached the
+      # verifiers or not. Mint a per-run pair with the same script operators use
+      # so the stack runs in the staging/prod shape and
+      # tests/integration/test_es256_token_verification.py exercises the real
+      # verification path. Generated per run, never stored — it is a CI-only key.
+      - name: Provision asymmetric JWT keys (ES256)
+        env:
+          JWT_SECRET: ${{ secrets.CI_JWT_SECRET }}
+        run: |
+          GENERATED=$(uv run --with cryptography python scripts/generate_jwt_keys.py)
+          JWT_KEYS=$(printf '%s\n' "$GENERATED" | grep '^JWT_KEYS=' | cut -d= -f2-)
+          JWT_JWKS=$(printf '%s\n' "$GENERATED" | grep '^JWT_JWKS=' | cut -d= -f2-)
+          # Both embed JWT_SECRET as a symmetric JWK — secrets, not public keys.
+          echo "::add-mask::$JWT_KEYS"
+          echo "::add-mask::$JWT_JWKS"
+          : "${JWT_KEYS:?generate_jwt_keys.py emitted no JWT_KEYS}"
+          : "${JWT_JWKS:?generate_jwt_keys.py emitted no JWT_JWKS}"
+          echo "JWT_KEYS=$JWT_KEYS" >> .env.ci
+          echo "JWT_JWKS=$JWT_JWKS" >> .env.ci
 
       - name: Create MinIO data directory
         run: mkdir -p /tmp/minio-ci && chmod 777 /tmp/minio-ci
@@ -887,6 +935,10 @@ jobs:
           fi
         env:
           TEST_BASE_URL: http://localhost
+          # Same placeholder pair written into .env.ci above, so the Studio
+          # basic-auth test authenticates against the credential Kong loaded.
+          DASHBOARD_USERNAME: ci-admin
+          DASHBOARD_PASSWORD: ci-changeme
           ANON_KEY: ${{ secrets.CI_ANON_KEY }}
           SERVICE_ROLE_KEY: ${{ secrets.CI_SERVICE_ROLE_KEY }}
           POSTGRES_USER: supabase_admin

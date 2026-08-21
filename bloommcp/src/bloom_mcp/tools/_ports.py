@@ -62,15 +62,35 @@ def raw_source_for(filename: str) -> Optional[Path]:
     )
 
 
-def load_frame(filename: str) -> tuple:
+def load_frame(
+    filename: str,
+    *,
+    source_id: Optional[int] = None,
+    run_id: Optional[str] = None,
+) -> tuple:
     """Legacy 4-tuple read adapter for the discovery + workflow tools.
 
     Returns ``(df, trait_cols, config, source)`` on success, or
     ``(None, None, None, error_message)`` when the experiment cannot be loaded —
-    preserving the contract the tools were written against.
+    preserving the 4-tuple contract the tools were written against. ``config``
+    additionally carries ``resolved_source_id``/``available_source_count`` (both
+    ``None`` when not applicable) — read from the SAME ``ExperimentFrame``
+    resolution already performed here, so a caller building a source-ambiguity
+    advisory (like ``qc_clean``'s ``source_note``) never needs its own
+    ``list_sources`` round-trip.
+
+    ``source_id``/``run_id`` optionally pin a specific raw DB source (#626). A
+    pin only ever means anything against the raw tier, and this seam has no
+    other way to request it, so a non-``None`` pin forces ``version="raw"``
+    — otherwise a pin on any experiment that already has a cleaned version
+    would spuriously raise ``AmbiguousSourceSelectionError`` even though the
+    caller gave only one selector.
     """
+    version = "raw" if (source_id is not None or run_id is not None) else "latest"
     try:
-        frame = _reader.load_experiment(filename)
+        frame = _reader.load_experiment(
+            filename, version=version, source_id=source_id, run_id=run_id
+        )
     except ExperimentReadError as exc:
         return None, None, None, str(exc)
     config = {
@@ -79,6 +99,10 @@ def load_frame(filename: str) -> tuple:
         "genotype_col": frame.genotype_col,
         "replicate_col": frame.replicate_col,
         "sample_id_col": frame.sample_id_col,
+        "resolved_source_id": (
+            frame.resolved_source.source_id if frame.resolved_source else None
+        ),
+        "available_source_count": frame.available_source_count,
     }
     return frame.df, frame.trait_cols, config, frame.source
 

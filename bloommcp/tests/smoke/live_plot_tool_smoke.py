@@ -124,7 +124,7 @@ def _print_summary() -> int:
         print(
             "live_plot_tool_smoke FAILED — a plotting tool could not write to "
             "PLOTS_DIR through the real container. If this is a permission "
-            "error, see openspec/changes/fix-bloommcp-dev-data-dir-permissions/ "
+            "error, see openspec/changes/archive/2026-08-09-fix-bloommcp-dev-data-dir-permissions/ "
             "and scripts/ensure_bloommcp_data_dirs.sh.",
             file=sys.stderr,
         )

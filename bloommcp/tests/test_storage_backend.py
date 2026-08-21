@@ -510,7 +510,7 @@ def test_local_store_roundtrip_matches_contract(monkeypatch, tmp_path):
 
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
-    monkeypatch.setenv("BLOOM_STORAGE_URL", "http://localhost/output")
+    monkeypatch.delenv("BLOOM_STORAGE_URL", raising=False)
     sb.reset_backend_for_tests()
 
     store = SupabaseResultStore()
@@ -529,15 +529,38 @@ def test_local_store_roundtrip_matches_contract(monkeypatch, tmp_path):
     assert stored.output_keys["cleaned"].startswith("bloommcp_output/qc_exp/")
     assert store.get_run("exp.csv", "qc", "latest").run_ref == "v1"
 
-    # bloom#581: local backend's served URL, built from the real key
+    # #642 follow-up: local backend surfaces the resolved direct path, not a
+    # URL — no BLOOM_STORAGE_URL needed at all.
     link = stored.output_links["cleaned"]
-    assert link.url == f"http://localhost/output/{stored.output_keys['cleaned']}"
+    assert link.path == str(tmp_path / stored.output_keys["cleaned"])
+    assert link.url is None
     assert link.size_bytes == len(b"data")
 
     # real files on disk, laid out by key
     out = tmp_path / "bloommcp_output" / "qc_exp"
     assert (out / "manifest.json").is_file()
     assert (out / stored.version_dir / "_cleaned.csv").read_bytes() == b"data"
+
+    # #642 review finding: get_download_links must not require
+    # BLOOM_STORAGE_URL either — it re-derives the same direct path rather
+    # than calling create_signed_url (which would raise without that var).
+    resolved = store.get_download_links("exp.csv", "qc", "latest")
+    relink = resolved.output_links["cleaned"]
+    assert relink.path == link.path
+    assert relink.url is None
+    assert relink.size_bytes == len(b"data")
+
+    # #643 review finding: a deleted/moved committed output must not leak its
+    # raw storage key to the caller — get_download_links redacts this the
+    # same way it already redacts a scope-mismatched key (CorruptRunLinksError).
+    Path(link.path).unlink()
+    from bloom_mcp.result_store import OutputFileMissingError
+
+    with pytest.raises(OutputFileMissingError) as exc_info:
+        store.get_download_links("exp.csv", "qc", "latest")
+    msg = str(exc_info.value)
+    assert stored.output_keys["cleaned"] not in msg
+    assert "see server logs" in msg
 
 
 def test_default_path_writes_no_local_files(
@@ -633,6 +656,14 @@ class _FakeSbStorageClient:
         # using this fake, so _to_public_url is a no-op and this is returned
         # verbatim.
         return {"signedURL": f"http://kong:8000/sign/{path}?expires_in={expires_in}"}
+
+    def info(self, path):
+        # Realistic nested shape (bloom#599) — real Supabase Storage's
+        # object-info endpoint nests size under `metadata`, matching
+        # storage3's only comparable typed object (`SearchV2Object`).
+        if path not in self.objects:
+            raise KeyError(f"object not found: {path}")
+        return {"name": path, "metadata": {"size": len(self.objects[path])}}
 
 
 def test_write_manifest_stamps_active_backend(monkeypatch, tmp_path):
@@ -1199,6 +1230,127 @@ def test_latest_does_not_log_when_resolved_trim_is_current(
     )
 
 
+# ─── 5b-2. explicit version="v<N>" checks BOTH qc and outliers (#644 review) ──
+#
+# Before this fix, an explicit version resolved against the `qc` class only.
+# `list_existing_analyses` lists `qc`/`outliers` versions separately, each with
+# its own independently-numbered `v<N>` sequence — a caller pinning an id seen
+# under `outliers` could silently get an unrelated `qc`-class entry of the same
+# id instead (the wrong, untrimmed dataset) rather than an error.
+
+
+def test_explicit_version_resolves_qc_when_only_qc_has_that_id(
+    local_manifest_backend,
+):
+    """No behavior change for the overwhelmingly common case: only `qc` has the
+    pinned id — resolves it, unqualified label, exactly as before this fix."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "v1")
+    assert err is None
+    assert path is not None and path.read_bytes() == b"a,b\n1,2\n"
+    assert label == "v1_cleaned"
+
+
+def test_explicit_version_resolves_outliers_when_only_outliers_has_that_id(
+    local_manifest_backend,
+):
+    """A version id that exists ONLY under `outliers` (not `qc`) now resolves
+    instead of hard-erroring not-found — closing a real coverage gap, not just
+    the ambiguity hazard: `list_existing_analyses` can list a version this
+    function previously could never pin by id at all."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "outliers",
+        "v1",
+        "2026-07-06T00:00:00Z",
+        b"trim,ok\n1,1\n",
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "v1")
+    assert err is None
+    assert path is not None and path.read_bytes() == b"trim,ok\n1,1\n"
+    assert label == "outliers_v1_cleaned"
+
+
+def test_explicit_version_collision_across_classes_is_ambiguous_not_silently_qc(
+    local_manifest_backend,
+):
+    """The actual #644-review repro: `qc` and `outliers` each independently have
+    their own 'v1' with DIFFERENT content. Pinning 'v1' must refuse as
+    ambiguous — silently returning `qc`'s content here would be exactly the
+    "caller pins the outliers-class id they saw in list_existing_analyses and
+    silently gets the wrong, untrimmed dataset" bug the review flagged."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "qc",
+        "v1",
+        "2026-07-06T00:00:00Z",
+        b"untrimmed\n9\n",
+    )
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "outliers",
+        "v1",
+        "2026-07-06T00:00:01Z",
+        b"trim,ok\n1,1\n",
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "v1")
+    assert path is None
+    assert label is None
+    assert err is not None
+    assert "ambiguous" in err.lower()
+    assert "'qc'" in err and "'outliers'" in err
+
+
+def test_explicit_version_not_found_in_either_class(local_manifest_backend):
+    """Neither class has the pinned id — a clear not-found error naming both
+    classes checked, not just `qc` (previously the only class ever checked)."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "v9")
+    assert path is None
+    assert label is None
+    assert err is not None
+    assert "not found" in err.lower()
+    assert "'qc'" in err and "'outliers'" in err
+
+
+def test_explicit_version_infra_error_takes_priority_over_not_found_elsewhere(
+    local_manifest_backend,
+):
+    """`outliers` fails schema validation while `qc` simply has no matching id —
+    the genuine infra failure must surface, not be masked by the other class's
+    plain not-found miss."""
+    from bloom_mcp import experiment_utils as eu
+
+    write_cleaned_manifest(
+        local_manifest_backend, "exp", "qc", "v2", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+    write_invalid_schema_manifest("exp", "outliers")
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, "exp", "v1")
+    assert path is None
+    assert label is None
+    assert err is not None and "manifest schema error for 'exp'" in err
+
+
 # ─── 5c. bloom#585 — shared `trim_staleness` primitive ────────────────────────
 
 
@@ -1417,6 +1569,40 @@ def test_validate_storage_backend_output_subfolder_blocked_by_file(
     sb.reset_backend_for_tests()
     with pytest.raises(RuntimeError, match="output root.*not a directory"):
         sb.validate_storage_backend()
+
+
+def test_validate_storage_backend_rejects_relative_local_root(monkeypatch, tmp_path):
+    """A relative BLOOM_LOCAL_ROOT resolves against the process's CWD — a
+    restart from a different CWD would silently point at a different
+    directory, making prior on-disk results unretrievable with no error at
+    all. Caught at boot instead, before any mkdir."""
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", "relative/local/root")
+    monkeypatch.chdir(tmp_path)
+    sb.reset_backend_for_tests()
+    with pytest.raises(RuntimeError, match="not an absolute path"):
+        sb.validate_storage_backend()
+    assert not (tmp_path / "relative").exists()  # fails before any mkdir
+
+
+def test_validate_storage_backend_rejects_relative_explicit_override(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", "relative/output/root")
+    monkeypatch.delenv("BLOOM_LOCAL_ROOT", raising=False)
+    sb.reset_backend_for_tests()
+    with pytest.raises(RuntimeError, match="not an absolute path"):
+        sb.validate_storage_backend()
+
+
+def test_validate_storage_backend_accepts_absolute_local_root(monkeypatch, tmp_path):
+    monkeypatch.delenv("BLOOM_STORAGE_LOCAL_ROOT", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(tmp_path))
+    sb.reset_backend_for_tests()
+    sb.validate_storage_backend()  # must not raise
 
 
 # ─── 5d. bloom#593 — shared `fit_is_trustworthy` primitive ────────────────────
@@ -1728,6 +1914,10 @@ def test_local_create_signed_url_ignores_expires_in(monkeypatch, tmp_path):
 
 
 def test_local_create_signed_url_raises_when_unset_no_path_leak(monkeypatch, tmp_path):
+    """Not called by the local backend's own output_links pipeline anymore
+    (#642 follow-up — commit() surfaces a direct path instead), but the
+    method itself still fails closed for an operator who deliberately calls
+    it (or configures BLOOM_STORAGE_URL) without finishing the setup."""
     monkeypatch.delenv("BLOOM_STORAGE_URL", raising=False)
     with pytest.raises(Exception) as exc:
         sb.LocalStorageBackend(tmp_path).create_signed_url("k", 3600)
@@ -1741,6 +1931,19 @@ def test_storage_backend_protocol_includes_create_signed_url(tmp_path):
     assert isinstance(sb.LocalStorageBackend(tmp_path), sb.StorageBackend)
     assert hasattr(sb.SupabaseStorageBackend, "create_signed_url")
     assert hasattr(sb.LocalStorageBackend, "create_signed_url")
+
+
+# ─── 9. Local-mode self-serve base URL (#642) ──────────────────────────────────
+
+
+def test_self_serve_base_url_defaults_to_localhost_8811(monkeypatch):
+    monkeypatch.delenv("BLOOMMCP_PUBLIC_URL", raising=False)
+    assert sb.self_serve_base_url() == "http://localhost:8811"
+
+
+def test_self_serve_base_url_prefers_public_url(monkeypatch):
+    monkeypatch.setenv("BLOOMMCP_PUBLIC_URL", "https://example.internal/")
+    assert sb.self_serve_base_url() == "https://example.internal"
 
 
 def test_create_signed_url_performs_no_ownership_check(monkeypatch):
@@ -1782,3 +1985,168 @@ def test_supabase_client_reexports_create_signed_url(monkeypatch):
     monkeypatch.setattr(sb_module, "active_backend", lambda: _FakeBackend())
     assert sc.create_signed_url("k", 3600) == "http://x/signed"
     assert captured["args"] == ("k", 3600)
+
+
+# ─── 9. Object byte size lookup (#599) ─────────────────────────────────────────
+
+
+class _FakeInfoClient:
+    """Stand-in for the storage3 bucket client's `info()` method."""
+
+    def __init__(self, response):
+        self._response = response
+        self.calls: list[str] = []
+
+    def info(self, path):
+        self.calls.append(path)
+        if isinstance(self._response, Exception):
+            raise self._response
+        return self._response
+
+
+def test_supabase_get_object_size_extracts_nested_metadata_size(monkeypatch):
+    # The real (and only typed-sibling-confirmed) shape: size nested under
+    # `metadata` (design.md Decision 2).
+    client = _FakeInfoClient({"name": "k", "metadata": {"size": 1234}})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+
+    size = sb.SupabaseStorageBackend().get_object_size("k")
+
+    assert client.calls == ["k"]
+    assert size == 1234
+
+
+def test_supabase_get_object_size_extracts_flat_size_fallback(monkeypatch):
+    # A flat top-level `size` is accepted as a fallback in case a future
+    # client version flattens the response.
+    client = _FakeInfoClient({"name": "k", "size": 5678})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+
+    size = sb.SupabaseStorageBackend().get_object_size("k")
+
+    assert size == 5678
+
+
+def test_supabase_get_object_size_raises_when_size_field_missing(monkeypatch):
+    client = _FakeInfoClient({"name": "k", "metadata": {}})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+
+    with pytest.raises(Exception):
+        sb.SupabaseStorageBackend().get_object_size("k")
+
+
+def test_supabase_get_object_size_raises_when_size_is_non_numeric(monkeypatch):
+    client = _FakeInfoClient({"name": "k", "metadata": {"size": "not-a-number"}})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+
+    with pytest.raises(Exception):
+        sb.SupabaseStorageBackend().get_object_size("k")
+
+
+def test_supabase_get_object_size_raises_when_size_is_negative(monkeypatch):
+    client = _FakeInfoClient({"name": "k", "metadata": {"size": -1}})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+
+    with pytest.raises(Exception):
+        sb.SupabaseStorageBackend().get_object_size("k")
+
+
+def test_supabase_get_object_size_propagates_client_raise_unmodified(monkeypatch):
+    # `client.info()` itself raising for a missing/deleted object propagates
+    # as-is -- matching this class's own download_file/read_json, neither of
+    # which wraps a missing-key failure into a bloommcp-defined type either.
+    client = _FakeInfoClient(KeyError("object not found: k"))
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+
+    with pytest.raises(KeyError):
+        sb.SupabaseStorageBackend().get_object_size("k")
+
+
+def test_supabase_get_object_size_performs_no_ownership_check(monkeypatch):
+    # A syntactically valid key belonging to a different experiment/tool_class
+    # succeeds with no authorization error -- restricting scope is the
+    # caller's responsibility (identically to create_signed_url).
+    client = _FakeInfoClient({"name": "other", "metadata": {"size": 42}})
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: client
+    )
+
+    size = sb.SupabaseStorageBackend().get_object_size(
+        "bloommcp_output/qc_someone_elses_experiment/v1/_cleaned.csv"
+    )
+
+    assert size == 42
+
+
+def test_local_get_object_size_returns_real_stat_size(tmp_path):
+    b = _local(tmp_path)
+    src = _seed_file(tmp_path, b"0123456789")
+    b.upload_file("bloommcp_output/x/v1/f.csv", src)
+
+    assert b.get_object_size("bloommcp_output/x/v1/f.csv") == 10
+
+
+def test_local_get_object_size_missing_key_raises_storage_key_not_found(tmp_path):
+    b = _local(tmp_path)
+    with pytest.raises(sb.StorageKeyNotFound) as exc:
+        b.get_object_size("bloommcp_output/x/missing.csv")
+    assert str(tmp_path) not in str(exc.value)
+    assert "bloommcp_output/x/missing.csv" in str(exc.value)
+
+
+def test_storage_backend_protocol_includes_get_object_size(tmp_path):
+    assert hasattr(sb.SupabaseStorageBackend, "get_object_size")
+    assert hasattr(sb.LocalStorageBackend, "get_object_size")
+    assert isinstance(sb.SupabaseStorageBackend(), sb.StorageBackend)
+    assert isinstance(sb.LocalStorageBackend(tmp_path), sb.StorageBackend)
+
+
+def test_supabase_client_reexports_get_object_size(monkeypatch):
+    import bloom_mcp.storage_backend as sb_module
+    import bloom_mcp.supabase_client as sc
+
+    captured = {}
+
+    class _FakeBackend:
+        def get_object_size(self, key):
+            captured["key"] = key
+            return 999
+
+    monkeypatch.setattr(sb_module, "active_backend", lambda: _FakeBackend())
+    assert sc.get_object_size("k") == 999
+    assert captured["key"] == "k"
+
+
+def test_get_object_size_real_dispatch_through_active_backend(monkeypatch):
+    """Exercises get_object_size through genuine `active_backend()` dispatch
+    (task 1.6) -- not only through the always-faked `_sc`-module fixtures,
+    matching this file's existing real-dispatch convention
+    (`_FakeSbStorageClient` patches only `get_storage_client`, letting the
+    real `SupabaseStorageBackend` class run through the real dispatch path).
+    """
+    sb.reset_backend_for_tests()
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "supabase")
+    fake_client = _FakeSbStorageClient()
+    fake_client.objects["bloommcp_output/qc_x/v1/f.csv"] = b"0123456789ab"
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.get_storage_client", lambda **_k: fake_client
+    )
+
+    import bloom_mcp.supabase_client as sc
+
+    size = sc.get_object_size("bloommcp_output/qc_x/v1/f.csv")
+
+    assert size == 12
+    sb.reset_backend_for_tests()

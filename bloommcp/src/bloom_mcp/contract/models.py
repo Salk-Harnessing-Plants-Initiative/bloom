@@ -14,24 +14,39 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from bloom_mcp.contract.provenance import SEED_MAX
 
 
 class OutputLink(BaseModel):
-    """A downloadable pointer to one persisted output artifact (bloom#581).
+    """A pointer to one persisted output artifact (bloom#581, #642 follow-up).
 
-    ``key`` is the same object key surfaced in ``RunLinks.outputs``; ``url`` is a
-    signed (Supabase backend) or served (local backend) download link; ``sha256``
-    matches the manifest's ``output_sha256`` for this artifact; ``size_bytes`` is
-    the artifact's byte size (non-negative — a zero-byte artifact is legal).
+    ``key`` is the same object key surfaced in ``RunLinks.outputs``. Exactly one
+    of ``url``/``path`` is set: ``url`` is a signed download link (Supabase
+    backend, or an operator-configured local ``BLOOM_STORAGE_URL``); ``path``
+    is the resolved absolute filesystem path for the local backend's default
+    (no served URL — the caller already has direct filesystem access to a file
+    bloommcp just wrote, so there is nothing to sign or serve). ``sha256``
+    matches the manifest's ``output_sha256`` for this artifact; ``size_bytes``
+    is the artifact's byte size (non-negative — a zero-byte artifact is legal).
     """
 
     key: str
-    url: str
+    url: Optional[str] = None
+    path: Optional[str] = None
     sha256: str
     size_bytes: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _exactly_one_of_url_or_path(self) -> "OutputLink":
+        # Falsiness, not `is None`-ness: a URL or path is never legitimately
+        # an empty string, so `url=""` must count as "not set" the same as
+        # `url=None` — else `OutputLink(url="", path=None)` would pass this
+        # guard despite carrying neither a usable URL nor a usable path.
+        if bool(self.url) == bool(self.path):
+            raise ValueError("exactly one of url or path must be set")
+        return self
 
 
 class RunLinks(BaseModel):
