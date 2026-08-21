@@ -61,10 +61,19 @@ def test_hostname_outside_every_site_address_is_refused(base_url, host):
 
 @pytest.mark.parametrize("host", ["localhost", "studio.localhost", "minio.localhost"])
 def test_routed_hostnames_are_not_swallowed(base_url, host):
-    """A routed hostname must still reach its handler, not the fall-through."""
+    """A routed hostname must still reach its handler, not the fall-through.
+
+    404 is the discriminator here, not success. `studio.localhost` answers 401
+    from Kong's basic-auth gate (#689), and that 401 is itself proof the request
+    traversed the `@studio` handle rather than falling out the bottom of the site
+    block — so asserting a 2xx would fail on a correctly gated console.
+    """
     status, body = _get(base_url, host)
-    assert status < 400, (
-        f"{host} is a routed hostname but answered {status} with {len(body)} bytes. "
-        "A 404 means the fall-through matched ahead of the per-host handle blocks; "
-        "a 5xx means the handler was reached but its upstream is down."
+    assert status != 404, (
+        f"{host} is a routed hostname but answered 404 with {len(body)} bytes — "
+        "the fall-through matched ahead of the per-host handle blocks"
+    )
+    assert status < 500, (
+        f"{host} answered {status} with {len(body)} bytes — the handler was reached "
+        "but its upstream is down"
     )

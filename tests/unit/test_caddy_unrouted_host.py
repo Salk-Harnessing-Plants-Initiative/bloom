@@ -4,8 +4,11 @@
 one-level subdomain and Caddy accepts the connection for any of them. A name
 with no `handle @host` block falls out of the site block, and Caddy's implicit
 response to that is an empty `200 OK` — a success code for a page we do not
-serve. Anything checking only the status reads it as healthy, which is how
-`test_studio_reachable` came to pass against nothing (see #649).
+serve. Anything checking only the status reads it as healthy, which is how the
+old status-only Studio reachability test came to pass against nothing — it was
+since replaced by `test_studio_requires_credentials` and
+`test_studio_reachable_with_credentials`, which assert the gate and a non-empty
+body (#689, #649).
 
 Over HTTPS a name outside the wildcard is refused at the handshake, since no
 certificate covers it. Plain HTTP has no such step, hence the `:80` block.
