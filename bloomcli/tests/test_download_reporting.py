@@ -574,6 +574,21 @@ def test_the_retry_hint_is_said_once_when_failures_first_appear(capsys):
     assert dl.RETRY_HINT not in err.splitlines()[0], "not before anything has failed"
 
 
+def test_the_retry_hint_is_worded_for_what_the_method_downloads(capsys):
+    """A plate run counts captures, so the hint must not tell it to retry frames."""
+    from bloomctl._download import retry_hint
+
+    assert retry_hint("captures") == (
+        "Some captures are failing — re-run this command afterwards and it will retry them."
+    )
+
+    dl.ProgressReporter(interval=0.0, noun="captures")("downloading", 1, 1, 1)
+
+    err = capsys.readouterr().err
+    assert "Some captures are failing" in err, "the reporter must use its own noun"
+    assert "frames" not in err
+
+
 def test_no_retry_hint_on_a_run_where_nothing_fails(capsys):
     report = dl.ProgressReporter(interval=0.0)
 
