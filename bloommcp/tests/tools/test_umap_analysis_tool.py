@@ -504,6 +504,26 @@ def test_degenerate_fit_does_not_leak_backend_internals(
     assert store.list_runs(_EXPERIMENT, "umap") == []
 
 
+def test_undeclared_delegate_raise_is_scrubbed(injected_ports, monkeypatch):
+    """bloom#664 item 2: an exception type outside the `(ValueError, KeyError,
+    RuntimeError, TypeError)` except clause above falls through undeclared to
+    `internal_error` — pinned, not just "doesn't leak" (mirrors the #660
+    qc_inspect/qc_clean/remove_outliers pattern, closing the coverage gap for
+    this tool)."""
+    _reader, store = injected_ports
+
+    def _boom(*a, **k):
+        raise Exception("secret path /var/secrets/key and host db.internal")
+
+    monkeypatch.setattr(umap_analysis_tool, "perform_umap_analysis", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "internal_error"
+    msg = f"{exc.value.message} {exc.value.remedy}"
+    assert "/var" not in msg and "db.internal" not in msg
+    assert store.list_runs(_EXPERIMENT, "umap") == []
+
+
 def test_delegate_failure_logs_original_exception_at_debug_level(
     injected_ports, monkeypatch, caplog
 ):
@@ -1043,3 +1063,25 @@ def test_explicit_version_is_passed_through(injected_ports):
     reader.load_experiment.assert_called_once_with(
         _EXPERIMENT, require_clean=True, version="v2"
     )
+
+
+# ── discoverable via list_existing_analyses (bloom#669) ─────────────────────
+
+
+def test_discoverable_via_list_existing_analyses(injected_ports):
+    """Live discoverability, mirroring the same pattern
+    remove_outliers/cross_experiment_correlations use for their own registered class."""
+    from bloom_mcp.sections.core import (
+        list_existing_analyses as list_existing_analyses_mod,
+    )
+
+    list_existing_analyses_mod._RESPONSE_CACHE.clear()
+    try:
+        _run()
+        response = json.loads(
+            list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
+        )
+    finally:
+        list_existing_analyses_mod._RESPONSE_CACHE.clear()
+
+    assert "umap" in response["analyses"]
