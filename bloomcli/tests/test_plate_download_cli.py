@@ -203,12 +203,18 @@ def test_a_server_error_surfaces_its_message(tmp_path, monkeypatch):
     _signed_in(monkeypatch)
 
     def _boom(*a, **k):
-        raise APIError({"message": "search query too long (max 200 characters)"})
+        # P0001 is a RAISE EXCEPTION — a sentence written for the user, so it is passed
+        # on as-is. Without the code this exercises the wrapping path instead.
+        raise APIError({"message": "search query too long (max 200 characters)", "code": "P0001"})
 
     monkeypatch.setattr(pd, "search_experiments", _boom)
     result = _run(str(tmp_path / "out"), "--experiment-name", "x" * 201)
     assert result.exit_code != 0
     assert "too long" in result.output
+    assert "Could not read" not in result.output, (
+        "the server's own sentence must reach the user unprefixed — a read-failure "
+        "framing sends them to check the network over their own input"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -280,9 +286,65 @@ def test_a_server_error_on_the_scan_query_is_a_message_not_a_traceback(tmp_path,
     result = _run(str(tmp_path / "out"), "--experiment-id", "12")
 
     assert result.exit_code != 0
-    assert "Traceback" not in result.output
+    assert isinstance(result.exception, SystemExit), "the APIError escaped click unhandled"
     assert "permission denied" in result.output
     assert "the scans for this experiment" in result.output
+
+
+def test_a_failed_scan_read_names_itself(tmp_path, monkeypatch):
+    from postgrest import APIError
+
+    _signed_in(monkeypatch)
+
+    def _boom(*a, **k):
+        raise APIError({"message": "permission denied for view gravi_scans_extended"})
+
+    monkeypatch.setattr(pd, "fetch_plate_scan", _boom)
+
+    result = _run(str(tmp_path / "out"), "--scan-id", "77")
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, SystemExit), "the APIError escaped click unhandled"
+    assert "this scan" in result.output
+    assert "permission denied for view gravi_scans_extended" in result.output
+
+
+def test_a_failed_image_row_read_names_itself(tmp_path, monkeypatch):
+    from postgrest import APIError
+
+    _signed_in(monkeypatch)
+    _one_scan(monkeypatch)  # the scan query succeeds; the image rows are the next read
+
+    def _boom(*a, **k):
+        raise APIError({"message": "relation gravi_images does not exist"})
+
+    monkeypatch.setattr(pd, "fetch_plate_images", _boom)
+
+    result = _run(str(tmp_path / "out"), "--experiment-id", "12")
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, SystemExit), "the APIError escaped click unhandled"
+    assert "the image rows for these scans" in result.output
+    assert "relation gravi_images does not exist" in result.output
+
+
+def test_a_read_timeout_resolving_a_name_is_a_sentence(tmp_path, monkeypatch):
+    """The old handler caught APIError only, so a timeout here was the one failure it missed."""
+    import httpx
+
+    _signed_in(monkeypatch)
+
+    def _boom(*a, **k):
+        raise httpx.ReadTimeout("")
+
+    monkeypatch.setattr(pd, "search_experiments", _boom)
+
+    result = _run(str(tmp_path / "out"), "--experiment-name", "Gravi 2026-05")
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, SystemExit), "the ReadTimeout escaped click unhandled"
+    assert "the experiment names" in result.output
+    assert "check your connection" in result.output
 
 
 def test_a_failed_section_query_says_the_csv_is_already_written(tmp_path, monkeypatch):
@@ -610,3 +672,18 @@ def test_an_unknown_scan_id_exits_non_zero(tmp_path, monkeypatch):
 
     assert result.exit_code != 0
     assert "404" in result.output
+
+
+def test_the_retry_hint_names_captures_on_a_plate_run(tmp_path, monkeypatch):
+    """Driven through the command, because the noun is chosen where the command builds the
+    reporter — a test that builds its own cannot see that choice."""
+    from test_plate_download_images import _Client
+
+    client = _Client(fail_on=[IMAGE["object_path"]])
+    _signed_in(monkeypatch, client=client)
+    _one_scan(monkeypatch)
+
+    res = _run(str(tmp_path / "out"), "--experiment-id", "12")
+
+    assert "Some captures are failing" in res.output
+    assert "frames" not in res.output
