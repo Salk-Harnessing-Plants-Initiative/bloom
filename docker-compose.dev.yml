@@ -164,6 +164,58 @@ services:
     stop_grace_period: 30s
     restart: unless-stopped
 
+  # Periodically polls Argo for each in-flight run's real Workflow phase(s)
+  # and progresses cyl_pipeline_runs.status past dispatch outcome (bloom #11
+  # Phase 3) — a separate process from cyl-pipeline-worker above (event-driven
+  # dispatch vs. this poller's fixed wall-clock sweep). Same image; read-only
+  # use of the K8s API (get, not create), so only four of the five
+  # WORKFLOWS_K8S_* vars are needed — TTL_SECONDS/ENV_LABEL are
+  # submission-only (build_workflow_body), never read by this poller.
+  # WORKFLOWS_STATUS_POLL_SECONDS is deliberately NOT referenced here — its
+  # Python-side default (15s) governs it, matching WORKFLOWS_WORKER_POLL_SECONDS's
+  # own precedent above; adding it here without a real default-file entry would
+  # make compose inject an empty string and silently override that default.
+  # Also safe to scale by replicas, for a different reason than cyl-pipeline-
+  # worker above: each sweep is an idempotent recompute from Argo's current
+  # state (see design.md's "rollup computation happens in Python" decision),
+  # not a claimed, exactly-once event — redundant concurrent sweeps just
+  # mean harmless, wasted-work overlap, not a correctness risk.
+  cyl-status-poller:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      WORKFLOWS_K8S_TOKEN: ${WORKFLOWS_K8S_TOKEN}
+      WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
+      WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
+      WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE:-runai-busch-lab}
+    volumes:
+      - ./services/workflows:/app
+    command: ["python", "status_poller.py"]
+    networks:
+      - supanet
+    depends_on:
+      - db-dev
+      - kong
+    # Larger than cyl-pipeline-worker's 30s (found during /review-pr round 1,
+    # not a blind copy): one sweep can issue one get_workflow_status GET per
+    # distinct workflow name across EVERY candidate run this cycle, not a
+    # single call per claim, so 30s isn't necessarily enough headroom for
+    # _stop()'s documented "let the in-flight sweep finish" guarantee.
+    stop_grace_period: 60s
+    restart: unless-stopped
+
   bloommcp:
     build:
       context: ./bloommcp

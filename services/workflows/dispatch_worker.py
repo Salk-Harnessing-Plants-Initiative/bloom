@@ -28,17 +28,17 @@ from k8s_client import (
     submit_workflow,
 )
 from pipeline_queue import claim_batch, complete_batch, fail_batch
-from supabase_client import DISPATCH_WORKER_POSTGREST_TIMEOUT_SECONDS
+from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS
 from supabase_client import app_client as _app_client
 
 
 def app_client():
     """This worker's RPCs are all small, single-batch, indexed operations —
     safe to bound tighter than supabase-py's 120s default (see
-    supabase_client.py's DISPATCH_WORKER_POSTGREST_TIMEOUT_SECONDS). Wrapped
+    supabase_client.py's SINGLE_ROW_RPC_TIMEOUT_SECONDS). Wrapped
     here rather than passed at each call site so every app_client() call in
     this module gets it, including the retry loop below."""
-    return _app_client(timeout_seconds=DISPATCH_WORKER_POSTGREST_TIMEOUT_SECONDS)
+    return _app_client(timeout_seconds=SINGLE_ROW_RPC_TIMEOUT_SECONDS)
 
 
 logger = logging.getLogger(__name__)
