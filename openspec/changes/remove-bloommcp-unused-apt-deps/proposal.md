@@ -24,11 +24,16 @@ change performs that check for `bloommcp` and closes the gap (issue #590).
 
 Two dependencies were checked specifically because they could plausibly need a compiler
 or runtime-linked system library even with wheels installed, and both check out clean:
-- **matplotlib / Pillow**: their manylinux wheels statically vendor their own FreeType /
-  libpng / libjpeg-turbo / zlib copies (the standard `auditwheel`/manylinux
-  "batteries-included" convention) — neither `dlopen`s a system `libfreetype6` /
-  `libpng16` / `libjpeg` at runtime, so removing the `-dev` headers changes nothing at
-  runtime.
+- **matplotlib**: its manylinux wheel statically vendors its own FreeType / libpng /
+  libjpeg-turbo / zlib copies (compiled in and linked directly into the extension
+  module) — it doesn't `dlopen` a system `libfreetype6` / `libpng16` / `libjpeg` at
+  runtime, so removing the `-dev` headers changes nothing at runtime.
+- **Pillow**: its manylinux wheel bundles the same set of libraries, but as
+  dynamically-linked `.so`s that `auditwheel` vendors into the wheel itself and
+  rewrites to load via an RPATH-relative path (the standard manylinux
+  "batteries-included" convention) — not statically linked, but still self-contained
+  and never resolved against a system `libfreetype6` / `libpng16` / `libjpeg`, so the
+  same "no `-dev` headers needed at runtime" conclusion holds.
 - **numba / llvmlite** (pulled in transitively via `umap-learn`/`pynndescent`, used by
   `sleap_roots_umap_analysis`): their JIT (`@numba.jit`) compiles in-process through a
   statically-bundled LLVM via llvmlite's wheel — it does not shell out to `gcc`/`cc`, so

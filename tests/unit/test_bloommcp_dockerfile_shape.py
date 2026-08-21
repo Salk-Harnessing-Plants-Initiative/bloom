@@ -10,12 +10,20 @@ nothing in the dependency tree actually needs.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 DOCKERFILE = REPO_ROOT / "bloommcp" / "Dockerfile"
 
+# Matches `apt-get install`/`apt install`, with or without flags in between
+# (e.g. `apt-get -y install`, `apt-get --no-install-recommends install`), and
+# survives a Dockerfile line-continuation split (`apt-get \` + newline +
+# `install`) once continuations are joined below.
+_APT_INSTALL = re.compile(r"\bapt(?:-get)?\s+(?:-\S+\s+)*install\b")
+
 
 def test_no_apt_get_install():
     text = DOCKERFILE.read_text(encoding="utf-8")
-    assert "apt-get install" not in text
+    joined = re.sub(r"\\\r?\n", " ", text)
+    assert not _APT_INSTALL.search(joined)
