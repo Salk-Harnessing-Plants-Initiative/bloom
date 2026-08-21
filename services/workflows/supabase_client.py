@@ -22,7 +22,7 @@ APP_PASSWORD = os.environ.get("WORKFLOWS_SUPABASE_PASSWORD")
 # stop_grace_period (30s) nor the status poller's own, larger one (60s, sized
 # for its own N-GETs-per-sweep worst case — see design.md) actually covers
 # that — a hung RPC could still be SIGKILLed mid-request — and every RPC either
-# calls (claim_cyl_pipeline_batch/complete_cyl_pipeline_batch/
+# service calls (claim_cyl_pipeline_batch/complete_cyl_pipeline_batch/
 # fail_cyl_pipeline_batch/update_cyl_pipeline_run_status) is a single-row,
 # small, indexed operation with no large-payload case to protect, so a tight
 # bound is safe for both. But app_client() is also shared with pipeline.py's

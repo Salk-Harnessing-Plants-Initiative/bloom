@@ -558,3 +558,48 @@ a real submitted Workflow) was not performed — stated explicitly, not claimed.
 - [x] 12.2 Re-run the full suite: `services/workflows` unit tests, `openspec validate --strict`. Confirm
       no regressions. Push as a new commit (`docs(#11): fix stale module docstring in status_poller.py —
       round-4 /review-pr finding`) on the same PR branch.
+
+## 13. Round-5 `/review-pr` findings (a convergence-check round, applied post round-4 fix commit)
+
+> A fifth full 5-subagent review pass, this time deliberately instructed to probe fresh ground (startup
+> ordering, config validation, dead schema columns, per-scan diagnosability) rather than only re-verify
+> prior fixes, since 4 rounds of narrow "did the last fix work" focus risked leaving broader territory
+> unchecked. Found one real, cheap-to-fix bug plus two legitimate pre-existing data-integrity gaps
+> (neither introduced by this PR) that become consequential now that this PR makes terminal run states
+> reachable in production for the first time. Security stayed clean for the 4th consecutive round.
+
+- [x] 13.1 **IMPORTANT (real bug, not a regression) — a negative `WORKFLOWS_STATUS_POLL_SECONDS` crashes
+      the process; zero removes the sweep loop's only throttle.** `_resolve_poll_interval`'s
+      `except ValueError` only ever caught a non-numeric string; a negative value parses fine as a float
+      but then crashes `time.sleep()` (`ValueError: sleep length must be non-negative`) at every one of
+      `run()`'s three call sites, crash-looping the container under `restart: unless-stopped`. Failing
+      tests first: `test_poll_interval_falls_back_to_default_for_a_negative_value`,
+      `test_poll_interval_falls_back_to_default_for_zero`,
+      `test_poll_interval_logs_a_warning_when_falling_back_for_a_bad_value`. Confirm red, then fix:
+      `_resolve_poll_interval` now rejects any parsed value `<= 0`, falling back to the same default a
+      non-numeric string already fell back to, with a `logger.warning` on both fallback paths (previously
+      silent) naming the raw misconfigured value. `k8s_client.py`'s `_resolve_ttl_seconds()` deliberately
+      NOT touched — it predates this PR (Phase 2) and a malformed TTL is Argo's problem, not a crash risk
+      for this service.
+- [x] 13.2 **Cosmetic, no behavior change** — fixed a grammatically broken comment in
+      `supabase_client.py` (introduced by section 0's rename commit, survived all 4 prior review rounds
+      unnoticed since reviewers focused on `status_poller.py`/`k8s_client.py`).
+- [x] 13.3 **Documentation-only** — added a one-line comment to both compose files' `cyl-status-poller`
+      blocks explaining why it's safe to scale by replicas (idempotent recompute, unlike its sibling
+      `cyl-pipeline-worker`'s different "pgmq claim is concurrency-safe" reasoning) — closes the gap where
+      an operator following the adjacent service's documented pattern could infer the wrong reasoning
+      even though the conclusion (safe to scale) happens to be the same.
+- [x] 13.4 **Pre-existing, out-of-scope-for-this-PR data-integrity gap, filed as a follow-up issue** —
+      `cyl_pipeline_runs.done_count`/`failed_count` are defined in Phase 1's schema but never populated by
+      anything (not Phase 2, not this PR); this PR is merely what makes the gap live-misleading for the
+      first time by being the first code to ever drive a run to a real terminal `'complete'`/`'failed'`
+      conclusion. Filed as [bloom #716](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/716).
+- [x] 13.5 **Documentation escalation, no code change** — strengthened `design.md`'s existing
+      `error_message` Non-Goal to note it now compounds with #716 (above) and the existing per-scan
+      diagnosability gap ([bloom #696](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/696)):
+      together, a researcher facing a `'failed'`/`'partial'` run today has no actionable field anywhere in
+      this API's response to start diagnosing why — worth flagging as a near-term fast-follow now that
+      this PR makes those statuses reachable in production, rather than an indefinite deferral.
+- [x] 13.6 Re-run the full suite: `services/workflows` unit tests, `openspec validate --strict`. Confirm
+      no regressions. Push as a new commit (`fix(#11): apply round-5 /review-pr findings — negative/zero
+      poll-interval crash, stale comment, scaling docs`) on the same PR branch.

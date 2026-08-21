@@ -175,6 +175,11 @@ services:
   # Python-side default (15s) governs it, matching WORKFLOWS_WORKER_POLL_SECONDS's
   # own precedent above; adding it here without a real default-file entry would
   # make compose inject an empty string and silently override that default.
+  # Also safe to scale by replicas, for a different reason than cyl-pipeline-
+  # worker above: each sweep is an idempotent recompute from Argo's current
+  # state (see design.md's "rollup computation happens in Python" decision),
+  # not a claimed, exactly-once event — redundant concurrent sweeps just
+  # mean harmless, wasted-work overlap, not a correctness risk.
   cyl-status-poller:
     build:
       context: ./services/workflows

@@ -845,3 +845,33 @@ def test_run_does_not_reset_the_error_streak_when_the_outer_exceptions_own_recon
 def test_poll_interval_defaults_to_15_when_env_var_unset(monkeypatch):
     monkeypatch.delenv("WORKFLOWS_STATUS_POLL_SECONDS", raising=False)
     assert worker._resolve_poll_interval() == 15
+
+
+def test_poll_interval_falls_back_to_default_for_a_negative_value(monkeypatch):
+    """Found during /review-pr round 5: a negative value parses fine as a
+    float (no ValueError), but time.sleep() raises ValueError for a negative
+    argument — an uncaught crash at every one of run()'s three sleep call
+    sites, directly contradicting this function's own "never raises"
+    docstring, which previously only guarded against non-numeric strings."""
+    monkeypatch.setenv("WORKFLOWS_STATUS_POLL_SECONDS", "-5")
+    assert worker._resolve_poll_interval() == 15.0
+
+
+def test_poll_interval_falls_back_to_default_for_zero(monkeypatch):
+    """A zero interval doesn't crash time.sleep(), but it removes the only
+    throttle on the sweep loop entirely — an un-throttled, continuous
+    hammering of the candidate query and every get_workflow_status call."""
+    monkeypatch.setenv("WORKFLOWS_STATUS_POLL_SECONDS", "0")
+    assert worker._resolve_poll_interval() == 15.0
+
+
+def test_poll_interval_logs_a_warning_when_falling_back_for_a_bad_value(
+    monkeypatch, caplog
+):
+    monkeypatch.setenv("WORKFLOWS_STATUS_POLL_SECONDS", "-5")
+    with caplog.at_level("WARNING"):
+        worker._resolve_poll_interval()
+    assert any(
+        "WORKFLOWS_STATUS_POLL_SECONDS" in record.message
+        for record in caplog.records
+    )

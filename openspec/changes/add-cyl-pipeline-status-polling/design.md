@@ -48,6 +48,16 @@ per-scan `cyl_pipeline_run_scans.status` is in scope.
   proposal exists yet to build against.
 - Populating `cyl_pipeline_runs.error_message` from a failed workflow's real Argo status — see the
   round-2 fix decision below; `update_cyl_pipeline_run_status` writes `status`/`completed_at` only.
+  **Escalated priority note (`/review-pr` round 5)**: this Non-Goal compounds with two other
+  already-accepted gaps — `cyl_pipeline_runs.done_count`/`failed_count` are defined but never populated
+  by anything (filed as [bloom #716](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/716)),
+  and per-scan `status` only ever reflects dispatch outcome, not real pipeline outcome, so `GET
+  /workflows/runs/{run_id}` cannot identify *which* dispatched scan failed within a `'partial'` run (this
+  is exactly the gap [bloom #696](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/696)
+  is scoped to close). Individually each gap was reasonably deferred; together, a researcher facing a
+  `'failed'`/`'partial'` run today has no actionable field anywhere in this API's response to start
+  diagnosing why — worth treating as a near-term fast-follow now that this PR is what makes `'failed'`/
+  `'partial'` reachable in production for the first time, rather than an indefinite deferral.
 
 ## Decisions
 
@@ -457,6 +467,30 @@ kind of risk, only a second call site for an existing one — httpx's own defaul
 timeouts bound the realistic worst case even without an explicit override. Recorded here as an accepted,
 narrow risk rather than fixed — a real fix would mean explicitly configuring the GoTrue client's own
 timeout, which is a `supabase_client.py`-wide change well beyond this fix round's scope.
+
+### Decision (fix, `/review-pr` round 5): `_resolve_poll_interval` rejects non-positive values, not just non-numeric ones
+
+Found on review — a real, previously-unflagged bug directly contradicting this function's own "never
+raises" docstring: `_resolve_poll_interval`'s `try`/`except ValueError` only caught a non-numeric string
+(e.g. `"15s"`, a common unit-suffix typo). A parseable-but-negative value (e.g. `"-5"`) sailed through as
+`-5.0` with no error — but `time.sleep()` itself raises `ValueError: sleep length must be non-negative`
+for a negative argument, an uncaught exception at every one of `run()`'s three `time.sleep(POLL_INTERVAL)`
+call sites. Under `restart: unless-stopped`, this crash-loops the container. A value of exactly `"0"`
+doesn't crash `time.sleep()`, but removes the only throttle on the sweep loop entirely — an unthrottled,
+continuous hammering of `_fetch_candidate_runs` (already flagged as unbounded — see the "unbounded
+candidate-list growth" risk) and every `get_workflow_status` call.
+
+**Fix**: `_resolve_poll_interval` now rejects any parsed value `<= 0`, falling back to the same `15.0`
+default a non-numeric string already fell back to. Both fallback paths (non-numeric, non-positive) now
+log a `logger.warning` naming the raw misconfigured value — previously silent, so a misconfiguration
+would never surface except by an operator noticing observed poll timing didn't match what they thought
+they'd configured. `k8s_client.py`'s `_resolve_ttl_seconds()` is deliberately NOT touched by this fix —
+it predates this PR (Phase 2) and a malformed/negative TTL is Argo's problem to reject, not a crash risk
+for this service, so extending this fix there would be out-of-scope scope creep into already-shipped code.
+
+- Alternatives considered: reject only exactly `0`, treating any negative value as a "the operator clearly
+  meant something else, just use 15s" case identical to zero — adopted as the actual fix (`<= 0` covers
+  both in one check, simpler than two separate conditions with identical handling).
 
 ### Decision: `status_poller.py` is a separate process from `dispatch_worker.py`
 

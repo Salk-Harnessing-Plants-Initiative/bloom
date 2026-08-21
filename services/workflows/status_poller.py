@@ -47,12 +47,34 @@ logger = logging.getLogger(__name__)
 def _resolve_poll_interval() -> float:
     """Never raises — a present-but-malformed value must degrade to the safe
     default, not crash the module at import time, matching k8s_client.py's
-    _resolve_ttl_seconds() convention for the same class of failure mode."""
+    _resolve_ttl_seconds() convention for the same class of failure mode.
+    Also rejects a parseable-but-non-positive value (found during
+    /review-pr round 5): a negative number parses fine as a float, but
+    time.sleep() raises ValueError for a negative argument — an uncaught
+    crash at every one of run()'s three sleep call sites, undermining this
+    function's own "never raises" guarantee. Zero parses and doesn't crash
+    time.sleep(), but removes the only throttle on the sweep loop entirely.
+    Both fall back to the same safe default as a malformed string, with a
+    warning logged so the misconfiguration is operator-visible rather than
+    silently ignored forever."""
     raw = os.environ.get("WORKFLOWS_STATUS_POLL_SECONDS", "15")
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
+        logger.warning(
+            "status_poller: WORKFLOWS_STATUS_POLL_SECONDS=%r is not a valid "
+            "number, falling back to the default of 15s",
+            raw,
+        )
         return 15.0
+    if value <= 0:
+        logger.warning(
+            "status_poller: WORKFLOWS_STATUS_POLL_SECONDS=%r is not a "
+            "positive number, falling back to the default of 15s",
+            raw,
+        )
+        return 15.0
+    return value
 
 
 POLL_INTERVAL = _resolve_poll_interval()
