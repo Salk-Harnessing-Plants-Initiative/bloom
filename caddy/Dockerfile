@@ -65,3 +65,9 @@ RUN xcaddy build \
 # -----------------------------------------------------------------------------
 FROM caddy:2.11.3-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+
+# When bumping the Caddy version: re-verify that a routed hostname still gets a
+# 308 on :80. Automatic HTTPS prepends its redirect routes at runtime, ahead of
+# the explicit `:80` catch-all in the Caddyfile — `caddy adapt` does not show
+# this, and CI runs http:// site addresses where automatic HTTPS is off, so
+# neither would catch an inversion.
