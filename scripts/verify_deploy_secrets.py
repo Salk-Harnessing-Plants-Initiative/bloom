@@ -208,6 +208,20 @@ def check_environment(
             )
             continue
 
+        # The key has a value but no secret behind it — a ${{ vars.X }}/${{ env.X }}
+        # lookup, or a literal. Nothing checks either exists, so both reach the deploy
+        # unverified. Placed above the wiring-only bail-out so a missing token cannot
+        # hide it.
+        if not refs:
+            failures.add(
+                f"{key} is set in deploy.yml's .env.{env_name} block, but nothing "
+                f"verifiable backs it: the value holds no ${{{{ secrets.X }}}} reference, "
+                f"and .env.{env_name}.defaults does not supply it",
+                f"Back it with a secret this check can confirm exists, or move it "
+                f"to .env.{env_name}.defaults if it is not sensitive.",
+            )
+            continue
+
         if known_secrets is None:
             # Wiring-only mode: a key present in the block is as far as we can check.
             continue

@@ -152,6 +152,55 @@ def test_unwired_var_fails(tree, capsys):
     assert "BRAND_NEW_VAR" in capsys.readouterr().err
 
 
+# --- a value nothing verifiable backs (#699's shape, inside the tool) ----------
+# The block supplying a key is not proof the key resolves: only a secret this check
+# can confirm exists, or a defaults entry, is. Everything else reaches the deploy
+# unverified while reading as "supplied".
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "${{ vars.PROD_API_TOKEN }}",
+        "${{ env.PROD_API_TOKEN }}",
+        "${{ github.sha }}",
+        "a-literal-typed-into-the-block",
+    ],
+)
+def test_a_value_no_secret_backs_is_reported(tree, capsys, value):
+    deploy = DEPLOY.replace("API_TOKEN=${{ secrets.PROD_API_TOKEN }}", f"API_TOKEN={value}")
+    (tree / "deploy.yml").write_text(deploy)
+    assert run(tree, ALL_PRESENT) == 1
+    assert "nothing verifiable backs it" in capsys.readouterr().err
+
+
+def test_a_value_no_secret_backs_is_reported_in_wiring_mode_too(tree, capsys):
+    """The finding needs no secret list, so losing the token cannot hide it."""
+    deploy = DEPLOY.replace(
+        "API_TOKEN=${{ secrets.PROD_API_TOKEN }}", "API_TOKEN=${{ vars.SOMETHING }}"
+    )
+    (tree / "deploy.yml").write_text(deploy)
+    assert run(tree) == 1
+    assert "nothing verifiable backs it" in capsys.readouterr().err
+
+
+def test_the_finding_names_the_environment_it_was_found_in(tree, capsys):
+    """Both environments are checked separately; staging's block is its own."""
+    deploy = DEPLOY.replace(
+        "API_TOKEN=${{ secrets.STAGING_API_TOKEN }}", "API_TOKEN=${{ vars.SOMETHING }}"
+    )
+    (tree / "deploy.yml").write_text(deploy)
+    assert run(tree, ALL_PRESENT) == 1
+    err = capsys.readouterr().err
+    assert ".env.staging block" in err
+    assert ".env.prod block" not in err
+
+
+def test_a_defaults_supplied_key_is_still_not_required_in_the_block(tree):
+    """REGION comes from the defaults file, so it needs no secret behind it."""
+    assert run(tree, ALL_PRESENT) == 0
+
+
 def test_wiring_mode_does_not_check_existence(tree):
     """Without --secrets-json the script cannot see GitHub, so a missing secret
     passes. The notice it prints is what stops that reading as a clean bill."""
