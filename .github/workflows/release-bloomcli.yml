@@ -42,7 +42,10 @@ jobs:
     # Skip cleanly (not a failing run) when a Release belongs to a different
     # monorepo package (e.g. bloommcp-vX.Y.Z). workflow_dispatch has no release
     # tag, so it always passes this guard. See release-bloommcp.yml's
-    # reciprocal guard.
+    # reciprocal guard. Note: `startsWith()`'s GitHub Actions semantics are
+    # case-insensitive, while the bash prefix-strip below is case-sensitive —
+    # an all-caps tag would pass this guard but then fail cleanly at the
+    # tag/version mismatch check, never silently skipped or accepted.
     if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'bloomctl-')
     steps:
       - uses: actions/checkout@v4
@@ -55,8 +58,11 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "bloomctl version: $VERSION"
 
-      # Release tag must equal the package version. Accepts `bloomctl-vX`, `vX`,
-      # or a bare `X` tag by stripping the known prefixes.
+      # Release tag must equal the package version. Only `bloomctl-vX` reaches
+      # this step now — the job-level guard above already skips anything else,
+      # including the bare `vX`/`X` forms this step used to also strip (never
+      # actually used for a real release; see the `bloomcli-packaging` spec
+      # delta and bloomcli/RELEASE_PROCESS.md's "Tag scoping" section).
       # Untrusted inputs (the release tag) go through env, never interpolated
       # into the script text, so a crafted tag can't break out of the command.
       - name: Validate tag matches version
@@ -66,7 +72,6 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           TAG_VERSION="${TAG#bloomctl-v}"
-          TAG_VERSION="${TAG_VERSION#v}"
           if [ "$TAG_VERSION" != "$VERSION" ]; then
             echo "::error::Release tag ($TAG -> $TAG_VERSION) does not match bloomcli/pyproject.toml version ($VERSION)"
             exit 1

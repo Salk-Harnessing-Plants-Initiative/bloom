@@ -12,7 +12,10 @@ trusted publishing (OIDC) — there is no TestPyPI lane and no stored token.
   manual `workflow_dispatch` run validates + builds + smoke-tests but does NOT
   publish (a safe dry run).
 - **Pre-releases** — publish to real PyPI as PEP 440 `aN`/`bN`/`rcN`, marked
-  "pre-release" on the GitHub Release.
+  "pre-release" on the GitHub Release. A plain `pip install bloommcp` / `uvx bloommcp`
+  ignores them unless the caller pins the exact version (`pip install bloommcp==0.1.0a1`)
+  or passes `--pre` (pip) / `--prerelease=allow` (uv). The first release (`0.1.0a1`) is a
+  pre-release — parent issue #33 leaves the stable public tool-surface question open.
 - **Package-scoped** — the workflow only acts on a Release tagged `bloommcp-vX.Y.Z`; a
   Release for a different monorepo package (e.g. `bloomctl-vX.Y.Z`) is skipped cleanly,
   not failed (see "Tag scoping" below).
@@ -47,16 +50,19 @@ and are marked as a pre-release on GitHub.
 2. Add a `## [X.Y.Z] - YYYY-MM-DD` entry to `bloommcp/CHANGELOG.md`.
 3. Create a **GitHub Release** whose tag is `bloommcp-vX.Y.Z` (this is the only accepted
    tag form — see "Tag scoping" below). Tick **"Set as a pre-release"** for `aN`/`bN`/`rcN`.
-4. Publishing the Release runs `release-bloommcp.yml`:
+4. Publishing the Release runs `release-bloommcp.yml`, three jobs:
    - `validate-release`: skipped entirely unless the tag starts with `bloommcp-`;
      otherwise validates tag ↔ version match, changelog entry exists, lint + tests.
-   - `build-and-publish`: `uv build`, `twine check`, imports `bloom_mcp` and its
+   - `build-and-verify` (no publish credential — third-party code runs here, not
+     alongside the OIDC token): `uv build`, `twine check`, imports `bloom_mcp` and its
      `tools`/`manifest`/`server` submodules plus the concrete Supabase-backed adapters
      (`bloom_mcp.data_access.SupabaseReader`, `bloom_mcp.result_store.SupabaseResultStore`)
      and their `postgrest`/`supabase` transitive imports — not just
      `bloom_mcp.server.build_app()`, which alone doesn't reach those adapters (see the
      `add-bloommcp-pypi-release-pipeline` OpenSpec change's `design.md` for why) — runs
-     `bloom-mcp --version`, then `uv publish`.
+     `bloom-mcp --version`, records the artifact's checksum, and uploads it.
+   - `build-and-publish` (holds `id-token: write` + the `pypi` environment, no other
+     code): downloads the verified artifact, re-checks its hash, then `uv publish`.
 5. Verify on PyPI:
 
    ```bash

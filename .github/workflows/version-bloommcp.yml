@@ -6,11 +6,11 @@ name: version-bloommcp
 # (or a custom version), and merge the PR it opens. Then update
 # bloommcp/CHANGELOG.md and cut a GitHub Release to publish.
 #
-# Unlike version-bloomcli.yml's original comment (now stale — bloomcli/uv.lock
-# exists and is a checked service too), this workflow regenerates bloommcp/uv.lock
-# as part of the bump: bloommcp is one of the services scripts/check-uv-locks.py
-# checks, so a version-only bump would leave the lockfile's recorded package
-# version out of sync and fail CI on the bump PR itself.
+# This workflow regenerates bloommcp/uv.lock as part of the bump, same as
+# version-bloomcli.yml does for bloomcli/uv.lock: bloommcp is one of the
+# services scripts/check-uv-locks.py checks, so a version-only bump would leave
+# the lockfile's recorded package version out of sync and fail CI on the bump
+# PR itself.
 
 on:
   workflow_dispatch:
@@ -35,6 +35,14 @@ on:
 permissions:
   contents: write
   pull-requests: write
+
+# peter-evans/create-pull-request force-pushes a fixed-name branch
+# (bloommcp-version-bump-<version>) with no built-in protection against
+# concurrent dispatches — two same-bump_type runs before either merges could
+# otherwise clobber each other.
+concurrency:
+  group: version-bloommcp
+  cancel-in-progress: false
 
 defaults:
   run:

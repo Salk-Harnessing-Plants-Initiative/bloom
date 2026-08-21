@@ -57,20 +57,27 @@ changes only that file, mirroring `version-bloomcli.yml`.
 ### Requirement: bloommcp PyPI Release Workflow
 
 A `release-bloommcp.yml` workflow SHALL run on every published GitHub Release and on manual
-`workflow_dispatch`, mirroring `release-bloomcli.yml`'s two-job shape
-(`validate-release` → `build-and-publish`). It SHALL validate — on a real Release only — that
+`workflow_dispatch`, as three jobs: `validate-release` → `build-and-verify` →
+`build-and-publish`. `validate-release` SHALL validate — on a real Release only — that
 the release tag's version matches `bloommcp/pyproject.toml` and that a matching
 `CHANGELOG.md` entry exists, then lint and test the package, failing before any build step if
-any of these checks fail. `build-and-publish` SHALL then build the package, run
-`twine check`, verify the built wheel imports (`bloom_mcp`, `bloom_mcp.tools`,
-`bloom_mcp.manifest`, `bloom_mcp.server`; that `bloom_mcp.server.build_app()` succeeds; and
-that the concrete Supabase-backed adapters — `bloom_mcp.data_access.SupabaseReader`,
+any of these checks fail. `build-and-verify` SHALL then build the package, record the built
+artifact's checksum, run `twine check`, verify the built wheel imports (`bloom_mcp`,
+`bloom_mcp.tools`, `bloom_mcp.manifest`, `bloom_mcp.server`; that `bloom_mcp.server.build_app()`
+succeeds; and that the concrete Supabase-backed adapters — `bloom_mcp.data_access.SupabaseReader`,
 `bloom_mcp.result_store.SupabaseResultStore` — and their `postgrest`/`supabase` transitive
 imports resolve, since these sit behind `main()`'s composition root and are not exercised by
 `build_app()` alone) and that its `bloom-mcp --version` entry point runs, from an isolated,
-project-free environment — all before the publish step. It SHALL publish to PyPI via trusted
-publishing (OIDC, no stored token) only when triggered by a published Release; a
-`workflow_dispatch` run SHALL stop after verification without publishing.
+project-free environment, then upload the built artifact — all before any job holds the
+publish credential. `build-and-publish` SHALL hold the OIDC token and the `pypi` environment,
+run no other third-party code, download the verified artifact, re-check its checksum, and
+publish to PyPI via trusted publishing (OIDC, no stored token) only when triggered by a
+published Release; a `workflow_dispatch` run SHALL stop after verification without publishing.
+
+`build-and-verify` and `validate-release` SHALL NOT hold `id-token: write` or the `pypi`
+environment — only `build-and-publish` may, since `build-and-verify` deliberately executes
+third-party code (the build backend, `twine`, the freshly built wheel's own dependency chain)
+that must never run alongside the publish credential.
 
 #### Scenario: Tag/version mismatch blocks release
 
@@ -96,14 +103,24 @@ publishing (OIDC, no stored token) only when triggered by a published Release; a
 - **THEN** `uv publish --trusted-publishing always` runs, with no stored API token anywhere in
   the workflow
 
+#### Scenario: The publish credential never shares a job with third-party code
+
+- **WHEN** `release-bloommcp.yml` runs, for any trigger
+- **THEN** the job that builds the package and runs `twine check`/wheel-import checks
+  (`build-and-verify`) holds neither `id-token: write` nor the `pypi` environment
+- **AND** only the job that holds them (`build-and-publish`) runs no code beyond
+  downloading the pre-verified artifact, re-checking its checksum, and publishing it
+
 ### Requirement: Release Workflow Skips Foreign Package Tags
 
 `release-bloommcp.yml`'s `validate-release` job SHALL carry a job-level guard —
 `github.event_name != 'release' || startsWith(github.event.release.tag_name, 'bloommcp-')` —
 so the workflow skips cleanly (no failing run) when a published Release's tag does not start
 with `bloommcp-`, while a `workflow_dispatch` run (which has no release tag) always passes the
-guard. Because GitHub Actions skip-propagates through `needs:`, gating only `validate-release`
-is sufficient to also skip `build-and-publish` — the guard is not duplicated on every job.
+guard. Because GitHub Actions skip-propagates through `needs:` (transitively, across both hops
+of `validate-release` → `build-and-verify` → `build-and-publish`), gating only
+`validate-release` is sufficient to also skip the other two jobs — the guard is not
+duplicated on every job.
 
 The symmetric guard on the existing `release-bloomcli.yml` (`bloomctl-` prefix) is specified
 as a delta against the `bloomcli-packaging` capability, since that workflow is bloomcli's, not
@@ -113,7 +130,7 @@ bloommcp's.
 
 - **WHEN** a GitHub Release is published tagging `bloomctl-v<X>`
 - **THEN** `release-bloommcp.yml`'s `validate-release` job (and, transitively via `needs:`,
-  `build-and-publish`) is skipped rather than run and failed
+  `build-and-verify` and `build-and-publish`) is skipped rather than run and failed
 
 #### Scenario: workflow_dispatch is unaffected by the tag guard
 

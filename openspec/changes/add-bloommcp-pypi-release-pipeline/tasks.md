@@ -53,25 +53,31 @@
 
 ## 5. Release workflow
 
-- [x] 5.1 Add `.github/workflows/release-bloommcp.yml`, mirroring `release-bloomcli.yml`'s
-      **actual current** two-job shape (verified directly against `origin/main` — NOT the
-      more-hardened three-job shape that exists only on `staging` via issue #629, not yet
-      rolled up to `main`):
+- [x] 5.1 Add `.github/workflows/release-bloommcp.yml`, **three** jobs (revised after review:
+      the original draft mirrored `release-bloomcli.yml`'s actual-on-`main` two-job shape to
+      minimize surprise; a review pointed out that reasoning only justifies _retrofitting_ a
+      live, production-critical file — `release-bloommcp.yml` is a brand-new file, so there is
+      no cost to giving it the safer, credential-isolated shape directly instead of
+      deliberately reintroducing the #629 flaw into new infrastructure):
   - `validate-release`: read version; job-level guard
     `if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'bloommcp-')`;
     (release-only) validate tag matches version and a `## [version]` `CHANGELOG.md` entry
     exists; lint (`uvx ruff@0.9.9 check .`); run
     `uv run --extra test pytest -m "not integration and not live_smoke" -q`.
-  - `build-and-publish` (holds `environment: pypi` + `id-token: write`, same job builds and
-    publishes — matching bloomcli's actual shape, not a separate verify job): pin
-    `[project.urls]` in the build checkout to the release tag (release-only, no-op on
-    dispatch), `uv build`, `uvx twine check dist/*`, verify the wheel imports (`bloom_mcp`,
-    `bloom_mcp.tools`, `bloom_mcp.manifest`, `bloom_mcp.server`, `bloom_mcp.server.build_app()`,
-    **plus** `bloom_mcp.data_access.SupabaseReader`, `bloom_mcp.result_store.SupabaseResultStore`,
+  - `build-and-verify` (needs `validate-release`; no `id-token`/`pypi` environment — this is
+    where third-party code runs): pin `[project.urls]` in the build checkout to the release tag
+    (release-only, no-op on dispatch), `uv build`, record the artifact's `sha256sum`, run
+    `uvx twine@7.0.0 check dist/*` (pinned — new code, unlike `release-bloomcli.yml`'s inherited
+    unpinned `uvx twine check`), verify the wheel imports (`bloom_mcp`, `bloom_mcp.tools`,
+    `bloom_mcp.manifest`, `bloom_mcp.server`, `bloom_mcp.server.build_app()`, **plus**
+    `bloom_mcp.data_access.SupabaseReader`, `bloom_mcp.result_store.SupabaseResultStore`,
     `postgrest.APIError`, `supabase.create_client` — the concrete adapters `build_app()` alone
     doesn't reach, per `design.md`'s gap analysis — with `SUPABASE_URL`/`BLOOM_AGENT_KEY`
-    pinned empty) and that `bloom-mcp --version` runs, from an isolated `--no-project`
-    environment; then (release-only) `uv publish --trusted-publishing always`.
+    pinned empty), verify `bloom-mcp --version` runs from an isolated `--no-project`
+    environment, re-check the sha256sum, then upload `dist/` + the checksum as an artifact.
+  - `build-and-publish` (needs `build-and-verify`; holds `environment: pypi` +
+    `id-token: write`, runs no third-party code): download the verified artifact, re-check its
+    sha256sum, then (release-only) `uv publish --trusted-publishing always`.
 - [x] 5.2 Commit: `feat(#663): add release-bloommcp.yml with its own tag-prefix guard`
       (depends on tasks 1–4 landing first, since this workflow's verify step imports/runs them).
 
@@ -90,6 +96,16 @@
 - [x] 6.4 Commit: `fix(#663): scope release-bloomcli.yml to bloomctl- tags` (isolated,
       single-file, easy independent revert — this touches a currently-live, production-critical
       workflow that real `bloomctl` releases depend on).
+- [x] 6.5 Found during review: `version-bloomcli.yml`'s `bump-version` job never ran `uv lock`,
+      so `bloomcli/uv.lock` (a checked service lockfile per `scripts/check-uv-locks.py`) drifted
+      out of sync with every version bump — the exact bug `version-bloommcp.yml` (task 4.1) was
+      written to avoid. Add a `Sync uv.lock` step (`uv lock`) before opening the PR, and add
+      `bloomcli/uv.lock` to `add-paths`.
+- [x] 6.6 Extend `tests/unit/test_release_bloomcli_workflow_shape.py`'s version-workflow
+      assertion to require `uv lock` in `bump-version`'s steps text, mirroring the existing
+      `test_release_bloommcp_workflow_shape.py` assertion.
+- [x] 6.7 Commit: `fix(#663): sync bloomcli/uv.lock in version-bloomcli.yml's bump PR` (isolated,
+      single-file plus its regression test — independent of everything else in this PR).
 
 ## 7. New regression-guard test (bloommcp)
 
@@ -112,16 +128,30 @@
 - [x] 8.5 `python scripts/check-uv-locks.py` (confirms `bloommcp/uv.lock` is back in sync after
       task 3.4's regeneration).
 - [x] 8.6 `uvx ruff@0.9.9 check bloommcp/`.
-- [ ] 8.7 Dry-run `release-bloommcp.yml` via `workflow_dispatch` on this branch/PR before
-      merge, confirming it builds/verifies without attempting a publish. Do not merge with a
-      known-red dry run.
+- [x] 8.7a Manually reproduce `build-and-verify`'s steps locally (`uv build`, `sha256sum`,
+      `uvx twine@7.0.0 check dist/*`, the wheel-import smoke test including the Supabase
+      adapters, `bloom-mcp --version` from the built wheel) — confirmed passing. This is not a
+      substitute for a real dry run (job-level `if:` guards, `needs:` gating, and the
+      artifact upload/download handoff are untested by it), but it does verify the underlying
+      commands actually work.
+- [ ] 8.7b Dry-run `release-bloommcp.yml` via `workflow_dispatch`, confirming it builds/verifies
+      without attempting a publish. **Cannot happen before merge**: GitHub only allows
+      dispatching a workflow that already exists on the default branch (confirmed —
+      `gh workflow run release-bloommcp.yml --ref <this-branch>` 404s with "workflow ... not
+      found on the default branch"). Do this immediately after merge, before cutting the first
+      real Release — not "before merge" as originally written here, which was never achievable
+      once this became a new top-level workflow file.
 
 ## 9. Manual follow-up (outside this PR's reach)
 
 - [ ] 9.1 Register the PyPI trusted publisher for `bloommcp` (PyPI Project Name `bloommcp`,
       Owner `Salk-Harnessing-Plants-Initiative`, Repository `bloom`, Workflow
       `release-bloommcp.yml`, Environment `pypi`) — requires PyPI admin rights; the `pypi`
-      GitHub environment already exists and is reused.
+      GitHub environment already exists and is reused. **Recommended now, in parallel with
+      review/merge, not deferred to after**: every value this needs (repo, workflow filename,
+      environment name) is already fixed by this PR and won't change during review. Registering
+      it late just leaves a "Release published but PyPI never got it" window open longer than
+      necessary.
 - [ ] 9.2 After merge: bump to a real first version via `version-bloommcp.yml`, add its
       `CHANGELOG.md` entry, and cut a GitHub Release tagged `bloommcp-v0.1.0a1` to trigger the
       first real publish.

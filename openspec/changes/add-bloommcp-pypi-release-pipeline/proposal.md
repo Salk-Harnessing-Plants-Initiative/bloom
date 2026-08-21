@@ -24,10 +24,12 @@ workflows don't cross-fire.
   `design.md`.
 - Add `bloommcp/CHANGELOG.md` (Keep a Changelog format, matching `bloomcli/CHANGELOG.md`) with
   an `[Unreleased]` section — the release gate has nothing to validate against without it.
-- Add `bloom_mcp.__version__` (same `importlib.metadata` pattern as `bloomctl.__version__`) and
-  a `--version`/`-V` flag on the `bloom-mcp` entry point (`main()`) that prints the version and
-  returns before any environment validation or server startup. Today there is nothing for a
-  release gate to assert against, and `bloom-mcp` has no way to report its version at all.
+- Add `bloom_mcp.__version__`, via the same `importlib.metadata` pattern as
+  `bloomctl.__version__`, and a `--version` flag on the `bloom-mcp` entry point (`main()`) that
+  prints the version and returns before any environment validation or server startup — needed
+  since today there is nothing for a release gate to assert against, and `bloom-mcp` has no way
+  to report its version at all. Also accepts `-V` as a short alias; this is a bloommcp-only
+  addition, not mirrored from `bloomctl` (which has no `-V` today).
 - Add a release-tag-prefix guard to **both** `release-bloommcp.yml` (new) and the existing
   `release-bloomcli.yml`, so publishing a Release for one package no longer triggers a failing
   run of the other's workflow (today `release-bloomcli.yml` fires on _any_ published Release
@@ -71,6 +73,8 @@ workflows don't cross-fire.
   - `.github/workflows/version-bloommcp.yml` (new)
   - `.github/workflows/release-bloommcp.yml` (new)
   - `.github/workflows/release-bloomcli.yml` (add tag-prefix guard — isolated commit)
+  - `.github/workflows/version-bloomcli.yml` (sync `bloomcli/uv.lock` in the bump PR — an
+    unrelated bug found during review; isolated commit)
   - `bloomcli/RELEASE_PROCESS.md` (document the narrowed `bloomctl-vX.Y.Z`-only tag form)
   - `bloommcp/CHANGELOG.md` (new)
   - `bloommcp/RELEASE_PROCESS.md` (new)

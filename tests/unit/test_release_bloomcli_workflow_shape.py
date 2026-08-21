@@ -162,12 +162,13 @@ def test_version_workflow_is_dispatch_only_with_bump_input():
     assert {"patch", "minor", "major"}.issubset(set(inputs["bump_type"]["options"]))
 
 
-def test_version_workflow_bumps_and_opens_pr():
+def test_version_workflow_bumps_syncs_lock_and_opens_pr():
     wf = _load(VERSION)
     assert wf["permissions"]["contents"] == "write"
     assert wf["permissions"]["pull-requests"] == "write"
     text = _steps_text(wf["jobs"]["bump-version"])
     assert "uv version" in text
+    assert "uv lock" in text  # bloomcli/uv.lock must stay in sync with the bump
     assert "peter-evans/create-pull-request" in text
 
 

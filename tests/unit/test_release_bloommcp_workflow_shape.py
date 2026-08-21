@@ -12,14 +12,20 @@ add-bloommcp-pypi-release-pipeline) signed off on:
   - `validate-release` skips cleanly (job-level `if:`, not a step) for a
     Release tag that isn't bloommcp's own, while workflow_dispatch always
     passes the guard;
-  - `build-and-publish` is gated by `needs: validate-release`;
-  - `build-and-publish` requests the OIDC token (`id-token: write`) and pins the
-    `pypi` environment so trusted publishing works, and stores no API token;
+  - three jobs, chained by `needs:`: validate-release -> build-and-verify ->
+    build-and-publish;
+  - only `build-and-publish` requests the OIDC token (`id-token: write`) and
+    pins the `pypi` environment — `build-and-verify`, which runs the
+    third-party build/twine/import code, holds neither, so the publish
+    credential never shares a job with that code (#629);
   - the actual `uv publish` runs only on a real Release event;
   - the built wheel is smoke-tested (import of bloom_mcp plus the concrete
-    Supabase adapters, and `bloom-mcp --version`) before upload;
+    Supabase adapters, and `bloom-mcp --version`) before upload, and its
+    checksum is recorded before and re-verified after the artifact crosses the
+    job boundary;
   - there is no TestPyPI lane;
-  - the version workflow bumps via `uv version`, syncs `uv.lock`, and opens a PR.
+  - the version workflow bumps via `uv version`, syncs `uv.lock`, and opens a
+    PR, with a concurrency guard against overlapping dispatches.
 """
 
 from __future__ import annotations
@@ -76,13 +82,13 @@ def test_validate_release_skips_tags_that_are_not_bloommcps():
     assert "github.event_name != 'release'" in condition
 
 
-# --- publish workflow: validate gates publish ------------------------------
+# --- publish workflow: three jobs chained validate -> verify -> publish ----
 
-def test_publish_needs_validate_release():
+def test_three_jobs_chained_in_order():
     jobs = _load(RELEASE)["jobs"]
-    assert "validate-release" in jobs
-    assert "build-and-publish" in jobs
-    assert jobs["build-and-publish"]["needs"] == "validate-release"
+    assert set(jobs) == {"validate-release", "build-and-verify", "build-and-publish"}
+    assert jobs["build-and-verify"]["needs"] == "validate-release"
+    assert jobs["build-and-publish"]["needs"] == "build-and-verify"
 
 
 def test_validate_checks_tag_changelog_lint_tests():
@@ -93,7 +99,21 @@ def test_validate_checks_tag_changelog_lint_tests():
     assert "pytest" in text                          # tests
 
 
-# --- publish workflow: trusted publishing + immutability guard -------------
+# --- credential isolation: only build-and-publish holds the OIDC token -----
+
+def test_only_publish_job_holds_the_oidc_credential():
+    """The build/verify job runs third-party code (twine, the wheel's own
+    dependency chain) — it must never share a job with the OIDC token (#629).
+    """
+    jobs = _load(RELEASE)["jobs"]
+    verify_perms = jobs["build-and-verify"].get("permissions", {})
+    assert verify_perms.get("id-token") != "write"
+    assert "environment" not in jobs["build-and-verify"]
+
+    publish_job = jobs["build-and-publish"]
+    assert publish_job["permissions"]["id-token"] == "write"
+    assert publish_job["environment"] == "pypi"
+
 
 def test_publish_uses_oidc_pypi_env_and_no_token():
     wf = _load(RELEASE)
@@ -114,8 +134,8 @@ def test_publish_step_gated_on_real_release():
     assert publish[0]["if"] == "github.event_name == 'release'"
 
 
-def test_built_wheel_is_smoke_tested_before_publish():
-    text = _steps_text(_load(RELEASE)["jobs"]["build-and-publish"])
+def test_built_wheel_is_smoke_tested_before_upload():
+    text = _steps_text(_load(RELEASE)["jobs"]["build-and-verify"])
     assert "uv build" in text
     assert "import bloom_mcp" in text
     assert "bloom-mcp --version" in text
@@ -127,11 +147,39 @@ def test_the_wheel_gate_imports_the_concrete_supabase_adapters():
     composition root, after the --version early return. Explicit imports here
     close the class of gap bloomcli's #629 exploited.
     """
-    text = _steps_text(_load(RELEASE)["jobs"]["build-and-publish"])
+    text = _steps_text(_load(RELEASE)["jobs"]["build-and-verify"])
     assert "SupabaseReader" in text
     assert "SupabaseResultStore" in text
     assert "from postgrest import APIError" in text
     assert "from supabase import create_client" in text
+
+
+def test_twine_check_is_pinned():
+    """New code, unlike release-bloomcli.yml's inherited unpinned `uvx twine
+    check` — nothing to copy forward here."""
+    text = _steps_text(_load(RELEASE)["jobs"]["build-and-verify"])
+    assert "uvx twine@" in text
+
+
+# --- artifact handoff: checksum recorded before, re-verified after the ------
+# --- job boundary, so a build-time swap can't slip past unnoticed ----------
+
+def test_artifact_checksum_recorded_and_reverified_across_job_boundary():
+    verify_text = _steps_text(_load(RELEASE)["jobs"]["build-and-verify"])
+    publish_text = _steps_text(_load(RELEASE)["jobs"]["build-and-publish"])
+    assert "sha256sum dist/*" in verify_text
+    assert "sha256sum -c dist.sha256" in verify_text
+    assert "sha256sum -c dist.sha256" in publish_text
+
+
+def test_verified_artifact_uploaded_and_downloaded_by_name():
+    verify_job = _load(RELEASE)["jobs"]["build-and-verify"]
+    publish_job = _load(RELEASE)["jobs"]["build-and-publish"]
+    upload = [s for s in verify_job["steps"] if s.get("uses", "").startswith("actions/upload-artifact")]
+    download = [s for s in publish_job["steps"] if s.get("uses", "").startswith("actions/download-artifact")]
+    assert len(upload) == 1
+    assert len(download) == 1
+    assert upload[0]["with"]["name"] == download[0]["with"]["name"]
 
 
 # --- version workflow -------------------------------------------------------
@@ -152,6 +200,14 @@ def test_version_workflow_bumps_syncs_lock_and_opens_pr():
     assert "uv version" in text
     assert "uv lock" in text  # bloommcp/uv.lock must stay in sync with the bump
     assert "peter-evans/create-pull-request" in text
+
+
+def test_version_workflow_has_concurrency_guard():
+    """create-pull-request force-pushes a fixed-name branch — two overlapping
+    dispatches with no guard could clobber each other."""
+    wf = _load(VERSION)
+    assert "concurrency" in wf
+    assert wf["concurrency"]["group"]
 
 
 if __name__ == "__main__":
