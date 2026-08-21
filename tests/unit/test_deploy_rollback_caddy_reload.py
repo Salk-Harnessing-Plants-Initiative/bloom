@@ -42,6 +42,8 @@ DEPLOY_YML = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 
 ROLLBACK_STEP_NAME = "Rollback on failure"
 RELOAD_CMD = "caddy reload --config /etc/caddy/Caddyfile"
+# Matches the sibling kong restart's bound in the same step.
+RELOAD_TIMEOUT = 60
 
 # The two deploy jobs are duplicated YAML, not a shared composite action, so
 # every assertion runs against both or one copy is free to lose the behaviour.
@@ -146,7 +148,13 @@ def test_rollback_caddy_reload_failure_warns_and_does_not_abort(job_name, pull_i
     (scripts/wait_for_kong_healthy.sh); `caddy reload` has no equivalent gate.
     """
     run = _rollback_run(job_name)
-    reload_line = next(line for line in run.splitlines() if RELOAD_CMD in line)
+    reload_line = _reload_line(run)
+    assert reload_line.strip().startswith(f"if ! timeout {RELOAD_TIMEOUT} "), (
+        f"the reload must stay bounded by `timeout {RELOAD_TIMEOUT}` — an unresponsive caddy is "
+        "the likeliest consequence of the bad Caddyfile that triggered this rollback, and "
+        "`compose exec` on one blocks until the job timeout, taking the recovery step with "
+        f"it: {reload_line!r}"
+    )
     assert reload_line.strip().startswith("if ! "), (
         "the reload must be negated (`if ! ...; then <warn>`) so the warning sits on the "
         "FAILURE branch. Dropping the `!` still parses and still guards against set -e, "
@@ -195,10 +203,14 @@ def test_rollback_payload_has_no_unescaped_backticks(job_name, pull_id, compose)
         i for i, line in enumerate(lines)
         if line.lstrip().startswith("ssh ") and "deploy_key" in line
     )
-    offenders = [line for line in lines[payload_start:] if re.search(r"(?<!\\)`", line)]
+    # Reject `\\`` too, not just a bare backtick. Escaping only stops the RUNNER from
+    # substituting — a literal backtick still reaches the remote shell, where it is
+    # command substitution on the deploy host unless it happens to land in a remote-side
+    # comment. The rollback payload has no legitimate use for one either way.
+    offenders = [line for line in lines[payload_start:] if "`" in line]
     assert not offenders, (
-        "unescaped backtick inside the ssh payload — escape as \\` or drop it: "
-        f"{offenders!r}"
+        "backtick inside the ssh payload — drop it (escaping is not enough; the remote "
+        f"shell still substitutes): {offenders!r}"
     )
 
 
@@ -315,6 +327,26 @@ def test_reload_failure_is_annotated_warning_not_error(job_name, pull_id, compos
     )
 
 
+@pytest.mark.parametrize("job_name,pull_id,compose", JOB_CASES)
+def test_reload_failure_hint_names_this_jobs_own_environment(job_name, pull_id, compose):
+    """The hint is what an on-call engineer pastes into a terminal at 2am. Both jobs
+    ssh to the same host, so a hint carrying the other job's project name and env file
+    walks them into reloading the wrong environment. `_reload_line` deliberately skips
+    echo lines so the hint cannot satisfy assertions about the executed command — which
+    left the hint itself unchecked."""
+    run = _rollback_run(job_name)
+    hint = next(
+        line for line in run.splitlines()
+        if line.lstrip().startswith("echo '::warning::caddy reload during rollback failed")
+    )
+    assert f"{compose} exec -T caddy {RELOAD_CMD}" in hint, (
+        f"{job_name}'s retry hint must name its own compose invocation: {hint!r}"
+    )
+    assert f"{compose} ps caddy" in hint, (
+        f"...including the is-it-running check: {hint!r}"
+    )
+
+
 class TestRollbackCaddyReloadBehaviour:
     """Behavioural counterpart to the shape tests above: extract the Caddy block
     and the summary `if` that consumes its flag, substitute the GitHub
@@ -357,7 +389,18 @@ class TestRollbackCaddyReloadBehaviour:
             f"exit {1 if reload_fails else 0}\n"
         )
         timeout = fake_bin / "timeout"
-        timeout.write_text('#!/usr/bin/env bash\nshift\nexec "$@"\n')
+        # Validate the bound rather than shifting it off unread — a double that ignores
+        # its arguments makes "the reload is bounded" untestable, and both `timeout 5`
+        # and dropping `timeout` entirely survived the suite before this.
+        timeout.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f'if [ "$1" != "{RELOAD_TIMEOUT}" ]; then\n'
+            f'  echo "fake timeout: unexpected bound: $1 (expected {RELOAD_TIMEOUT})" >&2\n'
+            "  exit 98\n"
+            "fi\n"
+            'shift\nexec "$@"\n'
+        )
         for stub in (docker, timeout):
             stub.chmod(stub.stat().st_mode | _stat.S_IEXEC | _stat.S_IXGRP | _stat.S_IXOTH)
         return fake_bin
