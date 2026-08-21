@@ -138,7 +138,11 @@ def test_search_apierror_mapped_to_clean_clickexception(tmp_path, monkeypatch):
     )
     assert res.exit_code != 0
     assert "search query too long" in res.output  # the mapped message
-    assert "Traceback" not in res.output  # not a raw traceback
+    assert "Could not read" not in res.output, (
+        "P0001 is a sentence written for the user, so it must arrive unprefixed — the "
+        "substring above is satisfied by the wrapped form too, so it cannot catch this alone"
+    )
+    assert isinstance(res.exception, SystemExit)  # click handled it; no raw traceback
 
 
 def test_no_match_errors(tmp_path, monkeypatch):

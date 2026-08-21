@@ -89,6 +89,11 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   run goes through this on both commands, including the experiment-name search. The per-scan frame
   listing keeps its own handling — one unreadable scan must not end a run — and is reported in the
   download log as before.
+- A message the server raised for a user to read is passed on as written, without that prefix. A
+  PL/pgSQL `RAISE EXCEPTION` is someone's sentence, not a failed read: the search's own
+  "search query too long (max 200 characters)" is the user's input to fix, and framing it as a
+  read failure sends them to check the network instead. This applies to any such message from
+  either command, where before only the name search on `plate` was exempt.
 - An error the server sends without any wording no longer reaches the terminal or the download log
   as its own raw body. The body carries `hint` and `details`, which is where PostgREST puts the
   connection string and the failing statement, and `download_log.txt` is the file we ask people to
