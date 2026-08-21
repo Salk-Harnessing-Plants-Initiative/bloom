@@ -19,6 +19,12 @@
       both design.md D5 and `supabase_client.py` — only if that value is actually lower than 120s;
       otherwise leave the default as-is.
 
+      **Superseded by [bloom#637](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/637)
+      / `fix-cyl-scan-traits-latest-rollup`**, archived here rather than left open indefinitely — that
+      change fixes `get_experiment_traits`/`get_experiment_summary_counts`'s actual cost at
+      `experiment_id=1` scale instead of sizing a client timeout around it, making this benchmark-and-tune
+      task moot.
+
 ## 1. SQL integration test scaffolding (RED first)
 
 - [x] 1.1 Add `tests/integration/test_cyl_experiment_summary_counts.py` using `test_cyl_experiment_traits.py`'s

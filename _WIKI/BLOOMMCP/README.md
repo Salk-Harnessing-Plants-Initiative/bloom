@@ -160,7 +160,9 @@ The `get_scan_traits(experiment_id_, trait_name_, source_id_, run_id_)` RPC
 exposes the same selection (latest by default; pin a `source_id_`; group by
 `run_id_`). "Latest" = `max(source_id)` per scan; the rule lives once in
 `cyl_scan_traits_source` — see the `cyl-trait-read` spec and its migration for
-the definition (not restated here).
+the definition (not restated here). `is_latest` is a stored, indexed per-scan
+value (`cyl_scan_latest_source`, joined into the view), not a live per-query
+computation (bloom#637) — the rule itself is unchanged, only where it's computed.
 
 **Loading a whole experiment.** `get_scan_traits` is per-trait — one call per
 trait name. For a wide-pivot read (all of an experiment's traits at once),
@@ -181,7 +183,17 @@ sources = client.rpc("list_experiment_trait_sources", {"experiment_id_": 42}).ex
 `get_experiment_summary_counts(experiment_id_, source_id_, run_id_)` computes those counts server-side
 via one aggregate call; with all three arguments `NULL` it covers every experiment in a single round
 trip, same latest/`source_id`/`run_id` selection as `get_experiment_traits` — see the `cyl-trait-read`
-spec for the definition (not restated here).
+spec for the definition (not restated here). With no `source_id_`/`run_id_` pin, `n_plants` is always
+live but `n_traits` is read from a cache (not per write — bloom#637/bloom#656), refreshed
+on demand only via a manually-dispatched GitHub Action
+(`.github/workflows/refresh-cyl-experiment-trait-counts.yml`, `environment: staging|production`)
+rather than an automatic schedule — staging doesn't need frequent automatic refreshes, and
+GitHub Actions `schedule:` triggers only fire from the repo's default branch anyway, so one
+would have sat inert on `staging` (see `design.md` D8 for the full reasoning). Staleness is
+therefore unbounded until someone dispatches a refresh for the environment in question;
+production is expected to get its own automatic cadence eventually
+([bloom#708](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/708)). A pinned
+call is fully live for both counts.
 
 See [`_WIKI/SUPABASE/README.md`](../SUPABASE/README.md) for the full
 role / RLS picture.

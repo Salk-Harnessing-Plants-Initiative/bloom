@@ -1,12 +1,16 @@
 """
-Integration tests for the aggregate summary-counts change (`fix-bloommcp-list-experiments-summary-rpc`,
-bloom#625).
+Integration tests for the aggregate summary-counts function, originally added by bloom#625
+(`fix-bloommcp-list-experiments-summary-rpc`) and rewritten by bloom#637/bloom#656
+(`fix-cyl-scan-traits-latest-rollup`, `20260817150000_rewrite_get_experiment_summary_counts.sql`).
 
-Adds `get_experiment_summary_counts(experiment_id_ DEFAULT NULL, source_id_ DEFAULT NULL, run_id_
-DEFAULT NULL)` — server-side `COUNT(DISTINCT plant_id)`/`COUNT(DISTINCT trait_name)` over the same join
-chain and latest/pin-source/pin-run disjunction `get_experiment_traits` uses, so `bloommcp`'s
-`list_experiments()` can fetch every experiment's counts in one round trip instead of one
-`get_experiment_traits` call per experiment (today's N+1 hang on staging).
+`get_experiment_summary_counts(experiment_id_ DEFAULT NULL, source_id_ DEFAULT NULL, run_id_ DEFAULT
+NULL)`'s two counts now have different cost profiles when unpinned (both `source_id_`/`run_id_` NULL):
+`n_plants` is a live `EXISTS` semi-join (cheap, always current); `n_traits` is read from
+`cyl_experiment_trait_counts`, a cache refreshed by `refresh_cyl_experiment_trait_counts()` on an
+external schedule rather than recomputed live -- so unpinned `n_traits` assertions below call that
+refresh function first (`_refresh_trait_counts`), matching the documented staleness contract
+(design.md D5), rather than expecting it to reflect just-written data instantly. Pinned
+(`source_id_`/`run_id_`) calls remain fully live for both counts, same as before.
 
 LOCAL ONLY: the `pg_conn` fixture connects to 127.0.0.1 on POSTGRES_HOST_PORT as `supabase_admin`
 (BYPASSRLS) and every test rolls back. Seeding helpers are imported from `test_cyl_read_path.py` rather
@@ -36,6 +40,10 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 _TS = "20260807000000_get_experiment_summary_counts"
 MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_TS}.sql"
 ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_TS}_rollback.sql"
+
+_REWRITE_TS = "20260817150000_rewrite_get_experiment_summary_counts"
+REWRITE_MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_REWRITE_TS}.sql"
+REWRITE_ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_REWRITE_TS}_rollback.sql"
 
 _READ_ROLES = ["bloom_agent", "bloom_user", "bloom_admin"]
 
@@ -90,6 +98,12 @@ def _get_summary_counts(cur, experiment_id=None, *, source_id=None, run_id=None)
     return cur.fetchall()
 
 
+def _refresh_trait_counts(cur):
+    """n_traits is cache-backed for unpinned calls (design.md D5) -- call this before asserting
+    on it so the assertion reflects the refresh contract, not an assumption of instant staleness."""
+    cur.execute("SELECT public.refresh_cyl_experiment_trait_counts()")
+
+
 def _assert_matches_get_experiment_traits(
     cur, experiment_id, *, source_id=None, run_id=None
 ):
@@ -102,7 +116,13 @@ def _assert_matches_get_experiment_traits(
     that happens to include a legacy row with an unresolved `trait_id` (not exercised by any
     fixture below today, but the filter is here so a future one doesn't silently break this
     helper instead of the SQL it's checking).
+
+    Unpinned calls (`source_id`/`run_id` both `None`) read `n_traits` from the scheduled-refresh
+    cache, so this refreshes it first -- the oracle comparison is about correctness once refreshed,
+    not about staleness, which has its own dedicated tests in `test_cyl_experiment_trait_counts.py`.
     """
+    if source_id is None and run_id is None:
+        _refresh_trait_counts(cur)
     traits_rows = _get_experiment_traits(
         cur, experiment_id, source_id=source_id, run_id=run_id
     )
@@ -146,12 +166,35 @@ def test_accession_null_plant_excluded_from_counts(pg_conn):
         _deliver(cur, imgs_ok, "ok", traits=[_trait("A", 1.0)])
         _deliver(cur, imgs_no_acc, "no-acc", traits=[_trait("B", 2.0)])
 
+        _refresh_trait_counts(cur)
         rows = _get_summary_counts(cur, exp)
         assert len(rows) == 1
         _, n_plants, n_traits = rows[0]
         # Only the accession-bearing plant/trait counts -- "B" (the no-accession plant's trait)
         # must not appear.
         assert (n_plants, n_traits) == (1, 1)
+        _assert_matches_get_experiment_traits(cur, exp)
+    pg_conn.rollback()
+
+
+def test_scan_with_no_trait_rows_excluded_from_n_plants(pg_conn):
+    """Flagged in an external PR review as untested: n_plants's live rewrite (D4) filters on
+    `EXISTS (SELECT 1 FROM cyl_scan_traits t WHERE t.scan_id = s.id)` specifically so a plant whose
+    scan has never been delivered any trait data isn't counted -- unlike the null-accession test
+    above (which exercises the `accession_id IS NOT NULL` filter), this exercises the EXISTS
+    semi-join itself. A second plant with a VALID accession but zero cyl_scan_traits rows (no
+    `_deliver` call at all, not even a rerun) must not inflate n_plants."""
+    with pg_conn.cursor() as cur:
+        exp, wave = _seed_experiment(cur)
+        _, imgs_with_traits = _seed_scan_in(cur, wave)
+        _seed_scan_in(cur, wave)  # a second, valid-accession scan -- deliberately never delivered
+        _deliver(cur, imgs_with_traits, "ok", traits=[_trait("A", 1.0)])
+
+        _refresh_trait_counts(cur)
+        rows = _get_summary_counts(cur, exp)
+        assert len(rows) == 1
+        _, n_plants, n_traits = rows[0]
+        assert (n_plants, n_traits) == (1, 1)  # the trait-less scan's plant is excluded
         _assert_matches_get_experiment_traits(cur, exp)
     pg_conn.rollback()
 
@@ -201,6 +244,7 @@ def test_experiment_id_pin_isolates_to_one_experiment(pg_conn):
         exp2, _, imgs2 = _seed_experiment_scan(cur)
         _deliver(cur, imgs2, "e2", traits=[_trait("length", 2.0), _trait("width", 3.0)])
 
+        _refresh_trait_counts(cur)
         rows1 = _get_summary_counts(cur, exp1)
         rows2 = _get_summary_counts(cur, exp2)
         assert len(rows1) == 1 and rows1[0][0] == exp1
@@ -218,6 +262,7 @@ def test_bulk_unpinned_returns_one_row_per_experiment_with_data(pg_conn):
             cur
         )  # no scans -- must be absent from the bulk result
 
+        _refresh_trait_counts(cur)
         rows = {r[0]: r[1:] for r in _get_summary_counts(cur)}
         assert rows.get(exp_with_data) == (1, 1)
         assert exp_empty not in rows
@@ -236,10 +281,121 @@ def test_null_trait_value_still_counts_toward_n_traits(pg_conn):
     with pg_conn.cursor() as cur:
         exp, _, imgs = _seed_experiment_scan(cur)
         _deliver(cur, imgs, "k", traits=[_trait("length", None)])
+        _refresh_trait_counts(cur)
         rows = _get_summary_counts(cur, exp)
         assert len(rows) == 1
         _, n_plants, n_traits = rows[0]
         assert (n_plants, n_traits) == (1, 1)
+    pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# bloom#637 / bloom#656: unpinned n_plants live, n_traits cache-backed
+# --------------------------------------------------------------------------- #
+
+
+def test_unpinned_n_plants_is_unaffected_by_a_corrupted_cache(pg_conn):
+    """n_plants must be computed live, not read from any cache -- corrupt the (unrelated)
+    n_traits cache row and confirm n_plants is still correct, proving the two counts have
+    independent code paths in the unpinned branch."""
+    with pg_conn.cursor() as cur:
+        exp, _, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "k", traits=[_trait("length", 1.0)])
+        _refresh_trait_counts(cur)
+        cur.execute(
+            "UPDATE cyl_experiment_trait_counts SET n_traits = 999 WHERE experiment_id = %s",
+            (exp,),
+        )
+        rows = _get_summary_counts(cur, exp)
+        assert len(rows) == 1
+        _, n_plants, n_traits = rows[0]
+        assert n_plants == 1  # correct, unaffected by the corrupted cache row
+        assert n_traits == 999  # proves n_traits IS read from the cache, not recomputed
+    pg_conn.rollback()
+
+
+def test_unpinned_n_traits_reads_the_cache_not_a_live_recompute(pg_conn):
+    with pg_conn.cursor() as cur:
+        exp, _, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "k", traits=[_trait("length", 1.0), _trait("width", 2.0)])
+        _refresh_trait_counts(cur)
+        _, _, n_traits_before = _get_summary_counts(cur, exp)[0]
+        assert n_traits_before == 2
+
+        # New trait data lands after the refresh -- n_traits must NOT reflect it yet.
+        _deliver(cur, imgs, "reproc", traits=[_trait("height", 3.0)])
+        _, _, n_traits_stale = _get_summary_counts(cur, exp)[0]
+        assert n_traits_stale == n_traits_before
+
+        _refresh_trait_counts(cur)
+        _, _, n_traits_fresh = _get_summary_counts(cur, exp)[0]
+        assert n_traits_fresh == 1  # the rerun's single new trait, "height"
+    pg_conn.rollback()
+
+
+def test_pinned_call_unaffected_by_cache_staleness(pg_conn):
+    """Pinned (source_id_/run_id_) calls never read the cache at all -- confirm a pinned call
+    is correct even when the cache has never been refreshed."""
+    with pg_conn.cursor() as cur:
+        exp, _, imgs = _seed_experiment_scan(cur)
+        old = _deliver(cur, imgs, "old", traits=[_trait("length", 10.0)])
+        _deliver(cur, imgs, "new", traits=[_trait("length", 20.0), _trait("width", 5.0)])
+        # No refresh call at all.
+        rows = _get_summary_counts(cur, exp, source_id=old)
+        assert len(rows) == 1
+        _, n_plants, n_traits = rows[0]
+        assert (n_plants, n_traits) == (1, 1)
+    pg_conn.rollback()
+
+
+def test_n_traits_updated_at_reflects_cache_staleness(pg_conn):
+    """Raised in round 4's review and again by an external review in round 6 without either round
+    actually closing it: n_traits's own staleness (design.md D5) was invisible to any caller of
+    this RPC. `n_traits_updated_at` closes that -- unpinned, it must match
+    `cyl_experiment_trait_counts.updated_at` exactly (so a caller can tell how stale the count is);
+    pinned, it must be NULL (always live, no cache to be stale against, and NULL rather than
+    `now()` specifically so a caller can't mistake a live read for a just-refreshed cache)."""
+    with pg_conn.cursor() as cur:
+        exp, _, imgs = _seed_experiment_scan(cur)
+        old = _deliver(cur, imgs, "old", traits=[_trait("length", 1.0)])
+        _refresh_trait_counts(cur)
+
+        cur.execute(
+            "SELECT experiment_id, n_plants, n_traits, n_traits_updated_at "
+            "FROM get_experiment_summary_counts(%s, NULL, NULL)",
+            (exp,),
+        )
+        _, _, _, unpinned_updated_at = cur.fetchone()
+        assert unpinned_updated_at is not None
+        cur.execute(
+            "SELECT updated_at FROM cyl_experiment_trait_counts WHERE experiment_id=%s", (exp,)
+        )
+        assert unpinned_updated_at == cur.fetchone()[0]
+
+        cur.execute(
+            "SELECT experiment_id, n_plants, n_traits, n_traits_updated_at "
+            "FROM get_experiment_summary_counts(%s, %s, NULL)",
+            (exp, old),
+        )
+        _, _, _, pinned_updated_at = cur.fetchone()
+        assert pinned_updated_at is None
+    pg_conn.rollback()
+
+
+def test_n_traits_updated_at_is_null_when_never_refreshed(pg_conn):
+    """An experiment whose cache row has never been populated (no refresh has run since this
+    experiment's data landed) must report `n_traits_updated_at IS NULL`, not some fallback value
+    that would misleadingly imply a refresh already happened."""
+    with pg_conn.cursor() as cur:
+        exp, _, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "k", traits=[_trait("length", 1.0)])
+        # No _refresh_trait_counts call at all.
+        cur.execute(
+            "SELECT n_traits, n_traits_updated_at FROM get_experiment_summary_counts(%s, NULL, NULL)",
+            (exp,),
+        )
+        n_traits, updated_at = cur.fetchone()
+        assert (n_traits, updated_at) == (0, None)
     pg_conn.rollback()
 
 
@@ -250,14 +406,18 @@ def test_null_trait_value_still_counts_toward_n_traits(pg_conn):
 
 @pytest.mark.parametrize("role", _READ_ROLES)
 def test_read_roles_can_call_function(pg_conn, role):
+    """`count(*)` never returns NULL even for a zero-row result -- asserting `is not None` against
+    it is trivially always true regardless of whether `role` could actually call the function
+    correctly (caught in round-2 review). Assert the real row content instead."""
     with pg_conn.cursor() as cur:
         exp, _, imgs = _seed_experiment_scan(cur)
         _deliver(cur, imgs, "k", traits=[_trait("length", 1.0)])
+        _refresh_trait_counts(cur)
         cur.execute(f"SET LOCAL ROLE {role}")
         cur.execute(
-            "SELECT count(*) FROM get_experiment_summary_counts(%s, NULL, NULL)", (exp,)
+            "SELECT n_plants, n_traits FROM get_experiment_summary_counts(%s, NULL, NULL)", (exp,)
         )
-        assert cur.fetchone()[0] is not None
+        assert cur.fetchone() == (1, 1)
         cur.execute("RESET ROLE")
     pg_conn.rollback()
 
@@ -272,6 +432,46 @@ def test_authenticated_has_execute_grant(pg_conn):
             "'authenticated', 'get_experiment_summary_counts(bigint,bigint,text)', 'EXECUTE')"
         )
         assert cur.fetchone()[0] is True
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize(
+    "fn_signature",
+    [
+        "get_experiment_summary_counts(bigint,bigint,text)",
+        "compute_cyl_experiment_summary_counts_live(bigint,bigint,text)",
+    ],
+)
+def test_anon_has_no_execute_grant(pg_conn, fn_signature):
+    """Caught in review: the 20260817150000 rewrite's REVOKE originally only covered PUBLIC, not
+    anon explicitly -- Supabase auto-grants EXECUTE on new public-schema functions to anon, so
+    that alone left anon still able to call both. compute_cyl_experiment_summary_counts_live is
+    SECURITY DEFINER, so anon calling it directly would have run with the definer's elevated
+    privilege, bypassing whatever table grants anon itself lacks -- confirmed exploitable
+    (empirically, against a local Postgres) before this fix."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT has_function_privilege('anon', %s, 'EXECUTE')", (fn_signature,)
+        )
+        assert cur.fetchone()[0] is False
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize(
+    "fn_name",
+    ["get_experiment_summary_counts", "compute_cyl_experiment_summary_counts_live"],
+)
+def test_function_search_path_is_pinned(pg_conn, fn_name):
+    """No regression test previously guarded either function's `SET search_path` -- caught in
+    round-4 review, matching test_cyl_scan_latest_source.py's existing
+    test_trigger_function_metadata precedent for the trigger function. get_experiment_summary_counts
+    itself was the one function in this change without a pinned search_path until round 4 (not
+    exploitable -- every reference in its body is already schema-qualified, and it's SECURITY
+    INVOKER -- but pinned anyway for consistency with every other function this change touches)."""
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT proconfig FROM pg_proc WHERE proname = %s", (fn_name,))
+        (proconfig,) = cur.fetchone()
+        assert any(c.startswith("search_path=") for c in (proconfig or []))
     pg_conn.rollback()
 
 
@@ -314,6 +514,14 @@ def test_get_experiment_summary_counts_reachable_over_postgrest(api, service_rol
 
 def test_migration_body_is_idempotent(pg_conn):
     with pg_conn.cursor() as cur:
+        # This test's whole DB already has the REWRITE migration (20260817150000) applied, which
+        # changed get_experiment_summary_counts's return shape (added n_traits_updated_at) --
+        # Postgres refuses to CREATE OR REPLACE a function across a return-type change, so this
+        # bloom#625 migration's own 3-column CREATE OR REPLACE would fail here with "cannot change
+        # return type" unless the function is reset to a droppable state first. Testing-environment
+        # coupling only (a fresh production deploy applies this migration before the rewrite ever
+        # exists, so this ordering issue never arises there) -- found in round-6 review.
+        cur.execute("DROP FUNCTION IF EXISTS public.get_experiment_summary_counts(bigint, bigint, text)")
         cur.execute(_sql_body(MIGRATION))  # re-apply on already-applied state
         cur.execute(
             "SELECT count(*) FROM pg_proc WHERE proname='get_experiment_summary_counts' "
@@ -344,6 +552,45 @@ def test_rollback_restores_prior_state(pg_conn):
         cur.execute(_sql_body(MIGRATION))
         cur.execute(
             "SELECT count(*) FROM pg_proc WHERE proname='get_experiment_summary_counts'"
+        )
+        assert cur.fetchone()[0] == 1
+    pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# bloom#637/bloom#656 rewrite migration hygiene
+# --------------------------------------------------------------------------- #
+
+
+def test_rewrite_migration_body_is_idempotent(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(REWRITE_MIGRATION))
+        cur.execute(
+            "SELECT count(*) FROM pg_proc "
+            "WHERE proname='compute_cyl_experiment_summary_counts_live' AND pronargs=3"
+        )
+        assert cur.fetchone()[0] == 1
+    pg_conn.rollback()
+
+
+def test_rewrite_rollback_restores_prior_body(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(REWRITE_ROLLBACK))
+        cur.execute(
+            "SELECT count(*) FROM pg_proc WHERE proname='compute_cyl_experiment_summary_counts_live'"
+        )
+        assert cur.fetchone()[0] == 0
+        # The rolled-back body is the bloom#625 live-join-only version -- confirm it still works.
+        exp, _, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "k", traits=[_trait("length", 1.0)])
+        cur.execute(
+            "SELECT n_plants, n_traits FROM get_experiment_summary_counts(%s, NULL, NULL)", (exp,)
+        )
+        assert cur.fetchone() == (1, 1)
+        # Round-trip: re-apply the rewrite and confirm the helper is back.
+        cur.execute(_sql_body(REWRITE_MIGRATION))
+        cur.execute(
+            "SELECT count(*) FROM pg_proc WHERE proname='compute_cyl_experiment_summary_counts_live'"
         )
         assert cur.fetchone()[0] == 1
     pg_conn.rollback()
