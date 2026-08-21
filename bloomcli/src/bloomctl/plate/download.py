@@ -46,6 +46,7 @@ from .._download import (
     write_manifest,
 )
 from .._postgrest import fetch_in_batches
+from .._postgrest import queried as _queried
 from .._storage import atomic_write_bytes, sweep_orphan_temps
 from ..credentials import DEFAULT_PROFILE
 
@@ -245,22 +246,6 @@ def download_selector(**options: Any) -> dict[str, Any]:
 
 
 # --- supabase / storage I/O -------------------------------------------------
-
-def _queried(what: str, call: Callable[[], Any]) -> Any:
-    """Run one metadata query, turning a server error into something a scientist can act on.
-
-    Permission denied, a gateway blip, an unapplied migration — all of them arrive as an
-    APIError, and unhandled they reach the user as a Python traceback with the useful sentence
-    buried in it. `what` names the query so the message says which one failed.
-    """
-    from postgrest import APIError
-
-    try:
-        return call()
-    except APIError as exc:
-        detail = getattr(exc, "message", None) or str(exc)
-        raise click.ClickException(f"Could not read {what} from Bloom: {detail}") from exc
-
 
 def fetch_plate_scans(
     client: Any,
@@ -621,12 +606,10 @@ def download(
         raise click.ClickException(str(exc)) from exc
 
     if experiment_name is not None:  # resolve the name to a concrete id (server-side search)
-        from postgrest import APIError
-
-        try:
-            found = search_experiments(client, experiment_name, species=species)
-        except APIError as exc:  # e.g. the RPC's >200-char guard, or a permission error
-            raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc
+        found = _queried(  # e.g. the RPC's >200-char guard, a permission error, a read timeout
+            "the experiment names",
+            lambda: search_experiments(client, experiment_name, species=species),
+        )
         outcome = classify(found)
         if isinstance(outcome, NoMatch):
             scope = f" for species {species!r}" if species else ""
