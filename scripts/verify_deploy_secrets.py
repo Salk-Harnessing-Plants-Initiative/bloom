@@ -110,26 +110,33 @@ def load_secret_names(path: Path) -> dict[str, set[str]] | None:
     Shape is validated rather than trusted: a string value would silently become a
     set of characters and report every secret as missing, and a missing environment
     key would assert an absence the file never claimed.
+
+    The file holds secret *names* only — the workflow builds it from
+    `gh api ... -q '.secrets[].name'`, and GitHub's API cannot return a secret
+    value. CodeQL still marks `path` as sensitive because the argument it comes
+    from is called `--secrets-json`, so the four `print`s below carry an explicit
+    suppression: each logs a filename, a decode error, a type name or an
+    environment name, never a value.
     """
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        print(f"ERROR: {path} is not readable JSON: {exc}", file=sys.stderr)
+        print(f"ERROR: {path} is not readable JSON: {exc}", file=sys.stderr)  # codeql[py/clear-text-logging-sensitive-data]
         return None
 
     if not isinstance(raw, dict):
-        print(f"ERROR: {path} must be an object, got {type(raw).__name__}", file=sys.stderr)
+        print(f"ERROR: {path} must be an object, got {type(raw).__name__}", file=sys.stderr)  # codeql[py/clear-text-logging-sensitive-data]
         return None
 
     names: dict[str, set[str]] = {}
     for github_env in ENVIRONMENTS.values():
         if github_env not in raw:
-            print(f"ERROR: {path} has no entry for '{github_env}'", file=sys.stderr)
+            print(f"ERROR: {path} has no entry for '{github_env}'", file=sys.stderr)  # codeql[py/clear-text-logging-sensitive-data]
             return None
         entry = raw[github_env]
         if not isinstance(entry, list) or not all(isinstance(n, str) for n in entry):
             print(
-                f"ERROR: {path}['{github_env}'] must be a list of strings",
+                f"ERROR: {path}['{github_env}'] must be a list of strings",  # codeql[py/clear-text-logging-sensitive-data]
                 file=sys.stderr,
             )
             return None
