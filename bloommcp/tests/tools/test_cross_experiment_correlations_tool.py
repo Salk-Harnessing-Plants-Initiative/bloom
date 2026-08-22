@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -27,7 +28,7 @@ from hypothesis import given, settings, strategies as st
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
-from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+from bloom_mcp.result_store import FakeResultStore, RunStateError, SupabaseResultStore
 from bloom_mcp.tools import _ports
 from bloom_mcp.sections.sleap_roots.analysis import (
     cross_experiment_correlations as xcorr_tool,
@@ -835,12 +836,12 @@ def test_source_csv_content_addresses_both_inputs(injected_ports):
         return stored.output_sha256["correlations.csv"]
 
     baseline = _hash_for(None, None)
-    assert (
-        _hash_for(999.0, None) != baseline
-    ), "experiment_1 alone should change the hash"
-    assert (
-        _hash_for(None, 999.0) != baseline
-    ), "experiment_2 alone should change the hash"
+    assert _hash_for(999.0, None) != baseline, (
+        "experiment_1 alone should change the hash"
+    )
+    assert _hash_for(None, 999.0) != baseline, (
+        "experiment_2 alone should change the hash"
+    )
 
 
 def test_genotype_means_artifacts_persisted(injected_ports):
@@ -941,14 +942,65 @@ def test_out_of_range_parameters_rejected(injected_ports, bad_kwargs):
 
 
 def test_no_error_leaks_backend_internals(injected_ports, monkeypatch):
+    """bloom#664 item 2: this tool has no except clause around its delegate
+    calls at all, so this undeclared exception already falls through to
+    `internal_error` today — pin the code explicitly (not just "doesn't
+    leak"), closing the coverage gap the #660 review left for this tool."""
+
     def _boom(*a, **k):
         raise RuntimeError("secret path /var/secrets/key and host db.internal")
 
     monkeypatch.setattr(xcorr_tool, "calculate_genotype_means", _boom)
     with pytest.raises(BloomMCPError) as exc:
         _run()
+    assert exc.value.code == "internal_error"
     msg = f"{exc.value.message} {exc.value.remedy}"
     assert "/var" not in msg and "db.internal" not in msg
+
+
+# ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
+# (#640: this tool's declared errors=(ExperimentReadError,) swallowed a CommitFailedError/
+# ManifestReadError from store.create_run()/commit() into a generic internal_error ref).
+# The tool's only ResultStore interaction is a single create_run/commit pair keyed by the
+# COMPOSITE experiment string (_COMPOSITE_KEY), not experiment_1/experiment_2 directly --
+# fail_next_commit/fail_next_read must be armed against that composite key, since neither
+# input experiment is ever read through ResultStore (both go through ExperimentReader). ──
+
+
+def test_commit_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_commit(_COMPOSITE_KEY, "correlation")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "commit failed for correlation" in exc.value.message
+
+
+def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_read(_COMPOSITE_KEY, "correlation")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "manifest read failure" in exc.value.message
+
+
+def test_run_state_error_from_commit_still_maps_to_internal_error(
+    injected_ports, monkeypatch
+):
+    """RunStateError (a handle-misuse/wiring bug, never triggerable via tool input) must
+    stay internal_error even after declaring CommitFailedError/ManifestReadError — proves
+    the errors= tuple wasn't accidentally widened to the full ResultStoreError base
+    (design.md Decision 1; #660 review: only qc_inspect had this test)."""
+    _reader, store = injected_ports
+
+    def _boom(run, outputs):
+        raise RunStateError("commit() on an unknown or already-committed run")
+
+    monkeypatch.setattr(store, "commit", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "internal_error"
 
 
 # ── tools/list presence ───────────────────────────────────────────────────────
@@ -1004,3 +1056,90 @@ def test_reproduces_golden_correlation_unfiltered(monkeypatch):
         assert bool(corr_csv["significant"].iloc[0]) == g["significant"]
     finally:
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+# ── explicit per-experiment cleaned-version selectors (#626) ────────────────
+
+
+def test_version_1_and_version_2_fields_exist():
+    assert "version_1" in CrossExperimentCorrelationsParams.model_fields
+    assert "version_2" in CrossExperimentCorrelationsParams.model_fields
+
+
+def test_omitting_both_versions_preserves_todays_exact_calls(injected_ports):
+    """Spy on load_experiment directly (not the _load_cleaned helper wholesale)
+    so a forgot-to-forward bug inside _load_cleaned's own new version param
+    would still be caught."""
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run()
+
+    assert reader.load_experiment.call_args_list == [
+        ((_EXP_1,), {"require_clean": True}),
+        ((_EXP_2,), {"require_clean": True}),
+    ]
+
+
+def test_version_1_alone_only_changes_experiment_1s_call(injected_ports):
+    reader, _store = injected_ports
+    df1, _df2 = _correlated_pair()
+    reader.add_cleaned_version(_EXP_1, "v2", df1, make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(version_1="v2")
+
+    assert reader.load_experiment.call_args_list == [
+        ((_EXP_1,), {"require_clean": True, "version": "v2"}),
+        ((_EXP_2,), {"require_clean": True}),
+    ]
+
+
+def test_version_2_alone_only_changes_experiment_2s_call(injected_ports):
+    reader, _store = injected_ports
+    _df1, df2 = _correlated_pair()
+    reader.add_cleaned_version(_EXP_2, "v2", df2, make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(version_2="v2")
+
+    assert reader.load_experiment.call_args_list == [
+        ((_EXP_1,), {"require_clean": True}),
+        ((_EXP_2,), {"require_clean": True, "version": "v2"}),
+    ]
+
+
+def test_version_1_and_version_2_both_pinned_to_different_real_values(
+    injected_ports,
+):
+    """The case that matters most, per PR #644 review: version_1 and version_2
+    pinned SIMULTANEOUSLY (not "one set, other omitted" — the only combination
+    the two tests above prove). Proves the "independently selectable" guarantee
+    with something stronger than call-arg introspection alone: each experiment's
+    own distinct pin actually reaches its own read (source_1/source_2 in the
+    result reflect the pinned version each experiment was read from), so a bug
+    that swapped which pin went to which experiment, or dropped one pin while
+    honoring the other, would be caught."""
+    reader, _store = injected_ports
+    df1, df2 = _correlated_pair()
+    # Distinct v2 content per experiment (not just re-registering v1's df under a
+    # new id) so experiment_1's and experiment_2's pinned reads are independently
+    # verifiable from their own genotype-mean values, not merely same-shaped data.
+    df1_v2 = df1.copy()
+    df1_v2["TraitA1"] = df1_v2["TraitA1"] * 10
+    df2_v2 = df2.copy()
+    df2_v2["TraitB1"] = df2_v2["TraitB1"] * 10
+    reader.add_cleaned_version(_EXP_1, "v2", df1_v2, make_latest=False)
+    reader.add_cleaned_version(_EXP_2, "v2", df2_v2, make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    result = _run(version_1="v2", version_2="v2")
+
+    assert reader.load_experiment.call_args_list == [
+        ((_EXP_1,), {"require_clean": True, "version": "v2"}),
+        ((_EXP_2,), {"require_clean": True, "version": "v2"}),
+    ]
+    # Both experiments' reads actually resolved the pinned version, not v1 (the
+    # make_latest=True default) or each other's pin.
+    assert result.source_1 == "v2_cleaned"
+    assert result.source_2 == "v2_cleaned"

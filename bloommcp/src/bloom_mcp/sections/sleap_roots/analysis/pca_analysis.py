@@ -36,6 +36,14 @@ all four) and persists them as additional ``*.png`` entries in the existing
 ``include_plots=False`` path. Figure construction is delegated entirely to
 ``bloom_mcp.tools._plots`` (validate/generate/close), which is tool-agnostic and
 meant to be reused verbatim by the upcoming UMAP tool (#425).
+
+**Optional font-style override (#661).** ``plot_font_family``/``plot_font_size`` are
+forwarded into ``_plots.generate_figures``, which applies them uniformly to every
+generated figure's title, axis labels, tick labels, standalone annotation text (e.g.
+``create_pca_biplot``'s arrow labels, ``create_pca_scree_plot``'s bar annotations,
+``create_feature_contribution_heatmap``'s seaborn cell values), figure-level text (e.g. a
+``fig.suptitle``), and legend text/title before it is persisted. Both default to ``None``
+(no override, identical to pre-#661 styling) and are ignored when ``include_plots=False``.
 """
 
 from __future__ import annotations
@@ -51,6 +59,7 @@ from bloom_mcp.data_access import (
     ExperimentFrame,
     ExperimentReadError,
 )
+from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._consumer_utils import _build_output_frame, snapshot_frame
 from bloom_mcp.tools._plots import close_figures, generate_figures, validate_plot_keys
@@ -83,6 +92,12 @@ class PCAAnalysisParams(BaseModel):
         "produced by qc_clean; pca_analysis consumes it (require_clean). Resolves the most "
         "recent outlier trim when one exists for the experiment, not merely the most "
         "recent clean.",
+    )
+    version: str | None = Field(
+        default=None,
+        description="Pin the analysis to a specific committed cleaned version "
+        "(e.g. 'v2'; see list_existing_analyses). Omit to use the latest "
+        "cleaned version, same as today.",
     )
     trait_columns: list[str] | None = Field(
         default=None,
@@ -119,6 +134,32 @@ class PCAAnalysisParams(BaseModel):
         "available plots when include_plots=True. Ignored when include_plots=False. "
         "Valid keys: create_pca_scree_plot, create_pca_biplot, "
         "create_feature_contribution_plot, create_feature_contribution_heatmap.",
+    )
+    plot_font_family: str | None = Field(
+        default=None,
+        description="Font family override (e.g. 'serif', 'DejaVu Sans') applied to every "
+        "text element (title, axis labels, tick labels, annotations, legend text/title) "
+        "on each generated plot. Omit for each plot's default matplotlib styling. Ignored "
+        "when include_plots=False. An unrecognized family name is not rejected — it "
+        "silently falls back to matplotlib's default font rather than erroring, so a "
+        "typo won't surface as invalid_input.",
+    )
+    plot_font_size: float | None = Field(
+        default=None,
+        gt=0,
+        description="Font size (points) override applied to every text element on each "
+        "generated plot. Omit for each plot's default size. Ignored when "
+        "include_plots=False.",
+    )
+    plot_alpha: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Scatter-point transparency (0=fully transparent, 1=fully opaque) for "
+        "create_pca_biplot. Has no effect on create_pca_scree_plot, "
+        "create_feature_contribution_plot, or create_feature_contribution_heatmap — none of "
+        "their upstream signatures accept alpha. Ignored (not rejected) when "
+        "include_plots=False.",
     )
     user_label: str | None = Field(
         default=None,
@@ -167,12 +208,19 @@ def _pca_plot_calls(
     pca: PCAResult,
     frame: ExperimentFrame,
     threshold: float,
+    *,
+    plot_alpha: float | None = None,
 ) -> dict:
     """Return zero-arg callables for each catalog plot key, lazily importing plotters.
 
     Plotters are imported here (not at module level) so that importing this
     module never pulls in matplotlib — the Tier-0 import-clean guarantee is
     maintained on the default no-plots path.
+
+    ``plot_alpha`` is forwarded to ``create_pca_biplot`` only — the sole catalog plotter
+    here whose upstream signature accepts it (see design.md's per-plotter support table) —
+    and only when set, so an unset (``None``) value reproduces the plotter's own hardcoded
+    default (``alpha=0.6``) exactly.
     """
     from sleap_roots_analyze import (
         create_feature_contribution_heatmap,
@@ -180,6 +228,10 @@ def _pca_plot_calls(
         create_pca_biplot,
         create_pca_scree_plot,
     )
+
+    biplot_kwargs: dict = {}
+    if plot_alpha is not None:
+        biplot_kwargs["alpha"] = plot_alpha
 
     return {
         "create_pca_scree_plot": lambda: create_pca_scree_plot(
@@ -190,6 +242,7 @@ def _pca_plot_calls(
             df=_biplot_df(frame),
             trait_names=list(pca.feature_names),
             color_by=frame.genotype_col,
+            **biplot_kwargs,
         ),
         "create_feature_contribution_plot": lambda: create_feature_contribution_plot(
             result_dict,
@@ -218,7 +271,7 @@ def _loadings_frame(pca: PCAResult) -> pd.DataFrame:
 @as_mcp_tool(
     input_model=PCAAnalysisParams,
     output_model=PCAAnalysisResult,
-    errors=(ExperimentReadError,),
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
 )
 def pca_analysis(
     params: PCAAnalysisParams, *, provenance: Provenance
@@ -230,8 +283,13 @@ def pca_analysis(
     # Consumer: require a cleaned version. A missing one is a precondition failure with a
     # concrete remedy — caught here so it carries "run qc_clean first" rather than the
     # contract's generic tool_error message for the declared read error.
+    # #626: an explicit version selector is opt-in; omitting it makes this call
+    # identical to before this change (no version kwarg -> Protocol default "latest").
+    version_kwargs = {} if params.version is None else {"version": params.version}
     try:
-        frame = reader.load_experiment(params.experiment, require_clean=True)
+        frame = reader.load_experiment(
+            params.experiment, require_clean=True, **version_kwargs
+        )
     except CleanedVersionRequiredError:
         raise BloomMCPError(
             code="tool_error",
@@ -327,14 +385,23 @@ def pca_analysis(
             matplotlib.use("Agg")
             validate_plot_keys(params.plots, _PCA_CATALOG_KEYS)
             calls = _pca_plot_calls(
-                result_dict, pca, frame, params.explained_variance_threshold
+                result_dict,
+                pca,
+                frame,
+                params.explained_variance_threshold,
+                plot_alpha=params.plot_alpha,
             )
             keys_to_generate = (
                 list(params.plots)
                 if params.plots is not None
                 else list(_PCA_CATALOG_KEYS)
             )
-            generate_figures({k: calls[k] for k in keys_to_generate}, figures)
+            generate_figures(
+                {k: calls[k] for k in keys_to_generate},
+                figures,
+                font_family=params.plot_font_family,
+                font_size=params.plot_font_size,
+            )
 
         with snapshot_frame(frame.df) as source_snapshot:
             run = store.create_run(

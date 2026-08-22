@@ -23,6 +23,14 @@ Endpoints:
                                                        pipeline run for a scan/wave/
                                                        experiment/explicit scan list
                                                        (requires a Supabase user JWT)
+    GET  /runs/{run_id}                             - externally reachable as
+                                                       GET /workflows/runs/{run_id}:
+                                                       read a pipeline run's current
+                                                       status + its scans, exactly as
+                                                       stored — does NOT itself query
+                                                       Argo/K8s; live reconciliation is
+                                                       exclusively status_poller.py's job
+                                                       (requires a Supabase user JWT)
 """
 
 import logging
@@ -73,12 +81,23 @@ def cyl_experiment_scan_video(
     """
     enforce_rate_limit(user_id)
     result = generate_experiment_scan_video(experiment_id, scan_id)
-    logger.info(
-        "Generated video for experiment %s scan %s (%d frames)",
-        experiment_id,
-        scan_id,
-        result["frames"],
-    )
+    # Split, because most requests for a scan that already has a video generate nothing. Saying
+    # "Generated" either way, with a count describing the scan rather than the stored file,
+    # would make the operator log assert work that never happened — and this log is the only
+    # signal for exactly the cases the keep guards exist to handle.
+    if result.get("regenerated", True):
+        logger.info(
+            "Generated video for experiment %s scan %s (%d frames)",
+            experiment_id,
+            scan_id,
+            result["frames"],
+        )
+    else:
+        logger.info(
+            "Kept the stored video for experiment %s scan %s",
+            experiment_id,
+            scan_id,
+        )
     return {"experiment_id": experiment_id, **result}
 
 
@@ -104,3 +123,19 @@ def trigger_pipeline_route(
         result["reused_count"],
     )
     return result
+
+
+@app.get("/runs/{run_id}")
+def get_pipeline_run_route(
+    run_id: int,
+    user_id: str = Depends(require_supabase_user),
+):
+    """Read a pipeline run's current status + its scans (reachable externally
+    at GET /workflows/runs/{run_id}, same prefix-stripping as every other
+    route above). A plain DB read — does NOT itself query Argo/K8s; live
+    reconciliation is exclusively status_poller.py's job.
+
+    Requires a valid Supabase user JWT (Bearer). Rate-limited per user.
+    """
+    enforce_rate_limit(user_id)
+    return pipeline.get_run(run_id)

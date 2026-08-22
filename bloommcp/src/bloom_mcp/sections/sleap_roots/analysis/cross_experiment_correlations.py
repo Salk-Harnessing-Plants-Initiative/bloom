@@ -103,6 +103,7 @@ from bloom_mcp.data_access import (
     ExperimentFrame,
     ExperimentReadError,
 )
+from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._consumer_utils import snapshot_frame
 from bloom_mcp.tools._qc_shared import _validate_experiment_name, _validate_trait_subset
@@ -154,6 +155,19 @@ class CrossExperimentCorrelationsParams(BaseModel):
     experiment_2: str = Field(
         ...,
         description="Second experiment identifier. Same requirements as experiment_1.",
+    )
+    version_1: str | None = Field(
+        default=None,
+        description="Pin experiment_1 to a specific committed cleaned version "
+        "(e.g. 'v2'; see list_existing_analyses). Omit to use its latest "
+        "cleaned version, same as today. Independent of version_2 — each "
+        "experiment's version is resolved separately.",
+    )
+    version_2: str | None = Field(
+        default=None,
+        description="Pin experiment_2 to a specific committed cleaned version. "
+        "Omit to use its latest cleaned version, same as today. Independent "
+        "of version_1.",
     )
     trait_columns_1: list[str] | None = Field(
         default=None,
@@ -359,10 +373,18 @@ def _composite_experiment_key(stem_1: str, stem_2: str) -> str:
     return f"{len(stem_1)}_{stem_1}{_COMPOSITE_SEPARATOR}{stem_2}"
 
 
-def _load_cleaned(reader, name: str, label: str) -> ExperimentFrame:
-    """Load ``name`` with require_clean=True, naming ``label`` in a tool_error remedy."""
+def _load_cleaned(
+    reader, name: str, label: str, *, version: str | None = None
+) -> ExperimentFrame:
+    """Load ``name`` with require_clean=True, naming ``label`` in a tool_error remedy.
+
+    ``version`` optionally pins a specific committed cleaned version (#626);
+    omitting it makes this call identical to before this change (no version
+    kwarg -> Protocol default "latest").
+    """
+    version_kwargs = {} if version is None else {"version": version}
     try:
-        return reader.load_experiment(name, require_clean=True)
+        return reader.load_experiment(name, require_clean=True, **version_kwargs)
     except CleanedVersionRequiredError:
         raise BloomMCPError(
             code="tool_error",
@@ -454,7 +476,7 @@ def _combined_snapshot(
 @as_mcp_tool(
     input_model=CrossExperimentCorrelationsParams,
     output_model=CrossExperimentCorrelationsResult,
-    errors=(ExperimentReadError,),
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
 )
 def cross_experiment_correlations(
     params: CrossExperimentCorrelationsParams, *, provenance: Provenance
@@ -468,8 +490,12 @@ def cross_experiment_correlations(
     reader = _ports.reader()
     store = _ports.store()
 
-    frame1 = _load_cleaned(reader, params.experiment_1, "experiment_1")
-    frame2 = _load_cleaned(reader, params.experiment_2, "experiment_2")
+    frame1 = _load_cleaned(
+        reader, params.experiment_1, "experiment_1", version=params.version_1
+    )
+    frame2 = _load_cleaned(
+        reader, params.experiment_2, "experiment_2", version=params.version_2
+    )
 
     genotype_col_1 = _require_genotype_col(frame1, params.experiment_1, "experiment_1")
     genotype_col_2 = _require_genotype_col(frame2, params.experiment_2, "experiment_2")

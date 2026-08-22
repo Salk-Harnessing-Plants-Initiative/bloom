@@ -44,16 +44,35 @@ and are marked as a pre-release on GitHub.
 3. Create a **GitHub Release** whose tag matches the version (`bloomctl-vX.Y.Z`,
    `vX.Y.Z`, or `X.Y.Z`). Tick **"Set as a pre-release"** for `aN`/`bN`/`rcN`.
 4. Publishing the Release runs two workflows:
-   - `release-bloomcli.yml`:
+   - `release-bloomcli.yml`, in three jobs:
      - `validate-release`: tag ↔ version match, changelog entry exists, lint + tests.
-     - `build-and-publish`: `uv build`, import the wheel + run `bloomctl --version`,
-       then `uv publish`.
+     - `build-and-verify`: `uv build`, then import every `bloomctl` module and the
+       supabase/postgrest chain from the built wheel — once with stable dependencies
+       and once with `--prerelease=allow`. `import bloomctl` on its own stays green
+       on a build where every real command dies, which is how `0.1.0a4` shipped
+       broken (#629).
+     - `build-and-publish`: checks the artifact's checksum and runs `uv publish`.
+       Nothing else runs in this job — it holds the PyPI credential, so no package
+       code executes beside it.
    - `docker-build-bloomcli.yml`: validates the same tag ↔ version match
      independently, then builds and pushes a matching GHCR version tag (see
      `bloomcli/README.md`'s "Container image" section for the image and tag
      scheme).
-5. Verify on PyPI: `uvx bloomctl --version` (stable) or
-   `uvx --prerelease=allow bloomctl --version` (pre-release).
+5. Verify on PyPI. `--version` is not enough — it passed on `0.1.0a4`, where every
+   real command died on import. Pull the dependency chain the way the gate does:
+
+   ```bash
+   uvx --from "bloomctl==X.Y.Z" python -c "
+   import importlib, pkgutil, bloomctl
+   [importlib.import_module(m.name) for m in pkgutil.walk_packages(bloomctl.__path__, 'bloomctl.')]
+   from supabase import create_client
+   print('ok')"
+   ```
+
+   Naming the exact version resolves stable dependencies, which is also what the
+   README tells users to install — `--pre` / `--prerelease=allow` lets every
+   transitive dependency install an unfinished version too, and that is what
+   broke `0.1.0a4`.
 
 ### Project URLs
 

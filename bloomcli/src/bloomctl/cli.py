@@ -1,4 +1,4 @@
-"""bloomctl command group (entry point ``bloomctl = bloomctl.cli:cli``)."""
+"""bloomctl command group. The console script is `bloomctl.errors:main`, which wraps this."""
 
 from __future__ import annotations
 
@@ -104,7 +104,9 @@ def login(
     click.echo(f"Logged in as {email}. Credentials saved to {path}.")
 
 
-# Data-type command groups, one file per command (see bloomctl/cyl).
+# Data-type command groups, one file per command (see bloomctl/cyl, bloomctl/plate).
 from .cyl import cyl  # noqa: E402  (registered after `cli` is defined)
+from .plate import plate  # noqa: E402
 
 cli.add_command(cyl)
+cli.add_command(plate)

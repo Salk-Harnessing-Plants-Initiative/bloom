@@ -265,6 +265,60 @@ export interface Database {
           },
         ]
       }
+      cyl_experiment_trait_counts: {
+        Row: {
+          experiment_id: number
+          n_traits: number
+          updated_at: string
+        }
+        Insert: {
+          experiment_id: number
+          n_traits: number
+          updated_at?: string
+        }
+        Update: {
+          experiment_id?: number
+          n_traits?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'cyl_experiment_trait_counts_experiment_id_fkey'
+            columns: ['experiment_id']
+            isOneToOne: true
+            referencedRelation: 'cyl_experiments'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'cyl_experiment_trait_counts_experiment_id_fkey'
+            columns: ['experiment_id']
+            isOneToOne: true
+            referencedRelation: 'cyl_plants_extended'
+            referencedColumns: ['experiment_id']
+          },
+          {
+            foreignKeyName: 'cyl_experiment_trait_counts_experiment_id_fkey'
+            columns: ['experiment_id']
+            isOneToOne: true
+            referencedRelation: 'cyl_scans_extended'
+            referencedColumns: ['experiment_id']
+          },
+          {
+            foreignKeyName: 'cyl_experiment_trait_counts_experiment_id_fkey'
+            columns: ['experiment_id']
+            isOneToOne: true
+            referencedRelation: 'cyl_trait_by_experiment_wave'
+            referencedColumns: ['experiment_id']
+          },
+          {
+            foreignKeyName: 'cyl_experiment_trait_counts_experiment_id_fkey'
+            columns: ['experiment_id']
+            isOneToOne: true
+            referencedRelation: 'recent_experiments_by_cyl_scanner'
+            referencedColumns: ['experiment_id']
+          },
+        ]
+      }
       cyl_image_traits: {
         Row: {
           id: number
@@ -582,6 +636,36 @@ export interface Database {
             isOneToOne: false
             referencedRelation: "cyl_trait_sources"
             referencedColumns: ["id"]
+          },
+        ]
+      }
+      cyl_scan_latest_source: {
+        Row: {
+          max_source_id: number | null
+          scan_id: number
+        }
+        Insert: {
+          max_source_id?: number | null
+          scan_id: number
+        }
+        Update: {
+          max_source_id?: number | null
+          scan_id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'cyl_scan_latest_source_scan_id_fkey'
+            columns: ['scan_id']
+            isOneToOne: true
+            referencedRelation: 'cyl_scans'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'cyl_scan_latest_source_scan_id_fkey'
+            columns: ['scan_id']
+            isOneToOne: true
+            referencedRelation: 'cyl_scans_extended'
+            referencedColumns: ['scan_id']
           },
         ]
       }
@@ -1606,6 +1690,19 @@ export interface Database {
           pipeline_run_id: string | null
         }[]
       }
+      get_experiment_summary_counts: {
+        Args: {
+          experiment_id_?: number
+          source_id_?: number
+          run_id_?: string
+        }
+        Returns: {
+          experiment_id: number
+          n_plants: number
+          n_traits: number
+          n_traits_updated_at: string | null
+        }[]
+      }
       get_scans_without_videos: {
         Args: Record<PropertyKey, never>
         Returns: {
@@ -1646,6 +1743,22 @@ export interface Database {
         Returns: {
           category: string | null
         }[]
+      }
+      compute_cyl_experiment_summary_counts_live: {
+        Args: {
+          experiment_id_: number
+          source_id_: number
+          run_id_: string
+        }
+        Returns: {
+          experiment_id: number
+          n_plants: number
+          n_traits: number
+        }[]
+      }
+      refresh_cyl_experiment_trait_counts: {
+        Args: Record<PropertyKey, never>
+        Returns: undefined
       }
     }
     Enums: {

@@ -43,6 +43,7 @@ from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from starlette.routing import Mount
+from starlette.staticfiles import StaticFiles
 
 # Env validation is lazy (see supabase_client / experiment_utils validate_env):
 # importing this module no longer requires Supabase or the BLOOM_*_DIR env, so
@@ -51,7 +52,7 @@ from starlette.routing import Mount
 from bloom_mcp.supabase_client import validate_env as validate_supabase_env
 from bloom_mcp.experiment_utils import validate_env as validate_data_env
 
-from bloom_mcp.auth import API_KEY, auth_provider
+from bloom_mcp.auth import API_KEY, AUTHORIZATION_SERVER, PUBLIC_URL, auth_provider
 from bloom_mcp.identity import IdentityMiddleware
 
 from bloom_mcp.sections import SECTIONS
@@ -79,6 +80,26 @@ async def health(_: Request) -> PlainTextResponse:
     return PlainTextResponse("ok")
 
 
+def _startup_banner(*, api_key: str | None, oauth_configured: bool) -> str:
+    """The one-line startup banner describing which auth mode(s) are active.
+
+    Matches `build_auth_provider()`'s own condition
+    (`bloom_mcp.auth`, `PUBLIC_URL and AUTHORIZATION_SERVER`) directly, kept
+    explicit here rather than duplicated by feel — an earlier version of
+    this banner checked only `api_key`, so OAuth-configured-with-no-API-key
+    (a real, enforced auth mode — `MultiAuth` with an empty API-key verifier
+    list) fell into the "no authentication" branch and logged a false
+    "dev mode" claim while OAuth enforcement was actually active.
+    """
+    if oauth_configured and api_key:
+        return "Bloom MCP Server starting with OAuth login and API key authentication"
+    if oauth_configured:
+        return "Bloom MCP Server starting with OAuth login (no API key configured)"
+    if api_key:
+        return "Bloom MCP Server starting with API key authentication"
+    return "Bloom MCP Server starting without authentication (dev mode)"
+
+
 def build_app() -> Starlette:
     """Compose the combined surface and one path per section into one ASGI app.
 
@@ -94,6 +115,23 @@ def build_app() -> Starlette:
     FastMCP's own per-section `BLOOMMCP_API_KEY` bearer check (wired via
     `auth=` on each `FastMCP` instance, inside each `Mount`) — the two checks
     are independent; see openspec add-bloommcp-caller-identity design.md.
+
+    In fully-local mode (`BLOOM_STORAGE_BACKEND=local`), also mounts `/plots`
+    as `StaticFiles`, serving the local plots root the plotting tools
+    themselves write to — so a served URL built from either
+    `storage_backend.self_serve_base_url()`'s default or an explicit
+    `BLOOM_PLOTS_URL` pointing at this same address actually resolves
+    standalone, with no docker-compose. Unauthenticated beyond
+    `IdentityMiddleware`'s optional identity check (matching `/health`'s
+    precedent) — see openspec update-bloommcp-local-url-defaults design.md
+    Decision 3. Absent entirely on the default (Supabase) backend.
+
+    No analogous `/output` mount: analysis outputs' `output_links` surface a
+    direct resolved filesystem path for the local backend instead of a served
+    URL (`result_store/_artifacts.py`'s `path_for`) — the caller already has
+    direct filesystem access to a file bloommcp just wrote, so there is
+    nothing to self-serve over HTTP for outputs (see the GitHub issue #642
+    follow-up discussion linked from `update-bloommcp-local-url-defaults`).
     """
     combined_app = mcp.http_app(path="/mcp")
     section_apps = {
@@ -103,6 +141,19 @@ def build_app() -> Starlette:
     # Section paths first (more specific); combined at root last so /mcp and
     # /health fall through to it.
     routes = [Mount(f"/{name}", app=app) for name, app in section_apps.items()]
+
+    from bloom_mcp.experiment_utils import PLOTS_DIR
+    from bloom_mcp.storage_backend import is_local_backend
+
+    if is_local_backend():
+        routes.append(
+            Mount(
+                "/plots",
+                app=StaticFiles(directory=str(PLOTS_DIR), check_dir=False),
+                name="local-plots",
+            )
+        )
+
     routes.append(Mount("/", app=combined_app))
 
     lifespans = [combined_app.lifespan, *(a.lifespan for a in section_apps.values())]
@@ -169,10 +220,11 @@ def main() -> None:
 
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
-    if API_KEY:
-        print("Bloom MCP Server starting with API key authentication")
-    else:
-        print("Bloom MCP Server starting without authentication (dev mode)")
+    print(
+        _startup_banner(
+            api_key=API_KEY, oauth_configured=bool(PUBLIC_URL and AUTHORIZATION_SERVER)
+        )
+    )
 
     import uvicorn
 

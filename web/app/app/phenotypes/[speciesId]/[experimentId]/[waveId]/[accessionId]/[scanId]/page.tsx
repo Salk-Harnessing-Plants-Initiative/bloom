@@ -5,7 +5,10 @@ import {
 } from "@/lib/supabase/server";
 
 import PlantImage from "@/components/plant-image";
-import PlantScan from "@/components/plant-scan";
+import ScanFrameViewer from "@/components/scan-frame-viewer";
+import ScanVideoButton from "@/components/scan-video-button";
+import { completenessWarning } from "@/components/plant-scan.helpers";
+import { getStoredScanVideoUrl } from "@/lib/supabase/scan-video";
 import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
 
@@ -28,6 +31,9 @@ export default async function Image({
   );
   const speciesName : any = species?.common_name ?? "";
   const scan : any = await getScan(Number(scanId));
+  // Resolved once here so the viewer's icon and the generate button agree on
+  // whether a video exists, instead of each deciding for itself.
+  const videoUrl = scan ? await getStoredScanVideoUrl(scan.id) : null;
   const wave = scan?.cyl_plants?.cyl_waves;
 
   const accession : any = await getAccession(Number(accessionId));
@@ -78,8 +84,16 @@ export default async function Image({
       <div className="mb-4">
         {experiment?.people && <ScientistBadge person={experiment.people} />}
       </div>
-      <div className="table-auto select-none pr-8 pb-8">
-        {scan && <PlantScan scan={scan} thumb={false} />}
+      <div className="table-auto pr-8 pb-8">
+        {scan && <ScanFrameViewer scan={scan} />}
+        {scan && (
+          <ScanVideoButton
+            experimentId={Number(experimentId)}
+            scanId={scan.id}
+            initialVideoUrl={videoUrl}
+            completenessWarning={completenessWarning(scan.cyl_images)}
+          />
+        )}
       </div>
     </div>
   );
@@ -132,8 +146,15 @@ async function getScan(scanId: number) {
 
   const { data } = await supabase
     .from("cyl_scans")
-    .select("*, cyl_images(*), cyl_plants(*, cyl_waves(*))")
+    // Named columns on cyl_images, not `*`: the whole embed is serialised into the
+    // client payload, a rotation runs to ~72 frames (124 at the observed maximum), and
+    // the viewer reads three of them. PostgREST has no db-max-rows configured, so the
+    // row count is unbounded here — naming columns bounds the width, not the length.
+    .select(
+      "*, cyl_images(id, frame_number, object_path), cyl_plants(*, cyl_waves(*))"
+    )
     .eq("id", scanId)
+    .order("frame_number", { referencedTable: "cyl_images", ascending: true })
     .single();
 
   return data;

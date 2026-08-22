@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
+import { safeNextPath } from "@/lib/oauth-consent";
 import styles from "./login.module.css";
 
 const LOCAL_PART = /[^A-Za-z0-9._+\-]/g;
@@ -22,7 +23,11 @@ export default function LoginForm() {
   const [success, setSuccess] = useState("");
   const [remember, setRemember] = useState(true);
   const router = useRouter();
+  const searchParams = useSearchParams();
   const supabase = createClientSupabaseClient();
+
+  // Send the user back where they came from (e.g. a pending OAuth consent).
+  const destination = safeNextPath(searchParams.get("next")) ?? "/app";
 
   const handleSignUp = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -55,7 +60,7 @@ export default function LoginForm() {
         setError(signInError.message);
         setSuccess("");
       } else {
-        router.push("/app");
+        router.push(destination);
       }
     }
   };
@@ -77,7 +82,7 @@ export default function LoginForm() {
     if (error) {
       setError(error.message);
     } else {
-      router.push("/app");
+      router.push(destination);
     }
   };
 

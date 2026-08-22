@@ -45,7 +45,7 @@ silently reverting a trim with no signal): the trade-off is auditable (the stale
 ``outliers`` entry's own ``based_on_version`` still names the ``qc`` version it was
 trimmed from) and recoverable by a known action (re-run ``remove_outliers``), unlike
 the silent revert it replaces. See
-``openspec/changes/fix-bloommcp-remove-outliers-tool-class/design.md`` for the full
+``openspec/changes/archive/2026-08-09-fix-bloommcp-remove-outliers-tool-class/design.md`` for the full
 reasoning, including why a recency-based cross-class comparison (an earlier draft of
 this fix) does not actually work.
 
@@ -88,6 +88,7 @@ from bloom_mcp.data_access import (
     ExperimentFrame,
     ExperimentReadError,
 )
+from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import (
     CLEANED_CSV_NAME,
@@ -137,6 +138,16 @@ class RemoveOutliersParams(BaseModel):
         ...,
         description="Experiment identifier from list_available_experiments (must be "
         "cleaned).",
+    )
+    version: Optional[str] = Field(
+        default=None,
+        description="Pin outlier detection to a specific committed cleaned "
+        "version (e.g. 'v2'; see list_existing_analyses). Omit (or pass "
+        "'latest') to use the latest plain-clean version (today's default is "
+        "'latest_qc', not 'latest' — it ignores any prior outlier trim so this "
+        "tool trims from the plain clean, not from its own previous output; "
+        "'latest' is treated identically to omitting this field, not as an "
+        "override of that default).",
     )
     method: Literal["mahalanobis", "isolation_forest"] = Field(
         default="mahalanobis",
@@ -288,7 +299,7 @@ def _barcodes(report: dict) -> list[str]:
 @as_mcp_tool(
     input_model=RemoveOutliersParams,
     output_model=RemoveOutliersResult,
-    errors=(ExperimentReadError,),
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
 )
 def remove_outliers(
     params: RemoveOutliersParams, *, random_state: int, provenance: Provenance
@@ -311,11 +322,24 @@ def remove_outliers(
     # qc_clean produces. A missing cleaned version is the QC guardrail, mapped here to
     # a self-correctable assumption_violated (not the reader's raw message / tool_error).
     try:
-        # version="latest_qc": always the current plain clean, never a prior trim of
-        # our own — see the module docstring's Composition section for why (a fresh
-        # qc_clean must always be visible to the *next* remove_outliers call).
+        # version="latest_qc" is this tool's own default (not the Protocol's generic
+        # "latest"): always the current plain clean, never a prior trim of our own —
+        # see the module docstring's Composition section for why (a fresh qc_clean
+        # must always be visible to the *next* remove_outliers call). #626: an
+        # explicit params.version overrides that default; omitting it preserves it.
+        # An explicit version="latest" is treated the same as omitting it (both map
+        # to "latest_qc"): the bare Protocol default isn't a deliberate override of
+        # this tool's own default, and passing it through unchanged would silently
+        # resolve the generic outliers-preferring "latest" instead — trimming from
+        # this tool's own prior output rather than the plain clean, exactly what
+        # "latest_qc" exists to prevent (found in PR #644 review).
+        version = params.version
+        if version is None or version == "latest":
+            version = "latest_qc"
         frame = reader.load_experiment(
-            params.experiment, require_clean=True, version="latest_qc"
+            params.experiment,
+            require_clean=True,
+            version=version,
         )
     except CleanedVersionRequiredError:
         raise BloomMCPError(

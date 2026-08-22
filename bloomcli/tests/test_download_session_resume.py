@@ -8,6 +8,8 @@ held for the whole run stops working the moment that token is replaced.
 
 from __future__ import annotations
 
+import errno
+import os
 import stat
 from pathlib import Path
 
@@ -15,8 +17,8 @@ import pytest
 from click.testing import CliRunner
 from test_download_metadata import SCAN
 
+import bloomctl._storage as storage
 import bloomctl.auth as auth
-import bloomctl.cyl._storage as storage
 import bloomctl.cyl.download as dl
 from bloomctl.cli import cli
 from bloomctl.credentials import Credentials
@@ -115,11 +117,11 @@ def test_a_cached_bucket_handle_dies_when_the_client_refreshes():
 def test_download_object_resolves_a_fresh_handle_so_it_survives_the_refresh():
     """Asking for a handle each time picks up the renewed token."""
     client = _RotatingClient()
-    assert storage.download_object(client, "cyl-images/0.png") == b"bytes::cyl-images/0.png"
+    assert storage.download_object(client, "cyl-images/0.png", bucket="images") == b"bytes::cyl-images/0.png"
 
     client.auto_refresh()
 
-    assert storage.download_object(client, "cyl-images/1.png") == b"bytes::cyl-images/1.png"
+    assert storage.download_object(client, "cyl-images/1.png", bucket="images") == b"bytes::cyl-images/1.png"
 
 
 def test_a_whole_download_survives_a_refresh_mid_run(tmp_path, monkeypatch):
@@ -158,7 +160,7 @@ def test_each_frame_gets_its_own_bucket_handle(tmp_path, monkeypatch):
 def test_an_expired_looking_failure_is_retried_once():
     client = _Client(budget=0)
     with pytest.raises(storage.StorageError):
-        storage.download_object(client, "cyl-images/0.png")
+        storage.download_object(client, "cyl-images/0.png", bucket="images")
     assert client.bucket.calls == 2  # first attempt + one retry
 
 
@@ -177,7 +179,7 @@ def test_a_missing_object_is_not_retried():
     client.bucket = _MissingBucket()
 
     with pytest.raises(storage.StorageError):
-        storage.download_object(client, "cyl-images/0.png")
+        storage.download_object(client, "cyl-images/0.png", bucket="images")
     assert client.bucket.calls == 1
 
 
@@ -190,13 +192,13 @@ def test_no_credentials_are_needed_to_recover(monkeypatch):
     monkeypatch.setattr(auth, "make_authed_client", _must_not_authenticate)
     client = _RotatingClient()
     client.auto_refresh()
-    assert storage.download_object(client, "cyl-images/0.png") == b"bytes::cyl-images/0.png"
+    assert storage.download_object(client, "cyl-images/0.png", bucket="images") == b"bytes::cyl-images/0.png"
 
 
 def test_an_expired_session_is_named_instead_of_a_missing_bucket():
     client = _Client(budget=0)
     with pytest.raises(storage.StorageError) as excinfo:
-        storage.download_object(client, "cyl-images/0.png")
+        storage.download_object(client, "cyl-images/0.png", bucket="images")
 
     message = str(excinfo.value)
     assert "expired session" in message
@@ -212,7 +214,7 @@ def test_an_unrelated_error_message_is_left_alone():
     client.bucket = _BrokenBucket()
 
     with pytest.raises(storage.StorageError) as excinfo:
-        storage.download_object(client, "cyl-images/0.png")
+        storage.download_object(client, "cyl-images/0.png", bucket="images")
     assert str(excinfo.value) == "disk on fire"
 
 
@@ -244,6 +246,23 @@ def test_a_crash_mid_write_leaves_the_previous_file_intact(tmp_path, monkeypatch
     assert list(tmp_path.glob(".dl-*")) == []
 
 
+def test_a_failed_write_names_the_file_asked_for_not_the_temp_one(tmp_path, monkeypatch):
+    """The temp file is gone by the time anyone reads the error it is named in."""
+    dest = tmp_path / "frame.png"
+
+    def _full_disk(self, data):
+        raise OSError(errno.ENOSPC, "No space left on device", str(self))
+
+    monkeypatch.setattr(Path, "write_bytes", _full_disk)
+
+    with pytest.raises(OSError) as caught:
+        storage.atomic_write_bytes(dest, b"bytes")
+
+    assert caught.value.filename == str(dest), "the temp name is an implementation detail"
+    assert ".tmp" not in str(caught.value)
+    assert caught.value.errno == errno.ENOSPC, "the full-disk stop reads this"
+
+
 def test_frames_are_written_atomically(tmp_path, monkeypatch):
     """A crash mid-write must not leave a partial frame that resume would then skip."""
     monkeypatch.setattr(dl, "fetch_images", lambda c, scan_id: _images(1))
@@ -272,14 +291,17 @@ def test_already_downloaded_ignores_empty_and_missing_files(tmp_path):
     assert storage.already_downloaded(complete)
 
 
-def test_already_downloaded_checks_the_expected_size_when_one_is_known(tmp_path):
-    """A half-written frame from an older version must not count as finished."""
+def test_a_truncated_frame_is_taken_on_trust_because_no_size_is_known(tmp_path):
+    """Pins the limit of what resume can promise, so the docs cannot drift past it.
+
+    Nothing tells `bloomctl` how long a frame should be — `cyl_images` records the path,
+    not the length — so a fragment left by `0.1.0a3` counts as present. The CHANGELOG
+    says to download such a directory afresh; this is the code that makes that necessary.
+    """
     truncated = tmp_path / "frame.png"
     truncated.write_bytes(b"partial")
 
-    assert storage.already_downloaded(truncated)  # size unknown: only "non-empty"
-    assert not storage.already_downloaded(truncated, expected_size=815689)
-    assert storage.already_downloaded(truncated, expected_size=len(b"partial"))
+    assert storage.already_downloaded(truncated)
 
 
 def test_download_images_skips_frames_already_on_disk(tmp_path, monkeypatch):
@@ -463,7 +485,7 @@ def test_the_retry_waits_before_trying_again(monkeypatch):
 
     client = _Client(budget=0)
     with pytest.raises(storage.StorageError):
-        storage.download_object(client, "cyl-images/0.png")
+        storage.download_object(client, "cyl-images/0.png", bucket="images")
 
     assert slept == [storage.RETRY_DELAY_SECONDS]
 
@@ -494,5 +516,37 @@ def test_the_retry_asks_for_a_new_bucket_handle():
     client = _Client()
     client.storage = _StaleFirstHandle()
 
-    assert storage.download_object(client, "cyl-images/0.png") == b"fetched with a fresh handle"
+    assert storage.download_object(client, "cyl-images/0.png", bucket="images") == b"fetched with a fresh handle"
     assert client.storage.handles == 2, "the retry must resolve its own handle"
+
+
+def test_the_sweep_reaches_temp_files_outside_the_images_tree(tmp_path):
+    """`scans.csv` and `download_log.txt` write atomically too, beside themselves in the root.
+
+    Sweeping only `images/` left those two behind for good after a hard kill.
+    """
+    (tmp_path / "images" / "Wave2").mkdir(parents=True)
+    beside_a_frame = tmp_path / "images" / "Wave2" / ".dl-deadbeef.tmp"
+    beside_the_csv = tmp_path / ".dl-cafebabe.tmp"
+    beside_a_frame.write_bytes(b"half a frame")
+    beside_the_csv.write_bytes(b"half a scans.csv")
+    for old in (beside_a_frame, beside_the_csv):
+        os.utime(old, (0, 0))  # abandoned, not in flight
+
+    removed = storage.sweep_orphan_temps(tmp_path)
+
+    assert removed == 2
+    assert not beside_a_frame.exists() and not beside_the_csv.exists()
+
+
+def test_the_sweep_leaves_the_real_output_alone(tmp_path):
+    """It runs at the start of every download, over a directory holding finished work."""
+    (tmp_path / "images").mkdir()
+    csv = tmp_path / "scans.csv"
+    csv.write_text("scan_id\n1\n")
+    frame = tmp_path / "images" / "0.png"
+    frame.write_bytes(b"a real frame")
+
+    assert storage.sweep_orphan_temps(tmp_path) == 0
+    assert csv.read_text() == "scan_id\n1\n"
+    assert frame.read_bytes() == b"a real frame"

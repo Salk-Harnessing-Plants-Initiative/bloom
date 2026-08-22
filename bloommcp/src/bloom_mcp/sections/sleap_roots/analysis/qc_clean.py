@@ -75,6 +75,7 @@ from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.data_access.columns import resolve_columns, run_input_validation
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import CLEANED_CSV_NAME, QC_TOOL_CLASS
+from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._inline_input import compute_input_sha256, parse_inline_csv_frame
 from bloom_mcp.tools._qc_shared import (
@@ -186,6 +187,19 @@ class QCCleanParams(BaseModel):
         default=None,
         description="Optional slug appended to the version directory name.",
     )
+    source_id: Optional[int] = Field(
+        default=None,
+        description="Pin cleaning to a specific raw DB source (see "
+        "core_list_experiment_sources). Omit to use the latest source, same as "
+        "today. Mutually exclusive with run_id. Not applicable to csv_content.",
+    )
+    run_id: Optional[str] = Field(
+        default=None,
+        description="Pin cleaning to a specific raw DB source by its pipeline "
+        "run id (see core_list_experiment_sources). Omit to use the latest "
+        "source, same as today. Mutually exclusive with source_id. Not "
+        "applicable to csv_content.",
+    )
 
     # NOTE: the exactly-one-of-experiment/csv_content rule is enforced in the tool
     # body (qc_clean's first lines), not here as a @model_validator. A validator's
@@ -249,12 +263,22 @@ class QCCleanResult(BaseModel):
             "has no csv_content support)."
         ),
     )
+    source_note: Optional[str] = Field(
+        default=None,
+        description=(
+            "Advisory populated only when the experiment has more than one known "
+            "raw source and neither source_id nor run_id was given: names the "
+            "source actually used and points to core_list_experiment_sources to "
+            "choose a different one. None when a pin was given, when the "
+            "experiment has zero or one source, or on the csv_content path."
+        ),
+    )
 
 
 @as_mcp_tool(
     input_model=QCCleanParams,
     output_model=QCCleanResult,
-    errors=(ExperimentReadError,),
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
 )
 def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     """Clean ``experiment`` (or inline ``csv_content``) via analyze's
@@ -283,6 +307,28 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     # there is no experiment identity on the inline path.
     experiment_label = _INLINE_EXPERIMENT_LABEL if is_inline else params.experiment
 
+    # A source/run pin only ever means anything against the DB-backed raw tier —
+    # csv_content bypasses the reader port entirely, so there is no source to pin.
+    # Reject rather than silently drop (the same "reject, don't silently ignore"
+    # principle the exactly-one-of-experiment/csv_content check above applies) —
+    # checked here, not via a @model_validator, for the same reason documented in
+    # the NOTE on QCCleanParams: a validator's raised ValueError loses this specific
+    # message to the contract layer's generic "(<root>: value_error)" text.
+    if is_inline and (params.source_id is not None or params.run_id is not None):
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                "source_id/run_id cannot be used with csv_content: a source pin "
+                "only applies to a registered experiment's raw DB-backed read, "
+                "and csv_content bypasses that read entirely."
+            ),
+            remedy=(
+                "Omit source_id/run_id when using csv_content, or supply "
+                "experiment instead of csv_content to pin a source."
+            ),
+        )
+
+    source_note: Optional[str] = None
     if is_inline:
         # Inline content bypasses the ExperimentReader port entirely — parsed directly
         # into an in-memory frame by the shared helper, never touching Storage/DB.
@@ -294,7 +340,32 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         # RAW input — never re-clean a prior cleaned artifact. Force version="raw" so a
         # re-run (after a cleaned version already exists) still reads raw rather than
         # the default "latest" resolution, which would resolve the newest _cleaned.csv.
-        frame = reader.load_experiment(params.experiment, version="raw")
+        frame = reader.load_experiment(
+            params.experiment,
+            version="raw",
+            source_id=params.source_id,
+            run_id=params.run_id,
+        )
+        # #626: when neither source_id nor run_id was given and the experiment has
+        # more than one known source, say so explicitly rather than silently
+        # resolving "latest" — an agent that hasn't already discovered the sources
+        # should still learn there was a choice to make. Reads frame.available_source_count
+        # (stamped from the SAME resolution load_experiment already performed) rather than
+        # a fresh reader.list_sources call — that would be a redundant DB round-trip with a
+        # TOCTOU window against the read above.
+        if (
+            params.source_id is None
+            and params.run_id is None
+            and frame.available_source_count is not None
+            and frame.available_source_count > 1
+            and frame.resolved_source is not None
+        ):
+            source_note = (
+                f"{frame.available_source_count} sources available for "
+                f"{params.experiment!r}; used latest "
+                f"(source_id={frame.resolved_source.source_id}). Call "
+                "core_list_experiment_sources to choose a different one."
+            )
 
     # B-4: the same column cannot serve as both genotype label and sample identifier.
     if (
@@ -664,4 +735,5 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         output_links=output_links,
         input_sha256=input_sha256,
         next_step=next_step,
+        source_note=source_note,
     )

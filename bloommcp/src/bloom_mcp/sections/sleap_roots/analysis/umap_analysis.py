@@ -49,6 +49,13 @@ needs a ``pca_results`` dict to rank trait contributions; this tool computes tha
 internal, **non-persisted** call to ``perform_pca_analysis`` over the exact same
 certified-clean trait selection already used for the UMAP embedding (see design.md's
 Decision #3 — no second versioned run is created for it).
+
+**Optional font-style override (#661).** ``plot_font_family``/``plot_font_size`` are
+forwarded into ``_plots.generate_figures`` — the same shared helper call above — which
+applies them uniformly to every generated figure's title, axis labels, tick labels,
+standalone annotation text, figure-level text (e.g. a ``fig.suptitle`` — as
+``create_umap_colored_by_top_traits`` sets), and legend text/title before it is persisted.
+Both default to ``None`` (no override) and are ignored when ``include_plots=False``.
 """
 
 from __future__ import annotations
@@ -66,6 +73,7 @@ from bloom_mcp.data_access import (
     ExperimentFrame,
     ExperimentReadError,
 )
+from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._consumer_utils import _build_output_frame, snapshot_frame
 from bloom_mcp.tools._plots import close_figures, generate_figures, validate_plot_keys
@@ -101,6 +109,12 @@ class UMAPAnalysisParams(BaseModel):
         "produced by qc_clean; umap_analysis consumes it (require_clean). Resolves the most "
         "recent outlier trim when one exists for the experiment, not merely the most "
         "recent clean.",
+    )
+    version: str | None = Field(
+        default=None,
+        description="Pin the analysis to a specific committed cleaned version "
+        "(e.g. 'v2'; see list_existing_analyses). Omit to use the latest "
+        "cleaned version, same as today.",
     )
     trait_columns: list[str] | None = Field(
         default=None,
@@ -151,6 +165,46 @@ class UMAPAnalysisParams(BaseModel):
         "available plots when include_plots=True. Ignored when include_plots=False. "
         "Valid keys: create_umap_single_trait, create_umap_colored_by_top_traits.",
     )
+    plot_font_family: str | None = Field(
+        default=None,
+        description="Font family override (e.g. 'serif', 'DejaVu Sans') applied to every "
+        "text element (title, axis labels, tick labels, annotations, legend text/title) "
+        "on each generated plot. Omit for each plot's default matplotlib styling. Ignored "
+        "when include_plots=False. An unrecognized family name is not rejected — it "
+        "silently falls back to matplotlib's default font rather than erroring, so a "
+        "typo won't surface as invalid_input.",
+    )
+    plot_font_size: float | None = Field(
+        default=None,
+        gt=0,
+        description="Font size (points) override applied to every text element on each "
+        "generated plot. Omit for each plot's default size. Ignored when "
+        "include_plots=False.",
+    )
+    plot_cmap: str | None = Field(
+        default=None,
+        description="Colormap for create_umap_single_trait's continuous trait coloring "
+        "(e.g. 'plasma', 'viridis'). Not validated against matplotlib's colormap registry — "
+        "an unknown name raises ValueError from matplotlib itself at figure-generation "
+        "time. Has no effect on create_umap_colored_by_top_traits (its upstream signature "
+        "does not accept cmap). Ignored (not rejected) when include_plots=False.",
+    )
+    plot_point_size: float | None = Field(
+        default=None,
+        gt=0,
+        description="Scatter point size for create_umap_single_trait. Has no effect on "
+        "create_umap_colored_by_top_traits (its upstream signature does not accept "
+        "point_size). Ignored (not rejected) when include_plots=False.",
+    )
+    plot_alpha: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Point transparency (0=fully transparent, 1=fully opaque) for "
+        "create_umap_single_trait. Has no effect on create_umap_colored_by_top_traits (its "
+        "upstream signature does not accept alpha). Ignored (not rejected) when "
+        "include_plots=False.",
+    )
     user_label: str | None = Field(
         default=None,
         description="Optional slug appended to the version directory name.",
@@ -176,6 +230,10 @@ def _umap_plot_calls(
     result_dict: dict,
     frame: ExperimentFrame,
     trait_cols: list[str],
+    *,
+    plot_cmap: str | None = None,
+    plot_point_size: float | None = None,
+    plot_alpha: float | None = None,
 ) -> dict:
     """Return zero-arg callables for each catalog plot key, lazily importing plotters.
 
@@ -183,11 +241,25 @@ def _umap_plot_calls(
     on the ``include_plots=True`` path. This does NOT keep matplotlib out of
     ``sys.modules`` on the default path — this module's top-level ``sleap_roots_analyze``
     import already pulls matplotlib in transitively (see the module docstring).
+
+    ``plot_cmap``/``plot_point_size``/``plot_alpha`` are forwarded to
+    ``create_umap_single_trait`` only — the sole catalog plotter here whose upstream
+    signature accepts any of them (see design.md's per-plotter support table) — and only
+    when set, so an unset (``None``) field reproduces the plotter's own hardcoded default
+    exactly rather than passing that default back explicitly.
     """
     from sleap_roots_analyze import (
         create_umap_colored_by_top_traits,
         create_umap_single_trait,
     )
+
+    single_trait_kwargs: dict = {}
+    if plot_cmap is not None:
+        single_trait_kwargs["cmap"] = plot_cmap
+    if plot_point_size is not None:
+        single_trait_kwargs["point_size"] = plot_point_size
+    if plot_alpha is not None:
+        single_trait_kwargs["alpha"] = plot_alpha
 
     def _top_traits():
         # Internal, non-persisted PCA call over the exact same certified-clean trait
@@ -233,7 +305,7 @@ def _umap_plot_calls(
 
     return {
         "create_umap_single_trait": lambda: create_umap_single_trait(
-            result_dict, frame.df, trait_cols[0]
+            result_dict, frame.df, trait_cols[0], **single_trait_kwargs
         ),
         "create_umap_colored_by_top_traits": _top_traits,
     }
@@ -242,7 +314,7 @@ def _umap_plot_calls(
 @as_mcp_tool(
     input_model=UMAPAnalysisParams,
     output_model=UMAPAnalysisResult,
-    errors=(ExperimentReadError,),
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
 )
 def umap_analysis(
     params: UMAPAnalysisParams, *, random_state: int, provenance: Provenance
@@ -254,8 +326,13 @@ def umap_analysis(
     # Consumer: require a cleaned version. A missing one is a precondition failure with a
     # concrete remedy — caught here so it carries "run qc_clean first" rather than the
     # contract's generic tool_error message for the declared read error.
+    # #626: an explicit version selector is opt-in; omitting it makes this call
+    # identical to before this change (no version kwarg -> Protocol default "latest").
+    version_kwargs = {} if params.version is None else {"version": params.version}
     try:
-        frame = reader.load_experiment(params.experiment, require_clean=True)
+        frame = reader.load_experiment(
+            params.experiment, require_clean=True, **version_kwargs
+        )
     except CleanedVersionRequiredError:
         raise BloomMCPError(
             code="tool_error",
@@ -377,13 +454,25 @@ def umap_analysis(
 
             matplotlib.use("Agg")
             validate_plot_keys(params.plots, _UMAP_CATALOG_KEYS)
-            calls = _umap_plot_calls(result_dict, frame, trait_cols)
+            calls = _umap_plot_calls(
+                result_dict,
+                frame,
+                trait_cols,
+                plot_cmap=params.plot_cmap,
+                plot_point_size=params.plot_point_size,
+                plot_alpha=params.plot_alpha,
+            )
             keys_to_generate = (
                 list(params.plots)
                 if params.plots is not None
                 else list(_UMAP_CATALOG_KEYS)
             )
-            generate_figures({k: calls[k] for k in keys_to_generate}, figures)
+            generate_figures(
+                {k: calls[k] for k in keys_to_generate},
+                figures,
+                font_family=params.plot_font_family,
+                font_size=params.plot_font_size,
+            )
 
         with snapshot_frame(frame.df) as source_snapshot:
             run = store.create_run(

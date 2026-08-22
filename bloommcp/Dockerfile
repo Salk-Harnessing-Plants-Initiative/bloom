@@ -7,14 +7,13 @@ COPY --from=ghcr.io/astral-sh/uv:0.11@sha256:b1e699368d24c57cda93c338a57a8c5a119
 # Venv outside /app so dev compose bind-mounts don't shadow it
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv PATH="/opt/venv/bin:$PATH"
 
-# System deps for matplotlib rendering and scipy (must precede uv sync and run as root)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libfreetype6-dev \
-    libpng-dev \
-    libjpeg-dev \
-    pkg-config \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
+# No apt-get block: matplotlib, numpy, scipy, and every other native-code dependency
+# (scikit-learn, statsmodels, pillow, numba/llvmlite, etc.) publish manylinux wheels
+# for this image's cp311 + x86_64/aarch64 target, so `uv sync` resolves prebuilt
+# wheels rather than compiling from source (confirmed via build log; see #590). A
+# future dependency that genuinely needs native compilation should reintroduce an
+# apt-get block then — tests/unit/test_bloommcp_dockerfile_shape.py guards against
+# a silent regression back to one being unnecessary.
 
 # Create bloom user AND pre-create bloom-owned dirs in a single layer BEFORE the
 # venv install, so `uv sync` (and every subsequent COPY) can run as bloom — no

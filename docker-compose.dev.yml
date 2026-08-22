@@ -13,13 +13,16 @@ services:
       context: .
       dockerfile: ./web/Dockerfile.bloom-web.dev
       args:
-        NEXT_PUBLIC_SUPABASE_URL: http://localhost:8000
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-http://localhost:8000}
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
     ports:
       - "${BLOOM_WEB_PORT}:3000"
     environment:
       NODE_ENV: development
-      NEXT_PUBLIC_SUPABASE_URL: http://localhost:8000
+      # Browser-facing: must be an address the *browser* can reach.
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-http://localhost:8000}
+      # Server-facing: stays on the Docker network.
+      SUPABASE_URL: http://kong:8000
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
       SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
       JWT_SECRET: ${JWT_SECRET}
@@ -119,6 +122,100 @@ services:
       - kong
     restart: unless-stopped
 
+  # Consumes the cyl_pipeline_dispatch pgmq queue (bloom #11/#404 Phase 2) and
+  # submits each claimed batch to Argo as a Kubernetes Workflow CRD. Same image
+  # as workflows; scale by replicas (pgmq's claim is concurrency-safe).
+  cyl-pipeline-worker:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      # Real credentials for the bloom-pipeline ServiceAccount — deploy-time
+      # secrets, not filled in here. Namespace/TTL have safe code defaults
+      # (runai-busch-lab / 3600s) so they're not required to be set.
+      WORKFLOWS_K8S_TOKEN: ${WORKFLOWS_K8S_TOKEN}
+      WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
+      WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
+      WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE:-runai-busch-lab}
+      WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS:-3600}
+      WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL:-dev}
+    volumes:
+      - ./services/workflows:/app
+    command: ["python", "dispatch_worker.py"]
+    networks:
+      - supanet
+    depends_on:
+      - db-dev
+      - kong
+    # See docker-compose.prod.yml's cyl-pipeline-worker for why this isn't
+    # Docker's 10s default — the in-flight K8s submission POST alone can take
+    # up to 15s (k8s_client.py's httpx timeout).
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # Periodically polls Argo for each in-flight run's real Workflow phase(s)
+  # and progresses cyl_pipeline_runs.status past dispatch outcome (bloom #11
+  # Phase 3) — a separate process from cyl-pipeline-worker above (event-driven
+  # dispatch vs. this poller's fixed wall-clock sweep). Same image; read-only
+  # use of the K8s API (get, not create), so only four of the five
+  # WORKFLOWS_K8S_* vars are needed — TTL_SECONDS/ENV_LABEL are
+  # submission-only (build_workflow_body), never read by this poller.
+  # WORKFLOWS_STATUS_POLL_SECONDS is deliberately NOT referenced here — its
+  # Python-side default (15s) governs it, matching WORKFLOWS_WORKER_POLL_SECONDS's
+  # own precedent above; adding it here without a real default-file entry would
+  # make compose inject an empty string and silently override that default.
+  # Also safe to scale by replicas, for a different reason than cyl-pipeline-
+  # worker above: each sweep is an idempotent recompute from Argo's current
+  # state (see design.md's "rollup computation happens in Python" decision),
+  # not a claimed, exactly-once event — redundant concurrent sweeps just
+  # mean harmless, wasted-work overlap, not a correctness risk.
+  cyl-status-poller:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      WORKFLOWS_K8S_TOKEN: ${WORKFLOWS_K8S_TOKEN}
+      WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
+      WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
+      WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE:-runai-busch-lab}
+    volumes:
+      - ./services/workflows:/app
+    command: ["python", "status_poller.py"]
+    networks:
+      - supanet
+    depends_on:
+      - db-dev
+      - kong
+    # Larger than cyl-pipeline-worker's 30s (found during /review-pr round 1,
+    # not a blind copy): one sweep can issue one get_workflow_status GET per
+    # distinct workflow name across EVERY candidate run this cycle, not a
+    # single call per claim, so 30s isn't necessarily enough headroom for
+    # _stop()'s documented "let the in-flight sweep finish" guarantee.
+    stop_grace_period: 60s
+    restart: unless-stopped
+
   bloommcp:
     build:
       context: ./bloommcp
@@ -147,6 +244,16 @@ services:
       # actually carries the header), so leaving it set here has no effect
       # until a client sends that header.
       JWT_SECRET: ${JWT_SECRET}
+      # OAuth login for external MCP clients. Both URLs must be reachable by
+      # the *client* (which runs outside Docker), so they use host-facing
+      # addresses, not the internal kong hostname. Setting both turns on the
+      # /.well-known/oauth-protected-resource. Also reused (bloom#642) as the
+      # self-serve base for local-backend /plots URLs below — see
+      # bloommcp/docs/storage-backends.md.
+      BLOOMMCP_PUBLIC_URL: ${BLOOMMCP_PUBLIC_URL:-http://localhost:8811}
+      BLOOMMCP_OAUTH_AUTHORIZATION_SERVER: ${BLOOMMCP_OAUTH_AUTHORIZATION_SERVER:-http://localhost:8000/auth/v1}
+      # Set once Supabase signs asymmetrically; unset falls back to JWT_SECRET.
+      BLOOMMCP_OAUTH_JWKS_URI: ${BLOOMMCP_OAUTH_JWKS_URI:-}
       # Storage backend (opt-in, default off — empty here behaves exactly like
       # unset). Set BLOOM_STORAGE_BACKEND=local in your own .env.dev, or run
       # `make dev-up-local`, to run FULLY LOCAL (offline) — reads inputs via
@@ -167,10 +274,12 @@ services:
       BLOOM_STORAGE_LOCAL_ROOT: ${BLOOM_STORAGE_LOCAL_ROOT:-}
       BLOOM_EXPERIMENT_LOCAL_ROOT: ${BLOOM_EXPERIMENT_LOCAL_ROOT:-}
       BLOOM_LOCAL_ROOT: ${BLOOM_LOCAL_ROOT:-}
-      # Served-URL base the local backend uses to construct output_links URLs
-      # (bloom#581) — only meaningful with BLOOM_STORAGE_BACKEND=local, and
-      # only if something is separately serving BLOOM_STORAGE_LOCAL_ROOT over
-      # HTTP at this base (bloommcp does not run that server itself).
+      # Served-URL base for LocalStorageBackend.create_signed_url (bloom#581) —
+      # NOT used by bloommcp's own output_links (bloom#642: those carry a
+      # direct filesystem path for the local backend, no URL needed at all).
+      # Only relevant if you're deliberately calling create_signed_url
+      # yourself against a server you've separately stood up to serve
+      # BLOOM_STORAGE_LOCAL_ROOT over HTTP; leave unset otherwise.
       BLOOM_STORAGE_URL: ${BLOOM_STORAGE_URL:-}
       # Kept in sync with docker-compose.prod.yml for dev/prod parity, even
       # though dev has a writable root FS. See the prod compose for rationale.
@@ -196,7 +305,7 @@ services:
     restart: unless-stopped
 
   studio:
-    image: supabase/studio:2025.06.30-sha-6f5982d
+    image: supabase/studio:2026.03.30-sha-12a43e5
     restart: unless-stopped
     networks:
       - supanet
@@ -216,7 +325,8 @@ services:
     environment:
       STUDIO_PG_META_URL: http://meta:8080
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-
+      # Required from studio 2026.03.30 onward; without it the container exits on boot.
+      EDGE_FUNCTIONS_MANAGEMENT_FOLDER: /tmp/edge-functions
       DEFAULT_ORGANIZATION_NAME: ${STUDIO_DEFAULT_ORGANIZATION}
       DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
@@ -254,7 +364,7 @@ services:
     entrypoint: bash -c 'eval "echo \"$$(cat ~/temp.yml)\"" > ~/kong.yml && /docker-entrypoint.sh kong docker-start'
 
   auth:
-    image: supabase/gotrue:v2.177.0
+    image: supabase/gotrue:v2.188.1
     restart: unless-stopped
     networks:
       - supanet
@@ -271,6 +381,7 @@ services:
       timeout: 5s
       interval: 5s
       retries: 3
+      start_period: 20s
     depends_on:
       db-dev:
         condition: service_healthy
@@ -291,6 +402,13 @@ services:
       GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
       GOTRUE_JWT_EXP: ${JWT_EXPIRY}
       GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      # Asymmetric signing keys. ID tokens (the `openid` scope) cannot be
+      # signed with the shared HS256 secret — a public client has no way to
+      # verify one without also holding the secret — so GoTrue refuses and the
+      # token exchange fails. This key set carries an ES256 private key for
+      # new tokens plus JWT_SECRET as a symmetric JWK, so tokens already
+      # signed with the secret keep verifying.
+      GOTRUE_JWT_KEYS: ${JWT_KEYS:-[]}
 
       GOTRUE_EXTERNAL_EMAIL_ENABLED: ${ENABLE_EMAIL_SIGNUP}
       GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: ${ENABLE_ANONYMOUS_USERS}
@@ -299,6 +417,24 @@ services:
       # Custom access token hook — assigns bloom_user/bloom_admin role via JWT
       GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_ENABLED: "true"
       GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_URI: "pg-functions://postgres/public/custom_access_token_hook"
+      # OAuth discovery must advertise absolute URLs. Without an issuer GoTrue
+      # emits relative endpoints a conforming client cannot resolve — discovery
+      # returns 200 and the flow dead-ends before registration.
+      GOTRUE_API_EXTERNAL_URL: ${API_EXTERNAL_URL}
+      # Deliberately NOT ${API_EXTERNAL_URL}/auth/v1 (http://localhost:9999/auth/v1
+      # by default): that's GoTrue's own direct port, which this compose file
+      # never publishes to the host (no `ports:` on the `auth` service, only
+      # reachable container-to-container via `supanet`). An MCP client
+      # validating `iss` per RFC 9207 would reject every dev-issued token
+      # against an issuer it cannot even resolve. Routed through Kong's
+      # published port instead, matching BLOOMMCP_OAUTH_AUTHORIZATION_SERVER's
+      # own default (http://localhost:8000/auth/v1) below — both must name the
+      # same externally-reachable authorization server.
+      GOTRUE_JWT_ISSUER: http://localhost:${KONG_HTTP_PORT}/auth/v1
+      GOTRUE_OAUTH_SERVER_ENABLED: ${GOTRUE_OAUTH_SERVER_ENABLED:-true}
+      GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH: ${GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH:-/oauth/consent}
+      GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION: ${GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION:-true}
+      GOTRUE_OAUTH_SERVER_AUTHORIZATION_TTL: ${GOTRUE_OAUTH_SERVER_AUTHORIZATION_TTL:-600s}
 
   rest:
     image: postgrest/postgrest:v12.2.12
@@ -312,7 +448,7 @@ services:
       PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
       PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS}
       PGRST_DB_ANON_ROLE: anon
-      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_JWT_SECRET: ${JWT_JWKS:-${JWT_SECRET}}
       PGRST_DB_USE_LEGACY_GUCS: "false"
       PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
       PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY}
@@ -345,6 +481,7 @@ services:
       timeout: 5s
       interval: 5s
       retries: 3
+      start_period: 60s
     environment:
       PORT: 4000
       DB_HOST: ${POSTGRES_HOST}
@@ -354,7 +491,11 @@ services:
       DB_NAME: ${POSTGRES_DB}
       DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime'
       DB_ENC_KEY: ${DB_ENC_KEY}
+      # Realtime takes the JWKS via its own API_JWT_JWKS, not API_JWT_SECRET (#646).
+      # Default is `null`, not empty: seeds.exs guards with `if v, do: Jason.decode!(v)`
+      # and "" is truthy in Elixir, so an empty value crashes the boot seed.
       API_JWT_SECRET: ${JWT_SECRET}
+      API_JWT_JWKS: ${JWT_JWKS:-null}
       SECRET_KEY_BASE: ${SECRET_KEY_BASE}
       ERL_AFLAGS: -proto_dist inet_tcp
       DNS_NODES: "''"
@@ -380,7 +521,7 @@ services:
   minio-init:
     networks:
       - supanet
-    image: minio/mc:RELEASE.2025-01-17T23-25-50Z
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on:
       - supabase-minio
     entrypoint: ["/bin/sh", "/usr/local/bin/init/create-buckets.sh"]
@@ -393,7 +534,7 @@ services:
   storage:
     networks:
       - supanet
-    image: supabase/storage-api:v1.25.7
+    image: supabase/storage-api:v1.48.14
     restart: unless-stopped
     ports:
       - "${STORAGE_PORT}:5000"
@@ -412,6 +553,7 @@ services:
       timeout: 5s
       interval: 5s
       retries: 3
+      start_period: 30s
     depends_on:
       db-dev:
         condition: service_healthy
@@ -423,7 +565,12 @@ services:
       ANON_KEY: ${ANON_KEY}
       SERVICE_KEY: ${SERVICE_ROLE_KEY}
       POSTGREST_URL: http://rest:3000
+      # storage-api reads asymmetric keys from JWT_JWKS only — it treats
+      # PGRST_JWT_SECRET as an opaque symmetric secret, so the JWKS must not go
+      # there. Without JWT_JWKS its accepted-alg list stays HS256-only and every
+      # ES256 session token is refused (#646).
       PGRST_JWT_SECRET: ${JWT_SECRET}
+      JWT_JWKS: ${JWT_JWKS:-null}
       DATABASE_URL: postgres://supabase_storage_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
       # 500 MB cap for GraviScan jpegs (single sensor image). Per-bucket
       # `storage.buckets.file_size_limit` further constrains where stricter caps are needed.
@@ -441,7 +588,7 @@ services:
       IMGPROXY_URL: http://imgproxy:5001
 
   imgproxy:
-    image: darthsim/imgproxy:v3.8.0
+    image: darthsim/imgproxy:v3.31.1
     restart: unless-stopped
     networks:
       - supanet
@@ -457,6 +604,7 @@ services:
       timeout: 5s
       interval: 5s
       retries: 3
+      start_period: 20s
     environment:
       IMGPROXY_BIND: ":5001"
       IMGPROXY_LOCAL_FILESYSTEM_ROOT: /
@@ -464,7 +612,7 @@ services:
       IMGPROXY_ENABLE_WEBP_DETECTION: ${IMGPROXY_ENABLE_WEBP_DETECTION}
 
   meta:
-    image: supabase/postgres-meta:v0.91.6
+    image: supabase/postgres-meta:v0.96.2
     restart: unless-stopped
     networks:
       - supanet
@@ -483,7 +631,22 @@ services:
   # connections to DataDog. See: https://github.com/supabase/cli/issues/3254
 
   db-dev:
-    image: supabase/postgres:15.8.1.060
+    # Pinned to the same tag as docker-compose.prod.yml. Behaviour that differs between
+    # Postgres builds is otherwise invisible locally and only surfaces in the one CI job
+    # that builds from the prod compose file. See issue #692.
+    #
+    # Upgrading an existing checkout requires clearing TWO things once, or the container
+    # restart-loops on `configuration file "/etc/postgresql/postgresql.conf" contains errors`:
+    #
+    #   make dev-down
+    #   rm -rf ./volumes/db/data              # bind mount; both tags are PG 15, so the
+    #                                         # cluster is otherwise never re-initialised
+    #   docker volume rm bloom_v2_dev_db-config   # holds supautils.conf et al. written by
+    #                                             # the OLD image; the new one rejects it
+    #
+    # The db-config volume is the non-obvious one — it survives `docker compose down` and is
+    # shared by every worktree using the bloom_v2_dev project name.
+    image: supabase/postgres:15.14.1.104
     restart: unless-stopped
     volumes:
       - ./volumes/db/_supabase.sh:/docker-entrypoint-initdb.d/96-_supabase.sh:Z
@@ -515,6 +678,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 60s
     environment:
       POSTGRES_HOST: /var/run/postgresql
       PGPORT: ${POSTGRES_PORT}
@@ -549,7 +713,7 @@ services:
       TRY_IT_OUT_ENABLED: true
 
   supavisor:
-    image: supabase/supavisor:2.5.7
+    image: supabase/supavisor:2.7.4
     restart: unless-stopped
     networks:
       - supanet
@@ -571,6 +735,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 60s
     depends_on:
       db-dev:
         condition: service_healthy
@@ -584,6 +749,8 @@ services:
       CLUSTER_POSTGRES: true
       SECRET_KEY_BASE: ${SECRET_KEY_BASE}
       VAULT_ENC_KEY: ${VAULT_ENC_KEY}
+      # Supavisor has no documented JWKS input, so it keeps the symmetric secret
+      # it used before the asymmetric migration rather than an unreadable blob (#646).
       API_JWT_SECRET: ${JWT_SECRET}
       METRICS_JWT_SECRET: ${JWT_SECRET}
       REGION: local

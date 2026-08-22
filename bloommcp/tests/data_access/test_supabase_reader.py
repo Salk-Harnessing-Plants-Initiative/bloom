@@ -277,20 +277,67 @@ def test_list_experiments_enumerates_database_experiments(
     assert summary.trait_columns == 2
     assert summary.genotype_col == "genotype"
     assert summary.sample_id_col == "sample_id"
+    # bloom#637: trait_columns's own staleness, threaded from the RPC's n_traits_updated_at.
+    assert summary.trait_columns_updated_at == "2026-01-01T00:00:00+00:00"
+    # The whole point of this change: one bulk RPC call, not one per experiment.
+    assert fake_supabase_db.rpc_calls.count("get_experiment_summary_counts") == 1
+    assert "get_experiment_traits" not in fake_supabase_db.rpc_calls
     # The discovery -> read round trip: the printed filename must itself load.
     SupabaseReader().load_experiment(summary.filename)
 
 
-def test_list_experiments_excludes_a_failing_experiment(
+def test_list_experiments_reports_zero_counts_for_experiment_with_no_traits(
     fake_supabase_storage, fake_supabase_db
 ):
+    """An experiment that exists in cyl_experiments but has no matching trait
+    rows is listed with rows=0/trait_columns=0, not excluded -- the bulk
+    RPC's result set has no row for it at all, so list_experiments() must
+    default the missing entry to zero rather than dropping the experiment."""
     _seed_two_plant_experiment(fake_supabase_db, experiment_id=42)
-    fake_supabase_db.seed_experiment(43, "broken experiment")
+    fake_supabase_db.seed_experiment(43, "no traits yet")
+    summaries = {s.filename: s for s in SupabaseReader().list_experiments()}
+    assert set(summaries) == {"42", "43"}
+    assert summaries["43"].rows == 0
+    assert summaries["43"].trait_columns == 0
+    # Missing from the bulk RPC's result entirely -- defaults to None, not a fabricated timestamp.
+    assert summaries["43"].trait_columns_updated_at is None
+
+
+def test_list_experiments_raises_when_summary_counts_rpc_fails(
+    fake_supabase_storage, fake_supabase_db
+):
+    """A bulk get_experiment_summary_counts failure has no per-experiment
+    granularity to fail-open into (unlike the old per-experiment loop) --
+    it must surface as a structured ExperimentReadError, not an empty or
+    partial list."""
+    _seed_two_plant_experiment(fake_supabase_db, experiment_id=42)
     fake_supabase_db.fail_rpc(
-        "get_experiment_traits", RuntimeError("boom"), experiment_id=43
+        "get_experiment_summary_counts",
+        RuntimeError("connection reset by peer at 10.0.0.5:5432"),
     )
-    summaries = SupabaseReader().list_experiments()
-    assert {s.filename for s in summaries} == {"42"}
+    with pytest.raises(ExperimentReadError) as exc_info:
+        SupabaseReader().list_experiments()
+    assert "10.0.0.5" not in str(exc_info.value)
+
+
+def test_get_experiment_summary_counts_rpc_honors_a_pinned_experiment_id(
+    fake_supabase_storage, fake_supabase_db
+):
+    """`list_experiments()` only ever calls this RPC unpinned, but its signature
+    exists so a future source-pinning caller can reuse it pinned to one
+    experiment_id_ -- prove the fake (and therefore the contract a real caller
+    would rely on) actually honors that pin, not just the all-NULL case."""
+    import bloom_mcp.supabase_client as _sc
+
+    _seed_two_plant_experiment(fake_supabase_db, experiment_id=42)
+    _seed_two_plant_experiment(fake_supabase_db, experiment_id=43)
+
+    rows = _sc.call_rpc(
+        "get_experiment_summary_counts",
+        {"experiment_id_": 42, "source_id_": None, "run_id_": None},
+    )
+
+    assert {r["experiment_id"] for r in rows} == {42}
 
 
 def test_supabase_reader_no_longer_satisfies_raw_sourced(
@@ -336,6 +383,29 @@ def test_resolved_source_is_none_for_cleaned_tier_read(
     frame = SupabaseReader().load_experiment(str(experiment_id))
     assert frame.source.endswith("_cleaned")
     assert frame.resolved_source is None
+    assert frame.available_source_count is None
+
+
+def test_available_source_count_reflects_the_real_multi_source_read(
+    fake_supabase_storage, fake_supabase_db, seed_multi_source_experiment
+):
+    """PR #644 review: every prior multi-source test went through the hand-rolled
+    _MultiSourceFakeReader double, which reimplements the resolution logic rather
+    than exercising the real adapter -- design.md's own Decision 5 says multi-source
+    *data* tests should use the monkeypatched-SupabaseReader boundary instead. This
+    is that direct coverage: the real SupabaseReader.load_experiment, against a real
+    (fake-DB-backed) list_experiment_trait_sources RPC, actually populates
+    available_source_count -- and does so from a SINGLE list_sources-backing RPC
+    call, proving the no-redundant-round-trip claim against the real adapter too,
+    not just the test double that stands in for it elsewhere."""
+    experiment_id = seed_multi_source_experiment(fake_supabase_db, 42, [9, 10, 11])
+    reader = SupabaseReader()
+
+    frame = reader.load_experiment(str(experiment_id))
+
+    assert frame.available_source_count == 3
+    assert frame.resolved_source.source_id == 11  # unpinned resolves the max id
+    assert fake_supabase_db.rpc_calls.count("list_experiment_trait_sources") == 1
 
 
 def test_resolved_source_reflects_load_time_not_a_later_resolution(

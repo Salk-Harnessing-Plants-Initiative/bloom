@@ -93,9 +93,9 @@ def test_no_shipped_module_imports_vendored_analysis():
     offenders: list[str] = []
     for py in _SRC.rglob("*.py"):
         offenders.extend(_vendored_imports_in(py))
-    assert (
-        not offenders
-    ), "shipped modules still import vendored analysis code:\n" + "\n".join(offenders)
+    assert not offenders, (
+        "shipped modules still import vendored analysis code:\n" + "\n".join(offenders)
+    )
 
 
 def test_vendored_analysis_modules_absent():
@@ -354,6 +354,12 @@ def test_tool_name_lists_match_live_registry():
     always_include = _parse_always_include_mcp_tools()
 
     assert "inspect_data_quality" not in always_include
+    # bloom#599: get_download_links is a deliberately non-foundational core
+    # tool (design.md Decision 5) — this test only proves the hand-list
+    # itself doesn't list it; it does not catch this tool being *called* with
+    # is_foundational_tool() the wrong way, since foundational_tools.py lives
+    # in a different service this suite cannot import directly.
+    assert "get_download_links" not in always_include
 
     live = asyncio.run(_live_tool_names())
     for name in sorted(always_include):
@@ -438,10 +444,15 @@ def test_expected_tool_surface():
         "sleap_roots_plot_correlation_matrix",
         "sleap_roots_plot_heritability_bar",
         "sleap_roots_plot_variance_decomposition",
-        # core: the 3 discovery tools
+        # core: the 3 discovery tools + get_download_links (bloom#599 — a
+        # targeted retrieval tool, not a discovery tool, but still a core-
+        # section registration) + list_experiment_sources (bloom#626 — a
+        # fourth discovery tool)
         "core_list_available_experiments",
         "core_load_experiment_data",
         "core_list_existing_analyses",
+        "core_get_download_links",
+        "core_list_experiment_sources",
     }
     not_expected = {
         # Un-namespaced Phase-1 names must NOT survive the P2.2/P2.3 move —

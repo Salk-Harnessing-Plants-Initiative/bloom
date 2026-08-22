@@ -577,13 +577,25 @@ def test_manifest_read_failure_raises_manifest_read_error_without_leaking(
 def test_manifest_schema_error_raises_manifest_incompatible_error(
     call_site, fake_supabase_storage, monkeypatch
 ):
+    """Like the generic branch's message (see
+    ``test_manifest_read_failure_raises_manifest_read_error_without_leaking``),
+    this is a fixed template that never interpolates the underlying
+    ``ManifestSchemaError`` text — pinned against regression (#660 review: the
+    schema branch used to interpolate ``{exc}`` directly, which was safe only
+    because ``ManifestSchemaError``'s own messages happen to contain nothing
+    but a schema-version int/repr; that safety was an unstated, untested
+    second-order invariant rather than a property of this raise site itself).
+    Simulates a hypothetical future ``ManifestSchemaError`` whose message
+    embeds something unsafe, to prove the caller-facing message can't leak it
+    regardless of what the underlying exception says."""
     import bloom_mcp.manifest.analysis_dir as _adir_mod
     from bloom_mcp.manifest import ManifestSchemaError
 
     def _boom(prefix):
         raise ManifestSchemaError(
             "manifest_schema_version 99 is newer than supported "
-            "(this code understands up to 3)"
+            "(this code understands up to 3) — secret path /var/secrets/key "
+            "and host db.internal"
         )
 
     monkeypatch.setattr(_adir_mod, "read_manifest", _boom)
@@ -595,7 +607,10 @@ def test_manifest_schema_error_raises_manifest_incompatible_error(
     # A subclass of ManifestReadError, not a sibling — every existing
     # `except ManifestReadError` keeps catching it.
     assert isinstance(excinfo.value, ManifestReadError)
-    assert "99" in str(excinfo.value)
+    msg = str(excinfo.value)
+    assert "unsupported" in msg
+    assert "99" not in msg
+    assert "secret" not in msg and "/var" not in msg and "db.internal" not in msg
 
 
 def test_create_run_guard_does_not_swallow_a_next_version_id_bug(

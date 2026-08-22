@@ -1,9 +1,9 @@
 """Object-storage backend selection for bloommcp.
 
-The seven object-storage helpers in :mod:`bloom_mcp.supabase_client`
+The eight object-storage helpers in :mod:`bloom_mcp.supabase_client`
 (``upload_file`` / ``download_file`` / ``write_json`` / ``read_json`` /
-``list_prefix`` / ``delete_files`` / ``create_signed_url``) delegate to the
-*active* backend selected here. Two backends exist:
+``list_prefix`` / ``delete_files`` / ``create_signed_url`` / ``get_object_size``)
+delegate to the *active* backend selected here. Two backends exist:
 
 * :class:`SupabaseStorageBackend` — the deployed default (Supabase Storage in the
   ``bloommcp-data`` bucket). Its method bodies are the pre-backend
@@ -24,8 +24,8 @@ touches no filesystem at import, so ``import bloom_mcp`` stays side-effect-free.
 root fails fast at boot rather than mid-run.
 
 Out of scope: PostgREST/table access (``get_postgrest_client``) and
-``read_input_csv``, which rides that client — neither is one of the seven
-swapped helpers, so both are unaffected by the selected backend.
+``read_input_csv``, which rides that client — neither is one of the eight swapped
+helpers, so both are unaffected by the selected backend.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ _TMP_PREFIX = ".tmp-"
 
 @runtime_checkable
 class StorageBackend(Protocol):
-    """The seven object-storage operations bloommcp's write/read paths use."""
+    """The eight object-storage operations bloommcp's write/read paths use."""
 
     def upload_file(self, key: str, local_path: Path) -> None: ...
 
@@ -76,8 +76,21 @@ class StorageBackend(Protocol):
         is responsible for restricting ``key`` to its own authorized scope
         before calling this (see ``result_store/_artifacts.py``'s
         ``build_output_links`` for that enforcement). A future caller outside
-        ``ResultStore.commit()`` SHOULD NOT assume this primitive itself
-        provides any ownership guarantee.
+        ``ResultStore.commit()`` (e.g. ``ResultStore.get_download_links``,
+        bloom#599, guarded by that module's ``build_download_links`` instead)
+        SHOULD NOT assume this primitive itself provides any ownership
+        guarantee, and must apply its own scope check first.
+        """
+        ...
+
+    def get_object_size(self, key: str) -> int:
+        """Return the real byte size of the object at ``key`` (bloom#599).
+
+        Performs NO ownership check of its own, identically to
+        ``create_signed_url`` — it reports the size of whatever syntactically
+        valid key it's given. Raises (never returns a fabricated ``0``) when
+        ``key`` has no backing object, mirroring ``download_file``/
+        ``read_json``'s existing not-found behavior.
         """
         ...
 
@@ -209,6 +222,49 @@ class SupabaseStorageBackend:
             raise StorageBackendError(f"could not extract a signed URL for key: {key}")
         return _to_public_url(url)
 
+    def get_object_size(self, key: str) -> int:
+        from bloom_mcp.supabase_client import get_storage_client
+
+        client = get_storage_client()
+        # A missing key propagates whatever the client raises here, unmodified —
+        # matching this class's own download_file/read_json, neither of which
+        # wraps a missing-key failure into a bloommcp-defined type either.
+        response = client.info(key)
+        size = _extract_object_size(response)
+        if size is None:
+            raise StorageBackendError(f"could not extract a byte size for key: {key}")
+        return size
+
+
+def _extract_object_size(response: object) -> Optional[int]:
+    """Best-effort extraction of an object's byte size from storage3's
+    per-object ``info()`` response.
+
+    storage3's ``info()`` returns an untyped ``dict[str, Any]`` (confirmed by
+    reading ``storage3/_sync/file_api.py``) — the client has no typed model
+    for this endpoint's shape. The only comparable *typed* object in the same
+    client, ``SearchV2Object``, nests object metadata under a ``metadata``
+    key rather than flat, matching Supabase Storage's real API convention
+    (size lives under ``metadata.size``) — so a nested lookup is tried first,
+    with a flat top-level ``size`` as a fallback in case a future client
+    version flattens it. Returns ``None`` (never a fabricated ``0``) for
+    anything that isn't a real non-negative int, so the caller's single
+    ``if size is None`` check is sufficient.
+    """
+    if not isinstance(response, dict):
+        return None
+    metadata = response.get("metadata")
+    candidate = None
+    if isinstance(metadata, dict):
+        candidate = metadata.get("size")
+    if candidate is None:
+        candidate = response.get("size")
+    if isinstance(candidate, bool) or not isinstance(candidate, int):
+        return None
+    if candidate < 0:
+        return None
+    return candidate
+
 
 def _extract_signed_url(response: object) -> Optional[str]:
     """Best-effort extraction across storage3/supabase-py versions.
@@ -294,6 +350,17 @@ class LocalStorageBackend:
         if target != self._root and self._root not in target.parents:
             raise ValueError(f"storage key {key!r} escapes the local root")
         return target
+
+    def resolve_path(self, key: str) -> Path:
+        """Public entry point for resolving ``key`` under this backend's root.
+
+        Routes through the same :meth:`_resolve` traversal guard every I/O
+        method here already uses (#642 follow-up) — a caller that needs the
+        on-disk path for a key (e.g. ``OutputLink.path``) must not hand-roll a
+        second, unguarded ``root / key`` join that could silently reopen the
+        traversal risk :meth:`_resolve` already closes.
+        """
+        return self._resolve(key)
 
     def _atomic_write(self, target: Path, data: bytes, *, key: str) -> None:
         """Write ``data`` to ``target`` atomically on POSIX.
@@ -409,7 +476,11 @@ class LocalStorageBackend:
         # expires_in is accepted for Protocol parity with the Supabase adapter
         # and ignored — this is an opt-in dev feature with no real credential/
         # expiry enforcement (see the class docstring's Windows-atomicity caveat
-        # for the same rhetorical shape).
+        # for the same rhetorical shape). Not called by the local backend's own
+        # output_links pipeline (#642 follow-up) — commit() surfaces a direct
+        # filesystem path instead (see result_store/_artifacts.py's `path_for`)
+        # — this remains only for an operator who has deliberately stood up
+        # their own external server and wants a real served URL.
         del expires_in
         base = os.environ.get("BLOOM_STORAGE_URL")
         if not base:
@@ -418,6 +489,16 @@ class LocalStorageBackend:
                 "for the local storage backend"
             )
         return f"{base.rstrip('/')}/{key}"
+
+    def get_object_size(self, key: str) -> int:
+        src = self._resolve(key)
+        if not src.is_file():
+            logger.debug("local storage miss: key=%s", key)
+            raise StorageKeyNotFound(f"storage object not found: {key}")
+        try:
+            return src.stat().st_size
+        except OSError as exc:
+            raise _redacted_io_error(key, exc) from None
 
 
 # ─── Selection ────────────────────────────────────────────────────────────────
@@ -451,6 +532,20 @@ def is_local_backend() -> bool:
     stay coupled (no local-raw / Supabase-cleaned split lineage).
     """
     return _selected_backend_name() == "local"
+
+
+def self_serve_base_url() -> str:
+    """bloommcp's own address, for defaulting local-mode served URLs (#642).
+
+    ``BLOOMMCP_PUBLIC_URL`` when set (the same var already used for OAuth
+    discovery in ``bloom_mcp.auth`` — reused here rather than adding a second
+    "how do I reach myself" var); otherwise the hardcoded ``http://localhost:8811``,
+    since the server's bind port is itself hardcoded (``server.main()``) and no
+    env var configures it.
+    """
+    return (os.environ.get("BLOOMMCP_PUBLIC_URL") or "http://localhost:8811").rstrip(
+        "/"
+    )
 
 
 def _resolve_local_root() -> Path:
@@ -586,6 +681,22 @@ def validate_storage_backend() -> None:
         raise _unrecognized_backend_error(name)
     if name == "local":
         root = _resolve_local_root()
+        # A relative BLOOM_LOCAL_ROOT/BLOOM_STORAGE_LOCAL_ROOT/BLOOM_OUTPUT_DIR
+        # resolves against whatever the process's CWD happens to be at first
+        # use (LocalStorageBackend.__init__'s own .resolve() call) — silently
+        # different across a restart with a different CWD, making a prior
+        # run's committed outputs unretrievable with no error at all. Checked
+        # here (root.parts guards the genuinely-empty/unset case, which the
+        # more specific "neither ... is set" message below already covers)
+        # so misconfiguration fails loudly at boot instead of resolving to a
+        # different directory next time.
+        if root.parts and not root.is_absolute():
+            raise RuntimeError(
+                f"BLOOM_STORAGE_BACKEND=local root {str(root)!r} is not an "
+                f"absolute path; set BLOOM_LOCAL_ROOT/BLOOM_STORAGE_LOCAL_ROOT/"
+                f"BLOOM_OUTPUT_DIR to an absolute path so it does not silently "
+                f"depend on the process's current working directory."
+            )
         explicit = os.environ.get("BLOOM_STORAGE_LOCAL_ROOT")
         derived_from_local_root = not explicit and bool(
             os.environ.get("BLOOM_LOCAL_ROOT")

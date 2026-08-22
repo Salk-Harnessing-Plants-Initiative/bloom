@@ -30,13 +30,15 @@ import io
 import json
 import math
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
 import pytest
+import sleap_roots_analyze
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
-from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+from bloom_mcp.result_store import FakeResultStore, RunStateError, SupabaseResultStore
 from bloom_mcp.sections.sleap_roots.analysis import umap_analysis as umap_analysis_tool
 from bloom_mcp.sections.sleap_roots.analysis.umap_analysis import (
     UMAPAnalysisParams,
@@ -503,6 +505,26 @@ def test_degenerate_fit_does_not_leak_backend_internals(
     assert store.list_runs(_EXPERIMENT, "umap") == []
 
 
+def test_undeclared_delegate_raise_is_scrubbed(injected_ports, monkeypatch):
+    """bloom#664 item 2: an exception type outside the `(ValueError, KeyError,
+    RuntimeError, TypeError)` except clause above falls through undeclared to
+    `internal_error` — pinned, not just "doesn't leak" (mirrors the #660
+    qc_inspect/qc_clean/remove_outliers pattern, closing the coverage gap for
+    this tool)."""
+    _reader, store = injected_ports
+
+    def _boom(*a, **k):
+        raise Exception("secret path /var/secrets/key and host db.internal")
+
+    monkeypatch.setattr(umap_analysis_tool, "perform_umap_analysis", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "internal_error"
+    msg = f"{exc.value.message} {exc.value.remedy}"
+    assert "/var" not in msg and "db.internal" not in msg
+    assert store.list_runs(_EXPERIMENT, "umap") == []
+
+
 def test_delegate_failure_logs_original_exception_at_debug_level(
     injected_ports, monkeypatch, caplog
 ):
@@ -547,6 +569,47 @@ def test_non_finite_embedding_is_assumption_violated_before_persistence(
         _run()
     assert exc.value.code == "assumption_violated"
     assert store.list_runs(_EXPERIMENT, "umap") == []  # no orphaned staging dir either
+
+
+# ── ResultStore write-path failures surface as tool_error, not a bare internal_error ref
+# (#640: umap_analysis's declared errors=(ExperimentReadError,) swallowed a CommitFailedError/
+# ManifestReadError from store.create_run()/commit() into a generic internal_error ref) ──
+
+
+def test_commit_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_commit(_EXPERIMENT, "umap")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "commit failed for umap" in exc.value.message
+
+
+def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
+    _reader, store = injected_ports
+    store.fail_next_read(_EXPERIMENT, "umap")
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "tool_error"
+    assert "manifest read failure" in exc.value.message
+
+
+def test_run_state_error_from_commit_still_maps_to_internal_error(
+    injected_ports, monkeypatch
+):
+    """RunStateError (a handle-misuse/wiring bug, never triggerable via tool input) must
+    stay internal_error even after declaring CommitFailedError/ManifestReadError — proves
+    the errors= tuple wasn't accidentally widened to the full ResultStoreError base
+    (design.md Decision 1; #660 review: only qc_inspect had this test)."""
+    _reader, store = injected_ports
+
+    def _boom(run, outputs):
+        raise RunStateError("commit() on an unknown or already-committed run")
+
+    monkeypatch.setattr(store, "commit", _boom)
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+    assert exc.value.code == "internal_error"
 
 
 # ── require_clean consumption ────────────────────────────────────────────────
@@ -716,6 +779,112 @@ def test_include_plots_false_with_plots_param_is_silently_ignored(injected_ports
     assert set(result.outputs) == {"embedding_coords.csv", "umap_result.json"}
 
 
+# ── plot style kwargs: plot_cmap/plot_point_size/plot_alpha (#662) ──────────
+
+
+def test_plot_style_fields_forwarded_to_create_umap_single_trait(
+    injected_ports, monkeypatch
+):
+    """Patches the real defining module, not ``umap_analysis_tool`` — the plotter is
+    imported function-locally inside ``_umap_plot_calls`` and is never a
+    ``umap_analysis_tool`` module attribute (see design.md)."""
+    captured = {}
+    real = sleap_roots_analyze.create_umap_single_trait
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_umap_single_trait", _spy)
+    _run(
+        include_plots=True,
+        plots=["create_umap_single_trait"],
+        plot_cmap="plasma",
+        plot_point_size=50,
+        plot_alpha=0.4,
+    )
+    assert captured["cmap"] == "plasma"
+    assert captured["point_size"] == 50
+    assert captured["alpha"] == 0.4
+
+
+def test_unset_plot_style_fields_are_omitted_not_passed_as_none(
+    injected_ports, monkeypatch
+):
+    captured = {}
+    real = sleap_roots_analyze.create_umap_single_trait
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_umap_single_trait", _spy)
+    _run(include_plots=True, plots=["create_umap_single_trait"])
+    assert "cmap" not in captured
+    assert "point_size" not in captured
+    assert "alpha" not in captured
+
+
+def test_plot_cmap_has_no_effect_on_create_umap_colored_by_top_traits(
+    injected_ports, monkeypatch
+):
+    captured = {}
+    real = sleap_roots_analyze.create_umap_colored_by_top_traits
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_umap_colored_by_top_traits", _spy)
+    _run(
+        include_plots=True,
+        plots=["create_umap_single_trait", "create_umap_colored_by_top_traits"],
+        plot_cmap="plasma",
+    )
+    assert "cmap" not in captured
+
+
+def test_plot_style_fields_ignored_when_include_plots_false(injected_ports):
+    result = _run(
+        include_plots=False, plot_cmap="plasma", plot_point_size=50, plot_alpha=0.4
+    )
+    assert not any(k.endswith(".png") for k in result.outputs)
+
+
+@pytest.mark.parametrize("include_plots", [True, False])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("plot_point_size", 0),
+        ("plot_point_size", -1),
+        ("plot_alpha", 1.5),
+        ("plot_alpha", -0.1),
+    ],
+)
+def test_out_of_range_plot_style_field_is_invalid_input_regardless_of_include_plots(
+    injected_ports, field, value, include_plots
+):
+    with pytest.raises(BloomMCPError) as exc:
+        umap_analysis(
+            {"experiment": _EXPERIMENT, "include_plots": include_plots, field: value}
+        )
+    assert exc.value.code == "invalid_input"
+
+
+@pytest.mark.parametrize("alpha", [0.0, 1.0])
+def test_plot_alpha_boundary_values_accepted(injected_ports, monkeypatch, alpha):
+    captured = {}
+    real = sleap_roots_analyze.create_umap_single_trait
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_umap_single_trait", _spy)
+    _run(include_plots=True, plots=["create_umap_single_trait"], plot_alpha=alpha)
+    assert captured["alpha"] == alpha
+
+
 def test_umap_single_trait_plot_png_round_trip(injected_ports, monkeypatch):
     """Real delegate: one genuine embedding through one real plotter, guarding against
     silent plotter-API drift (design.md's "Plotter API drift" risk)."""
@@ -855,8 +1024,8 @@ def test_figure_cleanup_get_fignums_empty_on_partial_plotter_failure(
     def _boom(*a, **k):
         raise RuntimeError("second plotter blew up")
 
-    def _patched(result_dict, frame, trait_cols):
-        calls = real(result_dict, frame, trait_cols)
+    def _patched(result_dict, frame, trait_cols, **kwargs):
+        calls = real(result_dict, frame, trait_cols, **kwargs)
         calls["create_umap_colored_by_top_traits"] = _boom
         return calls
 
@@ -874,3 +1043,152 @@ def test_plot_outputs_included_in_schema_round_trip(injected_ports):
     result = _run(include_plots=True, plots=["create_umap_single_trait"])
     again = UMAPAnalysisResult.model_validate(json.loads(result.model_dump_json()))
     assert "create_umap_single_trait.png" in again.outputs
+
+
+# ── Font-style override (#661) ───────────────────────────────────────────────
+
+
+def test_plot_font_family_and_size_forwarded_and_applied(injected_ports, monkeypatch):
+    """plot_font_family/plot_font_size flow from UMAPAnalysisParams through
+    generate_figures and are applied to the generated figure before it's saved."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    captured = {}
+
+    def _fake_calls(result_dict, frame, trait_cols, **kwargs):
+        def _make():
+            fig, ax = plt.subplots()
+            ax.set_title("t")
+            ax.set_xlabel("x")
+            captured["fig"] = fig
+            return fig
+
+        return {"create_umap_single_trait": _make}
+
+    monkeypatch.setattr(umap_analysis_tool, "_umap_plot_calls", _fake_calls)
+
+    _run(
+        include_plots=True,
+        plots=["create_umap_single_trait"],
+        plot_font_family="serif",
+        plot_font_size=22,
+    )
+
+    fig = captured["fig"]
+    assert fig.axes[0].title.get_fontfamily() == ["serif"]
+    assert fig.axes[0].title.get_fontsize() == 22
+
+
+def test_plot_font_size_non_positive_is_invalid_input(injected_ports):
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        umap_analysis({"experiment": _EXPERIMENT, "plot_font_size": -1})
+    assert exc.value.code == "invalid_input"
+    assert store.list_runs(_EXPERIMENT, "umap") == []
+
+
+def test_plot_font_fields_ignored_when_include_plots_false(injected_ports):
+    result = _run(include_plots=False, plot_font_family="serif", plot_font_size=22)
+    assert not any(k.endswith(".png") for k in result.outputs)
+
+
+def test_plot_font_size_just_above_zero_is_accepted():
+    assert (
+        UMAPAnalysisParams(experiment="x.csv", plot_font_size=0.01).plot_font_size
+        == 0.01
+    )
+
+
+def test_plots_subset_with_font_override_never_generates_non_requested_plots(
+    injected_ports, monkeypatch
+):
+    """A plots=[subset] request must generate — and therefore only font-style — the
+    requested catalog plot(s); a non-requested plotter must never even be called, so
+    it can't be affected by the override either."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    called = {"single_trait": 0, "top_traits": 0}
+
+    def _fake_calls(result_dict, frame, trait_cols, **kwargs):
+        def _single_trait():
+            called["single_trait"] += 1
+            fig, ax = plt.subplots()
+            ax.set_title("single trait")
+            return fig
+
+        def _top_traits():  # pragma: no cover - must not run
+            called["top_traits"] += 1
+            raise AssertionError("non-requested plotter was called")
+
+        return {
+            "create_umap_single_trait": _single_trait,
+            "create_umap_colored_by_top_traits": _top_traits,
+        }
+
+    monkeypatch.setattr(umap_analysis_tool, "_umap_plot_calls", _fake_calls)
+
+    result = _run(
+        include_plots=True,
+        plots=["create_umap_single_trait"],
+        plot_font_family="serif",
+    )
+
+    assert called == {"single_trait": 1, "top_traits": 0}
+    png_keys = {k for k in result.outputs if k.endswith(".png")}
+    assert png_keys == {"create_umap_single_trait.png"}
+
+
+# ── explicit cleaned-version selector (#626) ────────────────────────────────
+
+
+def test_version_field_exists():
+    assert "version" in UMAPAnalysisParams.model_fields
+
+
+def test_omitting_version_preserves_todays_exact_call(injected_ports):
+    reader, _store = injected_ports
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run()
+
+    reader.load_experiment.assert_called_once_with(_EXPERIMENT, require_clean=True)
+
+
+def test_explicit_version_is_passed_through(injected_ports):
+    reader, _store = injected_ports
+    reader.add_cleaned_version(_EXPERIMENT, "v2", _final_df(), make_latest=False)
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    _run(version="v2")
+
+    reader.load_experiment.assert_called_once_with(
+        _EXPERIMENT, require_clean=True, version="v2"
+    )
+
+
+# ── discoverable via list_existing_analyses (bloom#669) ─────────────────────
+
+
+def test_discoverable_via_list_existing_analyses(injected_ports):
+    """Live discoverability, mirroring the same pattern
+    remove_outliers/cross_experiment_correlations use for their own registered class."""
+    from bloom_mcp.sections.core import (
+        list_existing_analyses as list_existing_analyses_mod,
+    )
+
+    list_existing_analyses_mod._RESPONSE_CACHE.clear()
+    try:
+        _run()
+        response = json.loads(
+            list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
+        )
+    finally:
+        list_existing_analyses_mod._RESPONSE_CACHE.clear()
+
+    assert "umap" in response["analyses"]

@@ -134,7 +134,6 @@ export default async function Accession({
                           <div className="pb-1">Day {scan.plant_age_days}</div>
                           <PlantScan
                             scan={scan}
-                            thumb={true}
                             height={105}
                             href={`/app/phenotypes/${species?.id}/${experiment?.id}/${waveId}/${accessionId}/${scan.id}`}
                           />

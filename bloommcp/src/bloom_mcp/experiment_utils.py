@@ -64,10 +64,30 @@ def _resolve_plots_dir() -> str:
     return ""
 
 
+def _resolve_plots_url() -> str:
+    """``BLOOM_PLOTS_URL`` if set, else a self-served URL under ``BLOOM_LOCAL_ROOT``
+    fully-local mode (#642), else empty.
+
+    Mirrors ``_resolve_plots_dir()`` exactly, including its ``_fully_local_root()``
+    gate — reads ``is_local_backend()`` (and therefore ``BLOOM_STORAGE_BACKEND``)
+    only when ``BLOOM_LOCAL_ROOT`` is itself set, preserving the side-effect-free
+    import contract in every deployment that hasn't opted in.
+    """
+    explicit = os.getenv("BLOOM_PLOTS_URL")
+    if explicit:
+        return explicit
+    local_root = _fully_local_root()
+    if local_root is not None:
+        from bloom_mcp.storage_backend import self_serve_base_url
+
+        return f"{self_serve_base_url()}/plots"
+    return ""
+
+
 TRAITS_DIR = Path(os.getenv("BLOOM_TRAITS_DIR", ""))
 OUTPUT_DIR = Path(os.getenv("BLOOM_OUTPUT_DIR", ""))
 PLOTS_DIR = Path(_resolve_plots_dir())
-PLOTS_URL = os.getenv("BLOOM_PLOTS_URL", "")
+PLOTS_URL = _resolve_plots_url()
 
 
 def _ensure_subfolder(path: Path, label: str) -> None:
@@ -227,16 +247,17 @@ def validate_env() -> None:
     When ``BLOOM_STORAGE_BACKEND=local`` and ``BLOOM_LOCAL_ROOT`` is set,
     ``BLOOM_LOCAL_ROOT`` itself is validated first (one clear error if it's
     missing, not a directory, or not writable — see ``_validate_local_root_dir``),
-    and ``BLOOM_TRAITS_DIR`` / ``BLOOM_OUTPUT_DIR`` / ``BLOOM_PLOTS_DIR`` drop out
-    of the required-vars check below; in every other combination they remain
-    exactly as required as before this change.
+    and ``BLOOM_TRAITS_DIR`` / ``BLOOM_OUTPUT_DIR`` / ``BLOOM_PLOTS_DIR`` /
+    ``BLOOM_PLOTS_URL`` drop out of the required-vars check below (#642); in
+    every other combination they remain exactly as required as before this
+    change.
     """
     local_root = _fully_local_root()
     if local_root is not None:
         _validate_local_root_dir(local_root)
 
     optional_when_local = (
-        {"BLOOM_TRAITS_DIR", "BLOOM_OUTPUT_DIR", "BLOOM_PLOTS_DIR"}
+        {"BLOOM_TRAITS_DIR", "BLOOM_OUTPUT_DIR", "BLOOM_PLOTS_DIR", "BLOOM_PLOTS_URL"}
         if local_root is not None
         else set()
     )
@@ -404,10 +425,24 @@ def fit_is_trustworthy(goodness_of_fit: Optional[dict]) -> Optional[bool]:
 # outranks `qc`: for version="latest", a trim (once one exists) is preferred over a
 # plain clean regardless of which was committed more recently — see
 # `_resolve_versioned_cleaned` and
-# `openspec/changes/fix-bloommcp-remove-outliers-tool-class/design.md` for why a
+# `openspec/changes/archive/2026-08-09-fix-bloommcp-remove-outliers-tool-class/design.md` for why a
 # recency comparison does not work (the reverting `qc_clean` re-run is, by
 # construction, always the more recent commit).
 _CLEANED_TOOL_CLASSES_BY_PRIORITY = (QC_TOOL_CLASS, OUTLIERS_TOOL_CLASS)
+
+
+def _explicit_version_not_found_message(stem: str, version: str) -> str:
+    """The fixed not-found message for an explicit `v<N>` miss.
+
+    Single-sourced so `_resolve_one_class` and `_resolve_one_class_explicit_version`
+    can never drift, and so the latter can recognize "this class simply doesn't
+    have that id" (a soft miss it may fall through) apart from any other error
+    string (a genuine infra failure, which always takes priority).
+    """
+    return (
+        f"Version {version!r} not found for experiment '{stem}'. "
+        f"Use list_existing_analyses to see available versions."
+    )
 
 
 def _resolve_one_class(
@@ -467,14 +502,7 @@ def _resolve_one_class(
     if entry is None:
         if version == "latest":
             return None, None, None
-        return (
-            None,
-            None,
-            (
-                f"Version {version!r} not found for experiment '{stem}'. "
-                f"Use list_existing_analyses to see available versions."
-            ),
-        )
+        return None, None, _explicit_version_not_found_message(stem, version)
 
     # From here on `entry` names a real, committed version — any failure to
     # resolve it is a hard error, never a soft miss, regardless of `version`.
@@ -518,6 +546,78 @@ def _resolve_one_class(
     return tmp, f"{entry.id}_cleaned", None
 
 
+def _resolve_one_class_explicit_version(
+    stem: str, version: str
+) -> tuple[Optional[Path], Optional[str], Optional[str]]:
+    """Resolve an explicit `v<N>` version, checking **both** `qc` and `outliers`.
+
+    Each tool class has its own independently-numbered `v<N>` sequence (a
+    `create_run` call allocates the next id within its own class's manifest,
+    per `ResultStore`), so a bare version id given by a caller is not, on its
+    own, enough to say which class it names — and `list_existing_analyses`
+    lists them separately per class, which is exactly where a caller would
+    have seen the id in the first place. Checking `qc` alone (as this function
+    did before the #644 PR review) would silently resolve an unrelated,
+    differently-content `qc`-class entry of the same id instead of the
+    `outliers`-class entry the caller actually meant — a real
+    silently-wrong-dataset hazard, not merely a missing-coverage question.
+
+    - Exactly one class has a matching entry: resolve it (the `outliers` class
+      gets the same `f"outliers_{entry.id}_cleaned"` qualified label
+      `version="latest"` already uses; `qc` keeps the unqualified label).
+    - **Both** classes have a matching entry: refuse as an unresolvable
+      ambiguity — never silently pick one.
+    - **Neither** does: a not-found error naming both classes checked. A
+      genuine infra failure in either class (schema error, missing output key,
+      unlocatable version directory, failed download) always takes priority
+      over a plain not-found miss in the other — never masked by it.
+    """
+    results = {
+        tool_class: _resolve_one_class(stem, version, tool_class)
+        for tool_class in _CLEANED_TOOL_CLASSES_BY_PRIORITY
+    }
+
+    found = {
+        tool_class: (path, label)
+        for tool_class, (path, label, _error) in results.items()
+        if path is not None
+    }
+    if len(found) > 1:
+        classes = " and ".join(f"'{c}'" for c in sorted(found))
+        return (
+            None,
+            None,
+            (
+                f"Version {version!r} is ambiguous for experiment '{stem}': it "
+                f"exists independently in more than one tool class ({classes}). "
+                "Use list_existing_analyses to see which one you mean, or pin "
+                "'latest'/'latest_qc' instead if either of those is what you "
+                "actually want."
+            ),
+        )
+    if found:
+        [(tool_class, (path, label))] = found.items()
+        if tool_class != QC_TOOL_CLASS:
+            label = f"{tool_class}_{label}"
+        return path, label, None
+
+    not_found = _explicit_version_not_found_message(stem, version)
+    infra_errors = [
+        error for _path, _label, error in results.values() if error != not_found
+    ]
+    if infra_errors:
+        return None, None, infra_errors[0]
+    return (
+        None,
+        None,
+        (
+            f"Version {version!r} not found for experiment '{stem}' in either "
+            f"the {' or '.join(repr(c) for c in _CLEANED_TOOL_CLASSES_BY_PRIORITY)} "
+            "class. Use list_existing_analyses to see available versions."
+        ),
+    )
+
+
 def _resolve_versioned_cleaned(
     o_dir: Path,
     stem: str,
@@ -544,11 +644,18 @@ def _resolve_versioned_cleaned(
         `outliers` version, with the unqualified label — this is what
         `remove_outliers` reads as its trimming input, so a fresh `qc_clean`
         is always visible to it regardless of any prior trim.
-      - An explicit `"v<N>"` resolves the `qc` class only, unqualified label —
-        unchanged from before this function checked more than one class (no
-        shipped caller currently passes an explicit cleaned-tier version, so
-        resolving a pin across two independently-numbered class sequences is
-        not yet a reachable question).
+      - An explicit `"v<N>"` checks **both** `qc` and `outliers` classes — each
+        has its own independently-numbered `v<N>` sequence (`list_existing_analyses`
+        lists them separately, per tool class), so a version id a caller saw
+        listed under `outliers` may coincide with an unrelated, differently-content
+        `qc`-class entry of the same id. Resolving against `qc` alone (as this
+        function did before #644's review) would silently hand back the wrong,
+        untrimmed dataset instead of erroring. If exactly one class has a
+        matching entry, it resolves (the `outliers` class gets the same
+        `f"outliers_{entry.id}_cleaned"` qualified label `"latest"` uses); if
+        **both** classes have a matching entry, that is refused as an
+        unresolvable ambiguity — never silently guessed; if **neither** does,
+        a not-found error names both classes checked.
       - `"raw"` is handled by the caller and never reaches this function.
 
     A checked class with **no entry at all** is a soft miss (continues to the
@@ -573,7 +680,7 @@ def _resolve_versioned_cleaned(
         return _resolve_one_class(stem, "latest", "qc")
 
     if version != "latest":
-        return _resolve_one_class(stem, version, "qc")
+        return _resolve_one_class_explicit_version(stem, version)
 
     for tool_class in reversed(_CLEANED_TOOL_CLASSES_BY_PRIORITY):
         path, label, error = _resolve_one_class(stem, "latest", tool_class)

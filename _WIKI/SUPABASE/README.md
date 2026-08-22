@@ -11,7 +11,7 @@ Supabase is run as a self-hosted set of containers under
 | Container               | Image                         | What it does                                                                        |
 | ----------------------- | ----------------------------- | ----------------------------------------------------------------------------------- |
 | `db-prod`               | `supabase/postgres:15.x`      | The Postgres database (data + auth schemas + storage schema).                       |
-| `kong`                  | `kong:2.8.1`                  | API gateway. Routes `/auth`, `/rest`, `/storage`, `/realtime` to the right backend. |
+| `kong`                  | `kong:2.8.1`                  | API gateway. Routes `/auth`, `/rest`, `/storage`, `/realtime` to the right backend, and fronts the Studio UI via its `dashboard` service behind the `basic-auth` plugin. |
 | `auth` (gotrue)         | `supabase/gotrue:v2.x`        | User authentication, magic links, JWT issuance.                                     |
 | `rest` (postgrest)      | `postgrest/postgrest:v12.x`   | Exposes Postgres tables as REST via the JWT-derived role.                           |
 | `storage` (storage-api) | `supabase/storage-api:v1.x`   | Object storage HTTP API in front of MinIO.                                          |
@@ -19,9 +19,45 @@ Supabase is run as a self-hosted set of containers under
 | `supavisor`             | `supabase/supavisor:2.x`      | Connection pooler.                                                                  |
 | `supabase-minio`        | `minio/minio`                 | S3-compatible object store backing `storage`.                                       |
 | `meta`                  | `supabase/postgres-meta:v0.x` | Used by Studio for schema introspection.                                            |
-| `studio`                | `supabase/studio:2026.x`      | Admin UI.                                                                           |
+| `studio`                | `supabase/studio:2026.x`      | Admin UI. **No authentication of its own** — reachable only through Kong's `dashboard` service, which gates it with the shared `DASHBOARD` basic-auth credential. |
 
 The browser-facing URL is the one in `.env.{prod,staging}.defaults` (`SUPABASE_PUBLIC_URL`). Internal services talk to `http://kong:8000` via the `supanet` Docker network.
+
+### Studio access and query bounds
+
+Studio ships with no login, so Kong's `dashboard` service is the only thing in
+front of the console. Caddy's `@studio` catch-all proxies Kong rather than Studio —
+see `_WIKI/CADDY/README.md`. The credential lives in `.env.{prod,staging}` on the
+deploy host as `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD`.
+
+**Kong is in Studio's availability path.** If Kong is down or holding a config that
+failed to load, Studio is unreachable — while `docker compose ps` still reports
+`studio` as healthy, because Studio's healthcheck calls
+`http://studio:3000/api/platform/profile` from inside its own container and
+bypasses both Caddy and Kong. A healthy `studio` container says nothing about
+whether anyone can reach Studio.
+
+**Two different bounds apply on the Studio hostname:**
+
+| Path | Kong service | Bound | Covers |
+| --- | --- | --- | --- |
+| Studio UI and its `/api/pg-meta/*` routes | `dashboard` | **330s** | SQL-editor execution, its "Download CSV", table-editor paging, and each 500-row page of a table-editor export |
+| `/rest/*`, `/auth/*`, `/storage/*`, `/realtime/*` | `rest-v1` etc. | **60s** (Kong default) | Studio's browser-side supabase-js traffic, and on the main hostname bloom-web, the LangChain agent, and `bloomctl` |
+
+330s is deliberately above the database's own bound, not equal to it.
+`alter database postgres set statement_timeout TO '5min'`
+(`supabase/migrations/20240904033106_create_fix_create_cyl_dataset_function_again.sql`)
+already caps every Studio query at 300s, and `supabase_admin` — the role pg-meta
+connects as — has no override in this repo's migrations. Kong starts its clock
+earlier, so an equal bound would guarantee Kong's opaque 504 pre-empts Postgres's
+readable `canceling statement due to statement timeout`.
+
+**Long DDL through the SQL editor.** `supabase_admin` is a superuser and can
+`SET statement_timeout = 0`, but Kong's 330s still applies — a `CREATE INDEX` or
+backfill over `cyl_scan_traits` that runs longer returns 504. **A 504 does not
+cancel the statement**: the backend keeps running and may complete after the
+browser has given up. Check `pg_stat_activity` before retrying, and prefer `psql`
+on the deploy host for anything expected to exceed five minutes.
 
 ## The four bloom\_\* Postgres roles
 
@@ -65,9 +101,9 @@ The sleap-roots pipeline write-back (changes D/E) is the one place where the DB,
 
 ### Pipeline-trigger tables (`cyl_pipeline_runs` / `cyl_pipeline_run_scans`)
 
-Phase 1 of the A4 pipeline-trigger route (`POST /workflows/pipeline`, bloom #11/#404) added `cyl_pipeline_runs` (one row per trigger request) and `cyl_pipeline_run_scans` (one row per enumerated scan). `bloom_workflows` holds `SELECT`+`INSERT` on both — **not** `UPDATE`, since this phase's route only ever inserts; a later phase adds its own small grant migration when a push-based status writer needs it, matching this role's "expand grants only when a new endpoint needs them" convention. The dedup preview also needed two new read paths on **existing** tables: a `SELECT` policy + column-scoped `GRANT SELECT (scan_id, source_id)` on `cyl_scan_traits` and `GRANT SELECT (id, metadata)` on `cyl_trait_sources` (to check all of a scan's prior sources, not just the newest), plus `SELECT (id)`-only existence-check access on `cyl_waves`/`cyl_experiments` (to distinguish "target exists but has zero scans" from "target doesn't exist" — `cyl_scans_extended`'s inner joins can't tell those apart on their own). Both tables are in the `supabase_realtime` publication (the web UI's future live-status panel subscribes without polling).
+Phase 1 of the A4 pipeline-trigger route (`POST /workflows/pipeline`, bloom #11/#404) added `cyl_pipeline_runs` (one row per trigger request) and `cyl_pipeline_run_scans` (one row per enumerated scan). `bloom_workflows` holds `SELECT`+`INSERT` on both — **not** `UPDATE`, and never will: Phase 2 (the `cyl-pipeline-worker` dispatch worker) writes `argo_workflow_name`/`status`/`attempts`/`error_message`/`submitted_at`/`completed_at` entirely through its own `SECURITY DEFINER` wrapper functions (below), which run under the function owner's privileges rather than the caller's — so no table-level `UPDATE` grant was ever needed, superseding this migration's original "a later phase adds its own small grant migration" forecast. The dedup preview also needed two new read paths on **existing** tables: a `SELECT` policy + column-scoped `GRANT SELECT (scan_id, source_id)` on `cyl_scan_traits` and `GRANT SELECT (id, metadata)` on `cyl_trait_sources` (to check all of a scan's prior sources, not just the newest), plus `SELECT (id)`-only existence-check access on `cyl_waves`/`cyl_experiments` (to distinguish "target exists but has zero scans" from "target doesn't exist" — `cyl_scans_extended`'s inner joins can't tell those apart on their own). Both tables are in the `supabase_realtime` publication (the web UI's future live-status panel subscribes without polling).
 
-`enqueue_cyl_pipeline_batch(p_run_id, p_batch_index, p_scan_ids)` is a separate `SECURITY DEFINER` function wrapping a new pgmq queue (see the next section) — its `EXECUTE` is granted to **`bloom_workflows` only**, a narrower grant than the write-back RPC's four-role list above; do not conflate the two.
+`enqueue_cyl_pipeline_batch(p_run_id, p_batch_index, p_scan_ids)` is a separate `SECURITY DEFINER` function wrapping a new pgmq queue (see the next section) — its `EXECUTE` is granted to **`bloom_workflows` only**, a narrower grant than the write-back RPC's four-role list above; do not conflate the two. Phase 2 (bloom #11/#404) added three more functions on the same queue, also `bloom_workflows`-only: `claim_cyl_pipeline_batch` (the dispatch worker's poll, with a poison-message dead-letter guard), `complete_cyl_pipeline_batch` (records the submitted Argo workflow's name), and `fail_cyl_pipeline_batch` (terminal failure — no automatic retry). All three run the same run-completion aggregation (`cyl_pipeline_runs.status` → `submitted`/`partial`/`failed`) under a row lock on the run, so two workers settling a run's last two batches at once can't race. Phase 3 (bloom #11) added a fifth `bloom_workflows`-only `SECURITY DEFINER` function on the same tables, unrelated to the pgmq queue: `update_cyl_pipeline_run_status(p_run_id, p_status)`, called by a new standalone poller (`status_poller.py`) that checks each dispatched run's real Argo Workflow outcome and progresses `cyl_pipeline_runs.status` to `running`/`complete` (or a real-outcome `failed`/`partial`) — values Phase 2's own functions never reach, since those only ever describe dispatch outcome. Guarded to only write a run currently `submitted`/`running`/`partial` — `partial` is deliberately included (not terminal from this function's point of view: a run Phase 2 settled to `partial` may still have genuinely-dispatched batches whose real Argo outcome hasn't been checked), so only `complete`/`failed` are actually terminal and block further writes.
 
 ## pgmq queues
 
