@@ -13,6 +13,7 @@ tools #466 converged onto ``@as_mcp_tool`` (``plot_trait_histograms``, ``plot_tr
 :func:`resolve_trait_columns` instead of ``parse_traits``/``validate_filename``.
 """
 
+from collections import Counter
 from pathlib import Path
 
 import matplotlib
@@ -146,7 +147,10 @@ def resolve_trait_columns(
                 remedy="Omit trait_columns to use all detected traits, or name at least "
                 "one trait column.",
             )
-        duplicates = sorted({c for c in trait_columns if trait_columns.count(c) > 1})
+        # Counter, not `[c for c in trait_columns if trait_columns.count(c) > 1]`: the
+        # latter is O(n^2) (a .count() call per element over the same list), which matters
+        # at cylinder's ~846-trait scale (#466 review).
+        duplicates = sorted(c for c, n in Counter(trait_columns).items() if n > 1)
         if duplicates:
             raise BloomMCPError(
                 code="invalid_input",

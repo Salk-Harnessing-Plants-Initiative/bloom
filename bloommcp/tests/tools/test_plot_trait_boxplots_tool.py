@@ -161,6 +161,41 @@ def test_batches_above_threshold(monkeypatch):
     assert len(result.outputs) == expected
 
 
+def test_batched_commit_failing_partway_through_persists_nothing(monkeypatch):
+    """Tool-layer analog of test_store_parity.py's generic partial-commit coverage — see
+    the identical test in test_plot_trait_histograms_tool.py for the full rationale
+    (#466 review)."""
+    wide_experiment = "wide.csv"
+    n_traits = 60
+    reader = FakeReader()
+    reader.add_experiment(wide_experiment, _wide_df(n_traits))
+    store = FakeResultStore()
+    _ports.configure(reader=reader, store=store)
+    try:
+        expected_pages = _expected_pages(n_traits)
+        assert 0 < 2 < expected_pages
+        store.fail_next_commit(wide_experiment, "trait_boxplots", after_outputs=2)
+
+        captured = {}
+        real_create = store.create_run
+
+        def _spy_create(*a, **k):
+            run = real_create(*a, **k)
+            captured["staging_dir"] = run.staging_dir
+            return run
+
+        monkeypatch.setattr(store, "create_run", _spy_create)
+
+        with pytest.raises(BloomMCPError) as exc:
+            plot_trait_boxplots(PlotTraitBoxplotsParams(experiment=wide_experiment))
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    assert exc.value.code == "tool_error"
+    assert store.list_runs(wide_experiment, "trait_boxplots") == []
+    assert not captured["staging_dir"].exists()
+
+
 @pytest.mark.parametrize(
     "n_traits, expect_batched",
     [(50, False), (51, True)],

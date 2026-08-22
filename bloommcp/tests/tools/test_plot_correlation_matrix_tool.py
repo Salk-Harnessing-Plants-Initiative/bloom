@@ -264,6 +264,64 @@ def test_zero_variance_trait_excluded_from_counts_and_reported(injected_ports):
     assert "constant_trait" in result.zero_variance_traits
 
 
+def test_single_trait_selection_is_invalid_input(injected_ports, monkeypatch):
+    """A correlation view needs a pair — a lone trait must be rejected, not silently
+    committed as a meaningless 1x1 heatmap (#466 review)."""
+    df = _raw_df()
+    from bloom_mcp import experiment_utils as eu
+
+    trait = eu.detect_columns(df)["trait_cols"][0]
+    calls = {"n": 0}
+    real = plot_correlation_matrix_tool.create_correlation_heatmap
+
+    def _spy(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(
+        plot_correlation_matrix_tool, "create_correlation_heatmap", _spy
+    )
+    with pytest.raises(BloomMCPError) as exc:
+        _run(trait_columns=[trait])
+    assert exc.value.code == "invalid_input"
+    assert calls["n"] == 0
+
+
+def test_low_overlap_pair_excluded_from_counts_and_reported(injected_ports):
+    """Raw, uncleaned data can have disjoint per-trait missingness: two traits overlapping
+    in only 2 non-null rows are *always* perfectly (anti)correlated, a spurious "strong
+    correlation" from a near-empty sample — min_periods must exclude it from the counts,
+    and the pair must be named rather than silently miscounted (#466 review)."""
+    n = 20
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(n)],
+            "geno": ["g1", "g2"] * (n // 2),
+            # Disjoint missingness: only rows 8-9 have both non-null, and those 2 points
+            # are perfectly correlated (a deterministic property of any 2-point line).
+            "sparse_a": [float(i) if i < 10 else None for i in range(n)],
+            "sparse_b": [float(i) if i >= 8 else None for i in range(n)],
+        }
+    )
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, df)
+    _ports.configure(reader=reader, store=FakeResultStore())
+    try:
+        result = plot_correlation_matrix(
+            PlotCorrelationMatrixParams(experiment=_EXPERIMENT)
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    overlap = df[["sparse_a", "sparse_b"]].dropna()
+    assert (
+        len(overlap) == 2
+    )  # confirms the fixture actually exercises the near-empty case
+    assert ["sparse_a", "sparse_b"] in result.low_overlap_trait_pairs
+    assert result.strong_positive_correlations == 0
+    assert result.zero_variance_traits == []
+
+
 def test_reads_raw_even_when_a_cleaned_version_already_exists():
     reader = FakeReader()
     raw = _raw_df()

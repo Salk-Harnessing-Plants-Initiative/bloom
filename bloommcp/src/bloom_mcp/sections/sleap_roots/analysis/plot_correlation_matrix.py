@@ -19,6 +19,21 @@ because this tool reads **raw, uncleaned** data (no QC has dropped a zero-varian
 see the raw-read decision below). ``zero_variance_traits`` in the result names exactly which
 selected traits this affects, so the counts are not silently misleading.
 
+**A pair with too few overlapping non-null observations is excluded the same way, via
+``.corr(min_periods=...)``.** Raw, uncleaned data can have disjoint per-trait missingness, so
+two traits can overlap in as few as 2 non-null rows — and 2 points are *always* perfectly
+(anti)correlated, producing a spurious exact ±1.0 "strong correlation" from a near-empty
+overlap. ``min_periods`` (reusing the same ``_qc_shared._CANONICAL_MIN_SAMPLES_PER_TRAIT``
+threshold ``qc_clean``/``qc_inspect`` use for "enough samples to trust a trait") makes pandas
+return ``NaN`` instead of a numerically valid but meaningless coefficient for any pair below
+it, so it is excluded from the counts exactly like a zero-variance trait. ``low_overlap_trait_
+pairs`` names exactly which pairs this affects (excluding any pair already explained by a
+zero-variance trait, to avoid double-reporting the same ``NaN`` cell under two reasons).
+
+**At least 2 resolved trait columns are required.** A correlation view of a single trait is not
+meaningful (there is no pair to correlate) — rejected as ``invalid_input`` before any run is
+persisted, rather than silently committing a degenerate 1×1 result.
+
 Persists a versioned run under its own tool class ``correlation_matrix`` (not the shared,
 unclaimed legacy ``viz`` slot — see ``openspec/changes/converge-bloommcp-viz-tools/design.md``
 for why each converged tool mints its own class rather than interleaving version history with
@@ -38,16 +53,23 @@ import numpy as np
 from pydantic import BaseModel, Field
 from sleap_roots_analyze.visualization import create_correlation_heatmap
 
-from bloom_mcp.contract import Provenance, RunLinks, as_mcp_tool
+from bloom_mcp.contract import BloomMCPError, Provenance, RunLinks, as_mcp_tool
 from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools._qc_shared import _validate_experiment_name
+from bloom_mcp.tools._qc_shared import (
+    _CANONICAL_MIN_SAMPLES_PER_TRAIT,
+    _validate_experiment_name,
+)
 
 from ._viz_shared import resolve_trait_columns
 
 _TOOL_CLASS = "correlation_matrix"
 _HEATMAP_PNG = "correlation_matrix.png"
+# Reuses qc_clean/qc_inspect's "enough samples to trust a trait" convention as the minimum
+# pairwise overlap .corr() requires before reporting a coefficient — below it, pandas returns
+# NaN instead of a numerically valid but statistically meaningless value (see module docstring).
+_MIN_CORR_OVERLAP = _CANONICAL_MIN_SAMPLES_PER_TRAIT
 
 
 class PlotCorrelationMatrixParams(BaseModel):
@@ -86,6 +108,14 @@ class PlotCorrelationMatrixResult(RunLinks):
         "toward neither strong_positive_correlations nor strong_negative_correlations — "
         "empty when none were affected.",
     )
+    low_overlap_trait_pairs: list[list[str]] = Field(
+        default_factory=list,
+        description="Trait pairs whose overlapping non-null observations fell below the "
+        "minimum this tool requires to report a correlation coefficient — raw data can have "
+        "disjoint missingness, and a near-empty overlap (as few as 2 points) can otherwise "
+        "produce a spurious exact +/-1.0 'strong correlation'. Excludes any pair already "
+        "explained by zero_variance_traits. Empty when every pair had enough overlap.",
+    )
 
 
 @as_mcp_tool(
@@ -106,11 +136,34 @@ def plot_correlation_matrix(
 
     frame = reader.load_experiment(params.experiment, version="raw")
     trait_cols = resolve_trait_columns(frame, params.trait_columns, params.experiment)
+    if len(trait_cols) < 2:
+        raise BloomMCPError(
+            code="invalid_input",
+            message=f"plot_correlation_matrix requires at least 2 trait columns to "
+            f"correlate; {params.experiment!r} resolved only {trait_cols!r}.",
+            remedy="Select at least 2 trait columns, or omit trait_columns if the "
+            "experiment has more than one detected trait.",
+        )
 
-    corr = frame.df[trait_cols].corr()
+    corr = frame.df[trait_cols].corr(min_periods=_MIN_CORR_OVERLAP)
     zero_variance_traits = [
         c for c in trait_cols if not (frame.df[c].std(skipna=True) > 0)
     ]
+    zero_variance_set = set(zero_variance_traits)
+
+    # Vectorized pairwise overlap counts (notna^T @ notna) — a python double loop over
+    # trait_cols x trait_cols would be O(n^2) even just to build this, prohibitive at
+    # cylinder's ~846-trait scale; only the (typically small) flagged-pair list below is.
+    notna = frame.df[trait_cols].notna().to_numpy(dtype=int)
+    overlap_counts = notna.T @ notna
+    low_overlap_mask = np.triu(overlap_counts < _MIN_CORR_OVERLAP, k=1)
+    low_overlap_trait_pairs = [
+        [trait_cols[i], trait_cols[j]]
+        for i, j in zip(*np.where(low_overlap_mask))
+        if trait_cols[i] not in zero_variance_set
+        and trait_cols[j] not in zero_variance_set
+    ]
+
     upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
     high_pos = int((upper > 0.7).sum().sum())
     high_neg = int((upper < -0.7).sum().sum())
@@ -143,6 +196,7 @@ def plot_correlation_matrix(
         strong_positive_correlations=high_pos,
         strong_negative_correlations=high_neg,
         zero_variance_traits=zero_variance_traits,
+        low_overlap_trait_pairs=low_overlap_trait_pairs,
         run_ref=stored.run_ref,
         version_dir=stored.version_dir,
         manifest_path=stored.manifest_path,

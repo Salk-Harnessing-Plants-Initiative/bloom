@@ -118,6 +118,69 @@ def test_trait_batch_threshold_matches_heritability_plot_default():
     assert default == _viz_shared.TRAIT_BATCH_THRESHOLD
 
 
+# ── resolve_trait_columns (#466 review: direct coverage, not just indirect via the 3
+# converged tools' own contract tests) ───────────────────────────────────────
+
+
+def _frame_with_traits():
+    """A real ExperimentFrame via FakeReader — resolve_trait_columns takes frame.df/
+    frame.trait_cols, not a hand-rolled stub, so this exercises it exactly as the 3
+    converged tools do."""
+    from bloom_mcp.data_access import FakeReader
+
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(6)],
+            "geno": ["g1", "g2"] * 3,
+            "t1": [float(i) for i in range(6)],
+            "t2": [float(2 * i + 1) for i in range(6)],
+        }
+    )
+    reader = FakeReader()
+    reader.add_experiment("resolve.csv", df)
+    return reader.load_experiment("resolve.csv", version="raw")
+
+
+def test_resolve_trait_columns_none_returns_all_detected_traits():
+    frame = _frame_with_traits()
+    assert _viz_shared.resolve_trait_columns(frame, None, "resolve.csv") == list(
+        frame.trait_cols
+    )
+
+
+def test_resolve_trait_columns_explicit_subset_is_honored():
+    frame = _frame_with_traits()
+    assert _viz_shared.resolve_trait_columns(frame, ["t1"], "resolve.csv") == ["t1"]
+
+
+def test_resolve_trait_columns_empty_list_is_invalid_input():
+    from bloom_mcp.contract import BloomMCPError
+
+    frame = _frame_with_traits()
+    with pytest.raises(BloomMCPError) as exc:
+        _viz_shared.resolve_trait_columns(frame, [], "resolve.csv")
+    assert exc.value.code == "invalid_input"
+
+
+def test_resolve_trait_columns_duplicate_is_invalid_input():
+    from bloom_mcp.contract import BloomMCPError
+
+    frame = _frame_with_traits()
+    with pytest.raises(BloomMCPError) as exc:
+        _viz_shared.resolve_trait_columns(frame, ["t1", "t1"], "resolve.csv")
+    assert exc.value.code == "invalid_input"
+    assert "t1" in exc.value.message
+
+
+def test_resolve_trait_columns_unknown_column_is_invalid_input():
+    from bloom_mcp.contract import BloomMCPError
+
+    frame = _frame_with_traits()
+    with pytest.raises(BloomMCPError) as exc:
+        _viz_shared.resolve_trait_columns(frame, ["NoSuchTrait"], "resolve.csv")
+    assert exc.value.code == "invalid_input"
+
+
 def test_plot_heritability_bar_delegates_and_matches_independent_computation(
     viz_env, monkeypatch
 ):

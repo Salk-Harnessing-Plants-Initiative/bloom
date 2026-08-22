@@ -122,6 +122,43 @@ def test_batches_above_threshold(monkeypatch):
     assert len(result.output_links) == expected
 
 
+def test_batched_commit_failing_partway_through_persists_nothing(monkeypatch):
+    """The tool-layer analog of test_store_parity.py's generic partial-commit coverage: a
+    commit failing after some (not all, not zero) pages of a real multi-page batch are
+    recorded must still surface as tool_error and leave no discoverable/partial run —
+    the spec's own claim for this scenario was previously only covered transitively via
+    the generic store tests, not independently at the tool layer (#466 review)."""
+    wide_experiment = "wide.csv"
+    n_traits = 60
+    reader = FakeReader()
+    reader.add_experiment(wide_experiment, _wide_df(n_traits))
+    store = FakeResultStore()
+    _ports.configure(reader=reader, store=store)
+    try:
+        expected_pages = _expected_pages(n_traits)
+        assert 0 < 2 < expected_pages  # confirms this is a genuine partial, not 0/all
+        store.fail_next_commit(wide_experiment, "trait_histograms", after_outputs=2)
+
+        captured = {}
+        real_create = store.create_run
+
+        def _spy_create(*a, **k):
+            run = real_create(*a, **k)
+            captured["staging_dir"] = run.staging_dir
+            return run
+
+        monkeypatch.setattr(store, "create_run", _spy_create)
+
+        with pytest.raises(BloomMCPError) as exc:
+            plot_trait_histograms(PlotTraitHistogramsParams(experiment=wide_experiment))
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    assert exc.value.code == "tool_error"
+    assert store.list_runs(wide_experiment, "trait_histograms") == []
+    assert not captured["staging_dir"].exists()
+
+
 @pytest.mark.parametrize(
     "n_traits, expect_batched",
     [(50, False), (51, True)],
