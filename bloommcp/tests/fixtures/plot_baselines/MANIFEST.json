@@ -1,0 +1,8 @@
+{
+  "_comment": "Rendering-environment provenance for the baseline PNGs in this directory -- NOT asserted by any test (pixel content is compared via matplotlib.testing.compare.compare_images, not this file). Regenerate on Linux (matching the python-audit ubuntu-latest runner) via scripts/gen_plot_snapshots_golden.py after any intentional rendering change (matplotlib bump, plot-style-kwargs default change, delegate upgrade).",
+  "matplotlib_version": "3.10.8",
+  "pillow_version": "12.3.0",
+  "sleap_roots_analyze_version": "0.1.0a5",
+  "platform": "macOS-14.8.2-arm64-arm-64bit",
+  "python_version": "3.11.15"
+}
