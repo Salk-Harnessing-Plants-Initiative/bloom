@@ -229,7 +229,35 @@ contract):
   default to `None`, so omitting them is fully valid — these 3 tools simply use the reader's
   default single-source resolution. Threading them through is a genuine follow-up (matching
   `qc_clean`/`qc_inspect`'s shape exactly), left out here to keep this change a wrapper-layer
-  convergence rather than also picking up an unrelated, still-progressing feature.
+  convergence rather than also picking up an unrelated, still-progressing feature. **Concretely
+  disclosed cost of deferring it** (#466 review): an agent visualizing a multi-source experiment
+  with any of these 3 tools gets no `source_note`-style advisory about which source was actually
+  used (unlike `qc_clean`) — it silently gets the reader's default resolution with no signal that
+  more than one source exists. Real, but no worse than the equivalent gap already existed for all
+  8 granular tools before bloom#626, and each of the 5 tools bloom#626 already migrated took it
+  as its own dedicated PR — following the same one-tool(-family)-at-a-time precedent here rather
+  than folding it into this already-large convergence.
+
+- **Decision: `plot_correlation_matrix` requires at least 2 resolved trait columns.** A
+  correlation view of one trait has no pair to correlate — a single-trait selection (whether via
+  an explicit `trait_columns=[t]` or an experiment with only one detected trait) now raises
+  `invalid_input` before any run is persisted, rather than silently committing a degenerate 1×1
+  masked heatmap as a normal artifact (#466 review). This check lives in `plot_correlation_matrix`
+  itself, not in the shared `resolve_trait_columns` — a 1-trait selection is perfectly meaningful
+  for `plot_trait_histograms`/`plot_trait_boxplots` (a single histogram/boxplot), so the
+  minimum-2 rule must not leak into the shared helper both of those also call.
+
+- **Decision: `plot_correlation_matrix.corr()` uses `min_periods=_CANONICAL_MIN_SAMPLES_PER_TRAIT`
+  (reusing `qc_clean`/`qc_inspect`'s existing "10" convention) and reports
+  `low_overlap_trait_pairs`.** Raw, uncleaned data can have disjoint per-trait missingness, so two
+  traits can overlap in as few as 2 non-null rows — and any 2 points are *always* perfectly
+  (anti)correlated, producing a spurious exact ±1.0 "strong correlation" from a near-empty sample
+  (#466 review; the same silent-mislead failure mode already fixed for duplicate/zero-variance
+  traits, via a third mechanism). `min_periods` makes pandas return `NaN` (excluded from the counts
+  the same way a zero-variance trait already is) instead of a numerically valid but statistically
+  meaningless coefficient; `low_overlap_trait_pairs` names exactly which pairs this affects
+  (excluding any pair a zero-variance trait already explains, so a `NaN` cell isn't reported under
+  two reasons at once).
 
 ## Risks / Trade-offs
 
@@ -256,6 +284,32 @@ contract):
   versioned run per call, growing storage over repeated exploratory calls). No different from
   the storage growth every other consumer tool (`pca_analysis`, `qc_inspect`, …) already accepts;
   no retention/pruning policy exists for any of them today, so this does not introduce a new gap.
+- **`ResultStore` persistence has no per-caller ownership scoping — any caller with the same
+  `experiment` id can discover and read any prior run's outputs via `list_existing_analyses`,
+  including another user's.** This is an existing, architecture-wide characteristic already
+  shared by the 7 already-converged granular tools, not introduced by this change — but this
+  change meaningfully increases its blast radius: these 3 tools' outputs move from ephemeral,
+  locally-written PNGs (visible only via a filesystem path, not enumerable through any MCP tool)
+  to permanent, `list_existing_analyses`-discoverable artifacts, for what is likely the
+  highest-call-volume tool family (ad hoc exploratory plotting). No mitigation is proposed here —
+  it is the same trust boundary every other persisting tool already operates inside — but it is
+  worth naming explicitly given the 3x increase in exposed surface, rather than leaving it
+  implicit.
+- **A matplotlib figure-handle leak is possible if a batched delegate
+  (`create_trait_histograms_batched`/`create_trait_boxplots_by_genotype_batched`) raises
+  partway through internally**, having already created (but not returned) figures for earlier
+  pages — this tool's own `finally: for fig in figures: plt.close(fig)` cannot reach them, since
+  the delegate call is a single all-or-nothing expression. This is **not** the same situation as
+  `pca_analysis`'s multi-plot `include_plots` path, which avoids exactly this class of bug via
+  `tools/_plots.py::generate_figures` populating its `figures` dict one key at a time so a
+  mid-generation exception still leaves every already-successful figure reachable — `pca_analysis`
+  is safer here, not merely "no worse." These 3 tools can't reuse that pattern because the
+  vendored `sleap-roots-analyze` batch functions return `list[Figure]` all-or-nothing with no
+  per-page hook exposed, not because bloommcp chose not to. Tracked as
+  [#725](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/725) rather than fixed
+  here — pre-existing (this PR did not introduce the batched delegate call shape), and any real
+  fix needs either an upstream `sleap-roots-analyze` change or a coarser figure-registry-diffing
+  workaround, both out of scope for a wrapper-layer convergence.
 
 ## Migration Plan
 

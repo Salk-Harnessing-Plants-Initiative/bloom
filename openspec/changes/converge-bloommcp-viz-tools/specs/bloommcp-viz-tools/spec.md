@@ -140,6 +140,35 @@ than leaving the counts to look complete.
   `strong_positive_correlations` nor `strong_negative_correlations` includes any pair involving
   it
 
+### Requirement: Correlation Requires At Least Two Traits
+
+`plot_correlation_matrix` SHALL reject a resolved trait selection of fewer than 2 columns as
+`BloomMCPError(code="invalid_input")`, before any run is persisted — a correlation view of a
+single trait has no pair to correlate.
+
+#### Scenario: A single resolved trait is rejected
+
+- **WHEN** `trait_columns` resolves to exactly one column (via an explicit single-element list,
+  or because the experiment has only one detected numeric trait)
+- **THEN** `plot_correlation_matrix` raises `BloomMCPError(code="invalid_input")` and no run is
+  persisted
+
+### Requirement: Low-Overlap Trait Pairs Excluded And Disclosed
+
+`plot_correlation_matrix` SHALL compute Pearson correlation with a minimum pairwise-overlap
+requirement (`min_periods`, matching `qc_clean`/`qc_inspect`'s canonical minimum-samples
+threshold) and SHALL report `low_overlap_trait_pairs`: pairs whose overlapping non-null
+observations fell below that minimum. Raw data can have disjoint per-trait missingness, and a
+near-empty overlap (as few as 2 points) is otherwise always exactly ±1.0-correlated — a spurious
+"strong correlation" from an unreliable sample. A pair already explained by
+`zero_variance_traits` SHALL NOT also appear in `low_overlap_trait_pairs`.
+
+#### Scenario: A near-empty overlap is excluded, not miscounted
+
+- **WHEN** two selected traits overlap in fewer non-null rows than the minimum-overlap threshold
+- **THEN** that pair's coefficient counts toward neither `strong_positive_correlations` nor
+  `strong_negative_correlations`, and the pair appears in `low_overlap_trait_pairs`
+
 ### Requirement: Paginated Figure Persistence
 
 `plot_trait_histograms`/`plot_trait_boxplots` SHALL, once the selected trait count exceeds

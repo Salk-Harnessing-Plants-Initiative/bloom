@@ -184,9 +184,63 @@ originally, incorrectly created from). PR review then found the 3 new tools didn
 - [x] 8.12 Re-run the full suite + ruff/black + `openspec validate --strict` against the
       rebased-onto-staging tree.
 
-Not chased (disclosed, non-blocking per the review itself): a delegate-internal figure leak if
-`create_trait_histograms_batched`/`create_trait_boxplots_by_genotype_batched` raise partway
-through creating a batch's figures — this tool's own `finally: for fig in figures: plt.close(fig)`
-cannot reach figures the delegate created and abandoned before raising, since `figures` is never
-assigned until the (all-or-nothing) delegate call returns. Pre-existing, delegate-internal, and
-not unique to these 3 tools' wrapper.
+Not fixed inline, tracked instead as
+[#725](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/725): a
+delegate-internal figure leak if `create_trait_histograms_batched`/
+`create_trait_boxplots_by_genotype_batched` raise partway through creating a batch's figures —
+this tool's own `finally: for fig in figures: plt.close(fig)` cannot reach figures the delegate
+created and abandoned before raising, since `figures` is never assigned until the (all-or-nothing)
+delegate call returns. Pre-existing and delegate-internal — but, per a second review pass (§9),
+**not** equivalent to `pca_analysis`'s situation: `pca_analysis` is actually safer here via
+`tools/_plots.py::generate_figures`'s incremental population, which these 3 tools can't reuse
+because the vendored batch delegates expose no per-page hook (see design.md's corrected Risk).
+
+## 9. Second PR review pass — description accuracy + scientific-rigor gaps
+
+- [x] 9.1 **Blocking (description accuracy)**: re-verified every numeric/process claim in the PR
+      description against ground truth rather than repeating unverified figures. Corrected:
+      `test_viz_tool_classes_discovery.py` has 3 test functions, not 14 (the "14" conflated a
+      cross-file total with a single file); the 3 tools' conversion, their new tests, and the
+      `test_viz_tools.py` trim landed in one combined commit (`git log`), not tool-by-tool atomic
+      commits as the description implied — corrected the PR description to describe what actually
+      happened (a per-tool RED→GREEN *development* cycle, landed as one commit) rather than
+      overstating commit-level atomicity tasks.md's own TDD note calls for but this iteration
+      didn't follow to the letter.
+- [x] 9.2 **Important**: `plot_correlation_matrix` now rejects a resolved selection of fewer than
+      2 trait columns as `invalid_input` before any run is persisted (was: silently committed a
+      degenerate 1×1 masked heatmap as a normal artifact). Lives in the tool itself, not the
+      shared `resolve_trait_columns` (a 1-trait selection is valid for the other 2 tools).
+- [x] 9.3 **Important**: `plot_correlation_matrix.corr()` now takes
+      `min_periods=_CANONICAL_MIN_SAMPLES_PER_TRAIT` and the result reports
+      `low_overlap_trait_pairs` — closes the spurious-±1.0-from-a-near-empty-overlap gap (the
+      same silent-mislead class already fixed for duplicate/zero-variance traits, via disjoint
+      missingness instead). Test seeds two traits overlapping in exactly 2 non-null rows.
+- [x] 9.4 **Important**: corrected the matplotlib-figure-leak disclosure's "not unique to these 3
+      tools' wrapper" framing (design.md Risks + this file, above) and filed
+      [#725](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/725) to track the
+      gap itself, separately from this PR.
+- [x] 9.5 **Important**: design.md Risks now names the `ResultStore`-persistence blast-radius
+      increase (permanent, cross-caller-discoverable outputs replacing ephemeral local PNGs, for
+      the highest-call-volume tool family) as an existing, architecture-wide characteristic this
+      change meaningfully expands the surface of — not a new gap, but no longer left implicit.
+- [x] 9.6 **Important**: added a tool-layer test per batched tool
+      (`test_batched_commit_failing_partway_through_persists_nothing`) exercising "commit fails
+      partway through a multi-page batched persist" directly — previously only covered
+      transitively via `test_store_parity.py`'s generic store-level coverage, despite the spec
+      scenario's own wording implying tool-level coverage.
+- [x] 9.7 **Important**: added a `bloommcp-smoke-testing` spec delta (this change's `specs/`
+      directory) documenting the `seeded_experiment`/`db_experiment_id` harness split explicitly,
+      so it isn't left for someone to rediscover from the smoke-test diff alone.
+- [x] 9.8 **Important**: strengthened the `source_id`/`run_id` deferred note (design.md) to name
+      the concrete consequence the review raised — no `source_note`-style advisory for a
+      multi-source experiment — while keeping the deferral itself (matches bloom#626's own
+      one-tool-family-at-a-time migration precedent).
+- [x] 9.9 **Suggestion**: fixed the two remaining stale "5 surviving plots" comments
+      (`test_devendor_invariants.py`, `test_sections_scaffold.py`).
+- [x] 9.10 **Suggestion**: `_viz_shared.resolve_trait_columns`'s duplicate check is now O(n) via
+      `collections.Counter`, not O(n²) via a `.count()`-per-element comprehension (matters at
+      cylinder's ~846-trait scale).
+- [x] 9.11 **Suggestion**: added direct unit coverage for `resolve_trait_columns` itself
+      (`test_viz_tools.py`) — previously only exercised indirectly through the 3 tools' contract
+      tests.
+- [x] 9.12 Re-ran the full suite + ruff/black + `openspec validate --strict`.
