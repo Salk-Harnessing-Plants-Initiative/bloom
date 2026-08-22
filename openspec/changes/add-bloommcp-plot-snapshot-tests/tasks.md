@@ -78,9 +78,11 @@
   scripts/gen_plot_snapshots_golden.py` everywhere — one location was missing
   `--extra test`).
 
-## 6. Post-merge validation (cannot complete before the PR's own CI runs)
+## 6. Post-merge validation
 
-- [ ] 6.1 Watch this PR's `python-audit` CI run. If `test_viz_snapshot.py` fails on
-  `compare_images` RMS grounds (not a genuine content diff — check the named
-  `*-failed-diff.png`), follow design.md Decision 3: regenerate baselines from a Linux
-  environment rather than blindly loosening `_TOL`.
+- [x] 6.1 Watched PR #724's `python-audit` CI run (`ubuntu-latest`): all 8
+  `test_viz_snapshot.py` tests passed, including the 5 baseline comparisons — the
+  macOS-generated baselines (design.md Decision 3's accepted risk) held up against the
+  real Linux render at `_TOL=15` with no `compare_images` RMS or dimension-mismatch
+  failure. No baseline regeneration or tolerance adjustment was needed. Confirmed via
+  the job log (`gh api repos/.../actions/jobs/<id>/logs`), not just the green checkmark.
