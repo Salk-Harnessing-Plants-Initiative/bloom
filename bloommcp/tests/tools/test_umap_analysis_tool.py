@@ -851,14 +851,102 @@ def test_plot_style_fields_ignored_when_include_plots_false(injected_ports):
     assert not any(k.endswith(".png") for k in result.outputs)
 
 
+# ── plot_cmap allowlist (#721) ────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("include_plots", [True, False])
+def test_unregistered_plot_cmap_is_invalid_input_before_any_computation(
+    injected_ports, monkeypatch, include_plots
+):
+    """A misspelling like 'virdis' must be rejected before perform_umap_analysis runs —
+    not after burning a full UMAP fit and failing late with a raw matplotlib error."""
+    real = umap_analysis_tool.perform_umap_analysis
+    called = []
+
+    def _spy(*args, **kwargs):
+        called.append(True)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(umap_analysis_tool, "perform_umap_analysis", _spy)
+
+    with pytest.raises(BloomMCPError) as exc:
+        umap_analysis(
+            {
+                "experiment": _EXPERIMENT,
+                "include_plots": include_plots,
+                "plot_cmap": "virdis",
+            }
+        )
+    assert exc.value.code == "invalid_input"
+    assert "virdis" in exc.value.message
+    assert called == []
+
+
+@pytest.mark.parametrize("cmap", ["hsv", "tab10"])
+def test_excluded_but_registered_plot_cmap_is_invalid_input(
+    injected_ports, monkeypatch, cmap
+):
+    """hsv/tab10 are real matplotlib colormaps but neither sequential nor diverging —
+    misleading for continuous trait data, so they're rejected like an unknown name."""
+    real = umap_analysis_tool.perform_umap_analysis
+    called = []
+
+    def _spy(*args, **kwargs):
+        called.append(True)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(umap_analysis_tool, "perform_umap_analysis", _spy)
+
+    with pytest.raises(BloomMCPError) as exc:
+        umap_analysis({"experiment": _EXPERIMENT, "plot_cmap": cmap})
+    assert exc.value.code == "invalid_input"
+    assert called == []
+
+
+@pytest.mark.parametrize("cmap", ["viridis", "RdBu"])
+def test_allowed_sequential_or_diverging_plot_cmap_is_accepted(
+    injected_ports, monkeypatch, cmap
+):
+    captured = {}
+    real = sleap_roots_analyze.create_umap_single_trait
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_umap_single_trait", _spy)
+    _run(include_plots=True, plots=["create_umap_single_trait"], plot_cmap=cmap)
+    assert captured["cmap"] == cmap
+
+
+def test_unset_plot_cmap_skips_the_allowlist_check(injected_ports):
+    """plot_cmap=None (the default) must not trigger the new check at all."""
+    result = _run(include_plots=False)
+    assert not any(k.endswith(".png") for k in result.outputs)
+
+
+def test_allowed_cmaps_are_all_registered_in_installed_matplotlib():
+    """Regression guard for the hand-authored allowlist (#721 design.md Decision 3): if a
+    future matplotlib release renames or drops one of these names, this fails loudly
+    instead of silently rejecting a name callers expect to work."""
+    import matplotlib.pyplot as plt
+
+    registered = set(plt.colormaps())
+    missing = umap_analysis_tool._ALLOWED_CMAPS - registered
+    assert not missing, f"allowlisted colormap(s) no longer registered: {missing}"
+
+
 @pytest.mark.parametrize("include_plots", [True, False])
 @pytest.mark.parametrize(
     "field,value",
     [
         ("plot_point_size", 0),
         ("plot_point_size", -1),
+        ("plot_point_size", 10001),
         ("plot_alpha", 1.5),
         ("plot_alpha", -0.1),
+        ("plot_font_size", 101),
+        ("plot_font_size", float("inf")),
     ],
 )
 def test_out_of_range_plot_style_field_is_invalid_input_regardless_of_include_plots(
@@ -883,6 +971,54 @@ def test_plot_alpha_boundary_values_accepted(injected_ports, monkeypatch, alpha)
     monkeypatch.setattr(sleap_roots_analyze, "create_umap_single_trait", _spy)
     _run(include_plots=True, plots=["create_umap_single_trait"], plot_alpha=alpha)
     assert captured["alpha"] == alpha
+
+
+def test_plot_font_size_at_ceiling_is_accepted(injected_ports, monkeypatch):
+    """#721: 100 is the new inclusive ceiling. Follows
+    test_plot_font_family_and_size_forwarded_and_applied's pattern (font_size is applied
+    to the figure by generate_figures, not forwarded as a plotter kwarg) rather than the
+    plot_alpha spy pattern, since this boundary is on a font-style field, not a plotter
+    kwarg — the point is to confirm the call succeeds and the value is actually applied,
+    not just that Pydantic construction doesn't raise."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    captured = {}
+
+    def _fake_calls(result_dict, frame, trait_cols, **kwargs):
+        def _make():
+            fig, ax = plt.subplots()
+            ax.set_title("t")
+            captured["fig"] = fig
+            return fig
+
+        return {"create_umap_single_trait": _make}
+
+    monkeypatch.setattr(umap_analysis_tool, "_umap_plot_calls", _fake_calls)
+
+    _run(
+        include_plots=True,
+        plots=["create_umap_single_trait"],
+        plot_font_size=100,
+    )
+
+    assert captured["fig"].axes[0].title.get_fontsize() == 100
+
+
+def test_plot_point_size_at_ceiling_is_accepted(injected_ports, monkeypatch):
+    """#721: 10000 is the new inclusive ceiling — must still reach the plotter."""
+    captured = {}
+    real = sleap_roots_analyze.create_umap_single_trait
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_umap_single_trait", _spy)
+    _run(include_plots=True, plots=["create_umap_single_trait"], plot_point_size=10000)
+    assert captured["point_size"] == 10000
 
 
 def test_umap_single_trait_plot_png_round_trip(injected_ports, monkeypatch):
@@ -1027,6 +1163,35 @@ def test_figure_cleanup_get_fignums_empty_on_partial_plotter_failure(
     def _patched(result_dict, frame, trait_cols, **kwargs):
         calls = real(result_dict, frame, trait_cols, **kwargs)
         calls["create_umap_colored_by_top_traits"] = _boom
+        return calls
+
+    monkeypatch.setattr(umap_analysis_tool, "_umap_plot_calls", _patched)
+
+    with pytest.raises(BloomMCPError):
+        _run(
+            include_plots=True,
+            plots=["create_umap_single_trait", "create_umap_colored_by_top_traits"],
+        )
+    assert plt.get_fignums() == []
+
+
+def test_figure_cleanup_survives_a_plotter_that_allocates_then_raises(
+    injected_ports, monkeypatch
+):
+    """#721: unlike ``_boom`` above (zero figure allocation), a real ``plot_cmap``
+    failure allocates a figure via ``plt.subplots()`` and then raises later in the same
+    call — the exact shape that used to leak a figure per bad call."""
+    import matplotlib.pyplot as plt
+
+    real = umap_analysis_tool._umap_plot_calls
+
+    def _allocate_then_boom(*a, **k):
+        plt.subplots()
+        raise RuntimeError("plotter allocated a figure, then blew up")
+
+    def _patched(result_dict, frame, trait_cols, **kwargs):
+        calls = real(result_dict, frame, trait_cols, **kwargs)
+        calls["create_umap_colored_by_top_traits"] = _allocate_then_boom
         return calls
 
     monkeypatch.setattr(umap_analysis_tool, "_umap_plot_calls", _patched)

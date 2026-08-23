@@ -99,6 +99,85 @@ _UMAP_CATALOG_KEYS: frozenset[str] = frozenset(
 # still catching a runaway or adversarial request.
 _MAX_N_COMPONENTS = 50
 
+# Allowlist for plot_cmap (#721): matplotlib exposes no runtime categorization of its own
+# colormap registry (matplotlib.colormaps is a flat name -> Colormap mapping with no
+# sequential/diverging/qualitative metadata), so this list is hand-authored from matplotlib's
+# documented "Choosing Colormaps" reference categories: Perceptually Uniform Sequential,
+# Sequential, Sequential (2), and Diverging. Restricting to these two families (as opposed to
+# Qualitative/Cyclic/Miscellaneous) keeps plot_cmap limited to colormaps that render a
+# continuous trait faithfully — a qualitative map like tab10 chops a continuous value into
+# discrete-looking bands, and a cyclic map like hsv puts the same color at both ends of the
+# scale. Verified against the installed matplotlib (3.10.8): every base name below, and its
+# "_r" reversed variant, is a registered colormap. A future matplotlib release could rename or
+# add colormaps this list doesn't know about yet — accepted risk (design.md Decision 3): the
+# failure direction is a legitimate new name being rejected until this list is updated, never
+# an invalid one being silently accepted.
+_ALLOWED_CMAP_BASE_NAMES: frozenset[str] = frozenset(
+    {
+        # Perceptually Uniform Sequential
+        "viridis",
+        "plasma",
+        "inferno",
+        "magma",
+        "cividis",
+        # Sequential
+        "Greys",
+        "Purples",
+        "Blues",
+        "Greens",
+        "Oranges",
+        "Reds",
+        "YlOrBr",
+        "YlOrRd",
+        "OrRd",
+        "PuRd",
+        "RdPu",
+        "BuPu",
+        "GnBu",
+        "PuBu",
+        "YlGnBu",
+        "PuBuGn",
+        "BuGn",
+        "YlGn",
+        # Sequential (2)
+        "binary",
+        "gist_yarg",
+        "gist_gray",
+        "gray",
+        "bone",
+        "pink",
+        "spring",
+        "summer",
+        "autumn",
+        "winter",
+        "cool",
+        "Wistia",
+        "hot",
+        "afmhot",
+        "gist_heat",
+        "copper",
+        # Diverging
+        "PiYG",
+        "PRGn",
+        "BrBG",
+        "PuOr",
+        "RdGy",
+        "RdBu",
+        "RdYlBu",
+        "RdYlGn",
+        "Spectral",
+        "coolwarm",
+        "bwr",
+        "seismic",
+        "berlin",
+        "managua",
+        "vanimo",
+    }
+)
+_ALLOWED_CMAPS: frozenset[str] = frozenset(
+    _ALLOWED_CMAP_BASE_NAMES | {f"{name}_r" for name in _ALLOWED_CMAP_BASE_NAMES}
+)
+
 
 class UMAPAnalysisParams(BaseModel):
     """Inputs for ``umap_analysis``. Stochastic: the resolved ``seed`` drives the fit."""
@@ -177,24 +256,31 @@ class UMAPAnalysisParams(BaseModel):
     plot_font_size: float | None = Field(
         default=None,
         gt=0,
+        le=100,
         description="Font size (points) override applied to every text element on each "
-        "generated plot. Omit for each plot's default size. Ignored when "
-        "include_plots=False.",
+        "generated plot (1-100). The upper bound is a sanity ceiling on this LLM-driven "
+        "input surface, not a design limit — legitimate use is almost always 6-72; values "
+        "in the low thousands have been observed costing several seconds and multiple GB "
+        "per render (#721).",
     )
     plot_cmap: str | None = Field(
         default=None,
         description="Colormap for create_umap_single_trait's continuous trait coloring "
-        "(e.g. 'plasma', 'viridis'). Not validated against matplotlib's colormap registry — "
-        "an unknown name raises ValueError from matplotlib itself at figure-generation "
-        "time. Has no effect on create_umap_colored_by_top_traits (its upstream signature "
-        "does not accept cmap). Ignored (not rejected) when include_plots=False.",
+        "(e.g. 'plasma', 'viridis'). Restricted to matplotlib's documented sequential and "
+        "diverging colormap names (plus each name's _r reversed variant); an unrecognized "
+        "or excluded name (e.g. hsv, tab10 — valid matplotlib names but not sequential or "
+        "diverging, and misleading for continuous trait data) is rejected as invalid_input "
+        "naming the value, before any computation runs. Has no effect on "
+        "create_umap_colored_by_top_traits (its upstream signature does not accept cmap). "
+        "Ignored (not rejected) when include_plots=False.",
     )
     plot_point_size: float | None = Field(
         default=None,
         gt=0,
-        description="Scatter point size for create_umap_single_trait. Has no effect on "
-        "create_umap_colored_by_top_traits (its upstream signature does not accept "
-        "point_size). Ignored (not rejected) when include_plots=False.",
+        le=10000,
+        description="Scatter point size for create_umap_single_trait (up to 10000). Has no "
+        "effect on create_umap_colored_by_top_traits (its upstream signature does not "
+        "accept point_size). Ignored (not rejected) when include_plots=False.",
     )
     plot_alpha: float | None = Field(
         default=None,
@@ -377,6 +463,27 @@ def umap_analysis(
             ),
             remedy=(
                 f"Use n_neighbors <= {n_samples - 1}, or supply more samples, then retry."
+            ),
+        )
+
+    # plot_cmap allowlist (#721): checked here, in the tool body, rather than a Pydantic
+    # @field_validator — a validator's raised ValueError has its message text discarded by
+    # the contract layer's from_input_validation, remapped to a generic
+    # "(<root>: value_error)" (see qc_clean.py's exactly-one-of-experiment/csv_content note
+    # for the same, empirically-verified reasoning). Checked before perform_umap_analysis so
+    # an invalid name never burns a full UMAP fit (design.md Decision 3).
+    if params.plot_cmap is not None and params.plot_cmap not in _ALLOWED_CMAPS:
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                f"plot_cmap={params.plot_cmap!r} is not a recognized sequential or "
+                f"diverging colormap."
+            ),
+            remedy=(
+                "Use a matplotlib sequential or diverging colormap name (e.g. 'viridis', "
+                "'plasma', 'RdBu', 'coolwarm') or its '_r' reversed variant. Qualitative "
+                "colormaps (e.g. 'tab10') and cyclic colormaps (e.g. 'hsv') are not "
+                "accepted — they render a continuous trait misleadingly."
             ),
         )
 
