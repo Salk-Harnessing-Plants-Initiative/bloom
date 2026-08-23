@@ -147,9 +147,12 @@ class PCAAnalysisParams(BaseModel):
     plot_font_size: float | None = Field(
         default=None,
         gt=0,
+        le=100,
         description="Font size (points) override applied to every text element on each "
-        "generated plot. Omit for each plot's default size. Ignored when "
-        "include_plots=False.",
+        "generated plot (1-100). The upper bound is a sanity ceiling on this LLM-driven "
+        "input surface, not a design limit — legitimate use is almost always 6-72; values "
+        "in the low thousands have been observed costing several seconds and multiple GB "
+        "per render (#721).",
     )
     plot_alpha: float | None = Field(
         default=None,

@@ -830,6 +830,35 @@ def test_figure_cleanup_get_fignums_empty_on_partial_plotter_failure(
     assert plt.get_fignums() == []
 
 
+def test_figure_cleanup_survives_a_plotter_that_allocates_then_raises(
+    injected_ports, monkeypatch
+):
+    """#721: unlike ``_boom`` above (zero figure allocation), a plotter that allocates a
+    figure via ``plt.subplots()`` and then raises later in the same call used to leak that
+    figure — it was never assigned into the tool's own ``figures`` dict."""
+    import matplotlib.pyplot as plt
+
+    real = pca_analysis_tool._pca_plot_calls
+
+    def _allocate_then_boom(*a, **k):
+        plt.subplots()
+        raise RuntimeError("plotter allocated a figure, then blew up")
+
+    def _patched(result_dict, pca, frame, threshold, **kwargs):
+        calls = real(result_dict, pca, frame, threshold, **kwargs)
+        calls["create_pca_biplot"] = _allocate_then_boom
+        return calls
+
+    monkeypatch.setattr(pca_analysis_tool, "_pca_plot_calls", _patched)
+
+    with pytest.raises(BloomMCPError):
+        _run(
+            include_plots=True,
+            plots=["create_pca_scree_plot", "create_pca_biplot"],
+        )
+    assert plt.get_fignums() == []
+
+
 def test_matplotlib_not_imported_on_default_path(injected_ports, monkeypatch):
     """10.9 — no include_plots → matplotlib import never reached."""
     import sys
@@ -894,6 +923,53 @@ def test_plot_font_size_non_positive_is_invalid_input(injected_ports):
         )
     assert exc.value.code == "invalid_input"
     assert store.list_runs(_EXPERIMENT, "pca") == []
+
+
+@pytest.mark.parametrize("include_plots", [True, False])
+@pytest.mark.parametrize("value", [101, float("inf")])
+def test_plot_font_size_above_ceiling_is_invalid_input_regardless_of_include_plots(
+    injected_ports, value, include_plots
+):
+    with pytest.raises(BloomMCPError) as exc:
+        pca_analysis(
+            {
+                "experiment": _EXPERIMENT,
+                "trait_columns": _TRAITS,
+                "include_plots": include_plots,
+                "plot_font_size": value,
+            }
+        )
+    assert exc.value.code == "invalid_input"
+
+
+def test_plot_font_size_at_ceiling_is_accepted(injected_ports, monkeypatch):
+    """#721: 100 is the new inclusive ceiling — must still reach the generated figure,
+    not just pass Pydantic construction."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    captured = {}
+
+    def _fake_calls(result_dict, pca, frame, threshold, **kwargs):
+        def _make():
+            fig, ax = plt.subplots()
+            ax.set_title("t")
+            captured["fig"] = fig
+            return fig
+
+        return {"create_pca_scree_plot": _make}
+
+    monkeypatch.setattr(pca_analysis_tool, "_pca_plot_calls", _fake_calls)
+
+    _run(
+        include_plots=True,
+        plots=["create_pca_scree_plot"],
+        plot_font_size=100,
+    )
+
+    assert captured["fig"].axes[0].title.get_fontsize() == 100
 
 
 def test_plot_font_fields_ignored_when_include_plots_false(injected_ports):
