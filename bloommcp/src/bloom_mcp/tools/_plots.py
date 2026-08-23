@@ -118,9 +118,25 @@ def generate_figures(
     (not after) so that if ``apply_font_style`` itself ever raised, the figure would
     already be in ``figures`` for ``close_figures`` to reach in ``finally``, rather than
     leaking from matplotlib's registry unrecorded and unreachable.
+
+    A callable that internally allocates a figure (e.g. via ``plt.subplots()``) and then
+    raises *before returning it* (#721 — e.g. an invalid colormap name reaching
+    matplotlib deep inside the call) would otherwise leak that figure forever: the
+    assignment ``figures[key] = fn()`` never completes, so it's never recorded, and
+    ``close_figures`` only iterates the caller's dict. Guarded here by diffing
+    ``plt.get_fignums()`` around each call and closing anything new before re-raising.
     """
+    import matplotlib.pyplot as plt
+
     for key, fn in resolved_calls.items():
-        figures[key] = fn()
+        before = plt.get_fignums()
+        try:
+            figures[key] = fn()
+        except Exception:
+            for num in plt.get_fignums():
+                if num not in before:
+                    plt.close(num)
+            raise
         apply_font_style(figures[key], font_family=font_family, font_size=font_size)
 
 

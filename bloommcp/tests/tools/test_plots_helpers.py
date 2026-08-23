@@ -117,6 +117,34 @@ def test_generate_figures_partial_failure_then_close_leaves_no_open_figures():
     )  # closed via the same dict generate_figures populated
 
 
+def test_generate_figures_closes_a_figure_allocated_then_abandoned_mid_call():
+    """#721: unlike ``_boom`` above (which raises with zero figure allocation), a
+    real-world failure — an invalid ``plot_cmap`` reaching ``ax.scatter(cmap=...)`` — can
+    allocate a figure (``plt.subplots()``) and *then* raise from later in the same call,
+    before the callable ever returns. That figure is never assigned into ``figures`` (the
+    assignment ``figures[key] = fn()`` never completes), so ``close_figures`` — which only
+    iterates that dict — can never reach it on its own. ``generate_figures`` itself must
+    close it before propagating the exception."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    figures: dict = {}
+
+    def _allocate_then_boom():
+        plt.figure()  # allocated ...
+        raise RuntimeError(
+            "plotter blew up after allocating its figure"
+        )  # ... then lost
+
+    with pytest.raises(RuntimeError):
+        generate_figures({"only": _allocate_then_boom}, figures)
+
+    assert figures == {}  # never recorded — the callable never returned
+    assert plt.get_fignums() == []  # yet generate_figures already closed it
+
+
 # ── close_figures ────────────────────────────────────────────────────────────
 
 
