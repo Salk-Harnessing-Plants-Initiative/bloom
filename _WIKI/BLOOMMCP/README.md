@@ -184,16 +184,14 @@ sources = client.rpc("list_experiment_trait_sources", {"experiment_id_": 42}).ex
 via one aggregate call; with all three arguments `NULL` it covers every experiment in a single round
 trip, same latest/`source_id`/`run_id` selection as `get_experiment_traits` — see the `cyl-trait-read`
 spec for the definition (not restated here). With no `source_id_`/`run_id_` pin, `n_plants` is always
-live but `n_traits` is read from a cache (not per write — bloom#637/bloom#656), refreshed
-on demand only via a manually-dispatched GitHub Action
-(`.github/workflows/refresh-cyl-experiment-trait-counts.yml`, `environment: staging|production`)
-rather than an automatic schedule — staging doesn't need frequent automatic refreshes, and
-GitHub Actions `schedule:` triggers only fire from the repo's default branch anyway, so one
-would have sat inert on `staging` (see `design.md` D8 for the full reasoning). Staleness is
-therefore unbounded until someone dispatches a refresh for the environment in question;
-production is expected to get its own automatic cadence eventually
-([bloom#708](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/708)). A pinned
-call is fully live for both counts.
+live but `n_traits` is read from a cache (not per write — bloom#637/bloom#656), refreshed by a
+GitHub Action (`.github/workflows/refresh-cyl-experiment-trait-counts.yml`) that **production runs
+automatically on a daily `on: schedule` cron** (bloom#708) while **staging remains on-demand only**
+via manual `workflow_dispatch` (`environment: staging|production`; staging doesn't need frequent
+automatic refreshes — see `design.md` D8's addendum for the full reasoning, including why the
+scheduled path resolves to a second, ungated GitHub Environment rather than `production` itself).
+Staleness is therefore bounded to roughly one refresh interval on production, but still unbounded on
+staging until someone dispatches a refresh there. A pinned call is fully live for both counts.
 
 See [`_WIKI/SUPABASE/README.md`](../SUPABASE/README.md) for the full
 role / RLS picture.
