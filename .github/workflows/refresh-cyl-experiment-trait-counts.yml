@@ -7,12 +7,15 @@ name: Refresh cyl_experiment_trait_counts
 # the order of hundreds of trait rows in a loop -- a per-row trigger would fire that many
 # full-experiment recomputes for one upload.
 #
-# pg_cron isn't installed in this stack, so this lives here instead. No `on: schedule` trigger,
-# deliberately -- two reasons: (1) staging has low write volume and doesn't need frequent
-# automatic refreshes right now; (2) `schedule:` triggers only ever fire from the workflow file's
-# copy on the repo's DEFAULT branch, so a cron here would sit inert on staging until promoted to
-# main anyway (a real gap found in this PR's own review -- see design.md D8). Manual
-# `workflow_dispatch`, by contrast, can be run against any branch/ref holding this file right now.
+# pg_cron isn't installed in this stack, so this lives here instead. Staging has low write
+# volume and doesn't need frequent automatic refreshes -- it stays workflow_dispatch-only.
+# Production gets an automatic `on: schedule` cron (bloom#708, see below).
+#
+# Both `schedule:` AND `workflow_dispatch` require this file to be registered from the repo's
+# DEFAULT branch (`main`) before EITHER can fire at all -- neither trigger works until this
+# repo's normal `staging -> main` promotion practice carries this file forward; see design.md
+# D8's addendum (fix-cyl-scan-traits-latest-rollup) for the full reasoning and verification.
+#
 # Calls the refresh function as an ordinary PostgREST RPC (the same surface every other caller in
 # this repo uses), rather than SSH+psql, so it doesn't touch the "manual DB access is
 # emergency-only" deploy policy design.md's predecessor (PR #654) ran into for its own backfill.
@@ -34,11 +37,14 @@ name: Refresh cyl_experiment_trait_counts
 # Without it, this job could fire an RLS-bypass RPC at either database with zero approval, unlike
 # every other path that reaches them.
 #
-# Production is expected to eventually need an automatic (scheduled) refresh once its write
-# volume grows -- tracked as bloom#708, not added speculatively here. Until then: `staging` needs
-# no fixed cadence at all -- dispatch it (environment: staging) as needed for testing, whenever a
-# fresher count would help. `production` stays on-demand only until bloom#708 ships; that issue is
-# where its automatic cadence belongs, not an ad hoc interim process here.
+# bloom#708: production now has an automatic daily `on: schedule` cron (see the `on:` block
+# below) rather than staying on-demand-only indefinitely. `staging` still needs no fixed cadence
+# at all -- dispatch it (environment: staging) as needed for testing, whenever a fresher count
+# would help. A `schedule` event carries no `github.event.inputs` context, so the job's
+# `environment:` key and ENVIRONMENT below resolve off `github.event_name` instead of the
+# dispatch input directly -- see the inline comments at each site, and design.md D8's addendum
+# (fix-cyl-scan-traits-latest-rollup) for the full reasoning, including why the scheduled path
+# uses a separate, ungated GitHub Environment rather than `production` itself.
 
 on:
   workflow_dispatch:
@@ -50,28 +56,60 @@ on:
         options:
           - staging
           - production
+  # bloom#708: production's write volume is expected to eventually outgrow on-demand
+  # dispatch. staging keeps no automatic cadence at all -- see this file's header
+  # comment above for why. Once daily, deliberately off the top of the hour (GitHub's
+  # own docs flag midnight UTC as a period of elevated scheduler load/delay); a
+  # reasoned default, not benchmarked against real production write-cadence data,
+  # which doesn't exist yet (design.md D8 addendum, fix-cyl-scan-traits-latest-rollup).
+  schedule:
+    - cron: '17 0 * * *'
 
 # This job only makes an outbound curl call -- no checkout, no repo-content access needed.
 permissions: {}
 
-# Scoped by environment (round 9 fix) -- previously a single shared group meant a staging dispatch
-# and a production dispatch could cancel each other, even though they touch entirely independent
-# databases and never actually race. Safe to cancel within the SAME environment: the refresh RPC
-# is a single statement in one transaction, so an aborted client connection (what cancelling this
-# job's curl call amounts to) rolls it back cleanly -- no partial state either way.
+# The target-host expression below is repeated verbatim (not centralized in a
+# workflow-level `env:`) because the `concurrency:` context cannot read `env:` --
+# GitHub Actions only exposes `github`/`inputs`/`vars`/`needs` contexts there.
+#
+# Scoped by target HOST (round 9 fix), not by the job's own environment: key below --
+# previously a single shared group meant a staging dispatch and a production dispatch
+# could cancel each other, even though they touch entirely independent databases and
+# never actually race. A scheduled production run and a manual workflow_dispatch
+# production run share this group deliberately (bloom#708) -- both hit the same
+# database, and the refresh RPC's own advisory lock (design.md D5b) makes it safe for
+# one to cancel/replace the other. Safe to cancel in general: the refresh RPC is a
+# single statement in one transaction, so an aborted client connection (what
+# cancelling this job's curl call amounts to) rolls it back cleanly -- no partial
+# state either way.
 concurrency:
-  group: refresh-cyl-experiment-trait-counts-${{ github.event.inputs.environment }}
+  group: refresh-cyl-experiment-trait-counts-${{ github.event_name == 'schedule' && 'production' || github.event.inputs.environment }}
   cancel-in-progress: true
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment }}
+    # bloom#708: a SEPARATE expression from ENVIRONMENT below and concurrency.group
+    # above. A `schedule` event has no `github.event.inputs` context, so a scheduled
+    # run always targets production -- but it must NOT go through `production`'s own
+    # `required_reviewers` approval gate (there's no human present to click "Approve"
+    # on an unattended cron; it would sit "Waiting" indefinitely). Resolves instead to
+    # `production-scheduled-refresh`, a second, purpose-created GitHub Environment
+    # with no protection rules -- GitHub auto-creates a referenced Environment with no
+    # protection rules on first use, so this needs no manual repository-settings step,
+    # and no new secret provisioning (PROD_SERVICE_ROLE_KEY is a repository-level
+    # secret, visible regardless of which Environment name is referenced). A manual
+    # workflow_dispatch is completely unaffected -- still resolves to the dispatched
+    # `environment` input, still gated by that Environment's own protection rules
+    # exactly as before. See design.md's D8 addendum (fix-cyl-scan-traits-latest-rollup)
+    # for the full reasoning, including an accepted, retry-safe risk this shares a
+    # concurrency group with manual production dispatches.
+    environment: ${{ github.event_name == 'schedule' && 'production-scheduled-refresh' || github.event.inputs.environment }}
     timeout-minutes: 2
     steps:
       - name: Call refresh_cyl_experiment_trait_counts()
         env:
-          ENVIRONMENT: ${{ github.event.inputs.environment }}
+          ENVIRONMENT: ${{ github.event_name == 'schedule' && 'production' || github.event.inputs.environment }}
           STAGING_API_URL: https://staging.bloom.salk.edu:8443/api
           PROD_API_URL: https://bloom.salk.edu/api
           STAGING_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SERVICE_ROLE_KEY }}

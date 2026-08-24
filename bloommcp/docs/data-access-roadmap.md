@@ -73,19 +73,16 @@ act on without reading the whole doc. Everything else here is optional context.
    - The `source_id_`/`run_id_`-pinned branches' cost is _reasoned about_, not benchmarked
      (design.md D7) — no caller pins either parameter today, and this pass couldn't run
      `EXPLAIN (ANALYZE, BUFFERS)` against staging at `experiment_id=1` scale.
-   - `n_traits`'s refresh runs as a manually-dispatched GitHub Action (design.md D8), not a
-     `workflows`-service job — the other option she'd named on the predecessor PR's thread. It
-     needs no secret provisioning (both base URLs are hardcoded, non-sensitive literals; both
-     service-role keys it uses already existed). Deliberately no `on: schedule` trigger — staging
-     doesn't need frequent automatic refreshes, and `schedule:` only ever fires from the repo's
-     default branch anyway, so one would have sat inert on `staging` regardless. An `environment`
-     input (`staging`/`production`, mirroring `deploy.yml`'s own convention) lets the same
-     `workflow_dispatch` call target either host — closing what would otherwise have been a
-     permanent gap for production (it's a genuinely separate Supabase instance the original
-     staging-only version never touched). Production is expected to eventually need its own
-     automatic (scheduled) cadence once its write volume grows — tracked as
-     [bloom#708](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/708), not
-     guessed at here.
+   - `n_traits`'s refresh runs as a GitHub Action (design.md D8), not a `workflows`-service job —
+     the other option she'd named on the predecessor PR's thread. It needs no secret provisioning
+     (both base URLs are hardcoded, non-sensitive literals; both service-role keys it uses already
+     existed). An `environment` input (`staging`/`production`, mirroring `deploy.yml`'s own
+     convention) lets a manual `workflow_dispatch` call target either host. **Production also now
+     has an automatic daily `on: schedule` cron** (design.md D8's addendum,
+     [bloom#708](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/708)) — staging
+     still has none, since it doesn't need frequent automatic refreshes. See design.md D8's addendum
+     for the full reasoning, including why the scheduled path resolves to a second, ungated GitHub
+     Environment rather than `production` itself.
 
 Separately, not blocking this roadmap: issue #406 (verified per-user identity + a
 `bloommcp_usage` table) is still awaiting your reply to the two design questions from my

@@ -12,14 +12,10 @@ is round-by-round:
   copy, and this repo merges feature work to ``staging`` first.
 - Round 8 found a bigger gap: even once promoted, the workflow only ever targeted staging's
   host -- production's cache would never refresh by any existing mechanism.
-- Resolved by dropping ``on: schedule`` entirely (staging doesn't need frequent automatic
-  refreshes right now, and a schedule would sit inert there anyway per the round-7 finding)
-  in favor of ``workflow_dispatch``-only, which -- unlike ``schedule:`` -- can be triggered
-  against ANY branch/ref containing the file, no promotion needed. An ``environment`` input
-  (mirroring ``deploy.yml``'s own convention) selects which host/secret pair to use, closing
-  the round-8 gap with no new secret provisioning (``PROD_SERVICE_ROLE_KEY`` already existed).
-  A scheduled trigger for production specifically is tracked as a future follow-up
-  (bloom#708), not carried here speculatively.
+- Resolved by dropping ``on: schedule`` for staging (which doesn't need frequent automatic
+  refreshes) in favor of ``workflow_dispatch``-only there. An ``environment`` input (mirroring
+  ``deploy.yml``'s own convention) selects which host/secret pair to use, closing the round-8
+  gap with no new secret provisioning (``PROD_SERVICE_ROLE_KEY`` already existed).
 - Round 9 found two gaps in that redesign itself: the job's ``concurrency.group`` wasn't
   scoped by environment (a staging dispatch and a production dispatch could cancel each
   other, despite touching entirely independent databases), and the job declared no
@@ -28,25 +24,49 @@ is round-by-round:
   do. Both fixed; the ``environment`` input's ``default: 'staging'`` was also removed --
   forcing an explicit choice every dispatch, rather than silently refreshing staging when
   someone meant to pick production.
+- **CORRECTED (bloom#708 investigation):** an earlier version of this docstring claimed
+  ``workflow_dispatch``, unlike ``schedule:``, "can be triggered against ANY branch/ref
+  containing the file, no promotion needed." That was wrong -- GitHub gates
+  ``workflow_dispatch`` on default-branch presence exactly like ``schedule:`` is (GitHub's own
+  docs: "To trigger the workflow_dispatch event, your workflow must be in the default
+  branch"), confirmed against this repo directly while this file existed only on ``staging``
+  (``gh api`` returned 404; ``gh workflow list --all`` didn't list it). Neither trigger type
+  works until this file is promoted to ``main`` via this repo's normal ``staging -> main``
+  practice.
+- **bloom#708 (this same round): production now has an automatic daily ``on: schedule`` cron**
+  (``cron: '17 0 * * *'``, deliberately off the top of the hour) rather than staying
+  on-demand-only indefinitely; staging keeps none. Since a ``schedule`` event carries no
+  ``github.event.inputs`` context, ``ENVIRONMENT``/the job's ``environment:`` key/
+  ``concurrency.group`` all branch on ``github.event_name`` instead. The job's
+  ``environment:`` key resolves to a **different** literal than ``ENVIRONMENT``/
+  ``concurrency.group`` do for a scheduled run: the latter two resolve to ``'production'``
+  (the actual database/host), while the job's ``environment:`` key resolves to
+  ``'production-scheduled-refresh'`` -- a second, purpose-created, ungated GitHub
+  Environment -- because routing a scheduled run through ``production``'s own
+  ``required_reviewers`` gate would leave every unattended nightly run stuck "Waiting" for a
+  human approval that will never come. See design.md's D8 addendum
+  (fix-cyl-scan-traits-latest-rollup) for the full reasoning.
 
-This test does five things:
+This test does six things:
 
-1. Asserts there is no ``on: schedule`` trigger at all, and that ``workflow_dispatch`` has a
-   required ``environment`` choice input (``staging``/``production``, no default).
+1. Asserts ``on: schedule`` exists with the expected cron, that ``workflow_dispatch`` still
+   coexists alongside it, and that the cron string is structurally valid.
 2. Asserts neither ``STAGING_API_URL`` nor ``PROD_API_URL`` is a GitHub secret reference, and
    that each hardcoded literal matches its own environment's ``.env.*.defaults`` value -- so
    they can never silently drift apart.
 3. Asserts both service-role keys are still sourced from real secrets, and that the run
    script actually resolves the right URL/key pair for whichever environment is dispatched.
-4. Asserts the job's ``environment:`` key and ``concurrency.group`` are both scoped by the
-   dispatched environment (round 9 fixes) -- so this job goes through the same approval
-   gates ``deploy.yml`` does, and a dispatch against one environment can never cancel an
-   unrelated in-flight dispatch against the other.
+4. Asserts ``ENVIRONMENT``/``concurrency.group`` (target-host) and the job's ``environment:``
+   key (approval-gate name) resolve via the correct, DISTINCT expressions for both trigger
+   types -- including a truth-table test that extracts the live literals from the YAML rather
+   than hardcoding an independently-asserted expected value, and a structural check that the
+   scheduled-only Environment name can't leak into the ``workflow_dispatch`` fallback branch.
 5. Actually EXECUTES the extracted https:// guard under bash (round-7 review finding:
    asserting the guard's error string appears in the script text proves the text is
    present, not that the shell logic behaves -- mirrors the technique in
    ``tests/unit/test_deploy_kong_reload_on_config_change.py``'s
    ``TestKongfileChangedFailSafeDefault``) for both environments' literals.
+6. Asserts the job still has no checkout step and empty ``permissions:``.
 """
 
 from __future__ import annotations
@@ -65,6 +85,24 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "refresh-cyl-experiment-trait-c
 STAGING_DEFAULTS = REPO_ROOT / ".env.staging.defaults"
 PROD_DEFAULTS = REPO_ROOT / ".env.prod.defaults"
 JOB = "refresh"
+
+# bloom#708: a `schedule` event carries no `github.event.inputs` context at all, so
+# both the target-host (which database to call) and the job's `environment:` key
+# (which GitHub Environment gates the run) must branch on `github.event_name`
+# instead of reading `github.event.inputs.environment` directly. These are TWO
+# DISTINCT expressions, not one shared value: a `schedule` run always targets
+# production, but must NOT go through `production`'s `required_reviewers` approval
+# gate (there's no human present to click "Approve" on an unattended cron) -- so it
+# resolves the job's `environment:` key to a second, purpose-created, ungated
+# Environment (`production-scheduled-refresh`) instead of `production` itself.
+TARGET_HOST_EXPR = (
+    "${{ github.event_name == 'schedule' && 'production' || "
+    "github.event.inputs.environment }}"
+)
+JOB_ENVIRONMENT_EXPR = (
+    "${{ github.event_name == 'schedule' && 'production-scheduled-refresh' || "
+    "github.event.inputs.environment }}"
+)
 
 # See test_deploy_kong_reload_on_config_change.py's identical helper: `bash` can
 # resolve to the WSL launcher shim rather than a real POSIX shell on some Windows
@@ -112,15 +150,139 @@ def _step(workflow: dict) -> dict:
     return steps[0]
 
 
-def test_no_schedule_trigger_only_workflow_dispatch() -> None:
-    """Staging doesn't need frequent automatic refreshes; schedule: can't fire pre-promotion anyway."""
+def test_schedule_trigger_exists_for_production_only() -> None:
+    """bloom#708: production gets an automatic daily cron; staging stays dispatch-only."""
     on = _on_block(_load_workflow())
-    assert "schedule" not in on, (
-        "no on: schedule trigger expected -- schedule: only ever fires from the default "
-        "branch (round 7 finding), and staging doesn't need frequent automatic refreshes "
-        "right now (see bloom#708 for production's eventual automatic-refresh follow-up)."
+    assert "schedule" in on, "on: schedule trigger expected for bloom#708's production cron"
+    schedule = on["schedule"]
+    assert len(schedule) == 1, f"expected exactly one schedule entry, got {len(schedule)}"
+    assert schedule[0].get("cron") == "17 0 * * *", (
+        "cron must be '17 0 * * *' (once daily, deliberately off the top of the hour -- "
+        f"GitHub's own docs flag midnight UTC as a period of elevated scheduler load); got "
+        f"{schedule[0].get('cron')!r}"
     )
-    assert "workflow_dispatch" in on, "workflow_dispatch must remain the only trigger"
+
+
+def test_workflow_dispatch_still_present_alongside_schedule() -> None:
+    """Adding the schedule trigger must not remove manual dispatch for either host."""
+    on = _on_block(_load_workflow())
+    assert "schedule" in on
+    assert "workflow_dispatch" in on, "workflow_dispatch must remain alongside schedule"
+
+
+def test_cron_expression_is_structurally_valid() -> None:
+    """A copy-paste typo (wrong field count, out-of-range value) would otherwise only
+    surface after promotion to `main`, possibly not until a missed run."""
+    cron = _on_block(_load_workflow())["schedule"][0]["cron"]
+    fields = cron.split()
+    assert len(fields) == 5, f"cron must have exactly 5 fields, got {fields!r} from {cron!r}"
+    for field, (lo, hi) in zip(fields, [(0, 59), (0, 23), (1, 31), (1, 12), (0, 6)]):
+        if field == "*":
+            continue
+        assert field.isdigit(), f"cron field {field!r} is neither '*' nor numeric"
+        assert lo <= int(field) <= hi, f"cron field {field!r} out of range [{lo}, {hi}]"
+
+
+def test_target_host_expression_matches_between_env_var_and_concurrency_group() -> None:
+    """ENVIRONMENT (drives the bash case/esac) and concurrency.group's host suffix
+    must resolve identically, or a scheduled run could hit a different host than the
+    concurrency group it's serialized against expects."""
+    env = _step(_load_workflow())["env"]
+    assert env.get("ENVIRONMENT") == TARGET_HOST_EXPR, (
+        f"ENVIRONMENT must be {TARGET_HOST_EXPR!r}; got {env.get('ENVIRONMENT')!r}"
+    )
+
+    concurrency = _load_workflow()["concurrency"]
+    group = str(concurrency.get("group", ""))
+    prefix = "refresh-cyl-experiment-trait-counts-"
+    assert group.startswith(prefix), f"concurrency.group must start with {prefix!r}; got {group!r}"
+    assert group[len(prefix) :] == TARGET_HOST_EXPR, (
+        f"concurrency.group's host suffix must be the identical target-host expression "
+        f"as ENVIRONMENT, not a different one; got {group[len(prefix):]!r}"
+    )
+
+
+_SCHEDULE_BRANCH_RE = re.compile(
+    r"github\.event_name == 'schedule' && '([^']+)' \|\| github\.event\.inputs\.environment"
+)
+
+
+def _extract_schedule_branch_literal(expr: str) -> str:
+    """Extract the literal a `schedule` event resolves to, from the LIVE expression string.
+
+    Deliberately does not hardcode an independently-asserted expected value -- a test
+    that just restates the intended logic in parallel Python, decoupled from the actual
+    file content, would pass unchanged even if the real expression drifted (the same
+    false-confidence failure mode this file's own history already caught once). If the
+    expression doesn't match the expected `A == 'schedule' && '<literal>' || B` shape at
+    all (e.g. the `&&`/`||` structure was changed), this fails loudly rather than
+    silently returning something that happens to satisfy a caller's assertion.
+    """
+    match = _SCHEDULE_BRANCH_RE.search(expr)
+    assert match, (
+        "expression does not match the expected `github.event_name == 'schedule' && "
+        f"'<literal>' || github.event.inputs.environment` shape -- got {expr!r}"
+    )
+    return match.group(1)
+
+
+@pytest.mark.parametrize(
+    "event_name, dispatch_input, expected_target_host, expected_job_environment",
+    [
+        ("schedule", None, "production", "production-scheduled-refresh"),
+        ("workflow_dispatch", "staging", "staging", "staging"),
+        # The case that specifically proves a manual dispatch to production is NOT
+        # silently routed to the ungated production-scheduled-refresh Environment.
+        ("workflow_dispatch", "production", "production", "production"),
+    ],
+)
+def test_resolution_truth_table_for_schedule_vs_dispatch(
+    event_name: str,
+    dispatch_input: str | None,
+    expected_target_host: str,
+    expected_job_environment: str,
+) -> None:
+    """GitHub Actions expressions are evaluated server-side before the job's shell
+    ever starts -- no local bash subprocess can exercise this `&&`/`||` ternary the
+    way test_environment_input_resolves_to_the_right_url_and_key exercises the
+    bash-level case/esac logic. This re-implements the ternary's resolution in
+    Python, but the literals it resolves TO are extracted from the live YAML (see
+    _extract_schedule_branch_literal), not hardcoded."""
+    workflow = _load_workflow()
+    target_host_literal = _extract_schedule_branch_literal(_step(workflow)["env"]["ENVIRONMENT"])
+    job_environment_literal = _extract_schedule_branch_literal(
+        workflow["jobs"][JOB]["environment"]
+    )
+
+    if event_name == "schedule":
+        resolved_target_host = target_host_literal
+        resolved_job_environment = job_environment_literal
+    else:
+        resolved_target_host = dispatch_input
+        resolved_job_environment = dispatch_input
+
+    assert resolved_target_host == expected_target_host
+    assert resolved_job_environment == expected_job_environment
+
+
+def test_scheduled_environment_name_appears_only_in_the_schedule_branch() -> None:
+    """Guards against a copy-paste duplicating `production-scheduled-refresh` into the
+    workflow_dispatch fallback branch, which would silently strip production's
+    approval gate for a manual dispatch -- the more dangerous direction, opposite of
+    the bug this section fixes."""
+    job_env_expr = str(_load_workflow()["jobs"][JOB].get("environment", ""))
+    assert job_env_expr.count("production-scheduled-refresh") == 1, (
+        "'production-scheduled-refresh' must appear exactly once in the job's "
+        f"environment: expression; got {job_env_expr!r}"
+    )
+    fallback = job_env_expr.rsplit("||", 1)[-1]
+    assert "production-scheduled-refresh" not in fallback, (
+        f"the workflow_dispatch fallback branch must not reference "
+        f"'production-scheduled-refresh'; got fallback={fallback!r}"
+    )
+    assert "github.event.inputs.environment" in fallback, (
+        f"the fallback branch must read the dispatch input verbatim; got {fallback!r}"
+    )
 
 
 def test_workflow_dispatch_has_environment_choice_input() -> None:
@@ -142,26 +304,38 @@ def test_workflow_dispatch_has_environment_choice_input() -> None:
 
 
 def test_job_has_environment_protection_gate() -> None:
-    """The job's environment: key must track the dispatched environment (round 9 fix).
+    """The job's environment: key must resolve correctly for both trigger types.
 
-    Without this, the job never goes through this repo's GitHub Environment approval
-    rules (required reviewers, wait timers) that deploy.yml's own staging/production
-    jobs already go through -- anyone able to dispatch could hit either database with
-    zero approval otherwise.
+    A workflow_dispatch run still requires the explicit `environment` input and goes
+    through that Environment's own protection rules unchanged (round 9 fix). A
+    `schedule` run resolves to `production-scheduled-refresh` instead of `production`
+    itself (bloom#708) -- `production`'s own `required_reviewers` gate would otherwise
+    leave every unattended nightly run stuck "Waiting" for a human approval that will
+    never come.
     """
     job = _load_workflow()["jobs"][JOB]
-    assert job.get("environment") == "${{ github.event.inputs.environment }}", (
-        f"job must set environment: ${{{{ github.event.inputs.environment }}}} so "
-        f"dispatches are gated the same way deploy.yml's are; got {job.get('environment')!r}"
+    assert job.get("environment") == JOB_ENVIRONMENT_EXPR, (
+        f"job.environment must be {JOB_ENVIRONMENT_EXPR!r} so a scheduled run resolves "
+        f"to the ungated production-scheduled-refresh Environment while workflow_dispatch "
+        f"keeps its existing approval gate; got {job.get('environment')!r}"
     )
 
 
 def test_concurrency_group_is_scoped_by_environment() -> None:
-    """A staging dispatch must not be able to cancel an in-flight production one (round 9 fix)."""
+    """concurrency.group stays keyed by target HOST, not by the Environment name.
+
+    A staging dispatch must not be able to cancel an in-flight production one (round 9
+    fix). A scheduled production run and a manual workflow_dispatch production run must
+    still serialize against each other (both hit the same database) -- keying by the
+    job-environment-name expression instead would let them race past each other with no
+    serialization, since schedule and dispatch resolve to DIFFERENT Environment names
+    for the same host (bloom#708).
+    """
     concurrency = _load_workflow()["concurrency"]
-    assert "${{ github.event.inputs.environment }}" in str(concurrency.get("group", "")), (
-        "concurrency.group must include the environment input, or dispatches against "
-        f"different environments can cancel each other; got {concurrency.get('group')!r}"
+    assert TARGET_HOST_EXPR in str(concurrency.get("group", "")), (
+        "concurrency.group must contain the target-host expression, or dispatches "
+        f"against the same host under different trigger types can race; got "
+        f"{concurrency.get('group')!r}"
     )
 
 
