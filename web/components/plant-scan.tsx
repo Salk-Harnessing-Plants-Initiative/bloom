@@ -45,17 +45,24 @@ export default function PlantScan({
   target,
   height,
   label,
+  altText,
 }: {
   scan: CylScanWithImages;
   href?: string;
   target?: string;
   height?: number;
   label?: string;
+  // Names the image for screen readers. Separate from `label`, which also
+  // draws a visible badge, so a caller can identify the scan without one.
+  altText?: string;
 }) {
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [imageIsLoaded, setImageIsLoaded] = useState<boolean>(false);
+
+  const imageAlt =
+    altText ?? (label ? `Scan thumbnail, ${label}` : "Scan thumbnail");
 
   // Keyed on the scan id, not the object, so a caller re-rendering with an
   // equivalent scan doesn't re-sign everything.
@@ -136,7 +143,9 @@ export default function PlantScan({
         }
       >
         {imageIsLoaded && videoUrl !== null && (
-          <div className="p-1 rounded-md bg-stone-50 border absolute hidden left-1 top-1 group-hover:block text-lime-700 opacity-70 hover:opacity-90">
+          // Faded rather than `hidden`: display:none takes the link out of the
+          // tab order, leaving it mouse-only.
+          <div className="p-1 rounded-md bg-stone-50 border absolute left-1 top-1 text-lime-700 opacity-0 transition-opacity group-hover:opacity-70 group-focus-within:opacity-100 hover:opacity-90">
             <a
               href={videoUrl}
               target="_blank"
@@ -170,7 +179,7 @@ export default function PlantScan({
             <Link href={href} target={target}>
               <img
                 src={objectUrl}
-                alt={label ? `Scan thumbnail, ${label}` : "Scan thumbnail"}
+                alt={imageAlt}
                 className="rounded-md"
                 onLoad={() => setImageIsLoaded(true)}
                 onError={() => setImageIsLoaded(false)}
@@ -179,7 +188,7 @@ export default function PlantScan({
           ) : (
             <img
               src={objectUrl}
-              alt={label ? `Scan thumbnail, ${label}` : "Scan thumbnail"}
+              alt={imageAlt}
               className="rounded-md"
               onLoad={() => setImageIsLoaded(true)}
               onError={() => setImageIsLoaded(false)}

@@ -43,6 +43,13 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
   // broken-image glyph, which reads as a dark or empty capture.
   const [failedPaths, setFailedPaths] = useState<Set<string>>(new Set());
   const [requestedIndex, setRequestedIndex] = useState<number>(0);
+  // Frame URLs seen to load, whether by the preload or by the visible image.
+  const [loadedUrls, setLoadedUrls] = useState<Set<string>>(new Set());
+  // The frame currently painted, held on screen while the next one loads.
+  const [settledUrl, setSettledUrl] = useState<string | null>(null);
+
+  const markLoaded = (url: string) =>
+    setLoadedUrls((prev) => (prev.has(url) ? prev : new Set(prev).add(url)));
 
   // Keyed on the scan id, not the object: a refetch that returns the same scan
   // must not look like a different one, or it would reset the reader's frame.
@@ -68,6 +75,8 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
   useEffect(() => {
     setRequestedIndex(0);
     setFailedPaths(new Set());
+    setLoadedUrls(new Set());
+    setSettledUrl(null);
   }, [frames]);
 
   useEffect(() => {
@@ -105,6 +114,7 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
       if (!url) continue;
       const img = new window.Image();
       img.fetchPriority = "low";
+      img.onload = () => markLoaded(url);
       img.src = url;
     }
   }, [frameIndex, frames, frameUrls]);
@@ -115,23 +125,13 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
   const objectUrl =
     currentPath && failedPaths.has(currentPath) ? null : signedUrl;
 
-  // The previous frame stays painted while the next decodes, so without this
-  // there is no sign that a slow frame is on its way. Cleared by onLoad/onError.
-  const [framePending, setFramePending] = useState<boolean>(false);
+  // Pending is decided by which URL has been seen to load, never by asking the
+  // element. `img.complete` answers for whichever frame the element last settled
+  // on: React writes the new src and runs effects in one synchronous stack, so
+  // at that point the browser has not yet started the new request and still
+  // reports the old frame as complete.
+  const framePending = objectUrl !== null && !loadedUrls.has(objectUrl);
   const [showSpinner, setShowSpinner] = useState<boolean>(false);
-
-  const imgRef = useRef<HTMLImageElement>(null);
-
-  useEffect(() => {
-    if (objectUrl === null) {
-      setFramePending(false);
-      return;
-    }
-    // A preloaded frame can finish decoding before this effect runs, and `load`
-    // does not fire again for an already-complete image — so arming here
-    // unconditionally would leave the frame dimmed with no event to clear it.
-    setFramePending(!imgRef.current?.complete);
-  }, [objectUrl]);
 
   useEffect(() => {
     if (!framePending) {
@@ -185,32 +185,41 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
           </div>
         )}
         {objectUrl !== null ? (
-          <img
-            ref={imgRef}
-            // Deliberately unkeyed: reusing the element lets the browser hold the
-            // previous frame until the next decodes, instead of blanking between
-            // pages. onError still fires per failed src.
-            src={objectUrl}
-            alt={label}
-            // Dimmed while the next frame decodes. Holding the previous frame is
-            // what stops the flicker, but the label and counter have already moved
-            // on — an undimmed stale frame would sit under a caption naming a
-            // different one, and consecutive rotation frames look alike.
-            className={
-              "rounded-md max-h-full max-w-full object-contain transition-opacity" +
-              (framePending ? " opacity-40" : "")
-            }
-            onLoad={() => setFramePending(false)}
-            onError={(e) => {
-              // A load abandoned by paging can still report failure. Without
-              // this the blame lands on whichever frame is showing now, which
-              // is then stuck behind a retry it never needed.
-              if (e.currentTarget.src !== objectUrl) return;
-              setFramePending(false);
-              if (currentPath)
-                setFailedPaths((prev) => new Set(prev).add(currentPath));
-            }}
-          />
+          <>
+            {/* The frame already on screen is held underneath while the next one
+                loads, so paging never blanks. Dimmed and hidden from the a11y
+                tree: the label and counter have already moved on, so this is no
+                longer the frame the caption names. */}
+            {framePending && settledUrl !== null && settledUrl !== objectUrl && (
+              <img
+                src={settledUrl}
+                alt=""
+                aria-hidden="true"
+                className="absolute rounded-md max-h-full max-w-full object-contain opacity-40"
+              />
+            )}
+            <img
+              // Keyed by URL so each frame gets its own element. A reused element
+              // reports load and error against whatever src it holds now, which
+              // is how an abandoned request came to be blamed on the frame that
+              // replaced it.
+              key={objectUrl}
+              src={objectUrl}
+              alt={label}
+              className={
+                "rounded-md max-h-full max-w-full object-contain" +
+                (framePending ? " opacity-0" : "")
+              }
+              onLoad={() => {
+                markLoaded(objectUrl);
+                setSettledUrl(objectUrl);
+              }}
+              onError={() => {
+                if (currentPath)
+                  setFailedPaths((prev) => new Set(prev).add(currentPath));
+              }}
+            />
+          </>
         ) : !loading ? (
           // This one frame is unavailable — keep the pager so the rest stay reachable.
           <div className="px-4 py-6 text-sm text-stone-500 italic">

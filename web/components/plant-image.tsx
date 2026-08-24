@@ -6,6 +6,7 @@ import { createClientSupabaseClient } from "@/lib/supabase/client";
 // import Image from "next/image";
 import { Database } from "@/lib/database.types";
 import { useEffect, useState } from "react";
+import { usableUrl } from "./plant-scan.helpers";
 
 async function getObjectUrl(path: string, thumb: boolean) {
   const supabase = createClientSupabaseClient();
@@ -23,8 +24,7 @@ async function getObjectUrl(path: string, thumb: boolean) {
       : {}
   );
 
-  const signedUrl = data?.signedUrl ?? "";
-  return signedUrl;
+  return usableUrl(data?.signedUrl);
 }
 
 export default function PlantImage({
@@ -56,7 +56,7 @@ export default function PlantImage({
         }
       >
         {objectUrl !== null ? (
-          <img src={objectUrl} className="rounded-md" />
+          <img src={objectUrl} alt="Plant image" className="rounded-md" />
         ) : null}
       </div>
     </div>

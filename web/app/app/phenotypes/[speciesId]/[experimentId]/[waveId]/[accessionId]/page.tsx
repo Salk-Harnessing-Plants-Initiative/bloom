@@ -153,6 +153,7 @@ export default async function Accession({
                           <PlantScan
                             scan={scan}
                             height={105}
+                            altText={`Cylinder scan, day ${scan.plant_age_days}`}
                             href={`/app/phenotypes/${species?.id}/${experiment?.id}/${waveId}/${accessionId}/${scan.id}`}
                           />
                         </div>
