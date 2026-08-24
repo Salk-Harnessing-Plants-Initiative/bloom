@@ -14,6 +14,13 @@ import {
 // Long enough to page through a scan's frames without re-signing.
 const FRAME_URL_TTL = 3600;
 
+// The frame box holds this height so paging swaps only the picture, not the layout.
+const FRAME_VIEW_HEIGHT = 520;
+
+// A preloaded frame decodes in a few ms; showing a spinner for that long reads
+// as a glitch. Only frames that actually make you wait get one.
+const SPINNER_DELAY_MS = 150;
+
 // Sign every frame in one request, keyed by path so a partial or reordered
 // response can't shift frames out of position.
 async function getFrameUrls(paths: string[]) {
@@ -86,11 +93,39 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
     };
   }, [frames, total]);
 
+  // Fetch the frames either side so paging lands on a decoded image.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    for (const i of [frameIndex - 1, frameIndex + 1]) {
+      const path = frames[i]?.object_path;
+      const url = path ? frameUrls.get(path) : null;
+      if (url && !failedPaths.has(path!)) new window.Image().src = url;
+    }
+  }, [frameIndex, frames, frameUrls, failedPaths]);
+
   const signedUrl = currentPath ? frameUrls.get(currentPath) ?? null : null;
   // A frame that failed to load is as unavailable as one that failed to sign;
   // both must reach the same message rather than a broken image.
   const objectUrl =
     currentPath && failedPaths.has(currentPath) ? null : signedUrl;
+
+  // The previous frame stays painted while the next decodes, so without this
+  // there is no sign that a slow frame is on its way. Cleared by onLoad/onError.
+  const [framePending, setFramePending] = useState<boolean>(false);
+  const [showSpinner, setShowSpinner] = useState<boolean>(false);
+
+  useEffect(() => {
+    setFramePending(objectUrl !== null);
+  }, [objectUrl]);
+
+  useEffect(() => {
+    if (!framePending) {
+      setShowSpinner(false);
+      return;
+    }
+    const t = setTimeout(() => setShowSpinner(true), SPINNER_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [framePending]);
 
   // Rows the scan recorded whose image never arrived — the one completeness signal.
   const recorded = snapshot.recorded;
@@ -117,22 +152,36 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
   return (
     <div>
       <div
+        // Height is inline, not a Tailwind class: an interpolated arbitrary value
+        // never appears literally in the source for the scanner to emit.
+        style={{ height: FRAME_VIEW_HEIGHT }}
         className={
-          "relative bg-stone-300 box-content rounded-lg border-4 border-neutral-300 flex flex-col" +
+          "relative bg-stone-300 box-content rounded-lg border-4 border-neutral-300 flex flex-col items-center justify-center" +
           (loading ? " animate-pulse" : "")
         }
       >
+        {showSpinner && (
+          <div
+            className="absolute inset-0 flex items-center justify-center"
+            role="status"
+            aria-label="Loading frame"
+          >
+            <div className="h-8 w-8 animate-spin rounded-full border-4 border-neutral-300 border-t-lime-600" />
+          </div>
+        )}
         {objectUrl !== null ? (
           <img
-            // Keyed on the url so paging to a new frame remounts the element —
-            // otherwise a failure on one frame wouldn't re-fire for the next.
-            key={objectUrl}
+            // Deliberately unkeyed: reusing the element lets the browser hold the
+            // previous frame until the next decodes, instead of blanking between
+            // pages. onError still fires per failed src.
             src={objectUrl}
-            className="rounded-md"
-            onError={() =>
-              currentPath &&
-              setFailedPaths((prev) => new Set(prev).add(currentPath))
-            }
+            className="rounded-md max-h-full max-w-full object-contain"
+            onLoad={() => setFramePending(false)}
+            onError={() => {
+              setFramePending(false);
+              if (currentPath)
+                setFailedPaths((prev) => new Set(prev).add(currentPath));
+            }}
           />
         ) : !loading ? (
           // This one frame is unavailable — keep the pager so the rest stay reachable.
