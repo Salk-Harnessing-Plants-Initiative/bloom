@@ -123,6 +123,8 @@ export default function PlantScan({
       <div
         className={
           "relative bg-stone-300 box-content rounded-lg border-4 border-neutral-300" +
+          // Only hint at a click when there is somewhere to go.
+          (href ? " transition-colors group-hover:border-lime-700" : "") +
           ` h-[${height || defaultHeight}px]` +
           (objectUrl === null || loading ? " animate-pulse" : "")
         }
