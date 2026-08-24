@@ -10,13 +10,15 @@ from typing import Optional
 
 from bloom_mcp.tools import _ports
 
-# design.md D8 (bloom#637): the refresh workflow is on-demand only (`workflow_dispatch`,
-# no `on: schedule`) for both environments as of this change -- staging doesn't need
-# frequent automatic refreshes, and production's own automatic cadence is a tracked
-# follow-up (bloom#708), not yet built. So a cache row can go quiet indefinitely with no
-# signal beyond a timestamp that keeps looking like ordinary bounded lag. Elapsed time
+# design.md D8 addendum (bloom#637/#708): production now refreshes on an automatic daily
+# `on: schedule` cron; staging remains on-demand (`workflow_dispatch`) only -- it doesn't
+# need frequent automatic refreshes. So a STAGING cache row can still go quiet
+# indefinitely with no signal beyond a timestamp that keeps looking like ordinary bounded
+# lag; a PRODUCTION row's lag is bounded to roughly one refresh interval, but a missed or
+# delayed scheduled run would otherwise look identical to ordinary lag too. Elapsed time
 # past a couple of days is flagged explicitly rather than printed as a plain "as of"
-# timestamp, since nothing refreshes it automatically.
+# timestamp either way, since this tool has no way to tell which environment a given row
+# came from.
 _STALE_AFTER = timedelta(days=2)
 
 
@@ -41,7 +43,8 @@ def _traits_note(updated_at: Optional[str], *, now: Optional[datetime] = None) -
     if elapsed > _STALE_AFTER:
         return (
             f" (as of {updated_at}, {elapsed.days}d ago -- "
-            f"trait counts refresh on demand only, not automatically)"
+            f"trait counts refresh on a schedule or on demand, not on every write; "
+            f"this count may be older than the environment's own refresh cadence)"
         )
     return f" (as of {updated_at})"
 
