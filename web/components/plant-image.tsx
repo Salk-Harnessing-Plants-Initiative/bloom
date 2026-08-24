@@ -30,9 +30,13 @@ async function getObjectUrl(path: string, thumb: boolean) {
 export default function PlantImage({
   path,
   thumb,
+  altText,
 }: {
   path: string | null;
   thumb: boolean;
+  // Names the image for screen readers. Where the image is a link's only
+  // content it is also the link's name, so a page of them needs one each.
+  altText?: string;
 }) {
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -56,7 +60,11 @@ export default function PlantImage({
         }
       >
         {objectUrl !== null ? (
-          <img src={objectUrl} alt="Plant image" className="rounded-md" />
+          <img
+            src={objectUrl}
+            alt={altText ?? "Plant image"}
+            className="rounded-md"
+          />
         ) : null}
       </div>
     </div>

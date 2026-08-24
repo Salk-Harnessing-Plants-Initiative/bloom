@@ -45,3 +45,10 @@ describe("PlantImage", () => {
     expect(container.querySelector("img")).toBeNull();
   });
 });
+
+it("lets the caller name the image, so a page of links is not a page of identical links", async () => {
+  // Where PlantImage is a link's only content, its alt is the link's name.
+  render(<PlantImage path="a.png" thumb altText="Plant image, day 21" />);
+
+  expect(await screen.findByAltText("Plant image, day 21")).toBeTruthy();
+});
