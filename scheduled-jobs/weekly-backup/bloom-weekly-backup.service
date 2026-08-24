@@ -1,0 +1,25 @@
+[Unit]
+Description=Bloom weekly Postgres backup (__ENV_NAME__) — dumps the database and its roles and pushes both to Box via rclone.
+Documentation=https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/staging/_WIKI/SCHEDULEDJOBS/weekly-backup.md
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=__DEPLOY_USER__
+EnvironmentFile=__ENV_FILE__
+WorkingDirectory=__DEPLOY_DIR__
+ExecStart=/usr/bin/python3 __DEPLOY_DIR__/scheduled-jobs/weekly-backup/backup.py --env __ENV_NAME__ --deploy-dir __DEPLOY_DIR__
+StandardOutput=journal
+StandardError=journal
+
+# The dump holds every row in the database plus auth.users. Keep the blast
+# radius small: no new privileges, a read-only system tree apart from the
+# state dir, and no access to anyone's home directory.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=__STATE_DIR__
+ProtectHome=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
