@@ -181,6 +181,30 @@ class UMAPAnalysisParams(BaseModel):
         "generated plot. Omit for each plot's default size. Ignored when "
         "include_plots=False.",
     )
+    plot_cmap: str | None = Field(
+        default=None,
+        description="Colormap for create_umap_single_trait's continuous trait coloring "
+        "(e.g. 'plasma', 'viridis'). Not validated against matplotlib's colormap registry — "
+        "an unknown name raises ValueError from matplotlib itself at figure-generation "
+        "time. Has no effect on create_umap_colored_by_top_traits (its upstream signature "
+        "does not accept cmap). Ignored (not rejected) when include_plots=False.",
+    )
+    plot_point_size: float | None = Field(
+        default=None,
+        gt=0,
+        description="Scatter point size for create_umap_single_trait. Has no effect on "
+        "create_umap_colored_by_top_traits (its upstream signature does not accept "
+        "point_size). Ignored (not rejected) when include_plots=False.",
+    )
+    plot_alpha: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Point transparency (0=fully transparent, 1=fully opaque) for "
+        "create_umap_single_trait. Has no effect on create_umap_colored_by_top_traits (its "
+        "upstream signature does not accept alpha). Ignored (not rejected) when "
+        "include_plots=False.",
+    )
     user_label: str | None = Field(
         default=None,
         description="Optional slug appended to the version directory name.",
@@ -206,6 +230,10 @@ def _umap_plot_calls(
     result_dict: dict,
     frame: ExperimentFrame,
     trait_cols: list[str],
+    *,
+    plot_cmap: str | None = None,
+    plot_point_size: float | None = None,
+    plot_alpha: float | None = None,
 ) -> dict:
     """Return zero-arg callables for each catalog plot key, lazily importing plotters.
 
@@ -213,11 +241,25 @@ def _umap_plot_calls(
     on the ``include_plots=True`` path. This does NOT keep matplotlib out of
     ``sys.modules`` on the default path — this module's top-level ``sleap_roots_analyze``
     import already pulls matplotlib in transitively (see the module docstring).
+
+    ``plot_cmap``/``plot_point_size``/``plot_alpha`` are forwarded to
+    ``create_umap_single_trait`` only — the sole catalog plotter here whose upstream
+    signature accepts any of them (see design.md's per-plotter support table) — and only
+    when set, so an unset (``None``) field reproduces the plotter's own hardcoded default
+    exactly rather than passing that default back explicitly.
     """
     from sleap_roots_analyze import (
         create_umap_colored_by_top_traits,
         create_umap_single_trait,
     )
+
+    single_trait_kwargs: dict = {}
+    if plot_cmap is not None:
+        single_trait_kwargs["cmap"] = plot_cmap
+    if plot_point_size is not None:
+        single_trait_kwargs["point_size"] = plot_point_size
+    if plot_alpha is not None:
+        single_trait_kwargs["alpha"] = plot_alpha
 
     def _top_traits():
         # Internal, non-persisted PCA call over the exact same certified-clean trait
@@ -263,7 +305,7 @@ def _umap_plot_calls(
 
     return {
         "create_umap_single_trait": lambda: create_umap_single_trait(
-            result_dict, frame.df, trait_cols[0]
+            result_dict, frame.df, trait_cols[0], **single_trait_kwargs
         ),
         "create_umap_colored_by_top_traits": _top_traits,
     }
@@ -412,7 +454,14 @@ def umap_analysis(
 
             matplotlib.use("Agg")
             validate_plot_keys(params.plots, _UMAP_CATALOG_KEYS)
-            calls = _umap_plot_calls(result_dict, frame, trait_cols)
+            calls = _umap_plot_calls(
+                result_dict,
+                frame,
+                trait_cols,
+                plot_cmap=params.plot_cmap,
+                plot_point_size=params.plot_point_size,
+                plot_alpha=params.plot_alpha,
+            )
             keys_to_generate = (
                 list(params.plots)
                 if params.plots is not None
