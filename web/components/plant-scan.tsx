@@ -146,12 +146,17 @@ export default function PlantScan({
           // Always shown, never `hidden`: it only renders when the scan has a
           // video, and a badge that appears on hover is a badge nobody finds.
           // display:none would also drop it out of the tab order entirely.
-          <div className="p-1 rounded-md bg-stone-50 border absolute left-1 top-1 text-lime-800 opacity-90 transition-opacity hover:opacity-100 group-focus-within:opacity-100">
+          <div className="absolute left-1 top-1">
             <a
               href={videoUrl}
               target="_blank"
               rel="noreferrer"
-              aria-label="Open scan video"
+              // Named per scan: a grid of these all called "Open scan video"
+              // is a link list with no way to tell one day from another.
+              aria-label={`Open ${imageAlt} video in a new tab`}
+              // The chip is on the anchor, not a wrapper, so the padded area
+              // is the click target rather than a band that only looks live.
+              className="block p-1 rounded-md bg-stone-50 border border-stone-500 text-lime-800 opacity-90 transition-opacity hover:opacity-100 focus-visible:opacity-100"
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"

@@ -89,7 +89,7 @@ describe("PlantScan across a scan change", () => {
     );
     await waitFor(() => expect(container.querySelector("img")).not.toBeNull());
     fireEvent.load(container.querySelector("img")!);
-    await screen.findByLabelText("Open scan video");
+    await screen.findByLabelText(/Open .* video/);
 
     rerender(<PlantScan scan={scanWith(6, ["b.png"])} />);
     await waitFor(() =>
@@ -100,7 +100,7 @@ describe("PlantScan across a scan change", () => {
     fireEvent.load(container.querySelector("img")!);
 
     await waitFor(() =>
-      expect(screen.queryByLabelText("Open scan video")).toBeNull()
+      expect(screen.queryByLabelText(/Open .* video/)).toBeNull()
     );
   });
 
@@ -168,20 +168,36 @@ describe("PlantScan naming and reachability", () => {
     const img = await screen.findByAltText("Scan thumbnail");
     fireEvent.load(img);
 
-    const link = await screen.findByLabelText("Open scan video");
-    const chip = link.closest("div") as HTMLElement;
+    const link = await screen.findByLabelText(/Open .* video/);
     // A badge that only appears on hover is a badge nobody finds — and
     // `hidden` is display:none, which also drops it out of the tab order.
-    expect(chip.className).not.toContain("hidden");
-    expect(chip.className).not.toContain("opacity-0");
+    expect(link.className).not.toContain("hidden");
+    expect(link.className).not.toContain("opacity-0");
+    // The padded chip is the anchor itself, so all of it is clickable.
+    expect(link.className).toContain("p-1");
     expect(container.querySelector(".group")?.contains(link)).toBe(true);
+  });
+
+  it("names the video link by the scan, not identically on every tile", async () => {
+    render(
+      <PlantScan scan={scanWith(5, ["a.png"])} altText="Cylinder scan, day 21" />
+    );
+    fireEvent.load(await screen.findByAltText("Cylinder scan, day 21"));
+
+    // A grid of these all called "Open scan video" is a link list with no way
+    // to tell one day from another.
+    expect(
+      await screen.findByLabelText(
+        "Open Cylinder scan, day 21 video in a new tab"
+      )
+    ).toBeTruthy();
   });
 
   it("shows no video badge for a scan that has no video", async () => {
     render(<PlantScan scan={scanWith(1, ["a.png"])} />);
     fireEvent.load(await screen.findByAltText("Scan thumbnail"));
 
-    expect(screen.queryByLabelText("Open scan video")).toBeNull();
+    expect(screen.queryByLabelText(/Open .* video/)).toBeNull();
   });
 
   it("hints at the click for keyboard focus, not just the mouse", async () => {
