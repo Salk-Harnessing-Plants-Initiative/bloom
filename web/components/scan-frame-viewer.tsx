@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import { CylScanWithImages } from "@/lib/custom.types";
 import {
@@ -114,8 +114,17 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
   const [framePending, setFramePending] = useState<boolean>(false);
   const [showSpinner, setShowSpinner] = useState<boolean>(false);
 
+  const imgRef = useRef<HTMLImageElement>(null);
+
   useEffect(() => {
-    setFramePending(objectUrl !== null);
+    if (objectUrl === null) {
+      setFramePending(false);
+      return;
+    }
+    // A preloaded frame can finish decoding before this effect runs, and `load`
+    // does not fire again for an already-complete image — so arming here
+    // unconditionally would leave the frame dimmed with no event to clear it.
+    setFramePending(!imgRef.current?.complete);
   }, [objectUrl]);
 
   useEffect(() => {
@@ -171,11 +180,19 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
         )}
         {objectUrl !== null ? (
           <img
+            ref={imgRef}
             // Deliberately unkeyed: reusing the element lets the browser hold the
             // previous frame until the next decodes, instead of blanking between
             // pages. onError still fires per failed src.
             src={objectUrl}
-            className="rounded-md max-h-full max-w-full object-contain"
+            // Dimmed while the next frame decodes. Holding the previous frame is
+            // what stops the flicker, but the label and counter have already moved
+            // on — an undimmed stale frame would sit under a caption naming a
+            // different one, and consecutive rotation frames look alike.
+            className={
+              "rounded-md max-h-full max-w-full object-contain transition-opacity" +
+              (framePending ? " opacity-40" : "")
+            }
             onLoad={() => setFramePending(false)}
             onError={() => {
               setFramePending(false);
