@@ -106,17 +106,29 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
   // priority: these must not compete with the frame actually on screen.
   const failedRef = useRef(failedPaths);
   failedRef.current = failedPaths;
+  const loadedRef = useRef(loadedUrls);
+  loadedRef.current = loadedUrls;
   useEffect(() => {
+    const warming: HTMLImageElement[] = [];
     for (const i of [frameIndex - 1, frameIndex + 1]) {
       const path = frames[i]?.object_path;
       if (!path || failedRef.current.has(path)) continue;
       const url = frameUrls.get(path);
-      if (!url) continue;
+      if (!url || loadedRef.current.has(url)) continue;
       const img = new window.Image();
       img.fetchPriority = "low";
       img.onload = () => markLoaded(url);
       img.src = url;
+      warming.push(img);
     }
+    // Paging on leaves these fetching frames the reader has gone past, competing
+    // with the one they are waiting for. Blanking src is what aborts them.
+    return () => {
+      for (const img of warming) {
+        img.onload = null;
+        img.src = "";
+      }
+    };
   }, [frameIndex, frames, frameUrls]);
 
   const signedUrl = currentPath ? frameUrls.get(currentPath) ?? null : null;

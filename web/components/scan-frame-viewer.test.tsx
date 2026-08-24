@@ -377,15 +377,54 @@ describe("holding the previous frame", () => {
     };
     try {
       render(<ScanFrameViewer scan={THREE_FRAMES} />);
-      await settleFirstFrame();
-      // From the middle frame both sides exist, so this catches a preload that
-      // only ever looks forward.
+      // Deliberately not settled: a frame already loaded is skipped, so
+      // settling frame 1 would hide a preload that never looks backward.
+      await screen.findByAltText("Frame 1");
+      // From the middle frame both sides exist.
       fireEvent.click(screen.getByLabelText("Next frame"));
 
       await waitFor(() => {
         expect(requested).toContain("https://signed.test/f1.png");
         expect(requested).toContain("https://signed.test/f3.png");
       });
+    } finally {
+      window.Image = RealImage;
+    }
+  });
+
+  it("aborts a warm for a frame the reader has already paged past", async () => {
+    // Without this, twenty clicks leave forty downloads running, all competing
+    // with the frame actually being waited on.
+    const events: string[] = [];
+    const RealImage = window.Image;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).Image = class {
+      onload: (() => void) | null = null;
+      fetchPriority = "";
+      current = "";
+      set src(value: string) {
+        // Blanking src is what aborts an image fetch already in flight.
+        if (value === "") {
+          if (this.current) events.push("abort " + this.current);
+          return;
+        }
+        this.current = value;
+        events.push("start " + value);
+      }
+    };
+    try {
+      render(<ScanFrameViewer scan={THREE_FRAMES} />);
+      await screen.findByAltText("Frame 1");
+      // Frame 1 warms frame 2. Paging on must call that warm off.
+      await waitFor(() =>
+        expect(events).toContain("start https://signed.test/f2.png")
+      );
+
+      fireEvent.click(screen.getByLabelText("Next frame"));
+
+      await waitFor(() =>
+        expect(events).toContain("abort https://signed.test/f2.png")
+      );
     } finally {
       window.Image = RealImage;
     }
