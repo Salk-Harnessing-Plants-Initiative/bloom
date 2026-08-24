@@ -833,12 +833,50 @@ Running `openspec:archive` before then would copy a false statement into `opensp
       production-scheduled-refresh` job actually starts immediately (no pending-approval state) once this
       workflow actually reaches `main` via this repo's normal promotion practice — genuinely blocked until
       that promotion happens (same blocker as 5.3/5.6), not something this PR can complete on its own.
-      While verifying, also confirm via `gh api repos/.../environments/production-scheduled-refresh` that
-      it still carries zero protection rules (`/review-openspec` round 2's CI/CD pass flagged that
-      nothing prevents a repo admin from later adding `required_reviewers` to this Environment, silently
-      reintroducing the exact bug this section fixes — an accepted, not eliminated, risk per design.md's
-      D8 addendum; this check is the one point in this section's own process where it's cheap to notice
-      if that's already happened).
+      While verifying:
+      - Confirm via `gh api repos/.../environments/production-scheduled-refresh` that it still carries
+        zero protection rules (`/review-openspec` round 2's CI/CD pass flagged that nothing prevents a
+        repo admin from later adding `required_reviewers` to this Environment, silently reintroducing the
+        exact bug this section fixes — an accepted, not eliminated, risk per design.md's D8 addendum).
+      - **(Added after `/review-pr` round 2, against the pushed PR)** Also check for an **org-level**
+        default environment-protection policy, not just this one Environment's own settings — a
+        repo-scoped check alone wouldn't catch an org-wide default that auto-attaches
+        `required_reviewers` to any newly-created Environment.
+      - **(Added after `/review-pr` round 2)** Checking the Environment's static configuration isn't the
+        same as confirming the actual first scheduled firing succeeded — check the Actions tab the
+        morning after the first post-promotion midnight run specifically, not only the Environment's
+        protection-rule config beforehand.
+- [x] 14.10 Run the 5-subagent `/review-pr` pass against the implemented diff (not yet a GitHub PR — run
+      locally against the working tree). All 5 returned; **no BLOCKING findings.** One real, already-fixed
+      bug found: see 14.4's note above (the `_traits_note()` user-facing string, not just its module
+      comment, still unconditionally asserted the old "not automatically" claim). IMPORTANT findings, all
+      fixed: a test docstring's meta-reference to "`/review-openspec` round 1 finding" replaced with the
+      actual reason (future readers won't have this conversation's context); `type: choice`'s lack of
+      server-side enforcement (a crafted `workflow_dispatch` could execute the job under the ungated
+      Environment, though traced and confirmed the bash `case` guard still blocks the actual RPC call —
+      documented as an accepted risk in design.md's D8 addendum, not code-fixed, since the real call path
+      is already closed); two more residual risks (a scheduled run can be silently dropped entirely under
+      GitHub platform load with zero visibility; no coordination with `deploy.yml`'s production migrations)
+      — both documented as accepted, self-healing risks. SUGGESTIONS applied: trimmed the workflow header's
+      debug-journal-style investigation notes to a durable one-line summary pointing at design.md; added a
+      comment explaining why the target-host expression is repeated rather than centralized in a
+      workflow-level `env:` (the `concurrency:` context can't read it).
+- [x] 14.11 **Round 2 of `/review-pr`, run against the actual pushed PR #728** (not the local working
+      tree this time) — real CI status, real diff, checked for existing Copilot comments (none). All 5
+      subagents independently re-verified round 1's fixes hold up on the committed/pushed code (traced
+      character-by-character, confirmed zero drift from the comment-only polish commits) and confirmed CI
+      is genuinely green (the relevant test job is misleadingly named "Python Security Audit for CVEs" —
+      pulled its raw log directly rather than trusting the label). **No BLOCKING findings.** Three real,
+      non-blocking findings, all documented in design.md's D8 addendum rather than code-fixed (no actual
+      bug reachable, just follow-up verification gaps): the `_STALE_AFTER` 2-day threshold's tension with
+      the new 24h production cadence; an org-level environment-protection-policy check folded into 14.9;
+      and an explicit first-live-firing check (not just static config) folded into 14.9. One transient,
+      false-alarm finding investigated and resolved: a system notification mid-review showed the
+      workflow file's on-disk content reverted to its pre-#708 state — traced to a review subagent's own
+      scratch `.bak_current` copy (visible as an untracked file), not an actual revert; confirmed via
+      `git diff HEAD` (empty) and a byte-for-byte comparison against the committed blob that the real file
+      was never altered, then removed the stray untracked file. Posted the synthesized review to PR #728
+      as a comment (GitHub disallows self-approval/self-request-changes).
 - [x] 14.10 Run the 5-subagent `/review-pr` pass against the implemented diff (not yet a GitHub PR — run
       locally against the working tree). All 5 returned; **no BLOCKING findings.** One real, already-fixed
       bug found: see 14.4's note above (the `_traits_note()` user-facing string, not just its module

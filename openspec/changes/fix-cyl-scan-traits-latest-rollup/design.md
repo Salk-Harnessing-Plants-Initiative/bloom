@@ -1023,6 +1023,31 @@ the more durable signal that M2 hasn't actually been rolled back.
     happens to overlap 00:17 UTC could make that night's scheduled call fail. Low severity: the workflow
     already fails loudly (non-200/204 response -> `::error`, `exit 1`) rather than corrupting anything,
     and the next day's cron retries independently.
+
+    **Accepted, not fixed — `list_available_experiments.py`'s `_STALE_AFTER = timedelta(days=2)`
+    threshold is now a weak signal for the exact failure mode this section introduces, found by a
+    second `/review-pr` round against the pushed PR.** With production's cache refreshing every ~24h,
+    a *single* missed scheduled run only pushes a cached row's age to ~48h — right at the 2-day
+    boundary — so the explicit staleness flag barely appears after one miss and stays silent through
+    the entire first missed cycle. Not tightened here: `_traits_note()` has no way to tell which
+    environment a given row came from (the same limitation already documented above), so a
+    tighter threshold calibrated to catch a missed *production* refresh quickly would also false-alarm
+    on staging's normal, harmless multi-day quiet periods. A real, if narrow, cross-environment tension
+    this section doesn't resolve — worth a follow-up once (or if) the reader threads environment context
+    through this call path, not a blocker for the schedule itself shipping.
+
+    **Reinforced, not newly found — round 2's `/review-pr` pass on the pushed PR independently
+    converged on the same two follow-up angles for tasks.md 14.9's post-promotion check.** (1)
+    Security's pass: confirming `production-scheduled-refresh` carries zero protection rules today
+    isn't the same as confirming no *org-level* default environment-protection policy exists that
+    would auto-attach `required_reviewers` to any newly-created Environment — check for an
+    organization-wide policy specifically, not just this one Environment's own settings. (2)
+    Behavioral-correctness's pass: the Environment's static configuration can be verified at any time,
+    but the *first actual scheduled firing* only happens once, unattended, at an unscheduled future
+    date (whenever the next `staging -> main` promotion lands) — checking Environment settings alone
+    doesn't confirm that first live run actually succeeded end-to-end. tasks.md 14.9 now also calls for
+    checking the Actions tab the morning after the first post-promotion midnight, not just the
+    Environment's protection-rule config.
   - **Cron interval, reasoned from what's actually known, user-directed rather than benchmarked.**
     No real production write-cadence telemetry exists in this repo to derive a data-driven number from
     (confirmed by searching `bloommcp/docs/` and `services/workflows/` for any documented
