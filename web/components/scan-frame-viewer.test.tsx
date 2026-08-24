@@ -240,6 +240,114 @@ describe("when there is nothing to show", () => {
     );
   });
 
+
+  // Paging holds the previous frame on screen rather than blanking, which means
+  // the element is reused across a src change and the picture can briefly
+  // disagree with the label. These pin the parts that make that safe.
+
+  it("still reports a failure on a frame reached by paging, not just the first", async () => {
+    // The img is deliberately unkeyed, so this failure lands on a reused
+    // element rather than a freshly mounted one — the case the removed key
+    // was thought to protect.
+    const { container } = render(<ScanFrameViewer scan={THREE_FRAMES} />);
+    const first = await waitFor(() => {
+      const el = container.querySelector("img");
+      if (!el) throw new Error("no img");
+      return el;
+    });
+    fireEvent.load(first);
+
+    fireEvent.click(screen.getByLabelText("Next frame"));
+    await waitFor(() =>
+      expect(container.querySelector("img")?.getAttribute("src")).toBe(
+        "https://signed.test/f2.png"
+      )
+    );
+    fireEvent.error(container.querySelector("img")!);
+
+    expect(screen.getByText("Frame 2 could not be loaded.")).toBeTruthy();
+  });
+
+  it("dims the held frame until the next one loads", async () => {
+    // Undimmed, a stale frame sits under a label naming a different one, and
+    // consecutive rotation frames look alike enough to be misread.
+    const { container } = render(<ScanFrameViewer scan={THREE_FRAMES} />);
+    const img = await waitFor(() => {
+      const el = container.querySelector("img");
+      if (!el) throw new Error("no img");
+      return el;
+    });
+
+    await waitFor(() => expect(img.className).toContain("opacity-40"));
+    fireEvent.load(img);
+    await waitFor(() => expect(img.className).not.toContain("opacity-40"));
+  });
+
+  it("holds the spinner back so a fast frame never flashes one", async () => {
+    const { container } = render(<ScanFrameViewer scan={THREE_FRAMES} />);
+    await waitFor(() => {
+      if (!container.querySelector("img")) throw new Error("no img");
+    });
+
+    expect(screen.queryByRole("status")).toBeNull();
+    await waitFor(() => expect(screen.getByRole("status")).toBeTruthy(), {
+      timeout: 1000,
+    });
+  });
+
+  it("clears the spinner once the frame loads", async () => {
+    const { container } = render(<ScanFrameViewer scan={THREE_FRAMES} />);
+    const img = await waitFor(() => {
+      const el = container.querySelector("img");
+      if (!el) throw new Error("no img");
+      return el;
+    });
+    await waitFor(() => expect(screen.getByRole("status")).toBeTruthy(), {
+      timeout: 1000,
+    });
+
+    fireEvent.load(img);
+
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  });
+
+  it("fetches the neighbouring frames, and only those", async () => {
+    const requested: string[] = [];
+    const RealImage = window.Image;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).Image = class {
+      set src(value: string) {
+        requested.push(value);
+      }
+    };
+    try {
+      render(<ScanFrameViewer scan={THREE_FRAMES} />);
+      await waitFor(() =>
+        expect(requested).toContain("https://signed.test/f2.png")
+      );
+      // f3 is two away from the first frame — warming it would be wasted bytes
+      // competing with the frame actually on screen.
+      expect(requested).not.toContain("https://signed.test/f3.png");
+    } finally {
+      window.Image = RealImage;
+    }
+  });
+
+  it("holds the frame box at a fixed height so paging cannot reflow the page", async () => {
+    // The flicker was the box collapsing to each image in turn, which moved the
+    // pager under the reader's cursor.
+    const { container } = render(<ScanFrameViewer scan={THREE_FRAMES} />);
+    const img = await waitFor(() => {
+      const el = container.querySelector("img");
+      if (!el) throw new Error("no img");
+      return el;
+    });
+
+    expect((img.parentElement as HTMLElement).style.height).toBe("520px");
+    expect(img.className).toContain("object-contain");
+    expect(img.className).toContain("max-h-full");
+  });
+
   it("distinguishes frames that exist but could not be signed", async () => {
     unsignable.add("s1.png");
     unsignable.add("s2.png");
