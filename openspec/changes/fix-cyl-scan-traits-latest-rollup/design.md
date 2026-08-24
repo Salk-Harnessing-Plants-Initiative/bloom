@@ -57,17 +57,18 @@ needed" claim is not, and this design does not carry it forward uncorrected.
   `bloom_admin`'s break-glass access) keeps it correct without relying on the writer to know about it.
   `n_plants` is correct and live for every call (no staleness). `n_traits` is cheap to read, with its
   staleness bounded by how often `refresh_cyl_experiment_trait_counts()` is actually called — **by
-  design, that's on-demand (`workflow_dispatch`) rather than an automatic schedule, for either
-  environment, as of this PR.** Round 7 found an automatic `schedule:` trigger can't fire until a
-  separate promotion PR lands the workflow file on the repo's default branch, and round 8 found it would
-  only ever refresh staging's cache regardless — a second, environment-targeting gap. Rather than chase
-  promotion to fix a schedule staging doesn't currently need, the schedule was dropped entirely (see
-  D5/D8): manual dispatch works against any branch right now, closing the promotion gap, and an
-  `environment` input closes the production-targeting gap with no new secrets. Production is expected
-  to eventually need its own automatic cadence once write volume there grows — tracked as bloom#708, not
-  guessed at here. That is a UI-lag tradeoff, not a data-integrity one — the underlying trait data itself
-  is never inconsistent, only this one summary count can lag, and only until someone dispatches a
-  refresh.
+  design, that's on-demand (`workflow_dispatch`) for staging, and an automatic daily schedule for
+  production (bloom#708, this section).** Round 7 found an automatic `schedule:` trigger can't fire
+  until a separate promotion PR lands the workflow file on the repo's default branch, and round 8 found
+  it would only ever refresh staging's cache regardless — a second, environment-targeting gap. Rather
+  than chase promotion to fix a schedule staging doesn't currently need, `on: schedule` was dropped for
+  staging (see D5/D8) and an `environment` input closes the production-targeting gap with no new
+  secrets. **Correction (bloom#708 investigation): dropping `schedule:` did NOT close the promotion
+  gap — `workflow_dispatch` is gated on default-branch presence exactly like `schedule:` is; see D8's
+  addendum below.** Production now has its own automatic cadence (D8 addendum) rather than remaining
+  on-demand-only indefinitely. That is a UI-lag tradeoff, not a data-integrity one — the underlying
+  trait data itself is never inconsistent, only this one summary count can lag, and only until someone
+  dispatches or a schedule runs a refresh.
 - **Non-Goals:** re-deriving or changing `is_latest`'s selection semantics (per-`scan_id` partition grain,
   `IS NOT DISTINCT FROM` legacy-NULL handling — unchanged from the live `cyl-trait-read` spec). No new MCP
   tool, no `source_id_`/`run_id_` parameter threaded through any analysis tool. No change to
@@ -879,20 +880,161 @@ the more durable signal that M2 hasn't actually been rolled back.
   for production specifically, it is permanently frozen unless a second, environment-aware refresh path is
   added.
 
-  **Resolved (post-round-8, user-directed redesign): both gaps closed by dropping the schedule
-  entirely, not by chasing promotion.** The user's own framing cut through both findings at once —
-  staging isn't going to need frequent automatic refreshes, so there's no reason to carry a `schedule:`
-  trigger that (per the round-7 finding) can't fire pre-promotion anyway. `on: schedule` is removed;
-  the workflow is now `workflow_dispatch`-only, which — unlike `schedule:` — fires against _any_
-  branch/ref holding the file, no promotion required. That fully closes 5.4 (nothing left to promote
-  for this to work). The round-8 production gap is closed the same way `deploy.yml` already solves an
-  identical problem: a `choice` input, `environment` (`staging`/`production`, mirroring `deploy.yml`'s
-  own convention), selects which hardcoded URL/secret pair the run script resolves to
+  **Resolved (post-round-8, user-directed redesign): the production-targeting gap closed by dropping
+  the schedule entirely; the promotion gap NOT actually closed by this — see the correction below.**
+  The user's own framing cut through both findings at once — staging isn't going to need frequent
+  automatic refreshes, so there's no reason to carry a `schedule:` trigger that (per the round-7
+  finding) can't fire pre-promotion anyway. `on: schedule` was removed; the workflow shipped
+  `workflow_dispatch`-only. The round-8 production gap is closed the same way `deploy.yml` already
+  solves an identical problem: a `choice` input, `environment` (`staging`/`production`, mirroring
+  `deploy.yml`'s own convention), selects which hardcoded URL/secret pair the run script resolves to
   (`PROD_API_URL`/`PROD_SERVICE_ROLE_KEY` added alongside the staging pair — `PROD_SERVICE_ROLE_KEY`
-  already existed as a secret, so no new provisioning either). Production is expected to eventually
-  need its own automatic cadence once its write volume grows past what on-demand dispatch can keep up
-  with — tracked as a dedicated follow-up, bloom#708, rather than speculatively adding a cron trigger
-  now for a cadence nobody has picked yet.
+  already existed as a secret, so no new provisioning either).
+
+  **Correction (bloom#708 investigation — this round's own claim about `workflow_dispatch` was wrong,
+  confirmed against the live repo rather than assumed.)** This section originally claimed
+  `workflow_dispatch`, "unlike `schedule:`, fires against _any_ branch/ref holding the file, no
+  promotion required," and that this "fully closes 5.4 (nothing left to promote for this to work)."
+  That is false. GitHub's own docs state plainly: "To trigger the `workflow_dispatch` event, your
+  workflow must be in the default branch."
+  (https://docs.github.com/en/actions/using-workflows/manually-running-a-workflow) — the exact same
+  default-branch gate `schedule:` is subject to. The `ref`/`--ref` option a dispatch call accepts only
+  selects which branch's *copy of the workflow's code* runs for that one invocation, once the workflow
+  is already registered from the default branch; it does not make an unregistered workflow dispatchable
+  from a non-default branch. Confirmed directly against this repo while this file existed only on
+  `staging`: `gh api repos/.../actions/workflows/refresh-cyl-experiment-trait-counts.yml` returned `404
+  Not Found`, and `gh workflow list --repo ... --all` did not list it at all — this workflow was, and
+  is, completely undispatchable (no UI, no `gh workflow run`, no REST API call can trigger it) until it
+  is promoted to `main`. Dropping `schedule:` for `workflow_dispatch`-only was still the right call on
+  its own merits (staging's low write volume genuinely doesn't need an automatic cadence) — the error
+  was specifically in believing that choice also sidestepped the promotion dependency. It didn't; both
+  trigger types need this file on `main` before either can fire, manually or on a schedule. tasks.md 5.3
+  (verify staging dispatch) and 5.6 (verify production dispatch) are corrected to say so explicitly, and
+  neither is a "do this after merge" nicety anymore — both are genuinely blocked until this repo's next
+  `staging -> main` promotion PR carries this workflow file forward.
+
+  **D8 addendum (bloom#708, this section): an `on: schedule` cron trigger, scoped to `production`
+  only.** Production is expected to eventually need an automatic refresh once its write volume grows
+  past what on-demand dispatch can keep up with — bloom#708 tracks exactly this. Three design questions
+  this raises, all resolved here:
+  - **Target-host resolution.** A `schedule`-triggered run carries no `github.event.inputs` context at
+    all (that context is populated only for `workflow_dispatch` events) — so the workflow can't read an
+    `environment` choice off a schedule event the way it does for a manual dispatch. Resolved by
+    branching on `github.event_name` instead: `ENVIRONMENT` (the step's env var, which drives the bash
+    `case`/`esac` URL/key selection) and `concurrency.group`'s host suffix both use
+    `${{ github.event_name == 'schedule' && 'production' || github.event.inputs.environment }}` — a
+    scheduled run always resolves to `production`; a manual dispatch still requires the explicit input,
+    for either host. `staging` keeps no automatic cadence at all, matching this design's original
+    reasoning (low write volume) and bloom#708's own framing (only production needs this).
+  - **The job's `environment:` key resolves differently — a second, ungated GitHub Environment for the
+    scheduled path, found necessary only after checking the live approval-rule configuration rather
+    than assuming round 9's gate would just work here too.** Round 9 added `environment:
+    ${{ github.event.inputs.environment }}` specifically so a *human* dispatching this workflow can't
+    fire an RLS-bypass RPC at production without a second person's approval — confirmed via the GitHub
+    API that `production` carries `required_reviewers` and a 5-minute `wait_timer`. Naively reusing that
+    same expression for a scheduled run (resolving to `environment: production`) would route every
+    nightly run through that same approval gate — but GitHub Environment protection is keyed by
+    environment *name*, not trigger type, so a scheduled run has no human present to click "Approve";
+    it would sit "Waiting" indefinitely (or until GitHub's own multi-week protection-rule timeout),
+    silently never executing. Worse, with `cancel-in-progress: true` sharing one concurrency group, the
+    *next* night's run would cancel the still-pending prior one before anyone could approve it — a
+    compounding failure that surfaces no error at all. The two trigger types have genuinely different
+    risk shapes: `workflow_dispatch` lets any human with dispatch permission fire this RPC against
+    production *at will, with parameters they choose in the moment* — the approval gate defends against
+    exactly that discretion. A `schedule` trigger has no discretion: it always calls the same function,
+    on the same fixed cron, against the same fixed host; the only way its behavior changes is by editing
+    this workflow file, which already goes through this change's own OpenSpec review, ordinary PR review
+    to merge to `staging`, and this repo's `staging -> main` promotion review before it can register at
+    all (a schedule can't fire from an unpromoted file regardless — see the Correction above). A
+    per-run human click adds no real protection against behavior that's already fully fixed by
+    already-reviewed code. Resolved by introducing a second GitHub Environment,
+    `production-scheduled-refresh`, with no protection rules at all, used only for `schedule`-triggered
+    runs: `environment: ${{ github.event_name == 'schedule' && 'production-scheduled-refresh' ||
+    github.event.inputs.environment }}` — note this is a **different expression** from the target-host
+    one above (it names a distinct Environment for the schedule branch, not `'production'` itself);
+    `workflow_dispatch` against either host is completely unchanged, still gated exactly as round 9 left
+    it. `production-scheduled-refresh` needs no new secret provisioning — `PROD_SERVICE_ROLE_KEY` is a
+    repository-level secret, not environment-scoped (confirmed in round 9), so it's visible to a job
+    regardless of which Environment name the job references. GitHub auto-creates a referenced
+    Environment with no protection rules on first use once the referencing workflow file is on the
+    default branch, so no manual repository-settings step is needed either — it comes into existence as
+    a side effect of this file's own promotion to `main`. `concurrency.group` stays keyed by the
+    target-host expression (not this Environment-name one) so a scheduled production run and a manual
+    `workflow_dispatch` production run still serialize against each other in the same group (both
+    ultimately hit the same database, and the RPC's own `pg_advisory_xact_lock`, D5b, makes that safe);
+    keying it by the Environment name instead would have let a pending-approval manual dispatch and an
+    unrelated-group scheduled run race past each other with no serialization at all.
+
+    **Accepted, not fixed — a narrower, lower-severity instance of the same cancellation shape this
+    section already fixed for schedule-vs-schedule, found in round 2's re-verification of this fix.**
+    Sharing one concurrency group by target-host means a manual `workflow_dispatch` to `production` that
+    is currently sitting in "Waiting" for `required_reviewers` approval, and the 00:17 UTC scheduled run,
+    both occupy the same group — confirmed via GitHub's own documented behavior that
+    `cancel-in-progress: true` cancels a job that is queued/pending approval, not only one already
+    executing. If the cron fires while a manual production dispatch is still pending approval, it
+    silently cancels that pending dispatch. Unlike the schedule-vs-schedule case this section's main fix
+    closes (which could compound into *no* run ever completing), this is a single, one-off cancellation
+    of a specific manual request — safe to retry (D5b's advisory lock still makes any half-started state
+    a clean no-op), and only reachable in the narrow window where someone manually dispatches production
+    and a reviewer hasn't yet approved by the time the next cron tick lands. Not fixed here: giving the
+    scheduled and manually-dispatched paths separate concurrency groups would reopen the very race this
+    section's main fix (D5b's advisory lock aside) was written to prevent between two production-bound
+    calls. A manual dispatcher whose run gets cancelled this way sees GitHub's own "cancelled" status,
+    not a silent failure — an acceptable tradeoff, not an invisible one.
+
+    **Accepted, not fixed — retroactive drift risk on `production-scheduled-refresh`'s own protection
+    rules, found in round 2.** Nothing prevents a future repository-admin action from adding
+    `required_reviewers` to `production-scheduled-refresh` after this section ships, silently
+    reintroducing the exact stuck-forever bug this addendum exists to close — GitHub's Environment
+    protection rules are configured independently of any workflow file, so no amount of YAML review can
+    catch this by itself. Not worth a recurring automated check for a single-purpose Environment with no
+    other consumer; tasks.md 14.9 folds one manual verification into the same post-promotion check this
+    section already needs to do for another reason (confirming the scheduled job starts immediately),
+    which is cheap enough to be worth doing without standing up dedicated monitoring for it.
+
+    **Accepted, not fixed — `type: choice` is a UI-only constraint, not server-enforced, found by
+    `/review-pr`'s security pass on the implemented code.** The `workflow_dispatch` input's `type:
+    choice` restricts values in GitHub's web dispatch form, but the underlying REST/CLI API (what `gh
+    workflow run -f environment=...` calls) accepts an arbitrary string. Traced character-by-character:
+    a crafted dispatch with `environment=production-scheduled-refresh` makes `github.event_name ==
+    'schedule'` false, so BOTH the job's `environment:` key and `ENVIRONMENT`/`concurrency.group`'s
+    target-host expression fall through to the *same* literal `github.event.inputs.environment` value —
+    `"production-scheduled-refresh"` for both. The job executes under the ungated Environment (a real,
+    if narrow, approval-gate bypass for a human-triggered run), but the bash `case "${ENVIRONMENT}" in
+    ...esac` only recognizes `staging`/`production` and rejects anything else via its `*)` branch before
+    any `curl` call — so no RLS-bypass RPC call is actually reachable this way; the job errors out.
+    Confirmed the two expressions can never diverge for a `workflow_dispatch` event specifically (both
+    resolve to the identical raw input string), so this can't be combined with any other input to reach
+    a real call under the ungated Environment. Not fixed with explicit allow-list validation given the
+    bash guard already closes the actual RPC path — but this does mean the D8 addendum's own "manual
+    dispatch... still gated exactly as round 9 left it" claim above is accurate for the RPC call itself,
+    not for whether the job merely *executes* (harmlessly) under approval-gate bypass first.
+
+    **Accepted, not fixed — two more residual risks found by `/review-pr`'s behavioral-correctness pass
+    on the implemented code, distinct from the cancellation risks above.** (1) GitHub's own documented
+    behavior allows a scheduled workflow run to be dropped entirely under high platform load — no run
+    object is ever created, so there is nothing to cancel and no `timeout-minutes` budget is ever
+    consumed; a missed 00:17 UTC tick simply doesn't happen, with zero visibility (unlike a cancelled run,
+    which at least appears in the Actions UI with a status). Self-heals the next night, and is the same
+    UI-lag tradeoff already accepted for `n_traits` generally (Goals/Non-Goals) — not a new class of risk,
+    just an additional way the existing one can manifest. (2) This cron has no coordination with
+    `deploy.yml`'s production deploy job (a separate, unrelated `concurrency.group: deploy-bloom`) — a
+    migration altering the refresh RPC or locking underlying tables during a production deploy that
+    happens to overlap 00:17 UTC could make that night's scheduled call fail. Low severity: the workflow
+    already fails loudly (non-200/204 response -> `::error`, `exit 1`) rather than corrupting anything,
+    and the next day's cron retries independently.
+  - **Cron interval, reasoned from what's actually known, user-directed rather than benchmarked.**
+    No real production write-cadence telemetry exists in this repo to derive a data-driven number from
+    (confirmed by searching `bloommcp/docs/` and `services/workflows/` for any documented
+    ingest-frequency figure — none found). The refresh itself costs a flat 6.6s regardless of write
+    volume (D5), and the job has a 2-minute timeout with no meaningful resource cost, so there is no
+    real cost pressure toward a long interval the way there might be for an expensive job. Once daily is
+    the user's own chosen interval. The exact minute is `cron: '17 0 * * *'`, not a bare `'0 0 * * *'`
+    — GitHub's own documentation flags the top of every hour, including midnight UTC, as a period of
+    elevated scheduler load where a workflow "may be delayed" or occasionally dropped, and recommends
+    picking a non-round minute; a fixed offset costs nothing and removes that risk entirely. This is a
+    reasoned default, matching this design's own D7 precedent for reasoned-not-measured values: an
+    estimate to revisit once real production write-cadence data exists, not a benchmarked figure.
 
   **Found in round 9: the redesign itself shipped with two real gaps, both since fixed.** (1)
   `concurrency.group` was a single static string shared by both environments — with
