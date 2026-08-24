@@ -121,11 +121,17 @@ export default function PlantScan({
   return (
     <div className="group">
       <div
+        // Height is inline, not `h-[${...}px]`: an interpolated arbitrary value
+        // never appears literally in the source for Tailwind's scanner to emit,
+        // so the class was silently dropped and the box had no height at all.
+        style={{ height: height || defaultHeight }}
         className={
           "relative bg-stone-300 box-content rounded-lg border-4 border-neutral-300" +
-          // Only hint at a click when there is somewhere to go.
-          (href ? " transition-colors group-hover:border-lime-700" : "") +
-          ` h-[${height || defaultHeight}px]` +
+          // Only hint at a click when there is somewhere to go. focus-within so
+          // the hint reaches keyboard users, not just the mouse.
+          (href
+            ? " transition-colors group-hover:border-lime-700 group-focus-within:border-lime-700"
+            : "") +
           (objectUrl === null || loading ? " animate-pulse" : "")
         }
       >
@@ -164,6 +170,7 @@ export default function PlantScan({
             <Link href={href} target={target}>
               <img
                 src={objectUrl}
+                alt={label ? `Scan thumbnail, ${label}` : "Scan thumbnail"}
                 className="rounded-md"
                 onLoad={() => setImageIsLoaded(true)}
                 onError={() => setImageIsLoaded(false)}
@@ -172,6 +179,7 @@ export default function PlantScan({
           ) : (
             <img
               src={objectUrl}
+              alt={label ? `Scan thumbnail, ${label}` : "Scan thumbnail"}
               className="rounded-md"
               onLoad={() => setImageIsLoaded(true)}
               onError={() => setImageIsLoaded(false)}

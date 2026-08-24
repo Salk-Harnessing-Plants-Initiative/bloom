@@ -93,15 +93,21 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
     };
   }, [frames, total]);
 
-  // Fetch the frames either side so paging lands on a decoded image.
+  // Fetch the frames either side so paging lands on a decoded image. Low
+  // priority: these must not compete with the frame actually on screen.
+  const failedRef = useRef(failedPaths);
+  failedRef.current = failedPaths;
   useEffect(() => {
-    if (typeof window === "undefined") return;
     for (const i of [frameIndex - 1, frameIndex + 1]) {
       const path = frames[i]?.object_path;
-      const url = path ? frameUrls.get(path) : null;
-      if (url && !failedPaths.has(path!)) new window.Image().src = url;
+      if (!path || failedRef.current.has(path)) continue;
+      const url = frameUrls.get(path);
+      if (!url) continue;
+      const img = new window.Image();
+      img.fetchPriority = "low";
+      img.src = url;
     }
-  }, [frameIndex, frames, frameUrls, failedPaths]);
+  }, [frameIndex, frames, frameUrls]);
 
   const signedUrl = currentPath ? frameUrls.get(currentPath) ?? null : null;
   // A frame that failed to load is as unavailable as one that failed to sign;
@@ -175,7 +181,7 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
             role="status"
             aria-label="Loading frame"
           >
-            <div className="h-8 w-8 animate-spin rounded-full border-4 border-neutral-300 border-t-lime-600" />
+            <div className="h-8 w-8 animate-spin rounded-full border-4 border-stone-400 border-t-lime-800" />
           </div>
         )}
         {objectUrl !== null ? (
@@ -185,6 +191,7 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
             // previous frame until the next decodes, instead of blanking between
             // pages. onError still fires per failed src.
             src={objectUrl}
+            alt={label}
             // Dimmed while the next frame decodes. Holding the previous frame is
             // what stops the flicker, but the label and counter have already moved
             // on — an undimmed stale frame would sit under a caption naming a
@@ -194,7 +201,11 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
               (framePending ? " opacity-40" : "")
             }
             onLoad={() => setFramePending(false)}
-            onError={() => {
+            onError={(e) => {
+              // A load abandoned by paging can still report failure. Without
+              // this the blame lands on whichever frame is showing now, which
+              // is then stuck behind a retry it never needed.
+              if (e.currentTarget.src !== objectUrl) return;
               setFramePending(false);
               if (currentPath)
                 setFailedPaths((prev) => new Set(prev).add(currentPath));
