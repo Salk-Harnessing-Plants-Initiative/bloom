@@ -151,6 +151,16 @@ class PCAAnalysisParams(BaseModel):
         "generated plot. Omit for each plot's default size. Ignored when "
         "include_plots=False.",
     )
+    plot_alpha: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Scatter-point transparency (0=fully transparent, 1=fully opaque) for "
+        "create_pca_biplot. Has no effect on create_pca_scree_plot, "
+        "create_feature_contribution_plot, or create_feature_contribution_heatmap — none of "
+        "their upstream signatures accept alpha. Ignored (not rejected) when "
+        "include_plots=False.",
+    )
     user_label: str | None = Field(
         default=None,
         description="Optional slug appended to the version directory name.",
@@ -198,12 +208,19 @@ def _pca_plot_calls(
     pca: PCAResult,
     frame: ExperimentFrame,
     threshold: float,
+    *,
+    plot_alpha: float | None = None,
 ) -> dict:
     """Return zero-arg callables for each catalog plot key, lazily importing plotters.
 
     Plotters are imported here (not at module level) so that importing this
     module never pulls in matplotlib — the Tier-0 import-clean guarantee is
     maintained on the default no-plots path.
+
+    ``plot_alpha`` is forwarded to ``create_pca_biplot`` only — the sole catalog plotter
+    here whose upstream signature accepts it (see design.md's per-plotter support table) —
+    and only when set, so an unset (``None``) value reproduces the plotter's own hardcoded
+    default (``alpha=0.6``) exactly.
     """
     from sleap_roots_analyze import (
         create_feature_contribution_heatmap,
@@ -211,6 +228,10 @@ def _pca_plot_calls(
         create_pca_biplot,
         create_pca_scree_plot,
     )
+
+    biplot_kwargs: dict = {}
+    if plot_alpha is not None:
+        biplot_kwargs["alpha"] = plot_alpha
 
     return {
         "create_pca_scree_plot": lambda: create_pca_scree_plot(
@@ -221,6 +242,7 @@ def _pca_plot_calls(
             df=_biplot_df(frame),
             trait_names=list(pca.feature_names),
             color_by=frame.genotype_col,
+            **biplot_kwargs,
         ),
         "create_feature_contribution_plot": lambda: create_feature_contribution_plot(
             result_dict,
@@ -363,7 +385,11 @@ def pca_analysis(
             matplotlib.use("Agg")
             validate_plot_keys(params.plots, _PCA_CATALOG_KEYS)
             calls = _pca_plot_calls(
-                result_dict, pca, frame, params.explained_variance_threshold
+                result_dict,
+                pca,
+                frame,
+                params.explained_variance_threshold,
+                plot_alpha=params.plot_alpha,
             )
             keys_to_generate = (
                 list(params.plots)
