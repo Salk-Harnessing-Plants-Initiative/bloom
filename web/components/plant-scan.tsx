@@ -143,9 +143,10 @@ export default function PlantScan({
         }
       >
         {imageIsLoaded && videoUrl !== null && (
-          // Faded rather than `hidden`: display:none takes the link out of the
-          // tab order, leaving it mouse-only.
-          <div className="p-1 rounded-md bg-stone-50 border absolute left-1 top-1 text-lime-700 opacity-0 transition-opacity group-hover:opacity-70 group-focus-within:opacity-100 hover:opacity-90">
+          // Always shown, never `hidden`: it only renders when the scan has a
+          // video, and a badge that appears on hover is a badge nobody finds.
+          // display:none would also drop it out of the tab order entirely.
+          <div className="p-1 rounded-md bg-stone-50 border absolute left-1 top-1 text-lime-800 opacity-90 transition-opacity hover:opacity-100 group-focus-within:opacity-100">
             <a
               href={videoUrl}
               target="_blank"

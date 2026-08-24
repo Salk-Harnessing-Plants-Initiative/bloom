@@ -162,19 +162,26 @@ describe("PlantScan naming and reachability", () => {
     ).toBeTruthy();
   });
 
-  it("keeps the scan video in the tab order rather than hiding it until hover", async () => {
+  it("shows the scan video badge outright, not on hover", async () => {
     const { container } = render(<PlantScan scan={scanWith(5, ["a.png"])} />);
 
     const img = await screen.findByAltText("Scan thumbnail");
     fireEvent.load(img);
 
     const link = await screen.findByLabelText("Open scan video");
-    // `hidden` is display:none, which drops the link out of the tab order and
-    // the a11y tree entirely — reachable by mouse only.
     const chip = link.closest("div") as HTMLElement;
+    // A badge that only appears on hover is a badge nobody finds — and
+    // `hidden` is display:none, which also drops it out of the tab order.
     expect(chip.className).not.toContain("hidden");
-    expect(chip.className).toContain("group-focus-within:opacity-100");
+    expect(chip.className).not.toContain("opacity-0");
     expect(container.querySelector(".group")?.contains(link)).toBe(true);
+  });
+
+  it("shows no video badge for a scan that has no video", async () => {
+    render(<PlantScan scan={scanWith(1, ["a.png"])} />);
+    fireEvent.load(await screen.findByAltText("Scan thumbnail"));
+
+    expect(screen.queryByLabelText("Open scan video")).toBeNull();
   });
 
   it("hints at the click for keyboard focus, not just the mouse", async () => {
