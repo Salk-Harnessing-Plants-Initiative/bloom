@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import { CylScanWithImages } from "@/lib/custom.types";
 import {
@@ -13,6 +13,13 @@ import {
 
 // Long enough to page through a scan's frames without re-signing.
 const FRAME_URL_TTL = 3600;
+
+// The frame box holds this height so paging swaps only the picture, not the layout.
+const FRAME_VIEW_HEIGHT = 520;
+
+// A preloaded frame decodes in a few ms; showing a spinner for that long reads
+// as a glitch. Only frames that actually make you wait get one.
+const SPINNER_DELAY_MS = 150;
 
 // Sign every frame in one request, keyed by path so a partial or reordered
 // response can't shift frames out of position.
@@ -36,6 +43,13 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
   // broken-image glyph, which reads as a dark or empty capture.
   const [failedPaths, setFailedPaths] = useState<Set<string>>(new Set());
   const [requestedIndex, setRequestedIndex] = useState<number>(0);
+  // Frame URLs seen to load, whether by the preload or by the visible image.
+  const [loadedUrls, setLoadedUrls] = useState<Set<string>>(new Set());
+  // The frame currently painted, held on screen while the next one loads.
+  const [settledUrl, setSettledUrl] = useState<string | null>(null);
+
+  const markLoaded = (url: string) =>
+    setLoadedUrls((prev) => (prev.has(url) ? prev : new Set(prev).add(url)));
 
   // Keyed on the scan id, not the object: a refetch that returns the same scan
   // must not look like a different one, or it would reset the reader's frame.
@@ -61,6 +75,8 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
   useEffect(() => {
     setRequestedIndex(0);
     setFailedPaths(new Set());
+    setLoadedUrls(new Set());
+    setSettledUrl(null);
   }, [frames]);
 
   useEffect(() => {
@@ -86,11 +102,57 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
     };
   }, [frames, total]);
 
+  // Fetch the frames either side so paging lands on a decoded image. Low
+  // priority: these must not compete with the frame actually on screen.
+  const failedRef = useRef(failedPaths);
+  failedRef.current = failedPaths;
+  const loadedRef = useRef(loadedUrls);
+  loadedRef.current = loadedUrls;
+  useEffect(() => {
+    const warming: HTMLImageElement[] = [];
+    for (const i of [frameIndex - 1, frameIndex + 1]) {
+      const path = frames[i]?.object_path;
+      if (!path || failedRef.current.has(path)) continue;
+      const url = frameUrls.get(path);
+      if (!url || loadedRef.current.has(url)) continue;
+      const img = new window.Image();
+      img.fetchPriority = "low";
+      img.onload = () => markLoaded(url);
+      img.src = url;
+      warming.push(img);
+    }
+    // Paging on leaves these fetching frames the reader has gone past, competing
+    // with the one they are waiting for. Blanking src is what aborts them.
+    return () => {
+      for (const img of warming) {
+        img.onload = null;
+        img.src = "";
+      }
+    };
+  }, [frameIndex, frames, frameUrls]);
+
   const signedUrl = currentPath ? frameUrls.get(currentPath) ?? null : null;
   // A frame that failed to load is as unavailable as one that failed to sign;
   // both must reach the same message rather than a broken image.
   const objectUrl =
     currentPath && failedPaths.has(currentPath) ? null : signedUrl;
+
+  // Pending is decided by which URL has been seen to load, never by asking the
+  // element. `img.complete` answers for whichever frame the element last settled
+  // on: React writes the new src and runs effects in one synchronous stack, so
+  // at that point the browser has not yet started the new request and still
+  // reports the old frame as complete.
+  const framePending = objectUrl !== null && !loadedUrls.has(objectUrl);
+  const [showSpinner, setShowSpinner] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!framePending) {
+      setShowSpinner(false);
+      return;
+    }
+    const t = setTimeout(() => setShowSpinner(true), SPINNER_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [framePending]);
 
   // Rows the scan recorded whose image never arrived — the one completeness signal.
   const recorded = snapshot.recorded;
@@ -117,23 +179,59 @@ export default function ScanFrameViewer({ scan }: { scan: CylScanWithImages }) {
   return (
     <div>
       <div
+        // Height is inline, not a Tailwind class: an interpolated arbitrary value
+        // never appears literally in the source for the scanner to emit.
+        style={{ height: FRAME_VIEW_HEIGHT }}
         className={
-          "relative bg-stone-300 box-content rounded-lg border-4 border-neutral-300 flex flex-col" +
+          "relative bg-stone-300 box-content rounded-lg border-4 border-neutral-300 flex flex-col items-center justify-center" +
           (loading ? " animate-pulse" : "")
         }
       >
+        {showSpinner && (
+          <div
+            className="absolute inset-0 flex items-center justify-center"
+            role="status"
+            aria-label="Loading frame"
+          >
+            <div className="h-8 w-8 animate-spin rounded-full border-4 border-stone-400 border-t-lime-800" />
+          </div>
+        )}
         {objectUrl !== null ? (
-          <img
-            // Keyed on the url so paging to a new frame remounts the element —
-            // otherwise a failure on one frame wouldn't re-fire for the next.
-            key={objectUrl}
-            src={objectUrl}
-            className="rounded-md"
-            onError={() =>
-              currentPath &&
-              setFailedPaths((prev) => new Set(prev).add(currentPath))
-            }
-          />
+          <>
+            {/* The frame already on screen is held underneath while the next one
+                loads, so paging never blanks. Dimmed and hidden from the a11y
+                tree: the label and counter have already moved on, so this is no
+                longer the frame the caption names. */}
+            {framePending && settledUrl !== null && settledUrl !== objectUrl && (
+              <img
+                src={settledUrl}
+                alt=""
+                aria-hidden="true"
+                className="absolute rounded-md max-h-full max-w-full object-contain opacity-40"
+              />
+            )}
+            <img
+              // Keyed by URL so each frame gets its own element. A reused element
+              // reports load and error against whatever src it holds now, which
+              // is how an abandoned request came to be blamed on the frame that
+              // replaced it.
+              key={objectUrl}
+              src={objectUrl}
+              alt={label}
+              className={
+                "rounded-md max-h-full max-w-full object-contain" +
+                (framePending ? " opacity-0" : "")
+              }
+              onLoad={() => {
+                markLoaded(objectUrl);
+                setSettledUrl(objectUrl);
+              }}
+              onError={() => {
+                if (currentPath)
+                  setFailedPaths((prev) => new Set(prev).add(currentPath));
+              }}
+            />
+          </>
         ) : !loading ? (
           // This one frame is unavailable — keep the pager so the rest stay reachable.
           <div className="px-4 py-6 text-sm text-stone-500 italic">
