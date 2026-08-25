@@ -54,13 +54,7 @@ def label_for(capture_date: datetime, first_capture: datetime) -> str:
     else:
         elapsed_text = f"{sign}{hours:02d}h {minutes:02d}m"
 
-    hour12 = absolute.hour % 12 or 12
-    meridiem = "AM" if absolute.hour < 12 else "PM"
-    stamp = (
-        f"{absolute:%b} {absolute.day}, {absolute.year} "
-        f"{hour12}:{absolute.minute:02d} {meridiem} {absolute:%Z}"
-    )
-    return f"{stamp}\n{elapsed_text}"
+    return f"{absolute:%Y-%m-%d %H:%M %Z}\n{elapsed_text}"
 
 
 def annotate(frame: np.ndarray, label: str) -> np.ndarray:
