@@ -33,13 +33,34 @@ class TestPlateFps:
 
 
 class TestLabelFor:
-    def test_states_the_time_zone(self):
-        """Nothing in the schema records an experiment's timezone, so an
-        unlabelled time would be read as local."""
-        assert "UTC" in pt.label_for(T0, T0)
+    def test_names_the_time_zone(self):
+        """A video is a file and cannot know who is watching, so it has to say
+        which zone it used. The plate pages show local time and name no zone."""
+        assert "PDT" in pt.label_for(T0, T0)
+
+    def test_uses_the_scanners_zone_not_utc(self):
+        """09:15 UTC is 02:15 in the scanners' zone, and that is what the plate
+        pages render for the same capture."""
+        assert pt.label_for(T0, T0).startswith("Aug 25, 2026 2:15 AM PDT")
+
+    def test_switches_to_standard_time_in_winter(self):
+        winter = datetime(2026, 12, 15, 20, 37, tzinfo=timezone.utc)
+        assert "PST" in pt.label_for(winter, winter)
+
+    def test_uses_am_pm_not_a_24_hour_clock(self):
+        afternoon = datetime(2026, 8, 25, 23, 5, tzinfo=timezone.utc)
+        label = pt.label_for(afternoon, afternoon)
+        assert "4:05 PM" in label
+        assert "16:05" not in label
+
+    def test_noon_and_midnight_read_as_twelve(self):
+        noon = datetime(2026, 8, 25, 19, 0, tzinfo=timezone.utc)
+        midnight = datetime(2026, 8, 25, 7, 0, tzinfo=timezone.utc)
+        assert "12:00 PM" in pt.label_for(noon, noon)
+        assert "12:00 AM" in pt.label_for(midnight, midnight)
 
     def test_the_first_frame_reads_as_zero_elapsed(self):
-        assert pt.label_for(T0, T0) == "2026-08-25 09:15 UTC\n+00h 00m"
+        assert pt.label_for(T0, T0) == "Aug 25, 2026 2:15 AM PDT\n+00h 00m"
 
     @pytest.mark.parametrize(
         "gap,expected",
@@ -86,14 +107,16 @@ class TestLabelFor:
         # ...four hours of actual growth.
         assert pt.label_for(after, before).endswith("+04h 00m")
 
-    def test_a_naive_datetime_is_read_as_utc(self):
+    def test_a_naive_datetime_is_read_as_utc_then_converted(self):
+        """capture_date is TIMESTAMPTZ, so a naive value means the driver lost
+        the zone — reading it as UTC is the only safe assumption."""
         naive = datetime(2026, 8, 25, 9, 15)
-        assert pt.label_for(naive, naive).startswith("2026-08-25 09:15 UTC")
+        assert pt.label_for(naive, naive).startswith("Aug 25, 2026 2:15 AM PDT")
 
     def test_an_offset_datetime_is_converted_not_relabelled(self):
-        """A +02:00 timestamp is 07:15 UTC, not 09:15 UTC."""
+        """A +02:00 timestamp is 07:15 UTC, so 12:15 AM in the scanners' zone."""
         offset = datetime(2026, 8, 25, 9, 15, tzinfo=timezone(timedelta(hours=2)))
-        assert pt.label_for(offset, offset).startswith("2026-08-25 07:15 UTC")
+        assert pt.label_for(offset, offset).startswith("Aug 25, 2026 12:15 AM PDT")
 
 
 class TestAnnotate:

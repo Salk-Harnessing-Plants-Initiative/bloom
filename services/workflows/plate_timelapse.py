@@ -8,6 +8,7 @@ are no per-frame filenames for a filter to key on.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -16,6 +17,11 @@ from PIL import Image, ImageDraw, ImageFont
 # Fixed rather than derived: every video plays at the same rate, so duration
 # reflects how long the run was and two runs are directly comparable.
 PLATE_FPS = 4
+
+# The scanners are at Salk, and the plate pages render capture times in the
+# viewer's own zone — which for a scientist there is this one. A video is a
+# file and cannot know who is watching, so it names the zone it used.
+PLATE_TIMEZONE = ZoneInfo("America/Los_Angeles")
 
 # The band the label sits in, so it never covers tissue and never moves.
 LABEL_BAND_HEIGHT = 44
@@ -29,11 +35,11 @@ _TEXT_FILL = (255, 255, 255)
 def label_for(capture_date: datetime, first_capture: datetime) -> str:
     """Two lines: when the frame was taken, and how long into the run it is.
 
-    The absolute time says UTC explicitly because nothing in the schema records
-    an experiment's timezone. The elapsed line is timezone-free, and is what
+    The absolute time is shown in the scanners' zone and names it, matching
+    what the plate pages render. The elapsed line is timezone-free, and is what
     makes an irregular capture gap visible rather than silent.
     """
-    absolute = _as_utc(capture_date)
+    absolute = _as_utc(capture_date).astimezone(PLATE_TIMEZONE)
     start = _as_utc(first_capture)
 
     elapsed = absolute - start
@@ -48,7 +54,13 @@ def label_for(capture_date: datetime, first_capture: datetime) -> str:
     else:
         elapsed_text = f"{sign}{hours:02d}h {minutes:02d}m"
 
-    return f"{absolute:%Y-%m-%d %H:%M} UTC\n{elapsed_text}"
+    hour12 = absolute.hour % 12 or 12
+    meridiem = "AM" if absolute.hour < 12 else "PM"
+    stamp = (
+        f"{absolute:%b} {absolute.day}, {absolute.year} "
+        f"{hour12}:{absolute.minute:02d} {meridiem} {absolute:%Z}"
+    )
+    return f"{stamp}\n{elapsed_text}"
 
 
 def annotate(frame: np.ndarray, label: str) -> np.ndarray:
