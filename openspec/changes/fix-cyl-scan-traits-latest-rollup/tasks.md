@@ -1099,6 +1099,69 @@ and gave a false-reassuring result before the real cause (documented in `deploy.
       it's resolved, and update this change's standing archive-gate note (Section 14's, and this
       section's own below) to reflect that both are now closed.
 
+**`/review-pr` pass against PR #738 (the implementation PR for 15.1-15.6): 5 subagents, zero BLOCKING
+findings, several IMPORTANT ones — two closed here with new regression tests (TDD), two closed with
+design.md documentation, one filed as a separate follow-up (out of this PR's own scope).**
+
+- [ ] 15.9 **(Testing finding: doc-caveat wording had no regression test, despite in-repo precedent —
+      `tests/unit/test_bloommcp_local_mode_docs.py` already pins required/banned phrases in
+      `_WIKI/BLOOMMCP/README.md`, and 14.4 already treated this exact module's staleness wording as
+      test-worthy.)** Add `tests/unit/test_refresh_workflow_staleness_docs.py` (RED first), mirroring
+      `test_bloommcp_local_mode_docs.py`'s banned/required-phrase pattern (whitespace-normalized) across
+      both `_WIKI/BLOOMMCP/README.md` and `bloommcp/src/bloom_mcp/sections/core/list_available_experiments.py`:
+      - Banned: the pre-15.6 unconditional claim that production staleness "is [therefore] bounded to
+        roughly one refresh interval" (without the bloom#736/15.7 caveat).
+      - Required: the corrected, conditional wording — staleness is bounded only once bloom#736/Section
+        15 confirms an actual successful refresh, unbounded until then.
+      Confirm both new test functions FAIL against each file's pre-15.6 wording (temporarily revert each
+      file to confirm), then PASS against the current (post-15.6) text; restore.
+- [ ] 15.10 **(Testing finding: the two new `runs-on` tests in 15.1 assert against a hardcoded expected
+      value — neither catches this workflow's label list silently drifting out of sync with
+      `deploy.yml`'s own copy of the same three labels, the one drift this repo CAN detect without a
+      live network call to GitHub's runner-registration API.)** Add
+      `test_runner_label_matches_deploy_ymls_self_hosted_label` to
+      `tests/unit/test_refresh_workflow_shape.py` (RED first): extract the label list from
+      `deploy.yml`'s `fromJSON('[...]')` literal via regex (matching
+      `test_resolution_truth_table_for_schedule_vs_dispatch`'s own "extract from the live YAML, don't
+      hardcode an independently-asserted value" discipline) and assert it equals this workflow's
+      `runs-on` list exactly. Confirm it passes today (both currently
+      `["self-hosted", "linux", "salk-network"]`); then verify it actually catches drift by temporarily
+      changing one file's label list and confirming the test fails, then restoring. **Explicitly out of
+      scope, and not fixable by a unit test**: live verification that `salk-network` still matches an
+      actually-registered, `online` GitHub Actions runner — that requires the network call 15.2 already
+      made once, manually; periodic re-verification of the live registration remains a 15.7-adjacent
+      manual/operational check, not something `tests/unit/` (deliberately offline, per this repo's own
+      convention) can own.
+- [ ] 15.11 **(Security finding: the shared, long-lived `salk-network` runner is a materially different
+      trust boundary for `SERVICE_ROLE_KEY` than the previous ephemeral `ubuntu-latest` VM was, and
+      design.md never named this.)** Add a paragraph to design.md's Section 15 addendum: the `curl`
+      call's `Authorization: Bearer ${SERVICE_ROLE_KEY}` argument is visible via `ps`/`/proc/<pid>/cmdline`
+      to any other process on the same host for the few seconds the command runs; on the previous
+      single-tenant, throwaway `ubuntu-latest` VM that was a non-issue, but the shared `salk-network`
+      runner also runs `deploy.yml`'s own deploy jobs, and a host-level compromise now yields a path to a
+      live, full-RLS-bypass credential across every future run, not just one. Accepted, not mitigated
+      (GitHub already masks the value in *logs*; the process-list exposure is a materially smaller,
+      already-existing risk `deploy.yml`'s own jobs accept for their own secrets on this same host) —
+      documented so a future reader isn't the first to notice it.
+- [ ] 15.12 **(Behavioral-correctness finding: design.md documents `deploy.yml`-vs-refresh runner
+      contention but not refresh-vs-refresh contention.)** Add a one-line addendum to the same design.md
+      section: with exactly one registered `salk-network` runner (confirmed via 15.2's `gh api` check), a
+      `staging` dispatch and a `production` dispatch/schedule now also serialize against each other
+      purely by runner scarcity — new behavior, since elastically-scaled `ubuntu-latest` runners never
+      contended with each other. Not a correctness bug (each host's own `concurrency.group` is untouched
+      and still independent, so nothing races or corrupts) — noted for a future capacity-planning reader.
+- [ ] 15.13 Run the full `tests/unit/` suite (or at minimum `test_refresh_workflow_shape.py` and the new
+      `test_refresh_workflow_staleness_docs.py`); confirm zero regressions. `openspec validate
+      fix-cyl-scan-traits-latest-rollup --strict` passes. Push as an additional commit to PR #738 (same
+      branch, same PR — these are review fixes to already-open work, not a new proposal).
+- [ ] 15.14 **(Scientific-rigor finding, explicitly out of this PR's own scope — not fixed here.)** File
+      a separate GitHub issue: spot-check whether `cyl_experiment_trait_counts` currently holds any row
+      with a deceptively recent `updated_at` (e.g. from the migration's one-time initial population, per
+      design.md's Migration Plan M2) that would let `_traits_note()`'s 2-day threshold show a plain
+      `(as of TIMESTAMP)` with no staleness caveat, despite the automated refresh pipeline never having
+      actually succeeded. A live-database check, not a code fix — tracked separately rather than
+      expanded into this CI-runner PR's scope.
+
 **Do not archive this change until Section 14 AND this section are both complete.** Section 14 makes the
 scheduled cron *exist* and resolve its approval gate correctly; this section makes the RPC call it
 issues actually reach a host. The `cyl-experiment-summary-rollup` spec delta's "production refreshes on
