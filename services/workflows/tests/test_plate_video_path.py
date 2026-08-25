@@ -1,9 +1,8 @@
-"""The encoder side of the plate video key.
+"""Behaviour of the encoder's plate video key.
 
-tests/unit/test_plate_video_path_agreement.py proves this module and the
-TypeScript one state the same rule. These prove the rule is implemented, which
-that comparison cannot: two files can agree on a pattern and still differ in
-what they do with it.
+The agreement test proves this module and its TypeScript copy state the same
+rule; these prove the rule is actually implemented, which that comparison
+cannot see.
 """
 
 from __future__ import annotations
@@ -13,24 +12,21 @@ import plate_video_path as pvp
 
 class TestPlateVideoPath:
     def test_builds_the_key_the_existing_videos_live_under(self):
-        # Objects exist under this layout for experiments rendered by hand.
+        # Objects already exist under this layout; changing it orphans them.
         assert pvp.plate_video_path(12, 3, "Plate_9") == "12/wave-3/Plate_9.mp4"
 
     def test_a_plate_with_no_wave_gets_its_own_segment(self):
-        # Not an empty segment — `12//Plate_9.mp4` collides with the
-        # experiment's own directory level.
+        # An empty segment would give `12//Plate_9.mp4`.
         assert pvp.plate_video_path(12, None, "Plate_9") == "12/wave-none/Plate_9.mp4"
 
     def test_waves_stay_apart(self):
-        """Plate ids repeat across waves, so a shared key would mean one wave's
-        render overwrote another's."""
+        """Plate ids repeat across waves; a shared key would overwrite."""
         assert pvp.plate_video_path(12, 2, "Plate_9") != pvp.plate_video_path(
             12, 3, "Plate_9"
         )
 
     def test_wave_zero_is_a_wave_not_an_absence(self):
-        # The scanner app sends 0 when no wave is set, so 0 arrives in practice
-        # and must not collapse into `wave-none`.
+        # The scanner app sends 0 when no wave is set, so 0 arrives in practice.
         assert pvp.plate_video_path(12, 0, "Plate_9") == "12/wave-0/Plate_9.mp4"
 
     def test_refuses_a_plate_id_carrying_a_path_separator(self):
@@ -38,7 +34,7 @@ class TestPlateVideoPath:
             assert pvp.plate_video_path(12, 3, plate) is None, plate
 
     def test_refuses_a_leading_dot(self):
-        """`..` must never be constructible."""
+        """So `..` can never be constructed."""
         for plate in (".hidden", "..", "."):
             assert pvp.plate_video_path(12, 3, plate) is None, plate
 
@@ -52,7 +48,7 @@ class TestPlateVideoPath:
             assert pvp.plate_video_path(12, 3, plate) is None, repr(plate)
 
     def test_a_trailing_newline_cannot_slip_through(self):
-        """`re.match` would accept this; `fullmatch` is what refuses it."""
+        """`re.match` would accept this; `fullmatch` refuses it."""
         assert pvp.is_valid_plate_id("Plate_9\n") is False
 
     def test_refuses_a_non_positive_experiment_id(self):
@@ -60,8 +56,7 @@ class TestPlateVideoPath:
             assert pvp.plate_video_path(exp, 3, "Plate_9") is None, exp
 
     def test_refuses_a_bool_as_an_id_or_wave(self):
-        """bool is an int subclass, so True would otherwise render as
-        `wave-True` and `1/...`."""
+        """bool is an int subclass, so True would render as `wave-True`."""
         assert pvp.plate_video_path(True, 3, "Plate_9") is None
         assert pvp.plate_video_path(12, True, "Plate_9") is None
 

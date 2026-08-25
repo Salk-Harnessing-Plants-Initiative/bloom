@@ -1,8 +1,6 @@
 /**
- * A plate id is free text from the scanner and ends up as a path segment, so
- * these cover what must never become one. The Python copy is pinned against
- * this module's pattern by tests/unit/test_plate_video_path_agreement.py — that
- * proves the two rules are identical, and this proves the rule is right.
+ * A plate id is free text and ends up as a path segment, so these cover what
+ * must never become one.
  */
 
 import { describe, expect, it } from "vitest";
@@ -17,14 +15,12 @@ import {
 
 describe("plateVideoPath", () => {
   it("builds the key the existing videos already live under", () => {
-    // Objects exist under this layout for experiments rendered by hand.
-    // Changing it orphans them.
+    // Objects already exist under this layout; changing it orphans them.
     expect(plateVideoPath(12, 3, "Plate_9")).toBe("12/wave-3/Plate_9.mp4");
   });
 
   it("gives a plate with no wave its own segment", () => {
-    // Not an empty segment — `12//Plate_9.mp4` collides with the experiment's
-    // own directory level.
+    // An empty segment would give `12//Plate_9.mp4`.
     expect(plateVideoPath(12, null, "Plate_9")).toBe(
       "12/wave-none/Plate_9.mp4",
     );
@@ -37,8 +33,7 @@ describe("plateVideoPath", () => {
   });
 
   it("treats wave zero as a wave, not as absent", () => {
-    // The scanner app sends 0 when no wave is set, so 0 is a value that
-    // arrives in practice and must not collapse into `wave-none`.
+    // The scanner app sends 0 when no wave is set, so 0 arrives in practice.
     expect(plateVideoPath(12, 0, "Plate_9")).toBe("12/wave-0/Plate_9.mp4");
   });
 
