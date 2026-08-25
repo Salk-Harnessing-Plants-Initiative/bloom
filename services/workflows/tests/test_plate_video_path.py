@@ -63,6 +63,13 @@ class TestPlateVideoPath:
     def test_refuses_a_negative_wave(self):
         assert pvp.plate_video_path(12, -1, "Plate_9") is None
 
+    def test_refuses_a_float_id_or_wave(self):
+        # `12.0` and `1.5` would render as `12.0/...` and `wave-1.5`.
+        assert pvp.plate_video_path(12.0, 3, "Plate_9") is None
+        assert pvp.plate_video_path(1.5, 3, "Plate_9") is None
+        assert pvp.plate_video_path(12, 1.5, "Plate_9") is None
+        assert pvp.plate_video_path(12, 2.0, "Plate_9") is None
+
 
 class TestIsValidPlateId:
     def test_accepts_the_shapes_the_scanner_produces(self):

@@ -30,7 +30,7 @@ def _script() -> str:
 
 
 def test_videos_bucket_agrees():
-    web = re.search(r'GRAVISCAN_VIDEOS_BUCKET\s*=\s*"([^"]+)"', _web())
+    web = re.search(r'GRAVISCAN_VIDEOS_BUCKET\s*=\s*["\']([^"\']+)["\']', _web())
     assert web, f"no GRAVISCAN_VIDEOS_BUCKET in {WEB_PATH_MODULE.name}"
 
     # The service allows an env override; the default is what must match.
@@ -50,7 +50,7 @@ def test_videos_bucket_agrees():
 
 
 def test_images_bucket_agrees():
-    web = re.search(r'GRAVISCAN_IMAGES_BUCKET\s*=\s*"([^"]+)"', _web())
+    web = re.search(r'GRAVISCAN_IMAGES_BUCKET\s*=\s*["\']([^"\']+)["\']', _web())
     assert web, f"no GRAVISCAN_IMAGES_BUCKET in {WEB_PATH_MODULE.name}"
 
     service = re.search(
@@ -71,10 +71,10 @@ def test_images_bucket_agrees():
 def test_plate_id_pattern_is_byte_identical():
     """Compared as a literal, not by behaviour: two regexes can agree on the
     cases someone thought of and still be different rules."""
-    web = re.search(r'PLATE_ID_PATTERN\s*=\s*"([^"]+)"', _web())
+    web = re.search(r'PLATE_ID_PATTERN\s*=\s*["\']([^"\']+)["\']', _web())
     assert web, f"no PLATE_ID_PATTERN in {WEB_PATH_MODULE.name}"
 
-    service = re.search(r'PLATE_ID_PATTERN\s*=\s*"([^"]+)"', _workflows())
+    service = re.search(r'PLATE_ID_PATTERN\s*=\s*["\']([^"\']+)["\']', _workflows())
     assert service, f"no PLATE_ID_PATTERN in {WORKFLOWS_PATH_MODULE.name}"
 
     assert web.group(1) == service.group(1), (
@@ -95,9 +95,9 @@ def test_wave_segment_agrees():
     script_named = re.search(r'f"wave-\{job\.wave_number\}"', _script())
     assert script_named, f"{RENDER_SCRIPT.name} does not build `wave-{{n}}`"
 
-    web_none = re.search(r'return\s+"(wave-[a-z]+)"', _web())
-    service_none = re.search(r'return\s+"(wave-[a-z]+)"', _workflows())
-    script_none = re.search(r'else\s+"(wave-[a-z]+)"', _script())
+    web_none = re.search(r'return\s+["\'](wave-[a-z0-9]+)["\']', _web())
+    service_none = re.search(r'return\s+"(wave-[a-z0-9]+)"', _workflows())
+    script_none = re.search(r'else\s+"(wave-[a-z0-9]+)"', _script())
     assert web_none and service_none and script_none, (
         "each side must name the no-wave segment as a literal"
     )
@@ -127,4 +127,18 @@ def test_key_shape_agrees():
     )
     assert script, (
         f"{RENDER_SCRIPT.name} does not build {{exp}}/{{wave}}/{{plate}}.mp4"
+    )
+
+
+def test_components_do_not_rehardcode_the_buckets():
+    """A component carrying its own copy of a bucket name is invisible to the
+    comparisons above, which only read the three modules."""
+    components = REPO_ROOT / "web" / "components" / "recent-phenotypes-by-plate-scanner"
+
+    plate_video = (components / "PlateVideo.tsx").read_text(encoding="utf-8")
+    assert "plate-video-path" in plate_video, (
+        "PlateVideo.tsx must import the shared bucket constant"
+    )
+    assert '"graviscan-videos"' not in plate_video, (
+        "PlateVideo.tsx re-hardcodes the videos bucket instead of importing it"
     )

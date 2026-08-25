@@ -9,7 +9,9 @@ export const GRAVISCAN_IMAGES_BUCKET = "graviscan-images";
 // rather than escaped. No leading dot, so `..` cannot form.
 export const PLATE_ID_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$";
 
-export function isValidPlateId(plateId: string): boolean {
+export function isValidPlateId(plateId: string | null | undefined): boolean {
+  // `RegExp.test` stringifies, so an unguarded null becomes the id "null".
+  if (typeof plateId !== "string") return false;
   return new RegExp(PLATE_ID_PATTERN).test(plateId);
 }
 
@@ -25,7 +27,7 @@ export function waveSegment(waveNumber: number | null): string | null {
 export function plateVideoPath(
   experimentId: number,
   waveNumber: number | null,
-  plateId: string,
+  plateId: string | null | undefined,
 ): string | null {
   if (!Number.isInteger(experimentId) || experimentId <= 0) return null;
   if (!isValidPlateId(plateId)) return null;
