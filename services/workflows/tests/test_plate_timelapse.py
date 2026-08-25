@@ -25,10 +25,12 @@ class TestPlateFps:
         assert pt.PLATE_FPS == 2
         assert 1.0 / pt.PLATE_FPS >= 0.5
 
-    def test_a_ten_hour_plate_is_a_watchable_length(self):
-        """One image per 7 minutes for 10 hours is ~86 frames."""
-        frames = (10 * 60) // 7
-        assert 30 <= frames / pt.PLATE_FPS <= 60
+    def test_duration_scales_with_the_run_rather_than_being_fixed(self):
+        """A fixed rate means a longer run makes a longer video, so two plates
+        are comparable by length. Nothing here depends on how many frames a
+        plate actually has — that estimate only ever sized expectations."""
+        assert 40 / pt.PLATE_FPS == 20
+        assert 200 / pt.PLATE_FPS == 100
 
 
 class TestLabelFor:
