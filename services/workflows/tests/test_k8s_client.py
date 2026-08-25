@@ -4,9 +4,11 @@ way test_auth.py already does for JWT validation (a monkeypatched
 `_FakeClient`/`_FakeResp` onto `k8s_client.httpx.Client`) — no real network
 call, no real Kubernetes cluster."""
 
+import copy
 import datetime
 
 import pytest
+import yaml
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -14,6 +16,14 @@ from cryptography.x509.oid import NameOID
 
 import k8s_client
 from k8s_client import K8sConfigError, K8sStatusError, K8sSubmissionError
+
+
+@pytest.fixture
+def vendored_workflow():
+    """The real vendored file, parsed independently of build_workflow_body's
+    own internal parsing — the baseline every 'matches the vendored file'
+    assertion below compares against."""
+    return yaml.safe_load(k8s_client._VENDORED_WORKFLOW_PATH.read_text())
 
 
 class _FakeResp:
@@ -376,6 +386,154 @@ def test_build_workflow_body_dag_references_all_four_templates_in_order():
     assert deps[1] == [tasks[0]["name"]]
     assert deps[2] == [tasks[1]["name"]]
     assert deps[3] == [tasks[2]["name"]]
+
+
+# --- build_workflow_body: loaded from the vendored canonical source (bloom #737) --
+
+
+def test_build_workflow_body_volumes_match_the_vendored_file_exactly(vendored_workflow):
+    """Direct regression test for the bug this change fixes: the hand-built
+    body silently dropped spec.volumes entirely."""
+    body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+    assert body["spec"]["volumes"] == vendored_workflow["spec"]["volumes"]
+
+
+def test_build_workflow_body_preserves_entrypoint_and_service_account_from_vendored_file(
+    vendored_workflow,
+):
+    body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+    assert body["spec"]["entrypoint"] == vendored_workflow["spec"]["entrypoint"]
+    assert (
+        body["spec"]["serviceAccountName"]
+        == vendored_workflow["spec"]["serviceAccountName"]
+    )
+
+
+def test_build_workflow_body_preserves_dag_structure_from_vendored_file(
+    vendored_workflow,
+):
+    """The DAG-shape equivalent of the entrypoint/serviceAccountName check
+    above — a standing regression guard, not just a one-time design.md
+    inspection, that the vendored file's DAG still matches what this module
+    submits."""
+    body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+    actual_tasks = body["spec"]["templates"][0]["dag"]["tasks"]
+    expected_tasks = vendored_workflow["spec"]["templates"][0]["dag"]["tasks"]
+    assert actual_tasks == expected_tasks
+
+
+def test_build_workflow_body_only_changes_the_four_documented_overrides(
+    monkeypatch, vendored_workflow
+):
+    """Proves the 'no other field modified' requirement via a full-structure
+    diff — the field-specific tests above only spot-check individual paths."""
+    monkeypatch.setattr(k8s_client, "NAMESPACE", "runai-busch-lab")
+    monkeypatch.setattr(k8s_client, "ENV_LABEL", "staging")
+    monkeypatch.setattr(k8s_client, "TTL_SECONDS", 3600)
+
+    body = k8s_client.build_workflow_body(
+        run_id=42, batch_index=3, scan_ids=[12, 47, 9]
+    )
+
+    expected = copy.deepcopy(vendored_workflow)
+    expected["spec"]["arguments"]["parameters"][0]["value"] = "12,47,9"
+    expected["metadata"].setdefault("labels", {}).update(
+        {
+            "submitted-by": "bloom-pipeline",
+            "pipeline-run-id": "42",
+            "batch-index": "3",
+            "environment": "staging",
+        }
+    )
+    expected["spec"]["ttlStrategy"] = {"secondsAfterCompletion": 3600}
+    expected["metadata"]["namespace"] = "runai-busch-lab"
+
+    assert body == expected
+
+
+def test_build_workflow_body_merges_labels_rather_than_replacing(vendored_workflow):
+    body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+    labels = body["metadata"]["labels"]
+    assert labels["project"] == vendored_workflow["metadata"]["labels"]["project"]
+    assert labels["submitted-by"] == "bloom-pipeline"
+    assert labels["pipeline-run-id"] == "1"
+    assert labels["batch-index"] == "0"
+    assert "environment" in labels
+
+
+def test_build_workflow_body_forces_namespace_to_the_configured_value(
+    monkeypatch, vendored_workflow
+):
+    # Sanity check the premise: the vendored file's hardcoded namespace is
+    # what we're about to override, not incidentally the same value.
+    assert vendored_workflow["metadata"]["namespace"] == "runai-busch-lab"
+    monkeypatch.setattr(k8s_client, "NAMESPACE", "runai-talmo-lab")
+    body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+    assert body["metadata"]["namespace"] == "runai-talmo-lab"
+
+
+def test_build_workflow_body_returns_independent_copies_across_calls():
+    """The implementation re-reads and re-parses the vendored file on every
+    call rather than caching a parsed structure, which already gives every
+    call an independent object graph — this guards against a future change
+    that adds caching without also adding a copy step."""
+    first = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+    second = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+    first["spec"]["volumes"].append({"name": "mutated-in-test"})
+    assert all(v.get("name") != "mutated-in-test" for v in second["spec"]["volumes"])
+
+
+def test_build_workflow_body_raises_configerror_on_missing_vendored_file(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        k8s_client, "_VENDORED_WORKFLOW_PATH", tmp_path / "does-not-exist.yaml"
+    )
+    with pytest.raises(K8sConfigError):
+        k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+
+
+def test_build_workflow_body_raises_configerror_on_unparseable_vendored_file(
+    monkeypatch, tmp_path
+):
+    """Invalid YAML syntax — distinct from the structurally-wrong-but-valid
+    case below."""
+    bad_file = tmp_path / "bad.yaml"
+    bad_file.write_text("key: [unterminated")
+    monkeypatch.setattr(k8s_client, "_VENDORED_WORKFLOW_PATH", bad_file)
+    with pytest.raises(K8sConfigError):
+        k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "- just\n- a\n- list\n",  # valid YAML, but not a mapping at all
+        "apiVersion: argoproj.io/v1alpha1\nkind: Workflow\nmetadata: {}\n",  # missing spec
+    ],
+)
+def test_build_workflow_body_raises_configerror_on_structurally_wrong_vendored_file(
+    monkeypatch, tmp_path, content
+):
+    """Valid YAML with the wrong shape — must not let a raw KeyError/TypeError
+    escape from build_workflow_body's own field lookups."""
+    wrong_shape_file = tmp_path / "wrong-shape.yaml"
+    wrong_shape_file.write_text(content)
+    monkeypatch.setattr(k8s_client, "_VENDORED_WORKFLOW_PATH", wrong_shape_file)
+    with pytest.raises(K8sConfigError):
+        k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+
+
+def test_build_workflow_body_raises_configerror_when_scan_ids_parameter_missing_or_misnamed(
+    monkeypatch, tmp_path, vendored_workflow
+):
+    mutated = copy.deepcopy(vendored_workflow)
+    mutated["spec"]["arguments"]["parameters"][0]["name"] = "not-scan-ids"
+    mutated_file = tmp_path / "mutated.yaml"
+    mutated_file.write_text(yaml.safe_dump(mutated))
+    monkeypatch.setattr(k8s_client, "_VENDORED_WORKFLOW_PATH", mutated_file)
+    with pytest.raises(K8sConfigError):
+        k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
 
 
 # --- get_workflow_status: status-polling (bloom #11 Phase 3) ----------------

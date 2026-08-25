@@ -13,13 +13,34 @@ service's `error_message` column is user-facing).
 WORKFLOWS_K8S_NAMESPACE and WORKFLOWS_K8S_TTL_SECONDS are plain config values
 with safe defaults (`runai-busch-lab`, `3600`) — unlike the three credentials,
 neither is ever treated as "missing".
+
+The submitted `Workflow`'s `spec` is loaded from a vendored, CI-drift-checked
+copy of `sleap-roots-pipeline`'s canonical `sleap-roots-pipeline.yaml`
+(`vendored/sleap-roots-pipeline.yaml`, pin recorded in the sibling
+`SLEAP_ROOTS_PIPELINE_REF`), not hand-built field by field — a prior
+hand-reconstruction silently dropped `spec.volumes` entirely and broke every
+real batch dispatch (bloom #737). `build_workflow_body` re-reads and re-parses
+that file on every call (no caching) and applies exactly four overrides on top
+of it: the batch's `scan-ids` value, attribution labels (merged, not replacing
+whatever the vendored file already sets), `ttlStrategy` (dispatch-only — never
+folded into the shared file, since the submitting identity has no `delete`
+RBAC and would have no other way to ever clean up dispatched Workflows), and
+`metadata.namespace` (forced to `WORKFLOWS_K8S_NAMESPACE` — the vendored file
+hardcodes its own namespace, and the Kubernetes API rejects a submission whose
+body namespace disagrees with the URL's namespace segment, so this keeps
+namespace single-sourced with the value the submission URL already uses). A
+missing/unparseable/wrong-shaped vendored file, or a structural drift in the
+`scan-ids` parameter position, is a `K8sConfigError` — the same treatment as a
+missing credential.
 """
 
 import logging
 import os
 import ssl
+from pathlib import Path
 
 import httpx
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -62,13 +83,14 @@ TTL_SECONDS = _resolve_ttl_seconds()
 # never-"missing" treatment as NAMESPACE/TTL_SECONDS.
 ENV_LABEL = _resolve_env_label()
 
-# The four templates a batch's DAG references, in submission order.
-_TEMPLATE_REFS = [
-    ("images-downloader", "sleap-roots-images-downloader-template"),
-    ("predictor", "sleap-roots-predictor-template"),
-    ("trait-extractor", "sleap-roots-trait-extractor-template"),
-    ("write-back", "sleap-roots-write-back-template"),
-]
+# Vendored, CI-drift-checked copy of sleap-roots-pipeline's canonical
+# sleap-roots-pipeline.yaml (pin recorded in the sibling SLEAP_ROOTS_PIPELINE_REF
+# file) — the single source of truth for this Workflow's shape. A module-level
+# constant, not inlined, so tests can monkeypatch it onto a missing/malformed
+# fixture the same way TOKEN/CA_CERT/API_URL/NAMESPACE already are.
+_VENDORED_WORKFLOW_PATH = (
+    Path(__file__).parent / "vendored" / "sleap-roots-pipeline.yaml"
+)
 
 
 class K8sConfigError(Exception):
@@ -112,52 +134,71 @@ def _ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context(cadata=pem)
 
 
-def build_workflow_body(run_id, batch_index: int, scan_ids: list[int]) -> dict:
-    """Construct the Workflow CRD body for one batch — a DAG referencing the
-    four already-registered WorkflowTemplates in sequence, parameterized by
-    this batch's own scan-ids (not the whole run's)."""
-    tasks = []
-    for i, (task_name, template_name) in enumerate(_TEMPLATE_REFS):
-        task = {
-            "name": task_name,
-            "templateRef": {"name": template_name, "template": task_name},
-        }
-        if i > 0:
-            task["dependencies"] = [_TEMPLATE_REFS[i - 1][0]]
-        tasks.append(task)
+def _load_vendored_workflow() -> dict:
+    """Read and parse the vendored canonical Workflow, fresh on every call —
+    no module-level caching, since `yaml.safe_load` already returns an
+    independent object graph each time, making an explicit copy unnecessary.
+    Raises K8sConfigError (not a raw FileNotFoundError/YAMLError/KeyError) for
+    a missing file, a YAML syntax error, or a structurally-wrong-but-valid
+    file (not a mapping, or missing `spec`/`metadata`) — the same treatment
+    this module already gives a missing credential."""
+    try:
+        raw = _VENDORED_WORKFLOW_PATH.read_text()
+    except OSError as exc:
+        raise K8sConfigError(
+            "K8s client not configured: vendored Workflow source is missing"
+        ) from exc
 
-    return {
-        "apiVersion": "argoproj.io/v1alpha1",
-        "kind": "Workflow",
-        "metadata": {
-            "generateName": "sleap-roots-pipeline-",
-            "labels": {
-                "submitted-by": "bloom-pipeline",
-                "pipeline-run-id": str(run_id),
-                "batch-index": str(batch_index),
-                "environment": ENV_LABEL,
-            },
-        },
-        "spec": {
-            "entrypoint": "pipeline",
-            "serviceAccountName": "bloom-workflow",
-            "ttlStrategy": {"secondsAfterCompletion": TTL_SECONDS},
-            "arguments": {
-                "parameters": [
-                    {
-                        "name": "scan-ids",
-                        "value": ",".join(str(sid) for sid in scan_ids),
-                    }
-                ]
-            },
-            "templates": [
-                {
-                    "name": "pipeline",
-                    "dag": {"tasks": tasks},
-                }
-            ],
-        },
-    }
+    try:
+        parsed = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise K8sConfigError(
+            "K8s client not configured: vendored Workflow source failed to parse"
+        ) from exc
+
+    if (
+        not isinstance(parsed, dict)
+        or not isinstance(parsed.get("spec"), dict)
+        or not isinstance(parsed.get("metadata"), dict)
+    ):
+        raise K8sConfigError(
+            "K8s client not configured: vendored Workflow source has an unexpected shape"
+        )
+
+    return parsed
+
+
+def build_workflow_body(run_id, batch_index: int, scan_ids: list[int]) -> dict:
+    """Construct the Workflow CRD body for one batch by loading the vendored
+    canonical `sleap-roots-pipeline.yaml` and applying exactly four overrides
+    on top of it — see the module docstring for why each one exists. The
+    vendored file's DAG (referencing the four already-registered
+    WorkflowTemplates), volumes, entrypoint, and serviceAccountName all pass
+    through unmodified."""
+    body = _load_vendored_workflow()
+
+    parameters = body["spec"]["arguments"]["parameters"]
+    if not parameters or parameters[0].get("name") != "scan-ids":
+        raise K8sConfigError(
+            "K8s client not configured: vendored Workflow source's scan-ids "
+            "parameter is missing or has drifted to a different position"
+        )
+    parameters[0]["value"] = ",".join(str(sid) for sid in scan_ids)
+
+    labels = body["metadata"].setdefault("labels", {})
+    labels.update(
+        {
+            "submitted-by": "bloom-pipeline",
+            "pipeline-run-id": str(run_id),
+            "batch-index": str(batch_index),
+            "environment": ENV_LABEL,
+        }
+    )
+
+    body["spec"]["ttlStrategy"] = {"secondsAfterCompletion": TTL_SECONDS}
+    body["metadata"]["namespace"] = NAMESPACE
+
+    return body
 
 
 def submit_workflow(body: dict) -> str:
