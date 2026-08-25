@@ -1057,10 +1057,28 @@ the more durable signal that M2 hasn't actually been rolled back.
   `ubuntu-latest` escape-hatch input: that input exists because `deploy.yml`'s jobs are required/blocking
   checks that need a way to fail fast when the self-hosted runner is hung; this job is neither, and the
   escape hatch would do nothing for the unattended `schedule` trigger anyway. Accepted, not mitigated: if
-  `salk-network` is offline, a run now queues (up to GitHub's ~24h auto-cancel window) rather than
-  failing in ~12s — the same trade-off `deploy.yml` already accepts for real deploys, and lower-stakes
-  here since nothing blocks on this job and `concurrency.group`'s `cancel-in-progress: true` already
-  supersedes a stale queued run once a fresher one arrives.
+  `salk-network` is offline, a run now queues rather than failing in ~12s — the same trade-off
+  `deploy.yml` already accepts for real deploys, and lower-stakes here since nothing blocks on this job.
+  **Correction (`/review-openspec`'s CI/CD pass): the bound on this is NOT `concurrency.group`'s
+  `cancel-in-progress: true`** — that flag only cancels an already-**running** job; GitHub's own
+  documented default behavior already supersedes a **queued/pending** job in the same group once a newer
+  trigger arrives, independent of `cancel-in-progress`. The actual bound differs by host: `production`'s
+  daily cron supersedes a stuck queued run via that default behavior, on top of GitHub's own independent
+  ~24h hard-cancel-queued-job limit; `staging` has nothing that re-triggers automatically, so a queued
+  manual dispatch there relies solely on the same ~24h hard limit, not on anything this workflow's own
+  concurrency configuration adds.
+
+  **New risk, found by the same CI/CD pass, not previously documented anywhere in this design: this job
+  now shares a runner pool with `deploy.yml`'s deploy jobs, which `deploy.yml`'s own
+  `concurrency.group: deploy-bloom` comment states explicitly is a single physical machine ("single Salk
+  server, single docker daemon"), not an autoscaling fleet.** The two workflows use different
+  concurrency groups, so nothing serializes them against each other — a `deploy.yml` run
+  (`timeout-minutes: 30`) can occupy the only matching runner while this job queues behind it for up to
+  ~30 minutes, a distinct failure mode from "runner offline" that this addendum previously didn't
+  mention. Accepted, not mitigated: no human is waiting synchronously on this job, and `timeout-minutes:
+  2` only bounds execution time once a runner is assigned, not queued-for-a-runner time — both facts are
+  called out explicitly in the workflow's own comment (tasks.md 15.3) rather than left for a future
+  reader to assume incorrectly.
 
     **Reinforced, not newly found — round 2's `/review-pr` pass on the pushed PR independently
     converged on the same two follow-up angles for tasks.md 14.9's post-promotion check.** (1)
