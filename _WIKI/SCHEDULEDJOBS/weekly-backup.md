@@ -22,19 +22,30 @@ policies survive, but the roles they name no longer have the access those
 policies assume. Bloom manages grants as a tracked capability, so that loss is
 not acceptable in a backup. **Restore globals first, then the database.**
 
-## Schedule and retention
+## Schedule
 
 |             | staging                                | production                             |
 | ----------- | -------------------------------------- | -------------------------------------- |
 | Runs        | Sunday 02:00 server time (±15m jitter) | Sunday 02:00 server time (±15m jitter) |
-| Retention   | 4 weeks                                | 8 weeks                                |
 | Destination | `box:bloom-backups/staging`            | `box:bloom-backups/prod`               |
 
 `Persistent=true` — a run missed because the host was down happens on the next
 boot rather than being skipped.
 
-Retention prunes only **after** a verified upload, so a run that cannot produce
-a good dump can never age out the good copies already on Box.
+## Nothing is ever deleted on Box
+
+This job uploads and nothing else. It does not delete, overwrite, or age out
+anything in the Box folder. Old backups stay until someone removes them by
+hand, deliberately.
+
+Two consequences worth knowing:
+
+- The folder grows by two files a week, forever. Check on it occasionally and
+  prune by hand when you want to; if the Box quota ever fills, the upload is
+  what starts failing.
+- On the server nothing accumulates at all. Each run works inside a temporary
+  directory that is removed on every exit path, success or failure, so the dump
+  never lingers on disk.
 
 ## One-time setup
 
@@ -103,10 +114,6 @@ watching — it is how a partial dump announces itself.
 | 0    | Verified backup uploaded                             |
 | 1    | Subprocess failed (docker / pg_dump / gzip / rclone) |
 | 2    | Configuration problem, or the stack is not running   |
-| 3    | Backup uploaded, but the retention prune failed      |
-
-Exit 3 is deliberately distinct: the backup is safe, only the housekeeping
-failed.
 
 ## What is verified before an upload counts
 
@@ -121,7 +128,7 @@ anything is uploaded:
 - each artifact must clear a minimum-size floor;
 - the size is logged.
 
-Any failure ends the run without uploading and without pruning.
+Any failure ends the run without uploading anything.
 
 ## Restore
 

@@ -2,7 +2,7 @@
 
 The parts pinned here are the ones whose failure mode is a *silent* bad backup:
 a truncated dump that still gzips cleanly, an empty container lookup treated as
-success, a prune that runs after a failed upload and ages out the good copies.
+success, an artifact uploaded without being verified.
 The docker/rclone calls themselves need a live host and are exercised by the
 staging rehearsal documented in _WIKI/SCHEDULEDJOBS/weekly-backup.md.
 """
@@ -128,7 +128,7 @@ def test_a_succeeding_source_writes_a_readable_artifact(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Destination + retention
+# Destination
 # --------------------------------------------------------------------------
 
 
@@ -145,47 +145,22 @@ def test_destination_defaults_per_environment(monkeypatch):
     assert backup.backup_destination("prod") == ("box", "bloom-backups/prod")
 
 
-def test_retention_rejects_zero_and_negative(monkeypatch):
-    for bad in ("0", "-1"):
-        monkeypatch.setenv("BACKUP_RETENTION_WEEKS", bad)
-        with pytest.raises(backup.ConfigError, match="must be >= 1"):
-            backup.retention_weeks()
-
-
-def test_retention_rejects_nonsense(monkeypatch):
-    monkeypatch.setenv("BACKUP_RETENTION_WEEKS", "eight")
-    with pytest.raises(backup.ConfigError, match="not an integer"):
-        backup.retention_weeks()
-
-
-def test_retention_defaults_when_unset(monkeypatch):
-    monkeypatch.delenv("BACKUP_RETENTION_WEEKS", raising=False)
-    assert backup.retention_weeks() == backup.DEFAULT_RETENTION_WEEKS
-
-
-def test_prune_converts_weeks_to_the_rclone_min_age(monkeypatch):
-    monkeypatch.setenv("BACKUP_RCLONE_REMOTE", "box")
-    monkeypatch.setenv("BACKUP_RCLONE_DEST_DIR", "bloom-backups/prod")
-    seen: list[list[str]] = []
-    monkeypatch.setattr(backup, "_run", lambda cmd, cwd=None: seen.append(cmd) or "")
-    monkeypatch.setattr(backup, "_which", lambda name: name)
-    backup.prune_old_backups("prod", keep_weeks=8)
-    assert seen[0][-2:] == ["--min-age", "56d"]
-
-
 # --------------------------------------------------------------------------
 # Exit-code contract
 # --------------------------------------------------------------------------
 
 
 def test_exit_codes_are_distinct():
-    codes = {
-        backup.EXIT_OK,
-        backup.EXIT_SUBPROCESS,
-        backup.EXIT_CONFIG,
-        backup.EXIT_PRUNE_FAILED,
-    }
-    assert len(codes) == 4, "each failure class needs its own exit code"
+    codes = {backup.EXIT_OK, backup.EXIT_SUBPROCESS, backup.EXIT_CONFIG}
+    assert len(codes) == 3, "each failure class needs its own exit code"
+
+
+def test_the_job_never_deletes_anything_on_the_remote():
+    # This job uploads only. Nothing on Box is ever removed by it, by design.
+    source = _SCRIPT.read_text()
+    assert '"delete"' not in source
+    assert "--min-age" not in source
+    assert not hasattr(backup, "prune_old_backups")
 
 
 def test_a_missing_deploy_dir_is_a_config_error(tmp_path, monkeypatch):
@@ -194,72 +169,16 @@ def test_a_missing_deploy_dir_is_a_config_error(tmp_path, monkeypatch):
     assert rc == backup.EXIT_CONFIG
 
 
-def test_a_bad_retention_value_fails_before_anything_is_dumped(tmp_path, monkeypatch):
-    monkeypatch.setenv("BACKUP_RETENTION_WEEKS", "0")
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
-    called = []
-    monkeypatch.setattr(backup, "resolve_container", lambda *a: called.append(a))
-    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
-    assert rc == backup.EXIT_CONFIG
-    assert not called, "retention must be validated before the stack is touched"
-
-
-def test_prune_is_not_attempted_when_the_dump_fails(tmp_path, monkeypatch):
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("BACKUP_RCLONE_REMOTE", "box")
-    pruned = []
-    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
-    monkeypatch.setattr(
-        backup, "dump_database",
-        lambda *a: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["pg_dump"])),
-    )
-    monkeypatch.setattr(backup, "prune_old_backups", lambda *a: pruned.append(a))
-    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
-    assert rc == backup.EXIT_SUBPROCESS
-    assert not pruned, "a failed dump must never age out good remote copies"
-
-
-def test_prune_is_not_attempted_when_the_upload_fails(tmp_path, monkeypatch):
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
-    pruned = []
-    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
-    monkeypatch.setattr(backup, "dump_database", lambda *a: tmp_path / "db.sql.gz")
-    monkeypatch.setattr(backup, "dump_globals", lambda *a: tmp_path / "globals.sql.gz")
-    monkeypatch.setattr(
-        backup, "upload",
-        lambda *a: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["rclone"])),
-    )
-    monkeypatch.setattr(backup, "prune_old_backups", lambda *a: pruned.append(a))
-    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
-    assert rc == backup.EXIT_SUBPROCESS
-    assert not pruned
-
-
-def test_a_prune_failure_is_distinct_from_a_backup_failure(tmp_path, monkeypatch):
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
-    monkeypatch.setattr(backup, "dump_database", lambda *a: tmp_path / "db.sql.gz")
-    monkeypatch.setattr(backup, "dump_globals", lambda *a: tmp_path / "globals.sql.gz")
-    monkeypatch.setattr(backup, "upload", lambda *a: None)
-    monkeypatch.setattr(
-        backup, "prune_old_backups",
-        lambda *a: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["rclone"])),
-    )
-    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
-    assert rc == backup.EXIT_PRUNE_FAILED, "an uploaded backup is not a failed backup"
-
-
-def test_dry_run_verifies_but_never_uploads_or_prunes(tmp_path, monkeypatch):
+def test_dry_run_verifies_but_never_uploads(tmp_path, monkeypatch):
     monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
     touched = []
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
     monkeypatch.setattr(backup, "dump_database", lambda *a: tmp_path / "db.sql.gz")
     monkeypatch.setattr(backup, "dump_globals", lambda *a: tmp_path / "globals.sql.gz")
     monkeypatch.setattr(backup, "upload", lambda *a: touched.append("upload"))
-    monkeypatch.setattr(backup, "prune_old_backups", lambda *a: touched.append("prune"))
     rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path), "--dry-run"])
     assert rc == backup.EXIT_OK
-    assert not touched
+    assert not touched, "a dry run must not upload"
 
 
 def test_the_working_directory_is_removed_on_failure(tmp_path, monkeypatch):
@@ -281,7 +200,6 @@ def test_the_working_directory_is_removed_on_success(tmp_path, monkeypatch):
     monkeypatch.setattr(backup, "dump_database", lambda *a: tmp_path / "db.sql.gz")
     monkeypatch.setattr(backup, "dump_globals", lambda *a: tmp_path / "globals.sql.gz")
     monkeypatch.setattr(backup, "upload", lambda *a: None)
-    monkeypatch.setattr(backup, "prune_old_backups", lambda *a: None)
     rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
     assert rc == backup.EXIT_OK
     assert not list(state.glob("bloom-backup-*"))

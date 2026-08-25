@@ -3,20 +3,16 @@
 
 Runs from a per-env systemd timer (see bloom-weekly-backup.timer). Dumps the
 database and the global role definitions out of the running db-prod container,
-verifies both artifacts, uploads them to Box via a pre-configured rclone remote,
-then prunes remote copies past the retention window.
+verifies both artifacts, and uploads them to Box via a pre-configured rclone
+remote.
 
-Two artifacts, not one. The database dump keeps object ownership and GRANT
-statements, so a restore rebuilds the security model rather than flattening it;
-those statements reference roles, which live outside any single database, so
-`pg_dumpall --globals-only` captures them alongside. Restore order is globals
-first, then the database.
+This job only ever writes to Box. It never deletes there — old backups are kept
+until someone removes them by hand.
 
 Exit codes:
   0 = verified backup uploaded
   1 = subprocess failure (docker / pg_dump / gzip / rclone)
   2 = configuration error (missing env, no remote, stack not running)
-  3 = upload succeeded but the retention prune failed
 
 See `.env.{staging,prod}.defaults` for the BACKUP_* config surface, and
 _WIKI/SCHEDULEDJOBS/weekly-backup.md for setup and restore.
@@ -44,12 +40,9 @@ DB_SERVICE = "db-prod"
 MIN_DATABASE_BYTES = 4096
 MIN_GLOBALS_BYTES = 256
 
-DEFAULT_RETENTION_WEEKS = 8
-
 EXIT_OK = 0
 EXIT_SUBPROCESS = 1
 EXIT_CONFIG = 2
-EXIT_PRUNE_FAILED = 3
 
 
 class ConfigError(RuntimeError):
@@ -197,7 +190,7 @@ def dump_globals(container: str, work_dir: Path, timestamp: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Upload + retention
+# Upload
 # ---------------------------------------------------------------------------
 
 
@@ -217,29 +210,6 @@ def upload(artifacts: list[Path], env_name: str) -> None:
         _run([_which("rclone"), "copy", str(artifact), f"{remote}:{dest_dir}/"])
 
 
-def prune_old_backups(env_name: str, keep_weeks: int) -> None:
-    """Delete remote copies past the retention window.
-
-    Only ever called after a verified upload, so a run that produced no good
-    artifact can never age out the good copies already on the remote.
-    """
-    remote, dest_dir = backup_destination(env_name)
-    min_age = f"{keep_weeks * 7}d"
-    logger.info("pruning %s:%s/ older than %s", remote, dest_dir, min_age)
-    _run([_which("rclone"), "delete", f"{remote}:{dest_dir}/", "--min-age", min_age])
-
-
-def retention_weeks() -> int:
-    weeks = _env("BACKUP_RETENTION_WEEKS", str(DEFAULT_RETENTION_WEEKS))
-    try:
-        parsed = int(weeks)
-    except ValueError as exc:
-        raise ConfigError(f"BACKUP_RETENTION_WEEKS={weeks!r} is not an integer") from exc
-    if parsed < 1:
-        raise ConfigError(f"BACKUP_RETENTION_WEEKS={parsed} is invalid (must be >= 1)")
-    return parsed
-
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -252,7 +222,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--deploy-dir", required=True, type=Path,
                         help="Deploy directory holding the compose file and env file.")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Dump and verify, but skip the upload and the prune.")
+                        help="Dump and verify, but skip the upload.")
     return parser.parse_args(argv)
 
 
@@ -266,7 +236,6 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("starting bloom-weekly-backup env=%s timestamp=%s", args.env, timestamp)
 
     try:
-        keep_weeks = retention_weeks()
         deploy_dir = args.deploy_dir.resolve()
         if not deploy_dir.is_dir():
             raise ConfigError(f"deploy directory does not exist: {deploy_dir}")
@@ -294,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_SUBPROCESS
 
         if args.dry_run:
-            logger.info("DRY RUN — %d artifact(s) verified, skipping upload and prune",
+            logger.info("DRY RUN — %d artifact(s) verified, skipping upload",
                         len(artifacts))
             return EXIT_OK
 
@@ -306,12 +275,6 @@ def main(argv: list[str] | None = None) -> int:
         except subprocess.CalledProcessError as exc:
             logger.error("upload failed: %s", exc)
             return EXIT_SUBPROCESS
-
-    try:
-        prune_old_backups(args.env, keep_weeks)
-    except (ConfigError, subprocess.CalledProcessError) as exc:
-        logger.error("backup uploaded, but the retention prune failed: %s", exc)
-        return EXIT_PRUNE_FAILED
 
     logger.info("bloom-weekly-backup env=%s timestamp=%s complete", args.env, timestamp)
     return EXIT_OK
