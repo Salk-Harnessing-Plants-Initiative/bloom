@@ -562,3 +562,30 @@ def test_job_still_has_no_checkout_and_empty_permissions() -> None:
         "checkout unnecessary; adding one would silently widen this job's "
         "blast radius for values that never needed repo access."
     )
+
+
+def test_job_runs_on_self_hosted_salk_network() -> None:
+    """bloom#736: runs-on: ubuntu-latest (a GitHub-hosted runner) has no network route to
+    either host -- confirmed empirically by this workflow's first live scheduled run failing
+    its curl call in 12s with a connection timeout. deploy.yml's own jobs already run on this
+    same self-hosted label for the identical reason (see its comment near its own runs-on
+    ternary); this job now uses it too."""
+    runs_on = _load_workflow()["jobs"][JOB]["runs-on"]
+    assert runs_on == ["self-hosted", "linux", "salk-network"], (
+        f"runs-on must be the self-hosted salk-network label deploy.yml uses -- a "
+        f"GitHub-hosted runner has no route to the Salk server; got {runs_on!r}"
+    )
+
+
+def test_job_runs_on_is_unconditional_not_a_ternary() -> None:
+    """Deliberately no ubuntu-latest escape-hatch input, unlike deploy.yml's own `runner`
+    workflow_dispatch input -- this job isn't a required/blocking check, and an escape hatch
+    would do nothing for this workflow's unattended `schedule` trigger anyway. Guards against
+    a future copy-paste reintroducing deploy.yml's ternary/escape-hatch pattern here."""
+    runs_on = _load_workflow()["jobs"][JOB]["runs-on"]
+    assert isinstance(runs_on, list), (
+        f"runs-on must be a plain list, not a conditional expression string; got {runs_on!r}"
+    )
+    assert "ubuntu-latest" not in runs_on, (
+        f"runs-on must not fall back to ubuntu-latest under any branch; got {runs_on!r}"
+    )

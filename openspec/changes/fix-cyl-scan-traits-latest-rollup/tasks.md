@@ -1000,7 +1000,7 @@ and gave a false-reassuring result before the real cause (documented in `deploy.
   against two hardcoded `API_URL` literals — low blast radius; the self-hosted runner gains no new
   capability this job could misuse.
 
-- [ ] 15.1 Add failing unit tests to `tests/unit/test_refresh_workflow_shape.py` (RED first — the
+- [x] 15.1 Add failing unit tests to `tests/unit/test_refresh_workflow_shape.py` (RED first — the
       current file has no assertion on `runs-on` at all):
       - `test_job_runs_on_self_hosted_salk_network` — asserts
         `workflow["jobs"][JOB]["runs-on"] == ["self-hosted", "linux", "salk-network"]`.
@@ -1008,8 +1008,9 @@ and gave a false-reassuring result before the real cause (documented in `deploy.
         above against a future copy-paste of `deploy.yml`'s ternary pattern)**
         `test_job_runs_on_is_unconditional_not_a_ternary` — asserts `runs-on` is a plain `list` (not a
         `${{ ... }}` expression string) and that `"ubuntu-latest"` does not appear in it.
-      Confirm both fail against the current `runs-on: ubuntu-latest`.
-- [ ] 15.2 **Independently doable now — does not require this PR to merge or promote, since `deploy.yml`
+      Confirm both fail against the current `runs-on: ubuntu-latest`. **Done — both failed as expected
+      (`AssertionError`s against `'ubuntu-latest'`) before 15.3's implementation.**
+- [x] 15.2 **Independently doable now — does not require this PR to merge or promote, since `deploy.yml`
       already depends on this same label today.** `/review-openspec` round 2's testing pass found the
       original wording of this task ambiguous between two real possibilities, neither confirmed anywhere
       in this repo: the runner could be registered at the **repo** level or the **org** level, and if
@@ -1024,8 +1025,12 @@ and gave a false-reassuring result before the real cause (documented in `deploy.
         online but scoped to a different runner group would look "available" while still being
         unreachable by this workflow, the same false-confidence gap 15.1's YAML-shape test already has
         for a typo'd label.
-      Either way, confirm the runner's status is `online`, not just that it's registered.
-- [ ] 15.3 Implement, in one commit:
+      Either way, confirm the runner's status is `online`, not just that it's registered. **Done —
+      `gh api repos/Salk-Harnessing-Plants-Initiative/bloom/actions/runners` returned one runner
+      (`bloom-prod-runner`, `status: online`, `busy: false`) registered at the repo level with exactly
+      the labels `self-hosted`/`Linux`/`X64`/`salk-network` — settled directly, no org-level fallback
+      needed.**
+- [x] 15.3 Implement, in one commit:
       - `.github/workflows/refresh-cyl-experiment-trait-counts.yml`: change line 91's
         `runs-on: ubuntu-latest` to `runs-on: ["self-hosted", "linux", "salk-network"]`. Update the
         file's header comment with **one short paragraph** stating plainly that GitHub-hosted runners
@@ -1043,12 +1048,13 @@ and gave a false-reassuring result before the real cause (documented in `deploy.
         job queue behind it for up to `deploy.yml`'s own `timeout-minutes: 30`** — the contention risk
         found by `/review-openspec`'s CI/CD pass, not just an availability note. Confirm via `git diff`
         that no `runs-on:` value in `deploy.yml` itself is touched, only the comment.
-      Confirm 15.1's tests now pass.
-- [ ] 15.4 Run the full `tests/unit/test_refresh_workflow_shape.py` file; confirm zero regressions from
+      Confirm 15.1's tests now pass. **Done — both new tests pass; `git diff deploy.yml` confirmed
+      only the comment changed, no `runs-on:` value touched.**
+- [x] 15.4 Run the full `tests/unit/test_refresh_workflow_shape.py` file; confirm zero regressions from
       15.1/15.3's change (no other test in that file asserts anything about `runs-on`, so none should be
-      affected).
-- [ ] 15.5 `openspec validate fix-cyl-scan-traits-latest-rollup --strict` passes.
-- [ ] 15.6 **Part of the same combined commit as 15.1/15.3** (`/review-openspec` round 2's git-workflow
+      affected). **Done — 25 passed, 0 failed (23 pre-existing + 2 new).**
+- [x] 15.5 `openspec validate fix-cyl-scan-traits-latest-rollup --strict` passes. **Confirmed.**
+- [x] 15.6 **Part of the same combined commit as 15.1/15.3** (`/review-openspec` round 2's git-workflow
       pass: this task was added during the review-fix pass without saying which commit it belongs to —
       it's a tiny, thematically identical doc caveat with no conflict risk, so it lands with the rest
       rather than as a separate commit). Two doc sites assert the same now-falsified claim as settled
@@ -1069,7 +1075,10 @@ and gave a false-reassuring result before the real cause (documented in `deploy.
         as-is — already appropriately hedged, no change needed.)
       Run `prettier --check`/`--write` on the markdown file after editing, matching this change's own
       established convention (7.3, 14.6); run `black`/`ruff` on the Python file per this repo's normal
-      pre-commit scope.
+      pre-commit scope. **Done — both files caveated; `prettier --check` clean on the markdown file;
+      `black --check` clean on the Python file (comment-only edit); `ruff check` on the Python file
+      shows 2 pre-existing `UP045` findings on an untouched function signature (line 27, not part of
+      this edit's diff) — confirmed via `git diff` unrelated to this change, left as-is.**
 - [ ] 15.7 **Genuinely blocked on this section's own PR merging, promoting to `main`, AND a self-hosted
       runner actually being available — same "verify the real thing, not just static config" discipline
       as 14.9, not something this PR can complete on its own. Not part of this PR's own commit(s) —
