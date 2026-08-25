@@ -936,9 +936,14 @@ the more durable signal that M2 hasn't actually been rolled back.
     nightly run through that same approval gate — but GitHub Environment protection is keyed by
     environment *name*, not trigger type, so a scheduled run has no human present to click "Approve";
     it would sit "Waiting" indefinitely (or until GitHub's own multi-week protection-rule timeout),
-    silently never executing. Worse, with `cancel-in-progress: true` sharing one concurrency group, the
-    *next* night's run would cancel the still-pending prior one before anyone could approve it — a
-    compounding failure that surfaces no error at all. The two trigger types have genuinely different
+    silently never executing. Worse, with one concurrency group shared across nights, the *next* night's
+    run would cancel the still-pending prior one before anyone could approve it — a compounding failure
+    that surfaces no error at all. (**Correction, Section 15/bloom#736's own CI/CD pass: this
+    cancellation is GitHub's *default* pending-job-supersession behavior, not something `cancel-in-progress:
+    true` specifically causes** — that flag's only effect is additionally cancelling an already-**running**
+    job. The outcome described here is unchanged; only the earlier attribution to `cancel-in-progress`
+    specifically was imprecise. See Section 15's own addendum below for the corrected mechanism.) The two
+    trigger types have genuinely different
     risk shapes: `workflow_dispatch` lets any human with dispatch permission fire this RPC against
     production *at will, with parameters they choose in the moment* — the approval gate defends against
     exactly that discretion. A `schedule` trigger has no discretion: it always calls the same function,
@@ -969,10 +974,12 @@ the more durable signal that M2 hasn't actually been rolled back.
     section already fixed for schedule-vs-schedule, found in round 2's re-verification of this fix.**
     Sharing one concurrency group by target-host means a manual `workflow_dispatch` to `production` that
     is currently sitting in "Waiting" for `required_reviewers` approval, and the 00:17 UTC scheduled run,
-    both occupy the same group — confirmed via GitHub's own documented behavior that
-    `cancel-in-progress: true` cancels a job that is queued/pending approval, not only one already
-    executing. If the cron fires while a manual production dispatch is still pending approval, it
-    silently cancels that pending dispatch. Unlike the schedule-vs-schedule case this section's main fix
+    both occupy the same group — confirmed via GitHub's own documented behavior that a job that is
+    queued/pending approval is superseded by a newer trigger in the same group by default. (**Correction,
+    same Section 15/bloom#736 CI/CD finding as above: this default pending-job supersession is distinct
+    from `cancel-in-progress: true`, which only additionally cancels an already-running job — the
+    outcome below still holds, only the mechanism name was imprecise.**) If the cron fires while a manual
+    production dispatch is still pending approval, it silently cancels that pending dispatch. Unlike the schedule-vs-schedule case this section's main fix
     closes (which could compound into *no* run ever completing), this is a single, one-off cancellation
     of a specific manual request — safe to retry (D5b's advisory lock still makes any half-started state
     a clean no-op), and only reachable in the narrow window where someone manually dispatches production

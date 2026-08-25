@@ -990,6 +990,12 @@ and gave a false-reassuring result before the real cause (documented in `deploy.
   a human is waiting on, and `timeout-minutes: 2` only bounds *execution* time once a runner picks the job
   up, not queued time — call out both facts explicitly in the workflow's own comment (15.3) rather than
   leaving `timeout-minutes: 2` to misleadingly imply the queuing exposure is bounded by it.
+  **Caveat, found by `/review-openspec` round 2's CI/CD pass: "single physical machine" is
+  `deploy.yml`'s own comment's characterization, not something 15.2's runner-registration check actually
+  counts.** If more than one runner process/host is ever registered under this exact label set (self-hosted
+  runner setups commonly support this), the two workflows could run concurrently and this ~30-minute
+  contention risk wouldn't apply — not re-verified here, since 15.2 only confirms a runner online, not
+  how many.
 - This job needs no checkout (`permissions: {}`, no `actions/checkout` step) and only runs `curl`/`bash`
   against two hardcoded `API_URL` literals — low blast radius; the self-hosted runner gains no new
   capability this job could misuse.
@@ -1004,11 +1010,21 @@ and gave a false-reassuring result before the real cause (documented in `deploy.
         `${{ ... }}` expression string) and that `"ubuntu-latest"` does not appear in it.
       Confirm both fail against the current `runs-on: ubuntu-latest`.
 - [ ] 15.2 **Independently doable now — does not require this PR to merge or promote, since `deploy.yml`
-      already depends on this same label today.** Confirm via `gh api repos/Salk-Harnessing-Plants-Initiative/bloom/actions/runners`
-      (or the org-level runners endpoint) that a runner registered with exactly the labels
-      `self-hosted`, `linux`, `salk-network` is currently online — `/review-openspec`'s testing pass
-      flagged that 15.1's YAML-shape test cannot detect a typo'd label or an offline runner, so this is
-      the one check in this section that actually confirms the label string is real before relying on it.
+      already depends on this same label today.** `/review-openspec` round 2's testing pass found the
+      original wording of this task ambiguous between two real possibilities, neither confirmed anywhere
+      in this repo: the runner could be registered at the **repo** level or the **org** level, and if
+      org-level, could be scoped to a runner group that may or may not include `bloom` as an authorized
+      repository. Resolve, in order, rather than guessing:
+      - `gh api repos/Salk-Harnessing-Plants-Initiative/bloom/actions/runners` first — a non-empty result
+        listing a runner with exactly the labels `self-hosted`, `linux`, `salk-network` settles this
+        directly (repo-level registration, visible to this repo by construction).
+      - If that returns empty, the runner is org-level: `gh api orgs/Salk-Harnessing-Plants-Initiative/actions/runners`
+        to find it, THEN `gh api orgs/Salk-Harnessing-Plants-Initiative/actions/runner-groups` to confirm
+        its runner group's repository access actually includes `bloom` — an org-level runner that's
+        online but scoped to a different runner group would look "available" while still being
+        unreachable by this workflow, the same false-confidence gap 15.1's YAML-shape test already has
+        for a typo'd label.
+      Either way, confirm the runner's status is `online`, not just that it's registered.
 - [ ] 15.3 Implement, in one commit:
       - `.github/workflows/refresh-cyl-experiment-trait-counts.yml`: change line 91's
         `runs-on: ubuntu-latest` to `runs-on: ["self-hosted", "linux", "salk-network"]`. Update the
@@ -1032,13 +1048,28 @@ and gave a false-reassuring result before the real cause (documented in `deploy.
       15.1/15.3's change (no other test in that file asserts anything about `runs-on`, so none should be
       affected).
 - [ ] 15.5 `openspec validate fix-cyl-scan-traits-latest-rollup --strict` passes.
-- [ ] 15.6 Update `_WIKI/BLOOMMCP/README.md`'s "Supabase data access" section (lines ~187-194): its
-      current text states as fact that production's `n_traits` staleness "is therefore bounded to
-      roughly one refresh interval" — false as written, since the RPC has never once actually reached
-      production (bloom#736). Caveat it pending this section's own 15.7, e.g. "...bounded to roughly one
-      refresh interval on production, once bloom#736 (Section 15) confirms an actual successful refresh
-      — unbounded until then, identically to staging today." Run `prettier --check`/`--write` after
-      editing, matching this change's own established convention (7.3, 14.6).
+- [ ] 15.6 **Part of the same combined commit as 15.1/15.3** (`/review-openspec` round 2's git-workflow
+      pass: this task was added during the review-fix pass without saying which commit it belongs to —
+      it's a tiny, thematically identical doc caveat with no conflict risk, so it lands with the rest
+      rather than as a separate commit). Two doc sites assert the same now-falsified claim as settled
+      fact — production's `n_traits` staleness "bounded to roughly one refresh interval" — when the RPC
+      has never once actually reached production (bloom#736):
+      - `_WIKI/BLOOMMCP/README.md`'s "Supabase data access" section (lines ~187-194): "Staleness is
+        therefore bounded to roughly one refresh interval on production, but still unbounded on staging
+        until someone dispatches a refresh there." Caveat pending this section's own 15.7, e.g.
+        "...bounded to roughly one refresh interval on production, once bloom#736 (Section 15) confirms
+        an actual successful refresh — unbounded until then, identically to staging today."
+      - **(Found by `/review-openspec` round 2's documentation pass, missed in round 1)**
+        `bloommcp/src/bloom_mcp/sections/core/list_available_experiments.py`'s module-level comment
+        (lines ~13-21, directly above `_STALE_AFTER`): "a PRODUCTION row's lag is bounded to roughly one
+        refresh interval, but a missed or delayed scheduled run would otherwise look identical to
+        ordinary lag too" — the same claim, in code-comment form, that 14.4 already fixed once for the
+        user-facing `_traits_note()` string but never touched here. Caveat identically. (The
+        `_traits_note()` string itself, "may be older than the environment's own refresh cadence," stays
+        as-is — already appropriately hedged, no change needed.)
+      Run `prettier --check`/`--write` on the markdown file after editing, matching this change's own
+      established convention (7.3, 14.6); run `black`/`ruff` on the Python file per this repo's normal
+      pre-commit scope.
 - [ ] 15.7 **Genuinely blocked on this section's own PR merging, promoting to `main`, AND a self-hosted
       runner actually being available — same "verify the real thing, not just static config" discipline
       as 14.9, not something this PR can complete on its own. Not part of this PR's own commit(s) —
