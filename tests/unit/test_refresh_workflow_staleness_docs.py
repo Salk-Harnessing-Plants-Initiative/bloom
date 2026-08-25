@@ -31,11 +31,9 @@ BANNED_PHRASES = {
     ),
 }
 
-# The corrected, conditional claim each file must state instead.
-REQUIRED_PHRASES = {
-    WIKI_README: "bloom#736",
-    LIST_EXPERIMENTS_MODULE: "bloom#736",
-}
+# Every site must condition the bound claim on this same reference -- one shared constant,
+# not a per-file dict, since the required text doesn't actually vary between files.
+REQUIRED_PHRASE = "bloom#736"
 
 
 def _normalized_text(filename: str) -> str:
@@ -52,9 +50,9 @@ def test_staleness_docs_have_no_stale_unconditional_bound_claim():
 
 
 def test_staleness_docs_reference_bloom_736():
-    for filename, required in REQUIRED_PHRASES.items():
+    for filename in BANNED_PHRASES:
         text = _normalized_text(filename)
-        assert required in text, (
-            f"{filename}: expected a reference to {required!r} conditioning the staleness-bound "
-            "claim on an actual successful refresh (Section 15)."
+        assert REQUIRED_PHRASE in text, (
+            f"{filename}: expected a reference to {REQUIRED_PHRASE!r} conditioning the "
+            "staleness-bound claim on an actual successful refresh (Section 15)."
         )

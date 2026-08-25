@@ -1103,7 +1103,7 @@ and gave a false-reassuring result before the real cause (documented in `deploy.
 findings, several IMPORTANT ones — two closed here with new regression tests (TDD), two closed with
 design.md documentation, one filed as a separate follow-up (out of this PR's own scope).**
 
-- [ ] 15.9 **(Testing finding: doc-caveat wording had no regression test, despite in-repo precedent —
+- [x] 15.9 **(Testing finding: doc-caveat wording had no regression test, despite in-repo precedent —
       `tests/unit/test_bloommcp_local_mode_docs.py` already pins required/banned phrases in
       `_WIKI/BLOOMMCP/README.md`, and 14.4 already treated this exact module's staleness wording as
       test-worthy.)** Add `tests/unit/test_refresh_workflow_staleness_docs.py` (RED first), mirroring
@@ -1116,7 +1116,9 @@ design.md documentation, one filed as a separate follow-up (out of this PR's own
       Confirm both new test functions FAIL against each file's pre-15.6 wording (temporarily revert each
       file to confirm), then PASS against the current (post-15.6) text; restore. **Done — both files
       independently confirmed to fail when reverted (checked one file at a time so each failure is
-      attributable), pass when restored.**
+      attributable), pass when restored.** (**Checkbox corrected to `[x]` in round 2's `/review-pr`
+      pass — the work was done in the same commit as 15.10-15.14, but the box was left unchecked; found
+      by the code-quality reviewer.**)
 - [x] 15.10 **(Testing finding: the two new `runs-on` tests in 15.1 assert against a hardcoded expected
       value — neither catches this workflow's label list silently drifting out of sync with
       `deploy.yml`'s own copy of the same three labels, the one drift this repo CAN detect without a
@@ -1168,6 +1170,35 @@ design.md documentation, one filed as a separate follow-up (out of this PR's own
       actually succeeded. A live-database check, not a code fix — tracked separately rather than
       expanded into this CI-runner PR's scope. **Done — filed as
       [bloom#740](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/740).**
+
+**Round 2 `/review-pr` pass against the 15.9-15.14 commit: 5 subagents, zero BLOCKING, one IMPORTANT
+finding converged on independently by 3 reviewers (code quality, testing, behavioral correctness), one
+IMPORTANT checkbox slip (code quality), one follow-up filed (security).**
+
+- [x] 15.15 **(Converged finding: `test_runner_label_matches_deploy_ymls_self_hosted_label`'s
+      `_deploy_yml_self_hosted_labels()` used `re.search` — only the FIRST of `deploy.yml`'s two
+      identical `fromJSON('[...]')` occurrences (`deploy-production` line 46, `deploy-staging` line
+      818) — so it never actually verified the two `deploy.yml` jobs' label lists agree with each
+      other, only that the refresh workflow matched whichever one happened to appear first.)** Fixed:
+      switched to `re.findall`, added an assertion that all extracted occurrences are identical before
+      using any of them as the comparison baseline. Verified via the same discipline as every other
+      guard test in this file: temporarily changed only `deploy-staging`'s copy (line 818) to a
+      different label, confirmed the test failed with a clear message naming both diverged lists, then
+      restored.
+- [x] 15.16 Task 15.9's checkbox was left `[ ]` despite its own "Done" note — corrected to `[x]`
+      (code-quality finding).
+- [x] 15.17 **(Security suggestion, not fixed here — filed as a separate follow-up rather than
+      expanding this PR's scope further.)** The `curl` calls in both this workflow and `deploy.yml`'s
+      Cloudflare-token preflight step pass their secret as a literal argv argument, visible via
+      `ps`/`/proc/<pid>/cmdline` on the shared runner — a near-zero-cost fix (`curl -K -`) exists but
+      touches two workflows and wasn't in this PR's own scope. Filed as
+      [bloom#743](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/743).
+- [x] 15.18 Simplified `test_refresh_workflow_staleness_docs.py`'s `REQUIRED_PHRASES` dict (both
+      values identically `"bloom#736"`) to a single `REQUIRED_PHRASE` constant, matching
+      `test_bloommcp_local_mode_docs.py`'s own precedent (code-quality suggestion).
+- [x] 15.19 Re-ran `tests/unit/test_refresh_workflow_shape.py` + `tests/unit/test_refresh_workflow_staleness_docs.py`
+      (28 passed) and `openspec validate fix-cyl-scan-traits-latest-rollup --strict`; pushed as a third
+      commit to PR #738.
 
 **Do not archive this change until Section 14 AND this section are both complete.** Section 14 makes the
 scheduled cron *exist* and resolve its approval gate correctly; this section makes the RPC call it

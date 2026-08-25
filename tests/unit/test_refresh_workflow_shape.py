@@ -602,14 +602,20 @@ def _deploy_yml_self_hosted_labels() -> list[str]:
     expected labels in parallel Python, decoupled from deploy.yml's actual content, would pass
     unchanged even if deploy.yml's own list drifted (the same false-confidence failure mode
     test_resolution_truth_table_for_schedule_vs_dispatch's own docstring already names).
+
+    deploy.yml carries TWO copies of this literal -- one on `deploy-production`, one on
+    `deploy-staging` -- so this returns every occurrence found, not just the first (round 2's
+    `/review-pr` finding: using `re.search` here would silently only ever check the refresh
+    workflow against `deploy-production`'s copy, never noticing if `deploy-staging`'s diverged
+    from it).
     """
     text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
-    match = _DEPLOY_RUNS_ON_FROM_JSON_RE.search(text)
-    assert match, (
+    matches = _DEPLOY_RUNS_ON_FROM_JSON_RE.findall(text)
+    assert matches, (
         "could not find deploy.yml's runs-on fromJSON('[...]') literal -- if its ternary "
         "was restructured, update this regex rather than silently skipping the check"
     )
-    return yaml.safe_load(match.group(1))
+    return [yaml.safe_load(m) for m in matches]
 
 
 def test_runner_label_matches_deploy_ymls_self_hosted_label() -> None:
@@ -620,7 +626,17 @@ def test_runner_label_matches_deploy_ymls_self_hosted_label() -> None:
     API (live-registration drift is out of scope for tests/unit/, deliberately offline; see
     tasks.md 15.10)."""
     runs_on = _load_workflow()["jobs"][JOB]["runs-on"]
-    deploy_labels = _deploy_yml_self_hosted_labels()
+    deploy_labels_per_job = _deploy_yml_self_hosted_labels()
+    assert len(deploy_labels_per_job) >= 2, (
+        f"expected deploy.yml's runs-on fromJSON('[...]') literal to appear at least twice "
+        f"(deploy-production and deploy-staging); found {len(deploy_labels_per_job)}"
+    )
+    assert all(labels == deploy_labels_per_job[0] for labels in deploy_labels_per_job), (
+        f"deploy.yml's own runs-on occurrences disagree with each other -- "
+        f"{deploy_labels_per_job!r} -- deploy-production and deploy-staging must use the "
+        f"identical self-hosted runner label list before comparing either to this workflow"
+    )
+    deploy_labels = deploy_labels_per_job[0]
     assert runs_on == deploy_labels, (
         f"this workflow's runs-on ({runs_on!r}) has drifted from deploy.yml's own self-hosted "
         f"runner label list ({deploy_labels!r}) -- both must reference the identical runner"
