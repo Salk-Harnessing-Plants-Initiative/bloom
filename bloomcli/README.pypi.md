@@ -47,6 +47,43 @@ disk and fetches only what is missing, so nothing is downloaded twice.
 Every command takes `-p/--profile` to target a different login (default `prod`), and the `list`
 commands take `--output csv|json` for machine-readable output.
 
+## Quickstart for Plate Image Downloads
+
+Plate (GraviScan) experiments work the same way, with `plate` in place of `cyl`:
+
+```bash
+# 1. Log in once, if you have not already
+bloomctl login
+
+# 2. Download a whole plate experiment — by id, or just by name
+bloomctl plate download ./gravi --experiment-id 12
+bloomctl plate download ./gravi --experiment-name "gravitropism" --species Arabidopsis
+```
+
+That writes `./gravi/plates.csv` and `plate_sections.csv` (metadata) and the plate images.
+
+**Narrow it down** when you do not want the whole experiment:
+
+```bash
+bloomctl plate download ./gravi --experiment-id 12 --plate-id PLATE-001   # one plate
+bloomctl plate download ./gravi --experiment-id 12 --wave-number 3        # one wave
+bloomctl plate download ./gravi --experiment-id 12 --session-id 88        # one session
+bloomctl plate download ./gravi --experiment-id 12 --meta-only            # csv only, no images
+```
+
+**Start with `--meta-only`.** A continuous plate session captures one image per plate per
+cycle, so a multi-day experiment is thousands of files — the metadata tells you what you are
+about to pull. `--workers` raises the download concurrency here too, and `--limit` fetches at
+most that many scans, for looking at a sample — it is not a way to export an experiment in
+parts, so give a sample and a full download separate directories.
+
+Resume works as it does for cylinder downloads, and a little better: plate images record their
+size, so a file is skipped only when its size matches the database. A download truncated by a
+dropped connection is re-fetched rather than treated as complete.
+
+> `plate download` needs the `gravi_scans_extended` view on the server, and
+> `gravi_experiment_search` if you select by `--experiment-name`.
+
 ## Commands
 
 **Find & download** (any logged-in user):
@@ -59,6 +96,7 @@ commands take `--output csv|json` for machine-readable output.
 | `cyl datasets list` / `get`  | List trait datasets (`--experiment` menu) / show one dataset's traits                                                    |
 | `cyl qc list-sets`             | List cylinder QC sets                                                                                                      |
 | `cyl download <dir>`           | Download an experiment/scan:`scans.csv` + images. Select by `--experiment-id`, `--scan-id`, or `--experiment-name` |
+| `plate download <dir>`         | Download a plate (GraviScan) experiment/scan:`plates.csv` + `plate_sections.csv` + images. Same selectors, plus `--plate-id`, `--wave-number`, `--session-id` |
 
 **Pipeline** (stage-in / write-back):
 
