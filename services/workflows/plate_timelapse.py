@@ -43,9 +43,9 @@ def label_for(capture_date: datetime, first_capture: datetime) -> str:
     start = _as_utc(first_capture)
 
     elapsed = absolute - start
-    total_minutes = int(elapsed.total_seconds() // 60)
-    sign = "-" if total_minutes < 0 else "+"
-    total_minutes = abs(total_minutes)
+    sign = "-" if elapsed.total_seconds() < 0 else "+"
+    # Floor the magnitude, not the signed value: flooring -90s gives -2 minutes.
+    total_minutes = int(abs(elapsed).total_seconds() // 60)
     days, rem_minutes = divmod(total_minutes, 24 * 60)
     hours, minutes = divmod(rem_minutes, 60)
 
@@ -58,33 +58,49 @@ def label_for(capture_date: datetime, first_capture: datetime) -> str:
 
 
 def annotate(frame: np.ndarray, label: str) -> np.ndarray:
-    """Draw `label` into a band along the bottom of `frame`.
+    """Return `frame` with a labelled band added below it.
 
-    Returns an array of the same shape and dtype, so the caller can hand it
-    straight to the encoder.
+    The specimen is never drawn over — the band is extra rows underneath, so
+    the frame's own pixels come back byte for byte. The result is taller than
+    the input by LABEL_BAND_HEIGHT, and every frame grows by the same amount,
+    so the video's dimensions stay constant.
+
+    Takes 8-bit frames only. An MP4 is 8-bit regardless, so reducing a deeper
+    frame is the decoder's job, where the full range is still known — doing it
+    here would silently clamp highlights instead of scaling them.
     """
-    if frame.ndim not in (2, 3):
-        raise ValueError(f"expected a 2D or 3D frame, got shape {frame.shape}")
+    if frame.ndim == 2:
+        channels = 1
+    elif frame.ndim == 3 and frame.shape[2] == 3:
+        channels = 3
+    else:
+        raise ValueError(
+            f"expected a 2D frame or a 3-channel 3D frame, got shape {frame.shape}"
+        )
 
-    image = Image.fromarray(frame)
-    was_grayscale = image.mode != "RGB"
-    if was_grayscale:
-        image = image.convert("RGB")
+    if frame.dtype != np.uint8:
+        raise ValueError(
+            f"expected an 8-bit frame, got {frame.dtype} — reduce it before "
+            "annotating so the full range is scaled rather than clamped"
+        )
 
-    band_top = max(0, image.height - LABEL_BAND_HEIGHT)
-    draw = ImageDraw.Draw(image)
-    draw.rectangle([(0, band_top), (image.width, image.height)], fill=_BAND_FILL)
-    draw.multiline_text(
-        (LABEL_PADDING, band_top + LABEL_PADDING),
+    height, width = frame.shape[:2]
+    band = Image.new("RGB", (width, LABEL_BAND_HEIGHT), _BAND_FILL)
+    ImageDraw.Draw(band).multiline_text(
+        (LABEL_PADDING, LABEL_PADDING),
         label,
         fill=_TEXT_FILL,
         font=ImageFont.load_default(size=LABEL_FONT_SIZE),
         spacing=2,
     )
 
-    if was_grayscale:
-        image = image.convert(Image.fromarray(frame).mode)
-    return np.asarray(image, dtype=frame.dtype)
+    band_array = np.asarray(band, dtype=np.uint8)
+    if channels == 1:
+        # The band is drawn in RGB because the text is; flatten it to match a
+        # grayscale frame rather than widening the frame to colour.
+        band_array = band_array[:, :, 0]
+
+    return np.concatenate([frame, band_array], axis=0)
 
 
 def _as_utc(value: datetime) -> datetime:
