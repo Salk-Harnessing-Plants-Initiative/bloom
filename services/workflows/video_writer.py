@@ -55,6 +55,13 @@ class VideoWriter:
 
         if self.process is None:
             self._open(img.shape[1], img.shape[0])
+        elif (img.shape[1], img.shape[0]) != (self.width, self.height):
+            # ffmpeg reads raw frames by byte count, so a frame of a different
+            # size shears every frame after it and still exits 0.
+            raise ValueError(
+                f"frame is {img.shape[1]}x{img.shape[0]}, but the video was "
+                f"opened at {self.width}x{self.height}"
+            )
 
         # Ensure uint8
         if img.dtype != np.uint8:

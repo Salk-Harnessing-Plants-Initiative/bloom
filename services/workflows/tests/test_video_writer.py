@@ -15,6 +15,7 @@ from video_writer import VideoWriter, VideoEncodeError
 
 # --- even-dimension padding -------------------------------------------------
 
+
 def test_to_even_pads_odd_dimensions():
     img = np.zeros((5, 7, 3), dtype=np.uint8)  # odd H and W
     out = VideoWriter._to_even(img)
@@ -29,6 +30,7 @@ def test_to_even_leaves_even_unchanged():
 
 
 # --- close() lifecycle ------------------------------------------------------
+
 
 class _FakeStream:
     def __init__(self, data=b"", raise_on_close=None):
@@ -108,3 +110,52 @@ def test_close_guards_broken_pipe_on_stdin_close():
 
 def test_close_on_unopened_writer_is_noop():
     VideoWriter(filename="/tmp/unused.mp4").close()  # process is None
+
+
+class _RecordingStream(_FakeStream):
+    """Keeps what was written, so a frame's byte count can be checked."""
+
+    def __init__(self):
+        super().__init__()
+        self.chunks = []
+
+    def write(self, b):
+        self.chunks.append(b)
+
+
+def _opened_writer(width, height):
+    """A writer already streaming, so `add` takes the size-check branch."""
+    w = _writer_with(_FakeProc(returncode=0))
+    w.width, w.height = width, height
+    w.process.stdin = _RecordingStream()
+    return w
+
+
+def test_add_refuses_a_frame_that_changes_the_size():
+    """ffmpeg reads raw frames by byte count, so a differently sized frame
+    shears every frame after it and still exits 0."""
+    w = _opened_writer(300, 200)
+    with pytest.raises(ValueError, match="opened at 300x200"):
+        w.add(np.zeros((150, 250, 3), dtype=np.uint8))
+    assert w.process.stdin.chunks == [], "the bad frame must not reach ffmpeg"
+
+
+def test_add_accepts_a_frame_that_matches():
+    w = _opened_writer(300, 200)
+    w.add(np.zeros((200, 300, 3), dtype=np.uint8))
+    assert len(w.process.stdin.chunks[0]) == 300 * 200 * 3
+
+
+def test_add_compares_the_size_after_padding_to_even():
+    """_to_even runs first, so an odd frame that pads up to the video's size
+    is the same frame, not a size change."""
+    w = _opened_writer(300, 200)
+    w.add(np.zeros((199, 299, 3), dtype=np.uint8))
+    assert len(w.process.stdin.chunks[0]) == 300 * 200 * 3
+
+
+def test_add_refuses_a_grayscale_frame_of_the_wrong_size():
+    """Grayscale is widened to RGB first, so the check still sees pixels."""
+    w = _opened_writer(300, 200)
+    with pytest.raises(ValueError, match="opened at 300x200"):
+        w.add(np.zeros((150, 250), dtype=np.uint8))
