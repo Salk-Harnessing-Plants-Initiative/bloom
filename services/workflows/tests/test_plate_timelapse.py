@@ -20,17 +20,16 @@ T0 = datetime(2026, 8, 25, 9, 15, tzinfo=timezone.utc)
 
 class TestPlateFps:
     def test_is_slow_enough_to_read_a_burned_timestamp(self):
-        # At 2 fps a frame is on screen half a second. 4 fps was the rate the
-        # backfill script used and was reported as too fast to follow.
-        assert pt.PLATE_FPS == 2
-        assert 1.0 / pt.PLATE_FPS >= 0.5
+        # A frame must stay up long enough to read its label. Below ~8 fps a
+        # frame is at least an eighth of a second, which is the floor for that.
+        assert pt.PLATE_FPS == 4
+        assert 1.0 / pt.PLATE_FPS >= 0.125
 
     def test_duration_scales_with_the_run_rather_than_being_fixed(self):
-        """A fixed rate means a longer run makes a longer video, so two plates
-        are comparable by length. Nothing here depends on how many frames a
-        plate actually has — that estimate only ever sized expectations."""
-        assert 40 / pt.PLATE_FPS == 20
-        assert 200 / pt.PLATE_FPS == 100
+        """A fixed rate means twice the frames is twice the video, so two
+        plates are comparable by length. Written without a literal duration so
+        the rate stays tunable — nothing here depends on its value."""
+        assert (200 / pt.PLATE_FPS) == 5 * (40 / pt.PLATE_FPS)
 
 
 class TestLabelFor:

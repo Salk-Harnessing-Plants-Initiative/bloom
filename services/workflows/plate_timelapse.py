@@ -12,11 +12,10 @@ from datetime import datetime, timezone
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-# One frame is ~7 minutes of real time, so 2 fps is about half a second per
-# frame — slow enough to follow a root bending and to read the timestamp.
-# Fixed rather than derived: every video then plays at the same rate, so two
-# runs are directly comparable and duration reflects how long the run was.
-PLATE_FPS = 2
+# One frame is ~7 minutes of real time, so 4 fps is a quarter second per frame.
+# Fixed rather than derived: every video plays at the same rate, so duration
+# reflects how long the run was and two runs are directly comparable.
+PLATE_FPS = 4
 
 # The band the label sits in, so it never covers tissue and never moves.
 LABEL_BAND_HEIGHT = 44
