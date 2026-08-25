@@ -67,7 +67,6 @@ That writes `./gravi/plates.csv` and `plate_sections.csv` (metadata) and the pla
 ```bash
 bloomctl plate download ./gravi --experiment-id 12 --plate-id PLATE-001   # one plate
 bloomctl plate download ./gravi --experiment-id 12 --wave-number 3        # one wave
-bloomctl plate download ./gravi --experiment-id 12 --session-id 88        # one session
 bloomctl plate download ./gravi --experiment-id 12 --meta-only            # csv only, no images
 ```
 
@@ -96,7 +95,7 @@ dropped connection is re-fetched rather than treated as complete.
 | `cyl datasets list` / `get`  | List trait datasets (`--experiment` menu) / show one dataset's traits                                                    |
 | `cyl qc list-sets`             | List cylinder QC sets                                                                                                      |
 | `cyl download <dir>`           | Download an experiment/scan:`scans.csv` + images. Select by `--experiment-id`, `--scan-id`, or `--experiment-name` |
-| `plate download <dir>`         | Download a plate (GraviScan) experiment/scan:`plates.csv` + `plate_sections.csv` + images. Same selectors, plus `--plate-id`, `--wave-number`, `--session-id` |
+| `plate download <dir>`         | Download a plate (GraviScan) experiment/scan:`plates.csv` + `plate_sections.csv` + images. Same selectors, narrowed with `--plate-id` or `--wave-number` |
 
 **Pipeline** (stage-in / write-back):
 
