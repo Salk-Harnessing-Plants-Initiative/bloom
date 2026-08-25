@@ -82,6 +82,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "refresh-cyl-experiment-trait-counts.yml"
+DEPLOY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 STAGING_DEFAULTS = REPO_ROOT / ".env.staging.defaults"
 PROD_DEFAULTS = REPO_ROOT / ".env.prod.defaults"
 JOB = "refresh"
@@ -588,4 +589,39 @@ def test_job_runs_on_is_unconditional_not_a_ternary() -> None:
     )
     assert "ubuntu-latest" not in runs_on, (
         f"runs-on must not fall back to ubuntu-latest under any branch; got {runs_on!r}"
+    )
+
+
+_DEPLOY_RUNS_ON_FROM_JSON_RE = re.compile(r"fromJSON\('(\[[^)]*\])'\)")
+
+
+def _deploy_yml_self_hosted_labels() -> list[str]:
+    """Extract the label list from deploy.yml's own runs-on ternary's fromJSON('[...]') literal.
+
+    Extracted from the LIVE file rather than hardcoded -- a test that just restates the
+    expected labels in parallel Python, decoupled from deploy.yml's actual content, would pass
+    unchanged even if deploy.yml's own list drifted (the same false-confidence failure mode
+    test_resolution_truth_table_for_schedule_vs_dispatch's own docstring already names).
+    """
+    text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    match = _DEPLOY_RUNS_ON_FROM_JSON_RE.search(text)
+    assert match, (
+        "could not find deploy.yml's runs-on fromJSON('[...]') literal -- if its ternary "
+        "was restructured, update this regex rather than silently skipping the check"
+    )
+    return yaml.safe_load(match.group(1))
+
+
+def test_runner_label_matches_deploy_ymls_self_hosted_label() -> None:
+    """bloom#736 (found by `/review-pr` on PR #738): the two new runs-on tests above assert
+    against a hardcoded expected value -- neither would catch this workflow's label list
+    silently drifting out of sync with deploy.yml's own copy of the same three labels, the one
+    drift this repo can detect without a live network call to GitHub's runner-registration
+    API (live-registration drift is out of scope for tests/unit/, deliberately offline; see
+    tasks.md 15.10)."""
+    runs_on = _load_workflow()["jobs"][JOB]["runs-on"]
+    deploy_labels = _deploy_yml_self_hosted_labels()
+    assert runs_on == deploy_labels, (
+        f"this workflow's runs-on ({runs_on!r}) has drifted from deploy.yml's own self-hosted "
+        f"runner label list ({deploy_labels!r}) -- both must reference the identical runner"
     )

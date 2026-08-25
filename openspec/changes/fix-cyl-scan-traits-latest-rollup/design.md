@@ -1087,6 +1087,27 @@ the more durable signal that M2 hasn't actually been rolled back.
   called out explicitly in the workflow's own comment (tasks.md 15.3) rather than left for a future
   reader to assume incorrectly.
 
+  **New risk, found by `/review-pr` against PR #738 (the implementation of 15.1-15.6), not previously
+  documented: the shared, long-lived `salk-network` runner is a materially different trust boundary for
+  `SERVICE_ROLE_KEY` than the previous ephemeral `ubuntu-latest` VM was.** The `curl` call's
+  `Authorization: Bearer ${SERVICE_ROLE_KEY}` argument is visible via `ps`/`/proc/<pid>/cmdline` to any
+  other process on the same host for the few seconds the command runs. On the previous single-tenant,
+  throwaway `ubuntu-latest` VM that was a non-issue (the whole machine is destroyed after the job); the
+  shared `salk-network` runner also runs `deploy.yml`'s own deploy jobs, so a host-level compromise now
+  yields a path to a live, full-RLS-bypass credential across every future run, not just one. Accepted,
+  not mitigated: GitHub already masks the value in *logs*, and the process-list exposure is a materially
+  smaller, already-existing risk `deploy.yml`'s own jobs already accept for their own secrets on this
+  same host — documented here so a future reader isn't the first to notice it (tasks.md 15.11).
+
+  **Second new risk, same `/review-pr` pass: refresh-vs-refresh runner contention, distinct from the
+  deploy-vs-refresh contention documented immediately above.** With exactly one registered `salk-network`
+  runner (confirmed via 15.2's `gh api repos/.../actions/runners` check), a `staging` dispatch and a
+  `production` dispatch/schedule now also serialize against each other purely by runner scarcity — new
+  behavior, since the previous elastically-scaled `ubuntu-latest` runners never contended with each
+  other this way. Not a correctness bug: each host's own `concurrency.group` (scoped by target host, per
+  the file's own comment) is untouched and still fully independent, so nothing races or corrupts — just
+  a capacity-planning fact worth knowing (tasks.md 15.12).
+
     **Reinforced, not newly found — round 2's `/review-pr` pass on the pushed PR independently
     converged on the same two follow-up angles for tasks.md 14.9's post-promotion check.** (1)
     Security's pass: confirming `production-scheduled-refresh` carries zero protection rules today

@@ -1114,8 +1114,10 @@ design.md documentation, one filed as a separate follow-up (out of this PR's own
       - Required: the corrected, conditional wording — staleness is bounded only once bloom#736/Section
         15 confirms an actual successful refresh, unbounded until then.
       Confirm both new test functions FAIL against each file's pre-15.6 wording (temporarily revert each
-      file to confirm), then PASS against the current (post-15.6) text; restore.
-- [ ] 15.10 **(Testing finding: the two new `runs-on` tests in 15.1 assert against a hardcoded expected
+      file to confirm), then PASS against the current (post-15.6) text; restore. **Done — both files
+      independently confirmed to fail when reverted (checked one file at a time so each failure is
+      attributable), pass when restored.**
+- [x] 15.10 **(Testing finding: the two new `runs-on` tests in 15.1 assert against a hardcoded expected
       value — neither catches this workflow's label list silently drifting out of sync with
       `deploy.yml`'s own copy of the same three labels, the one drift this repo CAN detect without a
       live network call to GitHub's runner-registration API.)** Add
@@ -1131,8 +1133,10 @@ design.md documentation, one filed as a separate follow-up (out of this PR's own
       actually-registered, `online` GitHub Actions runner — that requires the network call 15.2 already
       made once, manually; periodic re-verification of the live registration remains a 15.7-adjacent
       manual/operational check, not something `tests/unit/` (deliberately offline, per this repo's own
-      convention) can own.
-- [ ] 15.11 **(Security finding: the shared, long-lived `salk-network` runner is a materially different
+      convention) can own. **Done — passes today; confirmed it catches drift by temporarily changing
+      one label to `salk-network-TYPO`, confirming the test failed with the exact mismatch, then
+      restoring.**
+- [x] 15.11 **(Security finding: the shared, long-lived `salk-network` runner is a materially different
       trust boundary for `SERVICE_ROLE_KEY` than the previous ephemeral `ubuntu-latest` VM was, and
       design.md never named this.)** Add a paragraph to design.md's Section 15 addendum: the `curl`
       call's `Authorization: Bearer ${SERVICE_ROLE_KEY}` argument is visible via `ps`/`/proc/<pid>/cmdline`
@@ -1142,25 +1146,28 @@ design.md documentation, one filed as a separate follow-up (out of this PR's own
       live, full-RLS-bypass credential across every future run, not just one. Accepted, not mitigated
       (GitHub already masks the value in *logs*; the process-list exposure is a materially smaller,
       already-existing risk `deploy.yml`'s own jobs accept for their own secrets on this same host) —
-      documented so a future reader isn't the first to notice it.
-- [ ] 15.12 **(Behavioral-correctness finding: design.md documents `deploy.yml`-vs-refresh runner
+      documented so a future reader isn't the first to notice it. **Done.**
+- [x] 15.12 **(Behavioral-correctness finding: design.md documents `deploy.yml`-vs-refresh runner
       contention but not refresh-vs-refresh contention.)** Add a one-line addendum to the same design.md
       section: with exactly one registered `salk-network` runner (confirmed via 15.2's `gh api` check), a
       `staging` dispatch and a `production` dispatch/schedule now also serialize against each other
       purely by runner scarcity — new behavior, since elastically-scaled `ubuntu-latest` runners never
       contended with each other. Not a correctness bug (each host's own `concurrency.group` is untouched
       and still independent, so nothing races or corrupts) — noted for a future capacity-planning reader.
-- [ ] 15.13 Run the full `tests/unit/` suite (or at minimum `test_refresh_workflow_shape.py` and the new
+      **Done.**
+- [x] 15.13 Run the full `tests/unit/` suite (or at minimum `test_refresh_workflow_shape.py` and the new
       `test_refresh_workflow_staleness_docs.py`); confirm zero regressions. `openspec validate
       fix-cyl-scan-traits-latest-rollup --strict` passes. Push as an additional commit to PR #738 (same
-      branch, same PR — these are review fixes to already-open work, not a new proposal).
-- [ ] 15.14 **(Scientific-rigor finding, explicitly out of this PR's own scope — not fixed here.)** File
+      branch, same PR — these are review fixes to already-open work, not a new proposal). **Done — 28/28
+      passed across both files; `openspec validate --strict` passes.**
+- [x] 15.14 **(Scientific-rigor finding, explicitly out of this PR's own scope — not fixed here.)** File
       a separate GitHub issue: spot-check whether `cyl_experiment_trait_counts` currently holds any row
       with a deceptively recent `updated_at` (e.g. from the migration's one-time initial population, per
       design.md's Migration Plan M2) that would let `_traits_note()`'s 2-day threshold show a plain
       `(as of TIMESTAMP)` with no staleness caveat, despite the automated refresh pipeline never having
       actually succeeded. A live-database check, not a code fix — tracked separately rather than
-      expanded into this CI-runner PR's scope.
+      expanded into this CI-runner PR's scope. **Done — filed as
+      [bloom#740](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/740).**
 
 **Do not archive this change until Section 14 AND this section are both complete.** Section 14 makes the
 scheduled cron *exist* and resolve its approval gate correctly; this section makes the RPC call it
