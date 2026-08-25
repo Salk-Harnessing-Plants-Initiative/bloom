@@ -90,8 +90,13 @@ class TestLabelFor:
 
     @pytest.mark.parametrize(
         "seconds,expected",
-        [(-1, "-00h 00m"), (-59, "-00h 00m"), (-60, "-00h 01m"),
-         (-90, "-00h 01m"), (-1800, "-00h 30m")],
+        [
+            (-1, "-00h 00m"),
+            (-59, "-00h 00m"),
+            (-60, "-00h 01m"),
+            (-90, "-00h 01m"),
+            (-1800, "-00h 30m"),
+        ],
     )
     def test_a_frame_before_the_first_rounds_the_same_way_forwards_and_back(
         self, seconds, expected
@@ -130,6 +135,22 @@ class TestAnnotate:
     def _frame(self, h=200, w=300, fill=128):
         return np.full((h, w, 3), fill, dtype=np.uint8)
 
+    def _band(self, label=None, h=200, w=300):
+        """The rows annotate added, which is everything below the frame."""
+        out = pt.annotate(self._frame(h=h, w=w), label or pt.label_for(T0, T0))
+        return out[h:]
+
+    @staticmethod
+    def _ink(band):
+        """Which rows and columns carry text, found by brightness rather than
+        by the fill constants so a change to either shows up here."""
+        bright = band > 128
+        return (
+            np.flatnonzero(bright.any(axis=(1, 2))),
+            np.flatnonzero(bright.any(axis=(0, 2))),
+            int(bright.all(axis=2).sum()),
+        )
+
     def test_the_band_is_added_below_rather_than_drawn_over(self):
         """The whole point: the specimen is never touched."""
         frame = self._frame()
@@ -144,12 +165,14 @@ class TestAnnotate:
         out = pt.annotate(frame, pt.label_for(T0, T0))
         assert np.array_equal(out[:40], frame)
 
-    def test_the_band_is_the_full_width(self):
-        out = pt.annotate(self._frame(), pt.label_for(T0, T0))
-        band = out[200:]
+    def test_the_band_is_the_full_width_and_black(self):
+        """Compared against literal black, not _BAND_FILL — an expectation read
+        from the constant it checks moves with any change to that constant."""
+        band = self._band()
         assert band.shape[1] == 300
-        # Every column carries band, not just the half the text sits on.
-        assert (band == pt._BAND_FILL[0]).any(axis=(0, 2)).all()
+        # Every column carries band in all three channels, not just the half
+        # the text sits on.
+        assert (band == 0).all(axis=2).any(axis=0).all()
 
     def test_the_band_is_a_fixed_height_regardless_of_the_label(self):
         """A band that grew with the text would change the video's dimensions
@@ -176,10 +199,27 @@ class TestAnnotate:
         assert not np.array_equal(a[200:], b[200:])
 
     def test_the_label_is_legible_against_the_band(self):
-        """Text and band the same colour would pass every other assertion."""
-        out = pt.annotate(self._frame(), pt.label_for(T0, T0))
-        band = out[200:]
-        assert band.min() != band.max()
+        """A contrast floor and an ink floor. `min() != max()` passed for text
+        one shade off the band, and for a font too small to read."""
+        band = self._band()
+        _, _, ink = self._ink(band)
+        assert int(band.max()) - int(band.min()) >= 128
+        assert ink >= 400
+
+    def test_both_label_lines_fit_inside_the_band(self):
+        """At LABEL_BAND_HEIGHT 20 the elapsed line is cut off the video
+        entirely, and every other assertion here still passes."""
+        rows, _, _ = self._ink(self._band(pt.label_for(T0 + timedelta(hours=12), T0)))
+        # Two lines of text means two runs of inked rows with a gap between.
+        assert len(np.flatnonzero(np.diff(rows) > 1)) == 1
+        assert rows[-1] < pt.LABEL_BAND_HEIGHT - 1
+
+    def test_the_text_does_not_touch_the_band_edge(self):
+        """Literal margins: at LABEL_PADDING 0 the glyphs sit against the frame
+        above them and against the video's left border."""
+        rows, cols, _ = self._ink(self._band())
+        assert rows[0] >= 8
+        assert cols[0] >= 4
 
     def test_does_not_mutate_the_frame_it_was_given(self):
         """The encoder may reuse buffers."""
@@ -207,10 +247,15 @@ class TestAnnotate:
         with pytest.raises(ValueError, match="8-bit"):
             pt.annotate(np.zeros((200, 300), dtype=np.uint16), "x")
 
-    def test_an_unsupported_shape_is_refused(self):
-        for bad in (np.zeros((5,), np.uint8), np.zeros((4, 4, 4), np.uint8)):
-            with pytest.raises(ValueError):
-                pt.annotate(bad, "x")
+    @pytest.mark.parametrize(
+        "shape",
+        [(5,), (4, 4, 4), (200, 300, 1), (200, 300, 4)],
+    )
+    def test_an_unsupported_shape_is_refused(self, shape):
+        """Matched on the message: without that, numpy's own incidental errors
+        ("not enough values to unpack") pass this with the guard removed."""
+        with pytest.raises(ValueError, match="expected a 2D frame"):
+            pt.annotate(np.zeros(shape, np.uint8), "x")
 
     def test_a_frame_narrower_than_the_label_still_returns(self):
         """Text overflows rather than raising; the band is still the frame's
