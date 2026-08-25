@@ -121,7 +121,7 @@ jobs:
             cd '${DEPLOY_PATH}'
             python3 scheduled-jobs/weekly-backup/backup.py \
               --env '${ENV_NAME}' --deploy-dir '${DEPLOY_PATH}' ${DRY_RUN}
-          " | tee backup-output.txt
+          " | tee "${RUNNER_TEMP}/backup-output.txt"
 
       # What the weekly check reads: sizes this run, and everything currently
       # sitting on Box. A shrinking artifact or a missing week is visible here
@@ -147,7 +147,7 @@ jobs:
             echo '### This run'
             echo '```'
             # The script's own summary block: artifact names and byte sizes.
-            sed -n '/^env: /,$p' backup-output.txt 2>/dev/null || echo "(no summary produced)"
+            sed -n '/^env: /,$p' "${RUNNER_TEMP}/backup-output.txt" 2>/dev/null || echo "(no summary produced)"
             echo '```'
             echo
             echo '### Currently on Box'
