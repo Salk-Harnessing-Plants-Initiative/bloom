@@ -75,11 +75,20 @@ NOT NULL`, and the unnecessary `cyl_experiments` join is dropped. **These branch
 - Affected code:
   - `supabase/migrations/` (3 new migrations — see `design.md`'s Migration Plan) + `supabase/rollbacks/`
     companions.
-  - A manually-dispatched refresh job invoking `refresh_cyl_experiment_trait_counts()` — a GitHub
-    Actions workflow file (`.github/workflows/refresh-cyl-experiment-trait-counts.yml`, per
-    `design.md` D8), `workflow_dispatch`-only with an `environment` (staging/production) input, no
-    automatic schedule for either environment as of this PR (bloom#708 tracks production's future
-    automatic cadence).
+  - A refresh job invoking `refresh_cyl_experiment_trait_counts()` — a GitHub Actions workflow file
+    (`.github/workflows/refresh-cyl-experiment-trait-counts.yml`, per `design.md` D8): `workflow_dispatch`
+    with an `environment` (staging/production) input for either host, plus (bloom#708, this change's
+    own follow-up section) an `on: schedule` cron trigger scoped to production only (`17 0 * * *`, once
+    daily, minute deliberately off the top-of-hour — a reasoned default, no real production write-cadence
+    telemetry exists to derive one from). Staging keeps no automatic cadence. A scheduled run's job
+    references a second, purpose-created GitHub Environment (`production-scheduled-refresh`, no
+    protection rules) rather than `production` itself — `production`'s existing `required_reviewers`
+    gate is a per-run human-approval control meant for on-demand `workflow_dispatch`, and would otherwise
+    leave every unattended nightly run stuck "Waiting" forever; `workflow_dispatch` against either host
+    keeps its existing approval gate unchanged. Also corrects a wrong claim this proposal's own design.md
+    originally made — that `workflow_dispatch`, unlike `schedule:`, doesn't require this file to be
+    promoted to the repo's default branch (`main`) before it can fire; both trigger types are gated on
+    default-branch presence identically, confirmed against the live repo.
   - `tests/integration/` — new/rewritten test files for the trigger, inline backfill, the semi-join
     rewrite, the cache table, and the rewritten `get_experiment_summary_counts`; no `bloommcp`/Python
     changes.

@@ -89,7 +89,7 @@ describe("PlantScan across a scan change", () => {
     );
     await waitFor(() => expect(container.querySelector("img")).not.toBeNull());
     fireEvent.load(container.querySelector("img")!);
-    await screen.findByLabelText("Open scan video");
+    await screen.findByLabelText(/Open .* video/);
 
     rerender(<PlantScan scan={scanWith(6, ["b.png"])} />);
     await waitFor(() =>
@@ -100,7 +100,7 @@ describe("PlantScan across a scan change", () => {
     fireEvent.load(container.querySelector("img")!);
 
     await waitFor(() =>
-      expect(screen.queryByLabelText("Open scan video")).toBeNull()
+      expect(screen.queryByLabelText(/Open .* video/)).toBeNull()
     );
   });
 
@@ -121,5 +121,105 @@ describe("PlantScan across a scan change", () => {
         "https://signed.test/b.png"
       )
     );
+  });
+});
+
+/**
+ * The affordance and naming this component grew: a screen reader must be able
+ * to tell one scan from another, and a keyboard user must be able to reach the
+ * video. Both are attribute-level and would otherwise regress in silence.
+ */
+describe("PlantScan naming and reachability", () => {
+  it("names the image for a screen reader instead of leaking the signed URL", async () => {
+    render(<PlantScan scan={scanWith(1, ["a.png"])} />);
+
+    const img = await screen.findByAltText("Scan thumbnail");
+    // The src is a signed URL with a token in it; an unnamed image gets read out.
+    expect(img.getAttribute("src")).toContain("https://signed.test/");
+  });
+
+  it("lets the caller name the scan without drawing the visible badge", async () => {
+    render(
+      <PlantScan scan={scanWith(1, ["a.png"])} altText="Cylinder scan, day 12" />
+    );
+
+    expect(await screen.findByAltText("Cylinder scan, day 12")).toBeTruthy();
+    // `label` is the prop that draws a badge; altText must not.
+    expect(screen.queryByText("Cylinder scan, day 12")).toBeNull();
+  });
+
+  it("names the link by the scan, so a row of days is not a row of identical links", async () => {
+    render(
+      <PlantScan
+        scan={scanWith(1, ["a.png"])}
+        href="/app/phenotypes/1/2/3/4/1"
+        altText="Cylinder scan, day 12"
+      />
+    );
+
+    expect(
+      await screen.findByRole("link", { name: "Cylinder scan, day 12" })
+    ).toBeTruthy();
+  });
+
+  it("shows the scan video badge outright, not on hover", async () => {
+    const { container } = render(<PlantScan scan={scanWith(5, ["a.png"])} />);
+
+    const img = await screen.findByAltText("Scan thumbnail");
+    fireEvent.load(img);
+
+    const link = await screen.findByLabelText(/Open .* video/);
+    // A badge that only appears on hover is a badge nobody finds — and
+    // `hidden` is display:none, which also drops it out of the tab order.
+    expect(link.className).not.toContain("hidden");
+    expect(link.className).not.toContain("opacity-0");
+    // The padded chip is the anchor itself, so all of it is clickable.
+    expect(link.className).toContain("p-1");
+    expect(container.querySelector(".group")?.contains(link)).toBe(true);
+  });
+
+  it("names the video link by the scan, not identically on every tile", async () => {
+    render(
+      <PlantScan scan={scanWith(5, ["a.png"])} altText="Cylinder scan, day 21" />
+    );
+    fireEvent.load(await screen.findByAltText("Cylinder scan, day 21"));
+
+    // A grid of these all called "Open scan video" is a link list with no way
+    // to tell one day from another.
+    expect(
+      await screen.findByLabelText(
+        "Open Cylinder scan, day 21 video in a new tab"
+      )
+    ).toBeTruthy();
+  });
+
+  it("shows no video badge for a scan that has no video", async () => {
+    render(<PlantScan scan={scanWith(1, ["a.png"])} />);
+    fireEvent.load(await screen.findByAltText("Scan thumbnail"));
+
+    expect(screen.queryByLabelText(/Open .* video/)).toBeNull();
+  });
+
+  it("hints at the click for keyboard focus, not just the mouse", async () => {
+    const { container } = render(
+      <PlantScan scan={scanWith(1, ["a.png"])} href="/app/phenotypes/1/2/3/4/1" />
+    );
+    await screen.findByAltText("Scan thumbnail");
+
+    const box = container.querySelector(".group > div") as HTMLElement;
+    expect(box.className).toContain("group-hover:border-lime-700");
+    expect(box.className).toContain("group-focus-within:border-lime-700");
+  });
+
+  it("sizes the box from the height prop", async () => {
+    // The height was an interpolated Tailwind class, which the scanner never
+    // emits — the boxplot's 250px box was rendering with no height at all.
+    const { container } = render(
+      <PlantScan scan={scanWith(1, ["a.png"])} height={250} />
+    );
+    await screen.findByAltText("Scan thumbnail");
+
+    const box = container.querySelector(".group > div") as HTMLElement;
+    expect(box.style.height).toBe("250px");
   });
 });
