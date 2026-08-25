@@ -61,22 +61,18 @@ def annotate(frame: np.ndarray, label: str) -> np.ndarray:
     """Return `frame` with a labelled band added below it.
 
     The specimen is never drawn over — the band is extra rows underneath, so
-    the frame's own pixels come back byte for byte. The result is taller than
-    the input by LABEL_BAND_HEIGHT, and every frame grows by the same amount,
-    so the video's dimensions stay constant.
+    the frame's own pixels come back byte for byte. The result is the frame's
+    width and LABEL_BAND_HEIGHT rows taller.
 
-    Takes 8-bit frames only. An MP4 is 8-bit regardless, so reducing a deeper
-    frame is the decoder's job, where the full range is still known — doing it
-    here would silently clamp highlights instead of scaling them.
+    Frames of different sizes stay different sizes: keeping a video's
+    dimensions constant is the caller's job, not this function's.
+
+    Takes 8-bit RGB frames only. The plate scanners produce colour, and an MP4
+    is 8-bit regardless, so converting and reducing are the decoder's job where
+    the source mode and full range are still known.
     """
-    if frame.ndim == 2:
-        channels = 1
-    elif frame.ndim == 3 and frame.shape[2] == 3:
-        channels = 3
-    else:
-        raise ValueError(
-            f"expected a 2D frame or a 3-channel 3D frame, got shape {frame.shape}"
-        )
+    if frame.ndim != 3 or frame.shape[2] != 3:
+        raise ValueError(f"expected a 3-channel RGB frame, got shape {frame.shape}")
 
     if frame.dtype != np.uint8:
         raise ValueError(
@@ -84,7 +80,7 @@ def annotate(frame: np.ndarray, label: str) -> np.ndarray:
             "annotating so the full range is scaled rather than clamped"
         )
 
-    height, width = frame.shape[:2]
+    width = frame.shape[1]
     band = Image.new("RGB", (width, LABEL_BAND_HEIGHT), _BAND_FILL)
     ImageDraw.Draw(band).multiline_text(
         (LABEL_PADDING, LABEL_PADDING),
@@ -95,16 +91,15 @@ def annotate(frame: np.ndarray, label: str) -> np.ndarray:
     )
 
     band_array = np.asarray(band, dtype=np.uint8)
-    if channels == 1:
-        # The band is drawn in RGB because the text is; flatten it to match a
-        # grayscale frame rather than widening the frame to colour.
-        band_array = band_array[:, :, 0]
-
     return np.concatenate([frame, band_array], axis=0)
 
 
 def _as_utc(value: datetime) -> datetime:
-    """A naive datetime is read as UTC; nothing records another zone."""
+    """capture_date is TIMESTAMPTZ, so a naive value means the zone was lost
+    upstream. Guessing one shifts the label by that zone's offset, silently."""
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
+        raise ValueError(
+            f"expected a timezone-aware capture time, got naive {value!r} — "
+            "the zone was lost upstream and cannot be recovered here"
+        )
     return value.astimezone(timezone.utc)

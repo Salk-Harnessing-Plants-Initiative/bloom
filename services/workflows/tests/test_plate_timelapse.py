@@ -119,11 +119,20 @@ class TestLabelFor:
         # ...four hours of actual growth.
         assert pt.label_for(after, before).endswith("+04h 00m")
 
-    def test_a_naive_datetime_is_read_as_utc_then_converted(self):
-        """capture_date is TIMESTAMPTZ, so a naive value means the driver lost
-        the zone — reading it as UTC is the only safe assumption."""
+    def test_a_naive_datetime_is_refused(self):
+        """capture_date is TIMESTAMPTZ, so a naive value means the zone was
+        lost upstream. Either argument is enough to make the label wrong."""
         naive = datetime(2026, 8, 25, 9, 15)
-        assert pt.label_for(naive, naive).startswith("2026-08-25 02:15 PDT")
+        for args in ((naive, naive), (naive, T0), (T0, naive)):
+            with pytest.raises(ValueError, match="timezone-aware"):
+                pt.label_for(*args)
+
+    def test_a_lost_zone_cannot_be_read_as_a_seven_hour_gap(self):
+        """The same instant written two ways used to read as +07h 00m — the
+        offset of the zone that was guessed, on the run's own first frame."""
+        same_instant_naive = datetime(2026, 8, 25, 2, 15)
+        with pytest.raises(ValueError):
+            pt.label_for(T0, same_instant_naive)
 
     def test_an_offset_datetime_is_converted_not_relabelled(self):
         """A +02:00 timestamp is 07:15 UTC, so 12:15 AM in the scanners' zone."""
@@ -234,27 +243,26 @@ class TestAnnotate:
         out = pt.annotate(self._frame(), "x")
         out[0, 0] = 1
 
-    def test_a_grayscale_frame_stays_grayscale(self):
-        frame = np.full((200, 300), 128, dtype=np.uint8)
-        out = pt.annotate(frame, pt.label_for(T0, T0))
-        assert out.shape == (200 + pt.LABEL_BAND_HEIGHT, 300)
-        assert out.dtype == np.uint8
-        assert np.array_equal(out[:200], frame)
+    def test_a_grayscale_frame_is_refused(self):
+        """The scanners produce colour. Accepting 2D would also accept a
+        palette image, whose indices would encode as brightness."""
+        with pytest.raises(ValueError, match="3-channel RGB"):
+            pt.annotate(np.full((200, 300), 128, dtype=np.uint8), "x")
 
     def test_a_deeper_frame_is_refused_rather_than_flattened(self):
         """An MP4 is 8-bit either way, but clamping 4000 to 255 blows out the
         highlights where scaling would not. Reduce it where the range is known."""
         with pytest.raises(ValueError, match="8-bit"):
-            pt.annotate(np.zeros((200, 300), dtype=np.uint16), "x")
+            pt.annotate(np.zeros((200, 300, 3), dtype=np.uint16), "x")
 
     @pytest.mark.parametrize(
         "shape",
-        [(5,), (4, 4, 4), (200, 300, 1), (200, 300, 4)],
+        [(5,), (200, 300), (4, 4, 4), (200, 300, 1), (200, 300, 4)],
     )
     def test_an_unsupported_shape_is_refused(self, shape):
         """Matched on the message: without that, numpy's own incidental errors
         ("not enough values to unpack") pass this with the guard removed."""
-        with pytest.raises(ValueError, match="expected a 2D frame"):
+        with pytest.raises(ValueError, match="expected a 3-channel RGB frame"):
             pt.annotate(np.zeros(shape, np.uint8), "x")
 
     def test_a_frame_narrower_than_the_label_still_returns(self):
