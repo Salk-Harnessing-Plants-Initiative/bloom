@@ -16,9 +16,10 @@ export function isValidPlateId(plateId: string | null | undefined): boolean {
 }
 
 // A plate with no wave still needs a segment; an empty one would collide with
-// the experiment's own level.
-export function waveSegment(waveNumber: number | null): string | null {
-  if (waveNumber === null) return "wave-none";
+// the experiment's own level. `undefined` counts as absent: Python has one
+// empty value, so both must reach the same segment.
+export function waveSegment(waveNumber: number | null | undefined): string | null {
+  if (waveNumber === null || waveNumber === undefined) return "wave-none";
   if (!Number.isInteger(waveNumber) || waveNumber < 0) return null;
   return `wave-${waveNumber}`;
 }
@@ -26,7 +27,7 @@ export function waveSegment(waveNumber: number | null): string | null {
 // Null when any part is unusable, so a bad plate id cannot become a path.
 export function plateVideoPath(
   experimentId: number,
-  waveNumber: number | null,
+  waveNumber: number | null | undefined,
   plateId: string | null | undefined,
 ): string | null {
   if (!Number.isInteger(experimentId) || experimentId <= 0) return null;

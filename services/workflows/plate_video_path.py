@@ -7,11 +7,13 @@ tests/unit/test_plate_video_path_agreement.py checks it.
 
 from __future__ import annotations
 
-import os
 import re
 
-VIDEOS_BUCKET = os.environ.get("WORKFLOWS_PLATE_VIDEOS_BUCKET", "graviscan-videos")
-IMAGES_BUCKET = os.environ.get("WORKFLOWS_PLATE_IMAGES_BUCKET", "graviscan-images")
+# Named for the scanner, not just the contents: services/workflows/video.py
+# already exports VIDEOS_BUCKET and IMAGES_BUCKET meaning the cylinder
+# buckets, and both modules sit on the same import path.
+GRAVISCAN_VIDEOS_BUCKET = "graviscan-videos"
+GRAVISCAN_IMAGES_BUCKET = "graviscan-images"
 
 # A plate id is free text and becomes a path segment, so it is whitelisted
 # rather than escaped. No leading dot, so `..` cannot form.

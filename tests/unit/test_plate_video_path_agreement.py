@@ -33,12 +33,11 @@ def test_videos_bucket_agrees():
     web = re.search(r'GRAVISCAN_VIDEOS_BUCKET\s*=\s*["\']([^"\']+)["\']', _web())
     assert web, f"no GRAVISCAN_VIDEOS_BUCKET in {WEB_PATH_MODULE.name}"
 
-    # The service allows an env override; the default is what must match.
     service = re.search(
-        r'VIDEOS_BUCKET\s*=\s*os\.environ\.get\(\s*"[^"]+"\s*,\s*"([^"]+)"\s*\)',
+        r'GRAVISCAN_VIDEOS_BUCKET\s*=\s*["\']([^"\']+)["\']',
         _workflows(),
     )
-    assert service, f"no VIDEOS_BUCKET default in {WORKFLOWS_PATH_MODULE.name}"
+    assert service, f"no GRAVISCAN_VIDEOS_BUCKET in {WORKFLOWS_PATH_MODULE.name}"
 
     script = re.search(r'target_bucket:\s*str\s*=\s*"([^"]+)"', _script())
     assert script, f"no target_bucket default in {RENDER_SCRIPT.name}"
@@ -54,10 +53,10 @@ def test_images_bucket_agrees():
     assert web, f"no GRAVISCAN_IMAGES_BUCKET in {WEB_PATH_MODULE.name}"
 
     service = re.search(
-        r'IMAGES_BUCKET\s*=\s*os\.environ\.get\(\s*"[^"]+"\s*,\s*"([^"]+)"\s*\)',
+        r'GRAVISCAN_IMAGES_BUCKET\s*=\s*["\']([^"\']+)["\']',
         _workflows(),
     )
-    assert service, f"no IMAGES_BUCKET default in {WORKFLOWS_PATH_MODULE.name}"
+    assert service, f"no GRAVISCAN_IMAGES_BUCKET in {WORKFLOWS_PATH_MODULE.name}"
 
     script = re.search(r'source_bucket:\s*str\s*=\s*"([^"]+)"', _script())
     assert script, f"no source_bucket default in {RENDER_SCRIPT.name}"
@@ -139,6 +138,9 @@ def test_components_do_not_rehardcode_the_buckets():
     assert "plate-video-path" in plate_video, (
         "PlateVideo.tsx must import the shared bucket constant"
     )
-    assert '"graviscan-videos"' not in plate_video, (
-        "PlateVideo.tsx re-hardcodes the videos bucket instead of importing it"
-    )
+    # Matched without quotes: the repo's prettier config rewrites double to
+    # single, so a quoted form would be the one shape this cannot see.
+    for bucket in ("graviscan-videos", "graviscan-images"):
+        assert bucket not in plate_video, (
+            f"PlateVideo.tsx re-hardcodes {bucket!r} instead of importing it"
+        )

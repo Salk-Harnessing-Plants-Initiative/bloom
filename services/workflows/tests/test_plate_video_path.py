@@ -95,6 +95,12 @@ class TestWaveSegment:
 
 
 class TestBuckets:
-    def test_defaults_name_the_graviscan_buckets(self):
-        assert pvp.VIDEOS_BUCKET == "graviscan-videos"
-        assert pvp.IMAGES_BUCKET == "graviscan-images"
+    def test_constants_name_the_graviscan_buckets(self):
+        assert pvp.GRAVISCAN_VIDEOS_BUCKET == "graviscan-videos"
+        assert pvp.GRAVISCAN_IMAGES_BUCKET == "graviscan-images"
+
+    def test_the_names_do_not_collide_with_the_cylinder_buckets(self):
+        """video.py exports VIDEOS_BUCKET/IMAGES_BUCKET meaning the cylinder
+        buckets, and both modules are importable by bare name."""
+        assert not hasattr(pvp, "VIDEOS_BUCKET")
+        assert not hasattr(pvp, "IMAGES_BUCKET")

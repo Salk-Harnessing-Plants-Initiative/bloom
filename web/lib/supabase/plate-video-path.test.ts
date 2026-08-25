@@ -68,6 +68,17 @@ describe("plateVideoPath", () => {
     expect(plateVideoPath(Number.NaN, 3, "Plate_9")).toBeNull();
   });
 
+  it("treats an undefined wave the same as a null one", () => {
+    // Python has one empty value, so both must reach `wave-none`. A column
+    // left out of a select arrives as undefined, not null.
+    expect(plateVideoPath(12, undefined, "Plate_9")).toBe(
+      "12/wave-none/Plate_9.mp4",
+    );
+    expect(plateVideoPath(12, undefined, "Plate_9")).toBe(
+      plateVideoPath(12, null, "Plate_9"),
+    );
+  });
+
   it("refuses a wave that is not a non-negative integer", () => {
     // `wave-NaN` and `wave--1` are addressable but meaningless.
     expect(plateVideoPath(12, Number.NaN, "Plate_9")).toBeNull();
@@ -87,6 +98,15 @@ describe("isValidPlateId", () => {
     for (const id of ["", "..", "./x", "a/b", "a b", "-lead", "_lead"]) {
       expect(isValidPlateId(id)).toBe(false);
     }
+  });
+
+  it("rejects a non-string", () => {
+    // `RegExp.test` stringifies, so without the guard null becomes the id
+    // "null" and the key "12/wave-3/null.mp4".
+    expect(isValidPlateId(null)).toBe(false);
+    expect(isValidPlateId(undefined)).toBe(false);
+    expect(plateVideoPath(12, 3, null)).toBeNull();
+    expect(plateVideoPath(12, 3, undefined)).toBeNull();
   });
 });
 
