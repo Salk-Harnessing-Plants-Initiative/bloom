@@ -1036,6 +1036,32 @@ the more durable signal that M2 hasn't actually been rolled back.
     this section doesn't resolve — worth a follow-up once (or if) the reader threads environment context
     through this call path, not a blocker for the schedule itself shipping.
 
+  **D8 addendum, part 2 (Section 15, bloom#736) — the promotion/approval-gate story above was correct,
+  but incomplete: the RPC call itself has never once reached either host.** This workflow's first live
+  scheduled run, once actually promoted to `main` (2026-08-24/25), started executing immediately under
+  `production-scheduled-refresh` exactly as designed above — and then failed in 12s:
+  `curl: (28) Failed to connect to bloom.salk.edu port 443 after 5001 ms: Timeout was reached` (run
+  32799136668, `2026-08-25T01:51:22Z`). Root cause: `runs-on: ubuntu-latest` (a GitHub-hosted runner) has
+  no network route to the Salk server — a limitation `deploy.yml` already documents in its own comment
+  ("GitHub-hosted runners have no route to the Salk server") for its self-hosted-runner jobs, but one
+  this workflow never adopted, from PR #684's original introduction through this same section's own
+  bloom#708 cron addition. This means every claim in this addendum above about the scheduled cron
+  "working" was accurate only for the approval-gate/environment-resolution half — the actual delivery
+  half was never exercised successfully by any run, scheduled or dispatched, at any point in this
+  workflow's history.
+
+  Fixed by changing `runs-on` to the same self-hosted label `deploy.yml` uses,
+  `["self-hosted", "linux", "salk-network"]`, applied unconditionally (both hosts, all three trigger
+  paths — this workflow has one job, not a per-host split, and the user chose parity over leaving
+  staging on `ubuntu-latest` as a negative control). Deliberately not mirroring `deploy.yml`'s
+  `ubuntu-latest` escape-hatch input: that input exists because `deploy.yml`'s jobs are required/blocking
+  checks that need a way to fail fast when the self-hosted runner is hung; this job is neither, and the
+  escape hatch would do nothing for the unattended `schedule` trigger anyway. Accepted, not mitigated: if
+  `salk-network` is offline, a run now queues (up to GitHub's ~24h auto-cancel window) rather than
+  failing in ~12s — the same trade-off `deploy.yml` already accepts for real deploys, and lower-stakes
+  here since nothing blocks on this job and `concurrency.group`'s `cancel-in-progress: true` already
+  supersedes a stale queued run once a fresher one arrives.
+
     **Reinforced, not newly found — round 2's `/review-pr` pass on the pushed PR independently
     converged on the same two follow-up angles for tasks.md 14.9's post-promotion check.** (1)
     Security's pass: confirming `production-scheduled-refresh` carries zero protection rules today
