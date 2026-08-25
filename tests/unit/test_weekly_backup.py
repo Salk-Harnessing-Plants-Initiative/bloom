@@ -30,6 +30,14 @@ def _load():
 backup = _load()
 
 
+def _deploy_dir(tmp_path, env_name="prod", **extra):
+    """A deploy directory with the env file the script reads its config from."""
+    lines = ["BACKUP_RCLONE_REMOTE=box", f"BACKUP_RCLONE_DEST_DIR=bloom-backups/{env_name}"]
+    lines += [f"{k}={v}" for k, v in extra.items()]
+    (tmp_path / f".env.{env_name}").write_text("\n".join(lines) + "\n")
+    return tmp_path
+
+
 # --------------------------------------------------------------------------
 # Container resolution
 # --------------------------------------------------------------------------
@@ -170,6 +178,7 @@ def test_a_missing_deploy_dir_is_a_config_error(tmp_path, monkeypatch):
 
 
 def test_dry_run_verifies_but_never_uploads(tmp_path, monkeypatch):
+    _deploy_dir(tmp_path)
     monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
     touched = []
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
@@ -194,6 +203,7 @@ def test_the_working_directory_is_removed_on_failure(tmp_path, monkeypatch):
 
 
 def test_the_working_directory_is_removed_on_success(tmp_path, monkeypatch):
+    _deploy_dir(tmp_path)
     state = tmp_path / "state"
     monkeypatch.setenv("BACKUP_STATE_DIR", str(state))
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
@@ -243,3 +253,72 @@ def test_both_artifacts_share_one_run_timestamp(tmp_path, monkeypatch):
     db = backup.dump_database("c", tmp_path, stamp)
     globals_ = backup.dump_globals("c", tmp_path, stamp)
     assert stamp in db.name and stamp in globals_.name
+
+
+# --------------------------------------------------------------------------
+# Env-file loading (systemd's EnvironmentFile, done in-process)
+# --------------------------------------------------------------------------
+
+
+def test_env_file_parses_plain_pairs(tmp_path):
+    f = tmp_path / ".env.prod"
+    f.write_text("BACKUP_RCLONE_REMOTE=box\nPOSTGRES_DB=postgres\n")
+    assert backup.load_env_file(f) == {
+        "BACKUP_RCLONE_REMOTE": "box",
+        "POSTGRES_DB": "postgres",
+    }
+
+
+def test_env_file_ignores_comments_and_blanks(tmp_path):
+    f = tmp_path / ".env.prod"
+    f.write_text("# a comment\n\nA=1\n   \n# B=2\n")
+    assert backup.load_env_file(f) == {"A": "1"}
+
+
+def test_env_file_strips_matched_quotes(tmp_path):
+    f = tmp_path / ".env.prod"
+    f.write_text("A=\"quoted\"\nB='single'\nC=bare\n")
+    assert backup.load_env_file(f) == {"A": "quoted", "B": "single", "C": "bare"}
+
+
+def test_env_file_keeps_values_containing_equals(tmp_path):
+    # JWT secrets and connection strings routinely contain '='.
+    f = tmp_path / ".env.prod"
+    f.write_text("KEY=abc=def==\n")
+    assert backup.load_env_file(f)["KEY"] == "abc=def=="
+
+
+def test_env_file_values_do_not_override_the_real_environment(tmp_path, monkeypatch):
+    # The env file supplies defaults; anything already exported wins.
+    monkeypatch.setenv("BACKUP_RCLONE_REMOTE", "from-environment")
+    f = tmp_path / ".env.prod"
+    f.write_text("BACKUP_RCLONE_REMOTE=from-file\n")
+    backup.apply_env_file(f)
+    assert backup._env("BACKUP_RCLONE_REMOTE") == "from-environment"
+
+
+def test_a_missing_env_file_is_a_config_error(tmp_path):
+    with pytest.raises(backup.ConfigError, match="env file not found"):
+        backup.apply_env_file(tmp_path / "absent")
+
+
+# --------------------------------------------------------------------------
+# The weekly summary
+# --------------------------------------------------------------------------
+
+
+def test_summary_reports_each_artifact_and_its_size(tmp_path):
+    a = tmp_path / "postgres-postgres-20260824T000000Z.sql.gz"
+    a.write_bytes(b"x" * 1234)
+    out = backup.format_summary("prod", "20260824T000000Z", [a], "box:bloom-backups/prod/", True)
+    assert "env: prod" in out
+    assert "postgres-postgres-20260824T000000Z.sql.gz" in out
+    assert "1,234 bytes" in out
+    assert "box:bloom-backups/prod/" in out
+
+
+def test_summary_marks_a_dry_run_as_not_uploaded(tmp_path):
+    a = tmp_path / "db.sql.gz"
+    a.write_bytes(b"x" * 10)
+    out = backup.format_summary("staging", "20260824T000000Z", [a], "", False)
+    assert "not uploaded" in out

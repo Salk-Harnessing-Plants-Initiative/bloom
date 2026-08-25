@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Weekly backup of Bloom's Supabase Postgres database to Box.
 
-Runs from a per-env systemd timer (see bloom-weekly-backup.timer). Dumps the
+Runs from the weekly-backup GitHub Actions workflow, which SSHes to the deploy
+host and invokes this script there. Dumps the
 database and the global role definitions out of the running db-prod container,
 verifies both artifacts, and uploads them to Box via a pre-configured rclone
 remote.
@@ -33,6 +34,8 @@ from pathlib import Path
 logger = logging.getLogger("bloom_weekly_backup")
 
 COMPOSE_FILE = "docker-compose.prod.yml"
+# Under the invoking user's own home, so no root-created directory is needed.
+DEFAULT_STATE_DIR = "~/.local/state/bloom-weekly-backup"
 DB_SERVICE = "db-prod"
 
 # Size floors. An empty or truncated dump is the failure this job exists to
@@ -48,14 +51,45 @@ EXIT_CONFIG = 2
 class ConfigError(RuntimeError):
     """Environment or host is not set up for this job to run."""
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
+
+
+def load_env_file(path: Path) -> dict[str, str]:
+    """Read a deploy .env file into a plain dict.
+
+    systemd read this file for us; over SSH nothing does, and sourcing it in the
+    shell would let a value containing spaces or quotes rewrite the command.
+    """
+    values: dict[str, str] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if not key or not key[0].isalpha():
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def apply_env_file(path: Path) -> int:
+    """Load the env file as defaults. A real environment variable still wins."""
+    if not path.is_file():
+        raise ConfigError(f"env file not found: {path}")
+    values = load_env_file(path)
+    for key, value in values.items():
+        os.environ.setdefault(key, value)
+    logger.info("loaded %d values from %s", len(values), path.name)
+    return len(values)
 
 
 def _which(name: str) -> str:
@@ -64,7 +98,6 @@ def _which(name: str) -> str:
     if not found:
         raise ConfigError(f"required binary not on PATH: {name}")
     return found
-
 
 def _run(cmd: list[str], cwd: Path | None = None) -> str:
     """Run a command, log its output to the journal, raise on non-zero exit."""
@@ -78,14 +111,12 @@ def _run(cmd: list[str], cwd: Path | None = None) -> str:
         )
     return result.stdout
 
-
 def compose_args(deploy_dir: Path, env_name: str) -> list[str]:
     """The compose invocation this environment's stack was brought up with."""
     return [
         "-f", str(deploy_dir / COMPOSE_FILE),
         "--env-file", str(deploy_dir / f".env.{env_name}"),
     ]
-
 
 def parse_container_id(ps_output: str) -> str:
     """Pick the container id out of `compose ps -q` output.
@@ -117,11 +148,9 @@ def resolve_container(deploy_dir: Path, env_name: str) -> str:
     logger.info("resolved %s container: %s", DB_SERVICE, container[:12])
     return container
 
-
 # ---------------------------------------------------------------------------
 # Dump + verify
 # ---------------------------------------------------------------------------
-
 
 def _stream_to_gzip(cmd: list[str], out: Path) -> None:
     """Run cmd, pipe it through gzip into out, and check BOTH exit statuses.
@@ -194,6 +223,21 @@ def dump_globals(container: str, work_dir: Path, timestamp: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
+def format_summary(env_name: str, timestamp: str, artifacts: list[Path],
+                   destination: str, uploaded: bool) -> str:
+    """A short human-readable record of the run, for the weekly glance."""
+    lines = [
+        f"env: {env_name}",
+        f"run: {timestamp}",
+        f"destination: {destination}" if uploaded else "destination: (dry run — not uploaded)",
+        "artifacts:",
+    ]
+    for artifact in artifacts:
+        size = artifact.stat().st_size if artifact.exists() else 0
+        lines.append(f"  {artifact.name}  {size:,} bytes")
+    return "\n".join(lines)
+
+
 def backup_destination(env_name: str) -> tuple[str, str]:
     """The remote and directory this environment's artifacts belong in."""
     remote = _env("BACKUP_RCLONE_REMOTE", "")
@@ -221,6 +265,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="Which deploy environment to back up.")
     parser.add_argument("--deploy-dir", required=True, type=Path,
                         help="Deploy directory holding the compose file and env file.")
+    parser.add_argument("--env-file", type=Path, default=None,
+                        help="Env file to read config from (default: <deploy-dir>/.env.<env>).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Dump and verify, but skip the upload.")
     return parser.parse_args(argv)
@@ -239,8 +285,11 @@ def main(argv: list[str] | None = None) -> int:
         deploy_dir = args.deploy_dir.resolve()
         if not deploy_dir.is_dir():
             raise ConfigError(f"deploy directory does not exist: {deploy_dir}")
-        state_dir = Path(_env("BACKUP_STATE_DIR", "/var/lib/bloom-weekly-backup"))
+        apply_env_file(args.env_file or deploy_dir / f".env.{args.env}")
+        state_dir = Path(_env("BACKUP_STATE_DIR", DEFAULT_STATE_DIR)).expanduser()
         state_dir.mkdir(parents=True, exist_ok=True)
+        # The working copy holds a full dump; keep it off other users.
+        state_dir.chmod(0o700)
     except ConfigError as exc:
         logger.error("configuration error: %s", exc)
         return EXIT_CONFIG
@@ -265,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             logger.info("DRY RUN — %d artifact(s) verified, skipping upload",
                         len(artifacts))
+            print(format_summary(args.env, timestamp, artifacts, "", uploaded=False))
             return EXIT_OK
 
         try:
@@ -275,6 +325,10 @@ def main(argv: list[str] | None = None) -> int:
         except subprocess.CalledProcessError as exc:
             logger.error("upload failed: %s", exc)
             return EXIT_SUBPROCESS
+
+        remote, dest_dir = backup_destination(args.env)
+        print(format_summary(args.env, timestamp, artifacts,
+                             f"{remote}:{dest_dir}/", uploaded=True))
 
     logger.info("bloom-weekly-backup env=%s timestamp=%s complete", args.env, timestamp)
     return EXIT_OK

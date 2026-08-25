@@ -1,7 +1,12 @@
 # Weekly Postgres backup to Box
 
-A per-environment systemd timer dumps the Supabase Postgres database once a
-week and pushes it to Box via rclone.
+The **Weekly Postgres backup** GitHub Actions workflow dumps the Supabase
+Postgres database once a week and pushes it to Box via rclone.
+
+The workflow SSHes to the deploy host and runs
+`scheduled-jobs/weekly-backup/backup.py` there, the same way `deploy.yml`
+reaches the server. Nothing is dumped onto the runner and no database port is
+opened.
 
 Scope is the **database only**. MinIO object storage is backed up separately as
 an object-level rclone sync.
@@ -24,13 +29,15 @@ not acceptable in a backup. **Restore globals first, then the database.**
 
 ## Schedule
 
-|             | staging                                | production                             |
-| ----------- | -------------------------------------- | -------------------------------------- |
-| Runs        | Sunday 02:00 server time (±15m jitter) | Sunday 02:00 server time (±15m jitter) |
-| Destination | `box:bloom-backups/staging`            | `box:bloom-backups/prod`               |
+|             |                                                           |
+| ----------- | --------------------------------------------------------- |
+| Runs        | Sunday 02:17 UTC, automatically, against **production**   |
+| Staging     | On demand only — dispatch the workflow and pick `staging` |
+| Destination | `box:bloom-backups/prod` and `box:bloom-backups/staging`  |
 
-`Persistent=true` — a run missed because the host was down happens on the next
-boot rather than being skipped.
+Run it by hand any time from the Actions tab: **Weekly Postgres backup → Run
+workflow**, choose the environment, optionally tick "dry run" to dump and verify
+without uploading.
 
 ## Nothing is ever deleted on Box
 
@@ -49,12 +56,11 @@ Two consequences worth knowing:
 
 ## One-time setup
 
-Per environment, on the bloom server.
+### 1. Configure the Box remote on the deploy host
 
-### 1. Configure the Box remote for the deploy user
-
-The timer runs as the deploy user, so the remote must belong to that user, not
-to root. Box authorisation is interactive — the installer cannot do this step.
+The backup runs on the server as the deploy user, so the rclone remote must
+belong to that user. Box authorisation is interactive, so this is done by hand,
+once per host.
 
 ```bash
 sudo -u bloom-deploy rclone config
@@ -68,44 +74,53 @@ sudo -u bloom-deploy rclone lsd box:
 The remote name must match `BACKUP_RCLONE_REMOTE` in the environment's
 `.env.<env>` file (default `box`).
 
-### 2. Run the installer
+### 2. Create the `production-scheduled-backup` GitHub Environment
 
-`--deploy-dir` is the deploy tree for that environment, which differs per host —
-it is never assumed. It is the directory holding `docker-compose.prod.yml` and
-`.env.<env>`.
+Settings → Environments → New environment, named exactly
+`production-scheduled-backup`. **Leave it with no required reviewers and no wait
+timer.**
+
+This exists because a scheduled run routed through `production`'s own approval
+gate would sit "Waiting" for an approval nobody gives at 02:00 on a Sunday — the
+backup would look configured and silently never run. Manual dispatches still go
+through the real `production` environment and its gates.
+
+### 3. Promote the workflow to `main`
+
+Neither `schedule:` nor `workflow_dispatch` fires until the workflow file exists
+on the repo's **default branch**. Both triggers are gated on it. Until the
+normal staging → main promotion carries this file across, nothing runs and the
+workflow does not appear in the Actions tab at all.
+
+### 4. Prove it on staging first
+
+Dispatch the workflow against `staging` with "dry run" ticked. That performs a
+real dump and verification without uploading. Then run it for real, and do the
+restore rehearsal below before relying on production.
+
+## The weekly check
+
+Open the Actions tab, click the latest **Weekly Postgres backup** run, and read
+the summary at the top of the page. Each run writes one, whether it succeeded or
+failed. It shows:
+
+- whether the run succeeded, stated plainly;
+- this run's artifacts and their **byte sizes**;
+- the current contents of the Box folder, so a missing week is visible.
+
+The size line is the one worth a second of attention. A dump that suddenly
+shrinks is how a partial backup announces itself, and it is much easier to spot
+across a list than inside a log.
+
+A failed run marks the workflow run red in the Actions tab and notifies you
+through whatever GitHub notification settings you already have — no separate
+alerting to set up.
+
+To check from the server instead:
 
 ```bash
-sudo bash <deploy-dir>/scheduled-jobs/weekly-backup/install.sh \
-  --env staging \
-  --deploy-dir <deploy-dir> \
-  --dry-run
+sudo -u bloom-deploy rclone lsl box:bloom-backups/prod
 ```
-
-The installer refuses to proceed unless the deploy directory, env file, compose
-file and backup script all exist, the deploy user exists and is in the `docker`
-group, `docker`/`rclone`/`gzip`/`python3` are on `PATH`, and the deploy user has
-an rclone remote. Each of those would otherwise be a silent failure on the first
-Sunday run.
-
-`--dry-run` then performs a real dump and verification without uploading. Do
-this before enabling production.
-
-Re-running the installer is safe; it converges rather than duplicating units.
-
-## Checking it is working
-
-```bash
-systemctl list-timers bloom-weekly-backup-staging.timer
-systemctl --failed | grep bloom-weekly-backup    # nothing = healthy
-journalctl -u bloom-weekly-backup-staging.service -n 50
-sudo -u bloom-deploy rclone lsl box:bloom-backups/staging
-```
-
-A failed run leaves its unit in a failed state, so it shows up in
-`systemctl --failed` without anyone reading the journal.
-
-Every run logs each artifact's byte size. A sudden shrink is the signal worth
-watching — it is how a partial dump announces itself.
 
 ### Exit codes
 
@@ -210,5 +225,6 @@ The dump contains `auth.users`. Do not leave it on disk.
   behind. Changing this means an rclone `crypt` remote wrapping the Box remote,
   plus somewhere durable to keep the passphrase; without that, the backups
   become the thing that gets lost.
-- **Not installed by the deploy.** The timer is installed by hand, once per
-  environment. Re-run the installer after a change to the unit templates.
+- **Nothing starts until the workflow reaches `main`.** Both triggers are gated
+  on the default branch, so a backup that "isn't running yet" is usually a
+  pending promotion, not a bug.
