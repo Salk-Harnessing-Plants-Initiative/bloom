@@ -185,6 +185,63 @@ def test_the_role_writes_the_videos_bucket_and_not_another(pg_conn):
     pg_conn.rollback()
 
 
+def test_the_role_cannot_move_an_object_between_buckets(pg_conn):
+    """Two UPDATE policies mean the role can write a row in either bucket, and
+    policies are OR-ed — so RLS alone would let it set one bucket's row to the
+    other's name, and RLS cannot compare the old row to the new one.
+
+    Moving a cyl video into graviscan-videos would expose it to every signed-in
+    user; moving a plate video out would leave the row pointing at a file that
+    is no longer there. Withholding the bucket_id column is what stops both.
+    """
+    with pg_conn.cursor() as cur:
+        for bucket in ("videos", BUCKET):
+            cur.execute(
+                "INSERT INTO storage.buckets (id, name) VALUES (%s, %s) "
+                "ON CONFLICT (id) DO NOTHING",
+                (bucket, bucket),
+            )
+        cur.execute(
+            "INSERT INTO storage.objects (bucket_id, name) VALUES (%s, %s)",
+            ("videos", "cyl-videos/999.mp4"),
+        )
+        cur.execute(f"SET LOCAL ROLE {ROLE}")
+
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            cur.execute(
+                "UPDATE storage.objects SET bucket_id = %s WHERE name = %s",
+                (BUCKET, "cyl-videos/999.mp4"),
+            )
+
+    pg_conn.rollback()
+
+
+def test_the_role_keeps_every_column_an_upload_writes(pg_conn):
+    """The companion to the test above. Withholding bucket_id must not take the
+    rest with it — this is the write path both the cyl and plate services use,
+    so an over-narrow grant breaks uploads rather than the move."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO storage.buckets (id, name) VALUES (%s, %s) "
+            "ON CONFLICT (id) DO NOTHING",
+            (BUCKET, BUCKET),
+        )
+        cur.execute(f"SET LOCAL ROLE {ROLE}")
+        cur.execute(
+            "INSERT INTO storage.objects (bucket_id, name) VALUES (%s, %s)",
+            (BUCKET, "12/wave-1/P1.mp4"),
+        )
+        cur.execute(
+            "UPDATE storage.objects SET metadata = %s, user_metadata = %s, "
+            "version = %s, updated_at = now(), last_accessed_at = now() "
+            "WHERE bucket_id = %s AND name = %s",
+            ('{"size": 1}', "{}", "v2", BUCKET, "12/wave-1/P1.mp4"),
+        )
+        assert cur.rowcount == 1, "the grant is too narrow for a normal overwrite"
+
+    pg_conn.rollback()
+
+
 def test_the_role_can_overwrite_a_video_it_already_wrote(pg_conn):
     """The object key is derived from the plate, so a re-render writes the same key.
     Without the UPDATE policy that upsert fails on the second render."""

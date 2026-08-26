@@ -82,4 +82,13 @@ CREATE POLICY workflows_update_graviscan_videos ON storage.objects
   USING (bucket_id = 'graviscan-videos')
   WITH CHECK (bucket_id = 'graviscan-videos');
 
+-- Two update policies mean the role can now write a row in either bucket, and
+-- policies are OR-ed, so nothing stops it setting one bucket's row to the
+-- other's name. RLS cannot compare the old row to the new one; taking away the
+-- column can. Everything except bucket_id stays updatable.
+REVOKE UPDATE ON storage.objects FROM bloom_workflows;
+GRANT UPDATE (id, name, owner, owner_id, created_at, updated_at,
+              last_accessed_at, metadata, user_metadata, path_tokens, version)
+  ON storage.objects TO bloom_workflows;
+
 COMMIT;
