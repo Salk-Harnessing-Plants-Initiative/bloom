@@ -13,7 +13,7 @@ import pytest
 from PIL import Image
 
 import plate_encode as pe
-from plate_timelapse import LABEL_BAND_HEIGHT
+from plate_timelapse import LABEL_BAND_HEIGHT, PLATE_FPS
 
 LABEL = "2026-03-06 21:36 PST\n+01h 10m"
 
@@ -119,3 +119,196 @@ def test_a_different_label_changes_only_the_band():
     b = pe.prepare_frame(_png(400, 600), "2026-03-07 09:00 PST\n+12h 34m")
     assert np.array_equal(a[:600], b[:600]), "the picture changed with the label"
     assert not np.array_equal(a[600:], b[600:]), "the band did not change"
+
+
+# --- many frames into a video ------------------------------------------------
+#
+# A fake ffmpeg stands in for the encoder; the frames are real image bytes.
+
+import subprocess  # noqa: E402
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+T0 = datetime(2026, 3, 6, 20, 26, tzinfo=timezone.utc)
+
+
+class _Stdin:
+    def __init__(self):
+        self.chunks = []
+
+    def write(self, data):
+        self.chunks.append(data)
+
+    def close(self):
+        pass
+
+
+class _Ffmpeg:
+    spawned: list = []
+
+    def __init__(self, cmd, **_kw):
+        self.cmd = cmd
+        self.stdin = _Stdin()
+        self.stderr = type("_S", (), {"read": lambda s: b"", "close": lambda s: None})()
+        self.returncode = 0
+        self.waited = False
+        _Ffmpeg.spawned.append(self)
+
+    def wait(self, timeout=None):
+        self.waited = True
+        with open(self.cmd[-1], "wb") as fh:
+            fh.write(b"\x00\x01")
+        return 0
+
+    def kill(self):
+        pass
+
+
+class _Images:
+    """The graviscan-images bucket: one payload per object path."""
+
+    def __init__(self, by_path, raises=None):
+        self._by_path = by_path
+        self._raises = raises
+        self.downloaded: list[str] = []
+
+    def download(self, path):
+        self.downloaded.append(path)
+        if self._raises is not None:
+            raise self._raises
+        return self._by_path.get(path)
+
+
+class _EncodeClient:
+    def __init__(self, by_path, raises=None):
+        self.images = _Images(by_path, raises)
+
+    @property
+    def storage(self):
+        outer = self
+
+        class _S:
+            def from_(self, name):
+                outer.bucket = name
+                return outer.images
+
+        return _S()
+
+
+@pytest.fixture
+def ffmpeg(monkeypatch):
+    spawned: list = []
+    monkeypatch.setattr(_Ffmpeg, "spawned", spawned)
+    monkeypatch.setattr(subprocess, "Popen", _Ffmpeg)
+    import video_writer
+
+    monkeypatch.setattr(video_writer.subprocess, "Popen", _Ffmpeg)
+    return spawned
+
+
+def _frames(n, width=400, height=600):
+    return [
+        {"object_path": f"12/wave-1/P7_{i}.tif", "capture_date": T0 + timedelta(minutes=7 * i)}
+        for i in range(n)
+    ]
+
+
+def _payloads(frames, width=400, height=600):
+    return {f["object_path"]: _png(width, height) for f in frames}
+
+
+def test_every_frame_reaches_the_encoder(ffmpeg, tmp_path):
+    frames = _frames(4)
+    client = _EncodeClient(_payloads(frames))
+    out = str(tmp_path / "out.mp4")
+
+    assert pe.encode_plate_video(client, frames, out) == 4
+    assert len(ffmpeg[0].stdin.chunks) == 4
+
+
+def test_the_frames_are_downloaded_in_the_order_given(ffmpeg, tmp_path):
+    """The list is already sorted by capture time; encoding out of order would
+    make the video play backwards in places."""
+    frames = _frames(3)
+    client = _EncodeClient(_payloads(frames))
+    pe.encode_plate_video(client, frames, str(tmp_path / "out.mp4"))
+
+    assert client.images.downloaded == [f["object_path"] for f in frames]
+
+
+def test_the_video_is_encoded_at_the_plate_frame_rate(ffmpeg, tmp_path):
+    """The cyl call site never passes fps and inherits 30, which at one frame
+    per seven minutes would be a blur."""
+    frames = _frames(2)
+    pe.encode_plate_video(_EncodeClient(_payloads(frames)), frames, str(tmp_path / "o.mp4"))
+
+    cmd = ffmpeg[0].cmd
+    assert cmd[cmd.index("-r") + 1] == str(PLATE_FPS)
+
+
+def test_the_frames_come_from_the_images_bucket(ffmpeg, tmp_path):
+    frames = _frames(1)
+    client = _EncodeClient(_payloads(frames))
+    pe.encode_plate_video(client, frames, str(tmp_path / "o.mp4"))
+    assert client.bucket == "graviscan-images"
+
+
+def test_an_undownloadable_frame_fails_the_render_naming_it(ffmpeg, tmp_path):
+    """`video.py` skips and logs. For a growth series the dropped frame may be
+    exactly where the root moved, and the video still looks complete."""
+    frames = _frames(3)
+    client = _EncodeClient({}, raises=Exception("connection reset"))
+
+    with pytest.raises(pe.FrameUnreadable) as ei:
+        pe.encode_plate_video(client, frames, str(tmp_path / "o.mp4"))
+    assert "P7_0.tif" in str(ei.value)
+
+
+def test_an_empty_object_fails_rather_than_encoding_nothing(ffmpeg, tmp_path):
+    frames = _frames(2)
+    payloads = _payloads(frames)
+    payloads[frames[1]["object_path"]] = b""
+
+    with pytest.raises(pe.FrameUnreadable) as ei:
+        pe.encode_plate_video(_EncodeClient(payloads), frames, str(tmp_path / "o.mp4"))
+    assert "P7_1.tif" in str(ei.value)
+    assert "empty" in str(ei.value), (
+        "an empty object should say so, not surface as a decode failure"
+    )
+
+
+def test_an_undecodable_frame_fails_naming_it(ffmpeg, tmp_path):
+    frames = _frames(2)
+    payloads = _payloads(frames)
+    payloads[frames[1]["object_path"]] = b"not an image"
+
+    with pytest.raises(pe.FrameUnreadable) as ei:
+        pe.encode_plate_video(_EncodeClient(payloads), frames, str(tmp_path / "o.mp4"))
+    assert "P7_1.tif" in str(ei.value)
+    assert "decode" in str(ei.value)
+
+
+def test_a_failed_render_still_tears_the_encoder_down(ffmpeg, tmp_path):
+    """An abandoned ffmpeg holds a pipe and a process for the life of the worker."""
+    frames = _frames(2)
+    payloads = _payloads(frames)
+    payloads[frames[1]["object_path"]] = b"not an image"
+
+    with pytest.raises(pe.FrameUnreadable):
+        pe.encode_plate_video(_EncodeClient(payloads), frames, str(tmp_path / "o.mp4"))
+
+    assert ffmpeg[0].waited, "ffmpeg was abandoned rather than closed"
+
+
+def test_no_frames_is_a_failure_not_an_empty_video(ffmpeg, tmp_path):
+    with pytest.raises(pe.FrameUnreadable):
+        pe.encode_plate_video(_EncodeClient({}), [], str(tmp_path / "o.mp4"))
+    assert ffmpeg == [], "ffmpeg was started for a plate with no frames"
+
+
+def test_each_frame_carries_its_own_elapsed_label(ffmpeg, tmp_path):
+    """The label counts from the first capture, so every frame differs."""
+    frames = _frames(3)
+    pe.encode_plate_video(_EncodeClient(_payloads(frames)), frames, str(tmp_path / "o.mp4"))
+
+    chunks = ffmpeg[0].stdin.chunks
+    assert len(set(chunks)) == 3, "two frames carried the same label"
