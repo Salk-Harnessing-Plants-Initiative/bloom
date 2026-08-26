@@ -37,6 +37,7 @@ import logging
 import os
 
 import pipeline
+import plate_request
 from auth import enforce_rate_limit, require_supabase_user
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -99,6 +100,36 @@ def cyl_experiment_scan_video(
             scan_id,
         )
     return {"experiment_id": experiment_id, **result}
+
+
+@app.post("/gravi/experiments/{experiment_id}/plate-video")
+def gravi_plate_video(
+    experiment_id: int,
+    body: dict,
+    user_id: str = Depends(require_supabase_user),
+):
+    """On-demand: render one plate's time-lapse for one wave.
+
+    `plate_id` and `wave_number` travel in the body, not the path — `plate_id`
+    is free text, and the cylinder route's integer-only path defence does not
+    transfer to it.
+
+    Requires a valid Supabase user JWT (Bearer). Rate-limited per user, which
+    is what stops a button being clicked repeatedly from starting a render each
+    time.
+    """
+    enforce_rate_limit(user_id)
+    result = plate_request.render(experiment_id, body)
+
+    logger.info(
+        "plate video for experiment %s plate %s wave %s requested by %s: %s",
+        experiment_id,
+        result.get("plate_id"),
+        result.get("wave_number"),
+        user_id,
+        result["action"],
+    )
+    return result
 
 
 @app.post("/pipeline")

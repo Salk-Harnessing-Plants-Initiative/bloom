@@ -301,13 +301,21 @@ def render_decision(frames: list[dict], stored: dict) -> dict:
             "storage could not say whether a video is already stored; "
             "changing nothing rather than overwriting one",
             key,
+            code="storage_unavailable",
         )
 
     if not available:
-        return _outcome("refuse", "this plate has no captures with an image", key)
+        return _outcome(
+            "refuse", "this plate has no captures with an image", key, code="no_frames"
+        )
 
     if key is None:
-        return _outcome("refuse", "this plate's video has no usable object key", key)
+        return _outcome(
+            "refuse",
+            "this plate's video has no usable object key",
+            key,
+            code="unusable_plate",
+        )
 
     if state == "absent":
         return _outcome("render", f"no video stored; encoding {available} frames", key)
@@ -333,8 +341,10 @@ def render_decision(frames: list[dict], stored: dict) -> dict:
     )
 
 
-def _outcome(action: str, reason: str, key: str | None) -> dict:
-    return {"action": action, "reason": reason, "key": key}
+def _outcome(action: str, reason: str, key: str | None, code: str = "") -> dict:
+    """`code` names why, for a caller that has to choose a status. The reason is
+    prose for a human; matching on it would break the first time it is reworded."""
+    return {"action": action, "reason": reason, "key": key, "code": code}
 
 
 # --- the whole question, in one call -----------------------------------------
@@ -366,6 +376,7 @@ def plan_render(
             "action": "refuse",
             "reason": oversized,
             "key": stored["key"],
+            "code": "too_large",
             "frames": frames,
             "coverage": None,
         }
