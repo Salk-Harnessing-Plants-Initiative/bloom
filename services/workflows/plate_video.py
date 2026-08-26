@@ -316,3 +316,43 @@ def render_decision(frames: list[dict], stored: dict) -> dict:
 
 def _outcome(action: str, reason: str, key: str | None) -> dict:
     return {"action": action, "reason": reason, "key": key}
+
+
+# --- the whole question, in one call -----------------------------------------
+
+
+def plan_render(
+    client, experiment_id: int, plate_id: str, wave_number: int | None
+) -> dict:
+    """Everything the caller needs to know before encoding anything.
+
+    `client` is an argument rather than a module global so a worker can call
+    this later without a refactor.
+
+    Order matters. The size check runs before the storage probe, so an absurd
+    plate is refused without a storage call — at the cost that a plate too large
+    to render is refused even when it already has a video worth handing back.
+    """
+    frames = get_plate_frames(client, experiment_id, plate_id, wave_number)
+
+    oversized = too_large_to_render(frames)
+    if oversized:
+        key = plate_video_path(experiment_id, wave_number, plate_id)
+        return {
+            "action": "refuse",
+            "reason": oversized,
+            "key": key,
+            "frames": frames,
+            "coverage": None,
+        }
+
+    stored = stored_video(client, experiment_id, plate_id, wave_number)
+    decision = render_decision(frames, stored)
+
+    # Coverage describes the run, not the decision, so it is reported even when
+    # nothing is encoded — the page states it beside a video either way.
+    coverage = (
+        completeness(frames, planned_cycles(client, frames)) if frames else None
+    )
+
+    return {**decision, "frames": frames, "coverage": coverage}

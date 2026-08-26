@@ -618,3 +618,98 @@ def test_the_action_is_always_one_of_three(state):
     """The caller switches on this; a fourth value would fall through silently."""
     d = pv.render_decision(_cycles(1, 2), _stored(state=state))
     assert d["action"] in {"render", "keep", "refuse"}
+
+
+# --- the whole question, in one call -----------------------------------------
+
+
+class _PlanClient(_StoredClient):
+    """Frames, a recorded video row, a session, and a storage bucket."""
+
+    def __init__(self, frames=None, row=None, raises=None, total_cycles=None):
+        super().__init__(row=row, raises=raises)
+        self.queries["gravi_scans"] = _Query(frames or [])
+        self.queries["gravi_scan_sessions"] = _Query(
+            [{"total_cycles": total_cycles}] if total_cycles is not None else []
+        )
+
+
+def _frames(n, session=7):
+    return [_row(i, f"{i}.tif", cycle=i, session=session) for i in range(n)]
+
+
+def _big(n):
+    rows = _frames(n)
+    for r in rows:
+        r["gravi_images"]["file_size_bytes"] = 1024**3
+    return rows
+
+
+def test_plan_renders_when_frames_have_arrived_since_the_stored_video():
+    client = _PlanClient(frames=_frames(200), row=_recorded(frames=140))
+    plan = pv.plan_render(client, 12, "P7", 1)
+
+    assert plan["action"] == "render"
+    assert len(plan["frames"]) == 200
+
+
+def test_plan_keeps_when_the_stored_video_is_current():
+    client = _PlanClient(frames=_frames(140), row=_recorded(frames=140))
+    assert pv.plan_render(client, 12, "P7", 1)["action"] == "keep"
+
+
+def test_plan_refuses_a_plate_too_large_without_probing_storage():
+    """The size check runs first, so an absurd plate costs no storage call."""
+    client = _PlanClient(frames=_big(20), row=_recorded())
+    plan = pv.plan_render(client, 12, "P7", 1)
+
+    assert plan["action"] == "refuse"
+    assert "GB" in plan["reason"]
+    assert client.bucket.signed == [], "storage was probed for a plate already refused"
+
+
+def test_plan_refuses_when_storage_cannot_say():
+    client = _PlanClient(
+        frames=_frames(200), row=_recorded(), raises=Exception("504 Gateway Timeout")
+    )
+    plan = pv.plan_render(client, 12, "P7", 1)
+
+    assert plan["action"] == "refuse"
+    assert "could not say" in plan["reason"]
+
+
+def test_plan_reports_coverage_even_when_it_keeps():
+    """Coverage describes the run, not the decision — the page states it beside
+    an existing video too."""
+    client = _PlanClient(frames=_frames(140), row=_recorded(frames=140), total_cycles=200)
+    plan = pv.plan_render(client, 12, "P7", 1)
+
+    assert plan["action"] == "keep"
+    assert plan["coverage"]["state"] == "short"
+    assert plan["coverage"]["summary"] == "140 of 200 frames; the run stopped early"
+
+
+def test_plan_carries_the_key_on_every_outcome():
+    for frames, row in ((_frames(200), _recorded(140)), (_frames(140), _recorded(140))):
+        plan = pv.plan_render(_PlanClient(frames=frames, row=row), 12, "P7", 1)
+        assert plan["key"] == "12/wave-1/P7.mp4"
+
+
+def test_an_oversized_plate_still_reports_the_key_it_refused():
+    plan = pv.plan_render(_PlanClient(frames=_big(20)), 12, "P7", 1)
+    assert plan["key"] == "12/wave-1/P7.mp4"
+
+
+def test_a_plate_with_no_frames_refuses_and_reports_no_coverage():
+    """There is no run to describe, and completeness of nothing would read as a
+    run that recorded no plan."""
+    plan = pv.plan_render(_PlanClient(frames=[]), 12, "P7", 1)
+
+    assert plan["action"] == "refuse"
+    assert plan["coverage"] is None
+
+
+def test_the_session_is_not_queried_when_there_are_no_frames():
+    client = _PlanClient(frames=[])
+    pv.plan_render(client, 12, "P7", 1)
+    assert "gravi_scan_sessions" not in client.tables
