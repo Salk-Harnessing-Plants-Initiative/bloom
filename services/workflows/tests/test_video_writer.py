@@ -1,8 +1,8 @@
 """Unit tests for VideoWriter lifecycle safety (no real ffmpeg needed).
 
-Covers even-dimension padding and the close() contract: a non-zero exit, a
-timeout, and a broken-pipe stdin flush must all be handled so a failed encode
-can never masquerade as success.
+Covers even-dimension padding, the frame-size guard in add(), and the close()
+contract: a non-zero exit, a timeout, and a broken-pipe stdin flush must all be
+handled so a failed encode can never masquerade as success.
 """
 
 import subprocess
@@ -20,6 +20,27 @@ def test_to_even_pads_odd_dimensions():
     img = np.zeros((5, 7, 3), dtype=np.uint8)  # odd H and W
     out = VideoWriter._to_even(img)
     assert out.shape[:2] == (6, 8)
+
+
+def test_to_even_pads_only_the_odd_axis():
+    """Both dimensions odd would let height and width be swapped."""
+    assert VideoWriter._to_even(np.zeros((200, 301, 3), np.uint8)).shape == (
+        200,
+        302,
+        3,
+    )
+    assert VideoWriter._to_even(np.zeros((201, 300, 3), np.uint8)).shape == (
+        202,
+        300,
+        3,
+    )
+
+
+def test_to_even_pads_the_bottom_and_right_not_the_top_and_left():
+    """Padding at the top shifts every row down; edge-replication makes the
+    corner pixel look right either way, so compare the whole original block."""
+    img = np.arange(3 * 3 * 3, dtype=np.uint8).reshape(3, 3, 3)
+    assert np.array_equal(VideoWriter._to_even(img)[:3, :3], img)
 
 
 def test_to_even_leaves_even_unchanged():
@@ -131,19 +152,32 @@ def _opened_writer(width, height):
     return w
 
 
-def test_add_refuses_a_frame_that_changes_the_size():
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (150, 250, 3),  # both axes differ
+        (244, 300, 3),  # same width, taller — what annotate produces
+        (200, 400, 3),  # same height, wider
+    ],
+)
+def test_add_refuses_a_frame_that_changes_the_size(shape):
     """ffmpeg reads raw frames by byte count, so a differently sized frame
-    shears every frame after it and still exits 0."""
+    shears every frame after it and still exits 0. One axis is enough."""
     w = _opened_writer(300, 200)
     with pytest.raises(ValueError, match="opened at 300x200"):
-        w.add(np.zeros((150, 250, 3), dtype=np.uint8))
+        w.add(np.zeros(shape, dtype=np.uint8))
     assert w.process.stdin.chunks == [], "the bad frame must not reach ffmpeg"
 
 
-def test_add_accepts_a_frame_that_matches():
+def test_add_writes_the_frame_once_and_in_row_order():
+    """Byte count alone would accept a transposed frame, or the same frame
+    written twice."""
+    frame = np.arange(200 * 300 * 3, dtype=np.uint32).astype(np.uint8)
+    frame = frame.reshape(200, 300, 3)
     w = _opened_writer(300, 200)
-    w.add(np.zeros((200, 300, 3), dtype=np.uint8))
-    assert len(w.process.stdin.chunks[0]) == 300 * 200 * 3
+    w.add(frame)
+    assert len(w.process.stdin.chunks) == 1
+    assert w.process.stdin.chunks[0] == frame.tobytes()
 
 
 def test_add_compares_the_size_after_padding_to_even():
@@ -159,3 +193,27 @@ def test_add_refuses_a_grayscale_frame_of_the_wrong_size():
     w = _opened_writer(300, 200)
     with pytest.raises(ValueError, match="opened at 300x200"):
         w.add(np.zeros((150, 250), dtype=np.uint8))
+
+
+def test_the_first_frame_opens_the_video_and_the_second_must_match(monkeypatch):
+    """Drives the guard through a real _open. The other tests set width and
+    height by hand, so they would still pass if _open stopped setting them."""
+    opened = {}
+
+    class _Popen:
+        def __init__(self, cmd, **kw):
+            opened["cmd"] = cmd
+            self.stdin = _RecordingStream()
+            self.stderr = _FakeStream()
+            self.returncode = 0
+
+    monkeypatch.setattr(subprocess, "Popen", _Popen)
+    w = VideoWriter(filename="/tmp/unused.mp4")
+
+    w.add(np.zeros((200, 300, 3), dtype=np.uint8))
+    assert (w.width, w.height) == (300, 200)
+    assert "300x200" in opened["cmd"]
+
+    with pytest.raises(ValueError, match="opened at 300x200"):
+        w.add(np.zeros((150, 250, 3), dtype=np.uint8))
+    assert len(w.process.stdin.chunks) == 1
