@@ -115,6 +115,11 @@ bound to exactly these values — they must match the workflow or publishing fai
 The `pypi` GitHub Environment already exists (shared with `bloomctl`'s release pipeline) —
 no new Environment is needed.
 
+**That shared environment currently has no protection rules** (no required reviewers, no
+branch restriction) — this pipeline is the second publish credential to gate on it, doubling
+what depends on that being safe. Adding a required reviewer (Settings → Environments →
+`pypi` → Protection rules) is recommended now rather than after the first `bloommcp` release.
+
 ## Troubleshooting
 
 - **`uv publish` fails with a trusted-publishing error** — the pending publisher
@@ -125,9 +130,16 @@ no new Environment is needed.
 - **`validate-release` fails on changelog** — add the `## [X.Y.Z]` entry to
   `bloommcp/CHANGELOG.md`.
 - **The workflow run is skipped entirely** — the Release tag doesn't start with `bloommcp-`
-  (it was probably meant for `bloomctl`'s release instead).
+  (it was probably meant for `bloomctl`'s release instead). If it doesn't start with either
+  package's prefix, `release-tag-guard.yml` fails loudly on the same Release so this doesn't
+  go unnoticed.
 - **`uv lock --check` / the `uv-lock-check` pre-commit hook fails after a version bump** —
   run `uv lock` inside `bloommcp/` and commit the updated `uv.lock`.
+- **`uv publish` partially succeeds** (e.g. the wheel uploads, then the sdist fails) — PyPI
+  rejects re-uploading a filename that already exists, so re-running the job does not resume
+  where it left off: the file that already uploaded is now rejected as a duplicate too.
+  Recovery is a new version (bump, changelog entry, re-tag, new Release), not a rerun of the
+  same one.
 
 ## References
 

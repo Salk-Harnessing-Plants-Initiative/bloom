@@ -121,7 +121,9 @@ trusted publishing binds the GitHub repo to the PyPI project.
 
 Create a repo Environment named **`pypi`** (Settings → Environments). Add
 protections (required reviewers, wait timer) here if a human gate on publishing
-is wanted.
+is wanted. This environment is now shared with `bloommcp`'s release pipeline too
+(`bloommcp/RELEASE_PROCESS.md`) — two packages' publish credentials gate on it having
+no protection rules today.
 
 ## Troubleshooting
 
@@ -133,7 +135,14 @@ is wanted.
 - **`validate-release` fails on changelog** — add the `## [X.Y.Z]` entry to
   `bloomcli/CHANGELOG.md`.
 - **The workflow run is skipped entirely** — the Release tag doesn't start with `bloomctl-`
-  (it was probably meant for `bloommcp`'s release instead).
+  (it was probably meant for `bloommcp`'s release instead). If it doesn't start with either
+  package's prefix, `release-tag-guard.yml` fails loudly on the same Release so this doesn't
+  go unnoticed.
+- **`uv publish` partially succeeds** (e.g. the wheel uploads, then the sdist fails) — PyPI
+  rejects re-uploading a filename that already exists, so re-running the job does not resume
+  where it left off: the file that already uploaded is now rejected as a duplicate too.
+  Recovery is a new version (bump, changelog entry, re-tag, new Release), not a rerun of the
+  same one.
 
 ## References
 
