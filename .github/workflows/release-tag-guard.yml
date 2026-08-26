@@ -1,0 +1,46 @@
+name: release-tag-guard
+
+# Every release-*.yml workflow's validate-release job is designed to skip
+# cleanly (not fail) when a published Release's tag belongs to a different
+# monorepo package — see release-bloomcli.yml's and release-bloommcp.yml's
+# reciprocal `if:` guards. That is the right behavior for the *expected*
+# case (a bloomctl release skipping bloommcp's workflow, or vice versa), but
+# it has a gap: a Release tagged with a typo'd or unknown prefix (e.g.
+# `bloomcp-v1.0.0`, missing the second `m`) makes BOTH release workflows
+# skip cleanly at once — nothing was published, and there is no failing
+# Actions run anywhere to say so.
+#
+# This workflow closes that gap. It never skips on a release event (no
+# job-level `if:`) and fails loudly — the one non-green, easy-to-spot
+# signal in the Release's checks — when the tag matches none of the
+# monorepo's known package prefixes.
+#
+# Keep KNOWN_PREFIXES in sync with release-bloomcli.yml's `bloomctl-` guard
+# and release-bloommcp.yml's `bloommcp-` guard.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  check-tag-matches-a-known-package:
+    name: Tag matches a known package prefix
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - name: Verify the release tag is claimed by a release workflow
+        run: |
+          for prefix in bloomctl- bloommcp-; do
+            case "$TAG" in
+              "$prefix"*)
+                echo "Tag '$TAG' matches the $prefix release workflow."
+                exit 0
+                ;;
+            esac
+          done
+          echo "::error::Release tag '$TAG' matches no known package prefix (bloomctl-, bloommcp-) — release-bloomcli.yml and release-bloommcp.yml both skipped this Release, and nothing was published anywhere. Re-tag the release with one of the known prefixes and re-publish."
+          exit 1
