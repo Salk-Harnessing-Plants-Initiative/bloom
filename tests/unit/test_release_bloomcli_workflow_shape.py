@@ -52,6 +52,27 @@ def _raw(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _guard_permits(condition: str, prefix: str, *, event_name: str, tag: str | None) -> bool:
+    """Evaluate a job-level `if:` guard of the exact `A || B` shape these
+    workflows use, rather than checking each clause's substring in isolation.
+
+    A future edit that silently breaks the join (e.g. `||` flipped to `&&`,
+    or the clauses reordered/duplicated) would still contain both substrings
+    but permanently disable every real release — this fails loudly on that
+    instead of passing. Deliberately not a general GitHub Actions expression
+    parser: a condition that isn't exactly this two-clause `||` shape raises.
+    """
+    clauses = [c.strip() for c in condition.split("||")]
+    assert len(clauses) == 2, f"expected exactly one top-level `||`, got: {condition!r}"
+    not_release, tag_prefix = clauses
+    assert not_release == "github.event_name != 'release'", not_release
+    assert tag_prefix == f"startsWith(github.event.release.tag_name, '{prefix}')", tag_prefix
+
+    if event_name != "release":
+        return True
+    return bool(tag and tag.startswith(prefix))
+
+
 # --- publish workflow: triggers --------------------------------------------
 
 def test_release_triggers_only_on_release_and_dispatch():
@@ -71,6 +92,20 @@ def test_validate_release_skips_tags_that_are_not_bloomctls():
     assert "startsWith(github.event.release.tag_name, 'bloomctl-')" in condition
     # workflow_dispatch (no release tag) must always pass the guard.
     assert "github.event_name != 'release'" in condition
+
+
+def test_validate_release_guard_truth_table():
+    """Exercises the joined `||` expression's actual behavior, not just each
+    clause's substring — see `_guard_permits`'s docstring for why."""
+    condition = _load(RELEASE)["jobs"]["validate-release"].get("if", "")
+
+    def guard(event_name: str, tag: str | None = None) -> bool:
+        return _guard_permits(condition, "bloomctl-", event_name=event_name, tag=tag)
+
+    assert guard("workflow_dispatch") is True
+    assert guard("release", tag="bloomctl-v1.0.0") is True
+    assert guard("release", tag="bloommcp-v1.0.0") is False
+    assert guard("release", tag="bloomcp-v1.0.0") is False  # typo'd prefix
 
 
 # --- publish workflow: validate gates publish ------------------------------
