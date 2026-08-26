@@ -15,19 +15,44 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS = REPO_ROOT / "supabase" / "migrations"
 
 FUNCTION = "public.record_gravi_plate_video"
 TABLE = "public.gravi_plate_videos"
 
-# `GRANT UPDATE ON ...` with no column list, and `GRANT ALL`, each reach every column — so a
-# pattern matching only column-scoped grants would miss the broadest form of what is forbidden.
-WRITE_GRANT = re.compile(
-    r"GRANT\s+(INSERT|UPDATE|DELETE|ALL(?:\s+PRIVILEGES)?)\s*(?:\([^)]*\))?\s+ON\s+"
-    r"(?:TABLE\s+)?public\.gravi_plate_videos\s+TO\s+([\w,\s]+)",
+# Matches any GRANT naming the table, then checks the privilege list separately —
+# a single pattern has to cope with `GRANT INSERT, UPDATE ON ...`, column lists, the
+# optional TABLE keyword, and the optional schema prefix (the table's own migration
+# writes the name unqualified).
+GRANT_ON_TABLE = re.compile(
+    r"GRANT\s+(?P<privs>[^;]*?)\s+ON\s+(?:TABLE\s+)?(?:public\.)?gravi_plate_videos"
+    r"\s+TO\s+(?P<grantees>[\w,\s]+)",
     re.IGNORECASE,
 )
+
+# A blanket grant never names the table, so the pattern above cannot see it.
+ALL_TABLES_GRANT = re.compile(
+    r"GRANT\s+(?P<privs>[^;]*?)\s+ON\s+ALL\s+TABLES\s+IN\s+SCHEMA\s+public"
+    r"\s+TO\s+(?P<grantees>[\w,\s]+)",
+    re.IGNORECASE,
+)
+
+WRITE_VERB = re.compile(r"\b(INSERT|UPDATE|DELETE|TRUNCATE|ALL)\b", re.IGNORECASE)
+
+
+def _write_grants(text: str) -> list[str]:
+    """Every GRANT in `text` giving bloom_workflows a write on the table."""
+    found = []
+    for pattern in (GRANT_ON_TABLE, ALL_TABLES_GRANT):
+        for m in pattern.finditer(text):
+            if "bloom_workflows" in m.group("grantees") and WRITE_VERB.search(
+                m.group("privs")
+            ):
+                found.append(m.group(0).strip())
+    return found
 
 
 def _migration_text() -> str:
@@ -38,14 +63,40 @@ def _migration_text() -> str:
 
 def test_the_role_is_never_granted_a_direct_write():
     """The wrapper is pointless if the role can write the table around it."""
-    offenders = [
-        f"GRANT {verb.strip()} TO {grantees.strip()}"
-        for verb, grantees in WRITE_GRANT.findall(_migration_text())
-        if "bloom_workflows" in grantees
-    ]
+    offenders = _write_grants(_migration_text())
     assert not offenders, (
         f"bloom_workflows must write {TABLE} through {FUNCTION} only. Found: {offenders}"
     )
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "GRANT INSERT ON public.gravi_plate_videos TO bloom_workflows;",
+        "GRANT INSERT ON gravi_plate_videos TO bloom_workflows;",
+        "GRANT INSERT, UPDATE ON gravi_plate_videos TO bloom_workflows;",
+        "GRANT ALL ON TABLE gravi_plate_videos TO bloom_workflows;",
+        "GRANT UPDATE (object_path) ON gravi_plate_videos TO bloom_workflows;",
+        "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO bloom_workflows;",
+    ],
+)
+def test_the_guard_matches_every_spelling_of_a_direct_write(statement):
+    """The table's own migration writes the name unqualified, so the schema-qualified
+    form is the least likely one to appear. Every one of these once passed the guard."""
+    assert _write_grants(statement), f"the guard does not match: {statement}"
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "GRANT SELECT ON gravi_plate_videos TO bloom_workflows;",
+        "GRANT INSERT, UPDATE ON gravi_plate_videos TO bloom_user;",
+        "GRANT EXECUTE ON FUNCTION public.record_gravi_plate_video() TO bloom_workflows;",
+    ],
+)
+def test_the_guard_does_not_fire_on_a_read_or_another_role(statement):
+    """A guard that matched these would forbid the grant this migration relies on."""
+    assert not _write_grants(statement), f"the guard wrongly matches: {statement}"
 
 
 def test_the_recording_wrapper_exists():
