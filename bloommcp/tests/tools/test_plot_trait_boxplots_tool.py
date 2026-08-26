@@ -213,6 +213,72 @@ def test_batching_boundary_matches_threshold(n_traits, expect_batched):
     assert result.batched is expect_batched
 
 
+def test_delegate_batch_size_matches_live_default():
+    """Pins _DELEGATE_BATCH_SIZE against the live delegate signature so a future
+    sleap-roots-analyze bump that changes its default is caught here, not silently
+    desyncing page_traits' chunking from what actually landed on each rendered page."""
+    import inspect
+
+    default = (
+        inspect.signature(
+            plot_trait_boxplots_tool.create_trait_boxplots_by_genotype_batched
+        )
+        .parameters["batch_size"]
+        .default
+    )
+    assert default == plot_trait_boxplots_tool._DELEGATE_BATCH_SIZE
+
+
+def test_page_traits_maps_each_page_to_its_actual_traits():
+    """#466 review: which traits landed on which page was previously only discoverable by
+    opening the image and reading axis labels — page_traits must name them directly, chunked
+    exactly the way create_trait_boxplots_by_genotype_batched's own batch_size does (confirmed
+    against the live delegate default by test_delegate_batch_size_matches_live_default above).
+    """
+    wide_experiment = "wide.csv"
+    n_traits = 60
+    reader = FakeReader()
+    reader.add_experiment(wide_experiment, _wide_df(n_traits))
+    _ports.configure(reader=reader, store=FakeResultStore())
+    try:
+        result = plot_trait_boxplots(
+            PlotTraitBoxplotsParams(experiment=wide_experiment)
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    all_trait_cols = result.resolved_trait_columns
+    batch_size = plot_trait_boxplots_tool._DELEGATE_BATCH_SIZE
+    expected_pages = _expected_pages(n_traits)
+    assert len(result.page_traits) == expected_pages
+    for i in range(1, expected_pages + 1):
+        name = f"trait_boxplots_page{i}.png"
+        start = (i - 1) * batch_size
+        assert result.page_traits[name] == all_trait_cols[start : start + batch_size]
+    all_paged = [t for traits in result.page_traits.values() for t in traits]
+    assert sorted(all_paged) == sorted(all_trait_cols)
+    assert len(all_paged) == len(all_trait_cols)
+
+
+def test_page_traits_single_entry_when_not_batched(injected_ports):
+    result = _run()
+    assert list(result.page_traits.keys()) == ["trait_boxplots.png"]
+    assert result.page_traits["trait_boxplots.png"] == result.resolved_trait_columns
+
+
+def test_resolved_trait_columns_recorded_in_result_and_manifest(injected_ports):
+    """#466 review: the actual auto-detected trait list used to render/persist the PNG was
+    previously never recorded — only its count (n_traits_plotted)."""
+    _reader, store = injected_ports
+    result = _run()
+    from bloom_mcp import experiment_utils as eu
+
+    expected = eu.detect_columns(_raw_df())["trait_cols"]
+    assert result.resolved_trait_columns == expected
+    stored = store.get_run(_EXPERIMENT, "trait_boxplots", "latest")
+    assert stored.params["resolved_trait_columns"] == expected
+
+
 # ── tools/list presence ──────────────────────────────────────────────────────
 
 

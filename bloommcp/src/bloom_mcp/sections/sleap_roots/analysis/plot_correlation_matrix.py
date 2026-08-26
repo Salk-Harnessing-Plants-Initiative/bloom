@@ -30,9 +30,26 @@ it, so it is excluded from the counts exactly like a zero-variance trait. ``low_
 pairs`` names exactly which pairs this affects (excluding any pair already explained by a
 zero-variance trait, to avoid double-reporting the same ``NaN`` cell under two reasons).
 
-**At least 2 resolved trait columns are required.** A correlation view of a single trait is not
-meaningful (there is no pair to correlate) — rejected as ``invalid_input`` before any run is
-persisted, rather than silently committing a degenerate 1×1 result.
+**At least 2 resolved trait columns are required, and at least 2 of them must carry non-zero
+variance.** A correlation view of a single trait is not meaningful (there is no pair to
+correlate); nor is one where every-but-one (or every) trait is constant/all-NaN, since every
+cell would then be ``NaN`` — both rejected as ``invalid_input``/``assumption_violated`` before
+any run is persisted, rather than silently committing a degenerate or all-``NaN`` result.
+
+**The rendered PNG is NOT masked the same way the summary is — this is a known, disclosed gap,
+not a silent one.** ``strong_positive_correlations``/``strong_negative_correlations`` and the
+``zero_variance_traits``/``low_overlap_trait_pairs`` disclosure fields above are all computed
+from this tool's own *guarded* ``.corr(min_periods=...)`` call. The persisted image, however, is
+rendered by a separate, independent call to the vendored ``create_correlation_heatmap``, which
+runs its own **unguarded** ``.corr()`` with no ``min_periods`` and no way to accept a
+precomputed matrix — a flagged pair's cell in the image can still render as a solid,
+confidently-colored ±1.0 square, visually indistinguishable from a real strong correlation over
+hundreds of points. Fixing this would mean either patching the vendored delegate (outside this
+package) or re-implementing heatmap rendering in bloommcp (against this file's own no-vendored-
+plotting-logic principle), so instead: the result's ``heatmap_caveat`` field is populated
+whenever either disclosure list is non-empty, explicitly telling the caller to cross-check them
+before trusting a highlighted cell. Tracked at
+https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/747.
 
 Persists a versioned run under its own tool class ``correlation_matrix`` (not the shared,
 unclaimed legacy ``viz`` slot — see ``openspec/changes/converge-bloommcp-viz-tools/design.md``
@@ -116,6 +133,20 @@ class PlotCorrelationMatrixResult(RunLinks):
         "produce a spurious exact +/-1.0 'strong correlation'. Excludes any pair already "
         "explained by zero_variance_traits. Empty when every pair had enough overlap.",
     )
+    heatmap_caveat: Optional[str] = Field(
+        default=None,
+        description="Populated only when zero_variance_traits or low_overlap_trait_pairs is "
+        "non-empty: the rendered PNG is NOT masked the way this summary is (the vendored "
+        "delegate runs its own unguarded correlation), so a flagged pair's cell in the image "
+        "may still render as a solid, confidently-colored square. Cross-check those two "
+        "fields before trusting any highlighted cell in the image.",
+    )
+    resolved_trait_columns: list[str] = Field(
+        description="The exact trait columns used to render/persist this run, in selection "
+        "order — recorded even when trait_columns was omitted (auto-detected), so a later "
+        "reader of this run's manifest can tell exactly which traits produced it without "
+        "re-deriving auto-detection against data that may have drifted since.",
+    )
 
 
 @as_mcp_tool(
@@ -145,11 +176,21 @@ def plot_correlation_matrix(
             "experiment has more than one detected trait.",
         )
 
-    corr = frame.df[trait_cols].corr(min_periods=_MIN_CORR_OVERLAP)
     zero_variance_traits = [
         c for c in trait_cols if not (frame.df[c].std(skipna=True) > 0)
     ]
     zero_variance_set = set(zero_variance_traits)
+    if len(trait_cols) - len(zero_variance_set) < 2:
+        raise BloomMCPError(
+            code="assumption_violated",
+            message=f"plot_correlation_matrix requires at least 2 non-constant trait "
+            f"columns; {params.experiment!r} resolved {trait_cols!r}, of which "
+            f"{sorted(zero_variance_set)!r} are constant or entirely NaN.",
+            remedy="Select at least 2 trait columns with non-zero variance, or use a "
+            "different experiment.",
+        )
+
+    corr = frame.df[trait_cols].corr(min_periods=_MIN_CORR_OVERLAP)
 
     # Vectorized pairwise overlap counts (notna^T @ notna) — a python double loop over
     # trait_cols x trait_cols would be O(n^2) even just to build this, prohibitive at
@@ -168,7 +209,22 @@ def plot_correlation_matrix(
     high_pos = int((upper > 0.7).sum().sum())
     high_neg = int((upper < -0.7).sum().sum())
 
-    prov = provenance.model_copy(update={"based_on_version": frame.source})
+    heatmap_caveat = (
+        "The rendered heatmap image is not masked for the pair(s)/trait(s) named in "
+        "zero_variance_traits/low_overlap_trait_pairs — it may show a solid, "
+        "confidently-colored cell for one of them. Cross-check those fields before "
+        "trusting any highlighted cell (see "
+        "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/747)."
+        if zero_variance_traits or low_overlap_trait_pairs
+        else None
+    )
+
+    prov = provenance.model_copy(
+        update={
+            "based_on_version": frame.source,
+            "params": {**provenance.params, "resolved_trait_columns": trait_cols},
+        }
+    )
     run = store.create_run(
         experiment=params.experiment,
         tool_class=_TOOL_CLASS,
@@ -197,6 +253,8 @@ def plot_correlation_matrix(
         strong_negative_correlations=high_neg,
         zero_variance_traits=zero_variance_traits,
         low_overlap_trait_pairs=low_overlap_trait_pairs,
+        heatmap_caveat=heatmap_caveat,
+        resolved_trait_columns=trait_cols,
         run_ref=stored.run_ref,
         version_dir=stored.version_dir,
         manifest_path=stored.manifest_path,

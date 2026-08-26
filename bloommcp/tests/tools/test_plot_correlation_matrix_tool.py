@@ -238,11 +238,31 @@ def test_provenance_stamped_seed_none_and_links_returned(injected_ports):
 
 
 def test_source_content_addressed_in_manifest(injected_ports):
+    """Actually asserts source/input content-addressing (#466 review round 3: the previous
+    version of this test only checked output hashing, not the based_on_version/
+    resolved_trait_columns fields its name promised)."""
     _reader, store = injected_ports
-    _run()
+    result = _run()
     stored = store.get_run(_EXPERIMENT, "correlation_matrix", "latest")
     assert stored.input_validation is None  # no input_validation for this tool
     assert stored.output_sha256  # every committed output is hashed
+    assert stored.based_on_version == result.source == "raw"
+    assert stored.params["resolved_trait_columns"] == result.resolved_trait_columns
+
+
+def test_resolved_trait_columns_recorded_when_trait_columns_omitted(injected_ports):
+    """When trait_columns is omitted, auto-detection resolves the actual trait list — that
+    exact list must be recoverable from the manifest later, not just its count (#466 review:
+    previously only n_traits was recorded, and auto-detection is data-dependent so it can't
+    be safely re-derived from a manifest read months later)."""
+    _reader, store = injected_ports
+    result = _run()
+    from bloom_mcp import experiment_utils as eu
+
+    expected = eu.detect_columns(_raw_df())["trait_cols"]
+    assert result.resolved_trait_columns == expected
+    stored = store.get_run(_EXPERIMENT, "correlation_matrix", "latest")
+    assert stored.params["resolved_trait_columns"] == expected
 
 
 def test_zero_variance_trait_excluded_from_counts_and_reported(injected_ports):
@@ -262,6 +282,86 @@ def test_zero_variance_trait_excluded_from_counts_and_reported(injected_ports):
     finally:
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
     assert "constant_trait" in result.zero_variance_traits
+    assert result.heatmap_caveat is not None
+    assert "747" in result.heatmap_caveat
+
+
+def test_all_selected_traits_zero_variance_is_assumption_violated(monkeypatch):
+    """The >=2-column guard only counts columns, not variance — 2+ constant/all-NaN traits
+    must still be rejected (as assumption_violated, discovered only after reading the data,
+    unlike the pure input-shape invalid_input single-trait guard) rather than committing a
+    meaningless all-NaN heatmap as a permanent artifact (#466 review)."""
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(8)],
+            "geno": ["g1", "g2"] * 4,
+            "const_a": [1.0] * 8,
+            "const_b": [2.0] * 8,
+        }
+    )
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, df)
+    store = FakeResultStore()
+    _ports.configure(reader=reader, store=store)
+    calls = {"n": 0}
+    real = plot_correlation_matrix_tool.create_correlation_heatmap
+
+    def _spy(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(
+        plot_correlation_matrix_tool, "create_correlation_heatmap", _spy
+    )
+    try:
+        with pytest.raises(BloomMCPError) as exc:
+            plot_correlation_matrix(PlotCorrelationMatrixParams(experiment=_EXPERIMENT))
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    assert exc.value.code == "assumption_violated"
+    assert calls["n"] == 0
+    assert store.list_runs(_EXPERIMENT, "correlation_matrix") == []
+
+
+def test_heatmap_caveat_is_none_when_nothing_is_flagged(injected_ports):
+    result = _run()
+    assert result.zero_variance_traits == []
+    assert result.low_overlap_trait_pairs == []
+    assert result.heatmap_caveat is None
+
+
+def test_heatmap_still_renders_from_the_full_unmasked_frame(
+    injected_ports, monkeypatch
+):
+    """The disclosure (heatmap_caveat) is honest only if the delegate genuinely receives no
+    masking — pins that create_correlation_heatmap is called with the same frame/trait_cols
+    regardless of what zero_variance_traits/low_overlap_trait_pairs flag (#466 review: the
+    image is NOT masked the way the summary is)."""
+    df = _raw_df()
+    df["constant_trait"] = 1.0
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, df)
+    _ports.configure(reader=reader, store=FakeResultStore())
+    captured = {}
+    real = plot_correlation_matrix_tool.create_correlation_heatmap
+
+    def _spy(passed_df, passed_trait_cols, *a, **k):
+        captured["trait_cols"] = list(passed_trait_cols)
+        return real(passed_df, passed_trait_cols, *a, **k)
+
+    monkeypatch.setattr(
+        plot_correlation_matrix_tool, "create_correlation_heatmap", _spy
+    )
+    try:
+        result = plot_correlation_matrix(
+            PlotCorrelationMatrixParams(experiment=_EXPERIMENT)
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    assert "constant_trait" in result.zero_variance_traits
+    # The flagged trait was still passed to the delegate, unmasked/unexcluded.
+    assert "constant_trait" in captured["trait_cols"]
+    assert captured["trait_cols"] == result.resolved_trait_columns
 
 
 def test_single_trait_selection_is_invalid_input(injected_ports, monkeypatch):
@@ -320,6 +420,7 @@ def test_low_overlap_pair_excluded_from_counts_and_reported(injected_ports):
     assert ["sparse_a", "sparse_b"] in result.low_overlap_trait_pairs
     assert result.strong_positive_correlations == 0
     assert result.zero_variance_traits == []
+    assert result.heatmap_caveat is not None
 
 
 def test_reads_raw_even_when_a_cleaned_version_already_exists():

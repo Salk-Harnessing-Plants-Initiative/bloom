@@ -13,6 +13,14 @@ plotting logic of its own. A batched render persists one committed output per pa
 Persists a versioned run under its own tool class ``trait_histograms`` (not the shared,
 unclaimed legacy ``viz`` slot — see
 ``openspec/changes/converge-bloommcp-viz-tools/design.md`` for why).
+
+**Two disclosure gaps closed in #466's review** (mirrors ``plot_trait_boxplots``):
+``resolved_trait_columns`` records the exact trait columns used — including when
+``trait_columns`` was omitted and auto-detection resolved them — both in the result and stamped
+into the persisted run's ``params``, so a later reader of the manifest doesn't have to
+re-run (data-dependent) auto-detection against data that may have drifted; and ``page_traits``
+names which traits landed on which page of a batched (paginated) render, previously only
+discoverable by opening an image and reading its axis labels.
 """
 
 from __future__ import annotations
@@ -40,6 +48,12 @@ from ._viz_shared import TRAIT_BATCH_THRESHOLD, resolve_trait_columns
 
 _TOOL_CLASS = "trait_histograms"
 _PNG_STEM = "trait_histograms"
+# create_trait_histograms_batched's own internal page size — independent of
+# TRAIT_BATCH_THRESHOLD (which only decides WHETHER to batch). Not overridden by this
+# tool's call, so it is safe to use for computing which trait landed on which page;
+# test_plot_trait_histograms_tool.py pins this against the live delegate signature so a
+# future sleap-roots-analyze bump that changes it is caught, not silently desynced.
+_DELEGATE_BATCH_SIZE = 16
 
 
 class PlotTraitHistogramsParams(BaseModel):
@@ -72,6 +86,15 @@ class PlotTraitHistogramsResult(RunLinks):
     n_pages: int = Field(
         description="Number of committed output pages (1 when not batched)."
     )
+    resolved_trait_columns: list[str] = Field(
+        description="The exact trait columns used to render/persist this run, in selection "
+        "order — recorded even when trait_columns was omitted (auto-detected).",
+    )
+    page_traits: dict[str, list[str]] = Field(
+        description="Maps each committed output filename to the trait columns rendered on "
+        "that page (a single entry, covering every resolved_trait_columns, when not batched) "
+        "— otherwise only discoverable by opening the image and reading its axis labels.",
+    )
 
 
 @as_mcp_tool(
@@ -94,7 +117,12 @@ def plot_trait_histograms(
     trait_cols = resolve_trait_columns(frame, params.trait_columns, params.experiment)
     batched = len(trait_cols) > TRAIT_BATCH_THRESHOLD
 
-    prov = provenance.model_copy(update={"based_on_version": frame.source})
+    prov = provenance.model_copy(
+        update={
+            "based_on_version": frame.source,
+            "params": {**provenance.params, "resolved_trait_columns": trait_cols},
+        }
+    )
     run = store.create_run(
         experiment=params.experiment,
         tool_class=_TOOL_CLASS,
@@ -111,10 +139,17 @@ def plot_trait_histograms(
             figures = [create_trait_histograms(frame.df, trait_cols)]
 
         outputs: dict[str, str] = {}
+        page_traits: dict[str, list[str]] = {}
         for i, fig in enumerate(figures, start=1):
             name = f"{_PNG_STEM}.png" if not batched else f"{_PNG_STEM}_page{i}.png"
             fig.savefig(run.staging_dir / name, dpi=150, bbox_inches="tight")
             outputs[name] = name
+            start = (i - 1) * _DELEGATE_BATCH_SIZE
+            page_traits[name] = (
+                trait_cols[start : start + _DELEGATE_BATCH_SIZE]
+                if batched
+                else list(trait_cols)
+            )
         stored = store.commit(run, outputs)
     except Exception:
         rmtree(run.staging_dir, ignore_errors=True)
@@ -129,6 +164,8 @@ def plot_trait_histograms(
         n_traits_plotted=len(trait_cols),
         batched=batched,
         n_pages=len(figures),
+        resolved_trait_columns=trait_cols,
+        page_traits=page_traits,
         run_ref=stored.run_ref,
         version_dir=stored.version_dir,
         manifest_path=stored.manifest_path,
