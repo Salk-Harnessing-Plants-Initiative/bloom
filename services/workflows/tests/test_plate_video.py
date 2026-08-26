@@ -658,14 +658,19 @@ def test_plan_keeps_when_the_stored_video_is_current():
     assert pv.plan_render(client, 12, "P7", 1)["action"] == "keep"
 
 
-def test_plan_refuses_a_plate_too_large_without_probing_storage():
-    """The size check runs first, so an absurd plate costs no storage call."""
-    client = _PlanClient(frames=_big(20), row=_recorded())
+def test_plan_refuses_a_plate_too_large_to_encode():
+    client = _PlanClient(frames=_big(20), row=_recorded(frames=1))
     plan = pv.plan_render(client, 12, "P7", 1)
 
     assert plan["action"] == "refuse"
     assert "GB" in plan["reason"]
-    assert client.bucket.signed == [], "storage was probed for a plate already refused"
+
+
+def test_a_plate_too_large_to_encode_still_gets_its_stored_video_back():
+    """The size limit is about encoding, not about the request. Refusing here
+    would withhold a video that already exists and is current."""
+    client = _PlanClient(frames=_big(20), row=_recorded(frames=20))
+    assert pv.plan_render(client, 12, "P7", 1)["action"] == "keep"
 
 
 def test_plan_refuses_when_storage_cannot_say():
@@ -678,15 +683,22 @@ def test_plan_refuses_when_storage_cannot_say():
     assert "could not say" in plan["reason"]
 
 
-def test_plan_reports_coverage_even_when_it_keeps():
-    """Coverage describes the run, not the decision — the page states it beside
-    an existing video too."""
+def test_coverage_is_reported_when_something_will_be_rendered():
+    client = _PlanClient(frames=_frames(200), row=_recorded(frames=140), total_cycles=500)
+    plan = pv.plan_render(client, 12, "P7", 1)
+
+    assert plan["action"] == "render"
+    assert plan["coverage"]["summary"] == "200 of 500 frames; the run stopped early"
+
+
+def test_keeping_costs_no_session_query():
+    """Nothing reads coverage on the keep path, and it is a second round trip."""
     client = _PlanClient(frames=_frames(140), row=_recorded(frames=140), total_cycles=200)
     plan = pv.plan_render(client, 12, "P7", 1)
 
     assert plan["action"] == "keep"
-    assert plan["coverage"]["state"] == "short"
-    assert plan["coverage"]["summary"] == "140 of 200 frames; the run stopped early"
+    assert plan["coverage"] is None
+    assert "gravi_scan_sessions" not in client.tables
 
 
 def test_plan_carries_the_key_on_every_outcome():

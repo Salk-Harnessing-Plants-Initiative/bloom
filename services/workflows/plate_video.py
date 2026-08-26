@@ -329,30 +329,27 @@ def plan_render(
     `client` is an argument rather than a module global so a worker can call
     this later without a refactor.
 
-    Order matters. The size check runs before the storage probe, so an absurd
-    plate is refused without a storage call — at the cost that a plate too large
-    to render is refused even when it already has a video worth handing back.
+    The size check applies to the decision, not the request: a plate too large
+    to encode still has its stored video handed back. Coverage is only computed
+    when something will be rendered — on the keep path nothing reads it, and it
+    costs a second query.
     """
     frames = get_plate_frames(client, experiment_id, plate_id, wave_number)
+    stored = stored_video(client, experiment_id, plate_id, wave_number)
+    decision = render_decision(frames, stored)
+
+    if decision["action"] != "render":
+        return {**decision, "frames": frames, "coverage": None}
 
     oversized = too_large_to_render(frames)
     if oversized:
-        key = plate_video_path(experiment_id, wave_number, plate_id)
         return {
             "action": "refuse",
             "reason": oversized,
-            "key": key,
+            "key": stored["key"],
             "frames": frames,
             "coverage": None,
         }
 
-    stored = stored_video(client, experiment_id, plate_id, wave_number)
-    decision = render_decision(frames, stored)
-
-    # Coverage describes the run, not the decision, so it is reported even when
-    # nothing is encoded — the page states it beside a video either way.
-    coverage = (
-        completeness(frames, planned_cycles(client, frames)) if frames else None
-    )
-
+    coverage = completeness(frames, planned_cycles(client, frames))
     return {**decision, "frames": frames, "coverage": coverage}
