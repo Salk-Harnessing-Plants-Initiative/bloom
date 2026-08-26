@@ -47,10 +47,13 @@ def test_the_role_is_not_bypassrls(pg_conn):
     """The premise of every other test here. A BYPASSRLS role reads everything
     regardless of policy, so without this they would pass with no policy at all."""
     with pg_conn.cursor() as cur:
-        cur.execute("SELECT rolbypassrls FROM pg_roles WHERE rolname = %s", (ROLE,))
+        cur.execute(
+            "SELECT rolbypassrls, rolsuper FROM pg_roles WHERE rolname = %s", (ROLE,)
+        )
         row = cur.fetchone()
         assert row is not None, f"{ROLE} does not exist"
-        assert row[0] is False, f"{ROLE} is BYPASSRLS; these tests would prove nothing"
+        # A superuser bypasses RLS whatever rolbypassrls says, so both must be false.
+        assert row == (False, False), f"{ROLE} bypasses RLS; these tests would prove nothing"
     pg_conn.rollback()
 
 
@@ -77,7 +80,7 @@ def test_reads_a_plates_captures_and_image_paths(pg_conn):
 
 
 @pytest.mark.parametrize("table", ["gravi_scans", "gravi_images"])
-@pytest.mark.parametrize("verb", ["UPDATE", "DELETE"])
+@pytest.mark.parametrize("verb", ["INSERT", "UPDATE", "DELETE"])
 def test_cannot_write_either_table(pg_conn, table, verb):
     """Read access only. A write must fail at the privilege check, not silently.
 
@@ -86,6 +89,7 @@ def test_cannot_write_either_table(pg_conn, table, verb):
     wrong reason.
     """
     statement = {
+        "INSERT": f"INSERT INTO {table} (id) VALUES (%s)",
         "UPDATE": f"UPDATE {table} SET id = id WHERE id = %s",
         "DELETE": f"DELETE FROM {table} WHERE id = %s",
     }[verb]
@@ -110,7 +114,18 @@ def test_holds_select_and_nothing_else(pg_conn, table):
         )
         assert cur.fetchone()[0] is True, f"{ROLE} cannot SELECT {table}"
 
-        for priv in ("INSERT", "UPDATE", "DELETE"):
+        # Column-grantable privileges are checked per column: a grant like
+        # INSERT (scan_id, path, frames) -- which this role already holds on
+        # cyl_scan_videos -- leaves has_table_privilege false.
+        for priv in ("INSERT", "UPDATE", "REFERENCES"):
+            cur.execute(
+                "SELECT has_any_column_privilege(%s, %s, %s)",
+                (ROLE, f"public.{table}", priv),
+            )
+            assert cur.fetchone()[0] is False, f"{ROLE} unexpectedly holds {priv} on {table}"
+
+        # DELETE and TRUNCATE cannot be granted per column.
+        for priv in ("DELETE", "TRUNCATE"):
             cur.execute(
                 "SELECT has_table_privilege(%s, %s, %s)", (ROLE, f"public.{table}", priv)
             )
@@ -118,34 +133,58 @@ def test_holds_select_and_nothing_else(pg_conn, table):
     pg_conn.rollback()
 
 
-def test_reads_the_graviscan_images_bucket_and_no_other(pg_conn):
-    """The policy names one bucket. A policy without the bucket_id predicate
-    would open every bucket in storage.objects to this role."""
+def test_reads_graviscan_images_objects_and_not_another_bucket(pg_conn):
+    """Reads a real storage row as the role, rather than reading the policy back
+    out of the catalogue — a policy that exists still proves nothing about what
+    it returns.
+
+    The control bucket is a throwaway rather than a real one: `scrna` carries a
+    `roles=public` policy, and `images` and `videos` each have a policy for this
+    role, so none of them can show that the graviscan grant is scoped.
+    """
+    with pg_conn.cursor() as cur:
+        for bucket in ("graviscan-images", "zzz-rls-control"):
+            cur.execute(
+                "INSERT INTO storage.buckets (id, name) VALUES (%s, %s) "
+                "ON CONFLICT (id) DO NOTHING",
+                (bucket, bucket),
+            )
+            cur.execute(
+                "INSERT INTO storage.objects (bucket_id, name) VALUES (%s, %s)",
+                (bucket, "1/wave-1/PLATE-RLS.tif"),
+            )
+
+        cur.execute(f"SET LOCAL ROLE {ROLE}")
+        cur.execute(
+            "SELECT bucket_id FROM storage.objects WHERE name = %s",
+            ("1/wave-1/PLATE-RLS.tif",),
+        )
+        visible = {r[0] for r in cur.fetchall()}
+
+    assert "graviscan-images" in visible, "the role cannot read the bucket it was granted"
+    assert "zzz-rls-control" not in visible, f"the grant is not scoped to one bucket: {visible}"
+    pg_conn.rollback()
+
+
+def test_holds_no_write_policy_on_graviscan_images(pg_conn):
+    """Read access only, for now.
+
+    Checks with_check as well as qual: for a FOR INSERT policy qual is NULL, so
+    a qual-only filter silently skips exactly the policy shape the write-path
+    migration will add.
+    """
     with pg_conn.cursor() as cur:
         cur.execute(
             """
-            SELECT qual
-            FROM pg_policies
-            WHERE schemaname = 'storage'
-              AND tablename = 'objects'
-              AND policyname = 'workflows_read_graviscan_images'
-            """
-        )
-        row = cur.fetchone()
-        assert row is not None, "the graviscan-images read policy is missing"
-        assert "graviscan-images" in row[0], f"policy is not scoped to one bucket: {row[0]}"
-
-        cur.execute(
-            """
-            SELECT count(*)
+            SELECT policyname, cmd
             FROM pg_policies
             WHERE schemaname = 'storage'
               AND tablename = 'objects'
               AND %s = ANY(roles)
               AND cmd <> 'SELECT'
-              AND qual LIKE '%%graviscan%%'
+              AND coalesce(qual, '') || coalesce(with_check, '') LIKE %s
             """,
-            (ROLE,),
+            (ROLE, "%graviscan-images%"),
         )
-        assert cur.fetchone()[0] == 0, "read access only — no write policy on graviscan yet"
+        assert cur.fetchall() == [], "a write policy on graviscan-images appeared"
     pg_conn.rollback()
