@@ -81,7 +81,7 @@ def test_reads_a_plates_captures_and_image_paths(pg_conn):
     pg_conn.rollback()
 
 
-@pytest.mark.parametrize("table", ["gravi_scans", "gravi_images"])
+@pytest.mark.parametrize("table", ["gravi_scans", "gravi_images", "gravi_scan_sessions"])
 @pytest.mark.parametrize("verb", ["INSERT", "UPDATE", "DELETE"])
 def test_cannot_write_either_table(pg_conn, table, verb):
     """Read access only. A write must be refused, not silently accepted.
@@ -108,7 +108,7 @@ def test_cannot_write_either_table(pg_conn, table, verb):
     pg_conn.rollback()
 
 
-@pytest.mark.parametrize("table", ["gravi_scans", "gravi_images"])
+@pytest.mark.parametrize("table", ["gravi_scans", "gravi_images", "gravi_scan_sessions"])
 def test_holds_select_and_nothing_else(pg_conn, table):
     """Privilege-level check, so a write refusal cannot be mistaken for an RLS
     policy that happens to match no rows."""
