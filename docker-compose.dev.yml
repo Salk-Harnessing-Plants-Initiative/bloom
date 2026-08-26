@@ -80,6 +80,8 @@ services:
     restart: unless-stopped
 
   workflows:
+    # Ceiling covers the 512m tmpfs (charged to this cgroup), ffmpeg, and one decoded frame.
+    mem_limit: 2g
     build:
       context: ./services/workflows
       dockerfile: Dockerfile
@@ -126,6 +128,8 @@ services:
   # submits each claimed batch to Argo as a Kubernetes Workflow CRD. Same image
   # as workflows; scale by replicas (pgmq's claim is concurrency-safe).
   cyl-pipeline-worker:
+    # Submits to Argo rather than encoding; sized to clear the 512m tmpfs.
+    mem_limit: 1g
     build:
       context: ./services/workflows
       dockerfile: Dockerfile
@@ -181,6 +185,8 @@ services:
   # not a claimed, exactly-once event — redundant concurrent sweeps just
   # mean harmless, wasted-work overlap, not a correctness risk.
   cyl-status-poller:
+    # Polls Argo status only; sized to clear the 512m tmpfs.
+    mem_limit: 1g
     build:
       context: ./services/workflows
       dockerfile: Dockerfile
