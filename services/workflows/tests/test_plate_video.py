@@ -173,3 +173,74 @@ def test_the_cycle_number_is_carried_through_even_when_null(cycle):
     """Gap detection reads it, and null is a real value the uploader sends."""
     client = _Client([_row(0, "a.tif", cycle=cycle)])
     assert pv.get_plate_frames(client, 12, "P7", 1)[0]["cycle_number"] == cycle
+
+
+# --- the byte pre-flight -----------------------------------------------------
+#
+# A plate TIFF measured off the scanners is ~57 MB, so a long run is tens of
+# gigabytes. The render is synchronous behind a 240s proxy timeout, so the size
+# has to be known before anything is downloaded.
+
+MB = 1024**2
+GB = 1024**3
+
+
+def _sized(*sizes):
+    """One frame per size; None means the row did not record one."""
+    return [
+        {"capture_date": T0, "cycle_number": i, "object_path": f"{i}.tif",
+         "file_size_bytes": size}
+        for i, size in enumerate(sizes)
+    ]
+
+
+def test_source_bytes_totals_what_will_be_downloaded():
+    assert pv.source_bytes(_sized(57 * MB, 57 * MB, 57 * MB)) == (171 * MB, 0)
+
+
+def test_source_bytes_counts_the_frames_that_did_not_say():
+    """`file_size_bytes` is nullable, so the caller has to know the total is a
+    floor rather than a measurement."""
+    assert pv.source_bytes(_sized(57 * MB, None, 57 * MB)) == (114 * MB, 1)
+
+
+def test_source_bytes_of_nothing_is_zero_not_an_error():
+    assert pv.source_bytes([]) == (0, 0)
+
+
+def test_a_plate_within_the_limit_is_not_refused():
+    """~86 frames at 57 MB is the design's expected ceiling, and must pass."""
+    assert pv.too_large_to_render(_sized(*([57 * MB] * 86))) is None
+
+
+def test_a_multi_day_plate_is_refused():
+    """860 frames at 57 MB is ~49 GB — hours of downloading inside a request
+    that gives up at 240s."""
+    assert pv.too_large_to_render(_sized(*([57 * MB] * 860))) is not None
+
+
+def test_the_refusal_says_how_big_and_how_much_was_measured():
+    """A scientist reading this in a log needs the number, and needs to know it
+    is a floor when some rows recorded no size."""
+    reason = pv.too_large_to_render(_sized(*([5 * GB] * 2 + [None])))
+    assert "10.0 GB" in reason
+    assert "2 of 3 frames" in reason
+
+
+def test_exactly_at_the_limit_is_allowed():
+    """A boundary that refuses what it permits elsewhere is a boundary nobody
+    can reason about."""
+    assert pv.too_large_to_render(_sized(pv.MAX_SOURCE_BYTES)) is None
+    assert pv.too_large_to_render(_sized(pv.MAX_SOURCE_BYTES + 1)) is not None
+
+
+def test_frames_with_no_recorded_size_cannot_trip_the_limit_alone():
+    """Nulls sum to nothing, so a plate whose sizes were never recorded is
+    allowed through rather than refused on a number nobody measured."""
+    assert pv.too_large_to_render(_sized(*([None] * 10_000))) is None
+
+
+def test_the_size_is_fetched_with_the_frames_not_in_a_second_query():
+    client = _Client([_row(0, "a.tif")])
+    pv.get_plate_frames(client, 12, "P7", 1)
+    assert "file_size_bytes" in client.q.recorded["select"]

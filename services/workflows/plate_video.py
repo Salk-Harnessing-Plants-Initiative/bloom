@@ -17,7 +17,14 @@ from datetime import datetime
 # the object to download. `!inner` drops a capture whose image never arrived —
 # excluded in the query rather than skipped later, so `len(frames)` means the
 # same thing as the count recorded against a stored video.
-_FRAME_SELECT = "capture_date, cycle_number, gravi_images!inner(object_path)"
+_FRAME_SELECT = (
+    "capture_date, cycle_number, gravi_images!inner(object_path, file_size_bytes)"
+)
+
+# Download volume, not memory. These are LZW TIFFs: ~57 MB on disk and ~97 MB
+# decoded, so ~86 frames is roughly 5 GB to pull. A coarse backstop against a
+# multi-day plate — the deadline is what actually bounds a render. Tune on staging.
+MAX_SOURCE_BYTES = 8 * 1024**3
 
 
 def get_plate_frames(
@@ -64,7 +71,36 @@ def _frame(row: dict) -> dict:
         "capture_date": row["capture_date"],
         "cycle_number": row.get("cycle_number"),
         "object_path": (embedded or {}).get("object_path"),
+        "file_size_bytes": (embedded or {}).get("file_size_bytes"),
     }
+
+
+def source_bytes(frames: list[dict]) -> tuple[int, int]:
+    """Bytes to download, and how many frames did not say.
+
+    `file_size_bytes` is nullable, so the total is a floor: safe to refuse on,
+    never safe to read as "small enough".
+    """
+    known = [f["file_size_bytes"] for f in frames if f["file_size_bytes"] is not None]
+    return sum(known), len(frames) - len(known)
+
+
+def too_large_to_render(frames: list[dict], limit: int = MAX_SOURCE_BYTES) -> str | None:
+    """Why this plate cannot be rendered in a request, or None.
+
+    Checked before anything is downloaded: the render is synchronous behind a
+    240s proxy timeout, and a long plate is tens of gigabytes. The deadline
+    would stop it eventually — this stops it in a millisecond, with a reason.
+    """
+    total, unknown = source_bytes(frames)
+    if total <= limit:
+        return None
+
+    counted = f"{len(frames) - unknown} of {len(frames)} frames"
+    return (
+        f"this plate is at least {total / 1024**3:.1f} GB across {counted}, "
+        f"over the {limit / 1024**3:.0f} GB a single render may pull"
+    )
 
 
 def first_capture(frames: list[dict]) -> datetime | None:
