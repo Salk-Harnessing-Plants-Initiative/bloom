@@ -42,6 +42,10 @@ class _Query:
         self.recorded.setdefault(key, []).append((column, value))
         return self
 
+    def limit(self, n):
+        self.recorded["limit"] = n
+        return self
+
     def in_(self, column, values):
         self.recorded["in"] = (column, list(values))
         return self
@@ -412,3 +416,124 @@ def test_a_run_that_outlasted_its_plan_is_complete_and_says_the_real_count():
 def test_a_run_that_matched_its_plan_does_not_mention_overshooting():
     result = pv.completeness(_cycles(1, 2, 3), planned=3)
     assert result["summary"] == "3 frames"
+
+
+# --- what is already stored --------------------------------------------------
+#
+# Three outcomes, and "unknown" is the one that matters: a storage outage that
+# makes the answer unclear is the same outage skipping frame downloads, so an
+# ambiguous answer arrives exactly when this render is the worse one. The key is
+# deterministic, so an overwrite is in place with nothing to recover.
+
+
+class _Bucket:
+    def __init__(self, raises=None):
+        self._raises = raises
+        self.signed: list[str] = []
+
+    def create_signed_url(self, key, ttl):
+        self.signed.append(key)
+        if self._raises is not None:
+            raise self._raises
+        return {"signedUrl": "http://signed"}
+
+
+class _Storage:
+    def __init__(self, bucket):
+        self._bucket = bucket
+        self.buckets: list[str] = []
+
+    def from_(self, name):
+        self.buckets.append(name)
+        return self._bucket
+
+
+class _StoredClient(_Client):
+    """A recorded video row, plus a storage bucket that answers or does not."""
+
+    def __init__(self, row=None, raises=None):
+        super().__init__(gravi_plate_videos=[row] if row else [])
+        self.bucket = _Bucket(raises)
+        self.storage = _Storage(self.bucket)
+
+
+def _recorded(frames=140, path="12/wave-1/P7.mp4"):
+    return {"object_path": path, "frame_count": frames}
+
+
+def test_a_recorded_video_whose_object_is_there_is_present():
+    client = _StoredClient(_recorded(frames=140))
+    result = pv.stored_video(client, 12, "P7", 1)
+
+    assert result["state"] == "present"
+    assert result["frame_count"] == 140
+    assert result["key"] == "12/wave-1/P7.mp4"
+
+
+def test_no_recorded_row_is_absent():
+    assert pv.stored_video(_StoredClient(None), 12, "P7", 1)["state"] == "absent"
+
+
+def test_a_row_whose_object_is_gone_is_absent_not_present():
+    """Serving the URL would hand back a 404; the row outlived its object."""
+    client = _StoredClient(_recorded(), raises=Exception("Object not found"))
+    result = pv.stored_video(client, 12, "P7", 1)
+
+    assert result["state"] == "absent"
+    assert result["frame_count"] is None, (
+        "a count from a row whose object is gone would be compared against"
+    )
+
+
+def test_storage_failing_to_answer_is_unknown_not_absent():
+    """The whole point. Read as absent, a storage outage overwrites a good video
+    with whatever this run managed to encode."""
+    client = _StoredClient(_recorded(), raises=Exception("504 Gateway Timeout"))
+    assert pv.stored_video(client, 12, "P7", 1)["state"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["Object not found", "not_found", "The resource does not exist", "no such key"],
+)
+def test_every_wording_storage_uses_for_missing_reads_as_absent(message):
+    """Storage answers a missing object with HTTP 400 and a string code, so the
+    wording is the guard — a status check would read missing as unknown."""
+    client = _StoredClient(_recorded(), raises=Exception(message))
+    assert pv.stored_video(client, 12, "P7", 1)["state"] == "absent"
+
+
+def test_an_unusable_plate_id_is_absent_without_touching_storage():
+    """`plate_video_path` refuses a key it cannot build; probing for None would
+    sign a nonsense path."""
+    client = _StoredClient(_recorded())
+    result = pv.stored_video(client, 12, "../secrets", 1)
+
+    assert result["state"] == "absent"
+    assert result["key"] is None
+    assert client.bucket.signed == [], "storage was asked about an unusable key"
+
+
+def test_the_probe_looks_in_the_videos_bucket():
+    client = _StoredClient(_recorded())
+    pv.stored_video(client, 12, "P7", 1)
+    assert client.storage.buckets == ["graviscan-videos"]
+
+
+def test_a_plate_with_no_wave_is_matched_with_is_null():
+    """`wave_number = NULL` matches nothing, so the row would be missed and a
+    stored video re-rendered on every request."""
+    client = _StoredClient(_recorded(path="12/wave-none/P7.mp4"))
+    result = pv.stored_video(client, 12, "P7", None)
+
+    recorded = client.queries["gravi_plate_videos"].recorded
+    assert ("wave_number", "null") in recorded["is"]
+    assert result["key"] == "12/wave-none/P7.mp4"
+
+
+def test_the_row_is_read_from_gravi_plate_videos_by_all_three_keys():
+    client = _StoredClient(_recorded())
+    pv.stored_video(client, 12, "P7", 3)
+
+    recorded = client.queries["gravi_plate_videos"].recorded
+    assert set(recorded["eq"]) == {("experiment_id", 12), ("plate_id", "P7"), ("wave_number", 3)}

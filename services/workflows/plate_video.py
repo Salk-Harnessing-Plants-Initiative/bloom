@@ -11,7 +11,16 @@ No storage, no encoding. This module answers what there is to render.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
+
+from plate_video_path import GRAVISCAN_VIDEOS_BUCKET, plate_video_path
+
+logger = logging.getLogger(__name__)
+
+# Storage answers a missing object with an error rather than an empty result,
+# and with HTTP 400 carrying a string code — so the wording is the real guard.
+_NOT_FOUND = ("not found", "not_found", "does not exist", "no such")
 
 # The scan carries the capture time and the plate's identity; the image carries
 # the object to download. `!inner` drops a capture whose image never arrived —
@@ -189,3 +198,65 @@ def first_capture(frames: list[dict]) -> datetime | None:
     is internally consistent and wrong throughout.
     """
     return frames[0]["capture_date"] if frames else None
+
+
+# --- what is already stored --------------------------------------------------
+
+
+def stored_video(client, experiment_id: int, plate_id: str, wave_number: int | None) -> dict:
+    """What this plate already has: `present`, `absent`, or `unknown`.
+
+    `unknown` is neither, and must not collapse into either. Read as absent, a
+    storage outage overwrites a good video with whatever this run manages to
+    encode — and the same outage is skipping frame downloads, so an unclear
+    answer arrives exactly when this render is the worse one. The key is
+    deterministic, so the overwrite is in place and there is nothing to recover.
+    Read as present, the request hands back a URL it cannot sign.
+    """
+    key = plate_video_path(experiment_id, wave_number, plate_id)
+    if key is None:
+        return {"state": "absent", "key": None, "frame_count": None}
+
+    row = _recorded_video(client, experiment_id, plate_id, wave_number)
+    if row is None:
+        # No record. The object could still be there from a hand-run backfill,
+        # but nothing says how many frames it covers, so it cannot be compared.
+        return {"state": "absent", "key": key, "frame_count": None}
+
+    exists = _object_exists(client, key)
+    if exists is None:
+        return {"state": "unknown", "key": key, "frame_count": row.get("frame_count")}
+    if not exists:
+        # The row outlived its object — regenerate rather than serve a 404.
+        return {"state": "absent", "key": key, "frame_count": None}
+
+    return {"state": "present", "key": key, "frame_count": row.get("frame_count")}
+
+
+def _recorded_video(client, experiment_id: int, plate_id: str, wave_number: int | None):
+    """The row recording this plate's video, or None."""
+    query = (
+        client.table("gravi_plate_videos")
+        .select("object_path, frame_count")
+        .eq("experiment_id", experiment_id)
+        .eq("plate_id", plate_id)
+    )
+    query = (
+        query.is_("wave_number", "null")
+        if wave_number is None
+        else query.eq("wave_number", wave_number)
+    )
+    rows = query.limit(1).execute().data or []
+    return rows[0] if rows else None
+
+
+def _object_exists(client, key: str) -> bool | None:
+    """Whether an object sits at `key`, or None when storage could not say."""
+    try:
+        client.storage.from_(GRAVISCAN_VIDEOS_BUCKET).create_signed_url(key, 60)
+        return True
+    except Exception as exc:
+        if any(token in str(exc).lower() for token in _NOT_FOUND):
+            return False
+        logger.warning("could not check for a stored video at %s: %s", key, exc)
+        return None
