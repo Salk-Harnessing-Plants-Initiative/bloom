@@ -38,6 +38,9 @@ def render(experiment_id: int, body: dict) -> dict:
     except FrameUnreadable as exc:
         # Naming the frame is the point — "a frame failed" sends someone to the
         # scanner, "12/wave-1/P7_40.tif could not be downloaded" sends them to it.
+        # Logged as well as returned: the web proxy suppresses 502 detail, so
+        # without this the object path is recorded nowhere.
+        logger.warning("plate video render failed: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except NotRecorded as exc:
         logger.error("plate video stored but not recorded: %s", exc)

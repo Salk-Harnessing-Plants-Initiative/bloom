@@ -6,6 +6,8 @@ tested directly. `tests/test_main.py` covers the wiring.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from fastapi import HTTPException
 
@@ -105,6 +107,20 @@ def test_an_unreadable_frame_names_it_in_the_response(monkeypatch):
 
     assert ei.value.status_code == 502
     assert "P7_40.tif" in ei.value.detail
+
+
+def test_an_unreadable_frame_is_logged_as_well_as_returned(monkeypatch, caplog):
+    """The response body is not a record. The web proxy discards 502 detail, so
+    an operator's only copy of the failing object path is this log line."""
+    def unreadable(*a, **k):
+        raise FrameUnreadable("could not download 12/wave-1/P7_40.tif: connection reset")
+
+    monkeypatch.setattr(pr, "render_plate_video", unreadable)
+    with caplog.at_level(logging.WARNING, logger=pr.logger.name):
+        with pytest.raises(HTTPException):
+            pr.render(12, {"plate_id": "P7", "wave_number": 1})
+
+    assert "P7_40.tif" in caplog.text
 
 
 def test_a_stored_but_unrecorded_video_is_a_server_error(monkeypatch):
