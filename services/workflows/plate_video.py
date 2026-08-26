@@ -18,7 +18,8 @@ from datetime import datetime
 # excluded in the query rather than skipped later, so `len(frames)` means the
 # same thing as the count recorded against a stored video.
 _FRAME_SELECT = (
-    "capture_date, cycle_number, gravi_images!inner(object_path, file_size_bytes)"
+    "capture_date, cycle_number, session_id, "
+    "gravi_images!inner(object_path, file_size_bytes)"
 )
 
 # Download volume, not memory. These are LZW TIFFs: ~57 MB on disk and ~97 MB
@@ -70,8 +71,85 @@ def _frame(row: dict) -> dict:
     return {
         "capture_date": row["capture_date"],
         "cycle_number": row.get("cycle_number"),
+        "session_id": row.get("session_id"),
         "object_path": (embedded or {}).get("object_path"),
         "file_size_bytes": (embedded or {}).get("file_size_bytes"),
+    }
+
+
+def planned_cycles(client, frames: list[dict]) -> int | None:
+    """How many captures the run that produced these frames set out to take.
+
+    None when the frames name no session, or the session recorded no plan —
+    both mean "unknown", which is not the same as "nothing is missing".
+    """
+    session_ids = {f["session_id"] for f in frames if f["session_id"] is not None}
+    if not session_ids:
+        return None
+
+    rows = (
+        client.table("gravi_scan_sessions")
+        .select("total_cycles")
+        .in_("id", sorted(session_ids))
+        .execute()
+        .data
+        or []
+    )
+    planned = [r["total_cycles"] for r in rows if r.get("total_cycles") is not None]
+    # A plate scanned across more than one session planned the sum of them.
+    return sum(planned) if planned else None
+
+
+def missing_cycles(frames: list[dict]) -> list[int]:
+    """Cycle numbers absent between the lowest and highest present.
+
+    Bounded by what arrived rather than by the plan, so it holds whatever the
+    numbering starts at. A run that stopped early has no gap — it has a short
+    tail, which `planned_cycles` is what answers.
+    """
+    present = {f["cycle_number"] for f in frames if f["cycle_number"] is not None}
+    if len(present) < 2:
+        return []
+    return sorted(set(range(min(present), max(present) + 1)) - present)
+
+
+def completeness(frames: list[dict], planned: int | None) -> dict:
+    """What arrived, against what was planned. Describes; never refuses.
+
+    A short run still renders — the video is real, just shorter than intended.
+    The point is that it can be said so, rather than looking finished.
+
+    `state` separates a run known to be short from one that cannot be checked:
+    both are "not complete", but only the first is a fact about the run.
+    """
+    present = len(frames)
+    gaps = missing_cycles(frames)
+
+    if planned is None:
+        state = "unknown"
+        summary = f"{present} frames; the run recorded no planned cycle count"
+    elif gaps:
+        listed = ", ".join(str(c) for c in gaps[:5])
+        more = f" and {len(gaps) - 5} more" if len(gaps) > 5 else ""
+        state = "gaps"
+        summary = f"{present} of {planned} frames; missing cycles {listed}{more}"
+    elif present < planned:
+        state = "short"
+        summary = f"{present} of {planned} frames; the run stopped early"
+    else:
+        # A run commonly outlasts its planned cycle count, so the plan is a
+        # floor rather than a target. Say the real number either way.
+        state = "complete"
+        ran_on = f", past the {planned} planned" if present > planned else ""
+        summary = f"{present} frames{ran_on}"
+
+    return {
+        "present": present,
+        "planned": planned,
+        "missing_cycles": gaps,
+        "state": state,
+        "summary": summary,
+        "complete": state == "complete",
     }
 
 

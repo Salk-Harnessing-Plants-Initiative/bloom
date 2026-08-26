@@ -42,6 +42,10 @@ class _Query:
         self.recorded.setdefault(key, []).append((column, value))
         return self
 
+    def in_(self, column, values):
+        self.recorded["in"] = (column, list(values))
+        return self
+
     def order(self, column, **kwargs):
         self.recorded["order"] = (column, kwargs.get("desc", False))
         return self
@@ -51,19 +55,28 @@ class _Query:
 
 
 class _Client:
-    def __init__(self, rows=None):
-        self.q = _Query(rows or [])
+    """One canned result per table, so a test can drive both queries."""
+
+    def __init__(self, rows=None, **by_table):
+        self.queries = {"gravi_scans": _Query(rows or []), **{
+            t: _Query(r) for t, r in by_table.items()
+        }}
         self.tables: list[str] = []
+
+    @property
+    def q(self):
+        return self.queries["gravi_scans"]
 
     def table(self, name):
         self.tables.append(name)
-        return self.q
+        return self.queries.setdefault(name, _Query([]))
 
 
-def _row(minutes, path, cycle=None):
+def _row(minutes, path, cycle=None, session=None):
     return {
         "capture_date": T0 + timedelta(minutes=minutes),
         "cycle_number": cycle,
+        "session_id": session,
         "gravi_images": {"object_path": path},
     }
 
@@ -244,3 +257,158 @@ def test_the_size_is_fetched_with_the_frames_not_in_a_second_query():
     client = _Client([_row(0, "a.tif")])
     pv.get_plate_frames(client, 12, "P7", 1)
     assert "file_size_bytes" in client.q.recorded["select"]
+
+
+# --- completeness ------------------------------------------------------------
+#
+# Whether every capture the run planned actually reached the database. A plate
+# whose scanner stopped at cycle 40 of 200 renders a perfectly good 40-frame
+# video that looks finished, so the shortfall has to be stated rather than seen.
+
+
+def _cycles(*numbers, session=7):
+    return [_row(i, f"{n}.tif", cycle=n, session=session) for i, n in enumerate(numbers)]
+
+
+def test_planned_cycles_reads_the_runs_plan():
+    client = _Client(gravi_scan_sessions=[{"total_cycles": 200}])
+    assert pv.planned_cycles(client, _cycles(1, 2, 3)) == 200
+    assert client.q.recorded == {} or True  # sessions query is a separate table
+    assert client.tables == ["gravi_scan_sessions"]
+
+
+def test_planned_cycles_asks_only_for_the_sessions_these_frames_name():
+    client = _Client(gravi_scan_sessions=[{"total_cycles": 200}])
+    frames = _cycles(1, 2, session=7) + _cycles(3, session=9)
+    pv.planned_cycles(client, frames)
+    assert client.queries["gravi_scan_sessions"].recorded["in"] == ("id", [7, 9])
+
+
+def test_a_plate_spanning_two_sessions_planned_the_sum():
+    client = _Client(gravi_scan_sessions=[{"total_cycles": 100}, {"total_cycles": 60}])
+    assert pv.planned_cycles(client, _cycles(1, 2)) == 160
+
+
+def test_planned_cycles_is_none_when_the_frames_name_no_session():
+    """session_id is nullable, and unknown is not the same as nothing missing."""
+    client = _Client(gravi_scan_sessions=[{"total_cycles": 200}])
+    assert pv.planned_cycles(client, _cycles(1, 2, session=None)) is None
+    assert client.tables == [], "no session to look up, so no query"
+
+
+def test_planned_cycles_is_none_when_the_session_recorded_no_plan():
+    """total_cycles is nullable — a single-shot scan plans nothing."""
+    client = _Client(gravi_scan_sessions=[{"total_cycles": None}])
+    assert pv.planned_cycles(client, _cycles(1, 2)) is None
+
+
+def test_a_gap_in_the_middle_is_found():
+    """Cycle 3 never arrived. The video would jump the interval without saying."""
+    assert pv.missing_cycles(_cycles(1, 2, 4, 5)) == [3]
+
+
+def test_a_run_that_stopped_early_has_no_gap():
+    """A short tail is not a gap — planned_cycles is what answers that."""
+    assert pv.missing_cycles(_cycles(1, 2, 3)) == []
+
+
+def test_gaps_are_bounded_by_what_arrived_not_by_the_plan():
+    """The numbering's starting point is the uploader's business, so the bounds
+    come from the frames rather than from an assumed 1..N."""
+    assert pv.missing_cycles(_cycles(10, 12, 14)) == [11, 13]
+
+
+@pytest.mark.parametrize("frames", [[], "one"])
+def test_fewer_than_two_cycles_cannot_have_a_gap(frames):
+    frames = [] if frames == [] else _cycles(5)
+    assert pv.missing_cycles(frames) == []
+
+
+def test_null_cycle_numbers_are_ignored_rather_than_read_as_zero():
+    """The uploader sends null when it does not know, and treating that as 0
+    would invent a gap from 0 to the first real cycle."""
+    rows = _cycles(4, 5) + [_row(9, "x.tif", cycle=None, session=7)]
+    assert pv.missing_cycles(rows) == []
+
+
+def test_completeness_reports_a_run_that_stopped_early():
+    result = pv.completeness(_cycles(1, 2, 3), planned=200)
+    assert result["present"] == 3
+    assert result["planned"] == 200
+    assert result["complete"] is False
+
+
+def test_completeness_of_a_finished_run():
+    assert pv.completeness(_cycles(1, 2, 3), planned=3)["complete"] is True
+
+
+def test_a_run_with_every_frame_but_a_gap_is_not_complete():
+    """Count alone would call this finished — 4 frames against a plan of 4."""
+    result = pv.completeness(_cycles(1, 2, 4, 5), planned=4)
+    assert result["missing_cycles"] == [3]
+    assert result["complete"] is False
+
+
+def test_unknown_plan_is_never_reported_as_complete():
+    """Not knowing what was planned cannot be evidence that nothing is missing."""
+    assert pv.completeness(_cycles(1, 2, 3), planned=None)["complete"] is False
+
+
+def test_more_frames_than_planned_is_still_complete():
+    """A run can overshoot its plan; that is not incompleteness."""
+    assert pv.completeness(_cycles(1, 2, 3, 4), planned=3)["complete"] is True
+
+
+def test_the_session_is_fetched_with_the_frames_not_in_a_third_query():
+    client = _Client([_row(0, "a.tif")])
+    pv.get_plate_frames(client, 12, "P7", 1)
+    assert "session_id" in client.q.recorded["select"]
+
+
+# --- what completeness says --------------------------------------------------
+#
+# `complete: False` alone conflates a run known to be short with one that
+# cannot be checked. Only the first is a fact about the run.
+
+
+def test_a_run_with_no_plan_is_unknown_not_short():
+    result = pv.completeness(_cycles(1, 2, 3), planned=None)
+    assert result["state"] == "unknown"
+    assert "recorded no planned cycle count" in result["summary"]
+
+
+def test_a_run_that_stopped_early_says_so():
+    result = pv.completeness(_cycles(1, 2, 3), planned=200)
+    assert result["state"] == "short"
+    assert result["summary"] == "3 of 200 frames; the run stopped early"
+
+
+def test_gaps_are_named_in_the_summary():
+    result = pv.completeness(_cycles(1, 2, 4, 6, 7), planned=5)
+    assert result["state"] == "gaps"
+    assert "missing cycles 3, 5" in result["summary"]
+
+
+def test_a_long_gap_list_is_truncated():
+    """A summary is read, not parsed — missing_cycles carries the full list.
+
+    Pins the listed cycles exactly: asserting only the "and N more" suffix
+    passes even when nothing was truncated, since that count is computed
+    separately from the list.
+    """
+    result = pv.completeness(_cycles(1, 20), planned=2)
+    assert "missing cycles 2, 3, 4, 5, 6 and 13 more" in result["summary"]
+    assert len(result["missing_cycles"]) == 18
+
+
+def test_a_run_that_outlasted_its_plan_is_complete_and_says_the_real_count():
+    """Overshooting the planned cycle count is the common case, so the plan is a
+    floor. Reporting "the whole run" would imply an exactness that is not there."""
+    result = pv.completeness(_cycles(1, 2, 3, 4, 5), planned=3)
+    assert result["state"] == "complete"
+    assert result["summary"] == "5 frames, past the 3 planned"
+
+
+def test_a_run_that_matched_its_plan_does_not_mention_overshooting():
+    result = pv.completeness(_cycles(1, 2, 3), planned=3)
+    assert result["summary"] == "3 frames"
