@@ -260,3 +260,59 @@ def _object_exists(client, key: str) -> bool | None:
             return False
         logger.warning("could not check for a stored video at %s: %s", key, exc)
         return None
+
+
+# --- what to do about it -----------------------------------------------------
+
+
+def render_decision(frames: list[dict], stored: dict) -> dict:
+    """Whether to render this plate, hand back what is stored, or refuse.
+
+    A plate keeps gaining captures, so a stored video is usually not wrong —
+    just short. The recorded count is what tells those apart, and every branch
+    here turns on having one.
+    """
+    available = len(frames)
+    state = stored["state"]
+    key = stored["key"]
+
+    if state == "unknown":
+        return _outcome(
+            "refuse",
+            "storage could not say whether a video is already stored; "
+            "changing nothing rather than overwriting one",
+            key,
+        )
+
+    if not available:
+        return _outcome("refuse", "this plate has no captures with an image", key)
+
+    if key is None:
+        return _outcome("refuse", "this plate's video has no usable object key", key)
+
+    if state == "absent":
+        return _outcome("render", f"no video stored; encoding {available} frames", key)
+
+    recorded = stored["frame_count"]
+    if recorded is None:
+        # Nothing to compare against, and keeping it would never self-correct:
+        # with no count, no later request could beat it either. One render
+        # replaces it with a video whose coverage is recorded.
+        return _outcome(
+            "render", "the stored video records no frame count; encoding to replace it", key
+        )
+
+    if available > recorded:
+        return _outcome(
+            "render",
+            f"{available - recorded} new frames since the stored video's {recorded}",
+            key,
+        )
+
+    return _outcome(
+        "keep", f"the stored video already covers {recorded} of {available} frames", key
+    )
+
+
+def _outcome(action: str, reason: str, key: str | None) -> dict:
+    return {"action": action, "reason": reason, "key": key}

@@ -537,3 +537,84 @@ def test_the_row_is_read_from_gravi_plate_videos_by_all_three_keys():
 
     recorded = client.queries["gravi_plate_videos"].recorded
     assert set(recorded["eq"]) == {("experiment_id", 12), ("plate_id", "P7"), ("wave_number", 3)}
+
+
+# --- what to do about it -----------------------------------------------------
+#
+# A plate keeps gaining captures, so a stored video is usually not wrong, just
+# short. Every branch turns on having a recorded count to compare against.
+
+
+def _stored(state="present", frames=140, key="12/wave-1/P7.mp4"):
+    return {"state": state, "frame_count": frames, "key": key}
+
+
+def test_new_frames_since_the_stored_video_means_render():
+    d = pv.render_decision(_cycles(*range(200)), _stored(frames=140))
+    assert d["action"] == "render"
+    assert "60 new frames" in d["reason"]
+
+
+def test_nothing_new_means_keep_and_encode_nothing():
+    """Re-encoding on every page view would burn minutes of CPU to produce an
+    identical file."""
+    d = pv.render_decision(_cycles(*range(140)), _stored(frames=140))
+    assert d["action"] == "keep"
+
+
+def test_fewer_frames_than_recorded_still_keeps():
+    """A count that went down means rows vanished, not that the stored video is
+    stale — overwriting it with less would be the wrong repair."""
+    assert pv.render_decision(_cycles(1, 2), _stored(frames=140))["action"] == "keep"
+
+
+def test_no_stored_video_means_render():
+    d = pv.render_decision(_cycles(1, 2, 3), _stored(state="absent", frames=None))
+    assert d["action"] == "render"
+    assert "no video stored" in d["reason"]
+
+
+def test_a_stored_video_with_no_recorded_count_is_replaced():
+    """Keeping it would never self-correct: with no count, no later request
+    could beat it either, so the plate would be stuck on it forever."""
+    d = pv.render_decision(_cycles(1, 2, 3), _stored(frames=None))
+    assert d["action"] == "render"
+    assert "records no frame count" in d["reason"]
+
+
+def test_storage_that_cannot_answer_refuses_rather_than_rendering():
+    """The one that matters. Rendering would overwrite a good video in place —
+    the key is deterministic — during the outage that made the answer unclear."""
+    d = pv.render_decision(_cycles(*range(200)), _stored(state="unknown"))
+    assert d["action"] == "refuse"
+    assert "could not say" in d["reason"]
+
+
+def test_a_plate_with_no_frames_refuses_rather_than_encoding_nothing():
+    assert pv.render_decision([], _stored(state="absent", frames=None))["action"] == "refuse"
+
+
+def test_an_unusable_object_key_refuses():
+    """`plate_video_path` returns None for a plate id it will not put in a key;
+    rendering would have nowhere to upload."""
+    d = pv.render_decision(_cycles(1, 2), _stored(state="absent", frames=None, key=None))
+    assert d["action"] == "refuse"
+
+
+def test_an_unknown_state_refuses_even_when_frames_are_missing():
+    """Ordering: an unclear answer about the stored video outranks every other
+    reason to act, because acting is what cannot be undone."""
+    assert pv.render_decision([], _stored(state="unknown"))["action"] == "refuse"
+    assert "could not say" in pv.render_decision([], _stored(state="unknown"))["reason"]
+
+
+def test_every_outcome_carries_the_key_it_decided_about():
+    for stored in (_stored(), _stored(state="absent", frames=None), _stored(state="unknown")):
+        assert pv.render_decision(_cycles(1, 2), stored)["key"] == "12/wave-1/P7.mp4"
+
+
+@pytest.mark.parametrize("state", ["present", "absent", "unknown"])
+def test_the_action_is_always_one_of_three(state):
+    """The caller switches on this; a fourth value would fall through silently."""
+    d = pv.render_decision(_cycles(1, 2), _stored(state=state))
+    assert d["action"] in {"render", "keep", "refuse"}
