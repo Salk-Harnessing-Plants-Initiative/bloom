@@ -138,9 +138,56 @@
       without attempting a publish. **Cannot happen before merge**: GitHub only allows
       dispatching a workflow that already exists on the default branch (confirmed —
       `gh workflow run release-bloommcp.yml --ref <this-branch>` 404s with "workflow ... not
-      found on the default branch"). Do this immediately after merge, before cutting the first
-      real Release — not "before merge" as originally written here, which was never achievable
-      once this became a new top-level workflow file.
+      found on the default branch"). This PR now targets `staging` (task 10.5), so "the default
+      branch" means: not merge to `staging`, but the next `staging → main` promotion after that
+      — do the dry run once this has reached `main`, before cutting the first real Release.
+
+## 10. Review round 2 (2026-08-26): stale premise, weak guard tests, staging targeting
+
+Found by a second human review, two days after PR #667 ("promote staging to main",
+2026-08-22) rolled up `release-bloomcli.yml`'s hardened three-job shape to `main` — eight days
+after this branch opened (2026-08-14) and after the round-1 review fix (task 5.1's note). The
+branch was never rebased/re-verified against `main` in between.
+
+- [x] 10.1 `release-bloommcp.yml`'s `build-and-verify` job now matches `release-bloomcli.yml`'s
+      current `main` shape on every axis it was missing: an exhaustive `pkgutil.walk_packages`
+      wheel-import walk, run twice (default resolution, then `--prerelease=allow`), and an
+      entry-point check that proves a real invocation with no env fails fast rather than hanging
+      (bloom_mcp has no `bloomctl.errors:main`-style wrapper, so the check is adapted to its own
+      `--version`-returns-before-validation contract instead of the wrapper-vs-bare-CLI check —
+      see design.md). The workflow's header comment no longer claims bloomcli's hardened shape
+      is "not yet on `main`".
+- [x] 10.2 Running the new `--prerelease=allow` pass for the first time failed immediately:
+      `httpx 1.0.dev5` resolved and broke `postgrest`'s import, exactly the #629 failure mode.
+      Added the same load-bearing `httpx<1.0`/`supabase<3` upper bounds
+      `bloomcli/pyproject.toml` already carries to `bloommcp/pyproject.toml`, then regenerated
+      `bloommcp/uv.lock`. Reran both wheel-import passes, `twine check`, and the full
+      `bloommcp` test suite (1405 passed) to confirm the fix and no regression.
+- [x] 10.3 Fixed both `test_validate_release_skips_tags_that_are_not_bloom{ctls,mcps}` tests
+      (they only asserted each `if:` clause's substring independently, never the joined `||`
+      expression — a flipped `||`/`&&` would pass both while disabling every real release).
+      Added `_guard_permits`, a small evaluator exercising the guard's actual truth table, to
+      both `tests/unit/test_release_bloomcli_workflow_shape.py` and
+      `tests/unit/test_release_bloommcp_workflow_shape.py`.
+- [x] 10.4 Added `.github/workflows/release-tag-guard.yml` (no job-level skip; fails loudly when
+      a Release tag matches neither `bloomctl-` nor `bloommcp-`, closing the gap where a typo'd
+      tag made both release workflows skip cleanly with no visible signal anywhere) and
+      `tests/unit/test_release_tag_guard_workflow_shape.py`.
+- [x] 10.5 Retargeted this PR from `main` to `staging` (`gh pr edit --base staging`) and rebased
+      the branch's 5 non-merge commits onto `origin/staging`, per `openspec/project.md`'s
+      staging-first branching convention — the original `main` targeting was a misreading of
+      that doc, not a deliberate exception (see design.md's "Base branch").
+- [x] 10.6 Documented, in both `bloomcli/RELEASE_PROCESS.md` and `bloommcp/RELEASE_PROCESS.md`:
+      the shared `pypi` environment's lack of protection rules (now doubled by this PR),
+      `release-tag-guard.yml` under "the workflow run is skipped entirely", and a new
+      partial-publish-failure entry (PyPI rejects re-uploading an existing file, so a
+      wheel-succeeds/sdist-fails run needs a version bump, not a rerun).
+- [x] 10.7 Updated `proposal.md`, `design.md`, and both `specs/*/spec.md` deltas to drop the
+      stale "hardened shape lives on staging, not main" framing throughout and describe the
+      current state accurately.
+- [x] 10.8 Corrected the PR description's Test plan: the workflow-shape test count was stale at
+      "19 tests" (already actually 29 before this round; 45 after task 10.3/10.4's additions —
+      15 `test_release_bloomcli_workflow_shape.py` + 19 `test_release_bloommcp_workflow_shape.py` + 11 `test_release_tag_guard_workflow_shape.py`).
 
 ## 9. Manual follow-up (outside this PR's reach)
 

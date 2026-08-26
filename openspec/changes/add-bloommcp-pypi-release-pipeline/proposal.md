@@ -14,14 +14,24 @@ workflows don't cross-fire.
 - Add `version-bloommcp.yml` (manual `workflow_dispatch`), mirroring `version-bloomcli.yml`:
   bump `bloommcp/pyproject.toml`'s version and open a PR touching only that file, branch
   `bloommcp-version-bump-<version>`.
-- Add `release-bloommcp.yml`, mirroring `release-bloomcli.yml`'s actual current two-job shape
-  (`validate-release` → `build-and-publish`): tag-equals-version, changelog-entry, lint, and
-  test gates; then build + `twine check` + wheel-import + `bloom-mcp --version` entry-point
-  verification; then — only on a published Release, never on `workflow_dispatch` —
+- Add `release-bloommcp.yml`, mirroring `release-bloomcli.yml`'s current three-job,
+  credential-isolated shape on `main` (`validate-release` → `build-and-verify` →
+  `build-and-publish`): tag-equals-version, changelog-entry, lint, and test gates; then build +
+  `twine check` + an exhaustive `pkgutil.walk_packages` wheel-import walk (run twice — default
+  resolution and `--prerelease=allow`) + `bloom-mcp --version` and a fail-fast entry-point
+  check; then — only on a published Release, never on `workflow_dispatch` —
   `uv publish --trusted-publishing always`. The wheel-import check goes slightly beyond
-  bloomcli's literal one-liner, additionally importing the concrete Supabase-backed adapters
+  bloomcli's, additionally importing the concrete Supabase-backed adapters
   (`SupabaseReader`/`SupabaseResultStore`) that `build_app()` alone doesn't reach — see
-  `design.md`.
+  `design.md`. Running the `--prerelease=allow` pass surfaced a real, pre-existing gap: unlike
+  `bloomcli/pyproject.toml`, `bloommcp/pyproject.toml` had no upper bound on `httpx`/`supabase`,
+  so a `--pre` install could resolve `httpx 1.0` and break the import chain exactly as #629
+  described. Fixed by adding the same `<1.0`/`<3` bounds `bloomcli` already carries.
+- Add `release-tag-guard.yml`: `release-bloomcli.yml` and `release-bloommcp.yml` each skip
+  cleanly (not fail) when a Release tag belongs to the other package, but a typo'd or
+  unknown-prefix tag makes both skip at once with no failing run anywhere to say nothing
+  shipped. This workflow never skips on a release event and fails loudly when a tag matches
+  neither known prefix.
 - Add `bloommcp/CHANGELOG.md` (Keep a Changelog format, matching `bloomcli/CHANGELOG.md`) with
   an `[Unreleased]` section — the release gate has nothing to validate against without it.
 - Add `bloom_mcp.__version__`, via the same `importlib.metadata` pattern as
@@ -72,19 +82,24 @@ workflows don't cross-fire.
 - Affected code:
   - `.github/workflows/version-bloommcp.yml` (new)
   - `.github/workflows/release-bloommcp.yml` (new)
+  - `.github/workflows/release-tag-guard.yml` (new — fails loudly when a Release tag matches
+    neither package's prefix, closing the double-silent-skip gap the review round found)
   - `.github/workflows/release-bloomcli.yml` (add tag-prefix guard — isolated commit)
   - `.github/workflows/version-bloomcli.yml` (sync `bloomcli/uv.lock` in the bump PR — an
     unrelated bug found during review; isolated commit)
-  - `bloomcli/RELEASE_PROCESS.md` (document the narrowed `bloomctl-vX.Y.Z`-only tag form)
+  - `bloomcli/RELEASE_PROCESS.md` (document the narrowed `bloomctl-vX.Y.Z`-only tag form, the
+    shared `pypi` environment's protection gap, and partial-publish-failure recovery)
   - `bloommcp/CHANGELOG.md` (new)
   - `bloommcp/RELEASE_PROCESS.md` (new)
-  - `bloommcp/pyproject.toml` (version bump to `0.1.0a1`, add `[project.urls]`)
-  - `bloommcp/uv.lock` (regenerated for the version bump — `bloommcp` is a checked service in
-    `scripts/check-uv-locks.py`)
+  - `bloommcp/pyproject.toml` (version bump to `0.1.0a1`, add `[project.urls]`, add load-bearing
+    `httpx<1.0`/`supabase<3` upper bounds found by the new `--prerelease=allow` check)
+  - `bloommcp/uv.lock` (regenerated for the version bump and the new dependency bounds —
+    `bloommcp` is a checked service in `scripts/check-uv-locks.py`)
   - `bloommcp/src/bloom_mcp/__init__.py` (add `__version__`)
   - `bloommcp/src/bloom_mcp/server.py` (add `--version`/`-V` handling in `main()`)
   - `bloommcp/tests/test_version.py` (new)
   - `tests/unit/test_release_bloommcp_workflow_shape.py` (new — regression guard mirroring
     `tests/unit/test_release_bloomcli_workflow_shape.py`)
   - `tests/unit/test_release_bloomcli_workflow_shape.py` (extended with the new tag-prefix
-    guard assertion)
+    guard truth-table assertion)
+  - `tests/unit/test_release_tag_guard_workflow_shape.py` (new)

@@ -1,31 +1,48 @@
 ## Context
 
 Follow-up to #33 (parent) via #663. `bloomcli` already ships `bloomctl` to PyPI through
-`release-bloomcli.yml` / `version-bloomcli.yml`. As verified directly against
-`origin/main` (`git show origin/main:.github/workflows/release-bloomcli.yml`), main's actual
-current pipeline is a straightforward two-job shape: `validate-release` (tag/version/changelog/
-lint/test) → `build-and-publish` (build, `twine check`, wheel-import + `bloomctl --version`
-checks, then `uv publish` — all in the same job, which also holds the OIDC publish credential).
-A more hardened rework — splitting build/verify from publish into a third job so the publish
-credential never shares a job with freshly-built or third-party code, plus a deeper
-`pkgutil.walk_packages` dependency-chain import check — has merged to `staging` (tracked by
-issue #629, a real incident where a broken pre-release shipped because a shallow
-`import bloomctl` check passed while every real command failed on a lazily-imported
-dependency) but has **not** reached `main` as of this writing.
+`release-bloomcli.yml` / `version-bloomcli.yml`.
 
-(This design went through an earlier draft that mistakenly mirrored the staging-only
-three-job shape, discovered via a 5-subagent OpenSpec review — a review that was itself
-partly working from the same stale/mixed branch state. The mismatch was caught before
-implementation was finalized by directly diffing `origin/main` against `origin/staging` for
-every touched file. A subsequent, human-solicited review then pointed out that the
-"match main's actual two-job shape" reasoning only justifies _retrofitting_ an already-live,
-production-critical file (`release-bloomcli.yml`) — `release-bloommcp.yml` is a brand-new
-file, so there is no cost to giving it the safer three-job shape directly instead of
-deliberately shipping the exact flaw #629 already proved unsafe into new infrastructure. The
-design below reflects that revision: `release-bloommcp.yml` adopts the three-job,
-credential-isolated shape (checksum-verified artifact handoff, no `pkgutil.walk_packages`
-walk); `release-bloomcli.yml` itself stays two-job, unchanged beyond the tag-prefix guard —
-retrofitting the rest of #629's hardening onto that live file is still out of scope for #663.)
+This design has gone through two rounds of "the branch's premise about `release-bloomcli.yml`
+went stale while it sat in review" — worth recording both, since the second is the direct
+cause of this revision.
+
+**Round 1 (caught before implementation, 2026-08-14).** An earlier draft mistakenly mirrored
+`staging`'s three-job hardened shape as if it were `main`'s, discovered via a 5-subagent
+OpenSpec review that was itself partly working from the same stale/mixed branch state. Directly
+diffing `origin/main` against `origin/staging` for every touched file showed `main`'s actual
+pipeline at the time was a straightforward two-job shape (`validate-release` →
+`build-and-publish`, credential and third-party code sharing one job), while the hardened
+three-job rework — job/credential isolation plus a `pkgutil.walk_packages` exhaustive import
+walk and a `--prerelease=allow` double-resolution check, all tracked by issue #629 (a real
+incident where a broken pre-release shipped because a shallow `import bloomctl` check passed
+while every real command failed on a lazily-imported dependency) — lived only on `staging`. A
+subsequent, human-solicited review then pointed out that "match main's actual two-job shape"
+only justifies _retrofitting_ an already-live, production-critical file — `release-bloommcp.yml`
+is brand-new, so there was no cost to giving it the safer three-job shape directly. The design
+at that point: `release-bloommcp.yml` three-job and credential-isolated, but without the
+`pkgutil.walk_packages`/`--prerelease=allow` hardening (deferred, see the now-removed Non-Goal
+below); `release-bloomcli.yml` itself untouched beyond the tag-prefix guard.
+
+**Round 2 (this revision, found by a second human review, 2026-08-26).** PR #667 ("promote
+staging to main") merged that same hardened three-job `release-bloomcli.yml` shape —
+`pkgutil.walk_packages` walk, `--prerelease=allow` double-resolution, and an
+entry-point-failure-mode check — into `main` on 2026-08-22, eight days after this branch was
+opened. The branch was never rebased or re-verified against `main` afterward, so by review time
+`release-bloommcp.yml` shipped with a comment claiming bloomcli's hardened shape was "not yet on
+`main`" (false since 2026-08-22) and a `build-and-verify` job measurably weaker than what
+`release-bloomcli.yml` actually runs today on exactly the axis #629 was about. This revision
+closes that gap directly: `release-bloommcp.yml`'s `build-and-verify` now matches
+`release-bloomcli.yml`'s current `main` shape on every axis (see Decisions), and the stale
+"deferred to staging's eventual rollup" framing is gone throughout this document. Running the
+new `--prerelease=allow` check for the first time also surfaced a real, independent bug — see
+"Wheel-import check" in Decisions.
+
+This revision also retargets the PR from `main` to `staging`, per `openspec/project.md`'s
+staging-first branching convention (feature branches are created from and target `staging`;
+`main` is the consolidation/release branch, updated only by periodic `staging → main`
+promotions) — see "Base branch" under Migration Plan for why the original choice of `main` was
+a misreading of that convention, not a deliberate exception to it.
 
 ## Goals / Non-Goals
 
@@ -35,22 +52,18 @@ retrofitting the rest of #629's hardening onto that live file is still out of sc
     before publishing on any failure and never runs third-party code alongside the publish
     credential.
   - Read as a variation of `bloomcli`'s design, not an ad hoc one — same validate/build/publish
-    stages, same tag-prefix guard mechanics, same wheel-import-goes-beyond-the-entry-point
-    reasoning — even where the two pipelines' job counts now differ (see Decisions).
+    stages, same tag-prefix guard mechanics, same job/credential split, and now the same
+    exhaustive wheel-import + entry-point-failure hardening, axis for axis (see Decisions).
   - Close the cross-firing gap named in the issue (item 6) for both workflows, with an
-    automated regression guard (not just a manual dry run) proving both.
+    automated regression guard (not just a manual dry run) proving both, plus a third guard
+    (`release-tag-guard.yml`, added in this revision) closing the adjacent gap the review round
+    found: a typo'd tag makes _both_ workflows skip silently, with no failing run to say so.
 - Non-Goals:
-  - The `pkgutil.walk_packages` exhaustive dependency-chain walk, or the `--prerelease=allow`
-    double-resolution import check, from `staging`'s `#629` rework. Those are mechanically
-    exhaustive hardening on top of the credential/job-isolation fix (which this PR _does_
-    adopt, see Decisions); bloommcp's own explicit adapter-class imports already close the
-    specific gap #629 exploited for this package's structure, so the additional exhaustive walk
-    is deferred to whatever eventually rolls the rest of `staging`'s `#629` rework to `main`.
-  - Retrofitting `release-bloomcli.yml` itself with the three-job split. That file is live and
-    production-critical; this PR's only change to it is the single job-level tag-prefix guard
-    (plus the unrelated `version-bloomcli.yml` uv.lock fix found during review — see Decisions).
-    Splitting it into three jobs is a larger, independently-revertable change that belongs with
-    whatever eventually rolls the rest of `staging`'s `#629` hardening to `main`.
+  - Retrofitting `release-bloomcli.yml` with anything beyond the tag-prefix guard (a single
+    job-level `if:`, no step changes) and the unrelated `version-bloomcli.yml` `uv.lock` fix
+    found during review (see Decisions). It needs no further retrofit: `main` already carries
+    the full hardened three-job shape as of PR #667 (2026-08-22) — `release-bloommcp.yml`
+    matches that shape directly now rather than deferring to it, see Decisions.
   - A PyPI-specific `README.pypi.md` / install-command rewriting. `bloomcli`'s current
     `build-and-publish` job rewrites both `pyproject.toml` and `README.pypi.md` (and, on
     staging's rework, versioned install-command strings); bloommcp has no `README.pypi.md`, so
@@ -60,43 +73,53 @@ retrofitting the rest of #629's hardening onto that live file is still out of sc
 
 ## Decisions
 
-- **`release-bloommcp.yml` adopts the three-job, credential-isolated shape**:
-  `validate-release` (tag/version/changelog/lint/test, no build) → `build-and-verify` (build,
-  record the artifact's checksum, `twine check`, wheel-import + entry-point checks, re-verify
-  the checksum, upload the artifact — no publish credential) → `build-and-publish` (download
-  the verified artifact, re-verify its checksum, `uv publish` — holds `id-token: write` and the
-  `pypi` environment, runs no other code). This mirrors staging's `#629` rework's job/credential
-  split (minus the `pkgutil.walk_packages` walk — see Non-Goals) rather than `release-bloomcli.yml`'s
-  current on-`main` two-job shape, because `release-bloommcp.yml` is a brand-new file: unlike
-  retrofitting a live production workflow, there is no diff-minimization argument for shipping
-  the exact credential/third-party-code coupling #629 already proved unsafe into it.
-  - **`release-bloomcli.yml` itself is not retrofitted with this split** — that file's only
-    change in this PR is the tag-prefix guard (a single job-level `if:`, no step changes),
-    consistent with the original diff-minimization reasoning for touching a currently-live,
-    production-critical file real `bloomctl` releases depend on. `bloomcli`'s `build-and-publish`
-    job still explicitly `checkout`s and still has the plain `import bloomctl; print(...)`
-    one-liner #629 showed to be insufficient — backporting that fix is still out of scope for
-    #663, tracked separately by whatever rolls the rest of `staging`'s `#629` rework to `main`.
+- **`release-bloommcp.yml` matches `release-bloomcli.yml`'s current `main` shape, axis for
+  axis**: `validate-release` (tag/version/changelog/lint/test, no build) → `build-and-verify`
+  (build, record the artifact's checksum, `twine check`, an exhaustive `pkgutil.walk_packages`
+  wheel-import walk run twice — default resolution and `--prerelease=allow` — plus the
+  entry-point checks below, re-verify the checksum, upload the artifact — no publish credential)
+  → `build-and-publish` (download the verified artifact, re-verify its checksum, `uv publish` —
+  holds `id-token: write` and the `pypi` environment, runs no other code). `release-bloommcp.yml`
+  is a brand-new file, so there was never a diff-minimization argument for giving it anything
+  less than what `bloomcli` already proved out for exactly this class of bug (#629); this
+  revision closes the gap where an earlier draft fell short of that (see Context).
+  - **`release-bloomcli.yml` itself needs no further retrofit here** — `main` already carries
+    this full shape as of PR #667 (2026-08-22), independent of this PR. This PR's only change to
+    that file remains the tag-prefix guard (a single job-level `if:`, no step changes).
   - **Found during review**: `version-bloomcli.yml` (a different file, same "existing bloomcli
     workflow" family) had its own real, unrelated bug — its `bump-version` job never ran
     `uv lock`, so `bloomcli/uv.lock` drifted out of sync with every version bump despite being a
     checked service lockfile. Fixed as its own isolated commit (tasks.md §6.5–6.7); this is not
     part of the `#629` job-split question, just a bug this review surfaced while reading the
     same file family.
-- **Wheel-import check for bloommcp goes slightly beyond `bloomcli`'s literal one-liner**,
-  independent of anything from `bloomcli`/`staging`: it imports `bloom_mcp`, its `tools`/
-  `manifest`/`server` submodules, calls `bloom_mcp.server.build_app()`, and additionally
-  imports the concrete Supabase-backed adapters —
-  `bloom_mcp.data_access.SupabaseReader`, `bloom_mcp.result_store.SupabaseResultStore` — plus
-  their `postgrest`/`supabase` transitive imports. This is a deliberate, targeted addition
-  specific to bloommcp's own structure: those two adapter classes are wired only inside
-  `main()`'s composition root, which sits _after_ the `--version` early return this PR adds —
-  so neither `build_app()` nor `bloom-mcp --version` alone would catch a broken adapter or a
-  lazily-imported dependency going stale. This closes the same _class_ of gap #629 named for
-  bloomcli, without needing bloomcli's own fix to have landed on main first.
-- **Entry-point verification is `bloom-mcp --version`**, matching `bloomcli`'s own single
-  `bloomctl --version` check (no deeper entry-point-wiring verification exists on main's
-  current `bloomcli` pipeline either, so there is nothing further to mirror here).
+- **Wheel-import check now matches `bloomcli`'s current exhaustive shape, plus a targeted
+  addition**: it runs `pkgutil.walk_packages` over every `bloom_mcp` submodule — twice, once at
+  default resolution and once with `--prerelease=allow`, exactly like `bloomcli`'s current
+  `main` check — and additionally imports the concrete Supabase-backed adapters
+  (`bloom_mcp.data_access.SupabaseReader`, `bloom_mcp.result_store.SupabaseResultStore`) and
+  calls `bloom_mcp.server.build_app()` explicitly. The walk alone would still import those
+  adapters' modules (and so exercise their `postgrest`/`supabase` transitive imports), but the
+  explicit class-level imports pin the exact names a refactor could otherwise let silently drop;
+  `build_app()` is asserted directly since it, not just an importable module, is bloommcp's own
+  composition entry point. Running the `--prerelease=allow` pass for the first time (this
+  revision) failed immediately: `httpx 1.0.dev5` resolved and broke `postgrest`'s import
+  (`ImportError: cannot import name 'Timeout' from 'httpx'`) — the exact failure mode #629
+  described, this time caught before merge instead of after. `bloomcli/pyproject.toml` already
+  carries load-bearing `httpx<1.0`/`supabase<3` upper bounds for this reason;
+  `bloommcp/pyproject.toml` had neither. Fixed by adding the matching bounds (see tasks.md).
+- **Entry-point verification now matches `bloomcli`'s current fail-fast-check shape, adapted to
+  bloommcp's different entry-point architecture**: `bloomcli`'s check proves an unhandled
+  exception becomes a one-line message via `bloomctl.errors:main` (distinguishing the wrapped
+  console script from the bare CLI, which `bloomctl --version` alone cannot do). `bloom_mcp`'s
+  console script is the bare `bloom_mcp.server:main` — there is no wrapper to distinguish, so
+  that exact check does not port over. What server.py's `main()` does document, and what
+  `--version` alone cannot prove, is its own contract: `--version`/`-V` return before any env
+  validation, and a real invocation with no env configured fails fast (raises `RuntimeError`)
+  rather than silently starting the server or hanging in `uvicorn.run()`. The new check drives
+  both paths explicitly (`bloom-mcp --version`, then a real `bloom-mcp` run under a 10s timeout
+  with no env), and pins the registered console-script target
+  (`entry_points(group="console_scripts")` must resolve `bloom-mcp` to `bloom_mcp.server:main`)
+  the way `bloomcli`'s check pins `bloomctl.errors:main`.
 - **Tag-prefix guard mechanics**: a **job-level** `if:` condition on `validate-release` —
   `if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'bloommcp-')`
   (and the `bloomctl-` symmetric on `release-bloomcli.yml`) — not a step. Two reasons:
@@ -107,6 +130,26 @@ retrofitting the rest of #629's hardening onto that live file is still out of sc
      `validate-release` → `build-and-verify` → `build-and-publish`), so gating only
      `validate-release` is sufficient to also skip the other two jobs — no need to duplicate
      the guard, and no need to touch `build-and-verify`'s or `build-and-publish`'s own steps.
+  - **The regression tests for both guards were themselves weak** (found in this revision's
+    review round): they asserted each clause's substring in the `if:` condition independently,
+    never the joined `||` expression — a future edit that silently flipped `||` to `&&`, or
+    otherwise broke the join, would still contain both substrings and pass, while permanently
+    disabling every real release (a release event's `github.event_name != 'release'` clause is
+    false, so `&&` would always evaluate to false regardless of the tag). Fixed by adding a
+    small evaluator (`_guard_permits` in both test files) that parses the condition into exactly
+    two `||`-joined clauses and exercises its actual truth table — `workflow_dispatch` always
+    passes, a real release with the right prefix passes, one with the other package's or a
+    typo'd prefix does not.
+- **`release-tag-guard.yml` closes the double-silent-skip gap** (also found in this revision's
+  review round): `release-bloomcli.yml` and `release-bloommcp.yml` are each designed to skip
+  cleanly — not fail — when a Release tag belongs to the other package. That is correct for the
+  two-package case, but it has no third state: a Release tagged with an unknown or typo'd prefix
+  (e.g. `bloomcp-v1.0.0`) makes _both_ workflows skip cleanly at once, and nothing in the
+  Actions UI says a Release was published that shipped nowhere. `release-tag-guard.yml` is a
+  third, minimal workflow — no job-level `if:`, `contents: read` only, no publish credential —
+  that runs on every published Release and fails loudly when the tag matches neither known
+  prefix. It intentionally does not attempt to also validate tag/version/changelog for the
+  matching package; that stays each package's own `validate-release` job's job.
 - **`twine` is pinned (`uvx twine@7.0.0 check dist/*`)**, unlike `release-bloomcli.yml`'s own
   equivalent step, which is still unpinned today — inconsistent with this repo's stated
   convention of pinning CI security/build tools (`openspec/project.md`). Copying that
@@ -163,9 +206,14 @@ not live_smoke" -q`, matching the exact marker set `pr-checks.yml`'s `python-aud
   `uv lock` and its `add-paths` includes `bloommcp/uv.lock` alongside `bloommcp/pyproject.toml`.
 - **A `bloommcp/RELEASE_PROCESS.md` runbook is added**, mirroring `bloomcli/RELEASE_PROCESS.md`
   (Overview, Version management, Cutting a release, Setup requirements incl. the PyPI trusted
-  publisher field table, Troubleshooting), substituting `bloommcp`/`bloom-mcp`/
-  `bloommcp-vX.Y.Z` and describing the extended wheel-import check in place of a walk-packages
-  mention (since bloomcli's own doc doesn't describe one either, on main). Without this, the
+  publisher field table, Troubleshooting), substituting `bloommcp`/`bloom-mcp`/`bloommcp-vX.Y.Z`
+  and describing the exhaustive-walk/double-resolution/entry-point-failure-mode checks alongside
+  the Supabase-adapter imports. This revision also adds, to both packages' `RELEASE_PROCESS.md`:
+  a note that the shared `pypi` environment has no protection rules today and now gates two
+  packages' publish credentials instead of one, a mention of `release-tag-guard.yml` under "the
+  workflow run is skipped entirely", and a partial-publish-failure entry (PyPI rejects
+  re-uploading a file that already exists, so a wheel-succeeds/sdist-fails run needs a new
+  version, not a rerun — neither doc mentioned this before). Without the runbook itself, the
   release-cutting procedure in `tasks.md` would be lost once this OpenSpec change is archived —
   `bloomcli` solved this with a durable doc; bloommcp's proposal should not regress on that.
 
@@ -184,14 +232,22 @@ not live_smoke" -q`, matching the exact marker set `pr-checks.yml`'s `python-aud
   line (no step changes), the existing + extended `tests/unit/test_release_bloomcli_workflow_shape.py`
   regression suite, and committing this change in its own isolated commit so it is trivially
   revertable independent of everything else in this PR.
-- The two pipelines are now inconsistent in the other direction: `release-bloommcp.yml` ships
-  three-job credential isolation from day one, while `release-bloomcli.yml` stays two-job (the
-  publish credential still shares a job with `twine check` and the wheel-import smoke test)
-  until `staging`'s `#629` rework eventually rolls up to `main`. Accepted: retrofitting that
-  hardening onto a currently-live, production-critical file real `bloomctl` releases depend on
-  is a larger, separately-reviewable change than this PR's scope, whereas giving a brand-new
-  file the safer shape costs nothing. The eventual rollup PR is the natural place to bring
-  `release-bloomcli.yml` up to the same isolation `release-bloommcp.yml` now has.
+- The `pypi` GitHub Environment has no protection rules today (no required reviewers, no
+  branch restriction) — pre-existing, shared with `bloomcli`, and outside this PR's reach to
+  fix directly (it's a repo setting, not a code change). This PR doubles what depends on that
+  being safe. Mitigated by documenting the gap explicitly in both packages'
+  `RELEASE_PROCESS.md` and recommending a required reviewer be added now (see Decisions/Setup
+  requirements) rather than treating it as someone else's problem because it predates this PR.
+- This PR's base branch was `main` at authoring time (2026-08-14) — a misreading of
+  `openspec/project.md`'s staging-first branching convention, not a deliberate exception to it
+  (see "Base branch" under Migration Plan). Retargeting to `staging` in this revision means
+  `release-bloommcp.yml` and `release-tag-guard.yml` won't be reachable by a real Release, and
+  `release-bloommcp.yml`/`version-bloommcp.yml` won't be dispatchable via `workflow_dispatch`,
+  until the next `staging → main` promotion — GitHub only evaluates `on: release`-triggered and
+  dispatches `workflow_dispatch`-triggered workflows from files that exist on the default
+  branch. This is not a new risk introduced by retargeting; it is the same path
+  `release-bloomcli.yml`'s own hardening took via `staging` before #667 promoted it, and it does
+  not block review or merge to `staging`.
 - The `bloomcli-packaging` capability now has two independent, unarchived ADDED deltas on `main`
   at once (this PR's, and `openspec/changes/add-bloomcli-container-release`'s — see "Capability
   placement" above). Neither change can control the other's archival order; flagged explicitly
@@ -199,28 +255,38 @@ not live_smoke" -q`, matching the exact marker set `pr-checks.yml`'s `python-aud
 
 ## Migration Plan
 
-Purely additive (two new workflow files, a new changelog, a version bump + lockfile
-regeneration, a version-metadata addition, a `[project.urls]` addition, a new release
-runbook), plus two narrow, independent retrofits to existing workflows: a single job-level
-guard condition on `release-bloomcli.yml`, and a `uv lock` step + `add-paths` entry on
-`version-bloomcli.yml` (the unrelated bug found during review — see Decisions). No runtime
-behavior of the shipped MCP server changes. Rollback is deleting the two new workflow files,
-reverting the `release-bloomcli.yml` guard and the `version-bloomcli.yml` fix, and reverting
-the version bump; nothing depends on them existing.
+Purely additive (three new workflow files, a new changelog, a version bump + lockfile
+regeneration, two new load-bearing dependency upper bounds, a version-metadata addition, a
+`[project.urls]` addition, a new release runbook), plus two narrow, independent retrofits to
+existing workflows: a single job-level guard condition on `release-bloomcli.yml`, and a
+`uv lock` step + `add-paths` entry on `version-bloomcli.yml` (the unrelated bug found during
+review — see Decisions). No runtime behavior of the shipped MCP server changes. Rollback is
+deleting the three new workflow files, reverting the `release-bloomcli.yml` guard and the
+`version-bloomcli.yml` fix, and reverting the version bump and dependency-bound changes;
+nothing depends on them existing.
 
 **Ordering**: version introspection (`__version__`/`--version`) → CHANGELOG.md → pyproject
-version bump + lockfile → `version-bloommcp.yml` → `release-bloommcp.yml` (depends on
-everything above existing, since its verify step imports and runs them) →
+version bump + dependency upper bounds + lockfile → `version-bloommcp.yml` →
+`release-bloommcp.yml` (depends on everything above existing, since its verify step imports and
+runs them) → `release-tag-guard.yml` (independent of everything else) →
 `release-bloomcli.yml` tag-prefix retrofit → `version-bloomcli.yml` uv.lock fix (both
 independent of everything else and of each other; isolated commits). See `tasks.md` for the
 exact commit sequence.
 
-**Base branch**: `main`, not `staging` (`openspec/project.md`'s documented default for feature
-branches). This is the correct choice for this specific class of change regardless of which
-branch currently has the more-hardened `release-bloomcli.yml`: GitHub only evaluates
-`on: release`-triggered workflows from the repo's default branch (`main`), so
-`release-bloommcp.yml` cannot fire at all unless it lives there; and the immediately-preceding
-bloommcp-infrastructure change (#590) also branched from and merged to `main` directly.
+**Base branch**: `staging`, not `main`. The original choice of `main` (recorded when this
+branch was opened, 2026-08-14) cited `openspec/project.md` as documenting `main` as the default
+for feature branches — that citation was backwards. `openspec/project.md`'s Git Workflow
+section is explicit: "Every feature/fix/docs PR targets `staging` by default... Feature
+branches: Create from `origin/staging`," with `main` reserved for periodic `staging → main`
+promotion PRs. This revision retargets to `staging` accordingly. The one true technical
+constraint — GitHub only evaluates `on: release`-triggered workflows, and only accepts
+`workflow_dispatch` runs, for files that exist on the repo's default branch (`main`) — does not
+argue for `main` as the PR's _base_; it only means `release-bloommcp.yml` and
+`release-tag-guard.yml` stay untriggerable until the next `staging → main` promotion carries
+them over, exactly as `release-bloomcli.yml`'s own hardening did before #667 (see Risks). The
+immediately-preceding bloommcp-infrastructure change (#590) branching from and merging to
+`main` directly was not itself evidence of the documented convention — it may simply predate
+consistent adherence to it, and does not override what `openspec/project.md` states today.
 
 ## Open Questions
 

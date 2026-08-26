@@ -62,14 +62,19 @@ A `release-bloommcp.yml` workflow SHALL run on every published GitHub Release an
 the release tag's version matches `bloommcp/pyproject.toml` and that a matching
 `CHANGELOG.md` entry exists, then lint and test the package, failing before any build step if
 any of these checks fail. `build-and-verify` SHALL then build the package, record the built
-artifact's checksum, run `twine check`, verify the built wheel imports (`bloom_mcp`,
-`bloom_mcp.tools`, `bloom_mcp.manifest`, `bloom_mcp.server`; that `bloom_mcp.server.build_app()`
-succeeds; and that the concrete Supabase-backed adapters — `bloom_mcp.data_access.SupabaseReader`,
+artifact's checksum, run `twine check`, verify the built wheel imports — every `bloom_mcp`
+submodule via an exhaustive `pkgutil.walk_packages` walk, run twice (once at default
+resolution, once with `--prerelease=allow`, so a broken transitive pre-release is caught before
+a real user hits it), plus explicitly that `bloom_mcp.server.build_app()` succeeds and that the
+concrete Supabase-backed adapters — `bloom_mcp.data_access.SupabaseReader`,
 `bloom_mcp.result_store.SupabaseResultStore` — and their `postgrest`/`supabase` transitive
 imports resolve, since these sit behind `main()`'s composition root and are not exercised by
-`build_app()` alone) and that its `bloom-mcp --version` entry point runs, from an isolated,
-project-free environment, then upload the built artifact — all before any job holds the
-publish credential. `build-and-publish` SHALL hold the OIDC token and the `pypi` environment,
+`build_app()` alone — and verify the entry point from an isolated, project-free environment:
+`bloom-mcp --version` returns cleanly, the installed `bloom-mcp` console script resolves to
+`bloom_mcp.server:main`, and a real invocation with no environment configured fails fast
+(raises, does not hang) rather than silently starting the server. `build-and-verify` SHALL
+then upload the built artifact — all before any job holds the publish credential.
+`build-and-publish` SHALL hold the OIDC token and the `pypi` environment,
 run no other third-party code, download the verified artifact, re-check its checksum, and
 publish to PyPI via trusted publishing (OIDC, no stored token) only when triggered by a
 published Release; a `workflow_dispatch` run SHALL stop after verification without publishing.
@@ -111,6 +116,21 @@ that must never run alongside the publish credential.
 - **AND** only the job that holds them (`build-and-publish`) runs no code beyond
   downloading the pre-verified artifact, re-checking its checksum, and publishing it
 
+#### Scenario: A broken transitive pre-release fails the build before publish
+
+- **WHEN** a transitive dependency has a pre-release version that removes or breaks an API
+  `bloom_mcp` (or one of its Supabase adapters) imports
+- **THEN** the `--prerelease=allow` wheel-import pass in `build-and-verify` fails, blocking the
+  release before any publish step runs — even though the default-resolution pass on the same
+  build would have passed
+
+#### Scenario: A real invocation with no environment fails fast, not silently
+
+- **WHEN** the built wheel's `bloom-mcp` console script is invoked with no `BLOOM_*`/
+  `SUPABASE_*` environment variables set, and no `--version`/`-V` flag
+- **THEN** it raises before binding a port or starting the server, within a bounded time —
+  neither succeeding nor hanging
+
 ### Requirement: Release Workflow Skips Foreign Package Tags
 
 `release-bloommcp.yml`'s `validate-release` job SHALL carry a job-level guard —
@@ -136,3 +156,21 @@ bloommcp's.
 
 - **WHEN** `release-bloommcp.yml` is run via `workflow_dispatch` (no release tag present)
 - **THEN** the tag-prefix guard does not skip the run
+
+### Requirement: Release Tag Guard Catches Unknown Prefixes
+
+A `release-tag-guard.yml` workflow SHALL run on every published GitHub Release, carry no
+job-level skip condition, and fail if the release tag matches neither `bloomctl-` nor
+`bloommcp-`. This is a cross-cutting guard specified once here (rather than duplicated per
+package) since it does not belong to either package's own release workflow — the reciprocal
+statement of this same requirement also appears as a delta against the `bloomcli-packaging`
+capability, since `release-tag-guard.yml` is a new top-level file neither existing capability
+solely owns.
+
+#### Scenario: A typo'd or unknown tag prefix produces a visible failing run
+
+- **WHEN** a GitHub Release is published tagging something matching neither `bloomctl-` nor
+  `bloommcp-` (e.g. `bloomcp-v1.0.0`)
+- **THEN** `release-tag-guard.yml` runs (unlike `release-bloomcli.yml`/`release-bloommcp.yml`,
+  which both skip cleanly) and fails, naming the tag and the known prefixes it matched neither
+  of
