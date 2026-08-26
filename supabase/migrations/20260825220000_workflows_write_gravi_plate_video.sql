@@ -84,8 +84,10 @@ CREATE POLICY workflows_update_graviscan_videos ON storage.objects
 
 -- Two update policies mean the role can now write a row in either bucket, and
 -- policies are OR-ed, so nothing stops it setting one bucket's row to the
--- other's name. RLS cannot compare the old row to the new one; taking away the
--- column can. Everything except bucket_id stays updatable.
+-- other's name. A plate video moved to `videos` becomes readable by every
+-- authenticated user, and either direction leaves the row pointing at a file
+-- that stayed where it was. RLS cannot compare the old row to the new one;
+-- withholding the column can. Everything else stays updatable.
 REVOKE UPDATE ON storage.objects FROM bloom_workflows;
 GRANT UPDATE (id, name, owner, owner_id, created_at, updated_at,
               last_accessed_at, metadata, user_metadata, path_tokens, version)

@@ -190,9 +190,10 @@ def test_the_role_cannot_move_an_object_between_buckets(pg_conn):
     policies are OR-ed — so RLS alone would let it set one bucket's row to the
     other's name, and RLS cannot compare the old row to the new one.
 
-    Moving a cyl video into graviscan-videos would expose it to every signed-in
-    user; moving a plate video out would leave the row pointing at a file that
-    is no longer there. Withholding the bucket_id column is what stops both.
+    `videos` carries a policy for `authenticated` and `graviscan-videos` does
+    not, so a plate video moved there becomes readable by every signed-in user.
+    Either direction also leaves the row naming a bucket the file is not in.
+    Withholding the bucket_id column is what stops both.
     """
     with pg_conn.cursor() as cur:
         for bucket in ("videos", BUCKET):
@@ -216,28 +217,66 @@ def test_the_role_cannot_move_an_object_between_buckets(pg_conn):
     pg_conn.rollback()
 
 
-def test_the_role_keeps_every_column_an_upload_writes(pg_conn):
-    """The companion to the test above. Withholding bucket_id must not take the
-    rest with it — this is the write path both the cyl and plate services use,
-    so an over-narrow grant breaks uploads rather than the move."""
+def test_the_role_can_still_update_the_same_row_without_the_bucket(pg_conn):
+    """The positive control for the test above: without it, that test passes just
+    as well if the role lost UPDATE entirely."""
     with pg_conn.cursor() as cur:
         cur.execute(
             "INSERT INTO storage.buckets (id, name) VALUES (%s, %s) "
             "ON CONFLICT (id) DO NOTHING",
-            (BUCKET, BUCKET),
+            ("videos", "videos"),
+        )
+        cur.execute(
+            "INSERT INTO storage.objects (bucket_id, name) VALUES (%s, %s)",
+            ("videos", "cyl-videos/999.mp4"),
         )
         cur.execute(f"SET LOCAL ROLE {ROLE}")
         cur.execute(
-            "INSERT INTO storage.objects (bucket_id, name) VALUES (%s, %s)",
-            (BUCKET, "12/wave-1/P1.mp4"),
+            "UPDATE storage.objects SET version = %s WHERE name = %s",
+            ("v2", "cyl-videos/999.mp4"),
         )
+        assert cur.rowcount == 1, "the denial is about UPDATE, not about bucket_id"
+
+    pg_conn.rollback()
+
+
+# The statement storage-api issues for an upsert upload, read out of
+# supabase/storage-api:v1.48.14 (`storage/database/knex.js`). Its DO UPDATE set is
+# metadata, user_metadata, version, owner, owner_id — losing any of those from the
+# grant breaks every upload, cylinder and plate alike.
+_STORAGE_UPSERT = """
+    INSERT INTO storage.objects
+      (name, owner, owner_id, bucket_id, metadata, user_metadata, version)
+    VALUES (%s, NULL, NULL, %s, %s, %s, %s)
+    ON CONFLICT (name, bucket_id) DO UPDATE
+      SET metadata = EXCLUDED.metadata,
+          user_metadata = EXCLUDED.user_metadata,
+          version = EXCLUDED.version,
+          owner = EXCLUDED.owner,
+          owner_id = EXCLUDED.owner_id
+    RETURNING *
+"""
+
+
+@pytest.mark.parametrize("bucket", ["graviscan-videos", "videos"])
+def test_an_upload_still_works_in_both_buckets(pg_conn, bucket):
+    """Withholding bucket_id must not take the rest of the grant with it. Runs the
+    real upsert rather than a guessed column set, and against `videos` too — the
+    cylinder path shares this grant, so an over-narrow list breaks it first."""
+    with pg_conn.cursor() as cur:
         cur.execute(
-            "UPDATE storage.objects SET metadata = %s, user_metadata = %s, "
-            "version = %s, updated_at = now(), last_accessed_at = now() "
-            "WHERE bucket_id = %s AND name = %s",
-            ('{"size": 1}', "{}", "v2", BUCKET, "12/wave-1/P1.mp4"),
+            "INSERT INTO storage.buckets (id, name) VALUES (%s, %s) "
+            "ON CONFLICT (id) DO NOTHING",
+            (bucket, bucket),
         )
-        assert cur.rowcount == 1, "the grant is too narrow for a normal overwrite"
+        cur.execute(f"SET LOCAL ROLE {ROLE}")
+
+        for version in ("v1", "v2"):  # second pass takes the DO UPDATE branch
+            cur.execute(
+                _STORAGE_UPSERT,
+                ("12/wave-1/P1.mp4", bucket, "{}", "{}", version),
+            )
+            assert cur.rowcount == 1, f"the grant is too narrow for an upload ({version})"
 
     pg_conn.rollback()
 
