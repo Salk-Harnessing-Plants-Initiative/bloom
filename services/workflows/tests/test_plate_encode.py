@@ -312,3 +312,103 @@ def test_each_frame_carries_its_own_elapsed_label(ffmpeg, tmp_path):
 
     chunks = ffmpeg[0].stdin.chunks
     assert len(set(chunks)) == 3, "two frames carried the same label"
+
+
+# --- bounded -----------------------------------------------------------------
+#
+# Not a memory bound: the host has 633 GB free and a render peaks around
+# 194 MB. The semaphore is so forty simultaneous clicks do not saturate the
+# link to storage; the lock is so two requests for one plate do not both encode.
+
+import threading  # noqa: E402
+
+
+def test_one_plate_gets_one_lock():
+    assert pe.plate_lock("12/wave-1/P7.mp4") is pe.plate_lock("12/wave-1/P7.mp4")
+
+
+def test_different_plates_get_different_locks():
+    """A shared lock would serialise every render in the service."""
+    assert pe.plate_lock("12/wave-1/P7.mp4") is not pe.plate_lock("12/wave-1/P8.mp4")
+
+
+def test_the_lock_actually_excludes():
+    lock = pe.plate_lock("12/wave-1/held.mp4")
+    with lock:
+        assert lock.acquire(blocking=False) is False
+    assert lock.acquire(blocking=False) is True
+    lock.release()
+
+
+def test_the_lock_table_is_built_under_its_own_guard():
+    """Two threads asking at once must not each create a lock — one of them
+    would then hold a lock nobody else respects."""
+    seen = []
+    barrier = threading.Barrier(8)
+
+    def grab():
+        barrier.wait()
+        seen.append(pe.plate_lock("12/wave-1/raced.mp4"))
+
+    threads = [threading.Thread(target=grab) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len({id(lock) for lock in seen}) == 1
+
+
+def test_a_slot_is_released_when_the_render_finishes():
+    for _ in range(pe.MAX_CONCURRENT_ENCODES + 2):
+        with pe.encode_slot():
+            pass
+
+
+def test_a_slot_is_released_when_the_render_raises():
+    """A slot leaked on the error path takes a permanent bite out of capacity."""
+    for _ in range(pe.MAX_CONCURRENT_ENCODES + 2):
+        with pytest.raises(RuntimeError):
+            with pe.encode_slot():
+                raise RuntimeError("render failed")
+
+
+def test_asking_past_the_limit_refuses_rather_than_queueing():
+    """The caller is a synchronous request with a client already waiting;
+    queueing would hold a slot's memory to achieve nothing it can see."""
+    held = [pe.encode_slot() for _ in range(pe.MAX_CONCURRENT_ENCODES)]
+    for slot in held:
+        slot.__enter__()
+    try:
+        with pytest.raises(pe.EncoderBusy) as ei:
+            with pe.encode_slot():
+                pass
+        assert str(pe.MAX_CONCURRENT_ENCODES) in str(ei.value)
+    finally:
+        for slot in held:
+            slot.__exit__(None, None, None)
+
+
+def test_a_caller_may_wait_for_a_slot_if_it_chooses():
+    """`timeout` is opt-in: a worker with no client waiting can queue."""
+    held = [pe.encode_slot() for _ in range(pe.MAX_CONCURRENT_ENCODES)]
+    for slot in held:
+        slot.__enter__()
+
+    released = threading.Event()
+
+    def free_one():
+        released.wait(1)
+        held[0].__exit__(None, None, None)
+
+    freer = threading.Thread(target=free_one)
+    freer.start()
+    released.set()
+
+    try:
+        with pe.encode_slot(timeout=2):
+            pass
+    finally:
+        freer.join()
+        for slot in held[1:]:
+            slot.__exit__(None, None, None)

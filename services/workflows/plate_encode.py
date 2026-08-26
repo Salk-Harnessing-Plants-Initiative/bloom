@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import io
 import logging
+import threading
+from contextlib import contextmanager
 
 import numpy as np
 from PIL import Image
@@ -29,6 +31,50 @@ logger = logging.getLogger(__name__)
 # width, so file size does not constrain the choice; browser decode limits and
 # legibility do.
 PLATE_VIDEO_WIDTH = 1440
+
+# How many plates may encode at once. Not a memory bound — the host has 633 GB
+# free and a render peaks around 194 MB. This is so forty simultaneous clicks
+# do not saturate the link to storage and make every other request slower.
+MAX_CONCURRENT_ENCODES = 4
+
+# Nothing here bounds a single download. The storage client takes no per-call
+# timeout, so that belongs on its HTTP client rather than in this module — the
+# cyl path has the same gap. A whole plate is deliberately unbounded either
+# way: 86 frames measured at 0.68s each, and a longer run should take longer
+# rather than be truncated.
+
+_encode_slots = threading.BoundedSemaphore(MAX_CONCURRENT_ENCODES)
+_plate_locks: dict[str, threading.Lock] = {}
+_plate_locks_guard = threading.Lock()
+
+
+def plate_lock(key: str) -> threading.Lock:
+    """The lock for one plate's video, created on first use.
+
+    Keyed by the object key, so two requests for the same plate serialise while
+    different plates do not. Taken once the plate is known to exist, so the
+    table stays bounded by real plates rather than by anything a caller asks for.
+    """
+    with _plate_locks_guard:
+        return _plate_locks.setdefault(key, threading.Lock())
+
+
+@contextmanager
+def encode_slot(timeout: float | None = None):
+    """One of the concurrent-encode slots, or a refusal.
+
+    Refusing beats queueing: the caller is a synchronous request that already
+    has a client waiting, and a queue would hold the slot's worth of memory
+    while achieving nothing the client can see.
+    """
+    if not _encode_slots.acquire(blocking=timeout is not None, timeout=timeout):
+        raise EncoderBusy(
+            f"{MAX_CONCURRENT_ENCODES} plate videos are already encoding; try again shortly"
+        )
+    try:
+        yield
+    finally:
+        _encode_slots.release()
 
 
 def prepare_frame(image_bytes: bytes, label: str) -> np.ndarray:
@@ -84,6 +130,10 @@ def _even(image: Image.Image) -> Image.Image:
 
 class FrameUnreadable(RuntimeError):
     """A frame could not be fetched or decoded, and the render must not go on."""
+
+
+class EncoderBusy(RuntimeError):
+    """Every encode slot is taken. Not a failure — a reason to come back."""
 
 
 def encode_plate_video(client, frames: list[dict], out_path: str) -> int:
