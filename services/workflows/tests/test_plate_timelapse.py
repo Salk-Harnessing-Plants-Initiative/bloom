@@ -38,8 +38,8 @@ class TestLabelFor:
         assert "PDT" in pt.label_for(T0, T0)
 
     def test_uses_the_scanners_zone_not_utc(self):
-        """09:15 UTC is 02:15 in the scanners' zone, and that is what the plate
-        pages render for the same capture."""
+        """09:15 UTC is 02:15 where the scanners are. The plate pages render
+        the same capture in the viewer's own zone instead (#734)."""
         assert pt.label_for(T0, T0).startswith("2026-08-25 02:15 PDT")
 
     def test_switches_to_standard_time_in_winter(self):
@@ -191,8 +191,7 @@ class TestAnnotate:
         assert short.shape == long.shape
 
     def test_the_band_height_is_a_real_number_of_rows(self):
-        """Asserted against a literal: deriving it from the constant would make
-        the test grow with the mistake."""
+        """The band is real rows, and a plausible number of them."""
         out = pt.annotate(self._frame(h=100), "x")
         assert out.shape[0] == 100 + pt.LABEL_BAND_HEIGHT
         assert 20 <= pt.LABEL_BAND_HEIGHT <= 80
@@ -208,20 +207,30 @@ class TestAnnotate:
         assert not np.array_equal(a[200:], b[200:])
 
     def test_the_label_is_legible_against_the_band(self):
-        """A contrast floor and an ink floor. `min() != max()` passed for text
-        one shade off the band, and for a font too small to read."""
+        """A contrast floor and an ink floor: legible, not merely present."""
         band = self._band()
         _, _, ink = self._ink(band)
         assert int(band.max()) - int(band.min()) >= 128
         assert ink >= 400
 
-    def test_both_label_lines_fit_inside_the_band(self):
-        """At LABEL_BAND_HEIGHT 20 the elapsed line is cut off the video
-        entirely, and every other assertion here still passes."""
-        rows, _, _ = self._ink(self._band(pt.label_for(T0 + timedelta(hours=12), T0)))
+    def test_both_label_lines_fit_inside_the_band(self, monkeypatch):
+        """Both lines are drawn inside LABEL_BAND_HEIGHT rows.
+
+        Measured on an oversized band, because a band exactly as tall as the
+        text it holds clips that text to its own last row — so the ink stops
+        where the band stops whether it fits or not.
+        """
+        label = pt.label_for(T0 + timedelta(hours=12), T0)
+        height = pt.LABEL_BAND_HEIGHT
+        roomy = height * 3
+
+        monkeypatch.setattr(pt, "LABEL_BAND_HEIGHT", roomy)
+        rows, _, _ = self._ink(self._band(label))
+
+        assert rows[-1] < roomy - 1, "the oversized band clipped too — raise it"
         # Two lines of text means two runs of inked rows with a gap between.
         assert len(np.flatnonzero(np.diff(rows) > 1)) == 1
-        assert rows[-1] < pt.LABEL_BAND_HEIGHT - 1
+        assert rows[-1] < height
 
     def test_the_text_does_not_touch_the_band_edge(self):
         """Literal margins: at LABEL_PADDING 0 the glyphs sit against the frame
@@ -229,6 +238,13 @@ class TestAnnotate:
         rows, cols, _ = self._ink(self._band())
         assert rows[0] >= 8
         assert cols[0] >= 4
+        assert pt.LABEL_BAND_HEIGHT - rows[-1] > 1, "the last line sits on the edge"
+
+    def test_the_result_is_still_8_bit(self):
+        """np.concatenate promotes: an int8 frame would come back int16 and
+        write twice the bytes ffmpeg expects."""
+        out = pt.annotate(self._frame(), pt.label_for(T0, T0))
+        assert out.dtype == np.uint8
 
     def test_does_not_mutate_the_frame_it_was_given(self):
         """The encoder may reuse buffers."""
@@ -252,8 +268,9 @@ class TestAnnotate:
     def test_a_deeper_frame_is_refused_rather_than_flattened(self):
         """An MP4 is 8-bit either way, but clamping 4000 to 255 blows out the
         highlights where scaling would not. Reduce it where the range is known."""
-        with pytest.raises(ValueError, match="8-bit"):
-            pt.annotate(np.zeros((200, 300, 3), dtype=np.uint16), "x")
+        for dtype in (np.uint16, np.int8, np.float32, np.bool_):
+            with pytest.raises(ValueError, match="8-bit"):
+                pt.annotate(np.zeros((200, 300, 3), dtype=dtype), "x")
 
     @pytest.mark.parametrize(
         "shape",

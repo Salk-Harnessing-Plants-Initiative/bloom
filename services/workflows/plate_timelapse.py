@@ -35,9 +35,10 @@ _TEXT_FILL = (255, 255, 255)
 def label_for(capture_date: datetime, first_capture: datetime) -> str:
     """Two lines: when the frame was taken, and how long into the run it is.
 
-    The absolute time is shown in the scanners' zone and names it, matching
-    what the plate pages render. The elapsed line is timezone-free, and is what
-    makes an irregular capture gap visible rather than silent.
+    The absolute time is shown in the scanners' zone and names it, because a
+    file cannot know who is watching and the plate pages name no zone at all
+    (#734). The elapsed line is timezone-free, and is what makes an irregular
+    capture gap visible rather than silent.
     """
     absolute = _as_utc(capture_date).astimezone(PLATE_TIMEZONE)
     start = _as_utc(first_capture)
