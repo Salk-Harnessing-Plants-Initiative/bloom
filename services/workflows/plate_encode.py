@@ -16,6 +16,7 @@ import io
 import logging
 import math
 import os
+import tempfile
 import threading
 from contextlib import contextmanager
 
@@ -23,7 +24,7 @@ import numpy as np
 from PIL import Image
 
 from plate_timelapse import PLATE_FPS, annotate, label_for
-from plate_video import first_capture
+from plate_video import first_capture, plan_render
 from plate_video_path import (
     GRAVISCAN_IMAGES_BUCKET,
     GRAVISCAN_VIDEOS_BUCKET,
@@ -435,3 +436,43 @@ def publish_plate_video(
 
     logger.info("recorded %s: %s frames", key, frame_count)
     return {k.removeprefix("p_"): v for k, v in recorded.items()}
+
+
+# --- the whole render --------------------------------------------------------
+
+
+def render_plate_video(
+    client, experiment_id: int, plate_id: str, wave_number: int | None
+) -> dict:
+    """Decide, encode, store, record. The one call a route makes.
+
+    The plan is taken twice: once to decide, and again once the plate's lock is
+    held. Between those two a concurrent request for the same plate may have
+    rendered it, and re-encoding would overwrite a video identical to the one
+    about to be made — the second look turns that into a `keep`.
+    """
+    plan = plan_render(client, experiment_id, plate_id, wave_number)
+    if plan["action"] != "render":
+        return plan
+
+    with encode_slot(), plate_lock(plan["key"]):
+        plan = plan_render(client, experiment_id, plate_id, wave_number)
+        if plan["action"] != "render":
+            return plan
+
+        with tempfile.TemporaryDirectory() as work:
+            # A constant name: the plate id is caller-supplied and would
+            # otherwise reach the filesystem and the ffmpeg command line.
+            video_path = os.path.join(work, "plate.mp4")
+            written = encode_plate_video(client, plan["frames"], video_path)
+            recorded = publish_plate_video(
+                client,
+                plan["key"],
+                video_path,
+                experiment_id=experiment_id,
+                plate_id=plate_id,
+                wave_number=wave_number,
+                frame_count=written,
+            )
+
+    return {**plan, "action": "rendered", "recorded": recorded}
