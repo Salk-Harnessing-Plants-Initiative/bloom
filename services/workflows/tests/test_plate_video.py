@@ -77,8 +77,10 @@ class _Client:
 
 
 def _row(minutes, path, cycle=None, session=None):
+    # PostgREST sends TIMESTAMPTZ as an ISO string, never a datetime. Building
+    # rows the other way hid a crash in the encoder for the whole of PR 4 and 5.
     return {
-        "capture_date": T0 + timedelta(minutes=minutes),
+        "capture_date": (T0 + timedelta(minutes=minutes)).isoformat(),
         "cycle_number": cycle,
         "session_id": session,
         "gravi_images": {"object_path": path},
@@ -170,6 +172,35 @@ def test_a_plate_with_no_captures_is_an_empty_list_not_an_error():
     """`.execute().data` is None when nothing matched."""
     client = _Client(None)
     assert pv.get_plate_frames(client, 12, "P7", 1) == []
+
+
+class TestCaptureDateArrivesAsAString:
+    """PostgREST sends TIMESTAMPTZ as text. Everything downstream — the elapsed
+    maths, the burned label, the ordering check — needs a datetime, so the
+    conversion happens once, where rows enter."""
+
+    def test_a_frames_capture_date_is_a_datetime(self):
+        client = _Client([_row(0, "a.tif")])
+        frames = pv.get_plate_frames(client, 12, "P7", 1)
+        assert isinstance(frames[0]["capture_date"], datetime)
+
+    def test_an_offset_written_with_z_is_understood(self):
+        """Postgres can end an offset with Z; fromisoformat rejected it before 3.11."""
+        client = _Client([{**_row(0, "a.tif"), "capture_date": "2026-05-29T11:00:00Z"}])
+        frames = pv.get_plate_frames(client, 12, "P7", 1)
+        assert frames[0]["capture_date"] == datetime(2026, 5, 29, 11, 0, tzinfo=timezone.utc)
+
+    def test_a_naive_stamp_stays_naive(self):
+        """Not repaired here. `label_for` refuses a naive time rather than guess a
+        zone, and inventing UTC at this layer would silently shift every label."""
+        client = _Client([{**_row(0, "a.tif"), "capture_date": "2026-05-29T11:00:00"}])
+        frames = pv.get_plate_frames(client, 12, "P7", 1)
+        assert frames[0]["capture_date"].tzinfo is None
+
+    def test_an_unparseable_stamp_is_refused(self):
+        client = _Client([{**_row(0, "a.tif"), "capture_date": "last tuesday"}])
+        with pytest.raises(ValueError, match="unparseable capture_date"):
+            pv.get_plate_frames(client, 12, "P7", 1)
 
 
 def test_first_capture_is_the_oldest_frame():

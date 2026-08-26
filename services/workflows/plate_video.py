@@ -78,12 +78,31 @@ def _frame(row: dict) -> dict:
         embedded = embedded[0] if embedded else {}
 
     return {
-        "capture_date": row["capture_date"],
+        "capture_date": _capture_datetime(row["capture_date"]),
         "cycle_number": row.get("cycle_number"),
         "session_id": row.get("session_id"),
         "object_path": (embedded or {}).get("object_path"),
         "file_size_bytes": (embedded or {}).get("file_size_bytes"),
     }
+
+
+def _capture_datetime(value) -> datetime:
+    """`capture_date` as a datetime.
+
+    PostgREST sends TIMESTAMPTZ as an ISO string, and the label maths needs a
+    datetime. Converted here, where rows enter, so nothing downstream has to
+    know which it was handed. A naive value stays naive on purpose: `label_for`
+    refuses one rather than guess a zone.
+    """
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str):
+        raise TypeError(f"capture_date must be a datetime or an ISO string, got {value!r}")
+    try:
+        # 3.11 is the floor, and its fromisoformat takes a Z-terminated offset.
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"unparseable capture_date {value!r}") from exc
 
 
 def planned_cycles(client, frames: list[dict]) -> int | None:
