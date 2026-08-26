@@ -15,6 +15,8 @@ import psycopg
 import pytest
 
 ROLE = "bloom_workflows"
+BUCKET = "graviscan-images"
+OBJECT = "1/wave-1/PLATE-RLS.tif"
 
 
 def _seed_plate(cur):
@@ -38,7 +40,7 @@ def _seed_plate(cur):
 
     cur.execute(
         "INSERT INTO gravi_images (scan_id, object_path) VALUES (%s, %s)",
-        (scan_id, "1/wave-1/PLATE-RLS.tif"),
+        (scan_id, OBJECT),
     )
     return scan_id
 
@@ -75,18 +77,20 @@ def test_reads_a_plates_captures_and_image_paths(pg_conn):
         rows = cur.fetchall()
 
     assert len(rows) == 1, "the role sees no rows — grant without a policy reads empty"
-    assert rows[0][1] == "1/wave-1/PLATE-RLS.tif"
+    assert rows[0][1] == OBJECT
     pg_conn.rollback()
 
 
 @pytest.mark.parametrize("table", ["gravi_scans", "gravi_images"])
 @pytest.mark.parametrize("verb", ["INSERT", "UPDATE", "DELETE"])
 def test_cannot_write_either_table(pg_conn, table, verb):
-    """Read access only. A write must fail at the privilege check, not silently.
+    """Read access only. A write must be refused, not silently accepted.
 
-    One statement per test: the first error aborts the transaction, so a second
-    write in the same one would raise InFailedSqlTransaction and pass for the
-    wrong reason.
+    42501 covers both a missing grant and a missing RLS policy, so this does not
+    say which refused it — `test_holds_select_and_nothing_else` is what pins the
+    grant. One statement per test: the first error aborts the transaction, so a
+    second write in the same one would raise InFailedSqlTransaction and pass for
+    the wrong reason.
     """
     statement = {
         "INSERT": f"INSERT INTO {table} (id) VALUES (%s)",
@@ -143,7 +147,7 @@ def test_reads_graviscan_images_objects_and_not_another_bucket(pg_conn):
     role, so none of them can show that the graviscan grant is scoped.
     """
     with pg_conn.cursor() as cur:
-        for bucket in ("graviscan-images", "zzz-rls-control"):
+        for bucket in (BUCKET, "zzz-rls-control"):
             cur.execute(
                 "INSERT INTO storage.buckets (id, name) VALUES (%s, %s) "
                 "ON CONFLICT (id) DO NOTHING",
@@ -151,40 +155,41 @@ def test_reads_graviscan_images_objects_and_not_another_bucket(pg_conn):
             )
             cur.execute(
                 "INSERT INTO storage.objects (bucket_id, name) VALUES (%s, %s)",
-                (bucket, "1/wave-1/PLATE-RLS.tif"),
+                (bucket, OBJECT),
             )
 
         cur.execute(f"SET LOCAL ROLE {ROLE}")
         cur.execute(
             "SELECT bucket_id FROM storage.objects WHERE name = %s",
-            ("1/wave-1/PLATE-RLS.tif",),
+            (OBJECT,),
         )
         visible = {r[0] for r in cur.fetchall()}
 
-    assert "graviscan-images" in visible, "the role cannot read the bucket it was granted"
+    assert BUCKET in visible, "the role cannot read the bucket it was granted"
     assert "zzz-rls-control" not in visible, f"the grant is not scoped to one bucket: {visible}"
     pg_conn.rollback()
 
 
-def test_holds_no_write_policy_on_graviscan_images(pg_conn):
-    """Read access only, for now.
+def test_cannot_write_an_object_into_graviscan_images(pg_conn):
+    """The role holds table-level INSERT and UPDATE on storage.objects, so the
+    only thing keeping it out of this bucket is the absence of a policy.
 
-    Checks with_check as well as qual: for a FOR INSERT policy qual is NULL, so
-    a qual-only filter silently skips exactly the policy shape the write-path
-    migration will add.
+    Attempts the write rather than enumerating policies: a catalogue query has
+    to guess which policy shapes count, and misses an unscoped `FOR ALL` one,
+    or one granted `TO public`, or one whose predicate never names the bucket.
     """
     with pg_conn.cursor() as cur:
         cur.execute(
-            """
-            SELECT policyname, cmd
-            FROM pg_policies
-            WHERE schemaname = 'storage'
-              AND tablename = 'objects'
-              AND %s = ANY(roles)
-              AND cmd <> 'SELECT'
-              AND coalesce(qual, '') || coalesce(with_check, '') LIKE %s
-            """,
-            (ROLE, "%graviscan-images%"),
+            "INSERT INTO storage.buckets (id, name) VALUES (%s, %s) "
+            "ON CONFLICT (id) DO NOTHING",
+            (BUCKET, BUCKET),
         )
-        assert cur.fetchall() == [], "a write policy on graviscan-images appeared"
+        cur.execute(f"SET LOCAL ROLE {ROLE}")
+
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            cur.execute(
+                "INSERT INTO storage.objects (bucket_id, name) VALUES (%s, %s)",
+                (BUCKET, "written-by-the-role.mp4"),
+            )
+
     pg_conn.rollback()

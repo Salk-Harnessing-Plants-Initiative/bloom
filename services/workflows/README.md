@@ -214,6 +214,8 @@ and storage policies are the boundary**. The app user needs only:
 - `SELECT (scan_id, source_id)` on `cyl_scan_traits`, `SELECT (id, metadata)` on
   `cyl_trait_sources` (the pipeline-trigger dedup preview's all-sources join),
   and `SELECT (id)`-only existence-check access on `cyl_waves`/`cyl_experiments`
+- `SELECT` on `gravi_scans`, `gravi_images` and read on the graviscan-images
+  bucket — the plate time-lapse frame set
 - `EXECUTE` on `enqueue_cyl_pipeline_batch`, `claim_cyl_pipeline_batch`,
   `complete_cyl_pipeline_batch`, `fail_cyl_pipeline_batch`,
   `update_cyl_pipeline_run_status`
@@ -227,7 +229,8 @@ user. The first three grants are set up by the migration
 `…_create_cyl_pipeline_runs.sql` (bloom #11/#404, Phase 1); the
 claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 (Phase 2); `update_cyl_pipeline_run_status` by
-`…_add_cyl_pipeline_run_status_polling.sql` (Phase 3).
+`…_add_cyl_pipeline_run_status_polling.sql` (Phase 3); the gravi reads by
+`…_workflows_read_gravi.sql`.
 
 ## Provisioning (per environment)
 
