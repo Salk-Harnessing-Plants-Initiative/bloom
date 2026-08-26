@@ -412,3 +412,176 @@ def test_a_caller_may_wait_for_a_slot_if_it_chooses():
         freer.join()
         for slot in held[1:]:
             slot.__exit__(None, None, None)
+
+
+# --- publishing --------------------------------------------------------------
+#
+# Two systems, no shared transaction. Upload first, because the page reads the
+# row without checking the object: a row without its file renders a broken
+# player, a file without its row reads as no video yet.
+
+import hashlib  # noqa: E402
+
+
+class _Videos:
+    def __init__(self, raises=None):
+        self._raises = raises
+        self.uploaded: list[tuple] = []
+
+    def upload(self, key, data, options=None):
+        if self._raises is not None:
+            raise self._raises
+        self.uploaded.append((key, data, options))
+
+
+class _PublishClient:
+    def __init__(self, upload_raises=None, rpc_raises=None):
+        self.videos = _Videos(upload_raises)
+        self._rpc_raises = rpc_raises
+        self.calls: list[tuple] = []
+
+    @property
+    def storage(self):
+        outer = self
+
+        class _S:
+            def from_(self, name):
+                outer.bucket = name
+                return outer.videos
+
+        return _S()
+
+    def rpc(self, name, params):
+        self.calls.append((name, params))
+        outer = self
+
+        class _R:
+            def execute(self):
+                if outer._rpc_raises is not None:
+                    raise outer._rpc_raises
+                return type("_D", (), {"data": None})()
+
+        return _R()
+
+
+def _encoded(tmp_path, payload=b"\x00\x01mp4"):
+    path = tmp_path / "out.mp4"
+    path.write_bytes(payload)
+    return str(path)
+
+
+def _publish(client, tmp_path, frames=86, payload=b"\x00\x01mp4"):
+    return pe.publish_plate_video(
+        client,
+        "12/wave-1/P7.mp4",
+        _encoded(tmp_path, payload),
+        experiment_id=12,
+        plate_id="P7",
+        wave_number=1,
+        frame_count=frames,
+    )
+
+
+def test_the_video_is_uploaded_to_the_videos_bucket(tmp_path):
+    client = _PublishClient()
+    _publish(client, tmp_path)
+
+    assert client.bucket == "graviscan-videos"
+    key, data, options = client.videos.uploaded[0]
+    assert key == "12/wave-1/P7.mp4"
+    assert data == b"\x00\x01mp4"
+
+
+def test_the_upload_overwrites_rather_than_failing_on_a_re_render(tmp_path):
+    """The key is derived from the plate, so every render writes the same one."""
+    client = _PublishClient()
+    _publish(client, tmp_path)
+    assert client.videos.uploaded[0][2]["upsert"] == "true"
+
+
+def test_the_row_is_written_through_the_wrapper(tmp_path):
+    """The role has no table grant; this is the only write it can make."""
+    client = _PublishClient()
+    _publish(client, tmp_path)
+
+    name, params = client.calls[0]
+    assert name == "record_gravi_plate_video"
+    assert params["p_experiment_id"] == 12
+    assert params["p_plate_id"] == "P7"
+    assert params["p_wave_number"] == 1
+    assert params["p_object_path"] == "12/wave-1/P7.mp4"
+
+
+def test_the_recorded_duration_follows_the_frame_rate(tmp_path):
+    """86 frames at 4 fps is 21.5 seconds, which rounds up — a duration short of
+    the video would cut the last frames off a progress bar."""
+    client = _PublishClient()
+    _publish(client, tmp_path, frames=86)
+
+    params = client.calls[0][1]
+    assert params["p_fps"] == PLATE_FPS
+    assert params["p_duration_seconds"] == 22
+
+
+def test_the_recorded_size_and_hash_describe_the_file(tmp_path):
+    client = _PublishClient()
+    _publish(client, tmp_path, payload=b"some bytes")
+
+    params = client.calls[0][1]
+    assert params["p_file_size_bytes"] == len(b"some bytes")
+    assert params["p_file_hash"] == hashlib.sha256(b"some bytes").hexdigest()
+
+
+def test_the_upload_happens_before_the_row_is_written(tmp_path):
+    """A row without its file renders a broken player; a file without its row
+    reads as no video yet. Only one of those is worth showing a scientist."""
+    client = _PublishClient(rpc_raises=Exception("db unavailable"))
+
+    with pytest.raises(pe.NotRecorded):
+        _publish(client, tmp_path)
+
+    assert client.videos.uploaded, "the video was not stored before recording was attempted"
+
+
+def test_a_failed_recording_raises_rather_than_reporting_success(tmp_path):
+    """video.py logs and carries on here, which is how a recording failure
+    stayed invisible until production held no rows against 84,748 videos."""
+    client = _PublishClient(rpc_raises=Exception("db unavailable"))
+
+    with pytest.raises(pe.NotRecorded) as ei:
+        _publish(client, tmp_path)
+    assert "12/wave-1/P7.mp4" in str(ei.value)
+
+
+def test_a_failed_upload_never_records_a_row(tmp_path):
+    """Recording a path nothing was written to is the orphan that shows a
+    broken player."""
+    client = _PublishClient(upload_raises=Exception("storage unavailable"))
+
+    with pytest.raises(Exception):
+        _publish(client, tmp_path)
+    assert client.calls == [], "a row was recorded for a video that was never stored"
+
+
+def test_an_empty_encode_is_never_published(tmp_path):
+    """ffmpeg can exit 0 having written nothing; uploading it would replace a
+    good video with zero bytes."""
+    client = _PublishClient()
+
+    with pytest.raises(pe.NotRecorded):
+        _publish(client, tmp_path, payload=b"")
+    assert client.videos.uploaded == []
+
+
+def test_a_plate_with_no_wave_records_a_null_rather_than_a_number(tmp_path):
+    client = _PublishClient()
+    pe.publish_plate_video(
+        client,
+        "12/wave-none/P7.mp4",
+        _encoded(tmp_path),
+        experiment_id=12,
+        plate_id="P7",
+        wave_number=None,
+        frame_count=10,
+    )
+    assert client.calls[0][1]["p_wave_number"] is None

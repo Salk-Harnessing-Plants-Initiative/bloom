@@ -11,8 +11,11 @@ twice that while the label is added, so holding the set would be gigabytes.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
+import math
+import os
 import threading
 from contextlib import contextmanager
 
@@ -21,7 +24,7 @@ from PIL import Image
 
 from plate_timelapse import PLATE_FPS, annotate, label_for
 from plate_video import first_capture
-from plate_video_path import GRAVISCAN_IMAGES_BUCKET
+from plate_video_path import GRAVISCAN_IMAGES_BUCKET, GRAVISCAN_VIDEOS_BUCKET
 from video_writer import VideoWriter
 
 logger = logging.getLogger(__name__)
@@ -188,3 +191,64 @@ def _fetch_frame(images, path: str, label: str) -> np.ndarray:
         return prepare_frame(data, label)
     except Exception as exc:
         raise FrameUnreadable(f"could not decode {path}: {exc}") from exc
+
+
+# --- publishing --------------------------------------------------------------
+
+
+class NotRecorded(RuntimeError):
+    """The video is stored but its row was not written."""
+
+
+def publish_plate_video(
+    client,
+    key: str,
+    video_path: str,
+    *,
+    experiment_id: int,
+    plate_id: str,
+    wave_number: int | None,
+    frame_count: int,
+) -> dict:
+    """Upload the encoded video, then record what was made.
+
+    Upload first. These are two systems with no shared transaction, so a crash
+    between them leaves one of two orphans, and both are repaired by the next
+    request — the stored-object probe checks the row and the object. The
+    difference is what a scientist sees meanwhile: the page reads the row and
+    does not check the object, so a row without its file renders a broken
+    player, while a file without its row simply reads as no video yet.
+    """
+    with open(video_path, "rb") as handle:
+        video = handle.read()
+
+    if not video:
+        raise NotRecorded(f"the encoder produced an empty file at {video_path}")
+
+    videos = client.storage.from_(GRAVISCAN_VIDEOS_BUCKET)
+    videos.upload(key, video, {"content-type": "video/mp4", "upsert": "true"})
+
+    recorded = {
+        "p_experiment_id": experiment_id,
+        "p_plate_id": plate_id,
+        "p_wave_number": wave_number,
+        "p_object_path": key,
+        "p_frame_count": frame_count,
+        "p_duration_seconds": math.ceil(frame_count / PLATE_FPS),
+        "p_fps": PLATE_FPS,
+        "p_file_size_bytes": len(video),
+        "p_file_hash": hashlib.sha256(video).hexdigest(),
+    }
+
+    try:
+        client.rpc("record_gravi_plate_video", recorded).execute()
+    except Exception as exc:
+        # `video.py` logs and carries on here. That is what kept a recording
+        # failure invisible until production held no rows against 84,748 stored
+        # videos. Reporting success for a video the page cannot find is worse
+        # than an error the caller can retry: the object is already stored, so
+        # the next attempt overwrites it and records the row.
+        raise NotRecorded(f"{key} was stored but recording it failed: {exc}") from exc
+
+    logger.info("recorded %s: %s frames", key, frame_count)
+    return {k.removeprefix("p_"): v for k, v in recorded.items()}
