@@ -259,6 +259,53 @@ contract):
   (excluding any pair a zero-variance trait already explains, so a `NaN` cell isn't reported under
   two reasons at once).
 
+- **Decision: `plot_correlation_matrix` additionally requires at least 2 *non-zero-variance*
+  trait columns, not merely at least 2 columns.** The plain column-count guard above doesn't
+  catch a selection where all-but-one (or all) resolved columns are constant/all-NaN — every
+  cell of the correlation matrix would then be `NaN`, a meaningless artifact the guard's own
+  stated purpose ("no degenerate result committed") should also cover (#466 review round 3).
+  Raised as `assumption_violated` (discovered only after reading the data), not `invalid_input`
+  (the plain count check, a pure input-shape fact knowable before any read) — mirrors the same
+  distinction `plot_trait_boxplots`'s missing-genotype-column check already draws.
+
+- **Decision: the rendered PNG is explicitly disclosed as unmasked, not silently left
+  inconsistent with the guarded summary.** `plot_correlation_matrix`'s own `.corr(min_periods=
+  ...)` call only feeds the JSON summary (`strong_positive_correlations`/`zero_variance_traits`/
+  `low_overlap_trait_pairs`); the persisted image is rendered by a *separate*, independent call
+  to the vendored `create_correlation_heatmap`, which runs its own unguarded `.corr()` with no
+  `min_periods` and no way to accept a precomputed/masked matrix (#466 review round 3 — a real
+  gap that survived two rounds of the author's own review, since both rounds fixed the summary
+  without checking whether the image agreed with it). A flagged pair's cell can still render as
+  a solid, confidently-colored ±1.0 square. Neither "patch the vendored delegate" nor
+  "re-implement heatmap rendering in bloommcp" (the latter against this file's own no-vendored-
+  plotting-logic principle) is in scope here, so the result's new `heatmap_caveat` field
+  discloses the mismatch explicitly whenever either summary-disclosure list is non-empty,
+  directing the caller to cross-check them before trusting a highlighted cell. Tracked at
+  [#747](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/747).
+
+- **Decision: `resolved_trait_columns` is recorded — in the result and stamped into the
+  persisted run's `params` — on all 3 tools, not just reported as a count.** When
+  `trait_columns` is omitted, auto-detection resolves the actual list used to render/persist the
+  artifact, but only its count (`n_traits`/`n_traits_plotted`) was previously recorded anywhere
+  — a manifest read months later couldn't answer "exactly which traits produced this artifact"
+  if source columns had drifted since (#466 review round 3). Stamped via
+  `provenance.model_copy(update={"params": {**provenance.params, "resolved_trait_columns":
+  trait_cols}})` — extending the tool-call's own `params` dict rather than adding a new
+  `Provenance` schema field, the same "additive, caller-merged, no schema-version bump" pattern
+  `input_validation` already uses (see `Provenance`'s own docstring). Mirrors `pca_analysis`'s
+  existing `feature_names` field for the same underlying need.
+
+- **Decision: `page_traits` maps each committed output filename to the trait columns rendered
+  on that page**, for the 2 batching-capable tools. A batched (paginated) render's structured
+  result previously said only *how many* pages existed, not *which traits* landed on which one —
+  discoverable only by opening an image and reading its axis labels (#466 review round 3). Computed
+  directly from `trait_cols` chunked by `_DELEGATE_BATCH_SIZE` (the vendored batch delegate's own
+  default, not overridden by this tool's call) — a plain slice, not a re-derivation of anything
+  the delegate itself decided. `_DELEGATE_BATCH_SIZE` is pinned against the live delegate
+  signature by a dedicated test (mirrors `TRAIT_BATCH_THRESHOLD`'s own existing live-signature
+  pin) so a future `sleap-roots-analyze` bump that changes the default is caught, not silently
+  desynced.
+
 ## Risks / Trade-offs
 
 - **Breaking request AND response shape** for the 3 tools (`filename`/`traits` kwargs → one
@@ -338,3 +385,19 @@ Callers DO need to migrate, on three axes:
   today) should eventually grow equivalent coverage for these 3 tools. Left as a follow-up, not
   in this change's scope — it is a large, bespoke script, and #466 does not ask for new
   live-persistence smoke coverage.
+- `plot_trait_histograms`/`plot_trait_boxplots` still delegate raw-data NaN/outlier handling
+  silently (no "N rows excluded" or per-trait missingness disclosure), asymmetric with the
+  rigor now applied to `plot_correlation_matrix` (`zero_variance_traits`/`low_overlap_trait_
+  pairs`/`heatmap_caveat`). Filed as
+  [#748](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/748), a suggestion-
+  tier follow-up (#466 review round 3), not fixed here.
+
+## Incidental Fix
+
+`_qc_shared._validate_trait_subset`'s `require_certified=True` duplicate check (used by
+`pca_analysis`/`clustering`) was backported from O(n²) (`.count()` inside a comprehension over
+the same list) to O(n) (`collections.Counter`) — the identical fix this change already made in
+the new `_viz_shared.resolve_trait_columns` for the same cylinder-scale (~846-trait) motivation
+(#466 review round 3 suggestion). Behavior-preserving (same duplicate set, same error), covered
+by `pca_analysis`/`clustering`'s existing `test_duplicate_trait_columns_is_invalid_input_naming_
+them` tests — no new test needed.

@@ -244,3 +244,53 @@ because the vendored batch delegates expose no per-page hook (see design.md's co
       (`test_viz_tools.py`) — previously only exercised indirectly through the 3 tools' contract
       tests.
 - [x] 9.12 Re-ran the full suite + ruff/black + `openspec validate --strict`.
+
+## 10. Third PR review pass — genuine data-integrity gap that survived 2 review rounds
+
+- [x] 10.1 **Blocking**: `plot_correlation_matrix`'s guarded correlation (`min_periods`) fed
+      only the JSON summary; the persisted PNG is rendered by a *separate* call to the vendored
+      `create_correlation_heatmap`, which runs its own unguarded, unmaskable correlation — a
+      flagged pair could still render as a solid, confidently-colored ±1.0 square in the image
+      itself, the exact artifact researchers actually look at. Fixed by disclosure (a new
+      `heatmap_caveat` result field, populated whenever `zero_variance_traits`/
+      `low_overlap_trait_pairs` is non-empty) rather than a silent, undisclosed gap; filed
+      [#747](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/747) to track a
+      real fix (patching the vendored delegate, or a bloommcp-side render — the latter against
+      this tool's own no-vendored-plotting-logic principle). Added
+      `test_heatmap_still_renders_from_the_full_unmasked_frame` (proves the disclosure is
+      honest: the delegate genuinely receives the unmasked selection) and
+      `test_heatmap_caveat_is_none_when_nothing_is_flagged`.
+- [x] 10.2 **Important**: `resolved_trait_columns` — the exact trait list used to
+      render/persist a run — is now recorded on all 3 tools, both in the result and stamped into
+      the persisted run's `params` (via `provenance.model_copy` extending the existing `params`
+      dict, mirroring how `input_validation` is already merged in post-hoc). Previously only a
+      count (`n_traits`/`n_traits_plotted`) was recorded anywhere, so a manifest read months
+      later couldn't answer "exactly which traits produced this artifact" if auto-detection
+      (data-dependent) would resolve differently against drifted source columns today.
+- [x] 10.3 **Important**: `plot_trait_histograms`/`plot_trait_boxplots` now report `page_traits`
+      — a mapping from each committed output filename to the trait columns rendered on that
+      page — computed from `trait_cols` chunked by `_DELEGATE_BATCH_SIZE` (pinned against the
+      live delegate signature by a new `test_delegate_batch_size_matches_live_default`, mirroring
+      `TRAIT_BATCH_THRESHOLD`'s own existing live-signature pin). Previously only discoverable by
+      opening an image (up to ~53 pages at cylinder scale) and reading its axis labels.
+- [x] 10.4 **Important**: the `<2`-column guard only counted columns, not variance —
+      `plot_correlation_matrix` now also requires at least 2 *non-constant* trait columns
+      (`assumption_violated`, since it's discovered only after reading the data), closing the
+      all-zero-variance edge case that could otherwise commit a meaningless all-`NaN` heatmap as
+      a permanent artifact. Added `test_all_selected_traits_zero_variance_is_assumption_violated`.
+- [x] 10.5 **Important**: `test_source_content_addressed_in_manifest`'s name overclaimed what it
+      verified (only output hashing, not `based_on_version`/source content-addressing) — fixed
+      to actually assert `stored.based_on_version == result.source` and
+      `stored.params["resolved_trait_columns"] == result.resolved_trait_columns`, rather than
+      just renaming it to something more modest.
+- [x] 10.6 **Suggestion**: backported the O(n) `Counter`-based duplicate check (added in round 2
+      for `_viz_shared.resolve_trait_columns`) to `_qc_shared._validate_trait_subset`'s
+      `require_certified=True` branch (`pca_analysis`/`clustering`) — same cylinder-scale
+      motivation, behavior-preserving, covered by their existing duplicate-rejection tests.
+- [x] 10.7 **Suggestion**: filed
+      [#748](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/748) tracking
+      `plot_trait_histograms`/`plot_trait_boxplots`'s delegate-silent raw-data NaN/outlier
+      handling (asymmetric with the rigor now applied to `plot_correlation_matrix`) — a
+      suggestion-tier follow-up, not fixed in this PR.
+- [x] 10.8 Re-ran the full suite (1464 passed — reconciled against 1452 + exactly the 12 tests
+      this round added) + `openspec validate --strict`.

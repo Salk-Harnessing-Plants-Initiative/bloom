@@ -153,6 +153,14 @@ single trait has no pair to correlate.
 - **THEN** `plot_correlation_matrix` raises `BloomMCPError(code="invalid_input")` and no run is
   persisted
 
+#### Scenario: Fewer than two non-constant traits is also rejected
+
+- **WHEN** the resolved trait selection has 2 or more columns, but fewer than 2 of them have
+  non-zero variance (constant or all-NaN in the raw data)
+- **THEN** `plot_correlation_matrix` raises `BloomMCPError(code="assumption_violated")` and no
+  run is persisted — a plain column-count check alone is not sufficient, since every cell of the
+  resulting correlation matrix would otherwise be `NaN`
+
 ### Requirement: Low-Overlap Trait Pairs Excluded And Disclosed
 
 `plot_correlation_matrix` SHALL compute Pearson correlation with a minimum pairwise-overlap
@@ -169,6 +177,40 @@ near-empty overlap (as few as 2 points) is otherwise always exactly ±1.0-correl
 - **THEN** that pair's coefficient counts toward neither `strong_positive_correlations` nor
   `strong_negative_correlations`, and the pair appears in `low_overlap_trait_pairs`
 
+### Requirement: Rendered Heatmap Masking Mismatch Is Disclosed
+
+`plot_correlation_matrix`'s persisted PNG SHALL be understood to NOT be masked the way the
+summary counts/disclosure lists are — it is rendered by a separate, independent delegate call
+running its own unguarded correlation. The result SHALL carry a `heatmap_caveat` field,
+populated whenever `zero_variance_traits` or `low_overlap_trait_pairs` is non-empty, directing
+the caller to cross-check those fields before trusting a highlighted cell in the image; `None`
+when neither is populated.
+
+#### Scenario: A flagged pair still renders unmasked, and the caveat says so
+
+- **WHEN** `zero_variance_traits` or `low_overlap_trait_pairs` is non-empty for a call
+- **THEN** the delegate that renders the persisted PNG is still called with the full,
+  unmasked/unexcluded trait selection (the same `resolved_trait_columns`), and the result's
+  `heatmap_caveat` is populated (not `None`)
+
+#### Scenario: Nothing flagged means no caveat
+
+- **WHEN** neither `zero_variance_traits` nor `low_overlap_trait_pairs` is populated for a call
+- **THEN** the result's `heatmap_caveat` is `None`
+
+### Requirement: Resolved Trait Selection Is Recorded, Not Just Counted
+
+Each of the 3 tools SHALL record the exact, resolved trait columns used to render/persist a run
+— in the result (`resolved_trait_columns`) and stamped into the persisted run's `params`
+(`resolved_trait_columns`) — not merely their count. This holds even when `trait_columns` was
+omitted and the actual list was determined by (data-dependent) auto-detection.
+
+#### Scenario: Auto-detected trait selection is recoverable from the manifest
+
+- **WHEN** any of the 3 tools completes successfully with `trait_columns` omitted
+- **THEN** the result's `resolved_trait_columns` names the exact traits used, and the
+  persisted run's recorded `params["resolved_trait_columns"]` matches it exactly
+
 ### Requirement: Paginated Figure Persistence
 
 `plot_trait_histograms`/`plot_trait_boxplots` SHALL, once the selected trait count exceeds
@@ -180,6 +222,13 @@ committed output (and one `OutputLink`) per page, rather than a single figure.
 - **WHEN** the resolved trait selection exceeds `TRAIT_BATCH_THRESHOLD` traits
 - **THEN** the committed run's `outputs` contains one entry per rendered page, each with its own
   `OutputLink`, and the result reports the page count
+
+#### Scenario: Each page's traits are named, not just its count
+
+- **WHEN** any of `plot_trait_histograms`/`plot_trait_boxplots` completes successfully
+- **THEN** the result's `page_traits` maps every committed output filename to the exact trait
+  columns rendered on that page (a single entry, covering every `resolved_trait_columns`, when
+  not batched)
 
 ### Requirement: Genotype Column Required For Boxplots
 
