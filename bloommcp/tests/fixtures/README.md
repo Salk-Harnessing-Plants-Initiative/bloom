@@ -222,9 +222,15 @@ asserted `.is_file()` on the generated PNG.
   **Not** asserted by any test; documentation only. These baselines were generated on
   macOS at authoring time (Docker was unavailable to produce a Linux-rendered baseline
   matching the `python-audit` CI job's `ubuntu-latest` runner) — see design.md Decision 3
-  for the accepted cross-platform risk and the fallback (regenerate from Linux) if a real
-  CI run ever shows the tolerance doesn't hold.
+  for the accepted cross-platform risk. **Confirmed resolved**: PR #724's own CI run passed
+  all 5 comparisons on `ubuntu-latest` against these macOS-generated baselines, so `_TOL`
+  held cross-platform on the first try; the fallback there (regenerate from Linux) applies
+  only if a *future* PR's CI run fails on RMS grounds.
 - Regenerate all 5 + the manifest via
   `cd bloommcp && uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py`
   after any intentional rendering change (matplotlib bump, plot-style-kwargs default change,
-  delegate upgrade) — never hand-edit these PNGs.
+  delegate upgrade) — never hand-edit these PNGs. **If you're regenerating over existing
+  baselines** (not creating this directory for the first time), the script prints the
+  old-vs-new RMS for each file it overwrites (design.md Decision 5) — a PR that touches
+  these PNGs MUST state, per file, what that RMS was and why the visual change is expected;
+  an RMS near 0 means nothing actually changed and no explanation is needed beyond that.

@@ -30,16 +30,35 @@ If CI's first real cross-platform run shows the genuine hinting-noise RMS is clo
 regenerate the baselines from a Linux run -- see `scripts/gen_plot_snapshots_golden.py`'s
 module docstring.
 
-Known limitation -- localized regressions: RMS is a whole-image average, so a spatially
-small miscoloring is diluted across every unaffected pixel. Measured directly against the
-`heritability_bar` baseline (single fully-recolored rectangle vs. the original): a region
-covering ~1.5% of the image area scores RMS≈14.4 (would NOT be caught at `_TOL=15`); ~2%
-scores RMS≈16.7 (would be caught). A single bar in an ~18-trait bar chart is comfortably
-above that floor, but a single cell in a large correlation-matrix heatmap could plausibly
-fall under it. This is an accepted tradeoff of a whole-image, "lightweight" tolerance
-check (the issue's own word) rather than a per-region diff -- catching every possible
-single-element miscoloring would need a heavier-weight structural comparison, which is
-out of scope here.
+Known limitation -- localized regressions, measured per plot type (not just guessed to
+generalize from one): RMS is a whole-image average, so a spatially small miscoloring is
+diluted across every unaffected pixel, and *how much* it's diluted depends on the plot's
+own layout -- a sparse grid with lots of white margin dilutes less than a dense heatmap
+where the perturbed region already sat over saturated color. Measured directly (single
+fully-recolored square vs. the original baseline, at increasing area fractions):
+
+| baseline               | ~2% area RMS | floor to clear `_TOL=15` |
+|------------------------|--------------|---------------------------|
+| histograms             | ≈22.0        | <2%                       |
+| boxplots               | ≈21.7        | <2%                       |
+| variance_decomposition | ≈22.1        | <2%                       |
+| heritability_bar       | ≈17.0        | ~2%                       |
+| correlation_matrix     | ≈13.7        | ~2.5% (2% alone is NOT caught) |
+
+`correlation_matrix` is the outlier: its heatmap fills most of the frame with already-
+saturated color, so a same-area recolor lands a smaller RGB delta than the same recolor
+landing on the sparser plots' white margins -- and it is also the tool where a silent
+single-cell error is most scientifically consequential (a shifted correlation value a
+researcher would act on). `test_tolerance_catches_a_localized_regression` below is
+parametrized over both `heritability_bar` (its own ~2% floor) and `correlation_matrix`
+(~3%, chosen with real margin above its measured ~2.5% crossing point) so this isn't
+asserted only for the tool with the most headroom. A single bar in an ~18-trait bar chart
+or a handful of cells in a correlation heatmap both clear their respective floors in
+practice, but an even smaller single-cell change is an accepted tradeoff of a whole-image,
+"lightweight" tolerance check (the issue's own word) rather than a per-region diff --
+catching every possible single-element miscoloring would need a heavier-weight structural
+comparison, out of scope here. This table should be re-measured (not assumed to still
+hold) after any change to a plot's own color density or layout.
 
 Scope: the 5 dedicated plotting tools only (matching `test_viz_tools.py`'s existing
 `_TOOLS` list) -- the optional plot keys `pca_analysis`/`umap_analysis`/`clustering` can
@@ -54,6 +73,7 @@ from pathlib import Path
 
 import pytest
 from matplotlib.testing.compare import compare_images
+from matplotlib.testing.exceptions import ImageComparisonFailure
 from PIL import Image, ImageDraw, ImageEnhance
 
 from bloom_mcp.sections.sleap_roots.analysis import (
@@ -67,7 +87,9 @@ from bloom_mcp.sections.sleap_roots.analysis import (
 _BASELINES = Path(__file__).resolve().parents[1] / "fixtures" / "plot_baselines"
 _EXPERIMENT = "turface_19.csv"
 
-# See module docstring for how this was derived.
+# Empirically derived, not guessed -- see the module docstring's Tolerance and Known
+# limitation sections (design.md Decisions 2 & 3 have the full measurement + fallback
+# plan). Changing this number should come with a fresh measurement, not a vibe.
 _TOL = 15
 
 # (label, tool module, tool fn name, produced PNG name, baseline PNG name)
@@ -143,7 +165,7 @@ def _compare_or_fail(baseline: Path, actual: Path):
     """
     try:
         return compare_images(str(baseline), str(actual), tol=_TOL)
-    except Exception as exc:  # noqa: BLE001 -- re-raised as an actionable pytest failure
+    except (ImageComparisonFailure, ValueError) as exc:
         pytest.fail(
             f"{exc}\n"
             "If this is a dimension mismatch (not an RMS-over-tolerance message), it may "
@@ -173,19 +195,37 @@ def test_tolerance_catches_a_real_regression(tmp_path):
     )
 
 
-def test_tolerance_catches_a_localized_regression(tmp_path):
+_LOCALIZED_REGRESSION_CASES = [
+    # (baseline filename, area fraction) -- fraction chosen per-baseline from the module
+    # docstring's measured table, not one number assumed to generalize: correlation_matrix
+    # needs ~3% (real margin above its measured ~2.5% crossing point) where the other 4
+    # clear _TOL at 2% or less.
+    ("heritability_turface_19_baseline.png", 0.02),
+    ("correlation_matrix_turface_19_baseline.png", 0.03),
+]
+
+
+@pytest.mark.parametrize(
+    "baseline_name,area_fraction",
+    _LOCALIZED_REGRESSION_CASES,
+    ids=[name.split("_turface")[0] for name, _ in _LOCALIZED_REGRESSION_CASES],
+)
+def test_tolerance_catches_a_localized_regression(tmp_path, baseline_name, area_fraction):
     """A *global* dim (above) isn't the only regression shape worth proving `_TOL` catches
     -- a single mis-colored element (one bar, one heatmap cell) only touches part of the
     image, and RMS is a whole-image average (see module docstring's "Known limitation").
-    Recolors ~2% of the `heritability_bar` baseline's area (empirically, this repo's
-    measured floor above which such a regression clears `_TOL=15`; see the module
-    docstring) and confirms it is still caught.
+    Parametrized over `heritability_bar` and `correlation_matrix` specifically (not just
+    whichever baseline has the most headroom): `correlation_matrix`'s heatmap fills most
+    of the frame with already-saturated color, so it dilutes a same-area recolor less
+    than the sparser plots do, and it is the tool where a silent single-cell error is
+    most scientifically consequential -- it should not be validated only by proxy via a
+    different tool's floor.
     """
-    baseline = _BASELINES / "heritability_turface_19_baseline.png"
+    baseline = _BASELINES / baseline_name
     img = Image.open(baseline).convert("RGB")
     w, h = img.size
     perturbed_img = img.copy()
-    side = int((w * h * 0.02) ** 0.5)
+    side = int((w * h * area_fraction) ** 0.5)
     x0, y0 = w // 3, h // 3
     ImageDraw.Draw(perturbed_img).rectangle(
         [x0, y0, x0 + side, y0 + side], fill=(255, 165, 0)
@@ -195,8 +235,9 @@ def test_tolerance_catches_a_localized_regression(tmp_path):
 
     diff = compare_images(str(baseline), str(perturbed), tol=_TOL)
     assert diff is not None, (
-        f"a ~2%-area recolored baseline compared equal to itself -- _TOL={_TOL} is too "
-        "loose to catch even this deliberately-sized localized regression"
+        f"a ~{area_fraction * 100:.0f}%-area recolored {baseline_name} compared equal to "
+        f"itself -- _TOL={_TOL} is too loose to catch even this deliberately-sized "
+        "localized regression"
     )
 
 

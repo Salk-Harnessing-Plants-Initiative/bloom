@@ -52,18 +52,37 @@ grid with plain matplotlib+pandas, no bloommcp involved):
 case live (not hardcoded) so `_TOL` staying meaningful is itself asserted, not just
 documented here.
 
-**Known limitation — localized regressions.** A uniform dim changes every pixel by the
-same amount; a real single-element bug (one bar recolored, one heatmap cell wrong) only
-touches part of the image, and RMS is a whole-image average that dilutes a small affected
-region. Measured directly against the `heritability_bar` baseline (a single fully-recolored
-rectangle vs. the original, at increasing area fractions): 1.5% of the image area scores
-RMS≈14.4 (would **not** clear `_TOL=15`); 2% scores RMS≈16.7 (would). A single bar in an
-~18-trait bar chart occupies comfortably more than 2% of the image, but a single cell in a
-large correlation-matrix heatmap could plausibly fall under that floor.
-`test_viz_snapshot.py::test_tolerance_catches_a_localized_regression` pins the ~2% case as
-caught; anything smaller is an accepted gap of this whole-image, "lightweight" approach —
-closing it fully would need a per-region/structural comparison, a heavier-weight technique
-than what #713 asked for.
+**Known limitation — localized regressions, measured per plot type.** A uniform dim
+changes every pixel by the same amount; a real single-element bug (one bar recolored, one
+heatmap cell wrong) only touches part of the image, and RMS is a whole-image average that
+dilutes a small affected region — by an amount that depends on the plot's own layout, not
+one constant. Measured directly (single fully-recolored square vs. the original baseline,
+at increasing area fractions) against **all 5** baselines, not just one assumed to
+generalize (a PR review on #713 correctly flagged the original version of this section for
+calibrating against only `heritability_bar`):
+
+| baseline | ~2% area RMS | floor to clear `_TOL=15` |
+|---|---|---|
+| histograms | ≈22.0 | <2% |
+| boxplots | ≈21.7 | <2% |
+| variance_decomposition | ≈22.1 | <2% |
+| heritability_bar | ≈17.0 | ~2% |
+| correlation_matrix | ≈13.7 | ~2.5% (2% alone is **not** caught) |
+
+`correlation_matrix` is the real outlier, and for a legible reason: its heatmap fills most
+of the frame with already-saturated color, so a same-area recolor lands a smaller RGB
+delta there than the same recolor landing on the sparser plots' white margins. It is also
+the tool where a silent single-cell error is most scientifically consequential (a shifted
+correlation value a researcher would act on) — the highest-stakes tool was, before this
+fix, the least-validated one.
+`test_viz_snapshot.py::test_tolerance_catches_a_localized_regression` is now parametrized
+over both `heritability_bar` (~2%) and `correlation_matrix` (~3%, real margin above its
+measured ~2.5% crossing point), not asserted only against the baseline with the most
+headroom. Anything smaller than these per-baseline floors is an accepted gap of this
+whole-image, "lightweight" approach — closing it fully would need a per-region/structural
+comparison, a heavier-weight technique than what #713 asked for. This table is a
+measurement of today's baselines, not a law — re-measure it after any change to a plot's
+own color density or layout (e.g. a colormap change, added gridlines).
 
 ## Decision 3: baseline generation environment — accepted risk
 
@@ -74,16 +93,19 @@ authoring (the daemon could not be kept up long enough to complete a `uv sync` i
 container). `plot_baselines/MANIFEST.json` records the actual generation platform
 honestly (`macOS-14.8.2-arm64`) rather than claiming a Linux provenance it doesn't have.
 
-This is a real, accepted gap, not a hidden one: the first genuine test of "does `_TOL=15`
-survive real cross-platform FreeType differences" is this PR's own `python-audit` CI run
-comparing the macOS-authored baselines against a `ubuntu-latest` render. Two outcomes:
-
-- **CI passes**: the empirical tolerance holds cross-platform; no further action.
-- **CI fails on `compare_images` RMS alone** (not a genuine content difference — check the
-  `*-failed-diff.png` the failure names): regenerate the baselines from a Linux
-  environment via `scripts/gen_plot_snapshots_golden.py` (its own docstring documents
-  this) and re-push, rather than loosening `_TOL` blindly — a wider tolerance should be a
-  deliberate choice backed by the observed RMS, not a reflex fix.
+This was a real, accepted gap, not a hidden one, going into review: the first genuine
+test of "does `_TOL=15` survive real cross-platform FreeType differences" was this
+PR's own `python-audit` CI run comparing the macOS-authored baselines against a
+`ubuntu-latest` render. **Outcome: it passed.** All 5 baseline comparisons (plus both
+negative-control tests) succeeded on `ubuntu-latest` against the macOS-generated
+baselines with no RMS-over-tolerance or dimension-mismatch failure — confirmed by reading
+the job log directly (`gh api .../actions/jobs/<id>/logs`), not just the green checkmark.
+No baseline regeneration or tolerance adjustment was needed. If a *future* PR's CI run
+fails on `compare_images` RMS alone (not a genuine content difference — check the
+`*-failed-diff.png` the failure names), the fallback is unchanged: regenerate the
+baselines from a Linux environment via `scripts/gen_plot_snapshots_golden.py` (its own
+docstring documents this) rather than loosening `_TOL` blindly — a wider tolerance should
+be a deliberate choice backed by the observed RMS, not a reflex fix.
 
 ## Decision 4: scope — 5 dedicated plotting tools only
 
@@ -93,7 +115,26 @@ would roughly triple this change for a feature the issue itself twice calls
 "lightweight". Tracked as **#723**, filed alongside this proposal rather than left
 implicit.
 
-## Decision 5: shared `viz_env` fixture via `tests/tools/conftest.py`
+## Decision 5: regeneration safeguard — old-vs-new RMS on overwrite
+
+A PR review on #713 flagged a real gap: `gen_plot_snapshots_golden.py` overwrote all 5
+baseline PNGs unconditionally, with nothing distinguishing "regenerated because of an
+intentional rendering change" from "regenerated because a real regression got baked into
+the new golden and nobody noticed." A future baseline-touching PR is exactly the moment a
+genuine bug could get laundered into the reference the tests compare against.
+
+Fix: when `build()` overwrites an *existing* baseline, it now computes the old-vs-new RMS
+via `compare_images(tol=0)` and prints it (`REGENERATED <path>: old-vs-new RMS=X.X`). An
+RMS near 0 confirms nothing visually changed (e.g. a dependency patch bump with no
+rendering effect); a large RMS means the regeneration changed what the golden considers
+correct, and the script's own module docstring now states plainly that such a PR's
+description MUST say what changed and why. This is intentionally a runtime print, not a
+CI gate or required commit-message format — enforcing it mechanically (e.g. failing the
+script above some RMS threshold without a `--force`/justification flag) is more machinery
+than a "lightweight" testing change justifies; the goal is making the regeneration's
+effect visible to both the author and reviewer, not blocking it.
+
+## Decision 6: shared `viz_env` fixture via `tests/tools/conftest.py`
 
 `test_viz_snapshot.py` needs the identical real-TRAITS_DIR-read / real-PLOTS_DIR-write /
 manifest-miss setup `test_viz_tools.py`'s `viz_env` fixture already provides. Duplicating

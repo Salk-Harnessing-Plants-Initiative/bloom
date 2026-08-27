@@ -86,3 +86,42 @@
   real Linux render at `_TOL=15` with no `compare_images` RMS or dimension-mismatch
   failure. No baseline regeneration or tolerance adjustment was needed. Confirmed via
   the job log (`gh api repos/.../actions/jobs/<id>/logs`), not just the green checkmark.
+
+## 7. Human-review response (PR #724, reviewer eberrigan)
+
+- [x] 7.1 **Tolerance coverage was uneven across the 5 plot types** — `_TOL=15` had only
+  been calibrated against `histograms`/`heritability_bar`. Measured the localized-regression
+  floor (single fully-recolored square, increasing area %) against all 5 baselines: 4 of 5
+  clear `_TOL=15` comfortably at 2% area, but `correlation_matrix` — the highest-stakes tool
+  for a silent single-cell error — does **not** (RMS≈13.7 at 2%, crosses ~2.5%). Rather than
+  filing a follow-up for this (the reviewer's suggested minimum), resolved it directly:
+  generalized `test_tolerance_catches_a_localized_regression` into a parametrized test
+  covering both `heritability_bar` (~2%) and `correlation_matrix` (~3%, real margin above
+  its measured crossing point), and rewrote the "Known limitation" section in
+  `test_viz_snapshot.py`'s docstring and design.md Decision 2 with the full 5-baseline
+  table instead of a single-baseline extrapolation.
+- [x] 7.2 **PR body claimed local and CI test counts matched exactly** ("1376 passed...
+  matches CI's python-audit invocation exactly") when CI actually showed 1408 — most likely
+  `staging` drift between the local run and CI, not a test defect. Corrected the PR
+  description to stop claiming exact reproduction.
+- [x] 7.3 **No safeguard against a baseline-regeneration PR silently laundering a real
+  regression** — `gen_plot_snapshots_golden.py` overwrote existing baselines with no
+  visibility into what changed. Added: when overwriting an existing baseline, the script
+  now computes and prints the old-vs-new RMS via `compare_images(tol=0)`, and its module
+  docstring states that a baseline-touching PR must say what changed and why (design.md
+  Decision 5). Verified locally: regenerating without any tool-code change reports
+  `RMS=0.0` for all 5, and the PNGs come out byte-identical (`git status` shows no diff).
+- [x] 7.4 **Minor: `tasks.md` vs. PR body inconsistency** on whether task 6.1 was done —
+  synced the PR body's checklist to match `tasks.md`.
+- [x] 7.5 **Minor: localized-regression test's discriminating power is tied to today's
+  exact baseline pixel content** and could need re-measuring after a routine baseline
+  regen — acknowledged explicitly in the docstring table's closing note ("re-measure...
+  after any change to a plot's own color density or layout") rather than left implicit.
+- [x] 7.6 **Suggestion: narrow `_compare_or_fail`'s `except Exception`** to
+  `except (ImageComparisonFailure, ValueError)` — done.
+- [x] 7.7 **Suggestion: tie `_TOL` more directly to the design.md regen protocol** — added
+  an inline comment at the `_TOL = 15` definition site pointing to design.md Decisions 2 & 3
+  (previously only reachable via the module docstring).
+- [x] 7.8 Reran `cd bloommcp && uv run --extra test pytest tests/tools/test_viz_snapshot.py
+  tests/tools/test_viz_tools.py -v` (9 tests, up from 8) and the full per-PR sweep —
+  confirm green before pushing the fix commit.

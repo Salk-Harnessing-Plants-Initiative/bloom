@@ -22,6 +22,17 @@ reflects the full save path (``_viz_shared.save_plot``/``save_plot_or_plots``, i
 the tool actually produces.
 
 Run:  cd bloommcp && uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py
+
+Regenerating over an *existing* baseline is exactly the moment a real rendering
+regression could get silently "laundered" into a new golden -- a PR that touches these
+PNGs is, by construction, changing the thing the tests exist to catch changes to. To make
+that visible rather than invisible, this script reports the old-vs-new RMS
+(`matplotlib.testing.compare.compare_images`) for every baseline it overwrites. A PR that
+regenerates baselines MUST state, per file, what the reported RMS was and why the change
+is expected (matplotlib bump, an intentional style/color default change, etc.) -- not just
+commit new PNGs silently. An RMS of 0 (or near it) confirms nothing visually changed and
+this run was just re-stamping provenance (e.g. a `sleap-roots-analyze` patch bump with no
+rendering effect).
 """
 
 from __future__ import annotations
@@ -35,6 +46,7 @@ from pathlib import Path
 import matplotlib
 import PIL
 import sleap_roots_analyze as sra
+from matplotlib.testing.compare import compare_images
 
 import bloom_mcp.manifest.manifest as _manifest
 import bloom_mcp.supabase_client as _sc
@@ -108,8 +120,20 @@ def build(tmp_path: Path) -> None:
         produced = plots / produced_name
         if not produced.is_file():
             raise RuntimeError(f"expected {produced} to exist, tool reported: {result}")
-        shutil.copy(produced, _BASELINES / baseline_name)
-        print(f"wrote {(_BASELINES / baseline_name).relative_to(_FIXTURES.parents[1])}")
+
+        target = _BASELINES / baseline_name
+        rel = target.relative_to(_FIXTURES.parents[1])
+        if target.is_file():
+            diff = compare_images(str(target), str(produced), tol=0, in_decorator=True)
+            rms = diff["rms"] if diff else 0.0
+            print(
+                f"REGENERATED {rel}: old-vs-new RMS={rms:.1f} -- if this is not ~0, "
+                "the PR description MUST say what visually changed and why "
+                "(see this script's module docstring)"
+            )
+        else:
+            print(f"wrote {rel} (new baseline, no prior version to diff against)")
+        shutil.copy(produced, target)
 
 
 def write_manifest() -> None:
