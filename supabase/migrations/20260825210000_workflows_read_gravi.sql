@@ -20,8 +20,10 @@ BEGIN;
 
 GRANT SELECT ON public.gravi_scans TO bloom_workflows;
 GRANT SELECT ON public.gravi_images TO bloom_workflows;
--- total_cycles is the planned capture count. Without it a run that stopped
--- early renders a short video that looks finished.
+-- A session records how a run ended: `cancelled` and `completed_at` say
+-- whether it stopped early. `total_cycles` counts a session, while a video
+-- covers (experiment, plate, wave) and can span sessions, so it is not a
+-- frame-count target.
 GRANT SELECT ON public.gravi_scan_sessions TO bloom_workflows;
 -- Read only. Writes go through record_gravi_plate_video, which is a separate
 -- migration and grants no table access.
