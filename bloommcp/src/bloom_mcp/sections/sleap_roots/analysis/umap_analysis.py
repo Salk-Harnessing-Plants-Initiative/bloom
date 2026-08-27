@@ -99,6 +99,14 @@ _UMAP_CATALOG_KEYS: frozenset[str] = frozenset(
 # still catching a runaway or adversarial request.
 _MAX_N_COMPONENTS = 50
 
+# Sanity ceilings for plot_font_size/plot_point_size (#721): both fields previously allowed
+# any positive value, including float('inf'). Values in the low thousands have been observed
+# costing several seconds and multiple GB per render on this LLM-driven input surface — these
+# ceilings are generous headroom over real use (fonts are almost always 6-72pt; scatter
+# markers are almost always 1-500) while catching a runaway or adversarial request.
+_MAX_PLOT_FONT_SIZE = 100
+_MAX_PLOT_POINT_SIZE = 10000
+
 # Allowlist for plot_cmap (#721): matplotlib exposes no runtime categorization of its own
 # colormap registry (matplotlib.colormaps is a flat name -> Colormap mapping with no
 # sequential/diverging/qualitative metadata), so this list is hand-authored from matplotlib's
@@ -107,11 +115,19 @@ _MAX_N_COMPONENTS = 50
 # Qualitative/Cyclic/Miscellaneous) keeps plot_cmap limited to colormaps that render a
 # continuous trait faithfully — a qualitative map like tab10 chops a continuous value into
 # discrete-looking bands, and a cyclic map like hsv puts the same color at both ends of the
-# scale. Verified against the installed matplotlib (3.10.8): every base name below, and its
-# "_r" reversed variant, is a registered colormap. A future matplotlib release could rename or
-# add colormaps this list doesn't know about yet — accepted risk (design.md Decision 3): the
-# failure direction is a legitimate new name being rejected until this list is updated, never
-# an invalid one being silently accepted.
+# scale. A future matplotlib release could rename or add colormaps this list doesn't know
+# about yet — accepted risk (design.md Decision 3): the failure direction is a legitimate new
+# name being rejected until this list is updated, never an invalid one being silently
+# accepted.
+#
+# Tied to bloommcp's declared dependency floor: pyproject.toml pins "matplotlib>=3.7.0" (no
+# upper bound). Every name below must be registered as of that FLOOR version, not just in
+# whatever matplotlib happens to be installed here — otherwise an install that resolves to an
+# older-but-still-permitted matplotlib would pass this allowlist check for a name it doesn't
+# actually have, then hit the exact opaque matplotlib error this allowlist exists to prevent.
+# Diverging colormaps "berlin"/"managua"/"vanimo" (Crameri's scientific colour maps) were only
+# added in matplotlib 3.10.0 — excluded here for that reason. Re-add them if/when the
+# pyproject.toml floor is bumped to >=3.10.0.
 _ALLOWED_CMAP_BASE_NAMES: frozenset[str] = frozenset(
     {
         # Perceptually Uniform Sequential
@@ -169,9 +185,6 @@ _ALLOWED_CMAP_BASE_NAMES: frozenset[str] = frozenset(
         "coolwarm",
         "bwr",
         "seismic",
-        "berlin",
-        "managua",
-        "vanimo",
     }
 )
 _ALLOWED_CMAPS: frozenset[str] = frozenset(
@@ -256,12 +269,12 @@ class UMAPAnalysisParams(BaseModel):
     plot_font_size: float | None = Field(
         default=None,
         gt=0,
-        le=100,
-        description="Font size (points) override applied to every text element on each "
-        "generated plot (1-100). The upper bound is a sanity ceiling on this LLM-driven "
-        "input surface, not a design limit — legitimate use is almost always 6-72; values "
-        "in the low thousands have been observed costing several seconds and multiple GB "
-        "per render (#721).",
+        le=_MAX_PLOT_FONT_SIZE,
+        description=f"Font size (points) override applied to every text element on each "
+        f"generated plot (1-{_MAX_PLOT_FONT_SIZE}). The upper bound is a sanity ceiling on "
+        f"this LLM-driven input surface, not a design limit (#721). A valid value has no "
+        f"effect when include_plots=False (nothing is rendered to style); an out-of-range "
+        f"value is rejected as invalid_input regardless of include_plots.",
     )
     plot_cmap: str | None = Field(
         default=None,
@@ -270,17 +283,22 @@ class UMAPAnalysisParams(BaseModel):
         "diverging colormap names (plus each name's _r reversed variant); an unrecognized "
         "or excluded name (e.g. hsv, tab10 — valid matplotlib names but not sequential or "
         "diverging, and misleading for continuous trait data) is rejected as invalid_input "
-        "naming the value, before any computation runs. Has no effect on "
-        "create_umap_colored_by_top_traits (its upstream signature does not accept cmap). "
-        "Ignored (not rejected) when include_plots=False.",
+        "naming the value, before any computation runs — regardless of include_plots. Has "
+        "no effect on create_umap_colored_by_top_traits (its upstream signature does not "
+        "accept cmap, and — separately, #721 — hardcodes its own cmap/point_size/alpha "
+        "unconditionally; this field never reaches it).",
     )
     plot_point_size: float | None = Field(
         default=None,
         gt=0,
-        le=10000,
-        description="Scatter point size for create_umap_single_trait (up to 10000). Has no "
-        "effect on create_umap_colored_by_top_traits (its upstream signature does not "
-        "accept point_size). Ignored (not rejected) when include_plots=False.",
+        le=_MAX_PLOT_POINT_SIZE,
+        description=f"Scatter point size for create_umap_single_trait (up to "
+        f"{_MAX_PLOT_POINT_SIZE}). A valid value has no effect when include_plots=False "
+        f"(nothing is rendered to style); an out-of-range value is rejected as "
+        f"invalid_input regardless of include_plots. Has no effect on "
+        f"create_umap_colored_by_top_traits (its upstream signature does not accept "
+        f"point_size, and — separately, #721 — hardcodes its own cmap/point_size/alpha "
+        f"unconditionally; this field never reaches it).",
     )
     plot_alpha: float | None = Field(
         default=None,

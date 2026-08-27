@@ -21,6 +21,24 @@ code-level decisions needed to close them.
   established by `add-bloommcp-plot-style-kwargs`); revisiting `plot_font_family`'s
   unvalidated free-text (out of scope for #721); a matplotlib-registry-derived colormap
   category (matplotlib exposes no such categorization at runtime — see Decision 3).
+- **Also Non-Goals, added to issue #721 as a follow-up comment after this change's proposal
+  was scaffolded** (findings 6-8, posted 2026-08-22, a day before this change's
+  implementation commits): (6) `create_umap_colored_by_top_traits` hardcodes its own
+  `cmap="viridis", s=30, alpha=0.7` and never receives any of `plot_cmap`/`plot_point_size`/
+  `plot_alpha`, so requesting both UMAP catalog plots together can produce two figures styled
+  inconsistently with each other — documented in `plot_cmap`/`plot_point_size`'s field
+  descriptions (this change) but not fixed, since fixing it means either wiring new kwargs
+  into `create_umap_colored_by_top_traits` upstream in `sleap_roots_analyze` (not a
+  `bloommcp`-only change) or dropping the styling on the other plot instead; (7) `plot_alpha`
+  near (but not at) `0.0` can render a lone point invisible against a dense cluster's haze,
+  producing a plot that silently looks like "no outliers" — `plot_alpha` is untouched by this
+  change (it already shipped in `add-bloommcp-plot-style-kwargs`, is not part of #721's
+  original five findings, and a fix here would mean judging a _scientifically_ correct
+  minimum alpha, not a resource-exhaustion ceiling like Decisions 1-2); (8) no test pins that
+  style fields are persisted with the run record, so a future refactor could silently drop
+  them from provenance with nothing failing. All three are real and worth a dedicated
+  follow-up change — deliberately not folded into this one, which was already scoped,
+  reviewed, and approved against the original five findings before comment 6-8 was posted.
 
 ## Decisions
 

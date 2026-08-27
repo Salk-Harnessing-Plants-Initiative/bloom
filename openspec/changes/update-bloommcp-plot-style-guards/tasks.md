@@ -12,7 +12,7 @@ how #661 landed), not a separate red-only commit — see the review's git-workfl
       `[True, False]`; confirm the new cases are covered by that same parametrization, not
       just one value). Confirm red (neither field has an upper bound yet).
 - [x] 1.2 Add `test_plot_font_size_at_ceiling_is_accepted` and
-      `test_plot_point_size_at_ceiling_is_accepted`, following the *end-to-end*
+      `test_plot_point_size_at_ceiling_is_accepted`, following the _end-to-end_
       `test_plot_alpha_boundary_values_accepted` pattern (not the Pydantic-construction-only
       `test_plot_font_size_just_above_zero_is_accepted` pattern, which doesn't confirm the
       value actually reaches the plotter): spy-and-delegate on
@@ -35,7 +35,7 @@ how #661 landed), not a separate red-only commit — see the review's git-workfl
       `test_plot_font_size_non_positive_is_invalid_input` shape): parametrize over
       `include_plots in [True, False]` and over `plot_font_size in [101, float("inf")]`,
       asserting `invalid_input` in all four combinations. Confirm red.
-- [x] 2.2 Add `test_plot_font_size_at_ceiling_is_accepted`, following the *end-to-end*
+- [x] 2.2 Add `test_plot_font_size_at_ceiling_is_accepted`, following the _end-to-end_
       `test_plot_alpha_boundary_values_accepted` pattern (spy-and-delegate on
       `sleap_roots_analyze.create_pca_biplot`, `include_plots=True`,
       `plots=["create_pca_biplot"]`, `plot_font_size=100`), asserting success and that the
@@ -81,8 +81,8 @@ how #661 landed), not a separate red-only commit — see the review's git-workfl
 - [x] 3.4 In `umap_analysis`'s tool body, add a check alongside the existing
       `n_neighbors >= n_samples` check (`umap_analysis.py:367-381`, before the
       `perform_umap_analysis` call at ~line 392): if `params.plot_cmap is not None and
-      params.plot_cmap not in _ALLOWED_CMAPS`, raise `BloomMCPError(code="invalid_input",
-      ...)` naming the invalid value — **not** a Pydantic `@field_validator`, per design.md
+params.plot_cmap not in _ALLOWED_CMAPS`, raise `BloomMCPError(code="invalid_input",
+...)` naming the invalid value — **not** a Pydantic `@field_validator`, per design.md
       Decision 3 (`qc_clean.py:204-212` precedent: a validator's `ValueError` loses its
       message text at the contract layer).
 - [x] 3.5 Replace the now-false sentence in `plot_cmap`'s field description — "Not validated
@@ -128,10 +128,38 @@ how #661 landed), not a separate red-only commit — see the review's git-workfl
 
 - [x] 5.1 `openspec validate update-bloommcp-plot-style-guards --strict` passes
 - [x] 5.2 Full `bloommcp` test suite passes: `cd bloommcp && uv run --frozen --extra test
-      pytest tests/ -m "not integration and not live_smoke" -v --tb=short` (the exact
+pytest tests/ -m "not integration and not live_smoke" -v --tb=short` (the exact
       invocation `pr-checks.yml`'s `python-audit` job runs) — 1424 passed, 33 deselected.
 - [x] 5.3 Lint/format clean on every changed file, via the repo's actual pre-commit hooks
       (`uvx pre-commit run black|ruff|ruff-format --files <file>`, since `ruff`/`black`
       aren't in bloommcp's own `uv` environment — they run through pre-commit's isolated
       tool envs per `.pre-commit-config.yaml`): black reformatted one line in
       `test_plots_helpers.py`; ruff/ruff-format clean on every file from the start.
+
+## 6. Post-review fixes (PR #726 review)
+
+- [x] 6.1 **Blocking**: dropped `berlin`/`managua`/`vanimo` from `_ALLOWED_CMAP_BASE_NAMES` —
+      confirmed (matplotlib's own 3.10.0 release notes) these were added in matplotlib
+      3.10.0, but `bloommcp/pyproject.toml` pins `matplotlib>=3.7.0` with no upper bound, so
+      an install resolving below 3.10 would pass the allowlist check for these three names
+      and then hit the exact opaque render-time error this change exists to eliminate. Added
+      a comment tying the allowlist's provenance to the declared dependency floor so a future
+      `pyproject.toml` bump (in either direction) doesn't silently desync again.
+- [x] 6.2 Fixed `plot_cmap`/`plot_point_size` (UMAP) and `plot_font_size` (UMAP + PCA)
+      field descriptions: each previously ended with "Ignored (not rejected) when
+      include*plots=False," which is only true for a \_valid* value (nothing to render) —
+      an _out-of-range/invalid_ value is rejected regardless of `include_plots`, and for
+      `plot_cmap` specifically this read as directly self-contradicting the sentence just
+      before it describing that same rejection. Reworded all three to state both halves
+      unambiguously.
+- [x] 6.3 Hoisted the `100`/`10000` ceilings into named module-level constants
+      (`_MAX_PLOT_FONT_SIZE` in both files, `_MAX_PLOT_POINT_SIZE` in `umap_analysis.py`),
+      matching the existing `_MAX_N_COMPONENTS` precedent — previously inline literals
+      duplicated across each `Field(...)` call and its own prose description.
+- [x] 6.4 Added missing test-coverage parity: `plot_point_size` now has an `inf` rejection
+      case alongside `plot_font_size`'s; the `hsv`/`tab10` excluded-cmap rejection test is
+      now parametrized over `include_plots` like the misspelling case already was.
+- [x] 6.5 Documented GitHub issue #721's findings 6-8 (posted as a follow-up comment the day
+      before this change's implementation commits, after the proposal was already scaffolded
+      and approved) as explicit Non-Goals in `design.md`, with the reasoning for leaving each
+      out of this change's scope rather than silently ignoring them.

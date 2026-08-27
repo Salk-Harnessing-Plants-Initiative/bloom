@@ -82,6 +82,13 @@ _PCA_CATALOG_KEYS: frozenset[str] = frozenset(
     }
 )
 
+# Sanity ceiling for plot_font_size (#721): previously allowed any positive value, including
+# float('inf'). Values in the low thousands have been observed costing several seconds and
+# multiple GB per render on this LLM-driven input surface — generous headroom over real use
+# (fonts are almost always 6-72pt) while catching a runaway or adversarial request. Matches
+# UMAPAnalysisParams's identical ceiling (umap_analysis.py's _MAX_PLOT_FONT_SIZE).
+_MAX_PLOT_FONT_SIZE = 100
+
 
 class PCAAnalysisParams(BaseModel):
     """Inputs for ``pca_analysis``. No ``seed`` — PCA here is deterministic."""
@@ -147,12 +154,12 @@ class PCAAnalysisParams(BaseModel):
     plot_font_size: float | None = Field(
         default=None,
         gt=0,
-        le=100,
-        description="Font size (points) override applied to every text element on each "
-        "generated plot (1-100). The upper bound is a sanity ceiling on this LLM-driven "
-        "input surface, not a design limit — legitimate use is almost always 6-72; values "
-        "in the low thousands have been observed costing several seconds and multiple GB "
-        "per render (#721).",
+        le=_MAX_PLOT_FONT_SIZE,
+        description=f"Font size (points) override applied to every text element on each "
+        f"generated plot (1-{_MAX_PLOT_FONT_SIZE}). The upper bound is a sanity ceiling on "
+        f"this LLM-driven input surface, not a design limit (#721). A valid value has no "
+        f"effect when include_plots=False (nothing is rendered to style); an out-of-range "
+        f"value is rejected as invalid_input regardless of include_plots.",
     )
     plot_alpha: float | None = Field(
         default=None,

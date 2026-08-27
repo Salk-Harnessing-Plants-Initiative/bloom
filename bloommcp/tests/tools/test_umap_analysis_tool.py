@@ -882,12 +882,14 @@ def test_unregistered_plot_cmap_is_invalid_input_before_any_computation(
     assert called == []
 
 
+@pytest.mark.parametrize("include_plots", [True, False])
 @pytest.mark.parametrize("cmap", ["hsv", "tab10"])
 def test_excluded_but_registered_plot_cmap_is_invalid_input(
-    injected_ports, monkeypatch, cmap
+    injected_ports, monkeypatch, cmap, include_plots
 ):
     """hsv/tab10 are real matplotlib colormaps but neither sequential nor diverging —
-    misleading for continuous trait data, so they're rejected like an unknown name."""
+    misleading for continuous trait data, so they're rejected like an unknown name,
+    regardless of include_plots (same rule as the misspelling case above)."""
     real = umap_analysis_tool.perform_umap_analysis
     called = []
 
@@ -898,7 +900,13 @@ def test_excluded_but_registered_plot_cmap_is_invalid_input(
     monkeypatch.setattr(umap_analysis_tool, "perform_umap_analysis", _spy)
 
     with pytest.raises(BloomMCPError) as exc:
-        umap_analysis({"experiment": _EXPERIMENT, "plot_cmap": cmap})
+        umap_analysis(
+            {
+                "experiment": _EXPERIMENT,
+                "include_plots": include_plots,
+                "plot_cmap": cmap,
+            }
+        )
     assert exc.value.code == "invalid_input"
     assert called == []
 
@@ -943,6 +951,7 @@ def test_allowed_cmaps_are_all_registered_in_installed_matplotlib():
         ("plot_point_size", 0),
         ("plot_point_size", -1),
         ("plot_point_size", 10001),
+        ("plot_point_size", float("inf")),
         ("plot_alpha", 1.5),
         ("plot_alpha", -0.1),
         ("plot_font_size", 101),
