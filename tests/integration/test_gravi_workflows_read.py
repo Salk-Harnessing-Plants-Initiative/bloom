@@ -1,9 +1,10 @@
 """What `bloom_workflows` can and cannot reach on the gravi tables.
 
 Covers 20260825210000_workflows_read_gravi.sql: the plate time-lapse endpoint
-reads a plate's captures and their image paths, and nothing else.
+reads a plate's captures, their image paths, the run they belong to and what a
+stored video already covers — and nothing else.
 
-Both tables have RLS on, so a grant without a policy returns no rows rather
+All four tables have RLS on, so a grant without a policy returns no rows rather
 than failing — a test that only checked the grant would pass either way. These
 read actual rows as the role.
 
@@ -19,8 +20,15 @@ BUCKET = "graviscan-images"
 OBJECT = "1/wave-1/PLATE-RLS.tif"
 
 
+# Sentinels, so a read that returns the wrong row is not mistaken for a pass.
+TOTAL_CYCLES = 17
+FRAME_COUNT = 23
+
+
 def _seed_plate(cur):
-    """One experiment, one capture, one image. Returns the scan id."""
+    """One experiment, session, capture, image and stored video. Returns the
+    scan id. The scan carries its session_id so the seed matches the join the
+    encoder issues, not just the tables in isolation."""
     cur.execute(
         "INSERT INTO gravi_experiments (name) VALUES ('rls-probe') RETURNING id"
     )
@@ -28,19 +36,37 @@ def _seed_plate(cur):
 
     cur.execute(
         """
+        INSERT INTO gravi_scan_sessions (experiment_id, total_cycles)
+        VALUES (%s, %s) RETURNING id
+        """,
+        (experiment_id, TOTAL_CYCLES),
+    )
+    session_id = cur.fetchone()[0]
+
+    cur.execute(
+        """
         INSERT INTO gravi_scans
-            (experiment_id, plate_id, wave_number, capture_date,
+            (experiment_id, session_id, plate_id, wave_number, capture_date,
              grid_mode, plate_index, resolution)
-        VALUES (%s, 'PLATE-RLS', 1, now(), 'single', '00', 600)
+        VALUES (%s, %s, 'PLATE-RLS', 1, now(), 'single', '00', 600)
         RETURNING id
         """,
-        (experiment_id,),
+        (experiment_id, session_id),
     )
     scan_id = cur.fetchone()[0]
 
     cur.execute(
         "INSERT INTO gravi_images (scan_id, object_path) VALUES (%s, %s)",
         (scan_id, OBJECT),
+    )
+
+    cur.execute(
+        """
+        INSERT INTO gravi_plate_videos
+            (experiment_id, plate_id, session_id, object_path, frame_count)
+        VALUES (%s, 'PLATE-RLS', %s, '1/wave-1/PLATE-RLS.mp4', %s)
+        """,
+        (experiment_id, session_id, FRAME_COUNT),
     )
     return scan_id
 
@@ -81,9 +107,49 @@ def test_reads_a_plates_captures_and_image_paths(pg_conn):
     pg_conn.rollback()
 
 
+def test_reads_the_sessions_planned_cycle_count(pg_conn):
+    """RLS on SELECT filters rows rather than raising, so without a policy this
+    returns empty and the encoder reads a short run as a finished one."""
+    with pg_conn.cursor() as cur:
+        scan_id = _seed_plate(cur)
+
+        cur.execute(f"SET LOCAL ROLE {ROLE}")
+        cur.execute(
+            """
+            SELECT ss.total_cycles
+            FROM gravi_scans s
+            JOIN gravi_scan_sessions ss ON ss.id = s.session_id
+            WHERE s.id = %s
+            """,
+            (scan_id,),
+        )
+        rows = cur.fetchall()
+
+    assert rows, "the role sees no session — grant without a policy reads empty"
+    assert rows[0][0] == TOTAL_CYCLES
+    pg_conn.rollback()
+
+
+def test_reads_a_stored_videos_frame_count(pg_conn):
+    """Same failure mode: an empty read looks like 'no video yet', so the
+    encoder would re-render every plate on every request."""
+    with pg_conn.cursor() as cur:
+        _seed_plate(cur)
+
+        cur.execute(f"SET LOCAL ROLE {ROLE}")
+        cur.execute(
+            "SELECT frame_count FROM gravi_plate_videos WHERE plate_id = 'PLATE-RLS'"
+        )
+        rows = cur.fetchall()
+
+    assert rows, "the role sees no video row — grant without a policy reads empty"
+    assert rows[0][0] == FRAME_COUNT
+    pg_conn.rollback()
+
+
 @pytest.mark.parametrize("table", ["gravi_scans", "gravi_images", "gravi_scan_sessions", "gravi_plate_videos"])
 @pytest.mark.parametrize("verb", ["INSERT", "UPDATE", "DELETE"])
-def test_cannot_write_either_table(pg_conn, table, verb):
+def test_cannot_write_any_of_the_four_tables(pg_conn, table, verb):
     """Read access only. A write must be refused, not silently accepted.
 
     42501 covers both a missing grant and a missing RLS policy, so this does not
