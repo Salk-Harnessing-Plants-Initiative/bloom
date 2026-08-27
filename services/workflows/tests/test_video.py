@@ -132,6 +132,7 @@ def test_record_video_skipped_when_table_unset(monkeypatch):
 
 # --- generate_scan_video failure paths (never upload a bad/absent video) -----
 
+
 def _png_bytes() -> bytes:
     buf = io.BytesIO()
     Image.new("RGB", (8, 8)).save(buf, "PNG")
@@ -274,6 +275,7 @@ def test_generate_scan_video_500_when_no_signed_url(monkeypatch):
 
 # --- I4 completeness signal + I5 re-encode guard (happy paths) ---------------
 
+
 class _GenQuery:
     def __init__(self, rows):
         self._rows = rows
@@ -337,7 +339,9 @@ class _GenClient:
 
     def __init__(self, images, recorded_frames=None, stored=None):
         self._images = images
-        self._recorded = [] if recorded_frames is None else [{"frames": recorded_frames}]
+        self._recorded = (
+            [] if recorded_frames is None else [{"frames": recorded_frames}]
+        )
         self.uploads = 0
         # Whether an object sits at this scan's video key. A recorded count implies one.
         self.stored = recorded_frames is not None if stored is None else stored
@@ -389,8 +393,7 @@ def test_generate_scan_video_reports_completeness(monkeypatch):
 def test_generate_scan_video_flags_truncation(monkeypatch):
     monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
     images = [
-        {"object_path": f"o{i}", "frame_number": i}
-        for i in range(video.MAX_IMAGES + 5)
+        {"object_path": f"o{i}", "frame_number": i} for i in range(video.MAX_IMAGES + 5)
     ]
     client = _GenClient(images)
 
@@ -460,6 +463,7 @@ def test_an_unclear_existence_check_is_neither_yes_nor_no():
 
 def _blip_signing(monkeypatch):
     """Make every signing attempt fail for a reason that is not "missing"."""
+
     def _blip(self, *a, **k):
         raise RuntimeError("storage gateway timed out")
 
@@ -508,10 +512,9 @@ def test_rows_with_no_object_do_not_spend_slots_in_the_cap(monkeypatch):
     replaced — stay short permanently, despite every frame having been present.
     """
     monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
-    images = (
-        [{"object_path": None, "frame_number": i} for i in range(10)]
-        + [{"object_path": f"o{i}", "frame_number": i} for i in range(10, 80)]
-    )
+    images = [{"object_path": None, "frame_number": i} for i in range(10)] + [
+        {"object_path": f"o{i}", "frame_number": i} for i in range(10, 80)
+    ]
     client = _GenClient(images)
 
     result = video.generate_scan_video(client, 5)
@@ -525,7 +528,9 @@ def test_rows_with_no_object_do_not_spend_slots_in_the_cap(monkeypatch):
 def test_exactly_at_the_cap_is_not_truncated(monkeypatch):
     """72 is the cap, not past it — the over-fetch of one row exists to tell those apart."""
     monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
-    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(video.MAX_IMAGES)]
+    images = [
+        {"object_path": f"o{i}", "frame_number": i} for i in range(video.MAX_IMAGES)
+    ]
     result = video.generate_scan_video(_GenClient(images), 5)
 
     assert result["truncated"] is False
@@ -534,7 +539,9 @@ def test_exactly_at_the_cap_is_not_truncated(monkeypatch):
 
 def test_one_past_the_cap_is_truncated(monkeypatch):
     monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
-    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(video.MAX_IMAGES + 1)]
+    images = [
+        {"object_path": f"o{i}", "frame_number": i} for i in range(video.MAX_IMAGES + 1)
+    ]
     result = video.generate_scan_video(_GenClient(images), 5)
 
     assert result["truncated"] is True
@@ -556,7 +563,9 @@ def test_a_video_this_run_cannot_beat_is_kept_without_encoding(monkeypatch):
     """
     monkeypatch.setattr(video, "VideoWriter", _ExplodingWriter)
     images = [{"object_path": f"o{i}", "frame_number": i} for i in range(3)]
-    client = _GenClient(images, recorded_frames=3, stored=True)  # a tie, known in advance
+    client = _GenClient(
+        images, recorded_frames=3, stored=True
+    )  # a tie, known in advance
 
     result = video.generate_scan_video(client, 5)
 
@@ -582,7 +591,9 @@ def test_a_scan_that_might_beat_the_stored_video_still_encodes(monkeypatch):
     """The gate must not swallow the case it exists to let through."""
     monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
     images = [{"object_path": f"o{i}", "frame_number": i} for i in range(9)]
-    client = _GenClient(images, recorded_frames=3, stored=True)  # 9 available vs 3 recorded
+    client = _GenClient(
+        images, recorded_frames=3, stored=True
+    )  # 9 available vs 3 recorded
 
     result = video.generate_scan_video(client, 5)
 
@@ -610,8 +621,8 @@ def test_frames_lost_during_the_encode_fall_back_to_keeping(monkeypatch):
 
     result = video.generate_scan_video(client, 5)
 
-    assert result["regenerated"] is False   # 4 encoded vs 5 recorded -> keep
-    assert result["frames"] == 5            # reports the stored video's count
+    assert result["regenerated"] is False  # 4 encoded vs 5 recorded -> keep
+    assert result["frames"] == 5  # reports the stored video's count
     assert client.uploads == 0
 
 
@@ -643,7 +654,9 @@ def test_a_strictly_better_encode_replaces_the_stored_video(monkeypatch):
     """The other half of the rule. Without it a scan is frozen on its worst encode forever."""
     monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
     images = [{"object_path": f"o{i}", "frame_number": i} for i in range(9)]
-    client = _GenClient(images, recorded_frames=3, stored=True)  # 9 frames now vs 3 recorded
+    client = _GenClient(
+        images, recorded_frames=3, stored=True
+    )  # 9 frames now vs 3 recorded
 
     result = video.generate_scan_video(client, 5)
 
@@ -656,8 +669,10 @@ def test_a_kept_video_is_never_re_recorded(monkeypatch):
     """Recording a kept result would write the discarded encode's lower count over the real one."""
     monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
     monkeypatch.setattr(video, "scan_in_experiment", lambda *a, **k: True)
-    images = [{"object_path": "o0", "frame_number": 0}]          # this run manages 1 frame
-    client = _GenClient(images, recorded_frames=72, stored=True)  # a 72-frame video is recorded
+    images = [{"object_path": "o0", "frame_number": 0}]  # this run manages 1 frame
+    client = _GenClient(
+        images, recorded_frames=72, stored=True
+    )  # a 72-frame video is recorded
     monkeypatch.setattr(video, "app_client", lambda: client)
 
     calls: list = []
@@ -703,7 +718,7 @@ def test_an_already_null_row_is_not_rewritten_on_every_request(monkeypatch):
 
 
 def test_a_failed_record_lookup_does_not_read_as_no_record(monkeypatch):
-    """"Nothing recorded" sends the request down the unmeasured-video branch, where the stored
+    """ "Nothing recorded" sends the request down the unmeasured-video branch, where the stored
     video is kept whatever was encoded and a null count is written over the real one. An error
     must not be reported as that."""
     monkeypatch.setattr(video, "VIDEO_TABLE", "cyl_scan_videos")
@@ -748,7 +763,9 @@ def test_a_kept_video_with_no_row_is_recorded_without_a_count(monkeypatch):
     assert "stored_frames_unknown" not in result
 
 
-def test_generate_scan_video_replaces_a_recorded_video_whose_object_is_gone(monkeypatch):
+def test_generate_scan_video_replaces_a_recorded_video_whose_object_is_gone(
+    monkeypatch,
+):
     """A row says a video was stored once, not that it still is.
 
     Trusting the row here would sign a key with nothing behind it, which raises — failing the
@@ -791,8 +808,8 @@ def test_generate_scan_video_keeps_better_existing(monkeypatch):
     result = video.generate_scan_video(client, 5)
 
     assert result["regenerated"] is False
-    assert result["frames"] == 72          # reports the kept video's count
-    assert client.uploads == 0             # did not overwrite
+    assert result["frames"] == 72  # reports the kept video's count
+    assert client.uploads == 0  # did not overwrite
 
 
 def test_generate_scan_video_500_on_empty_output(monkeypatch):
@@ -918,6 +935,8 @@ def _png(width, height, mode="RGB") -> bytes:
     data = ((rows * 37 + cols * 11 + chans * 5) % 251).astype(np.uint8)
     if mode == "RGBA":
         data[..., 3] = 255  # a varying alpha is not preserved the same way
+    if bands == 1:
+        data = data[:, :, 0]  # single-band modes want a 2D array
 
     buf = io.BytesIO()
     Image.fromarray(data, mode).save(buf, "PNG")
@@ -983,25 +1002,30 @@ def test_every_frame_of_a_uniform_scan_reaches_the_encoder(ffmpeg):
     assert ffmpeg[0].stdin.chunks == [_pixels(by_path[f"o{i}"]) for i in range(4)]
 
 
-def test_an_rgba_frame_is_piped_at_the_wrong_byte_count(ffmpeg):
-    """A PNG with alpha decodes to 4 channels and nothing normalises it —
-    `Image.open(...)` at the download is not `.convert("RGB")`.
-
-    ffmpeg is told rgb24 and reads w*h*3 bytes per frame, so w*h*4 shears
-    every frame after the first. Real ffmpeg exits 0 on that and the sheared
-    MP4 is stored; the 500 here is the fake refusing what production accepts,
-    which is the only way this shows up as a failure rather than a bad video.
-
-    When this test fails, the caller was fixed: expect 3 channels, a normal
-    success, and drop this note.
+def test_an_rgba_frame_is_normalised_to_three_channels(ffmpeg):
+    """A PNG with alpha decodes to 4 channels. ffmpeg is told rgb24 and reads
+    w*h*3 bytes per frame, so piping w*h*4 shears every frame after the first
+    while ffmpeg still exits 0. The download converts to RGB so it cannot.
     """
     by_path = {f"o{i}": _png(8, 8, mode="RGBA") for i in range(2)}
     client = _SizedGenClient(_scan_of(by_path), by_path)
 
-    with pytest.raises(HTTPException) as ei:
-        video.generate_scan_video(client, 5, decimate=1)
+    result = video.generate_scan_video(client, 5, decimate=1)
 
-    assert ei.value.status_code == 500
+    assert result["frames"] == 2
     assert ffmpeg[0].cmd[ffmpeg[0].cmd.index("-s") + 1] == "8x8"
-    assert len(ffmpeg[0].stdin.chunks[0]) == 8 * 8 * 4, "four channels, not three"
-    assert client.uploads == 0, "a sheared encode must not reach the videos bucket"
+    for chunk in ffmpeg[0].stdin.chunks:
+        assert len(chunk) == 8 * 8 * 3, "three channels, not four"
+    assert client.uploads == 1
+
+
+def test_a_grayscale_frame_is_normalised_to_three_channels(ffmpeg):
+    """Mono capture has to keep working if the scanners ever switch to it."""
+    by_path = {f"o{i}": _png(8, 8, mode="L") for i in range(2)}
+    client = _SizedGenClient(_scan_of(by_path), by_path)
+
+    result = video.generate_scan_video(client, 5, decimate=1)
+
+    assert result["frames"] == 2
+    for chunk in ffmpeg[0].stdin.chunks:
+        assert len(chunk) == 8 * 8 * 3

@@ -60,7 +60,7 @@ def _to_public_url(url: str) -> str:
         return url
     internal = SUPABASE_URL.rstrip("/")
     if url.startswith(internal):
-        return PUBLIC_SUPABASE_URL.rstrip("/") + url[len(internal):]
+        return PUBLIC_SUPABASE_URL.rstrip("/") + url[len(internal) :]
     return url
 
 
@@ -131,7 +131,11 @@ def _stored_video_exists(vids, key: str) -> bool | None:
         return True
     except Exception as exc:
         message = str(exc).lower()
-        if "not found" in message or "not_found" in message or "does not exist" in message:
+        if (
+            "not found" in message
+            or "not_found" in message
+            or "does not exist" in message
+        ):
             return False
         logger.warning("could not check for a stored video at %s: %s", key, exc)
         return None
@@ -227,7 +231,9 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
         logger.warning(
             "scan %s: has more than %s images; encoding the first %s "
             "(higher frame_numbers dropped)",
-            scan_id, MAX_IMAGES, MAX_IMAGES,
+            scan_id,
+            MAX_IMAGES,
+            MAX_IMAGES,
         )
     frames_expected = len(images)
 
@@ -249,7 +255,12 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
                     scan_id,
                 )
                 kept = _result(
-                    scan_id, vids, key, frames_expected, frames_expected, truncated,
+                    scan_id,
+                    vids,
+                    key,
+                    frames_expected,
+                    frames_expected,
+                    truncated,
                     regenerated=False,
                 )
                 # Recorded once, not on every request: a row already carrying a NULL count
@@ -262,10 +273,17 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
                 return kept
             logger.warning(
                 "scan %s: at most %s frames available, recorded %s; keeping the existing video",
-                scan_id, frames_expected, prior_frames,
+                scan_id,
+                frames_expected,
+                prior_frames,
             )
             return _result(
-                scan_id, vids, key, prior_frames, frames_expected, truncated,
+                scan_id,
+                vids,
+                key,
+                prior_frames,
+                frames_expected,
+                truncated,
                 regenerated=False,
             )
 
@@ -285,7 +303,13 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
                 data = img_bucket.download(object_path)
                 if not data:
                     continue
-                arr = np.array(Image.open(io.BytesIO(data)))
+                img = Image.open(io.BytesIO(data))
+                if img.mode != "RGB":
+                    # Normalise every capture mode to RGB. Mono, alpha and
+                    # 16-bit all reach ffmpeg as the wrong bytes otherwise.
+                    # Skipped when already RGB, which avoids a full-frame copy.
+                    img = img.convert("RGB")
+                arr = np.array(img)
                 arr = arr[::decimate, ::decimate]
                 if arr.size == 0:
                     continue
@@ -326,7 +350,10 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
     if frames_written < frames_expected:
         logger.warning(
             "scan %s: encoded %s of %s frames (%s skipped)",
-            scan_id, frames_written, frames_expected, frames_expected - frames_written,
+            scan_id,
+            frames_written,
+            frames_expected,
+            frames_expected - frames_written,
         )
 
     # The gate above cleared this run to encode because `frames_expected` beat the recorded
@@ -342,10 +369,18 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
     ):
         logger.warning(
             "scan %s: new encode has %s frames, recorded %s; keeping the existing video",
-            scan_id, frames_written, prior_frames,
+            scan_id,
+            frames_written,
+            prior_frames,
         )
         return _result(
-            scan_id, vids, key, prior_frames, frames_expected, truncated, regenerated=False
+            scan_id,
+            vids,
+            key,
+            prior_frames,
+            frames_expected,
+            truncated,
+            regenerated=False,
         )
 
     vids.upload(key, video_bytes, {"content-type": "video/mp4", "upsert": "true"})
@@ -354,13 +389,16 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
     )
 
 
-def _result(scan_id, vids, key, frames, frames_expected, truncated, regenerated) -> dict:
+def _result(
+    scan_id, vids, key, frames, frames_expected, truncated, regenerated
+) -> dict:
     """Build the response, failing (not returning null) if no URL can be signed."""
     download_url = _signed_url(vids, key)
     if not download_url:
         # A response without a usable URL is a failure, not a success.
         raise HTTPException(
-            status_code=500, detail=f"Could not create a download URL for scan {scan_id}"
+            status_code=500,
+            detail=f"Could not create a download URL for scan {scan_id}",
         )
     return {
         "frames": frames,

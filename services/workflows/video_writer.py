@@ -51,6 +51,12 @@ class VideoWriter:
             # Grayscale - convert to RGB
             img = np.stack([img, img, img], axis=-1)
 
+        if img.ndim != 3 or img.shape[2] != 3:
+            # The video is written as rgb24, so any other channel count changes
+            # the bytes per frame and shears everything after it. Callers
+            # normalise at decode; this is the last check before the pipe.
+            raise ValueError(f"expected a 3-channel frame, got shape {img.shape}")
+
         img = self._to_even(img)
 
         if self.process is None:
