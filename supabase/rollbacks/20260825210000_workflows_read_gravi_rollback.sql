@@ -1,7 +1,7 @@
 -- Manual rollback for 20260825210000_workflows_read_gravi.sql
 --
--- Removes the workflows service's read access to a plate's frames: the three
--- policies that migration created, and the two table grants.
+-- Removes the workflows service's read access to a plate's frames: the five
+-- policies that migration created, and the four table grants.
 --
 -- Does NOT revoke anything on storage.objects or storage.buckets. Those grants
 -- predate this migration and the cylinder video endpoint runs on them.

@@ -214,8 +214,9 @@ and storage policies are the boundary**. The app user needs only:
 - `SELECT (scan_id, source_id)` on `cyl_scan_traits`, `SELECT (id, metadata)` on
   `cyl_trait_sources` (the pipeline-trigger dedup preview's all-sources join),
   and `SELECT (id)`-only existence-check access on `cyl_waves`/`cyl_experiments`
-- `SELECT` on `gravi_scans`, `gravi_images` and read on the graviscan-images
-  bucket — the plate time-lapse frame set
+- `SELECT` on `gravi_scans`, `gravi_images`, `gravi_scan_sessions` and
+  `gravi_plate_videos`, and read on the graviscan-images bucket — the plate
+  time-lapse frame set, the run it belongs to, and what a stored video covers
 - `EXECUTE` on `enqueue_cyl_pipeline_batch`, `claim_cyl_pipeline_batch`,
   `complete_cyl_pipeline_batch`, `fail_cyl_pipeline_batch`,
   `update_cyl_pipeline_run_status`
