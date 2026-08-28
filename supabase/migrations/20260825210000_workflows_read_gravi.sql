@@ -1,13 +1,17 @@
 -- Read access to a plate's frames for the workflows service.
 --
--- Grants bloom_workflows SELECT on every column of four tables, and read on one
--- storage bucket. Nothing else, and nothing writable:
+-- Grants bloom_workflows SELECT on every column of four tables, and adds an RLS
+-- policy for one storage bucket. Nothing else, and nothing writable:
 --
 --   public.gravi_scans          which captures a plate has, and in what order
 --   public.gravi_images         the object_path of each capture's image
---   public.gravi_scan_sessions  how many captures the run planned
+--   public.gravi_scan_sessions  whether the run finished or was cancelled
 --   public.gravi_plate_videos   what a stored video already covers
 --   graviscan-images bucket     the images themselves
+--
+-- The bucket read also needs GRANT SELECT ON storage.objects, which
+-- 20260716000000 already gives this role. Without it the policy below is inert
+-- and reads return no rows rather than failing.
 --
 -- The write path -- the record wrapper and the graviscan-videos policies -- is
 -- a separate migration.
@@ -20,13 +24,14 @@ BEGIN;
 
 GRANT SELECT ON public.gravi_scans TO bloom_workflows;
 GRANT SELECT ON public.gravi_images TO bloom_workflows;
--- A session records how a run ended: `cancelled` and `completed_at` say
--- whether it stopped early. `total_cycles` counts a session, while a video
--- covers (experiment, plate, wave) and can span sessions, so it is not a
--- frame-count target.
+-- A session is one scanning run: what it planned, when it ended, whether it
+-- was cancelled. No single column is authoritative -- a run can capture
+-- nothing with cancelled false and completed_at null -- and a video covers
+-- (experiment, plate, wave), which can span sessions. The PR that reads this
+-- names the column it trusts.
 GRANT SELECT ON public.gravi_scan_sessions TO bloom_workflows;
--- Read only. Writes go through record_gravi_plate_video, which is a separate
--- migration and grants no table access.
+-- Read only. The write path is a separate migration and will go through a
+-- SECURITY DEFINER wrapper, so it grants no table access here.
 GRANT SELECT ON public.gravi_plate_videos TO bloom_workflows;
 
 DROP POLICY IF EXISTS workflows_read_gravi_scans ON public.gravi_scans;

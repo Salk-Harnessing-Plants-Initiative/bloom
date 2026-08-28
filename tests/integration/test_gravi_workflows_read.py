@@ -1,8 +1,9 @@
 """What `bloom_workflows` can and cannot reach on the gravi tables.
 
 Covers 20260825210000_workflows_read_gravi.sql: the plate time-lapse endpoint
-reads a plate's captures, their image paths, the run they belong to and what a
-stored video already covers — and nothing else.
+reads a plate's captures, their image paths, the run they belong to, what a
+stored video already covers, and the frame objects in the graviscan-images
+bucket — and nothing else, in either direction.
 
 All four tables have RLS on, so a grant without a policy returns no rows rather
 than failing — a test that only checked the grant would pass either way. These
