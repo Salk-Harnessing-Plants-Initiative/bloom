@@ -36,6 +36,10 @@ _FRAME_SELECT = (
 # multi-day plate — the deadline is what actually bounds a render. Tune on staging.
 MAX_SOURCE_BYTES = 8 * 1024**3
 
+# What a frame that recorded no size is assumed to weigh. Live frames measure
+# 45-64 MB, so this is the middle of the range rather than a guess.
+NOMINAL_FRAME_BYTES = 57 * 1024**2
+
 
 def get_plate_frames(
     client,
@@ -97,7 +101,9 @@ def _capture_datetime(value) -> datetime:
     if isinstance(value, datetime):
         return value
     if not isinstance(value, str):
-        raise TypeError(f"capture_date must be a datetime or an ISO string, got {value!r}")
+        raise TypeError(
+            f"capture_date must be a datetime or an ISO string, got {value!r}"
+        )
     try:
         # 3.11 is the floor, and its fromisoformat takes a Z-terminated offset.
         return datetime.fromisoformat(value)
@@ -128,20 +134,61 @@ def planned_cycles(client, frames: list[dict]) -> int | None:
     return sum(planned) if planned else None
 
 
-def missing_cycles(frames: list[dict]) -> list[int]:
-    """Cycle numbers absent between the lowest and highest present.
+def session_first_cycle(client, frames: list[dict]) -> int | None:
+    """The lowest cycle number any plate in this run recorded.
 
-    Bounded by what arrived rather than by the plan, so it holds whatever the
-    numbering starts at. A run that stopped early has no gap — it has a short
-    tail, which `planned_cycles` is what answers.
+    Every plate in a run is photographed on every cycle, so a sibling plate's
+    lowest cycle is where this plate's numbering should have started. That is
+    what makes a missing first frame detectable: this plate's own frames cannot
+    show it.
+
+    None when the frames name no session, or no cycle was recorded — both mean
+    the start is unknown, and `missing_cycles` then falls back to what arrived.
+
+    Blind in one case, deliberately: if the run lost the same leading cycles for
+    every plate, the siblings agree and the hole stays invisible.
+    """
+    session_ids = {f["session_id"] for f in frames if f["session_id"] is not None}
+    if not session_ids:
+        return None
+
+    rows = (
+        client.table("gravi_scans")
+        .select("cycle_number")
+        .in_("session_id", sorted(session_ids))
+        .execute()
+        .data
+        or []
+    )
+    cycles = [r["cycle_number"] for r in rows if r.get("cycle_number") is not None]
+    return min(cycles) if cycles else None
+
+
+def missing_cycles(frames: list[dict], first_cycle: int | None = None) -> list[int]:
+    """Cycle numbers absent between `first_cycle` and the highest present.
+
+    Without `first_cycle` the search starts at the lowest cycle that arrived,
+    which cannot see a hole at the start of a run — the question would be
+    "are any of my cycles missing?" asked using only the cycles it has.
+    `session_first_cycle` supplies the bound a sibling plate proves.
+
+    A run that stopped early has no gap — it has a short tail, which
+    `planned_cycles` is what answers.
+
+    A plate is scanned once per wave, so cycle numbers are unique within a
+    frame set and can be compared directly.
     """
     present = {f["cycle_number"] for f in frames if f["cycle_number"] is not None}
-    if len(present) < 2:
+    if not present:
         return []
-    return sorted(set(range(min(present), max(present) + 1)) - present)
+
+    low = min(present) if first_cycle is None else min(first_cycle, min(present))
+    return sorted(set(range(low, max(present) + 1)) - present)
 
 
-def completeness(frames: list[dict], planned: int | None) -> dict:
+def completeness(
+    frames: list[dict], planned: int | None, first_cycle: int | None = None
+) -> dict:
     """What arrived, against what was planned. Describes; never refuses.
 
     A short run still renders — the video is real, just shorter than intended.
@@ -151,7 +198,7 @@ def completeness(frames: list[dict], planned: int | None) -> dict:
     both are "not complete", but only the first is a fact about the run.
     """
     present = len(frames)
-    gaps = missing_cycles(frames)
+    gaps = missing_cycles(frames, first_cycle)
 
     if planned is None:
         state = "unknown"
@@ -162,8 +209,10 @@ def completeness(frames: list[dict], planned: int | None) -> dict:
         state = "gaps"
         summary = f"{present} of {planned} frames; missing cycles {listed}{more}"
     elif present < planned:
+        # Says what arrived, not why. Frames upload after a run finishes, so a
+        # short count during that window is the normal state, not a fault.
         state = "short"
-        summary = f"{present} of {planned} frames; the run stopped early"
+        summary = f"{present} of {planned} frames so far"
     else:
         # A run commonly outlasts its planned cycle count, so the plan is a
         # floor rather than a target. Say the real number either way.
@@ -191,21 +240,35 @@ def source_bytes(frames: list[dict]) -> tuple[int, int]:
     return sum(known), len(frames) - len(known)
 
 
-def too_large_to_render(frames: list[dict], limit: int = MAX_SOURCE_BYTES) -> str | None:
+def too_large_to_render(
+    frames: list[dict], limit: int = MAX_SOURCE_BYTES
+) -> str | None:
     """Why this plate cannot be rendered in a request, or None.
 
     Checked before anything is downloaded: the render is synchronous behind a
     240s proxy timeout, and a long plate is tens of gigabytes. The deadline
     would stop it eventually — this stops it in a millisecond, with a reason.
+
+    A frame that recorded no size is estimated rather than counted as zero,
+    from this plate's own frames where it can be. Reading a missing size as
+    nothing lets a plate of any size past the guard.
     """
     total, unknown = source_bytes(frames)
+    counted = len(frames) - unknown
+
+    if unknown:
+        per_frame = total // counted if counted else NOMINAL_FRAME_BYTES
+        total += unknown * per_frame
+
     if total <= limit:
         return None
 
-    counted = f"{len(frames) - unknown} of {len(frames)} frames"
+    measured = (
+        f"{counted} of {len(frames)} frames" if unknown else f"all {len(frames)} frames"
+    )
     return (
-        f"this plate is at least {total / 1024**3:.1f} GB across {counted}, "
-        f"over the {limit / 1024**3:.0f} GB a single render may pull"
+        f"this plate is about {total / 1024**3:.1f} GB, measured across "
+        f"{measured}, over the {limit / 1024**3:.0f} GB a single render may pull"
     )
 
 
@@ -222,7 +285,9 @@ def first_capture(frames: list[dict]) -> datetime | None:
 # --- what is already stored --------------------------------------------------
 
 
-def stored_video(client, experiment_id: int, plate_id: str, wave_number: int | None) -> dict:
+def stored_video(
+    client, experiment_id: int, plate_id: str, wave_number: int | None
+) -> dict:
     """What this plate already has: `present`, `absent`, or `unknown`.
 
     `unknown` is neither, and must not collapse into either. Read as absent, a
@@ -318,7 +383,9 @@ def render_decision(frames: list[dict], stored: dict) -> dict:
         # with no count, no later request could beat it either. One render
         # replaces it with a video whose coverage is recorded.
         return _outcome(
-            "render", "the stored video records no frame count; encoding to replace it", key
+            "render",
+            "the stored video records no frame count; encoding to replace it",
+            key,
         )
 
     if available > recorded:
@@ -370,5 +437,9 @@ def plan_render(
             "coverage": None,
         }
 
-    coverage = completeness(frames, planned_cycles(client, frames))
+    coverage = completeness(
+        frames,
+        planned_cycles(client, frames),
+        session_first_cycle(client, frames),
+    )
     return {**decision, "frames": frames, "coverage": coverage}
