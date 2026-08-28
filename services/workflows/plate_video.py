@@ -20,9 +20,15 @@ logger = logging.getLogger(__name__)
 
 # Storage answers a missing object with an error rather than an empty result,
 # and with HTTP 400 carrying a string code — so the wording is the real guard.
-# Signing an object in a bucket that does not exist returns the *same*
-# "Object not found" as signing a missing object in a real one, so the wording
-# cannot separate them and `_bucket_exists` is what asks.
+# Signing an object in a bucket that does not exist answers identically to
+# signing a missing object in a real one. Measured against storage-api on
+# POST /object/sign, which is the call below:
+#
+#   missing object, real bucket -> {"error":"not_found","message":"Object not found"}
+#   bucket does not exist       -> {"error":"not_found","message":"Object not found"}
+#
+# ("Bucket not found" exists, but only on GET /bucket/<id>, which is never
+# called here.) So no wording can separate them, and `_bucket_exists` asks.
 _NOT_FOUND = ("object not found", "no such key", "object does not exist")
 
 # The scan carries the capture time and the plate's identity; the image carries
