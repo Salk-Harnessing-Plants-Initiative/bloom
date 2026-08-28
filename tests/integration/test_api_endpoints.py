@@ -63,6 +63,7 @@ HEADER_ROUTES = [
     "/api/client-info",  # exact path -> bloom-web
     "/api/oauth/consent",  # exact path -> bloom-web
     "/api/cyl/scans/1/video",  # /api/cyl/* -> bloom-web (prefix preserved)
+    "/api/gravi/experiments/1/plate-video",  # /api/gravi/* -> bloom-web (prefix preserved)
     "/api/auth/v1/health",  # /api/* -> kong -> gotrue
     "/api/rest/v1/",  # /api/* -> kong -> postgrest
     "/api/storage/v1/bucket",  # /api/* -> kong -> storage-api
