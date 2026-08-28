@@ -287,9 +287,9 @@ def _object_exists(client, key: str) -> bool | None:
 def render_decision(frames: list[dict], stored: dict) -> dict:
     """Whether to render this plate, hand back what is stored, or refuse.
 
-    A plate keeps gaining captures, so a stored video is usually not wrong —
-    just short. The recorded count is what tells those apart, and every branch
-    here turns on having one.
+    Frames upload from the scanner after the run finishes, so a video rendered
+    before that upload completed is short rather than wrong. The recorded count
+    is what tells those apart, and every branch here turns on having one.
     """
     available = len(frames)
     state = stored["state"]

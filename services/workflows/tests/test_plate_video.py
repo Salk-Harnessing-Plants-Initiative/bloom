@@ -551,7 +551,7 @@ def test_the_probe_looks_in_the_videos_bucket():
     assert client.storage.buckets == ["graviscan-videos"]
 
 
-def test_a_plate_with_no_wave_is_matched_with_is_null():
+def test_a_stored_video_with_no_wave_is_matched_with_is_null():
     """`wave_number = NULL` matches nothing, so the row would be missed and a
     stored video re-rendered on every request."""
     client = _StoredClient(_recorded(path="12/wave-none/P7.mp4"))
@@ -572,8 +572,9 @@ def test_the_row_is_read_from_gravi_plate_videos_by_all_three_keys():
 
 # --- what to do about it -----------------------------------------------------
 #
-# A plate keeps gaining captures, so a stored video is usually not wrong, just
-# short. Every branch turns on having a recorded count to compare against.
+# Frames upload from the scanner after the run finishes, so a video rendered
+# before that upload completed is short rather than wrong. Every branch turns on
+# having a recorded count to compare against.
 
 
 def _stored(state="present", frames=140, key="12/wave-1/P7.mp4"):
