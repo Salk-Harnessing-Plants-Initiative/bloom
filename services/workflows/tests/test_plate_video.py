@@ -593,13 +593,33 @@ def test_storage_failing_to_answer_is_unknown_not_absent():
 
 @pytest.mark.parametrize(
     "message",
-    ["Object not found", "not_found", "The resource does not exist", "no such key"],
+    [
+        # The shape storage3 actually raises: the error code and the message
+        # both appear, and only the message says what was missing.
+        "{'statusCode': 404, 'error': not_found, 'message': Object not found}",
+        "Object not found",
+        "no such key",
+        "Object does not exist",
+    ],
 )
-def test_every_wording_storage_uses_for_missing_reads_as_absent(message):
+def test_every_wording_storage_uses_for_a_missing_object_reads_as_absent(message):
     """Storage answers a missing object with HTTP 400 and a string code, so the
     wording is the guard — a status check would read missing as unknown."""
     client = _StoredClient(_recorded(), raises=Exception(message))
     assert pv.stored_video(client, 12, "P7", 1)["state"] == "absent"
+
+
+def test_a_missing_bucket_is_unknown_not_absent():
+    """Storage says "Bucket not found" with the same not_found code as a
+    missing object. Reading it as absent renders every plate in the experiment
+    into a bucket that cannot accept them."""
+    client = _StoredClient(
+        _recorded(),
+        raises=Exception(
+            "{'statusCode': 404, 'error': not_found, 'message': Bucket not found}"
+        ),
+    )
+    assert pv.stored_video(client, 12, "P7", 1)["state"] == "unknown"
 
 
 def test_an_unusable_plate_id_is_absent_without_touching_storage():
@@ -691,7 +711,7 @@ def test_storage_that_cannot_answer_refuses_rather_than_rendering():
     the key is deterministic — during the outage that made the answer unclear."""
     d = pv.render_decision(_cycles(*range(200)), _stored(state="unknown"))
     assert d["action"] == "refuse"
-    assert "could not say" in d["reason"]
+    assert "try again" in d["reason"]
 
 
 def test_a_plate_with_no_frames_refuses_rather_than_encoding_nothing():
@@ -714,7 +734,7 @@ def test_an_unknown_state_refuses_even_when_frames_are_missing():
     """Ordering: an unclear answer about the stored video outranks every other
     reason to act, because acting is what cannot be undone."""
     assert pv.render_decision([], _stored(state="unknown"))["action"] == "refuse"
-    assert "could not say" in pv.render_decision([], _stored(state="unknown"))["reason"]
+    assert "try again" in pv.render_decision([], _stored(state="unknown"))["reason"]
 
 
 def test_every_outcome_carries_the_key_it_decided_about():
@@ -798,7 +818,7 @@ def test_plan_refuses_when_storage_cannot_say():
     plan = pv.plan_render(client, 12, "P7", 1)
 
     assert plan["action"] == "refuse"
-    assert "could not say" in plan["reason"]
+    assert "try again" in plan["reason"]
 
 
 def test_coverage_is_reported_when_something_will_be_rendered():

@@ -20,7 +20,11 @@ logger = logging.getLogger(__name__)
 
 # Storage answers a missing object with an error rather than an empty result,
 # and with HTTP 400 carrying a string code — so the wording is the real guard.
-_NOT_FOUND = ("not found", "not_found", "does not exist", "no such")
+# Every token has to name the object. Storage answers a missing bucket with
+# "Bucket not found" and the same `not_found` error code as a missing object,
+# so a bare "not found" or "not_found" reads a broken bucket as an absent
+# video and renders into a bucket that cannot accept it.
+_NOT_FOUND = ("object not found", "no such key", "object does not exist")
 
 # The scan carries the capture time and the plate's identity; the image carries
 # the object to download. `!inner` drops a capture whose image never arrived —
@@ -361,10 +365,13 @@ def render_decision(frames: list[dict], stored: dict) -> dict:
     key = stored["key"]
 
     if state == "unknown":
+        # Says what to do, not what broke: nothing here is the scientist's to
+        # fix, and rendering on an answer we do not trust could replace a good
+        # video with a worse one.
         return _outcome(
             "refuse",
-            "storage could not say whether a video is already stored; "
-            "changing nothing rather than overwriting one",
+            "this video cannot be made right now — storage did not answer. "
+            "Nothing has been changed; try again in a few minutes",
             key,
         )
 
