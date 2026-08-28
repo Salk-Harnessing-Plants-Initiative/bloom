@@ -703,7 +703,7 @@ def test_a_stored_video_with_no_recorded_count_is_replaced():
     could beat it either, so the plate would be stuck on it forever."""
     d = pv.render_decision(_cycles(1, 2, 3), _stored(frames=None))
     assert d["action"] == "render"
-    assert "records no frame count" in d["reason"]
+    assert "does not say how much of the run" in d["reason"]
 
 
 def test_storage_that_cannot_answer_refuses_rather_than_rendering():

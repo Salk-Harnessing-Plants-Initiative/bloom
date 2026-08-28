@@ -376,10 +376,14 @@ def render_decision(frames: list[dict], stored: dict) -> dict:
         )
 
     if not available:
-        return _outcome("refuse", "this plate has no captures with an image", key)
+        return _outcome(
+            "refuse", "none of this plate's images have finished uploading yet", key
+        )
 
     if key is None:
-        return _outcome("refuse", "this plate's video has no usable object key", key)
+        return _outcome(
+            "refuse", "this plate's id or wave number cannot be used in a video", key
+        )
 
     if state == "absent":
         return _outcome("render", f"no video stored; encoding {available} frames", key)
@@ -391,7 +395,8 @@ def render_decision(frames: list[dict], stored: dict) -> dict:
         # replaces it with a video whose coverage is recorded.
         return _outcome(
             "render",
-            "the stored video records no frame count; encoding to replace it",
+            "the stored video does not say how much of the run it covers; "
+            "rebuilding it",
             key,
         )
 
@@ -422,10 +427,16 @@ def plan_render(
     `client` is an argument rather than a module global so a worker can call
     this later without a refactor.
 
-    The size check applies to the decision, not the request: a plate too large
-    to encode still has its stored video handed back. Coverage is only computed
-    when something will be rendered — on the keep path nothing reads it, and it
-    costs a second query.
+    The size check runs only when something would be rendered, so a plate whose
+    stored video is already current is handed it back without being measured.
+    A plate that is both stale and too large refuses rather than serving the
+    older video — no run can reach that size today (a full 10-hour plate is
+    ~86 frames and under 5 GB, against an 8 GB limit), so it is left as the
+    simpler behaviour rather than a branch nothing exercises.
+
+    Coverage is only computed when something will be rendered — on the keep
+    path nothing reads it, and it costs a second query. #756 covers the case
+    that makes visible.
     """
     frames = get_plate_frames(client, experiment_id, plate_id, wave_number)
     stored = stored_video(client, experiment_id, plate_id, wave_number)
