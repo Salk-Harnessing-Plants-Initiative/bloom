@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { PlateImage } from "./PlateImage";
+import { withShortTimeZoneName } from "./format-times";
 
 export interface TimePoint {
   scan_id: number;
@@ -166,10 +167,13 @@ export function PlateTimeSeries({ points }: PlateTimeSeriesProps) {
 function formatStamp(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return d.toLocaleString(
+    undefined,
+    withShortTimeZoneName({
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }),
+  );
 }
