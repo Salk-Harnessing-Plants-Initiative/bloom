@@ -20,10 +20,9 @@ logger = logging.getLogger(__name__)
 
 # Storage answers a missing object with an error rather than an empty result,
 # and with HTTP 400 carrying a string code — so the wording is the real guard.
-# Every token has to name the object. Storage answers a missing bucket with
-# "Bucket not found" and the same `not_found` error code as a missing object,
-# so a bare "not found" or "not_found" reads a broken bucket as an absent
-# video and renders into a bucket that cannot accept it.
+# Signing an object in a bucket that does not exist returns the *same*
+# "Object not found" as signing a missing object in a real one, so the wording
+# cannot separate them and `_bucket_exists` is what asks.
 _NOT_FOUND = ("object not found", "no such key", "object does not exist")
 
 # The scan carries the capture time and the plate's identity; the image carries
@@ -138,19 +137,20 @@ def planned_cycles(client, frames: list[dict]) -> int | None:
     return sum(planned) if planned else None
 
 
-def session_first_cycle(client, frames: list[dict]) -> int | None:
-    """The lowest cycle number any plate in this run recorded.
+def session_cycle_range(client, frames: list[dict]) -> tuple[int, int] | None:
+    """The lowest and highest cycle number any plate in this run recorded.
 
     Every plate in a run is photographed on every cycle, so a sibling plate's
-    lowest cycle is where this plate's numbering should have started. That is
-    what makes a missing first frame detectable: this plate's own frames cannot
-    show it.
+    range is the range this plate should have. That is what makes a missing
+    first or last frame detectable: bounded by its own frames, a plate cannot
+    show a hole at either end.
 
     None when the frames name no session, or no cycle was recorded — both mean
-    the start is unknown, and `missing_cycles` then falls back to what arrived.
+    the range is unknown, and `missing_cycles` then falls back to what arrived.
 
-    Blind in one case, deliberately: if the run lost the same leading cycles for
-    every plate, the siblings agree and the hole stays invisible.
+    Blind in one case, deliberately: if the run lost the same leading or
+    trailing cycles for every plate, the siblings agree and the hole stays
+    invisible.
     """
     session_ids = {f["session_id"] for f in frames if f["session_id"] is not None}
     if not session_ids:
@@ -165,19 +165,20 @@ def session_first_cycle(client, frames: list[dict]) -> int | None:
         or []
     )
     cycles = [r["cycle_number"] for r in rows if r.get("cycle_number") is not None]
-    return min(cycles) if cycles else None
+    return (min(cycles), max(cycles)) if cycles else None
 
 
-def missing_cycles(frames: list[dict], first_cycle: int | None = None) -> list[int]:
-    """Cycle numbers absent between `first_cycle` and the highest present.
+def missing_cycles(
+    frames: list[dict],
+    first_cycle: int | None = None,
+    last_cycle: int | None = None,
+) -> list[int]:
+    """Cycle numbers absent across the run this plate belongs to.
 
-    Without `first_cycle` the search starts at the lowest cycle that arrived,
-    which cannot see a hole at the start of a run — the question would be
-    "are any of my cycles missing?" asked using only the cycles it has.
-    `session_first_cycle` supplies the bound a sibling plate proves.
-
-    A run that stopped early has no gap — it has a short tail, which
-    `planned_cycles` is what answers.
+    Bounded by its own frames, a plate cannot show a hole at either end: the
+    question becomes "are any of my cycles missing?" asked using only the
+    cycles it has. `session_cycle_range` supplies the bounds a sibling plate
+    proves, so a lost head or tail is visible.
 
     A plate is scanned once per wave, so cycle numbers are unique within a
     frame set and can be compared directly.
@@ -187,11 +188,14 @@ def missing_cycles(frames: list[dict], first_cycle: int | None = None) -> list[i
         return []
 
     low = min(present) if first_cycle is None else min(first_cycle, min(present))
-    return sorted(set(range(low, max(present) + 1)) - present)
+    high = max(present) if last_cycle is None else max(last_cycle, max(present))
+    return sorted(set(range(low, high + 1)) - present)
 
 
 def completeness(
-    frames: list[dict], planned: int | None, first_cycle: int | None = None
+    frames: list[dict],
+    planned: int | None,
+    cycle_range: tuple[int, int] | None = None,
 ) -> dict:
     """What arrived, against what was planned. Describes; never refuses.
 
@@ -202,16 +206,21 @@ def completeness(
     both are "not complete", but only the first is a fact about the run.
     """
     present = len(frames)
-    gaps = missing_cycles(frames, first_cycle)
+    first_cycle, last_cycle = cycle_range if cycle_range else (None, None)
+    gaps = missing_cycles(frames, first_cycle, last_cycle)
 
-    if planned is None:
-        state = "unknown"
-        summary = f"{present} frames; the run recorded no planned cycle count"
-    elif gaps:
+    # Gaps first: they are proved by the frames themselves, so a missing plan
+    # cannot unprove them. Reported the other way round, the module found the
+    # holes and then described the run as unknown without naming them.
+    if gaps:
         listed = ", ".join(str(c) for c in gaps[:5])
         more = f" and {len(gaps) - 5} more" if len(gaps) > 5 else ""
+        of_planned = f" of {planned}" if planned is not None else ""
         state = "gaps"
-        summary = f"{present} of {planned} frames; missing cycles {listed}{more}"
+        summary = f"{present}{of_planned} frames; missing cycles {listed}{more}"
+    elif planned is None:
+        state = "unknown"
+        summary = f"{present} frames; the run recorded no planned cycle count"
     elif present < planned:
         # Says what arrived, not why. Frames upload after a run finishes, so a
         # short count during that window is the normal state, not a fault.
@@ -345,9 +354,24 @@ def _object_exists(client, key: str) -> bool | None:
         return True
     except Exception as exc:
         if any(token in str(exc).lower() for token in _NOT_FOUND):
-            return False
+            # A missing bucket answers identically, and renders into a bucket
+            # that cannot take the upload. Only reached when a recorded row's
+            # object is already missing, so the extra call is a rare path.
+            if _bucket_exists(client):
+                return False
+            logger.warning("the %s bucket did not answer", GRAVISCAN_VIDEOS_BUCKET)
+            return None
         logger.warning("could not check for a stored video at %s: %s", key, exc)
         return None
+
+
+def _bucket_exists(client) -> bool:
+    """False when the videos bucket is missing or storage cannot say — both
+    mean this render should not proceed on the answer above."""
+    try:
+        return bool(client.storage.get_bucket(GRAVISCAN_VIDEOS_BUCKET))
+    except Exception:
+        return False
 
 
 # --- what to do about it -----------------------------------------------------
@@ -458,6 +482,6 @@ def plan_render(
     coverage = completeness(
         frames,
         planned_cycles(client, frames),
-        session_first_cycle(client, frames),
+        session_cycle_range(client, frames),
     )
     return {**decision, "frames": frames, "coverage": coverage}
