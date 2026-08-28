@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 #
 # ("Bucket not found" exists, but only on GET /bucket/<id>, which is never
 # called here.) So no wording can separate them, and `_bucket_exists` asks.
+# Only the first token below was measured; the other two are defensive, and an
+# unmatched wording falls through to unknown, which refuses.
 _NOT_FOUND = ("object not found", "no such key", "object does not exist")
 
 # The scan carries the capture time and the plate's identity; the image carries
@@ -45,9 +47,10 @@ _FRAME_SELECT = (
 # multi-day plate — the deadline is what actually bounds a render. Tune on staging.
 MAX_SOURCE_BYTES = 8 * 1024**3
 
-# What a frame that recorded no size is assumed to weigh. Live frames measure
-# 45-64 MB, so this is the middle of the range rather than a guess.
-NOMINAL_FRAME_BYTES = 57 * 1024**2
+# What a frame that recorded no size is assumed to weigh. Measured over
+# gravi_images: 44.5 MB to 64.4 MB, mean 58.8. Set near the mean rather than
+# the midpoint, so substituting it does not bias a plate's total downward.
+NOMINAL_FRAME_BYTES = 59 * 1024**2
 
 
 def get_plate_frames(
@@ -139,11 +142,14 @@ def planned_cycles(client, frames: list[dict]) -> int | None:
         or []
     )
     planned = [r["total_cycles"] for r in rows if r.get("total_cycles") is not None]
-    # A plate scanned across more than one session planned the sum of them.
+    # One session per plate-wave, so this sums a single value. Written as a sum
+    # rather than a lookup so a second session could not silently be dropped.
     return sum(planned) if planned else None
 
 
-def session_cycle_range(client, frames: list[dict]) -> tuple[int, int] | None:
+def session_cycle_range(
+    client, frames: list[dict], experiment_id: int, wave_number: int | None
+) -> tuple[int, int] | None:
     """The lowest and highest cycle number any plate in this run recorded.
 
     Every plate in a run is photographed on every cycle, so a sibling plate's
@@ -154,6 +160,10 @@ def session_cycle_range(client, frames: list[dict]) -> tuple[int, int] | None:
     None when the frames name no session, or no cycle was recorded — both mean
     the range is unknown, and `missing_cycles` then falls back to what arrived.
 
+    Scoped to the same experiment and wave as the frames, not to the session
+    alone: nothing in the schema binds a session to one wave, and a range taken
+    across two would name the other wave's cycles as missing from this plate.
+
     Blind in one case, deliberately: if the run lost the same leading or
     trailing cycles for every plate, the siblings agree and the hole stays
     invisible.
@@ -162,14 +172,18 @@ def session_cycle_range(client, frames: list[dict]) -> tuple[int, int] | None:
     if not session_ids:
         return None
 
-    rows = (
+    query = (
         client.table("gravi_scans")
         .select("cycle_number")
+        .eq("experiment_id", experiment_id)
         .in_("session_id", sorted(session_ids))
-        .execute()
-        .data
-        or []
     )
+    query = (
+        query.is_("wave_number", "null")
+        if wave_number is None
+        else query.eq("wave_number", wave_number)
+    )
+    rows = query.execute().data or []
     cycles = [r["cycle_number"] for r in rows if r.get("cycle_number") is not None]
     return (min(cycles), max(cycles)) if cycles else None
 
@@ -179,7 +193,7 @@ def missing_cycles(
     first_cycle: int | None = None,
     last_cycle: int | None = None,
 ) -> list[int]:
-    """Cycle numbers absent across the run this plate belongs to.
+    """Cycle numbers this plate is missing, against the run it belongs to.
 
     Bounded by its own frames, a plate cannot show a hole at either end: the
     question becomes "are any of my cycles missing?" asked using only the
@@ -405,20 +419,27 @@ def render_decision(frames: list[dict], stored: dict) -> dict:
             key,
         )
 
-    if not available:
-        return _outcome(
-            "refuse", "none of this plate's images have finished uploading yet", key
-        )
-
     if key is None:
         return _outcome(
             "refuse", "this plate's id or wave number cannot be used in a video", key
         )
 
     if state == "absent":
+        if not available:
+            return _outcome(
+                "refuse", "none of this plate's images have finished uploading yet", key
+            )
         return _outcome("render", f"no video stored; encoding {available} frames", key)
 
     recorded = stored["frame_count"]
+
+    if not available:
+        # A video exists and its row says what it covers, so frames certainly
+        # did upload. Seeing none of them now is a read problem — a policy that
+        # hides the scans, or purged rows — not an empty plate. Keeping is the
+        # only answer that does not throw away the video over it.
+        return _outcome("keep", "the stored video is kept; no frames are visible", key)
+
     if recorded is None:
         # Nothing to compare against, and keeping it would never self-correct:
         # with no count, no later request could beat it either. One render
@@ -437,8 +458,18 @@ def render_decision(frames: list[dict], stored: dict) -> dict:
             key,
         )
 
+    if recorded > available:
+        # Rows went away since the render. Keeping is right — a poorer video
+        # is not a repair — but say what happened rather than "86 of 5".
+        return _outcome(
+            "keep",
+            f"the stored video covers {recorded} frames; only {available} are "
+            "in the database now",
+            key,
+        )
+
     return _outcome(
-        "keep", f"the stored video already covers {recorded} of {available} frames", key
+        "keep", f"the stored video already covers all {available} frames", key
     )
 
 
@@ -488,6 +519,6 @@ def plan_render(
     coverage = completeness(
         frames,
         planned_cycles(client, frames),
-        session_cycle_range(client, frames),
+        session_cycle_range(client, frames, experiment_id, wave_number),
     )
     return {**decision, "frames": frames, "coverage": coverage}

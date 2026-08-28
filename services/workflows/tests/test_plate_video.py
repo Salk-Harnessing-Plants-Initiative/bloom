@@ -333,7 +333,7 @@ def _cycles(*numbers, session=7):
 def test_planned_cycles_reads_the_runs_plan():
     client = _Client(gravi_scan_sessions=[{"total_cycles": 200}])
     assert pv.planned_cycles(client, _cycles(1, 2, 3)) == 200
-    assert client.q.recorded == {} or True  # sessions query is a separate table
+    assert client.q.recorded == {}, "the plan comes from the sessions table"
     assert client.tables == ["gravi_scan_sessions"]
 
 
@@ -469,22 +469,41 @@ def test_session_cycle_range_reads_what_any_plate_recorded():
     """Every plate is photographed on every cycle, so a sibling's range is the
     range this plate should have — at both ends."""
     client = _Client(_cycles(1, 2, 3, 4))  # what the run actually recorded
-    assert pv.session_cycle_range(client, _cycles(2, 3)) == (1, 4)
+    assert pv.session_cycle_range(client, _cycles(2, 3), 12, 1) == (1, 4)
 
 
 def test_session_cycle_range_asks_only_for_the_sessions_these_frames_name():
     """Without the filter it takes the range across every scan in the database,
     which is always 1 and silently defeats detection."""
     client = _Client(_cycles(1, 2))
-    pv.session_cycle_range(client, _cycles(1, session=7) + _cycles(2, session=9))
+    pv.session_cycle_range(client, _cycles(1, session=7) + _cycles(2, session=9), 12, 1)
     assert client.q.recorded["in"] == ("session_id", [7, 9])
+
+
+def test_session_cycle_range_is_scoped_to_the_same_experiment_and_wave():
+    """Nothing binds a session to one wave. Unscoped, a range spanning two
+    waves names the other wave's cycles as missing from this plate — the one
+    way this can report a gap that is not real."""
+    client = _Client(_cycles(1, 2))
+    pv.session_cycle_range(client, _cycles(1), 12, 3)
+
+    assert ("experiment_id", 12) in client.q.recorded["eq"]
+    assert ("wave_number", 3) in client.q.recorded["eq"]
+
+
+def test_session_cycle_range_matches_a_wave_less_plate_with_is_null():
+    """`wave_number = NULL` matches nothing, so a plate with no wave would get
+    an empty range and lose detection entirely."""
+    client = _Client(_cycles(1, 2))
+    pv.session_cycle_range(client, _cycles(1), 12, None)
+    assert ("wave_number", "null") in client.q.recorded["is"]
 
 
 def test_session_cycle_range_is_none_when_the_run_is_unknown():
     """No session, or no cycle recorded, means the range cannot be proved —
     and missing_cycles then falls back to what arrived."""
-    assert pv.session_cycle_range(_Client([]), _cycles(1, 2)) is None
-    assert pv.session_cycle_range(_Client([]), [_row(0, "a.tif")]) is None
+    assert pv.session_cycle_range(_Client([]), _cycles(1, 2), 12, 1) is None
+    assert pv.session_cycle_range(_Client([]), [_row(0, "a.tif")], 12, 1) is None
 
 
 def test_a_missing_last_frame_is_found_from_where_the_run_ended():
@@ -500,6 +519,29 @@ def test_a_first_cycle_above_this_plates_own_still_searches_from_the_lowest():
     """The bound is clamped to whichever is lower. Unclamped, a hole below the
     sibling range is missed — here cycle 2 would go unreported."""
     assert pv.missing_cycles(_cycles(1, 5), first_cycle=3) == [2, 3, 4]
+
+
+def test_a_last_cycle_below_this_plates_own_still_searches_to_the_highest():
+    """The upper bound is clamped to whichever is higher. Unclamped, a hole
+    above the sibling range is dropped — here 6, 7 and 8 would go unreported."""
+    assert pv.missing_cycles(_cycles(1, 5, 9), first_cycle=1, last_cycle=3) == [
+        2,
+        3,
+        4,
+        6,
+        7,
+        8,
+    ]
+
+
+def test_a_gap_summary_names_the_planned_total_only_when_there_is_one():
+    """Without the guard the no-plan summary reads "5 of None frames"."""
+    with_plan = pv.completeness(_cycles(1, 4), planned=4, cycle_range=(1, 4))
+    assert with_plan["summary"].startswith("2 of 4 frames;")
+
+    without = pv.completeness(_cycles(1, 4), planned=None, cycle_range=(1, 4))
+    assert without["summary"].startswith("2 frames;")
+    assert "None" not in without["summary"]
 
 
 def test_gaps_are_reported_even_when_the_run_recorded_no_plan():
@@ -749,7 +791,29 @@ def test_nothing_new_means_keep_and_encode_nothing():
 def test_fewer_frames_than_recorded_still_keeps():
     """A count that went down means rows vanished, not that the stored video is
     stale — overwriting it with less would be the wrong repair."""
-    assert pv.render_decision(_cycles(1, 2), _stored(frames=140))["action"] == "keep"
+    d = pv.render_decision(_cycles(1, 2), _stored(frames=140))
+    assert d["action"] == "keep"
+    # Not "covers 140 of 2 frames": the branch is entered when the stored video
+    # covers MORE than exists, so the template read backwards.
+    assert d["reason"] == (
+        "the stored video covers 140 frames; only 2 are in the database now"
+    )
+
+
+def test_a_current_video_says_it_covers_everything_there_is():
+    d = pv.render_decision(_cycles(1, 2), _stored(frames=2))
+    assert d["action"] == "keep"
+    assert d["reason"] == "the stored video already covers all 2 frames"
+
+
+def test_a_stored_video_is_kept_when_no_frames_are_visible():
+    """A video exists and its row says what it covers, so frames did upload.
+    Seeing none now is a read problem — a policy hiding the scans, or purged
+    rows — and refusing would blame the scanner and withhold a real video."""
+    d = pv.render_decision([], _stored(frames=86))
+
+    assert d["action"] == "keep", "refusing throws away a video that exists"
+    assert "no frames are visible" in d["reason"]
 
 
 def test_no_stored_video_means_render():
@@ -774,11 +838,12 @@ def test_storage_that_cannot_answer_refuses_rather_than_rendering():
     assert "try again" in d["reason"]
 
 
-def test_a_plate_with_no_frames_refuses_rather_than_encoding_nothing():
-    assert (
-        pv.render_decision([], _stored(state="absent", frames=None))["action"]
-        == "refuse"
-    )
+def test_a_plate_with_no_frames_and_no_video_refuses():
+    """Only when there is nothing to hand back: with a stored video the same
+    input keeps instead."""
+    d = pv.render_decision([], _stored(state="absent", frames=None))
+    assert d["action"] == "refuse"
+    assert "finished uploading" in d["reason"]
 
 
 def test_an_unusable_object_key_refuses():
@@ -913,8 +978,9 @@ def test_a_plan_reports_a_missing_head_the_plates_own_frames_cannot_show():
     assert plan["coverage"]["missing_cycles"] == list(range(1, 11))
 
 
-def test_keeping_costs_no_session_query():
-    """Nothing reads coverage on the keep path, and it is a second round trip."""
+def test_keeping_costs_no_extra_queries():
+    """Nothing reads coverage on the keep path, and computing it costs two more
+    round trips — the sessions table, and gravi_scans a second time."""
     client = _PlanClient(
         frames=_frames(140), row=_recorded(frames=140), total_cycles=200
     )
