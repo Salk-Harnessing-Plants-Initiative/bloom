@@ -20,7 +20,18 @@ logger = logging.getLogger(__name__)
 
 # Storage answers a missing object with an error rather than an empty result,
 # and with HTTP 400 carrying a string code — so the wording is the real guard.
-_NOT_FOUND = ("not found", "not_found", "does not exist", "no such")
+# Signing an object in a bucket that does not exist answers identically to
+# signing a missing object in a real one. Measured against storage-api on
+# POST /object/sign, which is the call below:
+#
+#   missing object, real bucket -> {"error":"not_found","message":"Object not found"}
+#   bucket does not exist       -> {"error":"not_found","message":"Object not found"}
+#
+# ("Bucket not found" exists, but only on GET /bucket/<id>, which is never
+# called here.) So no wording can separate them, and `_bucket_exists` asks.
+# Only the first token below was measured; the other two are defensive, and an
+# unmatched wording falls through to unknown, which refuses.
+_NOT_FOUND = ("object not found", "no such key", "object does not exist")
 
 # The scan carries the capture time and the plate's identity; the image carries
 # the object to download. `!inner` drops a capture whose image never arrived —
@@ -35,6 +46,11 @@ _FRAME_SELECT = (
 # decoded, so ~86 frames is roughly 5 GB to pull. A coarse backstop against a
 # multi-day plate — the deadline is what actually bounds a render. Tune on staging.
 MAX_SOURCE_BYTES = 8 * 1024**3
+
+# What a frame that recorded no size is assumed to weigh. Measured over
+# gravi_images: 44.5 MB to 64.4 MB, mean 58.8. Set near the mean rather than
+# the midpoint, so substituting it does not bias a plate's total downward.
+NOMINAL_FRAME_BYTES = 59 * 1024**2
 
 
 def get_plate_frames(
@@ -97,7 +113,9 @@ def _capture_datetime(value) -> datetime:
     if isinstance(value, datetime):
         return value
     if not isinstance(value, str):
-        raise TypeError(f"capture_date must be a datetime or an ISO string, got {value!r}")
+        raise TypeError(
+            f"capture_date must be a datetime or an ISO string, got {value!r}"
+        )
     try:
         # 3.11 is the floor, and its fromisoformat takes a Z-terminated offset.
         return datetime.fromisoformat(value)
@@ -124,24 +142,81 @@ def planned_cycles(client, frames: list[dict]) -> int | None:
         or []
     )
     planned = [r["total_cycles"] for r in rows if r.get("total_cycles") is not None]
-    # A plate scanned across more than one session planned the sum of them.
+    # One session per plate-wave, so this sums a single value. Written as a sum
+    # rather than a lookup so a second session could not silently be dropped.
     return sum(planned) if planned else None
 
 
-def missing_cycles(frames: list[dict]) -> list[int]:
-    """Cycle numbers absent between the lowest and highest present.
+def session_cycle_range(
+    client, frames: list[dict], experiment_id: int, wave_number: int | None
+) -> tuple[int, int] | None:
+    """The lowest and highest cycle number any plate in this run recorded.
 
-    Bounded by what arrived rather than by the plan, so it holds whatever the
-    numbering starts at. A run that stopped early has no gap — it has a short
-    tail, which `planned_cycles` is what answers.
+    Every plate in a run is photographed on every cycle, so a sibling plate's
+    range is the range this plate should have. That is what makes a missing
+    first or last frame detectable: bounded by its own frames, a plate cannot
+    show a hole at either end.
+
+    None when the frames name no session, or no cycle was recorded — both mean
+    the range is unknown, and `missing_cycles` then falls back to what arrived.
+
+    Scoped to the same experiment and wave as the frames, not to the session
+    alone: nothing in the schema binds a session to one wave, and a range taken
+    across two would name the other wave's cycles as missing from this plate.
+
+    Blind in one case, deliberately: if the run lost the same leading or
+    trailing cycles for every plate, the siblings agree and the hole stays
+    invisible.
+    """
+    session_ids = {f["session_id"] for f in frames if f["session_id"] is not None}
+    if not session_ids:
+        return None
+
+    query = (
+        client.table("gravi_scans")
+        .select("cycle_number")
+        .eq("experiment_id", experiment_id)
+        .in_("session_id", sorted(session_ids))
+    )
+    query = (
+        query.is_("wave_number", "null")
+        if wave_number is None
+        else query.eq("wave_number", wave_number)
+    )
+    rows = query.execute().data or []
+    cycles = [r["cycle_number"] for r in rows if r.get("cycle_number") is not None]
+    return (min(cycles), max(cycles)) if cycles else None
+
+
+def missing_cycles(
+    frames: list[dict],
+    first_cycle: int | None = None,
+    last_cycle: int | None = None,
+) -> list[int]:
+    """Cycle numbers this plate is missing, against the run it belongs to.
+
+    Bounded by its own frames, a plate cannot show a hole at either end: the
+    question becomes "are any of my cycles missing?" asked using only the
+    cycles it has. `session_cycle_range` supplies the bounds a sibling plate
+    proves, so a lost head or tail is visible.
+
+    A plate is scanned once per wave, so cycle numbers are unique within a
+    frame set and can be compared directly.
     """
     present = {f["cycle_number"] for f in frames if f["cycle_number"] is not None}
-    if len(present) < 2:
+    if not present:
         return []
-    return sorted(set(range(min(present), max(present) + 1)) - present)
+
+    low = min(present) if first_cycle is None else min(first_cycle, min(present))
+    high = max(present) if last_cycle is None else max(last_cycle, max(present))
+    return sorted(set(range(low, high + 1)) - present)
 
 
-def completeness(frames: list[dict], planned: int | None) -> dict:
+def completeness(
+    frames: list[dict],
+    planned: int | None,
+    cycle_range: tuple[int, int] | None = None,
+) -> dict:
     """What arrived, against what was planned. Describes; never refuses.
 
     A short run still renders — the video is real, just shorter than intended.
@@ -151,19 +226,26 @@ def completeness(frames: list[dict], planned: int | None) -> dict:
     both are "not complete", but only the first is a fact about the run.
     """
     present = len(frames)
-    gaps = missing_cycles(frames)
+    first_cycle, last_cycle = cycle_range if cycle_range else (None, None)
+    gaps = missing_cycles(frames, first_cycle, last_cycle)
 
-    if planned is None:
-        state = "unknown"
-        summary = f"{present} frames; the run recorded no planned cycle count"
-    elif gaps:
+    # Gaps first: they are proved by the frames themselves, so a missing plan
+    # cannot unprove them. Reported the other way round, the module found the
+    # holes and then described the run as unknown without naming them.
+    if gaps:
         listed = ", ".join(str(c) for c in gaps[:5])
         more = f" and {len(gaps) - 5} more" if len(gaps) > 5 else ""
+        of_planned = f" of {planned}" if planned is not None else ""
         state = "gaps"
-        summary = f"{present} of {planned} frames; missing cycles {listed}{more}"
+        summary = f"{present}{of_planned} frames; missing cycles {listed}{more}"
+    elif planned is None:
+        state = "unknown"
+        summary = f"{present} frames; the run recorded no planned cycle count"
     elif present < planned:
+        # Says what arrived, not why. Frames upload after a run finishes, so a
+        # short count during that window is the normal state, not a fault.
         state = "short"
-        summary = f"{present} of {planned} frames; the run stopped early"
+        summary = f"{present} of {planned} frames so far"
     else:
         # A run commonly outlasts its planned cycle count, so the plan is a
         # floor rather than a target. Say the real number either way.
@@ -191,21 +273,35 @@ def source_bytes(frames: list[dict]) -> tuple[int, int]:
     return sum(known), len(frames) - len(known)
 
 
-def too_large_to_render(frames: list[dict], limit: int = MAX_SOURCE_BYTES) -> str | None:
+def too_large_to_render(
+    frames: list[dict], limit: int = MAX_SOURCE_BYTES
+) -> str | None:
     """Why this plate cannot be rendered in a request, or None.
 
     Checked before anything is downloaded: the render is synchronous behind a
     240s proxy timeout, and a long plate is tens of gigabytes. The deadline
     would stop it eventually — this stops it in a millisecond, with a reason.
+
+    A frame that recorded no size is estimated rather than counted as zero,
+    from this plate's own frames where it can be. Reading a missing size as
+    nothing lets a plate of any size past the guard.
     """
     total, unknown = source_bytes(frames)
+    counted = len(frames) - unknown
+
+    if unknown:
+        per_frame = total // counted if counted else NOMINAL_FRAME_BYTES
+        total += unknown * per_frame
+
     if total <= limit:
         return None
 
-    counted = f"{len(frames) - unknown} of {len(frames)} frames"
+    measured = (
+        f"{counted} of {len(frames)} frames" if unknown else f"all {len(frames)} frames"
+    )
     return (
-        f"this plate is at least {total / 1024**3:.1f} GB across {counted}, "
-        f"over the {limit / 1024**3:.0f} GB a single render may pull"
+        f"this plate is about {total / 1024**3:.1f} GB, measured across "
+        f"{measured}, over the {limit / 1024**3:.0f} GB a single render may pull"
     )
 
 
@@ -222,7 +318,9 @@ def first_capture(frames: list[dict]) -> datetime | None:
 # --- what is already stored --------------------------------------------------
 
 
-def stored_video(client, experiment_id: int, plate_id: str, wave_number: int | None) -> dict:
+def stored_video(
+    client, experiment_id: int, plate_id: str, wave_number: int | None
+) -> dict:
     """What this plate already has: `present`, `absent`, or `unknown`.
 
     `unknown` is neither, and must not collapse into either. Read as absent, a
@@ -276,9 +374,24 @@ def _object_exists(client, key: str) -> bool | None:
         return True
     except Exception as exc:
         if any(token in str(exc).lower() for token in _NOT_FOUND):
-            return False
+            # A missing bucket answers identically, and renders into a bucket
+            # that cannot take the upload. Only reached when a recorded row's
+            # object is already missing, so the extra call is a rare path.
+            if _bucket_exists(client):
+                return False
+            logger.warning("the %s bucket did not answer", GRAVISCAN_VIDEOS_BUCKET)
+            return None
         logger.warning("could not check for a stored video at %s: %s", key, exc)
         return None
+
+
+def _bucket_exists(client) -> bool:
+    """False when the videos bucket is missing or storage cannot say — both
+    mean this render should not proceed on the answer above."""
+    try:
+        return bool(client.storage.get_bucket(GRAVISCAN_VIDEOS_BUCKET))
+    except Exception:
+        return False
 
 
 # --- what to do about it -----------------------------------------------------
@@ -287,38 +400,55 @@ def _object_exists(client, key: str) -> bool | None:
 def render_decision(frames: list[dict], stored: dict) -> dict:
     """Whether to render this plate, hand back what is stored, or refuse.
 
-    A plate keeps gaining captures, so a stored video is usually not wrong —
-    just short. The recorded count is what tells those apart, and every branch
-    here turns on having one.
+    Frames upload from the scanner after the run finishes, so a video rendered
+    before that upload completed is short rather than wrong. The recorded count
+    is what tells those apart, and every branch here turns on having one.
     """
     available = len(frames)
     state = stored["state"]
     key = stored["key"]
 
     if state == "unknown":
+        # Says what to do, not what broke: nothing here is the scientist's to
+        # fix, and rendering on an answer we do not trust could replace a good
+        # video with a worse one.
         return _outcome(
             "refuse",
-            "storage could not say whether a video is already stored; "
-            "changing nothing rather than overwriting one",
+            "this video cannot be made right now — storage did not answer. "
+            "Nothing has been changed; try again in a few minutes",
             key,
         )
 
-    if not available:
-        return _outcome("refuse", "this plate has no captures with an image", key)
-
     if key is None:
-        return _outcome("refuse", "this plate's video has no usable object key", key)
+        return _outcome(
+            "refuse", "this plate's id or wave number cannot be used in a video", key
+        )
 
     if state == "absent":
+        if not available:
+            return _outcome(
+                "refuse", "none of this plate's images have finished uploading yet", key
+            )
         return _outcome("render", f"no video stored; encoding {available} frames", key)
 
     recorded = stored["frame_count"]
+
+    if not available:
+        # A video exists and its row says what it covers, so frames certainly
+        # did upload. Seeing none of them now is a read problem — a policy that
+        # hides the scans, or purged rows — not an empty plate. Keeping is the
+        # only answer that does not throw away the video over it.
+        return _outcome("keep", "the stored video is kept; no frames are visible", key)
+
     if recorded is None:
         # Nothing to compare against, and keeping it would never self-correct:
         # with no count, no later request could beat it either. One render
         # replaces it with a video whose coverage is recorded.
         return _outcome(
-            "render", "the stored video records no frame count; encoding to replace it", key
+            "render",
+            "the stored video does not say how much of the run it covers; "
+            "rebuilding it",
+            key,
         )
 
     if available > recorded:
@@ -328,8 +458,18 @@ def render_decision(frames: list[dict], stored: dict) -> dict:
             key,
         )
 
+    if recorded > available:
+        # Rows went away since the render. Keeping is right — a poorer video
+        # is not a repair — but say what happened rather than "86 of 5".
+        return _outcome(
+            "keep",
+            f"the stored video covers {recorded} frames; only {available} are "
+            "in the database now",
+            key,
+        )
+
     return _outcome(
-        "keep", f"the stored video already covers {recorded} of {available} frames", key
+        "keep", f"the stored video already covers all {available} frames", key
     )
 
 
@@ -348,10 +488,16 @@ def plan_render(
     `client` is an argument rather than a module global so a worker can call
     this later without a refactor.
 
-    The size check applies to the decision, not the request: a plate too large
-    to encode still has its stored video handed back. Coverage is only computed
-    when something will be rendered — on the keep path nothing reads it, and it
-    costs a second query.
+    The size check runs only when something would be rendered, so a plate whose
+    stored video is already current is handed it back without being measured.
+    A plate that is both stale and too large refuses rather than serving the
+    older video — no run can reach that size today (a full 10-hour plate is
+    ~86 frames and under 5 GB, against an 8 GB limit), so it is left as the
+    simpler behaviour rather than a branch nothing exercises.
+
+    Coverage is only computed when something will be rendered — on the keep
+    path nothing reads it, and it costs a second query. #756 covers the case
+    that makes visible.
     """
     frames = get_plate_frames(client, experiment_id, plate_id, wave_number)
     stored = stored_video(client, experiment_id, plate_id, wave_number)
@@ -370,5 +516,9 @@ def plan_render(
             "coverage": None,
         }
 
-    coverage = completeness(frames, planned_cycles(client, frames))
+    coverage = completeness(
+        frames,
+        planned_cycles(client, frames),
+        session_cycle_range(client, frames, experiment_id, wave_number),
+    )
     return {**decision, "frames": frames, "coverage": coverage}

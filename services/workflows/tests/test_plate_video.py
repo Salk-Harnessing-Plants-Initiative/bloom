@@ -20,8 +20,10 @@ T0 = datetime(2026, 8, 25, 9, 15, tzinfo=timezone.utc)
 class _Query:
     """Records what was asked for, so a test can assert the query's shape."""
 
-    def __init__(self, rows):
+    def __init__(self, rows, then=None):
         self._rows = rows
+        self._then = then
+        self.calls = 0
         self.recorded: dict = {}
 
     def select(self, columns):
@@ -55,16 +57,19 @@ class _Query:
         return self
 
     def execute(self):
-        return type("_R", (), {"data": self._rows})()
+        self.calls += 1
+        rows = self._then if self.calls > 1 and self._then is not None else self._rows
+        return type("_R", (), {"data": rows})()
 
 
 class _Client:
     """One canned result per table, so a test can drive both queries."""
 
     def __init__(self, rows=None, **by_table):
-        self.queries = {"gravi_scans": _Query(rows or []), **{
-            t: _Query(r) for t, r in by_table.items()
-        }}
+        self.queries = {
+            "gravi_scans": _Query(rows or []),
+            **{t: _Query(r) for t, r in by_table.items()},
+        }
         self.tables: list[str] = []
 
     @property
@@ -188,7 +193,9 @@ class TestCaptureDateArrivesAsAString:
         """Postgres can end an offset with Z; fromisoformat rejected it before 3.11."""
         client = _Client([{**_row(0, "a.tif"), "capture_date": "2026-05-29T11:00:00Z"}])
         frames = pv.get_plate_frames(client, 12, "P7", 1)
-        assert frames[0]["capture_date"] == datetime(2026, 5, 29, 11, 0, tzinfo=timezone.utc)
+        assert frames[0]["capture_date"] == datetime(
+            2026, 5, 29, 11, 0, tzinfo=timezone.utc
+        )
 
     def test_a_naive_stamp_stays_naive(self):
         """Not repaired here. `label_for` refuses a naive time rather than guess a
@@ -236,8 +243,12 @@ GB = 1024**3
 def _sized(*sizes):
     """One frame per size; None means the row did not record one."""
     return [
-        {"capture_date": T0, "cycle_number": i, "object_path": f"{i}.tif",
-         "file_size_bytes": size}
+        {
+            "capture_date": T0,
+            "cycle_number": i,
+            "object_path": f"{i}.tif",
+            "file_size_bytes": size,
+        }
         for i, size in enumerate(sizes)
     ]
 
@@ -268,10 +279,12 @@ def test_a_multi_day_plate_is_refused():
 
 
 def test_the_refusal_says_how_big_and_how_much_was_measured():
-    """A scientist reading this in a log needs the number, and needs to know it
-    is a floor when some rows recorded no size."""
+    """A scientist reading this in a log needs the number, and needs to know
+    how much of it was measured rather than estimated."""
     reason = pv.too_large_to_render(_sized(*([5 * GB] * 2 + [None])))
-    assert "10.0 GB" in reason
+    assert "15.0 GB" in reason, (
+        "the unsized frame is estimated at the plate's own average"
+    )
     assert "2 of 3 frames" in reason
 
 
@@ -282,10 +295,20 @@ def test_exactly_at_the_limit_is_allowed():
     assert pv.too_large_to_render(_sized(pv.MAX_SOURCE_BYTES + 1)) is not None
 
 
-def test_frames_with_no_recorded_size_cannot_trip_the_limit_alone():
-    """Nulls sum to nothing, so a plate whose sizes were never recorded is
-    allowed through rather than refused on a number nobody measured."""
-    assert pv.too_large_to_render(_sized(*([None] * 10_000))) is None
+def test_frames_with_no_recorded_size_are_estimated_not_counted_as_zero():
+    """4.9% of live rows have no size and nothing backfills it. Reading a
+    missing size as nothing lets a plate of any size past the guard."""
+    assert pv.too_large_to_render(_sized(*([None] * 10_000))) is not None
+
+    # Under the limit once estimated, so the estimate is a size and not a veto.
+    assert pv.too_large_to_render(_sized(*([None] * 10))) is None
+
+
+def test_an_unsized_frame_is_estimated_from_the_plates_own_frames():
+    """A nominal size is the fallback, not the first answer: a plate that
+    recorded most of its sizes knows better than the constant does."""
+    # Two frames at 5 GB, one unsized -> the unsized one is worth 5 GB too.
+    assert "15.0 GB" in pv.too_large_to_render(_sized(*([5 * GB] * 2 + [None])))
 
 
 def test_the_size_is_fetched_with_the_frames_not_in_a_second_query():
@@ -302,13 +325,15 @@ def test_the_size_is_fetched_with_the_frames_not_in_a_second_query():
 
 
 def _cycles(*numbers, session=7):
-    return [_row(i, f"{n}.tif", cycle=n, session=session) for i, n in enumerate(numbers)]
+    return [
+        _row(i, f"{n}.tif", cycle=n, session=session) for i, n in enumerate(numbers)
+    ]
 
 
 def test_planned_cycles_reads_the_runs_plan():
     client = _Client(gravi_scan_sessions=[{"total_cycles": 200}])
     assert pv.planned_cycles(client, _cycles(1, 2, 3)) == 200
-    assert client.q.recorded == {} or True  # sessions query is a separate table
+    assert client.q.recorded == {}, "the plan comes from the sessions table"
     assert client.tables == ["gravi_scan_sessions"]
 
 
@@ -412,10 +437,131 @@ def test_a_run_with_no_plan_is_unknown_not_short():
     assert "recorded no planned cycle count" in result["summary"]
 
 
-def test_a_run_that_stopped_early_says_so():
+def test_a_short_count_says_what_arrived_without_blaming_the_run():
+    """Frames upload after a run finishes, so a short count during that window
+    is the normal state — not evidence the run stopped early."""
     result = pv.completeness(_cycles(1, 2, 3), planned=200)
     assert result["state"] == "short"
-    assert result["summary"] == "3 of 200 frames; the run stopped early"
+    assert result["summary"] == "3 of 200 frames so far"
+
+
+def test_a_missing_first_frame_is_found_from_where_the_run_started():
+    """This plate has cycles 11-86; a sibling plate proves the run began at 1.
+    Without that bound the search starts at 11 and the hole is invisible."""
+    frames = _cycles(*range(11, 87))
+
+    assert pv.missing_cycles(frames) == [], "its own frames cannot show it"
+    assert pv.missing_cycles(frames, first_cycle=1) == list(range(1, 11))
+
+
+def test_one_frame_left_of_a_run_still_reports_the_hole():
+    """The old bound gave up below two cycles, so a run reduced to its last
+    frame reported nothing missing."""
+    assert pv.missing_cycles(_cycles(86), first_cycle=1) == list(range(1, 86))
+
+
+def test_a_run_whose_first_frame_arrived_reports_no_hole():
+    """The bound must not invent a gap when nothing is missing."""
+    assert pv.missing_cycles(_cycles(1, 2, 3), first_cycle=1) == []
+
+
+def test_session_cycle_range_reads_what_any_plate_recorded():
+    """Every plate is photographed on every cycle, so a sibling's range is the
+    range this plate should have — at both ends."""
+    client = _Client(_cycles(1, 2, 3, 4))  # what the run actually recorded
+    assert pv.session_cycle_range(client, _cycles(2, 3), 12, 1) == (1, 4)
+
+
+def test_session_cycle_range_asks_only_for_the_sessions_these_frames_name():
+    """Without the filter it takes the range across every scan in the database,
+    which is always 1 and silently defeats detection."""
+    client = _Client(_cycles(1, 2))
+    pv.session_cycle_range(client, _cycles(1, session=7) + _cycles(2, session=9), 12, 1)
+    assert client.q.recorded["in"] == ("session_id", [7, 9])
+
+
+def test_session_cycle_range_is_scoped_to_the_same_experiment_and_wave():
+    """Nothing binds a session to one wave. Unscoped, a range spanning two
+    waves names the other wave's cycles as missing from this plate — the one
+    way this can report a gap that is not real."""
+    client = _Client(_cycles(1, 2))
+    pv.session_cycle_range(client, _cycles(1), 12, 3)
+
+    assert ("experiment_id", 12) in client.q.recorded["eq"]
+    assert ("wave_number", 3) in client.q.recorded["eq"]
+
+
+def test_session_cycle_range_matches_a_wave_less_plate_with_is_null():
+    """`wave_number = NULL` matches nothing, so a plate with no wave would get
+    an empty range and lose detection entirely."""
+    client = _Client(_cycles(1, 2))
+    pv.session_cycle_range(client, _cycles(1), 12, None)
+    assert ("wave_number", "null") in client.q.recorded["is"]
+
+
+def test_session_cycle_range_is_none_when_the_run_is_unknown():
+    """No session, or no cycle recorded, means the range cannot be proved —
+    and missing_cycles then falls back to what arrived."""
+    assert pv.session_cycle_range(_Client([]), _cycles(1, 2), 12, 1) is None
+    assert pv.session_cycle_range(_Client([]), [_row(0, "a.tif")], 12, 1) is None
+
+
+def test_a_missing_last_frame_is_found_from_where_the_run_ended():
+    """Bounded by its own frames a plate cannot show a lost tail either: 1-10
+    of a run that reached 12 looked complete."""
+    frames = _cycles(*range(1, 11))
+
+    assert pv.missing_cycles(frames) == [], "its own frames cannot show it"
+    assert pv.missing_cycles(frames, first_cycle=1, last_cycle=12) == [11, 12]
+
+
+def test_a_first_cycle_above_this_plates_own_still_searches_from_the_lowest():
+    """The bound is clamped to whichever is lower. Unclamped, a hole below the
+    sibling range is missed — here cycle 2 would go unreported."""
+    assert pv.missing_cycles(_cycles(1, 5), first_cycle=3) == [2, 3, 4]
+
+
+def test_a_last_cycle_below_this_plates_own_still_searches_to_the_highest():
+    """The upper bound is clamped to whichever is higher. Unclamped, a hole
+    above the sibling range is dropped — here 6, 7 and 8 would go unreported."""
+    assert pv.missing_cycles(_cycles(1, 5, 9), first_cycle=1, last_cycle=3) == [
+        2,
+        3,
+        4,
+        6,
+        7,
+        8,
+    ]
+
+
+def test_a_gap_summary_names_the_planned_total_only_when_there_is_one():
+    """Without the guard the no-plan summary reads "5 of None frames"."""
+    with_plan = pv.completeness(_cycles(1, 4), planned=4, cycle_range=(1, 4))
+    assert with_plan["summary"].startswith("2 of 4 frames;")
+
+    without = pv.completeness(_cycles(1, 4), planned=None, cycle_range=(1, 4))
+    assert without["summary"].startswith("2 frames;")
+    assert "None" not in without["summary"]
+
+
+def test_gaps_are_reported_even_when_the_run_recorded_no_plan():
+    """The frames prove the hole; a missing plan cannot unprove it. Reported
+    the other way round, the module found 4-7 and called the run unknown."""
+    result = pv.completeness(_cycles(1, 2, 3, 8, 9), planned=None, cycle_range=(1, 9))
+
+    assert result["missing_cycles"] == [4, 5, 6, 7]
+    assert result["state"] == "gaps"
+    assert "missing cycles 4, 5, 6, 7" in result["summary"]
+
+
+def test_a_missing_head_is_reported_as_gaps_not_as_a_short_run():
+    """The failure this fixes: 76 of 86 frames with the first 10 missing used
+    to read as no gaps, and the shortfall was blamed on the run stopping."""
+    frames = _cycles(*range(11, 87))
+    result = pv.completeness(frames, planned=86, cycle_range=(1, 86))
+
+    assert result["state"] == "gaps"
+    assert "missing cycles 1, 2, 3, 4, 5 and 5 more" in result["summary"]
 
 
 def test_gaps_are_named_in_the_summary():
@@ -470,22 +616,32 @@ class _Bucket:
 
 
 class _Storage:
-    def __init__(self, bucket):
+    def __init__(self, bucket, bucket_exists=True):
         self._bucket = bucket
+        self._bucket_exists = bucket_exists
         self.buckets: list[str] = []
+        self.probed: list[str] = []
 
     def from_(self, name):
         self.buckets.append(name)
         return self._bucket
 
+    def get_bucket(self, name):
+        """Storage signs a missing object and a missing bucket identically, so
+        this is what separates them."""
+        self.probed.append(name)
+        if not self._bucket_exists:
+            raise Exception("Bucket not found")
+        return {"name": name}
+
 
 class _StoredClient(_Client):
     """A recorded video row, plus a storage bucket that answers or does not."""
 
-    def __init__(self, row=None, raises=None):
+    def __init__(self, row=None, raises=None, bucket_exists=True):
         super().__init__(gravi_plate_videos=[row] if row else [])
         self.bucket = _Bucket(raises)
-        self.storage = _Storage(self.bucket)
+        self.storage = _Storage(self.bucket, bucket_exists=bucket_exists)
 
 
 def _recorded(frames=140, path="12/wave-1/P7.mp4"):
@@ -525,12 +681,46 @@ def test_storage_failing_to_answer_is_unknown_not_absent():
 
 @pytest.mark.parametrize(
     "message",
-    ["Object not found", "not_found", "The resource does not exist", "no such key"],
+    [
+        # The shape storage3 actually raises: the error code and the message
+        # both appear, and only the message says what was missing.
+        "{'statusCode': 404, 'error': not_found, 'message': Object not found}",
+        "Object not found",
+        "no such key",
+        "Object does not exist",
+    ],
 )
-def test_every_wording_storage_uses_for_missing_reads_as_absent(message):
+def test_every_wording_storage_uses_for_a_missing_object_reads_as_absent(message):
     """Storage answers a missing object with HTTP 400 and a string code, so the
     wording is the guard — a status check would read missing as unknown."""
     client = _StoredClient(_recorded(), raises=Exception(message))
+    assert pv.stored_video(client, 12, "P7", 1)["state"] == "absent"
+
+
+def test_a_missing_bucket_is_unknown_not_absent():
+    """Signing an object in a bucket that does not exist returns the SAME
+    "Object not found" as a missing object in a real one — verified against
+    storage-api. So the wording cannot separate them; the bucket is probed."""
+    client = _StoredClient(
+        _recorded(),
+        raises=Exception(
+            "{'statusCode': 404, 'error': not_found, 'message': Object not found}"
+        ),
+        bucket_exists=False,
+    )
+    assert pv.stored_video(client, 12, "P7", 1)["state"] == "unknown"
+    assert client.storage.probed == ["graviscan-videos"]
+
+
+def test_a_missing_object_in_a_real_bucket_is_absent():
+    """The same error text, the opposite answer — the bucket is what differs."""
+    client = _StoredClient(
+        _recorded(),
+        raises=Exception(
+            "{'statusCode': 404, 'error': not_found, 'message': Object not found}"
+        ),
+        bucket_exists=True,
+    )
     assert pv.stored_video(client, 12, "P7", 1)["state"] == "absent"
 
 
@@ -551,7 +741,7 @@ def test_the_probe_looks_in_the_videos_bucket():
     assert client.storage.buckets == ["graviscan-videos"]
 
 
-def test_a_plate_with_no_wave_is_matched_with_is_null():
+def test_a_stored_video_with_no_wave_is_matched_with_is_null():
     """`wave_number = NULL` matches nothing, so the row would be missed and a
     stored video re-rendered on every request."""
     client = _StoredClient(_recorded(path="12/wave-none/P7.mp4"))
@@ -567,13 +757,18 @@ def test_the_row_is_read_from_gravi_plate_videos_by_all_three_keys():
     pv.stored_video(client, 12, "P7", 3)
 
     recorded = client.queries["gravi_plate_videos"].recorded
-    assert set(recorded["eq"]) == {("experiment_id", 12), ("plate_id", "P7"), ("wave_number", 3)}
+    assert set(recorded["eq"]) == {
+        ("experiment_id", 12),
+        ("plate_id", "P7"),
+        ("wave_number", 3),
+    }
 
 
 # --- what to do about it -----------------------------------------------------
 #
-# A plate keeps gaining captures, so a stored video is usually not wrong, just
-# short. Every branch turns on having a recorded count to compare against.
+# Frames upload from the scanner after the run finishes, so a video rendered
+# before that upload completed is short rather than wrong. Every branch turns on
+# having a recorded count to compare against.
 
 
 def _stored(state="present", frames=140, key="12/wave-1/P7.mp4"):
@@ -596,7 +791,29 @@ def test_nothing_new_means_keep_and_encode_nothing():
 def test_fewer_frames_than_recorded_still_keeps():
     """A count that went down means rows vanished, not that the stored video is
     stale — overwriting it with less would be the wrong repair."""
-    assert pv.render_decision(_cycles(1, 2), _stored(frames=140))["action"] == "keep"
+    d = pv.render_decision(_cycles(1, 2), _stored(frames=140))
+    assert d["action"] == "keep"
+    # Not "covers 140 of 2 frames": the branch is entered when the stored video
+    # covers MORE than exists, so the template read backwards.
+    assert d["reason"] == (
+        "the stored video covers 140 frames; only 2 are in the database now"
+    )
+
+
+def test_a_current_video_says_it_covers_everything_there_is():
+    d = pv.render_decision(_cycles(1, 2), _stored(frames=2))
+    assert d["action"] == "keep"
+    assert d["reason"] == "the stored video already covers all 2 frames"
+
+
+def test_a_stored_video_is_kept_when_no_frames_are_visible():
+    """A video exists and its row says what it covers, so frames did upload.
+    Seeing none now is a read problem — a policy hiding the scans, or purged
+    rows — and refusing would blame the scanner and withhold a real video."""
+    d = pv.render_decision([], _stored(frames=86))
+
+    assert d["action"] == "keep", "refusing throws away a video that exists"
+    assert "no frames are visible" in d["reason"]
 
 
 def test_no_stored_video_means_render():
@@ -610,7 +827,7 @@ def test_a_stored_video_with_no_recorded_count_is_replaced():
     could beat it either, so the plate would be stuck on it forever."""
     d = pv.render_decision(_cycles(1, 2, 3), _stored(frames=None))
     assert d["action"] == "render"
-    assert "records no frame count" in d["reason"]
+    assert "does not say how much of the run" in d["reason"]
 
 
 def test_storage_that_cannot_answer_refuses_rather_than_rendering():
@@ -618,17 +835,23 @@ def test_storage_that_cannot_answer_refuses_rather_than_rendering():
     the key is deterministic — during the outage that made the answer unclear."""
     d = pv.render_decision(_cycles(*range(200)), _stored(state="unknown"))
     assert d["action"] == "refuse"
-    assert "could not say" in d["reason"]
+    assert "try again" in d["reason"]
 
 
-def test_a_plate_with_no_frames_refuses_rather_than_encoding_nothing():
-    assert pv.render_decision([], _stored(state="absent", frames=None))["action"] == "refuse"
+def test_a_plate_with_no_frames_and_no_video_refuses():
+    """Only when there is nothing to hand back: with a stored video the same
+    input keeps instead."""
+    d = pv.render_decision([], _stored(state="absent", frames=None))
+    assert d["action"] == "refuse"
+    assert "finished uploading" in d["reason"]
 
 
 def test_an_unusable_object_key_refuses():
     """`plate_video_path` returns None for a plate id it will not put in a key;
     rendering would have nowhere to upload."""
-    d = pv.render_decision(_cycles(1, 2), _stored(state="absent", frames=None, key=None))
+    d = pv.render_decision(
+        _cycles(1, 2), _stored(state="absent", frames=None, key=None)
+    )
     assert d["action"] == "refuse"
 
 
@@ -636,11 +859,15 @@ def test_an_unknown_state_refuses_even_when_frames_are_missing():
     """Ordering: an unclear answer about the stored video outranks every other
     reason to act, because acting is what cannot be undone."""
     assert pv.render_decision([], _stored(state="unknown"))["action"] == "refuse"
-    assert "could not say" in pv.render_decision([], _stored(state="unknown"))["reason"]
+    assert "try again" in pv.render_decision([], _stored(state="unknown"))["reason"]
 
 
 def test_every_outcome_carries_the_key_it_decided_about():
-    for stored in (_stored(), _stored(state="absent", frames=None), _stored(state="unknown")):
+    for stored in (
+        _stored(),
+        _stored(state="absent", frames=None),
+        _stored(state="unknown"),
+    ):
         assert pv.render_decision(_cycles(1, 2), stored)["key"] == "12/wave-1/P7.mp4"
 
 
@@ -657,16 +884,27 @@ def test_the_action_is_always_one_of_three(state):
 class _PlanClient(_StoredClient):
     """Frames, a recorded video row, a session, and a storage bucket."""
 
-    def __init__(self, frames=None, row=None, raises=None, total_cycles=None):
+    def __init__(
+        self, frames=None, row=None, raises=None, total_cycles=None, session_cycles=None
+    ):
         super().__init__(row=row, raises=raises)
-        self.queries["gravi_scans"] = _Query(frames or [])
+        # get_plate_frames and session_cycle_range both read gravi_scans; the
+        # second sees the whole run, so it has to answer differently.
+        self.queries["gravi_scans"] = _Query(frames or [], then=session_cycles)
         self.queries["gravi_scan_sessions"] = _Query(
             [{"total_cycles": total_cycles}] if total_cycles is not None else []
         )
 
 
-def _frames(n, session=7):
-    return [_row(i, f"{i}.tif", cycle=i, session=session) for i in range(n)]
+def _frames(n, session=7, size=1 * MB, cycle_start=0):
+    """Sized by default: an unsized fixture trips the size guard once unknown
+    frames are estimated, which is not what these tests are about."""
+    rows = [
+        _row(i, f"{i}.tif", cycle=cycle_start + i, session=session) for i in range(n)
+    ]
+    for r in rows:
+        r["gravi_images"]["file_size_bytes"] = size
+    return rows
 
 
 def _big(n):
@@ -711,20 +949,41 @@ def test_plan_refuses_when_storage_cannot_say():
     plan = pv.plan_render(client, 12, "P7", 1)
 
     assert plan["action"] == "refuse"
-    assert "could not say" in plan["reason"]
+    assert "try again" in plan["reason"]
 
 
 def test_coverage_is_reported_when_something_will_be_rendered():
-    client = _PlanClient(frames=_frames(200), row=_recorded(frames=140), total_cycles=500)
+    client = _PlanClient(
+        frames=_frames(200), row=_recorded(frames=140), total_cycles=500
+    )
     plan = pv.plan_render(client, 12, "P7", 1)
 
     assert plan["action"] == "render"
-    assert plan["coverage"]["summary"] == "200 of 500 frames; the run stopped early"
+    assert plan["coverage"]["summary"] == "200 of 500 frames so far"
 
 
-def test_keeping_costs_no_session_query():
-    """Nothing reads coverage on the keep path, and it is a second round trip."""
-    client = _PlanClient(frames=_frames(140), row=_recorded(frames=140), total_cycles=200)
+def test_a_plan_reports_a_missing_head_the_plates_own_frames_cannot_show():
+    """End to end: get_plate_frames sees cycles 11-20, the session says the run
+    ran 1-20, and the plan names the ten frames that never arrived."""
+    client = _PlanClient(
+        frames=_frames(10, cycle_start=11),
+        row=_recorded(frames=5),
+        total_cycles=20,
+        session_cycles=_cycles(*range(1, 21)),
+    )
+    plan = pv.plan_render(client, 12, "P7", 1)
+
+    assert plan["action"] == "render"
+    assert plan["coverage"]["state"] == "gaps"
+    assert plan["coverage"]["missing_cycles"] == list(range(1, 11))
+
+
+def test_keeping_costs_no_extra_queries():
+    """Nothing reads coverage on the keep path, and computing it costs two more
+    round trips — the sessions table, and gravi_scans a second time."""
+    client = _PlanClient(
+        frames=_frames(140), row=_recorded(frames=140), total_cycles=200
+    )
     plan = pv.plan_render(client, 12, "P7", 1)
 
     assert plan["action"] == "keep"
