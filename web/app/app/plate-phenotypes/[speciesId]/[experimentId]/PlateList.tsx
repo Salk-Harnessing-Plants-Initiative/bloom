@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { PlateImage } from "@/components/recent-phenotypes-by-plate-scanner/PlateImage";
+import { withShortTimeZoneName } from "@/components/recent-phenotypes-by-plate-scanner/format-times";
 import type { PlateGroup } from "./plateGrouping";
 
 export function PlateList({
@@ -107,11 +108,14 @@ export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return d.toLocaleString(
+    undefined,
+    withShortTimeZoneName({
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }),
+  );
 }

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { withShortTimeZoneName } from "@/components/recent-phenotypes-by-plate-scanner/format-times";
 
 export function capitalizeFirstLetter(s: string) {
   return s.charAt(0).toUpperCase() + s.slice(1);
@@ -71,7 +72,7 @@ function formatDate(
 ): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString(undefined, opts);
+  return d.toLocaleDateString(undefined, withShortTimeZoneName(opts));
 }
 
 // "Scanned May 5, 2026" for a single day, "May 1 – May 8, 2026" for a range

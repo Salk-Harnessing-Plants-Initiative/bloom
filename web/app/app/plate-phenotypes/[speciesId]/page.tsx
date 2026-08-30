@@ -4,6 +4,7 @@ import {
   createServerSupabaseClient,
   getUser,
 } from "@/lib/supabase/server";
+import { withShortTimeZoneName } from "@/components/recent-phenotypes-by-plate-scanner/format-times";
 import Mixpanel from "mixpanel";
 
 interface SessionRow {
@@ -220,11 +221,14 @@ function formatDate(iso: string | null | undefined): string | null {
   if (!iso) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  return d.toLocaleDateString(
+    undefined,
+    withShortTimeZoneName({
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    }),
+  );
 }
 
 function formatDuration(seconds: number | null): string | null {
