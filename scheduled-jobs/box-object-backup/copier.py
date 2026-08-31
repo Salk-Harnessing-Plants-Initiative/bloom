@@ -35,8 +35,13 @@ def copy_all(
     box_root: str,
     ledger: Ledger,
     workers: int,
+    failures: list[str] | None = None,
 ) -> tuple[int, int]:
-    """Copy every planned object, N at a time, recording each success."""
+    """Copy every planned object, N at a time, recording each success.
+
+    `failures`, when given, collects the storage path of every object that
+    failed, so the run report can name them rather than only count them.
+    """
     src_fs = minio.fs()
     lock = threading.Lock()
     state = {"copied": 0, "failed": 0, "bytes": 0}
@@ -50,6 +55,8 @@ def copy_all(
             logger.error("failed %s: %s", obj.storage_path, exc)
             with lock:
                 state["failed"] += 1
+                if failures is not None:
+                    failures.append(obj.storage_path)
             return
         # Recorded only after the copy returns, so an interrupted run never
         # claims an object it did not finish.

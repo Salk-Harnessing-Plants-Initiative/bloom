@@ -29,6 +29,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -36,9 +37,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import backup_lib as lib  # noqa: E402
 import docker_env as dock  # noqa: E402
+import report  # noqa: E402
 from copier import MAX_ATTEMPTS, copy_all, verify_sample  # noqa: E402
 from ledger import Ledger  # noqa: E402
 from rclone_rc import MinioSource, RcloneError, RcloneRC  # noqa: E402
+from runlock import SKIP_MARKER, LockHeld, RunLock  # noqa: E402
 
 logger = logging.getLogger("bloom_box_object_backup")
 
@@ -123,11 +126,27 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def run_backup(args: argparse.Namespace) -> int:
+    state_dir = Path(args.state_dir)
+    state_dir.mkdir(parents=True, exist_ok=True)
+
+    # Taken before anything reads the ledger. A multi-day seed and the weekly
+    # run share one SQLite file, and two writers corrupt each other's progress.
+    try:
+        lock = RunLock(state_dir).acquire()
+    except LockHeld as held:
+        logger.warning("%s", SKIP_MARKER)
+        logger.warning("held by %s", held.holder.describe())
+        return 0
+    try:
+        return run_locked(args, state_dir)
+    finally:
+        lock.release()
+
+
+def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     project = dock.project_name(args.env)
     box_fs = f"{args.box_remote}:"
 
-    state_dir = Path(args.state_dir)
-    state_dir.mkdir(parents=True, exist_ok=True)
     ledger = Ledger.open(str(state_dir / "ledger.db"))
 
     db_container = dock.find_container(project, dock.DB_SERVICE)
@@ -165,8 +184,11 @@ def run_backup(args: argparse.Namespace) -> int:
         port=args.rc_port,
         transfers=args.workers,
         bwlimit=args.bwlimit,
+        state_dir=str(state_dir.resolve()),
     )
     totals = Totals()
+    started_at = datetime.now(timezone.utc)
+    crashed = False
     try:
         client = wait_for_daemon(daemon)
         copy_manifest(client, manifest, ledger, minio, box_fs, args, totals)
@@ -178,18 +200,28 @@ def run_backup(args: argparse.Namespace) -> int:
                 args.box_root,
                 args.verify,
             )
+    except BaseException:
+        # Recorded before re-raising so the Box report still names the run
+        # that died — a failed run is the one most worth a record.
+        crashed = True
+        raise
     finally:
+        stats = {
+            "listed": listed,
+            "copied": totals.copied,
+            "failed": totals.failed,
+            "skipped": totals.skipped,
+            "already_current": totals.already_current,
+        }
+        outcome = "error" if crashed else ("ok" if totals.failed == 0 else "partial")
+        publish_report(
+            daemon, state_dir, box_fs, args,
+            run_id=run_id, started_at=started_at, outcome=outcome,
+            stats=stats, failures=totals.failures,
+        )
         daemon.stop()
         ledger.commit()
 
-    stats = {
-        "listed": listed,
-        "copied": totals.copied,
-        "failed": totals.failed,
-        "skipped": totals.skipped,
-        "already_current": totals.already_current,
-    }
-    outcome = "ok" if totals.failed == 0 else "partial"
     ledger.finish_run(run_id, outcome, stats)
     ledger.close()
     logger.info(
@@ -214,6 +246,55 @@ class Totals:
     skipped: int = 0
     already_current: int = 0
     verify_pool: list = field(default_factory=list)
+    failures: list = field(default_factory=list)
+
+
+def publish_report(
+    daemon: dock.RcDaemon,
+    state_dir: Path,
+    box_fs: str,
+    args: argparse.Namespace,
+    *,
+    run_id: int,
+    started_at: "datetime",
+    outcome: str,
+    stats: dict,
+    failures: list,
+) -> None:
+    """Write the run report locally, then copy it to Box beside the mirror.
+
+    Best-effort by design: the objects are already on Box, and losing the
+    report must not turn a good run into a failed one. It is logged loudly
+    instead, and the local copy under the state dir survives either way.
+    """
+    entry = report.RunReport(
+        env=args.env,
+        run_id=run_id,
+        started_at=started_at,
+        finished_at=datetime.now(timezone.utc),
+        outcome=outcome,
+        box_root=args.box_root,
+        stats=stats,
+        failures=failures,
+    )
+    try:
+        local = report.write_local(entry, state_dir)
+    except OSError as exc:
+        logger.error("could not write the run report locally: %s", exc)
+        return
+    try:
+        client = RcloneRC(daemon.url, daemon.user, daemon.password)
+        client.copy_file(
+            dock.STATE_MOUNT + "/" + report.REPORTS_DIRNAME,
+            entry.filename(),
+            box_fs,
+            report.box_remote_path(entry),
+        )
+        logger.info("run report on Box: %s", report.box_remote_path(entry))
+    except RcloneError as exc:
+        logger.error(
+            "run report stayed local at %s — upload failed: %s", local, exc
+        )
 
 
 def plan_batches(
@@ -268,7 +349,8 @@ def copy_manifest(
             "batch: %d object(s), %s", len(plan.copies), lib.format_bytes(plan.total_bytes)
         )
         copied, failed = copy_all(
-            client, plan, minio, box_fs, args.box_root, ledger, args.workers
+            client, plan, minio, box_fs, args.box_root, ledger, args.workers,
+            failures=totals.failures,
         )
         totals.copied += copied
         totals.failed += failed

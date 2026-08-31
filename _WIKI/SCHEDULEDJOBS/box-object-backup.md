@@ -123,6 +123,35 @@ Progress lines report objects/second and a projected finish. Failures are
 retried with backoff — Box's 429s and 5xx are treated as transient; a 404 on
 the MinIO side is not, and is reported.
 
+### Run reports on Box
+
+Every run drops a dated JSON report in `<BACKUP_BOX_ROOT>/_runs/`, named
+`2026-08-31T021703Z-prod-run00042.json`. This is the only view of the
+backup's history that does not need server access: a missing week shows up as
+a gap in a Box folder listing.
+
+That matters because neither of the other two records answers the question on
+its own. The mirror holds current state, so a week where nothing changed looks
+exactly like a week where nothing ran. The ledger's `runs` table does know the
+difference, but it lives in `/var/lib` behind SSH and SQLite.
+
+Each report carries the run's outcome (`ok`, `partial`, `error`), its
+duration, the counts (`listed`, `copied`, `failed`, `skipped`,
+`already_current`), and the paths of failed objects — capped, with
+`failure_count` keeping the true total. Reports are written for failed runs
+too.
+
+The upload is best-effort: the objects are already on Box, so a failed report
+upload does not fail the run. A copy is always kept on the host under
+`<state-dir>/_runs/`, so the record survives either way.
+
+The same history, locally:
+
+```bash
+sqlite3 /var/lib/bloom-box-object-backup/ledger.db \
+  "SELECT started_at, finished_at, outcome, stats FROM runs ORDER BY id DESC LIMIT 10;"
+```
+
 ## Restoring
 
 Restoring a single file is a download from Box. Restoring the deploy needs

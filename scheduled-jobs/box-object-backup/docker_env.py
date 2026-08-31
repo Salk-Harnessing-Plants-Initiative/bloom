@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 RCLONE_IMAGE = "rclone/rclone:1.71.4"
 RC_CONTAINER_PREFIX = "bloom-box-backup-rclone"
+
+# Where the host's state dir appears inside the daemon container, so the run
+# report can be uploaded through the same authenticated Box connection.
+STATE_MOUNT = "/state"
 DB_SERVICE = "db-prod"
 COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
 COMPOSE_SERVICE_LABEL = "com.docker.compose.service"
@@ -146,6 +150,7 @@ def start_rc_daemon(
     port: int,
     transfers: int,
     bwlimit: str = "",
+    state_dir: str | None = None,
 ) -> RcDaemon:
     """Start the rclone daemon on the deploy network, bound to loopback.
 
@@ -165,6 +170,12 @@ def start_rc_daemon(
         "--volume", f"{rclone_config}:/config/rclone/rclone.conf:ro",
         "--user", f"{_host_uid()}:{_host_gid()}",
         "--env", "RCLONE_CONFIG=/config/rclone/rclone.conf",
+    ]
+    # Read-only so the daemon can upload the run report the host wrote there.
+    # Nothing else in the state dir is read, and nothing is written back.
+    if state_dir:
+        cmd += ["--volume", f"{state_dir}:{STATE_MOUNT}:ro"]
+    cmd += [
         RCLONE_IMAGE,
         "rcd",
         f"--rc-addr=:{port}",
