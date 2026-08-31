@@ -457,3 +457,53 @@ def test_backup_minio_bucket_matches_the_compose_backing_bucket():
             f"{path.name}: BACKUP_MINIO_BUCKET is {actual!r} but storage-api "
             f"writes to {expected!r} (docker-compose.prod.yml STORAGE_S3_BUCKET)"
         )
+
+
+# The Box destination is pinned, not merely validated. It names a folder
+# created empty for this job alone, and the job only ever uploads — it never
+# lists the destination first, so pointing it at a folder that already holds
+# something would interleave eight million objects into it with no complaint
+# and no way to tell the two apart afterwards. The V1 archive
+# (Bloom-Backups/Old_Bloom_Final_State) sits in the same account.
+#
+# A tripwire rather than a rule: changing the destination is a legitimate thing
+# to want, and this does not prevent it. It makes it deliberate, by requiring
+# the change to appear here too, where a reviewer sees it.
+EXPECTED_BOX_ROOTS = {
+    "prod": "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
+    "staging": "Bloom-Backups/BloomV2-Data-Backup/staging/storage",
+}
+
+
+@pytest.mark.parametrize("env,expected", sorted(EXPECTED_BOX_ROOTS.items()))
+def test_backup_box_root_is_the_folder_this_job_was_given(env, expected):
+    path = PROD_DEFAULTS if env == "prod" else STAGING_DEFAULTS
+    actual = _parse(path)["BACKUP_BOX_ROOT"].strip()
+    assert actual == expected, (
+        f"{path.name}: BACKUP_BOX_ROOT is {actual!r}, expected {expected!r}.\n"
+        "This job only uploads and never inspects the destination first, so a "
+        "changed root silently mixes the mirror into whatever is already "
+        "there. If the move is intended, update EXPECTED_BOX_ROOTS in this "
+        "test so the change is visible in review."
+    )
+
+
+def test_both_environments_mirror_under_one_dedicated_parent():
+    # Everything this job writes stays inside a folder created for it, rather
+    # than being scattered across the Box account.
+    parent = "Bloom-Backups/BloomV2-Data-Backup"
+    for path in (PROD_DEFAULTS, STAGING_DEFAULTS):
+        root = _parse(path)["BACKUP_BOX_ROOT"].strip()
+        assert root.startswith(parent + "/"), (
+            f"{path.name}: {root!r} is outside {parent!r}"
+        )
+
+
+def test_the_destination_is_not_the_v1_archive():
+    # A specific folder in the same account holding the one-time V1 S3 archive.
+    # Nothing distinguishes it from an empty folder at runtime.
+    for path in (PROD_DEFAULTS, STAGING_DEFAULTS):
+        root = _parse(path)["BACKUP_BOX_ROOT"].strip().lower()
+        assert "old_bloom_final_state" not in root, (
+            f"{path.name}: points at the V1 archive"
+        )
