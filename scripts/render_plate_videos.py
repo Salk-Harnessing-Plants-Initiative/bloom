@@ -204,19 +204,21 @@ def upsert_video_row(
     object_path: str,
     duration_seconds: int,
     frame_count: int,
+    fps: int,
     file_size_bytes: int,
 ) -> None:
     """Upsert a row in gravi_plate_videos keyed on (experiment, plate, wave)."""
     sql = """
         INSERT INTO gravi_plate_videos
           (experiment_id, plate_id, wave_number, session_id, object_path,
-           duration_seconds, frame_count, file_size_bytes, generated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
+           duration_seconds, frame_count, fps, file_size_bytes, generated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
         ON CONFLICT (experiment_id, plate_id, COALESCE(wave_number, -1)) DO UPDATE
           SET object_path     = EXCLUDED.object_path,
               session_id      = EXCLUDED.session_id,
               duration_seconds = EXCLUDED.duration_seconds,
               frame_count     = EXCLUDED.frame_count,
+              fps             = EXCLUDED.fps,
               file_size_bytes = EXCLUDED.file_size_bytes,
               generated_at    = EXCLUDED.generated_at
     """
@@ -231,6 +233,7 @@ def upsert_video_row(
                 object_path,
                 duration_seconds,
                 frame_count,
+                fps,
                 file_size_bytes,
             ),
         )
@@ -427,6 +430,7 @@ def render_one(
                 len(job.frame_paths), cfg.framerate
             ),
             frame_count=len(job.frame_paths),
+            fps=cfg.framerate,
             file_size_bytes=out_path.stat().st_size,
         )
         conn.commit()
