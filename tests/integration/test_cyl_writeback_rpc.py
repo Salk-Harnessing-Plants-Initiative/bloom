@@ -28,7 +28,7 @@ psycopg = pytest.importorskip("psycopg")
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 RPC = "public.insert_cyl_result_envelope"
-PINNED_VERSION = "0.1.0a3"
+PINNED_VERSION = "0.1.0a7"
 
 
 # --------------------------------------------------------------------------- #
@@ -232,7 +232,7 @@ def test_bare_contract_version_accepted(pg_conn):
     # The emitter stamps the bare PEP 440 package version; it must be accepted.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        res = _call(cur, _envelope(imgs, contract_version="0.1.0a3", idempotency_key="cvbare"))
+        res = _call(cur, _envelope(imgs, contract_version="0.1.0a7", idempotency_key="cvbare"))
         assert res["was_noop"] is False
     pg_conn.rollback()
 
@@ -241,7 +241,7 @@ def test_v_prefixed_contract_version_accepted(pg_conn):
     # The v-prefixed git-tag/$id form normalizes to the same pinned version.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        res = _call(cur, _envelope(imgs, contract_version="v0.1.0a3", idempotency_key="cvvpref"))
+        res = _call(cur, _envelope(imgs, contract_version="v0.1.0a7", idempotency_key="cvvpref"))
         assert res["was_noop"] is False
     pg_conn.rollback()
 
@@ -259,6 +259,20 @@ def test_a2_contract_version_rejected(pg_conn, ver):
     pg_conn.rollback()
 
 
+@pytest.mark.parametrize("ver", ["0.1.0a3", "v0.1.0a3"])
+def test_a3_contract_version_rejected(pg_conn, ver):
+    # Hard cutover (repin-cyl-contract-a7, bloom #685): the *previous* pinned
+    # version (a3, either form) is now refused too, symmetric with the a2 case
+    # above. `v0.1.0a3` is the load-bearing revert-detector for THIS re-pin -- it
+    # was ACCEPTED by the pre-a7 strict RPC, so this case fails if the a7
+    # migration is reverted; bare `0.1.0a3` rejects either way.
+    with pg_conn.cursor() as cur:
+        _, imgs = _seed_scan(cur)
+        with pytest.raises(psycopg.errors.RaiseException):
+            _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cva3"))
+    pg_conn.rollback()
+
+
 def test_contract_version_mismatch_rejected(pg_conn):
     # An arbitrary unrelated version is rejected.
     with pg_conn.cursor() as cur:
@@ -268,7 +282,7 @@ def test_contract_version_mismatch_rejected(pg_conn):
     pg_conn.rollback()
 
 
-@pytest.mark.parametrize("ver", ["V0.1.0a3", "0.1.0a3 ", "0.1.0a30", "vv0.1.0a3"])
+@pytest.mark.parametrize("ver", ["V0.1.0a7", "0.1.0a7 ", "0.1.0a70", "vv0.1.0a7"])
 def test_version_boundary_forms_rejected(pg_conn, ver):
     # Normalization strips a single lowercase leading `v` only: uppercase V, a
     # doubled vv, trailing whitespace, and near-miss versions all reject.
@@ -814,4 +828,59 @@ def test_a3_rollback_restores_strict_a2(pg_conn):
         _, imgs = _seed_scan(cur)
         with pytest.raises(psycopg.errors.RaiseException):
             _call(cur, _envelope(imgs, contract_version="0.1.0a3", idempotency_key="a3rb"))
+    pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# a7 contract-version re-pin migration (repin-cyl-contract-a7, bloom #685)
+# --------------------------------------------------------------------------- #
+
+_TS_A7 = "20260831130000_cyl_writeback_contract_a7"
+MIGRATION_A7 = REPO_ROOT / "supabase" / "migrations" / f"{_TS_A7}.sql"
+ROLLBACK_A7 = REPO_ROOT / "supabase" / "rollbacks" / f"{_TS_A7}_rollback.sql"
+
+
+def test_a7_migration_body_is_idempotent(pg_conn):
+    # Re-applying the a7 migration on top of the applied state is a clean no-op
+    # (CREATE OR REPLACE FUNCTION / ALTER OWNER / REVOKE / GRANT), and the RPC still
+    # accepts the pinned a7 contract_version afterward.
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(MIGRATION_A3))    # a3 body first (forward chain)
+        cur.execute(_sql_body(MIGRATION_A7))
+        cur.execute(_sql_body(MIGRATION_A7))     # second apply: must be a no-op, not an error
+        _, imgs = _seed_scan(cur)
+        res = _call(cur, _envelope(imgs, contract_version="0.1.0a7", idempotency_key="a7idem"))
+        assert res["was_noop"] is False
+    pg_conn.rollback()
+
+
+def test_a7_rollback_restores_strict_a3(pg_conn):
+    """Apply a3 then a7 then a7's rollback in an uncommitted txn; assert the function is
+    restored to the strict 0.1.0a3 posture -- the a7 version it just accepted is now
+    rejected -- and the function still exists (the a7 change only replaced its body)."""
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(MIGRATION_A3))
+        cur.execute(_sql_body(MIGRATION_A7))    # a7 body present
+        cur.execute(_sql_body(ROLLBACK_A7))     # roll back to strict 0.1.0a3
+        cur.execute("SELECT 1 FROM pg_proc WHERE proname='insert_cyl_result_envelope'")
+        assert cur.fetchone() is not None, "a7 rollback must keep the function (body-only change)"
+        _, imgs = _seed_scan(cur)
+        with pytest.raises(psycopg.errors.RaiseException):
+            _call(cur, _envelope(imgs, contract_version="0.1.0a7", idempotency_key="a7rb"))
+        # the restored strict-a3 body accepts a3 again
+        _, imgs2 = _seed_scan(cur)
+        res = _call(cur, _envelope(imgs2, contract_version="0.1.0a3", idempotency_key="a7rb-a3"))
+        assert res["was_noop"] is False
+    pg_conn.rollback()
+
+
+def test_a7_cutover_guard_raises_on_a3_row(pg_conn):
+    # The a7 migration's prepended DO-block guard must fail loudly, not silently orphan,
+    # if any cyl_trait_sources row carries a 0.1.0a3 contract_version at apply time.
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(MIGRATION_A3))  # bring the RPC to a3 first so a3 rows are legal
+        _, imgs = _seed_scan(cur)
+        _call(cur, _envelope(imgs, contract_version="0.1.0a3", idempotency_key="guard-seed"))
+        with pytest.raises(psycopg.errors.RaiseException, match="a7 cutover blocked"):
+            cur.execute(_sql_body(MIGRATION_A7))
     pg_conn.rollback()
