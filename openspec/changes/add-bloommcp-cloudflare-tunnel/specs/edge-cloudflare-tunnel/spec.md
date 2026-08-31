@@ -50,7 +50,7 @@ The Cloudflare Tunnel SHALL NOT alter existing request handling for `DOMAIN_MAIN
 #### Scenario: Production is not affected by this change
 
 - **WHEN** the production compose stack is deployed (same `docker-compose.prod.yml` staging uses, since no separate prod compose file exists)
-- **THEN** the `cloudflared` service does not start, because it is gated behind a Compose profile that only staging's deploy step activates — production's `docker compose up` neither activates that profile nor starts the container — and no tunnel-related Caddy routes or `remote_ip` restrictions become reachable, since `TUNNEL_HOSTNAME` in `.env.prod` is a harmless, non-functional placeholder that no real DNS record or client ever targets (not literally unset — see the next scenario for why it must have a value at all)
+- **THEN** the `cloudflared` service does not start, because it is gated behind a Compose profile that only staging's deploy step activates — production's `docker compose up` neither activates that profile nor starts the container — and no tunnel-related Caddy routes or `remote_ip` restrictions become reachable in practice, since no real DNS record or client ever targets whatever value `TUNNEL_HOSTNAME` holds in `.env.prod`
 
 #### Scenario: Production's env validation still passes despite the new required-looking variables
 
