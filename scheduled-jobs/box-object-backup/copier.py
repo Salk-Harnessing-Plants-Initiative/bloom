@@ -54,7 +54,7 @@ def copy_all(
     def worker(obj: lib.StorageObject) -> None:
         dst = lib.box_path(obj, box_root)
         try:
-            copy_one(client, src_fs, obj, box_fs, dst)
+            copy_one(client, src_fs, lib.source_remote(obj, minio.prefix), box_fs, dst, obj)
         except RcloneError as exc:
             logger.error("failed %s: %s", obj.storage_path, exc)
             with lock:
@@ -88,14 +88,15 @@ def copy_all(
 def copy_one(
     client: RcloneRC,
     src_fs: str,
-    obj: lib.StorageObject,
+    src_remote: str,
     box_fs: str,
     dst_remote: str,
+    obj: lib.StorageObject,
 ) -> None:
     """Copy one object, backing off on the throttling Box does under load."""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            client.copy_file(src_fs, obj.minio_key, box_fs, dst_remote)
+            client.copy_file(src_fs, src_remote, box_fs, dst_remote)
             return
         except RcloneError as exc:
             if not exc.retryable or attempt == MAX_ATTEMPTS:

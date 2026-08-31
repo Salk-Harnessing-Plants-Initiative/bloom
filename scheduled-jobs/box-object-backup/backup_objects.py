@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Mirror Supabase Storage objects to Box under their Storage API paths.
 
-MinIO holds every object at `bloom-storage/<bucket>/<name>/<version-uuid>`,
+MinIO holds every object at
+`bloom-storage/storage-single-tenant/<bucket>/<name>/<version-uuid>`,
 so a straight bucket-to-Box copy produces files whose last path segment is a
 UUID with no extension — Box cannot preview them and a human cannot find
 anything. This job reads `storage.objects`, which knows the logical name and
@@ -97,6 +98,16 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
             "BACKUP_RCLONE_CONFIG", str(Path.home() / ".config/rclone/rclone.conf")
         ),
     )
+    parser.add_argument(
+        "--minio-bucket",
+        default=os.environ.get("BACKUP_MINIO_BUCKET", ""),
+        help="the single MinIO bucket storage-api writes into (STORAGE_S3_BUCKET)",
+    )
+    parser.add_argument(
+        "--minio-prefix",
+        default=os.environ.get("BACKUP_MINIO_PREFIX", ""),
+        help="tenant prefix storage-api files objects under, e.g. storage-single-tenant",
+    )
     parser.add_argument("--state-dir", default=os.environ.get("BACKUP_STATE_DIR", DEFAULT_STATE_DIR))
     parser.add_argument("--workers", type=int, default=int(os.environ.get("BACKUP_WORKERS", DEFAULT_WORKERS)))
     parser.add_argument("--rc-port", type=int, default=int(os.environ.get("BACKUP_RC_PORT", 5572)))
@@ -174,7 +185,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         ledger.close()
         return 0
 
-    minio = minio_source_from_env()
+    minio = minio_source_from_env(args)
     require_rclone_config(args.rclone_config, args.box_remote)
     run_id = ledger.start_run()
     network = dock.find_network(project)
@@ -191,6 +202,9 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     crashed = False
     try:
         client = wait_for_daemon(daemon)
+        first = first_planned_object(manifest)
+        if first is not None:
+            preflight_source(client, minio, first)
         copy_manifest(client, manifest, ledger, minio, box_fs, args, totals)
         if args.verify and totals.verify_pool:
             verify_sample(
@@ -252,6 +266,20 @@ class Totals:
     already_current: int = 0
     verify_pool: list = field(default_factory=list)
     failures: list = field(default_factory=list)
+
+
+def first_planned_object(manifest: Path) -> "lib.StorageObject | None":
+    """First object the run would actually copy, for the preflight to probe.
+
+    Read straight off the manifest rather than the plan, so the check runs
+    before any batching or ledger work. Returns None for an empty manifest,
+    where there is nothing to prove.
+    """
+    with manifest.open(encoding="utf-8") as handle:
+        for obj in lib.iter_manifest(handle):
+            if lib.unsafe_reason(obj) is None:
+                return obj
+    return None
 
 
 def run_outcome(*, crashed: bool, failed: int, copied: int, limit: int | None) -> str:
@@ -380,7 +408,7 @@ def copy_manifest(
             totals.verify_pool.extend(plan.copies[: args.verify])
 
 
-def minio_source_from_env() -> MinioSource:
+def minio_source_from_env(args: argparse.Namespace) -> MinioSource:
     access = os.environ.get("MINIO_ROOT_USER", "")
     secret = os.environ.get("MINIO_ROOT_PASSWORD", "")
     if not access or not secret:
@@ -388,11 +416,48 @@ def minio_source_from_env() -> MinioSource:
             "MINIO_ROOT_USER / MINIO_ROOT_PASSWORD missing — the service reads "
             "them from the deploy's .env file; export them for a manual run"
         )
+    if not args.minio_bucket.strip():
+        raise lib.BackupError(
+            "BACKUP_MINIO_BUCKET is empty. It must name the single MinIO "
+            "bucket storage-api writes into (STORAGE_S3_BUCKET in the compose "
+            "file). Left empty, rclone reads each object's own bucket_id as a "
+            "bucket name and every copy 404s."
+        )
     return MinioSource(
         endpoint=os.environ.get("BACKUP_MINIO_ENDPOINT", "http://supabase-minio:9000"),
         access_key=access,
         secret_key=secret,
+        bucket=args.minio_bucket,
+        prefix=args.minio_prefix,
     )
+
+
+def preflight_source(client: RcloneRC, minio: MinioSource, sample: lib.StorageObject) -> None:
+    """Prove the configured bucket and prefix actually address real bytes.
+
+    Config cannot fix a layout bug on its own — a wrong value in an env file
+    fails exactly as a wrong constant did, just in two files instead of one.
+    What makes it safe is failing here, in seconds, naming the path that was
+    tried, rather than after days of a seed that 404s all eight million
+    objects and leaves an empty mirror.
+    """
+    remote = lib.source_remote(sample, minio.prefix)
+    try:
+        item = client.stat(minio.fs(), remote)
+    except RcloneError as exc:
+        raise lib.BackupError(
+            f"preflight could not read MinIO at {minio.root()}/ — {exc}"
+        ) from exc
+    if item is None:
+        raise lib.BackupError(
+            "preflight failed: no object at\n"
+            f"    {minio.bucket.strip('/')}/{remote}\n"
+            "Postgres lists this object but MinIO does not hold it there. "
+            "Check BACKUP_MINIO_BUCKET and BACKUP_MINIO_PREFIX against one "
+            "real key:\n"
+            f"    rclone lsf :s3:{minio.bucket.strip('/')} --max-depth 3"
+        )
+    logger.info("preflight ok — source root %s resolves", minio.root())
 
 
 def require_rclone_config(path: str, remote: str) -> None:

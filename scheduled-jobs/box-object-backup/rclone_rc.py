@@ -42,12 +42,29 @@ class MinioSource:
     Passing MinIO's credentials inline keeps them out of the rclone config
     file that gets mounted into the container — the config holds only the
     Box remote, whose token is the thing that actually needs to persist.
+
+    `bucket` is part of the fs, not of each object's remote. An fs left at
+    the provider root makes rclone read the first path segment of every
+    remote as a bucket name, which is how an earlier version of this job
+    ended up asking MinIO for a bucket called `images` — a bucket that
+    exists, and does not hold these objects. Naming the bucket here means a
+    remote can never be silently reinterpreted as one.
     """
 
     endpoint: str
     access_key: str
     secret_key: str
+    bucket: str
+    prefix: str = ""
     region: str = "us-east-1"
+
+    def __post_init__(self) -> None:
+        if not self.bucket.strip():
+            raise ValueError(
+                "MinIO bucket is empty — set BACKUP_MINIO_BUCKET. Without it "
+                "rclone treats each object's own bucket_id as the bucket name "
+                "and every copy fails with a 404."
+            )
 
     def fs(self) -> str:
         parts = [
@@ -59,7 +76,13 @@ class MinioSource:
             f"region={_escape(self.region)}",
             "force_path_style=true",
         ]
-        return ",".join(parts) + ":"
+        return ",".join(parts) + ":" + self.bucket.strip("/")
+
+    def root(self) -> str:
+        """Human-readable source root, for logs and preflight errors."""
+        base = self.bucket.strip("/")
+        tail = self.prefix.strip("/")
+        return f"{base}/{tail}" if tail else base
 
 
 def _escape(value: str) -> str:

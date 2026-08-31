@@ -17,6 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import backup_lib as lib  # noqa: E402
 from backup_lib import (  # noqa: E402
     BACKING_BUCKET, SQLITE_MAX_VARIABLES, BackupError, StorageObject,
     batches, box_path, build_plan, chunked, format_bytes, iter_manifest,
@@ -41,7 +42,11 @@ def obj(
 
 # ---------- the core mapping ----------
 
-def test_minio_key_appends_version_suffix():
+def test_minio_key_is_relative_to_the_backing_bucket():
+    # NOT a whole MinIO address — the bucket comes from MinioSource.fs() and
+    # the tenant prefix from source_remote(). Handing this to rclone against a
+    # provider-root fs makes it read "images" as the bucket name, which is a
+    # real bucket that does not hold these objects.
     assert obj().minio_key == f"images/exp-42/plate-7/frame_0001.png/{VERSION}"
 
 
@@ -437,28 +442,36 @@ def test_a_resumed_run_only_copies_what_the_ledger_lacks(ledger):
 # ---------- MinIO connection string ----------
 
 def test_minio_fs_declares_the_minio_provider():
-    assert "provider=Minio" in MinioSource("http://m:9000", "k", "s").fs()
+    assert "provider=Minio" in MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
 
 
 def test_minio_fs_carries_the_endpoint():
-    assert "endpoint=http://m:9000" in MinioSource("http://m:9000", "k", "s").fs()
+    assert "endpoint=http://m:9000" in MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
 
 
 def test_minio_fs_forces_path_style():
-    assert "force_path_style=true" in MinioSource("http://m:9000", "k", "s").fs()
+    assert "force_path_style=true" in MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
 
 
 def test_minio_fs_is_a_connection_string_not_a_named_remote():
-    fs = MinioSource("http://m:9000", "k", "s").fs()
-    assert fs.startswith(":s3,") and fs.endswith(":")
+    fs = MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
+    assert fs.startswith(":s3,")
+
+
+def test_minio_fs_names_the_bucket_rather_than_stopping_at_the_root():
+    # The old form ended at ':' — a provider-root fs — which made rclone read
+    # the first segment of every remote as a bucket name.
+    fs = MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
+    assert fs.endswith(":bloom-storage")
+    assert not fs.endswith(",:")
 
 
 def test_minio_fs_quotes_a_secret_containing_a_comma():
-    assert '"a,b"' in MinioSource("http://m:9000", "k", "a,b").fs()
+    assert '"a,b"' in MinioSource("http://m:9000", "k", "a,b", "bloom-storage").fs()
 
 
 def test_minio_fs_doubles_an_embedded_quote():
-    assert '""' in MinioSource("http://m:9000", "k", 'a"b').fs()
+    assert '""' in MinioSource("http://m:9000", "k", 'a"b', "bloom-storage").fs()
 
 
 # ---------- retry classification ----------
@@ -491,12 +504,12 @@ def test_rclone_error_defaults_to_not_retryable():
 # ---------- credential redaction ----------
 
 def test_redact_hides_the_minio_secret():
-    fs = MinioSource("http://m:9000", "rootuser", "s3cr3t-value").fs()
+    fs = MinioSource("http://m:9000", "rootuser", "s3cr3t-value", "bloom-storage").fs()
     assert "s3cr3t-value" not in redact(f"copy failed on {fs}")
 
 
 def test_redact_hides_the_access_key():
-    fs = MinioSource("http://m:9000", "rootuser", "s3cr3t").fs()
+    fs = MinioSource("http://m:9000", "rootuser", "s3cr3t", "bloom-storage").fs()
     assert "rootuser" not in redact(fs)
 
 
@@ -505,7 +518,7 @@ def test_redact_hides_the_daemon_password():
 
 
 def test_redact_leaves_the_endpoint_readable():
-    fs = MinioSource("http://supabase-minio:9000", "k", "s").fs()
+    fs = MinioSource("http://supabase-minio:9000", "k", "s", "bloom-storage").fs()
     assert "endpoint=http://supabase-minio:9000" in redact(fs)
 
 
@@ -541,3 +554,49 @@ def test_format_bytes_scales_to_gibibytes():
 
 def test_format_bytes_caps_at_tebibytes():
     assert format_bytes(7 * 1024**4).endswith("TiB")
+
+
+class TestSourceAddress:
+    """The full MinIO address, which is what actually has to be right.
+
+    storage-api files bytes at
+    <backing bucket>/<tenant prefix>/<bucket_id>/<name>/<version>. Getting any
+    component wrong 404s every object while looking like a working run, so
+    each part is pinned here rather than assumed.
+    """
+
+    def test_prefix_precedes_the_object_key(self):
+        assert lib.source_remote(obj(), "storage-single-tenant") == (
+            f"storage-single-tenant/images/exp-42/plate-7/frame_0001.png/{VERSION}"
+        )
+
+    def test_no_prefix_leaves_the_key_untouched(self):
+        assert lib.source_remote(obj(), "") == obj().minio_key
+
+    def test_surrounding_slashes_do_not_double_up(self):
+        assert lib.source_remote(obj(), "/tenant/") == f"tenant/{obj().minio_key}"
+
+    def test_the_bucket_lives_in_the_fs_not_the_remote(self):
+        fs = MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
+        assert fs.endswith(":bloom-storage")
+        assert "bloom-storage" not in lib.source_remote(obj(), "storage-single-tenant")
+
+    def test_an_empty_bucket_is_refused_outright(self):
+        # An empty bucket silently rebuilds the original defect, so it must
+        # fail at construction rather than at object number one.
+        with pytest.raises(ValueError, match="BACKUP_MINIO_BUCKET"):
+            MinioSource("http://m:9000", "k", "s", "")
+
+    def test_the_composed_address_matches_the_deployed_layout(self):
+        # Pins the layout the rest of the repo already assumes — see
+        # services/video-worker/video_listener.py, which reads images from
+        # bucket 'bloom-storage' under prefix 'storage-single-tenant/'.
+        source = MinioSource(
+            "http://supabase-minio:9000", "k", "s", "bloom-storage",
+            prefix="storage-single-tenant",
+        )
+        assert source.fs().endswith(":bloom-storage")
+        assert source.root() == "bloom-storage/storage-single-tenant"
+        assert lib.source_remote(obj(), source.prefix) == (
+            f"storage-single-tenant/images/exp-42/plate-7/frame_0001.png/{VERSION}"
+        )

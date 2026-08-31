@@ -6,11 +6,12 @@ real `.png` you can preview in the browser.
 
 ## Why this job exists
 
-The Storage API keeps all buckets inside one MinIO bucket, `bloom-storage`,
+The Storage API keeps all buckets inside one MinIO bucket (`bloom-storage`),
+under a tenant prefix (`storage-single-tenant`),
 and appends a version UUID to every key:
 
 ```
-MinIO           bloom-storage/images/exp-42/plate-7/frame_0001.png/0f8b1c2a-…
+MinIO           bloom-storage/storage-single-tenant/images/exp-42/plate-7/frame_0001.png/0f8b1c2a-…
 Storage API     images/exp-42/plate-7/frame_0001.png
 ```
 
@@ -160,11 +161,26 @@ both halves, in this order:
 1. Restore the Postgres dump. That brings back `storage.objects`, including
    each object's `version`.
 2. For each row, upload the Box copy at `<bucket_id>/<name>` back to MinIO
-   at `bloom-storage/<bucket_id>/<name>/<version>`.
+   at `<BACKUP_MINIO_BUCKET>/<BACKUP_MINIO_PREFIX>/<bucket_id>/<name>/<version>`
+   — with the deployed defaults, that is
+   `bloom-storage/storage-single-tenant/<bucket_id>/<name>/<version>`.
+
+   **Rows with a NULL `version` take no suffix**, matching what the job read:
+   `…/<bucket_id>/<name>`. Appending a version to those creates an object
+   storage-api cannot see.
 
 Step 2 is the mirror of what this job does — the version suffix comes from
 the restored row, which is exactly why the dump and the object mirror are
 only useful together.
+
+Both path components are configuration, not constants, and the job verifies
+them against a real object at startup before copying anything. A restore must
+use the same two values the backup ran with; they are recorded in every run
+report under `_runs/`.
+
+There is no restore tooling yet. Doing this for 8M rows needs a script, and
+writing it is tracked separately — as is a round-trip drill proving one object
+survives MinIO → Box → MinIO and is still served by storage-api.
 
 ## Configuration
 
@@ -172,8 +188,10 @@ Set in `.env.<env>` (defaults in `.env.prod.defaults` / `.env.staging.defaults`)
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `BACKUP_MINIO_BUCKET` | `bloom-storage` | The single MinIO bucket storage-api writes into (`STORAGE_S3_BUCKET` in the compose file). **Required** — an empty value makes rclone read each object's own `bucket_id` as a bucket name and every copy 404s. |
+| `BACKUP_MINIO_PREFIX` | `storage-single-tenant` | Tenant prefix storage-api files objects under. Not declared anywhere else in the stack — it is storage-api's own default. |
 | `BACKUP_BOX_REMOTE` | `box` | Name of the rclone remote |
-| `BACKUP_BOX_ROOT` | `Bloom-Backups/prod/storage` | Folder on Box to mirror into |
+| `BACKUP_BOX_ROOT` | `Bloom-Backups/BloomV2-Data-Backup/prod/storage` | Folder on Box to mirror into |
 | `BACKUP_WORKERS` | `8` | Concurrent copies; lower it if Box throttles hard |
 | `BACKUP_BWLIMIT` | *(unset)* | rclone bandwidth cap, e.g. `20M` |
 | `BACKUP_STATE_DIR` | `/var/lib/bloom-box-object-backup` | Ledger location |
@@ -182,3 +200,10 @@ Set in `.env.<env>` (defaults in `.env.prod.defaults` / `.env.staging.defaults`)
 `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` / `POSTGRES_USER` / `POSTGRES_DB`
 come from the same `.env` file; the job passes MinIO's credentials to rclone
 inline so they never land in a config file on disk.
+
+`BACKUP_MINIO_BUCKET` and `BACKUP_MINIO_PREFIX` are checked against a real
+object before any copying starts: the run stats one object the manifest names
+and aborts with the exact path it tried if MinIO does not hold it there. A
+wrong value in an env file is as fatal as a wrong constant in the code — what
+makes it survivable is failing in seconds rather than after a multi-day seed
+that 404s everything and leaves an empty mirror.
