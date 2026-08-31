@@ -14,6 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import backup_lib as lib
+import stopping
 from ledger import Ledger
 from rclone_rc import MinioSource, RcloneError, RcloneRC
 
@@ -59,6 +60,12 @@ def copy_all(
     started = time.monotonic()
 
     def worker(obj: lib.StorageObject) -> None:
+        # Checked before anything starts, never during a transfer. A stop skips
+        # the objects still queued while those already in flight finish and are
+        # recorded — so nothing is left half-copied, and a restart neither
+        # repeats them nor misses them.
+        if stopping.stopping():
+            return
         dst = lib.box_path(obj, box_root)
         try:
             copy_one(client, src_fs, lib.source_remote(obj, minio.prefix), box_fs, dst, obj)

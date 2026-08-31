@@ -12,6 +12,7 @@ prove the workflow runs, only that it still agrees with the code it drives.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import pytest
@@ -388,3 +389,319 @@ class TestTheHeadlineCarriesTheCounts:
         headline = self.run_summary(parsed, "ERROR boom\n", outcome="failure")
         assert "FAILED" in headline
         assert "succeeded" not in headline
+
+
+class TestCancellingTheJobStopsTheRun:
+    """Cancelling kills the ssh client on the runner, not the run on the host.
+
+    The remote sees the connection drop, which arrives as SIGHUP. That used to
+    be a hard kill — the cleanup in `finally` never ran and the rclone
+    container was left holding the RC port, so the next run refused to start.
+    """
+
+    def step(self, parsed: dict) -> dict:
+        steps = parsed["jobs"]["mirror"]["steps"]
+        matches = [
+            s for s in steps if s.get("name", "").startswith("Ask the host to stop")
+        ]
+        assert matches, "no cancellation step — cancelling would leave the run going"
+        return matches[0]
+
+    def test_it_only_runs_when_the_job_was_cancelled(self, parsed: dict):
+        assert self.step(parsed)["if"] == "cancelled()"
+
+    def test_it_runs_before_the_summary(self, parsed: dict):
+        # So the summary describes a run that has actually stopped.
+        names = [s.get("name", "") for s in parsed["jobs"]["mirror"]["steps"]]
+        stop = next(i for i, n in enumerate(names) if n.startswith("Ask the host to stop"))
+        summary = next(i for i, n in enumerate(names) if n.startswith("Write the run summary"))
+        assert stop < summary
+
+    def test_it_finds_the_process_through_the_lock_file(self, parsed: dict):
+        # runlock.py writes the pid there; nothing else knows what is running.
+        script = self.step(parsed)["run"]
+        assert "backup.lock" in script
+        assert '"pid"' in script
+
+    def test_it_asks_rather_than_kills(self, parsed: dict):
+        # SIGKILL is the hard kill this whole change exists to avoid: it would
+        # leave the container behind exactly as before.
+        # Comments stripped: the script's own comment explains why it does NOT
+        # escalate to SIGKILL, and a substring check on the raw text trips over
+        # that explanation rather than on any code.
+        script = _strip_comments(self.step(parsed)["run"])
+        assert "kill -TERM" in script
+        # `kill -9` specifically: a bare "-9" also appears inside the [!0-9]
+        # character class that validates the pid.
+        assert "kill -9" not in script
+        assert "-KILL" not in script
+        assert "SIGKILL" not in script
+
+    def test_it_cannot_hang_the_job(self, parsed: dict):
+        step = self.step(parsed)
+        assert step.get("timeout-minutes"), "no timeout on a step that waits"
+        assert "ConnectTimeout" in step["run"]
+
+    def test_the_shell_parses(self, parsed: dict):
+        import subprocess
+        import tempfile
+        from pathlib import Path as P
+
+        with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as handle:
+            handle.write(self.step(parsed)["run"])
+            path = handle.name
+        result = subprocess.run(["bash", "-n", path], capture_output=True, text=True)
+        P(path).unlink()
+        assert result.returncode == 0, result.stderr
+
+
+class TestTheRunStepStampsItsMarker:
+    """The other half of the ownership guard.
+
+    The cancel step refuses to signal anything unless the marker names this
+    job. If the run step stops writing it, the cancel step stays silent and a
+    cancelled run keeps going on the host — the leak the whole step exists to
+    close, and nothing else in the suite would notice.
+    """
+
+    def remote_script(self, parsed: dict) -> str:
+        steps = parsed["jobs"]["mirror"]["steps"]
+        outer = next(
+            s for s in steps if s.get("name", "").startswith("Run the mirror")
+        )["run"]
+        return outer.split("<<'REMOTE'", 1)[1].split("\n          REMOTE", 1)[0]
+
+    def test_the_marker_is_written_before_the_job_is_launched(self, parsed: dict):
+        script = self.remote_script(parsed)
+        marker = "/var/lib/bloom-box-object-backup/actions-run.started"
+        assert marker in script, "the run step never stamps the marker"
+        launch = script.index("backup_objects.py")
+        assert script.index(marker) < launch, (
+            "stamped after the job starts — the window where it is missing is "
+            "exactly when a cancellation is most likely"
+        )
+
+    def test_the_marker_names_this_job_and_the_time(self, parsed: dict, tmp_path):
+        """Run the stamping line for real and read back what it wrote.
+
+        The tag alone lets a marker from an earlier job pass; the time alone
+        lets this job's own stand-down pass. Both, or the guard has a hole.
+        """
+        import subprocess
+
+        script = self.remote_script(parsed)
+        marker = tmp_path / "actions-run.started"
+        lines = [ln.strip() for ln in script.splitlines()]
+        start = next(i for i, ln in enumerate(lines) if ln.startswith("marker="))
+        write = next(i for i, ln in enumerate(lines) if '> "$marker"' in ln)
+        block = "\n".join(lines[start:write + 1]).replace(
+            "/var/lib/bloom-box-object-backup/actions-run.started", str(marker)
+        )
+        subprocess.run(
+            ["bash", "-c", f'set -e\nrun_tag="$1"\n{block}', "bash", "42-7"],
+            check=True, capture_output=True, text=True,
+        )
+        tag, stamped = marker.read_text().split()
+        assert tag == "42-7", f"the marker does not name the job: {tag}"
+        assert int(stamped) > 1_700_000_000, f"not a plausible timestamp: {stamped}"
+
+
+class TestTheStopScriptBehaves:
+    """Run the remote half against real lock files, with a fake ssh."""
+
+    def remote_script(self, parsed: dict) -> str:
+        steps = parsed["jobs"]["mirror"]["steps"]
+        outer = next(
+            s for s in steps if s.get("name", "").startswith("Ask the host to stop")
+        )["run"]
+        # The remote half is the quoted heredoc body.
+        return outer.split("<<'REMOTE'", 1)[1].split("REMOTE", 1)[0].split("\n", 1)[1]
+
+    RUN_TAG = "1234567890-1"
+
+    def run_remote(self, parsed: dict, lock_dir, contents=None, marker="same-job"):
+        """Run the remote half, with the lock and the marker under `lock_dir`.
+
+        `marker` says what this job left behind on the host:
+          "same-job"  this job started the run holding the lock (the norm)
+          "other-job" a marker from an earlier job — a stale file
+          "stood-down" this job's marker, but the lock predates it, which is
+                       what a nightly that found the seed's lock leaves
+          None        no marker at all
+        """
+        import subprocess
+
+        script = self.remote_script(parsed).replace(
+            "/var/lib/bloom-box-object-backup/backup.lock", f"{lock_dir}/backup.lock"
+        ).replace(
+            "/var/lib/bloom-box-object-backup/actions-run.started",
+            f"{lock_dir}/actions-run.started",
+        )
+        if contents is not None:
+            (lock_dir / "backup.lock").write_text(contents)
+        if marker is not None:
+            tag = self.RUN_TAG if marker != "other-job" else "999-1"
+            # The stood-down case stamps the marker AFTER the lock was taken.
+            stamped = 2_000_000_000 if marker == "stood-down" else 1
+            (lock_dir / "actions-run.started").write_text(f"{tag} {stamped}\n")
+        return subprocess.run(
+            ["bash", "-c", script, "bash", self.RUN_TAG],
+            capture_output=True, text=True,
+        )
+
+    def test_no_lock_file_is_not_an_error(self, parsed: dict, tmp_path):
+        result = self.run_remote(parsed, tmp_path)
+        assert result.returncode == 0
+        assert "nothing was running" in result.stdout
+
+    def test_a_lock_without_a_pid_is_not_an_error(self, parsed: dict, tmp_path):
+        result = self.run_remote(parsed, tmp_path, contents='{"started_at": 1700000000}')
+        assert result.returncode == 0
+        assert "nothing to stop" in result.stdout
+
+    def test_a_stale_pid_is_not_an_error(self, parsed: dict, tmp_path):
+        # The kernel drops the flock when the holder dies, but the metadata can
+        # outlive it.
+        result = self.run_remote(parsed, tmp_path, contents='{"pid": 999999, "started_at": 1700000000}')
+        assert result.returncode == 0
+        assert "gone already" in result.stdout
+
+    def test_garbage_in_the_lock_file_is_not_an_error(self, parsed: dict, tmp_path):
+        result = self.run_remote(parsed, tmp_path, contents="not json at all")
+        assert result.returncode == 0
+
+    @contextlib.contextmanager
+    def live_child(self):
+        """A process that exits 3 on SIGTERM, so being signalled is visible.
+
+        Reaped in a thread throughout. `kill -0` succeeds on a zombie, so an
+        unreaped child makes the script wait out its whole minute before
+        reporting — which turns a guard that fails to spare the process into a
+        one-minute test instead of an immediate one.
+        """
+        import subprocess
+        import sys
+        import threading
+
+        child = subprocess.Popen(
+            [sys.executable, "-c",
+             "import signal,sys,time\n"
+             "signal.signal(signal.SIGTERM, lambda *a: sys.exit(3))\n"
+             "print('up', flush=True)\n"
+             "time.sleep(60)"],
+            stdout=subprocess.PIPE, text=True,
+        )
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "up"
+        reaper = threading.Thread(target=child.wait, daemon=True)
+        reaper.start()
+        try:
+            yield child
+        finally:
+            child.kill()
+            reaper.join(timeout=10)
+
+    def test_a_marker_from_an_earlier_job_spares_the_run(self, parsed: dict, tmp_path):
+        """A marker is left on the host by every job that starts a run.
+
+        Reading one from last night and stopping whatever holds the lock today
+        is the same mistake as having no guard at all, so the tag has to match
+        this job before anything is signalled.
+        """
+        import json
+
+        with self.live_child() as child:
+            result = self.run_remote(
+                parsed, tmp_path,
+                contents=json.dumps({"pid": child.pid, "started_at": 1_700_000_000}),
+                marker="other-job",
+            )
+            assert "another job" in result.stdout, result.stdout
+            assert child.poll() is None, "signalled a run this job never started"
+
+    def test_the_seed_is_spared_when_a_stood_down_job_is_cancelled(
+        self, parsed: dict, tmp_path
+    ):
+        """The case this guard exists for.
+
+        The seed holds the lock for days. A nightly starts, stamps its own
+        marker, finds the lock held and stands down — leaving the seed's pid in
+        the lock file and its own tag in the marker. Cancelling that stood-down
+        job must not stop the seed: weeks of copying, halted silently, with the
+        Actions run reporting only that it was cancelled.
+
+        The tag matches here, so only the start times tell the two apart.
+        """
+        import json
+
+        with self.live_child() as seed:
+            result = self.run_remote(
+                parsed, tmp_path,
+                contents=json.dumps({"pid": seed.pid, "started_at": 1_700_000_000}),
+                marker="stood-down",
+            )
+            assert "already running before this job" in result.stdout, result.stdout
+            assert seed.poll() is None, "stopped the seed while cancelling another job"
+
+    def test_no_marker_at_all_spares_the_run(self, parsed: dict, tmp_path):
+        import json
+
+        with self.live_child() as child:
+            result = self.run_remote(
+                parsed, tmp_path,
+                contents=json.dumps({"pid": child.pid, "started_at": 1_700_000_000}),
+                marker=None,
+            )
+            assert "no marker" in result.stdout, result.stdout
+            assert child.poll() is None, "signalled without knowing whose run it is"
+
+    def test_a_lock_with_no_start_time_spares_the_run(self, parsed: dict, tmp_path):
+        """Nothing writes such a lock today, but guessing is the wrong default."""
+        import json
+
+        with self.live_child() as child:
+            result = self.run_remote(
+                parsed, tmp_path, contents=json.dumps({"pid": child.pid}),
+            )
+            assert "cannot compare" in result.stdout, result.stdout
+            assert child.poll() is None
+
+    def test_a_live_process_is_asked_to_stop(self, parsed: dict, tmp_path):
+        """A running process is signalled, exits on its own, and is seen to.
+
+        The child is reaped in a thread while the script polls. Without that it
+        lingers as a zombie, and `kill -0` succeeds on a zombie — so the script
+        would wait out its full timeout against a process that had already
+        exited. Real runs do not hit this: a seed in tmux is reaped by tmux,
+        and a workflow run is orphaned to init when the ssh shell exits.
+        """
+        import json
+        import subprocess
+        import sys
+        import threading
+
+        child = subprocess.Popen(
+            [sys.executable, "-c",
+             "import signal,sys,time\n"
+             "signal.signal(signal.SIGTERM, lambda *a: sys.exit(3))\n"
+             "print('up', flush=True)\n"
+             "time.sleep(60)"],
+            stdout=subprocess.PIPE, text=True,
+        )
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "up"
+
+        status = {}
+        reaper = threading.Thread(target=lambda: status.setdefault("rc", child.wait()))
+        reaper.start()
+        try:
+            result = self.run_remote(
+                parsed, tmp_path, contents=json.dumps({"pid": child.pid, "started_at": 1_700_000_000})
+            )
+            assert "asking pid" in result.stdout, result.stdout
+            reaper.join(timeout=15)
+            assert status.get("rc") == 3, "it was killed rather than asked to stop"
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)

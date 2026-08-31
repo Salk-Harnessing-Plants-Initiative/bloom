@@ -149,6 +149,88 @@ seed picks up where it stopped. Re-running costs one query, not one Box call
 per already-copied object — the ledger, not the Box listing, is what the plan
 is built against.
 
+## Stopping and resuming
+
+A run can be stopped at any point and started again later. It carries on from
+where it stopped — the ledger records every object as it is copied, so nothing
+is done twice and nothing is missed.
+
+This is what makes it safe to deploy during the seed. **Stop the backup, confirm
+it has stopped, deploy, start the backup again.** No coordination, no waiting
+for a multi-hour run to finish.
+
+### Stopping it
+
+Whichever of these you use, the effect is the same:
+
+| where it is running | how to stop it |
+|---|---|
+| by hand in tmux | `Ctrl-C`, or `kill <pid>` from another shell |
+| detached, or you are not attached to it | `kill $(python3 -c 'import json;print(json.load(open("/var/lib/bloom-box-object-backup/backup.lock"))["pid"])')` |
+| started by the scheduled workflow | cancel the run in the Actions tab |
+
+The lock file records the pid of whatever is running, so you never have to hunt
+for it in `ps`.
+
+Cancelling in the Actions tab stops **only a run that job started**. If a
+nightly found the seed already going and stood down, cancelling that nightly
+leaves the seed alone — which is what you want, and also means it is not a way
+to stop a seed you started by hand. Use `kill` for that.
+
+**Do not use `kill -9`.** That is the one thing it cannot survive tidily: it
+skips the cleanup, leaves the rclone container holding the RC port, and the next
+run then refuses to start until you remove it (it will tell you the command).
+
+### What it does when asked
+
+- finishes copying the object already in flight, and records it
+- starts nothing further
+- removes its rclone container, commits the ledger, writes the run report
+- exits **3** — "interrupted; progress is in the ledger and the next run resumes"
+
+While it is copying, it stops within seconds — it does not wait out the rest of
+the 20,000-object batch it was working through, nor plan another one.
+
+**One exception, worth knowing before you rely on it.** A run begins by asking
+Postgres for the object list, and on a full run that query reads every row of
+`storage.objects` and can take many minutes. A stop that arrives during it is
+not noticed until the query returns; the run then stops immediately, before
+copying anything. So a stop is quick during the copying and can be slow at the
+very start.
+
+If you are stopping it in order to deploy, confirm it has actually stopped —
+see below — rather than assuming. A cancelled workflow that gave up waiting
+says so on the run, as a warning reading `pid N has not stopped yet`.
+
+A stopped run is recorded **partial**, never `ok`. That matters: `ok` is what
+"everything up to here is backed up" points at, and a stopped run has not
+reached the end of the table. Recording it clean would move that marker past
+objects it never looked at.
+
+### Confirming it stopped cleanly
+
+```bash
+docker ps -a --filter name=bloom-box-backup-rclone     # expect: nothing
+sqlite3 /var/lib/bloom-box-object-backup/ledger.db \
+  "SELECT started_at, outcome FROM runs ORDER BY id DESC LIMIT 3;"
+```
+
+An empty container list means the cleanup ran. A `partial` outcome on the last
+row is what a stopped run looks like.
+
+### Resuming
+
+Run the same command again. There is no separate resume step:
+
+```bash
+python3 "$DEPLOY/scheduled-jobs/box-object-backup/backup_objects.py" \
+    --env prod --full --limit 500000 --verify 50
+```
+
+It re-reads the object list, skips everything the ledger already holds, and
+carries on. The skipped objects cost one database query between them, not one
+Box call each.
+
 ## Nightly behaviour
 
 Each scheduled run enumerates only objects whose `updated_at` is newer than

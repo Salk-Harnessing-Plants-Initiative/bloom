@@ -134,6 +134,7 @@ jobs:
           DEPLOY_PATH: ${{ steps.target.outputs.deploy_path }}
           DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
           VERIFY: ${{ github.event.inputs.verify || '50' }}
+          RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
@@ -150,10 +151,10 @@ jobs:
           # remote shell run the rest — `verify` is free-text and GitHub
           # validates it no further than "is a string".
           ssh -i ~/.ssh/deploy_key "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            bash -s -- "$DEPLOY_PATH" "$ENV_NAME" "$VERIFY" "$DRY_RUN" \
+            bash -s -- "$DEPLOY_PATH" "$ENV_NAME" "$VERIFY" "$RUN_TAG" "$DRY_RUN" \
             <<'REMOTE' 2>&1 | tee "${RUNNER_TEMP}/mirror-output.txt"
           set -euo pipefail
-          deploy_path="$1"; env_name="$2"; verify="$3"; dry_run="${4:-}"
+          deploy_path="$1"; env_name="$2"; verify="$3"; run_tag="$4"; dry_run="${5:-}"
 
           case "$verify" in
             ''|*[!0-9]*) echo "verify must be a whole number, got: $verify" >&2; exit 2 ;;
@@ -182,10 +183,97 @@ jobs:
           done < <(grep -E '^(BACKUP_[A-Z_]+|POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' \
                      "$env_file")
 
+          # Stamped just before launching, so the cancel step can tell the run
+          # THIS job starts from one that was already going. During the seed
+          # that distinction matters: the seed holds the lock, a nightly finds
+          # it held and stands down, and cancelling that stood-down job would
+          # otherwise stop the seed by mistake — days of work, silently.
+          #
+          # Both halves are needed. The tag rules out a marker left by an
+          # earlier job; the time rules out this job's own stand-down, where
+          # the marker is this job's but the lock is still the seed's. Written
+          # with the host's clock, the same one the lock file records, so the
+          # two are comparable without the runner's clock coming into it.
+          #
+          # A failed write is not worth failing the backup for: the cancel step
+          # then finds no marker and declines to signal anything.
+          marker=/var/lib/bloom-box-object-backup/actions-run.started
+          echo "$run_tag $(date +%s)" > "$marker" || echo "could not write $marker" >&2
+
           # --verify on every scheduled run: an unverified mirror cannot tell a
           # copied object from a lost one.
           python3 scheduled-jobs/box-object-backup/backup_objects.py \
             --env "$env_name" --verify "$verify" $dry_run
+          REMOTE
+
+      # Cancelling this job kills the ssh client on the runner, not the python
+      # process on the host — the remote gets SIGHUP when the connection drops.
+      # That used to be a hard kill: the cleanup in `finally` never ran and the
+      # rclone container was left holding the RC port, so the NEXT run refused
+      # to start until someone removed it by hand.
+      #
+      # The job now handles SIGHUP, so the drop alone is survivable. This step
+      # is belt and braces for the case where the connection outlives the
+      # cancellation: it asks the run to stop by name, using the pid the lock
+      # file records, and gives it a moment to put itself away.
+      - name: Ask the host to stop the run, if this job was cancelled
+        if: cancelled()
+        env:
+          RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        timeout-minutes: 3
+        run: |
+          set -uo pipefail
+          ssh -i ~/.ssh/deploy_key -o ConnectTimeout=15 \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s -- "$RUN_TAG" <<'REMOTE' || true
+          set -uo pipefail
+          run_tag="$1"
+          lock=/var/lib/bloom-box-object-backup/backup.lock
+          [ -r "$lock" ] || { echo "no lock file — nothing was running"; exit 0; }
+
+          # runlock.py writes {"pid": ..., "started_at": ..., "argv": ...}
+          pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pid",""))' "$lock" 2>/dev/null || true)"
+          case "$pid" in
+            ''|*[!0-9]*) echo "no pid in the lock file — nothing to stop"; exit 0 ;;
+          esac
+
+          # The lock names whoever holds it, which is not necessarily the run
+          # this job started. During the seed that distinction matters: the
+          # seed holds the lock for days, a nightly finds it held and stands
+          # down without touching the file, and cancelling THAT job would stop
+          # the seed by mistake. So the run step stamps a marker naming itself,
+          # and this only signals when the marker still names this job.
+          marker=/var/lib/bloom-box-object-backup/actions-run.started
+          [ -r "$marker" ] || { echo "no marker — this job started no run"; exit 0; }
+          read -r marked_tag stamped_at _ < "$marker" || true
+          if [ "${marked_tag:-}" != "$run_tag" ]; then
+            echo "the marker names another job — leaving pid $pid alone"
+            exit 0
+          fi
+          # Every run rewrites started_at as it takes the lock, so a lock older
+          # than the marker belongs to a run this job never started.
+          started_at="$(python3 -c 'import json,sys; print(int(float(json.load(open(sys.argv[1]))["started_at"])))' "$lock" 2>/dev/null || true)"
+          case "${started_at:-x}${stamped_at:-x}" in
+            *[!0-9]*) echo "cannot compare the start times — leaving pid $pid alone"; exit 0 ;;
+          esac
+          if [ "$started_at" -lt "$stamped_at" ]; then
+            echo "pid $pid was already running before this job — leaving it alone"
+            exit 0
+          fi
+
+          kill -0 "$pid" 2>/dev/null || { echo "pid $pid is gone already"; exit 0; }
+
+          echo "asking pid $pid to stop"
+          kill -TERM "$pid"
+          for _ in $(seq 1 30); do
+            kill -0 "$pid" 2>/dev/null || { echo "stopped cleanly"; exit 0; }
+            sleep 2
+          done
+          # Deliberately not escalating to SIGKILL: that is the hard kill this
+          # exists to avoid, and it would leave the container behind again. A
+          # run still going after a minute is worth a human looking.
+          echo "::warning::pid $pid has not stopped yet; leaving it alone"
           REMOTE
 
       # A run that stood down against the seed's lock exits 0, exactly as a

@@ -44,6 +44,7 @@ import report  # noqa: E402
 from copier import MAX_ATTEMPTS, VerifyReservoir, copy_all, verify_sample  # noqa: E402
 from ledger import Ledger  # noqa: E402
 from rclone_rc import MinioSource, RcloneError, RcloneRC  # noqa: E402
+import stopping  # noqa: E402
 from runlock import SKIP_MARKER, LockHeld, RunLock  # noqa: E402
 
 logger = logging.getLogger("bloom_box_object_backup")
@@ -80,6 +81,9 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+    # Before any work starts, so a stop arriving during the manifest read is
+    # honoured rather than killing the process partway through it.
+    stopping.install_handlers()
     try:
         return run_backup(args)
     except (dock.DockerError, lib.BackupError) as exc:
@@ -265,6 +269,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             limit=args.limit,
             verify_mismatched=totals.verify_mismatched,
             bucket_scoped=bool(args.buckets.strip()),
+            stopped=stopping.stopping(),
         )
         publish_report(
             daemon, state_dir, box_fs, args,
@@ -302,7 +307,9 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             totals.failed, MAX_ATTEMPTS,
         )
     return exit_code(
-        failed=totals.failed, verify_mismatched=totals.verify_mismatched
+        failed=totals.failed,
+        verify_mismatched=totals.verify_mismatched,
+        stopped=stopping.stopping(),
     )
 
 
@@ -346,7 +353,7 @@ def sample_planned_objects(manifest: Path, count: int = PREFLIGHT_SAMPLE) -> lis
     return candidates[::stride][:count]
 
 
-def exit_code(*, failed: int, verify_mismatched: int) -> int:
+def exit_code(*, failed: int, verify_mismatched: int, stopped: bool = False) -> int:
     """What the run tells its caller, which for a scheduled run is everything.
 
     A verification mismatch must NOT be 0. The workflow's only route to a human
@@ -365,6 +372,12 @@ def exit_code(*, failed: int, verify_mismatched: int) -> int:
         return 1
     if verify_mismatched:
         return 4
+    # 3 is already the documented "interrupted; progress is in the ledger and
+    # the next run resumes". Installing a signal handler means SIGINT no longer
+    # raises KeyboardInterrupt, so without this a stopped run would report the
+    # clean 0 of a run that finished everything.
+    if stopped:
+        return 3
     return 0
 
 
@@ -376,6 +389,7 @@ def run_outcome(
     limit: int | None,
     verify_mismatched: int = 0,
     bucket_scoped: bool = False,
+    stopped: bool = False,
 ) -> str:
     """Classify a finished run — and decide whether it can be a watermark.
 
@@ -386,6 +400,9 @@ def run_outcome(
     A run cut short by `--limit` has not seen the whole table; recording it
     clean would make the next run filter on its start time and skip everything
     the limit left behind, permanently and without saying so.
+
+    A run that was asked to stop has not reached the end of the table either,
+    for the same reason and with the same consequence.
 
     A run scoped by `--buckets` has not seen the other buckets. Recording it
     clean advances the watermark for ALL of them, so every object in the
@@ -401,7 +418,7 @@ def run_outcome(
     if crashed:
         return "error"
     truncated = limit is not None and copied >= limit
-    if failed or truncated or verify_mismatched or bucket_scoped:
+    if failed or truncated or verify_mismatched or bucket_scoped or stopped:
         return "partial"
     return "ok"
 
@@ -497,6 +514,14 @@ def copy_manifest(
     totals: Totals,
 ) -> None:
     for plan in plan_batches(manifest, ledger, args.limit):
+        # Between batches as well as between objects: a batch is 20,000
+        # objects, and a stop should not have to wait for the rest of one.
+        if stopping.stopping():
+            logger.warning(
+                "stopping before a further batch — %d object(s) copied so far",
+                totals.copied,
+            )
+            return
         report_skips(plan)
         totals.skipped += len(plan.skipped)
         totals.already_current += plan.already_current
