@@ -195,9 +195,13 @@
 Run these against the full branch, after every commit above exists locally, immediately before opening
 the PR — none of them is scoped to a single commit's diff.
 
-- [x] 4.1 Run `ruff check`, `ruff format --check`, and `black --check` (pinned per
-      `.pre-commit-config.yaml`) clean on all new/changed files (`k8s_client.py`,
-      `tests/test_k8s_client.py`, the new drift-check script and its test).
+- [x] 4.1 Run `ruff check`, `ruff format --check`, and `black --check` (pinned
+      versions matching `.pre-commit-config.yaml`) clean on all new/changed files
+      (`k8s_client.py`, `tests/test_k8s_client.py`, the new drift-check script and
+      its test). Note: `.pre-commit-config.yaml`'s `files:` scope only actually
+      covers `langchain/`, `bloommcp/`, and `services/workflows/` — `scripts/` and
+      root `tests/unit/` are clean today by this hand-run check, not by any
+      standing pre-commit or CI enforcement (found during PR review).
 - [x] 4.2 Run `uv lock --check` for `services/workflows` (or `python scripts/check-uv-locks.py`) to
       confirm the lockfile committed in 2.4 stays in sync.
 - [x] 4.3 File (or note in this change's own follow-up, if a formal issue isn't warranted yet) a

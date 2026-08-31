@@ -177,7 +177,12 @@ def build_workflow_body(run_id, batch_index: int, scan_ids: list[int]) -> dict:
     through unmodified."""
     body = _load_vendored_workflow()
 
-    parameters = body["spec"]["arguments"]["parameters"]
+    # .get() chains, not body["spec"]["arguments"]["parameters"] directly:
+    # `_load_vendored_workflow` only validates that `spec`/`metadata` are
+    # dicts, not their nested structure, so a vendored file missing
+    # `arguments`/`parameters` entirely (as opposed to having them but
+    # misnamed) must still raise K8sConfigError, not a raw KeyError.
+    parameters = body.get("spec", {}).get("arguments", {}).get("parameters")
     if not parameters or parameters[0].get("name") != "scan-ids":
         raise K8sConfigError(
             "K8s client not configured: vendored Workflow source's scan-ids "

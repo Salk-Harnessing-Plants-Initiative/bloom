@@ -213,6 +213,28 @@ not part of the implementation. The independent-copies test (`tasks.md` 2.2) exi
 guard against a *future* change introducing caching without also introducing a copy step, not because
 today's straightforward implementation needs one.
 
+### Refinement (found during PR review): a 404 is a *permanent* fetch failure, not a transient one
+
+The first implementation of "distinct failure messages for fetch-failed vs. content-drifted" (above)
+caught every network-level problem — DNS failure, timeout, and HTTP error status — in one
+`except (urllib.error.URLError, OSError)` clause and reported all of them as "transient — re-run this
+job." That's wrong for an HTTP 404 specifically: `urllib.error.HTTPError` is itself a subclass of
+`URLError` (confirmed directly against Python's `urllib.error` module, not assumed), so a 404 was being
+silently folded into the "transient" bucket. A 404 on `raw.githubusercontent.com` for a specific commit
+SHA means that commit no longer resolves upstream at all — exactly the dangling-pin scenario the Risk
+above describes — and no amount of retrying or re-running the job fixes that; only a human re-pinning
+`SLEAP_ROOTS_PIPELINE_REF` does. `check_vendored_workflow_drift.py` now special-cases `HTTPError` with
+`code == 404` into its own `PinNotFoundError` (a `FetchError` subclass), which `fetch_with_retry` never
+retries (retrying a 404 wastes the retry budget on something that can't succeed) and `check_drift`
+reports with a distinct "PIN NO LONGER RESOLVES UPSTREAM (re-pin required, not transient)" message.
+Two related gaps closed at the same time: `http.client.IncompleteRead` (raised by `resp.read()` on a
+truncated response — not a `URLError`/`OSError` subclass, so it previously escaped uncaught and would
+have crashed the script with Python's default exit code 1, colliding with the "content drift" exit
+code) is now also caught; and `SLEAP_ROOTS_PIPELINE_REF` being missing or containing something that
+isn't a 40-character commit SHA is now a clean, distinct "PIN FILE MISSING/MALFORMED" failure (exit
+code 3) that never reaches the network, rather than a raw `FileNotFoundError` or a confusing 404 from
+building a URL out of garbage.
+
 ### Error handling for a missing/unparseable vendored file
 
 Treated the same as a missing `WORKFLOWS_K8S_CA_CERT`/`_TOKEN`/`_API_URL` today: a `K8sConfigError`
@@ -228,12 +250,15 @@ module docstring).
 
 ## Risks / Trade-offs
 
-- **Pin points at an unmerged upstream branch head.** `SLEAP_ROOTS_PIPELINE_REF` currently records
-  `4d00ec6aa84c0a0f6be07269630e136aead57b6e`, the head of `sleap-roots-pipeline` PR #49, which is open
-  — not yet merged to that repo's `main`. The content is correct regardless (the PR is comment-only,
-  doesn't touch `spec`), and CI's drift-check fetches by exact SHA regardless of merge status, so this
-  doesn't block or weaken the fix. Tracked as a follow-up task to re-verify (and, if needed, re-pin to
-  a `main`-reachable SHA) once PR #49 merges — see `tasks.md`.
+- **RESOLVED during PR review, not merely a theoretical risk: the pin pointed at an unmerged upstream
+  branch head, and hitting the consequence took days, not a hypothetical future.** `SLEAP_ROOTS_PIPELINE_REF`
+  originally recorded `4d00ec6aa84c0a0f6be07269630e136aead57b6e`, the head of `sleap-roots-pipeline` PR
+  #49. That PR merged (`9df1e52d...`) and — as is normal, expected cleanup — its feature branch was
+  deleted, leaving the original pinned commit unreachable from `main` and at real risk of eventual
+  garbage collection. Re-pinned live to `main`'s new HEAD once the merge landed (same commit content;
+  the PR was comment-only). This is exactly the scenario the CI-drift-check decision's "distinct failure
+  messages" bullet anticipated in the abstract — see the classification refinement immediately below,
+  which closes the gap a first implementation of that idea still had.
 - **This is the first bespoke external-repo-content fetch in `pr-checks.yml`** (see the CI drift-check
   decision above for the distinction from the existing, less rigorous Supabase CLI `curl` precedent).
   Rejected alternatives (published package, live fetch at build/runtime for the *service itself*, as

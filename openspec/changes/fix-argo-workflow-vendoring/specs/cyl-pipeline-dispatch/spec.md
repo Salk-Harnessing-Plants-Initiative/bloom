@@ -134,13 +134,15 @@ where `<SHA>` is the commit recorded in `services/workflows/vendored/SLEAP_ROOTS
 diff it byte-for-byte against `services/workflows/vendored/sleap-roots-pipeline.yaml`. Any mismatch
 SHALL fail the pull request. This SHALL be the only network fetch of upstream content anywhere in this
 mechanism — the running service and its container build SHALL NOT fetch this file at build or runtime.
-The job SHALL distinguish, in its failure output, a failed upstream fetch (transient — the check could
-not run) from a genuine content mismatch (real drift) — the two require different human responses and
-SHALL NOT produce the same failure message. The job SHALL retry the fetch at least once before treating
-it as a fetch failure, and SHALL run under an explicit time limit. This job's path-scoping SHALL be
-implemented as a condition on this job alone (e.g. a job-level `if:`), never as a change to
-`pr-checks.yml`'s shared top-level trigger — a top-level path filter would scope every other job in the
-file, not just this one.
+The job SHALL distinguish, in its failure output, three cases that require different human responses
+and SHALL NOT produce the same failure message: a transient failed upstream fetch (the check could not
+run — re-run the job), the pinned commit no longer resolving upstream at all (an HTTP 404 — the pin
+itself is invalid and needs re-pinning, not a re-run), and a genuine content mismatch (real drift). The
+job SHALL retry a transient fetch failure at least once before treating it as such, but SHALL NOT retry
+a 404 — retrying a commit that doesn't exist upstream cannot succeed. The job SHALL run under an
+explicit time limit. This job's path-scoping SHALL be implemented as a condition on this job alone (e.g.
+a job-level `if:`), never as a change to `pr-checks.yml`'s shared top-level trigger — a top-level path
+filter would scope every other job in the file, not just this one.
 
 #### Scenario: A PR whose vendored copy matches the pinned upstream commit passes
 
@@ -163,6 +165,14 @@ file, not just this one.
 - **THEN** the job fails
 - **AND** its failure message identifies this as a fetch failure, not a content mismatch — a reviewer
   reading the failure does not need to inspect the script's source to tell the two cases apart
+
+#### Scenario: A pinned commit that no longer resolves upstream is distinguishable from a transient failure
+
+- **WHEN** the pinned commit returns HTTP 404 from `raw.githubusercontent.com` (e.g. its branch was
+  deleted after merge and the commit was garbage-collected)
+- **THEN** the job fails without retrying
+- **AND** its failure message identifies this as the pin no longer resolving upstream, requiring a
+  re-pin — not "transient, re-run this job," which would never resolve the actual problem
 
 #### Scenario: A fetch that fails once but succeeds on retry does not fail the job
 

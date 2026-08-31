@@ -510,6 +510,7 @@ def test_build_workflow_body_raises_configerror_on_unparseable_vendored_file(
     [
         "- just\n- a\n- list\n",  # valid YAML, but not a mapping at all
         "apiVersion: argoproj.io/v1alpha1\nkind: Workflow\nmetadata: {}\n",  # missing spec
+        "apiVersion: argoproj.io/v1alpha1\nkind: Workflow\nspec: {}\n",  # missing metadata
     ],
 )
 def test_build_workflow_body_raises_configerror_on_structurally_wrong_vendored_file(
@@ -529,6 +530,34 @@ def test_build_workflow_body_raises_configerror_when_scan_ids_parameter_missing_
 ):
     mutated = copy.deepcopy(vendored_workflow)
     mutated["spec"]["arguments"]["parameters"][0]["name"] = "not-scan-ids"
+    mutated_file = tmp_path / "mutated.yaml"
+    mutated_file.write_text(yaml.safe_dump(mutated))
+    monkeypatch.setattr(k8s_client, "_VENDORED_WORKFLOW_PATH", mutated_file)
+    with pytest.raises(K8sConfigError):
+        k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+
+
+def test_build_workflow_body_raises_configerror_when_arguments_key_is_entirely_missing(
+    monkeypatch, tmp_path, vendored_workflow
+):
+    """Distinct from the misnamed-parameter case above: here `spec` itself is
+    a valid dict (passes `_load_vendored_workflow`'s shape check) but has no
+    `arguments` key at all, so indexing `spec["arguments"]["parameters"]`
+    must not raise a raw KeyError."""
+    mutated = copy.deepcopy(vendored_workflow)
+    del mutated["spec"]["arguments"]
+    mutated_file = tmp_path / "mutated.yaml"
+    mutated_file.write_text(yaml.safe_dump(mutated))
+    monkeypatch.setattr(k8s_client, "_VENDORED_WORKFLOW_PATH", mutated_file)
+    with pytest.raises(K8sConfigError):
+        k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+
+
+def test_build_workflow_body_raises_configerror_when_parameters_key_is_entirely_missing(
+    monkeypatch, tmp_path, vendored_workflow
+):
+    mutated = copy.deepcopy(vendored_workflow)
+    del mutated["spec"]["arguments"]["parameters"]
     mutated_file = tmp_path / "mutated.yaml"
     mutated_file.write_text(yaml.safe_dump(mutated))
     monkeypatch.setattr(k8s_client, "_VENDORED_WORKFLOW_PATH", mutated_file)
