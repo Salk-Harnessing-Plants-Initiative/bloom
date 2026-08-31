@@ -33,6 +33,11 @@ Requests reaching bloommcp's routes through the tunnel hostname SHALL be restric
 - **WHEN** a request's immediate TCP peer is not the trusted `cloudflared` container (i.e., it did not arrive through the tunnel), but it carries a `Cf-Connecting-IP` header claiming an Anthropic-range IP
 - **THEN** Caddy does not honor that header for a connection outside the trusted-proxy chain, and the request is evaluated as coming from its actual, non-trusted source IP
 
+#### Scenario: A request through the tunnel with no `Cf-Connecting-IP` header at all fails closed
+
+- **WHEN** a request arrives via the trusted `cloudflared` peer but carries no `Cf-Connecting-IP` header at all (distinct from a spoofed one — simply absent)
+- **THEN** Caddy resolves the client IP to `cloudflared`'s own container address (the immediate TCP peer, with no header to override it), which is outside Anthropic's published ranges, so the request is rejected the same as any other out-of-range request
+
 ### Requirement: Tunnel Connectivity Is Environment-Additive
 
 The Cloudflare Tunnel SHALL NOT alter existing request handling for `DOMAIN_MAIN`, `DOMAIN_STUDIO`, or `DOMAIN_MINIO` traffic, and SHALL be scoped to the staging environment only.
@@ -44,5 +49,10 @@ The Cloudflare Tunnel SHALL NOT alter existing request handling for `DOMAIN_MAIN
 
 #### Scenario: Production is not affected by this change
 
-- **WHEN** the production compose stack is deployed
-- **THEN** no `cloudflared` service runs and no tunnel-related Caddy routes or `remote_ip` restrictions apply — this capability exists on staging only until a separate follow-up change extends it
+- **WHEN** the production compose stack is deployed (same `docker-compose.prod.yml` staging uses, since no separate prod compose file exists)
+- **THEN** the `cloudflared` service does not start, because it is gated behind a Compose profile that only staging's deploy step activates — production's `docker compose up` neither activates that profile nor starts the container — and no tunnel-related Caddy routes or `remote_ip` restrictions apply, since `TUNNEL_HOSTNAME` is unset in `.env.prod`
+
+#### Scenario: Production's env validation still passes despite the new required-looking variables
+
+- **WHEN** `scripts/validate_env.sh` runs against `.env.prod` as part of a production deploy
+- **THEN** it passes — `.env.prod`'s assembly includes harmless placeholder values for `CLOUDFLARE_TUNNEL_TOKEN` and `TUNNEL_HOSTNAME` (unused, since the profile that would consume them is never activated), so the new `${VAR}` references `validate_env.sh` derives from `docker-compose.prod.yml` do not turn into a production deploy failure
