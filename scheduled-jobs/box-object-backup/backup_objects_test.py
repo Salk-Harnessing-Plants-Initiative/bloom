@@ -352,6 +352,14 @@ class TestOutcomeProtectsTheWatermark:
         # limit — that run really did see everything.
         assert job.run_outcome(crashed=False, failed=0, copied=1_200, limit=500_000) == "ok"
 
+    def test_one_object_short_of_the_limit_still_saw_the_whole_table(self):
+        # The boundary itself: `copied >= limit` means the run may have been
+        # cut off, one below means it ran out of work first. Only far-from-the
+        # -edge values were pinned, which hold either way.
+        assert job.run_outcome(
+            crashed=False, failed=0, copied=499_999, limit=500_000
+        ) == "ok"
+
     def test_failures_still_mark_a_run_partial(self):
         assert job.run_outcome(crashed=False, failed=3, copied=10, limit=None) == "partial"
 
@@ -392,11 +400,12 @@ class TestVerificationCanFailARun:
 
 
 class TestVerifyReservoir:
-    """The sample must cover the run, not its first few thousand objects."""
+    """The sample must cover the run, not its first few thousand objects, and
+    must not change because the network was faster on one night."""
 
-    def make(self, cap, n):
-        r = copier.VerifyReservoir(cap, seed=1234)
-        for i in range(n):
+    def make(self, cap, n, order=None):
+        r = copier.VerifyReservoir(cap)
+        for i in (order if order is not None else range(n)):
             r.offer(f"obj-{i:06d}")
         return r
 
@@ -425,8 +434,48 @@ class TestVerifyReservoir:
         # A mismatch must stay findable on a re-run rather than vanishing.
         assert self.make(50, 10_000).items == self.make(50, 10_000).items
 
+    def test_is_reproducible_even_when_the_order_changes(self):
+        """The one that matters in production.
+
+        `offer` is called by whichever copy worker finishes first, so the order
+        follows Box's network timing and differs every run. Seeded reservoir
+        sampling was reproducible for a fixed sequence and for nothing else —
+        reproducible in this test file and in no real run.
+        """
+        import random
+
+        shuffled = list(range(10_000))
+        random.Random(7).shuffle(shuffled)
+        in_order = self.make(50, 10_000)
+        out_of_order = self.make(50, 10_000, order=shuffled)
+        assert out_of_order.items == in_order.items, (
+            "a different arrival order sampled different objects"
+        )
+
+    def test_the_sample_does_not_depend_on_the_process(self):
+        """str hashing is salted per process; the sample must not be.
+
+        Pinned to actual values so a change of hash shows up as a failing test
+        rather than as verification quietly checking somewhere else.
+        """
+        # Confirmed identical under PYTHONHASHSEED 0, 1 and 12345.
+        assert self.make(3, 1_000).items == [
+            "obj-000815", "obj-000894", "obj-000343"
+        ]
+
     def test_counts_everything_it_was_offered(self):
         assert self.make(50, 10_000).seen == 10_000
+
+    def test_an_object_that_cannot_be_ordered_is_still_accepted(self):
+        """Ties must never compare the objects themselves.
+
+        StorageObject is a frozen dataclass with no ordering, so a tie that
+        reached it would raise TypeError mid-run, inside a copy worker.
+        """
+        r = copier.VerifyReservoir(5)
+        for _ in range(10):
+            r.offer(obj(name="same/path.png"))
+        assert len(r) == 5
 
 
 class TestBoxRootIsChecked:

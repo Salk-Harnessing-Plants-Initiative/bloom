@@ -7,8 +7,9 @@ parsing, Docker, or the workflow that schedules it.
 
 from __future__ import annotations
 
+import hashlib
+import heapq
 import logging
-import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -102,37 +103,61 @@ def copy_all(
 
 
 class VerifyReservoir:
-    """Bounded, uniform, reproducible sample of the objects a run copied.
+    """Bounded, uniform, order-independent sample of the objects a run copied.
 
     The pool cannot simply be the first N — a seed night copies half a million
     objects and the head of the run is not representative of it. Nor can it be
     everything: that is the memory the batching exists to avoid.
 
-    Reservoir sampling gives every copied object the same chance of being kept
-    while holding at most `cap` of them. The RNG is seeded to a constant so a
-    re-run over the same sequence samples the same objects — a mismatch stays
-    reproducible instead of vanishing on the next attempt, which was the point
-    of the original stride.
+    Which objects are kept is decided by a hash of each object's path, keeping
+    the `cap` smallest. That is a uniform sample, and — the part that matters —
+    it does not depend on the order they were offered in. Reservoir sampling
+    with a seeded RNG was uniform but not that: `offer` is called by whichever
+    of the copy workers finishes first, so the order varies with Box's network
+    timing and every run sampled different objects. It was only reproducible
+    single-threaded, which is to say only in its tests.
+
+    Reproducibility is the point: a verification mismatch stays findable on a
+    re-run instead of vanishing, so it can be investigated rather than guessed
+    at.
     """
 
-    def __init__(self, cap: int, seed: int = 0) -> None:
+    def __init__(self, cap: int) -> None:
         self.cap = cap
         self.seen = 0
-        self.items: list = []
-        self._rng = random.Random(seed)
+        # Entries are (-rank, path, arrival, obj), a max-heap by rank: the
+        # worst-ranked entry sits on top and is the one evicted, so what
+        # remains is the `cap` best. `arrival` only breaks ties, so the
+        # comparison never reaches `obj`, which need not be orderable.
+        self._heap: list[tuple[int, str, int, object]] = []
+
+    @staticmethod
+    def _rank(obj) -> tuple[int, str]:
+        """Where this object falls in the sample, from its path alone.
+
+        blake2b rather than hash(): the built-in is salted per process, so it
+        would sample differently on every run — the exact property being fixed.
+        """
+        path = str(getattr(obj, "storage_path", obj))
+        digest = hashlib.blake2b(path.encode("utf-8"), digest_size=8).digest()
+        return int.from_bytes(digest, "big"), path
 
     def offer(self, obj) -> None:
         self.seen += 1
-        if len(self.items) < self.cap:
-            self.items.append(obj)
-            return
-        # Replace with probability cap/seen, which keeps the sample uniform.
-        idx = self._rng.randrange(self.seen)
-        if idx < self.cap:
-            self.items[idx] = obj
+        rank, path = self._rank(obj)
+        entry = (-rank, path, self.seen, obj)
+        if len(self._heap) < self.cap:
+            heapq.heappush(self._heap, entry)
+        elif entry[0] > self._heap[0][0]:
+            heapq.heapreplace(self._heap, entry)
+
+    @property
+    def items(self) -> list:
+        """The sample, in a fixed order so what is checked is fixed too."""
+        return [entry[3] for entry in sorted(self._heap, key=lambda e: (-e[0], e[1]))]
 
     def __len__(self) -> int:
-        return len(self.items)
+        return len(self._heap)
 
 
 def copy_one(

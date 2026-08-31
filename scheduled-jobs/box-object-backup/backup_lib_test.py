@@ -270,6 +270,16 @@ def test_object_over_the_box_file_cap_is_unsafe():
     assert "per-file limit" in unsafe_reason(obj(size=60 * 1024**3))
 
 
+def test_a_file_exactly_at_the_box_limit_is_allowed():
+    # The comparison is `>`, so the limit itself is fine. Only 60GiB was ever
+    # tested, which passes whether the boundary is right or off by one.
+    assert unsafe_reason(obj(size=lib.BOX_MAX_FILE_BYTES)) is None
+
+
+def test_a_file_one_byte_over_the_box_limit_is_not():
+    assert "per-file limit" in unsafe_reason(obj(size=lib.BOX_MAX_FILE_BYTES + 1))
+
+
 def test_unknown_size_is_not_treated_as_oversized():
     assert unsafe_reason(obj(size=None)) is None
 
