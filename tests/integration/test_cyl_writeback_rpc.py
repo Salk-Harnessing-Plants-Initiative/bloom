@@ -865,8 +865,17 @@ def test_a7_rollback_restores_strict_a3(pg_conn):
         cur.execute("SELECT 1 FROM pg_proc WHERE proname='insert_cyl_result_envelope'")
         assert cur.fetchone() is not None, "a7 rollback must keep the function (body-only change)"
         _, imgs = _seed_scan(cur)
+        # A RAISE EXCEPTION aborts the whole transaction, not just this statement -- a plain
+        # ROLLBACK (as in test_all_or_nothing_rolls_back_registry) would also undo the three
+        # migration/rollback applications above, falling back to whatever the ambient DB's
+        # actually-committed function body is (which, once this PR itself is merged, IS the
+        # a7-pinned body -- the opposite of what this test needs to keep exercising). Use a
+        # SAVEPOINT so only the expected-failure statement rolls back, preserving the
+        # in-transaction rollback-to-a3 body for the assertion below.
+        cur.execute("SAVEPOINT expect_a7_rejected")
         with pytest.raises(psycopg.errors.RaiseException):
             _call(cur, _envelope(imgs, contract_version="0.1.0a7", idempotency_key="a7rb"))
+        cur.execute("ROLLBACK TO SAVEPOINT expect_a7_rejected")
         # the restored strict-a3 body accepts a3 again
         _, imgs2 = _seed_scan(cur)
         res = _call(cur, _envelope(imgs2, contract_version="0.1.0a3", idempotency_key="a7rb-a3"))
