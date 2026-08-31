@@ -13,6 +13,7 @@ dependencies = [
     # Frame decoding + encoding for scan-to-video.
     "numpy>=2.0.0",
     "pillow>=12.0.0",
+    "tzdata>=2025.1",
     # Security floor for the supabase auth/JWT transitive dep, per repo convention.
     # Bumped past CVE-2026-69247 (fixed in 50.0.0), disclosed 2026-08-03.
     "cryptography>=50.0.0",

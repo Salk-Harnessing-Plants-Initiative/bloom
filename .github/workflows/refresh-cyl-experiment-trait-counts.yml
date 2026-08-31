@@ -45,6 +45,12 @@ name: Refresh cyl_experiment_trait_counts
 # dispatch input directly -- see the inline comments at each site, and design.md D8's addendum
 # (fix-cyl-scan-traits-latest-rollup) for the full reasoning, including why the scheduled path
 # uses a separate, ungated GitHub Environment rather than `production` itself.
+#
+# bloom#736: this job runs on the same self-hosted `salk-network` runner deploy.yml uses (see
+# its own runs-on comment), not a GitHub-hosted one -- GitHub-hosted runners have no network
+# route to the Salk server at all, confirmed empirically when this workflow's first live
+# scheduled run failed its curl call outright. See design.md's D8 addendum, part 2
+# (fix-cyl-scan-traits-latest-rollup) for the full investigation and the accepted trade-offs.
 
 on:
   workflow_dispatch:
@@ -88,7 +94,16 @@ concurrency:
 
 jobs:
   refresh:
-    runs-on: ubuntu-latest
+    # bloom#736: a GitHub-hosted runner (the previous `ubuntu-latest`) has no network route
+    # to either host -- same self-hosted label deploy.yml's own jobs use, and for the same
+    # reason (see that file's own comment near its runs-on ternary). Applied unconditionally
+    # to both staging and production -- this job has no per-host boundary, and no
+    # ubuntu-latest escape-hatch input like deploy.yml's own `runner` input, since this job
+    # isn't a required/blocking check and an escape hatch wouldn't help the unattended
+    # `schedule` trigger anyway. If this runner is offline, a run queues rather than failing
+    # fast -- accepted, not mitigated; see design.md's D8 addendum, part 2 for the full
+    # reasoning, including this job now sharing a runner pool with deploy.yml's deploy jobs.
+    runs-on: ["self-hosted", "linux", "salk-network"]
     # bloom#708: a SEPARATE expression from ENVIRONMENT below and concurrency.group
     # above. A `schedule` event has no `github.event.inputs` context, so a scheduled
     # run always targets production -- but it must NOT go through `production`'s own
@@ -105,6 +120,8 @@ jobs:
     # for the full reasoning, including an accepted, retry-safe risk this shares a
     # concurrency group with manual production dispatches.
     environment: ${{ github.event_name == 'schedule' && 'production-scheduled-refresh' || github.event.inputs.environment }}
+    # Only bounds execution time once a runner is assigned -- does NOT bound how long a run
+    # can sit queued waiting for the self-hosted runner (bloom#736).
     timeout-minutes: 2
     steps:
       - name: Call refresh_cyl_experiment_trait_counts()
