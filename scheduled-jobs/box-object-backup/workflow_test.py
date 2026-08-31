@@ -326,7 +326,6 @@ class TestTheHeadlineCarriesTheCounts:
 
     def run_summary(self, parsed: dict, log: str, outcome: str = "success") -> str:
         """Execute the real step against a real log, and return the headline."""
-        import re
         import subprocess
         import tempfile
         from pathlib import Path as P
