@@ -445,8 +445,28 @@ def test_minio_fs_declares_the_minio_provider():
     assert "provider=Minio" in MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
 
 
-def test_minio_fs_carries_the_endpoint():
-    assert "endpoint=http://m:9000" in MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
+def test_minio_fs_carries_the_endpoint_quoted():
+    # QUOTED, not bare. rclone ends an fs at the first unquoted colon, and the
+    # endpoint carries two — bare, rclone read the endpoint as `http`, dropped
+    # every parameter after it, and no object could be copied. The previous
+    # version of this test asserted the bare form, so it held the bug in place.
+    fs = MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
+    assert 'endpoint="http://m:9000"' in fs
+    assert "endpoint=http://m:9000," not in fs
+
+
+def test_minio_fs_keeps_every_parameter_after_the_endpoint():
+    # The real damage was positional: everything following the unquoted colon
+    # was read as path, so the credentials never applied at all.
+    fs = MinioSource("http://m:9000", "key", "sec", "bloom-storage").fs()
+    tail = fs.split('endpoint="http://m:9000"', 1)[1]
+    for param in ("access_key_id=", "secret_access_key=", "region=", "force_path_style="):
+        assert param in tail, f"{param} lost after the endpoint"
+
+
+def test_minio_fs_ends_at_the_bucket_not_inside_the_endpoint():
+    fs = MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
+    assert fs.rsplit(":", 1)[1] == "bloom-storage"
 
 
 def test_minio_fs_forces_path_style():
@@ -519,7 +539,17 @@ def test_redact_hides_the_daemon_password():
 
 def test_redact_leaves_the_endpoint_readable():
     fs = MinioSource("http://supabase-minio:9000", "k", "s", "bloom-storage").fs()
-    assert "endpoint=http://supabase-minio:9000" in redact(fs)
+    assert 'endpoint="http://supabase-minio:9000"' in redact(fs)
+
+
+def test_redact_hides_a_secret_that_needed_quoting():
+    # The characters that force quoting are exactly the ones the old pattern
+    # excluded, so a quoted secret passed through in full. Once the endpoint is
+    # quoted too, a redactor that cannot read quotes redacts nothing at all.
+    for secret in ('pa,ss', 'pa"ss', 'pa:ss', 'pa,s"s:x'):
+        out = redact(MinioSource("http://m:9000", "user", secret, "bloom-storage").fs())
+        assert secret not in out, f"leaked {secret!r}"
+        assert "user" not in out.replace("bloom-storage", "")
 
 
 def test_redact_leaves_an_ordinary_message_alone():

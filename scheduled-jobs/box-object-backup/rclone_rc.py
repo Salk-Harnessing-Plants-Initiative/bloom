@@ -86,8 +86,16 @@ class MinioSource:
 
 
 def _escape(value: str) -> str:
-    """Quote a connection-string value if it holds a separator character."""
-    if any(ch in value for ch in ',"'):
+    """Quote a connection-string value if it holds a separator character.
+
+    `:` belongs in that set as much as `,` does. rclone ends an fs at the first
+    UNQUOTED colon, and the endpoint always carries two
+    (`http://supabase-minio:9000`) — leaving it bare made rclone read the
+    endpoint as `http`, drop every parameter after it, and fail every copy:
+
+        ERROR : Custom endpoint `http` was not a valid URI
+    """
+    if any(ch in value for ch in ',":'):
         return '"' + value.replace('"', '""') + '"'
     return value
 
@@ -175,8 +183,16 @@ def _error_detail(exc: urllib.error.HTTPError) -> str:
 # connection string carrying MinIO's root credentials. Scrub them before the
 # message reaches a log line.
 SECRET_PARAMS = ("secret_access_key", "access_key_id", "rc-pass")
+
+# The value is either a quoted run (doubled quotes escape a literal one) or a
+# bare token. The bare alternative must NOT exclude `"` and `,` the way an
+# earlier version did: those are exactly the characters `_escape` wraps a value
+# in, so the pattern could not match a quoted secret and passed it through in
+# full. Now that `_escape` also quotes on `:`, every credential in a real fs
+# string is quoted — a redactor that cannot read quotes would redact nothing.
 _SECRET_RE = re.compile(
-    r"(" + "|".join(SECRET_PARAMS) + r")=([^,\s:\"]+)", re.IGNORECASE
+    r"(" + "|".join(SECRET_PARAMS) + r")=(\"(?:[^\"]|\"\")*\"|[^,\s:]+)",
+    re.IGNORECASE,
 )
 
 
