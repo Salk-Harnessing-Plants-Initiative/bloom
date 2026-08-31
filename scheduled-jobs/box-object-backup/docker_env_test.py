@@ -259,3 +259,37 @@ class TestTheDaemonPasswordIsNotDiscoverable:
         assert "no-new-privileges" in argv
         assert "--cap-drop" in argv
         assert "ALL" in argv
+
+
+class TestStaleDaemonDetection:
+    """The leak this exists to catch.
+
+    `daemon.stop()` lives in a `finally`, and `finally` does not run when the
+    process is killed with SIGTERM — a reboot, a `kill`, a cancelled workflow.
+    The container survives, keeps the RC port, and the next run dies on
+    `port is already allocated` with nothing pointing at the cause.
+    """
+
+    def test_no_leftovers_is_an_empty_list(self, captured):
+        calls, scripted = captured
+        scripted["stdout"] = ""
+        assert dock.find_stale_daemons() == []
+
+    def test_a_leftover_is_reported_with_its_status(self, captured):
+        calls, scripted = captured
+        scripted["stdout"] = "bloom-box-backup-rclone-a1b2 (Up 3 days)\n"
+        assert dock.find_stale_daemons() == ["bloom-box-backup-rclone-a1b2 (Up 3 days)"]
+
+    def test_stopped_containers_count_too(self, captured):
+        # --all, not just running: an exited container still holds its name and
+        # its published port binding until it is removed.
+        calls, scripted = captured
+        scripted["stdout"] = "x (Exited (137) 2 days ago)\n"
+        dock.find_stale_daemons()
+        assert "--all" in calls[0]
+
+    def test_only_this_job_s_containers_are_considered(self, captured):
+        calls, scripted = captured
+        scripted["stdout"] = ""
+        dock.find_stale_daemons()
+        assert f"name={dock.RC_CONTAINER_PREFIX}" in calls[0]

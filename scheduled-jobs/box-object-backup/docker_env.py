@@ -201,6 +201,29 @@ class RcDaemon:
             logger.warning("could not remove rclone container: %s", exc)
 
 
+def find_stale_daemons() -> list[str]:
+    """Containers this job left behind, as `<name> (<status>)` lines.
+
+    `daemon.stop()` sits in a `finally`, which does not run when the process
+    is killed with SIGTERM — a reboot, a `kill`, a cancelled Actions job. The
+    container then outlives the run that made it, still holding the RC port
+    and a live Box session, and the next run fails on `port is already
+    allocated` with nothing to say why.
+
+    Callers must already hold the run lock. That is what makes the answer
+    unambiguous: a container carrying this prefix cannot belong to a
+    legitimate concurrent run, because there cannot be one.
+    """
+    out = run(
+        [
+            which("docker"), "ps", "--all",
+            "--filter", f"name={RC_CONTAINER_PREFIX}",
+            "--format", "{{.Names}} ({{.Status}})",
+        ]
+    )
+    return [line for line in out.splitlines() if line.strip()]
+
+
 def start_rc_daemon(
     network: str,
     rclone_config: str,

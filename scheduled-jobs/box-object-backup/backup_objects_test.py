@@ -661,6 +661,7 @@ class TestRunLockedWiresItsPartsTogether:
         class FakeDock:
             DB_SERVICE = "db-prod"
             STATE_MOUNT = "/state"
+            RC_CONTAINER_PREFIX = job.dock.RC_CONTAINER_PREFIX
             DockerError = job.dock.DockerError
 
             @staticmethod
@@ -683,6 +684,10 @@ class TestRunLockedWiresItsPartsTogether:
             def psql_query_to_file(container, sql, user, database, destination):
                 destination.write_text(TestRunLockedWiresItsPartsTogether.MANIFEST)
                 return 2
+
+            @staticmethod
+            def find_stale_daemons():
+                return state.get("stale", [])
 
             @staticmethod
             def start_rc_daemon(**kwargs):
@@ -785,9 +790,61 @@ class TestRunLockedWiresItsPartsTogether:
         state, tmp_path = harness
         assert job.run_locked(self.args(tmp_path, verify=2), tmp_path) == 0
 
+    def test_a_leftover_container_stops_the_run_before_anything_is_copied(self, harness):
+        # The check must be reachable from the run, not merely importable.
+        state, tmp_path = harness
+        state["stale"] = ["bloom-box-backup-rclone-dead (Up 3 days)"]
+        with pytest.raises(job.lib.BackupError, match="earlier run"):
+            job.run_locked(self.args(tmp_path), tmp_path)
+        assert state["copied"] == [], "copied despite a stale daemon holding the port"
+
     def test_the_daemon_is_stopped_even_when_the_run_raises(self, harness):
         state, tmp_path = harness
         state["missing"].add("storage-single-tenant/images/exp-42/a.png/v1")
         with pytest.raises(job.lib.BackupError):
             job.run_locked(self.args(tmp_path), tmp_path)
         assert state["daemon_stopped"], "the rclone container was left running"
+
+
+class TestStaleDaemonStopsTheRun:
+    """A leftover container is refused, not removed.
+
+    Removing one is destructive, and this job should not do that on its own
+    initiative. What it owes the operator is a message that names the container
+    and the command — rather than docker's `port is already allocated`, which
+    says nothing about a run three nights ago.
+    """
+
+    def test_a_leftover_refuses_the_run(self, monkeypatch):
+        monkeypatch.setattr(
+            job.dock, "find_stale_daemons",
+            lambda: ["bloom-box-backup-rclone-a1b2 (Up 3 days)"],
+        )
+        with pytest.raises(job.lib.BackupError) as caught:
+            job.check_no_stale_daemon()
+        message = str(caught.value)
+        assert "bloom-box-backup-rclone-a1b2" in message, "the container is not named"
+        assert "docker rm" in message, "no command to act on"
+
+    def test_a_clean_host_passes(self, monkeypatch):
+        monkeypatch.setattr(job.dock, "find_stale_daemons", lambda: [])
+        job.check_no_stale_daemon()
+
+    def test_the_message_says_why_it_is_safe_to_remove(self, monkeypatch):
+        # The operator's first worry is "is a backup using this?" — the run
+        # lock is already held here, so nothing else can be.
+        monkeypatch.setattr(job.dock, "find_stale_daemons", lambda: ["x (Up 1 day)"])
+        with pytest.raises(job.lib.BackupError) as caught:
+            job.check_no_stale_daemon()
+        assert "lock" in str(caught.value)
+
+    def test_the_check_runs_before_the_daemon_is_started(self):
+        # Order is the property: checking after `docker run` has already failed
+        # is no better than the error it replaces.
+        source = (Path(__file__).parent / "backup_objects.py").read_text()
+        executable = "\n".join(
+            line for line in source.splitlines() if not line.lstrip().startswith("#")
+        )
+        assert executable.index("check_no_stale_daemon()") < executable.index(
+            "dock.start_rc_daemon("
+        )

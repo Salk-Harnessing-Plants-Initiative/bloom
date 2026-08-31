@@ -204,6 +204,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         ledger.close()
         return 0
 
+    check_no_stale_daemon()
     check_box_root(args)
     minio = minio_source_from_env(args)
     require_rclone_config(args.rclone_config, args.box_remote)
@@ -509,6 +510,33 @@ def minio_source_from_env(args: argparse.Namespace) -> MinioSource:
         secret_key=secret,
         bucket=args.minio_bucket,
         prefix=args.minio_prefix,
+    )
+
+
+def check_no_stale_daemon() -> None:
+    """Refuse to start while a previous run's container is still around.
+
+    Deliberately a refusal rather than a cleanup. Removing a container is
+    destructive and this job should not do destructive things on its own
+    initiative — a person can look, confirm it is a leftover, and remove it.
+
+    The alternative is what happens today: `docker run` fails with `port is
+    already allocated`, which says nothing about a run three nights ago being
+    the cause, and gives no hint that a `docker rm` is all that is needed.
+    """
+    stale = dock.find_stale_daemons()
+    if not stale:
+        return
+    listed = "\n".join(f"    {line}" for line in stale)
+    raise lib.BackupError(
+        "an rclone container from an earlier run is still present:\n"
+        f"{listed}\n"
+        "It holds the RC port and a live Box session, so this run cannot start "
+        "its own. A run stopped with SIGTERM — a reboot, a `kill`, a cancelled "
+        "workflow — skips the cleanup that would normally remove it.\n"
+        "Nothing else is using it: this run already holds the lock, so there is "
+        "no other backup in progress. Remove it and re-run:\n"
+        f"    docker rm --force $(docker ps -aq --filter name={dock.RC_CONTAINER_PREFIX})"
     )
 
 
