@@ -2,7 +2,7 @@
 
 Split out from backup_objects.py so the retry, progress, and verification
 behaviour can be tested against a fake daemon without going near argument
-parsing, Docker, or the systemd wrapper.
+parsing, Docker, or the workflow that schedules it.
 """
 
 from __future__ import annotations
