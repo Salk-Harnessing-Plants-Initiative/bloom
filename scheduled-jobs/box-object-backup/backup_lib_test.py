@@ -705,3 +705,44 @@ class TestTheClientRedactsWhereTheErrorIsBuilt:
         with pytest.raises(RcloneError) as caught:
             client.stat("dst", "b")
         assert caught.value.retryable is False
+
+
+class TestLedgerKeyMatchesTheDestination:
+    """The record and the file on Box must be keyed the same way.
+
+    `box_path` normalizes and `ledger_key` did not, so two rows that are one
+    file on Box got two ledger entries — both claiming a backup, while the
+    second copy had overwritten the first and nothing said so.
+    """
+
+    # "café.png" twice: the accent as one character, then as e + combining mark.
+    COMPOSED = "café.png"
+    DECOMPOSED = "café.png"
+
+    def test_the_two_spellings_really_are_different_text(self):
+        # If this ever stops being true the rest of the class proves nothing.
+        assert self.COMPOSED != self.DECOMPOSED
+        assert len(self.COMPOSED) != len(self.DECOMPOSED)
+
+    def test_they_land_on_the_same_box_path(self):
+        a = obj(name=self.COMPOSED)
+        b = obj(name=self.DECOMPOSED)
+        assert lib.box_path(a, "root") == lib.box_path(b, "root")
+
+    def test_and_therefore_share_one_ledger_entry(self):
+        # One file on Box, one record. Keyed raw, this was two records for one
+        # file, each asserting a backup that only one of them had.
+        a = obj(name=self.COMPOSED)
+        b = obj(name=self.DECOMPOSED)
+        assert a.ledger_key == b.ledger_key
+
+    def test_an_ordinary_name_is_untouched(self):
+        plain = "cyl-images/cyl-image_13891376_282e916f.png"
+        assert obj(name=plain).ledger_key == ("images", plain)
+
+    def test_the_key_and_the_destination_agree(self):
+        # The property the box_path docstring claimed all along.
+        for name in (self.COMPOSED, self.DECOMPOSED, "plain/a.png"):
+            o = obj(name=name)
+            bucket, key = o.ledger_key
+            assert lib.box_path(o) == f"{bucket}/{key}"
