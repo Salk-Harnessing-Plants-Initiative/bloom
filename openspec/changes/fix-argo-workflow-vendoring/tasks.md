@@ -204,10 +204,10 @@ the PR — none of them is scoped to a single commit's diff.
       standing pre-commit or CI enforcement (found during PR review).
 - [x] 4.2 Run `uv lock --check` for `services/workflows` (or `python scripts/check-uv-locks.py`) to
       confirm the lockfile committed in 2.4 stays in sync.
-- [x] 4.3 File (or note in this change's own follow-up, if a formal issue isn't warranted yet) a
-      reminder to re-verify `SLEAP_ROOTS_PIPELINE_REF`'s pinned SHA once `sleap-roots-pipeline` PR #49
-      merges to that repo's `main` — the content is correct either way (comment-only, doesn't touch
-      `spec`), but the pin should ideally reference a commit reachable from `main` once one exists.
+- [x] 4.3 DONE, not just noted: `sleap-roots-pipeline` PR #49 merged (`9df1e52d...`) and its feature
+      branch was deleted per normal cleanup, leaving the original pin (`4d00ec6a...`) unreachable from
+      `main` — re-pinned live to `main`'s new HEAD (same content; the PR was comment-only) before that
+      commit could be garbage-collected. See `design.md`'s Risks section.
 - [x] 4.4 (Optional, small) Add a one-line `services/workflows` entry to `openspec/project.md`'s
       "External Packages" section, matching the existing per-service pointer style (e.g. "Video
       worker: see `services/video-worker/pyproject.toml`") — that section currently has no entry for
