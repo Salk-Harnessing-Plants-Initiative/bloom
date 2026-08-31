@@ -47,6 +47,9 @@ class RunReport:
 
     def to_dict(self) -> dict:
         listed = self.failures[:MAX_REPORTED_FAILURES]
+        # The copier stops collecting paths past its own ceiling, so the list
+        # cannot be trusted for the total — `stats["failed"]` counts them all.
+        total_failures = self.stats.get("failed", len(self.failures))
         return {
             "schema": SCHEMA_VERSION,
             "env": self.env,
@@ -60,8 +63,8 @@ class RunReport:
             "box_root": self.box_root,
             "stats": dict(self.stats),
             "failures": listed,
-            "failures_truncated": len(self.failures) > len(listed),
-            "failure_count": len(self.failures),
+            "failures_truncated": total_failures > len(listed),
+            "failure_count": total_failures,
         }
 
     def to_json(self) -> str:

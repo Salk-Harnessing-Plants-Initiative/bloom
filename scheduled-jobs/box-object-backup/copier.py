@@ -26,6 +26,10 @@ RETRY_BASE_SECONDS = 5
 LEDGER_COMMIT_EVERY = 200
 PROGRESS_EVERY = 500
 
+# Ceiling on failure paths held in memory for the run report. Comfortably
+# above what a report lists, so the cap is never the reason a report is short.
+MAX_TRACKED_FAILURES = 5_000
+
 
 def copy_all(
     client: RcloneRC,
@@ -55,7 +59,10 @@ def copy_all(
             logger.error("failed %s: %s", obj.storage_path, exc)
             with lock:
                 state["failed"] += 1
-                if failures is not None:
+                # Bounded: a bad night can fail millions of objects, and the
+                # count is what matters once there are more than a report can
+                # usefully list. Every failure is in the log regardless.
+                if failures is not None and len(failures) < MAX_TRACKED_FAILURES:
                     failures.append(obj.storage_path)
             return
         # Recorded only after the copy returns, so an interrupted run never

@@ -25,6 +25,15 @@ RC_CONTAINER_PREFIX = "bloom-box-backup-rclone"
 # Where the host's state dir appears inside the daemon container, so the run
 # report can be uploaded through the same authenticated Box connection.
 STATE_MOUNT = "/state"
+
+# Rows psql pulls per cursor fetch. Bounds the db container's memory during
+# the manifest read regardless of how many objects the deploy holds.
+FETCH_COUNT = 10_000
+
+# The rclone daemon shares the host with the whole Bloom stack, so it gets a
+# hard ceiling rather than whatever it decides to take. Its own transfer
+# buffers are the bulk of it, and they scale with --transfers.
+RC_MEMORY_LIMIT = "512m"
 DB_SERVICE = "db-prod"
 COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
 COMPOSE_SERVICE_LABEL = "com.docker.compose.service"
@@ -110,6 +119,11 @@ def psql_query_to_file(
         "--no-align", "--tuples-only", "--field-separator", "\t",
         "--quiet", "--no-psqlrc",
         "-v", "ON_ERROR_STOP=1",
+        # Without this psql buffers the whole result set in the db container
+        # before writing a byte — millions of rows of it, next to Postgres's
+        # own memory on a host that runs the entire stack. FETCH_COUNT makes
+        # psql read through a cursor and stream, at identical output format.
+        "-v", f"FETCH_COUNT={FETCH_COUNT}",
         "-f", "-",
     ]
     preamble = "SET default_transaction_read_only = on;\nSET statement_timeout = '60min';\n"
@@ -167,6 +181,7 @@ def start_rc_daemon(
         which("docker"), "run", "--detach", "--name", name,
         "--network", network,
         "--publish", f"127.0.0.1:{port}:{port}",
+        "--memory", RC_MEMORY_LIMIT,
         "--volume", f"{rclone_config}:/config/rclone/rclone.conf:ro",
         "--user", f"{_host_uid()}:{_host_gid()}",
         "--env", "RCLONE_CONFIG=/config/rclone/rclone.conf",
