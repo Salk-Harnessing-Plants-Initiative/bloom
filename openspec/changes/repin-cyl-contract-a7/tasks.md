@@ -111,5 +111,7 @@
 - [x] 4.3 Migration lint passes: `scripts/lint_migrations.sh origin/staging` → "Migration lint
       passed (checked 1 new file(s) against origin/staging; latest base timestamp
       20260825220000)."
-- [ ] 4.4 Open the bundled PR (proposal + implementation) targeting `staging`; link bloom #685 and
-      `talmolab/sleap-roots-pipeline#52`; needs a non-author reviewer (branch protection)
+- [x] 4.4 Opened the bundled PR (proposal + implementation) targeting `staging`:
+      https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/766 — links bloom #685 and
+      `talmolab/sleap-roots-pipeline#52`; still needs CI green (§2.4/§4.2 unverified locally) and a
+      non-author reviewer (branch protection)
