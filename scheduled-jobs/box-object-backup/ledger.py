@@ -110,7 +110,11 @@ class Ledger:
                 "VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT (bucket_id, name) DO UPDATE SET "
                 "version=excluded.version, size=excluded.size, copied_at=excluded.copied_at",
-                (obj.bucket_id, obj.name, obj.version, obj.size, now or utcnow()),
+                # ledger_key, NOT obj.name. versions_for() looks rows up by
+                # ledger_key, which is normalized; storing the raw name means
+                # a name that differs from its normalized form never matches
+                # what was written and is re-copied on every run.
+                (*obj.ledger_key, obj.version, obj.size, now or utcnow()),
             )
 
     def commit(self) -> None:

@@ -746,3 +746,47 @@ class TestLedgerKeyMatchesTheDestination:
             o = obj(name=name)
             bucket, key = o.ledger_key
             assert lib.box_path(o) == f"{bucket}/{key}"
+
+
+class TestTheLedgerStoresWhatItLooksUp:
+    """`mark_copied` wrote the raw name while `versions_for` looked up the
+    normalized one, so a name differing from its normalized form was written
+    under one key and searched for under another — never matching, and
+    re-copied on every run forever.
+
+    Half of a fix is its own bug: normalizing `ledger_key` without normalizing
+    what is stored moved the mismatch rather than removing it.
+    """
+
+    # Built from code points, NOT typed as a literal: an editor or a shell
+    # normalizes a pasted "café" to NFC, so the literal would be identical to
+    # the composed form and the test would prove nothing. This is genuinely
+    # e + U+0301 COMBINING ACUTE ACCENT.
+    DECOMPOSED = "caf\u0065\u0301.png"
+
+    def test_the_fixture_really_is_decomposed(self):
+        # If this stops holding, everything below is vacuous.
+        import unicodedata
+
+        assert self.DECOMPOSED != unicodedata.normalize("NFC", self.DECOMPOSED)
+
+    def test_a_name_written_can_be_found_again(self, ledger):
+        o = obj(name=self.DECOMPOSED)
+        ledger.mark_copied(o)
+        ledger.commit()
+        assert ledger.versions_for([o.ledger_key]) == {o.ledger_key: o.version}
+
+    def test_an_ordinary_name_round_trips(self, ledger):
+        o = obj(name="cyl-images/cyl-image_13891376.png")
+        ledger.mark_copied(o)
+        ledger.commit()
+        assert ledger.versions_for([o.ledger_key])[o.ledger_key] == o.version
+
+    def test_a_copied_object_is_not_planned_again(self, ledger):
+        # The consequence that matters: without this, every run re-copies it.
+        o = obj(name=self.DECOMPOSED)
+        ledger.mark_copied(o)
+        ledger.commit()
+        plan = lib.build_plan([o], ledger.versions_for([o.ledger_key]))
+        assert plan.copies == (), "already copied, but planned again"
+        assert plan.already_current == 1

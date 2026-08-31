@@ -816,6 +816,32 @@ class TestRunLockedWiresItsPartsTogether:
             job.run_locked(self.args(tmp_path), tmp_path)
         assert state["copied"] == [], "copied despite a stale daemon holding the port"
 
+    def test_a_bucket_scoped_run_does_not_record_itself_as_clean(self, harness):
+        # run_outcome knowing about --buckets is useless if the run never tells
+        # it. Removing the argument from the call site left the suite green.
+        state, tmp_path = harness
+        args = self.args(tmp_path)
+        args.buckets = "images"
+        assert job.run_locked(args, tmp_path) == 0
+
+        import sqlite3
+        rows = sqlite3.connect(tmp_path / "ledger.db").execute(
+            "SELECT outcome FROM runs ORDER BY id DESC LIMIT 1"
+        ).fetchall()
+        assert rows and rows[0][0] == "partial", (
+            "a bucket-scoped run recorded itself clean, so the watermark "
+            "advances for every bucket it never enumerated"
+        )
+
+    def test_a_whole_table_run_still_records_clean(self, harness):
+        state, tmp_path = harness
+        assert job.run_locked(self.args(tmp_path), tmp_path) == 0
+        import sqlite3
+        rows = sqlite3.connect(tmp_path / "ledger.db").execute(
+            "SELECT outcome FROM runs ORDER BY id DESC LIMIT 1"
+        ).fetchall()
+        assert rows and rows[0][0] == "ok"
+
     def test_the_daemon_is_stopped_even_when_the_run_raises(self, harness):
         state, tmp_path = harness
         state["missing"].update({
@@ -869,3 +895,42 @@ class TestStaleDaemonStopsTheRun:
         assert executable.index("check_no_stale_daemon()") < executable.index(
             "dock.start_rc_daemon("
         )
+
+
+class TestBucketScopedRunsCannotBecomeTheWatermark:
+    """`--buckets` narrows what a run enumerates; the watermark does not narrow
+    with it.
+
+    A run scoped to one bucket finishing clean was recorded `ok`, so
+    `last_successful_run()` returned its start time and the NEXT run filtered
+    `updated_at > <that>` across ALL buckets. Every object in the buckets it
+    never looked at, older than that moment, was never enumerated again —
+    silently, with the run reporting success.
+    """
+
+    def test_a_bucket_scoped_run_is_partial(self):
+        assert job.run_outcome(
+            crashed=False, failed=0, copied=100, limit=None, bucket_scoped=True
+        ) == "partial"
+
+    def test_a_whole_table_run_is_still_ok(self):
+        assert job.run_outcome(
+            crashed=False, failed=0, copied=100, limit=None, bucket_scoped=False
+        ) == "ok"
+
+    def test_the_wiki_smoke_test_shape_is_partial(self):
+        # --buckets images --limit 20: partial for two independent reasons.
+        assert job.run_outcome(
+            crashed=False, failed=0, copied=20, limit=20, bucket_scoped=True
+        ) == "partial"
+
+    def test_scoping_alone_is_enough_without_a_limit(self):
+        # The dangerous form: --buckets with no --limit, which used to be ok.
+        assert job.run_outcome(
+            crashed=False, failed=0, copied=999, limit=None, bucket_scoped=True
+        ) == "partial"
+
+    def test_a_crash_still_outranks_it(self):
+        assert job.run_outcome(
+            crashed=True, failed=0, copied=1, limit=None, bucket_scoped=True
+        ) == "error"

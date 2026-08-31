@@ -13,6 +13,7 @@ under test.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -293,3 +294,77 @@ class TestStaleDaemonDetection:
         scripted["stdout"] = ""
         dock.find_stale_daemons()
         assert f"name={dock.RC_CONTAINER_PREFIX}" in calls[0]
+
+
+class TestTheRcloneImageIsReal:
+    """The image was pinned to a tag that was never published.
+
+    `rclone/rclone:1.71.4` does not exist — the 1.71 line stops at 1.71.2 — so
+    `docker run` exited 125 with "manifest not found", the daemon never
+    started, and no object could ever be copied. Nothing in a unit suite can
+    notice that: the argv was well-formed, every flag was valid, and the value
+    is a string like any other.
+    """
+
+    def test_the_pin_carries_a_digest(self):
+        # A tag can be re-pushed under the same name; a digest cannot. This
+        # container holds the Box token and MinIO's root credentials, and
+        # docker-compose.prod.yml pins MinIO the same way for the same reason.
+        assert "@sha256:" in dock.RCLONE_IMAGE
+        _, digest = dock.RCLONE_IMAGE.split("@", 1)
+        assert len(digest) == len("sha256:") + 64
+
+    def test_the_pin_names_a_version_that_was_published(self):
+        # Guards the specific mistake: a plausible-looking version number that
+        # the project never released.
+        assert "1.71.3" not in dock.RCLONE_IMAGE
+        assert "1.71.4" not in dock.RCLONE_IMAGE
+        assert "1.71.5" not in dock.RCLONE_IMAGE
+
+    @pytest.mark.skipif(
+        os.environ.get("BLOOM_SKIP_NETWORK_TESTS") == "1",
+        reason="needs the Docker registry",
+    )
+    def test_the_image_exists_in_the_registry(self):
+        """Ask the registry. This is the only check that could have caught it.
+
+        Skipped with BLOOM_SKIP_NETWORK_TESTS=1, and treated as inconclusive
+        rather than failed if the registry cannot be reached — an offline
+        machine must not turn this red.
+        """
+        import json
+        import urllib.error
+        import urllib.request
+
+        # For a digest pin the manifest reference is the digest itself;
+        # "1.74.3@sha256:..." is not a reference the registry accepts.
+        reference = (
+            dock.RCLONE_IMAGE.split("@", 1)[1]
+            if "@" in dock.RCLONE_IMAGE
+            else dock.RCLONE_IMAGE.split(":", 1)[1]
+        )
+        try:
+            auth = urllib.request.urlopen(
+                "https://auth.docker.io/token?service=registry.docker.io"
+                "&scope=repository:rclone/rclone:pull",
+                timeout=15,
+            )
+            token = json.loads(auth.read())["token"]
+            request = urllib.request.Request(
+                f"https://registry-1.docker.io/v2/rclone/rclone/manifests/{reference}",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.docker.distribution.manifest.list.v2+json",
+                },
+            )
+            status = urllib.request.urlopen(request, timeout=15).status
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                pytest.fail(
+                    f"{dock.RCLONE_IMAGE} is not in the registry — `docker run` "
+                    "would exit 125 and no object could ever be copied"
+                )
+            pytest.skip(f"registry returned {exc.code}; inconclusive")
+        except OSError as exc:
+            pytest.skip(f"registry unreachable ({exc}); inconclusive")
+        assert status == 200

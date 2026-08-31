@@ -264,6 +264,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             copied=totals.copied,
             limit=args.limit,
             verify_mismatched=totals.verify_mismatched,
+            bucket_scoped=bool(args.buckets.strip()),
         )
         publish_report(
             daemon, state_dir, box_fs, args,
@@ -374,15 +375,23 @@ def run_outcome(
     copied: int,
     limit: int | None,
     verify_mismatched: int = 0,
+    bucket_scoped: bool = False,
 ) -> str:
     """Classify a finished run — and decide whether it can be a watermark.
 
     `Ledger.last_successful_run()` only considers runs recorded `ok`, so this
-    is what stops a run from losing objects. Two cases must never be `ok`:
+    is what stops a run from losing objects. A run may only be `ok` if it saw
+    the whole table and everything it did was sound. Three cases must not be:
 
     A run cut short by `--limit` has not seen the whole table; recording it
     clean would make the next run filter on its start time and skip everything
     the limit left behind, permanently and without saying so.
+
+    A run scoped by `--buckets` has not seen the other buckets. Recording it
+    clean advances the watermark for ALL of them, so every object in the
+    buckets it never looked at, older than this run, is never enumerated
+    again. The wiki's own smoke test is bucket-scoped, one edit away from
+    dropping the `--limit` that currently saves it.
 
     A run whose verification found objects missing from Box has copied things
     that are not there. Recording it clean would advance the watermark past
@@ -392,7 +401,7 @@ def run_outcome(
     if crashed:
         return "error"
     truncated = limit is not None and copied >= limit
-    if failed or truncated or verify_mismatched:
+    if failed or truncated or verify_mismatched or bucket_scoped:
         return "partial"
     return "ok"
 

@@ -20,7 +20,18 @@ from rclone_rc import redact
 
 logger = logging.getLogger(__name__)
 
-RCLONE_IMAGE = "rclone/rclone:1.71.4"
+# Digest-pinned for the reason docker-compose.prod.yml gives for MinIO: a tag
+# can be re-pushed without this file changing, and this container holds the Box
+# OAuth token and MinIO's root credentials.
+#
+# 1.74.3 rather than the 1.71 line, which stops at 1.71.2 — the 1.71.4 pinned
+# here before was never published, so every run died at `docker run` with
+# "manifest not found" before the daemon could start. It is also the version
+# the connection-string escaping was verified against.
+RCLONE_IMAGE = (
+    "rclone/rclone:1.74.3"
+    "@sha256:623378ad0ff3ebd5cebf77720843c0e02edfe46e2d5b5ac6bed54c6371780dfb"
+)
 RC_CONTAINER_PREFIX = "bloom-box-backup-rclone"
 
 # Where the host's state dir appears inside the daemon container, so the run
