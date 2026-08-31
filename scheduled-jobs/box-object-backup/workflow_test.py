@@ -83,7 +83,7 @@ class TestRunInvocation:
         # description, so `"--verify" in workflow` stays true even after the
         # flag is dropped from the command. Verified by deleting it — that
         # weaker assertion did not go red.
-        assert "--verify '${VERIFY}'" in workflow
+        assert '--verify "$verify"' in workflow
 
     def test_the_seed_is_not_run_by_the_workflow(self, workflow: str):
         # --full is the multi-day pass. The self-hosted runner is shared with
@@ -115,3 +115,87 @@ class TestSupersededSchedulingIsGone:
             "alongside the workflow tells an operator to install infrastructure "
             "the team decided against"
         )
+
+
+class TestTheRemoteRunGetsItsConfiguration:
+    """The job reads every setting from the environment, and `ssh host cmd`
+    supplies none — no profile, no .env file.
+
+    The systemd unit this replaced carried `EnvironmentFile=`. Deleting it
+    removed the only mechanism feeding BACKUP_*, POSTGRES_* and MINIO_ROOT_* to
+    the process, and nothing replaced it: every scheduled run would have died
+    at the first config lookup, after a full scan of storage.objects.
+    """
+
+    def run_step(self, workflow: str) -> str:
+        import yaml
+
+        parsed = yaml.safe_load(workflow)
+        steps = parsed["jobs"]["mirror"]["steps"]
+        return next(s["run"] for s in steps if s.get("id") == "run")
+
+    def test_the_env_file_is_read_on_the_remote(self, workflow: str):
+        script = self.run_step(workflow)
+        assert ".env.$env_name" in script or '.env.$ENV_NAME' in script, (
+            "nothing reads the deploy env file, so the job runs with no config"
+        )
+
+    def test_every_variable_family_the_job_needs_is_exported(self, workflow: str):
+        script = self.run_step(workflow)
+        for family in ("BACKUP_", "POSTGRES_", "MINIO_ROOT_"):
+            assert family in script, f"{family}* never reaches the process"
+
+    def test_secrets_the_job_does_not_need_are_left_behind(self, workflow: str):
+        # Assert the FILTER, not the absence of a word from the file — the
+        # script's own comment names JWT as the thing being excluded, so a
+        # substring check on the whole script fails for the wrong reason.
+        import re
+
+        script = self.run_step(workflow)
+        assert "set -a" not in script, "sourcing exports every secret in the file"
+        pattern = re.search(r"grep -E '(\^\([^']+)'", script)
+        assert pattern, "no filter found — the whole env file would be exported"
+        families = pattern.group(1)
+        assert "BACKUP_" in families and "MINIO_ROOT_" in families
+        for unwanted in ("JWT", "SERVICE_ROLE", "ANON_KEY", "ENC_KEY", "PASSWORD)"):
+            assert unwanted not in families, f"filter would export {unwanted}"
+
+    def test_the_env_file_is_assigned_rather_than_sourced(self, workflow: str):
+        # `. file` parses a .env as shell — a password containing a quote or a
+        # backtick then either aborts the run or executes part of itself.
+        script = self.run_step(workflow)
+        assert 'export "$key=$value"' in script
+
+
+class TestDispatchInputCannotReachTheRemoteShell:
+    """`verify` is free-text; GitHub validates it no further than "is a string".
+
+    Interpolated into the ssh command string it was executable on the deploy
+    host: `50'; <command>; echo '` closed the quote and the remote shell ran
+    the rest. argparse's type=int never sees it — the shell splits first.
+    """
+
+    def run_step(self, workflow: str) -> str:
+        import yaml
+
+        parsed = yaml.safe_load(workflow)
+        steps = parsed["jobs"]["mirror"]["steps"]
+        return next(s["run"] for s in steps if s.get("id") == "run")
+
+    def test_the_remote_script_is_a_quoted_heredoc(self, workflow: str):
+        # Quoted, so the runner's shell substitutes nothing into it.
+        assert "<<'REMOTE'" in self.run_step(workflow)
+
+    def test_values_are_passed_as_arguments_not_interpolated(self, workflow: str):
+        script = self.run_step(workflow)
+        assert 'bash -s --' in script
+        assert '--verify "$verify"' in script, "verify must come from $1..$n, not the runner"
+        assert "--verify '${VERIFY}'" not in script, "interpolated — injectable"
+
+    def test_verify_is_rejected_unless_numeric(self, workflow: str):
+        assert "*[!0-9]*" in self.run_step(workflow)
+
+    def test_the_deploy_path_is_checked_in_the_step_that_uses_it(self, workflow: str):
+        # `cd ''` succeeds and lands in $HOME; the guard in an earlier step does
+        # not protect this one.
+        assert 'DEPLOY_PATH:?' in self.run_step(workflow)

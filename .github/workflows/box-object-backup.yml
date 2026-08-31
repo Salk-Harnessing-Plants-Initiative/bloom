@@ -127,16 +127,55 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
           set -euo pipefail
-          # The script reads its own config out of the deploy env file, so
-          # nothing has to be sourced into this shell. --verify is passed on
-          # every scheduled run: an unverified mirror cannot tell a copied
-          # object from a lost one.
-          ssh -i ~/.ssh/deploy_key "${DEPLOY_USER}@${DEPLOY_HOST}" "
-            set -euo pipefail
-            cd '${DEPLOY_PATH}'
-            python3 scheduled-jobs/box-object-backup/backup_objects.py \
-              --env '${ENV_NAME}' --verify '${VERIFY}' ${DRY_RUN}
-          " 2>&1 | tee "${RUNNER_TEMP}/mirror-output.txt"
+
+          # Re-asserted here, not only in Resolve target: this is the step that
+          # uses it, and an empty value makes the remote `cd` succeed into
+          # $HOME and run against whatever is there.
+          : "${DEPLOY_PATH:?deploy path is empty}"
+
+          # The remote script is a QUOTED heredoc and the values go to it as
+          # positional arguments. Nothing is interpolated into a command
+          # string, so a dispatch input cannot close a quote and have the
+          # remote shell run the rest — `verify` is free-text and GitHub
+          # validates it no further than "is a string".
+          ssh -i ~/.ssh/deploy_key "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            bash -s -- "$DEPLOY_PATH" "$ENV_NAME" "$VERIFY" "$DRY_RUN" \
+            <<'REMOTE' 2>&1 | tee "${RUNNER_TEMP}/mirror-output.txt"
+          set -euo pipefail
+          deploy_path="$1"; env_name="$2"; verify="$3"; dry_run="${4:-}"
+
+          case "$verify" in
+            ''|*[!0-9]*) echo "verify must be a whole number, got: $verify" >&2; exit 2 ;;
+          esac
+
+          cd "$deploy_path"
+
+          # The job takes ALL its configuration from the environment, and an
+          # `ssh host cmd` shell reads no profile and no .env file. The systemd
+          # unit this replaced carried EnvironmentFile=, which is what used to
+          # supply these; without an equivalent the run dies at the first
+          # config lookup having already scanned every row of storage.objects.
+          #
+          # Filtered rather than taking the whole file: the job needs the backup
+          # settings, the Postgres role and MinIO's credentials, and has no use
+          # for the JWT keys or service-role secrets sitting beside them.
+          #
+          # Assigned, NOT sourced. A .env file is not a shell script — a
+          # password containing a quote, a backtick or a $ makes `. file` either
+          # die parsing or execute part of the value. `export "$k=$v"` takes the
+          # value literally from the variable, so no character in it is special.
+          env_file="$deploy_path/.env.$env_name"
+          [ -r "$env_file" ] || { echo "cannot read $env_file" >&2; exit 2; }
+          while IFS='=' read -r key value; do
+            [ -n "$key" ] && export "$key=$value"
+          done < <(grep -E '^(BACKUP_[A-Z_]+|POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' \
+                     "$env_file")
+
+          # --verify on every scheduled run: an unverified mirror cannot tell a
+          # copied object from a lost one.
+          python3 scheduled-jobs/box-object-backup/backup_objects.py \
+            --env "$env_name" --verify "$verify" $dry_run
+          REMOTE
 
       # A run that stood down against the seed's lock exits 0, exactly as a
       # successful run does. Reading the marker is the only way to tell them
