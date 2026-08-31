@@ -105,12 +105,32 @@ class SkippedObject:
 
 
 @dataclass(frozen=True)
+class CopiedRecord:
+    """What the ledger holds for one destination path.
+
+    `raw_name` is the object's name as Postgres stores it, which is NOT the
+    key it is filed under — the key is normalized, because that is what Box
+    writes. Keeping the raw name is what makes a collision detectable: a
+    second object whose name normalizes onto an existing row, but reads
+    differently in the database, is a different object heading for a path
+    that is already taken.
+    """
+
+    version: str | None
+    raw_name: str | None = None
+
+
+@dataclass(frozen=True)
 class CopyPlan:
     """What the run intends to do, after ledger and safety filtering."""
 
     copies: tuple[StorageObject, ...]
     skipped: tuple[SkippedObject, ...]
     already_current: int
+    # Counted apart from `skipped`, which is mostly names Box will not accept.
+    # A collision is a different problem: the object is fine, another one is
+    # already using its destination, and no rename at this end can fix it.
+    collisions: int = 0
 
     @property
     def total_bytes(self) -> int:
@@ -281,28 +301,66 @@ def box_path(obj: StorageObject, root: str = "") -> str:
 # Planning
 # ---------------------------------------------------------------------------
 
+def collision_reason(held_by: str) -> str:
+    """Why an object is refused when its destination is already spoken for."""
+    return (
+        f"its name normalizes onto {held_by!r}, which is a different object "
+        "in the database but the same path on Box — backing up both would "
+        "leave only one, so neither is overwritten. Rename one at the source."
+    )
+
+
 def build_plan(
     objects: Iterable[StorageObject],
-    copied: dict[tuple[str, str], str | None],
+    copied: dict[tuple[str, str], CopiedRecord],
     limit: int | None = None,
 ) -> CopyPlan:
-    """Decide what to copy: skip unsafe paths and already-current versions."""
+    """Decide what to copy: skip unsafe paths, collisions, and current versions.
+
+    Two names that differ as text can normalize to one Box path — an accent
+    written as a single character, or as a letter plus a combining mark. Both
+    are real, distinct objects in `storage.objects`; only one file can exist at
+    the destination. Copying both means one silently overwrites the other, and
+    on the next run the ledger's version no longer matches the loser, so it is
+    copied back over the winner — forever, with nothing reporting it.
+
+    So the first name to reach a path keeps it, and anything else landing there
+    is skipped and named. That is deterministic across runs, because the ledger
+    records which raw name holds the path.
+    """
     copies: list[StorageObject] = []
     skipped: list[SkippedObject] = []
     already = 0
+    # Claimed within this plan as well as in the ledger: a batch can contain
+    # both halves of a collision, neither of which has been copied yet.
+    claimed: dict[tuple[str, str], str] = {}
+    collisions = 0
     for obj in objects:
         reason = unsafe_reason(obj)
         if reason:
             skipped.append(SkippedObject(obj, reason))
             continue
         key = obj.ledger_key
-        if key in copied and copied[key] == obj.version:
+        record = copied.get(key)
+        holder = claimed.get(key)
+        if holder is None and record is not None:
+            # None on rows written before the column existed, which reads as
+            # "nobody is known to hold this" — the only safe reading, since
+            # treating unknown as taken would refuse every object in an
+            # existing ledger.
+            holder = record.raw_name
+        if holder is not None and holder != obj.name:
+            skipped.append(SkippedObject(obj, collision_reason(holder)))
+            collisions += 1
+            continue
+        claimed[key] = obj.name
+        if record is not None and record.version == obj.version:
             already += 1
             continue
         if limit is not None and len(copies) >= limit:
             continue
         copies.append(obj)
-    return CopyPlan(tuple(copies), tuple(skipped), already)
+    return CopyPlan(tuple(copies), tuple(skipped), already, collisions)
 
 
 def chunked(items: Sequence, size: int) -> Iterator[Sequence]:

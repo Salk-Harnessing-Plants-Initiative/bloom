@@ -258,6 +258,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             "copied": totals.copied,
             "failed": totals.failed,
             "skipped": totals.skipped,
+            "collisions": totals.collisions,
             "already_current": totals.already_current,
             "verify_checked": totals.verify_checked,
             "verify_mismatched": totals.verify_mismatched,
@@ -285,6 +286,15 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         "done — copied %d, failed %d, already current %d, skipped %d",
         totals.copied, totals.failed, totals.already_current, totals.skipped,
     )
+    if totals.collisions:
+        logger.error(
+            "%d object(s) were NOT backed up: their names normalize onto a path "
+            "another object already holds, so copying them would have deleted "
+            "what is there. Box cannot hold both. The pairs are named in the "
+            "WARNING lines above; rename one of each pair in Supabase and the "
+            "next run will pick it up.",
+            totals.collisions,
+        )
     if totals.verify_mismatched:
         logger.error(
             "%d of %d verified object(s) were missing or the wrong size on Box. "
@@ -320,6 +330,7 @@ class Totals:
     copied: int = 0
     failed: int = 0
     skipped: int = 0
+    collisions: int = 0
     already_current: int = 0
     verify_checked: int = 0
     verify_mismatched: int = 0
@@ -496,6 +507,7 @@ def report_dry_run(manifest: Path, ledger: Ledger, limit: int | None) -> None:
     for plan in plan_batches(manifest, ledger, limit):
         totals.copied += len(plan.copies)
         totals.skipped += len(plan.skipped)
+        totals.collisions += plan.collisions
         totals.already_current += plan.already_current
         report_skips(plan)
     logger.info(
@@ -524,6 +536,7 @@ def copy_manifest(
             return
         report_skips(plan)
         totals.skipped += len(plan.skipped)
+        totals.collisions += plan.collisions
         totals.already_current += plan.already_current
         if not plan.copies:
             continue

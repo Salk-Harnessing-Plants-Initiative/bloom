@@ -118,7 +118,7 @@ def test_every_planned_object_is_copied_once(ledger):
 
 def test_a_successful_copy_is_recorded(ledger):
     run_copy(FakeRclone(), [obj()], ledger)
-    assert ledger.copied_versions()[("images", "exp-42/frame.png")] == VERSION
+    assert ledger.copied_versions()[("images", "exp-42/frame.png")].version == VERSION
 
 
 def test_a_failed_copy_is_not_recorded(ledger):
@@ -977,6 +977,72 @@ class TestAStoppedRunIsResumable:
         assert "3 = interrupted" in job.__doc__
 
 
+class TestACollisionIsVisibleInAWholeRun:
+    """End to end, because the complaint was silence rather than wrongness.
+
+    A run that quietly copies one of two objects and reports success is the
+    failure mode: nothing in the exit code, the ledger, or the report said an
+    object had been left behind.
+    """
+
+    COMPOSED = "exp/caf\u00e9.png"
+    DECOMPOSED = "exp/caf\u0065\u0301.png"
+
+    @pytest.fixture
+    def harness(self, monkeypatch, tmp_path):
+        return TestRunLockedWiresItsPartsTogether().harness.__wrapped__(
+            TestRunLockedWiresItsPartsTogether(), monkeypatch, tmp_path
+        )
+
+    def run_it(self, harness, monkeypatch):
+        monkeypatch.setattr(
+            TestRunLockedWiresItsPartsTogether, "MANIFEST",
+            f"images\t{self.COMPOSED}\tv1\t100\t2026-08-31T00:00:00+00\n"
+            f"images\t{self.DECOMPOSED}\tv2\t100\t2026-08-31T00:00:01+00\n",
+        )
+        state, tmp_path = harness
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
+        code = job.run_locked(args, tmp_path)
+        return state, tmp_path, code
+
+    def test_only_one_object_is_copied(self, harness, monkeypatch):
+        state, _, _ = self.run_it(harness, monkeypatch)
+        assert len(state["copied"]) == 1, (
+            "both were copied — the second overwrote the first on Box"
+        )
+
+    def test_the_run_report_counts_the_collision(self, harness, monkeypatch):
+        import json
+        import sqlite3
+
+        _, tmp_path, _ = self.run_it(harness, monkeypatch)
+        conn = sqlite3.connect(str(tmp_path / "ledger.db"))
+        stats = json.loads(
+            conn.execute("SELECT stats FROM runs ORDER BY id DESC LIMIT 1").fetchone()[0]
+        )
+        conn.close()
+        assert stats["collisions"] == 1, f"nothing recorded the collision: {stats}"
+        assert stats["copied"] == 1
+
+    def test_the_run_tells_the_operator_what_to_do(self, harness, monkeypatch, caplog):
+        import logging
+
+        with caplog.at_level(logging.ERROR, logger="bloom_box_object_backup"):
+            self.run_it(harness, monkeypatch)
+        assert "were NOT backed up" in caplog.text, "the run said nothing"
+        assert "rename" in caplog.text.lower(), "did not say how to fix it"
+
+    def test_the_ledger_does_not_claim_both(self, harness, monkeypatch):
+        import sqlite3
+
+        _, tmp_path, _ = self.run_it(harness, monkeypatch)
+        conn = sqlite3.connect(str(tmp_path / "ledger.db"))
+        rows = conn.execute("SELECT name, raw_name FROM copied").fetchall()
+        conn.close()
+        assert len(rows) == 1, f"two rows for one Box path: {rows}"
+        assert rows[0][1] == self.COMPOSED
+
+
 class TestStoppingActuallyStopsTheWork:
     """Behaviour, not source text.
 
@@ -1022,9 +1088,8 @@ class TestStoppingActuallyStopsTheWork:
         run_copy(client, objects, ledger, workers=1)
         ledger.commit()
         first = objects[0]
-        assert ledger.versions_for([first.ledger_key]) == {
-            first.ledger_key: first.version
-        }
+        found = ledger.versions_for([first.ledger_key])
+        assert found[first.ledger_key].version == first.version
 
     def test_what_was_not_reached_is_still_pending(self, ledger):
         # The rest must remain uncopied so a later run picks them up.
