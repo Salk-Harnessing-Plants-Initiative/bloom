@@ -13,9 +13,13 @@
 # every real batch dispatch (found 2026-08-24/25, see
 # docs/superpowers/specs/2026-08-25-shared-argo-workflow-source-design.md and
 # https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/737). `salk-bloom`'s CI diffs
-# its vendored copy against this file at the pinned commit on every PR and fails loudly on drift.
-# If you change this file's `volumes`, `entrypoint`, `serviceAccountName`, or DAG structure, update
-# the vendored copy and bump the pinned commit SHA in `salk-bloom` too, or that repo's CI will fail.
+# its vendored copy against this file at the pinned commit whenever a PR there touches the
+# vendored files — it catches "the vendored copy and the pin disagree with each other," not
+# "upstream changed and nobody's noticed yet" (it never looks at this file's current `main`, only
+# at the pinned commit). If you change this file's `volumes`, `entrypoint`, `serviceAccountName`,
+# or DAG structure, update the vendored copy and bump the pinned commit SHA in `salk-bloom` too —
+# otherwise the two silently drift until some unrelated `salk-bloom` PR happens to touch those
+# files and trips the check.
 
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
