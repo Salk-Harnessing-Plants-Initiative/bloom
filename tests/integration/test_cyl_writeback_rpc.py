@@ -893,3 +893,17 @@ def test_a7_cutover_guard_raises_on_a3_row(pg_conn):
         with pytest.raises(psycopg.errors.RaiseException, match="a7 cutover blocked"):
             cur.execute(_sql_body(MIGRATION_A7))
     pg_conn.rollback()
+
+
+def test_a7_rollback_guard_raises_on_a7_row(pg_conn):
+    # Symmetric with the forward migration's own guard: the a7 rollback's prepended
+    # DO-block guard must fail loudly rather than silently re-widen acceptance if any
+    # cyl_trait_sources row already carries a 0.1.0a7 contract_version.
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(MIGRATION_A3))
+        cur.execute(_sql_body(MIGRATION_A7))  # bring the RPC to a7 first so a7 rows are legal
+        _, imgs = _seed_scan(cur)
+        _call(cur, _envelope(imgs, contract_version="0.1.0a7", idempotency_key="rb-guard-seed"))
+        with pytest.raises(psycopg.errors.RaiseException, match="a7 rollback blocked"):
+            cur.execute(_sql_body(ROLLBACK_A7))
+    pg_conn.rollback()

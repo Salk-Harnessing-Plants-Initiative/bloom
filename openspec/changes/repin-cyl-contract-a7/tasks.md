@@ -88,6 +88,20 @@
       `metadata->>'contract_version' = '0.1.0a3'` via the a3 RPC, then asserts applying the a7
       migration raises `a7 cutover blocked`) — closing the gap where the a3 migration's own
       a2-guard had no equivalent test. **Not run against a live DB in this environment** — see §2.4
+- [x] 2.6 (added post-review, `/review-pr`) The rollback (§2.3) only *documented* the "check #52
+      before rolling back" risk in a comment, with no automated enforcement — asymmetric with the
+      forward migration's enforced cutover guard. Added a matching `DO` guard to
+      `20260831130000_cyl_writeback_contract_a7_rollback.sql` (raises `a7 rollback blocked` if any
+      `cyl_trait_sources` row already carries `contract_version LIKE '%0.1.0a7%'`) plus
+      `test_a7_rollback_guard_raises_on_a7_row`. Also fixed a real CI-caught bug in
+      `test_a7_rollback_restores_strict_a3`: the expected `RAISE EXCEPTION` aborts the whole
+      transaction, so the follow-on "a3 still accepted" assertion needs a `SAVEPOINT`/`ROLLBACK TO
+      SAVEPOINT` around the failing call (a plain `ROLLBACK` would also undo the in-transaction
+      migration applications and fall back to the ambient committed body — which, post-merge, is
+      itself the a7-pinned body). And fixed two stale `0.1.0a3` literals in
+      `bloomcli/tests/test_cyl_ingest.py` missed by §3.3's grep sweep (it only scoped top-level
+      `tests/`, not `bloomcli/tests/`) — verified `uv run --extra test pytest
+      tests/test_cyl_ingest.py`: 137 passed, 1 skipped
 
 ## 3. Update dependent tests and references
 

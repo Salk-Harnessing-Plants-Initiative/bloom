@@ -18,8 +18,29 @@
 -- WARNING: applying this rollback also re-widens acceptance back to `0.1.0a3`/`v0.1.0a3`,
 -- undoing the a7 cutover guard's premise. Do NOT treat "rolled back" as a safe steady state
 -- for the live write-back path once any real `a7` envelope has been ingested.
-
+--
 BEGIN;
+
+-- Automated version of the "check #52's status first" note above (defense-in-depth,
+-- mirroring the forward migration's own symmetric cutover guard): if any
+-- `cyl_trait_sources` row already carries a `0.1.0a7` contract_version, this rollback
+-- would make future re-delivery of that same run resolve against a body that no longer
+-- accepts its provenance's stamped version -- not corrupting the existing row (metadata
+-- is opaque and untouched), but silently misleading about what the live RPC currently
+-- accepts. Fail loudly instead of proceeding quietly. Runs in the same transaction, so a
+-- trip aborts the whole rollback.
+DO $guard$
+DECLARE
+    n_a7 bigint;
+BEGIN
+    SELECT count(*) INTO n_a7
+      FROM public.cyl_trait_sources
+     WHERE metadata ->> 'contract_version' LIKE '%0.1.0a7%';
+    IF n_a7 > 0 THEN
+        RAISE EXCEPTION 'a7 rollback blocked: % cyl_trait_sources row(s) already carry a 0.1.0a7 contract_version; rolling back would silently stop accepting real pipeline envelopes -- check talmolab/sleap-roots-pipeline#52''s status before proceeding', n_a7;
+    END IF;
+END
+$guard$;
 
 CREATE OR REPLACE FUNCTION public.insert_cyl_result_envelope(envelope jsonb)
 RETURNS jsonb
