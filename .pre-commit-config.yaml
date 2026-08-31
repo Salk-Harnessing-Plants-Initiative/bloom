@@ -23,7 +23,11 @@ repos:
     rev: 2c8dce6094fa2b4b668e74f694ca63ceffd38614  # v0.9.9
     hooks:
       - id: ruff
-        files: ^(langchain|bloommcp|services/workflows|bloomcli)/
+        # scheduled-jobs is linted but NOT formatted, as bloomcli is: adding it
+        # to black/ruff-format below would rewrite ~570 lines across 12 files
+        # for no defect. Before this, none of scheduled-jobs was checked by
+        # anything, and formatting drift had already got in.
+        files: ^(langchain|bloommcp|services/workflows|bloomcli|scheduled-jobs)/
         args: [--fix]
       - id: ruff-format
         files: ^(langchain|bloommcp|services/workflows)/
