@@ -13,6 +13,8 @@ prove the workflow runs, only that it still agrees with the code it drives.
 from __future__ import annotations
 
 import contextlib
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -218,9 +220,17 @@ class TestTheRemoteRunGetsItsConfiguration:
 class TestDispatchInputCannotReachTheRemoteShell:
     """`verify` is free-text; GitHub validates it no further than "is a string".
 
-    Interpolated into the ssh command string it was executable on the deploy
-    host: `50'; <command>; echo '` closed the quote and the remote shell ran
-    the rest. argparse's type=int never sees it — the shell splits first.
+    This has now been wrong twice, in two different shells, so these tests run
+    the thing rather than reading it.
+
+    First it was interpolated into the ssh command string, where
+    `50\'; <command>; echo \'` closed the quote. That was replaced with
+    `ssh host bash -s -- "$VERIFY"` and a numeric guard inside the heredoc —
+    which looked safe and was not. ssh cannot carry argv boundaries: it joins
+    the words after the host into one string for the remote login shell to
+    parse, so the values were back in a shell string, and the guard was inside
+    `bash -s`, merely the first statement of it. The earlier tests here
+    asserted on the shape of the YAML and passed throughout.
     """
 
     def run_step(self, workflow: str) -> str:
@@ -230,18 +240,97 @@ class TestDispatchInputCannotReachTheRemoteShell:
         steps = parsed["jobs"]["mirror"]["steps"]
         return next(s["run"] for s in steps if s.get("id") == "run")
 
+    def runner_prologue(self, workflow: str) -> str:
+        """Everything the runner does before it calls ssh."""
+        outer = self.run_step(workflow).split("<<'REMOTE'")[0]
+        lines = outer.splitlines()
+        stop = next(i for i, ln in enumerate(lines) if ln.strip().startswith("ssh "))
+        return "\n".join(lines[:stop])
+
+    def remote_body(self, workflow: str) -> str:
+        step = self.run_step(workflow)
+        return step.split("<<'REMOTE'", 1)[1].split("\n          REMOTE", 1)[0]
+
+    def build_args(self, workflow: str, **values) -> subprocess.CompletedProcess:
+        """Run the real runner-side lines and read back what ssh would send."""
+        env = {
+            "DEPLOY_PATH": "/srv/bloom", "ENV_NAME": "prod", "VERIFY": "50",
+            "RUN_TAG": "1-1", "DRY_RUN": "", "RUNNER_TEMP": "/tmp",
+            "PATH": os.environ["PATH"],
+        }
+        env.update(values)
+        return subprocess.run(
+            ["bash", "-c", self.runner_prologue(workflow) + '\nprintf "%s" "$remote_args"'],
+            capture_output=True, text=True, env=env,
+        )
+
+    def send(self, workflow: str, remote_args: str, cwd) -> subprocess.CompletedProcess:
+        """What sshd does: join, then hand the one string to a shell."""
+        return subprocess.run(
+            ["bash", "-c", f"bash -s -- {remote_args}"],
+            input=self.remote_body(workflow),
+            capture_output=True, text=True, cwd=cwd,
+        )
+
+    def test_a_non_numeric_verify_is_refused_before_ssh_is_called(self, workflow: str):
+        result = self.build_args(workflow, VERIFY="50; touch PWNED #")
+        assert result.returncode != 0, "a payload got past the runner"
+        assert "verify must be a whole number" in result.stderr
+
+    def test_verify_still_has_to_be_a_number_at_all(self, workflow: str):
+        assert self.build_args(workflow, VERIFY="").returncode != 0
+        assert self.build_args(workflow, VERIFY="all").returncode != 0
+        assert self.build_args(workflow, VERIFY="50").returncode == 0
+
+    def test_shell_syntax_in_a_value_does_not_execute_on_the_remote(
+        self, workflow: str, tmp_path
+    ):
+        """The layer under the numeric guard.
+
+        `verify` is checked, but the other values are not — they are secrets
+        and a resolved env name, and nothing validates their characters. If the
+        quoting is what stands between a value and the remote shell, then a
+        value full of shell syntax must arrive as text and nothing else.
+        """
+        payload = f"/srv/bloom; touch {tmp_path}/PWNED #"
+        built = self.build_args(workflow, DEPLOY_PATH=payload)
+        assert built.returncode == 0, built.stderr
+
+        self.send(workflow, built.stdout, tmp_path)
+        assert not (tmp_path / "PWNED").exists(), (
+            "the remote shell executed part of a value — ssh joined the "
+            "arguments and nothing quoted them"
+        )
+
+    def test_the_value_still_arrives_intact(self, workflow: str, tmp_path):
+        """Quoting that mangles the value is not a fix either."""
+        odd = str(tmp_path / "a dir with spaces")
+        built = self.build_args(workflow, DEPLOY_PATH=odd)
+        assert built.returncode == 0, built.stderr
+        result = self.send(workflow, built.stdout, tmp_path)
+        # cd fails on a directory that does not exist, and names what it tried.
+        assert odd in (result.stderr + result.stdout), (
+            f"the path did not survive the round trip: {result.stderr}"
+        )
+
+    def test_without_the_quoting_the_payload_would_run(self, workflow: str, tmp_path):
+        """A control, so the reason for the quoting cannot be misread.
+
+        Not a test of our code — a demonstration of the mechanism the previous
+        fix assumed did not exist. If this ever stops creating the file, ssh
+        has changed and the comment in the workflow needs revisiting.
+        """
+        payload = f"/srv/bloom; touch {tmp_path}/PWNED #"
+        unquoted = f"{payload} prod 50 1-1 "
+        self.send(workflow, unquoted, tmp_path)
+        assert (tmp_path / "PWNED").exists(), (
+            "joining unquoted arguments no longer executes them"
+        )
+
     def test_the_remote_script_is_a_quoted_heredoc(self, workflow: str):
-        # Quoted, so the runner's shell substitutes nothing into it.
+        # Quoted, so the runner's shell substitutes nothing into it. Separate
+        # from the argument quoting above, and not a substitute for it.
         assert "<<'REMOTE'" in self.run_step(workflow)
-
-    def test_values_are_passed_as_arguments_not_interpolated(self, workflow: str):
-        script = self.run_step(workflow)
-        assert 'bash -s --' in script
-        assert '--verify "$verify"' in script, "verify must come from $1..$n, not the runner"
-        assert "--verify '${VERIFY}'" not in script, "interpolated — injectable"
-
-    def test_verify_is_rejected_unless_numeric(self, workflow: str):
-        assert "*[!0-9]*" in self.run_step(workflow)
 
     def test_the_deploy_path_is_checked_in_the_step_that_uses_it(self, workflow: str):
         # `cd ''` succeeds and lands in $HOME; the guard in an earlier step does
