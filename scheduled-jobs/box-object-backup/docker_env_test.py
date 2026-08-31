@@ -29,8 +29,9 @@ def captured(monkeypatch):
     calls: list[list[str]] = []
     scripted = {"stdout": ""}
 
-    def fake_run(cmd, *, input_text=None, check=True):
+    def fake_run(cmd, *, input_text=None, check=True, env=None):
         calls.append(cmd)
+        scripted.setdefault("envs", []).append(env)
         return scripted["stdout"]
 
     monkeypatch.setattr(dock, "run", fake_run)
@@ -144,6 +145,18 @@ class TestManifestQueryIsBoundedAndReadOnly:
 class TestRcloneDaemonArgv:
     """The container holding the Box token and MinIO's root credentials."""
 
+    def daemon_call(self, captured, **kwargs):
+        """Returns (argv, env) for one start_rc_daemon call."""
+        calls, scripted = captured
+        scripted["stdout"] = "containerid\n"
+        options = dict(
+            network="supanet", rclone_config="/conf/rclone.conf", port=5572,
+            transfers=8,
+        )
+        options.update(kwargs)
+        daemon = dock.start_rc_daemon(**options)
+        return calls[0], scripted["envs"][0], daemon
+
     def daemon_argv(self, captured, **kwargs):
         calls, scripted = captured
         scripted["stdout"] = "containerid\n"
@@ -187,3 +200,62 @@ class TestRcloneDaemonArgv:
     def test_no_state_dir_means_no_mount(self, captured):
         argv = self.daemon_argv(captured)
         assert not any(dock.STATE_MOUNT in a for a in argv)
+
+
+class TestTheDaemonPasswordIsNotDiscoverable:
+    """The RC API is reachable from every container on the deploy network.
+
+    It has to be — MinIO's S3 port is published nowhere else. So the password
+    is the only thing keeping `storage`, `kong`, `postgrest` and `studio` out
+    of an API whose `config/dump` returns the Box OAuth token in plaintext.
+
+    It was passed as `--rc-pass=<secret>`, and /proc/<pid>/cmdline is
+    world-readable: every user on the host could read it, for the days a seed
+    takes. Generating it with `secrets` was beside the point.
+    """
+
+    def call(self, captured, **kwargs):
+        calls, scripted = captured
+        scripted["stdout"] = "containerid\n"
+        options = dict(
+            network="supanet", rclone_config="/conf/rclone.conf", port=5572,
+            transfers=8,
+        )
+        options.update(kwargs)
+        daemon = dock.start_rc_daemon(**options)
+        return calls[0], scripted["envs"][0], daemon
+
+    def test_the_password_is_nowhere_in_the_command_line(self, captured):
+        argv, env, daemon = self.call(captured)
+        assert daemon.password, "no password was generated"
+        for arg in argv:
+            assert daemon.password not in arg, (
+                f"the password is in the argv ({arg[:32]}…), which every user "
+                "on the host can read from /proc/<pid>/cmdline"
+            )
+
+    def test_the_password_reaches_the_container_through_the_environment(self, captured):
+        argv, env, daemon = self.call(captured)
+        assert env is not None, "run() was called without an env"
+        assert env[dock.RC_PASS_ENV] == daemon.password
+
+    def test_docker_is_told_to_pass_the_variable_through_by_name(self, captured):
+        # `--env NAME=value` would put the secret in docker's OWN command line,
+        # which is just as readable. Valueless means "copy it from my env".
+        argv, env, daemon = self.call(captured)
+        assert dock.RC_PASS_ENV in argv, "docker was not told to forward it"
+        assert not any(
+            a.startswith(f"{dock.RC_PASS_ENV}=") for a in argv
+        ), "the value is in docker's argv"
+
+    def test_the_rc_pass_flag_is_gone(self, captured):
+        argv, env, daemon = self.call(captured)
+        assert not any(a.startswith("--rc-pass") for a in argv)
+
+    def test_the_container_drops_privileges_like_every_other_service(self, captured):
+        # docker-compose.prod.yml sets both on every service. This container
+        # holds the Box token and MinIO's root credentials.
+        argv, env, daemon = self.call(captured)
+        assert "no-new-privileges" in argv
+        assert "--cap-drop" in argv
+        assert "ALL" in argv
