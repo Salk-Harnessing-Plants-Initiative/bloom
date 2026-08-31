@@ -977,6 +977,85 @@ class TestAStoppedRunIsResumable:
         assert "3 = interrupted" in job.__doc__
 
 
+class TestACrashedRunStillLeavesARecord:
+    """`finish_run` sat after the try/except/finally rather than inside it.
+
+    So it ran on every successful run and on no failing one: the `runs` row
+    opened by `start_run` kept a NULL finished_at, outcome and stats forever.
+    Not dead code — code that runs in the ordinary case and is skipped exactly
+    when the record is worth having. The report published to Box named the
+    outcome correctly three lines earlier, so the local ledger the job's own
+    error messages point operators at was the one place a crash never showed.
+    """
+
+    @pytest.fixture
+    def harness(self, monkeypatch, tmp_path):
+        return TestRunLockedWiresItsPartsTogether().harness.__wrapped__(
+            TestRunLockedWiresItsPartsTogether(), monkeypatch, tmp_path
+        )
+
+    def crash(self, harness, monkeypatch):
+        def boom(*a, **kw):
+            raise RuntimeError("preflight could not reach MinIO")
+
+        monkeypatch.setattr(job, "preflight_source", boom)
+        state, tmp_path = harness
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
+        with pytest.raises(RuntimeError, match="preflight"):
+            job.run_locked(args, tmp_path)
+        return state, tmp_path
+
+    def last_run(self, tmp_path):
+        import sqlite3
+
+        conn = sqlite3.connect(str(tmp_path / "ledger.db"))
+        row = conn.execute(
+            "SELECT finished_at, outcome, stats FROM runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        return row
+
+    def test_the_run_is_recorded_as_finished(self, harness, monkeypatch):
+        _, tmp_path = self.crash(harness, monkeypatch)
+        finished_at, _, _ = self.last_run(tmp_path)
+        assert finished_at is not None, "the row was left open forever"
+
+    def test_the_run_is_recorded_as_an_error(self, harness, monkeypatch):
+        _, tmp_path = self.crash(harness, monkeypatch)
+        _, outcome, _ = self.last_run(tmp_path)
+        assert outcome == "error", f"a crash was recorded as {outcome!r}"
+
+    def test_the_stats_are_recorded_too(self, harness, monkeypatch):
+        import json
+
+        _, tmp_path = self.crash(harness, monkeypatch)
+        _, _, stats = self.last_run(tmp_path)
+        assert stats is not None, "no stats for the run that most needs them"
+        assert json.loads(stats)["copied"] == 0
+
+    def test_a_crash_is_not_a_watermark(self, harness, monkeypatch):
+        """The row is now filled in, so it must still not count as success."""
+        _, tmp_path = self.crash(harness, monkeypatch)
+        led = Ledger.open(str(tmp_path / "ledger.db"))
+        assert led.last_successful_run() is None
+        led.close()
+
+    def test_the_exception_still_reaches_the_caller(self, harness, monkeypatch):
+        # Recording the failure must not swallow it — main() turns it into the
+        # exit code, and a crash that exits 0 is worse than an open row.
+        self.crash(harness, monkeypatch)
+
+    def test_an_ordinary_run_is_still_recorded_ok(self, harness):
+        state, tmp_path = harness
+        assert job.run_locked(
+            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
+        ) == 0
+        finished_at, outcome, stats = self.last_run(tmp_path)
+        assert finished_at is not None
+        assert outcome == "ok"
+        assert stats is not None
+
+
 class TestACollisionIsVisibleInAWholeRun:
     """End to end, because the complaint was silence rather than wrongness.
 

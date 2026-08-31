@@ -279,9 +279,14 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         )
         daemon.stop()
         ledger.commit()
-
-    ledger.finish_run(run_id, outcome, stats)
-    ledger.close()
+        # Inside the finally, not after it. A run that raised is the one whose
+        # record matters most, and outside it every crash left a row with no
+        # finished_at, no outcome and no stats — while the report published to
+        # Box three lines above named the outcome correctly. The local audit
+        # trail this job's own error messages tell operators to read was the
+        # only place the failure did not appear.
+        ledger.finish_run(run_id, outcome, stats)
+        ledger.close()
     logger.info(
         "done — copied %d, failed %d, already current %d, skipped %d",
         totals.copied, totals.failed, totals.already_current, totals.skipped,
