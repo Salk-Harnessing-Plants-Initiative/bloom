@@ -9,7 +9,6 @@ Box path keeps the extension, the MinIO key keeps the version suffix.
 
 from __future__ import annotations
 
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -324,8 +323,11 @@ def test_plan_of_nothing_is_empty():
 # ---------- ledger ----------
 
 @pytest.fixture
-def ledger():
-    led = Ledger(sqlite3.connect(":memory:"))
+def ledger(tmp_path):
+    # Through the production constructor — see the note in
+    # backup_objects_test.py. Using a real file also exercises the WAL pragma
+    # open() sets, which an in-memory connection never reaches.
+    led = Ledger.open(str(tmp_path / "ledger.db"))
     yield led
     led.close()
 
@@ -445,8 +447,28 @@ def test_minio_fs_declares_the_minio_provider():
     assert "provider=Minio" in MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
 
 
-def test_minio_fs_carries_the_endpoint():
-    assert "endpoint=http://m:9000" in MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
+def test_minio_fs_carries_the_endpoint_quoted():
+    # QUOTED, not bare. rclone ends an fs at the first unquoted colon, and the
+    # endpoint carries two — bare, rclone read the endpoint as `http`, dropped
+    # every parameter after it, and no object could be copied. The previous
+    # version of this test asserted the bare form, so it held the bug in place.
+    fs = MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
+    assert 'endpoint="http://m:9000"' in fs
+    assert "endpoint=http://m:9000," not in fs
+
+
+def test_minio_fs_keeps_every_parameter_after_the_endpoint():
+    # The real damage was positional: everything following the unquoted colon
+    # was read as path, so the credentials never applied at all.
+    fs = MinioSource("http://m:9000", "key", "sec", "bloom-storage").fs()
+    tail = fs.split('endpoint="http://m:9000"', 1)[1]
+    for param in ("access_key_id=", "secret_access_key=", "region=", "force_path_style="):
+        assert param in tail, f"{param} lost after the endpoint"
+
+
+def test_minio_fs_ends_at_the_bucket_not_inside_the_endpoint():
+    fs = MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
+    assert fs.rsplit(":", 1)[1] == "bloom-storage"
 
 
 def test_minio_fs_forces_path_style():
@@ -519,7 +541,17 @@ def test_redact_hides_the_daemon_password():
 
 def test_redact_leaves_the_endpoint_readable():
     fs = MinioSource("http://supabase-minio:9000", "k", "s", "bloom-storage").fs()
-    assert "endpoint=http://supabase-minio:9000" in redact(fs)
+    assert 'endpoint="http://supabase-minio:9000"' in redact(fs)
+
+
+def test_redact_hides_a_secret_that_needed_quoting():
+    # The characters that force quoting are exactly the ones the old pattern
+    # excluded, so a quoted secret passed through in full. Once the endpoint is
+    # quoted too, a redactor that cannot read quotes redacts nothing at all.
+    for secret in ('pa,ss', 'pa"ss', 'pa:ss', 'pa,s"s:x'):
+        out = redact(MinioSource("http://m:9000", "user", secret, "bloom-storage").fs())
+        assert secret not in out, f"leaked {secret!r}"
+        assert "user" not in out.replace("bloom-storage", "")
 
 
 def test_redact_leaves_an_ordinary_message_alone():
@@ -588,9 +620,9 @@ class TestSourceAddress:
             MinioSource("http://m:9000", "k", "s", "")
 
     def test_the_composed_address_matches_the_deployed_layout(self):
-        # Pins the layout the rest of the repo already assumes — see
-        # services/video-worker/video_listener.py, which reads images from
-        # bucket 'bloom-storage' under prefix 'storage-single-tenant/'.
+        # The path on the prod stack:
+        #   /data/bloom-storage/storage-single-tenant/<bucket_id>/<name>/<ver>
+        # Also what services/video-worker/video_listener.py reads from.
         source = MinioSource(
             "http://supabase-minio:9000", "k", "s", "bloom-storage",
             prefix="storage-single-tenant",
@@ -600,3 +632,117 @@ class TestSourceAddress:
         assert lib.source_remote(obj(), source.prefix) == (
             f"storage-single-tenant/images/exp-42/plate-7/frame_0001.png/{VERSION}"
         )
+
+
+class TestTheClientRedactsWhereTheErrorIsBuilt:
+    """`RcloneRC.call` is where a credential would escape, and it had no tests.
+
+    rclone echoes the failing remote back in its errors, and ours is a
+    connection string carrying MinIO's root credentials. The only test that
+    claimed to cover this asserted `"MINIO" not in caplog.text` — a string that
+    appears nowhere in the code path — and it passed with redaction disabled.
+    """
+
+    SECRET = 'pa,ss"w:rd'
+
+    def client(self, monkeypatch, raises):
+        import urllib.request
+
+        from rclone_rc import RcloneRC
+
+        monkeypatch.setattr(
+            urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(raises)
+        )
+        return RcloneRC("http://127.0.0.1:5572", "u", "p")
+
+    def http_error(self, body: str):
+        import io
+        import urllib.error
+
+        return urllib.error.HTTPError(
+            "http://x", 500, "err", {}, io.BytesIO(body.encode())
+        )
+
+    def test_an_http_error_body_carrying_the_secret_is_redacted(self, monkeypatch):
+        from rclone_rc import RcloneError
+
+        fs = MinioSource("http://m:9000", "rootuser", self.SECRET, "bloom-storage").fs()
+        client = self.client(monkeypatch, self.http_error(f'{{"error": "cannot read {fs}"}}'))
+        with pytest.raises(RcloneError) as caught:
+            client.copy_file("src", "a", "dst", "b")
+        assert self.SECRET not in str(caught.value)
+        assert "rootuser" not in str(caught.value)
+
+    def test_a_transport_error_carrying_the_secret_is_redacted(self, monkeypatch):
+        import urllib.error
+
+        from rclone_rc import RcloneError
+
+        fs = MinioSource("http://m:9000", "rootuser", self.SECRET, "bloom-storage").fs()
+        client = self.client(monkeypatch, urllib.error.URLError(f"refused for {fs}"))
+        with pytest.raises(RcloneError) as caught:
+            client.copy_file("src", "a", "dst", "b")
+        assert self.SECRET not in str(caught.value)
+
+    def test_a_throttle_is_marked_retryable(self, monkeypatch):
+        from rclone_rc import RcloneError
+
+        client = self.client(monkeypatch, self.http_error('{"error": "rate_limit"}'))
+        with pytest.raises(RcloneError) as caught:
+            client.stat("dst", "b")
+        assert caught.value.retryable is True
+
+    def test_a_missing_object_is_not_retryable(self, monkeypatch):
+        import io
+        import urllib.error
+
+        from rclone_rc import RcloneError
+
+        err = urllib.error.HTTPError(
+            "http://x", 404, "not found", {}, io.BytesIO(b'{"error": "object not found"}')
+        )
+        client = self.client(monkeypatch, err)
+        with pytest.raises(RcloneError) as caught:
+            client.stat("dst", "b")
+        assert caught.value.retryable is False
+
+
+class TestLedgerKeyMatchesTheDestination:
+    """The record and the file on Box must be keyed the same way.
+
+    `box_path` normalizes and `ledger_key` did not, so two rows that are one
+    file on Box got two ledger entries — both claiming a backup, while the
+    second copy had overwritten the first and nothing said so.
+    """
+
+    # "café.png" twice: the accent as one character, then as e + combining mark.
+    COMPOSED = "café.png"
+    DECOMPOSED = "café.png"
+
+    def test_the_two_spellings_really_are_different_text(self):
+        # If this ever stops being true the rest of the class proves nothing.
+        assert self.COMPOSED != self.DECOMPOSED
+        assert len(self.COMPOSED) != len(self.DECOMPOSED)
+
+    def test_they_land_on_the_same_box_path(self):
+        a = obj(name=self.COMPOSED)
+        b = obj(name=self.DECOMPOSED)
+        assert lib.box_path(a, "root") == lib.box_path(b, "root")
+
+    def test_and_therefore_share_one_ledger_entry(self):
+        # One file on Box, one record. Keyed raw, this was two records for one
+        # file, each asserting a backup that only one of them had.
+        a = obj(name=self.COMPOSED)
+        b = obj(name=self.DECOMPOSED)
+        assert a.ledger_key == b.ledger_key
+
+    def test_an_ordinary_name_is_untouched(self):
+        plain = "cyl-images/cyl-image_13891376_282e916f.png"
+        assert obj(name=plain).ledger_key == ("images", plain)
+
+    def test_the_key_and_the_destination_agree(self):
+        # The property the box_path docstring claimed all along.
+        for name in (self.COMPOSED, self.DECOMPOSED, "plain/a.png"):
+            o = obj(name=name)
+            bucket, key = o.ledger_key
+            assert lib.box_path(o) == f"{bucket}/{key}"

@@ -16,10 +16,12 @@ bytes. Restoring means writing each file back to MinIO under the key the
 restored row names — see the wiki page for the procedure.
 
 Exit codes:
-  0 = every planned object copied (or dry run completed)
+  0 = every planned object copied (or dry run completed), or another run held
+      the lock and this one stood down
   1 = one or more objects failed after retries
   2 = configuration or preflight error
   3 = interrupted; progress is in the ledger and the next run resumes
+  4 = copying reported success but verification found objects missing from Box
 """
 
 from __future__ import annotations
@@ -56,6 +58,13 @@ BATCH_SIZE = 20_000
 # Verification samples from the objects this run copied; cap what we retain
 # so a multi-million-object seed doesn't hold them all to check 50.
 VERIFY_POOL_CAP = 5_000
+
+# How many objects the preflight probes, and how far into the manifest it looks
+# for them. Several rather than one, because a single orphaned row must not be
+# able to reject a correct configuration; bounded, so the check stays instant
+# against an 8M-row manifest.
+PREFLIGHT_SAMPLE = 5
+PREFLIGHT_SCAN = 10_000
 
 # Objects checked on Box after a run, when --verify is not given a value.
 # Deliberately a flat number rather than a share of the run: it reliably
@@ -202,6 +211,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         ledger.close()
         return 0
 
+    check_no_stale_daemon()
     check_box_root(args)
     minio = minio_source_from_env(args)
     require_rclone_config(args.rclone_config, args.box_remote)
@@ -222,9 +232,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     crashed = False
     try:
         client = wait_for_daemon(daemon)
-        first = first_planned_object(manifest)
-        if first is not None:
-            preflight_source(client, minio, first)
+        preflight_source(client, minio, sample_planned_objects(manifest))
         copy_manifest(client, manifest, ledger, minio, box_fs, args, totals)
         if args.verify and totals.verify_pool and len(totals.verify_pool):
             totals.verify_checked = min(args.verify, len(totals.verify_pool))
@@ -273,9 +281,16 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     )
     if totals.verify_mismatched:
         logger.error(
-            "%d of %d verified object(s) were missing or the wrong size on Box "
-            "— run recorded 'partial' so the next run re-examines them",
+            "%d of %d verified object(s) were missing or the wrong size on Box. "
+            "These are NOT retried automatically — the ledger already records "
+            "them as copied, so every later run skips them. To force a re-copy, "
+            "delete their rows by hand:\n"
+            "    sqlite3 %s \"DELETE FROM copied WHERE bucket_id='<bucket>' "
+            "AND name='<name>';\"\n"
+            "The failing paths are named in the ERROR lines above and in the "
+            "run report under _runs/ on Box.",
             totals.verify_mismatched, totals.verify_checked,
+            state_dir / "ledger.db",
         )
     elif totals.verify_checked:
         logger.info("verified %d object(s) on Box, all present and correct",
@@ -285,8 +300,9 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             "%d object(s) failed after %d attempts each — re-run to retry them",
             totals.failed, MAX_ATTEMPTS,
         )
-        return 1
-    return 0
+    return exit_code(
+        failed=totals.failed, verify_mismatched=totals.verify_mismatched
+    )
 
 
 @dataclass
@@ -303,18 +319,52 @@ class Totals:
     failures: list = field(default_factory=list)
 
 
-def first_planned_object(manifest: Path) -> "lib.StorageObject | None":
-    """First object the run would actually copy, for the preflight to probe.
+def sample_planned_objects(manifest: Path, count: int = PREFLIGHT_SAMPLE) -> list:
+    """A spread of objects the run would copy, for the preflight to probe.
 
-    Read straight off the manifest rather than the plan, so the check runs
-    before any batching or ledger work. Returns None for an empty manifest,
-    where there is nothing to prove.
+    Deliberately not the first one. The manifest is ordered
+    `bucket_id, updated_at`, so the first safe row is always the OLDEST object
+    in the alphabetically-first bucket — the row most likely to be a
+    `storage.objects` entry whose bytes left MinIO years ago. Probing only that
+    lets a single dead row reject a correct configuration, in the same way
+    every week, with an error blaming the bucket and prefix settings.
+
+    Reading is bounded to PREFLIGHT_SCAN lines and then strided, so the check
+    stays instant against an 8M-row manifest.
     """
+    candidates = []
     with manifest.open(encoding="utf-8") as handle:
-        for obj in lib.iter_manifest(handle):
+        for lineno, obj in enumerate(lib.iter_manifest(handle)):
+            if lineno >= PREFLIGHT_SCAN:
+                break
             if lib.unsafe_reason(obj) is None:
-                return obj
-    return None
+                candidates.append(obj)
+    if not candidates:
+        return []
+    stride = max(1, len(candidates) // count)
+    return candidates[::stride][:count]
+
+
+def exit_code(*, failed: int, verify_mismatched: int) -> int:
+    """What the run tells its caller, which for a scheduled run is everything.
+
+    A verification mismatch must NOT be 0. The workflow's only route to a human
+    is the run failing — a green tick notifies nobody, and the mismatch would
+    then live solely in a JSON file on Box that someone has to think to open.
+
+    It is also not 1. Every copy reported success and the check disagreed, so
+    the mirror is misreporting itself rather than some copies having errored,
+    and those want telling apart in a job log.
+
+    This keeps failing every week until the ledger rows are cleared by hand.
+    That is intended: a backup that stops mentioning images it knows are
+    missing is how a broken mirror comes to be trusted.
+    """
+    if failed:
+        return 1
+    if verify_mismatched:
+        return 4
+    return 0
 
 
 def run_outcome(
@@ -480,6 +530,33 @@ def minio_source_from_env(args: argparse.Namespace) -> MinioSource:
     )
 
 
+def check_no_stale_daemon() -> None:
+    """Refuse to start while a previous run's container is still around.
+
+    Deliberately a refusal rather than a cleanup. Removing a container is
+    destructive and this job should not do destructive things on its own
+    initiative — a person can look, confirm it is a leftover, and remove it.
+
+    The alternative is what happens today: `docker run` fails with `port is
+    already allocated`, which says nothing about a run three nights ago being
+    the cause, and gives no hint that a `docker rm` is all that is needed.
+    """
+    stale = dock.find_stale_daemons()
+    if not stale:
+        return
+    listed = "\n".join(f"    {line}" for line in stale)
+    raise lib.BackupError(
+        "an rclone container from an earlier run is still present:\n"
+        f"{listed}\n"
+        "It holds the RC port and a live Box session, so this run cannot start "
+        "its own. A run stopped with SIGTERM — a reboot, a `kill`, a cancelled "
+        "workflow — skips the cleanup that would normally remove it.\n"
+        "Nothing else is using it: this run already holds the lock, so there is "
+        "no other backup in progress. Remove it and re-run:\n"
+        f"    docker rm --force $(docker ps -aq --filter name={dock.RC_CONTAINER_PREFIX})"
+    )
+
+
 def check_box_root(args: argparse.Namespace) -> None:
     """Refuse a destination that would scatter the mirror across Box.
 
@@ -514,32 +591,47 @@ def check_box_root(args: argparse.Namespace) -> None:
         )
 
 
-def preflight_source(client: RcloneRC, minio: MinioSource, sample: lib.StorageObject) -> None:
+def preflight_source(client: RcloneRC, minio: MinioSource, samples: list) -> None:
     """Prove the configured bucket and prefix actually address real bytes.
 
     Config cannot fix a layout bug on its own — a wrong value in an env file
     fails exactly as a wrong constant did, just in two files instead of one.
-    What makes it safe is failing here, in seconds, naming the path that was
+    What makes it safe is failing here, in seconds, naming the paths that were
     tried, rather than after days of a seed that 404s all eight million
     objects and leaves an empty mirror.
+
+    ONE object resolving is enough. It proves the bucket and the prefix, which
+    is the whole of what this check is for. Refusing only when every sample
+    misses is what stops a single orphaned row — a row whose bytes left MinIO
+    while the row survived — from rejecting a correct configuration every week.
     """
-    remote = lib.source_remote(sample, minio.prefix)
-    try:
-        item = client.stat(minio.fs(), remote)
-    except RcloneError as exc:
-        raise lib.BackupError(
-            f"preflight could not read MinIO at {minio.root()}/ — {exc}"
-        ) from exc
-    if item is None:
-        raise lib.BackupError(
-            "preflight failed: no object at\n"
-            f"    {minio.bucket.strip('/')}/{remote}\n"
-            "Postgres lists this object but MinIO does not hold it there. "
-            "Check BACKUP_MINIO_BUCKET and BACKUP_MINIO_PREFIX against one "
-            "real key:\n"
-            f"    rclone lsf :s3:{minio.bucket.strip('/')} --max-depth 3"
-        )
-    logger.info("preflight ok — source root %s resolves", minio.root())
+    if not samples:
+        return
+    tried: list[str] = []
+    errors: list[str] = []
+    for sample in samples:
+        remote = lib.source_remote(sample, minio.prefix)
+        tried.append(f"{minio.bucket.strip('/')}/{remote}")
+        try:
+            if client.stat(minio.fs(), remote) is not None:
+                logger.info(
+                    "preflight ok — source root %s resolves (%d of %d sampled)",
+                    minio.root(), len(tried), len(samples),
+                )
+                return
+        except RcloneError as exc:
+            errors.append(str(exc))
+    listed = "\n".join(f"    {path}" for path in tried)
+    detail = "\nErrors: " + "; ".join(errors) if errors else ""
+    raise lib.BackupError(
+        f"preflight failed: none of {len(tried)} sampled object(s) is in MinIO "
+        "where this job expects it:\n"
+        f"{listed}\n"
+        "Postgres lists them but MinIO does not hold them there. Check "
+        "BACKUP_MINIO_BUCKET and BACKUP_MINIO_PREFIX against one real key:\n"
+        f"    rclone lsf :s3:{minio.bucket.strip('/')} --max-depth 3"
+        f"{detail}"
+    )
 
 
 def require_rclone_config(path: str, remote: str) -> None:

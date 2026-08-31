@@ -9,6 +9,7 @@ instead of a silent connection to nothing.
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 import shutil
 import subprocess
@@ -25,6 +26,11 @@ RC_CONTAINER_PREFIX = "bloom-box-backup-rclone"
 # Where the host's state dir appears inside the daemon container, so the run
 # report can be uploaded through the same authenticated Box connection.
 STATE_MOUNT = "/state"
+
+# rclone's environment equivalent of --rc-pass. The daemon's password reaches
+# it this way so it never appears in an argv, which any user on the host can
+# read out of /proc/<pid>/cmdline.
+RC_PASS_ENV = "RCLONE_RC_PASS"
 
 # Rows psql pulls per cursor fetch. Bounds the db container's memory during
 # the manifest read regardless of how many objects the deploy holds.
@@ -51,9 +57,21 @@ def which(name: str) -> str:
     return found
 
 
-def run(cmd: list[str], *, input_text: str | None = None, check: bool = True) -> str:
+def run(
+    cmd: list[str],
+    *,
+    input_text: str | None = None,
+    check: bool = True,
+    env: dict[str, str] | None = None,
+) -> str:
+    """Run a command, capturing its output.
+
+    `env` replaces the child's environment. It exists so a secret can reach a
+    subprocess without going in `cmd`: an argv is world-readable through
+    /proc/<pid>/cmdline, while an environment is readable only by the owner.
+    """
     result = subprocess.run(
-        cmd, input=input_text, capture_output=True, text=True
+        cmd, input=input_text, capture_output=True, text=True, env=env
     )
     if check and result.returncode != 0:
         stderr = result.stderr.strip() or "(no stderr)"
@@ -183,6 +201,29 @@ class RcDaemon:
             logger.warning("could not remove rclone container: %s", exc)
 
 
+def find_stale_daemons() -> list[str]:
+    """Containers this job left behind, as `<name> (<status>)` lines.
+
+    `daemon.stop()` sits in a `finally`, which does not run when the process
+    is killed with SIGTERM — a reboot, a `kill`, a cancelled Actions job. The
+    container then outlives the run that made it, still holding the RC port
+    and a live Box session, and the next run fails on `port is already
+    allocated` with nothing to say why.
+
+    Callers must already hold the run lock. That is what makes the answer
+    unambiguous: a container carrying this prefix cannot belong to a
+    legitimate concurrent run, because there cannot be one.
+    """
+    out = run(
+        [
+            which("docker"), "ps", "--all",
+            "--filter", f"name={RC_CONTAINER_PREFIX}",
+            "--format", "{{.Names}} ({{.Status}})",
+        ]
+    )
+    return [line for line in out.splitlines() if line.strip()]
+
+
 def start_rc_daemon(
     network: str,
     rclone_config: str,
@@ -191,7 +232,20 @@ def start_rc_daemon(
     bwlimit: str = "",
     state_dir: str | None = None,
 ) -> RcDaemon:
-    """Start the rclone daemon on the deploy network, bound to loopback.
+    """Start the rclone daemon on the deploy network.
+
+    The RC port is published to the host's loopback only, but the daemon still
+    listens on every interface INSIDE the container, and the container is on
+    the deploy network — it has to be, because MinIO's S3 port is published
+    nowhere else. So `storage`, `kong`, `postgrest`, `studio` and MinIO can all
+    reach the API. What keeps them out is the password, which is why the
+    password must not be discoverable.
+
+    It therefore travels in the environment, not the argv. `/proc/<pid>/cmdline`
+    is world-readable, so a flag would show the secret to every user on the host
+    for the days a seed takes — and `--env NAME=value` would only move it into
+    docker's own command line. Naming the variable with no value makes docker
+    copy it from its own environment, where only the owner can read it.
 
     The config file is mounted read-only: it holds the Box OAuth token, and
     a run that refreshes the token in a throwaway container copy would lose
@@ -207,9 +261,16 @@ def start_rc_daemon(
         "--network", network,
         "--publish", f"127.0.0.1:{port}:{port}",
         "--memory", RC_MEMORY_LIMIT,
+        # Every service in docker-compose.prod.yml carries both. This container
+        # holds the Box token and MinIO's root credentials and was the only one
+        # in the deploy without them.
+        "--security-opt", "no-new-privileges",
+        "--cap-drop", "ALL",
         "--volume", f"{rclone_config}:/config/rclone/rclone.conf:ro",
         "--user", f"{_host_uid()}:{_host_gid()}",
         "--env", "RCLONE_CONFIG=/config/rclone/rclone.conf",
+        # Pass-through, deliberately valueless — see the docstring.
+        "--env", RC_PASS_ENV,
     ]
     # Read-only so the daemon can upload the run report the host wrote there.
     # Nothing else in the state dir is read, and nothing is written back.
@@ -220,7 +281,6 @@ def start_rc_daemon(
         "rcd",
         f"--rc-addr=:{port}",
         f"--rc-user={user}",
-        f"--rc-pass={password}",
         f"--transfers={transfers}",
         "--retries=1",  # retry/backoff is the caller's job, per object
         "--stats=0",
@@ -231,7 +291,7 @@ def start_rc_daemon(
     ]
     if bwlimit:
         cmd.append(f"--bwlimit={bwlimit}")
-    container = run(cmd).strip()
+    container = run(cmd, env={**os.environ, RC_PASS_ENV: password}).strip()
     logger.info("started rclone daemon container %s on network %s", name, network)
     return RcDaemon(
         container=container,

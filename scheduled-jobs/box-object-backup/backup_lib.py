@@ -78,7 +78,24 @@ class StorageObject:
 
     @property
     def ledger_key(self) -> tuple[str, str]:
-        return (self.bucket_id, self.name)
+        """What the ledger records, in the SAME form `box_path` writes.
+
+        Normalized to match the destination. Two names can differ as text and
+        still be one file on Box — an accent written as a single character, or
+        as a letter plus a combining mark, looks identical and normalizes the
+        same way. Keyed on the raw name, the ledger held two entries claiming
+        two backups while Box held one file, the second having overwritten the
+        first, with nothing reporting it.
+
+        This makes the record honest; it does not stop the collision. Two
+        objects sharing a destination still means only one survives, and
+        catching that needs a check at planning time.
+
+        Changed while the ledger was empty. Afterwards it would not be worth
+        it: every existing entry would stop matching and the next run would
+        treat all eight million objects as never copied.
+        """
+        return (self.bucket_id, unicodedata.normalize("NFC", self.name))
 
 
 @dataclass(frozen=True)
@@ -231,10 +248,12 @@ def source_remote(obj: StorageObject, prefix: str = "") -> str:
     `<backing bucket>/<prefix>/<bucket_id>/<name>/<version>`. The bucket is
     carried by the fs; this supplies everything after it.
 
-    The prefix is configuration rather than a constant because nothing in
-    the stack declares it — it is storage-api's own internal default, and
-    the only other place in this repo that knows it is a bare string in
-    services/video-worker/video_listener.py.
+    On the prod stack that is
+    `bloom-storage/storage-single-tenant/<bucket_id>/<name>/<version>`.
+
+    Configuration rather than a constant because nothing in the stack declares
+    it: storage-api chooses the prefix, and no compose file or env var names
+    it. The same path is assumed by services/video-worker/video_listener.py.
     """
     tail = obj.minio_key
     cleaned = prefix.strip("/")
@@ -244,9 +263,13 @@ def source_remote(obj: StorageObject, prefix: str = "") -> str:
 def box_path(obj: StorageObject, root: str = "") -> str:
     """Destination path under the Box root, NFC-normalized.
 
-    Box normalizes unicode in names; normalizing here keeps the ledger's
-    idea of the destination identical to what Box actually stores, so a
-    re-run doesn't see every accented filename as missing.
+    Box normalizes unicode in names, so normalizing here means a re-run does
+    not see every accented filename as missing.
+
+    `ledger_key` normalizes the same way, so the record and the destination
+    agree. It did not always — this docstring claimed they did while the
+    ledger was keyed on the raw name, which is how the divergence went
+    unnoticed.
     """
     path = unicodedata.normalize("NFC", obj.storage_path)
     root = root.strip("/")

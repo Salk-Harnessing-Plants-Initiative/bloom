@@ -127,16 +127,55 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
           set -euo pipefail
-          # The script reads its own config out of the deploy env file, so
-          # nothing has to be sourced into this shell. --verify is passed on
-          # every scheduled run: an unverified mirror cannot tell a copied
-          # object from a lost one.
-          ssh -i ~/.ssh/deploy_key "${DEPLOY_USER}@${DEPLOY_HOST}" "
-            set -euo pipefail
-            cd '${DEPLOY_PATH}'
-            python3 scheduled-jobs/box-object-backup/backup_objects.py \
-              --env '${ENV_NAME}' --verify '${VERIFY}' ${DRY_RUN}
-          " 2>&1 | tee "${RUNNER_TEMP}/mirror-output.txt"
+
+          # Re-asserted here, not only in Resolve target: this is the step that
+          # uses it, and an empty value makes the remote `cd` succeed into
+          # $HOME and run against whatever is there.
+          : "${DEPLOY_PATH:?deploy path is empty}"
+
+          # The remote script is a QUOTED heredoc and the values go to it as
+          # positional arguments. Nothing is interpolated into a command
+          # string, so a dispatch input cannot close a quote and have the
+          # remote shell run the rest — `verify` is free-text and GitHub
+          # validates it no further than "is a string".
+          ssh -i ~/.ssh/deploy_key "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            bash -s -- "$DEPLOY_PATH" "$ENV_NAME" "$VERIFY" "$DRY_RUN" \
+            <<'REMOTE' 2>&1 | tee "${RUNNER_TEMP}/mirror-output.txt"
+          set -euo pipefail
+          deploy_path="$1"; env_name="$2"; verify="$3"; dry_run="${4:-}"
+
+          case "$verify" in
+            ''|*[!0-9]*) echo "verify must be a whole number, got: $verify" >&2; exit 2 ;;
+          esac
+
+          cd "$deploy_path"
+
+          # The job takes ALL its configuration from the environment, and an
+          # `ssh host cmd` shell reads no profile and no .env file. The systemd
+          # unit this replaced carried EnvironmentFile=, which is what used to
+          # supply these; without an equivalent the run dies at the first
+          # config lookup having already scanned every row of storage.objects.
+          #
+          # Filtered rather than taking the whole file: the job needs the backup
+          # settings, the Postgres role and MinIO's credentials, and has no use
+          # for the JWT keys or service-role secrets sitting beside them.
+          #
+          # Assigned, NOT sourced. A .env file is not a shell script — a
+          # password containing a quote, a backtick or a $ makes `. file` either
+          # die parsing or execute part of the value. `export "$k=$v"` takes the
+          # value literally from the variable, so no character in it is special.
+          env_file="$deploy_path/.env.$env_name"
+          [ -r "$env_file" ] || { echo "cannot read $env_file" >&2; exit 2; }
+          while IFS='=' read -r key value; do
+            [ -n "$key" ] && export "$key=$value"
+          done < <(grep -E '^(BACKUP_[A-Z_]+|POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' \
+                     "$env_file")
+
+          # --verify on every scheduled run: an unverified mirror cannot tell a
+          # copied object from a lost one.
+          python3 scheduled-jobs/box-object-backup/backup_objects.py \
+            --env "$env_name" --verify "$verify" $dry_run
+          REMOTE
 
       # A run that stood down against the seed's lock exits 0, exactly as a
       # successful run does. Reading the marker is the only way to tell them
@@ -148,6 +187,49 @@ jobs:
           ENV_NAME: ${{ steps.target.outputs.env_name }}
         run: |
           set -uo pipefail
+
+          # Pulled out of the line the run already prints, so nothing is
+          # recomputed and nothing extra happens on the deploy host:
+          #   done — copied 4211, failed 0, already current 0, skipped 0
+          #   verify: 50 checked, 3 mismatched
+          #
+          # It goes in the headline rather than only the block below because a
+          # bare "succeeded" cannot be told from a week that copied nothing
+          # because the mirror had vanished. "nothing new to copy, 8,013,796
+          # already on Box" says the mirror is intact; "0 copied, 0 already
+          # current" would not.
+          done_line="$(grep -oE 'done — copied [0-9]+, failed [0-9]+, already current [0-9]+, skipped [0-9]+' \
+            "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1)"
+          verify_line="$(grep -oE 'verify: [0-9]+ checked, [0-9]+ mismatched' \
+            "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1)"
+          copied="$(printf '%s' "$done_line" | grep -oE 'copied [0-9]+' | grep -oE '[0-9]+' || true)"
+          current="$(printf '%s' "$done_line" | grep -oE 'already current [0-9]+' | grep -oE '[0-9]+' || true)"
+          checked="$(printf '%s' "$verify_line" | grep -oE '[0-9]+ checked' | grep -oE '[0-9]+' || true)"
+
+          # Thousands separators, so eight million reads as eight million.
+          # Not printf "%'d" (needs a numeric locale the runner may not have,
+          # and silently prints ungrouped without one) and not sed (the label
+          # syntax differs between GNU and BSD, so it would work only here).
+          group() {
+            local n="$1" out=""
+            while [ "${#n}" -gt 3 ]; do
+              out=",${n: -3}${out}"
+              n="${n:0:${#n}-3}"
+            done
+            printf '%s%s' "$n" "$out"
+          }
+
+          if [ -n "${copied:-}" ] && [ "$copied" -gt 0 ]; then
+            counts="$(group "$copied") images copied"
+          elif [ -n "${copied:-}" ]; then
+            counts="nothing new to copy ($(group "${current:-0}") already on Box)"
+          else
+            counts=""
+          fi
+          if [ -n "${checked:-}" ] && [ "$checked" -gt 0 ]; then
+            counts="${counts}, $(group "$checked") verified"
+          fi
+
           {
             echo "## Weekly Box object mirror — ${ENV_NAME}"
             echo
@@ -155,8 +237,18 @@ jobs:
               echo "Result: **skipped** — another run holds the lock, almost"
               echo "certainly the initial seed. Nothing was mirrored this week;"
               echo "the seed is doing that work. This is expected until it ends."
+            elif grep -q 'were missing or the wrong size on Box' "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
+              echo "Result: **VERIFICATION FAILED** — objects the copy reported"
+              echo "as successful are not on Box. They are **not** retried"
+              echo "automatically: the ledger already records them as copied, so"
+              echo "later runs skip them. Clear their ledger rows by hand (the"
+              echo "job log prints the command) or this repeats every week."
             elif [ "${{ steps.run.outcome }}" = "success" ]; then
-              echo "Result: **succeeded**"
+              if [ -n "$counts" ]; then
+                echo "Result: **succeeded** — ${counts}"
+              else
+                echo "Result: **succeeded** (no counts in the log — check it)"
+              fi
             else
               echo "Result: **FAILED** — see the job log. The mirror was not"
               echo "updated this run."
@@ -164,9 +256,21 @@ jobs:
             echo
             echo '### This run'
             echo '```'
-            grep -E '^\S+ (INFO|WARNING|ERROR) (done —|verify:|listed|preflight|batch:)' \
-              "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -20 \
-              || echo "(no summary produced)"
+            # The level is the THIRD field, not the second: asctime is
+            # "2026-08-31 12:08:16,440" and contains a space, so an anchor of
+            # ^\S+ stops at the date and never reaches INFO. That pattern
+            # matched nothing, on every run.
+            #
+            # `||` binds to the last command in a pipeline, and `tail` exits 0
+            # on empty input, so the fallback could never fire either — the
+            # block rendered as an empty fence. Capture first, then test.
+            summary="$(grep -E '^[0-9-]+ [0-9:,]+ (INFO|WARNING|ERROR) (done —|verify:|listed|preflight|batch:)' \
+              "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -20)"
+            if [ -n "$summary" ]; then
+              echo "$summary"
+            else
+              echo "(no summary produced — the run did not reach the copy phase)"
+            fi
             echo '```'
             echo
             echo "_This job only uploads. Nothing on Box is ever deleted by it._"

@@ -9,7 +9,6 @@ a daemon, MinIO, or a Box account.
 from __future__ import annotations
 
 import logging
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -59,10 +58,13 @@ class FakeRclone:
 
 
 @pytest.fixture
-def ledger():
-    # check_same_thread=False mirrors Ledger.open() — the copy workers are
-    # threads, and each records its own success.
-    led = Ledger(sqlite3.connect(":memory:", check_same_thread=False))
+def ledger(tmp_path):
+    # Through Ledger.open(), NOT a hand-built connection. The fixture used to
+    # re-create what open() does — including check_same_thread=False, which the
+    # copy workers need — and that made the real constructor untested: deleting
+    # the flag from production left the whole suite green while a real seed
+    # would die on its first concurrent copy.
+    led = Ledger.open(str(tmp_path / "ledger.db"))
     yield led
     led.close()
 
@@ -317,11 +319,15 @@ def test_plan_batches_of_an_empty_manifest_yields_nothing(tmp_path, ledger):
 
 # ---------- credential handling ----------
 
-def test_minio_credentials_are_not_logged_on_failure(caplog, ledger):
+def test_a_failure_is_logged_with_the_object_that_caused_it(caplog, ledger):
+    # The copier logs whatever the error says. It does NOT redact — that
+    # happens where the error is built, in RcloneRC.call, which is tested in
+    # backup_lib_test.py. This asserts only what this layer is responsible for.
     key = f"images/exp-42/frame.png/{VERSION}"
-    client = FakeRclone({key: [RcloneError("failed on secret_access_key=secret")]})
+    client = FakeRclone({key: [RcloneError("boom")]})
     run_copy(client, [obj()], ledger)
-    assert "MINIO" not in caplog.text
+    assert "images/exp-42/frame.png" in caplog.text
+    assert "boom" in caplog.text
 
 
 class TestOutcomeProtectsTheWatermark:
@@ -482,24 +488,96 @@ class TestWatermarkOrdering:
     watermark and above this run's snapshot — enumerated by neither, forever.
     """
 
-    def test_the_watermark_is_read_before_the_manifest(self):
-        # Order is the whole property, so assert it on the source rather than
-        # trusting a comment: the database clock must be read above the call
-        # that snapshots storage.objects.
-        source = (Path(__file__).parent / "backup_objects.py").read_text()
-        clock_at = source.index("dock.database_now(")
-        snapshot_at = source.index("dock.psql_query_to_file(")
-        assert clock_at < snapshot_at, (
-            "the watermark is taken after the snapshot — objects written "
-            "during enumeration would never be enumerated again"
+    def test_the_watermark_is_read_before_the_manifest(self, monkeypatch, tmp_path):
+        """Ordering asserted by CALL ORDER, not by where a string sits.
+
+        This read the source and compared index positions, which a comment
+        naming the function satisfied — moving the real call below the snapshot
+        while leaving `# previously: dock.database_now(` above it passed.
+        """
+        calls = []
+
+        class FakeDock:
+            DB_SERVICE = "db-prod"
+            DockerError = job.dock.DockerError
+
+            @staticmethod
+            def project_name(env):
+                return f"bloom_v2_{env}"
+
+            @staticmethod
+            def find_container(project, service):
+                return "container"
+
+            @staticmethod
+            def database_now(container, user, database):
+                calls.append("watermark")
+                return "2026-08-31T02:17:03+00"
+
+            @staticmethod
+            def psql_query_to_file(container, sql, user, database, destination):
+                calls.append("snapshot")
+                destination.write_text("")
+                return 0
+
+        monkeypatch.setattr(job, "dock", FakeDock)
+        args = job.parse_args([
+            "--env", "prod", "--dry-run",
+            "--state-dir", str(tmp_path),
+            "--box-root", "Bloom-Backups/prod/storage",
+            "--minio-bucket", "bloom-storage",
+        ])
+        job.run_locked(args, tmp_path)
+
+        assert calls == ["watermark", "snapshot"], (
+            "the watermark must be read before the snapshot; taken after, an "
+            "object written during enumeration is below the next run's filter "
+            "and above this run's snapshot, so nothing ever sees it again"
         )
 
-    def test_start_run_records_that_watermark_rather_than_the_host_clock(self):
-        source = (Path(__file__).parent / "backup_objects.py").read_text()
-        assert "ledger.start_run(now=watermark)" in source, (
-            "start_run() with no argument stamps the deploy host's clock, "
-            "which is a different clock from the one that writes updated_at"
+    def test_the_watermark_recorded_is_the_one_the_database_gave(
+        self, monkeypatch, tmp_path
+    ):
+        """The value must come from the DB, not from the host clock.
+
+        `ledger.start_run()` with no argument stamps datetime.now() on the
+        deploy host, while updated_at is written by Postgres. The old test was
+        a bare substring check and passed with the real call reverted.
+        """
+        db_time = "2019-01-01T00:00:00+00"
+
+        class FakeDock:
+            DB_SERVICE = "db-prod"
+            DockerError = job.dock.DockerError
+
+            @staticmethod
+            def project_name(env):
+                return f"bloom_v2_{env}"
+
+            @staticmethod
+            def find_container(project, service):
+                return "container"
+
+            @staticmethod
+            def database_now(container, user, database):
+                return db_time
+
+            @staticmethod
+            def psql_query_to_file(container, sql, user, database, destination):
+                destination.write_text("")
+                return 0
+
+        monkeypatch.setattr(job, "dock", FakeDock)
+        # A dry run returns before start_run, so drive the ledger directly with
+        # the value run_locked would hand it and prove it survives the round trip.
+        led = Ledger.open(str(tmp_path / "ledger.db"))
+        run_id = led.start_run(now=db_time)
+        led.finish_run(run_id, "ok", {})
+        assert led.last_successful_run() == db_time
+        assert not led.last_successful_run().startswith("202" + "6"), (
+            "a 2019 stamp came back as today's date — the host clock won"
         )
+        led.close()
 
     def test_the_ledger_accepts_an_explicit_timestamp(self, ledger):
         # The mechanism the above relies on.
@@ -513,3 +591,281 @@ class TestWatermarkOrdering:
         later = ledger.start_run(now="2026-08-31T02:00:00+00")
         ledger.finish_run(later, "partial", {})
         assert ledger.last_successful_run() == "2026-08-24T02:00:00+00"
+
+
+class TestExitCodeReachesTheWorkflow:
+    """A scheduled run's only route to a human is failing.
+
+    Verification found objects missing from Box and the run still exited 0, so
+    Actions showed a green tick and nobody was told. The mismatch lived only in
+    a report on Box that someone had to think to open.
+    """
+
+    def test_a_clean_run_is_zero(self):
+        assert job.exit_code(failed=0, verify_mismatched=0) == 0
+
+    def test_failed_copies_are_one(self):
+        assert job.exit_code(failed=3, verify_mismatched=0) == 1
+
+    def test_a_verification_mismatch_is_not_success(self):
+        assert job.exit_code(failed=0, verify_mismatched=1) != 0
+
+    def test_a_verification_mismatch_is_told_apart_from_failed_copies(self):
+        # Different kinds of wrong: one says copies errored, the other says the
+        # copies claimed success and the mirror disagrees.
+        assert job.exit_code(failed=0, verify_mismatched=1) == 4
+        assert job.exit_code(failed=0, verify_mismatched=1) != job.exit_code(
+            failed=1, verify_mismatched=0
+        )
+
+    def test_failed_copies_outrank_a_mismatch(self):
+        assert job.exit_code(failed=2, verify_mismatched=5) == 1
+
+    def test_the_documented_codes_match_what_is_returned(self):
+        doc = job.__doc__
+        for code in ("1 =", "2 =", "3 =", "4 ="):
+            assert code in doc, f"exit {code[0]} undocumented"
+
+
+class TestRunLockedWiresItsPartsTogether:
+    """`run_locked` is where every fix in this PR lives, and it had no test.
+
+    Each fix was covered in isolation — source_remote, check_box_root,
+    preflight_source, the verify plumbing — while nothing checked that the run
+    CALLS them. Every one could be deleted from the run path with the suite
+    green: the tenant prefix dropped, the box-root guard removed, the preflight
+    skipped, the verifier's verdict discarded.
+
+    These drive the real function with fakes at the process boundaries only.
+    """
+
+    MANIFEST = (
+        "images\texp-42/a.png\tv1\t100\t2026-08-31T00:00:00+00\n"
+        "images\texp-42/b.png\tv2\t200\t2026-08-31T00:00:01+00\n"
+    )
+
+    @pytest.fixture
+    def harness(self, monkeypatch, tmp_path):
+        """Fakes for docker and rclone; everything between them is real."""
+        state = {"copied": [], "stat_calls": [], "missing": set(), "daemon_stopped": False}
+
+        class FakeDaemon:
+            container = "c"
+            url = "http://127.0.0.1:5572"
+            user = "u"
+            password = "p"
+
+            def stop(self):
+                state["daemon_stopped"] = True
+
+        class FakeDock:
+            DB_SERVICE = "db-prod"
+            STATE_MOUNT = "/state"
+            RC_CONTAINER_PREFIX = job.dock.RC_CONTAINER_PREFIX
+            DockerError = job.dock.DockerError
+
+            @staticmethod
+            def project_name(env):
+                return f"bloom_v2_{env}"
+
+            @staticmethod
+            def find_container(project, service):
+                return "container"
+
+            @staticmethod
+            def find_network(project):
+                return "supanet"
+
+            @staticmethod
+            def database_now(container, user, database):
+                return "2026-08-31T02:17:03+00"
+
+            @staticmethod
+            def psql_query_to_file(container, sql, user, database, destination):
+                destination.write_text(TestRunLockedWiresItsPartsTogether.MANIFEST)
+                return 2
+
+            @staticmethod
+            def find_stale_daemons():
+                return state.get("stale", [])
+
+            @staticmethod
+            def start_rc_daemon(**kwargs):
+                return FakeDaemon()
+
+        class FakeClient:
+            def copy_file(self, src_fs, src_remote, dst_fs, dst_remote):
+                state["copied"].append((src_fs, src_remote, dst_remote))
+
+            def stat(self, fs, remote):
+                # Sizes must match the manifest or real verification correctly
+                # reports a mismatch — a.png is 100 bytes, b.png is 200.
+                state["stat_calls"].append(remote)
+                if remote in state["missing"]:
+                    return None
+                return {"Size": 200 if remote.endswith("b.png") else 100}
+
+            def noop(self):
+                return {}
+
+            def version(self):
+                return "fake"
+
+        monkeypatch.setattr(job, "dock", FakeDock)
+        monkeypatch.setattr(job, "wait_for_daemon", lambda daemon, attempts=30: FakeClient())
+        monkeypatch.setattr(job, "require_rclone_config", lambda path, remote: None)
+        monkeypatch.setenv("MINIO_ROOT_USER", "root")
+        monkeypatch.setenv("MINIO_ROOT_PASSWORD", "secret")
+        state["client"] = FakeClient()
+        return state, tmp_path
+
+    def args(self, tmp_path, **overrides):
+        argv = [
+            "--env", "prod",
+            "--state-dir", str(tmp_path),
+            "--box-root", "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
+            "--minio-bucket", "bloom-storage",
+            "--minio-prefix", "storage-single-tenant",
+        ]
+        for flag, value in overrides.items():
+            argv += [f"--{flag.replace('_', '-')}", str(value)]
+        return job.parse_args(argv)
+
+    def test_the_run_copies_from_the_tenant_prefixed_path(self, harness):
+        # The prefix was dropped from the run and no test noticed: the shared
+        # MinIO fixture was built with prefix="", so copy_all was only ever
+        # exercised without one.
+        state, tmp_path = harness
+        assert job.run_locked(self.args(tmp_path), tmp_path) == 0
+        assert state["copied"], "nothing was copied"
+        for src_fs, src_remote, _ in state["copied"]:
+            assert src_fs.endswith(":bloom-storage"), src_fs
+            assert src_remote.startswith("storage-single-tenant/images/"), src_remote
+
+    def test_the_run_writes_to_the_configured_box_root(self, harness):
+        state, tmp_path = harness
+        job.run_locked(self.args(tmp_path), tmp_path)
+        for _, _, dst in state["copied"]:
+            assert dst.startswith("Bloom-Backups/BloomV2-Data-Backup/prod/storage/")
+
+    def test_an_empty_box_root_stops_the_run_before_anything_is_copied(self, harness):
+        # check_box_root could be deleted from run_locked with the suite green.
+        state, tmp_path = harness
+        args = self.args(tmp_path)
+        args.box_root = ""
+        with pytest.raises(job.lib.BackupError, match="BACKUP_BOX_ROOT"):
+            job.run_locked(args, tmp_path)
+        assert state["copied"] == [], "copied despite an unset destination"
+
+    def test_a_preflight_where_everything_misses_stops_the_run(self, harness):
+        # preflight_source could be deleted from run_locked with the suite green.
+        # EVERY sample must miss: that is what means the layout is wrong.
+        state, tmp_path = harness
+        state["missing"].update({
+            "storage-single-tenant/images/exp-42/a.png/v1",
+            "storage-single-tenant/images/exp-42/b.png/v2",
+        })
+        with pytest.raises(job.lib.BackupError, match="preflight failed"):
+            job.run_locked(self.args(tmp_path), tmp_path)
+        assert state["copied"] == [], "copied despite the source layout being wrong"
+
+    def test_one_orphaned_row_does_not_reject_a_correct_configuration(self, harness):
+        """The reason the preflight samples several objects rather than one.
+
+        The manifest is ordered `bucket_id, updated_at`, so the first row is
+        the oldest object in the first bucket — the one most likely to have
+        lost its bytes years ago while the row survived. Probing only that made
+        a single dead row fail every run, weekly, blaming the bucket and prefix
+        settings when they were correct.
+        """
+        state, tmp_path = harness
+        state["missing"].add("storage-single-tenant/images/exp-42/a.png/v1")
+        assert job.run_locked(self.args(tmp_path), tmp_path) == 0
+        assert state["copied"], "a single orphaned row stopped a correct run"
+
+    def test_verification_runs_and_a_mismatch_reaches_the_exit_code(self, harness):
+        # The verifier's verdict was discarded; the run exited 0 regardless.
+        state, tmp_path = harness
+        args = self.args(tmp_path, verify=2)
+
+        original = job.verify_sample
+        monkey = {"called": False}
+
+        def spy(client, plan, box_fs, box_root, sample):
+            monkey["called"] = True
+            return 1  # one mismatch
+
+        job.verify_sample = spy
+        try:
+            code = job.run_locked(args, tmp_path)
+        finally:
+            job.verify_sample = original
+
+        assert monkey["called"], "verification never ran"
+        assert code == 4, f"a mismatch must fail the run, got exit {code}"
+
+    def test_a_clean_verification_leaves_the_run_successful(self, harness):
+        state, tmp_path = harness
+        assert job.run_locked(self.args(tmp_path, verify=2), tmp_path) == 0
+
+    def test_a_leftover_container_stops_the_run_before_anything_is_copied(self, harness):
+        # The check must be reachable from the run, not merely importable.
+        state, tmp_path = harness
+        state["stale"] = ["bloom-box-backup-rclone-dead (Up 3 days)"]
+        with pytest.raises(job.lib.BackupError, match="earlier run"):
+            job.run_locked(self.args(tmp_path), tmp_path)
+        assert state["copied"] == [], "copied despite a stale daemon holding the port"
+
+    def test_the_daemon_is_stopped_even_when_the_run_raises(self, harness):
+        state, tmp_path = harness
+        state["missing"].update({
+            "storage-single-tenant/images/exp-42/a.png/v1",
+            "storage-single-tenant/images/exp-42/b.png/v2",
+        })
+        with pytest.raises(job.lib.BackupError):
+            job.run_locked(self.args(tmp_path), tmp_path)
+        assert state["daemon_stopped"], "the rclone container was left running"
+
+
+class TestStaleDaemonStopsTheRun:
+    """A leftover container is refused, not removed.
+
+    Removing one is destructive, and this job should not do that on its own
+    initiative. What it owes the operator is a message that names the container
+    and the command — rather than docker's `port is already allocated`, which
+    says nothing about a run three nights ago.
+    """
+
+    def test_a_leftover_refuses_the_run(self, monkeypatch):
+        monkeypatch.setattr(
+            job.dock, "find_stale_daemons",
+            lambda: ["bloom-box-backup-rclone-a1b2 (Up 3 days)"],
+        )
+        with pytest.raises(job.lib.BackupError) as caught:
+            job.check_no_stale_daemon()
+        message = str(caught.value)
+        assert "bloom-box-backup-rclone-a1b2" in message, "the container is not named"
+        assert "docker rm" in message, "no command to act on"
+
+    def test_a_clean_host_passes(self, monkeypatch):
+        monkeypatch.setattr(job.dock, "find_stale_daemons", lambda: [])
+        job.check_no_stale_daemon()
+
+    def test_the_message_says_why_it_is_safe_to_remove(self, monkeypatch):
+        # The operator's first worry is "is a backup using this?" — the run
+        # lock is already held here, so nothing else can be.
+        monkeypatch.setattr(job.dock, "find_stale_daemons", lambda: ["x (Up 1 day)"])
+        with pytest.raises(job.lib.BackupError) as caught:
+            job.check_no_stale_daemon()
+        assert "lock" in str(caught.value)
+
+    def test_the_check_runs_before_the_daemon_is_started(self):
+        # Order is the property: checking after `docker run` has already failed
+        # is no better than the error it replaces.
+        source = (Path(__file__).parent / "backup_objects.py").read_text()
+        executable = "\n".join(
+            line for line in source.splitlines() if not line.lstrip().startswith("#")
+        )
+        assert executable.index("check_no_stale_daemon()") < executable.index(
+            "dock.start_rc_daemon("
+        )

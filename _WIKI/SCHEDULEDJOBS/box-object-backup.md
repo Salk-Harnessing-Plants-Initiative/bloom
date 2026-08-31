@@ -210,8 +210,22 @@ nobody looked, which is not the same as looking and finding nothing wrong.
 
 After copying, `--verify N` asks Box directly whether N of the objects this run
 copied are present and the expected size. A non-zero mismatch count records the
-run `partial`, so the watermark holds and those objects are re-examined next
-run instead of being sealed behind a false `ok`.
+run `partial`, which holds the watermark.
+
+**A mismatched object is not retried automatically.** The ledger recorded it as
+copied before verification ran, so every later run skips it as
+`already_current` — `--full` does not help, since that bypasses the watermark
+and not the ledger. Forcing a re-copy means deleting its ledger row by hand:
+
+```bash
+sqlite3 /var/lib/bloom-box-object-backup/ledger.db \
+  "DELETE FROM copied WHERE bucket_id='images' AND name='exp-42/frame.png';"
+```
+
+The failing paths are in the run's log and in the report under `_runs/` on Box.
+Until this is automated, **check `verify_mismatched` in the run report after
+each backup** — it is the one number that says whether what was copied is
+actually there.
 
 The N objects are a uniform random sample of the run's **successful** copies,
 seeded so a re-run checks the same ones — a mismatch stays reproducible rather
@@ -274,7 +288,7 @@ Set in `.env.<env>` (defaults in `.env.prod.defaults` / `.env.staging.defaults`)
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `BACKUP_MINIO_BUCKET` | `bloom-storage` | The single MinIO bucket storage-api writes into (`STORAGE_S3_BUCKET` in the compose file). **Required** — an empty value makes rclone read each object's own `bucket_id` as a bucket name and every copy 404s. |
-| `BACKUP_MINIO_PREFIX` | `storage-single-tenant` | Tenant prefix storage-api files objects under. Not declared anywhere else in the stack — it is storage-api's own default. |
+| `BACKUP_MINIO_PREFIX` | `storage-single-tenant` | Tenant prefix storage-api files objects under. Config rather than a constant because nothing in the stack declares it — storage-api chooses it. To see the path on a host: `docker exec <minio-container> ls /data/bloom-storage/` |
 | `BACKUP_BOX_REMOTE` | `box` | Name of the rclone remote |
 | `BACKUP_BOX_ROOT` | `Bloom-Backups/BloomV2-Data-Backup/prod/storage` | Folder on Box to mirror into |
 | `BACKUP_WORKERS` | `8` | Concurrent copies; lower it if Box throttles hard |

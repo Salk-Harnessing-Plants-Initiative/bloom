@@ -175,6 +175,13 @@ jobs:
       - name: Run workflows service tests
         run: cd services/workflows && uv run --frozen --extra test pytest tests/ -v --tb=short
 
+      - name: Lint scheduled-jobs (ruff)
+        # The pre-commit hook covers this too, but pre-commit runs in CI only
+        # for the bloomcli release workflow — anyone without it installed
+        # locally would otherwise go unchecked. Version pinned to the same rev
+        # as .pre-commit-config.yaml so the two cannot disagree.
+        run: uvx ruff@0.9.9 check scheduled-jobs/
+
       - name: Run scheduled-jobs tests
         # These sit next to the job they cover and are named `*_test.py`, so
         # the root pytest config (testpaths=tests, python_files=test_*.py)
