@@ -934,3 +934,77 @@ class TestBucketScopedRunsCannotBecomeTheWatermark:
         assert job.run_outcome(
             crashed=True, failed=0, copied=1, limit=None, bucket_scoped=True
         ) == "error"
+
+
+class TestAStoppedRunIsResumable:
+    """Stopping must leave the run in a state the next one continues from.
+
+    Two things have to be true, and they are separate: the run must not record
+    itself as clean (or the watermark advances past objects it never reached),
+    and it must report the interrupted exit code rather than the clean one.
+    """
+
+    def test_a_stopped_run_is_partial_not_ok(self):
+        # Same reasoning as --limit and --buckets: it did not see the whole
+        # table, so it cannot be what "everything up to here is backed up"
+        # points at.
+        assert job.run_outcome(
+            crashed=False, failed=0, copied=500, limit=None, stopped=True
+        ) == "partial"
+
+    def test_a_run_that_finished_is_still_ok(self):
+        assert job.run_outcome(
+            crashed=False, failed=0, copied=500, limit=None, stopped=False
+        ) == "ok"
+
+    def test_a_stopped_run_exits_three(self):
+        # 3 is already documented as "interrupted; progress is in the ledger
+        # and the next run resumes".
+        assert job.exit_code(failed=0, verify_mismatched=0, stopped=True) == 3
+
+    def test_a_finished_run_still_exits_zero(self):
+        assert job.exit_code(failed=0, verify_mismatched=0, stopped=False) == 0
+
+    def test_real_failures_outrank_a_stop(self):
+        # Objects that failed are worth more attention than the stop itself.
+        assert job.exit_code(failed=2, verify_mismatched=0, stopped=True) == 1
+
+    def test_a_verification_mismatch_outranks_a_stop(self):
+        assert job.exit_code(failed=0, verify_mismatched=1, stopped=True) == 4
+
+    def test_the_exit_code_is_documented(self):
+        assert "3 = interrupted" in job.__doc__
+
+
+class TestStoppingIsCheckedWhereWorkIsHandedOut:
+    """The flag is useless if no loop reads it."""
+
+    def test_the_copier_checks_before_starting_an_object(self):
+        source = (Path(__file__).parent / "copier.py").read_text()
+        executable = "\n".join(
+            line for line in source.splitlines() if not line.lstrip().startswith("#")
+        )
+        worker_body = executable.split("def worker(", 1)[1]
+        before_copy = worker_body.split("copy_one(", 1)[0]
+        assert "stopping.stopping()" in before_copy, (
+            "the check must come before copy_one, or a stop still starts "
+            "transfers it will not finish"
+        )
+
+    def test_the_batch_loop_checks_between_batches(self):
+        source = (Path(__file__).parent / "backup_objects.py").read_text()
+        executable = "\n".join(
+            line for line in source.splitlines() if not line.lstrip().startswith("#")
+        )
+        loop = executable.split("def copy_manifest(", 1)[1]
+        assert "stopping.stopping()" in loop, (
+            "without this a stop waits for the rest of a 20,000-object batch"
+        )
+
+    def test_the_handlers_are_installed_at_the_entry_point(self):
+        source = (Path(__file__).parent / "backup_objects.py").read_text()
+        executable = "\n".join(
+            line for line in source.splitlines() if not line.lstrip().startswith("#")
+        )
+        main_body = executable.split("def main(", 1)[1].split("def ", 1)[0]
+        assert "stopping.install_handlers()" in main_body

@@ -388,3 +388,152 @@ class TestTheHeadlineCarriesTheCounts:
         headline = self.run_summary(parsed, "ERROR boom\n", outcome="failure")
         assert "FAILED" in headline
         assert "succeeded" not in headline
+
+
+class TestCancellingTheJobStopsTheRun:
+    """Cancelling kills the ssh client on the runner, not the run on the host.
+
+    The remote sees the connection drop, which arrives as SIGHUP. That used to
+    be a hard kill — the cleanup in `finally` never ran and the rclone
+    container was left holding the RC port, so the next run refused to start.
+    """
+
+    def step(self, parsed: dict) -> dict:
+        steps = parsed["jobs"]["mirror"]["steps"]
+        matches = [
+            s for s in steps if s.get("name", "").startswith("Ask the host to stop")
+        ]
+        assert matches, "no cancellation step — cancelling would leave the run going"
+        return matches[0]
+
+    def test_it_only_runs_when_the_job_was_cancelled(self, parsed: dict):
+        assert self.step(parsed)["if"] == "cancelled()"
+
+    def test_it_runs_before_the_summary(self, parsed: dict):
+        # So the summary describes a run that has actually stopped.
+        names = [s.get("name", "") for s in parsed["jobs"]["mirror"]["steps"]]
+        stop = next(i for i, n in enumerate(names) if n.startswith("Ask the host to stop"))
+        summary = next(i for i, n in enumerate(names) if n.startswith("Write the run summary"))
+        assert stop < summary
+
+    def test_it_finds_the_process_through_the_lock_file(self, parsed: dict):
+        # runlock.py writes the pid there; nothing else knows what is running.
+        script = self.step(parsed)["run"]
+        assert "backup.lock" in script
+        assert '"pid"' in script
+
+    def test_it_asks_rather_than_kills(self, parsed: dict):
+        # SIGKILL is the hard kill this whole change exists to avoid: it would
+        # leave the container behind exactly as before.
+        # Comments stripped: the script's own comment explains why it does NOT
+        # escalate to SIGKILL, and a substring check on the raw text trips over
+        # that explanation rather than on any code.
+        script = _strip_comments(self.step(parsed)["run"])
+        assert "kill -TERM" in script
+        # `kill -9` specifically: a bare "-9" also appears inside the [!0-9]
+        # character class that validates the pid.
+        assert "kill -9" not in script
+        assert "-KILL" not in script
+        assert "SIGKILL" not in script
+
+    def test_it_cannot_hang_the_job(self, parsed: dict):
+        step = self.step(parsed)
+        assert step.get("timeout-minutes"), "no timeout on a step that waits"
+        assert "ConnectTimeout" in step["run"]
+
+    def test_the_shell_parses(self, parsed: dict):
+        import subprocess
+        import tempfile
+        from pathlib import Path as P
+
+        with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as handle:
+            handle.write(self.step(parsed)["run"])
+            path = handle.name
+        result = subprocess.run(["bash", "-n", path], capture_output=True, text=True)
+        P(path).unlink()
+        assert result.returncode == 0, result.stderr
+
+
+class TestTheStopScriptBehaves:
+    """Run the remote half against real lock files, with a fake ssh."""
+
+    def remote_script(self, parsed: dict) -> str:
+        steps = parsed["jobs"]["mirror"]["steps"]
+        outer = next(
+            s for s in steps if s.get("name", "").startswith("Ask the host to stop")
+        )["run"]
+        # The remote half is the quoted heredoc body.
+        return outer.split("<<'REMOTE'", 1)[1].split("REMOTE", 1)[0].split("\n", 1)[1]
+
+    def run_remote(self, parsed: dict, lock_dir, contents=None):
+        import subprocess
+
+        script = self.remote_script(parsed).replace(
+            "/var/lib/bloom-box-object-backup/backup.lock", f"{lock_dir}/backup.lock"
+        )
+        if contents is not None:
+            (lock_dir / "backup.lock").write_text(contents)
+        return subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True
+        )
+
+    def test_no_lock_file_is_not_an_error(self, parsed: dict, tmp_path):
+        result = self.run_remote(parsed, tmp_path)
+        assert result.returncode == 0
+        assert "nothing was running" in result.stdout
+
+    def test_a_lock_without_a_pid_is_not_an_error(self, parsed: dict, tmp_path):
+        result = self.run_remote(parsed, tmp_path, contents="{}")
+        assert result.returncode == 0
+        assert "nothing to stop" in result.stdout
+
+    def test_a_stale_pid_is_not_an_error(self, parsed: dict, tmp_path):
+        # The kernel drops the flock when the holder dies, but the metadata can
+        # outlive it.
+        result = self.run_remote(parsed, tmp_path, contents='{"pid": 999999}')
+        assert result.returncode == 0
+        assert "gone already" in result.stdout
+
+    def test_garbage_in_the_lock_file_is_not_an_error(self, parsed: dict, tmp_path):
+        result = self.run_remote(parsed, tmp_path, contents="not json at all")
+        assert result.returncode == 0
+
+    def test_a_live_process_is_asked_to_stop(self, parsed: dict, tmp_path):
+        """A running process is signalled, exits on its own, and is seen to.
+
+        The child is reaped in a thread while the script polls. Without that it
+        lingers as a zombie, and `kill -0` succeeds on a zombie — so the script
+        would wait out its full timeout against a process that had already
+        exited. Real runs do not hit this: a seed in tmux is reaped by tmux,
+        and a workflow run is orphaned to init when the ssh shell exits.
+        """
+        import json
+        import subprocess
+        import sys
+        import threading
+
+        child = subprocess.Popen(
+            [sys.executable, "-c",
+             "import signal,sys,time\n"
+             "signal.signal(signal.SIGTERM, lambda *a: sys.exit(3))\n"
+             "print('up', flush=True)\n"
+             "time.sleep(60)"],
+            stdout=subprocess.PIPE, text=True,
+        )
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "up"
+
+        status = {}
+        reaper = threading.Thread(target=lambda: status.setdefault("rc", child.wait()))
+        reaper.start()
+        try:
+            result = self.run_remote(
+                parsed, tmp_path, contents=json.dumps({"pid": child.pid})
+            )
+            assert "asking pid" in result.stdout, result.stdout
+            reaper.join(timeout=15)
+            assert status.get("rc") == 3, "it was killed rather than asked to stop"
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)

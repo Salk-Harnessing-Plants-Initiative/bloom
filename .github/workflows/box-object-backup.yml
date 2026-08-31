@@ -188,6 +188,49 @@ jobs:
             --env "$env_name" --verify "$verify" $dry_run
           REMOTE
 
+      # Cancelling this job kills the ssh client on the runner, not the python
+      # process on the host — the remote gets SIGHUP when the connection drops.
+      # That used to be a hard kill: the cleanup in `finally` never ran and the
+      # rclone container was left holding the RC port, so the NEXT run refused
+      # to start until someone removed it by hand.
+      #
+      # The job now handles SIGHUP, so the drop alone is survivable. This step
+      # is belt and braces for the case where the connection outlives the
+      # cancellation: it asks the run to stop by name, using the pid the lock
+      # file records, and gives it a moment to put itself away.
+      - name: Ask the host to stop the run, if this job was cancelled
+        if: cancelled()
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        timeout-minutes: 3
+        run: |
+          set -uo pipefail
+          ssh -i ~/.ssh/deploy_key -o ConnectTimeout=15 \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s <<'REMOTE' || true
+          set -uo pipefail
+          lock=/var/lib/bloom-box-object-backup/backup.lock
+          [ -r "$lock" ] || { echo "no lock file — nothing was running"; exit 0; }
+
+          # runlock.py writes {"pid": ..., "started_at": ..., "argv": ...}
+          pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pid",""))' "$lock" 2>/dev/null || true)"
+          case "$pid" in
+            ''|*[!0-9]*) echo "no pid in the lock file — nothing to stop"; exit 0 ;;
+          esac
+          kill -0 "$pid" 2>/dev/null || { echo "pid $pid is gone already"; exit 0; }
+
+          echo "asking pid $pid to stop"
+          kill -TERM "$pid"
+          for _ in $(seq 1 30); do
+            kill -0 "$pid" 2>/dev/null || { echo "stopped cleanly"; exit 0; }
+            sleep 2
+          done
+          # Deliberately not escalating to SIGKILL: that is the hard kill this
+          # exists to avoid, and it would leave the container behind again. A
+          # run still going after a minute is worth a human looking.
+          echo "::warning::pid $pid has not stopped yet; leaving it alone"
+          REMOTE
+
       # A run that stood down against the seed's lock exits 0, exactly as a
       # successful run does. Reading the marker is the only way to tell them
       # apart, and calling a stood-down week "succeeded" is how a months-long
