@@ -273,9 +273,16 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     )
     if totals.verify_mismatched:
         logger.error(
-            "%d of %d verified object(s) were missing or the wrong size on Box "
-            "— run recorded 'partial' so the next run re-examines them",
+            "%d of %d verified object(s) were missing or the wrong size on Box. "
+            "These are NOT retried automatically — the ledger already records "
+            "them as copied, so every later run skips them. To force a re-copy, "
+            "delete their rows by hand:\n"
+            "    sqlite3 %s \"DELETE FROM copied WHERE bucket_id='<bucket>' "
+            "AND name='<name>';\"\n"
+            "The failing paths are named in the ERROR lines above and in the "
+            "run report under _runs/ on Box.",
             totals.verify_mismatched, totals.verify_checked,
+            state_dir / "ledger.db",
         )
     elif totals.verify_checked:
         logger.info("verified %d object(s) on Box, all present and correct",
