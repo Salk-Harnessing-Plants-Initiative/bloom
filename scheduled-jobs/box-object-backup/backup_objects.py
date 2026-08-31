@@ -213,7 +213,12 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             "skipped": totals.skipped,
             "already_current": totals.already_current,
         }
-        outcome = "error" if crashed else ("ok" if totals.failed == 0 else "partial")
+        outcome = run_outcome(
+            crashed=crashed,
+            failed=totals.failed,
+            copied=totals.copied,
+            limit=args.limit,
+        )
         publish_report(
             daemon, state_dir, box_fs, args,
             run_id=run_id, started_at=started_at, outcome=outcome,
@@ -247,6 +252,23 @@ class Totals:
     already_current: int = 0
     verify_pool: list = field(default_factory=list)
     failures: list = field(default_factory=list)
+
+
+def run_outcome(*, crashed: bool, failed: int, copied: int, limit: int | None) -> str:
+    """Classify a finished run — and decide whether it can be a watermark.
+
+    `Ledger.last_successful_run()` only considers runs recorded `ok`, so this
+    is what stops a chunked seed from losing objects. A run cut short by
+    `--limit` has not seen the whole table; recording it clean would make the
+    next run filter on its start time and skip everything the limit left
+    behind, permanently and without saying so.
+    """
+    if crashed:
+        return "error"
+    truncated = limit is not None and copied >= limit
+    if failed or truncated:
+        return "partial"
+    return "ok"
 
 
 def publish_report(

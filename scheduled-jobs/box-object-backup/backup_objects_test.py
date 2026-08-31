@@ -322,3 +322,31 @@ def test_minio_credentials_are_not_logged_on_failure(caplog, ledger):
     client = FakeRclone({key: [RcloneError("failed on secret_access_key=secret")]})
     run_copy(client, [obj()], ledger)
     assert "MINIO" not in caplog.text
+
+
+class TestOutcomeProtectsTheWatermark:
+    """A chunked seed must not poison the `since` watermark.
+
+    `last_successful_run()` reads the newest run with outcome='ok'. A run cut
+    short by --limit has not seen the whole table, so recording it clean would
+    make the next run filter on its start time and skip every object the limit
+    left behind — silently, and forever.
+    """
+
+
+    def test_a_complete_unlimited_run_is_clean(self):
+        assert job.run_outcome(crashed=False, failed=0, copied=8_000_000, limit=None) == "ok"
+
+    def test_a_run_that_hit_its_limit_is_partial(self):
+        assert job.run_outcome(crashed=False, failed=0, copied=500_000, limit=500_000) == "partial"
+
+    def test_a_limited_run_that_finished_early_is_clean(self):
+        # Fewer copies than the cap means the table ran out first, not the
+        # limit — that run really did see everything.
+        assert job.run_outcome(crashed=False, failed=0, copied=1_200, limit=500_000) == "ok"
+
+    def test_failures_still_mark_a_run_partial(self):
+        assert job.run_outcome(crashed=False, failed=3, copied=10, limit=None) == "partial"
+
+    def test_a_crash_outranks_everything(self):
+        assert job.run_outcome(crashed=True, failed=0, copied=500_000, limit=500_000) == "error"
