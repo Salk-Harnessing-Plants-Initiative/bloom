@@ -198,9 +198,34 @@ difference, but it lives in `/var/lib` behind SSH and SQLite.
 
 Each report carries the run's outcome (`ok`, `partial`, `error`), its
 duration, the counts (`listed`, `copied`, `failed`, `skipped`,
-`already_current`), and the paths of failed objects — capped, with
-`failure_count` keeping the true total. Reports are written for failed runs
-too.
+`already_current`, `verify_checked`, `verify_mismatched`), and the paths of
+failed objects — capped, with `failure_count` keeping the true total. Reports
+are written for failed runs too.
+
+`verify_checked` and `verify_mismatched` are what make the report a record of
+a *checked* backup rather than an attempted one. `verify_checked: 0` means
+nobody looked, which is not the same as looking and finding nothing wrong.
+
+### What verification does, and does not, prove
+
+After copying, `--verify N` asks Box directly whether N of the objects this run
+copied are present and the expected size. A non-zero mismatch count records the
+run `partial`, so the watermark holds and those objects are re-examined next
+run instead of being sealed behind a false `ok`.
+
+The N objects are a uniform random sample of the run's **successful** copies,
+seeded so a re-run checks the same ones — a mismatch stays reproducible rather
+than vanishing on the next attempt.
+
+**N is a flat 50, hardcoded.** That reliably catches a systemic fault — wrong
+path, broken auth, nothing landing at all — and is not statistical assurance
+about rare corruption: 50 of 8M objects is 0.0006% of the mirror. Whether it
+should instead scale with the size of the run is an open question and
+deliberately left for review rather than decided here.
+
+Size is also the only property compared. MinIO exposes MD5 and Box exposes
+SHA-1, so there is no common checksum, and a file corrupted without changing
+length would pass.
 
 The upload is best-effort: the objects are already on Box, so a failed report
 upload does not fail the run. A copy is always kept on the host under

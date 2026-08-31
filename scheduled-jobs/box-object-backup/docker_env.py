@@ -142,6 +142,31 @@ def psql_query_to_file(
     return rows
 
 
+def database_now(container: str, user: str, database: str) -> str:
+    """The DATABASE's clock, in the format the manifest reports updated_at in.
+
+    The watermark is compared against `storage.objects.updated_at`, which
+    Postgres writes. Taking it from the deploy host instead compares two
+    clocks: if the host ever runs ahead, objects written inside the skew are
+    never enumerated again, silently and permanently. Containers share the
+    host kernel clock today, so this is latent rather than active — but the
+    comparison should not depend on that staying true.
+    """
+    out = run(
+        [
+            which("docker"), "exec", "-i", container,
+            "psql", "-U", user, "-d", database,
+            "--no-align", "--tuples-only", "--quiet", "--no-psqlrc",
+            "-v", "ON_ERROR_STOP=1",
+            "-c", "SELECT to_char(now() AT TIME ZONE 'UTC', "
+                  "'YYYY-MM-DD\"T\"HH24:MI:SSOF')",
+        ]
+    ).strip()
+    if not out:
+        raise DockerError("could not read the database clock for the watermark")
+    return out.splitlines()[0].strip()
+
+
 @dataclass
 class RcDaemon:
     """A short-lived `rclone rcd` container, alive for one backup run."""

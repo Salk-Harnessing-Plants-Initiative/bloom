@@ -164,6 +164,10 @@ def test_env_disambiguating_values_differ():
         # collapsing them to the same value would silently defeat it with no
         # other test catching that.
         "WORKFLOWS_K8S_ENV_LABEL",
+        # Same reasoning: prod and staging hold objects under identical
+        # logical names, so one environment's mirror pointed at the other's
+        # Box folder would overwrite real backups rather than sit beside them.
+        "BACKUP_BOX_ROOT",
     ):
         assert prod[key] != staging[key], (
             f"{key} identical in prod/staging ({prod[key]!r}); "
@@ -372,3 +376,84 @@ def _run_validator_real_compose(tmp_path: Path, env_content: str) -> subprocess.
         capture_output=True,
         text=True,
     )
+
+
+# --- Box object mirror (scheduled-jobs/box-object-backup) -------------------
+#
+# These are not ordinary config. An empty or wrong value does not fail the
+# backup job loudly; it sends eight million images somewhere nobody is looking,
+# and the run reports success while doing it. The job refuses to start on a bad
+# value at runtime, and these keep a bad value from reaching the deploy at all.
+
+BACKUP_REQUIRED_KEYS = (
+    "BACKUP_BOX_REMOTE",
+    "BACKUP_BOX_ROOT",
+    "BACKUP_MINIO_BUCKET",
+    "BACKUP_MINIO_PREFIX",
+)
+
+
+@pytest.mark.parametrize("key", BACKUP_REQUIRED_KEYS)
+def test_backup_keys_are_present_and_non_empty(key):
+    """An unset destination writes the mirror to the top of the Box drive.
+
+    BACKUP_BOX_ROOT defaults to "" in the job, and an empty root makes every
+    object land at `<bucket>/<name>` — the root of the Box account, alongside
+    everyone else's folders. BACKUP_MINIO_BUCKET empty is the mirror image:
+    rclone then reads each object's own bucket_id as a MinIO bucket name and
+    every copy 404s.
+    """
+    for path in (PROD_DEFAULTS, STAGING_DEFAULTS):
+        values = _parse(path)
+        assert key in values, f"{path.name}: {key} is missing"
+        assert values[key].strip(), f"{path.name}: {key} is empty"
+
+
+def test_backup_box_root_names_its_own_environment():
+    """Each root must sit under a segment naming its environment.
+
+    Guards the copy-paste that points staging's mirror at prod's folder. The
+    job makes the same check at runtime against --env; this catches it in the
+    committed defaults, before it reaches a deploy.
+    """
+    for path, env, other in (
+        (PROD_DEFAULTS, "prod", "staging"),
+        (STAGING_DEFAULTS, "staging", "prod"),
+    ):
+        root = _parse(path)["BACKUP_BOX_ROOT"].strip().strip("/")
+        segments = [s.lower() for s in root.split("/")]
+        assert env in segments, (
+            f"{path.name}: BACKUP_BOX_ROOT ({root!r}) has no {env!r} path "
+            "segment, so it cannot be told apart from the other environment"
+        )
+        assert other not in segments, (
+            f"{path.name}: BACKUP_BOX_ROOT ({root!r}) points into {other!r}"
+        )
+
+
+def test_backup_box_roots_are_not_nested_in_each_other():
+    """Neither environment may mirror into a folder inside the other's."""
+    prod = _parse(PROD_DEFAULTS)["BACKUP_BOX_ROOT"].strip().strip("/")
+    staging = _parse(STAGING_DEFAULTS)["BACKUP_BOX_ROOT"].strip().strip("/")
+    assert prod != staging, "prod and staging mirror into the same Box folder"
+    assert not prod.startswith(staging + "/"), f"{prod!r} is inside {staging!r}"
+    assert not staging.startswith(prod + "/"), f"{staging!r} is inside {prod!r}"
+
+
+def test_backup_minio_bucket_matches_the_compose_backing_bucket():
+    """The mirror must read from the bucket storage-api actually writes to.
+
+    docker-compose.prod.yml sets STORAGE_S3_BUCKET for storage-api; if that
+    ever changes and the backup's copy does not, the job reads an empty or
+    wrong bucket and mirrors nothing while reporting success on zero objects.
+    """
+    compose = COMPOSE_FILE.read_text()
+    match = re.search(r"^\s*STORAGE_S3_BUCKET:\s*(\S+)\s*$", compose, re.M)
+    assert match, "STORAGE_S3_BUCKET not found in docker-compose.prod.yml"
+    expected = match.group(1).strip().strip("\"'")
+    for path in (PROD_DEFAULTS, STAGING_DEFAULTS):
+        actual = _parse(path)["BACKUP_MINIO_BUCKET"].strip()
+        assert actual == expected, (
+            f"{path.name}: BACKUP_MINIO_BUCKET is {actual!r} but storage-api "
+            f"writes to {expected!r} (docker-compose.prod.yml STORAGE_S3_BUCKET)"
+        )
