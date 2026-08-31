@@ -23,6 +23,33 @@ WORKFLOW = (
 
 
 @pytest.fixture(scope="module")
+def parsed(workflow: str) -> dict:
+    """The workflow as YAML, with comments discarded.
+
+    Assertions on raw file text are satisfied by a comment. Every one of these
+    survived having the real thing broken while the searched-for string was
+    left in a comment above it: the approval gate re-enabled, the skip branch
+    deleted entirely. Parsing removes that channel.
+    """
+    import yaml
+
+    return yaml.safe_load(workflow)
+
+
+@pytest.fixture(scope="module")
+def summary_script(parsed: dict) -> str:
+    steps = parsed["jobs"]["mirror"]["steps"]
+    return next(s["run"] for s in steps if s.get("name", "").startswith("Write the run summary"))
+
+
+def _strip_comments(script: str) -> str:
+    """Executable lines only — a comment must not satisfy an assertion."""
+    return "\n".join(
+        line for line in script.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
+@pytest.fixture(scope="module")
 def workflow() -> str:
     if not WORKFLOW.exists():
         pytest.fail(
@@ -36,20 +63,32 @@ def workflow() -> str:
 class TestSkipMarkerContract:
     """The one string that has to match across the two files."""
 
-    def test_the_workflow_greps_a_prefix_of_the_marker(self, workflow: str):
+    def test_the_workflow_greps_a_prefix_of_the_marker(self, summary_script: str):
         # The YAML greps a plain ASCII prefix: the full marker carries an
         # em dash, which is a poor thing to put in a shell string literal.
         prefix = "box-object-backup: SKIPPED"
         assert SKIP_MARKER.startswith(prefix)
-        assert prefix in workflow
+        assert prefix in _strip_comments(summary_script)
 
-    def test_a_stood_down_run_is_not_reported_as_success(self, workflow: str):
+    def test_the_python_actually_prints_the_marker(self):
+        # The contract was only ever tested from the YAML side; removing the
+        # logger.warning that emits it went unnoticed.
+        source = (Path(__file__).parent / "backup_objects.py").read_text()
+        executable = _strip_comments(source)
+        assert "SKIP_MARKER" in executable
+
+    def test_a_stood_down_run_is_not_reported_as_success(self, summary_script: str):
         # The whole point: a skipped run exits 0 exactly as a good one does,
         # so the summary must distinguish them or a months-long gap in the
         # mirror reads as months of green ticks.
-        skipped_at = workflow.find("box-object-backup: SKIPPED")
-        succeeded_at = workflow.find("**succeeded**")
-        assert skipped_at != -1 and succeeded_at != -1
+        #
+        # Comments stripped first — deleting this branch entirely used to pass,
+        # because the marker survived in the comment above it.
+        script = _strip_comments(summary_script)
+        skipped_at = script.find("box-object-backup: SKIPPED")
+        succeeded_at = script.find("**succeeded**")
+        assert skipped_at != -1, "the skip branch is gone from the summary"
+        assert succeeded_at != -1
         assert skipped_at < succeeded_at, (
             "the skip check must be tested before the success branch, "
             "or a stood-down run reports as succeeded"
@@ -67,10 +106,18 @@ class TestScheduleShape:
         assert "group: box-object-backup-" in workflow
         assert "group: deploy-bloom" not in workflow
 
-    def test_the_scheduled_run_is_not_behind_an_approval_gate(self, workflow: str):
-        # An unattended 02:00 run routed through a reviewer gate waits for an
+    def test_the_scheduled_run_is_not_behind_an_approval_gate(self, parsed: dict):
+        # An unattended 02:17 run routed through a reviewer gate waits for an
         # approval nobody is awake to give, and the backup silently never runs.
-        assert "production-scheduled-backup" in workflow
+        #
+        # Read off the parsed job: setting `environment: production` while
+        # leaving the ungated name in a comment used to pass.
+        environment = parsed["jobs"]["mirror"]["environment"]
+        assert "production-scheduled-backup" in environment
+        assert "schedule" in environment, (
+            "the gate must be chosen by event type, or the scheduled run "
+            "inherits production's required reviewer"
+        )
 
 
 class TestRunInvocation:

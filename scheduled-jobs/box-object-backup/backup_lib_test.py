@@ -9,7 +9,6 @@ Box path keeps the extension, the MinIO key keeps the version suffix.
 
 from __future__ import annotations
 
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -324,8 +323,11 @@ def test_plan_of_nothing_is_empty():
 # ---------- ledger ----------
 
 @pytest.fixture
-def ledger():
-    led = Ledger(sqlite3.connect(":memory:"))
+def ledger(tmp_path):
+    # Through the production constructor — see the note in
+    # backup_objects_test.py. Using a real file also exercises the WAL pragma
+    # open() sets, which an in-memory connection never reaches.
+    led = Ledger.open(str(tmp_path / "ledger.db"))
     yield led
     led.close()
 
@@ -630,3 +632,76 @@ class TestSourceAddress:
         assert lib.source_remote(obj(), source.prefix) == (
             f"storage-single-tenant/images/exp-42/plate-7/frame_0001.png/{VERSION}"
         )
+
+
+class TestTheClientRedactsWhereTheErrorIsBuilt:
+    """`RcloneRC.call` is where a credential would escape, and it had no tests.
+
+    rclone echoes the failing remote back in its errors, and ours is a
+    connection string carrying MinIO's root credentials. The only test that
+    claimed to cover this asserted `"MINIO" not in caplog.text` — a string that
+    appears nowhere in the code path — and it passed with redaction disabled.
+    """
+
+    SECRET = 'pa,ss"w:rd'
+
+    def client(self, monkeypatch, raises):
+        import urllib.request
+
+        from rclone_rc import RcloneRC
+
+        monkeypatch.setattr(
+            urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(raises)
+        )
+        return RcloneRC("http://127.0.0.1:5572", "u", "p")
+
+    def http_error(self, body: str):
+        import io
+        import urllib.error
+
+        return urllib.error.HTTPError(
+            "http://x", 500, "err", {}, io.BytesIO(body.encode())
+        )
+
+    def test_an_http_error_body_carrying_the_secret_is_redacted(self, monkeypatch):
+        from rclone_rc import RcloneError
+
+        fs = MinioSource("http://m:9000", "rootuser", self.SECRET, "bloom-storage").fs()
+        client = self.client(monkeypatch, self.http_error(f'{{"error": "cannot read {fs}"}}'))
+        with pytest.raises(RcloneError) as caught:
+            client.copy_file("src", "a", "dst", "b")
+        assert self.SECRET not in str(caught.value)
+        assert "rootuser" not in str(caught.value)
+
+    def test_a_transport_error_carrying_the_secret_is_redacted(self, monkeypatch):
+        import urllib.error
+
+        from rclone_rc import RcloneError
+
+        fs = MinioSource("http://m:9000", "rootuser", self.SECRET, "bloom-storage").fs()
+        client = self.client(monkeypatch, urllib.error.URLError(f"refused for {fs}"))
+        with pytest.raises(RcloneError) as caught:
+            client.copy_file("src", "a", "dst", "b")
+        assert self.SECRET not in str(caught.value)
+
+    def test_a_throttle_is_marked_retryable(self, monkeypatch):
+        from rclone_rc import RcloneError
+
+        client = self.client(monkeypatch, self.http_error('{"error": "rate_limit"}'))
+        with pytest.raises(RcloneError) as caught:
+            client.stat("dst", "b")
+        assert caught.value.retryable is True
+
+    def test_a_missing_object_is_not_retryable(self, monkeypatch):
+        import io
+        import urllib.error
+
+        from rclone_rc import RcloneError
+
+        err = urllib.error.HTTPError(
+            "http://x", 404, "not found", {}, io.BytesIO(b'{"error": "object not found"}')
+        )
+        client = self.client(monkeypatch, err)
+        with pytest.raises(RcloneError) as caught:
+            client.stat("dst", "b")
+        assert caught.value.retryable is False
