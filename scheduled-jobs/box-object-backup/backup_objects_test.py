@@ -757,13 +757,31 @@ class TestRunLockedWiresItsPartsTogether:
             job.run_locked(args, tmp_path)
         assert state["copied"] == [], "copied despite an unset destination"
 
-    def test_a_failed_preflight_stops_the_run_before_anything_is_copied(self, harness):
+    def test_a_preflight_where_everything_misses_stops_the_run(self, harness):
         # preflight_source could be deleted from run_locked with the suite green.
+        # EVERY sample must miss: that is what means the layout is wrong.
         state, tmp_path = harness
-        state["missing"].add("storage-single-tenant/images/exp-42/a.png/v1")
+        state["missing"].update({
+            "storage-single-tenant/images/exp-42/a.png/v1",
+            "storage-single-tenant/images/exp-42/b.png/v2",
+        })
         with pytest.raises(job.lib.BackupError, match="preflight failed"):
             job.run_locked(self.args(tmp_path), tmp_path)
         assert state["copied"] == [], "copied despite the source layout being wrong"
+
+    def test_one_orphaned_row_does_not_reject_a_correct_configuration(self, harness):
+        """The reason the preflight samples several objects rather than one.
+
+        The manifest is ordered `bucket_id, updated_at`, so the first row is
+        the oldest object in the first bucket — the one most likely to have
+        lost its bytes years ago while the row survived. Probing only that made
+        a single dead row fail every run, weekly, blaming the bucket and prefix
+        settings when they were correct.
+        """
+        state, tmp_path = harness
+        state["missing"].add("storage-single-tenant/images/exp-42/a.png/v1")
+        assert job.run_locked(self.args(tmp_path), tmp_path) == 0
+        assert state["copied"], "a single orphaned row stopped a correct run"
 
     def test_verification_runs_and_a_mismatch_reaches_the_exit_code(self, harness):
         # The verifier's verdict was discarded; the run exited 0 regardless.
@@ -800,7 +818,10 @@ class TestRunLockedWiresItsPartsTogether:
 
     def test_the_daemon_is_stopped_even_when_the_run_raises(self, harness):
         state, tmp_path = harness
-        state["missing"].add("storage-single-tenant/images/exp-42/a.png/v1")
+        state["missing"].update({
+            "storage-single-tenant/images/exp-42/a.png/v1",
+            "storage-single-tenant/images/exp-42/b.png/v2",
+        })
         with pytest.raises(job.lib.BackupError):
             job.run_locked(self.args(tmp_path), tmp_path)
         assert state["daemon_stopped"], "the rclone container was left running"
