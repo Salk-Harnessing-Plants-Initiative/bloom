@@ -24,7 +24,7 @@ from ledger import Ledger  # noqa: E402
 from rclone_rc import MinioSource, RcloneError  # noqa: E402
 
 VERSION = "0f8b1c2a-4d5e-4f60-9a1b-2c3d4e5f6a7b"
-MINIO = MinioSource("http://supabase-minio:9000", "root", "secret")
+MINIO = MinioSource("http://supabase-minio:9000", "root", "secret", "bloom-storage")
 BOX_FS = "box:"
 
 

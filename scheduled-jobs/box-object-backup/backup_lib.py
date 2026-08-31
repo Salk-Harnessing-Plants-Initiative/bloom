@@ -5,8 +5,9 @@ database, an rclone daemon, or a Box account. The one stateful piece, the
 copy ledger, lives in ledger.py.
 
 The mapping this module implements is the whole point of the job. Supabase
-Storage stores every object in one backing MinIO bucket under a key of
-`<bucket_id>/<name>/<version>`, so the last path segment is a version UUID
+Storage stores every object in one backing MinIO bucket, under a tenant
+prefix, at `<bucket_id>/<name>/<version>` — so the last path segment is a
+version UUID
 and the file has no extension — Box shows those as unpreviewable blobs. We
 copy each object to `<bucket_id>/<name>` instead, which is the path the
 Storage API serves it under, so the Box copy keeps its `.png` and previews.
@@ -56,7 +57,12 @@ class StorageObject:
 
     @property
     def minio_key(self) -> str:
-        """Key inside the backing bucket, as the Storage API writes it.
+        """Key RELATIVE to the backing bucket and tenant prefix.
+
+        This is not a whole MinIO address: `source_remote` prepends the
+        tenant prefix, and `MinioSource.fs` names the bucket. Callers that
+        hand this straight to rclone against a provider-root fs get the
+        object's own `bucket_id` read as a MinIO bucket name.
 
         Pre-version objects (written before storage-api added versioning)
         have no suffix, so the key is just `<bucket>/<name>`.
@@ -215,6 +221,24 @@ def unsafe_reason(obj: StorageObject) -> str | None:
     if obj.size is not None and obj.size > BOX_MAX_FILE_BYTES:
         return f"object exceeds Box per-file limit: {obj.size} bytes"
     return None
+
+
+def source_remote(obj: StorageObject, prefix: str = "") -> str:
+    """Remote of one object within the backing bucket's fs.
+
+    storage-api in single-tenant mode files everything under a tenant
+    prefix, so the full address is
+    `<backing bucket>/<prefix>/<bucket_id>/<name>/<version>`. The bucket is
+    carried by the fs; this supplies everything after it.
+
+    The prefix is configuration rather than a constant because nothing in
+    the stack declares it — it is storage-api's own internal default, and
+    the only other place in this repo that knows it is a bare string in
+    services/video-worker/video_listener.py.
+    """
+    tail = obj.minio_key
+    cleaned = prefix.strip("/")
+    return f"{cleaned}/{tail}" if cleaned else tail
 
 
 def box_path(obj: StorageObject, root: str = "") -> str:
