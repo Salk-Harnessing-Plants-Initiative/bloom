@@ -139,9 +139,16 @@ def _load_vendored_workflow() -> dict:
     no module-level caching, since `yaml.safe_load` already returns an
     independent object graph each time, making an explicit copy unnecessary.
     Raises K8sConfigError (not a raw FileNotFoundError/YAMLError/KeyError) for
-    a missing file, a YAML syntax error, or a structurally-wrong-but-valid
-    file (not a mapping, or missing `spec`/`metadata`) — the same treatment
-    this module already gives a missing credential."""
+    a missing file, a symlinked file (could point a future edit somewhere the
+    CI drift-check's path-scoped git diff would never notice), a YAML syntax
+    error, or a structurally-wrong-but-valid file (not a mapping, or missing
+    `spec`/`metadata`) — the same treatment this module already gives a
+    missing credential."""
+    if _VENDORED_WORKFLOW_PATH.is_symlink():
+        raise K8sConfigError(
+            "K8s client not configured: vendored Workflow source must not be a symlink"
+        )
+
     try:
         raw = _VENDORED_WORKFLOW_PATH.read_text()
     except OSError as exc:
@@ -181,24 +188,40 @@ def build_workflow_body(run_id, batch_index: int, scan_ids: list[int]) -> dict:
     # `_load_vendored_workflow` only validates that `spec`/`metadata` are
     # dicts, not their nested structure, so a vendored file missing
     # `arguments`/`parameters` entirely (as opposed to having them but
-    # misnamed) must still raise K8sConfigError, not a raw KeyError.
+    # misnamed) must still raise K8sConfigError, not a raw KeyError. The
+    # isinstance checks below cover the shape being present but wrong (not a
+    # list, or its first element not a dict) — otherwise `.get("name")` on a
+    # non-dict element raises a raw AttributeError/TypeError instead.
     parameters = body.get("spec", {}).get("arguments", {}).get("parameters")
-    if not parameters or parameters[0].get("name") != "scan-ids":
+    if (
+        not isinstance(parameters, list)
+        or not parameters
+        or not isinstance(parameters[0], dict)
+        or parameters[0].get("name") != "scan-ids"
+    ):
         raise K8sConfigError(
             "K8s client not configured: vendored Workflow source's scan-ids "
             "parameter is missing or has drifted to a different position"
         )
     parameters[0]["value"] = ",".join(str(sid) for sid in scan_ids)
 
+    dispatch_labels = {
+        "submitted-by": "bloom-pipeline",
+        "pipeline-run-id": str(run_id),
+        "batch-index": str(batch_index),
+        "environment": ENV_LABEL,
+    }
     labels = body["metadata"].setdefault("labels", {})
-    labels.update(
-        {
-            "submitted-by": "bloom-pipeline",
-            "pipeline-run-id": str(run_id),
-            "batch-index": str(batch_index),
-            "environment": ENV_LABEL,
-        }
-    )
+    collisions = set(labels) & set(dispatch_labels)
+    if collisions:
+        # A plain dict merge would let the dispatch value silently win with
+        # no signal — the same class of silent-coupling bug the scan-ids
+        # assertion above exists to catch, just for labels instead.
+        raise K8sConfigError(
+            "K8s client not configured: vendored Workflow source already "
+            f"defines label(s) {sorted(collisions)} that this worker also sets"
+        )
+    labels.update(dispatch_labels)
 
     body["spec"]["ttlStrategy"] = {"secondsAfterCompletion": TTL_SECONDS}
     body["metadata"]["namespace"] = NAMESPACE

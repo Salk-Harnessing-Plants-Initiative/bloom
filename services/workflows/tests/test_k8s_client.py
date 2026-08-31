@@ -483,6 +483,24 @@ def test_build_workflow_body_returns_independent_copies_across_calls():
     assert all(v.get("name") != "mutated-in-test" for v in second["spec"]["volumes"])
 
 
+def test_build_workflow_body_raises_configerror_on_a_symlinked_vendored_file(
+    monkeypatch, tmp_path
+):
+    """A symlink swap on the vendored path could point future edits
+    somewhere the CI drift-check's path-scoped git diff would never notice,
+    permanently blinding drift detection from that point on."""
+    real_target = tmp_path / "real-target.yaml"
+    real_target.write_text("apiVersion: argoproj.io/v1alpha1\n")
+    symlinked_vendored = tmp_path / "sleap-roots-pipeline.yaml"
+    try:
+        symlinked_vendored.symlink_to(real_target)
+    except OSError as exc:
+        pytest.skip(f"platform/permissions don't allow creating symlinks: {exc}")
+    monkeypatch.setattr(k8s_client, "_VENDORED_WORKFLOW_PATH", symlinked_vendored)
+    with pytest.raises(K8sConfigError):
+        k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+
+
 def test_build_workflow_body_raises_configerror_on_missing_vendored_file(
     monkeypatch, tmp_path
 ):
@@ -558,6 +576,48 @@ def test_build_workflow_body_raises_configerror_when_parameters_key_is_entirely_
 ):
     mutated = copy.deepcopy(vendored_workflow)
     del mutated["spec"]["arguments"]["parameters"]
+    mutated_file = tmp_path / "mutated.yaml"
+    mutated_file.write_text(yaml.safe_dump(mutated))
+    monkeypatch.setattr(k8s_client, "_VENDORED_WORKFLOW_PATH", mutated_file)
+    with pytest.raises(K8sConfigError):
+        k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+
+
+@pytest.mark.parametrize(
+    "parameters_value",
+    [
+        "not-a-list",
+        {"name": "scan-ids", "value": ""},
+        ["not-a-dict"],
+    ],
+)
+def test_build_workflow_body_raises_configerror_when_parameters_has_the_wrong_shape(
+    monkeypatch, tmp_path, vendored_workflow, parameters_value
+):
+    """Distinct from 'entirely missing' above: here `parameters` IS present
+    but isn't a list-of-dicts (a string, a bare mapping, or a list whose
+    first element isn't a dict) — `.get("name")` on a non-dict element must
+    not raise a raw AttributeError/TypeError."""
+    mutated = copy.deepcopy(vendored_workflow)
+    mutated["spec"]["arguments"]["parameters"] = parameters_value
+    mutated_file = tmp_path / "mutated.yaml"
+    mutated_file.write_text(yaml.safe_dump(mutated))
+    monkeypatch.setattr(k8s_client, "_VENDORED_WORKFLOW_PATH", mutated_file)
+    with pytest.raises(K8sConfigError):
+        k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+
+
+def test_build_workflow_body_raises_configerror_on_a_dispatch_label_key_collision(
+    monkeypatch, tmp_path, vendored_workflow
+):
+    """The vendored file's own labels are merged with, never silently
+    overwritten by, the four dispatch-added label keys (see the label-merge
+    test above) — but if the vendored file ever defines one of THOSE SAME
+    keys itself, a plain dict merge would let the dispatch value win with no
+    signal that anything unusual happened. Mirrors the scan-ids
+    structural-drift assertion for labels."""
+    mutated = copy.deepcopy(vendored_workflow)
+    mutated["metadata"].setdefault("labels", {})["environment"] = "prod"
     mutated_file = tmp_path / "mutated.yaml"
     mutated_file.write_text(yaml.safe_dump(mutated))
     monkeypatch.setattr(k8s_client, "_VENDORED_WORKFLOW_PATH", mutated_file)

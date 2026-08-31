@@ -142,6 +142,17 @@ against `build_workflow_body` itself mis-indexing into a structurally-changed-bu
 independent second check — if it fires, that's a configuration error (same `K8sConfigError` treatment
 as a missing credential: raised before any network call), not a silent wrong submission.
 
+**Extended during a later review round to guard the assumed shape, not just the name.** The original
+assertion assumed `parameters` was present and shaped as a list of dicts, checking only whether
+`parameters[0]["name"]` matched — but a vendored file where `parameters` exists with an unexpected
+shape (not a list, or its first element not a dict) would raise a raw `AttributeError`/`TypeError` from
+`.get("name")` instead of `K8sConfigError`. That uncaught exception is not caught by
+`dispatch_worker.py`'s `process_one()` (which only catches `K8sConfigError`/`K8sSubmissionError`), so
+it would fall through to the generic loop-error handler and crash-loop the same claim every time its
+visibility timeout expired — a real availability gap, not silent data loss, but still not the clean
+config-error path this assertion exists to guarantee. Now checked with `isinstance` before any `.get()`
+call.
+
 ### Confirmed: the vendored file's `entrypoint`/`serviceAccountName` match today's hardcoded values
 
 The current hand-built `build_workflow_body` hardcodes `spec.entrypoint: "pipeline"` and
@@ -202,6 +213,15 @@ label a future vendored-file revision adds) is preserved on every submitted Work
 a strictly more complete label set than today's, consistent with the existing "at minimum" phrasing in
 the mandatory-attribution-labels requirement.
 
+**Extended during a later review round to detect a key collision, not just merge silently.** A plain
+`dict.update()` lets the dispatch-added keys win on any collision with no signal that anything unusual
+happened. Today's vendored file only sets `project: busch-lab` — no collision — but a future
+vendored-file revision that happens to add e.g. a generic `environment` label would be silently and
+permanently shadowed, with zero CI signal (the drift-check only diffs vendored-vs-upstream content, not
+override semantics). `build_workflow_body` now raises `K8sConfigError` if the vendored file's labels
+already define any of the four dispatch keys — the same structural-drift treatment the `scan-ids`
+assertion already gives labels' sibling override.
+
 ### No module-level caching — the vendored file is read and parsed fresh on every call
 
 `build_workflow_body` reads and `yaml.safe_load`s the vendored file anew on every call, rather than
@@ -224,16 +244,31 @@ silently folded into the "transient" bucket. A 404 on `raw.githubusercontent.com
 SHA means that commit no longer resolves upstream at all — exactly the dangling-pin scenario the Risk
 above describes — and no amount of retrying or re-running the job fixes that; only a human re-pinning
 `SLEAP_ROOTS_PIPELINE_REF` does. `check_vendored_workflow_drift.py` now special-cases `HTTPError` with
-`code == 404` into its own `PinNotFoundError` (a `FetchError` subclass), which `fetch_with_retry` never
-retries (retrying a 404 wastes the retry budget on something that can't succeed) and `check_drift`
-reports with a distinct "PIN NO LONGER RESOLVES UPSTREAM (re-pin required, not transient)" message.
-Two related gaps closed at the same time: `http.client.IncompleteRead` (raised by `resp.read()` on a
-truncated response — not a `URLError`/`OSError` subclass, so it previously escaped uncaught and would
-have crashed the script with Python's default exit code 1, colliding with the "content drift" exit
-code) is now also caught; and `SLEAP_ROOTS_PIPELINE_REF` being missing or containing something that
-isn't a 40-character commit SHA is now a clean, distinct "PIN FILE MISSING/MALFORMED" failure (exit
-code 3) that never reaches the network, rather than a raw `FileNotFoundError` or a confusing 404 from
-building a URL out of garbage.
+`code == 404` into its own `PinNotFoundError` (a `FetchError` subclass) and `check_drift` reports it
+with a distinct "PIN NO LONGER RESOLVES UPSTREAM" message — see the next section for how the retry
+policy around it was subsequently refined. Two related gaps closed at the same time:
+`http.client.IncompleteRead` (raised by `resp.read()` on a truncated response — not a
+`URLError`/`OSError` subclass, so it previously escaped uncaught and would have crashed the script with
+Python's default exit code 1, colliding with the "content drift" exit code) is now also caught; and
+`SLEAP_ROOTS_PIPELINE_REF` being missing or containing something that isn't a 40-character commit SHA
+is now a clean, distinct "PIN FILE MISSING/MALFORMED" failure (`EXIT_PIN_FILE_INVALID`) that never
+reaches the network, rather than a raw `FileNotFoundError` or a confusing 404 from building a URL out
+of garbage.
+
+### Second refinement (found during a later PR review round): a single 404 must still get a retry
+
+The first refinement above initially had `fetch_with_retry` never retry a `PinNotFoundError` at all —
+reasoned as "retrying a 404 wastes the budget on something that can't succeed." A later review round
+caught the gap in that reasoning: `raw.githubusercontent.com` is served off GitHub's CDN, which can
+briefly 404 a commit that was only just pushed, before it's fully propagated — indistinguishable from a
+genuinely dangling pin (branch deleted, commit garbage-collected) from the response alone. This was not
+hypothetical for this PR specifically: its own pin was re-pinned live, same-day, right after
+`sleap-roots-pipeline` PR #49 merged (see the Risk above) — exactly the scenario where a fresh commit
+could transiently 404. `fetch_with_retry` now gives a 404 the same retry chance as any other failure;
+only if it persists across the *entire* retry budget does it re-raise as `PinNotFoundError` and
+`check_drift` report `EXIT_PIN_NOT_FOUND` (a code now distinct from generic transient-fetch-failure's
+`EXIT_FETCH_FAILED`, closing a separate finding from the same review round that the two failure modes
+previously shared one exit code, distinguishable only by message text).
 
 ### Error handling for a missing/unparseable vendored file
 
@@ -247,6 +282,16 @@ recognizable failure" this proposal exists to close off, just one level removed 
 case the defensive assertion above already covers. This keeps `build_workflow_body`'s failure modes
 consistent with the rest of this module's existing config-error convention (see `k8s_client.py`'s
 module docstring).
+
+### Symlink rejection (found during a later review round)
+
+The vendored path's `detect-vendored-workflow-changes` path-scoping (see the CI drift-check decision
+above) watches `services/workflows/vendored/**` by path, not by resolved content. If that path were ever
+replaced with a symlink pointing outside the watched paths, only the *first* edit (creating the symlink)
+would trigger the drift-check; every subsequent edit to the symlink's target would be invisible to the
+`git diff` the detection job runs, permanently blinding drift detection from that point on. Both
+`check_vendored_workflow_drift.py`'s `check_drift` and `k8s_client.py`'s `_load_vendored_workflow` now
+reject a symlinked vendored path outright (`Path.is_symlink()`), before reading its content.
 
 ## Risks / Trade-offs
 

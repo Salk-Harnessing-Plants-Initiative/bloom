@@ -202,10 +202,35 @@ def test_fetch_canonical_file_raises_fetcherror_on_incomplete_read(monkeypatch):
         check_drift_module.fetch_canonical_file("https://example.invalid/file.yaml")
 
 
-def test_fetch_with_retry_does_not_retry_a_pinnotfounderror(monkeypatch):
-    """Retrying a 404 can never succeed — the pin itself is invalid, not the
-    network. Confirm fetch_canonical_file is called exactly once, not
-    retries+1 times."""
+def test_fetch_with_retry_recovers_from_a_transient_404_on_retry(monkeypatch):
+    """A 404 right after a commit is pushed can be CDN-propagation lag, not a
+    genuinely dangling pin — GitHub's raw-content CDN can briefly 404 a commit
+    that resolves moments later. A single 404 must get the same retry chance
+    as any other fetch failure, not be treated as immediately terminal."""
+    calls = {"count": 0}
+
+    def _404_once_then_succeeds(url, timeout=None):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise check_drift_module.PinNotFoundError("pinned commit not found (404)")
+        return b"content"
+
+    monkeypatch.setattr(
+        check_drift_module, "fetch_canonical_file", _404_once_then_succeeds
+    )
+    monkeypatch.setattr(check_drift_module, "RETRY_DELAY_SECONDS", 0)
+
+    result = check_drift_module.fetch_with_retry("https://example.invalid/file.yaml")
+    assert result == b"content"
+    assert calls["count"] == 2
+
+
+def test_fetch_with_retry_raises_pinnotfounderror_only_after_every_attempt_404s(
+    monkeypatch,
+):
+    """Only a 404 that persists across the full retry budget is treated as a
+    genuinely dangling pin — one that resolves on retry is transient (see
+    test above); one that doesn't is real."""
     calls = {"count": 0}
 
     def _always_404(url, timeout=None):
@@ -217,10 +242,10 @@ def test_fetch_with_retry_does_not_retry_a_pinnotfounderror(monkeypatch):
 
     with pytest.raises(check_drift_module.PinNotFoundError):
         check_drift_module.fetch_with_retry("https://example.invalid/file.yaml")
-    assert calls["count"] == 1
+    assert calls["count"] == 2  # used the full retry budget, not given up early
 
 
-def test_check_drift_fails_with_a_repin_required_message_on_404(
+def test_check_drift_fails_with_a_repin_required_message_on_persistent_404(
     monkeypatch, vendored_and_ref, capsys
 ):
     vendored, ref = vendored_and_ref
@@ -230,10 +255,34 @@ def test_check_drift_fails_with_a_repin_required_message_on_404(
 
     monkeypatch.setattr(check_drift_module, "fetch_with_retry", _always_404)
     exit_code = check_drift_module.check_drift(vendored, ref)
-    assert exit_code != 0
+    assert exit_code == check_drift_module.EXIT_PIN_NOT_FOUND
     message = capsys.readouterr().err
     assert "RE-PIN" in message.upper()
     assert "DRIFT" not in message.upper()
+
+
+def test_check_drift_rejects_a_symlinked_vendored_file(monkeypatch, tmp_path, capsys):
+    """A symlink swap on the vendored path could point a future edit
+    somewhere the path-scoped git diff would never notice, permanently
+    blinding drift detection from that point on."""
+    real_target = tmp_path / "real-target.yaml"
+    real_target.write_text("apiVersion: argoproj.io/v1alpha1\n")
+    symlinked_vendored = tmp_path / "sleap-roots-pipeline.yaml"
+    try:
+        symlinked_vendored.symlink_to(real_target)
+    except OSError as exc:
+        pytest.skip(f"platform/permissions don't allow creating symlinks: {exc}")
+    ref = tmp_path / "SLEAP_ROOTS_PIPELINE_REF"
+    ref.write_text("a" * 40 + "\n")
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("must not attempt a network fetch for a symlinked file")
+
+    monkeypatch.setattr(check_drift_module, "fetch_with_retry", _fail_if_called)
+    exit_code = check_drift_module.check_drift(symlinked_vendored, ref)
+    assert exit_code != 0
+    message = capsys.readouterr().err
+    assert "SYMLINK" in message.upper()
 
 
 def test_check_drift_fails_cleanly_when_ref_file_is_missing(

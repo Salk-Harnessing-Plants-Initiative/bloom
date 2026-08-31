@@ -214,3 +214,56 @@ the PR — none of them is scoped to a single commit's diff.
       this service at all, a pre-existing gap this change is a natural place to backfill.
 - [x] 4.5 Run `openspec validate fix-argo-workflow-vendoring --strict` and resolve any issues before
       requesting review.
+
+## 5. PR review round 3 (`/review-pr`, 5-lens): fixes
+
+A full `/review-pr` pass (code quality, testing, pipeline correctness, security, behavioral correctness)
+found no BLOCKING issues but several real IMPORTANT gaps, all fixed on the same branch:
+
+- [x] 5.1 `fetch_with_retry` no longer treats a single HTTP 404 as immediately terminal — GitHub's
+      raw-content CDN can briefly 404 a commit right after it's pushed (this PR's own pin was re-pinned
+      same-day after a merge, exactly that scenario). A 404 now gets the same retry chance as any other
+      `FetchError`; only a 404 that persists across the full retry budget is reported as
+      `PinNotFoundError`/`EXIT_PIN_NOT_FOUND`. New tests: a transient 404 that resolves on retry
+      succeeds; a persistent 404 raises after using the full retry budget.
+- [x] 5.2 Named exit-code constants (`EXIT_OK`/`EXIT_DRIFT`/`EXIT_FETCH_FAILED`/`EXIT_PIN_FILE_INVALID`/
+      `EXIT_PIN_NOT_FOUND`) replace bare literals in `check_vendored_workflow_drift.py`, and
+      `EXIT_PIN_NOT_FOUND` is now distinct from `EXIT_FETCH_FAILED` — previously both transient fetch
+      failure and permanent pin-not-found shared exit code `2`, distinguishable only by message text.
+- [x] 5.3 `build_workflow_body`'s `parameters[0]` shape assumption is now guarded with `isinstance`
+      checks before any `.get()` call — a vendored file with `parameters` present but shaped wrong (not
+      a list, or its first element not a mapping) previously raised a raw `AttributeError`/`TypeError`
+      instead of `K8sConfigError`, which `dispatch_worker.py`'s `process_one()` doesn't catch (crash-loop
+      risk, not silent data loss). New parametrized test covers three wrong-shape cases.
+- [x] 5.4 `build_workflow_body` now raises `K8sConfigError` if the vendored file's `metadata.labels`
+      already defines any of the four dispatch-added keys — previously a plain `dict.update()` let the
+      dispatch value silently win with no signal, the same class of silent-coupling bug the `scan-ids`
+      assertion already guards against. New test covers a label-key collision.
+- [x] 5.5 New regression test (`test_dispatch_worker.py`) confirms `build_workflow_body` raising
+      `K8sConfigError` gets the identical unsettled-claim treatment through `process_one()` as the
+      pre-existing `submit_workflow`-raises case — this PR is what first made `build_workflow_body`
+      capable of raising `K8sConfigError` at all, and no test previously covered that specific call site.
+      Confirmed passing with no implementation change needed (`process_one()`'s shared `try`/`except`
+      already handled it correctly).
+- [x] 5.6 Both `check_vendored_workflow_drift.py` and `k8s_client.py`'s `_load_vendored_workflow` now
+      reject a symlinked vendored path (`Path.is_symlink()`) before reading it — a symlink swap could
+      otherwise point future edits somewhere the path-scoped CI drift-check would never notice, silently
+      disabling drift detection from that point on.
+- [x] 5.7 Removed a dead `# noqa: S310` — confirmed no `pyproject.toml` in this repo enables flake8-
+      bandit's `S` rules, and `scripts/` isn't even in the ruff pre-commit hook's scope.
+- [x] 5.8 Corrected stale test counts in the PR description (227/services/workflows and 20/root
+      drift-check-plus-job-shape after this round's additions, not the earlier 224/12 the description
+      previously said).
+
+**Explicitly not fixed, by design or by user decision:**
+- CODEOWNERS for `services/workflows/vendored/**`/`scripts/check_vendored_workflow_drift.py` (the
+  self-referential-tamper finding — a single PR could edit both the vendored file and the checker that
+  verifies it) — a repo-governance decision, not a code fix; user decided not to add it.
+- `detect-vendored-workflow-changes`'s inline `git diff` logic remains untested at the behavior level
+  (only its YAML shape is asserted) — confirmed by hand it fails open (safe direction) on a `git diff`
+  error, but low enough value to leave as a documented gap rather than adding a Python rewrite for one
+  cheap shell comparison.
+- CI interpreter-pinning inconsistency (the drift-check job runs `python3` directly rather than via
+  `astral-sh/setup-uv` like its closest sibling jobs) — cosmetic, the script is stdlib-only either way.
+- `scan_ids=[]` producing an empty `scan-ids` value with no defensive check — confirmed pre-existing
+  behavior (identical in the prior hand-built implementation), not a regression this PR introduced.

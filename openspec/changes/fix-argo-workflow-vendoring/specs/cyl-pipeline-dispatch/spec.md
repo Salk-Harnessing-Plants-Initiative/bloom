@@ -71,7 +71,9 @@ it, and apply exactly four overrides to the parsed structure before returning it
    call), not proceed with a mis-targeted override.
 2. `metadata.labels` — `submitted-by`, `pipeline-run-id`, `batch-index`, `environment` merged into
    whatever labels the vendored file already carries (it currently sets `project: busch-lab`), not a
-   wholesale replacement of `metadata.labels`.
+   wholesale replacement of `metadata.labels`. If the vendored file already defines any of these four
+   keys itself, the worker SHALL treat it as a configuration error rather than silently letting the
+   dispatch-added value win.
 3. `spec.ttlStrategy` — added only here, never present in the vendored file itself.
 4. `metadata.namespace` — forced to the configured `WORKFLOWS_K8S_NAMESPACE`, overwriting whatever the
    vendored file sets (it currently hardcodes `runai-busch-lab`). This keeps namespace single-sourced
@@ -100,6 +102,13 @@ No field of the vendored structure other than these four SHALL be modified befor
 - **THEN** the returned `metadata.labels` includes `project: busch-lab` (from the vendored file) in
   addition to the four dispatch-added labels — the override merges rather than replaces
 
+#### Scenario: A vendored file that defines one of the four dispatch label keys is a configuration error
+
+- **WHEN** the vendored file's `metadata.labels` already defines one of `submitted-by`,
+  `pipeline-run-id`, `batch-index`, or `environment`
+- **THEN** `build_workflow_body` raises a configuration error before submitting anything, rather than
+  silently letting the dispatch-added value overwrite it with no signal
+
 #### Scenario: The submitted namespace always matches the configured namespace, never the vendored file's
 
 - **WHEN** `build_workflow_body` constructs a Workflow for any batch
@@ -119,6 +128,21 @@ No field of the vendored structure other than these four SHALL be modified befor
 - **THEN** `build_workflow_body` raises a configuration error before any network call, rather than
   letting a raw `KeyError`/`TypeError` escape from its own field lookups
 
+#### Scenario: A symlinked vendored file is a configuration error
+
+- **WHEN** `services/workflows/vendored/sleap-roots-pipeline.yaml` is a symlink rather than a regular
+  file
+- **THEN** `build_workflow_body` raises a configuration error before reading its content — a symlink
+  swap could point a future edit somewhere the CI drift-check's path-scoped comparison would never
+  notice
+
+#### Scenario: A present-but-wrong-shaped scan-ids parameter is caught defensively, not just a missing one
+
+- **WHEN** the vendored file's `spec.arguments.parameters` is present but is not a list of mappings
+  (e.g. a string, or a list whose first element isn't a mapping)
+- **THEN** `build_workflow_body` raises a configuration error before any network call, rather than
+  letting a raw `AttributeError`/`TypeError` escape from its own field lookups
+
 #### Scenario: A structurally-drifted scan-ids parameter is caught defensively
 
 - **WHEN** the vendored file's `spec.arguments.parameters[0]` is not named `scan-ids` (e.g. a future
@@ -136,13 +160,19 @@ SHALL fail the pull request. This SHALL be the only network fetch of upstream co
 mechanism — the running service and its container build SHALL NOT fetch this file at build or runtime.
 The job SHALL distinguish, in its failure output, three cases that require different human responses
 and SHALL NOT produce the same failure message: a transient failed upstream fetch (the check could not
-run — re-run the job), the pinned commit no longer resolving upstream at all (an HTTP 404 — the pin
-itself is invalid and needs re-pinning, not a re-run), and a genuine content mismatch (real drift). The
-job SHALL retry a transient fetch failure at least once before treating it as such, but SHALL NOT retry
-a 404 — retrying a commit that doesn't exist upstream cannot succeed. The job SHALL run under an
-explicit time limit. This job's path-scoping SHALL be implemented as a condition on this job alone (e.g.
-a job-level `if:`), never as a change to `pr-checks.yml`'s shared top-level trigger — a top-level path
-filter would scope every other job in the file, not just this one.
+run — re-run the job), the pinned commit no longer resolving upstream at all (an HTTP 404 that persists
+across every attempt — the pin itself is invalid and needs re-pinning, not a re-run), and a genuine
+content mismatch (real drift). The job SHALL retry a transient fetch failure at least once before
+treating it as such. An HTTP 404 SHALL be given the same retry chance as any other fetch failure before
+being treated as the pin no longer resolving upstream — a 404 immediately after a commit is pushed can
+be CDN propagation lag, indistinguishable from a genuinely dangling pin without giving it a chance to
+resolve; only a 404 that persists across the full retry budget SHALL be reported as the pin no longer
+resolving. The job SHALL run under an explicit time limit, and SHALL use a distinct exit code for each
+of the four outcomes (match, drift, transient fetch failure, pin no longer resolving), not just distinct
+messages, so automation keying off exit status alone can still tell them apart. This job's path-scoping
+SHALL be implemented as a condition on this job alone (e.g. a job-level `if:`), never as a change to
+`pr-checks.yml`'s shared top-level trigger — a top-level path filter would scope every other job in the
+file, not just this one.
 
 #### Scenario: A PR whose vendored copy matches the pinned upstream commit passes
 
@@ -168,11 +198,21 @@ filter would scope every other job in the file, not just this one.
 
 #### Scenario: A pinned commit that no longer resolves upstream is distinguishable from a transient failure
 
-- **WHEN** the pinned commit returns HTTP 404 from `raw.githubusercontent.com` (e.g. its branch was
-  deleted after merge and the commit was garbage-collected)
-- **THEN** the job fails without retrying
+- **WHEN** the pinned commit returns HTTP 404 from `raw.githubusercontent.com` on every attempt
+  including its retry (e.g. its branch was deleted after merge and the commit was garbage-collected)
+- **THEN** the job fails
 - **AND** its failure message identifies this as the pin no longer resolving upstream, requiring a
   re-pin — not "transient, re-run this job," which would never resolve the actual problem
+- **AND** its exit code is distinct from both the generic transient-fetch-failure code and the
+  content-drift code
+
+#### Scenario: A single HTTP 404 recovers on retry and does not fail the job
+
+- **WHEN** the pinned commit returns HTTP 404 on the first attempt but a retried attempt succeeds and
+  its content matches the vendored copy (CDN propagation lag right after the commit was pushed, not a
+  genuinely dangling pin)
+- **THEN** the job passes — a single 404, recovered by the retry, is not treated as either a dangling
+  pin or a content drift
 
 #### Scenario: A fetch that fails once but succeeds on retry does not fail the job
 
