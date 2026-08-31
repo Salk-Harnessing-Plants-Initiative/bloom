@@ -187,6 +187,49 @@ jobs:
           ENV_NAME: ${{ steps.target.outputs.env_name }}
         run: |
           set -uo pipefail
+
+          # Pulled out of the line the run already prints, so nothing is
+          # recomputed and nothing extra happens on the deploy host:
+          #   done — copied 4211, failed 0, already current 0, skipped 0
+          #   verify: 50 checked, 3 mismatched
+          #
+          # It goes in the headline rather than only the block below because a
+          # bare "succeeded" cannot be told from a week that copied nothing
+          # because the mirror had vanished. "nothing new to copy, 8,013,796
+          # already on Box" says the mirror is intact; "0 copied, 0 already
+          # current" would not.
+          done_line="$(grep -oE 'done — copied [0-9]+, failed [0-9]+, already current [0-9]+, skipped [0-9]+' \
+            "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1)"
+          verify_line="$(grep -oE 'verify: [0-9]+ checked, [0-9]+ mismatched' \
+            "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1)"
+          copied="$(printf '%s' "$done_line" | grep -oE 'copied [0-9]+' | grep -oE '[0-9]+' || true)"
+          current="$(printf '%s' "$done_line" | grep -oE 'already current [0-9]+' | grep -oE '[0-9]+' || true)"
+          checked="$(printf '%s' "$verify_line" | grep -oE '[0-9]+ checked' | grep -oE '[0-9]+' || true)"
+
+          # Thousands separators, so eight million reads as eight million.
+          # Not printf "%'d" (needs a numeric locale the runner may not have,
+          # and silently prints ungrouped without one) and not sed (the label
+          # syntax differs between GNU and BSD, so it would work only here).
+          group() {
+            local n="$1" out=""
+            while [ "${#n}" -gt 3 ]; do
+              out=",${n: -3}${out}"
+              n="${n:0:${#n}-3}"
+            done
+            printf '%s%s' "$n" "$out"
+          }
+
+          if [ -n "${copied:-}" ] && [ "$copied" -gt 0 ]; then
+            counts="$(group "$copied") images copied"
+          elif [ -n "${copied:-}" ]; then
+            counts="nothing new to copy ($(group "${current:-0}") already on Box)"
+          else
+            counts=""
+          fi
+          if [ -n "${checked:-}" ] && [ "$checked" -gt 0 ]; then
+            counts="${counts}, $(group "$checked") verified"
+          fi
+
           {
             echo "## Weekly Box object mirror — ${ENV_NAME}"
             echo
@@ -201,7 +244,11 @@ jobs:
               echo "later runs skip them. Clear their ledger rows by hand (the"
               echo "job log prints the command) or this repeats every week."
             elif [ "${{ steps.run.outcome }}" = "success" ]; then
-              echo "Result: **succeeded**"
+              if [ -n "$counts" ]; then
+                echo "Result: **succeeded** — ${counts}"
+              else
+                echo "Result: **succeeded** (no counts in the log — check it)"
+              fi
             else
               echo "Result: **FAILED** — see the job log. The mirror was not"
               echo "updated this run."

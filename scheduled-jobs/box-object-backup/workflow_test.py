@@ -303,3 +303,89 @@ class TestTheSummaryCanActuallyReport:
         # useful thing to tell someone is that the ledger needs clearing.
         assert "VERIFICATION FAILED" in workflow
         assert "were missing or the wrong size on Box" in workflow
+
+
+class TestTheHeadlineCarriesTheCounts:
+    """A bare "succeeded" cannot be told from a vanished mirror.
+
+    A week that copies nothing looks identical to a week where the Box folder
+    had been deleted — both are a green tick. Putting the counts in the
+    headline distinguishes them: "nothing new to copy (8,013,796 already on
+    Box)" says the mirror is intact; "0 copied, 0 already current" would not.
+
+    The numbers are parsed out of lines the run already prints, so nothing is
+    recomputed and nothing extra runs on the deploy host.
+    """
+
+    def summary(self, parsed: dict) -> str:
+        steps = parsed["jobs"]["mirror"]["steps"]
+        return next(
+            s["run"] for s in steps
+            if s.get("name", "").startswith("Write the run summary")
+        )
+
+    def run_summary(self, parsed: dict, log: str, outcome: str = "success") -> str:
+        """Execute the real step against a real log, and return the headline."""
+        import re
+        import subprocess
+        import tempfile
+        from pathlib import Path as P
+
+        script = self.summary(parsed).replace("${{ steps.run.outcome }}", "$OUTCOME")
+        with tempfile.TemporaryDirectory() as tmp:
+            (P(tmp) / "mirror-output.txt").write_text(log)
+            out = P(tmp) / "summary.md"
+            subprocess.run(
+                ["bash", "-c", script],
+                env={
+                    "PATH": "/usr/bin:/bin", "RUNNER_TEMP": tmp, "ENV_NAME": "prod",
+                    "OUTCOME": outcome, "GITHUB_STEP_SUMMARY": str(out), "LC_ALL": "C",
+                },
+                capture_output=True, text=True,
+            )
+            body = out.read_text() if out.exists() else ""
+        line = [ln for ln in body.splitlines() if ln.startswith("Result:")]
+        return line[0] if line else ""
+
+    DONE = "2026-08-31 02:20:00,1 INFO done — copied {c}, failed 0, already current {a}, skipped 0\n"
+    VERIFY = "2026-08-31 02:41:00,1 INFO verify: {n} checked, 0 mismatched\n"
+
+    def test_a_busy_week_names_how_many_were_copied(self, parsed):
+        log = self.DONE.format(c=4211, a=0) + self.VERIFY.format(n=50)
+        assert "4,211 images copied" in self.run_summary(parsed, log)
+
+    def test_a_quiet_week_says_the_mirror_is_still_there(self, parsed):
+        # The case this exists for: nothing copied is only reassuring if the
+        # count of what is already on Box is shown beside it.
+        log = self.DONE.format(c=0, a=8013796)
+        headline = self.run_summary(parsed, log)
+        assert "nothing new to copy" in headline
+        assert "8,013,796 already on Box" in headline
+
+    def test_the_verification_count_is_shown(self, parsed):
+        log = self.DONE.format(c=10, a=0) + self.VERIFY.format(n=50)
+        assert "50 verified" in self.run_summary(parsed, log)
+
+    def test_a_log_without_counts_says_so_rather_than_claiming_success(self, parsed):
+        headline = self.run_summary(parsed, "ERROR exploded before copying\n")
+        assert "no counts in the log" in headline
+
+    def test_a_failed_verification_still_wins_the_headline(self, parsed):
+        log = (
+            self.DONE.format(c=10, a=0)
+            + "2026-08-31 02:41:00,1 ERROR 3 of 50 verified object(s) were "
+              "missing or the wrong size on Box.\n"
+        )
+        assert "VERIFICATION FAILED" in self.run_summary(parsed, log)
+
+    def test_a_stood_down_run_still_wins_the_headline(self, parsed):
+        log = (
+            "2026-08-31 02:20:00,1 WARNING box-object-backup: SKIPPED — "
+            "another run holds the lock\n"
+        )
+        assert "skipped" in self.run_summary(parsed, log)
+
+    def test_a_failed_run_is_not_reported_as_succeeded(self, parsed):
+        headline = self.run_summary(parsed, "ERROR boom\n", outcome="failure")
+        assert "FAILED" in headline
+        assert "succeeded" not in headline
