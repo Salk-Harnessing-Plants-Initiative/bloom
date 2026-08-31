@@ -96,10 +96,10 @@ class TestSkipMarkerContract:
 
 
 class TestScheduleShape:
-    def test_runs_before_the_postgres_dump(self, workflow: str):
-        # Saturday (day 6). The Postgres dump is Sunday (day 0), and objects
-        # must land first so every row in that dump has bytes behind it.
-        assert 'cron: "17 2 * * 6"' in workflow
+    def test_runs_every_night(self, workflow: str):
+        # Nightly, so at most a day's scans exist only in MinIO. Still lands
+        # before the Sunday Postgres dump, on the night before it.
+        assert 'cron: "17 2 * * *"' in workflow
 
     def test_does_not_share_the_deploy_concurrency_group(self, workflow: str):
         # A stuck deploy must not cancel the mirror, and vice versa.

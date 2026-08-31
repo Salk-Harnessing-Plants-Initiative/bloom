@@ -66,19 +66,30 @@ a schedule, SSHes to the deploy host, and the work happens there — the same
 shape as `weekly-backup.yml` and `deploy.yml`. There is nothing to install on
 the server beyond the prerequisites above.
 
-Saturday 02:17 UTC, ahead of the Sunday Postgres dump, so every row in that
+Every night at 02:17 UTC, so at most a day's scans exist only in MinIO rather
+than up to a week's. It still lands ahead of the Sunday Postgres dump, so every
+row in that
 dump has bytes already on Box behind it.
 
 Actions was chosen over a systemd timer because a failed run then surfaces
 through notifications people already read, whereas `systemctl --failed` only
 reports to whoever thinks to look.
 
+**Seed before promoting to `main`.** The first scheduled run with an empty
+ledger has no watermark to work from, so it enumerates everything — all 8M
+objects — inside a job that GitHub kills at 240 minutes. It would fail every
+night until someone intervened. Once a seed is under way the lock makes the
+scheduled job stand down, but the lock cannot help if no seed has started.
+
+Safe order: merge to `staging` → deploy → dry run → smoke test → seed by hand
+over several nights → then promote to `main`.
+
 **The workflow cannot fire until this file reaches `main`.** GitHub honours
 `schedule:` and `workflow_dispatch` only from the default branch, so merging
 to `staging` is not enough — the normal staging → main promotion has to carry
 it across. Until then, nothing runs on a schedule.
 
-To run it by hand: Actions → *Weekly Box object mirror* → **Run workflow**,
+To run it by hand: Actions → *Nightly Box object mirror* → **Run workflow**,
 choosing the environment and optionally `dry_run`.
 
 ## The seed run
@@ -86,7 +97,7 @@ choosing the environment and optionally `dry_run`.
 The first run has to move everything, which for prod is on the order of
 millions of objects. Box throttles per-user API calls and every file costs at
 least one call, so the seed is measured in days, not hours. **Run it by
-hand in a detached session**, then let the timer handle the weekly delta:
+hand in a detached session**, then let the schedule handle the nightly delta:
 
 The deploy tree is whatever `PROD_DEPLOY_PATH` points at; `$DEPLOY` below
 stands in for it.
@@ -124,7 +135,7 @@ python3 "$DEPLOY/scheduled-jobs/box-object-backup/backup_objects.py" \
     --env prod --full --limit 500000 --verify 50
 ```
 
-`--full` ignores the weekly watermark; `--limit` caps one night's work. A run
+`--full` ignores the watermark; `--limit` caps one night's work. A run
 stopped by `--limit` is recorded `partial` on purpose, so it never becomes the
 watermark and the next night re-enumerates from the start, skipping whatever
 the ledger already holds.
@@ -138,7 +149,7 @@ seed picks up where it stopped. Re-running costs one query, not one Box call
 per already-copied object — the ledger, not the Box listing, is what the plan
 is built against.
 
-## Weekly behaviour
+## Nightly behaviour
 
 Each scheduled run enumerates only objects whose `updated_at` is newer than
 the **start** of the last clean run, so the delta query stays small and an

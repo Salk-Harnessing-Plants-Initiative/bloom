@@ -1,11 +1,12 @@
-name: Weekly Box object mirror
+name: Nightly Box object mirror
 
-# Mirrors Supabase Storage objects (the image bytes in MinIO) to Box, weekly.
+# Mirrors Supabase Storage objects (the image bytes in MinIO) to Box, nightly.
 #
 # Companion to weekly-backup.yml, which dumps Postgres. Neither is a restore on
 # its own: the dump carries the `storage.objects` rows, this carries the bytes.
-# It runs on Saturday, ahead of the Sunday dump, so every row in that dump has
-# bytes already on Box behind it.
+# Nightly rather than weekly so that at most a day's scans exist only in
+# MinIO, rather than up to a week's. It also runs ahead of the Sunday dump on
+# the night before, so every row in that dump has bytes already on Box.
 #
 # The work happens on the deploy host: this workflow SSHes in and runs
 # scheduled-jobs/box-object-backup/backup_objects.py there, the same way
@@ -18,6 +19,11 @@ name: Weekly Box object mirror
 # Three things carried over from refresh-cyl-experiment-trait-counts.yml and
 # weekly-backup.yml, all of which were learned the hard way:
 #
+#   0. The FIRST scheduled run with an empty ledger has no watermark to work
+#      from, so it enumerates everything — all 8M objects — inside a job with a
+#      240 minute timeout. Seed by hand BEFORE promoting this to `main`; once a
+#      seed is under way the lock makes this job stand down, but it cannot help
+#      if no seed has started.
 #   1. BOTH `schedule:` and `workflow_dispatch` require this file to be present
 #      on the repo's DEFAULT branch (`main`) before either can fire -- dispatch
 #      is gated on it exactly as schedule is. Nothing runs until the normal
@@ -57,10 +63,15 @@ on:
         type: string
         default: "50"
   schedule:
-    # Saturday 02:17 UTC, ahead of the Sunday Postgres dump. Off the hour
-    # deliberately — GitHub's own docs flag the top of the hour as a period of
-    # elevated scheduler load and delay.
-    - cron: "17 2 * * 6"
+    # Every night at 02:17 UTC. Off the hour deliberately — GitHub's own docs
+    # flag the top of the hour as a period of elevated scheduler load and delay.
+    #
+    # The delta query is `updated_at > <last clean run>` and storage.objects has
+    # no index on updated_at, so each run is a sequential scan of ~8M rows.
+    # Seven of those a week instead of one is a few minutes of extra scanning on
+    # an otherwise idle database at 02:00; an index would remove even that and is
+    # worth doing separately.
+    - cron: "17 2 * * *"
 
 permissions:
   contents: read
@@ -75,7 +86,7 @@ jobs:
   mirror:
     name: Mirror ${{ github.event.inputs.environment || 'production' }} objects to Box
     runs-on: [self-hosted, linux, salk-network]
-    # The weekly delta is small — new and changed images only. A run that takes
+    # A night's delta is small — new and changed images only. A run that takes
     # hours means something is wrong, or a seed is still in progress, and in the
     # latter case this job stands down in seconds.
     timeout-minutes: 240
@@ -231,7 +242,7 @@ jobs:
           fi
 
           {
-            echo "## Weekly Box object mirror — ${ENV_NAME}"
+            echo "## Nightly Box object mirror — ${ENV_NAME}"
             echo
             if grep -q 'box-object-backup: SKIPPED' "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
               echo "Result: **skipped** — another run holds the lock, almost"
