@@ -1,0 +1,175 @@
+name: Weekly Box object mirror
+
+# Mirrors Supabase Storage objects (the image bytes in MinIO) to Box, weekly.
+#
+# Companion to weekly-backup.yml, which dumps Postgres. Neither is a restore on
+# its own: the dump carries the `storage.objects` rows, this carries the bytes.
+# It runs on Saturday, ahead of the Sunday dump, so every row in that dump has
+# bytes already on Box behind it.
+#
+# The work happens on the deploy host: this workflow SSHes in and runs
+# scheduled-jobs/box-object-backup/backup_objects.py there, the same way
+# deploy.yml reaches the server. The job talks to Postgres and MinIO over the
+# deploy's own Docker network — neither port is published — so nothing is
+# copied onto the runner.
+#
+# The job UPLOADS ONLY. It never deletes anything on Box.
+#
+# Three things carried over from refresh-cyl-experiment-trait-counts.yml and
+# weekly-backup.yml, all of which were learned the hard way:
+#
+#   1. BOTH `schedule:` and `workflow_dispatch` require this file to be present
+#      on the repo's DEFAULT branch (`main`) before either can fire -- dispatch
+#      is gated on it exactly as schedule is. Nothing runs until the normal
+#      staging -> main promotion carries this file there.
+#   2. A `schedule` event carries no `github.event.inputs`, so the target is
+#      resolved off `github.event_name` below rather than the dispatch input.
+#   3. The scheduled run uses a SEPARATE, ungated GitHub Environment
+#      (`production-scheduled-backup`) rather than `production` itself. Routing
+#      an unattended 02:00 run through production's required-reviewer gate
+#      would leave it stuck "Waiting" for an approval nobody is awake to give.
+#
+# THE SEED DOES NOT RUN HERE. The first full pass moves millions of objects
+# over days; the self-hosted runner is shared with deploys and must not be held
+# that long. The seed is started by hand, detached, on the host (see the wiki
+# page). While it runs it holds a lock, and this workflow stands down against
+# that lock -- reporting "skipped", not "succeeded", so a stood-down week is
+# never mistaken for a completed one.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to mirror"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      dry_run:
+        description: "Plan and report, but copy nothing"
+        required: false
+        type: boolean
+        default: false
+      verify:
+        description: "Objects to stat on Box afterwards and size-check"
+        required: false
+        type: string
+        default: "50"
+  schedule:
+    # Saturday 02:17 UTC, ahead of the Sunday Postgres dump. Off the hour
+    # deliberately — GitHub's own docs flag the top of the hour as a period of
+    # elevated scheduler load and delay.
+    - cron: "17 2 * * 6"
+
+permissions:
+  contents: read
+
+concurrency:
+  # Its own group, NOT deploy-bloom and NOT weekly-backup: a queued deploy must
+  # not cancel a mirror, and the mirror must not hold up either.
+  group: box-object-backup-${{ github.event.inputs.environment || 'production' }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Mirror ${{ github.event.inputs.environment || 'production' }} objects to Box
+    runs-on: [self-hosted, linux, salk-network]
+    # The weekly delta is small — new and changed images only. A run that takes
+    # hours means something is wrong, or a seed is still in progress, and in the
+    # latter case this job stands down in seconds.
+    timeout-minutes: 240
+    # Deliberately a DIFFERENT literal than the target resolution below: this
+    # is the approval-gate name, and the scheduled path must not be gated.
+    environment: ${{ github.event_name == 'schedule' && 'production-scheduled-backup' || github.event.inputs.environment }}
+    steps:
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "${{ secrets.DEPLOY_HOST_KEY }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      # `prod` is what the env file and the script call it; the GitHub
+      # Environment is called `production`. Resolve both here so the rest of
+      # the job has one name for each.
+      - name: Resolve target
+        id: target
+        env:
+          ENVIRONMENT: ${{ github.event_name == 'schedule' && 'production' || github.event.inputs.environment }}
+          PROD_DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
+          STAGING_DEPLOY_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          if [ "$ENVIRONMENT" = "production" ]; then
+            ENV_NAME=prod
+            DEPLOY_PATH="$PROD_DEPLOY_PATH"
+          else
+            ENV_NAME=staging
+            DEPLOY_PATH="$STAGING_DEPLOY_PATH"
+          fi
+          # An empty deploy path would make the remote `cd` land in $HOME and
+          # the job run against whatever happens to be there.
+          : "${DEPLOY_PATH:?deploy path secret is empty for $ENVIRONMENT}"
+          echo "env_name=$ENV_NAME" >> "$GITHUB_OUTPUT"
+          echo "deploy_path=$DEPLOY_PATH" >> "$GITHUB_OUTPUT"
+          echo "Mirroring $ENVIRONMENT ($ENV_NAME) from $DEPLOY_PATH"
+
+      - name: Run the mirror on the deploy host
+        id: run
+        env:
+          ENV_NAME: ${{ steps.target.outputs.env_name }}
+          DEPLOY_PATH: ${{ steps.target.outputs.deploy_path }}
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+          VERIFY: ${{ github.event.inputs.verify || '50' }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          # The script reads its own config out of the deploy env file, so
+          # nothing has to be sourced into this shell. --verify is passed on
+          # every scheduled run: an unverified mirror cannot tell a copied
+          # object from a lost one.
+          ssh -i ~/.ssh/deploy_key "${DEPLOY_USER}@${DEPLOY_HOST}" "
+            set -euo pipefail
+            cd '${DEPLOY_PATH}'
+            python3 scheduled-jobs/box-object-backup/backup_objects.py \
+              --env '${ENV_NAME}' --verify '${VERIFY}' ${DRY_RUN}
+          " 2>&1 | tee "${RUNNER_TEMP}/mirror-output.txt"
+
+      # A run that stood down against the seed's lock exits 0, exactly as a
+      # successful run does. Reading the marker is the only way to tell them
+      # apart, and calling a stood-down week "succeeded" is how a months-long
+      # gap in the mirror goes unnoticed.
+      - name: Write the run summary
+        if: always()
+        env:
+          ENV_NAME: ${{ steps.target.outputs.env_name }}
+        run: |
+          set -uo pipefail
+          {
+            echo "## Weekly Box object mirror — ${ENV_NAME}"
+            echo
+            if grep -q 'box-object-backup: SKIPPED' "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
+              echo "Result: **skipped** — another run holds the lock, almost"
+              echo "certainly the initial seed. Nothing was mirrored this week;"
+              echo "the seed is doing that work. This is expected until it ends."
+            elif [ "${{ steps.run.outcome }}" = "success" ]; then
+              echo "Result: **succeeded**"
+            else
+              echo "Result: **FAILED** — see the job log. The mirror was not"
+              echo "updated this run."
+            fi
+            echo
+            echo '### This run'
+            echo '```'
+            grep -E '^\S+ (INFO|WARNING|ERROR) (done —|verify:|listed|preflight|batch:)' \
+              "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -20 \
+              || echo "(no summary produced)"
+            echo '```'
+            echo
+            echo "_This job only uploads. Nothing on Box is ever deleted by it._"
+            echo "_Per-run reports, including verification counts, are written to"
+            echo "\`<BACKUP_BOX_ROOT>/_runs/\` on Box._"
+          } >> "$GITHUB_STEP_SUMMARY"

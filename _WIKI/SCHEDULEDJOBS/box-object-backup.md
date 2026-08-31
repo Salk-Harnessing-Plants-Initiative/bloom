@@ -40,22 +40,46 @@ neither is a complete restore on its own. See "Restoring" below.
 2. **Create the destination folder** in Box matching `BACKUP_BOX_ROOT`
    (`Bloom-Backups/prod/storage` by default).
 
-3. `rclone` is **not** needed on the host — the job runs it in a container on
+3. **State directory**, once, as root. The ledger lives here and it is what
+   makes the seed resumable:
+   ```bash
+   sudo install -d -m 0700 -o bloom-deploy -g bloom-deploy \
+       /var/lib/bloom-box-object-backup
+   ```
+
+4. **`bloom-deploy` must be in the `docker` group** — the job reaches Postgres
+   and MinIO through the deploy's containers.
+   ```bash
+   id -nG bloom-deploy | tr ' ' '\n' | grep -qw docker || \
+       sudo usermod -aG docker bloom-deploy
+   ```
+
+5. `rclone` is **not** needed on the host — the job runs it in a container on
    the deploy's `supanet`, because MinIO's S3 port is never published beyond
-   that network.
+   that network. (A host `rclone` is still handy for step 1 and for spot
+   checks.)
 
-## Install
+## Scheduling
 
-```bash
-sudo bash /data/bloom/prod/scheduled-jobs/box-object-backup/install.sh \
-    --env prod --dry-run
-```
+`.github/workflows/box-object-backup.yml` runs it: GitHub Actions triggers on
+a schedule, SSHes to the deploy host, and the work happens there — the same
+shape as `weekly-backup.yml` and `deploy.yml`. There is nothing to install on
+the server beyond the prerequisites above.
 
-This installs `bloom-box-object-backup-prod.{service,timer}` (Saturday
-02:00) and, with `--dry-run`, plans a backup without copying anything so you
-can see the object count before committing to a transfer.
+Saturday 02:17 UTC, ahead of the Sunday Postgres dump, so every row in that
+dump has bytes already on Box behind it.
 
-Installing the timer does **not** kick off the initial seed — see below.
+Actions was chosen over a systemd timer because a failed run then surfaces
+through notifications people already read, whereas `systemctl --failed` only
+reports to whoever thinks to look.
+
+**The workflow cannot fire until this file reaches `main`.** GitHub honours
+`schedule:` and `workflow_dispatch` only from the default branch, so merging
+to `staging` is not enough — the normal staging → main promotion has to carry
+it across. Until then, nothing runs on a schedule.
+
+To run it by hand: Actions → *Weekly Box object mirror* → **Run workflow**,
+choosing the environment and optionally `dry_run`.
 
 ## The seed run
 
@@ -64,20 +88,49 @@ millions of objects. Box throttles per-user API calls and every file costs at
 least one call, so the seed is measured in days, not hours. **Run it by
 hand in a detached session**, then let the timer handle the weekly delta:
 
+The deploy tree is whatever `PROD_DEPLOY_PATH` points at; `$DEPLOY` below
+stands in for it.
+
+Export only the variables the job reads. `set -a; source .env.prod` would hand
+the process every secret the stack owns, which it has no use for:
+
 ```bash
-sudo -u bloom-deploy tmux new -s box-seed
-set -a; source /data/bloom/prod/.env.prod; set +a
-python3 /data/bloom/prod/scheduled-jobs/box-object-backup/backup_objects.py \
-    --env prod --full --verify 50
+sudo -i -u bloom-deploy
+DEPLOY=/path/to/deploy/tree
+export $(grep -E '^(BACKUP_[A-Z_]+|POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' \
+    "$DEPLOY/.env.prod" | xargs -d '\n')
 ```
 
-Start smaller to prove the path end to end first:
+Prove the path end to end before committing to days of transfer:
 
 ```bash
-… backup_objects.py --env prod --buckets images --limit 20 --verify 20
+# 1. reads Postgres only, copies nothing
+python3 "$DEPLOY/scheduled-jobs/box-object-backup/backup_objects.py" \
+    --env prod --dry-run
+
+# 2. first real bytes — preflight checks the MinIO layout, verify checks Box
+python3 "$DEPLOY/scheduled-jobs/box-object-backup/backup_objects.py" \
+    --env prod --buckets images --limit 20 --verify 20
 ```
 
 Then open the Box folder and confirm the images preview.
+
+The seed itself runs detached, in nightly chunks so it never runs through
+working hours:
+
+```bash
+tmux new -s box-seed
+python3 "$DEPLOY/scheduled-jobs/box-object-backup/backup_objects.py" \
+    --env prod --full --limit 500000 --verify 50
+```
+
+`--full` ignores the weekly watermark; `--limit` caps one night's work. A run
+stopped by `--limit` is recorded `partial` on purpose, so it never becomes the
+watermark and the next night re-enumerates from the start, skipping whatever
+the ledger already holds.
+
+While the seed holds the lock, the scheduled workflow stands down and reports
+**skipped** rather than succeeded.
 
 The run is **resumable**: every successful copy is recorded in the SQLite
 ledger at `/var/lib/bloom-box-object-backup/ledger.db`, so an interrupted
@@ -106,15 +159,22 @@ scratch bucket for in-flight resumable uploads) is excluded by default.
 
 Check for skips after a run:
 
+Skips appear in the run's log and its count in the report on Box. Reading the
+report is the durable one — a journal rotates:
+
 ```bash
-journalctl -u bloom-box-object-backup-prod.service | grep skipping
+rclone cat "box:$BACKUP_BOX_ROOT/_runs/<latest>.json" | jq '.stats.skipped'
 ```
 
 ## Monitoring
 
+The run summary in the Actions tab is the first place to look — it says
+whether the week **succeeded**, **failed**, or was **skipped** because the seed
+still holds the lock, and carries the run's own closing lines.
+
 ```bash
-systemctl list-timers | grep box-object-backup
-journalctl -u bloom-box-object-backup-prod.service -n 100
+gh run list --workflow box-object-backup.yml --limit 10
+gh run view <run-id> --log
 ```
 
 Exit codes: `0` clean, `1` some objects failed after retries, `2`
