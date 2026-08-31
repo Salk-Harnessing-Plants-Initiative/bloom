@@ -155,9 +155,9 @@ A run can be stopped at any point and started again later. It carries on from
 where it stopped — the ledger records every object as it is copied, so nothing
 is done twice and nothing is missed.
 
-This is what makes it safe to deploy during the seed. **Stop the backup, deploy,
-start the backup again.** No coordination, no waiting for a multi-hour run to
-finish.
+This is what makes it safe to deploy during the seed. **Stop the backup, confirm
+it has stopped, deploy, start the backup again.** No coordination, no waiting
+for a multi-hour run to finish.
 
 ### Stopping it
 
@@ -172,6 +172,11 @@ Whichever of these you use, the effect is the same:
 The lock file records the pid of whatever is running, so you never have to hunt
 for it in `ps`.
 
+Cancelling in the Actions tab stops **only a run that job started**. If a
+nightly found the seed already going and stood down, cancelling that nightly
+leaves the seed alone — which is what you want, and also means it is not a way
+to stop a seed you started by hand. Use `kill` for that.
+
 **Do not use `kill -9`.** That is the one thing it cannot survive tidily: it
 skips the cleanup, leaves the rclone container holding the RC port, and the next
 run then refuses to start until you remove it (it will tell you the command).
@@ -183,8 +188,19 @@ run then refuses to start until you remove it (it will tell you the command).
 - removes its rclone container, commits the ledger, writes the run report
 - exits **3** — "interrupted; progress is in the ledger and the next run resumes"
 
-It stops within seconds. It does not wait for the rest of the 20,000-object
-batch it was working through.
+While it is copying, it stops within seconds — it does not wait out the rest of
+the 20,000-object batch it was working through, nor plan another one.
+
+**One exception, worth knowing before you rely on it.** A run begins by asking
+Postgres for the object list, and on a full run that query reads every row of
+`storage.objects` and can take many minutes. A stop that arrives during it is
+not noticed until the query returns; the run then stops immediately, before
+copying anything. So a stop is quick during the copying and can be slow at the
+very start.
+
+If you are stopping it in order to deploy, confirm it has actually stopped —
+see below — rather than assuming. A cancelled workflow that gave up waiting
+says so on the run, as a warning reading `pid N has not stopped yet`.
 
 A stopped run is recorded **partial**, never `ok`. That matters: `ok` is what
 "everything up to here is backed up" points at, and a stopped run has not
