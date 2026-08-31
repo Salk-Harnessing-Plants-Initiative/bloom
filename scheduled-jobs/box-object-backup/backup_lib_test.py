@@ -620,9 +620,9 @@ class TestSourceAddress:
             MinioSource("http://m:9000", "k", "s", "")
 
     def test_the_composed_address_matches_the_deployed_layout(self):
-        # Pins the layout the rest of the repo already assumes — see
-        # services/video-worker/video_listener.py, which reads images from
-        # bucket 'bloom-storage' under prefix 'storage-single-tenant/'.
+        # The path on the prod stack:
+        #   /data/bloom-storage/storage-single-tenant/<bucket_id>/<name>/<ver>
+        # Also what services/video-worker/video_listener.py reads from.
         source = MinioSource(
             "http://supabase-minio:9000", "k", "s", "bloom-storage",
             prefix="storage-single-tenant",

@@ -248,10 +248,12 @@ def source_remote(obj: StorageObject, prefix: str = "") -> str:
     `<backing bucket>/<prefix>/<bucket_id>/<name>/<version>`. The bucket is
     carried by the fs; this supplies everything after it.
 
-    The prefix is configuration rather than a constant because nothing in
-    the stack declares it — it is storage-api's own internal default, and
-    the only other place in this repo that knows it is a bare string in
-    services/video-worker/video_listener.py.
+    On the prod stack that is
+    `bloom-storage/storage-single-tenant/<bucket_id>/<name>/<version>`.
+
+    Configuration rather than a constant because nothing in the stack declares
+    it: storage-api chooses the prefix, and no compose file or env var names
+    it. The same path is assumed by services/video-worker/video_listener.py.
     """
     tail = obj.minio_key
     cleaned = prefix.strip("/")

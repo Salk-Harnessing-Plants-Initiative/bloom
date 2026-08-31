@@ -288,7 +288,7 @@ Set in `.env.<env>` (defaults in `.env.prod.defaults` / `.env.staging.defaults`)
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `BACKUP_MINIO_BUCKET` | `bloom-storage` | The single MinIO bucket storage-api writes into (`STORAGE_S3_BUCKET` in the compose file). **Required** — an empty value makes rclone read each object's own `bucket_id` as a bucket name and every copy 404s. |
-| `BACKUP_MINIO_PREFIX` | `storage-single-tenant` | Tenant prefix storage-api files objects under. Not declared anywhere else in the stack — it is storage-api's own default. |
+| `BACKUP_MINIO_PREFIX` | `storage-single-tenant` | Tenant prefix storage-api files objects under. Config rather than a constant because nothing in the stack declares it — storage-api chooses it. To see the path on a host: `docker exec <minio-container> ls /data/bloom-storage/` |
 | `BACKUP_BOX_REMOTE` | `box` | Name of the rclone remote |
 | `BACKUP_BOX_ROOT` | `Bloom-Backups/BloomV2-Data-Backup/prod/storage` | Folder on Box to mirror into |
 | `BACKUP_WORKERS` | `8` | Concurrent copies; lower it if Box throttles hard |
