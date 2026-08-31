@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import backup_objects as job  # noqa: E402
 import copier  # noqa: E402
+import stopping  # noqa: E402
 from backup_lib import CopyPlan, StorageObject, build_plan  # noqa: E402
 from ledger import Ledger  # noqa: E402
 from rclone_rc import MinioSource, RcloneError  # noqa: E402
@@ -976,35 +977,210 @@ class TestAStoppedRunIsResumable:
         assert "3 = interrupted" in job.__doc__
 
 
-class TestStoppingIsCheckedWhereWorkIsHandedOut:
-    """The flag is useless if no loop reads it."""
+class TestStoppingActuallyStopsTheWork:
+    """Behaviour, not source text.
 
-    def test_the_copier_checks_before_starting_an_object(self):
-        source = (Path(__file__).parent / "copier.py").read_text()
-        executable = "\n".join(
-            line for line in source.splitlines() if not line.lstrip().startswith("#")
-        )
-        worker_body = executable.split("def worker(", 1)[1]
-        before_copy = worker_body.split("copy_one(", 1)[0]
-        assert "stopping.stopping()" in before_copy, (
-            "the check must come before copy_one, or a stop still starts "
-            "transfers it will not finish"
+    This class used to be three greps for the substring `stopping.stopping()`.
+    Every one of them stayed green against a dead check (`and False`), against
+    the check deleted with the text left in a trailing comment, and against the
+    call sites passing a hard-coded `stopped=False`. In other words the flag's
+    effect on a run was not tested at all — only that a certain string appeared
+    somewhere in the file.
+
+    These drive the real functions with the flag set instead.
+    """
+
+    @pytest.fixture(autouse=True)
+    def clean_flag(self):
+        stopping.reset()
+        yield
+        stopping.reset()
+
+    class StopOnFirstCopy(FakeRclone):
+        """A client that asks the run to stop as its first copy lands.
+
+        Stands in for a signal arriving mid-run, without the timing races of
+        actually sending one.
+        """
+
+        def copy_file(self, src_fs, src_remote, dst_fs, dst_remote):
+            super().copy_file(src_fs, src_remote, dst_fs, dst_remote)
+            stopping._request_stop(15, None)
+
+    def test_the_copier_stops_handing_out_work(self, ledger):
+        client = self.StopOnFirstCopy()
+        objects = [obj(name=f"exp/{n}.png", version=f"v{n}") for n in range(25)]
+        copied, failed = run_copy(client, objects, ledger, workers=1)
+        assert failed == 0
+        assert copied == 1, f"kept going after the stop — copied {copied} of 25"
+        assert len(client.calls) == 1
+
+    def test_the_object_in_flight_is_recorded(self, ledger):
+        # It must not be re-copied on the next run, and must not be lost.
+        client = self.StopOnFirstCopy()
+        objects = [obj(name=f"exp/{n}.png", version=f"v{n}") for n in range(5)]
+        run_copy(client, objects, ledger, workers=1)
+        ledger.commit()
+        first = objects[0]
+        assert ledger.versions_for([first.ledger_key]) == {
+            first.ledger_key: first.version
+        }
+
+    def test_what_was_not_reached_is_still_pending(self, ledger):
+        # The rest must remain uncopied so a later run picks them up.
+        client = self.StopOnFirstCopy()
+        objects = [obj(name=f"exp/{n}.png", version=f"v{n}") for n in range(5)]
+        run_copy(client, objects, ledger, workers=1)
+        ledger.commit()
+        remaining = build_plan(objects, ledger.copied_versions())
+        assert len(remaining.copies) == 4
+
+    def test_a_second_run_carries_on_from_there(self, ledger):
+        # The whole promise of stopping: run it again and it continues.
+        objects = [obj(name=f"exp/{n}.png", version=f"v{n}") for n in range(5)]
+        run_copy(self.StopOnFirstCopy(), objects, ledger, workers=1)
+        ledger.commit()
+        stopping.reset()
+
+        second = FakeRclone()
+        copied, failed = run_copy(second, objects, ledger, workers=1)
+        assert failed == 0
+        assert copied == 4, "did not resume where the first run stopped"
+        assert len(second.calls) == 4
+
+
+class TestStoppingReachesTheOutcomeAndTheExitCode:
+    """The call sites, which testing the pure functions cannot reach.
+
+    `run_outcome` and `exit_code` were both covered, but only by calling them
+    directly with `stopped=True`. Replacing `stopped=stopping.stopping()` with
+    `stopped=False` at either call site left the whole suite green — so a
+    stopped run would have recorded itself clean and exited 0, which are
+    exactly the two things this must not do.
+    """
+
+    @pytest.fixture(autouse=True)
+    def clean_flag(self):
+        stopping.reset()
+        yield
+        stopping.reset()
+
+    @pytest.fixture
+    def harness(self, monkeypatch, tmp_path):
+        return TestRunLockedWiresItsPartsTogether().harness.__wrapped__(
+            TestRunLockedWiresItsPartsTogether(), monkeypatch, tmp_path
         )
 
-    def test_the_batch_loop_checks_between_batches(self):
-        source = (Path(__file__).parent / "backup_objects.py").read_text()
-        executable = "\n".join(
-            line for line in source.splitlines() if not line.lstrip().startswith("#")
-        )
-        loop = executable.split("def copy_manifest(", 1)[1]
-        assert "stopping.stopping()" in loop, (
-            "without this a stop waits for the rest of a 20,000-object batch"
+    def test_a_run_stopped_mid_copy_records_partial(self, harness):
+        import sqlite3
+
+        state, tmp_path = harness
+        stopping._request_stop(15, None)
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
+        job.run_locked(args, tmp_path)
+        outcome = sqlite3.connect(tmp_path / "ledger.db").execute(
+            "SELECT outcome FROM runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert outcome and outcome[0] == "partial", (
+            "a stopped run recorded itself clean — the watermark would advance "
+            "past objects it never reached"
         )
 
-    def test_the_handlers_are_installed_at_the_entry_point(self):
-        source = (Path(__file__).parent / "backup_objects.py").read_text()
-        executable = "\n".join(
-            line for line in source.splitlines() if not line.lstrip().startswith("#")
+    def test_a_run_stopped_mid_copy_exits_three(self, harness):
+        state, tmp_path = harness
+        stopping._request_stop(15, None)
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
+        assert job.run_locked(args, tmp_path) == 3
+
+    def test_an_unstopped_run_is_unaffected(self, harness):
+        state, tmp_path = harness
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
+        assert job.run_locked(args, tmp_path) == 0
+
+
+class TestTheEntryPointInstallsTheHandlers:
+    """Driven through `main`, not asserted against its source.
+
+    `stopping_test.py` sends real signals, but its fixture calls
+    `install_handlers()` itself — so it proves the module works, not that the
+    job switches it on. That is the same gap its docstring accuses the pattern
+    it copied of having.
+    """
+
+    def test_main_installs_them_before_doing_anything(self, monkeypatch, tmp_path):
+        installed = []
+        monkeypatch.setattr(
+            job.stopping, "install_handlers", lambda: installed.append("yes")
         )
-        main_body = executable.split("def main(", 1)[1].split("def ", 1)[0]
-        assert "stopping.install_handlers()" in main_body
+        # Fail immediately afterwards: we only care that it happened, and that
+        # it happened before any work started.
+        monkeypatch.setattr(
+            job, "run_backup",
+            lambda args: (_ for _ in ()).throw(job.lib.BackupError("stop here")),
+        )
+        code = job.main(["--env", "prod", "--state-dir", str(tmp_path)])
+        assert installed == ["yes"], "main did not install the stop handlers"
+        assert code == 2
+
+
+class TestStoppingBetweenBatches:
+    """The check in `copy_manifest`, which needs more than one batch to matter.
+
+    Every other stopping test drives `copy_all` directly, or uses a manifest
+    small enough to be a single batch — so making this check dead left the
+    suite green. What it has to be caught doing is refusing to *plan* a further
+    batch: the per-object check already stops the copying, so counting copied
+    objects proves nothing here. A real seed plans 20,000 at a time, reading
+    the ledger for each, and without this a stop waits out the whole remaining
+    plan before anything notices.
+    """
+
+    @pytest.fixture(autouse=True)
+    def clean_flag(self):
+        stopping.reset()
+        yield
+        stopping.reset()
+
+    def test_no_further_batch_is_planned_after_a_stop(self, monkeypatch, tmp_path):
+        # Two objects per batch rather than 20,000, so six objects make three
+        # batches instead of one.
+        monkeypatch.setattr(job, "BATCH_SIZE", 2)
+
+        manifest = tmp_path / "manifest.tsv"
+        manifest.write_text("".join(
+            f"images\texp/{n}.png\tv{n}\t100\t2026-08-31T00:00:0{n}+00\n"
+            for n in range(6)
+        ))
+        led = Ledger.open(str(tmp_path / "ledger.db"))
+
+        batches_run = []
+        real_copy_all = job.copy_all
+
+        def counting_copy_all(*a, **kw):
+            batches_run.append(len(a[1].copies))
+            return real_copy_all(*a, **kw)
+
+        monkeypatch.setattr(job, "copy_all", counting_copy_all)
+
+        class StopOnFirstCopy(FakeRclone):
+            def copy_file(self, src_fs, src_remote, dst_fs, dst_remote):
+                super().copy_file(src_fs, src_remote, dst_fs, dst_remote)
+                stopping._request_stop(15, None)
+
+        args = job.parse_args([
+            "--env", "prod",
+            "--state-dir", str(tmp_path),
+            "--box-root", "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
+            "--minio-bucket", "bloom-storage",
+            "--workers", "1",
+        ])
+        totals = job.Totals()
+        job.copy_manifest(StopOnFirstCopy(), manifest, led, MINIO, BOX_FS, args, totals)
+        led.close()
+
+        # The stop lands during the first batch, so the second and third are
+        # never planned or handed out at all.
+        assert len(batches_run) == 1, (
+            f"kept planning batches after the stop — ran {len(batches_run)} of 3"
+        )
+        assert totals.copied == 1, f"copied {totals.copied}, expected the one in flight"
