@@ -513,3 +513,37 @@ class TestWatermarkOrdering:
         later = ledger.start_run(now="2026-08-31T02:00:00+00")
         ledger.finish_run(later, "partial", {})
         assert ledger.last_successful_run() == "2026-08-24T02:00:00+00"
+
+
+class TestExitCodeReachesTheWorkflow:
+    """A scheduled run's only route to a human is failing.
+
+    Verification found objects missing from Box and the run still exited 0, so
+    Actions showed a green tick and nobody was told. The mismatch lived only in
+    a report on Box that someone had to think to open.
+    """
+
+    def test_a_clean_run_is_zero(self):
+        assert job.exit_code(failed=0, verify_mismatched=0) == 0
+
+    def test_failed_copies_are_one(self):
+        assert job.exit_code(failed=3, verify_mismatched=0) == 1
+
+    def test_a_verification_mismatch_is_not_success(self):
+        assert job.exit_code(failed=0, verify_mismatched=1) != 0
+
+    def test_a_verification_mismatch_is_told_apart_from_failed_copies(self):
+        # Different kinds of wrong: one says copies errored, the other says the
+        # copies claimed success and the mirror disagrees.
+        assert job.exit_code(failed=0, verify_mismatched=1) == 4
+        assert job.exit_code(failed=0, verify_mismatched=1) != job.exit_code(
+            failed=1, verify_mismatched=0
+        )
+
+    def test_failed_copies_outrank_a_mismatch(self):
+        assert job.exit_code(failed=2, verify_mismatched=5) == 1
+
+    def test_the_documented_codes_match_what_is_returned(self):
+        doc = job.__doc__
+        for code in ("1 =", "2 =", "3 =", "4 ="):
+            assert code in doc, f"exit {code[0]} undocumented"

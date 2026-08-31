@@ -16,10 +16,12 @@ bytes. Restoring means writing each file back to MinIO under the key the
 restored row names — see the wiki page for the procedure.
 
 Exit codes:
-  0 = every planned object copied (or dry run completed)
+  0 = every planned object copied (or dry run completed), or another run held
+      the lock and this one stood down
   1 = one or more objects failed after retries
   2 = configuration or preflight error
   3 = interrupted; progress is in the ledger and the next run resumes
+  4 = copying reported success but verification found objects missing from Box
 """
 
 from __future__ import annotations
@@ -292,8 +294,9 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             "%d object(s) failed after %d attempts each — re-run to retry them",
             totals.failed, MAX_ATTEMPTS,
         )
-        return 1
-    return 0
+    return exit_code(
+        failed=totals.failed, verify_mismatched=totals.verify_mismatched
+    )
 
 
 @dataclass
@@ -322,6 +325,28 @@ def first_planned_object(manifest: Path) -> "lib.StorageObject | None":
             if lib.unsafe_reason(obj) is None:
                 return obj
     return None
+
+
+def exit_code(*, failed: int, verify_mismatched: int) -> int:
+    """What the run tells its caller, which for a scheduled run is everything.
+
+    A verification mismatch must NOT be 0. The workflow's only route to a human
+    is the run failing — a green tick notifies nobody, and the mismatch would
+    then live solely in a JSON file on Box that someone has to think to open.
+
+    It is also not 1. Every copy reported success and the check disagreed, so
+    the mirror is misreporting itself rather than some copies having errored,
+    and those want telling apart in a job log.
+
+    This keeps failing every week until the ledger rows are cleared by hand.
+    That is intended: a backup that stops mentioning images it knows are
+    missing is how a broken mirror comes to be trusted.
+    """
+    if failed:
+        return 1
+    if verify_mismatched:
+        return 4
+    return 0
 
 
 def run_outcome(

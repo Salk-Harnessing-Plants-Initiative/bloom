@@ -194,6 +194,12 @@ jobs:
               echo "Result: **skipped** — another run holds the lock, almost"
               echo "certainly the initial seed. Nothing was mirrored this week;"
               echo "the seed is doing that work. This is expected until it ends."
+            elif grep -q 'were missing or the wrong size on Box' "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
+              echo "Result: **VERIFICATION FAILED** — objects the copy reported"
+              echo "as successful are not on Box. They are **not** retried"
+              echo "automatically: the ledger already records them as copied, so"
+              echo "later runs skip them. Clear their ledger rows by hand (the"
+              echo "job log prints the command) or this repeats every week."
             elif [ "${{ steps.run.outcome }}" = "success" ]; then
               echo "Result: **succeeded**"
             else
@@ -203,9 +209,21 @@ jobs:
             echo
             echo '### This run'
             echo '```'
-            grep -E '^\S+ (INFO|WARNING|ERROR) (done —|verify:|listed|preflight|batch:)' \
-              "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -20 \
-              || echo "(no summary produced)"
+            # The level is the THIRD field, not the second: asctime is
+            # "2026-08-31 12:08:16,440" and contains a space, so an anchor of
+            # ^\S+ stops at the date and never reaches INFO. That pattern
+            # matched nothing, on every run.
+            #
+            # `||` binds to the last command in a pipeline, and `tail` exits 0
+            # on empty input, so the fallback could never fire either — the
+            # block rendered as an empty fence. Capture first, then test.
+            summary="$(grep -E '^[0-9-]+ [0-9:,]+ (INFO|WARNING|ERROR) (done —|verify:|listed|preflight|batch:)' \
+              "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -20)"
+            if [ -n "$summary" ]; then
+              echo "$summary"
+            else
+              echo "(no summary produced — the run did not reach the copy phase)"
+            fi
             echo '```'
             echo
             echo "_This job only uploads. Nothing on Box is ever deleted by it._"

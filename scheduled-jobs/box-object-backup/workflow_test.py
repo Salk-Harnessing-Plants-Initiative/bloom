@@ -199,3 +199,60 @@ class TestDispatchInputCannotReachTheRemoteShell:
         # `cd ''` succeeds and lands in $HOME; the guard in an earlier step does
         # not protect this one.
         assert 'DEPLOY_PATH:?' in self.run_step(workflow)
+
+
+class TestTheSummaryCanActuallyReport:
+    """The summary is one of two things a human sees; the other is the tick.
+
+    Its grep anchored `^\\S+` before the level, but `asctime` is
+    "2026-08-31 12:08:16,440" — the anchor stops at the date and the level is
+    the third field. It matched nothing, on every run. `||` also bound to
+    `tail`, which exits 0 on empty input, so the fallback never fired either:
+    the block rendered as an empty fence rather than saying anything was wrong.
+    """
+
+    REAL_LOG = (
+        "2026-08-31 12:08:16,440 INFO preflight ok — source root x resolves\n"
+        "2026-08-31 12:08:17,001 INFO listed 4211 object(s)\n"
+        "2026-08-31 12:41:02,330 INFO verify: 50 checked, 3 mismatched\n"
+        "2026-08-31 12:41:02,331 INFO done — copied 4211, failed 0, "
+        "already current 0, skipped 0\n"
+    )
+
+    def summary_pattern(self, workflow: str) -> str:
+        import re
+
+        match = re.search(r"grep -E '(\^\[0-9[^']+)'", workflow)
+        assert match, "no summary grep found in the workflow"
+        return match.group(1)
+
+    def test_the_pattern_matches_the_format_the_job_actually_emits(self, workflow: str):
+        import subprocess
+
+        pattern = self.summary_pattern(workflow)
+        result = subprocess.run(
+            ["grep", "-E", pattern], input=self.REAL_LOG,
+            capture_output=True, text=True,
+        )
+        assert result.stdout.strip(), (
+            f"pattern {pattern!r} matches nothing in a real log — "
+            "the run summary would be empty on every run"
+        )
+        assert "verify:" in result.stdout, "verification counts missing from the summary"
+        assert "done —" in result.stdout, "the closing line missing from the summary"
+
+    def test_the_pattern_expects_the_level_as_the_third_field(self, workflow: str):
+        # The specific mistake: anchoring before a timestamp that has a space.
+        assert "^\\S+ (INFO" not in workflow
+
+    def test_an_empty_summary_says_so_rather_than_rendering_blank(self, workflow: str):
+        assert "no summary produced" in workflow
+        assert 'if [ -n "$summary" ]' in workflow, (
+            "`| tail || echo` cannot fall back: tail exits 0 on empty input"
+        )
+
+    def test_a_failed_verification_is_called_out_in_the_headline(self, workflow: str):
+        # Distinct from a plain failure: the copy reported success, so the
+        # useful thing to tell someone is that the ledger needs clearing.
+        assert "VERIFICATION FAILED" in workflow
+        assert "were missing or the wrong size on Box" in workflow
