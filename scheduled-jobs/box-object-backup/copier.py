@@ -8,6 +8,7 @@ parsing, Docker, or the workflow that schedules it.
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -40,11 +41,17 @@ def copy_all(
     ledger: Ledger,
     workers: int,
     failures: list[str] | None = None,
+    succeeded: "VerifyReservoir | None" = None,
 ) -> tuple[int, int]:
     """Copy every planned object, N at a time, recording each success.
 
     `failures`, when given, collects the storage path of every object that
     failed, so the run report can name them rather than only count them.
+
+    `succeeded`, when given, is offered every object that copied cleanly, so
+    verification samples objects that actually landed. Sampling the *plan*
+    instead re-reports failed objects as "missing on Box", double-counting
+    errors already logged.
     """
     src_fs = minio.fs()
     lock = threading.Lock()
@@ -69,6 +76,8 @@ def copy_all(
         # claims an object it did not finish.
         ledger.mark_copied(obj)
         with lock:
+            if succeeded is not None:
+                succeeded.offer(obj)
             state["copied"] += 1
             state["bytes"] += obj.size or 0
             done = state["copied"]
@@ -83,6 +92,40 @@ def copy_all(
         list(pool.map(worker, plan.copies))
     ledger.commit()
     return state["copied"], state["failed"]
+
+
+class VerifyReservoir:
+    """Bounded, uniform, reproducible sample of the objects a run copied.
+
+    The pool cannot simply be the first N — a seed night copies half a million
+    objects and the head of the run is not representative of it. Nor can it be
+    everything: that is the memory the batching exists to avoid.
+
+    Reservoir sampling gives every copied object the same chance of being kept
+    while holding at most `cap` of them. The RNG is seeded to a constant so a
+    re-run over the same sequence samples the same objects — a mismatch stays
+    reproducible instead of vanishing on the next attempt, which was the point
+    of the original stride.
+    """
+
+    def __init__(self, cap: int, seed: int = 0) -> None:
+        self.cap = cap
+        self.seen = 0
+        self.items: list = []
+        self._rng = random.Random(seed)
+
+    def offer(self, obj) -> None:
+        self.seen += 1
+        if len(self.items) < self.cap:
+            self.items.append(obj)
+            return
+        # Replace with probability cap/seen, which keeps the sample uniform.
+        idx = self._rng.randrange(self.seen)
+        if idx < self.cap:
+            self.items[idx] = obj
+
+    def __len__(self) -> int:
+        return len(self.items)
 
 
 def copy_one(

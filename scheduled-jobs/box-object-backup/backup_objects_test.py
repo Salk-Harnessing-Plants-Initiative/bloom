@@ -350,3 +350,166 @@ class TestOutcomeProtectsTheWatermark:
 
     def test_a_crash_outranks_everything(self):
         assert job.run_outcome(crashed=True, failed=0, copied=500_000, limit=500_000) == "error"
+
+
+class TestVerificationCanFailARun:
+    """A check whose verdict is discarded is not a check.
+
+    verify_sample computed a mismatch count and the caller threw it away, so a
+    run where every sampled object was missing from Box still exited 0, recorded
+    'ok', and advanced the watermark past the objects it had just proved were
+    absent.
+    """
+
+    def test_a_mismatch_stops_the_run_being_a_watermark(self):
+        assert job.run_outcome(
+            crashed=False, failed=0, copied=100, limit=None, verify_mismatched=1
+        ) == "partial"
+
+    def test_a_clean_verification_leaves_the_run_ok(self):
+        assert job.run_outcome(
+            crashed=False, failed=0, copied=100, limit=None, verify_mismatched=0
+        ) == "ok"
+
+    def test_a_crash_still_outranks_a_mismatch(self):
+        assert job.run_outcome(
+            crashed=True, failed=0, copied=100, limit=None, verify_mismatched=5
+        ) == "error"
+
+    def test_not_verifying_is_not_the_same_as_verifying_clean(self):
+        # A run with --verify 0 reports verify_checked=0; that must not read as
+        # "checked and fine" in the report.
+        assert job.run_outcome(
+            crashed=False, failed=0, copied=100, limit=None
+        ) == "ok"
+
+
+class TestVerifyReservoir:
+    """The sample must cover the run, not its first few thousand objects."""
+
+    def make(self, cap, n):
+        r = copier.VerifyReservoir(cap, seed=1234)
+        for i in range(n):
+            r.offer(f"obj-{i:06d}")
+        return r
+
+    def test_never_exceeds_its_cap(self):
+        assert len(self.make(50, 10_000)) == 50
+
+    def test_keeps_everything_when_under_cap(self):
+        assert len(self.make(50, 20)) == 20
+
+    def test_samples_beyond_the_head_of_the_run(self):
+        # The old pool was `plan.copies[:n]` per batch — always the first
+        # objects. With 10k offered and a cap of 50, a head-biased sample would
+        # hold only obj-0000xx.
+        r = self.make(50, 10_000)
+        indices = [int(o.split("-")[1]) for o in r.items]
+        assert max(indices) > 5_000, "sample never reaches the second half of the run"
+
+    def test_covers_the_whole_range_not_one_cluster(self):
+        r = self.make(200, 100_000)
+        indices = sorted(int(o.split("-")[1]) for o in r.items)
+        # Quartile coverage: a uniform sample lands in all four.
+        quartiles = {i // 25_000 for i in indices}
+        assert quartiles == {0, 1, 2, 3}, f"only covered quartiles {quartiles}"
+
+    def test_is_reproducible_for_the_same_sequence(self):
+        # A mismatch must stay findable on a re-run rather than vanishing.
+        assert self.make(50, 10_000).items == self.make(50, 10_000).items
+
+    def test_counts_everything_it_was_offered(self):
+        assert self.make(50, 10_000).seen == 10_000
+
+
+class TestBoxRootIsChecked:
+    """An unset destination writes 8M objects to the top of the Box drive.
+
+    --box-root defaults to "" and nothing validated it, so a manual seed over
+    SSH without BACKUP_BOX_ROOT exported — the exact workflow the wiki
+    describes — would mirror the whole deploy into the root of the account.
+    """
+
+    @staticmethod
+    def args(box_root, env="prod"):
+        import argparse
+        return argparse.Namespace(box_root=box_root, env=env)
+
+    def test_an_empty_root_is_refused(self):
+        with pytest.raises(job.lib.BackupError, match="BACKUP_BOX_ROOT is empty"):
+            job.check_box_root(self.args(""))
+
+    def test_whitespace_and_slashes_do_not_count_as_a_root(self):
+        for blank in ("   ", "/", "///", " / "):
+            with pytest.raises(job.lib.BackupError, match="empty"):
+                job.check_box_root(self.args(blank))
+
+    def test_a_real_root_passes(self):
+        job.check_box_root(self.args("Bloom-Backups/BloomV2-Data-Backup/prod/storage"))
+
+    def test_prod_pointed_at_the_staging_root_is_refused(self):
+        # Same logical names in both environments — this would overwrite the
+        # other environment's backup rather than sit beside it.
+        with pytest.raises(job.lib.BackupError, match="staging"):
+            job.check_box_root(
+                self.args("Bloom-Backups/BloomV2-Data-Backup/staging/storage", env="prod")
+            )
+
+    def test_staging_pointed_at_the_prod_root_is_refused(self):
+        with pytest.raises(job.lib.BackupError, match="prod"):
+            job.check_box_root(
+                self.args("Bloom-Backups/BloomV2-Data-Backup/prod/storage", env="staging")
+            )
+
+    def test_a_root_naming_both_is_allowed(self):
+        # e.g. .../prod/storage under a folder that happens to mention staging;
+        # the run's own env is present, so it is not a cross-environment write.
+        job.check_box_root(self.args("Backups/staging-and-prod/prod/storage", env="prod"))
+
+    def test_the_error_names_the_variable_an_operator_must_set(self):
+        with pytest.raises(job.lib.BackupError) as caught:
+            job.check_box_root(self.args(""))
+        assert "BACKUP_BOX_ROOT" in str(caught.value)
+        assert "prod" in str(caught.value)
+
+
+class TestWatermarkOrdering:
+    """The watermark must not be able to skip past the enumeration window.
+
+    `last_successful_run()` returns `runs.started_at`, which the next run uses
+    as `updated_at > since`. If that timestamp is taken AFTER the manifest
+    snapshot closed, objects written in between are below the next run's
+    watermark and above this run's snapshot — enumerated by neither, forever.
+    """
+
+    def test_the_watermark_is_read_before_the_manifest(self):
+        # Order is the whole property, so assert it on the source rather than
+        # trusting a comment: the database clock must be read above the call
+        # that snapshots storage.objects.
+        source = (Path(__file__).parent / "backup_objects.py").read_text()
+        clock_at = source.index("dock.database_now(")
+        snapshot_at = source.index("dock.psql_query_to_file(")
+        assert clock_at < snapshot_at, (
+            "the watermark is taken after the snapshot — objects written "
+            "during enumeration would never be enumerated again"
+        )
+
+    def test_start_run_records_that_watermark_rather_than_the_host_clock(self):
+        source = (Path(__file__).parent / "backup_objects.py").read_text()
+        assert "ledger.start_run(now=watermark)" in source, (
+            "start_run() with no argument stamps the deploy host's clock, "
+            "which is a different clock from the one that writes updated_at"
+        )
+
+    def test_the_ledger_accepts_an_explicit_timestamp(self, ledger):
+        # The mechanism the above relies on.
+        run_id = ledger.start_run(now="2026-08-31T02:17:03+00")
+        ledger.finish_run(run_id, "ok", {})
+        assert ledger.last_successful_run() == "2026-08-31T02:17:03+00"
+
+    def test_a_partial_run_does_not_become_the_watermark(self, ledger):
+        clean = ledger.start_run(now="2026-08-24T02:00:00+00")
+        ledger.finish_run(clean, "ok", {})
+        later = ledger.start_run(now="2026-08-31T02:00:00+00")
+        ledger.finish_run(later, "partial", {})
+        assert ledger.last_successful_run() == "2026-08-24T02:00:00+00"

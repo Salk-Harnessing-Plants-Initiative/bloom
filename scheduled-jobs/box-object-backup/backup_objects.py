@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import backup_lib as lib  # noqa: E402
 import docker_env as dock  # noqa: E402
 import report  # noqa: E402
-from copier import MAX_ATTEMPTS, copy_all, verify_sample  # noqa: E402
+from copier import MAX_ATTEMPTS, VerifyReservoir, copy_all, verify_sample  # noqa: E402
 from ledger import Ledger  # noqa: E402
 from rclone_rc import MinioSource, RcloneError, RcloneRC  # noqa: E402
 from runlock import SKIP_MARKER, LockHeld, RunLock  # noqa: E402
@@ -56,6 +56,13 @@ BATCH_SIZE = 20_000
 # Verification samples from the objects this run copied; cap what we retain
 # so a multi-million-object seed doesn't hold them all to check 50.
 VERIFY_POOL_CAP = 5_000
+
+# Objects checked on Box after a run, when --verify is not given a value.
+# Deliberately a flat number rather than a share of the run: it reliably
+# catches a systemic fault (wrong path, broken auth, nothing landing) and is
+# not meant to be statistical assurance about rare corruption. Whether it
+# should scale with the run is an open question — see the wiki page.
+DEFAULT_VERIFY_SAMPLE = 50
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -161,6 +168,16 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     ledger = Ledger.open(str(state_dir / "ledger.db"))
 
     db_container = dock.find_container(project, dock.DB_SERVICE)
+
+    # Taken from the database, BEFORE the manifest snapshot — not from the
+    # host afterwards. Anchoring on a moment the snapshot cannot precede means
+    # an object written while enumeration runs is re-checked next week rather
+    # than falling into a gap nothing ever revisits.
+    watermark = dock.database_now(
+        db_container,
+        user=os.environ.get("POSTGRES_USER", "supabase_admin"),
+        database=os.environ.get("POSTGRES_DB", "postgres"),
+    )
     since = None if args.full else ledger.last_successful_run()
     logger.info(
         "enumerating storage.objects for %s (%s)",
@@ -185,9 +202,10 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         ledger.close()
         return 0
 
+    check_box_root(args)
     minio = minio_source_from_env(args)
     require_rclone_config(args.rclone_config, args.box_remote)
-    run_id = ledger.start_run()
+    run_id = ledger.start_run(now=watermark)
     network = dock.find_network(project)
     daemon = dock.start_rc_daemon(
         network=network,
@@ -198,6 +216,8 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         state_dir=str(state_dir.resolve()),
     )
     totals = Totals()
+    if args.verify:
+        totals.verify_pool = VerifyReservoir(VERIFY_POOL_CAP)
     started_at = datetime.now(timezone.utc)
     crashed = False
     try:
@@ -206,10 +226,11 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         if first is not None:
             preflight_source(client, minio, first)
         copy_manifest(client, manifest, ledger, minio, box_fs, args, totals)
-        if args.verify and totals.verify_pool:
-            verify_sample(
+        if args.verify and totals.verify_pool and len(totals.verify_pool):
+            totals.verify_checked = min(args.verify, len(totals.verify_pool))
+            totals.verify_mismatched = verify_sample(
                 client,
-                lib.CopyPlan(tuple(totals.verify_pool), (), 0),
+                lib.CopyPlan(tuple(totals.verify_pool.items), (), 0),
                 box_fs,
                 args.box_root,
                 args.verify,
@@ -226,12 +247,15 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             "failed": totals.failed,
             "skipped": totals.skipped,
             "already_current": totals.already_current,
+            "verify_checked": totals.verify_checked,
+            "verify_mismatched": totals.verify_mismatched,
         }
         outcome = run_outcome(
             crashed=crashed,
             failed=totals.failed,
             copied=totals.copied,
             limit=args.limit,
+            verify_mismatched=totals.verify_mismatched,
         )
         publish_report(
             daemon, state_dir, box_fs, args,
@@ -247,6 +271,15 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         "done — copied %d, failed %d, already current %d, skipped %d",
         totals.copied, totals.failed, totals.already_current, totals.skipped,
     )
+    if totals.verify_mismatched:
+        logger.error(
+            "%d of %d verified object(s) were missing or the wrong size on Box "
+            "— run recorded 'partial' so the next run re-examines them",
+            totals.verify_mismatched, totals.verify_checked,
+        )
+    elif totals.verify_checked:
+        logger.info("verified %d object(s) on Box, all present and correct",
+                    totals.verify_checked)
     if totals.failed:
         logger.error(
             "%d object(s) failed after %d attempts each — re-run to retry them",
@@ -264,7 +297,9 @@ class Totals:
     failed: int = 0
     skipped: int = 0
     already_current: int = 0
-    verify_pool: list = field(default_factory=list)
+    verify_checked: int = 0
+    verify_mismatched: int = 0
+    verify_pool: object = None
     failures: list = field(default_factory=list)
 
 
@@ -282,19 +317,32 @@ def first_planned_object(manifest: Path) -> "lib.StorageObject | None":
     return None
 
 
-def run_outcome(*, crashed: bool, failed: int, copied: int, limit: int | None) -> str:
+def run_outcome(
+    *,
+    crashed: bool,
+    failed: int,
+    copied: int,
+    limit: int | None,
+    verify_mismatched: int = 0,
+) -> str:
     """Classify a finished run — and decide whether it can be a watermark.
 
     `Ledger.last_successful_run()` only considers runs recorded `ok`, so this
-    is what stops a chunked seed from losing objects. A run cut short by
-    `--limit` has not seen the whole table; recording it clean would make the
-    next run filter on its start time and skip everything the limit left
-    behind, permanently and without saying so.
+    is what stops a run from losing objects. Two cases must never be `ok`:
+
+    A run cut short by `--limit` has not seen the whole table; recording it
+    clean would make the next run filter on its start time and skip everything
+    the limit left behind, permanently and without saying so.
+
+    A run whose verification found objects missing from Box has copied things
+    that are not there. Recording it clean would advance the watermark past
+    them, so nothing would ever look at them again — the check would have
+    found the fault and then buried it.
     """
     if crashed:
         return "error"
     truncated = limit is not None and copied >= limit
-    if failed or truncated:
+    if failed or truncated or verify_mismatched:
         return "partial"
     return "ok"
 
@@ -401,11 +449,11 @@ def copy_manifest(
         copied, failed = copy_all(
             client, plan, minio, box_fs, args.box_root, ledger, args.workers,
             failures=totals.failures,
+            succeeded=totals.verify_pool,
         )
         totals.copied += copied
         totals.failed += failed
-        if args.verify and len(totals.verify_pool) < VERIFY_POOL_CAP:
-            totals.verify_pool.extend(plan.copies[: args.verify])
+        # The reservoir is offered every successful copy inside copy_all.
 
 
 def minio_source_from_env(args: argparse.Namespace) -> MinioSource:
@@ -430,6 +478,40 @@ def minio_source_from_env(args: argparse.Namespace) -> MinioSource:
         bucket=args.minio_bucket,
         prefix=args.minio_prefix,
     )
+
+
+def check_box_root(args: argparse.Namespace) -> None:
+    """Refuse a destination that would scatter the mirror across Box.
+
+    `--box-root` defaults to empty, and an empty root means `box_path` returns
+    a bare `<bucket>/<name>` — so a manual seed launched without
+    BACKUP_BOX_ROOT exported writes eight million objects, plus `_runs/`,
+    straight into the top level of the Box drive. Nothing about that looks
+    wrong while it happens, and undoing it is a manual cleanup of the whole
+    account.
+
+    The environment check is the same class of mistake one step along: prod
+    and staging hold objects under identical logical names, so pointing one
+    environment at the other's root silently overwrites real backups.
+    """
+    root = args.box_root.strip().strip("/")
+    if not root:
+        raise lib.BackupError(
+            "BACKUP_BOX_ROOT is empty. Set it to the folder on Box this "
+            "environment mirrors into, e.g.\n"
+            f"    export BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/{args.env}/storage\n"
+            "Left empty, the objects would be written to the top level of the "
+            "Box drive."
+        )
+    other = "staging" if args.env == "prod" else "prod"
+    segments = root.lower().split("/")
+    if other in segments and args.env not in segments:
+        raise lib.BackupError(
+            f"--env is '{args.env}' but BACKUP_BOX_ROOT points into '{other}':\n"
+            f"    {root}\n"
+            "prod and staging use the same logical object names, so this would "
+            "overwrite the other environment's backup."
+        )
 
 
 def preflight_source(client: RcloneRC, minio: MinioSource, sample: lib.StorageObject) -> None:
