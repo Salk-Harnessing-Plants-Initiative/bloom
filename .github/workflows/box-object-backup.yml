@@ -362,6 +362,13 @@ jobs:
               echo "(the job log prints the command) — this warning does NOT"
               echo "repeat, because the next run skips the objects rather than"
               echo "re-checking them."
+            elif grep -q 'were NOT backed up' "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
+              echo "Result: **OBJECTS NOT BACKED UP** — two object names"
+              echo "normalize onto one path on Box, so only one of each pair"
+              echo "can be stored and the job refused to overwrite the other."
+              echo "Rename one of each pair in Supabase; the job log names"
+              echo "them. Nothing else is wrong, and the run is recorded"
+              echo "**partial** so the objects stay in view until it is done."
             elif [ "${{ steps.run.outcome }}" = "success" ]; then
               if [ -n "$counts" ]; then
                 echo "Result: **succeeded** — ${counts}"

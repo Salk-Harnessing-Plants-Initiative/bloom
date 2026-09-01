@@ -96,6 +96,27 @@ class TestSkipMarkerContract:
             holder.release()
         assert SKIP_MARKER in caplog.text
 
+    def test_a_collision_is_reported_in_the_summary(self, summary_script: str):
+        """The summary greps for specific phrases, so a message that matches
+        none of them never reaches the operator. A refused collision means an
+        object is not backed up and needs a person; it was invisible here."""
+        assert "were NOT backed up" in _strip_comments(summary_script), (
+            "the summary cannot report a refused collision"
+        )
+
+    def test_the_collision_grep_matches_what_the_job_prints(self):
+        """The two halves live in different files and different languages."""
+        source = (Path(__file__).parent / "backup_objects.py").read_text()
+        assert "were NOT backed up" in source, (
+            "the workflow greps for a phrase the job no longer prints"
+        )
+
+    def test_the_collision_branch_precedes_the_success_branch(self, summary_script: str):
+        script = _strip_comments(summary_script)
+        assert script.index("were NOT backed up") < script.index(
+            'steps.run.outcome }}" = "success"'
+        ), "the success branch would win and the summary would read succeeded"
+
     def test_a_stood_down_run_is_not_reported_as_success(self, summary_script: str):
         # The whole point: a skipped run exits 0 exactly as a good one does,
         # so the summary must distinguish them or a months-long gap in the
