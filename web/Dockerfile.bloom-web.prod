@@ -41,6 +41,11 @@ RUN cd /app/packages/bloom-fs && npx tsc -p tsconfig.json --skipLibCheck
 WORKDIR /app/web
 RUN npm run build
 
+# Supabase CLI is a dev-only tool (Makefile gen-types); its bundled per-platform
+# Go binaries never run here and keep failing the image's CVE gate.
+RUN rm -rf /app/node_modules/supabase /app/node_modules/@supabase/cli-* \
+           /app/node_modules/.bin/supabase
+
 # ---- Runner Stage ----
 FROM node:20-alpine@sha256:f598378b5240225e6beab68fa9f356db1fb8efe55173e6d4d8153113bb8f333c AS runner
 
