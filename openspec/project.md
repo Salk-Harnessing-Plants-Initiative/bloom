@@ -212,6 +212,7 @@ Host-facing port mappings differ per environment:
 - **LangGraph agent**: FastAPI, LangGraph, langchain-core, boto3, PyJWT
 - **FastMCP server** (`bloommcp/`, installable package `bloom_mcp` under `src/`): FastMCP, sleap-roots-analyze, sleap-roots-contracts, scipy, scikit-learn, matplotlib, seaborn, pandas (statsmodels + umap-learn became transitive via sleap-roots-analyze after #315's delegation; see the smoke imports in pre-merge.md)
 - **Video worker**: see `services/video-worker/pyproject.toml`
+- **Workflows service**: see `services/workflows/pyproject.toml`
 - **Shared**: Supabase client libraries, custom bloom packages (`bloom-fs`, `bloom-js`, `bloom-nextjs-auth`)
 - **Build**: Turbo for monorepo orchestration; `uv` for Python services
 
