@@ -178,24 +178,22 @@ batches whose real Argo outcome hasn't been checked yet — it is not excluded
 merely because Phase 2 already settled its dispatch outcome). For each such
 run it fetches the real Argo phase of every distinct `argo_workflow_name`
 among that run's scans (`k8s_client.get_workflow_status` — a read-only `GET`,
-not the `create` `dispatch_worker.py` does) and, once it has enough evidence
-to conclude something that differs from the run's already-known status,
-writes the result via `update_cyl_pipeline_run_status`, progressing the run
-to `'running'`/`'complete'` (or a real-outcome `'failed'`/`'partial'`) —
-values `claim`/`complete`/`fail_cyl_pipeline_batch` (Phase 2) never reach,
-since those only ever describe dispatch outcome. A computed conclusion of
-`'running'` that merely reconfirms a run already known to be `'running'` is a
-no-op (no write) — `'running'` is the only status value this poller ever
-writes itself, so a known status of `'running'` unambiguously means a prior
-sweep already confirmed it. This same-value skip does **not** apply to
-`'partial'`: Phase 2's own dispatch-settle can *also* produce `'partial'` as a
-pre-poll guess this poller hasn't yet checked, so a `'partial'`-sourced
-candidate always writes its computed conclusion — even when that conclusion
-happens to be `'partial'` again — to avoid silently discarding a run's first
-real confirmation. A `'partial'` run whose dispatched batches are all already
-resolved does keep satisfying this candidate query and gets re-written
-identically forever (a documented, cosmetic trade-off — see `design.md`), but
-that's a strictly better failure mode than losing the first real write.
+not the `create` `dispatch_worker.py` does), computes `done_count`/`failed_count`
+from the same fetch (a plain count of that run's `cyl_pipeline_run_scans` rows
+by `status` — `'written'`/`'reused'` vs. `'failed'`; see the `cyl-trait-writeback`
+capability for what actually writes those per-scan values now), and writes the
+status plus both counts via `update_cyl_pipeline_run_status`, progressing the
+run to `'running'`/`'complete'` (or a real-outcome `'failed'`/`'partial'`) —
+values `claim`/`complete`/`fail_cyl_pipeline_batch` (Phase 2) never reach, since
+those only ever describe dispatch outcome. This write happens **every cycle a
+candidate run reaches this point, whether or not its overall status has
+changed** (`fix-cyl-pipeline-run-scan-status` removed an earlier same-value
+skip for a reconfirmed `'running'` status): `done_count`/`failed_count` can
+advance between cycles even while the run stays `'running'`, so skipping the
+write on an unchanged status would freeze the UI's "N/M scans done" display at
+whatever it read on the run's first `'running'` cycle. `update_cyl_pipeline_run_status`
+remains cheap and idempotent, so writing every cycle is not a scaling concern
+at this program's poll interval and run volume.
 
 The rollup rule that maps a run's per-workflow phases to one status is
 specified normatively in the `cyl-pipeline-status-polling` OpenSpec capability
