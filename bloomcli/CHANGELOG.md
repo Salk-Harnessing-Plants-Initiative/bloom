@@ -8,6 +8,17 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a6] - 2026-08-25 — plate download on the PyPI page
+
+### Fixed
+
+- The PyPI project page now documents `plate download`. `pyproject.toml` ships
+  `README.pypi.md`, not `README.md`, and only the latter had been updated — so the page for
+  `0.1.0a5`, whose headline feature is plate download, described only cylinder downloads. Adds a
+  plate quickstart and a Commands row. The published `0.1.0a5` page cannot be changed; PyPI
+  renders the description baked into each distribution, so this takes effect with the next
+  release.
+
 ## [0.1.0a5] - 2026-08-24 — plate download + shared download mechanism
 
 ### Added
