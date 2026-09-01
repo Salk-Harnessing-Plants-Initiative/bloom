@@ -16,14 +16,24 @@ name: release-tag-guard
 # monorepo's known package prefixes.
 #
 # Keep KNOWN_PREFIXES in sync with release-bloomcli.yml's `bloomctl-` guard
-# and release-bloommcp.yml's `bloommcp-` guard.
+# and release-bloommcp.yml's `bloommcp-` guard — a regression test
+# (tests/unit/test_release_tag_guard_workflow_shape.py) cross-checks all
+# three files so an omission here fails CI instead of just failing loudly
+# in production the first time it's exercised.
+#
+# `shopt -s nocasematch` before the `case` match: GitHub Actions'
+# `startsWith()` (used by the two real guards above) is case-insensitive,
+# but bash `case` is not by default. Without this, a tag like
+# `BLOOMMCP-v1.0.0` would pass the real workflow's guard (so it runs and
+# fails loudly at its own tag/version-mismatch check — never silent) while
+# this workflow reported the misleading "matches no known prefix", even
+# though it did match one.
 
 on:
   release:
     types: [published]
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   check-tag-matches-a-known-package:
@@ -34,6 +44,7 @@ jobs:
     steps:
       - name: Verify the release tag is claimed by a release workflow
         run: |
+          shopt -s nocasematch
           for prefix in bloomctl- bloommcp-; do
             case "$TAG" in
               "$prefix"*)
