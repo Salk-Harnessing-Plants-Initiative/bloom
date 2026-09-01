@@ -886,24 +886,23 @@ def test_a7_rollback_restores_strict_a3(pg_conn):
 def test_a7_cutover_guard_raises_on_a3_row(pg_conn):
     # The a7 migration's prepended DO-block guard must fail loudly, not silently orphan,
     # if any cyl_trait_sources row carries a 0.1.0a3 contract_version at apply time.
+    #
+    # (Note: an earlier revision of this change also added a symmetric guard to the
+    # ROLLBACK script -- checking for any 0.1.0a7-stamped row before restoring the strict
+    # a3 body -- plus a mirroring test. Reverted: unlike this forward guard (which checks
+    # for the OLD, retired version -- something no other test creates once a7 is the active
+    # pin), the rollback guard checked for the CURRENT pin's rows, and other integration
+    # test files legitimately `pg_conn.commit()` real cyl_trait_sources rows stamped with
+    # whatever version is currently active for their own (unrelated) concurrency tests. In
+    # CI's shared test database that made the rollback guard trip on every run, not just a
+    # genuine "already deployed to production" scenario -- confirmed by a real CI failure.
+    # The asymmetry between forward and rollback guards is therefore intentional, not an
+    # oversight: only the forward direction can be safely guarded this way in this test
+    # architecture. The rollback still documents the equivalent risk in its header comment.)
     with pg_conn.cursor() as cur:
         cur.execute(_sql_body(MIGRATION_A3))  # bring the RPC to a3 first so a3 rows are legal
         _, imgs = _seed_scan(cur)
         _call(cur, _envelope(imgs, contract_version="0.1.0a3", idempotency_key="guard-seed"))
         with pytest.raises(psycopg.errors.RaiseException, match="a7 cutover blocked"):
             cur.execute(_sql_body(MIGRATION_A7))
-    pg_conn.rollback()
-
-
-def test_a7_rollback_guard_raises_on_a7_row(pg_conn):
-    # Symmetric with the forward migration's own guard: the a7 rollback's prepended
-    # DO-block guard must fail loudly rather than silently re-widen acceptance if any
-    # cyl_trait_sources row already carries a 0.1.0a7 contract_version.
-    with pg_conn.cursor() as cur:
-        cur.execute(_sql_body(MIGRATION_A3))
-        cur.execute(_sql_body(MIGRATION_A7))  # bring the RPC to a7 first so a7 rows are legal
-        _, imgs = _seed_scan(cur)
-        _call(cur, _envelope(imgs, contract_version="0.1.0a7", idempotency_key="rb-guard-seed"))
-        with pytest.raises(psycopg.errors.RaiseException, match="a7 rollback blocked"):
-            cur.execute(_sql_body(ROLLBACK_A7))
     pg_conn.rollback()
