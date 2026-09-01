@@ -16,7 +16,7 @@ Exit codes:
   2 = configuration error (missing env, no remote, stack not running)
 
 See `.env.{staging,prod}.defaults` for the BACKUP_* config surface, and
-_WIKI/SCHEDULEDJOBS/weekly-backup.md for setup and restore.
+_WIKI/SCHEDULEDJOBS/weekly-backup.md for setup.
 """
 
 from __future__ import annotations

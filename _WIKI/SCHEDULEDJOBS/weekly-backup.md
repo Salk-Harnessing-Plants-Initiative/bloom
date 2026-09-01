@@ -25,7 +25,7 @@ dump taken with `--no-owner --no-privileges` restores into a database whose
 tables are owned by whoever ran `psql` and whose grants are gone — the RLS
 policies survive, but the roles they name no longer have the access those
 policies assume. Bloom manages grants as a tracked capability, so that loss is
-not acceptable in a backup. **Restore globals first, then the database.**
+not acceptable in a backup.
 
 ## Schedule
 
@@ -95,8 +95,8 @@ workflow does not appear in the Actions tab at all.
 ### 4. Prove it on staging first
 
 Dispatch the workflow against `staging` with "dry run" ticked. That performs a
-real dump and verification without uploading. Then run it for real, and do the
-restore rehearsal below before relying on production.
+real dump and verification without uploading. Then run it for real and confirm
+both artifacts land on Box before relying on production.
 
 ## The weekly check
 
@@ -147,73 +147,22 @@ Any failure ends the run without uploading anything.
 
 ## Restore
 
-> Restore into a scratch database first and compare row counts. Do not restore
-> over a live database as a first move.
+**Not documented here.** This job's scope is producing verified dumps and
+storing them on Box. Recovering from one is separate work and has not been
+rehearsed, so there is no procedure on this page to follow.
 
-### 1. Fetch the pair you want
+A trial restore found that a plain `psql` load of these artifacts reports
+success while leaving errors behind, and that loading the globals artifact can
+overwrite the target cluster's role passwords. Treat a recovery as work to
+plan, not to improvise from this page.
+
+To list or fetch what is stored:
 
 ```bash
 sudo -u bloom-deploy rclone lsl box:bloom-backups/prod
-sudo -u bloom-deploy rclone copy \
-  box:bloom-backups/prod/globals-<timestamp>.sql.gz /tmp/restore/
-sudo -u bloom-deploy rclone copy \
-  box:bloom-backups/prod/postgres-postgres-<timestamp>.sql.gz /tmp/restore/
 ```
 
-Use artifacts with the **same timestamp**. A database dump restored against a
-different run's globals can reference a role that dump does not define.
-
-### 2. Globals first
-
-The roles must exist before the database dump's `OWNER` and `GRANT` statements
-run, or every one of them fails.
-
-```bash
-gunzip -c /tmp/restore/globals-<timestamp>.sql.gz \
-  | docker exec -i <db-container> psql -U supabase_admin -d postgres
-```
-
-Role definitions are cluster-wide. Restoring globals onto a cluster that already
-has these roles reports "role already exists" for each — expected and harmless
-when restoring into the same cluster. Into an empty cluster they are created.
-
-### 3. Then the database
-
-```bash
-gunzip -c /tmp/restore/postgres-postgres-<timestamp>.sql.gz \
-  | docker exec -i <db-container> psql -U supabase_admin -d <target-db>
-```
-
-Resolve `<db-container>` the way the backup does, rather than guessing its name:
-
-```bash
-cd <deploy-dir>
-docker compose -f docker-compose.prod.yml --env-file .env.<env> ps -q db-prod
-```
-
-### 4. Confirm the restore
-
-Check row counts on the tables that matter, and confirm the grants survived —
-that being the reason both artifacts exist:
-
-```sql
-SELECT count(*) FROM cyl_scans;
-SELECT count(*) FROM cyl_traits;
-SELECT grantee, privilege_type
-  FROM information_schema.role_table_grants
- WHERE table_name = 'cyl_scans';
-```
-
-Empty grant output means the restore lost the security model — the globals step
-was skipped or failed.
-
-### 5. Clean up
-
-```bash
-rm -rf /tmp/restore
-```
-
-The dump contains `auth.users`. Do not leave it on disk.
+The dump contains `auth.users`. Do not leave a copy on disk.
 
 ## Notes on what this does not do
 
