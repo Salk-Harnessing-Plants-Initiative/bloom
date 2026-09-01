@@ -207,24 +207,60 @@ def make_plan(objects):
     return build_plan(objects, {})
 
 
+# The number verify_sample RETURNS is what everything downstream acts on: exit
+# code 4, the run being recorded `partial` rather than `ok` (which is what holds
+# the watermark back), and the VERIFICATION FAILED headline in the job summary.
+# Each of those three is tested on its own, and each is handed a number by hand
+# — so nothing joined the function that produces the count to the things that
+# consume it. Asserting only on caplog let `return 0`, and every one of the
+# three `mismatched += 1` lines, be deleted with the suite green.
+
+
 def test_verify_accepts_a_matching_size(caplog, ledger):
     caplog.set_level(logging.INFO)
     client = FakeRclone()
     client.stats_by_path["root/images/exp-42/frame.png"] = {"Size": 100}
-    copier.verify_sample(client, make_plan([obj()]), BOX_FS, "root", 1)
+    assert copier.verify_sample(client, make_plan([obj()]), BOX_FS, "root", 1) == 0
     assert "1 checked, 0 mismatched" in caplog.text
 
 
 def test_verify_flags_a_missing_destination(caplog, ledger):
-    copier.verify_sample(FakeRclone(), make_plan([obj()]), BOX_FS, "root", 1)
+    found = copier.verify_sample(FakeRclone(), make_plan([obj()]), BOX_FS, "root", 1)
+    assert found == 1, "an object absent from Box was not counted"
     assert "missing on Box" in caplog.text
 
 
 def test_verify_flags_a_size_mismatch(caplog, ledger):
     client = FakeRclone()
     client.stats_by_path["root/images/exp-42/frame.png"] = {"Size": 7}
-    copier.verify_sample(client, make_plan([obj()]), BOX_FS, "root", 1)
+    found = copier.verify_sample(client, make_plan([obj()]), BOX_FS, "root", 1)
+    assert found == 1, "a wrong-sized object on Box was not counted"
     assert "size mismatch" in caplog.text
+
+
+def test_verify_counts_an_object_it_could_not_check(caplog, ledger):
+    """Box refusing the question, rather than answering it.
+
+    The likeliest of the three outcomes and the only one with no test: the 50
+    stat calls fire straight after a night that may have pushed hundreds of
+    thousands of objects, which is exactly when Box throttles. If this stopped
+    counting, every check could fail while the run recorded `ok`, advanced the
+    watermark, and reported that verification passed.
+    """
+
+    class StatRefuses(FakeRclone):
+        def stat(self, fs, remote):
+            raise RcloneError("429 too many requests", retryable=True)
+
+    found = copier.verify_sample(StatRefuses(), make_plan([obj()]), BOX_FS, "root", 1)
+    assert found == 1, "an object that could not be checked was not counted"
+    assert "cannot stat" in caplog.text
+
+
+def test_verify_counts_every_bad_object_not_just_the_first(ledger):
+    """The count is a count, not a flag — the summary reports `N of M`."""
+    objects = [obj(name=f"exp-42/{n}.png") for n in range(3)]
+    assert copier.verify_sample(FakeRclone(), make_plan(objects), BOX_FS, "root", 3) == 3
 
 
 def test_verify_checks_the_requested_number_of_objects(ledger):
