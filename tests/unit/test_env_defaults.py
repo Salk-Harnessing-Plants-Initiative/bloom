@@ -4,7 +4,8 @@ Enforces the Committed Defaults contract from the deploy-env-config spec:
   openspec/changes/refactor-env-config-committed-defaults/specs/deploy-env-config/spec.md
 
 These defaults files MUST NOT contain secrets, MUST share the same key set
-between prod and staging, MUST NOT overlap with the sensitive inventory
+between prod and staging apart from the prod-only BACKUP_* block, MUST NOT
+overlap with the sensitive inventory
 that lives in GitHub Secrets, and MUST cover every env var referenced by
 docker-compose.prod.yml.
 """
@@ -134,13 +135,31 @@ def test_no_duplicate_keys_in_defaults():
             seen.add(key)
 
 
+# The one deliberate asymmetry. Staging objects are never mirrored to Box, so
+# staging carries no backup settings at all — see test_staging_has_no_backup_
+# configuration below, which pins that rather than leaving it to drift.
+BACKUP_PREFIX = "BACKUP_"
+
+
 def test_prod_staging_key_sets_are_identical():
     prod = set(_parse(PROD_DEFAULTS).keys())
     staging = set(_parse(STAGING_DEFAULTS).keys())
-    only_prod = prod - staging
+    only_prod = {k for k in prod - staging if not k.startswith(BACKUP_PREFIX)}
     only_staging = staging - prod
     assert not only_prod, f"keys only in prod: {sorted(only_prod)}"
     assert not only_staging, f"keys only in staging: {sorted(only_staging)}"
+
+
+def test_staging_has_no_backup_configuration():
+    """Staging is never backed up, so it must carry nothing that says it is.
+
+    Both environments run on one host and the job's state directory has no
+    environment in it, so a staging run would share prod's ledger — and the
+    ledger holds the watermark. Leaving a plausible-looking BACKUP_BOX_ROOT in
+    staging's defaults is an invitation to try.
+    """
+    staging = {k for k in _parse(STAGING_DEFAULTS) if k.startswith(BACKUP_PREFIX)}
+    assert not staging, f"staging still carries backup settings: {sorted(staging)}"
 
 
 def test_env_disambiguating_values_differ():
@@ -164,10 +183,6 @@ def test_env_disambiguating_values_differ():
         # collapsing them to the same value would silently defeat it with no
         # other test catching that.
         "WORKFLOWS_K8S_ENV_LABEL",
-        # Same reasoning: prod and staging hold objects under identical
-        # logical names, so one environment's mirror pointed at the other's
-        # Box folder would overwrite real backups rather than sit beside them.
-        "BACKUP_BOX_ROOT",
     ):
         assert prod[key] != staging[key], (
             f"{key} identical in prod/staging ({prod[key]!r}); "
@@ -403,41 +418,18 @@ def test_backup_keys_are_present_and_non_empty(key):
     rclone then reads each object's own bucket_id as a MinIO bucket name and
     every copy 404s.
     """
-    for path in (PROD_DEFAULTS, STAGING_DEFAULTS):
-        values = _parse(path)
-        assert key in values, f"{path.name}: {key} is missing"
-        assert values[key].strip(), f"{path.name}: {key} is empty"
+    values = _parse(PROD_DEFAULTS)
+    assert key in values, f"{PROD_DEFAULTS.name}: {key} is missing"
+    assert values[key].strip(), f"{PROD_DEFAULTS.name}: {key} is empty"
 
 
-def test_backup_box_root_names_its_own_environment():
-    """Each root must sit under a segment naming its environment.
-
-    Guards the copy-paste that points staging's mirror at prod's folder. The
-    job makes the same check at runtime against --env; this catches it in the
-    committed defaults, before it reaches a deploy.
-    """
-    for path, env, other in (
-        (PROD_DEFAULTS, "prod", "staging"),
-        (STAGING_DEFAULTS, "staging", "prod"),
-    ):
-        root = _parse(path)["BACKUP_BOX_ROOT"].strip().strip("/")
-        segments = [s.lower() for s in root.split("/")]
-        assert env in segments, (
-            f"{path.name}: BACKUP_BOX_ROOT ({root!r}) has no {env!r} path "
-            "segment, so it cannot be told apart from the other environment"
-        )
-        assert other not in segments, (
-            f"{path.name}: BACKUP_BOX_ROOT ({root!r}) points into {other!r}"
-        )
-
-
-def test_backup_box_roots_are_not_nested_in_each_other():
-    """Neither environment may mirror into a folder inside the other's."""
-    prod = _parse(PROD_DEFAULTS)["BACKUP_BOX_ROOT"].strip().strip("/")
-    staging = _parse(STAGING_DEFAULTS)["BACKUP_BOX_ROOT"].strip().strip("/")
-    assert prod != staging, "prod and staging mirror into the same Box folder"
-    assert not prod.startswith(staging + "/"), f"{prod!r} is inside {staging!r}"
-    assert not staging.startswith(prod + "/"), f"{staging!r} is inside {prod!r}"
+def test_backup_box_root_names_prod():
+    """The root must sit under a segment naming the environment it mirrors."""
+    root = _parse(PROD_DEFAULTS)["BACKUP_BOX_ROOT"].strip().strip("/")
+    segments = [s.lower() for s in root.split("/")]
+    assert "prod" in segments, (
+        f"BACKUP_BOX_ROOT ({root!r}) has no 'prod' path segment"
+    )
 
 
 def test_backup_minio_bucket_matches_the_compose_backing_bucket():
@@ -451,12 +443,11 @@ def test_backup_minio_bucket_matches_the_compose_backing_bucket():
     match = re.search(r"^\s*STORAGE_S3_BUCKET:\s*(\S+)\s*$", compose, re.M)
     assert match, "STORAGE_S3_BUCKET not found in docker-compose.prod.yml"
     expected = match.group(1).strip().strip("\"'")
-    for path in (PROD_DEFAULTS, STAGING_DEFAULTS):
-        actual = _parse(path)["BACKUP_MINIO_BUCKET"].strip()
-        assert actual == expected, (
-            f"{path.name}: BACKUP_MINIO_BUCKET is {actual!r} but storage-api "
-            f"writes to {expected!r} (docker-compose.prod.yml STORAGE_S3_BUCKET)"
-        )
+    actual = _parse(PROD_DEFAULTS)["BACKUP_MINIO_BUCKET"].strip()
+    assert actual == expected, (
+        f"BACKUP_MINIO_BUCKET is {actual!r} but storage-api writes to "
+        f"{expected!r} (docker-compose.prod.yml STORAGE_S3_BUCKET)"
+    )
 
 
 # The Box destination is pinned, not merely validated. It names a folder
@@ -469,41 +460,30 @@ def test_backup_minio_bucket_matches_the_compose_backing_bucket():
 # A tripwire rather than a rule: changing the destination is a legitimate thing
 # to want, and this does not prevent it. It makes it deliberate, by requiring
 # the change to appear here too, where a reviewer sees it.
-EXPECTED_BOX_ROOTS = {
-    "prod": "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
-    "staging": "Bloom-Backups/BloomV2-Data-Backup/staging/storage",
-}
+EXPECTED_BOX_ROOT = "Bloom-Backups/BloomV2-Data-Backup/prod/storage"
 
 
-@pytest.mark.parametrize("env,expected", sorted(EXPECTED_BOX_ROOTS.items()))
-def test_backup_box_root_is_the_folder_this_job_was_given(env, expected):
-    path = PROD_DEFAULTS if env == "prod" else STAGING_DEFAULTS
-    actual = _parse(path)["BACKUP_BOX_ROOT"].strip()
-    assert actual == expected, (
-        f"{path.name}: BACKUP_BOX_ROOT is {actual!r}, expected {expected!r}.\n"
+def test_backup_box_root_is_the_folder_this_job_was_given():
+    actual = _parse(PROD_DEFAULTS)["BACKUP_BOX_ROOT"].strip()
+    assert actual == EXPECTED_BOX_ROOT, (
+        f"BACKUP_BOX_ROOT is {actual!r}, expected {EXPECTED_BOX_ROOT!r}.\n"
         "This job only uploads and never inspects the destination first, so a "
         "changed root silently mixes the mirror into whatever is already "
-        "there. If the move is intended, update EXPECTED_BOX_ROOTS in this "
+        "there. If the move is intended, update EXPECTED_BOX_ROOT in this "
         "test so the change is visible in review."
     )
 
 
-def test_both_environments_mirror_under_one_dedicated_parent():
+def test_the_mirror_stays_under_one_dedicated_parent():
     # Everything this job writes stays inside a folder created for it, rather
     # than being scattered across the Box account.
     parent = "Bloom-Backups/BloomV2-Data-Backup"
-    for path in (PROD_DEFAULTS, STAGING_DEFAULTS):
-        root = _parse(path)["BACKUP_BOX_ROOT"].strip()
-        assert root.startswith(parent + "/"), (
-            f"{path.name}: {root!r} is outside {parent!r}"
-        )
+    root = _parse(PROD_DEFAULTS)["BACKUP_BOX_ROOT"].strip()
+    assert root.startswith(parent + "/"), f"{root!r} is outside {parent!r}"
 
 
 def test_the_destination_is_not_the_v1_archive():
     # A specific folder in the same account holding the one-time V1 S3 archive.
     # Nothing distinguishes it from an empty folder at runtime.
-    for path in (PROD_DEFAULTS, STAGING_DEFAULTS):
-        root = _parse(path)["BACKUP_BOX_ROOT"].strip().lower()
-        assert "old_bloom_final_state" not in root, (
-            f"{path.name}: points at the V1 archive"
-        )
+    root = _parse(PROD_DEFAULTS)["BACKUP_BOX_ROOT"].strip().lower()
+    assert "old_bloom_final_state" not in root, "points at the V1 archive"

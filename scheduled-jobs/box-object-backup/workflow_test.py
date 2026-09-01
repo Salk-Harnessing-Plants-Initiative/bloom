@@ -109,6 +109,33 @@ class TestScheduleShape:
         assert "group: box-object-backup-" in workflow
         assert "group: deploy-bloom" not in workflow
 
+    def test_staging_cannot_be_mirrored(self, parsed: dict, workflow: str):
+        """Both environments share this host, so they would share the ledger.
+
+        A staging run and the nightly would read and advance each other's
+        watermark, each skipping whatever the other's timestamp already
+        covered — silently, in both directions. The concurrency group would not
+        have stopped it: it was keyed on the environment, so the two ran in
+        different groups and GitHub was happy to run them at once.
+
+        YAML 1.1 reads a bare `on:` as the boolean True, which is why the
+        trigger block is not `parsed["on"]`.
+        """
+        inputs = parsed[True]["workflow_dispatch"]["inputs"]
+        assert "environment" not in inputs, (
+            "the environment input is back; staging can be dispatched again"
+        )
+        assert "STAGING_DEPLOY_PATH" not in workflow, (
+            "the staging deploy path is reachable again"
+        )
+        assert "staging" not in parsed["jobs"]["mirror"]["name"].lower()
+
+    def test_the_concurrency_group_is_fixed(self, parsed: dict):
+        """Keyed on an input, two dispatches did not serialise against each
+        other, and neither serialised against the nightly."""
+        group = parsed["concurrency"]["group"]
+        assert "${{" not in group, f"the group still varies: {group}"
+
     def test_the_scheduled_run_is_not_behind_an_approval_gate(self, parsed: dict):
         # An unattended 02:17 run routed through a reviewer gate waits for an
         # approval nobody is awake to give, and the backup silently never runs.

@@ -58,7 +58,6 @@ class TestFilename:
 
     def test_names_the_environment(self):
         assert "-prod-" in make_report(env="prod").filename()
-        assert "-staging-" in make_report(env="staging").filename()
 
     def test_normalises_a_non_utc_timestamp(self):
         pacific = timezone(timedelta(hours=-7))

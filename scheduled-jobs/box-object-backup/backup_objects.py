@@ -96,7 +96,13 @@ def main(argv: list[str] | None = None) -> int:
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--env", required=True, choices=("staging", "prod"))
+    # prod only. Both environments live on one host and this path has no
+    # environment in it, so a staging run would open the same ledger.db and
+    # write the same `runs` table — which is the watermark. The two would then
+    # advance each other's timestamp, each skipping what the other's run
+    # already covered. Nothing needs staging objects on Box, so the option is
+    # gone rather than the state being split per environment.
+    parser.add_argument("--env", required=True, choices=("prod",))
     parser.add_argument(
         "--buckets",
         default="",
@@ -619,9 +625,10 @@ def check_box_root(args: argparse.Namespace) -> None:
     wrong while it happens, and undoing it is a manual cleanup of the whole
     account.
 
-    The environment check is the same class of mistake one step along: prod
-    and staging hold objects under identical logical names, so pointing one
-    environment at the other's root silently overwrites real backups.
+    There is no cross-environment check because there is no other environment:
+    production is the only thing mirrored, so a root naming anything else is
+    just a wrong root, which the pinned value in the env-defaults tests catches
+    before it reaches a deploy.
     """
     root = args.box_root.strip().strip("/")
     if not root:
@@ -631,15 +638,6 @@ def check_box_root(args: argparse.Namespace) -> None:
             f"    export BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/{args.env}/storage\n"
             "Left empty, the objects would be written to the top level of the "
             "Box drive."
-        )
-    other = "staging" if args.env == "prod" else "prod"
-    segments = root.lower().split("/")
-    if other in segments and args.env not in segments:
-        raise lib.BackupError(
-            f"--env is '{args.env}' but BACKUP_BOX_ROOT points into '{other}':\n"
-            f"    {root}\n"
-            "prod and staging use the same logical object names, so this would "
-            "overwrite the other environment's backup."
         )
 
 

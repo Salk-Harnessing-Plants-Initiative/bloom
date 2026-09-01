@@ -45,13 +45,6 @@ name: Nightly Box object mirror
 on:
   workflow_dispatch:
     inputs:
-      environment:
-        description: "Environment to mirror"
-        required: true
-        type: choice
-        options:
-          - staging
-          - production
       dry_run:
         description: "Plan and report, but copy nothing"
         required: false
@@ -79,12 +72,12 @@ permissions:
 concurrency:
   # Its own group, NOT deploy-bloom and NOT weekly-backup: a queued deploy must
   # not cancel a mirror, and the mirror must not hold up either.
-  group: box-object-backup-${{ github.event.inputs.environment || 'production' }}
+  group: box-object-backup-production
   cancel-in-progress: false
 
 jobs:
   mirror:
-    name: Mirror ${{ github.event.inputs.environment || 'production' }} objects to Box
+    name: Mirror production objects to Box
     runs-on: [self-hosted, linux, salk-network]
     # A night's delta is small — new and changed images only. A run that takes
     # hours means something is wrong, or a seed is still in progress, and in the
@@ -92,7 +85,7 @@ jobs:
     timeout-minutes: 240
     # Deliberately a DIFFERENT literal than the target resolution below: this
     # is the approval-gate name, and the scheduled path must not be gated.
-    environment: ${{ github.event_name == 'schedule' && 'production-scheduled-backup' || github.event.inputs.environment }}
+    environment: ${{ github.event_name == 'schedule' && 'production-scheduled-backup' || 'production' }}
     steps:
       - name: Set up SSH
         run: |
@@ -108,24 +101,29 @@ jobs:
       - name: Resolve target
         id: target
         env:
-          ENVIRONMENT: ${{ github.event_name == 'schedule' && 'production' || github.event.inputs.environment }}
           PROD_DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
-          STAGING_DEPLOY_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
         run: |
           set -euo pipefail
-          if [ "$ENVIRONMENT" = "production" ]; then
-            ENV_NAME=prod
-            DEPLOY_PATH="$PROD_DEPLOY_PATH"
-          else
-            ENV_NAME=staging
-            DEPLOY_PATH="$STAGING_DEPLOY_PATH"
-          fi
+          # Production is the only thing this workflow mirrors, and staging is
+          # deliberately not offered. Both environments live on this one host,
+          # so they would share the ledger, the watermark, the run lock, the
+          # rclone container name and the RC port. Two runs would then read and
+          # advance each other's watermark, each skipping whatever the other's
+          # timestamp already covered — silently, and in both directions. The
+          # concurrency group above would not have stopped it either: it used
+          # to be keyed on the environment, so the two ran in different groups.
+          #
+          # Nothing needs staging objects on Box. Mirroring staging as well
+          # means scoping the ledger, the container name and the port per
+          # environment; that is a change worth making only if the need appears.
+          ENV_NAME=prod
+          DEPLOY_PATH="$PROD_DEPLOY_PATH"
           # An empty deploy path would make the remote `cd` land in $HOME and
           # the job run against whatever happens to be there.
-          : "${DEPLOY_PATH:?deploy path secret is empty for $ENVIRONMENT}"
+          : "${DEPLOY_PATH:?PROD_DEPLOY_PATH secret is empty}"
           echo "env_name=$ENV_NAME" >> "$GITHUB_OUTPUT"
           echo "deploy_path=$DEPLOY_PATH" >> "$GITHUB_OUTPUT"
-          echo "Mirroring $ENVIRONMENT ($ENV_NAME) from $DEPLOY_PATH"
+          echo "Mirroring production ($ENV_NAME) from $DEPLOY_PATH"
 
       - name: Run the mirror on the deploy host
         id: run

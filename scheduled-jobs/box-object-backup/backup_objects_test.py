@@ -478,6 +478,25 @@ class TestVerifyReservoir:
         assert len(r) == 5
 
 
+class TestOnlyProductionCanBeMirrored:
+    """Staging is never backed up, and must not be reachable by hand either.
+
+    Both environments run on this one host and the state directory has no
+    environment in it, so a staging run would open the same `ledger.db` and
+    write the same `runs` table — which is the watermark. The two would then
+    advance each other's timestamp, each skipping whatever the other had
+    already covered, silently and in both directions. Removing the option from
+    the workflow closes that from Actions; this closes it from a shell.
+    """
+
+    def test_staging_is_not_an_accepted_environment(self):
+        with pytest.raises(SystemExit):
+            job.parse_args(["--env", "staging", "--box-root", "x"])
+
+    def test_production_still_is(self):
+        assert job.parse_args(["--env", "prod", "--box-root", "x"]).env == "prod"
+
+
 class TestBoxRootIsChecked:
     """An unset destination writes 8M objects to the top of the Box drive.
 
@@ -502,25 +521,6 @@ class TestBoxRootIsChecked:
 
     def test_a_real_root_passes(self):
         job.check_box_root(self.args("Bloom-Backups/BloomV2-Data-Backup/prod/storage"))
-
-    def test_prod_pointed_at_the_staging_root_is_refused(self):
-        # Same logical names in both environments — this would overwrite the
-        # other environment's backup rather than sit beside it.
-        with pytest.raises(job.lib.BackupError, match="staging"):
-            job.check_box_root(
-                self.args("Bloom-Backups/BloomV2-Data-Backup/staging/storage", env="prod")
-            )
-
-    def test_staging_pointed_at_the_prod_root_is_refused(self):
-        with pytest.raises(job.lib.BackupError, match="prod"):
-            job.check_box_root(
-                self.args("Bloom-Backups/BloomV2-Data-Backup/prod/storage", env="staging")
-            )
-
-    def test_a_root_naming_both_is_allowed(self):
-        # e.g. .../prod/storage under a folder that happens to mention staging;
-        # the run's own env is present, so it is not a cross-environment write.
-        job.check_box_root(self.args("Backups/staging-and-prod/prod/storage", env="prod"))
 
     def test_the_error_names_the_variable_an_operator_must_set(self):
         with pytest.raises(job.lib.BackupError) as caught:
