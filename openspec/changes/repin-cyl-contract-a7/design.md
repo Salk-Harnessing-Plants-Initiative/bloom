@@ -43,6 +43,23 @@ mechanism. That design choice is being revisited here, not assumed to still be r
   trait-extractor image still emits `a3` — see the tracking issue for that image's own pin bump,
   `talmolab/sleap-roots-pipeline#52`, which is explicitly sequenced after this migration lands) but
   fails loudly rather than silently orphaning existing rows if that premise is ever violated.
+- **No symmetric guard on the rollback (deliberate, not an oversight).** An earlier revision of
+  this change added a matching `DO` guard to the rollback script — checking for any
+  `cyl_trait_sources` row already carrying `0.1.0a7` before restoring the strict `a3` body — for
+  symmetry with the forward guard above. **A real CI run caught why that doesn't work**: the
+  forward guard checks for the *retiring* version (`a3`), a population that's self-limiting by
+  construction — once `a7` is the active pin, nothing else in the system stamps `a3`, so a hit is a
+  genuine anomaly worth failing loudly over. The rollback guard would have checked for the
+  *currently active* version (`a7`) — a population that's expected to be populous from the moment
+  this migration deploys (every successful real ingest stamps it), and was already populous in
+  CI's own shared test database (17 rows, from unrelated integration tests' own legitimate
+  concurrency-test commits). "Fail if the currently-pinned version has ever been written" can never
+  be a useful gate; it always fires. This is a structural mismatch between the two directions, not
+  a bug in the first attempt — confirmed by checking whether `cyl_trait_sources` even has a
+  timestamp column that could support a time-scoped alternative (it doesn't: `id`, `name`,
+  `metadata`, `idempotency_key` only). The rollback keeps the manual header-comment warning only,
+  matching `repin-cyl-contract-a3`'s own rollback (which also never had an automated guard) —
+  reverting to that precedent turned out to be correct, not merely expedient.
 
 ## Risks / Trade-offs
 

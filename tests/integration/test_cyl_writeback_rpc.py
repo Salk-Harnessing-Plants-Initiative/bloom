@@ -898,7 +898,16 @@ def test_a7_cutover_guard_raises_on_a3_row(pg_conn):
     # genuine "already deployed to production" scenario -- confirmed by a real CI failure.
     # The asymmetry between forward and rollback guards is therefore intentional, not an
     # oversight: only the forward direction can be safely guarded this way in this test
-    # architecture. The rollback still documents the equivalent risk in its header comment.)
+    # architecture. The rollback still documents the equivalent risk in its header comment.
+    #
+    # WARNING for future authors: this test's correctness (and test_a7_migration_body_is_
+    # idempotent's) relies on an UNENFORCED cross-file invariant -- no other file in
+    # tests/integration/ ever commits a cyl_trait_sources row with a retired-version
+    # contract_version literal (e.g. "0.1.0a3") once a newer version is the active pin. If
+    # you add a concurrency/back-compat test that seeds an old-version-stamped row via a raw
+    # INSERT (bypassing the RPC) and commits it, you will silently reintroduce this exact
+    # class of cross-file-pollution bug on the FORWARD guard, the same way it already broke
+    # the (since-reverted) rollback guard above.)
     with pg_conn.cursor() as cur:
         cur.execute(_sql_body(MIGRATION_A3))  # bring the RPC to a3 first so a3 rows are legal
         _, imgs = _seed_scan(cur)
