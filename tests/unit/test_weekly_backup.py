@@ -176,10 +176,37 @@ def test_exit_codes_are_distinct():
     assert len(codes) == 3, "each failure class needs its own exit code"
 
 
+# Every rclone subcommand that can remove something at the destination.
+DESTRUCTIVE_RCLONE_VERBS = (
+    "sync", "move", "moveto", "purge", "delete", "deletefile",
+    "rmdir", "rmdirs", "cleanup",
+)
+
+
+def test_the_job_only_ever_copies_to_the_remote(tmp_path, monkeypatch):
+    # Assert the verb positively. Blacklisting the single spelling "delete" let
+    # `sync` through — which removes everything at the destination that is not
+    # in the source, i.e. every previous week's backup.
+    seen: list[list[str]] = []
+    monkeypatch.setattr(backup, "_run", lambda cmd, cwd=None: seen.append(cmd))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setenv("BACKUP_RCLONE_REMOTE", "box")
+    monkeypatch.setenv("BACKUP_RCLONE_DEST_DIR", "bloom-backups/prod")
+
+    backup.upload([tmp_path / "database.sql.gz", tmp_path / "globals.sql.gz"], "prod")
+
+    assert len(seen) == 2, "both artifacts must be uploaded"
+    for cmd in seen:
+        assert cmd[0] == "rclone"
+        assert cmd[1] == "copy", f"rclone must only ever copy, not {cmd[1]!r}"
+        assert cmd[-1] == "box:bloom-backups/prod/"
+
+
 def test_the_job_never_deletes_anything_on_the_remote():
     # This job uploads only. Nothing on Box is ever removed by it, by design.
     source = _SCRIPT.read_text()
-    assert '"delete"' not in source
+    for verb in DESTRUCTIVE_RCLONE_VERBS:
+        assert f'"{verb}"' not in source, f"destructive rclone verb in source: {verb}"
     assert "--min-age" not in source
     assert not hasattr(backup, "prune_old_backups")
 
@@ -330,6 +357,31 @@ def test_globals_are_dumped_alongside_the_database(tmp_path, monkeypatch):
     backup.dump_globals("container123", tmp_path, "20260824T000000Z")
     assert "pg_dumpall" in seen[0]
     assert "--globals-only" in seen[0]
+
+
+def test_a_run_dumps_and_uploads_both_artifacts(tmp_path, monkeypatch):
+    # The sibling test proves dump_globals works when called. This proves a run
+    # calls it: the database dump's GRANT statements name roles only the globals
+    # file defines, so shipping one without the other is half a backup.
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+
+    database = tmp_path / "postgres-postgres-20260824T000000Z.sql.gz"
+    globals_ = tmp_path / "globals-20260824T000000Z.sql.gz"
+    dumped: list[str] = []
+    monkeypatch.setattr(backup, "dump_database",
+                        lambda *a: (dumped.append("database"), database)[1])
+    monkeypatch.setattr(backup, "dump_globals",
+                        lambda *a: (dumped.append("globals"), globals_)[1])
+    uploaded: list[Path] = []
+    monkeypatch.setattr(backup, "upload",
+                        lambda artifacts, env: uploaded.extend(artifacts))
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
+    assert rc == backup.EXIT_OK
+    assert dumped == ["database", "globals"], "a run must take both dumps"
+    assert uploaded == [database, globals_], "both artifacts must reach Box"
 
 
 def test_both_artifacts_share_one_run_timestamp(tmp_path, monkeypatch):
