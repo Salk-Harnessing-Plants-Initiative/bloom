@@ -70,11 +70,13 @@ def test_cron_is_weekly_and_structurally_valid(workflow):
     assert hour.isdigit()
 
 
-def test_dispatch_offers_both_environments_and_a_dry_run(workflow):
+def test_dispatch_offers_a_dry_run_and_no_environment_choice(workflow):
+    # Production is the only target. A staging option would read staging's env
+    # file while still resolving the production container, because the compose
+    # project name is pinned in docker-compose.prod.yml.
     inputs = workflow["on"]["workflow_dispatch"]["inputs"]
-    assert set(inputs["environment"]["options"]) == {"staging", "production"}
-    assert inputs["environment"]["required"] is True, "force an explicit choice"
     assert "dry_run" in inputs
+    assert "environment" not in inputs
 
 
 def test_the_default_branch_requirement_is_documented(text):
@@ -109,53 +111,45 @@ def test_the_scheduled_environment_cannot_leak_into_the_dispatch_branch(workflow
     environment = _job(workflow)["environment"]
     _, _, dispatch_half = environment.partition("||")
     assert SCHEDULED_ENVIRONMENT not in dispatch_half
-    assert "github.event.inputs.environment" in dispatch_half
+    assert "'production'" in dispatch_half
 
 
-def test_the_target_host_and_the_approval_gate_are_different_expressions(workflow, text):
-    # ENVIRONMENT (which host to back up) resolves to 'production'; the job's
-    # environment: (which gate to pass) resolves to the ungated name. Collapsing
-    # them re-introduces the hang.
+def test_the_target_host_and_the_approval_gate_stay_distinct(workflow, text):
+    # The job's environment: (which gate to pass) resolves to the ungated name
+    # on a schedule; the host it backs up is always the real production deploy
+    # path. Collapsing the gate to `production` re-introduces the hang.
     job_environment = _job(workflow)["environment"]
-    target = next(
-        step["env"]["ENVIRONMENT"]
-        for step in _job(workflow)["steps"]
-        if step.get("env", {}).get("ENVIRONMENT")
-    )
-    assert target != job_environment
-    assert "'production'" in target
-    assert SCHEDULED_ENVIRONMENT not in target, (
+    assert SCHEDULED_ENVIRONMENT in job_environment
+    resolve = next(step for step in _job(workflow)["steps"]
+                   if step.get("id") == "target")
+    assert "secrets.PROD_DEPLOY_PATH" in resolve["env"]["PROD_DEPLOY_PATH"]
+    assert SCHEDULED_ENVIRONMENT not in resolve["run"], (
         "the backup must target the real production host, not the gate's name"
     )
 
 
 @pytest.mark.parametrize(
-    "event_name,dispatch_input,expected_target,expected_gate",
+    "event_name,expected_gate",
     [
-        ("schedule", "", "production", SCHEDULED_ENVIRONMENT),
-        ("workflow_dispatch", "production", "production", "production"),
-        ("workflow_dispatch", "staging", "staging", "staging"),
+        ("schedule", SCHEDULED_ENVIRONMENT),
+        ("workflow_dispatch", "production"),
     ],
 )
-def test_environment_truth_table(workflow, event_name, dispatch_input,
-                                 expected_target, expected_gate):
-    """Evaluate the live GitHub expressions rather than restating them."""
+def test_the_approval_gate_truth_table(workflow, event_name, expected_gate):
+    """Evaluate the live GitHub expression, both halves, rather than restating it."""
 
     def evaluate(expression: str) -> str:
-        # `A && 'x' || B` — GitHub's ternary idiom.
-        condition = "github.event_name == 'schedule'" in expression
-        left = re.search(r"&&\s*'([^']*)'", expression)
-        assert left, expression
-        if condition and event_name == "schedule":
-            return left.group(1)
-        return dispatch_input
+        # `A && 'x' || 'y'` — GitHub's ternary idiom. Parse BOTH literals: a
+        # regex that reads only the && half turns this into a tautology.
+        match = re.fullmatch(
+            r"\$\{\{\s*github\.event_name == 'schedule'\s*"
+            r"&&\s*'([^']*)'\s*\|\|\s*'([^']*)'\s*\}\}",
+            expression.strip(),
+        )
+        assert match, f"unrecognised ternary: {expression}"
+        scheduled, dispatched = match.groups()
+        return scheduled if event_name == "schedule" else dispatched
 
-    target = next(
-        step["env"]["ENVIRONMENT"]
-        for step in _job(workflow)["steps"]
-        if step.get("env", {}).get("ENVIRONMENT")
-    )
-    assert evaluate(target) == expected_target
     assert evaluate(_job(workflow)["environment"]) == expected_gate
 
 
@@ -174,7 +168,7 @@ def test_concurrency_is_not_the_shared_deploy_group(workflow):
 
 def test_deploy_paths_come_from_secrets_not_literals(text):
     assert "secrets.PROD_DEPLOY_PATH" in text
-    assert "secrets.STAGING_DEPLOY_PATH" in text
+    assert "secrets.STAGING_DEPLOY_PATH" not in text, "production is the only target"
     assert "/data/bloom" not in text, "deploy paths differ per host; never hardcode one"
 
 
@@ -185,15 +179,15 @@ def test_an_empty_deploy_path_fails_rather_than_backing_up_home(text):
     # empty path.
     assert "${DEPLOY_PATH:?" in text
 
-    guard = 'DEPLOY_PATH=""\n: "${DEPLOY_PATH:?deploy path secret is empty}"\n'
+    guard = 'DEPLOY_PATH=""\n: "${DEPLOY_PATH:?PROD_DEPLOY_PATH secret is empty}"\n'
     empty = subprocess.run(["bash", "-c", "set -euo pipefail\n" + guard],
                            capture_output=True, text=True)
     assert empty.returncode != 0, "an empty deploy path must abort the job"
-    assert "deploy path secret is empty" in empty.stderr
+    assert "PROD_DEPLOY_PATH secret is empty" in empty.stderr
 
     ok = subprocess.run(
         ["bash", "-c", 'set -euo pipefail\nDEPLOY_PATH=/srv/bloom\n'
-                       ': "${DEPLOY_PATH:?deploy path secret is empty}"\necho fine'],
+                       ': "${DEPLOY_PATH:?PROD_DEPLOY_PATH secret is empty}"\necho fine'],
         capture_output=True, text=True)
     assert ok.returncode == 0 and "fine" in ok.stdout
 

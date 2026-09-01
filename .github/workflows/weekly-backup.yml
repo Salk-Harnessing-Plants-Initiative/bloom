@@ -11,6 +11,11 @@ name: Weekly Postgres backup
 # The job UPLOADS ONLY. It never deletes anything on Box; old backups are
 # removed by hand, deliberately.
 #
+# PRODUCTION ONLY. Staging is not backed up, and there is no staging target:
+# the compose project name is pinned in docker-compose.prod.yml, so an
+# `--env staging` run would read staging's env file while still resolving the
+# production container. Rehearse with a dry run against production instead.
+#
 # Three things to know, all of which refresh-cyl-experiment-trait-counts.yml
 # documents at length and was bitten by first:
 #
@@ -18,8 +23,8 @@ name: Weekly Postgres backup
 #      on the repo's DEFAULT branch (`main`) before either can fire at all --
 #      dispatch is gated on it exactly as schedule is. Nothing runs until the
 #      normal staging -> main promotion carries this file there.
-#   2. A `schedule` event carries no `github.event.inputs`, so the target is
-#      resolved off `github.event_name` below rather than the dispatch input.
+#   2. A `schedule` event carries no `github.event.inputs`, so the approval
+#      gate below is resolved off `github.event_name`, not off an input.
 #   3. The scheduled run uses a SEPARATE, ungated GitHub Environment
 #      (`production-scheduled-backup`) rather than `production` itself. Routing
 #      an unattended 02:00 run through production's required-reviewer gate
@@ -36,13 +41,6 @@ name: Weekly Postgres backup
 on:
   workflow_dispatch:
     inputs:
-      environment:
-        description: "Environment to back up"
-        required: true
-        type: choice
-        options:
-          - staging
-          - production
       dry_run:
         description: "Dump and verify, but do not upload"
         required: false
@@ -59,17 +57,17 @@ permissions:
 concurrency:
   # Its own group, NOT deploy-bloom: a queued or stuck deploy must not cancel a
   # backup, and a backup must not hold up a deploy.
-  group: weekly-backup-${{ github.event.inputs.environment || 'production' }}
+  group: weekly-backup-production
   cancel-in-progress: false
 
 jobs:
   backup:
-    name: Back up ${{ github.event.inputs.environment || 'production' }}
+    name: Back up production
     runs-on: [self-hosted, linux, salk-network]
     timeout-minutes: 60
     # Deliberately a DIFFERENT literal than the target resolution below: this
     # is the approval-gate name, and the scheduled path must not be gated.
-    environment: ${{ github.event_name == 'schedule' && 'production-scheduled-backup' || github.event.inputs.environment }}
+    environment: ${{ github.event_name == 'schedule' && 'production-scheduled-backup' || 'production' }}
     steps:
       - name: Set up SSH
         run: |
@@ -80,29 +78,22 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       # `prod` is what the env file and the script call it; the GitHub
-      # Environment is called `production`. Resolve both here so the rest of
-      # the job has one name for each.
+      # Environment is called `production`. Name both here so the rest of the
+      # job has one name for each.
       - name: Resolve target
         id: target
         env:
-          ENVIRONMENT: ${{ github.event_name == 'schedule' && 'production' || github.event.inputs.environment }}
           PROD_DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
-          STAGING_DEPLOY_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
         run: |
           set -euo pipefail
-          if [ "$ENVIRONMENT" = "production" ]; then
-            ENV_NAME=prod
-            DEPLOY_PATH="$PROD_DEPLOY_PATH"
-          else
-            ENV_NAME=staging
-            DEPLOY_PATH="$STAGING_DEPLOY_PATH"
-          fi
+          ENV_NAME=prod
+          DEPLOY_PATH="$PROD_DEPLOY_PATH"
           # An empty deploy path would make the remote `cd` land in $HOME and
           # the backup run against whatever happens to be there.
-          : "${DEPLOY_PATH:?deploy path secret is empty for $ENVIRONMENT}"
+          : "${DEPLOY_PATH:?PROD_DEPLOY_PATH secret is empty}"
           echo "env_name=$ENV_NAME" >> "$GITHUB_OUTPUT"
           echo "deploy_path=$DEPLOY_PATH" >> "$GITHUB_OUTPUT"
-          echo "Backing up $ENVIRONMENT ($ENV_NAME) from $DEPLOY_PATH"
+          echo "Backing up production ($ENV_NAME) from $DEPLOY_PATH"
 
       - name: Run the backup on the deploy host
         id: run

@@ -29,15 +29,19 @@ not acceptable in a backup.
 
 ## Schedule
 
-|             |                                                           |
-| ----------- | --------------------------------------------------------- |
-| Runs        | Sunday 02:17 UTC, automatically, against **production**   |
-| Staging     | On demand only — dispatch the workflow and pick `staging` |
-| Destination | `box:bloom-backups/prod` and `box:bloom-backups/staging`  |
+|             |                                                         |
+| ----------- | ------------------------------------------------------- |
+| Runs        | Sunday 02:17 UTC, automatically, against **production** |
+| Scope       | Production only — staging is not backed up              |
+| Destination | `box:bloom-backups/prod`                                |
 
 Run it by hand any time from the Actions tab: **Weekly Postgres backup → Run
-workflow**, choose the environment, optionally tick "dry run" to dump and verify
-without uploading.
+workflow**, optionally ticking "dry run" to dump and verify without uploading.
+
+There is deliberately no staging target. `docker-compose.prod.yml` pins the
+compose project name, so a staging run would read staging's env file — and so
+write to staging's Box folder — while still resolving the **production**
+container. Rehearse with a dry run against production instead.
 
 ## Nothing is ever deleted on Box
 
@@ -50,9 +54,12 @@ Two consequences worth knowing:
 - The folder grows by two files a week, forever. Check on it occasionally and
   prune by hand when you want to; if the Box quota ever fills, the upload is
   what starts failing.
-- On the server nothing accumulates at all. Each run works inside a temporary
-  directory that is removed on every exit path, success or failure, so the dump
-  never lingers on disk.
+- On the server nothing accumulates. Each run works inside a temporary
+  directory removed when the run returns or raises; a cancelled run or a
+  `timeout-minutes` kill is caught by a signal handler, and anything a `SIGKILL`
+  or a power cut leaves behind is swept by the next run. A leftover dump is
+  therefore possible for at most a week, which matters because it is a full
+  plaintext copy including `auth.users`.
 
 ## One-time setup
 
@@ -92,11 +99,12 @@ on the repo's **default branch**. Both triggers are gated on it. Until the
 normal staging → main promotion carries this file across, nothing runs and the
 workflow does not appear in the Actions tab at all.
 
-### 4. Prove it on staging first
+### 4. Prove it with a dry run first
 
-Dispatch the workflow against `staging` with "dry run" ticked. That performs a
-real dump and verification without uploading. Then run it for real and confirm
-both artifacts land on Box before relying on production.
+Dispatch the workflow with "dry run" ticked. That runs the real SSH hop, the
+real container resolution and a real `pg_dump`, verifies both artifacts, and
+stops before uploading — `pg_dump` only reads, so this is safe against
+production. Then run it for real and confirm both artifacts land on Box.
 
 ## The weekly check
 

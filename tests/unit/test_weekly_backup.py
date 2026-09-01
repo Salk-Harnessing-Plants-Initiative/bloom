@@ -4,13 +4,14 @@ The parts pinned here are the ones whose failure mode is a *silent* bad backup:
 a truncated dump that still gzips cleanly, an empty container lookup treated as
 success, an artifact uploaded without being verified.
 The docker/rclone calls themselves need a live host and are exercised by the
-staging rehearsal documented in _WIKI/SCHEDULEDJOBS/weekly-backup.md.
+dry-run rehearsal documented in _WIKI/SCHEDULEDJOBS/weekly-backup.md.
 """
 from __future__ import annotations
 
 import gzip
 import importlib.util
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -60,9 +61,21 @@ def test_multiple_containers_are_an_error():
 
 
 def test_compose_args_point_at_this_environments_files(tmp_path):
-    args = backup.compose_args(tmp_path, "staging")
+    args = backup.compose_args(tmp_path, "prod")
     assert str(tmp_path / "docker-compose.prod.yml") in args
-    assert str(tmp_path / ".env.staging") in args
+    assert str(tmp_path / ".env.prod") in args
+
+
+def test_the_compose_project_is_pinned_by_the_file_not_the_directory():
+    # Why this job is production-only. compose_args passes no -p, and
+    # docker-compose.prod.yml pins `name: bloom_v2_prod`, which outranks the
+    # directory basename. So `ps -q db-prod` resolves the PRODUCTION container
+    # from any deploy directory — a staging target would read staging's env
+    # file (and so its Box folder) while dumping production. Adding a staging
+    # path again requires -p matching deploy.yml's `-p bloom_v2_staging`.
+    assert "-p" not in backup.compose_args(Path("/srv/bloom"), "prod")
+    compose = (REPO_ROOT / "docker-compose.prod.yml").read_text()
+    assert "\nname: bloom_v2_prod\n" in compose
 
 
 def test_compose_args_never_hardcode_a_container_name():
@@ -191,13 +204,18 @@ def test_dry_run_verifies_but_never_uploads(tmp_path, monkeypatch):
 
 
 def test_the_working_directory_is_removed_on_failure(tmp_path, monkeypatch):
+    # _deploy_dir matters: without the env file main() returns before the state
+    # dir is created, and the glob below passes without reaching the cleanup.
+    _deploy_dir(tmp_path)
     state = tmp_path / "state"
     monkeypatch.setenv("BACKUP_STATE_DIR", str(state))
     monkeypatch.setattr(
         backup, "resolve_container",
         lambda *a: (_ for _ in ()).throw(backup.ConfigError("stack down")),
     )
-    backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
+    assert rc == backup.EXIT_CONFIG
+    assert state.is_dir(), "the run must have got far enough to create the state dir"
     leftovers = list(state.glob("bloom-backup-*"))
     assert not leftovers, f"a dump directory outlived a failed run: {leftovers}"
 
@@ -213,6 +231,75 @@ def test_the_working_directory_is_removed_on_success(tmp_path, monkeypatch):
     rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
     assert rc == backup.EXIT_OK
     assert not list(state.glob("bloom-backup-*"))
+
+
+def test_a_dump_left_by_a_killed_run_is_swept_at_startup(tmp_path, monkeypatch):
+    # SIGKILL and power loss cannot be caught, so the next run must clear what
+    # they left. Each orphan is a full plaintext dump including auth.users.
+    _deploy_dir(tmp_path)
+    state = tmp_path / "state"
+    orphan = state / "bloom-backup-oldrun"
+    orphan.mkdir(parents=True)
+    (orphan / "postgres-postgres-20260824T021700Z.sql.gz").write_bytes(b"stale dump")
+
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(state))
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    monkeypatch.setattr(backup, "dump_database", lambda *a: tmp_path / "db.sql.gz")
+    monkeypatch.setattr(backup, "dump_globals", lambda *a: tmp_path / "globals.sql.gz")
+    monkeypatch.setattr(backup, "upload", lambda *a: None)
+
+    assert backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)]) == backup.EXIT_OK
+    assert not orphan.exists(), "an orphaned dump survived the next run"
+
+
+def _run_until_signalled(state: Path, install_handler: bool) -> list[str]:
+    """Enter the real working dir, take a signal, report what was left behind."""
+    driver = f"""
+import importlib.util, os, signal, tempfile
+spec = importlib.util.spec_from_file_location("wb", {str(_SCRIPT)!r})
+backup = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(backup)
+if {install_handler!r}:
+    signal.signal(signal.SIGTERM, backup._terminate)
+try:
+    with tempfile.TemporaryDirectory(prefix="bloom-backup-", dir={str(state)!r}):
+        os.kill(os.getpid(), signal.SIGTERM)
+except SystemExit:
+    pass
+"""
+    subprocess.run([sys.executable, "-c", driver], capture_output=True, text=True)
+    return [p.name for p in state.glob("bloom-backup-*")]
+
+
+def test_a_terminating_signal_still_removes_the_working_directory(tmp_path):
+    # Cancelling the run from the Actions tab, and timeout-minutes, both kill
+    # this process from outside. No exception is raised, so `with` alone does
+    # not unwind — the handler is what makes it.
+    state = tmp_path / "state"
+    state.mkdir()
+    assert _run_until_signalled(state, install_handler=True) == []
+
+    # Control: without the handler the dump is stranded. If this ever comes
+    # back empty the test above has stopped proving anything.
+    for stale in state.glob("bloom-backup-*"):
+        stale.rmdir()
+    assert _run_until_signalled(state, install_handler=False) != []
+
+
+def test_main_installs_the_termination_handlers(tmp_path, monkeypatch):
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    monkeypatch.setattr(backup, "dump_database", lambda *a: tmp_path / "db.sql.gz")
+    monkeypatch.setattr(backup, "dump_globals", lambda *a: tmp_path / "globals.sql.gz")
+    monkeypatch.setattr(backup, "upload", lambda *a: None)
+
+    installed = {}
+    monkeypatch.setattr(backup.signal, "signal",
+                        lambda sig, handler: installed.setdefault(sig, handler))
+    backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
+    assert set(installed) == {backup.signal.SIGTERM, backup.signal.SIGHUP}
+    assert set(installed.values()) == {backup._terminate}
 
 
 # --------------------------------------------------------------------------

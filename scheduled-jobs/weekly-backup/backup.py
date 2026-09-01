@@ -25,6 +25,7 @@ import argparse
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -151,6 +152,22 @@ def resolve_container(deploy_dir: Path, env_name: str) -> str:
 # ---------------------------------------------------------------------------
 # Dump + verify
 # ---------------------------------------------------------------------------
+
+def _terminate(signum: int, _frame: object) -> None:
+    """Turn a kill signal into an exception so the working dir unwinds."""
+    raise SystemExit(f"terminated by signal {signum}")
+
+
+def sweep_stale_work_dirs(state_dir: Path) -> int:
+    """Remove dumps left by a run that was killed before its cleanup ran."""
+    stale = list(state_dir.glob("bloom-backup-*"))
+    for leftover in stale:
+        shutil.rmtree(leftover, ignore_errors=True)
+    if stale:
+        logger.warning("removed %d working dir(s) left by an interrupted run",
+                       len(stale))
+    return len(stale)
+
 
 def _stream_to_gzip(cmd: list[str], out: Path) -> None:
     """Run cmd, pipe it through gzip into out, and check BOTH exit statuses.
@@ -290,12 +307,18 @@ def main(argv: list[str] | None = None) -> int:
         state_dir.mkdir(parents=True, exist_ok=True)
         # The working copy holds a full dump; keep it off other users.
         state_dir.chmod(0o700)
+        # Cancelling the job or hitting timeout-minutes kills this process from
+        # outside; without a handler the working dir below is never unwound.
+        signal.signal(signal.SIGTERM, _terminate)
+        signal.signal(signal.SIGHUP, _terminate)
+        # SIGKILL and power loss cannot be caught, so sweep what they left.
+        sweep_stale_work_dirs(state_dir)
     except ConfigError as exc:
         logger.error("configuration error: %s", exc)
         return EXIT_CONFIG
 
-    # The working copy holds a full dump; the context manager removes it on
-    # every exit path, success or failure.
+    # The working copy holds a full dump. The context manager covers returns
+    # and exceptions; signals are covered by the handlers installed above.
     with tempfile.TemporaryDirectory(prefix="bloom-backup-", dir=str(state_dir)) as tmp:
         work_dir = Path(tmp)
         try:
