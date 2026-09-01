@@ -150,7 +150,7 @@ def objects_query(
     excluded: Sequence[str] = DEFAULT_EXCLUDED_BUCKETS,
     since: str | None = None,
 ) -> str:
-    """SQL listing the objects to mirror, newest-first within each bucket.
+    """SQL listing the objects to mirror, oldest-first within each bucket.
 
     `since` filters on `updated_at` so the weekly delta never enumerates the
     whole table. Identifiers are quoted by `_sql_literal`; every caller-

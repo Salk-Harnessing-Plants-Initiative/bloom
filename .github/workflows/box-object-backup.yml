@@ -352,14 +352,16 @@ jobs:
             echo
             if grep -q 'box-object-backup: SKIPPED' "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
               echo "Result: **skipped** — another run holds the lock, almost"
-              echo "certainly the initial seed. Nothing was mirrored this week;"
+              echo "certainly the initial seed. Nothing was mirrored tonight;"
               echo "the seed is doing that work. This is expected until it ends."
             elif grep -q 'were missing or the wrong size on Box' "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
               echo "Result: **VERIFICATION FAILED** — objects the copy reported"
               echo "as successful are not on Box. They are **not** retried"
               echo "automatically: the ledger already records them as copied, so"
-              echo "later runs skip them. Clear their ledger rows by hand (the"
-              echo "job log prints the command) or this repeats every week."
+              echo "later runs skip them. Clear their ledger rows by hand now"
+              echo "(the job log prints the command) — this warning does NOT"
+              echo "repeat, because the next run skips the objects rather than"
+              echo "re-checking them."
             elif [ "${{ steps.run.outcome }}" = "success" ]; then
               if [ -n "$counts" ]; then
                 echo "Result: **succeeded** — ${counts}"

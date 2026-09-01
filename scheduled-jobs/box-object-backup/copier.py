@@ -117,9 +117,11 @@ class VerifyReservoir:
     timing and every run sampled different objects. It was only reproducible
     single-threaded, which is to say only in its tests.
 
-    Reproducibility is the point: a verification mismatch stays findable on a
-    re-run instead of vanishing, so it can be investigated rather than guessed
-    at.
+    What this buys is a stable sample, not a reproducible finding. A mismatched
+    object is recorded as copied before verification runs, so the next run
+    skips it as `already_current`, never copies it, and never offers it here
+    again — re-running does not re-check it. Forcing that means deleting its
+    ledger row by hand, which the run's own error message explains.
     """
 
     def __init__(self, cap: int) -> None:
@@ -203,9 +205,10 @@ def verify_sample(
 ) -> int:
     """Stat a spread of destination paths and compare sizes against Postgres.
 
-    Sampled by stride rather than at random so a re-run checks the same
-    objects — a mismatch stays reproducible instead of vanishing. Returns the
-    number of mismatches.
+    Strided rather than random, so the same pool is always checked in the same
+    order. That does not make a mismatch reproducible across runs: the pool
+    holds only what THIS run copied, and a mismatched object is already in the
+    ledger, so later runs skip it. Returns the number of mismatches.
     """
     copies = plan.copies
     stride = max(1, len(copies) // max(1, sample_size))

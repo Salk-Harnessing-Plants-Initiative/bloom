@@ -38,7 +38,7 @@ neither is a complete restore on its own. See "Restoring" below.
    `sudo -u bloom-deploy rclone config reconnect box:`.
 
 2. **Create the destination folder** in Box matching `BACKUP_BOX_ROOT`
-   (`Bloom-Backups/prod/storage` by default).
+   (`Bloom-Backups/BloomV2-Data-Backup/prod/storage` by default).
 
 3. **State directory**, once, as root. The ledger lives here and it is what
    makes the seed resumable:
@@ -89,8 +89,9 @@ over several nights → then promote to `main`.
 to `staging` is not enough — the normal staging → main promotion has to carry
 it across. Until then, nothing runs on a schedule.
 
-To run it by hand: Actions → *Nightly Box object mirror* → **Run workflow**,
-choosing the environment and optionally `dry_run`.
+To run it by hand: Actions → *Nightly Box object mirror* → **Run workflow**.
+Production is the only target — there is no environment to choose. The two
+inputs are `dry_run` and `verify`.
 
 ## The seed run
 
@@ -133,6 +134,12 @@ python3 "$DEPLOY/scheduled-jobs/box-object-backup/backup_objects.py" \
 ```
 
 Then open the Box folder and confirm the images preview.
+
+**On a rebuilt host, restore the ledger before running either of these.** Both
+copy objects, and any run that copies something uploads its ledger over the
+copy on Box — so a smoke test against an empty ledger replaces the record of
+eight million objects with a record of twenty. See *If the deploy host itself
+is gone* below.
 
 The seed itself runs detached, in nightly chunks so it never runs through
 working hours:
@@ -279,7 +286,8 @@ gh run view <run-id> --log
 ```
 
 Exit codes: `0` clean, `1` some objects failed after retries, `2`
-configuration or preflight error, `3` interrupted (progress kept).
+configuration or preflight error, `3` interrupted (progress kept), `4`
+verification found objects missing or the wrong size on Box.
 
 Progress lines report objects/second and a projected finish. Failures are
 retried with backoff — Box's 429s and 5xx are treated as transient; a 404 on
@@ -332,11 +340,18 @@ Until this is automated, **check `verify_mismatched` in the run report after
 each backup** — it is the one number that says whether what was copied is
 actually there.
 
-The N objects are a uniform random sample of the run's **successful** copies,
-seeded so a re-run checks the same ones — a mismatch stays reproducible rather
-than vanishing on the next attempt.
+The N objects are a uniform sample of the run's **successful** copies, chosen
+by a hash of each object's path rather than by arrival order, so the same set
+of copies always yields the same sample no matter which worker finished first.
 
-**N is a flat 50, hardcoded.** That reliably catches a systemic fault — wrong
+That makes the sample stable, not the finding: a mismatched object is recorded
+as copied before verification runs, so the next run skips it as
+`already_current` and never re-checks it. Re-running does **not** reproduce a
+mismatch — see *A mismatched object is not retried automatically* above.
+
+**N defaults to 50 on every scheduled run**, set by the workflow, and is a
+`verify` input you can change when running by hand. The command-line default
+is `0`, so a manual run without `--verify` checks nothing. That reliably catches a systemic fault — wrong
 path, broken auth, nothing landing at all — and is not statistical assurance
 about rare corruption: 50 of 8M objects is 0.0006% of the mirror. Whether it
 should instead scale with the size of the run is an open question and
@@ -408,7 +423,9 @@ harmless — the copy simply overwrites what is already there.
 
 ## Configuration
 
-Set in `.env.<env>` (defaults in `.env.prod.defaults` / `.env.staging.defaults`):
+Set in `.env.prod` (defaults in `.env.prod.defaults`). Production is the only
+environment mirrored, so `.env.staging.defaults` deliberately carries no
+`BACKUP_*` keys and a test enforces that.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
