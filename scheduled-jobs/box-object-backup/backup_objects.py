@@ -278,30 +278,38 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             bucket_scoped=bool(args.buckets.strip()),
             stopped=stopping.stopping(),
         )
-        publish_report(
-            daemon, state_dir, box_fs, args,
-            run_id=run_id, started_at=started_at, outcome=outcome,
-            stats=stats, failures=totals.failures,
-        )
-        ledger.commit()
+        # Nested so the teardown below cannot be skipped. Everything in this
+        # block can raise — publish_report catches only OSError and
+        # RcloneError, and the ledger writes can raise sqlite3.Error on a full
+        # disk — and a container left holding the RC port makes every later
+        # night fail at check_no_stale_daemon until someone removes it by hand.
+        try:
+            publish_report(
+                daemon, state_dir, box_fs, args,
+                run_id=run_id, started_at=started_at, outcome=outcome,
+                stats=stats, failures=totals.failures,
+            )
+            ledger.commit()
         # Inside the finally, not after it. A run that raised is the one whose
         # record matters most, and outside it every crash left a row with no
         # finished_at, no outcome and no stats — while the report published to
         # Box three lines above named the outcome correctly. The local audit
         # trail this job's own error messages tell operators to read was the
         # only place the failure did not appear.
-        ledger.finish_run(run_id, outcome, stats)
-        # Closed BEFORE it is uploaded. SQLite runs in WAL mode here, so
-        # committed rows can still be sitting in ledger.db-wal; a copy of
-        # ledger.db on its own would be missing them. close() checkpoints the
-        # WAL into the file, which is what makes the uploaded copy complete.
-        ledger.close()
-        publish_ledger(
-            daemon, state_dir, box_fs, args,
-            copied=totals.copied, crashed=crashed,
-        )
-        # Last, so the daemon is still alive for both uploads above.
-        daemon.stop()
+            ledger.finish_run(run_id, outcome, stats)
+            # Closed BEFORE it is uploaded. SQLite runs in WAL mode here, so
+            # committed rows can still be sitting in ledger.db-wal; a copy of
+            # ledger.db on its own would be missing them. close() checkpoints
+            # the WAL into the file, which makes the uploaded copy complete.
+            ledger.close()
+            publish_ledger(
+                daemon, state_dir, box_fs, args,
+                copied=totals.copied, crashed=crashed,
+            )
+        finally:
+            # Last, so the daemon is still alive for both uploads above, and
+            # unconditional, so nothing above can strand the container.
+            daemon.stop()
     logger.info(
         "done — copied %d, failed %d, already current %d, skipped %d",
         totals.copied, totals.failed, totals.already_current, totals.skipped,
@@ -535,13 +543,38 @@ def publish_ledger(
     if not copied:
         logger.info("ledger not uploaded: nothing was copied this run")
         return
+    local = state_dir / report.LEDGER_FILENAME
+    try:
+        local_size = local.stat().st_size
+    except OSError as exc:
+        logger.error("ledger not uploaded: cannot read %s: %s", local, exc)
+        return
     destination = report.box_ledger_path(args.box_root)
     try:
         client = RcloneRC(daemon.url, daemon.user, daemon.password)
+        # Never replace a bigger copy with a smaller one. A ledger only grows,
+        # so a smaller one means this host did not build the mirror the copy on
+        # Box describes — a rebuilt host, or a wiped state dir. The smoke test
+        # in the wiki copies twenty objects, which is enough to trigger this
+        # upload, so without the check the first command an operator runs after
+        # losing the host would replace the record of eight million objects
+        # with a record of twenty.
+        existing = client.stat(box_fs, destination)
+        remote_size = existing.get("Size") if existing else None
+        if isinstance(remote_size, int) and local_size < remote_size:
+            logger.error(
+                "ledger NOT uploaded. The copy on Box is %s and this run's is "
+                "only %s, so this host is not the one that built that mirror. "
+                "Restore the Box copy before running again — see 'If the "
+                "deploy host itself is gone' in the wiki. Uploading now would "
+                "lose the record of what is already backed up.",
+                lib.format_bytes(remote_size), lib.format_bytes(local_size),
+            )
+            return
         client.copy_file(
             dock.STATE_MOUNT, report.LEDGER_FILENAME, box_fs, destination
         )
-        logger.info("ledger on Box: %s", destination)
+        logger.info("ledger on Box: %s (%s)", destination, lib.format_bytes(local_size))
     except Exception as exc:
         # Deliberately broad: this runs in the cleanup path, and anything
         # raised here would skip the container teardown below it.

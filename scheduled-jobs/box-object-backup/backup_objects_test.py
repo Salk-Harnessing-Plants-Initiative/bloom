@@ -1064,6 +1064,48 @@ class TestAStoppedRunIsResumable:
         assert "3 = interrupted" in job.__doc__
 
 
+class TestTheContainerIsAlwaysTornDown:
+    """`daemon.stop()` is the one thing in the cleanup that must not be skipped.
+
+    A container left holding the RC port makes every later night fail at
+    check_no_stale_daemon until someone SSHes in. Reordering the cleanup so the
+    ledger is closed before it is uploaded put daemon.stop() last, behind steps
+    that can raise: publish_report catches only OSError and RcloneError, and
+    the ledger writes can raise sqlite3.Error on a full disk — realistic on a
+    state dir holding a 1.7 GB ledger and a 1 GB manifest.
+    """
+
+    @pytest.fixture
+    def harness(self, monkeypatch, tmp_path):
+        return TestRunLockedWiresItsPartsTogether().harness.__wrapped__(
+            TestRunLockedWiresItsPartsTogether(), monkeypatch, tmp_path
+        )
+
+    def boom(self, *a, **kw):
+        raise RuntimeError("disk full")
+
+    def test_it_is_stopped_when_the_report_upload_raises(self, harness, monkeypatch):
+        state, tmp_path = harness
+        monkeypatch.setattr(job, "publish_report", self.boom)
+        with pytest.raises(RuntimeError):
+            job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        assert state["daemon_stopped"], "the rclone container was stranded"
+
+    def test_it_is_stopped_when_the_ledger_upload_raises(self, harness, monkeypatch):
+        state, tmp_path = harness
+        monkeypatch.setattr(job, "publish_ledger", self.boom)
+        with pytest.raises(RuntimeError):
+            job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        assert state["daemon_stopped"], "the rclone container was stranded"
+
+    def test_it_is_stopped_on_an_ordinary_clean_run(self, harness):
+        state, tmp_path = harness
+        assert job.run_locked(
+            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
+        ) == 0
+        assert state["daemon_stopped"]
+
+
 class TestRunBackupTakesTheHostLock:
     """`run_backup` had no coverage at all — the lock could be deleted outright.
 
@@ -1243,6 +1285,64 @@ class TestTheLedgerIsCopiedToBox:
         conn.close()
         assert copied == 2, f"the copy is missing rows the run recorded: {copied}"
         assert runs == 1, "the copy does not record the run that made it"
+
+    DEST = "Bloom-Backups/BloomV2-Data-Backup/prod/storage/_state/ledger.db"
+
+    def with_remote_size(self, state, monkeypatch, size):
+        """Make Box report a ledger of `size` bytes at the destination."""
+        real_stat = state["client"].__class__.stat
+
+        def sized(self, fs, remote):
+            if remote == TestTheLedgerIsCopiedToBox.DEST:
+                return None if size is None else {"Size": size}
+            return real_stat(self, fs, remote)
+
+        monkeypatch.setattr(state["client"].__class__, "stat", sized)
+
+    def test_it_refuses_to_replace_a_larger_copy(self, harness, monkeypatch, caplog):
+        """The scenario the whole feature exists for, and would have broken.
+
+        Host dies, gets rebuilt, ledger is empty. The wiki's smoke test copies
+        twenty objects — enough to trigger this upload — and without a floor it
+        replaces the record of eight million copied objects with a record of
+        twenty. The one thing needed to avoid a three-week re-seed, destroyed
+        by the first command the operator runs.
+        """
+        state, tmp_path = harness
+        self.with_remote_size(state, monkeypatch, 1_700_000_000)
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        assert self.uploads(state) == [], "overwrote a larger ledger on Box"
+        assert "NOT uploaded" in caplog.text
+        assert "Restore the Box copy" in caplog.text, "did not say how to recover"
+
+    def test_it_uploads_when_the_copy_on_box_is_smaller(self, harness, monkeypatch):
+        state, tmp_path = harness
+        self.with_remote_size(state, monkeypatch, 1)
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        assert len(self.uploads(state)) == 1, "refused to update a stale copy"
+
+    def test_it_uploads_when_box_has_no_copy_yet(self, harness, monkeypatch):
+        state, tmp_path = harness
+        self.with_remote_size(state, monkeypatch, None)
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        assert len(self.uploads(state)) == 1, "the first upload never happens"
+
+    def test_an_equal_sized_copy_is_still_replaced(self, harness, monkeypatch, tmp_path):
+        """Only SMALLER is refused. Equal means the same ledger, and a run that
+        copied something has almost certainly changed it."""
+        state, tmp_path = harness
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
+        job.run_locked(args, tmp_path)          # first run creates the ledger
+        size = (tmp_path / "ledger.db").stat().st_size
+        state["copied"].clear()
+        self.with_remote_size(state, monkeypatch, size)
+        # Something new to copy, so the upload is reached at all.
+        monkeypatch.setattr(
+            TestRunLockedWiresItsPartsTogether, "MANIFEST",
+            "images\texp-42/c.png\tv3\t100\t2026-08-31T00:00:02+00\n",
+        )
+        job.run_locked(args, tmp_path)
+        assert len(self.uploads(state)) == 1
 
     def test_a_night_that_copied_nothing_does_not_send_it(self, harness):
         """It is a gigabyte or two once seeded, and an unchanged file."""
