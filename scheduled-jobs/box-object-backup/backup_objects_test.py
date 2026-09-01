@@ -1599,6 +1599,39 @@ class TestACollisionIsVisibleInAWholeRun:
         assert stats["collisions"] == 1, f"nothing recorded the collision: {stats}"
         assert stats["copied"] == 1
 
+    def test_the_pair_is_named_in_the_log(self, harness, monkeypatch, caplog):
+        """The error line says "named at the START of each `skipping` line".
+        Nothing asserted those lines are emitted, so that promise could become
+        false without a test failing."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="bloom_box_object_backup"):
+            self.run_it(harness, monkeypatch)
+        assert "skipping" in caplog.text, "the pairs are never named"
+        assert ascii(self.COMPOSED) in caplog.text, (
+            "the holder is not named, or is named unreadably"
+        )
+
+    def test_a_dry_run_reports_the_collision_too(self, harness, monkeypatch, caplog):
+        """A dry run is what an operator runs first, and it was the one path
+        where a refused collision stayed invisible to the summary."""
+        import logging
+
+        monkeypatch.setattr(
+            TestRunLockedWiresItsPartsTogether, "MANIFEST",
+            f"images\t{self.COMPOSED}\tv1\t100\t2026-08-31T00:00:00+00\n"
+            f"images\t{self.DECOMPOSED}\tv2\t100\t2026-08-31T00:00:01+00\n",
+        )
+        state, tmp_path = harness
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
+        args.dry_run = True   # a store_true flag, not a --flag value pair
+        with caplog.at_level(logging.ERROR, logger="bloom_box_object_backup"):
+            job.run_locked(args, tmp_path)
+        assert state["copied"] == [], "a dry run copied something"
+        assert "were NOT backed up" in caplog.text, (
+            "the summary greps this phrase; a dry run would read succeeded"
+        )
+
     def test_the_run_tells_the_operator_what_to_do(self, harness, monkeypatch, caplog):
         import logging
 

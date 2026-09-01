@@ -105,11 +105,26 @@ class TestSkipMarkerContract:
         )
 
     def test_the_collision_grep_matches_what_the_job_prints(self):
-        """The two halves live in different files and different languages."""
+        """The two halves live in different files and different languages.
+
+        Comments stripped first: a phrase left only in a comment satisfied the
+        raw-source version of this, which is the same way the skip-marker
+        contract broke.
+        """
         source = (Path(__file__).parent / "backup_objects.py").read_text()
-        assert "were NOT backed up" in source, (
+        assert "were NOT backed up" in _strip_comments(source), (
             "the workflow greps for a phrase the job no longer prints"
         )
+
+    def test_the_collision_branch_says_what_happened(self, summary_script: str):
+        """Position and grep phrase are not enough — the body could say
+        anything, including that the run succeeded."""
+        script = _strip_comments(summary_script)
+        start = script.index("were NOT backed up")
+        branch = script[start:start + 700]
+        assert "OBJECTS NOT BACKED UP" in branch
+        assert "rename" in branch.lower(), "does not say what to do"
+        assert "succeeded" not in branch, "a refused collision reports success"
 
     def test_the_collision_branch_precedes_the_success_branch(self, summary_script: str):
         script = _strip_comments(summary_script)

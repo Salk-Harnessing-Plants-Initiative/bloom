@@ -804,8 +804,18 @@ class TestTwoNamesThatBecomeOneBoxPath:
         plan = build_plan([self.a(), self.b()], {})
         skipped = plan.skipped[0]
         assert skipped.obj.name == self.DECOMPOSED
-        assert self.COMPOSED in skipped.reason, "does not say what took the path"
+        # Escaped, not plain: the two names are identical to a human, so a
+        # plain rendering names an object the operator cannot pick out.
+        assert ascii(self.COMPOSED) in skipped.reason, (
+            "does not say what took the path, or says it unreadably"
+        )
+        assert self.COMPOSED not in skipped.reason, (
+            "printed the raw name, which is indistinguishable from its twin"
+        )
         assert "Box" in skipped.reason
+        assert "THIS object" in skipped.reason, (
+            "does not say which of the two to rename"
+        )
 
     def test_the_first_one_seen_keeps_the_path(self):
         assert build_plan([self.a(), self.b()], {}).copies[0].name == self.COMPOSED
@@ -821,7 +831,7 @@ class TestTwoNamesThatBecomeOneBoxPath:
         ledger.commit()
         plan = build_plan([self.b()], ledger.versions_for([self.b().ledger_key]))
         assert plan.copies == (), "overwrote an object copied in an earlier batch"
-        assert self.COMPOSED in plan.skipped[0].reason
+        assert ascii(self.COMPOSED) in plan.skipped[0].reason
 
     def test_it_does_not_flip_flop_from_run_to_run(self, ledger):
         """What made this permanent rather than merely wrong once.

@@ -322,15 +322,28 @@ filename uploaded from machines that spell an accent differently. Box can hold
 only one of them, so the job copies the first and refuses the second rather
 than overwriting it.
 
-The refused object is **not backed up**, and nothing on this side can fix that:
-rename one of the pair in Supabase and the next run mirrors both. The job log
-names each pair on the `skipping` lines.
+The refused object is **not backed up**, and nothing on this side can fix
+that. **Rename the object named at the start of the `skipping` line** — the
+refused one. Renaming its twin instead leaves a ledger row still claiming the
+path, nothing prunes that row, and the refused object is then refused for ever.
+
+The two names look identical, which is why they collide, so the log escapes
+them: one reads `cafe\u0301.png` and the other `caf\xe9.png`. Match the escaped
+form against what Supabase shows.
+
+Do **not** delete the ledger row here, even though that is the remedy for a
+verification mismatch. The row belongs to the object that won the path; delete
+it and the refused object takes the path and overwrites the winner's file on
+Box, which nothing then repairs.
 
 Such a run is recorded `partial`, deliberately, so the watermark does not move
-past an object that is not on Box. Until the rename, every night re-reads the
-whole `storage.objects` table rather than a delta — slower, and the intended
-price of not losing sight of the object. `stats.collisions` in the run report
-is the count.
+past an object that is not on Box. Until the rename, each night re-reads
+everything changed since the last *clean* run rather than since last night — a
+window that grows until someone acts, and the whole table if no run has ever
+been clean. That is the intended price of not losing sight of the object.
+
+`stats.collisions` in the run report is the count. Note they are also included
+in `stats.skipped`, so that figure is not only Box-illegal names.
 
 There are none in production today: every name is already in the normalized
 form, so nothing can collide. This exists for the day something uploads one

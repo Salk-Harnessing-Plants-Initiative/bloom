@@ -322,14 +322,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         totals.copied, totals.failed, totals.already_current, totals.skipped,
     )
     if totals.collisions:
-        logger.error(
-            "%d object(s) were NOT backed up: their names normalize onto a path "
-            "another object already holds, so copying them would have deleted "
-            "what is there. Box cannot hold both. The pairs are named in the "
-            "WARNING lines above; rename one of each pair in Supabase and the "
-            "next run will pick it up.",
-            totals.collisions,
-        )
+        report_collisions(totals.collisions)
     if totals.verify_mismatched:
         logger.error(
             "%d of %d verified object(s) were missing or the wrong size on Box. "
@@ -427,10 +420,13 @@ def exit_code(
         return 1
     if verify_mismatched:
         return 4
-    # Its own code rather than 4. Both mean objects are not on Box, but the
-    # remedies are opposite: 4 says delete the ledger row so the object is
-    # copied again, and doing that to a collision loser just re-refuses it.
-    # This one needs a rename in Supabase, and the run's log names the pair.
+    # Its own code rather than 4, because the remedies are opposite and one
+    # is dangerous here. Exit 4 says delete the ledger row so the object is
+    # copied again. Do that for a collision and the row you delete belongs to
+    # the object that WON the path — the refused one has no row. The winner is
+    # then behind the watermark and not re-enumerated, so the refused object
+    # takes the path and overwrites the winner's file on Box, permanently.
+    # This needs a rename in Supabase instead.
     if collisions:
         return 5
     # 3 is already the documented "interrupted; progress is in the ledger and
@@ -476,7 +472,9 @@ def run_outcome(
     nothing will until a person renames one of them — so it must not become the
     watermark either, or the object stops being enumerated and the one log line
     naming it is the last anyone hears of it. The cost is real: until that
-    rename, every night re-reads the whole table. That is the intended trade,
+    rename, every night re-reads everything changed since the last clean run
+    rather than since last night — a window that grows until someone acts, and
+    the whole table if no run has ever been clean. That is the intended trade,
     because an object nobody knows is missing is worse than a slow night.
 
     A run whose verification found objects missing from Box has copied things
@@ -650,6 +648,10 @@ def report_dry_run(manifest: Path, ledger: Ledger, limit: int | None) -> None:
         "dry run — would copy %d, %d already current, %d skipped; nothing was copied",
         totals.copied, totals.already_current, totals.skipped,
     )
+    if totals.collisions:
+        # The same line a real run prints, so a dry run is not the one place a
+        # refused collision stays invisible. The summary greps for this phrase.
+        report_collisions(totals.collisions)
 
 
 def copy_manifest(
@@ -840,10 +842,39 @@ def wait_for_daemon(daemon: dock.RcDaemon, attempts: int = 30) -> RcloneRC:
     )
 
 
+def report_collisions(count: int) -> None:
+    """The line a run prints when it refused objects, real or dry.
+
+    The workflow summary greps this phrase, so it is the difference between a
+    night that says OBJECTS NOT BACKED UP and one that says succeeded. Shared
+    with the dry run deliberately: a dry run is what an operator runs first,
+    and it was the one path where a refused collision stayed invisible.
+    """
+    logger.error(
+        "%d object(s) were NOT backed up: their names normalize onto a path "
+        "another object already holds, so copying them would have deleted "
+        "what is there. Box cannot hold both. Rename the object named at the "
+        "START of each `skipping` line above — renaming its twin instead "
+        "leaves a ledger row still claiming the path, and this object is then "
+        "refused for ever.",
+        count,
+    )
+
+
 def report_skips(plan: lib.CopyPlan) -> None:
-    """Name every object the plan refused to mirror, and why."""
+    """Name every object the plan refused to mirror, and why.
+
+    A path that is not plain ASCII is escaped, because the reason a collision
+    happens is that the two names look the same. Unescaped, the line names an
+    object the operator cannot pick out from its twin.
+    """
     for skipped in plan.skipped:
-        logger.warning("skipping %s: %s", skipped.obj.storage_path, skipped.reason)
+        path = skipped.obj.storage_path
+        logger.warning(
+            "skipping %s: %s",
+            path if path.isascii() else ascii(path),
+            skipped.reason,
+        )
 
 
 

@@ -302,11 +302,23 @@ def box_path(obj: StorageObject, root: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 def collision_reason(held_by: str) -> str:
-    """Why an object is refused when its destination is already spoken for."""
+    """Why an object is refused when its destination is already spoken for.
+
+    The holder is rendered with `ascii()`, not `repr()`. The two names are
+    identical to a human by definition — that is what makes them collide — so
+    printing them plainly gives the operator no way to tell which file in
+    Supabase is which. Escaped, one reads `caf\\xe9.png` and the other
+    `cafe\\u0301.png`.
+
+    The remedy names THIS object, not either of them. Renaming the holder
+    leaves its ledger row still claiming the path, and nothing prunes that row,
+    so this object would be refused for ever.
+    """
     return (
-        f"its name normalizes onto {held_by!r}, which is a different object "
-        "in the database but the same path on Box — backing up both would "
-        "leave only one, so neither is overwritten. Rename one at the source."
+        f"its name normalizes onto {ascii(held_by)}, which is a different "
+        "object in the database but the same path on Box — backing up both "
+        "would leave only one, so neither is overwritten. Rename THIS object "
+        "at the source, not the one named above."
     )
 
 

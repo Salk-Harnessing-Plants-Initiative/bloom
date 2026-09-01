@@ -366,9 +366,12 @@ jobs:
               echo "Result: **OBJECTS NOT BACKED UP** — two object names"
               echo "normalize onto one path on Box, so only one of each pair"
               echo "can be stored and the job refused to overwrite the other."
-              echo "Rename one of each pair in Supabase; the job log names"
-              echo "them. Nothing else is wrong, and the run is recorded"
-              echo "**partial** so the objects stay in view until it is done."
+              echo "Rename the object named at the START of each"
+              echo "\`skipping\` line in the job log — renaming its twin"
+              echo "instead leaves this one refused for ever. The run is"
+              echo "recorded **partial**, so they stay in view until it is"
+              echo "done. Check the log for failures too; this line does not"
+              echo "mean nothing else went wrong."
             elif [ "${{ steps.run.outcome }}" = "success" ]; then
               if [ -n "$counts" ]; then
                 echo "Result: **succeeded** — ${counts}"
