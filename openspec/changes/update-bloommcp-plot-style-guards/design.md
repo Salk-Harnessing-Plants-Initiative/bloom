@@ -97,6 +97,41 @@ allocates-then-raises for an unrelated reason — the existing tests' `_boom`-st
 `test_plots_helpers.py:96`) never exercised this path because none of them allocate a figure
 before raising; this change adds one that does.
 
+**Decision 5 — `generate_figures` serializes across concurrent calls via a process-wide
+lock (added after PR review).** Decision 4's fignum-diffing cleanup is only safe if no
+_other_ call is concurrently mutating the same global registry while the diff is computed.
+That assumption was wrong, not hypothetical: matplotlib's pyplot figure registry
+(`matplotlib._pylab_helpers.Gcf.figs`) is a single class-level `OrderedDict`, shared by the
+whole process regardless of thread — and FastMCP dispatches sync tool handlers via a thread
+pool (`bloom_mcp/result_store/_locks.py`'s module docstring documents the same fact, for the
+same reason: two `ResultStore.commit` calls for the same key can race today). Two concurrent
+`umap_analysis`/`pca_analysis` calls therefore really can both reach `generate_figures` at
+the same time, and one call's allocate-then-raise cleanup could close a figure a
+_different_, unrelated concurrent call had just allocated — silently corrupting or blanking
+that other call's plot with no error surfaced to it. Fixed with a single
+`_FIGURE_REGISTRY_LOCK` (`threading.Lock`) held for the entire `generate_figures` call, not
+just the diff-and-close step — serializing all plot generation across the process. The
+alternative fix (have the plotters construct `matplotlib.figure.Figure()` directly, bypassing
+the shared registry entirely) isn't available from within `bloommcp`: the plotters that call
+`plt.subplots()`/`plt.figure()` live in the vendored, third-party `sleap_roots_analyze`
+package.
+
+**Decision 6 — `plot_font_size`/`plot_point_size` ceilings checked in the tool body too
+(added after PR review), not as `Field(gt=0, le=...)` constraints.** Decision 3's rationale
+for `plot_cmap` — a `BloomMCPError.from_input_validation` mapping surfaces only the field
+name + error type, never the submitted value or the ceiling — applies identically to a bare
+numeric `Field` constraint. Shipping `le=100`/`le=10000` as Field constraints (as this
+change originally did) produced the exact opaque message this PR set out to eliminate, just
+for two different fields. Both ceilings moved into each tool's body via a new shared
+`bloom_mcp.tools._plots.check_plot_style_ceiling` helper (NaN-safe: `not (0 < nan <= max)` is
+`True`, matching Pydantic's own NaN rejection), checked immediately alongside the
+`plot_cmap` allowlist check — before `reader.load_experiment` — since all three fields are
+derived purely from the request, with no reason to pay for a full experiment read (or the
+`np.isfinite` scan over it) before rejecting a bad one. The ceiling values themselves
+(`MAX_PLOT_FONT_SIZE`, `MAX_PLOT_POINT_SIZE`) now live in `_plots.py`, imported by both
+`umap_analysis.py` and `pca_analysis.py`, rather than duplicated as a local constant in each
+— the same duplication-desync risk Decision 3's colormap allowlist already had to avoid.
+
 ## Risks / Trade-offs
 
 - **Narrow breaking change**: an existing caller relying on `plot_font_size > 100`,
@@ -106,11 +141,32 @@ before raising; this change adds one that does.
   allowlist renders continuous trait data correctly.
 - **Hand-authored colormap list can go stale** → see Decision 3; mitigated by keeping the
   list a single, easily-editable module-level constant near `_MAX_N_COMPONENTS`'s existing
-  pattern.
-- **`plt.get_fignums()` diffing assumes single-threaded figure creation** within one
-  `generate_figures` call — true today (each `resolved_calls` entry runs synchronously, one
-  at a time, within a single tool invocation); flagged here in case a future
-  concurrent-plotting change is considered.
+  pattern, plus a dedicated test (`test_allowed_cmaps_exist_at_the_declared_dependency_floor`)
+  checking new entries against a separately hand-maintained "known good at the declared
+  `pyproject.toml` floor" snapshot — added after PR review found the _installed_-matplotlib
+  regression test alone couldn't have caught this PR's own `berlin`/`managua`/`vanimo`
+  floor-mismatch bug, since the locked matplotlib (3.10.8) is newer than the floor
+  (`>=3.7.0`) and already has those three names.
+- **Concurrent plot generation is now fully serialized process-wide** (Decision 5) — a
+  correctness-over-throughput trade-off. Plot generation is an opt-in (`include_plots=True`)
+  path, not the default, so this is not expected to be a hot path under real concurrency;
+  revisit if profiling ever shows otherwise.
+- **Two related gaps identified in PR review, deliberately left unfixed here**:
+  - `PCAAnalysisParams`/`UMAPAnalysisParams` don't set `extra="forbid"`, so passing a
+    UMAP-only kwarg (e.g. `plot_point_size`) to `pca_analysis` is silently accepted and
+    dropped (Pydantic v2's `extra="ignore"` default) rather than raising `invalid_input` —
+    the same "loud, actionable rejection" this PR built for the misspelled-colormap case,
+    just missing for the wrong-tool case. This is pre-existing, codebase-wide behavior (no
+    params model anywhere in `bloommcp` sets `extra="forbid"`), not a regression this PR
+    introduced, and deciding to add `extra="forbid"` is a broader schema-wide decision than
+    this PR's narrow scope — left as a documented follow-up rather than a unilateral change
+    here.
+  - `UMAPAnalysisParams.n_neighbors` (`ge=2`, no `le`, only indirectly bounded by a runtime
+    check against sample count) and `min_dist` (`ge=0.0`, no `le`, no runtime check at all)
+    are the same "unbounded numeric field on this LLM-driven input surface" risk class this
+    PR just fixed for `plot_font_size`/`plot_point_size` — but unlike those two, without any
+    measured cost data behind a specific ceiling. Pre-existing, out of #721's stated scope;
+    worth the same profile-then-bound treatment in a dedicated follow-up.
 
 ## Migration Plan
 

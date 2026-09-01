@@ -12,6 +12,7 @@ import pytest
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.tools._plots import (
     apply_font_style,
+    check_plot_style_ceiling,
     close_figures,
     generate_figures,
     validate_plot_keys,
@@ -60,6 +61,33 @@ def test_empty_list_raises_invalid_input():
     with pytest.raises(BloomMCPError) as exc:
         validate_plot_keys([], _VALID)
     assert exc.value.code == "invalid_input"
+
+
+# ── check_plot_style_ceiling ─────────────────────────────────────────────────
+
+
+def test_check_plot_style_ceiling_none_is_accepted_without_error():
+    check_plot_style_ceiling(None, field_name="plot_font_size", max_value=100)  # no exc
+
+
+@pytest.mark.parametrize("value", [1, 50, 100])
+def test_check_plot_style_ceiling_in_range_is_accepted(value):
+    check_plot_style_ceiling(
+        value, field_name="plot_font_size", max_value=100
+    )  # no exc
+
+
+@pytest.mark.parametrize("value", [0, -1, 101, float("inf"), float("nan")])
+def test_check_plot_style_ceiling_out_of_range_names_value_and_ceiling(value):
+    """The whole point of this helper vs. a Field(gt=0, le=...) constraint: the message
+    must name the actual submitted value and the ceiling, not just a field name (#721).
+    """
+    with pytest.raises(BloomMCPError) as exc:
+        check_plot_style_ceiling(value, field_name="plot_font_size", max_value=100)
+    assert exc.value.code == "invalid_input"
+    assert "plot_font_size" in exc.value.message
+    assert "100" in exc.value.message
+    assert repr(value) in exc.value.message
 
 
 # ── generate_figures ─────────────────────────────────────────────────────────
@@ -143,6 +171,62 @@ def test_generate_figures_closes_a_figure_allocated_then_abandoned_mid_call():
 
     assert figures == {}  # never recorded — the callable never returned
     assert plt.get_fignums() == []  # yet generate_figures already closed it
+
+
+def test_generate_figures_calls_are_serialized_across_threads():
+    """#721 PR review: matplotlib's pyplot figure registry (``Gcf.figs``) is a single
+    process-global ``OrderedDict``, not thread-local, and FastMCP dispatches sync tool
+    handlers via a thread pool (`bloom_mcp/result_store/_locks.py`'s own docstring
+    documents the same fact for the same reason). Without ``_FIGURE_REGISTRY_LOCK``
+    serializing the whole ``generate_figures`` call, two concurrent ``umap_analysis``/
+    ``pca_analysis`` calls could interleave — and the allocate-then-raise cleanup above,
+    which detects "new since I started" purely by diffing that shared global registry,
+    would have no way to tell its own orphaned figure apart from one a different,
+    unrelated concurrent call just allocated, closing that other call's figure instead.
+
+    Verified here without needing to actually trigger that corruption (timing-dependent
+    and therefore flaky to assert on directly): two threads race to call
+    ``generate_figures``, one with an artificially slow plotter. If calls are correctly
+    serialized, the fast thread's plotter cannot run until the slow thread's entire call
+    — not just its plotter, the whole ``generate_figures`` invocation — has returned.
+    Without the lock, the fast thread's plotter reliably finishes first.
+    """
+    import threading
+    import time
+
+    order: list[str] = []
+    slow_thread_started = threading.Event()
+
+    def _slow_call():
+        def _slow_plotter():
+            slow_thread_started.set()
+            time.sleep(0.2)
+            order.append("slow-plotted")
+            return object()
+
+        generate_figures({"k": _slow_plotter}, {})
+        order.append("slow-call-done")
+
+    def _fast_call():
+        slow_thread_started.wait(timeout=5)
+
+        def _fast_plotter():
+            order.append("fast-plotted")
+            return object()
+
+        generate_figures({"k": _fast_plotter}, {})
+
+    t_slow = threading.Thread(target=_slow_call)
+    t_fast = threading.Thread(target=_fast_call)
+    t_slow.start()
+    t_fast.start()
+    t_slow.join(timeout=5)
+    t_fast.join(timeout=5)
+
+    assert order == ["slow-plotted", "slow-call-done", "fast-plotted"], (
+        f"expected the fast call to be fully blocked until the slow call's "
+        f"generate_figures returned, got order={order}"
+    )
 
 
 # ── close_figures ────────────────────────────────────────────────────────────

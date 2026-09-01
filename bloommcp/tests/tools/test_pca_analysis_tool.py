@@ -926,7 +926,7 @@ def test_plot_font_size_non_positive_is_invalid_input(injected_ports):
 
 
 @pytest.mark.parametrize("include_plots", [True, False])
-@pytest.mark.parametrize("value", [101, float("inf")])
+@pytest.mark.parametrize("value", [101, float("inf"), float("nan")])
 def test_plot_font_size_above_ceiling_is_invalid_input_regardless_of_include_plots(
     injected_ports, value, include_plots
 ):
@@ -978,11 +978,13 @@ def test_plot_font_fields_ignored_when_include_plots_false(injected_ports):
     assert set(result.outputs) == {"loadings.csv", "scores.csv", "pca_result.json"}
 
 
-def test_plot_font_size_just_above_zero_is_accepted():
-    assert (
-        PCAAnalysisParams(experiment="x.csv", plot_font_size=0.01).plot_font_size
-        == 0.01
-    )
+def test_plot_font_size_just_above_zero_is_accepted(injected_ports):
+    """#721: plot_font_size validation moved from a Pydantic Field constraint into the
+    tool body (check_plot_style_ceiling), so this must go through the real tool call —
+    constructing PCAAnalysisParams directly no longer exercises any range check at all.
+    """
+    result = _run(include_plots=False, plot_font_size=0.01)
+    assert not any(k.endswith(".png") for k in result.outputs)
 
 
 def test_plots_subset_with_font_override_never_generates_non_requested_plots(

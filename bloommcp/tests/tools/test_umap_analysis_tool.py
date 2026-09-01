@@ -883,13 +883,15 @@ def test_unregistered_plot_cmap_is_invalid_input_before_any_computation(
 
 
 @pytest.mark.parametrize("include_plots", [True, False])
-@pytest.mark.parametrize("cmap", ["hsv", "tab10"])
+@pytest.mark.parametrize("cmap", ["hsv", "tab10", "hsv_r"])
 def test_excluded_but_registered_plot_cmap_is_invalid_input(
     injected_ports, monkeypatch, cmap, include_plots
 ):
     """hsv/tab10 are real matplotlib colormaps but neither sequential nor diverging —
     misleading for continuous trait data, so they're rejected like an unknown name,
-    regardless of include_plots (same rule as the misspelling case above)."""
+    regardless of include_plots (same rule as the misspelling case above). hsv_r confirms
+    the allowlist's own _r-variant inclusion doesn't accidentally admit an excluded base
+    name's reversed form too — only allowed base names get a matching _r entry."""
     real = umap_analysis_tool.perform_umap_analysis
     called = []
 
@@ -911,10 +913,12 @@ def test_excluded_but_registered_plot_cmap_is_invalid_input(
     assert called == []
 
 
-@pytest.mark.parametrize("cmap", ["viridis", "RdBu"])
+@pytest.mark.parametrize("cmap", ["viridis", "RdBu", "viridis_r"])
 def test_allowed_sequential_or_diverging_plot_cmap_is_accepted(
     injected_ports, monkeypatch, cmap
 ):
+    """viridis_r confirms the allowlist's _r reversed variants are actually reachable,
+    not just present in the frozenset construction."""
     captured = {}
     real = sleap_roots_analyze.create_umap_single_trait
 
@@ -944,6 +948,94 @@ def test_allowed_cmaps_are_all_registered_in_installed_matplotlib():
     assert not missing, f"allowlisted colormap(s) no longer registered: {missing}"
 
 
+# Hand-verified against matplotlib's own colormap-reference documentation as available at
+# or before matplotlib 3.7.0 — bloommcp/pyproject.toml's declared floor ("matplotlib>=3.7.0",
+# no upper bound). This is a deliberately SEPARATE piece of tribal knowledge from
+# `_ALLOWED_CMAP_BASE_NAMES` (not derived from it, not derived from whatever matplotlib
+# happens to be installed): the test below fails if someone adds a new name to the
+# allowlist without also adding it here, forcing them to consciously check "does this name
+# actually exist at the declared floor?" before it can pass — the exact question
+# `test_allowed_cmaps_are_all_registered_in_installed_matplotlib` above cannot ask, since
+# the installed/locked matplotlib (3.10.8 as of #721) is strictly newer than the floor and
+# already has every name berlin/managua/vanimo included, which is exactly why that test
+# alone did not catch this PR's own floor-mismatch bug (see design.md Decision 3 / the PR
+# review that found it).
+_KNOWN_GOOD_AT_MATPLOTLIB_3_7_BASE_NAMES: frozenset[str] = frozenset(
+    {
+        "viridis",
+        "plasma",
+        "inferno",
+        "magma",
+        "cividis",
+        "Greys",
+        "Purples",
+        "Blues",
+        "Greens",
+        "Oranges",
+        "Reds",
+        "YlOrBr",
+        "YlOrRd",
+        "OrRd",
+        "PuRd",
+        "RdPu",
+        "BuPu",
+        "GnBu",
+        "PuBu",
+        "YlGnBu",
+        "PuBuGn",
+        "BuGn",
+        "YlGn",
+        "binary",
+        "gist_yarg",
+        "gist_gray",
+        "gray",
+        "bone",
+        "pink",
+        "spring",
+        "summer",
+        "autumn",
+        "winter",
+        "cool",
+        "Wistia",
+        "hot",
+        "afmhot",
+        "gist_heat",
+        "copper",
+        "PiYG",
+        "PRGn",
+        "BrBG",
+        "PuOr",
+        "RdGy",
+        "RdBu",
+        "RdYlBu",
+        "RdYlGn",
+        "Spectral",
+        "coolwarm",
+        "bwr",
+        "seismic",
+    }
+)
+
+
+def test_allowed_cmaps_exist_at_the_declared_dependency_floor():
+    """#721 PR review: the test above checks the allowlist against whatever matplotlib is
+    actually installed (3.10.8, locked) — strictly newer than pyproject.toml's declared
+    floor (matplotlib>=3.7.0) — so it provides zero protection against re-adding a
+    3.8+/3.9+/3.10+-only name (like the berlin/managua/vanimo this PR removed for exactly
+    that reason). This checks against a separately hand-maintained floor snapshot instead,
+    so it actually catches that mistake."""
+    unverified_at_floor = (
+        umap_analysis_tool._ALLOWED_CMAP_BASE_NAMES
+        - _KNOWN_GOOD_AT_MATPLOTLIB_3_7_BASE_NAMES
+    )
+    assert not unverified_at_floor, (
+        f"colormap(s) added to the allowlist without confirming they exist at "
+        f"bloommcp's declared matplotlib floor (>=3.7.0): {unverified_at_floor}. Verify "
+        f"against matplotlib's release notes, then add to "
+        f"_KNOWN_GOOD_AT_MATPLOTLIB_3_7_BASE_NAMES above."
+    )
+
+
 @pytest.mark.parametrize("include_plots", [True, False])
 @pytest.mark.parametrize(
     "field,value",
@@ -952,10 +1044,12 @@ def test_allowed_cmaps_are_all_registered_in_installed_matplotlib():
         ("plot_point_size", -1),
         ("plot_point_size", 10001),
         ("plot_point_size", float("inf")),
+        ("plot_point_size", float("nan")),
         ("plot_alpha", 1.5),
         ("plot_alpha", -0.1),
         ("plot_font_size", 101),
         ("plot_font_size", float("inf")),
+        ("plot_font_size", float("nan")),
     ],
 )
 def test_out_of_range_plot_style_field_is_invalid_input_regardless_of_include_plots(
@@ -1269,11 +1363,13 @@ def test_plot_font_fields_ignored_when_include_plots_false(injected_ports):
     assert not any(k.endswith(".png") for k in result.outputs)
 
 
-def test_plot_font_size_just_above_zero_is_accepted():
-    assert (
-        UMAPAnalysisParams(experiment="x.csv", plot_font_size=0.01).plot_font_size
-        == 0.01
-    )
+def test_plot_font_size_just_above_zero_is_accepted(injected_ports):
+    """#721: plot_font_size validation moved from a Pydantic Field constraint into the
+    tool body (check_plot_style_ceiling), so this must go through the real tool call —
+    constructing UMAPAnalysisParams directly no longer exercises any range check at all.
+    """
+    result = _run(include_plots=False, plot_font_size=0.01)
+    assert not any(k.endswith(".png") for k in result.outputs)
 
 
 def test_plots_subset_with_font_override_never_generates_non_requested_plots(

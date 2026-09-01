@@ -76,7 +76,14 @@ from bloom_mcp.data_access import (
 from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._consumer_utils import _build_output_frame, snapshot_frame
-from bloom_mcp.tools._plots import close_figures, generate_figures, validate_plot_keys
+from bloom_mcp.tools._plots import (
+    MAX_PLOT_FONT_SIZE,
+    MAX_PLOT_POINT_SIZE,
+    check_plot_style_ceiling,
+    close_figures,
+    generate_figures,
+    validate_plot_keys,
+)
 from bloom_mcp.tools._qc_shared import _validate_trait_subset
 
 logger = logging.getLogger(__name__)
@@ -99,13 +106,9 @@ _UMAP_CATALOG_KEYS: frozenset[str] = frozenset(
 # still catching a runaway or adversarial request.
 _MAX_N_COMPONENTS = 50
 
-# Sanity ceilings for plot_font_size/plot_point_size (#721): both fields previously allowed
-# any positive value, including float('inf'). Values in the low thousands have been observed
-# costing several seconds and multiple GB per render on this LLM-driven input surface — these
-# ceilings are generous headroom over real use (fonts are almost always 6-72pt; scatter
-# markers are almost always 1-500) while catching a runaway or adversarial request.
-_MAX_PLOT_FONT_SIZE = 100
-_MAX_PLOT_POINT_SIZE = 10000
+# plot_font_size/plot_point_size ceilings (#721) live in bloom_mcp.tools._plots as
+# MAX_PLOT_FONT_SIZE/MAX_PLOT_POINT_SIZE — shared with pca_analysis.py so the two tools
+# can't silently desync on the same ceiling value.
 
 # Allowlist for plot_cmap (#721): matplotlib exposes no runtime categorization of its own
 # colormap registry (matplotlib.colormaps is a flat name -> Colormap mapping with no
@@ -118,7 +121,10 @@ _MAX_PLOT_POINT_SIZE = 10000
 # scale. A future matplotlib release could rename or add colormaps this list doesn't know
 # about yet — accepted risk (design.md Decision 3): the failure direction is a legitimate new
 # name being rejected until this list is updated, never an invalid one being silently
-# accepted.
+# accepted. Note the "Sequential (2)" category (spring/summer/copper/etc.) and Spectral are
+# flagged by matplotlib's own docs as not perceptually uniform — a real but weaker gap than
+# the qualitative/cyclic maps (tab10/hsv) this allowlist is specifically guarding against;
+# accepted as still a strict improvement over admitting those too.
 #
 # Tied to bloommcp's declared dependency floor: pyproject.toml pins "matplotlib>=3.7.0" (no
 # upper bound). Every name below must be registered as of that FLOOR version, not just in
@@ -268,13 +274,14 @@ class UMAPAnalysisParams(BaseModel):
     )
     plot_font_size: float | None = Field(
         default=None,
-        gt=0,
-        le=_MAX_PLOT_FONT_SIZE,
         description=f"Font size (points) override applied to every text element on each "
-        f"generated plot (1-{_MAX_PLOT_FONT_SIZE}). The upper bound is a sanity ceiling on "
-        f"this LLM-driven input surface, not a design limit (#721). A valid value has no "
-        f"effect when include_plots=False (nothing is rendered to style); an out-of-range "
-        f"value is rejected as invalid_input regardless of include_plots.",
+        f"generated plot (0-{MAX_PLOT_FONT_SIZE}, exclusive of 0). The upper bound is a "
+        f"sanity ceiling on this LLM-driven input surface, not a design limit (#721). "
+        f"Checked in the tool body — not a Pydantic Field constraint, so the rejection "
+        f"message names the value you submitted and the ceiling, not just a field name. "
+        f"A valid value has no effect when include_plots=False (nothing is rendered to "
+        f"style); an out-of-range value is rejected as invalid_input regardless of "
+        f"include_plots.",
     )
     plot_cmap: str | None = Field(
         default=None,
@@ -290,12 +297,12 @@ class UMAPAnalysisParams(BaseModel):
     )
     plot_point_size: float | None = Field(
         default=None,
-        gt=0,
-        le=_MAX_PLOT_POINT_SIZE,
-        description=f"Scatter point size for create_umap_single_trait (up to "
-        f"{_MAX_PLOT_POINT_SIZE}). A valid value has no effect when include_plots=False "
-        f"(nothing is rendered to style); an out-of-range value is rejected as "
-        f"invalid_input regardless of include_plots. Has no effect on "
+        description=f"Scatter point size for create_umap_single_trait (0-"
+        f"{MAX_PLOT_POINT_SIZE}, exclusive of 0). Checked in the tool body — not a "
+        f"Pydantic Field constraint, so the rejection message names the value you "
+        f"submitted and the ceiling, not just a field name. A valid value has no effect "
+        f"when include_plots=False (nothing is rendered to style); an out-of-range value "
+        f"is rejected as invalid_input regardless of include_plots. Has no effect on "
         f"create_umap_colored_by_top_traits (its upstream signature does not accept "
         f"point_size, and — separately, #721 — hardcodes its own cmap/point_size/alpha "
         f"unconditionally; this field never reaches it).",
@@ -427,6 +434,41 @@ def umap_analysis(
     reader = _ports.reader()
     store = _ports.store()
 
+    # Plot-style field validation (#721): checked here, first, before any I/O — these
+    # three fields are derived entirely from the request, not from the loaded experiment,
+    # so there is no reason to pay for reader.load_experiment (a full data read) or the
+    # np.isfinite scan below before rejecting a bad one (PR review: validation this cheap
+    # belongs before any computation, not just before the UMAP fit). plot_cmap is checked
+    # in the tool body rather than a Pydantic @field_validator for the same reason
+    # plot_font_size/plot_point_size are checked via check_plot_style_ceiling rather than
+    # Field(gt=0, le=...): a Field constraint's violation is mapped by the contract layer's
+    # BloomMCPError.from_input_validation into a generic message naming only the field and
+    # error type, never the submitted value or the ceiling/allowlist (see
+    # qc_clean.py's exactly-one-of-experiment/csv_content note for the same,
+    # empirically-verified reasoning about @field_validator specifically).
+    check_plot_style_ceiling(
+        params.plot_font_size, field_name="plot_font_size", max_value=MAX_PLOT_FONT_SIZE
+    )
+    check_plot_style_ceiling(
+        params.plot_point_size,
+        field_name="plot_point_size",
+        max_value=MAX_PLOT_POINT_SIZE,
+    )
+    if params.plot_cmap is not None and params.plot_cmap not in _ALLOWED_CMAPS:
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                f"plot_cmap={params.plot_cmap!r} is not a recognized sequential or "
+                f"diverging colormap."
+            ),
+            remedy=(
+                "Use a matplotlib sequential or diverging colormap name (e.g. 'viridis', "
+                "'plasma', 'RdBu', 'coolwarm') or its '_r' reversed variant. Qualitative "
+                "colormaps (e.g. 'tab10') and cyclic colormaps (e.g. 'hsv') are not "
+                "accepted — they render a continuous trait misleadingly."
+            ),
+        )
+
     # Consumer: require a cleaned version. A missing one is a precondition failure with a
     # concrete remedy — caught here so it carries "run qc_clean first" rather than the
     # contract's generic tool_error message for the declared read error.
@@ -481,27 +523,6 @@ def umap_analysis(
             ),
             remedy=(
                 f"Use n_neighbors <= {n_samples - 1}, or supply more samples, then retry."
-            ),
-        )
-
-    # plot_cmap allowlist (#721): checked here, in the tool body, rather than a Pydantic
-    # @field_validator — a validator's raised ValueError has its message text discarded by
-    # the contract layer's from_input_validation, remapped to a generic
-    # "(<root>: value_error)" (see qc_clean.py's exactly-one-of-experiment/csv_content note
-    # for the same, empirically-verified reasoning). Checked before perform_umap_analysis so
-    # an invalid name never burns a full UMAP fit (design.md Decision 3).
-    if params.plot_cmap is not None and params.plot_cmap not in _ALLOWED_CMAPS:
-        raise BloomMCPError(
-            code="invalid_input",
-            message=(
-                f"plot_cmap={params.plot_cmap!r} is not a recognized sequential or "
-                f"diverging colormap."
-            ),
-            remedy=(
-                "Use a matplotlib sequential or diverging colormap name (e.g. 'viridis', "
-                "'plasma', 'RdBu', 'coolwarm') or its '_r' reversed variant. Qualitative "
-                "colormaps (e.g. 'tab10') and cyclic colormaps (e.g. 'hsv') are not "
-                "accepted — they render a continuous trait misleadingly."
             ),
         )
 

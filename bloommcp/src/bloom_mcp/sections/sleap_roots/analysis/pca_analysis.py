@@ -62,7 +62,13 @@ from bloom_mcp.data_access import (
 from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._consumer_utils import _build_output_frame, snapshot_frame
-from bloom_mcp.tools._plots import close_figures, generate_figures, validate_plot_keys
+from bloom_mcp.tools._plots import (
+    MAX_PLOT_FONT_SIZE,
+    check_plot_style_ceiling,
+    close_figures,
+    generate_figures,
+    validate_plot_keys,
+)
 from bloom_mcp.tools._qc_shared import _validate_trait_subset
 
 _TOOL_CLASS = "pca"
@@ -82,12 +88,8 @@ _PCA_CATALOG_KEYS: frozenset[str] = frozenset(
     }
 )
 
-# Sanity ceiling for plot_font_size (#721): previously allowed any positive value, including
-# float('inf'). Values in the low thousands have been observed costing several seconds and
-# multiple GB per render on this LLM-driven input surface — generous headroom over real use
-# (fonts are almost always 6-72pt) while catching a runaway or adversarial request. Matches
-# UMAPAnalysisParams's identical ceiling (umap_analysis.py's _MAX_PLOT_FONT_SIZE).
-_MAX_PLOT_FONT_SIZE = 100
+# plot_font_size's ceiling (#721) lives in bloom_mcp.tools._plots as MAX_PLOT_FONT_SIZE —
+# shared with umap_analysis.py so the two tools can't silently desync on the same value.
 
 
 class PCAAnalysisParams(BaseModel):
@@ -153,13 +155,14 @@ class PCAAnalysisParams(BaseModel):
     )
     plot_font_size: float | None = Field(
         default=None,
-        gt=0,
-        le=_MAX_PLOT_FONT_SIZE,
         description=f"Font size (points) override applied to every text element on each "
-        f"generated plot (1-{_MAX_PLOT_FONT_SIZE}). The upper bound is a sanity ceiling on "
-        f"this LLM-driven input surface, not a design limit (#721). A valid value has no "
-        f"effect when include_plots=False (nothing is rendered to style); an out-of-range "
-        f"value is rejected as invalid_input regardless of include_plots.",
+        f"generated plot (0-{MAX_PLOT_FONT_SIZE}, exclusive of 0). The upper bound is a "
+        f"sanity ceiling on this LLM-driven input surface, not a design limit (#721). "
+        f"Checked in the tool body — not a Pydantic Field constraint, so the rejection "
+        f"message names the value you submitted and the ceiling, not just a field name. "
+        f"A valid value has no effect when include_plots=False (nothing is rendered to "
+        f"style); an out-of-range value is rejected as invalid_input regardless of "
+        f"include_plots.",
     )
     plot_alpha: float | None = Field(
         default=None,
@@ -289,6 +292,17 @@ def pca_analysis(
     """Run PCA on a cleaned ``experiment`` via ``perform_pca_analysis`` and persist it."""
     reader = _ports.reader()
     store = _ports.store()
+
+    # plot_font_size ceiling (#721): checked here, first, before any I/O — this field is
+    # derived entirely from the request, not from the loaded experiment, so there's no
+    # reason to pay for reader.load_experiment (a full data read) before rejecting a bad
+    # one. Not a Pydantic Field(gt=0, le=...) constraint: a Field constraint's violation
+    # is mapped by the contract layer's BloomMCPError.from_input_validation into a generic
+    # message naming only the field and error type, never the submitted value or the
+    # ceiling — see check_plot_style_ceiling's own docstring.
+    check_plot_style_ceiling(
+        params.plot_font_size, field_name="plot_font_size", max_value=MAX_PLOT_FONT_SIZE
+    )
 
     # Consumer: require a cleaned version. A missing one is a precondition failure with a
     # concrete remedy — caught here so it carries "run qc_clean first" rather than the

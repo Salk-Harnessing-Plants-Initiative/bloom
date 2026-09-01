@@ -147,11 +147,11 @@ pytest tests/ -m "not integration and not live_smoke" -v --tb=short` (the exact
       `pyproject.toml` bump (in either direction) doesn't silently desync again.
 - [x] 6.2 Fixed `plot_cmap`/`plot_point_size` (UMAP) and `plot_font_size` (UMAP + PCA)
       field descriptions: each previously ended with "Ignored (not rejected) when
-      include*plots=False," which is only true for a \_valid* value (nothing to render) —
-      an _out-of-range/invalid_ value is rejected regardless of `include_plots`, and for
-      `plot_cmap` specifically this read as directly self-contradicting the sentence just
-      before it describing that same rejection. Reworded all three to state both halves
-      unambiguously.
+      `include_plots=False`," which is only true for a **valid** value (nothing to
+      render) — an **out-of-range/invalid** value is rejected regardless of
+      `include_plots`, and for `plot_cmap` specifically this read as directly
+      self-contradicting the sentence just before it describing that same rejection.
+      Reworded all three to state both halves unambiguously.
 - [x] 6.3 Hoisted the `100`/`10000` ceilings into named module-level constants
       (`_MAX_PLOT_FONT_SIZE` in both files, `_MAX_PLOT_POINT_SIZE` in `umap_analysis.py`),
       matching the existing `_MAX_N_COMPONENTS` precedent — previously inline literals
@@ -163,3 +163,62 @@ pytest tests/ -m "not integration and not live_smoke" -v --tb=short` (the exact
       before this change's implementation commits, after the proposal was already scaffolded
       and approved) as explicit Non-Goals in `design.md`, with the reasoning for leaving each
       out of this change's scope rather than silently ignoring them.
+
+## 7. Post-review fixes, round 2 (5-subagent PR review of commit 9e30b840)
+
+- [x] 7.1 **Blocking**: fixed a cross-request race in `generate_figures`'s allocate-then-raise
+      cleanup — verified `matplotlib._pylab_helpers.Gcf.figs` is a process-global (not
+      thread-local) `OrderedDict`, and confirmed (via `result_store/_locks.py`'s own
+      docstring) that FastMCP dispatches sync tool handlers via a thread pool, so two
+      concurrent `umap_analysis`/`pca_analysis` calls really can race on that shared
+      registry — one call's cleanup closing a _different_, unrelated concurrent call's
+      figure. Added `_FIGURE_REGISTRY_LOCK` (`threading.Lock`) around the whole
+      `generate_figures` call (design.md Decision 5). New regression test
+      `test_generate_figures_calls_are_serialized_across_threads`
+      (`test_plots_helpers.py`), verified to fail without the lock (temporarily disabled it
+      locally, confirmed red, restored) and pass with it.
+- [x] 7.2 **Blocking**: moved `plot_font_size`/`plot_point_size` ceiling checks from
+      Pydantic `Field(gt=0, le=...)` constraints into each tool's body, via a new shared
+      `bloom_mcp.tools._plots.check_plot_style_ceiling` helper — a bare `Field` constraint's
+      violation is mapped by `BloomMCPError.from_input_validation` into a message naming
+      only the field and error type, never the submitted value or the ceiling, exactly the
+      failure mode this PR already fixed for `plot_cmap` but had not fixed for these two
+      (design.md Decision 6). All three checks (`plot_font_size`, `plot_point_size`,
+      `plot_cmap`) now run together at the very top of each tool body, before
+      `reader.load_experiment` — also closing the "cheap check runs after expensive I/O"
+      gap raised in the same review. `check_plot_style_ceiling` is NaN-safe by construction
+      (`not (0 < nan <= max)` is `True`) so moving out of Pydantic doesn't regress NaN
+      rejection; added explicit `nan` parametrize cases (previously only `inf`) to prove it.
+      Rewrote the two now-vacuous `..._just_above_zero_is_accepted` tests, which
+      constructed the params model directly and no longer exercised any validation at all
+      once the Field constraint was removed, to go through the real tool call instead.
+- [x] 7.3 Hoisted `MAX_PLOT_FONT_SIZE`/`MAX_PLOT_POINT_SIZE` (formerly per-file
+      `_MAX_PLOT_FONT_SIZE`/`_MAX_PLOT_POINT_SIZE` from 6.3) into `bloom_mcp.tools._plots`,
+      alongside the new `check_plot_style_ceiling` helper — both `umap_analysis.py` and
+      `pca_analysis.py` import from there now, closing the exact duplication-desync risk
+      6.3 only partially addressed (the value was named, but still duplicated per file).
+- [x] 7.4 Replaced the colormap regression test's weak guarantee: it checked the allowlist
+      against whatever matplotlib is actually _installed_ (3.10.8, locked) — strictly newer
+      than the declared floor (`>=3.7.0`) and already containing `berlin`/`managua`/
+      `vanimo`, so it could never have caught 6.1's own bug. Added
+      `test_allowed_cmaps_exist_at_the_declared_dependency_floor`, checking against a
+      separately hand-maintained `_KNOWN_GOOD_AT_MATPLOTLIB_3_7_BASE_NAMES` snapshot instead
+      (design.md's updated Risks section).
+- [x] 7.5 Added the missing `_r`-reversed-variant test coverage (`viridis_r` accepted,
+      `hsv_r` rejected the same way as its base name) and noted the "Sequential (2)"/
+      `Spectral` perceptual-uniformity caveat in the allowlist's own rationale comment.
+- [x] 7.6 Verified (empirically, `ax.title.set_fontfamily(<malformed string>)` +
+      `fig.canvas.draw()`) that an invalid `plot_font_family` has no pathological
+      font-manager-cache slowdown — falls back to the default font in <10ms. No code change
+      needed; documented as checked.
+- [x] 7.7 Documented two further gaps the same review raised, deliberately left unfixed
+      (design.md's updated Risks section): `PCAAnalysisParams`/`UMAPAnalysisParams` don't
+      set `extra="forbid"`, so a UMAP-only kwarg passed to `pca_analysis` is silently
+      dropped rather than rejected (pre-existing, codebase-wide, a broader decision than
+      this PR's scope); and `n_neighbors`/`min_dist` on `UMAPAnalysisParams` share the same
+      "unbounded numeric field" risk class this PR just fixed for the plot-style fields, but
+      without profiled cost data behind a specific ceiling (pre-existing, out of #721's
+      stated scope).
+- [x] 7.8 Corrected the PR description's overstated claim that plot_font_size/
+      plot_point_size's docstring fixes were "self-contradictory" — only `plot_cmap`'s was;
+      the other two were accuracy/clarity rewrites.
