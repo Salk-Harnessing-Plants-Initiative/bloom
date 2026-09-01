@@ -307,6 +307,9 @@ def test_the_working_directory_is_removed_on_success(tmp_path, monkeypatch):
     _deploy_dir(tmp_path)
     state = tmp_path / "state"
     monkeypatch.setenv("BACKUP_STATE_DIR", str(state))
+    # The preflight resolves rclone on PATH; without this the test passes only
+    # on a machine that happens to have rclone installed.
+    monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
     monkeypatch.setattr(backup, "dump_database", lambda *a: tmp_path / "db.sql.gz")
     monkeypatch.setattr(backup, "dump_globals", lambda *a: tmp_path / "globals.sql.gz")
@@ -326,6 +329,7 @@ def test_a_dump_left_by_a_killed_run_is_swept_at_startup(tmp_path, monkeypatch):
     (orphan / "postgres-postgres-20260824T021700Z.sql.gz").write_bytes(b"stale dump")
 
     monkeypatch.setenv("BACKUP_STATE_DIR", str(state))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
     monkeypatch.setattr(backup, "dump_database", lambda *a: tmp_path / "db.sql.gz")
     monkeypatch.setattr(backup, "dump_globals", lambda *a: tmp_path / "globals.sql.gz")
@@ -421,6 +425,7 @@ def test_a_run_dumps_and_uploads_both_artifacts(tmp_path, monkeypatch):
     # file defines, so shipping one without the other is half a backup.
     _deploy_dir(tmp_path)
     monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
 
     database = tmp_path / "postgres-postgres-20260824T000000Z.sql.gz"
