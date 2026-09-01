@@ -1266,14 +1266,14 @@ class TestTheLedgerIsCopiedToBox:
         state, tmp_path = harness
         snapshot = tmp_path / "snapshot" / "ledger.db"
         snapshot.parent.mkdir()
-        real_copy = state["client"].__class__.copy_file
+        real_copy = state["client"].copy_file
 
-        def snapshotting_copy(self, src_fs, src_remote, dst_fs, dst_remote):
-            real_copy(self, src_fs, src_remote, dst_fs, dst_remote)
+        def snapshotting_copy(src_fs, src_remote, dst_fs, dst_remote):
+            real_copy(src_fs, src_remote, dst_fs, dst_remote)
             if src_remote == "ledger.db":
                 shutil.copyfile(tmp_path / "ledger.db", snapshot)
 
-        monkeypatch.setattr(state["client"].__class__, "copy_file", snapshotting_copy)
+        monkeypatch.setattr(state["client"], "copy_file", snapshotting_copy)
         job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
 
         assert snapshot.exists(), "the ledger was never uploaded"
@@ -1290,14 +1290,14 @@ class TestTheLedgerIsCopiedToBox:
 
     def with_remote_size(self, state, monkeypatch, size):
         """Make Box report a ledger of `size` bytes at the destination."""
-        real_stat = state["client"].__class__.stat
+        real_stat = state["client"].stat
 
-        def sized(self, fs, remote):
+        def sized(fs, remote):
             if remote == TestTheLedgerIsCopiedToBox.DEST:
                 return None if size is None else {"Size": size}
-            return real_stat(self, fs, remote)
+            return real_stat(fs, remote)
 
-        monkeypatch.setattr(state["client"].__class__, "stat", sized)
+        monkeypatch.setattr(state["client"], "stat", sized)
 
     def test_it_refuses_to_replace_a_larger_copy(self, harness, monkeypatch, caplog):
         """The scenario the whole feature exists for, and would have broken.
@@ -1310,8 +1310,11 @@ class TestTheLedgerIsCopiedToBox:
         """
         state, tmp_path = harness
         self.with_remote_size(state, monkeypatch, 1_700_000_000)
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        code = job.run_locked(
+            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
+        )
         assert self.uploads(state) == [], "overwrote a larger ledger on Box"
+        assert code == 0, "a refused ledger upload failed the whole run"
         assert "NOT uploaded" in caplog.text
         assert "Restore the Box copy" in caplog.text, "did not say how to recover"
 
@@ -1389,14 +1392,14 @@ class TestTheLedgerIsCopiedToBox:
         self, harness, monkeypatch, caplog
     ):
         state, tmp_path = harness
-        real_copy = state["client"].__class__.copy_file
+        real_copy = state["client"].copy_file
 
-        def refuse_the_ledger(self, src_fs, src_remote, dst_fs, dst_remote):
+        def refuse_the_ledger(src_fs, src_remote, dst_fs, dst_remote):
             if src_remote == "ledger.db":
                 raise RcloneError("box: quota exceeded", retryable=False)
-            return real_copy(self, src_fs, src_remote, dst_fs, dst_remote)
+            return real_copy(src_fs, src_remote, dst_fs, dst_remote)
 
-        monkeypatch.setattr(state["client"].__class__, "copy_file", refuse_the_ledger)
+        monkeypatch.setattr(state["client"], "copy_file", refuse_the_ledger)
         code = job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
         assert code == 0, "a failed ledger upload failed the whole run"
         assert state["daemon_stopped"], "the rclone container was left behind"

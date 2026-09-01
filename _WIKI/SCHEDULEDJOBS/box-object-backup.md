@@ -121,6 +121,28 @@ done < <(grep -E '^(BACKUP_[A-Z_]+|POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' \
              "$DEPLOY/.env.prod")
 ```
 
+**Before the `main` promotion, `$DEPLOY` is the staging tree** — that is where
+the script lives until prod is redeployed, and the prod tree is reset to `main`
+on every deploy. `.env.prod` is not in the staging tree, and the prod one does
+not carry the `BACKUP_*` keys yet, so read the credentials from prod and supply
+the four backup settings by hand:
+
+```bash
+PROD=/path/to/prod/deploy/tree   # $PROD_DEPLOY_PATH
+while IFS='=' read -r key value; do
+    [ -n "$key" ] && export "$key=$value"
+done < <(grep -E '^(POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' "$PROD/.env.prod")
+
+export BACKUP_MINIO_BUCKET=bloom-storage
+export BACKUP_MINIO_PREFIX=storage-single-tenant
+export BACKUP_BOX_REMOTE=box
+export BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/prod/storage
+export BACKUP_WORKERS=8
+```
+
+`--env prod` selects the production containers, not a path, so running the
+script out of the staging tree still mirrors production.
+
 Prove the path end to end before committing to days of transfer:
 
 ```bash
@@ -135,11 +157,13 @@ python3 "$DEPLOY/scheduled-jobs/box-object-backup/backup_objects.py" \
 
 Then open the Box folder and confirm the images preview.
 
-**On a rebuilt host, restore the ledger before running either of these.** Both
-copy objects, and any run that copies something uploads its ledger over the
-copy on Box — so a smoke test against an empty ledger replaces the record of
-eight million objects with a record of twenty. See *If the deploy host itself
-is gone* below.
+**On a rebuilt host, restore the ledger before step 2.** Step 1 is a dry run
+and copies nothing, but step 2 copies twenty objects, and a run that copies
+something uploads its ledger. That upload refuses to replace a larger copy, so
+what you would actually see is `ledger NOT uploaded` in the log — the Box copy
+is safe, but it stops being updated until the local ledger is whole again.
+Restore it first and both problems go away. See *If the deploy host itself is
+gone* below.
 
 The seed itself runs detached, in nightly chunks so it never runs through
 working hours:
@@ -405,12 +429,31 @@ survives MinIO → Box → MinIO and is still served by storage-api.
 
 The ledger is what makes the mirror resumable, and it lives on that host. A
 copy is kept on Box at `<BACKUP_BOX_ROOT>/_state/ledger.db`, uploaded after any
-run that copied something. Put it back before running the job on a rebuilt
+run that copied something — unless the copy already there is larger, which
+means the run's own ledger knows less than the copy does. Put it back before running the job on a rebuilt
 host:
 
 ```bash
+sudo -i -u bloom-deploy
+export BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/prod/storage
 rclone copyto "box:$BACKUP_BOX_ROOT/_state/ledger.db" \
     /var/lib/bloom-box-object-backup/ledger.db
+```
+
+As `bloom-deploy`, because the Box token lives in that user's home. If you
+restore it as root, `chown bloom-deploy:bloom-deploy` the file afterwards or
+the next run dies with a read-only-database error.
+
+Two things to check before running anything against it:
+
+```bash
+# no stale write-ahead log beside the restored file
+ls /var/lib/bloom-box-object-backup/ledger.db-wal 2>/dev/null && \
+    echo "REMOVE THIS — it belongs to the old file"
+
+# and it is the ledger you expect: ~8.0M rows, not a smoke test's twenty
+sqlite3 /var/lib/bloom-box-object-backup/ledger.db \
+    "SELECT count(*) FROM copied;"
 ```
 
 Without it the job starts from an empty ledger, concludes nothing has ever been
@@ -418,8 +461,19 @@ copied, and re-transfers all eight million objects — weeks of work, and the Bo
 API load that comes with it. Listing Box cannot rebuild it: the ledger is keyed
 on each object's `version`, and a listing shows only that a path exists.
 
-The copy is at most one run behind, so a few objects may be re-copied. That is
-harmless — the copy simply overwrites what is already there.
+Normally the copy is one run behind at most, so restoring it may mean a few
+objects are copied again. That is harmless — the copy simply overwrites what
+is already there.
+
+It can fall further behind, though, and quietly. If a run's own ledger is
+smaller than the copy on Box the upload is refused, and the run still exits 0
+because the objects themselves were mirrored fine. That is the intended
+behaviour — it is what stops a rebuilt host replacing a good copy — but it
+means the Box copy stops being updated while nightly runs keep succeeding.
+The refusal is an `ERROR` in the job log reading `ledger NOT uploaded`; it does
+not appear in the Actions summary. If you have restored a ledger and want to
+know the copy is current again, look for `ledger on Box:` in the next run's
+log.
 
 ## Configuration
 
@@ -435,8 +489,8 @@ environment mirrored, so `.env.staging.defaults` deliberately carries no
 | `BACKUP_BOX_ROOT` | `Bloom-Backups/BloomV2-Data-Backup/prod/storage` | Folder on Box to mirror into |
 | `BACKUP_WORKERS` | `8` | Concurrent copies; lower it if Box throttles hard |
 | `BACKUP_BWLIMIT` | *(unset)* | rclone bandwidth cap, e.g. `20M` |
-| `BACKUP_STATE_DIR` | `/var/lib/bloom-box-object-backup` | Ledger location |
-| `BACKUP_RC_PORT` | `5572` | Loopback port for the rclone daemon |
+| `BACKUP_STATE_DIR` | `/var/lib/bloom-box-object-backup` | Ledger location. Not in the env file — a code default. The workflow's cancel step hardcodes this path, so setting it would stop that step finding the run. |
+| `BACKUP_RC_PORT` | `5572` | Loopback port for the rclone daemon. Not in the env file — a code default. |
 
 `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` / `POSTGRES_USER` / `POSTGRES_DB`
 come from the same `.env` file; the job passes MinIO's credentials to rclone

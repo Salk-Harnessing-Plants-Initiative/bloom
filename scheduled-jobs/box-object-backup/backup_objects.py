@@ -283,6 +283,10 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         # RcloneError, and the ledger writes can raise sqlite3.Error on a full
         # disk — and a container left holding the RC port makes every later
         # night fail at check_no_stale_daemon until someone removes it by hand.
+        #
+        # The stats dict and run_outcome are inside too. Neither can raise
+        # today, so this is not a fix; it keeps "nothing between `finally` and
+        # `try` can raise" true by construction rather than by inspection.
         try:
             publish_report(
                 daemon, state_dir, box_fs, args,
@@ -403,9 +407,11 @@ def exit_code(*, failed: int, verify_mismatched: int, stopped: bool = False) -> 
     the mirror is misreporting itself rather than some copies having errored,
     and those want telling apart in a job log.
 
-    This keeps failing every week until the ledger rows are cleared by hand.
-    That is intended: a backup that stops mentioning images it knows are
-    missing is how a broken mirror comes to be trusted.
+    It fires once, not until someone acts. The object is already recorded as
+    copied, so the next run plans it `already_current`, never re-copies it and
+    never re-checks it — the count returns to 0 and the run reports clean.
+    Clearing the ledger row by hand is what puts it back in view, and the run's
+    own error message prints that command.
     """
     if failed:
         return 1
@@ -529,10 +535,11 @@ def publish_ledger(
     the ledger is keyed on each object's version, and a listing shows only
     that a path exists.
 
-    Not uploaded after a run that copied nothing — the file is a gigabyte or
-    two once seeded and a quiet night has not meaningfully changed it — nor
-    after one that crashed, so a half-written ledger cannot replace a good
-    copy on Box.
+    Skipped in three cases: after a run that copied nothing — the file is a
+    gigabyte or two once seeded and a quiet night has not meaningfully changed
+    it; after one that crashed, so a half-written ledger cannot replace a good
+    copy; and when the copy on Box is larger than this one, which means this
+    host did not build the mirror that copy describes.
 
     Best-effort, like the run report: the objects are already safely on Box
     and a failed upload must not turn a good run into a failed one.
@@ -563,12 +570,13 @@ def publish_ledger(
         remote_size = existing.get("Size") if existing else None
         if isinstance(remote_size, int) and local_size < remote_size:
             logger.error(
-                "ledger NOT uploaded. The copy on Box is %s and this run's is "
+                "ledger NOT uploaded. The copy at %s is %s and this run's is "
                 "only %s, so this host is not the one that built that mirror. "
                 "Restore the Box copy before running again — see 'If the "
                 "deploy host itself is gone' in the wiki. Uploading now would "
                 "lose the record of what is already backed up.",
-                lib.format_bytes(remote_size), lib.format_bytes(local_size),
+                destination, lib.format_bytes(remote_size),
+                lib.format_bytes(local_size),
             )
             return
         client.copy_file(

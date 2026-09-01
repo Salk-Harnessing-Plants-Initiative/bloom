@@ -39,7 +39,7 @@ name: Nightly Box object mirror
 # over days; the self-hosted runner is shared with deploys and must not be held
 # that long. The seed is started by hand, detached, on the host (see the wiki
 # page). While it runs it holds a lock, and this workflow stands down against
-# that lock -- reporting "skipped", not "succeeded", so a stood-down week is
+# that lock -- reporting "skipped", not "succeeded", so a stood-down night is
 # never mistaken for a completed one.
 
 on:
@@ -296,7 +296,7 @@ jobs:
 
       # A run that stood down against the seed's lock exits 0, exactly as a
       # successful run does. Reading the marker is the only way to tell them
-      # apart, and calling a stood-down week "succeeded" is how a months-long
+      # apart, and calling a stood-down night "succeeded" is how a months-long
       # gap in the mirror goes unnoticed.
       - name: Write the run summary
         if: always()
