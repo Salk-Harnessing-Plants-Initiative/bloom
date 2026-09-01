@@ -144,9 +144,18 @@ jobs:
             echo
             echo '### Currently on Box'
             echo '```'
-            ssh -i ~/.ssh/deploy_key "${DEPLOY_USER}@${DEPLOY_HOST}" \
-              "rclone lsl \"\$(grep -E '^BACKUP_RCLONE_REMOTE=' '${DEPLOY_PATH}/.env.${ENV_NAME}' | cut -d= -f2)\":\"\$(grep -E '^BACKUP_RCLONE_DEST_DIR=' '${DEPLOY_PATH}/.env.${ENV_NAME}' | cut -d= -f2)\"/" \
-              2>&1 | sort -k2 | tail -20 || echo "(could not list the Box folder)"
+            # The script owns env-file parsing; a second copy in shell drifts.
+            if listing=$(ssh -i ~/.ssh/deploy_key "${DEPLOY_USER}@${DEPLOY_HOST}" "
+                  set -euo pipefail
+                  cd '${DEPLOY_PATH}'
+                  dest=\$(python3 scheduled-jobs/weekly-backup/backup.py \
+                    --env '${ENV_NAME}' --deploy-dir '${DEPLOY_PATH}' --print-destination)
+                  rclone lsl \"\${dest}/\"
+                "); then
+              printf '%s\n' "$listing" | sort -k2 | tail -20
+            else
+              echo "(could not list the Box folder — see the job log)"
+            fi
             echo '```'
             echo
             echo "_This job only uploads. Nothing on Box is ever deleted by it._"

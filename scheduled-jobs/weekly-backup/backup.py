@@ -306,6 +306,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="Env file to read config from (default: <deploy-dir>/.env.<env>).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Dump and verify, but skip the upload.")
+    parser.add_argument("--print-destination", action="store_true",
+                        help="Print this environment's Box destination and exit.")
     return parser.parse_args(argv)
 
 
@@ -323,6 +325,11 @@ def main(argv: list[str] | None = None) -> int:
         if not deploy_dir.is_dir():
             raise ConfigError(f"deploy directory does not exist: {deploy_dir}")
         apply_env_file(args.env_file or deploy_dir / f".env.{args.env}")
+        if args.print_destination:
+            # So the workflow never re-implements this parsing in shell.
+            remote, dest_dir = backup_destination(args.env)
+            print(f"{remote}:{dest_dir}")
+            return EXIT_OK
         state_dir = Path(_env("BACKUP_STATE_DIR", DEFAULT_STATE_DIR)).expanduser()
         state_dir.mkdir(parents=True, exist_ok=True)
         # The working copy holds a full dump; keep it off other users.

@@ -215,6 +215,13 @@ def test_the_summary_reports_failure_explicitly(text):
     assert "incomplete dated folder" in text
 
 
+def test_the_box_listing_does_not_reparse_the_env_file(text):
+    # A second env-file parser in shell drifts from load_env_file: `cut -d= -f2`
+    # keeps quotes, truncates values containing '=', and takes every match.
+    assert "cut -d=" not in text
+    assert "--print-destination" in text, "ask the script for its destination"
+
+
 def test_the_job_runs_on_the_salk_runner(workflow):
     assert _job(workflow)["runs-on"] == ["self-hosted", "linux", "salk-network"]
 
