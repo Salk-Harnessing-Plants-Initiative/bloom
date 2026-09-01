@@ -158,6 +158,69 @@ def test_the_approval_gate_truth_table(workflow, event_name, expected_gate):
 # --------------------------------------------------------------------------
 
 
+# --------------------------------------------------------------------------
+# The step that actually does the work
+# --------------------------------------------------------------------------
+
+
+def _step(workflow: dict, step_id: str) -> dict:
+    return next(s for s in _job(workflow)["steps"] if s.get("id") == step_id)
+
+
+def test_the_run_step_invokes_a_script_that_exists(workflow):
+    # A typo here is a red run every Sunday and nothing else; no test covered
+    # the command this job exists to issue.
+    script = "scheduled-jobs/weekly-backup/backup.py"
+    assert script in _step(workflow, "run")["run"]
+    assert (REPO_ROOT / script).is_file(), "the workflow names a script that is not in the repo"
+
+
+def test_the_run_step_fails_on_the_first_error_on_both_sides(workflow):
+    # Without pipefail the ssh exit status is masked by tee, and the job goes
+    # green on a failed backup.
+    run = _step(workflow, "run")["run"]
+    assert run.count("set -euo pipefail") == 2, "needed in the runner shell and the remote one"
+
+
+def test_dry_run_can_only_come_from_the_dispatch_input(workflow):
+    # Hardcoding --dry-run leaves every run green while Box receives nothing —
+    # the worst failure this job has, because it looks like success.
+    run = _step(workflow, "run")["run"]
+    assert "--dry-run" not in run, "the flag belongs in the DRY_RUN expression, not the command"
+    assert "${DRY_RUN}" in run
+    dry_run = _step(workflow, "run")["env"]["DRY_RUN"]
+    assert "github.event.inputs.dry_run" in dry_run
+    assert "'--dry-run'" in dry_run
+
+
+def test_paths_crossing_the_ssh_boundary_are_quoted(workflow):
+    # The deploy path is a secret and could contain a space; unquoted, `cd`
+    # lands somewhere else and the backup runs against whatever is there.
+    # Every occurrence must be quoted — asserting that one of them is passes
+    # while another sits bare.
+    run = _step(workflow, "run")["run"]
+    for name in ("DEPLOY_PATH", "ENV_NAME"):
+        token = "${%s}" % name
+        offsets = [m.start() for m in re.finditer(re.escape(token), run)]
+        assert offsets, f"{token} is never used"
+        for offset in offsets:
+            before = run[offset - 1] if offset else ""
+            after = run[offset + len(token):offset + len(token) + 1]
+            assert before == "'" and after == "'", (
+                f"{token} at offset {offset} crosses the ssh boundary unquoted"
+            )
+
+
+def test_the_summary_reads_the_file_the_run_step_wrote(workflow):
+    # Two independently written paths that must agree; if they drift, every
+    # summary is empty and nobody learns anything from the weekly check.
+    written = re.findall(r'tee "([^"]+)"', _step(workflow, "run")["run"])
+    read = re.findall(r'"(\$\{RUNNER_TEMP\}[^"]*)"', _step(workflow, "summary")["run"])
+    assert written, "the run step must capture its output for the summary"
+    assert read, "the summary step must read that captured output"
+    assert set(written) == set(read), f"run wrote {written}, summary read {read}"
+
+
 def test_concurrency_is_not_the_shared_deploy_group(workflow):
     group = workflow["concurrency"]["group"]
     assert "deploy-bloom" not in group, (

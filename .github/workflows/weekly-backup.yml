@@ -118,6 +118,7 @@ jobs:
       # sitting on Box. A shrinking artifact or a missing week is visible here
       # without opening the job log.
       - name: Write the run summary
+        id: summary
         if: always()
         env:
           ENV_NAME: ${{ steps.target.outputs.env_name }}
