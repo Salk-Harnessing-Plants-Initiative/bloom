@@ -714,6 +714,24 @@ class TestExitCodeReachesTheWorkflow:
         for code in ("1 =", "2 =", "3 =", "4 =", "5 ="):
             assert code in doc, f"exit {code[0]} undocumented"
 
+    def test_a_refused_collision_is_not_a_clean_run(self):
+        """Otherwise the watermark advances past an object that is not backed
+        up, and the next run does not even enumerate it — the one log line
+        naming it becomes the last anyone ever hears of it."""
+        assert job.run_outcome(
+            crashed=False, failed=0, copied=10, limit=None, collisions=1
+        ) == "partial"
+
+    def test_no_collisions_is_still_clean(self):
+        assert job.run_outcome(
+            crashed=False, failed=0, copied=10, limit=None, collisions=0
+        ) == "ok"
+
+    def test_a_crash_still_outranks_a_collision(self):
+        assert job.run_outcome(
+            crashed=True, failed=0, copied=10, limit=None, collisions=1
+        ) == "error"
+
     def test_a_refused_collision_has_its_own_code(self):
         """Not 4. Exit 4's remedy is deleting the ledger row so the object is
         copied again; doing that to a collision loser only re-refuses it. This
@@ -1541,6 +1559,32 @@ class TestACollisionIsVisibleInAWholeRun:
         assert len(state["copied"]) == 1, (
             "both were copied — the second overwrote the first on Box"
         )
+
+    def test_the_run_exits_five(self, harness, monkeypatch):
+        """The wiring, not the function. `exit_code` is unit-tested and
+        `totals.collisions` is accumulated — nothing joined the two."""
+        _, _, code = self.run_it(harness, monkeypatch)
+        assert code == 5, f"a collision exited {code}; the run looked clean"
+
+    def test_the_run_is_recorded_partial(self, harness, monkeypatch):
+        """So the watermark is held and the object stays enumerated."""
+        import sqlite3
+
+        _, tmp_path, _ = self.run_it(harness, monkeypatch)
+        conn = sqlite3.connect(str(tmp_path / "ledger.db"))
+        outcome = conn.execute(
+            "SELECT outcome FROM runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+        conn.close()
+        assert outcome == "partial", f"recorded {outcome!r}; the watermark moved"
+
+    def test_the_watermark_does_not_advance(self, harness, monkeypatch):
+        """The consequence that matters: a clean record here means the next
+        run filters on this run's start time and never lists the object."""
+        _, tmp_path, _ = self.run_it(harness, monkeypatch)
+        led = Ledger.open(str(tmp_path / "ledger.db"))
+        assert led.last_successful_run() is None
+        led.close()
 
     def test_the_run_report_counts_the_collision(self, harness, monkeypatch):
         import json

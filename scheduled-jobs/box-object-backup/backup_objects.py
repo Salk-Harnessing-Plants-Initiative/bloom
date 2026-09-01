@@ -279,6 +279,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             verify_mismatched=totals.verify_mismatched,
             bucket_scoped=bool(args.buckets.strip()),
             stopped=stopping.stopping(),
+            collisions=totals.collisions,
         )
         # Nested so the teardown below cannot be skipped. Everything in this
         # block can raise — publish_report catches only OSError and
@@ -354,6 +355,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         failed=totals.failed,
         verify_mismatched=totals.verify_mismatched,
         stopped=stopping.stopping(),
+        collisions=totals.collisions,
     )
 
 
@@ -449,6 +451,7 @@ def run_outcome(
     verify_mismatched: int = 0,
     bucket_scoped: bool = False,
     stopped: bool = False,
+    collisions: int = 0,
 ) -> str:
     """Classify a finished run — and decide whether it can be a watermark.
 
@@ -469,6 +472,13 @@ def run_outcome(
     again. The wiki's own smoke test is bucket-scoped, one edit away from
     dropping the `--limit` that currently saves it.
 
+    A run that refused a collision has not mirrored one of the two objects, and
+    nothing will until a person renames one of them — so it must not become the
+    watermark either, or the object stops being enumerated and the one log line
+    naming it is the last anyone hears of it. The cost is real: until that
+    rename, every night re-reads the whole table. That is the intended trade,
+    because an object nobody knows is missing is worse than a slow night.
+
     A run whose verification found objects missing from Box has copied things
     that are not there. Recording it clean would advance the watermark past
     them, so nothing would ever look at them again — the check would have
@@ -477,7 +487,10 @@ def run_outcome(
     if crashed:
         return "error"
     truncated = limit is not None and copied >= limit
-    if failed or truncated or verify_mismatched or bucket_scoped or stopped:
+    if (
+        failed or truncated or verify_mismatched
+        or bucket_scoped or stopped or collisions
+    ):
         return "partial"
     return "ok"
 
