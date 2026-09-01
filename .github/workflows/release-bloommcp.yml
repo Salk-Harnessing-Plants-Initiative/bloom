@@ -64,7 +64,7 @@ jobs:
     # passes this guard.
     if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'bloommcp-')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
 
       - name: Read version from pyproject.toml
@@ -130,7 +130,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
 
       # Freeze repo links to the release tag so PyPI's sidebar links
@@ -154,7 +154,10 @@ jobs:
           p = pathlib.Path("pyproject.toml")
           s = p.read_text()
           for pat, repl in subs:
-              s = re.sub(pat, repl, s)
+              # A callable replacement (not the string itself) so a tag
+              # containing a backslash-digit sequence (e.g. r"\1") can't be
+              # misread as a backreference — repl is inserted literally.
+              s = re.sub(pat, lambda m, r=repl: r, s)
           p.write_text(s)
           print("--- pyproject.toml ---")
           print(s)
@@ -261,7 +264,7 @@ jobs:
         run: sha256sum -c dist.sha256
 
       - name: Upload the verified artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: bloommcp-dist
           path: |
@@ -284,7 +287,7 @@ jobs:
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
 
       - name: Download the verified artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: bloommcp-dist
           path: bloommcp/
