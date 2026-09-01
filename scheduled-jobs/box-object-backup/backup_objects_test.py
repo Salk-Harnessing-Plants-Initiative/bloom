@@ -711,8 +711,31 @@ class TestExitCodeReachesTheWorkflow:
 
     def test_the_documented_codes_match_what_is_returned(self):
         doc = job.__doc__
-        for code in ("1 =", "2 =", "3 =", "4 ="):
+        for code in ("1 =", "2 =", "3 =", "4 =", "5 ="):
             assert code in doc, f"exit {code[0]} undocumented"
+
+    def test_a_refused_collision_has_its_own_code(self):
+        """Not 4. Exit 4's remedy is deleting the ledger row so the object is
+        copied again; doing that to a collision loser only re-refuses it. This
+        one needs a rename in Supabase."""
+        assert job.exit_code(failed=0, verify_mismatched=0, collisions=1) == 5
+
+    def test_a_run_with_no_collisions_is_unaffected(self):
+        assert job.exit_code(failed=0, verify_mismatched=0, collisions=0) == 0
+
+    def test_a_failed_copy_still_outranks_a_collision(self):
+        # 1 first: an object that errored may succeed on a re-run, which is a
+        # different thing to do about it than renaming a file.
+        assert job.exit_code(failed=1, verify_mismatched=0, collisions=1) == 1
+
+    def test_a_verification_mismatch_still_outranks_a_collision(self):
+        assert job.exit_code(failed=0, verify_mismatched=1, collisions=1) == 4
+
+    def test_a_collision_outranks_a_stop(self):
+        # A stop is expected and resumable; a collision needs a person.
+        assert job.exit_code(
+            failed=0, verify_mismatched=0, stopped=True, collisions=1
+        ) == 5
 
 
 class TestRunLockedWiresItsPartsTogether:

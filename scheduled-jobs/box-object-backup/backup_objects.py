@@ -22,6 +22,8 @@ Exit codes:
   2 = configuration or preflight error
   3 = interrupted; progress is in the ledger and the next run resumes
   4 = copying reported success but verification found objects missing from Box
+  5 = one or more objects were refused because two names collide on one Box
+      path; rename one of each pair in Supabase
 """
 
 from __future__ import annotations
@@ -396,7 +398,13 @@ def sample_planned_objects(manifest: Path, count: int = PREFLIGHT_SAMPLE) -> lis
     return candidates[::stride][:count]
 
 
-def exit_code(*, failed: int, verify_mismatched: int, stopped: bool = False) -> int:
+def exit_code(
+    *,
+    failed: int,
+    verify_mismatched: int,
+    stopped: bool = False,
+    collisions: int = 0,
+) -> int:
     """What the run tells its caller, which for a scheduled run is everything.
 
     A verification mismatch must NOT be 0. The workflow's only route to a human
@@ -417,6 +425,12 @@ def exit_code(*, failed: int, verify_mismatched: int, stopped: bool = False) -> 
         return 1
     if verify_mismatched:
         return 4
+    # Its own code rather than 4. Both mean objects are not on Box, but the
+    # remedies are opposite: 4 says delete the ledger row so the object is
+    # copied again, and doing that to a collision loser just re-refuses it.
+    # This one needs a rename in Supabase, and the run's log names the pair.
+    if collisions:
+        return 5
     # 3 is already the documented "interrupted; progress is in the ledger and
     # the next run resumes". Installing a signal handler means SIGINT no longer
     # raises KeyboardInterrupt, so without this a stopped run would report the
