@@ -69,7 +69,8 @@ def _env(name: str, default: str = "") -> str:
 def load_env_file(path: Path) -> dict[str, str]:
     """Read a deploy .env file into a plain dict.
 
-    systemd read this file for us; over SSH nothing does, and sourcing it in the
+    A systemd unit would have read this file for us; over SSH nothing does,
+    and sourcing it in the
     shell would let a value containing spaces or quotes rewrite the command.
     """
     values: dict[str, str] = {}

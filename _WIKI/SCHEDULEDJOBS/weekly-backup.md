@@ -8,8 +8,10 @@ The workflow SSHes to the deploy host and runs
 reaches the server. Nothing is dumped onto the runner and no database port is
 opened.
 
-Scope is the **database only**. MinIO object storage is backed up separately as
-an object-level rclone sync.
+Scope is the **database only**. MinIO object storage will be backed up
+separately by an object-level rclone sync — that job is still in progress, so
+until it lands, `storage.objects` is restorable as a catalogue of pointers to
+files nothing is backing up.
 
 ## What a run produces
 
@@ -17,8 +19,11 @@ Two artifacts per run, sharing one UTC timestamp:
 
 | Artifact                           | Contents                                                                                |
 | ---------------------------------- | --------------------------------------------------------------------------------------- |
-| `postgres-<db>-<timestamp>.sql.gz` | The whole database: schema, data, ownership, `GRANT`s                                   |
+| `postgres-<db>-<timestamp>.sql.gz` | The `postgres` database: schema, data, ownership, `GRANT`s                              |
 | `globals-<timestamp>.sql.gz`       | `pg_dumpall --globals-only` — the roles the dump's `OWNER`/`GRANT` statements reference |
+
+The globals file also carries each login role's password hash, so treat it as
+credential material, not just a list of names.
 
 Two files rather than one because roles live outside any single database. A
 dump taken with `--no-owner --no-privileges` restores into a database whose
@@ -194,3 +199,21 @@ The dump contains `auth.users`. Do not leave a copy on disk.
 - **Nothing starts until the workflow reaches `main`.** Both triggers are gated
   on the default branch, so a backup that "isn't running yet" is usually a
   pending promotion, not a bug.
+- **A production deploy must have run first.** The workflow checks nothing out;
+  it runs whatever `scheduled-jobs/weekly-backup/backup.py` the deploy
+  directory holds, and reads the `BACKUP_*` keys out of the `.env.prod` that
+  each deploy reassembles. Deploys here are manual, so the first Sunday after
+  the promotion can arrive before one has happened — that run fails with "No
+  such file or directory", which is loud and harmless.
+- **pgmq queues are not in the dump.** `pgmq.create()` registers
+  `pgmq.q_cyl_pipeline_dispatch` and its archive as extension members, and the
+  pinned pgmq never calls `pg_extension_config_dump`, so `pg_dump` emits
+  neither their definitions nor their rows. The durable record —
+  `cyl_pipeline_runs`, `cyl_pipeline_run_scans` — is captured; what is lost is
+  in-flight dispatch messages. Note the dump _does_ contain the wrapper
+  functions that call the queue, so after restoring anywhere, run
+  `SELECT pgmq.create('cyl_pipeline_dispatch');` or the dispatch path fails at
+  runtime with no other warning.
+- **The `_supabase` database is not in the dump.** `pg_dump` covers one
+  database and the cluster has two; `_supabase` holds Supavisor's pooler tenant
+  config, which its own migrations rebuild on boot.

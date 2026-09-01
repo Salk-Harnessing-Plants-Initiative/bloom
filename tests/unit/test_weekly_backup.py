@@ -451,7 +451,7 @@ def test_both_artifacts_share_one_run_timestamp(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# Env-file loading (systemd's EnvironmentFile, done in-process)
+# Env-file loading (an EnvironmentFile equivalent, done in-process)
 # --------------------------------------------------------------------------
 
 
