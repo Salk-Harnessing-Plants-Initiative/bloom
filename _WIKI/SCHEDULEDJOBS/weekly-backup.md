@@ -34,11 +34,16 @@ not acceptable in a backup.
 
 ## Schedule
 
-|             |                                                         |
-| ----------- | ------------------------------------------------------- |
-| Runs        | Sunday 02:17 UTC, automatically, against **production** |
-| Scope       | Production only — staging is not backed up              |
-| Destination | `box:bloom-backups/prod/<timestamp>/`                   |
+|             |                                                    |
+| ----------- | -------------------------------------------------- |
+| Runs        | Sat evening at Salk — 02:17 UTC Sun, automatically |
+| Scope       | Production only — staging is not backed up         |
+| Destination | `box:bloom-backups/prod/<timestamp>/`              |
+
+Cron is always UTC and never shifts for daylight saving, so the schedule reads
+`Sunday 02:17` while the run actually lands **Saturday 19:17 PDT** in summer and
+**Saturday 18:17 PST** in winter. If you are waiting to watch the first one,
+watch on Saturday evening.
 
 Run it by hand any time from the Actions tab: **Weekly Postgres backup → Run
 workflow**, optionally ticking "dry run" to dump and verify without uploading.

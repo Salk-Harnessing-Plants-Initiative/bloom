@@ -47,8 +47,11 @@ on:
         type: boolean
         default: false
   schedule:
-    # Sunday 02:17 UTC. Off the hour deliberately — GitHub's own docs flag the
-    # top of the hour as a period of elevated scheduler load and delay.
+    # Sunday 02:17 UTC, which at Salk is SATURDAY evening: 19:17 PDT or
+    # 18:17 PST. Cron here is always UTC and never shifts for DST, so the UTC
+    # day reads Sunday while the run happens on Saturday locally.
+    # Off the hour deliberately — GitHub's own docs flag the top of the hour as
+    # a period of elevated scheduler load and delay.
     - cron: "17 2 * * 0"
 
 permissions:
