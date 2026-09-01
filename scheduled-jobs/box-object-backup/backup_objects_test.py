@@ -9,6 +9,7 @@ a daemon, MinIO, or a Box account.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -17,6 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 
 import backup_objects as job  # noqa: E402
+from runlock import SKIP_MARKER, LockHeld, RunLock  # noqa: E402
 import copier  # noqa: E402
 import stopping  # noqa: E402
 from backup_lib import CopyPlan, StorageObject, build_plan  # noqa: E402
@@ -1060,6 +1062,107 @@ class TestAStoppedRunIsResumable:
 
     def test_the_exit_code_is_documented(self):
         assert "3 = interrupted" in job.__doc__
+
+
+class TestRunBackupTakesTheHostLock:
+    """`run_backup` had no coverage at all — the lock could be deleted outright.
+
+    It is one lock per host, and it is the only thing stopping the hand-run
+    seed and the 02:17 nightly from writing to one SQLite ledger at the same
+    time. Every other test in this file calls `run_locked`, which is past it.
+    `RunLock` itself is well tested cross-process; nothing showed that
+    `run_backup` uses it.
+
+    The contract also crosses into the workflow: a run that cannot take the
+    lock is NOT a failure. It exits 0 and prints a marker the job summary
+    greps for, so a stood-down night reads as "skipped" rather than as a
+    success — that difference is how a months-long gap would go unnoticed.
+    """
+
+    def args(self, tmp_path):
+        return job.parse_args([
+            "--env", "prod",
+            "--state-dir", str(tmp_path),
+            "--box-root", "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
+        ])
+
+    def test_the_lock_is_actually_taken(self, tmp_path, monkeypatch):
+        """While the run is going, nobody else can have it."""
+        held = {}
+
+        def while_running(args, state_dir):
+            with pytest.raises(LockHeld):
+                RunLock(state_dir).acquire()
+            held["checked"] = True
+            return 0
+
+        monkeypatch.setattr(job, "run_locked", while_running)
+        assert job.run_backup(self.args(tmp_path)) == 0
+        assert held.get("checked"), "run_locked was never reached"
+
+    def test_a_second_run_stands_down_without_failing(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(
+            job, "run_locked",
+            lambda *a, **kw: pytest.fail("ran while another run held the lock"),
+        )
+        first = RunLock(tmp_path).acquire()
+        try:
+            assert job.run_backup(self.args(tmp_path)) == 0, (
+                "a stood-down run failed the workflow instead of skipping"
+            )
+        finally:
+            first.release()
+
+    def test_a_stood_down_run_prints_the_marker_the_summary_greps(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        # The workflow greps this out of the log to tell a skipped night from a
+        # successful one. Both exit 0, so the marker is the only difference.
+        monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 0)
+        first = RunLock(tmp_path).acquire()
+        try:
+            job.run_backup(self.args(tmp_path))
+        finally:
+            first.release()
+        assert SKIP_MARKER in caplog.text, "a skipped night looks like a clean one"
+
+    def test_a_stood_down_run_names_who_is_holding_it(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 0)
+        first = RunLock(tmp_path).acquire()
+        try:
+            job.run_backup(self.args(tmp_path))
+        finally:
+            first.release()
+        assert "held by" in caplog.text
+        assert str(os.getpid()) in caplog.text, "does not say which process has it"
+
+    def test_the_lock_is_released_when_the_run_finishes(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 0)
+        job.run_backup(self.args(tmp_path))
+        # If it were still held, the next night would stand down forever.
+        RunLock(tmp_path).acquire().release()
+
+    def test_the_lock_is_released_even_when_the_run_raises(self, tmp_path, monkeypatch):
+        def boom(*a, **kw):
+            raise RuntimeError("the run died")
+
+        monkeypatch.setattr(job, "run_locked", boom)
+        with pytest.raises(RuntimeError):
+            job.run_backup(self.args(tmp_path))
+        RunLock(tmp_path).acquire().release()
+
+    def test_the_state_directory_is_created_if_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 0)
+        fresh = tmp_path / "not" / "there" / "yet"
+        job.run_backup(job.parse_args([
+            "--env", "prod", "--state-dir", str(fresh),
+            "--box-root", "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
+        ]))
+        assert fresh.is_dir()
+
+    def test_the_exit_code_is_whatever_the_run_returned(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 4)
+        assert job.run_backup(self.args(tmp_path)) == 4
 
 
 class TestTheLedgerIsCopiedToBox:

@@ -73,12 +73,28 @@ class TestSkipMarkerContract:
         assert SKIP_MARKER.startswith(prefix)
         assert prefix in _strip_comments(summary_script)
 
-    def test_the_python_actually_prints_the_marker(self):
-        # The contract was only ever tested from the YAML side; removing the
-        # logger.warning that emits it went unnoticed.
-        source = (Path(__file__).parent / "backup_objects.py").read_text()
-        executable = _strip_comments(source)
-        assert "SKIP_MARKER" in executable
+    def test_the_python_actually_prints_the_marker(self, tmp_path, monkeypatch, caplog):
+        """Run the stand-down and read the log, rather than grep the source.
+
+        This used to assert `"SKIP_MARKER" in backup_objects.py` — which the
+        import line at the top of that file satisfies on its own. Deleting the
+        `logger.warning` that actually emits it left this green, which is the
+        exact regression the comment here claimed to guard.
+        """
+        import backup_objects as job
+        from runlock import RunLock
+
+        monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 0)
+        args = job.parse_args([
+            "--env", "prod", "--state-dir", str(tmp_path),
+            "--box-root", "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
+        ])
+        holder = RunLock(tmp_path).acquire()
+        try:
+            assert job.run_backup(args) == 0
+        finally:
+            holder.release()
+        assert SKIP_MARKER in caplog.text
 
     def test_a_stood_down_run_is_not_reported_as_success(self, summary_script: str):
         # The whole point: a skipped run exits 0 exactly as a good one does,
