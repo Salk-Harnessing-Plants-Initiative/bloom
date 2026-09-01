@@ -27,6 +27,12 @@ SCHEMA_VERSION = 1
 # it sorts away from the mirrored bucket folders.
 REPORTS_DIRNAME = "_runs"
 
+# The ledger is uploaded beside the reports rather than among the objects: it
+# is not a backed-up object, and a folder of its own keeps it out of any
+# restore that walks the mirror.
+STATE_DIRNAME = "_state"
+LEDGER_FILENAME = "ledger.db"
+
 # A seed run can fail on thousands of objects; the report names enough to act
 # on and records that it truncated rather than growing without bound.
 MAX_REPORTED_FAILURES = 200
@@ -96,6 +102,13 @@ def write_local(report: RunReport, state_dir: Path | str) -> Path:
     path = directory / report.filename()
     path.write_text(report.to_json(), encoding="utf-8")
     return path
+
+
+def box_ledger_path(box_root: str) -> str:
+    """Destination for the ledger copy, under the run's Box root."""
+    root = box_root.strip("/")
+    parts = [part for part in (root, STATE_DIRNAME, LEDGER_FILENAME) if part]
+    return "/".join(parts)
 
 
 def box_remote_path(report: RunReport) -> str:

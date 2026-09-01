@@ -283,7 +283,6 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             run_id=run_id, started_at=started_at, outcome=outcome,
             stats=stats, failures=totals.failures,
         )
-        daemon.stop()
         ledger.commit()
         # Inside the finally, not after it. A run that raised is the one whose
         # record matters most, and outside it every crash left a row with no
@@ -292,7 +291,17 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         # trail this job's own error messages tell operators to read was the
         # only place the failure did not appear.
         ledger.finish_run(run_id, outcome, stats)
+        # Closed BEFORE it is uploaded. SQLite runs in WAL mode here, so
+        # committed rows can still be sitting in ledger.db-wal; a copy of
+        # ledger.db on its own would be missing them. close() checkpoints the
+        # WAL into the file, which is what makes the uploaded copy complete.
         ledger.close()
+        publish_ledger(
+            daemon, state_dir, box_fs, args,
+            copied=totals.copied, crashed=crashed,
+        )
+        # Last, so the daemon is still alive for both uploads above.
+        daemon.stop()
     logger.info(
         "done — copied %d, failed %d, already current %d, skipped %d",
         totals.copied, totals.failed, totals.already_current, totals.skipped,
@@ -490,6 +499,54 @@ def publish_report(
     except RcloneError as exc:
         logger.error(
             "run report stayed local at %s — upload failed: %s", local, exc
+        )
+
+
+def publish_ledger(
+    daemon: dock.RcDaemon,
+    state_dir: Path,
+    box_fs: str,
+    args: argparse.Namespace,
+    *,
+    copied: int,
+    crashed: bool,
+) -> None:
+    """Copy the ledger to Box, so losing the host does not mean re-seeding.
+
+    The ledger records which version of every object is on Box, and it is what
+    lets a multi-week seed stop and carry on. It lives on the deploy host —
+    the machine this job exists to survive losing. Without a copy, a rebuilt
+    host starts from an empty ledger, concludes nothing has ever been copied,
+    and re-transfers all eight million objects. Listing Box cannot rebuild it:
+    the ledger is keyed on each object's version, and a listing shows only
+    that a path exists.
+
+    Not uploaded after a run that copied nothing — the file is a gigabyte or
+    two once seeded and a quiet night has not meaningfully changed it — nor
+    after one that crashed, so a half-written ledger cannot replace a good
+    copy on Box.
+
+    Best-effort, like the run report: the objects are already safely on Box
+    and a failed upload must not turn a good run into a failed one.
+    """
+    if crashed:
+        logger.info("ledger not uploaded: the run did not finish cleanly")
+        return
+    if not copied:
+        logger.info("ledger not uploaded: nothing was copied this run")
+        return
+    destination = report.box_ledger_path(args.box_root)
+    try:
+        client = RcloneRC(daemon.url, daemon.user, daemon.password)
+        client.copy_file(
+            dock.STATE_MOUNT, report.LEDGER_FILENAME, box_fs, destination
+        )
+        logger.info("ledger on Box: %s", destination)
+    except Exception as exc:
+        # Deliberately broad: this runs in the cleanup path, and anything
+        # raised here would skip the container teardown below it.
+        logger.error(
+            "ledger stayed on the host only — upload failed: %s", exc
         )
 
 

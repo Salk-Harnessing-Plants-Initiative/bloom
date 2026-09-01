@@ -1062,6 +1062,144 @@ class TestAStoppedRunIsResumable:
         assert "3 = interrupted" in job.__doc__
 
 
+class TestTheLedgerIsCopiedToBox:
+    """The ledger lives on the host this job exists to survive losing.
+
+    It records which version of every object is on Box, and it is what lets a
+    multi-week seed stop and carry on. Without a copy off the host, rebuilding
+    the server means re-transferring all eight million objects — and listing
+    Box cannot reconstruct it, because the ledger is keyed on each object's
+    version and a listing shows only that a path exists.
+    """
+
+    @pytest.fixture
+    def harness(self, monkeypatch, tmp_path):
+        state, tmp_path = TestRunLockedWiresItsPartsTogether().harness.__wrapped__(
+            TestRunLockedWiresItsPartsTogether(), monkeypatch, tmp_path
+        )
+        # publish_report and publish_ledger build their own client from the
+        # daemon's credentials rather than taking the one the run already has,
+        # so the harness's fake never sees either upload — every harness test
+        # has been quietly logging "upload failed: Connection refused" and
+        # falling back to the local copy. Substitute the class so the uploads
+        # are observable.
+        monkeypatch.setattr(job, "RcloneRC", lambda *a, **kw: state["client"])
+        return state, tmp_path
+
+    def uploads(self, state):
+        return [c for c in state["copied"] if c[1] == "ledger.db"]
+
+    def test_it_is_uploaded_to_its_own_folder(self, harness):
+        state, tmp_path = harness
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        sent = self.uploads(state)
+        assert len(sent) == 1, "the ledger was not uploaded"
+        assert sent[0][2] == (
+            "Bloom-Backups/BloomV2-Data-Backup/prod/storage/_state/ledger.db"
+        ), sent[0][2]
+
+    def test_it_is_not_mixed_in_with_the_objects(self, harness):
+        state, tmp_path = harness
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        for _, _, dst in self.uploads(state):
+            assert "/_state/" in dst, f"the ledger landed among the mirror: {dst}"
+
+    def test_the_uploaded_copy_is_complete(self, harness, monkeypatch, tmp_path):
+        """The reason it is closed before being sent.
+
+        SQLite runs in WAL mode, so committed rows sit in ledger.db-wal until
+        the file is checkpointed. Uploading ledger.db while the connection is
+        open ships a file missing everything the run just recorded — which
+        would look fine until the day it was restored.
+
+        So: take a copy of ledger.db ALONE at the moment it is uploaded, the
+        way rclone would, and read it back with no WAL beside it.
+        """
+        import shutil
+        import sqlite3
+
+        state, tmp_path = harness
+        snapshot = tmp_path / "snapshot" / "ledger.db"
+        snapshot.parent.mkdir()
+        real_copy = state["client"].__class__.copy_file
+
+        def snapshotting_copy(self, src_fs, src_remote, dst_fs, dst_remote):
+            real_copy(self, src_fs, src_remote, dst_fs, dst_remote)
+            if src_remote == "ledger.db":
+                shutil.copyfile(tmp_path / "ledger.db", snapshot)
+
+        monkeypatch.setattr(state["client"].__class__, "copy_file", snapshotting_copy)
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+
+        assert snapshot.exists(), "the ledger was never uploaded"
+        conn = sqlite3.connect(str(snapshot))
+        copied = conn.execute("SELECT count(*) FROM copied").fetchone()[0]
+        runs = conn.execute(
+            "SELECT count(*) FROM runs WHERE outcome IS NOT NULL"
+        ).fetchone()[0]
+        conn.close()
+        assert copied == 2, f"the copy is missing rows the run recorded: {copied}"
+        assert runs == 1, "the copy does not record the run that made it"
+
+    def test_a_night_that_copied_nothing_does_not_send_it(self, harness):
+        """It is a gigabyte or two once seeded, and an unchanged file."""
+        state, tmp_path = harness
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
+        job.run_locked(args, tmp_path)
+        state["copied"].clear()
+        job.run_locked(args, tmp_path)   # everything already current
+        assert self.uploads(state) == [], "re-sent an unchanged ledger"
+
+    def test_a_crashed_run_does_not_replace_the_good_copy(self, harness, monkeypatch):
+        """Crashing AFTER copying, which is the case the guard is for.
+
+        A run that dies before copying anything is already covered by the
+        nothing-copied rule; only a run that copied and then crashed can reach
+        the upload with a ledger the run never finished writing.
+        """
+        state, tmp_path = harness
+
+        def boom(*a, **kw):
+            raise RuntimeError("Box refused during verification")
+
+        monkeypatch.setattr(job, "verify_sample", boom)
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path, verify=50)
+        with pytest.raises(RuntimeError):
+            job.run_locked(args, tmp_path)
+        assert state["copied"], "nothing was copied, so this proves nothing"
+        assert self.uploads(state) == [], "a half-written ledger was uploaded"
+
+    def test_a_run_that_copied_nothing_and_crashed_is_also_skipped(
+        self, harness, monkeypatch
+    ):
+        state, tmp_path = harness
+
+        def boom(*a, **kw):
+            raise RuntimeError("preflight could not reach MinIO")
+
+        monkeypatch.setattr(job, "preflight_source", boom)
+        with pytest.raises(RuntimeError):
+            job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        assert self.uploads(state) == []
+
+    def test_a_failed_upload_neither_fails_the_run_nor_strands_the_container(
+        self, harness, monkeypatch, caplog
+    ):
+        state, tmp_path = harness
+        real_copy = state["client"].__class__.copy_file
+
+        def refuse_the_ledger(self, src_fs, src_remote, dst_fs, dst_remote):
+            if src_remote == "ledger.db":
+                raise RcloneError("box: quota exceeded", retryable=False)
+            return real_copy(self, src_fs, src_remote, dst_fs, dst_remote)
+
+        monkeypatch.setattr(state["client"].__class__, "copy_file", refuse_the_ledger)
+        code = job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        assert code == 0, "a failed ledger upload failed the whole run"
+        assert state["daemon_stopped"], "the rclone container was left behind"
+        assert "upload failed" in caplog.text
+
+
 class TestACrashedRunStillLeavesARecord:
     """`finish_run` sat after the try/except/finally rather than inside it.
 

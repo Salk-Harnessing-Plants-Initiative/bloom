@@ -287,6 +287,10 @@ the MinIO side is not, and is reported.
 
 ### Run reports on Box
 
+Two things sit beside the mirror on Box rather than in it: dated run reports
+under `_runs/`, and a copy of the ledger under `_state/`. Neither is a
+backed-up object, and a restore that walks the mirror should skip both.
+
 Every run drops a dated JSON report in `<BACKUP_BOX_ROOT>/_runs/`, named
 `2026-08-31T021703Z-prod-run00042.json`. This is the only view of the
 backup's history that does not need server access: a missing week shows up as
@@ -381,6 +385,26 @@ report under `_runs/`.
 There is no restore tooling yet. Doing this for 8M rows needs a script, and
 writing it is tracked separately — as is a round-trip drill proving one object
 survives MinIO → Box → MinIO and is still served by storage-api.
+
+### If the deploy host itself is gone
+
+The ledger is what makes the mirror resumable, and it lives on that host. A
+copy is kept on Box at `<BACKUP_BOX_ROOT>/_state/ledger.db`, uploaded after any
+run that copied something. Put it back before running the job on a rebuilt
+host:
+
+```bash
+rclone copyto "box:$BACKUP_BOX_ROOT/_state/ledger.db" \
+    /var/lib/bloom-box-object-backup/ledger.db
+```
+
+Without it the job starts from an empty ledger, concludes nothing has ever been
+copied, and re-transfers all eight million objects — weeks of work, and the Box
+API load that comes with it. Listing Box cannot rebuild it: the ledger is keyed
+on each object's `version`, and a listing shows only that a path exists.
+
+The copy is at most one run behind, so a few objects may be re-copied. That is
+harmless — the copy simply overwrites what is already there.
 
 ## Configuration
 
