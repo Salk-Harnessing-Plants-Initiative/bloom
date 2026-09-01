@@ -301,8 +301,8 @@ rclone cat "box:$BACKUP_BOX_ROOT/_runs/<latest>.json" | jq '.stats.skipped'
 ## Monitoring
 
 The run summary in the Actions tab is the first place to look — it says
-whether the week **succeeded**, **failed**, or was **skipped** because the seed
-still holds the lock, and carries the run's own closing lines.
+whether the night **succeeded**, **failed**, or was **skipped** because the
+seed still holds the lock, and carries the run's own closing lines.
 
 ```bash
 gh run list --workflow box-object-backup.yml --limit 10
@@ -311,7 +311,30 @@ gh run view <run-id> --log
 
 Exit codes: `0` clean, `1` some objects failed after retries, `2`
 configuration or preflight error, `3` interrupted (progress kept), `4`
-verification found objects missing or the wrong size on Box.
+verification found objects missing or the wrong size on Box, `5` objects were
+refused because two names collide on one Box path.
+
+### Objects that were refused
+
+Exit `5`, and **OBJECTS NOT BACKED UP** in the summary. Two object names can
+differ in the database and still normalize to one path on Box — the same
+filename uploaded from machines that spell an accent differently. Box can hold
+only one of them, so the job copies the first and refuses the second rather
+than overwriting it.
+
+The refused object is **not backed up**, and nothing on this side can fix that:
+rename one of the pair in Supabase and the next run mirrors both. The job log
+names each pair on the `skipping` lines.
+
+Such a run is recorded `partial`, deliberately, so the watermark does not move
+past an object that is not on Box. Until the rename, every night re-reads the
+whole `storage.objects` table rather than a delta — slower, and the intended
+price of not losing sight of the object. `stats.collisions` in the run report
+is the count.
+
+There are none in production today: every name is already in the normalized
+form, so nothing can collide. This exists for the day something uploads one
+that is not.
 
 Progress lines report objects/second and a projected finish. Failures are
 retried with backoff — Box's 429s and 5xx are treated as transient; a 404 on
