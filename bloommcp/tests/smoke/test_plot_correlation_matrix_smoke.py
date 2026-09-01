@@ -33,3 +33,14 @@ def test_plot_correlation_matrix_smoke(call_tool, db_experiment_id: str) -> None
     assert result["outputs"]
     assert result["run_ref"]
     assert result["manifest_path"]
+
+    # #466 review round 4: cylinder's raw ~846-trait data is exactly the disjoint-per-trait-
+    # missingness case zero_variance_traits/low_overlap_trait_pairs/heatmap_caveat target,
+    # and this was previously the only place these 3 fields went entirely unasserted.
+    assert result["resolved_trait_columns"]
+    assert isinstance(result["zero_variance_traits"], list)
+    assert isinstance(result["low_overlap_trait_pairs"], list)
+    if result["zero_variance_traits"] or result["low_overlap_trait_pairs"]:
+        assert result["heatmap_caveat"] is not None
+    else:
+        assert result["heatmap_caveat"] is None

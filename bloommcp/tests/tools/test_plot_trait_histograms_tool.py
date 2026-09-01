@@ -190,17 +190,38 @@ def test_delegate_batch_size_matches_live_default():
     assert default == plot_trait_histograms_tool._DELEGATE_BATCH_SIZE
 
 
-def test_page_traits_maps_each_page_to_its_actual_traits():
-    """#466 review: which traits landed on which page was previously only discoverable by
-    opening the image and reading axis labels — page_traits must name them directly, chunked
-    exactly the way create_trait_histograms_batched's own batch_size does (confirmed against
-    the live delegate default by test_delegate_batch_size_matches_live_default above, so this
-    isn't just a plausible-looking guess)."""
+def _titled_traits(fig) -> list[str]:
+    """Extract the trait name each subplot's title actually names — create_trait_histograms
+    titles each axis f"{trait}\\n(n={count})" (verified against the live delegate)."""
+    return [ax.get_title().split("\n")[0] for ax in fig.axes]
+
+
+@pytest.mark.parametrize(
+    "n_traits", [60, 64]
+)  # 64: an exact multiple of batch_size (16)
+def test_page_traits_maps_each_page_to_its_actual_traits(n_traits, monkeypatch):
+    """#466 review round 3: which traits landed on which page was previously only
+    discoverable by opening the image and reading axis labels — page_traits must name them
+    directly. #466 review round 4: the original version of this test only recomputed the
+    same slicing formula the production code uses (checking the formula against itself); this
+    verifies against the delegate's own rendered subplot titles instead, and additionally
+    covers n_traits=64 (an exact multiple of batch_size), the boundary case n_traits=60 (not a
+    multiple) doesn't exercise."""
     wide_experiment = "wide.csv"
-    n_traits = 60
     reader = FakeReader()
     reader.add_experiment(wide_experiment, _wide_df(n_traits))
     _ports.configure(reader=reader, store=FakeResultStore())
+    captured = {}
+    real = plot_trait_histograms_tool.create_trait_histograms_batched
+
+    def _spy(*a, **k):
+        figs = real(*a, **k)
+        captured["figs"] = figs
+        return figs
+
+    monkeypatch.setattr(
+        plot_trait_histograms_tool, "create_trait_histograms_batched", _spy
+    )
     try:
         result = plot_trait_histograms(
             PlotTraitHistogramsParams(experiment=wide_experiment)
@@ -209,13 +230,12 @@ def test_page_traits_maps_each_page_to_its_actual_traits():
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
     all_trait_cols = result.resolved_trait_columns
-    batch_size = plot_trait_histograms_tool._DELEGATE_BATCH_SIZE
     expected_pages = _expected_pages(n_traits)
     assert len(result.page_traits) == expected_pages
-    for i in range(1, expected_pages + 1):
+    assert len(captured["figs"]) == expected_pages
+    for i, fig in enumerate(captured["figs"], start=1):
         name = f"trait_histograms_page{i}.png"
-        start = (i - 1) * batch_size
-        assert result.page_traits[name] == all_trait_cols[start : start + batch_size]
+        assert result.page_traits[name] == _titled_traits(fig)
     # Every trait appears on exactly one page.
     all_paged = [t for traits in result.page_traits.values() for t in traits]
     assert sorted(all_paged) == sorted(all_trait_cols)

@@ -30,6 +30,13 @@ it, so it is excluded from the counts exactly like a zero-variance trait. ``low_
 pairs`` names exactly which pairs this affects (excluding any pair already explained by a
 zero-variance trait, to avoid double-reporting the same ``NaN`` cell under two reasons).
 
+**Known, narrow taxonomy gap (not fixed, disclosed):** a pair that is globally non-constant and
+clears ``min_periods`` overlap can still be *locally* constant within that shared overlap (one
+trait happens to take the same value on exactly the rows where both are non-null), producing a
+``NaN`` cell named in neither ``zero_variance_traits`` nor ``low_overlap_trait_pairs``. Not a
+false-positive risk — the vendored heatmap independently produces the same ``NaN`` — just an
+incompleteness in *why* a given blank cell is blank. Deferred as out of scope for this pass.
+
 **At least 2 resolved trait columns are required, and at least 2 of them must carry non-zero
 variance.** A correlation view of a single trait is not meaningful (there is no pair to
 correlate); nor is one where every-but-one (or every) trait is constant/all-NaN, since every
@@ -42,14 +49,18 @@ not a silent one.** ``strong_positive_correlations``/``strong_negative_correlati
 from this tool's own *guarded* ``.corr(min_periods=...)`` call. The persisted image, however, is
 rendered by a separate, independent call to the vendored ``create_correlation_heatmap``, which
 runs its own **unguarded** ``.corr()`` with no ``min_periods`` and no way to accept a
-precomputed matrix — a flagged pair's cell in the image can still render as a solid,
-confidently-colored ±1.0 square, visually indistinguishable from a real strong correlation over
-hundreds of points. Fixing this would mean either patching the vendored delegate (outside this
-package) or re-implementing heatmap rendering in bloommcp (against this file's own no-vendored-
-plotting-logic principle), so instead: the result's ``heatmap_caveat`` field is populated
-whenever either disclosure list is non-empty, explicitly telling the caller to cross-check them
-before trusting a highlighted cell. Tracked at
-https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/747.
+precomputed matrix, so the cell itself would still render as a solid, confidently-colored ±1.0
+square with no fix applied here — genuinely fixing the *coloring* would mean either patching the
+vendored delegate (outside this package) or re-implementing heatmap rendering in bloommcp
+(against this file's own no-vendored-plotting-logic principle); tracked at
+https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/747. Two things ARE done here,
+cheaply and in-scope, so a caller who only ever looks at the saved PNG — never the JSON — still
+gets a signal: (1) a warning footnote is drawn directly onto the already-rendered ``Figure``
+before ``savefig`` whenever either disclosure list is non-empty (#466 review round 4 — the
+first version of this fix left the image itself untouched, a JSON-only disclosure a PNG-only
+consumer would never see); (2) ``heatmap_caveat`` is also stamped into the persisted run's
+``params`` (mirroring ``resolved_trait_columns`` below), not just the live response, so a later
+manifest read gets the same signal a live call did.
 
 Persists a versioned run under its own tool class ``correlation_matrix`` (not the shared,
 unclaimed legacy ``viz`` slot — see ``openspec/changes/converge-bloommcp-viz-tools/design.md``
@@ -136,10 +147,11 @@ class PlotCorrelationMatrixResult(RunLinks):
     heatmap_caveat: Optional[str] = Field(
         default=None,
         description="Populated only when zero_variance_traits or low_overlap_trait_pairs is "
-        "non-empty: the rendered PNG is NOT masked the way this summary is (the vendored "
-        "delegate runs its own unguarded correlation), so a flagged pair's cell in the image "
-        "may still render as a solid, confidently-colored square. Cross-check those two "
-        "fields before trusting any highlighted cell in the image.",
+        "non-empty: some cell(s) in the rendered heatmap are not backed by enough real data to "
+        "trust, but the image still colors them as if they were a genuine strong correlation. "
+        "The same warning is also drawn as a footnote directly on the saved PNG. Cross-check "
+        "zero_variance_traits/low_overlap_trait_pairs before trusting a highlighted cell in "
+        "the image.",
     )
     resolved_trait_columns: list[str] = Field(
         description="The exact trait columns used to render/persist this run, in selection "
@@ -209,20 +221,23 @@ def plot_correlation_matrix(
     high_pos = int((upper > 0.7).sum().sum())
     high_neg = int((upper < -0.7).sum().sum())
 
+    n_flagged = len(zero_variance_traits) + len(low_overlap_trait_pairs)
     heatmap_caveat = (
-        "The rendered heatmap image is not masked for the pair(s)/trait(s) named in "
-        "zero_variance_traits/low_overlap_trait_pairs — it may show a solid, "
-        "confidently-colored cell for one of them. Cross-check those fields before "
-        "trusting any highlighted cell (see "
-        "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/747)."
-        if zero_variance_traits or low_overlap_trait_pairs
+        f"{n_flagged} trait/pair below has too little real data behind it to trust as "
+        f"drawn — the image still colors it like a genuine strong correlation. See "
+        f"zero_variance_traits/low_overlap_trait_pairs for exactly which cell(s)."
+        if n_flagged
         else None
     )
 
     prov = provenance.model_copy(
         update={
             "based_on_version": frame.source,
-            "params": {**provenance.params, "resolved_trait_columns": trait_cols},
+            "params": {
+                **provenance.params,
+                "resolved_trait_columns": trait_cols,
+                "heatmap_caveat": heatmap_caveat,
+            },
         }
     )
     run = store.create_run(
@@ -236,6 +251,24 @@ def plot_correlation_matrix(
     fig = None
     try:
         fig = create_correlation_heatmap(frame.df, trait_cols)
+        if heatmap_caveat is not None:
+            # Cheap, in-scope: a footnote drawn directly onto the already-rendered Figure,
+            # not a per-cell hatch/marker — the latter would require reverse-engineering the
+            # vendored delegate's cell geometry (row/column orientation, any axis flip), and
+            # getting that wrong would mislabel a DIFFERENT cell as flagged, which is worse
+            # than no annotation. A caller who only ever opens the saved PNG (never the JSON
+            # response) still gets the warning this way (#466 review round 4).
+            fig.text(
+                0.5,
+                -0.02,
+                f"⚠ {heatmap_caveat}",
+                ha="center",
+                va="top",
+                fontsize=8,
+                color="darkred",
+                wrap=True,
+                transform=fig.transFigure,
+            )
         fig.savefig(run.staging_dir / _HEATMAP_PNG, dpi=150, bbox_inches="tight")
         stored = store.commit(run, {_HEATMAP_PNG: _HEATMAP_PNG})
     except Exception:

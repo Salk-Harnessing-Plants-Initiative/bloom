@@ -283,7 +283,7 @@ def test_zero_variance_trait_excluded_from_counts_and_reported(injected_ports):
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
     assert "constant_trait" in result.zero_variance_traits
     assert result.heatmap_caveat is not None
-    assert "747" in result.heatmap_caveat
+    assert "1" in result.heatmap_caveat  # names the flagged count
 
 
 def test_all_selected_traits_zero_variance_is_assumption_violated(monkeypatch):
@@ -364,6 +364,90 @@ def test_heatmap_still_renders_from_the_full_unmasked_frame(
     assert captured["trait_cols"] == result.resolved_trait_columns
 
 
+def test_heatmap_caveat_annotated_directly_onto_the_saved_figure(
+    injected_ports, monkeypatch
+):
+    """#466 review round 4 blocking finding: the first version of this fix was JSON-only —
+    a caller who downloads the PNG (or opens it via output_links) without also reading the
+    JSON response saw zero indication a cell might be spurious. The warning must be drawn
+    onto the actual Figure before savefig, not just returned in the result."""
+    df = _raw_df()
+    df["constant_trait"] = 1.0
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, df)
+    _ports.configure(reader=reader, store=FakeResultStore())
+    captured = {}
+    real = plot_correlation_matrix_tool.create_correlation_heatmap
+
+    def _spy(*a, **k):
+        fig = real(*a, **k)
+        captured["fig"] = fig
+        return fig
+
+    monkeypatch.setattr(
+        plot_correlation_matrix_tool, "create_correlation_heatmap", _spy
+    )
+    try:
+        result = plot_correlation_matrix(
+            PlotCorrelationMatrixParams(experiment=_EXPERIMENT)
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    assert result.heatmap_caveat is not None
+    fig = captured["fig"]
+    # plt.close(fig) detaches it from pyplot's registry but the Python object (and its
+    # child artists) is still fully inspectable via this held reference.
+    assert len(fig.texts) >= 1
+    assert any(result.heatmap_caveat in t.get_text() for t in fig.texts)
+
+
+def test_no_annotation_added_when_nothing_is_flagged(injected_ports, monkeypatch):
+    captured = {}
+    real = plot_correlation_matrix_tool.create_correlation_heatmap
+
+    def _spy(*a, **k):
+        fig = real(*a, **k)
+        captured["fig"] = fig
+        return fig
+
+    monkeypatch.setattr(
+        plot_correlation_matrix_tool, "create_correlation_heatmap", _spy
+    )
+    result = _run()
+    assert result.heatmap_caveat is None
+    assert captured["fig"].texts == []
+
+
+def test_heatmap_caveat_stamped_into_manifest_params(injected_ports):
+    """#466 review round 4 blocking finding: resolved_trait_columns was stamped into the
+    persisted run's params, but heatmap_caveat was only ever added to the live response —
+    a later reader of the manifest (list_existing_analyses/manifest_path, the workflow this
+    field exists for) got nothing. Must mirror the resolved_trait_columns pattern."""
+    _reader, store = injected_ports
+    df = _raw_df()
+    df["constant_trait"] = 1.0
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, df)
+    _ports.configure(reader=reader, store=store)
+    try:
+        result = plot_correlation_matrix(
+            PlotCorrelationMatrixParams(experiment=_EXPERIMENT)
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    assert result.heatmap_caveat is not None
+    stored = store.get_run(_EXPERIMENT, "correlation_matrix", "latest")
+    assert stored.params["heatmap_caveat"] == result.heatmap_caveat
+
+
+def test_heatmap_caveat_stamped_as_none_when_nothing_flagged(injected_ports):
+    _reader, store = injected_ports
+    _run()
+    stored = store.get_run(_EXPERIMENT, "correlation_matrix", "latest")
+    assert stored.params["heatmap_caveat"] is None
+
+
 def test_single_trait_selection_is_invalid_input(injected_ports, monkeypatch):
     """A correlation view needs a pair — a lone trait must be rejected, not silently
     committed as a meaningless 1x1 heatmap (#466 review)."""
@@ -421,6 +505,41 @@ def test_low_overlap_pair_excluded_from_counts_and_reported(injected_ports):
     assert result.strong_positive_correlations == 0
     assert result.zero_variance_traits == []
     assert result.heatmap_caveat is not None
+
+
+@pytest.mark.parametrize(
+    "n_overlap, expect_flagged",
+    [(10, False), (9, True)],  # boundary: min_periods=10, "< 10" is flagged
+)
+def test_low_overlap_boundary_at_min_periods(n_overlap, expect_flagged):
+    """#466 review round 4: the only prior overlap test used n=2, deep inside the flagged
+    region — nothing pinned the actual _MIN_CORR_OVERLAP=10 boundary itself, so an off-by-one
+    (<= instead of <, or the wrong constant) would sail through the full suite undetected.
+    """
+    assert plot_correlation_matrix_tool._MIN_CORR_OVERLAP == 10
+    n = 20
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(n)],
+            "geno": ["g1", "g2"] * (n // 2),
+            "sparse_a": [float(i) if i < n_overlap else None for i in range(n)],
+            "sparse_b": [float(i) if i < n_overlap else None for i in range(n)],
+        }
+    )
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, df)
+    _ports.configure(reader=reader, store=FakeResultStore())
+    try:
+        result = plot_correlation_matrix(
+            PlotCorrelationMatrixParams(experiment=_EXPERIMENT)
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    overlap = df[["sparse_a", "sparse_b"]].dropna()
+    assert len(overlap) == n_overlap  # confirms the fixture hits the exact boundary
+    is_flagged = ["sparse_a", "sparse_b"] in result.low_overlap_trait_pairs
+    assert is_flagged is expect_flagged
 
 
 def test_reads_raw_even_when_a_cleaned_version_already_exists():

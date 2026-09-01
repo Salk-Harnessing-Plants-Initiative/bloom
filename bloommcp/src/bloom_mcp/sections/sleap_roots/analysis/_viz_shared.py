@@ -138,6 +138,11 @@ def resolve_trait_columns(
       twice.
     - The resolved set must be non-empty (``invalid_input`` naming ``experiment``) — a
       metadata-only frame with no detected numeric trait has nothing to plot/correlate.
+
+    Matching (existence, numeric check, and the duplicate check above) is exact-string,
+    case-sensitive, matching ``pandas`` column-lookup semantics — ``"Trait_A"`` and
+    ``"trait_a"`` are different names, by design, not a bug a future reader should "fix" by
+    adding case-folding.
     """
     if trait_columns is not None:
         if not trait_columns:
