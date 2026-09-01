@@ -114,15 +114,25 @@ process, not an HTTP route — deployed as its own `cyl-pipeline-worker`
 container (same image as this service). It polls `claim_cyl_pipeline_batch`,
 and for each claimed batch:
 
-1. Constructs a `Workflow` CRD (`k8s_client.build_workflow_body`) — a DAG
-   referencing the four already-registered `WorkflowTemplate`s
-   (`sleap-roots-images-downloader-template` → `sleap-roots-predictor-template`
+1. Constructs a `Workflow` CRD (`k8s_client.build_workflow_body`) by loading a
+   vendored, CI-drift-checked copy of `sleap-roots-pipeline`'s canonical
+   `sleap-roots-pipeline.yaml` (`vendored/sleap-roots-pipeline.yaml`, pin
+   recorded in the sibling `SLEAP_ROOTS_PIPELINE_REF` — kept in sync with
+   upstream by a CI job, not hand-copied; see bloom #737) and applying exactly
+   four overrides on top of it: the batch's own `scan-ids`; attribution
+   labels — `submitted-by: bloom-pipeline`/`pipeline-run-id`/`batch-index`/
+   `environment`, **merged** into the vendored file's own labels rather than
+   replacing them (mandatory — raw K8s API submission gets none of Argo's
+   automatic `creator` label); a `ttlStrategy` (the submitting identity has no
+   `delete` RBAC, so Argo's own controller must clean up completed Workflows
+   instead — this override is dispatch-only, deliberately never added to the
+   shared file); and `metadata.namespace`, forced to the configured
+   `WORKFLOWS_K8S_NAMESPACE` (see below). Everything else — the DAG (which
+   references the four already-registered `WorkflowTemplate`s:
+   `sleap-roots-images-downloader-template` → `sleap-roots-predictor-template`
    → `sleap-roots-trait-extractor-template` → `sleap-roots-write-back-template`),
-   parameterized by that batch's own `scan-ids`, labeled with
-   `submitted-by: bloom-pipeline`/`pipeline-run-id`/`batch-index` (mandatory —
-   raw K8s API submission gets none of Argo's automatic `creator` label), and
-   carrying a `ttlStrategy` (the submitting identity has no `delete` RBAC, so
-   Argo's own controller must clean up completed Workflows instead).
+   `spec.volumes`, `spec.entrypoint`, `spec.serviceAccountName` — passes through
+   from the vendored file unmodified.
 2. POSTs it directly to the K8s API server
    (`{WORKFLOWS_K8S_API_URL}/apis/argoproj.io/v1alpha1/namespaces/{WORKFLOWS_K8S_NAMESPACE}/workflows`)
    with a Bearer token + CA cert — not the `argo` CLI, not the Argo Server.
@@ -132,7 +142,22 @@ and for each claimed batch:
 **Namespace is a single hardcoded value for v1** (`WORKFLOWS_K8S_NAMESPACE`,
 default `runai-busch-lab`) — no `lab`/`project` column exists on any
 scan/experiment/wave table to resolve a per-request namespace from. A known
-v1 limitation, not a bug.
+v1 limitation, not a bug. This value now reaches the K8s API **twice**: as
+the submission URL's namespace segment (as before), and — since bloom #737 —
+also forced into the submitted object's own `metadata.namespace`, overwriting
+whatever the vendored file hardcodes there. Both are always built from the
+same `NAMESPACE` variable, so they can't disagree; the Kubernetes API rejects
+a submission whose body namespace differs from the URL's.
+
+**`bloom-pipeline` vs. `bloom-workflow` — two different ServiceAccounts, easy
+to confuse by name.** `bloom-pipeline` (provisioned below) is the identity
+this worker authenticates as to *submit* Workflows to the K8s API.
+`bloom-workflow` (`spec.serviceAccountName`, set inside the submitted object,
+now loaded from the vendored file rather than hardcoded here) is the identity
+each DAG step's own *pod* runs as once Argo's controller picks it up, needed
+so each step can report results back to Argo (`workflowtaskresults
+create`/`patch`). This change doesn't alter either identity or its RBAC —
+only how the value `"bloom-workflow"` reaches the submitted object.
 
 ```bash
 cd services/workflows
