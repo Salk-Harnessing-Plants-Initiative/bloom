@@ -13,9 +13,14 @@ import threading
 from datetime import datetime, timezone
 from typing import Sequence
 
-from backup_lib import SQLITE_MAX_VARIABLES, StorageObject, chunked
+from backup_lib import (
+    SQLITE_MAX_VARIABLES,
+    CopiedRecord,
+    StorageObject,
+    chunked,
+)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class Ledger:
@@ -53,6 +58,12 @@ class Ledger:
                 version    TEXT,
                 size       INTEGER,
                 copied_at  TEXT NOT NULL,
+                -- The name as Postgres holds it. `name` above is normalized,
+                -- because that is the path Box writes; two different objects
+                -- can share it. Keeping the raw one is how a run tells "this
+                -- is the object I copied before" from "this is a different
+                -- object heading for a path that is taken".
+                raw_name   TEXT,
                 PRIMARY KEY (bucket_id, name)
             );
             CREATE TABLE IF NOT EXISTS runs (
@@ -68,53 +79,69 @@ class Ledger:
             );
             """
         )
+        # A ledger written before raw_name existed has the column added rather
+        # than rebuilt: its rows are still correct, they simply cannot report a
+        # collision until each is next copied. Rebuilding would re-copy all
+        # eight million objects to learn nothing.
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(copied)")}
+        if "raw_name" not in columns:
+            self.conn.execute("ALTER TABLE copied ADD COLUMN raw_name TEXT")
         self.conn.execute(
-            "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)",
+            "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
+            "ON CONFLICT (key) DO UPDATE SET value=excluded.value",
             (str(SCHEMA_VERSION),),
         )
         self.conn.commit()
 
-    def copied_versions(self) -> dict[tuple[str, str], str | None]:
+    def copied_versions(self) -> dict[tuple[str, str], CopiedRecord]:
         with self._lock:
             rows = self.conn.execute(
-                "SELECT bucket_id, name, version FROM copied"
+                "SELECT bucket_id, name, version, raw_name FROM copied"
             ).fetchall()
-        return {(bucket, name): version for bucket, name, version in rows}
+        return {
+            (bucket, name): CopiedRecord(version, raw)
+            for bucket, name, version, raw in rows
+        }
 
     def versions_for(
         self, keys: Sequence[tuple[str, str]]
-    ) -> dict[tuple[str, str], str | None]:
+    ) -> dict[tuple[str, str], CopiedRecord]:
         """Copied versions for just these objects.
 
         The seed walks millions of rows; loading the whole `copied` table to
         plan one batch would put the entire object list in memory twice. One
         indexed lookup per batch keeps the run flat instead.
         """
-        found: dict[tuple[str, str], str | None] = {}
+        found: dict[tuple[str, str], CopiedRecord] = {}
         for chunk in chunked(list(keys), SQLITE_MAX_VARIABLES // 2):
             placeholders = ", ".join(["(?, ?)"] * len(chunk))
             params = [value for key in chunk for value in key]
             with self._lock:
                 rows = self.conn.execute(
-                    "SELECT bucket_id, name, version FROM copied "
+                    "SELECT bucket_id, name, version, raw_name FROM copied "
                     f"WHERE (bucket_id, name) IN ({placeholders})",
                     params,
                 ).fetchall()
-            found.update({(bucket, name): version for bucket, name, version in rows})
+            found.update({
+                (bucket, name): CopiedRecord(version, raw)
+                for bucket, name, version, raw in rows
+            })
         return found
 
     def mark_copied(self, obj: StorageObject, now: str | None = None) -> None:
         with self._lock:
             self.conn.execute(
-                "INSERT INTO copied (bucket_id, name, version, size, copied_at) "
-                "VALUES (?, ?, ?, ?, ?) "
+                "INSERT INTO copied "
+                "(bucket_id, name, version, size, copied_at, raw_name) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (bucket_id, name) DO UPDATE SET "
-                "version=excluded.version, size=excluded.size, copied_at=excluded.copied_at",
+                "version=excluded.version, size=excluded.size, "
+                "copied_at=excluded.copied_at, raw_name=excluded.raw_name",
                 # ledger_key, NOT obj.name. versions_for() looks rows up by
                 # ledger_key, which is normalized; storing the raw name means
                 # a name that differs from its normalized form never matches
                 # what was written and is re-copied on every run.
-                (*obj.ledger_key, obj.version, obj.size, now or utcnow()),
+                (*obj.ledger_key, obj.version, obj.size, now or utcnow(), obj.name),
             )
 
     def commit(self) -> None:

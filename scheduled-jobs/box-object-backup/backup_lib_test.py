@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import backup_lib as lib  # noqa: E402
 from backup_lib import (  # noqa: E402
-    BACKING_BUCKET, SQLITE_MAX_VARIABLES, BackupError, StorageObject,
+    BACKING_BUCKET, SQLITE_MAX_VARIABLES, BackupError, CopiedRecord, StorageObject,
     batches, box_path, build_plan, chunked, format_bytes, iter_manifest,
     objects_query, parse_manifest, unsafe_reason,
 )
@@ -270,6 +270,16 @@ def test_object_over_the_box_file_cap_is_unsafe():
     assert "per-file limit" in unsafe_reason(obj(size=60 * 1024**3))
 
 
+def test_a_file_exactly_at_the_box_limit_is_allowed():
+    # The comparison is `>`, so the limit itself is fine. Only 60GiB was ever
+    # tested, which passes whether the boundary is right or off by one.
+    assert unsafe_reason(obj(size=lib.BOX_MAX_FILE_BYTES)) is None
+
+
+def test_a_file_one_byte_over_the_box_limit_is_not():
+    assert "per-file limit" in unsafe_reason(obj(size=lib.BOX_MAX_FILE_BYTES + 1))
+
+
 def test_unknown_size_is_not_treated_as_oversized():
     assert unsafe_reason(obj(size=None)) is None
 
@@ -282,12 +292,15 @@ def test_plan_copies_an_object_absent_from_the_ledger():
 
 
 def test_plan_skips_an_object_whose_version_is_already_copied():
-    plan = build_plan([obj()], {obj().ledger_key: VERSION})
+    plan = build_plan([obj()], {obj().ledger_key: CopiedRecord(VERSION, obj().name)})
     assert plan.copies == () and plan.already_current == 1
 
 
 def test_plan_recopies_an_object_whose_version_changed():
-    plan = build_plan([obj(version=OTHER_VERSION)], {obj().ledger_key: VERSION})
+    plan = build_plan(
+        [obj(version=OTHER_VERSION)],
+        {obj().ledger_key: CopiedRecord(VERSION, obj().name)},
+    )
     assert len(plan.copies) == 1
 
 
@@ -338,13 +351,15 @@ def test_new_ledger_has_no_copied_objects(ledger):
 
 def test_mark_copied_records_the_version(ledger):
     ledger.mark_copied(obj())
-    assert ledger.copied_versions()[obj().ledger_key] == VERSION
+    assert ledger.copied_versions()[obj().ledger_key].version == VERSION
 
 
 def test_mark_copied_twice_updates_rather_than_duplicates(ledger):
     ledger.mark_copied(obj())
     ledger.mark_copied(obj(version=OTHER_VERSION))
-    assert ledger.copied_versions() == {obj().ledger_key: OTHER_VERSION}
+    assert ledger.copied_versions() == {
+        obj().ledger_key: CopiedRecord(OTHER_VERSION, obj().name)
+    }
 
 
 def test_same_name_in_two_buckets_is_two_entries(ledger):
@@ -355,7 +370,7 @@ def test_same_name_in_two_buckets_is_two_entries(ledger):
 
 def test_ledger_round_trips_a_null_version(ledger):
     ledger.mark_copied(obj(version=None))
-    assert ledger.copied_versions()[obj().ledger_key] is None
+    assert ledger.copied_versions()[obj().ledger_key].version is None
 
 
 def test_no_successful_run_yet(ledger):
@@ -386,7 +401,8 @@ def test_versions_for_returns_only_the_requested_objects(ledger):
     ledger.mark_copied(obj(name="a.png"))
     ledger.mark_copied(obj(name="b.png"))
     found = ledger.versions_for([("images", "a.png")])
-    assert found == {("images", "a.png"): VERSION}
+    assert list(found) == [("images", "a.png")]
+    assert found[("images", "a.png")].version == VERSION
 
 
 def test_versions_for_omits_objects_it_has_never_seen(ledger):
@@ -417,7 +433,7 @@ def test_ledger_survives_reopening(tmp_path):
     first.commit()
     first.close()
     second = Ledger.open(path)
-    assert second.copied_versions()[obj().ledger_key] == VERSION
+    assert second.copied_versions()[obj().ledger_key].version == VERSION
     second.close()
 
 
@@ -748,6 +764,177 @@ class TestLedgerKeyMatchesTheDestination:
             assert lib.box_path(o) == f"{bucket}/{key}"
 
 
+class TestTwoNamesThatBecomeOneBoxPath:
+    """Distinct objects whose names normalize onto the same destination.
+
+    `ledger_key` and `box_path` both normalize, because Box does. So `café.png`
+    written with a precomposed e-acute and `café.png` written as e + combining
+    acute are two rows in `storage.objects`, two different files, and one path
+    on Box.
+
+    Before this, both were planned and copied. The second overwrote the first,
+    both reported success, and the ledger held one row — so the next run found
+    the recorded version no longer matched the loser and copied it back over
+    the winner, and the run after that reversed it again. Neither was ever
+    safely backed up and nothing said so. `ledger_key`'s own docstring named
+    this and said the check belonged at planning time; it was never written.
+    """
+
+    COMPOSED = "caf\u00e9.png"
+    DECOMPOSED = "caf\u0065\u0301.png"
+
+    def a(self):
+        return obj(name=self.COMPOSED, version=VERSION)
+
+    def b(self):
+        return obj(name=self.DECOMPOSED, version=OTHER_VERSION)
+
+    def test_they_really_are_two_objects_headed_for_one_path(self):
+        assert self.COMPOSED != self.DECOMPOSED
+        assert unsafe_reason(self.a()) is None and unsafe_reason(self.b()) is None
+        assert box_path(self.a(), "root") == box_path(self.b(), "root")
+        assert self.a().ledger_key == self.b().ledger_key
+
+    def test_only_one_of_them_is_copied(self):
+        plan = build_plan([self.a(), self.b()], {})
+        assert len(plan.copies) == 1, "both planned — one would overwrite the other"
+        assert len(plan.skipped) == 1
+
+    def test_the_one_refused_is_named_and_explained(self):
+        plan = build_plan([self.a(), self.b()], {})
+        skipped = plan.skipped[0]
+        assert skipped.obj.name == self.DECOMPOSED
+        assert self.COMPOSED in skipped.reason, "does not say what took the path"
+        assert "Box" in skipped.reason
+
+    def test_the_first_one_seen_keeps_the_path(self):
+        assert build_plan([self.a(), self.b()], {}).copies[0].name == self.COMPOSED
+        assert build_plan([self.b(), self.a()], {}).copies[0].name == self.DECOMPOSED
+
+    def test_the_loser_is_still_refused_in_a_later_batch(self, ledger):
+        """The collision does not have to be inside one plan.
+
+        A batch is 20,000 objects and a seed has millions; the two halves can
+        be days apart. The ledger remembers which raw name holds the path.
+        """
+        ledger.mark_copied(self.a())
+        ledger.commit()
+        plan = build_plan([self.b()], ledger.versions_for([self.b().ledger_key]))
+        assert plan.copies == (), "overwrote an object copied in an earlier batch"
+        assert self.COMPOSED in plan.skipped[0].reason
+
+    def test_it_does_not_flip_flop_from_run_to_run(self, ledger):
+        """What made this permanent rather than merely wrong once.
+
+        Each run saw a version that did not match and re-copied, so the two
+        objects took turns occupying the path and one Box write was wasted
+        every night, forever.
+        """
+        for _ in range(3):
+            plan = build_plan(
+                [self.a(), self.b()],
+                ledger.versions_for([self.a().ledger_key, self.b().ledger_key]),
+            )
+            for o in plan.copies:
+                ledger.mark_copied(o)
+            ledger.commit()
+        record = ledger.versions_for([self.a().ledger_key])[self.a().ledger_key]
+        assert record.raw_name == self.COMPOSED, "the path changed hands"
+        assert record.version == VERSION
+
+    def test_the_second_run_copies_nothing_at_all(self, ledger):
+        first = build_plan([self.a(), self.b()], {})
+        for o in first.copies:
+            ledger.mark_copied(o)
+        ledger.commit()
+        second = build_plan(
+            [self.a(), self.b()],
+            ledger.versions_for([self.a().ledger_key, self.b().ledger_key]),
+        )
+        assert second.copies == ()
+        assert second.already_current == 1
+        assert len(second.skipped) == 1
+
+    def test_a_collision_is_counted_apart_from_an_unsafe_name(self):
+        """`skipped` is mostly names Box will not accept — a colon, a trailing
+        space. A collision is a different report to make: the object is fine,
+        something else has its destination, and no rename here fixes it."""
+        plan = build_plan([self.a(), self.b(), obj(name="bad:name.png")], {})
+        assert len(plan.skipped) == 2
+        assert plan.collisions == 1, "a collision is indistinguishable from a bad name"
+
+    def test_no_collision_counts_none(self):
+        assert build_plan([obj(name="bad:name.png")], {}).collisions == 0
+
+    def test_the_same_object_twice_is_not_a_collision(self):
+        plan = build_plan([self.a(), self.a()], {})
+        assert plan.skipped == (), "refused an object for colliding with itself"
+
+    def test_the_same_name_in_another_bucket_is_not_a_collision(self):
+        plan = build_plan(
+            [obj(bucket_id="images", name=self.COMPOSED),
+             obj(bucket_id="videos", name=self.DECOMPOSED)],
+            {},
+        )
+        assert len(plan.copies) == 2 and plan.skipped == ()
+
+    def test_a_new_version_of_the_holder_is_still_copied(self, ledger):
+        """Refusing the collision must not freeze the object that won."""
+        ledger.mark_copied(self.a())
+        ledger.commit()
+        newer = obj(name=self.COMPOSED, version=OTHER_VERSION)
+        plan = build_plan([newer], ledger.versions_for([newer.ledger_key]))
+        assert len(plan.copies) == 1, "the winner stopped being updated"
+
+    def test_a_row_written_before_raw_name_existed_is_not_a_collision(self, ledger):
+        """Ledgers predating the column have raw_name NULL.
+
+        Treating unknown as "held by someone else" would refuse every object in
+        an existing ledger and mirror nothing at all.
+        """
+        ledger.mark_copied(self.a())
+        ledger.commit()
+        ledger.conn.execute("UPDATE copied SET raw_name = NULL")
+        ledger.commit()
+        plan = build_plan([self.a()], ledger.versions_for([self.a().ledger_key]))
+        assert plan.skipped == () and plan.already_current == 1
+
+
+class TestTheLedgerRemembersWhichNameHoldsThePath:
+    def test_the_raw_name_is_stored_alongside_the_normalized_one(self, ledger):
+        decomposed = "caf\u0065\u0301.png"
+        o = obj(name=decomposed)
+        ledger.mark_copied(o)
+        ledger.commit()
+        record = ledger.versions_for([o.ledger_key])[o.ledger_key]
+        assert record.raw_name == decomposed, "the raw name was not kept"
+        assert o.ledger_key[1] != decomposed, "the key is supposed to be normalized"
+
+    def test_an_older_ledger_gains_the_column_without_losing_rows(self, tmp_path):
+        import sqlite3
+
+        path = str(tmp_path / "old.db")
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            CREATE TABLE copied (
+                bucket_id TEXT NOT NULL, name TEXT NOT NULL, version TEXT,
+                size INTEGER, copied_at TEXT NOT NULL,
+                PRIMARY KEY (bucket_id, name)
+            );
+            INSERT INTO copied VALUES ('images', 'a.png', 'v1', 1, 'then');
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        led = Ledger.open(path)
+        record = led.versions_for([("images", "a.png")])[("images", "a.png")]
+        assert record.version == "v1", "an existing row was lost"
+        assert record.raw_name is None
+        led.close()
+
+
 class TestTheLedgerStoresWhatItLooksUp:
     """`mark_copied` wrote the raw name while `versions_for` looked up the
     normalized one, so a name differing from its normalized form was written
@@ -774,13 +961,13 @@ class TestTheLedgerStoresWhatItLooksUp:
         o = obj(name=self.DECOMPOSED)
         ledger.mark_copied(o)
         ledger.commit()
-        assert ledger.versions_for([o.ledger_key]) == {o.ledger_key: o.version}
+        assert ledger.versions_for([o.ledger_key])[o.ledger_key].version == o.version
 
     def test_an_ordinary_name_round_trips(self, ledger):
         o = obj(name="cyl-images/cyl-image_13891376.png")
         ledger.mark_copied(o)
         ledger.commit()
-        assert ledger.versions_for([o.ledger_key])[o.ledger_key] == o.version
+        assert ledger.versions_for([o.ledger_key])[o.ledger_key].version == o.version
 
     def test_a_copied_object_is_not_planned_again(self, ledger):
         # The consequence that matters: without this, every run re-copies it.

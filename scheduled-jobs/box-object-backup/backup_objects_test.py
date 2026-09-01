@@ -118,7 +118,7 @@ def test_every_planned_object_is_copied_once(ledger):
 
 def test_a_successful_copy_is_recorded(ledger):
     run_copy(FakeRclone(), [obj()], ledger)
-    assert ledger.copied_versions()[("images", "exp-42/frame.png")] == VERSION
+    assert ledger.copied_versions()[("images", "exp-42/frame.png")].version == VERSION
 
 
 def test_a_failed_copy_is_not_recorded(ledger):
@@ -352,6 +352,14 @@ class TestOutcomeProtectsTheWatermark:
         # limit — that run really did see everything.
         assert job.run_outcome(crashed=False, failed=0, copied=1_200, limit=500_000) == "ok"
 
+    def test_one_object_short_of_the_limit_still_saw_the_whole_table(self):
+        # The boundary itself: `copied >= limit` means the run may have been
+        # cut off, one below means it ran out of work first. Only far-from-the
+        # -edge values were pinned, which hold either way.
+        assert job.run_outcome(
+            crashed=False, failed=0, copied=499_999, limit=500_000
+        ) == "ok"
+
     def test_failures_still_mark_a_run_partial(self):
         assert job.run_outcome(crashed=False, failed=3, copied=10, limit=None) == "partial"
 
@@ -392,11 +400,12 @@ class TestVerificationCanFailARun:
 
 
 class TestVerifyReservoir:
-    """The sample must cover the run, not its first few thousand objects."""
+    """The sample must cover the run, not its first few thousand objects, and
+    must not change because the network was faster on one night."""
 
-    def make(self, cap, n):
-        r = copier.VerifyReservoir(cap, seed=1234)
-        for i in range(n):
+    def make(self, cap, n, order=None):
+        r = copier.VerifyReservoir(cap)
+        for i in (order if order is not None else range(n)):
             r.offer(f"obj-{i:06d}")
         return r
 
@@ -425,8 +434,48 @@ class TestVerifyReservoir:
         # A mismatch must stay findable on a re-run rather than vanishing.
         assert self.make(50, 10_000).items == self.make(50, 10_000).items
 
+    def test_is_reproducible_even_when_the_order_changes(self):
+        """The one that matters in production.
+
+        `offer` is called by whichever copy worker finishes first, so the order
+        follows Box's network timing and differs every run. Seeded reservoir
+        sampling was reproducible for a fixed sequence and for nothing else —
+        reproducible in this test file and in no real run.
+        """
+        import random
+
+        shuffled = list(range(10_000))
+        random.Random(7).shuffle(shuffled)
+        in_order = self.make(50, 10_000)
+        out_of_order = self.make(50, 10_000, order=shuffled)
+        assert out_of_order.items == in_order.items, (
+            "a different arrival order sampled different objects"
+        )
+
+    def test_the_sample_does_not_depend_on_the_process(self):
+        """str hashing is salted per process; the sample must not be.
+
+        Pinned to actual values so a change of hash shows up as a failing test
+        rather than as verification quietly checking somewhere else.
+        """
+        # Confirmed identical under PYTHONHASHSEED 0, 1 and 12345.
+        assert self.make(3, 1_000).items == [
+            "obj-000815", "obj-000894", "obj-000343"
+        ]
+
     def test_counts_everything_it_was_offered(self):
         assert self.make(50, 10_000).seen == 10_000
+
+    def test_an_object_that_cannot_be_ordered_is_still_accepted(self):
+        """Ties must never compare the objects themselves.
+
+        StorageObject is a frozen dataclass with no ordering, so a tie that
+        reached it would raise TypeError mid-run, inside a copy worker.
+        """
+        r = copier.VerifyReservoir(5)
+        for _ in range(10):
+            r.offer(obj(name="same/path.png"))
+        assert len(r) == 5
 
 
 class TestBoxRootIsChecked:
@@ -977,6 +1026,151 @@ class TestAStoppedRunIsResumable:
         assert "3 = interrupted" in job.__doc__
 
 
+class TestACrashedRunStillLeavesARecord:
+    """`finish_run` sat after the try/except/finally rather than inside it.
+
+    So it ran on every successful run and on no failing one: the `runs` row
+    opened by `start_run` kept a NULL finished_at, outcome and stats forever.
+    Not dead code — code that runs in the ordinary case and is skipped exactly
+    when the record is worth having. The report published to Box named the
+    outcome correctly three lines earlier, so the local ledger the job's own
+    error messages point operators at was the one place a crash never showed.
+    """
+
+    @pytest.fixture
+    def harness(self, monkeypatch, tmp_path):
+        return TestRunLockedWiresItsPartsTogether().harness.__wrapped__(
+            TestRunLockedWiresItsPartsTogether(), monkeypatch, tmp_path
+        )
+
+    def crash(self, harness, monkeypatch):
+        def boom(*a, **kw):
+            raise RuntimeError("preflight could not reach MinIO")
+
+        monkeypatch.setattr(job, "preflight_source", boom)
+        state, tmp_path = harness
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
+        with pytest.raises(RuntimeError, match="preflight"):
+            job.run_locked(args, tmp_path)
+        return state, tmp_path
+
+    def last_run(self, tmp_path):
+        import sqlite3
+
+        conn = sqlite3.connect(str(tmp_path / "ledger.db"))
+        row = conn.execute(
+            "SELECT finished_at, outcome, stats FROM runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        return row
+
+    def test_the_run_is_recorded_as_finished(self, harness, monkeypatch):
+        _, tmp_path = self.crash(harness, monkeypatch)
+        finished_at, _, _ = self.last_run(tmp_path)
+        assert finished_at is not None, "the row was left open forever"
+
+    def test_the_run_is_recorded_as_an_error(self, harness, monkeypatch):
+        _, tmp_path = self.crash(harness, monkeypatch)
+        _, outcome, _ = self.last_run(tmp_path)
+        assert outcome == "error", f"a crash was recorded as {outcome!r}"
+
+    def test_the_stats_are_recorded_too(self, harness, monkeypatch):
+        import json
+
+        _, tmp_path = self.crash(harness, monkeypatch)
+        _, _, stats = self.last_run(tmp_path)
+        assert stats is not None, "no stats for the run that most needs them"
+        assert json.loads(stats)["copied"] == 0
+
+    def test_a_crash_is_not_a_watermark(self, harness, monkeypatch):
+        """The row is now filled in, so it must still not count as success."""
+        _, tmp_path = self.crash(harness, monkeypatch)
+        led = Ledger.open(str(tmp_path / "ledger.db"))
+        assert led.last_successful_run() is None
+        led.close()
+
+    def test_the_exception_still_reaches_the_caller(self, harness, monkeypatch):
+        # Recording the failure must not swallow it — main() turns it into the
+        # exit code, and a crash that exits 0 is worse than an open row.
+        self.crash(harness, monkeypatch)
+
+    def test_an_ordinary_run_is_still_recorded_ok(self, harness):
+        state, tmp_path = harness
+        assert job.run_locked(
+            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
+        ) == 0
+        finished_at, outcome, stats = self.last_run(tmp_path)
+        assert finished_at is not None
+        assert outcome == "ok"
+        assert stats is not None
+
+
+class TestACollisionIsVisibleInAWholeRun:
+    """End to end, because the complaint was silence rather than wrongness.
+
+    A run that quietly copies one of two objects and reports success is the
+    failure mode: nothing in the exit code, the ledger, or the report said an
+    object had been left behind.
+    """
+
+    COMPOSED = "exp/caf\u00e9.png"
+    DECOMPOSED = "exp/caf\u0065\u0301.png"
+
+    @pytest.fixture
+    def harness(self, monkeypatch, tmp_path):
+        return TestRunLockedWiresItsPartsTogether().harness.__wrapped__(
+            TestRunLockedWiresItsPartsTogether(), monkeypatch, tmp_path
+        )
+
+    def run_it(self, harness, monkeypatch):
+        monkeypatch.setattr(
+            TestRunLockedWiresItsPartsTogether, "MANIFEST",
+            f"images\t{self.COMPOSED}\tv1\t100\t2026-08-31T00:00:00+00\n"
+            f"images\t{self.DECOMPOSED}\tv2\t100\t2026-08-31T00:00:01+00\n",
+        )
+        state, tmp_path = harness
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
+        code = job.run_locked(args, tmp_path)
+        return state, tmp_path, code
+
+    def test_only_one_object_is_copied(self, harness, monkeypatch):
+        state, _, _ = self.run_it(harness, monkeypatch)
+        assert len(state["copied"]) == 1, (
+            "both were copied — the second overwrote the first on Box"
+        )
+
+    def test_the_run_report_counts_the_collision(self, harness, monkeypatch):
+        import json
+        import sqlite3
+
+        _, tmp_path, _ = self.run_it(harness, monkeypatch)
+        conn = sqlite3.connect(str(tmp_path / "ledger.db"))
+        stats = json.loads(
+            conn.execute("SELECT stats FROM runs ORDER BY id DESC LIMIT 1").fetchone()[0]
+        )
+        conn.close()
+        assert stats["collisions"] == 1, f"nothing recorded the collision: {stats}"
+        assert stats["copied"] == 1
+
+    def test_the_run_tells_the_operator_what_to_do(self, harness, monkeypatch, caplog):
+        import logging
+
+        with caplog.at_level(logging.ERROR, logger="bloom_box_object_backup"):
+            self.run_it(harness, monkeypatch)
+        assert "were NOT backed up" in caplog.text, "the run said nothing"
+        assert "rename" in caplog.text.lower(), "did not say how to fix it"
+
+    def test_the_ledger_does_not_claim_both(self, harness, monkeypatch):
+        import sqlite3
+
+        _, tmp_path, _ = self.run_it(harness, monkeypatch)
+        conn = sqlite3.connect(str(tmp_path / "ledger.db"))
+        rows = conn.execute("SELECT name, raw_name FROM copied").fetchall()
+        conn.close()
+        assert len(rows) == 1, f"two rows for one Box path: {rows}"
+        assert rows[0][1] == self.COMPOSED
+
+
 class TestStoppingActuallyStopsTheWork:
     """Behaviour, not source text.
 
@@ -1022,9 +1216,8 @@ class TestStoppingActuallyStopsTheWork:
         run_copy(client, objects, ledger, workers=1)
         ledger.commit()
         first = objects[0]
-        assert ledger.versions_for([first.ledger_key]) == {
-            first.ledger_key: first.version
-        }
+        found = ledger.versions_for([first.ledger_key])
+        assert found[first.ledger_key].version == first.version
 
     def test_what_was_not_reached_is_still_pending(self, ledger):
         # The rest must remain uncopied so a later run picks them up.

@@ -145,13 +145,29 @@ jobs:
           # $HOME and run against whatever is there.
           : "${DEPLOY_PATH:?deploy path is empty}"
 
-          # The remote script is a QUOTED heredoc and the values go to it as
-          # positional arguments. Nothing is interpolated into a command
-          # string, so a dispatch input cannot close a quote and have the
-          # remote shell run the rest — `verify` is free-text and GitHub
-          # validates it no further than "is a string".
+          # `verify` is free-text: GitHub validates a workflow_dispatch input no
+          # further than "is a string". Checked HERE, on the runner, so a value
+          # that is not a plain number never reaches a shell at all.
+          case "$VERIFY" in
+            ''|*[!0-9]*) echo "verify must be a whole number, got: $VERIFY" >&2; exit 1 ;;
+          esac
+
+          # ssh cannot carry argv boundaries. Whatever words follow the host are
+          # joined with spaces into ONE string and handed to the remote login
+          # shell, which parses it as shell syntax. So `ssh host bash -s -- "$V"`
+          # is no safer than interpolating $V into the command: it only moves
+          # which shell does the parsing, and the heredoc's own guard runs
+          # inside `bash -s`, which is merely the first statement of that string.
+          #
+          # `printf %q` quotes each value so the remote shell reparses the
+          # joined string back into the arguments meant, rather than finding
+          # new commands inside them. The heredoc stays quoted for the separate
+          # reason that the runner must substitute nothing into the script.
+          remote_args="$(printf '%q ' \
+            "$DEPLOY_PATH" "$ENV_NAME" "$VERIFY" "$RUN_TAG" "$DRY_RUN")"
+
           ssh -i ~/.ssh/deploy_key "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            bash -s -- "$DEPLOY_PATH" "$ENV_NAME" "$VERIFY" "$RUN_TAG" "$DRY_RUN" \
+            "bash -s -- $remote_args" \
             <<'REMOTE' 2>&1 | tee "${RUNNER_TEMP}/mirror-output.txt"
           set -euo pipefail
           deploy_path="$1"; env_name="$2"; verify="$3"; run_tag="$4"; dry_run="${5:-}"
@@ -225,8 +241,12 @@ jobs:
         timeout-minutes: 3
         run: |
           set -uo pipefail
+          # Quoted for the same reason as the run step: ssh joins its trailing
+          # words into one string for the remote shell to parse. This tag is a
+          # run id and cannot carry a payload, but the pattern gets copied.
+          remote_args="$(printf '%q ' "$RUN_TAG")"
           ssh -i ~/.ssh/deploy_key -o ConnectTimeout=15 \
-            "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s -- "$RUN_TAG" <<'REMOTE' || true
+            "${DEPLOY_USER}@${DEPLOY_HOST}" "bash -s -- $remote_args" <<'REMOTE' || true
           set -uo pipefail
           run_tag="$1"
           lock=/var/lib/bloom-box-object-backup/backup.lock

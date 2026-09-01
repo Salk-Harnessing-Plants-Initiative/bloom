@@ -103,13 +103,21 @@ The deploy tree is whatever `PROD_DEPLOY_PATH` points at; `$DEPLOY` below
 stands in for it.
 
 Export only the variables the job reads. `set -a; source .env.prod` would hand
-the process every secret the stack owns, which it has no use for:
+the process every secret the stack owns, which it has no use for — and a `.env`
+file is not a shell script, so sourcing one dies on a password containing a
+quote, and runs part of one containing a backtick.
+
+Read line by line and assigned, never expanded. `export $(grep ...)` splits the
+values on whitespace and lets the shell see what is in them, which is the same
+mistake the scheduled job was rewritten to stop making:
 
 ```bash
 sudo -i -u bloom-deploy
 DEPLOY=/path/to/deploy/tree
-export $(grep -E '^(BACKUP_[A-Z_]+|POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' \
-    "$DEPLOY/.env.prod" | xargs -d '\n')
+while IFS='=' read -r key value; do
+    [ -n "$key" ] && export "$key=$value"
+done < <(grep -E '^(BACKUP_[A-Z_]+|POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' \
+             "$DEPLOY/.env.prod")
 ```
 
 Prove the path end to end before committing to days of transfer:
