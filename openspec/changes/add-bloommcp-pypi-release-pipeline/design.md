@@ -69,7 +69,7 @@ a misreading of that convention, not a deliberate exception to it.
     staging's rework, versioned install-command strings); bloommcp has no `README.pypi.md`, so
     its link-pinning step only rewrites `pyproject.toml`.
   - Registering the actual PyPI trusted publisher (external, manual, no repo access) — though
-    see tasks.md §9.1: recommended to happen now, in parallel with review, not deferred.
+    see tasks.md §11.1: recommended to happen now, in parallel with review, not deferred.
 
 ## Decisions
 
@@ -146,16 +146,31 @@ a misreading of that convention, not a deliberate exception to it.
   two-package case, but it has no third state: a Release tagged with an unknown or typo'd prefix
   (e.g. `bloomcp-v1.0.0`) makes _both_ workflows skip cleanly at once, and nothing in the
   Actions UI says a Release was published that shipped nowhere. `release-tag-guard.yml` is a
-  third, minimal workflow — no job-level `if:`, `contents: read` only, no publish credential —
-  that runs on every published Release and fails loudly when the tag matches neither known
-  prefix. It intentionally does not attempt to also validate tag/version/changelog for the
-  matching package; that stays each package's own `validate-release` job's job.
+  third, minimal workflow — no job-level `if:`, `permissions: {}` (it never checks out the
+  repo or calls the GitHub API, so even `contents: read` would be more than it needs) — that
+  runs on every published Release and fails loudly when the tag matches neither known prefix.
+  It intentionally does not attempt to also validate tag/version/changelog for the matching
+  package; that stays each package's own `validate-release` job's job. Its bash `case` match
+  runs under `shopt -s nocasematch`, matching GitHub Actions' `startsWith()` case-insensitive
+  semantics exactly (round 3 review: without this, a mixed-case tag like `BLOOMMCP-v1.0.0`
+  would correctly pass the real per-package guard while this workflow misreported "matches no
+  known prefix" — never silent, since the real guard still fails loudly at its own
+  tag/version-mismatch check, but a wrong diagnostic). A regression test
+  (`test_guard_prefixes_match_every_release_workflows_own_guard`) cross-checks this workflow's
+  `KNOWN_PREFIXES` against each real workflow's own guard, so a third package added later with
+  only its own guard updated fails in CI instead of only in production the first time its tag
+  is cut.
 - **`twine` is pinned (`uvx twine@7.0.0 check dist/*`)**, unlike `release-bloomcli.yml`'s own
   equivalent step, which is still unpinned today — inconsistent with this repo's stated
   convention of pinning CI security/build tools (`openspec/project.md`). Copying that
   inherited inconsistency into brand-new code would have had no excuse; fixing it unilaterally
   on `release-bloomcli.yml` itself remains out of scope for #663 (that file's diff is
-  minimized to the tag-prefix guard — see above).
+  minimized to the tag-prefix guard — see above). The same brand-new-file reasoning extended
+  in round 3 to SHA-pinning `actions/checkout`/`actions/upload-artifact`/
+  `actions/download-artifact` in `release-bloommcp.yml` (previously `@v4`, unlike
+  `astral-sh/setup-uv`, already SHA-pinned) — `release-bloomcli.yml` itself stays tag-pinned,
+  matching the repo's dominant convention (only `promote-security-to-main.yml` SHA-pins
+  `actions/checkout` today) and its own diff-minimization principle.
 - **Tag convention**: `bloommcp-vX.Y.Z`, matching the existing `bloomctl-vX.Y.Z` tags actually
   used for every `bloomcli` release to date (`git tag -l` shows `bloomctl-v0.1.0a1..a4`; no
   bare `vX` or `X` tag has ever been used in practice). Retrofitting the `bloomctl-` guard onto
@@ -193,7 +208,13 @@ not live_smoke" -q`, matching the exact marker set `pr-checks.yml`'s `python-aud
   This is bloommcp-specific — `bloomcli` only has an `integration` marker to exclude.
 - **`[project.urls]` added but link-pinning scoped to `pyproject.toml` only** (no
   `README.pypi.md` to rewrite, and no `bloommcp==X`/`bloommcp@X` install-command strings exist
-  in-repo yet to rewrite either).
+  in-repo yet to rewrite either). The link-pinning step's `re.sub` calls pass each replacement
+  through a lambda (`re.sub(pat, lambda m, r=repl: r, s)`) rather than the string directly
+  (round 3 review) — the release tag flows into that replacement string, and `re.sub` treats a
+  literal `\1`-style sequence in a plain-string replacement as a backreference, so a tag
+  containing one would raise `re.error` instead of substituting it literally. Only a
+  write-access user controls the tag (not attacker-exploitable), but a typo could still break
+  an otherwise-valid build.
 - **`bloommcp/uv.lock` is regenerated as part of the version bump**, both in this proposal's
   own `0.1.0` → `0.1.0a1` change and in every future `version-bloommcp.yml` run. Confirmed by
   reading `origin/main:bloommcp/uv.lock` directly: it records `version = "0.1.0"` for the
