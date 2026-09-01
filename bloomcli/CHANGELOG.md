@@ -8,6 +8,17 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Added
+
+- `cyl ingest-result`/`cyl batch-ingest-result` now link write-back to the
+  originating pipeline run when the `ARGO_WORKFLOW_NAME` environment
+  variable is set (Argo sets it automatically inside the write-back
+  container): a successful ingest marks the matching `cyl_pipeline_run_scans`
+  row `'written'`, and `batch-ingest-result` closes out any scan that never
+  produced a result as `'failed'` once the batch is done. Feeds
+  `cyl_pipeline_runs.done_count`/`failed_count` (bloom #716/#696). Manual/
+  ad-hoc invocation with the variable unset is unaffected.
+
 ## [0.1.0a6] - 2026-08-25 — plate download on the PyPI page
 
 ### Fixed
