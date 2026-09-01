@@ -52,10 +52,19 @@
 #
 # The official caddy:2.11.3-builder-alpine image already ships xcaddy paired
 # with the matching Caddy version, so we don't pin xcaddy separately.
+#
+# x/crypto is forced ahead of what Caddy pins. CVE-2026-56854 is a CRITICAL
+# authentication bypass in golang.org/x/crypto/ssh, fixed in 0.55.0; Caddy
+# 2.11.3 pins 0.50.0 and 2.11.4 — the newest release — still pins 0.52.0, so
+# there is no version to upgrade to. `--with` doubles as a module override, so
+# building the patched library in is what actually removes the finding rather
+# than muting it in .trivyignore. Drop this line once a Caddy release pins
+# 0.55.0 or later. See bloom#775.
 # -----------------------------------------------------------------------------
 FROM caddy:2.11.3-builder-alpine@sha256:3eae6b351ecdb05da6d16e341261a457692d344a435764c5ece7a60cf03a23f3 AS builder
 RUN xcaddy build \
-    --with github.com/caddy-dns/cloudflare@fd0213c5482b3dd2a1f14fbce832fcff8e1ac4f8
+    --with github.com/caddy-dns/cloudflare@fd0213c5482b3dd2a1f14fbce832fcff8e1ac4f8 \
+    --with golang.org/x/crypto@v0.55.0
 
 # -----------------------------------------------------------------------------
 # Stage 2 — runtime image.
