@@ -137,11 +137,15 @@ sudo -u bloom-deploy rclone lsl box:bloom-backups/prod
 
 ### Exit codes
 
-| Code | Meaning                                              |
-| ---- | ---------------------------------------------------- |
-| 0    | Verified backup uploaded                             |
-| 1    | Subprocess failed (docker / pg_dump / gzip / rclone) |
-| 2    | Configuration problem, or the stack is not running   |
+| Code | Meaning                                                     |
+| ---- | ----------------------------------------------------------- |
+| 0    | Verified backup uploaded                                    |
+| 1    | Subprocess failed (docker / pg_dump / gzip / rclone)        |
+| 2    | Configuration problem, or the stack is not running          |
+| 3    | An artifact failed verification — missing, short or corrupt |
+
+Code 3 is the one to read closely: the dump ran, but what came out cannot be a
+usable backup. Look at the database, not at the config.
 
 ## What is verified before an upload counts
 

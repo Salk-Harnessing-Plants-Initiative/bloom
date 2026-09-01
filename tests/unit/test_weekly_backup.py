@@ -107,7 +107,7 @@ def test_a_good_artifact_verifies_and_returns_its_size(tmp_path):
 
 def test_an_undersized_artifact_is_rejected(tmp_path):
     artifact = _write_gz(tmp_path / "dump.sql.gz", b"")
-    with pytest.raises(backup.ConfigError, match="below the"):
+    with pytest.raises(backup.VerificationError, match="below the"):
         backup.verify_artifact(artifact, min_bytes=backup.MIN_DATABASE_BYTES)
 
 
@@ -115,17 +115,33 @@ def test_a_corrupt_artifact_is_rejected(tmp_path):
     # Passes the size floor, fails integrity — the truncated-dump case.
     artifact = tmp_path / "dump.sql.gz"
     artifact.write_bytes(b"\x1f\x8b\x08" + b"\x00" * 5000)
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(backup.VerificationError, match="gzip integrity"):
         backup.verify_artifact(artifact, min_bytes=64)
 
 
 def test_a_missing_artifact_is_rejected(tmp_path):
-    with pytest.raises(backup.ConfigError, match="never written"):
+    with pytest.raises(backup.VerificationError, match="never written"):
         backup.verify_artifact(tmp_path / "absent.sql.gz", min_bytes=1)
 
 
 def test_database_floor_is_above_the_globals_floor():
     assert backup.MIN_DATABASE_BYTES > backup.MIN_GLOBALS_BYTES > 0
+
+
+def test_a_bad_dump_exits_on_its_own_code_not_the_config_one(tmp_path, monkeypatch):
+    # Exit 2 tells the operator to go and look at .env and rclone. A short or
+    # corrupt dump is the one failure this job exists to catch, so it gets its
+    # own code and the wiki's table can stay true.
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    monkeypatch.setattr(backup, "_stream_to_gzip", lambda cmd, out: out.write_bytes(b""))
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
+    assert rc == backup.EXIT_VERIFY
+    assert backup.EXIT_VERIFY not in (backup.EXIT_OK, backup.EXIT_SUBPROCESS,
+                                      backup.EXIT_CONFIG)
 
 
 # --------------------------------------------------------------------------

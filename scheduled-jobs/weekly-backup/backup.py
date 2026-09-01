@@ -14,6 +14,7 @@ Exit codes:
   0 = verified backup uploaded
   1 = subprocess failure (docker / pg_dump / gzip / rclone)
   2 = configuration error (missing env, no remote, stack not running)
+  3 = an artifact failed verification (missing, undersized, or corrupt)
 
 See `.env.{staging,prod}.defaults` for the BACKUP_* config surface, and
 _WIKI/SCHEDULEDJOBS/weekly-backup.md for setup.
@@ -47,10 +48,15 @@ MIN_GLOBALS_BYTES = 256
 EXIT_OK = 0
 EXIT_SUBPROCESS = 1
 EXIT_CONFIG = 2
+EXIT_VERIFY = 3
 
 
 class ConfigError(RuntimeError):
     """Environment or host is not set up for this job to run."""
+
+
+class VerificationError(RuntimeError):
+    """An artifact was produced but cannot be a usable dump."""
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -194,14 +200,19 @@ def _stream_to_gzip(cmd: list[str], out: Path) -> None:
 def verify_artifact(path: Path, min_bytes: int) -> int:
     """Reject an artifact that cannot be a real dump. Returns its size."""
     if not path.exists():
-        raise ConfigError(f"expected artifact was never written: {path.name}")
+        raise VerificationError(f"expected artifact was never written: {path.name}")
     size = path.stat().st_size
     if size < min_bytes:
-        raise ConfigError(
+        raise VerificationError(
             f"{path.name} is {size} bytes, below the {min_bytes}-byte floor — "
             "treating as a failed dump rather than uploading it"
         )
-    _run([_which("gzip"), "-t", str(path)])
+    try:
+        _run([_which("gzip"), "-t", str(path)])
+    except subprocess.CalledProcessError as exc:
+        # Same symptom as the checks above; reporting it as a subprocess
+        # failure would send the operator looking at docker instead.
+        raise VerificationError(f"{path.name} failed its gzip integrity check") from exc
     logger.info("verified %s: %d bytes", path.name, size)
     return size
 
@@ -341,6 +352,9 @@ def main(argv: list[str] | None = None) -> int:
                 dump_database(container, work_dir, timestamp),
                 dump_globals(container, work_dir, timestamp),
             ]
+        except VerificationError as exc:
+            logger.error("verification failed: %s", exc)
+            return EXIT_VERIFY
         except ConfigError as exc:
             logger.error("configuration error: %s", exc)
             return EXIT_CONFIG
