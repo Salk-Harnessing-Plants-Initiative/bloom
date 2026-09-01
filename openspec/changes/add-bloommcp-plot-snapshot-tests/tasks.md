@@ -94,12 +94,17 @@
   floor (single fully-recolored square, increasing area %) against all 5 baselines: 4 of 5
   clear `_TOL=15` comfortably at 2% area, but `correlation_matrix` — the highest-stakes tool
   for a silent single-cell error — does **not** (RMS≈13.7 at 2%, crosses ~2.5%). Rather than
-  filing a follow-up for this (the reviewer's suggested minimum), resolved it directly:
-  generalized `test_tolerance_catches_a_localized_regression` into a parametrized test
-  covering both `heritability_bar` (~2%) and `correlation_matrix` (~3%, real margin above
-  its measured crossing point), and rewrote the "Known limitation" section in
-  `test_viz_snapshot.py`'s docstring and design.md Decision 2 with the full 5-baseline
-  table instead of a single-baseline extrapolation.
+  filing a follow-up for this (the reviewer's suggested minimum), generalized
+  `test_tolerance_catches_a_localized_regression` into a parametrized test covering both
+  `heritability_bar` (~2%) and `correlation_matrix` (~3%, real margin above its measured
+  crossing point).
+  **Correction (see section 8): this was described as "resolved it directly" at the time,
+  which was itself an overclaim.** A follow-up review measured `correlation_matrix`'s
+  *actual* single-cell pixel footprint against the live delegate (`ax.get_window_extent()`)
+  and found it's ~0.455% of the image — the 3% test case here is ~6-7x a real cell, so it
+  never validated single-cell detection at all, only a several-cells-sized regression. See
+  section 8.1 for the actual resolution (measuring the real size and being honest that
+  single-cell detection remains an open, tracked, structural limitation — #768).
 - [x] 7.2 **PR body claimed local and CI test counts matched exactly** ("1376 passed...
   matches CI's python-audit invocation exactly") when CI actually showed 1408 — most likely
   `staging` drift between the local run and CI, not a test defect. Corrected the PR
@@ -108,9 +113,13 @@
   regression** — `gen_plot_snapshots_golden.py` overwrote existing baselines with no
   visibility into what changed. Added: when overwriting an existing baseline, the script
   now computes and prints the old-vs-new RMS via `compare_images(tol=0)`, and its module
-  docstring states that a baseline-touching PR must say what changed and why (design.md
+  docstring states that a baseline-touching PR should say what changed and why (design.md
   Decision 5). Verified locally: regenerating without any tool-code change reports
   `RMS=0.0` for all 5, and the PNGs come out byte-identical (`git status` shows no diff).
+  **Correction (see section 8.2): calling this a "safeguard" overclaimed what it is** — a
+  visibility print with no enforcement (`shutil.copy` still runs regardless of the RMS,
+  nothing in CI reads the output). Reframed as a "visibility aid" throughout, and its logic
+  extracted into a tested `_report_regeneration` helper (section 8.4).
 - [x] 7.4 **Minor: `tasks.md` vs. PR body inconsistency** on whether task 6.1 was done —
   synced the PR body's checklist to match `tasks.md`.
 - [x] 7.5 **Minor: localized-regression test's discriminating power is tied to today's
@@ -125,3 +134,66 @@
 - [x] 7.8 Reran `cd bloommcp && uv run --extra test pytest tests/tools/test_viz_snapshot.py
   tests/tools/test_viz_tools.py -v` (9 tests, up from 8) and the full per-PR sweep —
   confirm green before pushing the fix commit.
+
+## 8. Second human-review response (5-subagent parallel review of the section-7 fix commit)
+
+Found that section 7's own "resolved it directly" claim didn't hold up: the
+`correlation_matrix` negative-control test simulated a defect ~6x the size of a real
+heatmap cell, so it never actually validated single-cell detection for the tool the whole
+fix was about. Also found the narrowed exception handler's diagnostic pointer was
+unreachable in the common failure path, and that "safeguard"/"per-plot tolerance" language
+oversold what changed.
+
+- [x] 8.1 **BLOCKING: measure `correlation_matrix`'s real single-cell size, not an assumed
+  area fraction.** Rendered `create_correlation_heatmap` against the live `turface_19`
+  fixture (11 real trait columns → 55 lower-triangle cells) and measured the axes geometry
+  directly via `ax.get_window_extent()` after `fig.canvas.draw()`: one real cell is
+  ~108.8×108.8px ≈ 11,836px² ≈ **0.455%** of the 1690×1539 baseline — not the ~3% the
+  previous test used (~6-7x too large). Recoloring exactly that real footprint to the
+  most-detectable-possible color (opaque orange) scores **RMS≈5.2**, nowhere near
+  `_TOL=15`. Added `test_realistic_single_cell_defect_in_correlation_matrix_is_not_caught`:
+  a pinning/characterization test that honestly asserts the current (negative) result
+  rather than a rubber-stamped "resolved". Also verified `heritability_bar`'s existing 2%
+  figure the same rigorous way (real per-bar area via each bar patch's
+  `get_window_extent()`: range ~0%-2.89%, median ~2.41%) — it held up; only
+  `correlation_matrix`'s claim was wrong. Relabeled `test_tolerance_catches_a_localized_regression`'s
+  `correlation_matrix` case honestly as validating a several-cells-sized (~6-7 cells)
+  regression, not a single-cell one.
+- [x] 8.2 **Filed #768** ("correlation_matrix snapshot test cannot catch a real single-cell
+  defect") instead of leaving this as an implicit assumption or re-attempting a fix that
+  can't actually work: a `_TOL` low enough to catch a ~5 RMS single-cell signal would also
+  flag ordinary cross-platform noise (design.md Decision 7 explains why a per-plot `_TOL`
+  wouldn't help either). Referenced from `test_viz_snapshot.py`'s docstring, design.md
+  Decisions 2 & 7, and this file.
+- [x] 8.3 **IMPORTANT: `_compare_or_fail`'s design.md pointer was unreachable in the
+  ordinary failure case.** `compare_images` returns a plain string (not an exception) for
+  an RMS-over-`_TOL` mismatch — the exact scenario `_TOL` is calibrated against — so the
+  pointer text inside the `except` block never fired for it. Restructured `_compare_or_fail`
+  to attach the same pointer (`_CROSS_PLATFORM_POINTER`) to both the exception path AND the
+  returned-string path via one shared `pytest.fail` call.
+- [x] 8.4 **IMPORTANT: "per-plot tolerance" and "safeguard" language oversold the actual
+  changes.** `_TOL=15` remains one global constant in the only comparison that runs at
+  CI time (`test_plot_matches_baseline_within_tolerance`/`_compare_or_fail`) — what
+  became per-plot was the negative-control test's synthetic perturbation *size*, not `_TOL`
+  itself (design.md Decision 7 explains why a real per-plot `_TOL` wouldn't help for
+  `correlation_matrix` anyway). The regen script's RMS print was called a "safeguard";
+  reframed as a "visibility aid" throughout (script docstring, design.md Decision 5) since
+  nothing enforces it. Its logic extracted into `_report_regeneration`, now covered by
+  `tests/scripts/test_gen_plot_snapshots_golden.py` (previously untested, a cheap gap a
+  reviewer flagged).
+- [x] 8.5 **SUGGESTION: narrow `_compare_or_fail`'s exception tuple correctly.** The
+  previous `except (ImageComparisonFailure, ValueError)` included a `ValueError` no actual
+  `matplotlib.testing.compare` code path raises (verified by reading `_load_image`/
+  `calculate_rms`/`crop_to_same` source) and omitted `OSError`, the real type
+  `PIL.UnidentifiedImageError` (a corrupted/truncated baseline PNG) would raise. Swapped to
+  `except (ImageComparisonFailure, OSError)`.
+- [x] 8.6 **SUGGESTION**: added a comment next to `_SNAPSHOT_TOOLS` explicitly stating that
+  `histograms`/`boxplots`/`variance_decomposition` are documented but not independently
+  test-enforced for the localized-regression floor (only `heritability_bar` and
+  `correlation_matrix` get a dedicated case).
+- [x] 8.7 **SUGGESTION**: design.md Decision 3 now cites that the section-7 fix commit's
+  own CI run cross-platform-reverified the new `correlation_matrix`-parametrized case, not
+  just the original 5 baseline comparisons.
+- [x] 8.8 Ran `cd bloommcp && uv run --extra test pytest tests/tools/test_viz_snapshot.py
+  tests/scripts/test_gen_plot_snapshots_golden.py -v` and the full per-PR sweep — confirm
+  green before pushing.

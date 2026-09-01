@@ -25,14 +25,16 @@ Run:  cd bloommcp && uv run --frozen --extra test python scripts/gen_plot_snapsh
 
 Regenerating over an *existing* baseline is exactly the moment a real rendering
 regression could get silently "laundered" into a new golden -- a PR that touches these
-PNGs is, by construction, changing the thing the tests exist to catch changes to. To make
-that visible rather than invisible, this script reports the old-vs-new RMS
-(`matplotlib.testing.compare.compare_images`) for every baseline it overwrites. A PR that
-regenerates baselines MUST state, per file, what the reported RMS was and why the change
-is expected (matplotlib bump, an intentional style/color default change, etc.) -- not just
-commit new PNGs silently. An RMS of 0 (or near it) confirms nothing visually changed and
-this run was just re-stamping provenance (e.g. a `sleap-roots-analyze` patch bump with no
-rendering effect).
+PNGs is, by construction, changing the thing the tests exist to catch changes to. This
+script prints the old-vs-new RMS (`matplotlib.testing.compare.compare_images`) for every
+baseline it overwrites, via `_report_regeneration` below -- **a visibility aid for the
+author and reviewer, not an enforced gate**: `shutil.copy` runs unconditionally regardless
+of the reported RMS, nothing in CI reads this script's output, and there is no `--force`/
+justification flag. A PR that regenerates baselines should quote the printed RMS per file
+and say why the change is expected (matplotlib bump, an intentional style/color default
+change, etc.) as a matter of review convention, not because anything mechanically requires
+it. An RMS of 0 (or near it) confirms nothing visually changed -- e.g. a `sleap-roots-
+analyze` patch bump with no rendering effect.
 """
 
 from __future__ import annotations
@@ -95,6 +97,23 @@ _TOOLS = [
 ]
 
 
+def _report_regeneration(target: Path, produced: Path, rel: Path) -> str:
+    """Return the print-worthy message for overwriting (or first-writing) one baseline.
+
+    Pure w.r.t. I/O beyond the two reads `compare_images` itself does -- no copying,
+    no printing -- so this is unit-testable in isolation (`tests/scripts/`).
+    """
+    if not target.is_file():
+        return f"wrote {rel} (new baseline, no prior version to diff against)"
+    diff = compare_images(str(target), str(produced), tol=0, in_decorator=True)
+    rms = diff["rms"] if diff else 0.0
+    return (
+        f"REGENERATED {rel}: old-vs-new RMS={rms:.1f} -- if this is not ~0, "
+        "the PR description should say what visually changed and why "
+        "(see this script's module docstring)"
+    )
+
+
 def build(tmp_path: Path) -> None:
     # Same versioned-manifest miss `tests/tools/test_viz_tools.py`'s `viz_env` fixture
     # forces via `fake_supabase_storage` -- no Supabase env is configured here, so
@@ -123,16 +142,7 @@ def build(tmp_path: Path) -> None:
 
         target = _BASELINES / baseline_name
         rel = target.relative_to(_FIXTURES.parents[1])
-        if target.is_file():
-            diff = compare_images(str(target), str(produced), tol=0, in_decorator=True)
-            rms = diff["rms"] if diff else 0.0
-            print(
-                f"REGENERATED {rel}: old-vs-new RMS={rms:.1f} -- if this is not ~0, "
-                "the PR description MUST say what visually changed and why "
-                "(see this script's module docstring)"
-            )
-        else:
-            print(f"wrote {rel} (new baseline, no prior version to diff against)")
+        print(_report_regeneration(target, produced, rel))
         shutil.copy(produced, target)
 
 

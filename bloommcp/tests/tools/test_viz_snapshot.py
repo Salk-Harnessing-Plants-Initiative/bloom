@@ -31,34 +31,48 @@ regenerate the baselines from a Linux run -- see `scripts/gen_plot_snapshots_gol
 module docstring.
 
 Known limitation -- localized regressions, measured per plot type (not just guessed to
-generalize from one): RMS is a whole-image average, so a spatially small miscoloring is
-diluted across every unaffected pixel, and *how much* it's diluted depends on the plot's
-own layout -- a sparse grid with lots of white margin dilutes less than a dense heatmap
-where the perturbed region already sat over saturated color. Measured directly (single
-fully-recolored square vs. the original baseline, at increasing area fractions):
+generalize from one), and against **real element sizes**, not an assumed area fraction (a
+PR review on #713 correctly rejected an earlier version of this section for testing
+`correlation_matrix` at ~6x a real cell's actual pixel footprint -- see
+`test_realistic_single_cell_defect_in_correlation_matrix_is_not_caught` below):
 
-| baseline               | ~2% area RMS | floor to clear `_TOL=15` |
-|------------------------|--------------|---------------------------|
-| histograms             | ≈22.0        | <2%                       |
-| boxplots               | ≈21.7        | <2%                       |
-| variance_decomposition | ≈22.1        | <2%                       |
-| heritability_bar       | ≈17.0        | ~2%                       |
-| correlation_matrix     | ≈13.7        | ~2.5% (2% alone is NOT caught) |
+RMS is a whole-image average, so a spatially small miscoloring is diluted across every
+unaffected pixel, and *how much* it's diluted depends on both the perturbed area's size
+*and* the plot's own layout. Measuring a real plotting element's actual pixel footprint
+(via `ax.get_window_extent()` against the live delegate call, not guessed):
 
-`correlation_matrix` is the outlier: its heatmap fills most of the frame with already-
-saturated color, so a same-area recolor lands a smaller RGB delta than the same recolor
-landing on the sparser plots' white margins -- and it is also the tool where a silent
-single-cell error is most scientifically consequential (a shifted correlation value a
-researcher would act on). `test_tolerance_catches_a_localized_regression` below is
-parametrized over both `heritability_bar` (its own ~2% floor) and `correlation_matrix`
-(~3%, chosen with real margin above its measured ~2.5% crossing point) so this isn't
-asserted only for the tool with the most headroom. A single bar in an ~18-trait bar chart
-or a handful of cells in a correlation heatmap both clear their respective floors in
-practice, but an even smaller single-cell change is an accepted tradeoff of a whole-image,
-"lightweight" tolerance check (the issue's own word) rather than a per-region diff --
-catching every possible single-element miscoloring would need a heavier-weight structural
-comparison, out of scope here. This table should be re-measured (not assumed to still
-hold) after any change to a plot's own color density or layout.
+- **`correlation_matrix`** (11 real traits -> 55 lower-triangle cells): one cell measures
+  ~108.8x108.8px = **~11,836px², ~0.455% of the 1690x1539 baseline** (exact, reproducible
+  geometry -- see `test_realistic_single_cell_defect_in_correlation_matrix_is_not_caught`).
+  Recoloring exactly that footprint to the *most detectable possible* color (opaque orange
+  against `coolwarm`'s blue/white/red range -- a real miscolored cell would typically shift
+  color **within** the colormap's range, an even smaller RGB delta) scores **RMS≈5.2** --
+  nowhere near `_TOL=15`. **A genuine single-cell defect in `correlation_matrix` is not
+  reliably caught by this check, full stop** -- not "might slip through under bad luck",
+  a bug producing exactly this failure mode would not be flagged. There is no `_TOL` value
+  that both survives legitimate cross-platform noise (~5-12 RMS just from FreeType hinting
+  differences, see the Tolerance section above) and clears a ~5 RMS single-cell signal --
+  the two are the same order of magnitude. This is not a gap this PR closes; it's a real,
+  permanent limit of whole-image RMS comparison applied to a 55-cell grid, tracked as
+  **#768** rather than left as an implicit assumption.
+- **`heritability_bar`** (same 11 traits -> 11 bars): bar *area* varies with each trait's
+  H2 value (near-zero for a low-H2 bar up to the full bar height for H2≈1) -- measured
+  directly via each bar patch's `get_window_extent()`: real single-bar areas range
+  ~0%-2.89% of the image, median ~2.41%. The `test_tolerance_catches_a_localized_regression`
+  case below uses 2% -- within the real, measured range for a plausible single-bar defect
+  (not merely an assumed number), and clears `_TOL=15` (RMS≈17.0).
+- `histograms`/`boxplots`/`variance_decomposition`: not individually re-measured at their
+  real single-element size -- all three carry large enough headroom at a uniform 2% probe
+  (RMS≈21.7-22.1, well above `_TOL=15`) that a smaller real element is very likely still
+  caught, but this is not asserted by a dedicated test the way the two tools above are (see
+  the comment on `_SNAPSHOT_TOOLS`/`_LOCALIZED_REGRESSION_CASES` below).
+
+`test_tolerance_catches_a_localized_regression` proves `_TOL` catches a **several-cells-
+worth** regression in `correlation_matrix` (~3% area, ~6-7 real cells) -- a plausible
+shape for a bug affecting a contiguous block (e.g. one trait's whole row/column), not a
+claim that single-cell defects are covered. These measurements are a snapshot of today's
+baselines, not a law -- re-measure after any change to a plot's trait count, color
+density, or layout.
 
 Scope: the 5 dedicated plotting tools only (matching `test_viz_tools.py`'s existing
 `_TOOLS` list) -- the optional plot keys `pca_analysis`/`umap_analysis`/`clustering` can
@@ -93,6 +107,14 @@ _EXPERIMENT = "turface_19.csv"
 _TOL = 15
 
 # (label, tool module, tool fn name, produced PNG name, baseline PNG name)
+#
+# All 5 are covered by test_plot_matches_baseline_within_tolerance (the production
+# comparison). Only `heritability_bar` and `correlation_matrix` additionally get a
+# dedicated localized-regression negative-control case below
+# (_LOCALIZED_REGRESSION_CASES) -- `histograms`/`boxplots`/`variance_decomposition`'s
+# ~2%-area floor is documented in the module docstring's "Known limitation" section but
+# NOT independently test-enforced; nothing in CI would catch a future baseline
+# regeneration quietly eroding their margin against `_TOL=15`.
 _SNAPSHOT_TOOLS = [
     (
         "histograms",
@@ -151,27 +173,40 @@ def test_plot_matches_baseline_within_tolerance(
         "`uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py` to create it"
     )
 
-    diff = _compare_or_fail(baseline, actual)
-    assert diff is None, diff
+    _compare_or_fail(baseline, actual)
 
 
-def _compare_or_fail(baseline: Path, actual: Path):
-    """`compare_images` raises `ImageComparisonFailure` (not a clean result) when the two
-    PNGs differ in pixel dimensions -- e.g. if `bbox_inches="tight"` (`_viz_shared.save_plot`)
-    produced a different canvas size on this platform than the baseline's, itself a
-    plausible symptom of the same cross-platform font-hinting risk `_TOL` is calibrated
-    against (design.md Decision 3). Convert that into the same actionable failure shape as
-    an over-tolerance RMS, instead of letting a raw exception obscure the diagnosis.
+# Appended to EVERY failure this helper raises, not just the exception path -- a PR review
+# on #713 found the original version only attached this pointer inside the `except` block,
+# which `compare_images` never actually reaches for the ordinary "RMS exceeded `_TOL`" case
+# (that's a plain returned string, not a raised exception -- see the two paths in
+# `_compare_or_fail` below). The pointer was therefore dead code for the exact scenario
+# `_TOL` itself is calibrated against.
+_CROSS_PLATFORM_POINTER = (
+    "\nIf this is an RMS-over-tolerance message OR a dimension-mismatch exception, it may "
+    "be legitimate cross-platform FreeType-hinting / bbox_inches='tight' canvas-size noise "
+    "rather than a content regression -- see design.md Decision 3 before regenerating "
+    "baselines or changing _TOL."
+)
+
+
+def _compare_or_fail(baseline: Path, actual: Path) -> None:
+    """Compare and fail with `_CROSS_PLATFORM_POINTER` attached either way `compare_images`
+    can fail: it raises `ImageComparisonFailure` for a pixel-dimension mismatch (e.g. if
+    `bbox_inches="tight"`, `_viz_shared.save_plot`'s save call, produced a different canvas
+    size on this platform than the baseline's), but returns a plain failure *string* (no
+    exception) for an ordinary RMS-over-`_TOL` mismatch -- both need the same pointer, not
+    just the exception path. `OSError` also covers `PIL.UnidentifiedImageError` (a
+    committed baseline PNG that's corrupted/truncated) -- low-likelihood since baselines are
+    ordinary committed git binaries, but a real failure mode `_load_image` can hit, unlike a
+    speculative `ValueError` no path in `matplotlib.testing.compare` actually raises.
     """
     try:
-        return compare_images(str(baseline), str(actual), tol=_TOL)
-    except (ImageComparisonFailure, ValueError) as exc:
-        pytest.fail(
-            f"{exc}\n"
-            "If this is a dimension mismatch (not an RMS-over-tolerance message), it may "
-            "be a cross-platform bbox_inches='tight' canvas-size difference rather than a "
-            "content regression -- see design.md Decision 3 before regenerating baselines."
-        )
+        diff = compare_images(str(baseline), str(actual), tol=_TOL)
+    except (ImageComparisonFailure, OSError) as exc:
+        pytest.fail(f"{exc}{_CROSS_PLATFORM_POINTER}")
+    if diff is not None:
+        pytest.fail(f"{diff}{_CROSS_PLATFORM_POINTER}")
 
 
 def test_tolerance_catches_a_real_regression(tmp_path):
@@ -196,10 +231,13 @@ def test_tolerance_catches_a_real_regression(tmp_path):
 
 
 _LOCALIZED_REGRESSION_CASES = [
-    # (baseline filename, area fraction) -- fraction chosen per-baseline from the module
-    # docstring's measured table, not one number assumed to generalize: correlation_matrix
-    # needs ~3% (real margin above its measured ~2.5% crossing point) where the other 4
-    # clear _TOL at 2% or less.
+    # (baseline filename, area fraction). heritability_bar's 2% is within the real,
+    # measured single-bar-area range (~0%-2.89%, median ~2.41% -- see module docstring).
+    # correlation_matrix's 3% is deliberately NOT a single real cell (one cell measures
+    # ~0.455%, see test_realistic_single_cell_defect_in_correlation_matrix_is_not_caught
+    # below, which pins that a real single-cell defect is NOT caught) -- 3% represents
+    # ~6-7 real cells' worth of area, a plausible "whole row/column wrong" bug shape, with
+    # real margin above the ~2.5% RMS-crossing point measured for that size.
     ("heritability_turface_19_baseline.png", 0.02),
     ("correlation_matrix_turface_19_baseline.png", 0.03),
 ]
@@ -212,14 +250,11 @@ _LOCALIZED_REGRESSION_CASES = [
 )
 def test_tolerance_catches_a_localized_regression(tmp_path, baseline_name, area_fraction):
     """A *global* dim (above) isn't the only regression shape worth proving `_TOL` catches
-    -- a single mis-colored element (one bar, one heatmap cell) only touches part of the
-    image, and RMS is a whole-image average (see module docstring's "Known limitation").
-    Parametrized over `heritability_bar` and `correlation_matrix` specifically (not just
-    whichever baseline has the most headroom): `correlation_matrix`'s heatmap fills most
-    of the frame with already-saturated color, so it dilutes a same-area recolor less
-    than the sparser plots do, and it is the tool where a silent single-cell error is
-    most scientifically consequential -- it should not be validated only by proxy via a
-    different tool's floor.
+    -- a spatially small miscoloring only touches part of the image, and RMS is a
+    whole-image average (see module docstring's "Known limitation"). Proves `_TOL` catches
+    a **several-elements-worth** localized regression on both `heritability_bar` (a
+    realistically-sized single bar) and `correlation_matrix` (several cells, NOT a single
+    cell -- see the dedicated single-cell test below for that honest negative result).
     """
     baseline = _BASELINES / baseline_name
     img = Image.open(baseline).convert("RGB")
@@ -238,6 +273,58 @@ def test_tolerance_catches_a_localized_regression(tmp_path, baseline_name, area_
         f"a ~{area_fraction * 100:.0f}%-area recolored {baseline_name} compared equal to "
         f"itself -- _TOL={_TOL} is too loose to catch even this deliberately-sized "
         "localized regression"
+    )
+
+
+# Exact geometry for turface_19's real correlation_matrix render, measured directly against
+# the live delegate call via ax.get_window_extent() (not eyeballed): create_correlation_heatmap
+# renders turface_19's 11 real trait columns into an 11x11 grid (mask hides the upper
+# triangle + diagonal, leaving 55 real cells) inside a square axes measuring
+# 1196.7x1196.7px at the actual save dpi=150. One cell is therefore
+# 1196.7/11 = ~108.8px per side = ~11,836px^2 of the baseline's 1690x1539 = 2,600,910px^2
+# total -- ~0.455%. Re-derive this (same method: render, `fig.canvas.draw()`,
+# `ax.get_window_extent(fig.canvas.get_renderer())`) if the fixture's trait count or the
+# delegate's figsize/dpi ever changes; do not just bump the fraction.
+_REAL_CORRELATION_CELL_AREA_FRACTION = 11836 / (1690 * 1539)
+
+
+def test_realistic_single_cell_defect_in_correlation_matrix_is_not_caught(tmp_path):
+    """Honest negative result, not a gap papered over: a real single-cell defect in
+    `correlation_matrix` -- the tool where a silent wrong value is most scientifically
+    consequential -- is measurably NOT caught by `_TOL=15`. A PR review on #713 correctly
+    rejected an earlier version of this suite that tested at ~6x a real cell's actual size
+    and called the gap "resolved"; it wasn't. This test locks in the actual, current
+    behavior instead: it should fail loudly (telling us something changed, for better or
+    worse) if a future baseline regeneration or `_TOL` change ever alters this outcome --
+    it must NOT be treated as passing proof the gap is fine to ignore.
+
+    Uses opaque orange -- the same maximally-detectable color the other tests in this file
+    use -- which is *more* detectable than a realistic bug: a real miscolored cell under
+    `coolwarm` would typically shift color **within** the colormap's blue/white/red range
+    (a wrong-but-plausible correlation value), producing an even smaller RGB delta than an
+    unrelated hue. If even this generous, easiest-to-detect version of a single-cell defect
+    isn't caught, a realistic one certainly isn't either. See #768 for the tracked follow-up
+    (this is a structural limit of whole-image RMS on a 55-cell grid, not a TODO expected to
+    resolve on its own) and design.md's "Known limitation" section for the full reasoning.
+    """
+    baseline = _BASELINES / "correlation_matrix_turface_19_baseline.png"
+    img = Image.open(baseline).convert("RGB")
+    w, h = img.size
+    side = int((w * h * _REAL_CORRELATION_CELL_AREA_FRACTION) ** 0.5)
+    perturbed_img = img.copy()
+    x0, y0 = w // 3, h // 3
+    ImageDraw.Draw(perturbed_img).rectangle(
+        [x0, y0, x0 + side, y0 + side], fill=(255, 165, 0)
+    )
+    perturbed = tmp_path / "single_cell.png"
+    perturbed_img.save(perturbed)
+
+    diff = compare_images(str(baseline), str(perturbed), tol=_TOL)
+    assert diff is None, (
+        "a realistic single-cell-sized recolor is now caught by _TOL=15 -- this is an "
+        "IMPROVEMENT (great!), but update this test's assertion (and design.md / #768) to "
+        "reflect the new reality rather than leaving a stale 'not caught' pin: "
+        f"{diff}"
     )
 
 
