@@ -294,3 +294,59 @@ because the vendored batch delegates expose no per-page hook (see design.md's co
       suggestion-tier follow-up, not fixed in this PR.
 - [x] 10.8 Re-ran the full suite (1464 passed — reconciled against 1452 + exactly the 12 tests
       this round added) + `openspec validate --strict`.
+
+## 11. Fourth PR review pass — round 3's own fix was incomplete in two ways, plus verification gaps
+
+5-subagent panel review of the round-3 fix commit found the round-3 masking-mismatch fix itself
+had 2 blocking gaps (both about the *image*, not the JSON it already covered), plus real
+verification/testing gaps and a disputed test-count claim.
+
+- [x] 11.1 **Blocking**: the round-3 `heatmap_caveat` disclosure was JSON-only — the persisted
+      PNG itself carried no signal, so a caller who only downloads/opens the image (never reads
+      the JSON response) saw zero indication a cell might be spurious. Fixed by drawing
+      `heatmap_caveat` as a footnote directly onto the already-rendered `Figure` via
+      `fig.text(...)` before `savefig`, whenever non-`None` — a whole-figure footnote, not a
+      per-cell hatch/marker on the specific flagged pair(s): the latter would require
+      reverse-engineering the vendored delegate's exact cell geometry, and a wrong guess would
+      mislabel a *different* cell, worse than no annotation. Added
+      `test_heatmap_caveat_annotated_directly_onto_the_saved_figure` +
+      `test_no_annotation_added_when_nothing_is_flagged`.
+- [x] 11.2 **Blocking**: `heatmap_caveat` was never stamped into the persisted run's `params` —
+      only `resolved_trait_columns` was (round 3), undercutting round 3's own stated manifest-
+      readability motivation. Fixed with a one-line addition to the same `provenance.model_copy`
+      call. Added `test_heatmap_caveat_stamped_into_manifest_params` +
+      `test_heatmap_caveat_stamped_as_none_when_nothing_flagged`.
+- [x] 11.3 **Important**: re-verified the self-reported "1464 passed, 0 failed" claim against the
+      **exact** CI invocation (`--frozen`, `-v --tb=short`, from `pr-checks.yml`) on a freshly
+      recreated worktree, `uv lock --check` confirmed in sync first — reproduces exactly (1464
+      passed / 33 deselected / 1497 total via `--collect-only`). Documented the literal command
+      + output in design.md's new "Test Count Verification" section rather than just re-asserting
+      the number; could not reproduce the review's "1428/1461" on this side.
+- [x] 11.4 **Important**: added a dedicated parametrized boundary test for `_MIN_CORR_OVERLAP`
+      itself (overlap `== 10` not flagged, `== 9` flagged) — the only prior overlap test used
+      overlap `== 2`, deep inside the flagged region, so an off-by-one in the comparison operator
+      or the constant would have sailed through undetected.
+- [x] 11.5 **Important**: filed
+      [#769](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/769) tracking
+      `ResultStore`'s no-per-caller-ownership-scoping risk — previously disclosed in design.md's
+      Risks section but, unlike #725/#747/#748, had no linked tracking issue.
+- [x] 11.6 **Important**: `page_traits`'s tests recomputed the same slicing formula the
+      production code uses (checking the formula against itself) — nothing pinned the batching
+      *order*, only the batch *size*. Rewrote both tools' `test_page_traits_maps_each_page_to_
+      its_actual_traits` to spy on the batched delegate call and assert `page_traits` against
+      each returned `Figure`'s own rendered subplot titles instead, and added `n_traits=64` (an
+      exact multiple of `batch_size=16`) alongside the existing `n_traits=60`.
+- [x] 11.7 **Suggestion**: reworded `heatmap_caveat`'s message + field description to lead with
+      the consequence ("too little real data… still colored as if genuine") for a domain
+      scientist / relaying LLM agent, not with internals ("not masked… unguarded correlation").
+- [x] 11.8 **Suggestion**: documented the narrow disclosure-taxonomy gap (a pair globally
+      non-constant but locally constant within its shared overlap produces an unnamed `NaN`
+      cell) in the module docstring — not fixed, explicitly deferred as out of scope.
+- [x] 11.9 **Suggestion**: `test_plot_correlation_matrix_smoke.py` (cylinder, the real
+      disjoint-missingness case this feature targets) now asserts `resolved_trait_columns`/
+      `zero_variance_traits`/`low_overlap_trait_pairs`/`heatmap_caveat` structurally and for
+      cross-consistency — previously asserted nothing about any of the 3 disclosure fields.
+- [x] 11.10 **Suggestion**: added a one-line docstring note to `resolve_trait_columns` that
+      exact-match, case-sensitive `trait_columns` matching (mirroring `pandas` column-lookup
+      semantics) is by design, so a future reader doesn't "fix" it as a bug.
+- [x] 11.11 Re-ran the full 4-file targeted suite (115 passed) + `openspec validate --strict`.

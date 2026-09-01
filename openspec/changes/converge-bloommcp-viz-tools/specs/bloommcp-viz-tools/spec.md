@@ -184,7 +184,10 @@ summary counts/disclosure lists are — it is rendered by a separate, independen
 running its own unguarded correlation. The result SHALL carry a `heatmap_caveat` field,
 populated whenever `zero_variance_traits` or `low_overlap_trait_pairs` is non-empty, directing
 the caller to cross-check those fields before trusting a highlighted cell in the image; `None`
-when neither is populated.
+when neither is populated. The same non-`None` value SHALL be drawn as a visible annotation
+directly onto the rendered figure before it is saved, and SHALL also be stamped into the
+persisted run's `params` — a caller who only opens the saved PNG, or only reads the manifest
+later, must still receive the warning, not only a caller reading the live JSON response.
 
 #### Scenario: A flagged pair still renders unmasked, and the caveat says so
 
@@ -196,7 +199,19 @@ when neither is populated.
 #### Scenario: Nothing flagged means no caveat
 
 - **WHEN** neither `zero_variance_traits` nor `low_overlap_trait_pairs` is populated for a call
-- **THEN** the result's `heatmap_caveat` is `None`
+- **THEN** the result's `heatmap_caveat` is `None`, no annotation is drawn onto the figure, and
+  the persisted run's `params["heatmap_caveat"]` is `None`
+
+#### Scenario: The caveat is visible on the saved image itself
+
+- **WHEN** `heatmap_caveat` is populated for a call
+- **THEN** the rendered `Figure` gains a text annotation containing the same `heatmap_caveat`
+  value before it is saved to PNG
+
+#### Scenario: The caveat is recoverable from the manifest, not only the live response
+
+- **WHEN** `heatmap_caveat` is populated for a call
+- **THEN** the persisted run's `params["heatmap_caveat"]` equals the result's `heatmap_caveat`
 
 ### Requirement: Resolved Trait Selection Is Recorded, Not Just Counted
 

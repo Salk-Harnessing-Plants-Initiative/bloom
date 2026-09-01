@@ -257,7 +257,11 @@ contract):
   the same way a zero-variance trait already is) instead of a numerically valid but statistically
   meaningless coefficient; `low_overlap_trait_pairs` names exactly which pairs this affects
   (excluding any pair a zero-variance trait already explains, so a `NaN` cell isn't reported under
-  two reasons at once).
+  two reasons at once). The `min_periods` boundary itself (overlap `== 10` not flagged, `== 9`
+  flagged) is pinned by a dedicated parametrized test — the round-3 test only exercised
+  overlap `== 2`, deep inside the flagged region, so an off-by-one in the comparison operator
+  (`<=` vs. the correct `<`) or in the constant itself would have sailed through the full suite
+  undetected (#466 review round 4).
 
 - **Decision: `plot_correlation_matrix` additionally requires at least 2 *non-zero-variance*
   trait columns, not merely at least 2 columns.** The plain column-count guard above doesn't
@@ -268,20 +272,41 @@ contract):
   (the plain count check, a pure input-shape fact knowable before any read) — mirrors the same
   distinction `plot_trait_boxplots`'s missing-genotype-column check already draws.
 
-- **Decision: the rendered PNG is explicitly disclosed as unmasked, not silently left
-  inconsistent with the guarded summary.** `plot_correlation_matrix`'s own `.corr(min_periods=
-  ...)` call only feeds the JSON summary (`strong_positive_correlations`/`zero_variance_traits`/
-  `low_overlap_trait_pairs`); the persisted image is rendered by a *separate*, independent call
-  to the vendored `create_correlation_heatmap`, which runs its own unguarded `.corr()` with no
-  `min_periods` and no way to accept a precomputed/masked matrix (#466 review round 3 — a real
-  gap that survived two rounds of the author's own review, since both rounds fixed the summary
-  without checking whether the image agreed with it). A flagged pair's cell can still render as
-  a solid, confidently-colored ±1.0 square. Neither "patch the vendored delegate" nor
-  "re-implement heatmap rendering in bloommcp" (the latter against this file's own no-vendored-
-  plotting-logic principle) is in scope here, so the result's new `heatmap_caveat` field
-  discloses the mismatch explicitly whenever either summary-disclosure list is non-empty,
-  directing the caller to cross-check them before trusting a highlighted cell. Tracked at
-  [#747](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/747).
+- **Decision: the rendered PNG is explicitly disclosed as unmasked — in the image itself, not
+  only in JSON — and the disclosure is stamped into the manifest, not only the live
+  response.** `plot_correlation_matrix`'s own `.corr(min_periods=...)` call only feeds the JSON
+  summary (`strong_positive_correlations`/`zero_variance_traits`/`low_overlap_trait_pairs`); the
+  persisted image is rendered by a *separate*, independent call to the vendored
+  `create_correlation_heatmap`, which runs its own unguarded `.corr()` with no `min_periods` and
+  no way to accept a precomputed/masked matrix (#466 review round 3 — a real gap that survived
+  two rounds of the author's own review, since both rounds fixed the summary without checking
+  whether the image agreed with it). A flagged pair's cell can still render as a solid,
+  confidently-colored ±1.0 square — genuinely re-coloring it is out of scope (patching the
+  vendored delegate, or re-implementing heatmap rendering in bloommcp against this file's own
+  no-vendored-plotting-logic principle; tracked at
+  [#747](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/747)), but round 3's
+  first version of this fix was **JSON-only** — a caller who only ever downloads/opens the saved
+  PNG (never reads the JSON response) got zero signal (#466 review round 4). Two round-4 fixes,
+  both cheap and in-scope:
+  - `heatmap_caveat`, whenever non-empty, is drawn as a footnote directly onto the already-
+    rendered `Figure` via `fig.text(...)` *before* `savefig` — not a per-cell hatch/marker on
+    the specific flagged pair(s): that would require reverse-engineering the vendored delegate's
+    exact cell geometry (row/column orientation, any axis flip it applies), and getting that
+    wrong would mislabel a *different* cell as flagged, which is worse than no annotation.
+  - `heatmap_caveat` is now also stamped into the persisted run's `params` (mirroring
+    `resolved_trait_columns`, same `provenance.model_copy` call) — round 3's fix stamped
+    `resolved_trait_columns` there but left `heatmap_caveat` live-response-only, undercutting the
+    very motivation ("a later reader of the manifest…") the `resolved_trait_columns` fix itself
+    states.
+  - Wording tightened (`heatmap_caveat`'s field description and its message text) to lead with
+    the consequence ("some cell(s)… still colored as if genuine") rather than internals
+    ("not masked… unguarded correlation"), since the field is meant to reach a domain scientist
+    (or an LLM agent relaying it to one) who may not already know what `min_periods` means.
+  - **Known, disclosed, narrow taxonomy gap, not fixed here:** a pair that is globally
+    non-constant and clears `min_periods` overlap can still be *locally* constant within that
+    shared overlap, producing a `NaN` cell named in neither `zero_variance_traits` nor
+    `low_overlap_trait_pairs` (not a false-positive risk — the vendored heatmap independently
+    produces the same `NaN` — just an incompleteness in *why* a blank cell is blank).
 
 - **Decision: `resolved_trait_columns` is recorded — in the result and stamped into the
   persisted run's `params` — on all 3 tools, not just reported as a count.** When
@@ -304,7 +329,18 @@ contract):
   the delegate itself decided. `_DELEGATE_BATCH_SIZE` is pinned against the live delegate
   signature by a dedicated test (mirrors `TRAIT_BATCH_THRESHOLD`'s own existing live-signature
   pin) so a future `sleap-roots-analyze` bump that changes the default is caught, not silently
-  desynced.
+  desynced. **Verified against the delegate's own rendered content, not re-derived from the
+  same formula twice** (#466 review round 4): the round-3 test only recomputed
+  `trait_cols[start:start+batch_size]` and compared it to the identical production expression,
+  which pins the batch *size* (via the separate live-signature test) but nothing pinned the
+  batching *order* — a future delegate version that reorders/groups traits before chunking
+  (independent of batch size) would mislabel `page_traits` with no test failing. The round-4
+  test instead spies on the batched delegate call, reads each returned `Figure`'s own subplot
+  titles (`create_trait_histograms_batched` titles each axis `f"{trait}\n(n={count})"`;
+  `create_trait_boxplots_by_genotype_batched` titles it the bare trait name — both confirmed
+  against the live delegate, not assumed), and asserts `page_traits` matches what was actually
+  rendered. Also now covers `n_traits=64` (an exact multiple of `batch_size=16`) alongside the
+  existing `n_traits=60` — the boundary case a non-multiple never exercises.
 
 ## Risks / Trade-offs
 
@@ -341,7 +377,10 @@ contract):
   highest-call-volume tool family (ad hoc exploratory plotting). No mitigation is proposed here —
   it is the same trust boundary every other persisting tool already operates inside — but it is
   worth naming explicitly given the 3x increase in exposed surface, rather than leaving it
-  implicit.
+  implicit. Tracked at
+  [#769](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/769) (#466 review
+  round 4 — flagged that this risk, unlike #725/#747/#748, had no linked tracking issue and so
+  risked quietly becoming permanent institutional debt with no visible tracker).
 - **A matplotlib figure-handle leak is possible if a batched delegate
   (`create_trait_histograms_batched`/`create_trait_boxplots_by_genotype_batched`) raises
   partway through internally**, having already created (but not returned) figures for earlier
@@ -391,6 +430,21 @@ Callers DO need to migrate, on three axes:
   pairs`/`heatmap_caveat`). Filed as
   [#748](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/748), a suggestion-
   tier follow-up (#466 review round 3), not fixed here.
+
+## Test Count Verification
+
+Round 4 of PR review reported a self-reported "1464 passed, 0 failed" claim from round 3 did
+not reproduce in the reviewer's isolated export (`1428 selected / 1461 total`, plus ~59
+unrelated UMAP failures and one failure the review itself attributed to a partial export
+missing a sibling `web/` directory). Re-ran the **exact** CI invocation
+(`cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration and not
+live_smoke" -v --tb=short`, from `.github/workflows/pr-checks.yml`) against a freshly
+recreated worktree of this branch, with `uv lock --check` confirmed in sync first: **1464
+passed, 33 deselected** (1497 total via `--collect-only` with no marker filter), 0 failed —
+reproduces exactly. The discrepancy is not explained on this side; the reviewer's own
+disclosed environment issues (partial export, locale-dependent CSV artifacts in an unrelated
+test file) are the more likely source. Recorded here, with the literal command and output line,
+so the number is independently re-checkable rather than taken on trust either way.
 
 ## Incidental Fix
 
