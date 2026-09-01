@@ -322,6 +322,11 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGHUP, _terminate)
         # SIGKILL and power loss cannot be caught, so sweep what they left.
         sweep_stale_work_dirs(state_dir)
+        # Resolve the destination before dumping: finding out afterwards costs
+        # the whole dump window and discards the artifact.
+        if not args.dry_run:
+            _which("rclone")
+            backup_destination(args.env)
     except ConfigError as exc:
         logger.error("configuration error: %s", exc)
         return EXIT_CONFIG

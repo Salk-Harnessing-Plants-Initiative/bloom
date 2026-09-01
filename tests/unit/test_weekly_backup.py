@@ -183,6 +183,42 @@ DESTRUCTIVE_RCLONE_VERBS = (
 )
 
 
+def test_a_missing_remote_fails_before_the_dump_runs(tmp_path, monkeypatch):
+    # Discovering the destination is unset after a multi-GB production dump
+    # costs the whole dump window and then throws the artifact away.
+    (tmp_path / ".env.prod").write_text("POSTGRES_DB=postgres\n")
+    monkeypatch.delenv("BACKUP_RCLONE_REMOTE", raising=False)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    dumped: list[str] = []
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    monkeypatch.setattr(backup, "dump_database",
+                        lambda *a: dumped.append("database"))
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
+    assert rc == backup.EXIT_CONFIG
+    assert not dumped, "no dump may run before the destination is known"
+
+
+def test_a_dry_run_still_needs_no_rclone(tmp_path, monkeypatch):
+    # Proving the dump path before Box is set up is the point of --dry-run, so
+    # the preflight above must not start demanding rclone.
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    monkeypatch.setattr(backup, "dump_database", lambda *a: tmp_path / "db.sql.gz")
+    monkeypatch.setattr(backup, "dump_globals", lambda *a: tmp_path / "globals.sql.gz")
+
+    def _no_rclone(name: str) -> str:
+        if name == "rclone":
+            raise backup.ConfigError("rclone is not installed")
+        return name
+
+    monkeypatch.setattr(backup, "_which", _no_rclone)
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path), "--dry-run"])
+    assert rc == backup.EXIT_OK
+
+
 def test_the_job_only_ever_copies_to_the_remote(tmp_path, monkeypatch):
     # Assert the verb positively. Blacklisting the single spelling "delete" let
     # `sync` through — which removes everything at the destination that is not
