@@ -31,6 +31,40 @@ def _png(width, height, mode="RGB") -> bytes:
     return buf.getvalue()
 
 
+def _png16(data: np.ndarray) -> bytes:
+    """A 16-bit grayscale PNG carrying exactly `data`."""
+    buf = io.BytesIO()
+    Image.fromarray(data.astype(np.uint16)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _deep(mode, data: np.ndarray) -> Image.Image:
+    """A decoded image in one of the deeper modes.
+
+    Built rather than round-tripped through a file: PNG cannot carry `F` at
+    all, and reads `I;16B` and `I;16L` back as plain `I;16` — so a file would
+    silently test the same branch three times. What arrives here is a decoded
+    image either way.
+    """
+    if mode == "I":
+        return Image.fromarray(data.astype(np.int32), mode="I")
+    if mode == "I;16":
+        return Image.fromarray(data.astype(np.uint16))
+    order = ">u2" if mode == "I;16B" else "<u2"
+    size = (data.shape[1], data.shape[0])
+    return Image.frombytes(mode, size, data.astype(order).tobytes())
+
+
+def _stripes(width, height) -> bytes:
+    """One-pixel black and white columns — the finest detail a plate can hold,
+    and what a root looks like once the picture is 3.4x too small for it."""
+    cols = (np.arange(width) % 2 * 255).astype(np.uint8)
+    data = np.repeat(cols[None, :, None], height, axis=0).repeat(3, axis=2)
+    buf = io.BytesIO()
+    Image.fromarray(data, "RGB").save(buf, "PNG")
+    return buf.getvalue()
+
+
 def test_a_native_sized_plate_comes_back_at_the_target_width():
     frame = pe.prepare_frame(_png(4960, 6850), LABEL)
     assert frame.shape[1] == pe.PLATE_VIDEO_WIDTH
@@ -71,8 +105,24 @@ def test_the_result_is_8_bit_rgb():
 
 @pytest.mark.parametrize("mode", ["RGB", "L", "RGBA", "P"])
 def test_every_mode_the_scanners_might_write_becomes_rgb(mode):
+    """ffmpeg is told rgb24 and reads raw frames by byte count, so a frame with
+    a fourth channel is not rejected — it shears every frame after it."""
     frame = pe.prepare_frame(_png(400, 600, mode=mode), LABEL)
     assert frame.shape[2] == 3
+    assert frame.dtype == np.uint8
+
+
+@pytest.mark.parametrize("mode", ["CMYK", "YCbCr"])
+def test_a_colour_mode_that_is_not_rgb_is_converted_not_reinterpreted(mode):
+    """Both are three or four 8-bit channels that are not red, green and blue.
+    Reinterpreting rather than converting gives a frame of plausible size and
+    wrong colours. Built rather than round-tripped, because PNG cannot carry
+    either one — what arrives here is a decoded image regardless."""
+    source = Image.new(mode, (40, 60), "red" if mode == "CMYK" else None)
+    converted = np.asarray(pe._to_8bit_rgb(source))
+
+    assert converted.shape == (60, 40, 3)
+    assert converted.dtype == np.uint8
 
 
 def test_a_16_bit_source_is_scaled_rather_than_clamped():
@@ -89,6 +139,152 @@ def test_a_16_bit_source_is_scaled_rather_than_clamped():
     assert 40 < np.median(picture) < 215, (
         "a clamped conversion leaves a bimodal frame, not a gradient"
     )
+
+
+def test_a_hot_pixel_does_not_darken_the_rest_of_the_frame():
+    """Scaling a 16-bit frame by its own maximum makes brightness track the
+    brightest pixel in it. One dust speck, specular highlight or sensor hot
+    pixel then rescales every other pixel, and over ~86 frames the video
+    strobes with the noise rather than showing the plant — while a scientist
+    measures root movement off exactly that brightness."""
+    plain = np.full((600, 400), 4096, dtype=np.uint16)
+    speckled = plain.copy()
+    speckled[0, 0] = 65535
+
+    without = pe.prepare_frame(_png16(plain), LABEL)[:600]
+    with_speck = pe.prepare_frame(_png16(speckled), LABEL)[:600]
+
+    assert np.array_equal(without[1:], with_speck[1:]), (
+        "one bright pixel changed the brightness of every other pixel"
+    )
+
+
+def test_the_same_value_reduces_the_same_way_in_every_frame():
+    """The transfer function is fixed, so two frames of the same tissue at
+    different exposures stay comparable rather than being normalised apart."""
+    dim = pe.prepare_frame(_png16(np.full((600, 400), 8192, np.uint16)), LABEL)
+    bright = np.full((600, 400), 8192, np.uint16)
+    bright[:, :100] = 60000
+
+    assert np.array_equal(
+        dim[:600, 200:300], pe.prepare_frame(_png16(bright), LABEL)[:600, 200:300]
+    )
+
+
+@pytest.mark.parametrize("mode", ["I;16", "I;16B", "I;16L", "I"])
+def test_every_deep_mode_is_reduced_rather_than_clamped(mode):
+    """All four are listed as deep; only one of them had a test, so three could
+    have been dropped from the list without anything noticing. Written out
+    rather than read from `DEEP_MODES`, which would shrink along with it."""
+    assert mode in pe.DEEP_MODES, f"{mode} is no longer reduced, only clamped"
+
+    ramp = np.linspace(0, 65535, 400 * 600, dtype=np.uint16).reshape(600, 400)
+    picture = np.asarray(pe._to_8bit_rgb(_deep(mode, ramp)))
+
+    assert picture.max() > 200, f"{mode}: the bright end was lost"
+    assert picture.min() < 40, f"{mode}: the dark end was lost"
+    assert 40 < np.median(picture) < 215, (
+        f"{mode}: a clamped conversion leaves a bimodal frame, not a gradient"
+    )
+
+
+def test_a_floating_point_frame_is_refused_rather_than_given_a_scale():
+    """There is no full scale to divide by; picking one would rescale the frame
+    by a number nothing chose, silently."""
+    with pytest.raises(ValueError, match="full scale"):
+        pe._to_8bit_rgb(Image.new("F", (40, 60)))
+
+
+def test_a_negative_value_does_not_come_back_bright():
+    """Mode I is signed, and -5 wraps round to 251 on the way to uint8."""
+    picture = np.asarray(pe._to_8bit_rgb(_deep("I", np.full((60, 40), -5))))
+    assert picture.max() == 0, f"a negative value rendered as {picture.max()}"
+
+
+def test_a_deep_frame_reaches_the_reduction_through_the_decoder(): 
+    """The parametrised cases build an image directly, so this one proves the
+    real path — bytes off storage — still lands in the deep branch."""
+    ramp = np.linspace(0, 65535, 400 * 600, dtype=np.uint16).reshape(600, 400)
+    picture = pe.prepare_frame(_png16(ramp), LABEL)[:600]
+    assert picture.max() > 200 and picture.min() < 40
+
+
+def test_a_real_plate_size_comes_back_even():
+    """4960x6850 scales to 1440x1989 — odd, and with the band 2033, also odd.
+    601x803 takes the not-enlarged branch and never reaches the resize, so it
+    proves nothing about the size a real plate actually is."""
+    frame = pe.prepare_frame(_png(4960, 6850), LABEL)
+    assert frame.shape[1] % 2 == 0, f"width {frame.shape[1]} is odd"
+    assert frame.shape[0] % 2 == 0, f"height {frame.shape[0]} is odd"
+
+
+def test_the_downscale_resamples_rather_than_picking_pixels():
+    """Nearest-neighbour on a reduction aliases thin roots in and out between
+    frames — the exact artefact this video exists to show. It samples source
+    pixels, so on one-pixel stripes every output pixel is still pure black or
+    pure white; resampling averages them and produces neither.
+
+    The band is excluded by measuring it off the frame: the label is drawn with
+    antialiased glyphs, so it carries greys of its own whatever the picture did.
+    """
+    frame = pe.prepare_frame(_stripes(2880, 600), LABEL)
+    picture = frame[: frame.shape[0] - LABEL_BAND_HEIGHT]
+
+    assert picture.size, "the picture was empty, so nothing was measured"
+    assert set(np.unique(picture)) - {0, 255}, (
+        "every pixel is a source pixel, so the stripes were sampled, not resampled"
+    )
+
+
+def test_a_degenerately_small_source_still_produces_a_frame():
+    """Evening a 1px side by subtraction gives 0, and a zero-sized crop is not
+    a frame ffmpeg can be opened with."""
+    frame = pe.prepare_frame(_png(1, 1), LABEL)
+    assert frame.shape[0] > LABEL_BAND_HEIGHT and frame.shape[1] >= 2
+    assert frame.shape[0] % 2 == 0 and frame.shape[1] % 2 == 0
+
+
+def _ink_rows(band: np.ndarray) -> list[int]:
+    """The height of each run of rows carrying text, top to bottom."""
+    lit = (band > 128).any(axis=(1, 2))
+    runs, start = [], None
+    for row, on in enumerate(lit):
+        if on and start is None:
+            start = row
+        elif not on and start is not None:
+            runs.append(row - start)
+            start = None
+    if start is not None:
+        runs.append(len(lit) - start)
+    return runs
+
+
+def test_the_label_is_legible_at_the_size_the_video_is_watched_at():
+    """The band is a fixed number of rows on a ~2068-row frame, and a player
+    scales the whole thing down — so legibility is the ink height as a fraction
+    of the frame, not the font size. The default face draws digits at about 70%
+    of its em, so a 16px font was 11 rows: under 6px on a 1080-tall player,
+    where the elapsed line is the first to go and it is the one that makes an
+    irregular capture gap visible rather than silent."""
+    frame = pe.prepare_frame(_png(4960, 6850), LABEL)
+    lines = _ink_rows(frame[-LABEL_BAND_HEIGHT:])
+
+    assert len(lines) == 2, f"expected two label lines, found {len(lines)}"
+
+    on_a_1080_player = min(lines) / frame.shape[0] * 1080
+    assert on_a_1080_player >= 10, (
+        f"the digits render at {on_a_1080_player:.1f}px on a 1080-tall player"
+    )
+
+
+def test_the_label_still_fits_the_band_it_is_given():
+    """Sizing the font up without the band would clip the second line, and the
+    band is what keeps the video's dimensions constant."""
+    frame = pe.prepare_frame(_png(4960, 6850), LABEL)
+    band = frame[-LABEL_BAND_HEIGHT:]
+    lit = (band > 128).any(axis=(1, 2))
+
+    assert not lit[-1], "the label runs to the bottom edge, so it may be clipped"
 
 
 def test_a_plate_narrower_than_the_target_is_not_enlarged():
@@ -128,27 +324,62 @@ def test_a_different_label_changes_only_the_band():
 import subprocess  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
+from video_writer import VideoEncodeError  # noqa: E402
+
 T0 = datetime(2026, 3, 6, 20, 26, tzinfo=timezone.utc)
 
 
-class _Stdin:
+class _Spawned(list):
+    """The ffmpeg processes started, and how the next one is to behave.
+
+    One object rather than two so a test can reach both: the encoder's failure
+    paths are only visible when ffmpeg misbehaves, and the interesting ones are
+    a pipe that breaks mid-stream and a non-zero exit that says why.
+    """
+
     def __init__(self):
+        super().__init__()
+        self.stdin_fails_after = None  # frames accepted before the pipe breaks
+        self.exit_code = 0
+        self.stderr = b""
+
+
+class _Stdin:
+    def __init__(self, fails_after=None):
         self.chunks = []
+        self._fails_after = fails_after
 
     def write(self, data):
+        if self._fails_after is not None and len(self.chunks) >= self._fails_after:
+            raise BrokenPipeError("ffmpeg is gone")
         self.chunks.append(data)
 
     def close(self):
         pass
 
 
+class _Stderr:
+    """Hands its payload over once, then reports EOF like a closed pipe."""
+
+    def __init__(self, data=b""):
+        self._data = data
+        self.closed = False
+
+    def read(self, size=-1):
+        data, self._data = self._data, b""
+        return data
+
+    def close(self):
+        self.closed = True
+
+
 class _Ffmpeg:
-    spawned: list = []
+    spawned: _Spawned = _Spawned()
 
     def __init__(self, cmd, **_kw):
         self.cmd = cmd
-        self.stdin = _Stdin()
-        self.stderr = type("_S", (), {"read": lambda s: b"", "close": lambda s: None})()
+        self.stdin = _Stdin(_Ffmpeg.spawned.stdin_fails_after)
+        self.stderr = _Stderr(_Ffmpeg.spawned.stderr)
         self.returncode = 0
         self.waited = False
         _Ffmpeg.spawned.append(self)
@@ -157,7 +388,8 @@ class _Ffmpeg:
         self.waited = True
         with open(self.cmd[-1], "wb") as fh:
             fh.write(b"\x00\x01")
-        return 0
+        self.returncode = _Ffmpeg.spawned.exit_code
+        return self.returncode
 
     def kill(self):
         pass
@@ -196,7 +428,7 @@ class _EncodeClient:
 
 @pytest.fixture
 def ffmpeg(monkeypatch):
-    spawned: list = []
+    spawned = _Spawned()
     monkeypatch.setattr(_Ffmpeg, "spawned", spawned)
     monkeypatch.setattr(subprocess, "Popen", _Ffmpeg)
     import video_writer
@@ -299,6 +531,62 @@ def test_a_failed_render_still_tears_the_encoder_down(ffmpeg, tmp_path):
     assert ffmpeg[0].waited, "ffmpeg was abandoned rather than closed"
 
 
+def test_a_failed_render_leaves_no_partial_video(ffmpeg, tmp_path):
+    """ffmpeg has already written a playable MP4 of the frames that got
+    through, and nothing downstream can tell it from a complete one — the count
+    that would describe it goes out with the exception. Leaving it also fills
+    the container's 512MB tmpfs over a run of failures, after which every
+    encode fails."""
+    frames = _frames(5)
+    payloads = _payloads(frames)
+    payloads[frames[2]["object_path"]] = b"not an image"
+    out = tmp_path / "o.mp4"
+
+    with pytest.raises(pe.FrameUnreadable):
+        pe.encode_plate_video(_EncodeClient(payloads), frames, str(out))
+
+    assert not out.exists(), "a partial video was left where an upload could find it"
+
+
+def test_a_successful_render_keeps_its_video(ffmpeg, tmp_path):
+    """The clean-up is on the failure path only; deleting the output always
+    would leave nothing to publish."""
+    frames = _frames(2)
+    out = tmp_path / "o.mp4"
+    pe.encode_plate_video(_EncodeClient(_payloads(frames)), frames, str(out))
+    assert out.exists()
+
+
+def test_a_mismatched_frame_reads_as_this_plate_s_data(ffmpeg, tmp_path):
+    """Anything at or below the target width keeps its own evened width, so a
+    plate really can hold both 1438 and 1440. The writer refuses the second
+    because it would shear every frame after it — but as a bare ValueError,
+    which reaches a scientist as a 500 rather than as a bad plate."""
+    frames = _frames(2)
+    payloads = _payloads(frames)
+    payloads[frames[1]["object_path"]] = _png(402, 600)
+
+    with pytest.raises(pe.FrameUnreadable) as ei:
+        pe.encode_plate_video(_EncodeClient(payloads), frames, str(tmp_path / "o.mp4"))
+    assert "P7_1.tif" in str(ei.value)
+
+
+def test_a_broken_pipe_gives_up_the_reason_ffmpeg_died(ffmpeg, tmp_path):
+    """On a full disk ffmpeg exits saying so and the next add() raises
+    BrokenPipeError — the symptom. Raising the symptom and logging the cause
+    discards the only line that says what to fix."""
+    frames = _frames(3)
+    ffmpeg.stdin_fails_after = 1
+    ffmpeg.exit_code = 1
+    ffmpeg.stderr = b"av_interleaved_write_frame(): No space left on device"
+
+    with pytest.raises(VideoEncodeError) as ei:
+        pe.encode_plate_video(
+            _EncodeClient(_payloads(frames)), frames, str(tmp_path / "o.mp4")
+        )
+    assert "No space left on device" in str(ei.value)
+
+
 def test_no_frames_is_a_failure_not_an_empty_video(ffmpeg, tmp_path):
     with pytest.raises(pe.FrameUnreadable):
         pe.encode_plate_video(_EncodeClient({}), [], str(tmp_path / "o.mp4"))
@@ -321,42 +609,141 @@ def test_each_frame_carries_its_own_elapsed_label(ffmpeg, tmp_path):
 # link to storage; the lock is so two requests for one plate do not both encode.
 
 import threading  # noqa: E402
+import time  # noqa: E402
 
 
-def test_one_plate_gets_one_lock():
-    assert pe.plate_lock("12/wave-1/P7.mp4") is pe.plate_lock("12/wave-1/P7.mp4")
+def _off_thread(call, seconds=10.0):
+    """Run `call` elsewhere and return what it raised, or None.
+
+    A refusal that quietly became a wait does not fail an assertion, it blocks
+    it — and a blocked assertion is a stuck CI job with no failure in it.
+    """
+    outcome = []
+    done = threading.Event()
+
+    def run():
+        try:
+            call()
+            outcome.append(None)
+        except BaseException as exc:  # noqa: BLE001 - reported, not swallowed
+            outcome.append(exc)
+        finally:
+            done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    assert done.wait(seconds), "the call blocked instead of answering"
+    return outcome[0]
 
 
-def test_different_plates_get_different_locks():
+def test_a_second_request_for_one_plate_is_refused_rather_than_queued():
+    """A whole plate is about a minute, and `acquire` cannot be interrupted, so
+    a queued thread outlives the client's timeout still holding an encode slot
+    for a video nobody is waiting for."""
+    key = "12/wave-1/held.mp4"
+
+    def render_it_again():
+        with pe.plate_lock(key):
+            pass
+
+    with pe.plate_lock(key):
+        refusal = _off_thread(render_it_again)
+
+    assert isinstance(refusal, pe.PlateBusy), f"got {refusal!r}"
+    assert key in str(refusal)
+
+
+def test_a_refused_plate_reads_as_busy_like_a_refused_slot():
+    """Both mean come back shortly, and a caller that answers one answers both."""
+    assert issubclass(pe.PlateBusy, pe.EncoderBusy)
+
+
+def test_different_plates_do_not_block_each_other():
     """A shared lock would serialise every render in the service."""
-    assert pe.plate_lock("12/wave-1/P7.mp4") is not pe.plate_lock("12/wave-1/P8.mp4")
+    with pe.plate_lock("12/wave-1/P7.mp4"):
+        with pe.plate_lock("12/wave-1/P8.mp4"):
+            pass
 
 
-def test_the_lock_actually_excludes():
-    lock = pe.plate_lock("12/wave-1/held.mp4")
-    with lock:
-        assert lock.acquire(blocking=False) is False
-    assert lock.acquire(blocking=False) is True
-    lock.release()
+def test_the_plate_is_released_when_the_render_finishes():
+    for _ in range(3):
+        with pe.plate_lock("12/wave-1/repeat.mp4"):
+            pass
 
 
-def test_the_lock_table_is_built_under_its_own_guard():
-    """Two threads asking at once must not each create a lock — one of them
-    would then hold a lock nobody else respects."""
-    seen = []
+def test_the_plate_is_released_when_the_render_raises():
+    """A plate left locked can never be rendered again while the worker lives."""
+    for _ in range(3):
+        with pytest.raises(RuntimeError):
+            with pe.plate_lock("12/wave-1/raises.mp4"):
+                raise RuntimeError("render failed")
+
+
+def test_a_caller_may_wait_for_a_plate_if_it_chooses():
+    """`timeout` is opt-in: a worker with no client waiting can queue."""
+    key = "12/wave-1/waited.mp4"
+    holder_in = threading.Event()
+    release = threading.Event()
+
+    def hold():
+        with pe.plate_lock(key):
+            holder_in.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert holder_in.wait(5)
+
+    def free_it():
+        release.set()
+
+    threading.Timer(0.05, free_it).start()
+    try:
+        with pe.plate_lock(key, timeout=5):
+            pass
+    finally:
+        release.set()
+        holder.join(5)
+
+
+def test_waiting_for_a_plate_gives_up_at_the_timeout():
+    """A caller that asks to wait 200ms must not wait for the whole encode."""
+    key = "12/wave-1/never-freed.mp4"
+    with pe.plate_lock(key):
+        started = time.monotonic()
+        with pytest.raises(pe.PlateBusy):
+            with pe.plate_lock(key, timeout=0.2):
+                pass
+        waited = time.monotonic() - started
+
+    assert 0.15 <= waited < 3, f"waited {waited:.2f}s for a 0.2s timeout"
+
+
+def test_racing_requests_for_one_plate_still_serialise():
+    """Two threads each creating a lock for one key is not a race that raises:
+    both proceed, and two encodes overwrite the same object key."""
+    key = "12/wave-1/raced.mp4"
     barrier = threading.Barrier(8)
+    inside = []
+    peak = []
 
     def grab():
         barrier.wait()
-        seen.append(pe.plate_lock("12/wave-1/raced.mp4"))
+        try:
+            with pe.plate_lock(key, timeout=5):
+                inside.append(1)
+                peak.append(len(inside))
+                time.sleep(0.01)
+                inside.pop()
+        except pe.PlateBusy:
+            pass
 
     threads = [threading.Thread(target=grab) for _ in range(8)]
     for t in threads:
         t.start()
     for t in threads:
-        t.join()
+        t.join(10)
 
-    assert len({id(lock) for lock in seen}) == 1
+    assert peak and max(peak) == 1, f"{max(peak)} renders of one plate ran at once"
 
 
 def test_a_slot_is_released_when_the_render_finishes():
@@ -384,6 +771,37 @@ def test_asking_past_the_limit_refuses_rather_than_queueing():
             with pe.encode_slot():
                 pass
         assert str(pe.MAX_CONCURRENT_ENCODES) in str(ei.value)
+    finally:
+        for slot in held:
+            slot.__exit__(None, None, None)
+
+
+def test_the_encode_limit_is_the_number_the_service_is_sized_for():
+    """Nothing else pins this: every other assertion reads the constant back.
+    Four 16-bit plates peak under 700MB together, which is the number a
+    container memory limit has to be read from."""
+    assert pe.MAX_CONCURRENT_ENCODES == 4
+
+
+def test_releasing_a_slot_that_was_never_taken_is_caught():
+    """A plain Semaphore grants a fifth slot instead, and the leak runs the
+    wrong way: capacity grows silently until storage is saturated."""
+    with pytest.raises(ValueError):
+        pe._encode_slots.release()
+
+
+def test_waiting_for_a_slot_gives_up_at_the_timeout():
+    """A caller asking to wait 200ms must not wait for a whole encode."""
+    held = [pe.encode_slot() for _ in range(pe.MAX_CONCURRENT_ENCODES)]
+    for slot in held:
+        slot.__enter__()
+    try:
+        started = time.monotonic()
+        with pytest.raises(pe.EncoderBusy):
+            with pe.encode_slot(timeout=0.2):
+                pass
+        waited = time.monotonic() - started
+        assert 0.15 <= waited < 3, f"waited {waited:.2f}s for a 0.2s timeout"
     finally:
         for slot in held:
             slot.__exit__(None, None, None)

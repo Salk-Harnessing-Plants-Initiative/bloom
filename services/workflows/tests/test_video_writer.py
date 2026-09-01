@@ -6,11 +6,13 @@ handled so a failed encode can never masquerade as success.
 """
 
 import subprocess
+import threading
+import time
 
 import numpy as np
 import pytest
 
-from video_writer import VideoWriter, VideoEncodeError
+from video_writer import VideoWriter, VideoEncodeError, _StderrTail
 
 
 # --- even-dimension padding -------------------------------------------------
@@ -59,8 +61,10 @@ class _FakeStream:
         self.closed = False
         self._raise_on_close = raise_on_close
 
-    def read(self):
-        return self._data
+    def read(self, size=-1):
+        """Hands the payload over once, then reports EOF like a closed pipe."""
+        data, self._data = self._data, b""
+        return data
 
     def write(self, _b):
         pass
@@ -94,6 +98,9 @@ class _FakeProc:
 def _writer_with(proc):
     w = VideoWriter(filename="/tmp/unused.mp4")
     w.process = proc
+    # What _open() attaches: stderr is drained for the life of the encode, so
+    # close() reads a tail rather than a pipe that may never have been emptied.
+    w._stderr = _StderrTail(proc.stderr)
     return w
 
 
@@ -217,3 +224,145 @@ def test_the_first_frame_opens_the_video_and_the_second_must_match(monkeypatch):
     with pytest.raises(ValueError, match="opened at 300x200"):
         w.add(np.zeros((150, 250, 3), dtype=np.uint8))
     assert len(w.process.stdin.chunks) == 1
+
+
+# --- stderr is drained, not left to fill ------------------------------------
+#
+# Real child processes here. The pipe-buffer deadlock only exists between two
+# processes, and a fake stdin never blocks, so a mocked ffmpeg cannot show it.
+#
+# Every encode below runs off the test's own thread and every wait is bounded.
+# A regression here blocks rather than raises, and a blocked assertion is a
+# stuck CI job with no failure in it.
+
+import sys  # noqa: E402
+
+import video_writer  # noqa: E402
+
+# Comfortably past the ~64KB pipe buffer a child blocks on.
+_FLOOD_BYTES = 300_000
+
+# Long enough that a machine under load is not mistaken for a deadlock.
+_NOT_HANGING_SECONDS = 30.0
+
+# Frames big enough that the stdin buffer fills too, so a child that stops
+# reading stdin blocks the writer rather than being quietly absorbed.
+_BIG_FRAME = np.zeros((200, 300, 3), dtype=np.uint8)  # 180KB each
+
+_FLOOD_THEN_DRAIN_STDIN = (
+    "import sys\n"
+    f"sys.stderr.buffer.write(b'x' * {_FLOOD_BYTES})\n"
+    "sys.stderr.buffer.flush()\n"
+    "sys.stdin.buffer.read()\n"
+)
+
+
+def _stub_ffmpeg(monkeypatch, script: str):
+    """Run `script` wherever the code would have run ffmpeg."""
+    real_popen = subprocess.Popen
+
+    def _spawn(cmd, **kwargs):
+        return real_popen([sys.executable, "-c", script], **kwargs)
+
+    monkeypatch.setattr(video_writer.subprocess, "Popen", _spawn)
+
+
+def _encode_off_thread(writer, frames, close_timeout=10.0):
+    """Run a whole encode elsewhere, and return how it went.
+
+    Returns the exception the encode raised (or None) and the drain the first
+    frame's `_open` attached — close() clears it, so it is taken while the
+    encode is still running. Every touch of the writer happens on this thread,
+    because `add` is the call that blocks when the drain is missing.
+    """
+    finished = threading.Event()
+    outcome = []
+    drains = []
+
+    def run():
+        try:
+            for frame in frames:
+                writer.add(frame)
+                if not drains:
+                    drains.append(writer._stderr)
+            writer.close(timeout=close_timeout)
+            outcome.append(None)
+        except BaseException as exc:  # noqa: BLE001 - reported, not swallowed
+            outcome.append(exc)
+        finally:
+            finished.set()
+
+    threading.Thread(target=run, daemon=True).start()
+
+    assert finished.wait(_NOT_HANGING_SECONDS), (
+        "the encode never finished: ffmpeg's stderr was left to fill, so the "
+        "child stopped reading stdin and add() blocked in write() — and "
+        "close(), which holds the only timeout on this path, is never reached"
+    )
+    return outcome[0], (drains[0] if drains else None)
+
+
+def test_a_flooding_ffmpeg_does_not_block_the_encode(monkeypatch, tmp_path):
+    """A child that fills its stderr pipe stops reading stdin, and add() then
+    blocks in write() with no timeout on it. The encode hangs for the life of
+    the process, and whatever the caller wrapped around it — an encode slot, a
+    plate's lock — is held just as long, while /health still passes.
+    -loglevel error makes that unlikely, not impossible.
+    """
+    _stub_ffmpeg(monkeypatch, _FLOOD_THEN_DRAIN_STDIN)
+
+    writer = VideoWriter(filename=str(tmp_path / "out.mp4"))
+    failure, _ = _encode_off_thread(writer, [_BIG_FRAME] * 4)  # 720KB of stdin
+
+    assert failure is None, f"the encode failed: {failure!r}"
+
+
+def test_a_flooded_stderr_is_kept_bounded(monkeypatch, tmp_path):
+    """The drain runs for the whole encode, so it must not accumulate whatever
+    a child chooses to emit."""
+    _stub_ffmpeg(monkeypatch, _FLOOD_THEN_DRAIN_STDIN)
+
+    writer = VideoWriter(filename=str(tmp_path / "out.mp4"))
+    failure, drain = _encode_off_thread(writer, [_BIG_FRAME])
+
+    assert failure is None, f"the encode failed: {failure!r}"
+    assert drain is not None, "stderr was never drained"
+    assert len(drain._tail) <= video_writer.STDERR_TAIL_BYTES, (
+        f"kept {len(drain._tail)} bytes of a {_FLOOD_BYTES}-byte flood"
+    )
+
+
+def test_the_end_of_a_flood_survives_to_the_error_message(monkeypatch, tmp_path):
+    """The tail is kept rather than the head: ffmpeg says why it is giving up
+    last, after whatever it complained about on the way."""
+    _stub_ffmpeg(
+        monkeypatch,
+        "import sys\n"
+        f"sys.stderr.buffer.write(b'noise' * {_FLOOD_BYTES // 5})\n"
+        "sys.stderr.buffer.write(b'height not divisible by 2\\n')\n"
+        "sys.stderr.buffer.flush()\n"
+        "sys.stdin.buffer.read()\n"
+        "sys.exit(1)\n",
+    )
+
+    writer = VideoWriter(filename=str(tmp_path / "out.mp4"))
+    failure, _ = _encode_off_thread(writer, [_BIG_FRAME])
+
+    assert isinstance(failure, VideoEncodeError), f"got {failure!r}"
+    assert "height not divisible by 2" in str(failure)
+
+
+def test_a_stuck_ffmpeg_is_still_killed_within_the_timeout(monkeypatch, tmp_path):
+    """The drain must not become a second place close() can hang: it is joined
+    only after ffmpeg has been waited for or killed."""
+    _stub_ffmpeg(
+        monkeypatch,
+        "import sys, time\nsys.stdin.buffer.read()\ntime.sleep(120)\n",
+    )
+
+    writer = VideoWriter(filename=str(tmp_path / "out.mp4"))
+    started = time.monotonic()
+    failure, _ = _encode_off_thread(writer, [_BIG_FRAME], close_timeout=1)
+
+    assert isinstance(failure, VideoEncodeError) and "timed out" in str(failure)
+    assert time.monotonic() - started < 15, "close() outran its own timeout"

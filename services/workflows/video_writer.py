@@ -10,11 +10,63 @@ returns cleanly.
 """
 
 import subprocess
+import threading
+
 import numpy as np
 
 # Hard ceiling on a single encode; a stuck ffmpeg is killed rather than pinning
 # the synchronous request's worker thread indefinitely.
 ENCODE_TIMEOUT_SECONDS = 120.0
+
+# How much of ffmpeg's stderr is kept for the error message. Bounded because
+# the drain runs for the whole encode: a stream the child can flood must not be
+# one this process holds entire.
+STDERR_TAIL_BYTES = 8192
+
+# How long close() waits for the drain to reach EOF once ffmpeg has exited.
+STDERR_DRAIN_TIMEOUT_SECONDS = 5.0
+
+
+class _StderrTail:
+    """Reads ffmpeg's stderr for the life of the encode, keeping the tail.
+
+    Drained continuously rather than read in close(): the pipe buffer is ~64KB,
+    and a child that fills it stops reading stdin, so add() blocks in write()
+    and close() — the only place a timeout is applied — is never reached. The
+    encode then hangs for the life of the process, holding whatever the caller
+    holds around it.
+    """
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._tail = bytearray()
+        self._guard = threading.Lock()
+        self._thread = threading.Thread(target=self._pump, daemon=True)
+        self._thread.start()
+
+    def _pump(self):
+        try:
+            while True:
+                chunk = self._stream.read(4096)
+                if not chunk:
+                    break
+                with self._guard:
+                    self._tail.extend(chunk)
+                    del self._tail[:-STDERR_TAIL_BYTES]
+        except Exception:
+            # A drain that raises must not take the encode with it; the worst
+            # case is an error message that cannot be quoted.
+            pass
+
+    def finish(self, timeout: float = STDERR_DRAIN_TIMEOUT_SECONDS) -> bytes:
+        """The tail, once the pipe has reached EOF. Call after ffmpeg exits."""
+        self._thread.join(timeout)
+        try:
+            self._stream.close()
+        except Exception:
+            pass
+        with self._guard:
+            return bytes(self._tail)
 
 
 class VideoEncodeError(RuntimeError):
@@ -31,6 +83,7 @@ class VideoWriter:
         self.process = None
         self.width = None
         self.height = None
+        self._stderr = None
 
     @staticmethod
     def _to_even(img: np.ndarray) -> np.ndarray:
@@ -98,7 +151,7 @@ class VideoWriter:
             "-pix_fmt",
             "yuv420p",
             "-loglevel",
-            "error",  # keep stderr small enough to read into memory
+            "error",  # few enough lines that the kept tail is the whole story
             "-nostats",
             self.filename,
         ]
@@ -109,6 +162,7 @@ class VideoWriter:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
+        self._stderr = _StderrTail(self.process.stderr)
 
     def close(self, timeout: float = ENCODE_TIMEOUT_SECONDS):
         """Finalize the video, raising VideoEncodeError if ffmpeg failed.
@@ -121,6 +175,7 @@ class VideoWriter:
             return
 
         proc, self.process = self.process, None
+        tail, self._stderr = self._stderr, None
 
         try:
             proc.stdin.close()
@@ -130,18 +185,19 @@ class VideoWriter:
 
         try:
             proc.wait(timeout=timeout)
+            timed_out = False
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-            raise VideoEncodeError(f"ffmpeg timed out after {timeout}s; killed")
+            timed_out = True
 
-        err = b""
-        if proc.stderr:
-            try:
-                err = proc.stderr.read()
-            finally:
-                proc.stderr.close()
+        # Collected after the wait either way, so the tail is complete and the
+        # stderr pipe is closed even on the path that kills ffmpeg.
+        err = tail.finish() if tail is not None else b""
+        msg = err.decode("utf-8", "replace").strip()[-2000:]
+
+        if timed_out:
+            raise VideoEncodeError(f"ffmpeg timed out after {timeout}s; killed: {msg}")
 
         if proc.returncode != 0:
-            msg = err.decode("utf-8", "replace").strip()[-2000:]
             raise VideoEncodeError(f"ffmpeg exited {proc.returncode}: {msg}")
