@@ -27,7 +27,11 @@ The version lives in `bloommcp/pyproject.toml` (single source of truth;
 
 - **In CI:** run the **version-bloommcp** workflow (Actions tab → Run workflow),
   pick a bump type, and it opens a PR with the bump (including a regenerated
-  `bloommcp/uv.lock`).
+  `bloommcp/uv.lock`). Its `concurrency:` group only serializes overlapping
+  runs — it does not stop two dispatches with **different** `bump_type`s from
+  each computing a new version off the same not-yet-merged base and opening
+  two independent bump PRs. Don't dispatch a second bump before the first
+  one's PR has merged.
 - **Locally:**
 
   ```bash

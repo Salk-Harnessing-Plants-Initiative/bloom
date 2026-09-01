@@ -24,7 +24,11 @@ The version lives in `bloomcli/pyproject.toml` (single source of truth;
 `bloomcli/src/bloomctl/__init__.py` reads it from installed metadata).
 
 - **In CI:** run the **version-bloomcli** workflow (Actions tab → Run workflow),
-  pick a bump type, and it opens a PR with the bump.
+  pick a bump type, and it opens a PR with the bump. It has no `concurrency:`
+  guard at all, so two dispatches — same `bump_type` or different — can each
+  compute a new version off the same not-yet-merged base and open
+  independent, conflicting bump PRs. Don't dispatch a second bump before the
+  first one's PR has merged.
 - **Locally:**
 
   ```bash
