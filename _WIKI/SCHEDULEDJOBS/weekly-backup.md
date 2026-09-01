@@ -33,7 +33,7 @@ not acceptable in a backup.
 | ----------- | ------------------------------------------------------- |
 | Runs        | Sunday 02:17 UTC, automatically, against **production** |
 | Scope       | Production only — staging is not backed up              |
-| Destination | `box:bloom-backups/prod`                                |
+| Destination | `box:bloom-backups/prod/<timestamp>/`                   |
 
 Run it by hand any time from the Actions tab: **Weekly Postgres backup → Run
 workflow**, optionally ticking "dry run" to dump and verify without uploading.
@@ -51,9 +51,14 @@ hand, deliberately.
 
 Two consequences worth knowing:
 
-- The folder grows by two files a week, forever. Check on it occasionally and
-  prune by hand when you want to; if the Box quota ever fills, the upload is
+- The folder grows by one dated subfolder a week, forever. Check on it
+  occasionally and prune by hand; if the Box quota ever fills, the upload is
   what starts failing.
+- Each run's two artifacts go up as a single copy into
+  `bloom-backups/prod/<timestamp>/`. A run that dies mid-upload then leaves a
+  visibly incomplete folder, rather than a database dump with no globals beside
+  it — unusable on its own, but indistinguishable from a good backup in a flat
+  listing.
 - On the server nothing accumulates. Each run works inside a temporary
   directory removed when the run returns or raises; a cancelled run or a
   `timeout-minutes` kill is caught by a signal handler, and anything a `SIGKILL`

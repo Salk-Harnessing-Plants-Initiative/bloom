@@ -263,12 +263,21 @@ def backup_destination(env_name: str) -> tuple[str, str]:
     return remote, _env("BACKUP_RCLONE_DEST_DIR", f"bloom-backups/{env_name}")
 
 
-def upload(artifacts: list[Path], env_name: str) -> None:
-    """Push verified artifacts to this environment's Box destination."""
+def upload(artifacts: list[Path], env_name: str, timestamp: str) -> str:
+    """Push this run's artifacts to Box under one folder. Returns that folder.
+
+    One copy of the working directory rather than one per file: a run that
+    fails halfway then leaves an obviously incomplete folder, not a database
+    dump sitting among good backups with no globals beside it.
+    """
     remote, dest_dir = backup_destination(env_name)
-    logger.info("uploading %d artifact(s) to %s:%s/", len(artifacts), remote, dest_dir)
-    for artifact in artifacts:
-        _run([_which("rclone"), "copy", str(artifact), f"{remote}:{dest_dir}/"])
+    work_dirs = {artifact.parent for artifact in artifacts}
+    if len(work_dirs) != 1:
+        raise ConfigError(f"artifacts span {len(work_dirs)} directories, expected one")
+    destination = f"{remote}:{dest_dir}/{timestamp}/"
+    logger.info("uploading %d artifact(s) to %s", len(artifacts), destination)
+    _run([_which("rclone"), "copy", str(work_dirs.pop()), destination])
+    return destination
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +350,7 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_OK
 
         try:
-            upload(artifacts, args.env)
+            destination = upload(artifacts, args.env, timestamp)
         except ConfigError as exc:
             logger.error("configuration error: %s", exc)
             return EXIT_CONFIG
@@ -349,9 +358,8 @@ def main(argv: list[str] | None = None) -> int:
             logger.error("upload failed: %s", exc)
             return EXIT_SUBPROCESS
 
-        remote, dest_dir = backup_destination(args.env)
         print(format_summary(args.env, timestamp, artifacts,
-                             f"{remote}:{dest_dir}/", uploaded=True))
+                             destination, uploaded=True))
 
     logger.info("bloom-weekly-backup env=%s timestamp=%s complete", args.env, timestamp)
     return EXIT_OK

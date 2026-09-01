@@ -132,7 +132,8 @@ jobs:
             if [ "${{ steps.run.outcome }}" = "success" ]; then
               echo "Result: **succeeded**"
             else
-              echo "Result: **FAILED** — see the job log. No backup was taken this run."
+              echo "Result: **FAILED** — see the job log, then the listing below."
+              echo "A run that died mid-upload leaves an incomplete dated folder."
             fi
             echo
             echo '### This run'

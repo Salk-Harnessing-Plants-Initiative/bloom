@@ -209,7 +209,10 @@ def test_the_summary_is_written_even_when_the_backup_fails(workflow):
 
 def test_the_summary_reports_failure_explicitly(text):
     assert "FAILED" in text
-    assert "No backup was taken this run" in text
+    # It must not claim nothing was uploaded: a run that dies between the two
+    # artifacts leaves a partial dated folder that the listing below will show.
+    assert "No backup was taken this run" not in text
+    assert "incomplete dated folder" in text
 
 
 def test_the_job_runs_on_the_salk_runner(workflow):

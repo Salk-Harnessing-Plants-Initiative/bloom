@@ -193,13 +193,17 @@ def test_the_job_only_ever_copies_to_the_remote(tmp_path, monkeypatch):
     monkeypatch.setenv("BACKUP_RCLONE_REMOTE", "box")
     monkeypatch.setenv("BACKUP_RCLONE_DEST_DIR", "bloom-backups/prod")
 
-    backup.upload([tmp_path / "database.sql.gz", tmp_path / "globals.sql.gz"], "prod")
+    work = tmp_path / "bloom-backup-run"
+    work.mkdir()
+    destination = backup.upload([work / "database.sql.gz", work / "globals.sql.gz"],
+                                "prod", "20260824T000000Z")
 
-    assert len(seen) == 2, "both artifacts must be uploaded"
-    for cmd in seen:
-        assert cmd[0] == "rclone"
-        assert cmd[1] == "copy", f"rclone must only ever copy, not {cmd[1]!r}"
-        assert cmd[-1] == "box:bloom-backups/prod/"
+    assert len(seen) == 1, "the pair goes up as one copy, not one call per file"
+    cmd = seen[0]
+    assert cmd[0] == "rclone"
+    assert cmd[1] == "copy", f"rclone must only ever copy, not {cmd[1]!r}"
+    assert cmd[2] == str(work), "copy the working directory, not a single file"
+    assert cmd[-1] == destination == "box:bloom-backups/prod/20260824T000000Z/"
 
 
 def test_the_job_never_deletes_anything_on_the_remote():
@@ -376,7 +380,7 @@ def test_a_run_dumps_and_uploads_both_artifacts(tmp_path, monkeypatch):
                         lambda *a: (dumped.append("globals"), globals_)[1])
     uploaded: list[Path] = []
     monkeypatch.setattr(backup, "upload",
-                        lambda artifacts, env: uploaded.extend(artifacts))
+                        lambda artifacts, env, ts: uploaded.extend(artifacts) or "box:d/")
 
     rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
     assert rc == backup.EXIT_OK
