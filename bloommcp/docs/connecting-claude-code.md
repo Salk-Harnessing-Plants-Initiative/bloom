@@ -97,6 +97,30 @@ description (surfaced in the tool's schema) for exactly what is and isn't preser
 there's no run to look up afterward, so treat this as a one-off check, not a registered
 experiment.
 
+### Carrying an inline clean forward
+
+Because nothing is persisted, there is no cleaned version for a later tool to resolve — the
+`based_on_version` chaining a registered experiment gets is not available here. To feed the
+cleaned table into another analysis, ask `qc_clean` to hand it back and pass it on yourself:
+
+```
+result = qc_clean(csv_content="<the CSV file's text>", return_cleaned_csv=true)
+pca_analysis(csv_content=result.cleaned_csv)
+```
+
+The chaining is yours, not the server's: bloommcp keeps no copy of `cleaned_csv` and records no
+link between the two calls. `cleaned_csv_sha256` is there so you can prove to yourself that the
+second call analyzed the table the first one produced. `return_cleaned_csv` is off by default
+(the table can be large) and is rejected with a registered `experiment`, which already persists
+the cleaned CSV as a downloadable run artifact.
+
+### One caveat worth stating plainly
+
+`csv_content` is never written anywhere and never logged — but that guarantee is about
+bloommcp's normal operation. Raising the server's log level to `DEBUG` makes the MCP transport
+log whole request bodies, inline CSV included, into the container's logs. Don't run a shared
+bloommcp at `DEBUG` while callers are passing data they chose not to register.
+
 ## Claude Desktop / Claude Enterprise
 
 **Not yet written.** Claude Desktop and Claude Enterprise custom connectors work differently from
