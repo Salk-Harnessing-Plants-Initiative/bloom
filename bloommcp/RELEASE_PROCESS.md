@@ -51,20 +51,31 @@ and are marked as a pre-release on GitHub.
 ## Cutting a release
 
 1. Bump the version (workflow or `uv version`), merge the bump PR.
-2. Add a `## [X.Y.Z] - YYYY-MM-DD` entry to `bloommcp/CHANGELOG.md`.
+2. Move `[Unreleased]`'s entries in `bloommcp/CHANGELOG.md` under a new
+   `## [X.Y.Z] - YYYY-MM-DD` heading, dated the day you're actually cutting the release
+   (not whenever the entries were originally written — a stale date here is easy to miss
+   since nothing checks it).
 3. Create a **GitHub Release** whose tag is `bloommcp-vX.Y.Z` (this is the only accepted
    tag form — see "Tag scoping" below). Tick **"Set as a pre-release"** for `aN`/`bN`/`rcN`.
 4. Publishing the Release runs `release-bloommcp.yml`, three jobs:
    - `validate-release`: skipped entirely unless the tag starts with `bloommcp-`;
      otherwise validates tag ↔ version match, changelog entry exists, lint + tests.
    - `build-and-verify` (no publish credential — third-party code runs here, not
-     alongside the OIDC token): `uv build`, `twine check`, imports `bloom_mcp` and its
-     `tools`/`manifest`/`server` submodules plus the concrete Supabase-backed adapters
-     (`bloom_mcp.data_access.SupabaseReader`, `bloom_mcp.result_store.SupabaseResultStore`)
-     and their `postgrest`/`supabase` transitive imports — not just
-     `bloom_mcp.server.build_app()`, which alone doesn't reach those adapters (see the
-     `add-bloommcp-pypi-release-pipeline` OpenSpec change's `design.md` for why) — runs
-     `bloom-mcp --version`, records the artifact's checksum, and uploads it.
+     alongside the OIDC token): `uv build`, `twine check`, an exhaustive
+     `pkgutil.walk_packages` wheel-import walk (run twice — default resolution, then
+     `--prerelease=allow`, so a broken transitive pre-release is caught here, not at a
+     real user's install) that also explicitly imports the concrete Supabase-backed
+     adapters (`bloom_mcp.data_access.SupabaseReader`, `bloom_mcp.result_store.SupabaseResultStore`)
+     and calls `bloom_mcp.server.build_app()` — not just the walk alone, since a broken
+     adapter or dropped `build_app()` call should fail even if the walk's own import
+     order happened to mask it (see the `add-bloommcp-pypi-release-pipeline` OpenSpec
+     change's `design.md` for the full gap analysis) — verifies `bloom-mcp --version`
+     runs and that a real invocation with no env fails fast rather than hanging, records
+     the artifact's checksum, and uploads it. **Only the wheel is smoke-tested this
+     way** — the sdist is built and `twine check`ed, but never installed and imported.
+     Low-probability since bloommcp ships a universal wheel with no compiled
+     extensions, but a sdist-only defect (e.g. a packaging-config bug that drops a
+     module from the sdist specifically) would not be caught before publish.
    - `build-and-publish` (holds `id-token: write` + the `pypi` environment, no other
      code): downloads the verified artifact, re-checks its hash, then `uv publish`.
 5. Verify on PyPI:

@@ -47,7 +47,10 @@ and are marked as a pre-release on GitHub.
 ## Cutting a release
 
 1. Bump the version (workflow or `uv version`), merge the bump PR.
-2. Add a `## [X.Y.Z] - YYYY-MM-DD` entry to `bloomcli/CHANGELOG.md`.
+2. Move `[Unreleased]`'s entries in `bloomcli/CHANGELOG.md` under a new
+   `## [X.Y.Z] - YYYY-MM-DD` heading, dated the day you're actually cutting the release
+   (not whenever the entries were originally written — a stale date here is easy to miss
+   since nothing checks it).
 3. Create a **GitHub Release** whose tag is `bloomctl-vX.Y.Z` (this is now the only
    accepted tag form — see "Tag scoping" below; a bare `vX.Y.Z` or `X.Y.Z` tag is skipped,
    not validated). Tick **"Set as a pre-release"** for `aN`/`bN`/`rcN`.

@@ -8,7 +8,7 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
-## [0.1.0a1] - 2026-08-14
+## [0.1.0a1] - 2026-09-02
 
 ### Added
 
