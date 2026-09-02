@@ -9,17 +9,17 @@ inline `qc_inspect` call.
 
 ## 0. Result-model widening — first, because every tool depends on it
 
-- [ ] 0.1 Test: `RunLinks` still exposes exactly `run_ref`, `version_dir`, `manifest_path`,
+- [x] 0.1 Test: `RunLinks` still exposes exactly `run_ref`, `version_dir`, `manifest_path`,
       `outputs`, `output_links`; `from bloom_mcp.contract import RunLinks` still works; the
       existing `bloommcp-tool-contract` scenarios pass unchanged.
-- [ ] 0.2 Test: a `RunLinks` subclass constructed with all three run links `None` and `outputs`
+- [x] 0.2 Test: a `RunLinks` subclass constructed with all three run links `None` and `outputs`
       omitted validates, with empty `outputs`/`output_links`; a **wrong-typed** `run_ref` (e.g.
       `42`) or a non-string-valued `outputs` still raises `ValidationError`.
-- [ ] 0.3 Test, **per tool** (`pca_analysis`, `umap_analysis`, `clustering`, `descriptive_stats`,
+- [x] 0.3 *(PR 1: satisfied for six consumers by their existing `result.run_ref == stored.run_ref` assertions, which fail on `None`; the seventh, `cross_experiment_correlations`, asserted persistence only through the store's own records and gained the assertion explicitly.)* Test, **per tool** (`pca_analysis`, `umap_analysis`, `clustering`, `descriptive_stats`,
       `remove_outliers`, `cross_experiment_correlations`, `qc_inspect`): a **registered** call
       still returns non-`None` run links and non-empty `outputs`. Widening removes the Pydantic
       guarantee that a persisting tool populated them; this replaces it rather than losing it.
-- [ ] 0.4 Implement: widen `RunLinks`'s three run-link fields to `Optional[str]` (default `None`)
+- [~] 0.4 *(PR 1: `RunLinks` widened. The seven per-tool result models' `experiment` / `experiment_N` / `source_N` fields and their `input_sha256` widen with each tool in PR 2 and PR 3 — widening them ahead of a consumer would ship dead surface.)* Implement: widen `RunLinks`'s three run-link fields to `Optional[str]` (default `None`)
       and `outputs` to default `{}`; update `RunLinks`'s docstring, which says the fields are
       "returned by every consumer tool result". Widen the redeclared run-link fields on
       `QCInspectResult` and `ClusteringResult`, the `experiment` output field on all seven result
@@ -28,55 +28,55 @@ inline `qc_inspect` call.
 
 ## 1. Shared resolver (`_inline_input`) — built and tested once
 
-- [ ] 1.1 Test: `resolve_inline_or_experiment` rejects both-supplied with `invalid_input`, calling
+- [x] 1.1 Test: `resolve_inline_or_experiment` rejects both-supplied with `invalid_input`, calling
       neither the reader nor `pandas.read_csv` (spies assert zero calls).
-- [ ] 1.2 Test: rejects neither-supplied with `invalid_input`.
-- [ ] 1.3 Test: the exactly-one-of check runs **before** the registered-only-parameter check — a
+- [x] 1.2 Test: rejects neither-supplied with `invalid_input`.
+- [x] 1.3 Test: the exactly-one-of check runs **before** the registered-only-parameter check — a
       call that is wrong both ways reports the input conflict. (Without a defined order, §9.4's
       "names `version_2` only" is order-dependent and flaky.)
-- [ ] 1.4 Test: inline path returns a frame equal to `parse_inline_csv_frame`'s output,
+- [x] 1.4 Test: inline path returns a frame equal to `parse_inline_csv_frame`'s output,
       `input_sha256` equal to `compute_input_sha256`, `is_inline=True`, `label == "csv_content"`.
-- [ ] 1.5 Test: registered path returns the frame from the supplied `reader_call`,
+- [x] 1.5 Test: registered path returns the frame from the supplied `reader_call`,
       `input_sha256 is None`, `is_inline=False`, `label == experiment`.
-- [ ] 1.6 Test: the resolver takes the registered parameter's *name*, so `load_experiment_data`
+- [x] 1.6 Test: the resolver takes the registered parameter's *name*, so `load_experiment_data`
       (`filename`) and `cross_experiment_correlations` (per-side) produce the same message text
       modulo that name.
-- [ ] 1.7 Test: `reject_registered_only_params` raises `invalid_input` naming the offending
+- [x] 1.7 Test: `reject_registered_only_params` raises `invalid_input` naming the offending
       parameter, and is a no-op when the value is `None`/absent.
-- [ ] 1.8 Test: `serialize_table_csv` round-trips a DataFrame with no index column, emits `\n`
+- [x] 1.8 Test: `serialize_table_csv` round-trips a DataFrame with no index column, emits `\n`
       (no `\r`) regardless of platform — pandas defaults `lineterminator` to `os.linesep`, which
       would make every digest platform-dependent — and raises `invalid_input` naming the size
       when the result exceeds `MAX_INLINE_CSV_BYTES`.
-- [ ] 1.9 Test: `MAX_INLINE_CSV_ROWS` — a frame above the cap is rejected with `invalid_input`
+- [x] 1.9 Test: `MAX_INLINE_CSV_ROWS` — a frame above the cap is rejected with `invalid_input`
       naming the row count and the limit; a frame at exactly the cap is accepted.
-- [ ] 1.10 Test: `BLOOMMCP_INLINE_CSV_ENABLED` set false rejects every `csv_content` call with a
+- [x] 1.10 Test: `BLOOMMCP_INLINE_CSV_ENABLED` set false rejects every `csv_content` call with a
       remedy naming the registered path, and leaves the registered path untouched.
-- [ ] 1.11 Implement `InlineInput`, `resolve_inline_or_experiment`,
+- [x] 1.11 Implement `InlineInput`, `resolve_inline_or_experiment`,
       `reject_registered_only_params`, `serialize_table_csv`, `MAX_INLINE_CSV_ROWS`, and the kill
       switch; rewrite the module docstring, which still says `qc_clean` is the only caller.
-- [ ] 1.12 Test first, then implement: `_validate_trait_subset`'s `certified_label` presentation
+- [x] 1.12 Test first, then implement: `_validate_trait_subset`'s `certified_label` presentation
       parameter in `_qc_shared.py`. Assert the **accepted column set is byte-identical** with and
       without it (it is imported by eight modules, so the parameter must default), and that the
       inline wording claims no certification.
 
 ## 2. `qc_clean` — refactor onto the resolver, then extend
 
-- [ ] 2.1 Refactor `qc_clean` onto `resolve_inline_or_experiment`, in a commit touching **zero
+- [x] 2.1 Refactor `qc_clean` onto `resolve_inline_or_experiment`, in a commit touching **zero
       test files** — that is the refactor's entire claim and it is verifiable. Its existing suite
       passes unmodified. (Exception, deferred to 2.7: `test_inline_result_never_nudges_toward_
       qc_inspect` asserts `next_step is None` and must change — but not in this commit.)
-- [ ] 2.2 Test: `return_cleaned_csv=true` + `csv_content` returns `cleaned_csv` parsing back to
+- [x] 2.2 Test: `return_cleaned_csv=true` + `csv_content` returns `cleaned_csv` parsing back to
       the same table the registered path persists, no index column; `cleaned_csv_sha256` matches
       an independent digest.
-- [ ] 2.3 Test: `cleaned_csv` contains no `\r` and its digest is stable across repeated calls.
-- [ ] 2.4 Test: `cleaned_csv` re-parsed and run through `resolve_columns` yields a trait set
+- [x] 2.3 Test: `cleaned_csv` contains no `\r` and its digest is stable across repeated calls.
+- [x] 2.4 Test: `cleaned_csv` re-parsed and run through `resolve_columns` yields a trait set
       **equal to** `kept_trait_columns` and the same genotype/sample-id/replicate roles.
       `qc_clean`'s no-NaN guard is scoped to *kept* columns, so the serialized table can carry NaN
       in removed/metadata columns; this is the invariant that makes client-side chaining sound and
       nothing else pins it.
-- [ ] 2.5 Test: `return_cleaned_csv=true` + `experiment` raises `invalid_input`; omitted/false
+- [x] 2.5 Test: `return_cleaned_csv=true` + `experiment` raises `invalid_input`; omitted/false
       leaves both fields `None` with the rest of the response unchanged.
-- [ ] 2.6 Test: an oversized serialized table raises `invalid_input` naming size and limit, with
+- [x] 2.6 Test: an oversized serialized table raises `invalid_input` naming size and limit, with
       no truncated table returned; and `ResultStore` spy records zero `create_run`/`commit` even
       with `return_cleaned_csv=true`.
 - [ ] 2.7 **(PR 3, after §3.)** Test + implement: inline cleaning that drops samples populates
@@ -88,7 +88,7 @@ inline `qc_inspect` call.
 - [ ] 2.8 **(PR 3, after §3.)** Test: execute the `qc_inspect(csv_content=...)` call the inline
       `next_step` describes — it succeeds and returns diagnostics. The recommendation is verified
       against the real tool, not merely asserted to name it.
-- [ ] 2.9 Implement 2.2-2.6; update `QCCleanResult` field descriptions and both docstrings.
+- [x] 2.9 Implement 2.2-2.6; update `QCCleanResult` field descriptions and both docstrings.
 
 ## 3. `qc_inspect` — the figure-suppression case (PR 3)
 
@@ -288,17 +288,17 @@ inline `qc_inspect` call.
 
 ## 12. Verification — exact commands
 
-- [ ] 12.1 `cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration and not
+- [x] 12.1 `cd bloommcp && uv run --frozen --extra test pytest tests/ -m "not integration and not
       live_smoke" -v --tb=short` (as CI runs it, with `SUPABASE_URL=""`, `BLOOM_AGENT_KEY=""`).
 - [ ] 12.2 `cd bloommcp && uv run --frozen --extra test pytest tests/ -m integration -v` — the
       oracles excluded from per-PR CI.
-- [ ] 12.3 `uv run --extra test pytest tests/unit/ -v --tb=short` from the repo root.
-- [ ] 12.4 `cd bloommcp && uv run black --check src tests && uv run ruff check src tests` —
+- [x] 12.3 `uv run --extra test pytest tests/unit/ -v --tb=short` from the repo root.
+- [x] 12.4 `cd bloommcp && uv run black --check src tests && uv run ruff check src tests` —
       **not covered by CI**; pre-commit is the only gate, so skipping this locally means it is
       never checked.
 - [ ] 12.5 `uv run pre-commit run --all-files` from the repo root.
-- [ ] 12.6 `openspec validate add-bloommcp-inline-csv-all-tools --strict`.
-- [ ] 12.7 Confirm every existing registered-path test and golden oracle passes **unmodified**.
+- [x] 12.6 `openspec validate add-bloommcp-inline-csv-all-tools --strict`.
+- [x] 12.7 Confirm every existing registered-path test and golden oracle passes **unmodified**.
 
 ## 13. Live smoke — the transport is where the size questions live
 
