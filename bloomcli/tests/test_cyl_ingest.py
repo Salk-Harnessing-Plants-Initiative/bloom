@@ -1276,6 +1276,48 @@ def test_ingest_one_envelope_isolates_unexpected_error(monkeypatch, tmp_path):
     assert "simulated network timeout" in result.error
 
 
+def test_ingest_one_envelope_isolates_unreadable_file_error(tmp_path):
+    """load_envelope's Path.read_text can raise UnicodeDecodeError (a ValueError, not
+    OSError) on a truncated/corrupt file — e.g. one an OOM-killed producer pod left
+    mid-write. Review finding: this propagated past ingest_one_envelope's isolation
+    entirely, since the try/except around the load_envelope call only caught
+    EnvelopeError, and the broad `except Exception` catch only wrapped the later
+    blob/RPC block, not this one — a real file with invalid UTF-8 bytes reproduces it
+    without any monkeypatching."""
+    path = tmp_path / "scan_corrupt.result.json"
+    path.write_bytes(b"\xff\xfe\x00bad-utf8")
+
+    result = ing.ingest_one_envelope(object(), path)
+
+    assert result.status == "failed"
+    assert result.scan_key == "scan_corrupt"
+
+
+def test_batch_ingest_cli_isolates_unreadable_file_among_several(monkeypatch, tmp_path):
+    """The same corrupt-file failure, exercised through the full batch command: it must
+    be isolated to its own ScanResult, not abort ingestion of the other envelopes or
+    skip the end-of-batch reconciliation call."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-corrupt")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+    calls = []
+    monkeypatch.setattr(
+        ing, "reconcile_unresolved_scans", lambda client, name: calls.append(name) or 0
+    )
+    _write_envelope(tmp_path, "scan_1")
+    (tmp_path / "scan_corrupt.result.json").write_bytes(b"\xff\xfe\x00bad-utf8")
+    _write_envelope(tmp_path, "scan_3")
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code != 0
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_1"]["status"] == "ok"
+    assert payload["scan_corrupt"]["status"] == "failed"
+    assert payload["scan_3"]["status"] == "ok"
+    assert calls == ["wf-corrupt"], "reconciliation must still run despite the corrupt file"
+
+
 def test_batch_ingest_cli_isolates_unexpected_network_error_among_several(monkeypatch, tmp_path):
     _patch_batch_authed(monkeypatch)
 
@@ -1531,6 +1573,85 @@ def test_batch_ingest_result_missing_scan_key_alone_still_reconciles_when_workfl
     assert result.exit_code != 0  # both declared scan_keys are still reported failed
     assert called["auth"] is True
     assert calls == ["wf-missing-only"]
+
+
+def test_batch_ingest_cli_reconcile_failure_does_not_crash_and_is_reported(monkeypatch, tmp_path):
+    """Review finding: the reconciliation call had no exception handling of its own, unlike
+    every other RPC call in this file — a transient failure on this one closing call, after
+    every real envelope already ingested successfully, crashed the whole command with an
+    unhandled traceback instead of the batch's own summary."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-reconcile-boom")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+
+    def boom(client, name):
+        raise _api_error("simulated transient reconciliation failure")
+
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
+    for key in ("scan_1", "scan_2"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    # A clean click ctx.exit(1) surfaces as result.exception == SystemExit(1); an unhandled
+    # crash (the pre-fix behavior) surfaces as the raw exception itself with no parseable JSON
+    # on stdout — assert on the latter, not on `exception is None`, which SystemExit fails too.
+    assert isinstance(result.exception, SystemExit), (
+        f"must exit cleanly via click, not crash with a raw exception: {result.exception!r}"
+    )
+    assert result.exit_code != 0
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_1"]["status"] == "ok"
+    assert payload["scan_2"]["status"] == "ok"
+    reconciliation_entries = [e for e in payload.values() if e["status"] == "failed"]
+    assert len(reconciliation_entries) == 1
+    assert "simulated transient reconciliation failure" in reconciliation_entries[0]["error"]
+
+
+def test_batch_ingest_cli_reconcile_failure_on_empty_batch_is_reported(monkeypatch, tmp_path):
+    """Same isolation, exercised through the zero-envelopes early-return branch, which has its
+    own bespoke 'nothing to ingest' message/exit path distinct from the main batch flow."""
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-empty-boom")
+    monkeypatch.setattr(
+        climod, "_authed_client", lambda p: object()
+    )
+
+    def boom(client, name):
+        raise _api_error("simulated transient reconciliation failure")
+
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
+    # tmp_path is empty: no envelope files, no run_manifest.json
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert isinstance(result.exception, SystemExit), (
+        f"must exit cleanly via click, not crash with a raw exception: {result.exception!r}"
+    )
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert len(payload) == 1
+    assert payload[0]["status"] == "failed"
+    assert "simulated transient reconciliation failure" in payload[0]["error"]
+
+
+def test_batch_ingest_cli_reconcile_success_logs_the_reconciled_count(
+    monkeypatch, tmp_path, caplog
+):
+    """The reconciliation call's return value (how many scans it closed out) was previously
+    discarded silently — review finding: no CLI-visible signal that N scans were just marked
+    failed by this batch."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-logs-count")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", lambda client, name: 3)
+    _write_envelope(tmp_path, "scan_1")
+
+    with caplog.at_level("INFO", logger="bloomctl.cyl.ingest"):
+        result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    info_records = [r for r in caplog.records if r.levelname == "INFO"]
+    assert any("3" in r.message and "wf-logs-count" in r.message for r in info_records)
 
 
 def test_batch_ingest_cli_json_all_ok(monkeypatch, tmp_path):

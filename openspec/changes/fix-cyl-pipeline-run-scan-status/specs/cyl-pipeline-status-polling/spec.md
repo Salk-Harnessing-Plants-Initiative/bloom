@@ -21,7 +21,17 @@ between cycles even while its overall status does not, so an unchanged-status sh
 those counts. The sole remaining exception is the withheld-`'complete'` rule: when the computed
 status is `'complete'` and any of this cycle's workflow lookups returned `None` (404), the call is
 skipped entirely this cycle (status and counts both held back, since an unconfirmed workflow could
-still resolve to a failure that changes both). It SHALL isolate a failure fetching or updating any one
+still resolve to a failure that changes both). Before writing a run's status whenever the computed
+status is anything other than `'running'` (and is not withheld by the rule above), the poller SHALL
+close out, as `'failed'`, any of that run's `cyl_pipeline_run_scans` rows still `status = 'queued'`
+with a non-null `argo_workflow_name` — one `fail_cyl_pipeline_run_scans_without_result` call per
+distinct such workflow name, folding the closed-out rows into this cycle's `failed_count` — since a
+run whose rollup has already concluded will never be polled again once its terminal status is
+written, and this is the only remaining chance to resolve a scan whose write-back step never ran at
+all (its own workflow failed before reaching write-back, or the write-back container never started).
+If that reconciliation call itself fails, the run's status update SHALL be skipped entirely this
+cycle (the run's `cyl_pipeline_runs.status` left untouched, so it remains a candidate and is retried
+next cycle), matching the isolation the rule below already gives every other per-run failure. It SHALL isolate a failure fetching or updating any one
 run (a K8s error, a DB-read error, or a failed write) to that run alone, never aborting the rest of the
 cycle's candidates, and SHALL isolate a failure fetching the candidate list itself to that cycle alone
 (retrying next cycle, not crashing). Because this per-run/per-cycle isolation means a single sweep
@@ -112,6 +122,37 @@ matching `dispatch_worker.py`'s established conventions for both.
   "already confirmed by this poller," unlike `'running'`, since Phase 2's own dispatch-settle can also
   produce `'partial'` as a pre-poll guess (found `/review-pr` round 3, correcting a round-2 regression
   that silently discarded exactly this write)
+
+#### Scenario: A terminal rollup reconciles a scan whose write-back step never ran
+
+- **WHEN** a candidate run's rollup this cycle concludes `'failed'` (its one workflow's real Argo
+  phase resolved to a terminal, non-`Succeeded` outcome), and one of this run's
+  `cyl_pipeline_run_scans` rows is still `status = 'queued'` under that workflow's
+  `argo_workflow_name` (write-back never ran for that scan, e.g. the workflow failed before reaching
+  the write-back step)
+- **THEN** before writing the run's status, the poller calls
+  `fail_cyl_pipeline_run_scans_without_result` for that `argo_workflow_name`, and the run's
+  `failed_count` written this cycle includes that scan
+
+#### Scenario: A still-running workflow's queued rows are not reconciled
+
+- **WHEN** a candidate run's rollup this cycle concludes `'running'`
+- **THEN** the poller does not call `fail_cyl_pipeline_run_scans_without_result` for any of that
+  run's `'queued'` rows — they are not stuck, merely not yet resolved
+
+#### Scenario: A failed reconciliation call leaves the run unsettled for the next cycle
+
+- **WHEN** a candidate run's rollup concludes a non-`'running'` status, it has a `'queued'` row under
+  some `argo_workflow_name`, and the `fail_cyl_pipeline_run_scans_without_result` call for that
+  workflow name raises
+- **THEN** the poller does not call `update_cyl_pipeline_run_status` for that run this cycle (the run
+  remains a polling candidate, unchanged), and the cycle continues checking the remaining candidates
+
+#### Scenario: A run with no leftover queued rows is unaffected
+
+- **WHEN** a candidate run's rollup concludes a non-`'running'` status and every one of its scan rows
+  already has a status other than `'queued'`
+- **THEN** the poller makes no `fail_cyl_pipeline_run_scans_without_result` call for that run
 
 #### Scenario: Three consecutive unclean cycles trigger a proactive reconnect
 

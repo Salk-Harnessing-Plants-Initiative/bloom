@@ -19,6 +19,17 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   `cyl_pipeline_runs.done_count`/`failed_count` (bloom #716/#696). Manual/
   ad-hoc invocation with the variable unset is unaffected.
 
+### Fixed
+
+- `cyl batch-ingest-result`: an envelope file that can't be read as UTF-8
+  (e.g. one truncated mid-write by an OOM-killed producer) is now isolated to
+  its own failed entry, instead of aborting the rest of the batch and
+  skipping the end-of-batch reconciliation call. A failure of the
+  reconciliation call itself is likewise isolated — reported as its own
+  failed entry in the batch summary/`--json` output rather than crashing the
+  command — and a successful reconciliation now logs how many scans it
+  closed out.
+
 ## [0.1.0a6] - 2026-08-25 — plate download on the PyPI page
 
 ### Fixed

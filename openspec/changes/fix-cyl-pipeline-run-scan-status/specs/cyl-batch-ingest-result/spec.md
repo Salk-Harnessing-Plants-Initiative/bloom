@@ -18,7 +18,12 @@ set and non-empty, the command SHALL call `fail_cyl_pipeline_run_scans_without_r
 name that no envelope in this batch ever resolved (including a scan whose prediction failed before
 producing any file at all, which this command has no way to discover directly since it can only see
 files that exist). When `ARGO_WORKFLOW_NAME` is unset, the command SHALL make no such call, leaving
-manual/local batch runs unaffected.
+manual/local batch runs unaffected. A single envelope's failure at any stage (read, validate, blob
+construction/upload, or the RPC call itself) SHALL be isolated into that envelope's own failed
+`ScanResult`, never aborting the rest of the batch or preventing the end-of-batch reconciliation call
+from running. A failure of the reconciliation call itself SHALL likewise be isolated — reported as a
+synthetic failed `ScanResult` (rather than raised) so the batch's own summary/`--json` output and exit
+code still reflect it — and, on success, the number of scans it closed out SHALL be logged.
 
 #### Scenario: Every envelope file in the directory is ingested
 
@@ -56,3 +61,25 @@ manual/local batch runs unaffected.
   zero, if `envelopes_dir` is empty and no manifest is present)
 - **THEN** `fail_cyl_pipeline_run_scans_without_result` is called exactly once, after all envelopes
   (if any) have been processed — never once per envelope
+
+#### Scenario: An unreadable envelope file does not abort the batch or skip reconciliation
+
+- **WHEN** one envelope file in the batch cannot be read as UTF-8 text (e.g. truncated mid-write by
+  an OOM-killed producer), and `ARGO_WORKFLOW_NAME` is set
+- **THEN** that envelope is reported as a failed `ScanResult`, every other envelope in the batch is
+  still ingested normally, and the end-of-batch reconciliation call still runs
+
+#### Scenario: A reconciliation-call failure is isolated, not a crash
+
+- **WHEN** every envelope in the batch ingests successfully but the end-of-batch
+  `fail_cyl_pipeline_run_scans_without_result` call itself raises (e.g. a transient network/auth
+  error)
+- **THEN** the command does not crash with an unhandled exception; it still prints the batch summary
+  (or `--json` output) reflecting every envelope's real outcome, includes a distinct failed entry
+  describing the reconciliation failure, and exits non-zero
+
+#### Scenario: A successful reconciliation logs how many scans it closed out
+
+- **WHEN** the end-of-batch reconciliation call succeeds and closes out one or more scans as
+  `'failed'`
+- **THEN** the number of scans closed out is logged, rather than discarded silently

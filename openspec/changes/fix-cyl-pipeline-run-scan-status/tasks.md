@@ -58,8 +58,80 @@
 - [ ] 8.3 Trigger a poison-scan scenario expecting a `'partial'` outcome; confirm `done_count` and `failed_count` both match the real success/failure split for that run, are not double-counted across poller cycles, and are not stuck at a dispatch-level attempt count.
 - [ ] 8.4 Record the actual observed counts from 8.2/8.3 (not just pass/fail) as the verification evidence for this change.
 
-## 9. Post-merge follow-through
+## 9. Review round 1 fixes (`/review-pr` against PR #774, post-implementation)
 
-- [ ] 9.1 Update `docs/bloom-integration/roadmap.md` (in `sleap-roots-pipeline`) marking bloom #716 and #696 resolved, and note whether bloom #15's UI progress panel is now actually unblocked.
-- [ ] 9.2 Close bloom #716 and #696 referencing the merged PR, once merged and verified per Task 8.
-- [ ] 9.3 Fill in the `Purpose` sections of `openspec/specs/cyl-pipeline-runs/spec.md` and `openspec/specs/cyl-pipeline-status-polling/spec.md` — both currently read the literal placeholder text `TBD - created by archiving change ... Update Purpose after archive.` (their own inline comment, not an `openspec/AGENTS.md` rule) — as part of this change's own archival.
+Three real BLOCKING/IMPORTANT gaps survived Task 7's implementation, found once `/review-pr`'s 5
+parallel reviewers read the actual diff (as opposed to the design doc's description of it) — see
+`design.md`'s Decision 6. All three trace back to the same theme: a scan can stay `'queued'` forever
+if either `bloomctl`'s own failure-isolation has a hole, or if `bloomctl` never runs at all.
+
+- [x] 9.1 Write a failing test proving the isolation gap: monkeypatch/force `load_envelope` (or
+  write a real file with invalid UTF-8 bytes) so it raises something other than `EnvelopeError`
+  (e.g. `UnicodeDecodeError`) inside `ingest_one_envelope`, and confirm it currently propagates
+  instead of returning a failed `ScanResult`. **Done: `test_ingest_one_envelope_isolates_unreadable_file_error`
+  and `test_batch_ingest_cli_isolates_unreadable_file_among_several` (a real file with invalid UTF-8
+  bytes, no monkeypatching needed) — confirmed both failed against the pre-fix code with a raw
+  `UnicodeDecodeError`/`JSONDecodeError` before 9.2 landed.**
+- [x] 9.2 Fix: merge `ingest_one_envelope`'s three separate try/except blocks (narrow
+  `EnvelopeError`/`EnvelopeValidationError` catches around read/validate, broad `Exception` catch
+  around blob+RPC only) into one try block spanning the whole per-envelope pipeline, with a single
+  `except Exception` isolating any failure at any stage into that envelope's own failed
+  `ScanResult`. Run 9.1's test; confirm green. **Done — 150 passed, 1 skipped.**
+- [x] 9.3 Write failing tests for the reconciliation call's own isolation: (a) `batch_ingest_result`
+  with every envelope succeeding but `reconcile_unresolved_scans` raising — must not crash with an
+  unhandled exception, must still print the batch summary/JSON reflecting every real envelope
+  outcome, must include a distinct failed entry for the reconciliation failure, and must exit
+  non-zero; (b) the same for the zero-envelopes early-return branch; (c) a successful reconciliation
+  with a non-zero returned count logs that count (previously discarded silently). **Done: 3 new
+  tests, confirmed red against pre-fix code (crashed with the raw `APIError`/`Error P0001` instead
+  of a clean click exit; the logging test found no INFO record).**
+- [x] 9.4 Fix: add a small wrapper (e.g. `_reconcile_unresolved_scans_result`) around
+  `reconcile_unresolved_scans` that isolates any exception into a synthetic failed `ScanResult`
+  (`scan_key="<reconciliation>"`) folded into `scan_results`/`missing_results` before `BatchResult`
+  is built at both call sites, and logs the returned count via `logger.info` on success. Run 9.3's
+  tests; confirm green. **Done — 153 passed, 1 skipped (bloomcli/tests/test_cyl_ingest.py in full).**
+- [x] 9.5 Write failing tests for the `status_poller.py` backstop (extending
+  `services/workflows/tests/test_status_poller.py`): (a) a candidate run whose rollup concludes a
+  non-`'running'` status with a `'queued'` row under some `argo_workflow_name` — `sweep_once` calls
+  `fail_cyl_pipeline_run_scans_without_result` for that name, and the `failed_count` passed to
+  `update_cyl_pipeline_run_status` includes the reconciled row; (b) multiple distinct `'queued'`
+  workflow names for one run — reconciled once each; (c) rollup concludes `'running'` — no
+  reconciliation call at all; (d) the reconciliation call itself raises — `update_cyl_pipeline_run_status`
+  is NOT called for that run this cycle (left unsettled, `ok=False`), and the sweep still continues
+  to the next candidate; (e) no leftover `'queued'` rows — no reconciliation call, behavior
+  unchanged; (f) the existing withheld-`'complete'`-on-404 case still short-circuits before ever
+  reaching the new reconciliation logic (no reconciliation call in that case either). **Done: 6 new
+  tests added (one per scenario a-f), plus assertions on the new `queued_workflow_names` return
+  value added to the 4 pre-existing direct-call tests of `_fetch_effective_phases`, and a
+  `_reconcile_unresolved_scans` no-op mock added to `test_sweep_once_computes_counts_from_real_scan_rows_and_passes_them_through`
+  (its fixture's leftover 'queued' row would otherwise also exercise this new path, muddying its
+  original counting-only intent).**
+- [x] 9.6 Fix: widen `_fetch_effective_phases`'s return to also include the sorted, distinct
+  `argo_workflow_name`s among rows with `status = 'queued'`; in `sweep_once`, once `status` is known
+  and not withheld, reconcile each such name (isolated in one try/except covering the whole
+  per-run reconciliation loop — any failure skips this run's `update_cyl_pipeline_run_status` call
+  entirely this cycle, marks the cycle unclean, and moves on) and fold the reconciled counts into
+  `failed_count` before the status write. Run 9.5's tests; confirm green — including the full
+  pre-existing suite, so anything not explicitly touched by 9.5 shows zero diff in behavior. **Done
+  — 51 passed (up from 45; all 6 new tests plus every pre-existing test, unchanged in behavior).**
+- [x] 9.7 Update `services/workflows/README.md` and `bloomcli/README.md`/`CHANGELOG.md` if their
+  existing descriptions of the reconciliation call's behavior need amending given 9.2/9.4/9.6.
+  **Done — also caught and fixed a pre-existing staleness in `status_poller.py`'s own module
+  docstring (still described the same-value 'running' skip that Task 4 already removed).**
+- [x] 9.8 Re-run: `uv run --extra test pytest tests/integration/ -v` (targeted at the same files as
+  Task 7.3), `cd services/workflows && uv run --frozen --extra test pytest tests/ -v`, `cd bloomcli
+  && uv run --extra test pytest tests/ -m "not integration" -v`, and `openspec validate
+  fix-cyl-pipeline-run-scan-status --strict`. Confirm all green before the next `/review-pr` round.
+  **Done: integration — 222 passed, 2 skipped (identical to Task 7.3's baseline; these fixes touch
+  no schema/migration). `services/workflows` — 51 passed. `bloomcli` (`not integration`) — 868
+  passed, 13 failed, same pre-existing Windows POSIX-permission/symlink failures as Task 7.3, none
+  in touched files. `openspec validate --strict` — valid. `ruff@0.9.9 check` clean on all 4 touched
+  files; `ruff format` applied to `services/workflows/status_poller.py` and its test file (the
+  pre-commit-enforced scope per `.pre-commit-config.yaml`) — `bloomcli` files left as-is
+  (ruff-format/black are not pre-commit-scoped there, per Task 7.3's own note).**
+
+## 10. Post-merge follow-through
+
+- [ ] 10.1 Update `docs/bloom-integration/roadmap.md` (in `sleap-roots-pipeline`) marking bloom #716 and #696 resolved, and note whether bloom #15's UI progress panel is now actually unblocked.
+- [ ] 10.2 Close bloom #716 and #696 referencing the merged PR, once merged and verified per Task 8.
+- [ ] 10.3 Fill in the `Purpose` sections of `openspec/specs/cyl-pipeline-runs/spec.md` and `openspec/specs/cyl-pipeline-status-polling/spec.md` — both currently read the literal placeholder text `TBD - created by archiving change ... Update Purpose after archive.` (their own inline comment, not an `openspec/AGENTS.md` rule) — as part of this change's own archival.

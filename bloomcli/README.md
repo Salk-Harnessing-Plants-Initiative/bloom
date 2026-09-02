@@ -577,7 +577,13 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
   including a batch of zero envelopes, since every scan under that workflow
   name having failed prediction before producing any file is exactly the
   case this closes out). Skipped entirely when the env var is unset (manual/
-  local runs, unaffected).
+  local runs, unaffected). A failure of this call is isolated, not a crash —
+  it's reported as its own failed entry (`scan_key="<reconciliation>"`) in the
+  batch's summary/`--json` output and reflected in the exit code, alongside
+  every real envelope's own outcome; a successful call logs how many scans it
+  closed out. An unreadable envelope file at any earlier stage (e.g. a
+  truncated file left by an OOM-killed producer) is isolated the same way and
+  never prevents this call from running.
 
 Auth: same saved login profile as `ingest-result` (must have write access).
 

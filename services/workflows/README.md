@@ -195,6 +195,21 @@ whatever it read on the run's first `'running'` cycle. `update_cyl_pipeline_run_
 remains cheap and idempotent, so writing every cycle is not a scaling concern
 at this program's poll interval and run volume.
 
+Before writing a run's status whenever the computed conclusion is anything
+other than `'running'`, the poller also reconciles that run's leftover
+`'queued'` scan rows: since a terminal status write drops the run from this
+poller's candidate set for good, a scan still `'queued'` at that point can
+only mean write-back never ran for it at all (its workflow failed before
+reaching write-back, or the write-back container never started), and this is
+the last chance to close it out. It does so via
+`fail_cyl_pipeline_run_scans_without_result` (one call per distinct
+`argo_workflow_name` with a leftover `'queued'` row), folding the reconciled
+count into `failed_count` before the status write. If the reconciliation
+call itself fails, the status write is skipped entirely for that run this
+cycle — it remains a candidate and is retried next cycle, the same isolation
+already given to every other per-run failure — rather than writing a
+terminal status while leaving those rows permanently unresolved.
+
 The rollup rule that maps a run's per-workflow phases to one status is
 specified normatively in the `cyl-pipeline-status-polling` OpenSpec capability
 spec's "Rollup rule..." requirement — not restated here. See that change's
