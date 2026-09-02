@@ -23,6 +23,12 @@ requirement introduces.
 - **THEN** it raises a `BloomMCPError` with `code="invalid_input"`, not a raw validation
   exception or a plain error string
 
+#### Scenario: An unknown input field is rejected, not silently accepted
+
+- **WHEN** a tool is called with a field name its input model does not declare
+- **THEN** it raises a `BloomMCPError` with `code="invalid_input"` rather than silently
+  dropping the unrecognized field
+
 ### Requirement: Raw (Pre-Clean) Experiment Read
 
 Each of the 3 tools SHALL read the experiment frame through the `ExperimentReader` port with no

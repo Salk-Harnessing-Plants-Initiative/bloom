@@ -350,3 +350,55 @@ verification/testing gaps and a disputed test-count claim.
       exact-match, case-sensitive `trait_columns` matching (mirroring `pandas` column-lookup
       semantics) is by design, so a future reader doesn't "fix" it as a bug.
 - [x] 11.11 Re-ran the full 4-file targeted suite (115 passed) + `openspec validate --strict`.
+
+## 12. Fifth PR review pass — a stale count, an escalation, a re-scope, and a genuine coverage gap
+
+No blocking correctness/security/architecture findings this round — all 4 prior rounds' fixes
+(notably round 3/4's heatmap-caveat data-integrity fix) were independently re-verified against
+the live code and held up. One documentation-accuracy issue and a few real gaps remained.
+
+- [x] 12.1 **Important**: the PR description's "1472 passed... 33 deselected" and design.md's
+      "Test Count Verification" section's "1464/1497" didn't arithmetically reconcile
+      (`1472 + 33 = 1505 ≠ 1497`). Root cause: design.md's number went stale the moment round 4's
+      own fix commit added 8 tests after that section was written — the PR description was
+      actually correct (1472/1505 was the true post-round-4 count), design.md just never caught
+      up. Re-ran the exact CI invocation fresh (after this round's own additions too): **1479
+      passed, 33 deselected, 1512 total** (`1479 + 33 = 1512`, checked) — design.md's section
+      rewritten to explain the stale-section root cause explicitly, not just restate a new
+      number.
+- [x] 12.2 **Important**: escalated
+      [#769](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/769) to
+      `priority: high` — round 5 independently confirmed it as a concrete cross-caller read
+      exposure (any caller holding the shared MCP credential can enumerate/read another lab's
+      results for a known experiment id), not merely a theoretical architecture note.
+- [x] 12.3 **Important**: re-scoped
+      [#748](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/748) (retitled,
+      body rewritten, `priority: medium` added) to lead with `plot_trait_boxplots` disclosing no
+      sample size anywhere — not even in the subplot title, unlike `plot_trait_histograms`'s
+      delegate-provided `(n=...)` — concluded more consequential than the original "documentation
+      polish" framing.
+- [x] 12.4 **Important**: added direct `resolve_trait_columns` coverage against an all-NaN trait
+      column (`test_resolve_trait_columns_all_nan_trait_is_included_not_dropped_or_rejected` +
+      `..._explicit_all_nan_trait_is_honored`) — confirms the shared helper does NOT reject it
+      (intentional: the all-zero-variance guard lives in `plot_correlation_matrix` alone).
+      Writing it surfaced a test-authoring mistake (not a production bug): `[None] * 6` makes
+      pandas infer `dtype=object`, not numeric — fixed to `[float("nan")] * 6`.
+- [x] 12.5 **Suggestion**: added `n_traits=65` (one leftover trait alone on the last page) to
+      both batching tools' `page_traits` parametrization. Writing it surfaced a real bug in the
+      round-4 test *helper* (not production code): `create_trait_histograms_batched` pads a
+      not-exactly-full page to its fixed `n_cols=4` grid with invisible, blank-titled axes
+      (confirmed against the live delegate) that `_titled_traits` was reading unconditionally —
+      fixed by filtering to `ax.get_visible()` (applied defensively to
+      `create_trait_boxplots_by_genotype_batched`'s helper too, though that delegate doesn't pad
+      this way today).
+- [x] 12.6 **Suggestion**: added `model_config = ConfigDict(extra="forbid")` to all 3 new Params
+      models, plus a rejection test per tool — not currently exploitable, but silently accepting
+      an unknown field masks a caller typo (matches the recommendation already made on sibling
+      PR #726). Not backported to the other 8 tools' Params models — out of scope.
+- [x] 12.7 **Suggestion**: updated
+      [#747](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/747)'s
+      description — stale "the image itself is unchanged" claim corrected to describe round 4's
+      whole-figure/manifest disclosure fix; the underlying per-cell-masking complaint remains
+      correctly open.
+- [x] 12.8 Re-ran the exact CI invocation (1479 passed, 0 failed, 33 deselected, 1512 total,
+      arithmetic checked) + `openspec validate --strict`.

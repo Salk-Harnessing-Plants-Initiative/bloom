@@ -340,7 +340,35 @@ contract):
   `create_trait_boxplots_by_genotype_batched` titles it the bare trait name — both confirmed
   against the live delegate, not assumed), and asserts `page_traits` matches what was actually
   rendered. Also now covers `n_traits=64` (an exact multiple of `batch_size=16`) alongside the
-  existing `n_traits=60` — the boundary case a non-multiple never exercises.
+  existing `n_traits=60` — the boundary case a non-multiple never exercises. **Round 5** adds
+  `n_traits=65` (one leftover trait alone on the last page) — closing a second boundary case
+  the review round 4 asked for. Writing it surfaced a real bug in the round-4 test *helper*
+  itself (not the production code): `create_trait_histograms_batched` pads a not-exactly-full
+  page to its fixed `n_cols=4` grid with extra, invisible, blank-titled axes (confirmed against
+  the live delegate) — the helper was reading `fig.axes` unconditionally, so it picked up 3
+  spurious empty-string "titles" alongside the 1 real one. Fixed by filtering to
+  `ax.get_visible()`; `create_trait_boxplots_by_genotype_batched` doesn't pad this way today
+  (confirmed against the live delegate too), but the same filter was applied there defensively.
+
+- **Decision: the 3 new Params models declare `model_config = ConfigDict(extra="forbid")`.**
+  An unknown field isn't currently exploitable — `@as_mcp_tool`'s Pydantic validation already
+  means an unrecognized kwarg never reaches the tool body regardless — but silently *accepting*
+  one (Pydantic's default) masks a caller typo (e.g. `trait_column` instead of `trait_columns`)
+  that would otherwise be a hard, immediate schema error (#466 review round 5, matching the
+  recommendation already made on sibling PR #726). Not backported to the other 8 tools' Params
+  models in this PR — out of scope, a separate, larger-blast-radius change.
+
+- **Decision: added direct test coverage for `resolve_trait_columns` against an all-NaN trait
+  column** (#466 review round 5 — this exact "computed but not surfaced" bug class had
+  slipped through two prior review rounds once already, for `plot_correlation_matrix`'s
+  zero-variance handling). Confirms the shared helper does NOT reject an all-NaN column —
+  intentional: the all-zero-variance guard lives in `plot_correlation_matrix` alone (a
+  histogram/boxplot of an all-NaN trait is a legitimate, if uninformative, plot; a correlation
+  matrix cell needs variance to mean anything at all). Writing this test surfaced an authoring
+  mistake, not a production bug: constructing the all-NaN column as `[None] * 6` makes pandas
+  infer `dtype=object` (not numeric), which fails `_validate_trait_subset`'s numeric check for
+  an unrelated reason before ever reaching the variance question the test was about — fixed by
+  using `[float("nan")] * 6` instead, which pandas correctly infers as `float64`.
 
 ## Risks / Trade-offs
 
@@ -380,7 +408,11 @@ contract):
   implicit. Tracked at
   [#769](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/769) (#466 review
   round 4 — flagged that this risk, unlike #725/#747/#748, had no linked tracking issue and so
-  risked quietly becoming permanent institutional debt with no visible tracker).
+  risked quietly becoming permanent institutional debt with no visible tracker). **Escalated to
+  `priority: high` in round 5**, which independently confirmed this as a concrete cross-caller
+  read exposure (any caller holding the shared MCP credential can enumerate/read another lab's
+  results for a known experiment id via `list_existing_analyses`/`get_download_links`), not
+  merely a theoretical architecture note.
 - **A matplotlib figure-handle leak is possible if a batched delegate
   (`create_trait_histograms_batched`/`create_trait_boxplots_by_genotype_batched`) raises
   partway through internally**, having already created (but not returned) figures for earlier
@@ -428,8 +460,13 @@ Callers DO need to migrate, on three axes:
   silently (no "N rows excluded" or per-trait missingness disclosure), asymmetric with the
   rigor now applied to `plot_correlation_matrix` (`zero_variance_traits`/`low_overlap_trait_
   pairs`/`heatmap_caveat`). Filed as
-  [#748](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/748), a suggestion-
-  tier follow-up (#466 review round 3), not fixed here.
+  [#748](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/748) (#466 review
+  round 3, originally suggestion-tier). **Re-scoped and priority raised in round 5**: `plot_
+  trait_boxplots` specifically discloses no sample size *anywhere*, not even in the subplot
+  title (unlike `plot_trait_histograms`'s delegate-provided `f"{trait}\n(n={count})"`) — a
+  genotype group reduced to a handful of points by missingness renders as a normal-looking
+  box with zero signal to the researcher. Concluded to be more consequential than
+  documentation polish, not fixed in this PR.
 
 ## Test Count Verification
 
@@ -441,10 +478,25 @@ missing a sibling `web/` directory). Re-ran the **exact** CI invocation
 live_smoke" -v --tb=short`, from `.github/workflows/pr-checks.yml`) against a freshly
 recreated worktree of this branch, with `uv lock --check` confirmed in sync first: **1464
 passed, 33 deselected** (1497 total via `--collect-only` with no marker filter), 0 failed —
-reproduces exactly. The discrepancy is not explained on this side; the reviewer's own
-disclosed environment issues (partial export, locale-dependent CSV artifacts in an unrelated
-test file) are the more likely source. Recorded here, with the literal command and output line,
-so the number is independently re-checkable rather than taken on trust either way.
+reproduced exactly at the time. The discrepancy against the reviewer's number was not (and is
+still not) explained on this side; their own disclosed environment issues (partial export,
+locale-dependent CSV artifacts in an unrelated test file) are the more likely source.
+
+**Round 5 caught that this section itself had gone stale — a self-inflicted repeat of the
+exact accuracy problem this section exists to guard against.** Round 4's own fix commit added
+8 tests *after* the number above was recorded, bringing the true count to 1472 passed / 1505
+total — which is exactly what the round-4 PR description correctly reported. But this
+design.md section was never updated to match, so by round 5 it still said "1464/1497" while the
+PR description said "1472 passed... 33 deselected" — two numbers that don't arithmetically
+reconcile (`1472 + 33 = 1505 ≠ 1497`) if read together, which is exactly what round 5 flagged.
+Neither number was fabricated; the PR description was current, this section was stale.
+
+Re-ran the exact CI invocation again for round 5, after round 5's own additions (all-NaN
+`resolve_trait_columns` coverage, the `n_traits=65` pagination boundary, `extra="forbid"`
+tests): **1479 passed, 33 deselected, 1512 total** (`1479 + 33 = 1512` — checked), 0 failed.
+This section will need updating again if a future round adds tests without updating it here —
+the fix going forward is to update this number in the *same commit* that changes the test
+count, not to treat it as a one-time snapshot.
 
 ## Incidental Fix
 
