@@ -69,7 +69,7 @@ a misreading of that convention, not a deliberate exception to it.
     staging's rework, versioned install-command strings); bloommcp has no `README.pypi.md`, so
     its link-pinning step only rewrites `pyproject.toml`.
   - Registering the actual PyPI trusted publisher (external, manual, no repo access) — though
-    see tasks.md §11.1: recommended to happen now, in parallel with review, not deferred.
+    see tasks.md §12.1: recommended to happen now, in parallel with review, not deferred.
 
 ## Decisions
 
@@ -140,6 +140,21 @@ a misreading of that convention, not a deliberate exception to it.
     two `||`-joined clauses and exercises its actual truth table — `workflow_dispatch` always
     passes, a real release with the right prefix passes, one with the other package's or a
     typo'd prefix does not.
+  - **A third, unrelated file was missing this guard entirely** (round-4 review, blocking):
+    `docker-build-bloomcli.yml` — the GHCR image-publishing workflow, untouched by every
+    earlier round of this PR — fires on the same `release: published` event as both PyPI
+    workflows but had no tag-prefix guard, so its own `validate-tag` job ran unconditionally
+    on every published Release. A `bloommcp-vX.Y.Z` tag never matches its
+    `bloomctl-v`/`v`-stripping logic, so it produced a permanent, misleading failing run —
+    exactly the cross-firing-failure class this PR otherwise closes, on a file two prior
+    self-review rounds and a first external review round all missed because it is not named
+    `release-*.yml`. Fixed with an `&&`-joined guard on `validate-tag` (not `||` — this job
+    is release-only auxiliary validation that must stay skipped on `push`/`workflow_dispatch`
+    too, unlike `validate-release`, which is every trigger type's main gate):
+    `if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'bloomctl-')`.
+    `build-and-push`'s existing `if:` already treats a skipped `validate-tag` the same as a
+    failed one, so no change was needed there — the whole workflow now skips cleanly for a
+    bloommcp release, matching `release-bloomcli.yml`'s own behavior.
 - **`release-tag-guard.yml` closes the double-silent-skip gap** (also found in this revision's
   review round): `release-bloomcli.yml` and `release-bloommcp.yml` are each designed to skip
   cleanly — not fail — when a Release tag belongs to the other package. That is correct for the

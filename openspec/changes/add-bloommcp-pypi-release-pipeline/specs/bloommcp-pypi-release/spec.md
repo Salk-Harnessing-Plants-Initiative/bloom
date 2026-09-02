@@ -45,14 +45,19 @@ release whose tag's version has no matching entry.
 ### Requirement: bloommcp Version Bump Workflow
 
 A manual-dispatch `version-bloommcp.yml` workflow SHALL bump `bloommcp/pyproject.toml`'s
-version (via a selected bump type, or a custom version override) and open a pull request that
-changes only that file, mirroring `version-bloomcli.yml`.
+version (via a selected bump type, or a custom version override), regenerate
+`bloommcp/uv.lock` to match, and open a pull request that changes only
+`bloommcp/pyproject.toml` and `bloommcp/uv.lock`, mirroring `version-bloomcli.yml`.
+`bloommcp/uv.lock` is a checked service lockfile (`scripts/check-uv-locks.py` includes
+`bloommcp`), so the bump PR must touch it alongside `pyproject.toml` or CI fails on the
+bump PR itself.
 
 #### Scenario: Dispatching a bump opens a PR
 
 - **WHEN** `version-bloommcp.yml` is dispatched with a `bump_type` (or a `custom_version`)
 - **THEN** it opens a pull request that changes only `bloommcp/pyproject.toml`'s version
-  field, with a description naming the previous and new version
+  field and the regenerated `bloommcp/uv.lock`, with a description naming the previous and
+  new version
 
 ### Requirement: bloommcp PyPI Release Workflow
 

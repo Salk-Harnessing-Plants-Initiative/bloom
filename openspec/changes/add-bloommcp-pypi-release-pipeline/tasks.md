@@ -240,9 +240,71 @@ branch was never rebased/re-verified against `main` in between.
       structural refactor); a fail-fast "already on PyPI" pre-check; and a scheduled canary
       dry-run workflow.
 
-## 11. Manual follow-up (outside this PR's reach)
+## 11. Review round 4 (2026-09-02): a 5-subagent parallel review of the round-3 fix
 
-- [ ] 11.1 Register the PyPI trusted publisher for `bloommcp` (PyPI Project Name `bloommcp`,
+commits found one blocking gap that survived two prior self-review rounds, plus several
+real Important-tier gaps and Suggestions
+
+- [x] 11.1 **Blocking**: `docker-build-bloomcli.yml` (untouched by any earlier round of
+      this PR) had no tag-prefix guard, so every bloommcp release produced a permanent,
+      misleading red X on this unrelated GHCR-publishing workflow — `validate-tag`'s
+      `if: github.event_name == 'release'` ran unconditionally on every published Release,
+      stripped `bloomctl-v`/`v` from a `bloommcp-vX.Y.Z` tag (a no-op, since it doesn't
+      match), and failed the version-mismatch check. No wrong image shipped
+      (`build-and-push` already required `validate-tag` to succeed), but exactly the
+      cross-firing-failure class this PR otherwise closes. Fixed with
+      `if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'bloomctl-')`
+      (an `&&` join, not the `||` release-bloomcli.yml/release-bloommcp.yml use — this job
+      is release-only auxiliary validation, not the main gate every trigger type passes
+      through). Added a job-level MODIFIED requirement + scenario to this change's
+      `bloomcli-packaging` spec delta, and extended
+      `tests/unit/test_docker_build_bloomcli_workflow_shape.py` with a truth-table test
+      (mirroring `_guard_permits` from the release-workflow test files, adapted for the
+      `&&` shape).
+- [x] 11.2 Corrected the PR description's stale test-count claim (said 45, actually 48 —
+      `def test_` count differs from pytest's collected-test count once
+      `@pytest.mark.parametrize` expansion is counted; the PR description now says so
+      explicitly to avoid this exact mismatch recurring).
+- [x] 11.3 The `--prerelease=allow` httpx/supabase upper-bound fix (round 2, task 9.2) had
+      no PR-time regression test — only a real `workflow_dispatch`/release run exercises
+      that check. Added `test_the_dependency_caps_that_keep_pre_releases_installable_are_still_there`
+      to `bloommcp/tests/test_package_baseline.py`, mirroring
+      `bloomcli/tests/test_errors.py`'s pre-existing, identical guard for bloomcli's own
+      caps (missed when the bounds were first added — bloomcli already had exactly this
+      pattern to copy).
+- [x] 11.4 The tag↔version bash matching logic in `release-bloommcp.yml`/
+      `release-bloomcli.yml`'s "Validate tag matches version" step was only checked via
+      string-containment in the shape tests, never actually executed — unlike
+      `release-tag-guard.yml`'s bash, which round 3 already executes via
+      `subprocess.run`. Added `_run_validate_tag_script` + matching/mismatching-tag tests
+      to both `tests/unit/test_release_bloommcp_workflow_shape.py` and
+      `tests/unit/test_release_bloomcli_workflow_shape.py`, executing the real `run:`
+      script (TAG/VERSION via `env:`, matching how the real step receives them).
+- [x] 11.5 `openspec/changes/add-bloommcp-pypi-release-pipeline/specs/bloommcp-pypi-release/spec.md`
+      still said `version-bloommcp.yml` opens a PR "that changes only" `pyproject.toml`,
+      but the shipped workflow also commits the regenerated `bloommcp/uv.lock`
+      (load-bearing — task 4.1/§9.7). Fixed the requirement text and its scenario.
+- [x] 11.6 `version-bloommcp.yml`'s `actions/checkout@v4` was left unpinned — inconsistent
+      with this pipeline's own SHA-pinning rationale (round 3, task 10.4) — and nothing
+      asserted any file in this pipeline stayed fully SHA-pinned, so this drift (and any
+      future one) went uncaught. SHA-pinned it, and added
+      `test_every_action_is_sha_pinned` (scans every `uses:` in both `release-bloommcp.yml`
+      and `version-bloommcp.yml`) to `tests/unit/test_release_bloommcp_workflow_shape.py`.
+- [x] 11.7 Documented (not code-fixed — low-probability, per the review) that
+      `build-and-verify` only smoke-tests the wheel, never the sdist, in
+      `bloommcp/RELEASE_PROCESS.md`'s "Cutting a release" step 4.
+- [x] 11.8 Suggestions: noted in `proposal.md` why `bloom-mcp --version`'s output format
+      (`bloom-mcp <version>`) intentionally doesn't mirror `bloomctl --version`'s
+      click-generated format (`bloomctl, version <version>`) — `bloom-mcp` has no click
+      dependency to mirror that format from. Updated `bloommcp/CHANGELOG.md`'s
+      `[0.1.0a1]` date (was the branch-open date, 2026-08-14) and added a step to both
+      packages' `RELEASE_PROCESS.md` reminding the release-cutter to move `[Unreleased]`
+      entries under the new dated heading — dated the actual cut day, not whenever the
+      entries were written.
+
+## 12. Manual follow-up (outside this PR's reach)
+
+- [ ] 12.1 Register the PyPI trusted publisher for `bloommcp` (PyPI Project Name `bloommcp`,
       Owner `Salk-Harnessing-Plants-Initiative`, Repository `bloom`, Workflow
       `release-bloommcp.yml`, Environment `pypi`) — requires PyPI admin rights; the `pypi`
       GitHub environment already exists and is reused. **Recommended now, in parallel with
@@ -250,10 +312,10 @@ branch was never rebased/re-verified against `main` in between.
       environment name) is already fixed by this PR and won't change during review. Registering
       it late just leaves a "Release published but PyPI never got it" window open longer than
       necessary.
-- [ ] 11.2 After merge: bump to a real first version via `version-bloommcp.yml`, add its
+- [ ] 12.2 After merge: bump to a real first version via `version-bloommcp.yml`, add its
       `CHANGELOG.md` entry, and cut a GitHub Release tagged `bloommcp-v0.1.0a1` to trigger the
       first real publish.
-- [ ] 11.3 Add a required reviewer on the shared `pypi` GitHub Environment (Settings →
+- [ ] 12.3 Add a required reviewer on the shared `pypi` GitHub Environment (Settings →
       Environments → `pypi` → Protection rules) — it has none today and now gates two
       packages' publish credentials instead of one (round 3 review, task 10.7). Requires repo
       admin rights this fix does not have.

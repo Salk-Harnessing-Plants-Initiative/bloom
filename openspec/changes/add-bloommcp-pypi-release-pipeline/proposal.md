@@ -39,7 +39,11 @@ workflows don't cross-fire.
   prints the version and returns before any environment validation or server startup — needed
   since today there is nothing for a release gate to assert against, and `bloom-mcp` has no way
   to report its version at all. Also accepts `-V` as a short alias; this is a bloommcp-only
-  addition, not mirrored from `bloomctl` (which has no `-V` today).
+  addition, not mirrored from `bloomctl` (which has no `-V` today). Prints `bloom-mcp
+<version>` (a plain `sys.argv` check, matching `main()`'s own no-argparse/click style) —
+  not click's `<prog>, version <version>` format `bloomctl --version` produces, since
+  `bloom-mcp` deliberately has no click dependency to mirror that format from (round 4
+  review: intentional, not an oversight).
 - Add a release-tag-prefix guard to **both** `release-bloommcp.yml` (new) and the existing
   `release-bloomcli.yml`, so publishing a Release for one package no longer triggers a failing
   run of the other's workflow (today `release-bloomcli.yml` fires on _any_ published Release
@@ -85,6 +89,10 @@ workflows don't cross-fire.
   - `.github/workflows/release-tag-guard.yml` (new — fails loudly when a Release tag matches
     neither package's prefix, closing the double-silent-skip gap the review round found)
   - `.github/workflows/release-bloomcli.yml` (add tag-prefix guard — isolated commit)
+  - `.github/workflows/docker-build-bloomcli.yml` (add the same tag-prefix guard to
+    `validate-tag` — this file publishes bloomcli's GHCR image and is unrelated to
+    bloommcp's own workflows, but round 4 review found it was still missing the guard,
+    producing a misleading failing run on every bloommcp release; isolated commit)
   - `.github/workflows/version-bloomcli.yml` (sync `bloomcli/uv.lock` in the bump PR — an
     unrelated bug found during review; isolated commit)
   - `bloomcli/RELEASE_PROCESS.md` (document the narrowed `bloomctl-vX.Y.Z`-only tag form, the
@@ -103,3 +111,8 @@ workflows don't cross-fire.
   - `tests/unit/test_release_bloomcli_workflow_shape.py` (extended with the new tag-prefix
     guard truth-table assertion)
   - `tests/unit/test_release_tag_guard_workflow_shape.py` (new)
+  - `tests/unit/test_docker_build_bloomcli_workflow_shape.py` (extended with the new
+    tag-prefix guard truth-table assertion)
+  - `bloommcp/tests/test_package_baseline.py` (extended with a PR-time regression test for
+    the `httpx`/`supabase` upper bounds, mirroring `bloomcli/tests/test_errors.py`'s
+    pre-existing identical guard)
