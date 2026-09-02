@@ -32,7 +32,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sleap_roots_analyze.visualization import (
     create_trait_histograms,
     create_trait_histograms_batched,
@@ -58,6 +58,11 @@ _DELEGATE_BATCH_SIZE = 16
 
 class PlotTraitHistogramsParams(BaseModel):
     """Inputs for ``plot_trait_histograms``. No ``seed`` — rendering is deterministic."""
+
+    # extra="forbid": an unknown field isn't currently exploitable (it would be dropped
+    # before persistence either way), but silently accepting it masks a caller typo
+    # (#466 review round 5, matching the recommendation already made on sibling PR #726).
+    model_config = ConfigDict(extra="forbid")
 
     experiment: str = Field(
         ..., description="Experiment identifier from list_available_experiments."

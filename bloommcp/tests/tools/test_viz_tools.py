@@ -181,6 +181,47 @@ def test_resolve_trait_columns_unknown_column_is_invalid_input():
     assert exc.value.code == "invalid_input"
 
 
+def _frame_with_an_all_nan_trait():
+    """A detected trait column that is entirely NaN — resolve_trait_columns itself does
+    NOT validate variance (existence + numeric dtype only); the all-zero-variance guard
+    lives in plot_correlation_matrix alone, since a histogram/boxplot of an all-NaN trait
+    is a legitimate (if uninformative) plot, unlike a correlation matrix cell that needs
+    variance to mean anything (#466 review round 5: this exact "computed but not
+    surfaced" bug class had no direct test against this shared helper)."""
+    from bloom_mcp.data_access import FakeReader
+
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(6)],
+            "geno": ["g1", "g2"] * 3,
+            "t1": [float(i) for i in range(6)],
+            # float("nan"), not None/[None]*6: the latter infers dtype=object in pandas
+            # (not numeric), which would make this column fail the *numeric* check before
+            # ever reaching the variance question this test is actually about.
+            "all_nan": [float("nan")] * 6,
+        }
+    )
+    reader = FakeReader()
+    reader.add_experiment("resolve_nan.csv", df)
+    return reader.load_experiment("resolve_nan.csv", version="raw")
+
+
+def test_resolve_trait_columns_all_nan_trait_is_included_not_dropped_or_rejected():
+    frame = _frame_with_an_all_nan_trait()
+    assert (
+        "all_nan" in frame.trait_cols
+    )  # confirms it's genuinely auto-detected as a trait
+    resolved = _viz_shared.resolve_trait_columns(frame, None, "resolve_nan.csv")
+    assert "all_nan" in resolved
+
+
+def test_resolve_trait_columns_explicit_all_nan_trait_is_honored():
+    frame = _frame_with_an_all_nan_trait()
+    assert _viz_shared.resolve_trait_columns(
+        frame, ["t1", "all_nan"], "resolve_nan.csv"
+    ) == ["t1", "all_nan"]
+
+
 def test_plot_heritability_bar_delegates_and_matches_independent_computation(
     viz_env, monkeypatch
 ):

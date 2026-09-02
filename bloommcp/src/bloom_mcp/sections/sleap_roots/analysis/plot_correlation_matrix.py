@@ -78,7 +78,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sleap_roots_analyze.visualization import create_correlation_heatmap
 
 from bloom_mcp.contract import BloomMCPError, Provenance, RunLinks, as_mcp_tool
@@ -102,6 +102,11 @@ _MIN_CORR_OVERLAP = _CANONICAL_MIN_SAMPLES_PER_TRAIT
 
 class PlotCorrelationMatrixParams(BaseModel):
     """Inputs for ``plot_correlation_matrix``. No ``seed`` — rendering is deterministic."""
+
+    # extra="forbid": an unknown field isn't currently exploitable (it would be dropped
+    # before persistence either way), but silently accepting it masks a caller typo
+    # (#466 review round 5, matching the recommendation already made on sibling PR #726).
+    model_config = ConfigDict(extra="forbid")
 
     experiment: str = Field(
         ..., description="Experiment identifier from list_available_experiments."

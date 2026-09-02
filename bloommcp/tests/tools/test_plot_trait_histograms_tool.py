@@ -192,21 +192,25 @@ def test_delegate_batch_size_matches_live_default():
 
 def _titled_traits(fig) -> list[str]:
     """Extract the trait name each subplot's title actually names — create_trait_histograms
-    titles each axis f"{trait}\\n(n={count})" (verified against the live delegate)."""
-    return [ax.get_title().split("\n")[0] for ax in fig.axes]
+    titles each axis f"{trait}\\n(n={count})" (verified against the live delegate). A page
+    that doesn't exactly fill its n_cols=4 grid (e.g. one leftover trait alone on the last
+    page) pads with extra, invisible, blank-titled axes — confirmed against the live
+    delegate, not assumed — so those must be filtered out, not just all of fig.axes."""
+    return [ax.get_title().split("\n")[0] for ax in fig.axes if ax.get_visible()]
 
 
 @pytest.mark.parametrize(
-    "n_traits", [60, 64]
-)  # 64: an exact multiple of batch_size (16)
+    "n_traits", [60, 64, 65]
+)  # 64: an exact multiple of batch_size (16); 65: one leftover trait alone on the last page
 def test_page_traits_maps_each_page_to_its_actual_traits(n_traits, monkeypatch):
     """#466 review round 3: which traits landed on which page was previously only
     discoverable by opening the image and reading axis labels — page_traits must name them
     directly. #466 review round 4: the original version of this test only recomputed the
     same slicing formula the production code uses (checking the formula against itself); this
     verifies against the delegate's own rendered subplot titles instead, and additionally
-    covers n_traits=64 (an exact multiple of batch_size), the boundary case n_traits=60 (not a
-    multiple) doesn't exercise."""
+    covers n_traits=64 (an exact multiple of batch_size) and n_traits=65 (one leftover trait
+    alone on the last page) — boundary cases the original n_traits=60 doesn't exercise
+    (#466 review round 5)."""
     wide_experiment = "wide.csv"
     reader = FakeReader()
     reader.add_experiment(wide_experiment, _wide_df(n_traits))
@@ -296,6 +300,15 @@ def test_valid_input_output_round_trip(injected_ports):
 def test_missing_experiment_is_invalid_input():
     with pytest.raises(BloomMCPError) as exc:
         plot_trait_histograms({})
+    assert exc.value.code == "invalid_input"
+
+
+def test_unknown_field_is_rejected():
+    """extra="forbid" (#466 review round 5): an unknown field isn't currently
+    exploitable — it would be dropped before persistence either way — but silently
+    accepting it masks a caller typo."""
+    with pytest.raises(BloomMCPError) as exc:
+        plot_trait_histograms({"experiment": _EXPERIMENT, "trait_column": ["t1"]})
     assert exc.value.code == "invalid_input"
 
 

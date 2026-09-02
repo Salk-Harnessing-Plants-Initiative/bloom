@@ -124,6 +124,17 @@ def test_missing_experiment_is_invalid_input():
     assert exc.value.code == "invalid_input"
 
 
+def test_unknown_field_is_rejected():
+    """extra="forbid" (#466 review round 5): an unknown field isn't currently
+    exploitable — it would be dropped before persistence either way — but silently
+    accepting it masks a caller typo. Passed as a raw dict (not a pre-constructed Params
+    instance) so @as_mcp_tool's own input-validation path — the one a real MCP caller
+    goes through — is what's under test."""
+    with pytest.raises(BloomMCPError) as exc:
+        plot_correlation_matrix({"experiment": _EXPERIMENT, "trait_column": ["t1"]})
+    assert exc.value.code == "invalid_input"
+
+
 def test_empty_trait_columns_is_invalid_input(injected_ports):
     with pytest.raises(BloomMCPError) as exc:
         _run(trait_columns=[])
