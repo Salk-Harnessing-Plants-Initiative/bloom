@@ -987,6 +987,17 @@ def test_plot_font_size_just_above_zero_is_accepted(injected_ports):
     assert not any(k.endswith(".png") for k in result.outputs)
 
 
+def test_plot_font_size_ceiling_is_in_the_json_schema():
+    """#721 PR review: removing the Field(gt=0, le=...) constraint (in favor of a
+    tool-body check that can name the submitted value) must not make the ceiling
+    undiscoverable to a schema-reading caller — restored via json_schema_extra."""
+    schema = PCAAnalysisParams.model_json_schema()
+    font_size_schema = schema["properties"]["plot_font_size"]
+    assert font_size_schema["maximum"] == 100
+    assert font_size_schema["exclusiveMinimum"] == 0
+    PCAAnalysisParams(experiment="x.csv", plot_font_size=99999)  # must not raise
+
+
 def test_plots_subset_with_font_override_never_generates_non_requested_plots(
     injected_ports, monkeypatch
 ):

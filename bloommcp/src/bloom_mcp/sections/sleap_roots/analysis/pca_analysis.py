@@ -155,6 +155,7 @@ class PCAAnalysisParams(BaseModel):
     )
     plot_font_size: float | None = Field(
         default=None,
+        json_schema_extra={"exclusiveMinimum": 0, "maximum": MAX_PLOT_FONT_SIZE},
         description=f"Font size (points) override applied to every text element on each "
         f"generated plot (0-{MAX_PLOT_FONT_SIZE}, exclusive of 0). The upper bound is a "
         f"sanity ceiling on this LLM-driven input surface, not a design limit (#721). "

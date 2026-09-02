@@ -937,6 +937,35 @@ def test_unset_plot_cmap_skips_the_allowlist_check(injected_ports):
     assert not any(k.endswith(".png") for k in result.outputs)
 
 
+def test_plot_font_size_and_point_size_ceilings_are_in_the_json_schema():
+    """#721 PR review: removing the Field(gt=0, le=...) constraint (in favor of a
+    tool-body check that can name the submitted value) must not make the ceiling
+    undiscoverable to a schema-reading caller — restored via json_schema_extra, which
+    documents the bound without Pydantic enforcing it directly (enforcement stays in
+    check_plot_style_ceiling)."""
+    schema = UMAPAnalysisParams.model_json_schema()
+    font_size_schema = schema["properties"]["plot_font_size"]
+    point_size_schema = schema["properties"]["plot_point_size"]
+    assert font_size_schema["maximum"] == 100
+    assert font_size_schema["exclusiveMinimum"] == 0
+    assert point_size_schema["maximum"] == 10000
+    assert point_size_schema["exclusiveMinimum"] == 0
+    # And confirm the schema-declared ceiling is documentation, not enforcement — the
+    # real check lives in check_plot_style_ceiling, not a Field constraint.
+    UMAPAnalysisParams(experiment="x.csv", plot_font_size=99999)  # must not raise
+
+
+def test_plot_cmap_max_length_rejects_a_pathologically_long_string():
+    """#721 PR review (suggestion): plot_cmap had no max_length, so an arbitrarily long
+    string would be fully parsed and stored before the cheap allowlist check ever ran.
+    32 is generous — the longest real allowlisted name (with its _r variant) is 11
+    chars."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        UMAPAnalysisParams(experiment="x.csv", plot_cmap="x" * 1000)
+
+
 def test_allowed_cmaps_are_all_registered_in_installed_matplotlib():
     """Regression guard for the hand-authored allowlist (#721 design.md Decision 3): if a
     future matplotlib release renames or drops one of these names, this fails loudly
@@ -1225,6 +1254,34 @@ def test_top_traits_internal_pca_failure_logs_original_exception(
         "ValueError" in r.message and "/var/lib/whatever" in r.message
         for r in caplog.records
     )
+
+
+def test_top_traits_pca_computed_before_generate_figures_not_lazily_in_the_plot_callable(
+    injected_ports, monkeypatch
+):
+    """#721 PR review: the internal PCA fit for create_umap_colored_by_top_traits must
+    run before generate_figures — and therefore outside _FIGURE_REGISTRY_LOCK's held
+    window — not lazily inside the plot callable itself, which would hold that lock for
+    an unrelated PCA fit, not just the matplotlib rendering call. Proven by replacing
+    generate_figures with a no-op that never invokes any callable in resolved_calls: if
+    the PCA fit still ran, it must have happened before generate_figures was even
+    called."""
+    real_pca = umap_analysis_tool.perform_pca_analysis
+    called = []
+
+    def _spy(*a, **k):
+        called.append(True)
+        return real_pca(*a, **k)
+
+    monkeypatch.setattr(umap_analysis_tool, "perform_pca_analysis", _spy)
+    monkeypatch.setattr(
+        umap_analysis_tool,
+        "generate_figures",
+        lambda resolved_calls, figures, **k: None,
+    )
+
+    _run(include_plots=True, plots=["create_umap_colored_by_top_traits"])
+    assert called == [True]
 
 
 def test_plots_subset_generates_only_requested(injected_ports, monkeypatch):

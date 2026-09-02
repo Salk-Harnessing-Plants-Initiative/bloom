@@ -274,6 +274,7 @@ class UMAPAnalysisParams(BaseModel):
     )
     plot_font_size: float | None = Field(
         default=None,
+        json_schema_extra={"exclusiveMinimum": 0, "maximum": MAX_PLOT_FONT_SIZE},
         description=f"Font size (points) override applied to every text element on each "
         f"generated plot (0-{MAX_PLOT_FONT_SIZE}, exclusive of 0). The upper bound is a "
         f"sanity ceiling on this LLM-driven input surface, not a design limit (#721). "
@@ -285,6 +286,7 @@ class UMAPAnalysisParams(BaseModel):
     )
     plot_cmap: str | None = Field(
         default=None,
+        max_length=32,
         description="Colormap for create_umap_single_trait's continuous trait coloring "
         "(e.g. 'plasma', 'viridis'). Restricted to matplotlib's documented sequential and "
         "diverging colormap names (plus each name's _r reversed variant); an unrecognized "
@@ -297,6 +299,7 @@ class UMAPAnalysisParams(BaseModel):
     )
     plot_point_size: float | None = Field(
         default=None,
+        json_schema_extra={"exclusiveMinimum": 0, "maximum": MAX_PLOT_POINT_SIZE},
         description=f"Scatter point size for create_umap_single_trait (0-"
         f"{MAX_PLOT_POINT_SIZE}, exclusive of 0). Checked in the tool body — not a "
         f"Pydantic Field constraint, so the rejection message names the value you "
@@ -337,6 +340,51 @@ class UMAPAnalysisResult(RunLinks):
     seed: int
 
 
+def _compute_top_traits_pca(frame: ExperimentFrame, trait_cols: list[str]) -> dict:
+    """Run the internal, non-persisted PCA fit ``create_umap_colored_by_top_traits``
+    needs to rank trait contributions, over the exact same certified-clean trait
+    selection already validated and used for the UMAP embedding — see design.md's
+    Decision #3. Never committed as its own versioned run.
+
+    Called by the tool body *before* ``generate_figures`` runs (#721 PR review) — not
+    lazily from inside the plot callable itself — specifically so this real PCA fit
+    executes outside ``_FIGURE_REGISTRY_LOCK``'s held window. That lock only needs to
+    cover the actual matplotlib rendering call; holding it for an unrelated PCA fit too
+    would needlessly block every other concurrent plot-generating call for longer than
+    the rendering itself takes.
+
+    Same failure-translation as the main UMAP delegate call (including the same
+    exception tuple — a degenerate selection can fail PCA even though it fit UMAP
+    successfully, since PCA's standardization/eigendecomposition is stricter about
+    near-constant columns than UMAP is), and this call happens before
+    ``store.create_run()`` (so no run is ever orphaned by it either way) — but without
+    this except, the raw exception would propagate as an opaque ``internal_error``
+    instead of the actionable ``assumption_violated`` every other delegate failure in
+    this tool surfaces.
+    """
+    try:
+        return perform_pca_analysis(frame.df[trait_cols])
+    except (ValueError, KeyError, RuntimeError, TypeError) as exc:
+        logger.debug(
+            "internal perform_pca_analysis call for create_umap_colored_by_top_traits "
+            "failed, translating to assumption_violated: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        raise BloomMCPError(
+            code="assumption_violated",
+            message=(
+                "Could not rank trait contributions for "
+                "create_umap_colored_by_top_traits — the certified-clean trait "
+                "selection is degenerate for PCA."
+            ),
+            remedy=(
+                "Select a broader set of numeric trait columns, or omit "
+                "create_umap_colored_by_top_traits from plots, then retry."
+            ),
+        ) from None
+
+
 def _umap_plot_calls(
     result_dict: dict,
     frame: ExperimentFrame,
@@ -345,6 +393,7 @@ def _umap_plot_calls(
     plot_cmap: str | None = None,
     plot_point_size: float | None = None,
     plot_alpha: float | None = None,
+    top_traits_pca_result_dict: dict | None = None,
 ) -> dict:
     """Return zero-arg callables for each catalog plot key, lazily importing plotters.
 
@@ -358,6 +407,12 @@ def _umap_plot_calls(
     signature accepts any of them (see design.md's per-plotter support table) — and only
     when set, so an unset (``None``) field reproduces the plotter's own hardcoded default
     exactly rather than passing that default back explicitly.
+
+    ``top_traits_pca_result_dict`` must already be the *computed* result of
+    ``_compute_top_traits_pca`` (or ``None`` if the caller knows
+    ``create_umap_colored_by_top_traits`` won't be generated) — this function no longer
+    runs that PCA fit itself, so the callable it returns for that key only ever does
+    matplotlib rendering, never a fit (see ``_compute_top_traits_pca``'s docstring).
     """
     from sleap_roots_analyze import (
         create_umap_colored_by_top_traits,
@@ -372,53 +427,17 @@ def _umap_plot_calls(
     if plot_alpha is not None:
         single_trait_kwargs["alpha"] = plot_alpha
 
-    def _top_traits():
-        # Internal, non-persisted PCA call over the exact same certified-clean trait
-        # selection already validated and used for the UMAP embedding — see design.md's
-        # Decision #3. This is never committed as its own versioned run.
-        #
-        # Same failure-translation as the main UMAP delegate call (including the same
-        # exception tuple — a degenerate selection can fail PCA even though it fit UMAP
-        # successfully, since PCA's standardization/eigendecomposition is stricter about
-        # near-constant columns than UMAP is), and this call happens before
-        # store.create_run() (so no run is ever orphaned by it either way) — but without
-        # this except, the raw exception would propagate as an opaque internal_error
-        # instead of the actionable assumption_violated every other delegate failure in
-        # this tool surfaces.
-        try:
-            pca_result_dict = perform_pca_analysis(frame.df[trait_cols])
-        except (ValueError, KeyError, RuntimeError, TypeError) as exc:
-            logger.debug(
-                "internal perform_pca_analysis call for create_umap_colored_by_top_traits "
-                "failed, translating to assumption_violated: %s: %s",
-                type(exc).__name__,
-                exc,
-            )
-            raise BloomMCPError(
-                code="assumption_violated",
-                message=(
-                    "Could not rank trait contributions for "
-                    "create_umap_colored_by_top_traits — the certified-clean trait "
-                    "selection is degenerate for PCA."
-                ),
-                remedy=(
-                    "Select a broader set of numeric trait columns, or omit "
-                    "create_umap_colored_by_top_traits from plots, then retry."
-                ),
-            ) from None
-        return create_umap_colored_by_top_traits(
-            result_dict,
-            frame.df,
-            trait_cols,
-            trait_cols,
-            pca_result_dict,
-        )
-
     return {
         "create_umap_single_trait": lambda: create_umap_single_trait(
             result_dict, frame.df, trait_cols[0], **single_trait_kwargs
         ),
-        "create_umap_colored_by_top_traits": _top_traits,
+        "create_umap_colored_by_top_traits": lambda: create_umap_colored_by_top_traits(
+            result_dict,
+            frame.df,
+            trait_cols,
+            trait_cols,
+            top_traits_pca_result_dict,
+        ),
     }
 
 
@@ -600,6 +619,20 @@ def umap_analysis(
 
             matplotlib.use("Agg")
             validate_plot_keys(params.plots, _UMAP_CATALOG_KEYS)
+            keys_to_generate = (
+                list(params.plots)
+                if params.plots is not None
+                else list(_UMAP_CATALOG_KEYS)
+            )
+            # Computed here, before _umap_plot_calls/generate_figures, and only when
+            # actually needed — not lazily inside the plot callable itself — so this
+            # real PCA fit runs outside _FIGURE_REGISTRY_LOCK's held window (#721 PR
+            # review; see _compute_top_traits_pca's docstring).
+            top_traits_pca_result_dict = (
+                _compute_top_traits_pca(frame, trait_cols)
+                if "create_umap_colored_by_top_traits" in keys_to_generate
+                else None
+            )
             calls = _umap_plot_calls(
                 result_dict,
                 frame,
@@ -607,11 +640,7 @@ def umap_analysis(
                 plot_cmap=params.plot_cmap,
                 plot_point_size=params.plot_point_size,
                 plot_alpha=params.plot_alpha,
-            )
-            keys_to_generate = (
-                list(params.plots)
-                if params.plots is not None
-                else list(_UMAP_CATALOG_KEYS)
+                top_traits_pca_result_dict=top_traits_pca_result_dict,
             )
             generate_figures(
                 {k: calls[k] for k in keys_to_generate},

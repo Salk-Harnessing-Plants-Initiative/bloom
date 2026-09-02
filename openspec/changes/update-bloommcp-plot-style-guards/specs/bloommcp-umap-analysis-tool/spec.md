@@ -34,27 +34,36 @@ call, before the callable ever returns.
 
 ### Requirement: UMAP Plot Style Fields Have Sanity Ceilings
 
-`UMAPAnalysisParams.plot_font_size` SHALL be rejected as `invalid_input` when greater than
-`100`, and `UMAPAnalysisParams.plot_point_size` SHALL be rejected as `invalid_input` when
-greater than `10000` — both in addition to the existing `gt=0` lower-bound rejection, and
-both enforced as `Field` constraints on `UMAPAnalysisParams` itself, before the tool body
-runs (and therefore before `include_plots` is examined) — an out-of-range value is rejected
-regardless of `include_plots`'s value, the same rule already established for
-`plot_alpha`/`plot_point_size`'s lower bound.
+`UMAPAnalysisParams.plot_font_size` SHALL be rejected as `invalid_input` when not in
+`(0, 100]`, and `UMAPAnalysisParams.plot_point_size` SHALL be rejected as `invalid_input`
+when not in `(0, 10000]` — both checked in the `umap_analysis` tool body (via the shared
+`bloom_mcp.tools._plots.check_plot_style_ceiling` helper), before `reader.load_experiment`
+is called, rather than as Pydantic `Field(gt=0, le=...)` constraints. A `Field` constraint's
+violation is mapped by the contract layer's `BloomMCPError.from_input_validation` into a
+message naming only the field and error type — never the submitted value or the ceiling —
+which is exactly the opaque failure mode this same change eliminates for `plot_cmap` by
+using the identical tool-body-check approach. Both checks run regardless of
+`include_plots`'s value and before any I/O, the same rule already established for
+`plot_alpha`'s bounds and the `plot_cmap` allowlist. Each field's declared JSON schema SHALL
+still expose its ceiling as `maximum`/`exclusiveMinimum` metadata (via Pydantic's
+`json_schema_extra`, not `Field(le=...)`) so a schema-reading caller can discover the bound
+without needing to trigger a rejection first — the ceiling is undiscoverable-until-tried
+only via a naive reading of the Python type annotation, not via the tool's actual declared
+schema.
 
 #### Scenario: An excessive plot_font_size is rejected regardless of include_plots
 
 - **WHEN** `umap_analysis` is called with `plot_font_size` greater than `100` (including
-  `float("inf")`) — with `include_plots` set to either `True` or `False`
-- **THEN** the tool returns a `BloomMCPError` with code `invalid_input`, before any figure is
-  generated, in both cases
+  `float("inf")` or `float("nan")`) — with `include_plots` set to either `True` or `False`
+- **THEN** the tool returns a `BloomMCPError` with code `invalid_input`, naming the
+  submitted value and the ceiling, before any figure is generated, in both cases
 
 #### Scenario: An excessive plot_point_size is rejected regardless of include_plots
 
-- **WHEN** `umap_analysis` is called with `plot_point_size` greater than `10000` — with
-  `include_plots` set to either `True` or `False`
-- **THEN** the tool returns a `BloomMCPError` with code `invalid_input`, before any figure is
-  generated, in both cases
+- **WHEN** `umap_analysis` is called with `plot_point_size` greater than `10000` (including
+  `float("inf")` or `float("nan")`) — with `include_plots` set to either `True` or `False`
+- **THEN** the tool returns a `BloomMCPError` with code `invalid_input`, naming the
+  submitted value and the ceiling, before any figure is generated, in both cases
 
 #### Scenario: Boundary values 100 and 10000 are accepted
 
@@ -62,6 +71,13 @@ regardless of `include_plots`'s value, the same rule already established for
   `plots=["create_umap_single_trait"]`, and `plot_font_size=100` (or `plot_point_size=10000`)
 - **THEN** the tool succeeds and `create_umap_single_trait` is invoked accordingly — the
   inclusive ceilings are valid values, not rejected
+
+#### Scenario: The declared ceiling is discoverable in the tool's JSON schema
+
+- **WHEN** `umap_analysis`'s input schema is inspected (e.g. via MCP tool discovery)
+- **THEN** `plot_font_size`'s schema entry declares `maximum: 100` and
+  `plot_point_size`'s declares `maximum: 10000`, even though neither is enforced via a
+  Pydantic `Field` constraint
 
 ### Requirement: UMAP plot_cmap Is Restricted to Known Sequential and Diverging Colormaps
 

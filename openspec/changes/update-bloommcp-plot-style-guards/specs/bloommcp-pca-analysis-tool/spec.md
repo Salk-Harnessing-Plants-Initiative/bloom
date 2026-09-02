@@ -41,18 +41,24 @@ the callable ever returns.
 
 ### Requirement: PCA Plot Font Size Has a Sanity Ceiling
 
-`PCAAnalysisParams.plot_font_size` SHALL be rejected as `invalid_input` when greater than
-`100`, in addition to the existing `gt=0` lower-bound rejection, enforced as a `Field`
-constraint on `PCAAnalysisParams` itself, before the tool body runs (and therefore before
-`include_plots` is examined) — an out-of-range value is rejected regardless of
-`include_plots`'s value, the same rule already established for `plot_alpha`.
+`PCAAnalysisParams.plot_font_size` SHALL be rejected as `invalid_input` when not in
+`(0, 100]`, checked in the `pca_analysis` tool body (via the shared
+`bloom_mcp.tools._plots.check_plot_style_ceiling` helper, the same one UMAP uses), before
+`reader.load_experiment` is called, rather than as a Pydantic `Field(gt=0, le=100)`
+constraint. A `Field` constraint's violation is mapped by the contract layer's
+`BloomMCPError.from_input_validation` into a message naming only the field and error type —
+never the submitted value or the ceiling. The check runs regardless of `include_plots`'s
+value and before any I/O, the same rule already established for `plot_alpha`. The field's
+declared JSON schema SHALL still expose the ceiling as `maximum`/`exclusiveMinimum`
+metadata (via Pydantic's `json_schema_extra`, not `Field(le=...)`) so a schema-reading
+caller can discover the bound without needing to trigger a rejection first.
 
 #### Scenario: An excessive plot_font_size is rejected regardless of include_plots
 
 - **WHEN** `pca_analysis` is called with `plot_font_size` greater than `100` (including
-  `float("inf")`) — with `include_plots` set to either `True` or `False`
-- **THEN** the tool returns a `BloomMCPError` with code `invalid_input`, before any figure is
-  generated, in both cases
+  `float("inf")` or `float("nan")`) — with `include_plots` set to either `True` or `False`
+- **THEN** the tool returns a `BloomMCPError` with code `invalid_input`, naming the
+  submitted value and the ceiling, before any figure is generated, in both cases
 
 #### Scenario: Boundary value 100 is accepted
 
@@ -60,3 +66,9 @@ constraint on `PCAAnalysisParams` itself, before the tool body runs (and therefo
   and `plot_font_size=100`
 - **THEN** the tool succeeds and the figure is generated with the font size applied — the
   inclusive ceiling is a valid value, not rejected
+
+#### Scenario: The declared ceiling is discoverable in the tool's JSON schema
+
+- **WHEN** `pca_analysis`'s input schema is inspected (e.g. via MCP tool discovery)
+- **THEN** `plot_font_size`'s schema entry declares `maximum: 100`, even though it is not
+  enforced via a Pydantic `Field` constraint

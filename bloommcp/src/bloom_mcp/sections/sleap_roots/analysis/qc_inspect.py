@@ -44,11 +44,14 @@ from pydantic import BaseModel, Field
 import matplotlib
 
 # Headless: pin Agg before importing the analyze viz funcs below. NOTE: the analyze
-# delegates render on matplotlib's *global* pyplot state (`plt.subplots`), so figure
-# handling here (and the no-leak test's global `get_fignums()` baseline) assumes a
-# single in-flight render — i.e. one bloom-mcp writer at a time. Concurrent qc_inspect
-# calls in one process share that global registry; that is the same single-writer
-# assumption the versioned ResultStore already makes (see qc_clean).
+# delegates render on matplotlib's *global* pyplot state (`plt.subplots`), so concurrent
+# qc_inspect calls in one process — or a concurrent umap_analysis/pca_analysis call —
+# share that global registry. `_render_report`'s figure-creating delegate calls below
+# acquire `bloom_mcp.tools._plots.FIGURE_REGISTRY_LOCK` for exactly that reason (#721 PR
+# review): without it, a umap_analysis/pca_analysis call's allocate-then-raise cleanup
+# (which detects its own orphaned figure by diffing that same global registry) could
+# mistake a figure created here for its own and close it mid-render. See that lock's own
+# comment for the full reasoning and the complete list of call sites that share it.
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from sleap_roots_analyze import (
@@ -63,6 +66,7 @@ from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools._plots import FIGURE_REGISTRY_LOCK
 
 # Canonical thresholds + shared helpers are single-sourced in _qc_shared so qc_inspect's
 # overlays/recommendation cannot silently desync from the clean qc_clean would apply.
@@ -374,16 +378,19 @@ def _render_report(
     outputs: dict[str, str] = {}
 
     # 1. Per-trait NaN/zero/outlier overlay charts + the traits-actually-removed panel.
-    eda_figs = create_trait_eda_plots(
-        df,
-        trait_cols,
-        thresholds={
-            "nan": params.max_nans_per_trait,
-            "zero": params.max_zeros_per_trait,
-        },
-        cleanup_log=current_log,
-        min_samples_per_trait=params.min_samples_per_trait,
-    )
+    # FIGURE_REGISTRY_LOCK: this delegate call allocates figures against the shared
+    # global matplotlib registry (#721 PR review — see the module-level comment above).
+    with FIGURE_REGISTRY_LOCK:
+        eda_figs = create_trait_eda_plots(
+            df,
+            trait_cols,
+            thresholds={
+                "nan": params.max_nans_per_trait,
+                "zero": params.max_zeros_per_trait,
+            },
+            cleanup_log=current_log,
+            min_samples_per_trait=params.min_samples_per_trait,
+        )
     try:
         for name, fig in eda_figs.items():
             fname = f"{name}.png"
@@ -397,9 +404,10 @@ def _render_report(
     #    create_exploratory_summary_plots can be fragile on tiny/degenerate frames; the
     #    overview + recommendation are the load-bearing outputs).
     try:
-        summary_figs = create_exploratory_summary_plots(
-            df, trait_cols, genotype_col=role_kwargs.get("genotype_col", "geno")
-        )
+        with FIGURE_REGISTRY_LOCK:
+            summary_figs = create_exploratory_summary_plots(
+                df, trait_cols, genotype_col=role_kwargs.get("genotype_col", "geno")
+            )
     except Exception as exc:
         logger.warning(
             "qc_inspect: missingness heatmap unavailable (create_exploratory_summary_plots "

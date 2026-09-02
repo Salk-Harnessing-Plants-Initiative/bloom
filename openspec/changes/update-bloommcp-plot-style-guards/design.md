@@ -109,12 +109,60 @@ same reason: two `ResultStore.commit` calls for the same key can race today). Tw
 the same time, and one call's allocate-then-raise cleanup could close a figure a
 _different_, unrelated concurrent call had just allocated — silently corrupting or blanking
 that other call's plot with no error surfaced to it. Fixed with a single
-`_FIGURE_REGISTRY_LOCK` (`threading.Lock`) held for the entire `generate_figures` call, not
+`FIGURE_REGISTRY_LOCK` (`threading.Lock`) held for the entire `generate_figures` call, not
 just the diff-and-close step — serializing all plot generation across the process. The
 alternative fix (have the plotters construct `matplotlib.figure.Figure()` directly, bypassing
 the shared registry entirely) isn't available from within `bloommcp`: the plotters that call
 `plt.subplots()`/`plt.figure()` live in the vendored, third-party `sleap_roots_analyze`
 package.
+
+**Decision 5b — the same lock is not private to `generate_figures`; every other
+matplotlib-figure-creating call site in `bloommcp` acquires it too (added after a second PR
+review round).** `generate_figures`'s cleanup can be confused by _any_ figure that appears
+in the shared registry during its locked window, not just one from another
+`umap_analysis`/`pca_analysis` call. `qc_inspect.py`'s `_render_report`, `remove_outliers.py`'s
+`_make_figures`, and each of the 5 legacy `plot_*` tools (`plot_trait_boxplots.py`,
+`plot_correlation_matrix.py`, `plot_heritability_bar.py`, `plot_variance_decomposition.py`,
+`plot_trait_histograms.py`) all create figures against that same registry, independently of
+`generate_figures`, and none of them previously synchronized with it at all —
+`qc_inspect.py` even carried its own pre-existing comment naming a "single-writer
+assumption" for the shared registry, without ever enforcing it. A `umap_analysis`/
+`pca_analysis` failure could therefore have silently corrupted or blanked a concurrent,
+unrelated tool call's plot — the exact failure mode Decision 5 claims to close, just via an
+uncovered caller. Fixed by having each of those 7 other call sites acquire the same
+`bloom_mcp.tools._plots.FIGURE_REGISTRY_LOCK` around only their own figure-_creating_
+delegate call (not their full save/persist/commit span): since the lock is a mutex, no other
+call's creation step can execute while any one call holds it, regardless of how long that
+holder then takes afterward — none of these other call sites do fignum-diffing themselves
+(they close by direct object reference, already safe regardless of registry contents), so
+they only need to participate in the lock to protect themselves _from_
+`generate_figures`'s diff, not to protect each other. `FIGURE_REGISTRY_LOCK` is a plain
+`threading.Lock` (non-reentrant) — documented on the lock itself, since nothing today
+transitively re-enters it, but a future plotter that did would deadlock.
+
+**Decision 5c — the internal PCA fit for `create_umap_colored_by_top_traits` moved outside
+`generate_figures`'s lock window (added after the same review round).** That fit
+(`perform_pca_analysis`) previously ran lazily inside the plot callable itself — i.e. while
+`FIGURE_REGISTRY_LOCK` was held — needlessly serializing every other concurrent
+figure-creating call for the duration of an unrelated PCA fit, not just the actual
+matplotlib rendering call. `umap_analysis`'s tool body now computes it eagerly via a new
+`_compute_top_traits_pca` helper, before `_umap_plot_calls`/`generate_figures` run, and only
+when `create_umap_colored_by_top_traits` is actually in the requested `keys_to_generate` (so
+no wasted work when it isn't requested). `_umap_plot_calls` takes the already-computed
+result as `top_traits_pca_result_dict` instead of computing it itself; the callable it
+returns for that key now only ever does matplotlib rendering.
+
+**Decision 5d — the numeric ceiling is still discoverable via the tool's JSON schema
+(added after the same review round), via `json_schema_extra` rather than `Field(le=...)`.**
+Decision 6 removed the `Field` constraint entirely to get an informative rejection message,
+but that also silently dropped `maximum`/`exclusiveMinimum` from the auto-generated JSON
+schema — a schema-reading caller could no longer discover the ceiling without triggering a
+rejection first, and `plot_alpha` (untouched, still a real `Field(ge=0.0, le=1.0)`
+constraint) became inconsistent with the two fields this change touched. Restored via
+`Field(json_schema_extra={"exclusiveMinimum": 0, "maximum": MAX_PLOT_FONT_SIZE})` (and the
+`plot_point_size` analog) — `json_schema_extra` injects raw JSON Schema keywords into
+`model_json_schema()`'s output without Pydantic enforcing them, so the schema documents the
+bound while `check_plot_style_ceiling` remains the sole enforcement path.
 
 **Decision 6 — `plot_font_size`/`plot_point_size` ceilings checked in the tool body too
 (added after PR review), not as `Field(gt=0, le=...)` constraints.** Decision 3's rationale
@@ -147,10 +195,22 @@ derived purely from the request, with no reason to pay for a full experiment rea
   regression test alone couldn't have caught this PR's own `berlin`/`managua`/`vanimo`
   floor-mismatch bug, since the locked matplotlib (3.10.8) is newer than the floor
   (`>=3.7.0`) and already has those three names.
-- **Concurrent plot generation is now fully serialized process-wide** (Decision 5) — a
-  correctness-over-throughput trade-off. Plot generation is an opt-in (`include_plots=True`)
-  path, not the default, so this is not expected to be a hot path under real concurrency;
-  revisit if profiling ever shows otherwise.
+- **Concurrent plot generation is now fully serialized process-wide** (Decisions 5/5b) — a
+  correctness-over-throughput trade-off, now covering not just `umap_analysis`/
+  `pca_analysis` but every matplotlib-figure-creating call in `bloommcp`. Plot generation is
+  an opt-in (`include_plots=True`) path, not the default, so this is not expected to be a
+  hot path under real concurrency; revisit if profiling ever shows otherwise. Decision 5c
+  narrows the actual held-duration for UMAP's `create_umap_colored_by_top_traits` (the fit
+  moved outside the lock); the other 7 call sites lock only their own figure-_creation_
+  step, not their full save/persist span, for the same reason.
+- **Ceilings are not validated against dataset scale**: `plot_point_size=10000` against a
+  very large experiment still draws that many oversized markers in one `savefig()` — no
+  test exercises the ceiling at realistic data scale, only at the boundary value itself.
+  Accepted for the same reason `_MAX_N_COMPONENTS`'s precedent never added a data-scale
+  test either: the ceiling's purpose is bounding a single scalar input against measured
+  per-call cost, not scaling with dataset size, and a genuinely slow at-scale test isn't a
+  good fit for this fast unit-test suite. Worth a profiled follow-up if a real workload
+  ever shows this ceiling is still too generous at scale.
 - **Two related gaps identified in PR review, deliberately left unfixed here**:
   - `PCAAnalysisParams`/`UMAPAnalysisParams` don't set `extra="forbid"`, so passing a
     UMAP-only kwarg (e.g. `plot_point_size`) to `pca_analysis` is silently accepted and

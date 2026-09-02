@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 from sleap_roots_analyze.visualization import create_correlation_heatmap
 from bloom_mcp.experiment_utils import load_experiment_data as _load_data
+from bloom_mcp.tools._plots import FIGURE_REGISTRY_LOCK
 
 from ._viz_shared import parse_traits, save_plot, validate_filename
 
@@ -43,7 +44,12 @@ def plot_correlation_matrix(filename: str, traits: str = "") -> str:
         return "No valid traits found."
 
     try:
-        fig = create_correlation_heatmap(df, selected)
+        # FIGURE_REGISTRY_LOCK: allocates a figure against the shared global matplotlib
+        # registry, which a concurrent umap_analysis/pca_analysis call's
+        # allocate-then-raise cleanup could otherwise mistake for its own (#721 PR
+        # review — see that lock's own comment in bloom_mcp.tools._plots).
+        with FIGURE_REGISTRY_LOCK:
+            fig = create_correlation_heatmap(df, selected)
     except Exception:
         return "Correlation heatmap failed: the plot could not be generated for the selected traits."
 

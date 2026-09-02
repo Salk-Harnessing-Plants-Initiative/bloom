@@ -222,3 +222,60 @@ pytest tests/ -m "not integration and not live_smoke" -v --tb=short` (the exact
 - [x] 7.8 Corrected the PR description's overstated claim that plot_font_size/
       plot_point_size's docstring fixes were "self-contradictory" — only `plot_cmap`'s was;
       the other two were accuracy/clarity rewrites.
+
+## 8. Post-review fixes, round 3 (5-subagent PR review of commit e4c572f8)
+
+- [x] 8.1 **Blocking**: fixed the two OpenSpec spec deltas
+      (`specs/bloommcp-umap-analysis-tool/spec.md`, `specs/bloommcp-pca-analysis-tool/spec.md`)
+      that still said the `plot_font_size`/`plot_point_size` ceilings were "enforced as a
+      `Field` constraint" — confirmed via `grep` that round 2's move to
+      `check_plot_style_ceiling` (tasks.md 7.2) never updated these two requirement texts,
+      which `openspec archive` would otherwise fold into the permanent canonical record
+      describing a mechanism the PR itself removed. Reworded both requirements, and added a
+      new scenario to each confirming the ceiling is still discoverable via the tool's JSON
+      schema (see 8.3).
+- [x] 8.2 **Blocking**: extended `FIGURE_REGISTRY_LOCK` (renamed from
+      `_FIGURE_REGISTRY_LOCK` — no longer `_plots.py`-private) to every other
+      matplotlib-figure-creating call site in `bloommcp`: `qc_inspect.py`'s
+      `_render_report` (both `create_trait_eda_plots`/`create_exploratory_summary_plots`
+      calls), `remove_outliers.py`'s `_make_figures` (`plot_outlier_analysis`), and each of
+      the 5 legacy `plot_*` tools (`plot_trait_boxplots.py`, `plot_correlation_matrix.py`,
+      `plot_heritability_bar.py`, `plot_variance_decomposition.py`,
+      `plot_trait_histograms.py`). Confirmed none of these previously synchronized with
+      `generate_figures`'s cleanup at all — `qc_inspect.py` even carried its own
+      pre-existing "single-writer assumption" comment about the shared registry without
+      ever enforcing it. Only each call site's figure-_creation_ delegate call is wrapped
+      (not its full save/persist/commit span) — sufficient because the lock is a mutex, so
+      no other call's creation step can execute while any one call holds it (design.md
+      Decision 5b). Verified every touched module still imports cleanly (no circular
+      imports) and each file's own existing test suite (qc_inspect, remove_outliers, the 5
+      viz tools) still passes unchanged.
+- [x] 8.3 **Important**: restored JSON-schema discoverability for `plot_font_size`/
+      `plot_point_size`'s ceilings — round 2's move off `Field(gt=0, le=...)` (for an
+      informative rejection message) also silently dropped `maximum`/`exclusiveMinimum`
+      from the auto-generated schema, an asymmetry with the untouched `plot_alpha`'s real
+      `Field` bounds. Restored via `Field(json_schema_extra={"exclusiveMinimum": 0,
+"maximum": MAX_PLOT_FONT_SIZE})` (verified empirically: `json_schema_extra` injects
+      raw JSON Schema keywords into `model_json_schema()`'s output without Pydantic
+      enforcing them) — `check_plot_style_ceiling` remains the sole enforcement path. New
+      tests assert both the schema keys and that a wildly out-of-range construction still
+      does not raise at the Pydantic level.
+- [x] 8.4 **Important**: moved the internal PCA fit for `create_umap_colored_by_top_traits`
+      (`perform_pca_analysis`) out of `generate_figures`'s lock window — it previously ran
+      lazily inside the plot callable itself, holding `FIGURE_REGISTRY_LOCK` for an
+      unrelated fit, not just the matplotlib rendering call, understating the real
+      concurrency cost design.md's "not a hot path" framing implied. New
+      `_compute_top_traits_pca` helper is called eagerly by the tool body, before
+      `_umap_plot_calls`/`generate_figures`, and only when
+      `create_umap_colored_by_top_traits` is actually requested (no wasted work
+      otherwise); `_umap_plot_calls` now takes the already-computed result instead of
+      computing it. New regression test proves this is eager, not lazily
+      callable-triggered, by replacing `generate_figures` with a no-op that never invokes
+      any callable and asserting the PCA fit still ran.
+- [x] 8.5 Added a `max_length=32` guard to `plot_cmap` (suggestion — a pathologically long
+      string was previously fully parsed and stored before the cheap allowlist check ever
+      ran; 32 is generous, the longest real allowlisted name with its `_r` variant is 11
+      chars).
+- [x] 8.6 Ran the full `bloommcp` test suite, `openspec validate --strict`, and the repo's
+      actual pre-commit lint/format hooks on every file touched across all three rounds;
+      confirmed green before pushing.

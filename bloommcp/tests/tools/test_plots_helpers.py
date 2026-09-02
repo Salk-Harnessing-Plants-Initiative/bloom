@@ -177,7 +177,7 @@ def test_generate_figures_calls_are_serialized_across_threads():
     """#721 PR review: matplotlib's pyplot figure registry (``Gcf.figs``) is a single
     process-global ``OrderedDict``, not thread-local, and FastMCP dispatches sync tool
     handlers via a thread pool (`bloom_mcp/result_store/_locks.py`'s own docstring
-    documents the same fact for the same reason). Without ``_FIGURE_REGISTRY_LOCK``
+    documents the same fact for the same reason). Without ``FIGURE_REGISTRY_LOCK``
     serializing the whole ``generate_figures`` call, two concurrent ``umap_analysis``/
     ``pca_analysis`` calls could interleave — and the allocate-then-raise cleanup above,
     which detects "new since I started" purely by diffing that shared global registry,

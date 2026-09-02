@@ -105,6 +105,7 @@ from bloom_mcp.experiment_utils import (
     fit_is_trustworthy,
 )
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools._plots import FIGURE_REGISTRY_LOCK
 from bloom_mcp.tools._qc_shared import _role_kwargs, _validate_trait_subset
 
 if TYPE_CHECKING:  # matplotlib stays out of the runtime import graph (Tier-0)
@@ -595,15 +596,20 @@ def _make_figures(
 
     matplotlib.use("Agg")
 
-    available = plot_outlier_analysis(
-        frame.df,
-        trait_cols,
-        method=params.method,
-        random_state=random_state,
-        which=None,
-        **_role_kwargs(frame),
-        **detect_kwargs,
-    )
+    # FIGURE_REGISTRY_LOCK: this delegate call allocates figures against the shared
+    # global matplotlib registry, which a concurrent umap_analysis/pca_analysis call's
+    # allocate-then-raise cleanup could otherwise mistake for its own (#721 PR review —
+    # see that lock's own comment in bloom_mcp.tools._plots for the full reasoning).
+    with FIGURE_REGISTRY_LOCK:
+        available = plot_outlier_analysis(
+            frame.df,
+            trait_cols,
+            method=params.method,
+            random_state=random_state,
+            which=None,
+            **_role_kwargs(frame),
+            **detect_kwargs,
+        )
     if params.plots is None:
         return available
     unknown = [k for k in params.plots if k not in available]

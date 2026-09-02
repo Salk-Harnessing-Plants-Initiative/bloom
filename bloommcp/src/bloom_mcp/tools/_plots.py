@@ -139,23 +139,45 @@ def check_plot_style_ceiling(
         )
 
 
-# Process-wide, not per-key: matplotlib's pyplot figure registry (`Gcf.figs`, in
-# `matplotlib._pylab_helpers`) is a single class-level `OrderedDict` shared by the whole
-# process, not scoped per thread. FastMCP dispatches sync tool handlers via a thread pool
-# (see `bloom_mcp/result_store/_locks.py`'s module docstring for the same fact, verified
-# there against FastMCP's own dispatch code), so two `umap_analysis`/`pca_analysis` calls
-# can genuinely run concurrently in separate threads of one process — both reaching
-# `generate_figures` at the same time. Without this lock, the allocate-then-raise cleanup
-# below (which detects "new since I started" purely by diffing the shared global
-# `plt.get_fignums()`) cannot tell its own orphaned figure apart from one a *different*,
-# unrelated concurrent call just allocated — and would close that other call's figure
-# instead, silently corrupting or blanking its plot with no error surfaced to it at all
-# (#721 PR review). Serializing the entire generate-then-cleanup window process-wide is
-# the only fix available from within `bloommcp`: the plotters that actually call
-# `plt.subplots()`/`plt.figure()` live in the vendored, third-party `sleap_roots_analyze`
-# package, so switching them to construct `matplotlib.figure.Figure()` directly (bypassing
-# the shared registry entirely) is not a change bloommcp can make unilaterally.
-_FIGURE_REGISTRY_LOCK = threading.Lock()
+# Process-wide, not per-key, and NOT bloommcp.tools._plots-private: matplotlib's pyplot
+# figure registry (`Gcf.figs`, in `matplotlib._pylab_helpers`) is a single class-level
+# `OrderedDict` shared by the whole process, not scoped per thread. FastMCP dispatches sync
+# tool handlers via a thread pool (see `bloom_mcp/result_store/_locks.py`'s module
+# docstring for the same fact, verified there against FastMCP's own dispatch code), so any
+# two figure-creating tool calls in this process — not just two `umap_analysis`/
+# `pca_analysis` calls — can genuinely run concurrently. Without this lock,
+# `generate_figures`'s allocate-then-raise cleanup below (which detects "new since I
+# started" purely by diffing the shared global `plt.get_fignums()`) cannot tell its own
+# orphaned figure apart from one a *different*, unrelated concurrent call just allocated —
+# and would close that other call's figure instead, silently corrupting or blanking its
+# plot with no error surfaced to it at all (#721 PR review).
+#
+# This is why every OTHER matplotlib-figure-creating call site in bloommcp —
+# `qc_inspect.py`'s `_render_report`, `remove_outliers.py`'s `_make_figures`, and each of
+# the 5 legacy `plot_*` tools (`plot_trait_boxplots.py`, `plot_correlation_matrix.py`,
+# `plot_heritability_bar.py`, `plot_variance_decomposition.py`,
+# `plot_trait_histograms.py`) — must import and acquire this SAME lock around their own
+# delegate call that actually allocates a figure (not necessarily their full
+# save/commit/persist span — see each site's own comment for why the narrower scope is
+# still sufficient: `generate_figures`'s diff can only ever be confused by a figure that
+# is *created* while its own lock-protected window is open; once acquired here, no other
+# call's creation step can execute concurrently, by mutual exclusion, regardless of how
+# long that other call then takes to save/close/commit *after* creating). None of those
+# other call sites do fignum-diffing themselves (they close by direct object reference,
+# which is safe regardless of what else is in the registry), so they only need to
+# participate in this lock to protect themselves from `generate_figures`'s diff — not to
+# protect each other.
+#
+# Non-reentrant: a future plotter that transitively re-enters `generate_figures` (or any
+# other lock-acquiring call) from inside its own locked call would deadlock. Nothing in
+# this codebase does that today.
+#
+# The alternative fix (have every plotter construct `matplotlib.figure.Figure()` directly,
+# bypassing the shared registry entirely) isn't available from within `bloommcp` for the
+# UMAP/PCA catalog plotters: they live in the vendored, third-party `sleap_roots_analyze`
+# package. It IS available for `qc_inspect`/`remove_outliers`/the 5 legacy tools' own
+# rendering code, but they delegate to the same third-party package too.
+FIGURE_REGISTRY_LOCK = threading.Lock()
 
 
 def generate_figures(
@@ -185,13 +207,13 @@ def generate_figures(
     assignment ``figures[key] = fn()`` never completes, so it's never recorded, and
     ``close_figures`` only iterates the caller's dict. Guarded here by diffing
     ``plt.get_fignums()`` around each call and closing anything new before re-raising —
-    under ``_FIGURE_REGISTRY_LOCK`` for the whole call, since that diff is only safe
+    under ``FIGURE_REGISTRY_LOCK`` for the whole call, since that diff is only safe
     against a global registry no other call is concurrently mutating (see the lock's own
     comment).
     """
     import matplotlib.pyplot as plt
 
-    with _FIGURE_REGISTRY_LOCK:
+    with FIGURE_REGISTRY_LOCK:
         for key, fn in resolved_calls.items():
             before = plt.get_fignums()
             try:
