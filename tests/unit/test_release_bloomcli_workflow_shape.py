@@ -19,6 +19,9 @@ It locks the safety-critical properties the design signed off on:
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -28,6 +31,24 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 RELEASE = WORKFLOWS / "release-bloomcli.yml"
 VERSION = WORKFLOWS / "version-bloomcli.yml"
+
+# See test_deploy_kong_reload_on_config_change.py's identical helper for why this is
+# needed: `bash` can resolve to the WSL launcher shim rather than a real POSIX shell on
+# some Windows dev machines, depending on which process's PATH is being searched.
+_GIT_BASH_CANDIDATES = [
+    r"C:\Program Files\Git\bin\bash.exe",
+    r"C:\Program Files\Git\usr\bin\bash.exe",
+]
+
+
+def _bash_executable() -> str:
+    for candidate in _GIT_BASH_CANDIDATES:
+        if Path(candidate).exists():
+            return candidate
+    return shutil.which("bash") or "bash"
+
+
+BASH = _bash_executable()
 
 
 def _load(path: Path) -> dict:
@@ -126,6 +147,34 @@ def test_validate_checks_tag_changelog_lint_tests():
     assert "CHANGELOG.md" in text                    # changelog entry check
     assert "ruff" in text                            # lint
     assert "pytest" in text                          # tests
+
+
+def _run_validate_tag_script(tag: str, version: str) -> subprocess.CompletedProcess:
+    """Execute the REAL `run:` script from validate-release's "Validate tag
+    matches version" step (not a Python reimplementation) — this exercises
+    the actual exit-1-on-mismatch branch, not just a string-containment
+    check on the workflow YAML. TAG/VERSION are passed the same way the real
+    step receives them: via `env:`, not `uv version`/inline interpolation.
+    """
+    job = _load(RELEASE)["jobs"]["validate-release"]
+    step = next(s for s in job["steps"] if s.get("name") == "Validate tag matches version")
+    env = {**os.environ, "TAG": tag, "VERSION": version}
+    return subprocess.run(
+        [BASH, "-c", step["run"]], env=env, capture_output=True, text=True, timeout=10
+    )
+
+
+def test_validate_tag_script_passes_on_matching_tag():
+    result = _run_validate_tag_script("bloomctl-v0.1.0a6", "0.1.0a6")
+    assert result.returncode == 0, result.stderr
+    assert "matches version" in result.stdout
+
+
+def test_validate_tag_script_fails_on_mismatched_tag():
+    result = _run_validate_tag_script("bloomctl-v0.1.0a7", "0.1.0a6")
+    assert result.returncode == 1
+    assert "::error::" in result.stdout
+    assert "does not match" in result.stdout
 
 
 # --- publish workflow: trusted publishing + immutability guard -------------

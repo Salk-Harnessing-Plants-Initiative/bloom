@@ -30,6 +30,10 @@ add-bloommcp-pypi-release-pipeline) signed off on:
 
 from __future__ import annotations
 
+import os
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -39,6 +43,24 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 RELEASE = WORKFLOWS / "release-bloommcp.yml"
 VERSION = WORKFLOWS / "version-bloommcp.yml"
+
+# See test_deploy_kong_reload_on_config_change.py's identical helper for why this is
+# needed: `bash` can resolve to the WSL launcher shim rather than a real POSIX shell on
+# some Windows dev machines, depending on which process's PATH is being searched.
+_GIT_BASH_CANDIDATES = [
+    r"C:\Program Files\Git\bin\bash.exe",
+    r"C:\Program Files\Git\usr\bin\bash.exe",
+]
+
+
+def _bash_executable() -> str:
+    for candidate in _GIT_BASH_CANDIDATES:
+        if Path(candidate).exists():
+            return candidate
+    return shutil.which("bash") or "bash"
+
+
+BASH = _bash_executable()
 
 
 def _load(path: Path) -> dict:
@@ -132,6 +154,34 @@ def test_validate_checks_tag_changelog_lint_tests():
     assert "CHANGELOG.md" in text                    # changelog entry check
     assert "ruff" in text                            # lint
     assert "pytest" in text                          # tests
+
+
+def _run_validate_tag_script(tag: str, version: str) -> subprocess.CompletedProcess:
+    """Execute the REAL `run:` script from validate-release's "Validate tag
+    matches version" step (not a Python reimplementation) — this exercises
+    the actual exit-1-on-mismatch branch, not just a string-containment
+    check on the workflow YAML. TAG/VERSION are passed the same way the real
+    step receives them: via `env:`, not `uv version`/inline interpolation.
+    """
+    job = _load(RELEASE)["jobs"]["validate-release"]
+    step = next(s for s in job["steps"] if s.get("name") == "Validate tag matches version")
+    env = {**os.environ, "TAG": tag, "VERSION": version}
+    return subprocess.run(
+        [BASH, "-c", step["run"]], env=env, capture_output=True, text=True, timeout=10
+    )
+
+
+def test_validate_tag_script_passes_on_matching_tag():
+    result = _run_validate_tag_script("bloommcp-v0.1.0a1", "0.1.0a1")
+    assert result.returncode == 0, result.stderr
+    assert "matches version" in result.stdout
+
+
+def test_validate_tag_script_fails_on_mismatched_tag():
+    result = _run_validate_tag_script("bloommcp-v0.1.0a2", "0.1.0a1")
+    assert result.returncode == 1
+    assert "::error::" in result.stdout
+    assert "does not match" in result.stdout
 
 
 # --- credential isolation: only build-and-publish holds the OIDC token -----
@@ -275,6 +325,30 @@ def test_version_workflow_has_concurrency_guard():
     wf = _load(VERSION)
     assert "concurrency" in wf
     assert wf["concurrency"]["group"]
+
+
+# --- every action is SHA-pinned, in both files ------------------------------
+
+def _all_uses(wf: dict) -> list[str]:
+    uses = []
+    for job in wf["jobs"].values():
+        for step in job.get("steps", []):
+            if step.get("uses"):
+                uses.append(step["uses"])
+    return uses
+
+
+def test_every_action_is_sha_pinned():
+    """A tag ref (e.g. `@v4`) can be repointed by the action's maintainer — or
+    an attacker who compromises their account — without this repo's review
+    ever seeing it; a commit SHA is immutable. Round 3 SHA-pinned
+    actions/checkout/upload-artifact/download-artifact in release-bloommcp.yml
+    but left version-bloommcp.yml's actions/checkout@v4 behind, with nothing
+    asserting either file stays fully pinned (#663 review)."""
+    sha_pattern = re.compile(r"^[^@]+@[0-9a-f]{40}$")
+    for wf_path in (RELEASE, VERSION):
+        for uses in _all_uses(_load(wf_path)):
+            assert sha_pattern.match(uses), f"{wf_path.name}: {uses!r} is not SHA-pinned"
 
 
 if __name__ == "__main__":

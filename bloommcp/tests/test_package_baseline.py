@@ -128,6 +128,32 @@ def test_retained_heavy_deps_are_each_imported():
     ), f"declared deps not imported by shipped code (prune them): {sorted(unused)}"
 
 
+def _pyproject() -> dict:
+    import tomllib
+
+    return tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+
+def test_the_dependency_caps_that_keep_pre_releases_installable_are_still_there():
+    """`httpx 1.0` and `supabase 3.0` each remove something `bloom_mcp.supabase_client`
+    imports (#629, #663 review) — mirrors bloomcli/tests/test_errors.py's identical
+    guard for the same caps on bloomctl's side.
+
+    release-bloommcp.yml's build-and-verify `--prerelease=allow` wheel-import pass is
+    what actually caught the missing bound before merge (it resolved `httpx 1.0.dev5`
+    and broke `postgrest`'s import), but that check only runs on a real
+    `workflow_dispatch`/release run. This is the fast, PR-time regression guard: a
+    future edit that loosens either bound is caught here, not only at the next real
+    release, at the moment of an immutable PyPI upload.
+    """
+    deps = " ".join(_pyproject()["project"]["dependencies"])
+
+    assert "httpx>=0.27.0,<1.0" in deps
+    assert "supabase>=2.0.0,<3" in deps
+
+
 # ── Lazy Supabase Environment Validation ────────────────────────────────────
 
 
