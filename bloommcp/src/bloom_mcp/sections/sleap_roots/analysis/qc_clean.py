@@ -77,7 +77,7 @@ from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import CLEANED_CSV_NAME, QC_TOOL_CLASS
 from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools._inline_input import compute_input_sha256, parse_inline_csv_frame
+from bloom_mcp.tools import _inline_input
 from bloom_mcp.tools._qc_shared import (
     _CANONICAL_MAX_NANS_PER_SAMPLE,
     _CANONICAL_MAX_NANS_PER_TRAIT,
@@ -286,66 +286,44 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     versioned run; inline ``csv_content`` never persists anything (#582) — a one-off
     check, not a registered experiment.
     """
-    # Exactly one of experiment / csv_content — checked first, before touching the
-    # reader or the parser, so a bad call fails immediately with a specific message
-    # (see the NOTE on QCCleanParams for why this lives here and not in a validator).
-    if (params.experiment is None) == (params.csv_content is None):
-        raise BloomMCPError(
-            code="invalid_input",
-            message=(
-                "Exactly one of experiment or csv_content must be provided "
-                "(both or neither is not a valid call)."
-            ),
-            remedy=(
-                "Supply exactly one of experiment (a registered experiment "
-                "identifier) or csv_content (raw CSV text for a one-off analysis)."
-            ),
-        )
-
-    is_inline = params.csv_content is not None
-    # Used in error messages where an experiment name would normally be interpolated —
-    # there is no experiment identity on the inline path.
-    experiment_label = _INLINE_EXPERIMENT_LABEL if is_inline else params.experiment
-
-    # A source/run pin only ever means anything against the DB-backed raw tier —
-    # csv_content bypasses the reader port entirely, so there is no source to pin.
-    # Reject rather than silently drop (the same "reject, don't silently ignore"
-    # principle the exactly-one-of-experiment/csv_content check above applies) —
-    # checked here, not via a @model_validator, for the same reason documented in
-    # the NOTE on QCCleanParams: a validator's raised ValueError loses this specific
-    # message to the contract layer's generic "(<root>: value_error)" text.
-    if is_inline and (params.source_id is not None or params.run_id is not None):
-        raise BloomMCPError(
-            code="invalid_input",
-            message=(
-                "source_id/run_id cannot be used with csv_content: a source pin "
-                "only applies to a registered experiment's raw DB-backed read, "
-                "and csv_content bypasses that read entirely."
-            ),
-            remedy=(
-                "Omit source_id/run_id when using csv_content, or supply "
-                "experiment instead of csv_content to pin a source."
-            ),
-        )
-
     source_note: Optional[str] = None
-    if is_inline:
-        # Inline content bypasses the ExperimentReader port entirely — parsed directly
-        # into an in-memory frame by the shared helper, never touching Storage/DB.
-        frame = parse_inline_csv_frame(params.csv_content)
-    else:
-        reader = _ports.reader()
-        store = _ports.store()
+    store = None
+
+    def _read_raw():
         # qc_clean is the producer of cleaned data, so it must always clean from the
         # RAW input — never re-clean a prior cleaned artifact. Force version="raw" so a
         # re-run (after a cleaned version already exists) still reads raw rather than
         # the default "latest" resolution, which would resolve the newest _cleaned.csv.
-        frame = reader.load_experiment(
+        nonlocal store
+        store = _ports.store()
+        return _ports.reader().load_experiment(
             params.experiment,
             version="raw",
             source_id=params.source_id,
             run_id=params.run_id,
         )
+
+    # Exactly one of experiment / csv_content, plus the rejection of pins that only
+    # mean something against the DB-backed raw tier — both owned by the shared
+    # resolver so this tool speaks the same vocabulary as every other one (#582).
+    # It checks before touching the reader or the parser, so a bad call fails
+    # immediately with a specific message; and it raises BloomMCPError from the body
+    # rather than a @model_validator for the reason documented in the NOTE on
+    # QCCleanParams (a validator's ValueError loses its text to the contract layer's
+    # generic "(<root>: value_error)").
+    resolved_input = _inline_input.resolve_inline_or_experiment(
+        experiment=params.experiment,
+        csv_content=params.csv_content,
+        reader_call=_read_raw,
+        registered_only={"source_id": params.source_id, "run_id": params.run_id},
+    )
+    is_inline = resolved_input.is_inline
+    frame = resolved_input.frame
+    # Used in error messages where an experiment name would normally be interpolated —
+    # there is no experiment identity on the inline path.
+    experiment_label = resolved_input.label
+
+    if not is_inline:
         # #626: when neither source_id nor run_id was given and the experiment has
         # more than one known source, say so explicitly rather than silently
         # resolving "latest" — an agent that hasn't already discovered the sources
@@ -643,7 +621,7 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         run_ref = version_dir = manifest_path = None
         outputs: dict[str, str] = {}
         output_links: dict[str, OutputLink] = {}
-        input_sha256 = compute_input_sha256(params.csv_content)
+        input_sha256 = resolved_input.input_sha256
         next_step = None
     else:
         # Additive manifest block: the resolved roles, excluded metadata, and warn-mode
