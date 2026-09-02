@@ -227,7 +227,7 @@ asserted `.is_file()` on the generated PNG.
   held cross-platform on the first try; the fallback there (regenerate from Linux) applies
   only if a *future* PR's CI run fails on RMS grounds.
 - Regenerate all 5 + the manifest via
-  `cd bloommcp && uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py`
+  `cd bloommcp && uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py --yes`
   after any intentional rendering change (matplotlib bump, plot-style-kwargs default change,
   delegate upgrade) — never hand-edit these PNGs. **If you're regenerating over existing
   baselines** (not creating this directory for the first time), the script prints the

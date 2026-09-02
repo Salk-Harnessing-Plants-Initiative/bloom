@@ -18,17 +18,22 @@ macOS**, not on Linux (see `plot_baselines/MANIFEST.json` and design.md Decision
 was unavailable to produce a Linux-rendered baseline matching the `python-audit` CI job's
 `ubuntu-latest` runner at authoring time), so this test's *first* real cross-platform
 comparison is CI's own run, not this docstring's say-so. `_TOL` was picked from a real,
-reproducible measurement, not guessed: uniformly dimming the `histograms` baseline by 2%
-(`PIL.ImageEnhance.Brightness(0.98)`) against itself scores RMS≈5.6; 5% scores RMS≈12.2;
-10% scores RMS≈24.4 (see `test_tolerance_catches_a_real_regression` below, which
-reproduces the 10% case live rather than hardcoding these numbers). `_TOL = 15` sits above
-the 5%-dim noise floor (leaving headroom for legitimate cross-platform hinting noise,
-which manifests as far subtler pixel deltas than a uniform intensity shift) and
-comfortably below the 10% case a real color-rendering regression would plausibly produce.
-If CI's first real cross-platform run shows the genuine hinting-noise RMS is closer to
-`_TOL` than expected, that is the authoritative signal to revisit this constant or
-regenerate the baselines from a Linux run -- see `scripts/gen_plot_snapshots_golden.py`'s
-module docstring.
+reproducible measurement, not guessed, and checked against **all 5 baselines**, not just
+one (design.md Decision 2 has the full table): uniformly dimming each baseline by
+2%/5%/10% (`PIL.ImageEnhance.Brightness`) scores RMS≈5.4-5.7 / ≈11.7-12.5 / ≈23.4-24.9
+respectively -- the 5 plots agree within ~0.3 RMS at every level despite very different
+pixel content, because a *uniform* shift's RMS is dominated by the large shared
+white-background area, not each plot's distinct foreground (contrast the localized-
+regression case below, whose RMS genuinely does vary a lot by plot type).
+`test_tolerance_catches_a_real_regression` reproduces the 10%-dim case for `histograms`
+live rather than hardcoding it. `_TOL = 15` sits above the 5%-dim noise floor (leaving
+headroom for legitimate cross-platform hinting noise, which manifests as far subtler pixel
+deltas than a uniform intensity shift) and comfortably below the 10% case a real
+color-rendering regression would plausibly produce -- consistently across all 5. If CI's
+first real cross-platform run shows the genuine hinting-noise RMS is closer to `_TOL` than
+expected, that is the authoritative signal to revisit this constant or regenerate the
+baselines from a Linux run -- see `scripts/gen_plot_snapshots_golden.py`'s module
+docstring.
 
 Known limitation -- localized regressions, measured per plot type (not just guessed to
 generalize from one), and against **real element sizes**, not an assumed area fraction (a
@@ -85,11 +90,15 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+import pandas as pd
 import pytest
 from matplotlib.testing.compare import compare_images
 from matplotlib.testing.exceptions import ImageComparisonFailure
 from PIL import Image, ImageDraw, ImageEnhance
+from sleap_roots_analyze.visualization import create_correlation_heatmap
 
+from bloom_mcp import experiment_utils as eu
 from bloom_mcp.sections.sleap_roots.analysis import (
     plot_correlation_matrix as plot_correlation_matrix_mod,
     plot_heritability_bar as plot_heritability_bar_mod,
@@ -170,7 +179,7 @@ def test_plot_matches_baseline_within_tolerance(
     assert actual.is_file()
     assert baseline.is_file(), (
         f"missing baseline {baseline} -- run "
-        "`uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py` to create it"
+        "`uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py --yes` to create it"
     )
 
     _compare_or_fail(baseline, actual)
@@ -286,6 +295,52 @@ def test_tolerance_catches_a_localized_regression(tmp_path, baseline_name, area_
 # `ax.get_window_extent(fig.canvas.get_renderer())`) if the fixture's trait count or the
 # delegate's figsize/dpi ever changes; do not just bump the fraction.
 _REAL_CORRELATION_CELL_AREA_FRACTION = 11836 / (1690 * 1539)
+
+
+def _measure_live_correlation_cell_area_fraction() -> float:
+    """Independently re-derive `_REAL_CORRELATION_CELL_AREA_FRACTION` by actually rendering
+    the live delegate call and measuring its geometry, rather than trusting the hardcoded
+    comment above to stay accurate forever -- a third review correctly pointed out that a
+    comment telling a human to re-derive a number by hand is exactly the kind of thing that
+    silently goes stale (it's how the original 3%-vs-0.455% error happened in the first
+    place). Mirrors `scripts/gen_plot_snapshots_golden.py`'s own real-fixture setup, not a
+    synthetic stand-in.
+    """
+    raw = Path(__file__).resolve().parents[1] / "fixtures" / "turface_19_final_data.csv"
+    df = pd.read_csv(raw, encoding="utf-8")
+    trait_cols = eu.detect_columns(df)["trait_cols"]
+    n = len(trait_cols)
+
+    fig = create_correlation_heatmap(df, trait_cols)
+    try:
+        ax = fig.axes[0]
+        fig.canvas.draw()
+        ax_bbox = ax.get_window_extent(fig.canvas.get_renderer())
+        save_dpi = 150  # matches _viz_shared.save_plot's dpi
+        scale = save_dpi / fig.dpi
+        cell_area_px = (ax_bbox.width * scale / n) * (ax_bbox.height * scale / n)
+    finally:
+        plt.close(fig)
+
+    baseline = _BASELINES / "correlation_matrix_turface_19_baseline.png"
+    w, h = Image.open(baseline).size
+    return cell_area_px / (w * h)
+
+
+def test_real_correlation_cell_area_fraction_matches_measured_geometry():
+    """`_REAL_CORRELATION_CELL_AREA_FRACTION` -- the basis for both the localized-regression
+    test sizing and the single-cell pinning test below -- must not silently drift from
+    reality. If `turface_19`'s trait count or `create_correlation_heatmap`'s figsize/dpi ever
+    changes, this fails loudly (telling a developer to re-derive the constant and update the
+    docs/comments that cite it) instead of leaving a stale number nobody notices.
+    """
+    live = _measure_live_correlation_cell_area_fraction()
+    assert live == pytest.approx(_REAL_CORRELATION_CELL_AREA_FRACTION, rel=0.05), (
+        f"live-measured cell area fraction ({live:.5f}) has drifted from the hardcoded "
+        f"_REAL_CORRELATION_CELL_AREA_FRACTION ({_REAL_CORRELATION_CELL_AREA_FRACTION:.5f}) "
+        "-- re-derive the constant (see its comment) and update design.md/#768 if the new "
+        "value changes the single-cell-detection conclusion"
+    )
 
 
 def test_realistic_single_cell_defect_in_correlation_matrix_is_not_caught(tmp_path):

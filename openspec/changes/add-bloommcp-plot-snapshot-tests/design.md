@@ -26,18 +26,29 @@ distinguish "font hinting nudged some label pixels" from "the whole plot changed
 ## Decision 2: tolerance value (`_TOL = 15`)
 
 Derived from a real, reproducible measurement rather than guessed. Using
-`PIL.ImageEnhance.Brightness` to uniformly dim one committed baseline PNG against itself
+`PIL.ImageEnhance.Brightness` to uniformly dim a committed baseline PNG against itself
 (a synthetic stand-in for "a rendering regression large enough to matter" — not a literal
-simulation of a specific known bug) and scoring with `compare_images(tol=0)`:
+simulation of a specific known bug) and scoring with `compare_images(tol=0)`, measured
+against **all 5** baselines (a third review correctly noted an earlier version of this
+table cited only `histograms` and applied it globally without checking the others):
 
-| perturbation | RMS |
-|---|---|
-| 2% dim | ≈5.6 |
-| 5% dim | ≈12.2 |
-| 10% dim | ≈24.4 |
-| 15% dim | ≈36.6 |
+| baseline | 2% dim | 5% dim | 10% dim | 15% dim |
+|---|---|---|---|---|
+| histograms | ≈5.6 | ≈12.2 | ≈24.4 | ≈36.6 |
+| boxplots | ≈5.7 | ≈12.5 | ≈24.9 | ≈37.4 |
+| correlation_matrix | ≈5.5 | ≈12.0 | ≈23.8 | ≈35.7 |
+| heritability_bar | ≈5.4 | ≈11.7 | ≈23.4 | ≈35.0 |
+| variance_decomposition | ≈5.5 | ≈12.0 | ≈23.9 | ≈35.9 |
 
-`_TOL = 15` sits just above the 5%-dim case and comfortably below the 10%-dim case. Two
+The 5 baselines agree within ~0.3 RMS at every perturbation level despite very different
+pixel-content composition (a dense heatmap vs. mostly-white grids) — because a *uniform*
+brightness shift changes every pixel including the large shared white-background area, so
+the whole-image RMS a uniform perturbation produces is dominated by that shared background
+rather than by each plot's distinct foreground content. (This is a different regime from
+the *localized* perturbation below, whose RMS genuinely does vary a lot by plot type — see
+the "Known limitation" section: a small region's dilution depends on the plot's layout, but
+a whole-image shift's RMS mostly doesn't.) `_TOL = 15` sits just above the 5%-dim case and
+comfortably below the 10%-dim case, consistently across all 5. Two
 supporting data points from a separate experiment (rendering an equivalent 3×3 histogram
 grid with plain matplotlib+pandas, no bloommcp involved):
 
@@ -106,8 +117,11 @@ The baselines this change ships were generated on **macOS** (this development
 environment): Docker Desktop was unavailable for producing a Linux-rendered baseline
 matching the `python-audit` job's `ubuntu-latest` runner during this change's
 authoring (the daemon could not be kept up long enough to complete a `uv sync` inside a
-container). `plot_baselines/MANIFEST.json` records the actual generation platform
-honestly (`macOS-14.8.2-arm64`) rather than claiming a Linux provenance it doesn't have.
+container). `plot_baselines/MANIFEST.json` records the actual generation platform honestly
+(see that file for the exact `platform` string as of the current baselines — not repeated
+as a literal here, since a prior version of this line went stale the first time the
+authoring machine's OS updated even though the committed PNG bytes hadn't changed) rather
+than claiming a Linux provenance it doesn't have.
 
 This was a real, accepted gap, not a hidden one, going into review: the first genuine
 test of "does `_TOL=15` survive real cross-platform FreeType differences" was this
@@ -158,6 +172,16 @@ failing above some RMS threshold without an explicit override flag) is more mach
 a "lightweight" testing change justifies; the goal is making the regeneration's effect
 visible to a human, not blocking it in CI.
 
+## Decision 6: shared `viz_env` fixture via `tests/tools/conftest.py`
+
+`test_viz_snapshot.py` needs the identical real-TRAITS_DIR-read / real-PLOTS_DIR-write /
+manifest-miss setup `test_viz_tools.py`'s `viz_env` fixture already provides. Duplicating
+that fixture's body in a second file risks the two silently desyncing (e.g. one gets a
+manifest-miss fix the other doesn't) — the same rationale `_viz_shared.py` already gives
+for single-sourcing `save_plot`/`save_plot_or_plots` across the 5 tool files. Moved to a
+new `tests/tools/conftest.py`; `test_viz_tools.py`'s own tests are unaffected (pytest
+fixture resolution is unchanged from its perspective).
+
 ## Decision 7: why #768 (correlation_matrix single-cell detection) is tracked, not fixed here
 
 Given the ~5 RMS single-cell signal sits in the same range as legitimate cross-platform
@@ -177,12 +201,40 @@ person who notices it; `test_realistic_single_cell_defect_in_correlation_matrix_
 pins the current (negative) behavior so any future change to this outcome — in either
 direction — fails loudly instead of silently.
 
-## Decision 6: shared `viz_env` fixture via `tests/tools/conftest.py`
+## Decision 8: self-verifying the `correlation_matrix` cell-geometry constant
 
-`test_viz_snapshot.py` needs the identical real-TRAITS_DIR-read / real-PLOTS_DIR-write /
-manifest-miss setup `test_viz_tools.py`'s `viz_env` fixture already provides. Duplicating
-that fixture's body in a second file risks the two silently desyncing (e.g. one gets a
-manifest-miss fix the other doesn't) — the same rationale `_viz_shared.py` already gives
-for single-sourcing `save_plot`/`save_plot_or_plots` across the 5 tool files. Moved to a
-new `tests/tools/conftest.py`; `test_viz_tools.py`'s own tests are unaffected (pytest
-fixture resolution is unchanged from its perspective).
+`test_viz_snapshot.py`'s `_REAL_CORRELATION_CELL_AREA_FRACTION` (Decision 7 / #768's basis)
+was, as first written, a hand-derived literal with a comment telling a human to re-derive
+it by hand if the fixture or delegate geometry ever changed — a third review correctly
+pointed out this is exactly the same class of mistake that produced the original
+3%-vs-0.455% error this whole limitation was discovered from: a number documented as
+"measured" that no code actually re-measures. Fixed by adding
+`test_real_correlation_cell_area_fraction_matches_measured_geometry`, which renders the
+live delegate call, measures `ax.get_window_extent()` itself, and asserts the hardcoded
+constant is still within a small relative tolerance of that live measurement — so a future
+change to `turface_19`'s trait count or `create_correlation_heatmap`'s figsize/dpi fails
+this test loudly (telling a developer the constant and the docs need updating) instead of
+letting `_REAL_CORRELATION_CELL_AREA_FRACTION` silently drift out of sync with reality.
+
+## Decision 9: CI diff-image artifact upload
+
+A real regression's failure message names an RMS number and a local `*-failed-diff.png`
+path, but that file lived only on the CI runner's disposable filesystem — nothing surfaced
+it to a human. `.github/workflows/pr-checks.yml`'s `python-audit` job now uploads
+`bloommcp/tests/**/*-failed-diff.png` (`actions/upload-artifact`, `if: failure()`) as a
+build artifact, so a real `test_viz_snapshot.py` failure leaves a downloadable image a
+non-matplotlib-expert reviewer can actually look at, not just an RMS number and a path that
+no longer exists once the job finishes.
+
+## Decision 10: a deliberate confirmation step before overwriting an existing baseline
+
+Decision 5 is a visibility aid, not a gate, by design — but a third review noted nothing
+backstops a human who runs the regen script and copies the printed RMS past without
+reading it. Rather than building the CI-side enforcement Decision 5 already argued against
+(more machinery than this "lightweight" change justifies), `gen_plot_snapshots_golden.py`
+now requires an explicit `--yes` flag before it will overwrite any *existing* baseline:
+without it, the script prints every file's old-vs-new RMS (the same `_report_regeneration`
+message as always) and exits non-zero without touching anything; with it, it proceeds
+exactly as before. This is a local, opt-in speed bump — one extra deliberate step, not a
+CI check — that makes "I looked at the RMS and it's expected" an action a developer has to
+actually take, rather than a convention they can silently skip.

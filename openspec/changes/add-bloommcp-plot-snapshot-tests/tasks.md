@@ -197,3 +197,72 @@ oversold what changed.
 - [x] 8.8 Ran `cd bloommcp && uv run --extra test pytest tests/tools/test_viz_snapshot.py
   tests/scripts/test_gen_plot_snapshots_golden.py -v` and the full per-PR sweep — confirm
   green before pushing.
+
+## 9. Third human-review response (5-subagent review of the section-8 fix commit)
+
+No blocking issues — the honestly-pinned `correlation_matrix` limitation (#768) held up
+under independent re-derivation of the geometry math. Two important gaps closed: a
+"measured" constant that no code actually re-measured, and a noise-floor calibration
+verified on only one of the 5 plot types.
+
+- [x] 9.1 **IMPORTANT: `_REAL_CORRELATION_CELL_AREA_FRACTION` was a hardcoded literal
+  documented as "measured," with nothing re-verifying it.** Exactly the same class of
+  mistake that produced the original 3%-vs-0.455% error (section 8's whole subject) — a
+  number a human is trusted to re-derive by hand rather than something self-checking.
+  Added `test_real_correlation_cell_area_fraction_matches_measured_geometry`: renders the
+  live delegate call, measures `ax.get_window_extent()` itself
+  (`_measure_live_correlation_cell_area_fraction`), and asserts the hardcoded constant is
+  still within 5% relative of that live measurement — a future fixture/delegate geometry
+  change now fails this test loudly instead of leaving the constant stale. Design.md
+  Decision 8.
+- [x] 9.2 **IMPORTANT: `_TOL=15`'s noise-floor calibration (the 5.6/12.2/24.4/36.6 RMS
+  table) was measured against `histograms` only, then applied to all 5 plot types without
+  checking.** Re-measured the same 2%/5%/10%/15%-dim perturbation against all 5 baselines:
+  they agree within ~0.3 RMS at every level (the 5 baselines: 5.4-5.7 / 11.7-12.5 /
+  23.4-24.9 / 35.0-37.4) — because a *uniform* shift's RMS is dominated by the large shared
+  white-background area, not each plot's distinct foreground, unlike the *localized*
+  perturbation case (section 7/8) whose RMS genuinely does vary a lot by plot type. Added
+  the full table + this explanation to `test_viz_snapshot.py`'s docstring and design.md
+  Decision 2, replacing the single-baseline citation.
+- [x] 9.3 **IMPORTANT: a real CI failure's diff image never survived the CI run.**
+  `compare_images` names a local `*-failed-diff.png` on failure, but nothing uploaded it —
+  a non-matplotlib-expert reviewer had no way to actually see what changed. Added an
+  `actions/upload-artifact` step (`if: failure()`) to the `python-audit` job in
+  `.github/workflows/pr-checks.yml`, uploading `/tmp/pytest-of-*/**/*-failed-diff.png`.
+  Verified the existing CI-structure guard tests (`test_bloommcp_wheel_import_gate.py`,
+  `test_ci_workflow_uv_conventions.py`, `test_pr_checks_workflow_shape.py`,
+  `test_ci_dev_stack_smoke.py` — all match by step *presence*, not index) still pass.
+  Design.md Decision 9.
+- [x] 9.4 **IMPORTANT: nothing backstopped a human ignoring the regen script's printed
+  RMS.** Decision 5 already deliberately chose not to build CI-side enforcement — but
+  `gen_plot_snapshots_golden.py` now requires an explicit `--yes` flag before overwriting
+  any *existing* baseline: without it, prints every file's RMS and exits 1 without writing
+  anything (all-or-nothing, not a per-file mix); with it, proceeds as before. A local,
+  opt-in speed bump, not a CI gate. Design.md Decision 10. Updated the two literal
+  regen-command citations (`tests/fixtures/README.md`, the "missing baseline" test failure
+  message) to include `--yes`.
+  **Caught during this fix's own test-writing**: the new `build()`-gate tests initially
+  leaked global state (`_manifest.list_prefix`/`_sc.list_prefix`, permanently reassigned by
+  `build()` via plain assignment, not `monkeypatch.setattr`) into 30 unrelated tests
+  elsewhere in the suite (`tests/test_storage_backend.py`,
+  `tests/tools/test_list_existing_analyses_staleness.py`) when run as part of the full
+  sweep — caught by actually running the full per-PR sweep before committing, not just the
+  new/touched test files. Fixed by registering those two globals (alongside
+  `TRAITS_DIR`/`PLOTS_DIR`) for `monkeypatch` auto-revert before calling `build()` in tests.
+- [x] 9.5 **SUGGESTION: design.md's Decision 7 was physically ordered before Decision 6.**
+  Reordered so the numbering matches file order.
+- [x] 9.6 **SUGGESTION: design.md cited a stale baseline platform string
+  (`macOS-14.8.2-arm64`) that had drifted from the currently-committed `MANIFEST.json`
+  (`macOS-26.5.1-arm64-arm-64bit`) after an OS update on the authoring machine** — the PNG
+  bytes were confirmed byte-identical across commits, so this was doc-only drift, not a
+  silent re-render. Removed the hardcoded platform string from design.md's prose entirely
+  (pointing to `MANIFEST.json` instead) rather than just updating today's number, since a
+  hardcoded citation would go stale again the next time the authoring machine's OS updates.
+- [x] 9.7 **SUGGESTION: no pointer to #768 existed in `plot_correlation_matrix.py` itself**
+  — a maintainer starting from production code had no breadcrumb to the test-coverage gap.
+  Added a short module-docstring note.
+- [x] 9.8 Ran `cd bloommcp && uv run --extra test pytest tests/tools/test_viz_snapshot.py
+  tests/scripts/test_gen_plot_snapshots_golden.py -v` (11 + 6 tests) and the **full per-PR
+  sweep** (`uv run --frozen --extra test pytest tests/ -m "not integration and not
+  live_smoke"`, 1385 passed) — confirmed green, including the previously-leaking tests,
+  before pushing.

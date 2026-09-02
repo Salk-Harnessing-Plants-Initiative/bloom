@@ -21,24 +21,28 @@ reflects the full save path (``_viz_shared.save_plot``/``save_plot_or_plots``, i
 ``dpi``/``bbox_inches``), not a hand-rolled re-render that could quietly drift from what
 the tool actually produces.
 
-Run:  cd bloommcp && uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py
+Run:  cd bloommcp && uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py --yes
 
 Regenerating over an *existing* baseline is exactly the moment a real rendering
 regression could get silently "laundered" into a new golden -- a PR that touches these
 PNGs is, by construction, changing the thing the tests exist to catch changes to. This
 script prints the old-vs-new RMS (`matplotlib.testing.compare.compare_images`) for every
-baseline it overwrites, via `_report_regeneration` below -- **a visibility aid for the
-author and reviewer, not an enforced gate**: `shutil.copy` runs unconditionally regardless
-of the reported RMS, nothing in CI reads this script's output, and there is no `--force`/
-justification flag. A PR that regenerates baselines should quote the printed RMS per file
-and say why the change is expected (matplotlib bump, an intentional style/color default
-change, etc.) as a matter of review convention, not because anything mechanically requires
-it. An RMS of 0 (or near it) confirms nothing visually changed -- e.g. a `sleap-roots-
-analyze` patch bump with no rendering effect.
+baseline it would overwrite, via `_report_regeneration` below, and requires an explicit
+`--yes` flag before actually overwriting anything that already exists -- run it once
+without `--yes` to preview every file's RMS, then again with `--yes` once you've confirmed
+each one is expected. This is a **local, opt-in speed bump, not a CI-enforced gate**:
+nothing in CI reads this script's output or runs it itself, and `--yes` is trivial to pass
+without actually reading the RMS above it -- but it does mean "just run the regen script"
+can no longer silently overwrite an existing baseline in one uninterrupted step. A PR that
+regenerates baselines should still quote the printed RMS per file and say why the change is
+expected (matplotlib bump, an intentional style/color default change, etc.) as a matter of
+review convention. An RMS of 0 (or near it) confirms nothing visually changed -- e.g. a
+`sleap-roots-analyze` patch bump with no rendering effect.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import platform
 import shutil
@@ -114,7 +118,13 @@ def _report_regeneration(target: Path, produced: Path, rel: Path) -> str:
     )
 
 
-def build(tmp_path: Path) -> None:
+def build(tmp_path: Path, *, confirmed: bool) -> bool:
+    """Render all 5 tools and print each baseline's old-vs-new RMS. Only actually writes
+    the PNGs if `confirmed` is True, or none of them already exist (a first-time run has
+    nothing to silently launder) -- all-or-nothing, not a per-file mix, so the "did this
+    actually write anything" question always has one simple answer. Returns whether
+    anything was written (`main()` uses this to decide whether `write_manifest()` runs).
+    """
     # Same versioned-manifest miss `tests/tools/test_viz_tools.py`'s `viz_env` fixture
     # forces via `fake_supabase_storage` -- no Supabase env is configured here, so
     # without this, `load_experiment_data`'s manifest lookup raises before ever
@@ -132,6 +142,8 @@ def build(tmp_path: Path) -> None:
     _viz_shared.PLOTS_DIR = plots
 
     _BASELINES.mkdir(parents=True, exist_ok=True)
+    copies: list[tuple[Path, Path]] = []
+    any_existing = False
     for baseline_name, tool_fn, produced_name in _TOOLS:
         result = tool_fn(_EXPERIMENT)
         if "Plot saved:" not in result:
@@ -143,7 +155,14 @@ def build(tmp_path: Path) -> None:
         target = _BASELINES / baseline_name
         rel = target.relative_to(_FIXTURES.parents[1])
         print(_report_regeneration(target, produced, rel))
+        any_existing = any_existing or target.is_file()
+        copies.append((target, produced))
+
+    if any_existing and not confirmed:
+        return False
+    for target, produced in copies:
         shutil.copy(produced, target)
+    return True
 
 
 def write_manifest() -> None:
@@ -168,8 +187,25 @@ def write_manifest() -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help=(
+            "Confirm overwriting existing baselines. Without it, prints the old-vs-new "
+            "RMS for every file and exits without writing anything."
+        ),
+    )
+    args = parser.parse_args()
+
     with tempfile.TemporaryDirectory() as tmp:
-        build(Path(tmp))
+        wrote = build(Path(tmp), confirmed=args.yes)
+    if not wrote:
+        print(
+            "\nExisting baselines found -- nothing was written. Review the RMS values "
+            "above, then rerun with --yes to actually overwrite them."
+        )
+        raise SystemExit(1)
     write_manifest()
 
 
