@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import io
 import json
 import logging
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -23,6 +25,7 @@ from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, RunStateError, SupabaseResultStore
 from bloom_mcp.tools import _ports
+from bloom_mcp.data_access.columns import resolve_columns
 from bloom_mcp.tools._inline_input import compute_input_sha256
 from bloom_mcp.sections.sleap_roots.analysis import qc_clean as qc_clean_tool
 from bloom_mcp.sections.sleap_roots.analysis.qc_clean import (
@@ -1497,3 +1500,186 @@ def test_pinned_source_is_traceable_from_the_committed_runs_provenance(
     stored = store.get_run(_EXPERIMENT, "qc", "latest")
     assert stored.source_id == 9
     assert stored.source_name == "run-9"
+
+
+# ── return_cleaned_csv — the opt-in table return (#582) ─────────────────────
+#
+# Without this, five of the seven inline paths this rollout adds are unusable on
+# real data: they need finite, analysis-ready traits, and qc_clean's inline
+# result is a summary by design. This closes the loop *client-side* — the caller
+# holds the bytes and chooses to pass them on. Nothing is persisted and the
+# server records no lineage between the two calls.
+
+
+def _inline_clean(**kwargs) -> QCCleanResult:
+    return qc_clean(
+        QCCleanParams(
+            csv_content=_RAW.read_text(encoding="utf-8"),
+            max_nans_per_trait=_MNT,
+            **kwargs,
+        )
+    )
+
+
+def test_return_cleaned_csv_returns_the_cleaned_table(injected_ports):
+    result = _inline_clean(return_cleaned_csv=True)
+    restored = pd.read_csv(io.StringIO(result.cleaned_csv))
+
+    assert list(restored.columns) == list(
+        pd.read_csv(io.StringIO(result.cleaned_csv)).columns
+    )
+    # Every kept trait column survives the round trip, and no index column is added.
+    for col in result.kept_trait_columns:
+        assert col in restored.columns
+    assert "Unnamed: 0" not in restored.columns
+    assert len(restored) == result.n_samples_out
+
+
+def test_returned_cleaned_csv_sha256_matches_an_independent_digest(injected_ports):
+    result = _inline_clean(return_cleaned_csv=True)
+    expected = hashlib.sha256(result.cleaned_csv.encode("utf-8")).hexdigest()
+    assert result.cleaned_csv_sha256 == expected
+
+
+def test_returned_cleaned_csv_is_platform_independent(injected_ports):
+    """pandas defaults `lineterminator` to os.linesep, which would make the digest
+    a caller records depend on which platform bloommcp happens to run on."""
+    result = _inline_clean(return_cleaned_csv=True)
+    assert "\r" not in result.cleaned_csv
+    again = _inline_clean(return_cleaned_csv=True)
+    assert again.cleaned_csv_sha256 == result.cleaned_csv_sha256
+
+
+def test_returned_cleaned_csv_re_resolves_to_the_same_analysis_shape(injected_ports):
+    """The invariant that makes client-side chaining sound, and the one nothing
+    else pins: qc_clean's no-NaN guarantee is scoped to the *kept* trait columns,
+    while the serialized table also carries metadata and removed columns that may
+    hold NaN. If re-resolution re-detected a removed trait, a downstream tool
+    selecting "all detected traits" would pick it up and fail on it."""
+    result = _inline_clean(return_cleaned_csv=True)
+    reparsed = pd.read_csv(io.StringIO(result.cleaned_csv))
+    roles = resolve_columns(reparsed)
+
+    assert set(roles.trait_cols) == set(result.kept_trait_columns)
+    assert roles.genotype == result.genotype_column
+    assert roles.sample_id == result.sample_id_column
+    assert roles.replicate == result.replicate_column
+
+
+def test_returned_cleaned_csv_carries_no_nans_in_its_detected_traits(injected_ports):
+    """The property the downstream inline paths actually depend on."""
+    result = _inline_clean(return_cleaned_csv=True)
+    reparsed = pd.read_csv(io.StringIO(result.cleaned_csv))
+    roles = resolve_columns(reparsed)
+    assert not reparsed[list(roles.trait_cols)].isna().any().any()
+
+
+def test_return_cleaned_csv_is_rejected_with_a_registered_experiment(injected_ports):
+    """The registered path already persists the cleaned table as a linkable
+    artifact; returning it a second time inline would duplicate a durable output
+    into the response for no benefit."""
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment=_EXPERIMENT, return_cleaned_csv=True))
+    assert exc.value.code == "invalid_input"
+    assert "return_cleaned_csv" in exc.value.message
+
+
+def test_omitting_return_cleaned_csv_returns_no_table(injected_ports):
+    result = _inline_clean()
+    assert result.cleaned_csv is None
+    assert result.cleaned_csv_sha256 is None
+
+
+def test_return_cleaned_csv_false_returns_no_table(injected_ports):
+    result = _inline_clean(return_cleaned_csv=False)
+    assert result.cleaned_csv is None
+    assert result.cleaned_csv_sha256 is None
+
+
+def test_return_cleaned_csv_leaves_the_rest_of_the_response_unchanged(injected_ports):
+    with_table = _inline_clean(return_cleaned_csv=True).model_dump()
+    without = _inline_clean().model_dump()
+    for field in ("cleaned_csv", "cleaned_csv_sha256"):
+        with_table.pop(field)
+        without.pop(field)
+    assert with_table == without
+
+
+def test_oversized_cleaned_table_is_rejected_not_truncated(injected_ports, monkeypatch):
+    """The size cap is enforced by the shared serializer, so this asserts the tool
+    routes through it and propagates its structured error rather than truncating.
+
+    A *real* oversized cleaned table is unreachable from here: cleaning only ever
+    removes rows and columns, so a cleaned table over MAX_INLINE_CSV_BYTES implies
+    an input already over it, which the input guard rejects first (lowering the
+    shared constant to force the case trips that guard, not this one). The cap's
+    own boundary behavior is pinned directly in test_inline_input.py; what this
+    test owns is that qc_clean does not serialize the table itself and thereby
+    bypass it."""
+    calls: list[str] = []
+
+    def _refuse(df, *, field="csv"):
+        calls.append(field)
+        raise BloomMCPError(
+            code="invalid_input",
+            message=f"The table requested via {field} serializes to too many bytes.",
+            remedy="Register the data as an experiment.",
+        )
+
+    monkeypatch.setattr(qc_clean_tool._inline_input, "serialize_table_csv", _refuse)
+    with pytest.raises(BloomMCPError) as exc:
+        _inline_clean(return_cleaned_csv=True)
+
+    assert calls == ["cleaned_csv"], "qc_clean must delegate to the shared serializer"
+    assert exc.value.code == "invalid_input"
+    assert "cleaned_csv" in exc.value.message
+
+
+def test_return_cleaned_csv_still_persists_nothing(injected_ports):
+    reader, store = injected_ports
+    with (
+        patch.object(
+            store,
+            "create_run",
+            side_effect=AssertionError("create_run must not be called"),
+        ),
+        patch.object(
+            store, "commit", side_effect=AssertionError("commit must not be called")
+        ),
+    ):
+        result = _inline_clean(return_cleaned_csv=True)
+
+    assert result.run_ref is None
+    assert result.version_dir is None
+    assert result.manifest_path is None
+    assert result.outputs == {}
+
+
+def test_returned_cleaned_csv_never_appears_in_logs(injected_ports):
+    """The returned table is derived from caller content, so it carries the same
+    non-disclosure obligation the input does."""
+    marker = "MARKER_" + "R" * 64
+    csv_text = f"Barcode,geno,traitA,traitB\nS1,{marker},1.0,2.0\nS2,g2,3.0,4.0\n"
+    with _capture_all_logs() as records:
+        result = qc_clean(
+            QCCleanParams(
+                csv_content=csv_text, min_samples_per_trait=1, return_cleaned_csv=True
+            )
+        )
+    assert marker in result.cleaned_csv  # sanity: the marker really is in the table
+    assert marker not in "\n".join(r.getMessage() for r in records)
+
+
+# ── user_label is registered-only (#582 roster) ─────────────────────────────
+
+
+def test_user_label_with_csv_content_is_rejected_not_silently_dropped(injected_ports):
+    """user_label names the version directory a run is committed into. The inline
+    path creates none, so accepting it would leave the caller believing they had
+    labelled something."""
+    csv_text = _RAW.read_text(encoding="utf-8")
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(csv_content=csv_text, user_label="my-run"))
+    assert exc.value.code == "invalid_input"
+    assert "user_label" in exc.value.message
+    assert "csv_content" in exc.value.message
