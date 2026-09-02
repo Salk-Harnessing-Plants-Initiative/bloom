@@ -844,6 +844,21 @@ def test_source_csv_content_addresses_both_inputs(injected_ports):
     )
 
 
+def test_registered_path_returns_populated_run_links(injected_ports):
+    """#582 widened RunLinks' three run-link fields to Optional so an inline call
+    can return None for them. That removed the Pydantic guarantee that a
+    *persisting* call populated them — this replaces it for this tool. Every other
+    consumer's suite already covers it via `result.run_ref == stored.run_ref`;
+    this tool asserted persistence only through the store's own records."""
+    _reader, store = injected_ports
+    result = _run()
+    stored = store.get_run(_COMPOSITE_KEY, "correlation", "latest")
+    assert result.run_ref == stored.run_ref
+    assert result.version_dir is not None
+    assert result.manifest_path is not None
+    assert result.outputs
+
+
 def test_genotype_means_artifacts_persisted(injected_ports):
     _reader, store = injected_ports
     result = _run()

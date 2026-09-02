@@ -4,9 +4,18 @@ Parses a caller-supplied CSV string directly into an in-memory :class:`Experimen
 — never written to Storage, never registered, never persisted. Resolves column roles
 and trait columns through the same :func:`resolve_columns` unit every
 :class:`ExperimentReader` adapter uses, so an inline frame is indistinguishable in shape
-from an adapter-sourced one. This is the shared surface every consumer tool's own
-``csv_content`` path imports; ``qc_clean`` is the first (and, as of this module, only)
-caller — it is not specific to any one tool.
+from an adapter-sourced one.
+
+``resolve_inline_or_experiment`` is the entry point every tool uses. It owns the
+exactly-one-of rule, the rejection of parameters that only mean something against a
+registered experiment, the parse, and the ``input_sha256`` — in one place, with one
+message vocabulary, so ten tools cannot drift on what "exactly one is required"
+says. Everything genuinely per-tool (``require_clean``, version pinning, read-error
+mapping) stays in the tool and reaches this module as ``reader_call``.
+
+Routing every tool through it is also what makes the size, row-count and
+column-count guards below unbypassable: no tool calls ``pandas.read_csv`` on
+caller-supplied content itself.
 """
 
 from __future__ import annotations
@@ -14,6 +23,9 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import os
+from dataclasses import dataclass
+from typing import Any, Callable, Mapping, Optional
 
 import pandas as pd
 
@@ -54,6 +66,33 @@ MAX_INLINE_CSV_COLUMNS = 2000
 # header row (even at MAX_INLINE_CSV_COLUMNS columns with generous name
 # lengths) comes close to this.
 _MAX_HEADER_SCAN_BYTES = 256 * 1024
+
+# Neither cap above bounds a *super-linear* tool. Measured through this very
+# parser: a 5,242,866-byte payload (14 bytes under MAX_INLINE_CSV_BYTES) is
+# accepted in ~0.03s and yields 313,171 rows. `clustering(method="hierarchical")`
+# is cleanly O(n^2) in time and resident memory (n=6,000 -> 1.70s/+809 MiB;
+# n=12,000 -> 7.24s/+2.38 GiB), so that row count implies a condensed distance
+# matrix of hundreds of gibibytes; and `cross_experiment_correlations` runs an
+# all-pairs loop at ~326us per trait pair. Nothing throttles this path: no rate
+# limiting is wired into server.py, the proxy sets no request-body cap, tools are
+# registered without a timeout, and no compose service declares a memory limit —
+# so an OOM is resolved by the *host* killer, which may select the database
+# rather than bloommcp.
+#
+# 20,000 is roughly a hundred times the largest real experiment fixture in this
+# repo (turface_19: 187 rows; cylinder: 129) and ~15x below what the byte cap
+# alone admits. Tools whose cost is worse than linear in the row count add their
+# own, stricter inline caps on top of this one.
+MAX_INLINE_CSV_ROWS = 20_000
+
+# Kill switch (#582). bloommcp has no feature flags, and the deploy pipeline's
+# automatic rollback fires only when the deploy *job* fails — a successfully
+# deployed but misbehaving build is otherwise reverted only by a new commit
+# through a full multi-image rebuild. This change turns on the inline path for
+# ten tools at once, so one variable and a container restart is a proportionate
+# off switch. Read per call, not at import, so a restart is enough.
+_KILL_SWITCH_ENV = "BLOOMMCP_INLINE_CSV_ENABLED"
+_FALSEY = {"0", "false", "no", "off"}
 
 _BOM = "﻿"
 
@@ -113,8 +152,9 @@ def parse_inline_csv_frame(csv_content: str) -> ExperimentFrame:
     """Parse ``csv_content`` into an in-memory :class:`ExperimentFrame`.
 
     Raises :class:`BloomMCPError` (``invalid_input``) for an oversized payload,
-    too many columns, unparseable content, zero data rows, zero columns, or an
-    encode/decode failure — never a raw ``pandas``/``Unicode`` exception.
+    too many columns, too many rows, unparseable content, zero data rows, zero
+    columns, or an encode/decode failure — never a raw ``pandas``/``Unicode``
+    exception.
     """
     # Strip every leading BOM, not just one — a double-encoded or re-saved file
     # can carry more than one, and any left in place mangles the first column
@@ -219,6 +259,22 @@ def parse_inline_csv_frame(csv_content: str) -> ExperimentFrame:
             message="csv_content has no data rows.",
             remedy="Supply CSV content with a header row and at least one data row.",
         )
+    if df.shape[0] > MAX_INLINE_CSV_ROWS:
+        # Post-parse is the right place for this one, unlike the column guard:
+        # parsing is linear and cheap (~0.03s even at the byte cap), so the cost
+        # this bounds is everything *downstream* — a tool's own super-linear work
+        # — not the parse itself. See MAX_INLINE_CSV_ROWS above.
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                f"csv_content has {df.shape[0]} rows, exceeding the "
+                f"{MAX_INLINE_CSV_ROWS}-row limit for inline content."
+            ),
+            remedy=(
+                "Reduce the number of rows, or register the data as an "
+                "experiment instead of passing it inline."
+            ),
+        )
 
     resolved = resolve_columns(df)
     return ExperimentFrame(
@@ -258,9 +314,216 @@ def compute_input_sha256(csv_content: str) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def serialize_table_csv(df: pd.DataFrame, *, field: str = "csv") -> str:
+    """Serialize *df* to CSV text for an opt-in inline table return (#582).
+
+    Used by the two producer tools (``qc_clean``'s ``return_cleaned_csv`` and
+    ``remove_outliers``' ``return_trimmed_csv``) to hand the produced table back
+    in the response, so a caller can chain client-side — pass the text as the
+    next tool's ``csv_content``. This is **not** persistence: the text goes into
+    the response and nowhere else, and the server records no lineage between the
+    two calls.
+
+    ``lineterminator="\n"`` is explicit, not incidental: pandas defaults it to
+    ``os.linesep``, which would make the returned text — and therefore the
+    digest the caller records — depend on the platform bloommcp happens to run
+    on. (``.gitattributes`` already forces LF on this repo's CSVs for the same
+    class of bug.)
+
+    Raises :class:`BloomMCPError` (``invalid_input``) rather than returning a
+    multi-megabyte string through the MCP transport when the result exceeds
+    ``MAX_INLINE_CSV_BYTES``. Reusing the *input* cap avoids inventing a second
+    number and is conservative: cleaning and trimming only ever remove rows and
+    columns, so a result over the cap means the input was already near it.
+    """
+    text = df.to_csv(index=False, lineterminator="\n")
+    size = len(text.encode("utf-8"))
+    if size > MAX_INLINE_CSV_BYTES:
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                f"The table requested via {field} serializes to {size} bytes, "
+                f"exceeding the {MAX_INLINE_CSV_BYTES}-byte limit for inline "
+                f"content."
+            ),
+            remedy=(
+                f"Omit {field} and use the summary, or register the data as an "
+                "experiment so the table is persisted as a downloadable artifact."
+            ),
+        )
+    return text
+
+
+def inline_enabled() -> bool:
+    """Whether the inline ``csv_content`` path is enabled (default: yes).
+
+    Read per call rather than cached at import so flipping
+    ``BLOOMMCP_INLINE_CSV_ENABLED`` takes effect on a container restart instead
+    of a rebuild — see ``_KILL_SWITCH_ENV`` above.
+    """
+    raw = os.getenv(_KILL_SWITCH_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in _FALSEY
+
+
+@dataclass(frozen=True)
+class InlineInput:
+    """The frame a tool will analyze, plus how it was obtained.
+
+    ``label`` is what a tool interpolates wherever it would otherwise name the
+    experiment — the experiment identifier on the registered path, the literal
+    ``"csv_content"`` on the inline path. Tools use it instead of
+    ``params.experiment`` so no error message ever renders ``'None'`` as an
+    identifier, including messages raised deep inside a tool (``remove_outliers``'
+    fit-quality gate is the awkward one).
+    """
+
+    frame: Any
+    is_inline: bool
+    label: str
+    input_sha256: Optional[str] = None
+
+
+_INLINE_LABEL = "csv_content"
+
+
+def reject_registered_only_params(
+    registered_only: Mapping[str, Any],
+    *,
+    csv_content_field: str = "csv_content",
+) -> None:
+    """Reject parameters that only mean something against a registered experiment.
+
+    **Reject, never silently ignore.** A caller who supplied a pin and got a
+    successful result must not be left believing the pin took effect. Callers
+    pass only the parameters they actually mean — a ``None`` entry is a no-op, so
+    a tool can hand over its whole roster without filtering first, but a
+    default-valued flag (``include_plots=False``) must be filtered by the caller
+    rather than relied on being falsy here: ``version="latest"`` is falsy-looking
+    but is a real pin request on ``remove_outliers``, so this function tests for
+    ``None`` and nothing else.
+
+    Every offender is named, not just the first — a caller who passed two bad
+    parameters should fix both in one round trip.
+    """
+    offenders = sorted(k for k, v in registered_only.items() if v is not None)
+    if not offenders:
+        return
+    listed = ", ".join(offenders)
+    raise BloomMCPError(
+        code="invalid_input",
+        message=(
+            f"{listed} cannot be used with {csv_content_field}: "
+            f"{'these parameters' if len(offenders) > 1 else 'it'} only "
+            f"appl{'y' if len(offenders) > 1 else 'ies'} to a registered "
+            f"experiment's stored versions and sources, which "
+            f"{csv_content_field} bypasses entirely."
+        ),
+        remedy=(
+            f"Omit {listed} when using {csv_content_field}, or supply a "
+            f"registered experiment instead of {csv_content_field}."
+        ),
+    )
+
+
+def resolve_inline_or_experiment(
+    *,
+    experiment: Optional[str],
+    csv_content: Optional[str],
+    reader_call: Optional[Callable[[], Any]] = None,
+    registered_only: Optional[Mapping[str, Any]] = None,
+    registered_field: str = "experiment",
+    csv_content_field: str = "csv_content",
+) -> InlineInput:
+    """Resolve a tool's frame from exactly one of ``experiment`` / ``csv_content``.
+
+    The single entry point every inline-capable tool uses, so the exactly-one-of
+    rule, the registered-only rejection, the parse, and the ``input_sha256`` have
+    one implementation and one message vocabulary across the whole tool roster.
+
+    ``registered_field`` / ``csv_content_field`` name the caller's own parameters:
+    ``load_experiment_data`` pairs ``csv_content`` with ``filename``, and
+    ``cross_experiment_correlations`` resolves each side independently
+    (``experiment_2`` / ``csv_content_2``). Messages are therefore identical
+    across tools *modulo those names*, which is the strongest equality that is
+    actually true.
+
+    ``reader_call`` is the tool's own read, invoked only on the registered path.
+    Keeping it a callable is what leaves ``require_clean``, version pinning and
+    read-error mapping in the tool where they belong — this module never learns
+    what "cleaned" means.
+
+    **Check order is specified, not incidental.** The exactly-one-of check runs
+    first, so a call that is wrong in two ways reports the input conflict rather
+    than a parameter conflict that is moot; without that, a per-tool assertion
+    like "the error names version_2 only" would depend on order and flake.
+    """
+    has_experiment = experiment is not None
+    has_inline = csv_content is not None
+
+    if has_experiment == has_inline:
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                f"Exactly one of {registered_field} or {csv_content_field} must "
+                f"be provided (both or neither is not a valid call)."
+            ),
+            remedy=(
+                f"Supply exactly one of {registered_field} (a registered "
+                f"experiment identifier) or {csv_content_field} (raw CSV text "
+                f"for a one-off analysis)."
+            ),
+        )
+
+    if not has_inline:
+        if reader_call is None:
+            # A programming error in the calling tool, not a caller error: fail
+            # loudly here rather than returning a frameless result that explodes
+            # somewhere less obvious.
+            raise ValueError(
+                "resolve_inline_or_experiment requires reader_call on the "
+                f"{registered_field} path"
+            )
+        return InlineInput(
+            frame=reader_call(), is_inline=False, label=experiment, input_sha256=None
+        )
+
+    if not inline_enabled():
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                f"Inline {csv_content_field} input is disabled on this server."
+            ),
+            remedy=(
+                f"Register the data as an experiment and supply "
+                f"{registered_field} instead, or ask an administrator to "
+                f"re-enable inline input."
+            ),
+        )
+
+    if registered_only:
+        reject_registered_only_params(
+            registered_only, csv_content_field=csv_content_field
+        )
+
+    return InlineInput(
+        frame=parse_inline_csv_frame(csv_content),
+        is_inline=True,
+        label=_INLINE_LABEL,
+        input_sha256=compute_input_sha256(csv_content),
+    )
+
+
 __all__ = [
     "MAX_INLINE_CSV_BYTES",
     "MAX_INLINE_CSV_COLUMNS",
-    "parse_inline_csv_frame",
+    "MAX_INLINE_CSV_ROWS",
+    "InlineInput",
     "compute_input_sha256",
+    "inline_enabled",
+    "parse_inline_csv_frame",
+    "reject_registered_only_params",
+    "resolve_inline_or_experiment",
+    "serialize_table_csv",
 ]
