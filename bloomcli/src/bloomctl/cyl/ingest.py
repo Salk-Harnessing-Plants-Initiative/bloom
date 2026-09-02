@@ -523,11 +523,19 @@ def _reconcile_unresolved_scans_result(client: Any, argo_workflow_name: str) -> 
     try:
         count = reconcile_unresolved_scans(client, argo_workflow_name)
     except APIError as exc:
+        # Deliberately NOT map_rpc_error: that mapper's hints (e.g. "permission
+        # denied" -> "log in with a bloom_writer / bloom_admin account") are
+        # hardcoded to insert_cyl_result_envelope's own grant, but this call is
+        # against fail_cyl_pipeline_run_scans_without_result — granted to
+        # bloom_workflows only, a different role entirely (review finding:
+        # reusing that mapper here would name the wrong RPC and suggest the
+        # wrong role). The raw message is returned verbatim instead.
+        message = getattr(exc, "message", None) or str(exc)
         return ScanResult(
             "<reconciliation>",
             "failed",
             f"failed to reconcile unresolved scans for workflow {argo_workflow_name!r}: "
-            f"{map_rpc_error(getattr(exc, 'message', None))}",
+            f"{message}",
         )
     except Exception as exc:
         return ScanResult(

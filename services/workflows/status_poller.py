@@ -247,6 +247,33 @@ def _reconcile_unresolved_scans(client, argo_workflow_name: str) -> int:
     return result or 0
 
 
+def _count_done_and_failed(client, run_id) -> tuple[int, int]:
+    """Fresh done_count/failed_count for run_id, from a plain re-read of
+    cyl_pipeline_run_scans — deliberately independent of _fetch_effective_phases's
+    phases/K8s lookups (fix-cyl-pipeline-run-scan-status round 2, found during
+    /review-pr round 2's second pass). _fetch_effective_phases's own counts are a
+    snapshot taken before the reconciliation RPC (and before this cycle's K8s
+    lookups) even run; if a scan's write-back genuinely resolves ('queued' ->
+    'written') in that window, the reconciliation RPC correctly leaves it alone
+    (its own WHERE status='queued' guard no longer matches) — but incrementing
+    the STALE snapshot's failed_count by the reconciled count would never credit
+    that scan's completion to done_count either, permanently undercounting a run
+    that then goes terminal and is never revisited. sweep_once calls this for a
+    fresh recount immediately after reconciling, rather than reusing the earlier
+    snapshot."""
+    rows = (
+        client.table("cyl_pipeline_run_scans")
+        .select("status")
+        .eq("run_id", run_id)
+        .execute()
+        .data
+        or []
+    )
+    done_count = sum(1 for r in rows if r.get("status") in ("written", "reused"))
+    failed_count = sum(1 for r in rows if r.get("status") == "failed")
+    return done_count, failed_count
+
+
 def update_run_status(
     client,
     run_id,
@@ -340,7 +367,15 @@ def sweep_once(client) -> bool:
         if status != "running" and queued_workflow_names:
             try:
                 for name in queued_workflow_names:
-                    failed_count += _reconcile_unresolved_scans(client, name)
+                    _reconcile_unresolved_scans(client, name)
+                # Re-derive both counts fresh, rather than incrementing the
+                # snapshot _fetch_effective_phases already returned — that
+                # snapshot was taken before this cycle's K8s lookups and the
+                # reconciliation call above even ran, and can go stale if a
+                # scan's write-back genuinely resolved in that window (see
+                # _count_done_and_failed's own docstring for the failure mode
+                # this avoids).
+                done_count, failed_count = _count_done_and_failed(client, run_id)
             except Exception as exc:
                 logger.warning(
                     "status_poller: run %s failed to reconcile unresolved "

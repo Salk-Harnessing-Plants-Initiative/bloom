@@ -129,6 +129,28 @@ if either `bloomctl`'s own failure-isolation has a hole, or if `bloomctl` never 
   files; `ruff format` applied to `services/workflows/status_poller.py` and its test file (the
   pre-commit-enforced scope per `.pre-commit-config.yaml`) — `bloomcli` files left as-is
   (ruff-format/black are not pre-commit-scoped there, per Task 7.3's own note).**
+- [x] 9.9 A second `/review-pr` round, run specifically against 9.1-9.8's fix commit, found two more
+  real bugs (see `design.md`'s "Decision 6 addendum") — fixed via TDD, same as every prior round:
+  (a) `status_poller.py`'s `failed_count += <reconciled count>` folded a live reconciliation result
+  onto a stale pre-reconciliation snapshot, permanently undercounting a scan whose write-back
+  genuinely resolved in that window; fixed by adding `_count_done_and_failed` (a phases-independent
+  re-read) and using it to fully replace, not increment, `done_count`/`failed_count` after
+  reconciling. (b) `ingest.py`'s `_reconcile_unresolved_scans_result` reused `map_rpc_error` —
+  hardcoded to `insert_cyl_result_envelope`'s own messages/grant — for a different RPC
+  (`fail_cyl_pipeline_run_scans_without_result`, `bloom_workflows`-only); a real permission error
+  would have named the wrong RPC and suggested the wrong role. Fixed by returning the raw message
+  verbatim for this call site. Also added the one test-coverage gap cheap enough to close
+  immediately (rollup `'complete'` with a leftover `'queued'` row — named explicitly in design.md's
+  Decision 6 but previously untested). **Done: `services/workflows` — 53 passed (up from 51:
+  `test_sweep_recomputes_counts_fresh_after_reconciling_instead_of_incrementing_a_stale_snapshot`,
+  `test_sweep_reconciles_a_queued_scan_even_when_rollup_concludes_complete`, plus the two
+  pre-existing reconciliation tests updated to mock the new `_count_done_and_failed` dependency).
+  `bloomcli` — 154 passed, 1 skipped (up from 153:
+  `test_batch_ingest_cli_reconcile_permission_error_does_not_name_the_wrong_rpc`). Every new test
+  confirmed red against the pre-fix code before implementing. The one remaining round-2 finding not
+  addressed here — missing unit coverage for the real RPC-call shape of the reconciliation helpers
+  on both sides (every test on both sides monkeypatches them away wholesale) — is folded into
+  design.md's existing "Deferred from this round" note.**
 
 ## 10. Post-merge follow-through
 

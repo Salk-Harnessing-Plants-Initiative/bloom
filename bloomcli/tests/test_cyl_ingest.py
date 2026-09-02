@@ -1608,6 +1608,39 @@ def test_batch_ingest_cli_reconcile_failure_does_not_crash_and_is_reported(monke
     assert "simulated transient reconciliation failure" in reconciliation_entries[0]["error"]
 
 
+def test_batch_ingest_cli_reconcile_permission_error_does_not_name_the_wrong_rpc(
+    monkeypatch, tmp_path
+):
+    """Round 2 /review-pr finding: map_rpc_error's 'permission denied' branch is
+    hardcoded to insert_cyl_result_envelope's own grant (bloom_writer/bloom_admin) — but
+    the reconciliation call is against fail_cyl_pipeline_run_scans_without_result, which
+    is granted to bloom_workflows only, a different role entirely. Reusing that mapper
+    here would tell an operator to log in with the wrong account for the wrong RPC."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-perm-denied")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+
+    def boom(client, name):
+        raise _api_error("permission denied for function fail_cyl_pipeline_run_scans_without_result")
+
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
+    _write_envelope(tmp_path, "scan_1")
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    reconciliation_entries = [e for e in payload.values() if e["status"] == "failed"]
+    assert len(reconciliation_entries) == 1
+    error = reconciliation_entries[0]["error"]
+    assert "insert_cyl_result_envelope" not in error, (
+        "must not name the wrong RPC in the hint"
+    )
+    assert "bloom_writer" not in error and "bloom_admin" not in error, (
+        "must not suggest the wrong role — fail_cyl_pipeline_run_scans_without_result "
+        "is granted to bloom_workflows only"
+    )
+
+
 def test_batch_ingest_cli_reconcile_failure_on_empty_batch_is_reported(monkeypatch, tmp_path):
     """Same isolation, exercised through the zero-envelopes early-return branch, which has its
     own bespoke 'nothing to ingest' message/exit path distinct from the main batch flow."""

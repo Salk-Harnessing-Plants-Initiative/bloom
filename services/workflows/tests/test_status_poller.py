@@ -671,6 +671,7 @@ def test_sweep_reconciles_a_queued_scan_before_writing_a_terminal_status(monkeyp
         "_reconcile_unresolved_scans",
         lambda c, name: reconcile_calls.append(name) or 1,
     )
+    monkeypatch.setattr(worker, "_count_done_and_failed", lambda c, r: (0, 2))
     monkeypatch.setattr(
         worker,
         "update_run_status",
@@ -678,8 +679,10 @@ def test_sweep_reconciles_a_queued_scan_before_writing_a_terminal_status(monkeyp
     )
     worker.sweep_once(object())
     assert reconcile_calls == ["wf-a"]
-    # failed_count started at 1 (the pre-existing dispatch failure) and gains 1
-    # more from the reconciled queued row.
+    # Counts written come from the fresh post-reconciliation recount (mocked
+    # here to the same (0, 2) the old increment-based approach would also
+    # have produced in this non-racing case), not from incrementing the
+    # pre-reconciliation snapshot — see the dedicated staleness test below.
     assert update_calls == [(1, "failed", 0, 2)]
 
 
@@ -699,6 +702,7 @@ def test_sweep_reconciles_multiple_distinct_queued_workflow_names_once_each(
         "_reconcile_unresolved_scans",
         lambda c, name: reconcile_calls.append(name) or 1,
     )
+    monkeypatch.setattr(worker, "_count_done_and_failed", lambda c, r: (0, 2))
     monkeypatch.setattr(
         worker,
         "update_run_status",
@@ -707,6 +711,45 @@ def test_sweep_reconciles_multiple_distinct_queued_workflow_names_once_each(
     worker.sweep_once(object())
     assert reconcile_calls == ["wf-a", "wf-b"]
     assert update_calls == [(1, "failed", 0, 2)]
+
+
+def test_sweep_recomputes_counts_fresh_after_reconciling_instead_of_incrementing_a_stale_snapshot(
+    monkeypatch,
+):
+    """Round 2 /review-pr finding: _fetch_effective_phases's done_count/failed_count
+    are a snapshot taken BEFORE the per-workflow K8s phase lookups and the
+    reconciliation RPC even run. If a scan's write-back genuinely resolves
+    ('queued' -> 'written') in the window between that snapshot and the
+    reconciliation call, the reconciliation RPC correctly leaves it alone (its
+    WHERE status='queued' guard no longer matches) — but naively incrementing
+    the STALE snapshot's failed_count by the reconciled count would never give
+    that scan's completion credit in done_count either, permanently
+    undercounting a run that then goes terminal and is never revisited. The
+    fix re-derives both counts from a fresh read right after reconciling."""
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
+    # Stale snapshot: 0 done, 0 failed, one leftover queued row under wf-a.
+    monkeypatch.setattr(
+        worker,
+        "_fetch_effective_phases",
+        lambda c, r: (["Failed"], False, 0, 0, ["wf-a"]),
+    )
+    # The reconciliation call itself finds nothing left to fail — the one
+    # queued row it would have touched already resolved to 'written' for
+    # real, between the snapshot above and this call.
+    monkeypatch.setattr(worker, "_reconcile_unresolved_scans", lambda c, name: 0)
+    # A fresh recount now sees that real completion.
+    monkeypatch.setattr(worker, "_count_done_and_failed", lambda c, r: (1, 0))
+    calls = []
+    monkeypatch.setattr(
+        worker,
+        "update_run_status",
+        lambda c, r, s, d=None, f=None: calls.append((r, s, d, f)),
+    )
+    worker.sweep_once(object())
+    assert calls == [(1, "failed", 1, 0)], (
+        "must write the freshly-recounted done_count (1), not the stale "
+        "snapshot's done_count (0) incremented only by the reconciled count"
+    )
 
 
 def test_sweep_does_not_reconcile_queued_rows_while_still_running(monkeypatch):
@@ -785,6 +828,39 @@ def test_sweep_skips_reconciliation_when_no_queued_rows_remain(monkeypatch):
     )
     worker.sweep_once(object())
     assert calls == [(1, "complete")]
+
+
+def test_sweep_reconciles_a_queued_scan_even_when_rollup_concludes_complete(
+    monkeypatch,
+):
+    """Named explicitly in design.md's Decision 6: every distinct workflow can
+    resolve Succeeded (rollup 'complete') while one particular scan under that
+    workflow never got its own write-back call — a scan, not a workflow, can be
+    the thing that never ran. The backstop must not be gated on a non-'complete'
+    status; it's gated on 'not running' plus a leftover queued row, and 'complete'
+    satisfies both."""
+    reconcile_calls = []
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
+    monkeypatch.setattr(
+        worker,
+        "_fetch_effective_phases",
+        lambda c, r: (["Succeeded"], False, 3, 0, ["wf-a"]),
+    )
+    monkeypatch.setattr(
+        worker,
+        "_reconcile_unresolved_scans",
+        lambda c, name: reconcile_calls.append(name) or 1,
+    )
+    monkeypatch.setattr(worker, "_count_done_and_failed", lambda c, r: (3, 1))
+    calls = []
+    monkeypatch.setattr(
+        worker,
+        "update_run_status",
+        lambda c, r, s, d=None, f=None: calls.append((r, s, d, f)),
+    )
+    worker.sweep_once(object())
+    assert reconcile_calls == ["wf-a"]
+    assert calls == [(1, "complete", 3, 1)]
 
 
 def test_sweep_withheld_complete_on_404_never_reaches_reconciliation(monkeypatch):
