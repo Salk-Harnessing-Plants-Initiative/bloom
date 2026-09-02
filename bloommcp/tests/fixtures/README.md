@@ -46,6 +46,26 @@ code under test — so the oracle is a genuine cross-tier regression check.
   are independently hand-verifiable from the raw CSV, not merely a drift gate. `Root_Shoot_Ratio`
   is recorded with its genuinely non-normal `skewness ≈ 6.78`/`kurtosis ≈ 65.6` as a reminder the
   tool must not clip or transform it.
+- `turface_19_heritability_golden.json` — **characterization snapshot** (a drift gate, *not*
+  scientific ground truth) of `sleap_roots_analyze.statistics.calculate_heritability_estimates`
+  — the delegate the `heritability_analysis` tool (#462) wraps — recorded by calling it
+  **directly, not through the tool**, on the same canonical-default cleaned turface_19 frame
+  `turface_19_stats_golden.json` and `turface_19_outlier_golden.json` use
+  (`max_nans_per_trait=0.2` → **158 samples, 19 kept trait columns**; the clean is **reused, not
+  re-derived**, so all three goldens' provenance stays legible together). Records per-trait
+  `heritability`/`var_genetic`/`var_residual`/`n_genotypes`/`n_observations`/`model_type`, plus
+  `method="mixed_model"`, `mean_h2 ≈ 0.4780923914803235`, `n_above_threshold = 8` at
+  `threshold=0.5`, and `n_failed = 0`. Unlike `turface_19_stats_golden.json` (parameter-free
+  textbook arithmetic, hand-verifiable), a REML mixed-model fit has no closed form to check
+  against, so this shares `turface_19_pca_golden.json`'s `heritability_mean` caveat: it locks
+  **no-drift** from the recorded library output, not correctness. Two consequences for anyone
+  writing tests against it: (1) `Lower.Root.Area.mm2` lands at `h2 ≈ 7.67e-09` — a
+  variance-boundary value where no *relative* tolerance is meaningful, which is why the tool's
+  tests use `rel=1e-5` (kept in sync with `test_oracle.py`'s `_H2_TOL`) **with an absolute floor**;
+  (2) `statsmodels` emits `ConvergenceWarning`s while recording it, which is expected for this
+  fixture — the discrete `n_above_threshold` count is the optimizer-robust guard, exactly as
+  `test_oracle.py` uses it. Reproduced-by version is in
+  `_reproduced_by_sleap_roots_analyze_version`.
 - `turface_19_qc_inspect_golden.json` — independently-computed oracle for the **read-only
   `qc_inspect`** tool (#360), using `sleap_roots_analyze.apply_data_cleanup_filters` (the
   delegate `qc_inspect` wraps) on `turface_19_raw_data.csv` at the **canonical defaults**
