@@ -19,7 +19,7 @@ bind-mounted ``bloommcp/data/TRAITS_DIR/`` (not a host tempdir) as
 ``turface_raw.csv``, so the running container can see it at its
 ``BLOOM_TRAITS_DIR`` (``/app/data/TRAITS_DIR``). Unaffected by bloom#551's
 DB-only SupabaseReader rewrite: ``sleap_roots_plot_trait_histograms`` (like all
-5 plotting tools) reads via ``experiment_utils.load_experiment_data`` directly,
+3 plotting tools) reads via ``experiment_utils.load_experiment_data`` directly,
 a separate local-``BLOOM_TRAITS_DIR`` raw tier that rewrite never touched.
 
 Env (sourced from ``.env.dev`` by the ``make bloommcp-plot-smoke`` target):

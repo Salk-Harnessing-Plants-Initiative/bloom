@@ -438,12 +438,12 @@ def test_expected_tool_surface():
         "sleap_roots_umap_analysis",
         "sleap_roots_descriptive_stats",
         "sleap_roots_cross_experiment_correlations",
-        # sleap_roots: the 5 surviving plots
+        "sleap_roots_heritability_analysis",
+        # sleap_roots: the 3 surviving plots (bloom#462 folded the heritability bar
+        # and variance-decomposition figures into sleap_roots_heritability_analysis)
         "sleap_roots_plot_trait_histograms",
         "sleap_roots_plot_trait_boxplots",
         "sleap_roots_plot_correlation_matrix",
-        "sleap_roots_plot_heritability_bar",
-        "sleap_roots_plot_variance_decomposition",
         # core: the 3 discovery tools + get_download_links (bloom#599 — a
         # targeted retrieval tool, not a discovery tool, but still a core-
         # section registration) + list_experiment_sources (bloom#626 — a
@@ -471,6 +471,12 @@ def test_expected_tool_surface():
         "load_experiment_data",
         "list_existing_analyses",
         # Retired / dropped tools — never namespaced, just gone.
+        # The two namespaced heritability plot tools belong here, NOT merely absent
+        # from `expected`: this test asserts `live & relevant == expected` where
+        # `relevant = expected | not_expected`, so a name in neither set is invisible
+        # and the retirement would go unenforced (bloom#462).
+        "sleap_roots_plot_heritability_bar",
+        "sleap_roots_plot_variance_decomposition",
         "inspect_data_quality",
         "core_inspect_data_quality",
         "run_qc_workflow",

@@ -1090,3 +1090,48 @@ def test_paginated_bar_plot_persists_one_png_per_page(synthetic_ports):
         "create_heritability_plot_page2.png",
     ]
     assert plt.get_fignums() == []
+
+
+# ── the retirement half (see also test_sections_scaffold / test_devendor_invariants) ──
+
+
+def test_retired_tool_names_are_absent_from_tools_list():
+    """3.1 — a test that only asserted the new name would pass with both old tools
+    still registered."""
+    from bloom_mcp import server
+    from fastmcp import Client
+
+    async def _list():
+        async with Client(server.mcp) as client:
+            return await client.list_tools()
+
+    names = {t.name for t in asyncio.run(_list())}
+    assert "sleap_roots_plot_heritability_bar" not in names
+    assert "sleap_roots_plot_variance_decomposition" not in names
+
+
+def test_retired_modules_no_longer_exist():
+    """7.5c — deleted, not merely unregistered, so no unreachable second implementation
+    of the heritability calculation is left behind to drift."""
+    base = "bloom_mcp.sections.sleap_roots.analysis"
+    for name in ("plot_heritability_bar", "plot_variance_decomposition"):
+        assert importlib.util.find_spec(f"{base}.{name}") is None, name
+
+    pkg_dir = Path(heritability_module.__file__).parent
+    for name in ("plot_heritability_bar.py", "plot_variance_decomposition.py"):
+        assert not (pkg_dir / name).exists(), name
+
+
+def test_heritability_analysis_is_the_only_delegate_caller():
+    """7.5c — one implementation, not two. This is the defect #462 exists to remove:
+    the two retired tools each computed H2 independently, with nothing structurally
+    preventing the two renderings from disagreeing."""
+    src_root = Path(heritability_module.__file__).resolve().parents[4]
+    callers = sorted(
+        p.relative_to(src_root).as_posix()
+        for p in src_root.rglob("*.py")
+        if "calculate_heritability_estimates" in p.read_text(encoding="utf-8")
+    )
+    assert callers == [
+        "bloom_mcp/sections/sleap_roots/analysis/heritability_analysis.py"
+    ]

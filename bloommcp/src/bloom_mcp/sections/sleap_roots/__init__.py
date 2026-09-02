@@ -38,10 +38,8 @@ from .analysis import (
     heritability_analysis,
     pca_analysis,
     plot_correlation_matrix,
-    plot_heritability_bar,
     plot_trait_boxplots,
     plot_trait_histograms,
-    plot_variance_decomposition,
     qc_clean,
     qc_inspect,
     remove_outliers,
@@ -65,6 +63,4 @@ register(
     plot_trait_histograms.plot_trait_histograms,
     plot_trait_boxplots.plot_trait_boxplots,
     plot_correlation_matrix.plot_correlation_matrix,
-    plot_heritability_bar.plot_heritability_bar,
-    plot_variance_decomposition.plot_variance_decomposition,
 )

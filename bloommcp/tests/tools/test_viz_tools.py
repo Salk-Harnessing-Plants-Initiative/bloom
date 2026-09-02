@@ -1,14 +1,17 @@
-"""C3 golden + delegation coverage for the 5 surviving sleap_roots plotting tools.
+"""C3 golden + delegation coverage for the 3 surviving sleap_roots plotting tools.
 
 Each tool now lives in its own file under `sections/sleap_roots/analysis/`
 (moved by the Phase-2 sections migration, devendor-bloommcp-analysis) — these
 tests spy on the delegate name as bound in each tool's own module.
 `plot_dendrogram` and `plot_outlier_comparison` (dropped in C4) are
-intentionally not covered here.
+intentionally not covered here, and neither are `plot_heritability_bar` /
+`plot_variance_decomposition`: bloom#462 retired both into `heritability_analysis`,
+whose figures are covered by `test_heritability_analysis_tool.py` against the
+granular contract instead of this string-returning one.
 
 Fixture recipe (tasks.md C3.1): monkeypatch `experiment_utils.TRAITS_DIR` with a
 dropped-in copy of the turface_19 CSV; monkeypatch `PLOTS_DIR` in `_viz_shared`
-(the one place all 5 tools re-import it from, so a single patch covers all of
+(the one place all 3 tools re-import it from, so a single patch covers all of
 them); use `fake_supabase_storage` so the versioned-manifest lookup misses and
 `load_experiment_data` falls through to the raw CSV read. The `viz_env` fixture
 itself now lives in `conftest.py` (#713), shared with `test_viz_snapshot.py`.
@@ -26,10 +29,8 @@ from bloom_mcp import experiment_utils as eu
 from bloom_mcp.sections.sleap_roots.analysis import (
     _viz_shared,
     plot_correlation_matrix as plot_correlation_matrix_mod,
-    plot_heritability_bar as plot_heritability_bar_mod,
     plot_trait_boxplots as plot_trait_boxplots_mod,
     plot_trait_histograms as plot_trait_histograms_mod,
-    plot_variance_decomposition as plot_variance_decomposition_mod,
 )
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -270,86 +271,6 @@ def test_plot_correlation_matrix_pins_one_off_diagonal_cell(viz_env, monkeypatch
     assert f"Strong negative correlations (<-0.7): {expected_high_neg}" in result
 
 
-def test_plot_heritability_bar_delegates_and_matches_independent_computation(
-    viz_env, monkeypatch
-):
-    from sleap_roots_analyze import statistics as stats_module
-
-    calls = _spy(monkeypatch, plot_heritability_bar_mod, "create_heritability_plot")
-
-    df = pd.read_csv(_RAW, encoding="utf-8")
-    config = eu.detect_columns(df)
-    trait_cols = config["trait_cols"]
-    expected = stats_module.calculate_heritability_estimates(
-        df,
-        trait_cols,
-        genotype_col=config["genotype_col"],
-        replicate_col=config["replicate_col"],
-    )
-    assert "error" not in expected, expected.get("error")
-    expected_above = sum(
-        1
-        for t in trait_cols
-        if "heritability" in expected.get(t, {}) and expected[t]["heritability"] >= 0.5
-    )
-
-    result = plot_heritability_bar_mod.plot_heritability_bar(_EXPERIMENT)
-
-    assert "Plot saved:" in result
-    png = viz_env / f"heritability_{Path(_EXPERIMENT).stem}.png"
-    assert png.is_file()
-    assert calls["n"] == 1
-    assert plt.get_fignums() == []
-    assert f"{expected_above} above H2 >= 0.5" in result
-
-
-def test_plot_variance_decomposition_delegates_and_matches_independent_computation(
-    viz_env, monkeypatch
-):
-    """Regression test for a real pre-existing bug: plot_variance_decomposition's
-    hand-rolled comparison_df used the wrong column name ("H2" instead of
-    "heritability") and omitted columns create_variance_decomposition_plot reads
-    (e.g. n_observations) — every call raised a KeyError. Fixed by delegating the
-    table shape to compare_trait_heritabilities (see plot_variance_decomposition.py)."""
-    from sleap_roots_analyze import statistics as stats_module
-
-    calls = _spy(
-        monkeypatch,
-        plot_variance_decomposition_mod,
-        "create_variance_decomposition_plot",
-    )
-
-    df = pd.read_csv(_RAW, encoding="utf-8")
-    config = eu.detect_columns(df)
-    trait_cols = config["trait_cols"]
-    genotype_col, replicate_col = config["genotype_col"], config["replicate_col"]
-    expected_h2 = stats_module.calculate_heritability_estimates(
-        df, trait_cols, genotype_col=genotype_col, replicate_col=replicate_col
-    )
-    assert "error" not in expected_h2, expected_h2.get("error")
-    expected_comparison = stats_module.compare_trait_heritabilities(
-        df,
-        trait_cols,
-        expected_h2,
-        genotype_col=genotype_col,
-        replicate_col=replicate_col,
-    )
-    expected_scored = expected_comparison[expected_comparison["heritability"].notna()]
-
-    result = plot_variance_decomposition_mod.plot_variance_decomposition(_EXPERIMENT)
-
-    assert "Plot saved:" in result
-    png = viz_env / f"variance_decomposition_{Path(_EXPERIMENT).stem}.png"
-    assert png.is_file()
-    assert calls["n"] == 1
-    assert plt.get_fignums() == []
-    assert f"{len(expected_scored)} traits plotted" in result
-    # Every scored trait must carry a finite var_genetic/var_residual — the tool's
-    # own guard refuses to plot a zero-filled decomposition otherwise.
-    assert not expected_scored["var_genetic"].isna().any()
-    assert not expected_scored["var_residual"].isna().any()
-
-
 # ── Phase 3 / P3.3: path-safety + no-raw-exception-leak stopgap ─────────────
 
 _TOOLS = [
@@ -363,12 +284,6 @@ _TOOLS = [
         plot_correlation_matrix_mod,
         "plot_correlation_matrix",
         "create_correlation_heatmap",
-    ),
-    (plot_heritability_bar_mod, "plot_heritability_bar", "create_heritability_plot"),
-    (
-        plot_variance_decomposition_mod,
-        "plot_variance_decomposition",
-        "create_variance_decomposition_plot",
     ),
 ]
 _TOOL_IDS = [name for _module, name, _delegate in _TOOLS]

@@ -68,8 +68,14 @@ def test_sleap_roots_and_core_sections_registered():
 
 
 def test_sleap_roots_section_exposes_the_expected_namespaced_tools():
-    """The 7 sleap-roots-analyze consumers + 5 surviving plots are namespaced
-    sleap_roots_<tool> on the combined surface."""
+    """The 9 sleap-roots-analyze consumers + 3 surviving plots are namespaced
+    sleap_roots_<tool> on the combined surface.
+
+    bloom#462 took the roster from 8+5 to 9+3: heritability_analysis absorbed
+    plot_heritability_bar and plot_variance_decomposition as optional plots of the
+    call that returns the numbers. cross_experiment_correlations was missing from
+    this list before that change — added here rather than left for a future PR to
+    rediscover."""
     import asyncio
 
     tools = {t.name for t in asyncio.run(server.mcp.list_tools())}
@@ -81,11 +87,11 @@ def test_sleap_roots_section_exposes_the_expected_namespaced_tools():
         "clustering",
         "umap_analysis",
         "descriptive_stats",
+        "cross_experiment_correlations",
+        "heritability_analysis",
         "plot_trait_histograms",
         "plot_trait_boxplots",
         "plot_correlation_matrix",
-        "plot_heritability_bar",
-        "plot_variance_decomposition",
     }
     for tool in expected:
         assert f"sleap_roots_{tool}" in tools
