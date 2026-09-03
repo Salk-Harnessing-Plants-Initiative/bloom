@@ -402,3 +402,68 @@ the live code and held up. One documentation-accuracy issue and a few real gaps 
       correctly open.
 - [x] 12.8 Re-ran the exact CI invocation (1479 passed, 0 failed, 33 deselected, 1512 total,
       arithmetic checked) + `openspec validate --strict`.
+
+## 13. Sixth PR review pass — one softer masking gap, an in-flight PR conflict, and doc corrections
+
+No blocking correctness/architecture findings independent of the 2 below; all 5 prior rounds'
+fixes (notably the round-3/4 heatmap-caveat fix) were independently re-verified against the
+live code and held up.
+
+- [x] 13.1 **Blocking**: `heatmap_caveat`'s footnote named a *count* of flagged cells, not the
+      actual trait/pair names — a PNG-only viewer was told a problem exists with no way to tell
+      which cell to distrust, one layer softer than the JSON-only gap round 4 fixed. Fixed:
+      `create_correlation_heatmap` draws its axis tick labels from the same `trait_cols` list in
+      the same order, so the footnote now interpolates the actual flagged names (capped at 10,
+      `"+N more"` beyond that) — a PNG-only viewer can cross-reference a name against a label
+      they can already see, with none of the "wrong cell" geometry risk a per-cell hatch would
+      carry. Added `test_heatmap_caveat_caps_names_at_ten_with_a_remainder_count` and updated the
+      existing zero-variance/low-overlap tests to assert on names, not just presence.
+- [x] 13.2 **Blocking**: sibling PR #726/#721 (in flight, developed in parallel with no
+      awareness of this PR) wraps every matplotlib-figure-creating call site in bloommcp —
+      including the pre-#466 versions of these same 3 files — in a `FIGURE_REGISTRY_LOCK`
+      (`bloom_mcp.tools._plots`), closing a real FastMCP-thread-pool concurrent-figure-creation
+      race. #683's structural rewrite meant #726's diff to these 3 files couldn't reapply
+      cleanly, and landing without the lock would leave these 3 newly-converged tools as the
+      only unprotected matplotlib call sites in the codebase. Defined `FIGURE_REGISTRY_LOCK`
+      in this PR (matching #726's exact design/rationale, since it doesn't exist on `staging`
+      yet) and wrapped all 3 tools' figure-creating delegate calls with it. Added lock-
+      participation tests (shared-object identity + acquire/release spy) per tool, plus a
+      direct unit test in `test_plots_helpers.py`. Flagged the resulting trivial future
+      duplicate-definition conflict on PR #726 itself.
+- [x] 13.3 **Important**: re-confirmed and escalated the concreteness of
+      [#769](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/769) (a real
+      cross-caller read exposure, not theoretical) and
+      [#748](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/748) (real,
+      unmitigated boxplot sample-size gap) with comments nudging for a concrete remediation
+      owner on each — not assigned unilaterally, since triage isn't this PR's call.
+- [x] 13.4 **Important**: the full-suite CI claim didn't reproduce in an independent fresh
+      clone (47 UMAP-unrelated failures, matching a known cross-environment-flakiness signature
+      already flagged once in round 4). Re-verified `test_umap_analysis_tool.py` in isolation
+      here (clean 69/69) and rewrote design.md's "Test Count Verification" section to report
+      the isolated, diff-relevant suite (313 passed) as the portable/reliable claim, with the
+      full-suite number (1488/1521) recorded as "clean in this environment," not an
+      unconditional guarantee.
+- [x] 13.5 **Important**: softened the "delegates 100%/all figure rendering" claim in
+      `plot_correlation_matrix.py`'s docstring, this file's own Goals bullet, and spec.md — it
+      calls `Figure.text(...)` directly for the `heatmap_caveat` footnote, which is a real
+      (disclosed, tested) exception to a blanket claim.
+- [x] 13.6 **Important**: added the zero-variance/all-NaN handling asymmetry (only
+      `plot_correlation_matrix` guards it) directly to `plot_trait_histograms.py`/
+      `plot_trait_boxplots.py`'s module docstrings — previously only in a test comment a reader
+      wouldn't check first. Confirmed (not assumed) that both delegates render a literal
+      `"No data"` panel for an all-NaN trait.
+- [x] 13.7 **Important**: corrected a factually wrong test-docstring claim
+      (`create_trait_boxplots_by_genotype_batched` "does not pad incomplete pages," generalized
+      from the single `n_traits=65` case) — verified directly against the live delegate across
+      several remainders: it DOES pad, via an adaptive (not fixed-4-column) grid that only
+      happens to fit exactly for some remainders. Added `n_traits=69` (a remainder confirmed to
+      pad) so the invisible-axes filter is genuinely exercised for this tool, not just applied
+      defensively on an untested assumption.
+- [x] 13.8 **Suggestion**: corrected the PR description's stale CI-failure count (1 failing, not
+      2, by the time of this round).
+- [x] 13.9 **Suggestion**: renamed `test_delegates_rendering_and_never_calls_vendored_cleanup`
+      to `test_delegates_rendering_exactly_once` — its body only ever checked the call count.
+- [x] 13.10 **Suggestion**: confirmed (not assumed) the all-NaN "No data" panel disclosure
+      (13.6) rather than treating it as a placeholder claim.
+- [x] 13.11 Re-ran the full suite (1488 passed) + the isolated diff-relevant suite (313 passed)
+      + `openspec validate --strict`.

@@ -57,8 +57,11 @@ contract):
 ## Goals / Non-Goals
 
 - **Goals:** all 3 tools contract-wrapped, reading raw (no `require_clean`) via the
-  `ExperimentReader` port, delegating 100% of figure *rendering* to `sleap_roots_analyze`,
-  persisting a versioned run each with linked (not inline) figure outputs, discoverable via
+  `ExperimentReader` port, delegating every chart-element rendering decision to
+  `sleap_roots_analyze` (a disclosure annotation drawn onto a delegate-returned `Figure`
+  afterward, e.g. `heatmap_caveat`'s footnote, is not chart-element rendering — see design.md's
+  round-6 correction), persisting a versioned run each with linked (not inline) figure outputs,
+  discoverable via
   `list_existing_analyses`, covered by contract tests mirroring `qc_inspect`'s suite, with every
   existing in-repo caller of the old shape (unit tests + `tests/smoke/`) updated in step.
 - **Non-Goals:** any change to `sleap_roots_analyze` delegate logic; any change to
@@ -308,6 +311,41 @@ contract):
     `low_overlap_trait_pairs` (not a false-positive risk — the vendored heatmap independently
     produces the same `NaN` — just an incompleteness in *why* a blank cell is blank).
 
+  **Round 6: round 4's footnote itself didn't deliver on its stated purpose.** It named a
+  *count* of flagged cells and pointed to `zero_variance_traits`/`low_overlap_trait_pairs` for
+  specifics — but those fields exist only in the JSON response/manifest, never in the PNG. A
+  caller who only ever opens the saved image (exactly the audience the round-4 fix was *for*,
+  per its own commit message) was told a problem exists with no way to tell *which* cell to
+  distrust — the same failure pattern this PR's review history had already caught twice (round
+  3: no PNG signal at all; round 4: signal present but didn't reach the PNG/manifest), one layer
+  softer. Fixed cheaply and safely: `create_correlation_heatmap` draws its axis tick labels from
+  this same `trait_cols` list, in this same order, so the footnote now interpolates the actual
+  flagged trait/pair names (not just a count) — a PNG-only viewer can cross-reference a name
+  here against a label they can already see on the image, with none of the "wrong cell" geometry
+  risk that ruled out per-cell hatching in round 4. Capped at 10 names (`", +N more"` beyond
+  that) so a cylinder-scale selection with many flagged pairs doesn't produce an unreadably long
+  footnote — the full, uncapped lists remain in `zero_variance_traits`/`low_overlap_trait_pairs`.
+
+- **Decision: `FIGURE_REGISTRY_LOCK` — a process-wide lock around each of the 3 tools' figure-
+  creating delegate call — landed in this PR rather than deferred, to reconcile an unresolved
+  conflict with sibling PR #726/#721.** #726 (also in flight, developed in parallel with no
+  awareness of this PR) wraps every matplotlib-figure-creating call site in bloommcp — including
+  the *pre-#466* versions of these same 3 files — in a lock defined in `bloom_mcp.tools._plots`,
+  specifically because FastMCP's thread-pool dispatch means two figure-creating tool calls can
+  genuinely interleave, and (once #726 lands) its own `generate_figures` allocate-then-raise
+  cleanup diffs matplotlib's *shared, process-wide* figure registry — a diff that cannot tell its
+  own orphaned figure apart from one a different, unrelated concurrent call just allocated,
+  unless nothing else can create a figure while that diff's window is open (#466 review round 6).
+  #683's structural rewrite of these 3 files means #726's diff to them cannot reapply cleanly,
+  and whichever PR merges second either eats that conflict or (worse, if unresolved) ships with
+  these 3 newly-converged tools as the only matplotlib call sites left unprotected. Since
+  `FIGURE_REGISTRY_LOCK` doesn't exist on `staging` yet (#726 hasn't merged), it is defined here
+  too — matching #726's exact design/rationale, so the two PRs' additions of the same constant
+  become a trivial, easily-resolved duplicate-definition conflict rather than a silent gap.
+  Scope is narrow (only the delegate call that actually allocates a figure, not the surrounding
+  save/commit/persist span), matching #726's own scoping rationale exactly. Flagged on #726
+  itself so its author/reviewer isn't surprised by the conflict at merge time.
+
 - **Decision: `resolved_trait_columns` is recorded — in the result and stamped into the
   persisted run's `params` — on all 3 tools, not just reported as a count.** When
   `trait_columns` is omitted, auto-detection resolves the actual list used to render/persist the
@@ -347,8 +385,21 @@ contract):
   page to its fixed `n_cols=4` grid with extra, invisible, blank-titled axes (confirmed against
   the live delegate) — the helper was reading `fig.axes` unconditionally, so it picked up 3
   spurious empty-string "titles" alongside the 1 real one. Fixed by filtering to
-  `ax.get_visible()`; `create_trait_boxplots_by_genotype_batched` doesn't pad this way today
-  (confirmed against the live delegate too), but the same filter was applied there defensively.
+  `ax.get_visible()`; the same filter was applied to `create_trait_boxplots_by_genotype_
+  batched`'s helper too, at the time believed (wrongly — see round 6 below) to be defensive
+  only, since that delegate's `n_traits=65` case (1 leftover trait) happened to land on an
+  exact 1×1 grid with no padding.
+
+  **Round 6 corrects that claim: `create_trait_boxplots_by_genotype_batched` DOES pad,
+  same as the histograms delegate — its grid sizing is just adaptive, not fixed at 4
+  columns, so it only avoids padding when a remainder happens to fit its chosen grid
+  exactly** (confirmed directly against the live delegate across several remainders: 1, 2,
+  and 3 leftover traits fit exactly with no padding; 5 and 8 leftover traits pad to an 8-slot
+  grid). A committed test docstring had asserted the "doesn't pad" claim as a general fact
+  from that one `n_traits=65` case alone — factually wrong, caught by review, corrected, and
+  closed with a real test: `n_traits=69` (5 leftover traits, a remainder confirmed to pad) is
+  now parametrized alongside `65` so the visible-axes filter is genuinely exercised for this
+  tool too, not merely applied "just in case."
 
 - **Decision: the 3 new Params models declare `model_config = ConfigDict(extra="forbid")`.**
   An unknown field isn't currently exploitable — `@as_mcp_tool`'s Pydantic validation already
@@ -466,7 +517,20 @@ Callers DO need to migrate, on three axes:
   title (unlike `plot_trait_histograms`'s delegate-provided `f"{trait}\n(n={count})"`) — a
   genotype group reduced to a handful of points by missingness renders as a normal-looking
   box with zero signal to the researcher. Concluded to be more consequential than
-  documentation polish, not fixed in this PR.
+  documentation polish, not fixed in this PR. **Round 6** re-confirmed this as real and
+  unmitigated and added a comment nudging for a concrete remediation owner, since the issue
+  had priority but no owner; both `plot_trait_histograms.py`/`plot_trait_boxplots.py` now
+  disclose the asymmetry directly in their module docstrings (previously only noted in a test
+  comment) and confirm the delegates render a literal `"No data"` panel for an all-NaN trait
+  (verified against the live delegate) rather than a silent blank.
+- `ResultStore`'s no-per-caller-ownership-scoping gap ([#769](https://github.com/Salk-
+  Harnessing-Plants-Initiative/bloom/issues/769), see the Risks entry above) was independently
+  re-confirmed real in round 6 (a shared `bloom_agent` DB/Storage role, no scoping filter in
+  `list_available_experiments`, `USING (true)` RLS) but, being pre-existing across 8 tools
+  that shipped before #466, correctly not treated as blocking this PR's merge. Added a comment
+  nudging for a concrete remediation owner rather than leaving it to sit as a filed-but-
+  unowned `priority: high` issue indefinitely — not assigned unilaterally, since triage isn't
+  this PR's call to make.
 
 ## Test Count Verification
 
@@ -498,6 +562,29 @@ This section will need updating again if a future round adds tests without updat
 the fix going forward is to update this number in the *same commit* that changes the test
 count, not to treat it as a one-time snapshot.
 
+**Round 6: the full-suite claim itself doesn't reproduce reliably across environments, for
+reasons outside this PR's control — the claim needs hedging, not just a fresh number.** An
+independent fresh-clone run of the exact stated invocation showed 47 failures, all in
+`test_umap_analysis_tool.py` (a file this PR does not touch), matching the same
+environment-drift signature already flagged once before (round 4: a different reviewer
+environment showed ~59 UMAP-unrelated failures the review itself attributed to a locale/CSV
+artifact). Re-running `test_umap_analysis_tool.py` in isolation here gives a clean 69/69 — this
+environment cannot reproduce the failure either way, consistent with it being genuine
+cross-environment nondeterminism (most plausibly BLAS/LAPACK backend or thread-count
+differences affecting `scipy.sparse.linalg.eigsh`'s eigensolver fallback path, which
+`test_degenerate_small_n_neighbors_eigensolver_failure_is_assumption_violated`'s own captured
+warning already shows this suite exercises) rather than anything this diff introduces or could
+fix — UMAP code is untouched by #466.
+
+Given that, the **portable, reliably-reproducing claim is the isolated suite of files this diff
+actually touches** (the 4 tool-specific files + `test_viz_tools.py` + `test_plots_helpers.py` +
+`test_pca_analysis_tool.py`/`test_clustering_tool.py`, the latter two covering the
+`_qc_shared`/`resolve_trait_columns` dedup backport): **313 passed, 0 failed**, reproduced
+across every round of this review. The full-suite number is still recorded below for
+completeness, but should be read as "clean in this environment as of this commit," not as an
+unconditional, environment-independent guarantee the way earlier rounds implicitly presented
+it: **1488 passed, 33 deselected, 1521 total** (`1488 + 33 = 1521` — checked).
+
 ## Incidental Fix
 
 `_qc_shared._validate_trait_subset`'s `require_certified=True` duplicate check (used by
@@ -507,3 +594,37 @@ the new `_viz_shared.resolve_trait_columns` for the same cylinder-scale (~846-tr
 (#466 review round 3 suggestion). Behavior-preserving (same duplicate set, same error), covered
 by `pca_analysis`/`clustering`'s existing `test_duplicate_trait_columns_is_invalid_input_naming_
 them` tests — no new test needed.
+
+## Round 6: Documentation-Accuracy Corrections
+
+Three more corrections round 6 found, none behavior-affecting:
+
+- **"Delegates 100% of figure rendering" overstated `plot_correlation_matrix`'s actual
+  behavior.** It calls `Figure.text(...)` directly on the delegate's returned `Figure` to draw
+  the `heatmap_caveat` footnote (round 4). Softened in both the module docstring and this
+  change's spec.md requirement to distinguish *chart-element* rendering (fully delegated, as
+  claimed) from a plain text annotation added afterward (not delegated, and never was claimed
+  to be — the blanket "100%"/"all figure rendering" wording just didn't draw that line).
+- **A committed test docstring made a factually wrong claim about
+  `create_trait_boxplots_by_genotype_batched`** ("does not pad incomplete pages with blank
+  axes, unlike `create_trait_histograms_batched`"). Verified directly against the live delegate
+  across several remainders: it DOES pad, identically in spirit to the histograms delegate —
+  its grid sizing is just *adaptive* rather than fixed at 4 columns, so remainders of 1, 2, or 3
+  happen to fit its chosen grid exactly (no padding), while remainders of 5 or 8 do not (padded
+  to an 8-slot grid). The wrong claim came from generalizing off the single `n_traits=65` case
+  (remainder 1, an exact fit) tested in round 5. Corrected, and `n_traits=69` (remainder 5, a
+  case confirmed to pad) added to the boxplots test's parametrization so the invisible-axes
+  filter is genuinely exercised for this tool, not merely applied "just in case."
+- **The PR description's CI-failure count needs to track current state, not a stale
+  snapshot.** At round 5, 2 checks were failing (both traced to a pre-existing runner
+  disk-headroom regression, #334, unrelated to this diff); by round 6 only 1 still was — the
+  description is corrected to match current state each time it's updated, not left describing
+  an earlier snapshot.
+
+Also renamed `test_delegates_rendering_and_never_calls_vendored_cleanup` (in
+`test_plot_correlation_matrix_tool.py`) to `test_delegates_rendering_exactly_once`: its body
+only ever asserted the delegate call count, never anything about vendored cleanup — the
+"never calls the vendored `bloom_mcp.data_cleanup`" guarantee is structural (this module has
+no import of it at all) rather than something a runtime spy on an unrelated module would
+meaningfully test here, so the name is corrected rather than the test body padded out to match
+a claim it was never really positioned to verify.

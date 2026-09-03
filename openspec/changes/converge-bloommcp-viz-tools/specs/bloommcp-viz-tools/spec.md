@@ -5,11 +5,13 @@
 `plot_trait_histograms`, `plot_trait_boxplots`, and `plot_correlation_matrix` SHALL be wrapped
 by `@as_mcp_tool` with a Pydantic input model and a Pydantic `RunLinks`-based output model, each
 declaring `provenance` (a single `Provenance` stamped per call) but no `random_state` (these
-tools are deterministic given their input selection). Each tool SHALL delegate all figure
-*rendering* to `sleap_roots_analyze` and SHALL introduce no new rendering or statistics logic of
-its own; `plot_correlation_matrix`'s existing, non-delegated strong-correlation summary count
-(computed directly from the selected trait frame) carries over unchanged, not as new logic this
-requirement introduces.
+tools are deterministic given their input selection). Each tool SHALL delegate the substantive
+rendering of every chart element (axes, marks, colors, layout) to `sleap_roots_analyze` and
+SHALL introduce no new charting logic of its own; `plot_correlation_matrix`'s existing,
+non-delegated strong-correlation summary count (computed directly from the selected trait
+frame) carries over unchanged, not as new logic this requirement introduces. This does not
+preclude drawing a plain text disclosure directly onto a delegate-returned `Figure` (see
+`heatmap_caveat`'s figure annotation below) — that is not chart-element rendering.
 
 #### Scenario: Structured result replaces the plain string
 
@@ -28,6 +30,22 @@ requirement introduces.
 - **WHEN** a tool is called with a field name its input model does not declare
 - **THEN** it raises a `BloomMCPError` with `code="invalid_input"` rather than silently
   dropping the unrecognized field
+
+### Requirement: Figure-Creation Concurrency Safety
+
+Each of the 3 tools SHALL acquire `bloom_mcp.tools._plots.FIGURE_REGISTRY_LOCK` around its
+figure-creating delegate call (the call that allocates a new `Figure` against matplotlib's
+shared, process-wide pyplot figure registry), matching the same lock every other matplotlib-
+figure-creating call site in this section of bloommcp participates in. This closes a genuine
+concurrent-figure-creation race: FastMCP dispatches tool handlers via a thread pool, so two
+figure-creating calls in this process can genuinely interleave against that single shared
+registry.
+
+#### Scenario: The delegate call is lock-protected
+
+- **WHEN** any of the 3 tools renders a figure via its `sleap_roots_analyze` delegate call
+- **THEN** that call executes while `FIGURE_REGISTRY_LOCK` is held, and the lock is released
+  again once the call returns (or raises)
 
 ### Requirement: Raw (Pre-Clean) Experiment Read
 
@@ -190,17 +208,20 @@ summary counts/disclosure lists are — it is rendered by a separate, independen
 running its own unguarded correlation. The result SHALL carry a `heatmap_caveat` field,
 populated whenever `zero_variance_traits` or `low_overlap_trait_pairs` is non-empty, directing
 the caller to cross-check those fields before trusting a highlighted cell in the image; `None`
-when neither is populated. The same non-`None` value SHALL be drawn as a visible annotation
-directly onto the rendered figure before it is saved, and SHALL also be stamped into the
-persisted run's `params` — a caller who only opens the saved PNG, or only reads the manifest
-later, must still receive the warning, not only a caller reading the live JSON response.
+when neither is populated. `heatmap_caveat` SHALL name the actual flagged trait(s)/pair(s)
+directly (capped at 10, with a "+N more" summary beyond that), not merely a count — so that a
+caller viewing only the saved PNG can cross-reference a name against the image's own axis
+labels. The same non-`None` value SHALL be drawn as a visible annotation directly onto the
+rendered figure before it is saved, and SHALL also be stamped into the persisted run's
+`params` — a caller who only opens the saved PNG, or only reads the manifest later, must still
+receive the warning, not only a caller reading the live JSON response.
 
 #### Scenario: A flagged pair still renders unmasked, and the caveat says so
 
 - **WHEN** `zero_variance_traits` or `low_overlap_trait_pairs` is non-empty for a call
 - **THEN** the delegate that renders the persisted PNG is still called with the full,
   unmasked/unexcluded trait selection (the same `resolved_trait_columns`), and the result's
-  `heatmap_caveat` is populated (not `None`)
+  `heatmap_caveat` is populated (not `None`) and names the specific flagged trait(s)/pair(s)
 
 #### Scenario: Nothing flagged means no caveat
 
