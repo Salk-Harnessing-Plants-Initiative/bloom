@@ -135,6 +135,73 @@ jobs:
       - name: Run env-defaults unit tests
         run: uv run --extra test pytest tests/unit/test_env_defaults.py -v --tb=short
 
+  # Verified every var in compose file that requires secrets to be present in Github is present so deployment doesnt fail with secrect not found.
+  verify-deploy-secrets:
+    name: Verify deploy secrets exist
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+
+      - name: Collect secret names
+        id: collect
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SECRETS_AUDIT_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            # Passing here would silently return this job to checking wiring only.
+            echo "::error::SECRETS_AUDIT_TOKEN is not set — secret existence cannot be verified. Create it as a fine-grained PAT with repository Secrets: Read-only and Environments: Read-only, then re-run." >&2
+            exit 1
+          fi
+          api() {
+            gh api "$1" --paginate -q '.secrets[].name' \
+              || { echo "::error::SECRETS_AUDIT_TOKEN cannot read $1 — it is a fine-grained PAT and needs repository Secrets: Read-only plus Environments: Read-only (the environment endpoints are gated by Environments, not Secrets). Add organisation Secrets: Read-only only if that alone does not clear it." >&2; exit 1; }
+          }
+          # Organisation secrets shared with this repo resolve at deploy time too, so
+          # omitting them would report a var backed by one as missing.
+          {
+            api "repos/${GITHUB_REPOSITORY}/actions/secrets"
+            api "repos/${GITHUB_REPOSITORY}/actions/organization-secrets"
+          } > "${RUNNER_TEMP}/repo-names"
+          for env in production staging; do
+            api "repos/${GITHUB_REPOSITORY}/environments/${env}/secrets" > "${RUNNER_TEMP}/env-${env}"
+            cat "${RUNNER_TEMP}/repo-names" >> "${RUNNER_TEMP}/env-${env}"
+          done
+          python3 - "${RUNNER_TEMP}" > "${RUNNER_TEMP}/secrets.json" <<'EOF'
+          import json, sys
+          from pathlib import Path
+          tmp = Path(sys.argv[1])
+          out = {}
+          for env in ("production", "staging"):
+              out[env] = sorted({n for n in (tmp / f"env-{env}").read_text().split() if n})
+              if not out[env]:
+                  sys.exit(f"::error::no secret names returned for {env}")
+          print(json.dumps(out))
+          EOF
+          echo "have_secrets=true" >> "$GITHUB_OUTPUT"
+
+      - name: Verify every compose-required var is backed
+        shell: bash
+        env:
+          HAVE_SECRETS: ${{ steps.collect.outputs.have_secrets }}
+        run: |
+          set -euo pipefail
+          args=(--compose docker-compose.prod.yml --deploy .github/workflows/deploy.yml)
+          if [ "${HAVE_SECRETS:-}" = "true" ]; then
+            args+=(--secrets-json "${RUNNER_TEMP}/secrets.json")
+          fi
+          uv run --python 3.11 python scripts/verify_deploy_secrets.py "${args[@]}"
+
   # Scans Python dependencies for known CVEs via lockfile export
   python-audit:
     name: Python Security Audit for CVEs
