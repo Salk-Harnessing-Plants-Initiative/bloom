@@ -82,6 +82,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "refresh-cyl-experiment-trait-counts.yml"
+DEPLOY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 STAGING_DEFAULTS = REPO_ROOT / ".env.staging.defaults"
 PROD_DEFAULTS = REPO_ROOT / ".env.prod.defaults"
 JOB = "refresh"
@@ -561,4 +562,82 @@ def test_job_still_has_no_checkout_and_empty_permissions() -> None:
         "no step should use actions/checkout -- both hardcoded literals make "
         "checkout unnecessary; adding one would silently widen this job's "
         "blast radius for values that never needed repo access."
+    )
+
+
+def test_job_runs_on_self_hosted_salk_network() -> None:
+    """bloom#736: runs-on: ubuntu-latest (a GitHub-hosted runner) has no network route to
+    either host -- confirmed empirically by this workflow's first live scheduled run failing
+    its curl call in 12s with a connection timeout. deploy.yml's own jobs already run on this
+    same self-hosted label for the identical reason (see its comment near its own runs-on
+    ternary); this job now uses it too."""
+    runs_on = _load_workflow()["jobs"][JOB]["runs-on"]
+    assert runs_on == ["self-hosted", "linux", "salk-network"], (
+        f"runs-on must be the self-hosted salk-network label deploy.yml uses -- a "
+        f"GitHub-hosted runner has no route to the Salk server; got {runs_on!r}"
+    )
+
+
+def test_job_runs_on_is_unconditional_not_a_ternary() -> None:
+    """Deliberately no ubuntu-latest escape-hatch input, unlike deploy.yml's own `runner`
+    workflow_dispatch input -- this job isn't a required/blocking check, and an escape hatch
+    would do nothing for this workflow's unattended `schedule` trigger anyway. Guards against
+    a future copy-paste reintroducing deploy.yml's ternary/escape-hatch pattern here."""
+    runs_on = _load_workflow()["jobs"][JOB]["runs-on"]
+    assert isinstance(runs_on, list), (
+        f"runs-on must be a plain list, not a conditional expression string; got {runs_on!r}"
+    )
+    assert "ubuntu-latest" not in runs_on, (
+        f"runs-on must not fall back to ubuntu-latest under any branch; got {runs_on!r}"
+    )
+
+
+_DEPLOY_RUNS_ON_FROM_JSON_RE = re.compile(r"fromJSON\('(\[[^)]*\])'\)")
+
+
+def _deploy_yml_self_hosted_labels() -> list[str]:
+    """Extract the label list from deploy.yml's own runs-on ternary's fromJSON('[...]') literal.
+
+    Extracted from the LIVE file rather than hardcoded -- a test that just restates the
+    expected labels in parallel Python, decoupled from deploy.yml's actual content, would pass
+    unchanged even if deploy.yml's own list drifted (the same false-confidence failure mode
+    test_resolution_truth_table_for_schedule_vs_dispatch's own docstring already names).
+
+    deploy.yml carries TWO copies of this literal -- one on `deploy-production`, one on
+    `deploy-staging` -- so this returns every occurrence found, not just the first (round 2's
+    `/review-pr` finding: using `re.search` here would silently only ever check the refresh
+    workflow against `deploy-production`'s copy, never noticing if `deploy-staging`'s diverged
+    from it).
+    """
+    text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    matches = _DEPLOY_RUNS_ON_FROM_JSON_RE.findall(text)
+    assert matches, (
+        "could not find deploy.yml's runs-on fromJSON('[...]') literal -- if its ternary "
+        "was restructured, update this regex rather than silently skipping the check"
+    )
+    return [yaml.safe_load(m) for m in matches]
+
+
+def test_runner_label_matches_deploy_ymls_self_hosted_label() -> None:
+    """bloom#736 (found by `/review-pr` on PR #738): the two new runs-on tests above assert
+    against a hardcoded expected value -- neither would catch this workflow's label list
+    silently drifting out of sync with deploy.yml's own copy of the same three labels, the one
+    drift this repo can detect without a live network call to GitHub's runner-registration
+    API (live-registration drift is out of scope for tests/unit/, deliberately offline; see
+    tasks.md 15.10)."""
+    runs_on = _load_workflow()["jobs"][JOB]["runs-on"]
+    deploy_labels_per_job = _deploy_yml_self_hosted_labels()
+    assert len(deploy_labels_per_job) >= 2, (
+        f"expected deploy.yml's runs-on fromJSON('[...]') literal to appear at least twice "
+        f"(deploy-production and deploy-staging); found {len(deploy_labels_per_job)}"
+    )
+    assert all(labels == deploy_labels_per_job[0] for labels in deploy_labels_per_job), (
+        f"deploy.yml's own runs-on occurrences disagree with each other -- "
+        f"{deploy_labels_per_job!r} -- deploy-production and deploy-staging must use the "
+        f"identical self-hosted runner label list before comparing either to this workflow"
+    )
+    deploy_labels = deploy_labels_per_job[0]
+    assert runs_on == deploy_labels, (
+        f"this workflow's runs-on ({runs_on!r}) has drifted from deploy.yml's own self-hosted "
+        f"runner label list ({deploy_labels!r}) -- both must reference the identical runner"
     )
