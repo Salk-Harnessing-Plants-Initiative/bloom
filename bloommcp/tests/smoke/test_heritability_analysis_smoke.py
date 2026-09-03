@@ -49,6 +49,10 @@ def test_heritability_analysis_smoke(call_tool, db_experiment_id: str) -> None:
     for row in result["per_trait"]:
         assert 0.0 <= row["h2"] <= 1.0
         assert row["passed_threshold"] == (row["h2"] >= result["threshold"])
+        # A scored trait carrying both variance components as exactly 0 must be named —
+        # its h2 is not a measurement whichever branch produced it.
+        if row["var_genetic"] == 0.0 and row["var_residual"] == 0.0:
+            assert row["trait"] in result["zero_variance_traits"]
 
     # Both retired tools' figures, from the one call that returned the numbers above.
     pngs = {k for k in result["outputs"] if k.endswith(".png")}

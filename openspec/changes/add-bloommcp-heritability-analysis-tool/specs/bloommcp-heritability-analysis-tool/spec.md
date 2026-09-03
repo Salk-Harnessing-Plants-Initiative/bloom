@@ -178,8 +178,8 @@ data — not merely a figure link and an aggregate count. Each reported trait SH
 `h2`, `passed_threshold`, `var_genetic`, `var_residual`, `n_genotypes`, `n_observations`, and
 `model_type`. The result SHALL additionally carry `experiment`, `source`, `n_samples`,
 `genotype_col`, `replicate_col`, `method`, `threshold`, `mean_h2`, `n_above_threshold`,
-`n_traits_requested`, `n_traits_reported`, `n_failed`, `failed_traits`, and `nonfinite_traits`,
-plus the inherited `RunLinks` fields. The invariant
+`n_traits_requested`, `n_traits_reported`, `n_failed`, `failed_traits`, `nonfinite_traits`,
+and `zero_variance_traits`, plus the inherited `RunLinks` fields. The invariant
 `n_traits_requested == n_traits_reported + n_failed` SHALL hold for every successful call.
 
 The inline `per_trait` list SHALL be capped at the first 50 traits, with `truncated_in_summary`
@@ -214,6 +214,46 @@ SHALL always contain every scored trait, uncapped.
 - **WHEN** the result of any successful `heritability_analysis` call is serialized
 - **THEN** no single field's serialized form is an unbounded matrix or table — the full per-trait
   table is reachable only through the run's persisted outputs
+
+### Requirement: A Trait With No Variance to Partition Is Named
+
+The `heritability_analysis` tool SHALL list, in `zero_variance_traits`, every scored trait
+whose `var_genetic` and `var_residual` are both exactly zero. Such a trait has no variance to
+partition, so its reported H² is not a measurement — and which number the delegate attached
+depends on the branch that produced it: its `no_variance` branch reports `0.0`, while a
+mixed-model fit returning exact zeros divides `0/0`, producing `NaN`, which its own clamp
+turns into `1.0`. Reporting a *perfect* and a *zero* heritability for the same non-finding is
+why the caller needs the names.
+
+Such traits SHALL still be reported in `per_trait` and in the persisted table, and SHALL
+still contribute to `mean_h2` and `n_above_threshold` — the tool labels the delegate's
+verdict rather than overriding it, so the returned aggregates cannot drift from the ones a
+reader of the persisted result JSON would compute. The tool's description SHALL direct a
+caller to check this field before quoting either aggregate.
+
+The test SHALL be exact equality with zero, not a tolerance: a near-constant trait fits with
+tiny-but-nonzero variance components and yields an ordinary quotient, which is a real
+estimate and SHALL NOT be flagged.
+
+#### Scenario: A constant trait is reported and named
+
+- **WHEN** `heritability_analysis` runs on a cleaned frame containing a trait whose values
+  are all identical
+- **THEN** that trait appears in `zero_variance_traits`, still appears in `per_trait` with
+  the delegate's own `model_type`, and does **not** appear in `failed_traits`
+
+#### Scenario: A degenerate perfect heritability is named
+
+- **WHEN** the delegate returns a trait with `var_genetic` and `var_residual` both zero and a
+  heritability of `1.0`
+- **THEN** that trait appears in `zero_variance_traits`, so a caller can tell the reported
+  `1.0` apart from a genuine one
+
+#### Scenario: An ordinary trait is not flagged
+
+- **WHEN** a trait's variance components are non-zero, including a near-constant trait whose
+  components are very small but non-zero
+- **THEN** it does not appear in `zero_variance_traits`
 
 ### Requirement: Heritability Analysis Persists a Versioned Run With Provenance
 
@@ -327,6 +367,15 @@ list.
 - **THEN** the run's `outputs` contain `create_heritability_plot_page1.png` …
   `create_heritability_plot_pageN.png`, one per returned page, and no `outputs` entry holds a
   non-`Figure` value
+
+#### Scenario: The pagination boundary is exactly the plotter's page size
+
+- **WHEN** `heritability_analysis` renders the bar plot for exactly 50 scored traits, and
+  again for 51
+- **THEN** 50 traits produce a single `create_heritability_plot.png`, while 51 produce
+  `_page1`/`_page2` outputs whose first page carries the 50 highest-H² traits and whose
+  second carries the remaining one — the page split and each page's membership, not merely
+  the page count
 
 #### Scenario: Existing single-figure callers are unaffected
 

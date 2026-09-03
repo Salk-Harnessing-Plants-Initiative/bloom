@@ -544,7 +544,7 @@ def test_heritability_persist_checks_flags_missing_result_json():
 
 
 def test_heritability_result_checks_all_pass_on_valid_result():
-    checks = smoke.heritability_result_checks(19, 19, 0, [])
+    checks = smoke.heritability_result_checks(19, 19, 0, [], [])
     assert all(c.ok for c in checks), [c for c in checks if not c.ok]
 
 
@@ -552,24 +552,39 @@ def test_heritability_result_checks_tolerate_some_failed_traits():
     """Deliberately NOT n_failed == 0: this leg runs live on every PR against thin
     synthetic seed data, where a mixed model failing to fit a given trait is a
     legitimate outcome, not a regression."""
-    checks = smoke.heritability_result_checks(19, 17, 2, [])
+    checks = smoke.heritability_result_checks(19, 17, 2, [], [])
     assert all(c.ok for c in checks), [c for c in checks if not c.ok]
 
 
 def test_heritability_result_checks_flags_zero_traits_reported():
-    checks = smoke.heritability_result_checks(19, 0, 19, [])
+    checks = smoke.heritability_result_checks(19, 0, 19, [], [])
     assert any("n_traits_reported > 0" in c.name and not c.ok for c in checks)
 
 
 def test_heritability_result_checks_flags_unreconciled_counts():
     """requested == reported + failed must hold: a trait that is neither reported nor
     failed has been silently dropped."""
-    checks = smoke.heritability_result_checks(19, 17, 0, [])
+    checks = smoke.heritability_result_checks(19, 17, 0, [], [])
     assert any("counts reconcile" in c.name and not c.ok for c in checks)
 
 
 def test_heritability_result_checks_flags_nonfinite_routing():
     """A trait routed out for a non-finite value or a dropped delegate key IS a real
     contract regression, unlike a thin-data fit failure."""
-    checks = smoke.heritability_result_checks(19, 18, 1, ["Solidity"])
+    checks = smoke.heritability_result_checks(19, 18, 1, ["Solidity"], [])
     assert any("non-finite/dropped-key" in c.name and not c.ok for c in checks)
+
+
+def test_heritability_result_checks_tolerate_named_zero_variance_traits():
+    """A zero-variance trait in the seeded synthetic data is plausible and is NOT a
+    regression — the check exists so the tool keeps NAMING them, not so the list stays
+    empty."""
+    checks = smoke.heritability_result_checks(19, 19, 0, [], ["flat_trait"])
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_heritability_result_checks_flags_missing_zero_variance_field():
+    """Losing the field entirely IS a contract regression — a non-measurement would then
+    fold into mean_h2 with nothing to signal it."""
+    checks = smoke.heritability_result_checks(19, 19, 0, [], None)
+    assert any("zero-variance traits" in c.name and not c.ok for c in checks)

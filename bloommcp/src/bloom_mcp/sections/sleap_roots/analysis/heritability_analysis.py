@@ -50,6 +50,17 @@ description rather than left for a caller to trip over.
 **Nothing non-finite, and nothing zero-filled, reaches the wire.** Two distinct hazards,
 one mechanism — see :func:`_scrub_delegate_result`.
 
+**A trait with no variance to partition is named, not silently averaged in.** When a trait's
+``var_genetic`` and ``var_residual`` are both exactly ``0``, there is no variance to
+partition and its H2 is not a measurement — but the delegate still reports *a number* for
+it, and which number depends on which branch produced it: its ``no_variance`` branch
+hardcodes ``0.0``, while a mixed-model fit that returned exact zeros divides ``0/0``, gets
+``nan``, and clamps it to ``1.0`` (``max(0, min(1, nan))`` is ``1`` in Python). A *perfect*
+heritability and a *zero* heritability for the same underlying non-finding. Those traits are
+listed in ``zero_variance_traits`` so a reader of ``mean_h2`` / ``n_above_threshold`` can see
+that some contributing values are not estimates. They are still reported in ``per_trait`` and
+the persisted table — the delegate's own verdict is not overridden here, only labeled.
+
 Persists a versioned run under tool class ``heritability`` — reserved in
 ``manifest.CANONICAL_TOOL_CLASSES`` but never written to before this tool, since the
 retired heritability surface was two *plot* tools that wrote loose PNGs to ``PLOTS_DIR``
@@ -107,8 +118,6 @@ _REQUIRED_TRAIT_KEYS = (
     "model_type",
 )
 _FINITE_TRAIT_KEYS = ("heritability", "var_genetic", "var_residual")
-
-_METADATA_KEY = "__calculation_metadata__"
 
 
 class HeritabilityAnalysisParams(BaseModel):
@@ -197,6 +206,19 @@ class HeritabilityAnalysisResult(RunLinks):
             "reporting the trait as failed itself. A subset of failed_traits."
         ),
     )
+    zero_variance_traits: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Scored traits whose var_genetic AND var_residual are both exactly 0 — no "
+            "variance to partition, so their h2 is not a measurement whatever number the "
+            "delegate attached to it (its no_variance branch reports 0.0; a mixed-model fit "
+            "returning exact zeros divides 0/0 and clamps the NaN to 1.0). These traits ARE "
+            "still reported in per_trait and the persisted table, and they DO contribute to "
+            "mean_h2 and n_above_threshold — a non-empty list here means those aggregates "
+            "include values that are not estimates. Unlike nonfinite_traits, NOT a subset of "
+            "failed_traits: nothing failed, the trait simply carried no signal."
+        ),
+    )
     mean_h2: Optional[float] = Field(
         default=None,
         description=(
@@ -211,8 +233,10 @@ class HeritabilityAnalysisResult(RunLinks):
     omitted_traits: list[str] = Field(default_factory=list)
 
 
-def _scrub_delegate_result(raw: dict, trait_cols: list[str]) -> tuple[dict, list[str]]:
-    """Return a copy of ``raw`` with unusable per-trait entries replaced, + their names.
+def _scrub_delegate_result(
+    raw: dict, trait_cols: list[str]
+) -> tuple[dict, list[str], list[str]]:
+    """Return a copy of ``raw`` with unusable per-trait entries replaced, + two name lists.
 
     Two distinct hazards, one mechanism — both routed by replacing the offending entry
     with an ``{"error": ...}`` dict in a **copy**, so the trait lands in
@@ -239,9 +263,24 @@ def _scrub_delegate_result(raw: dict, trait_cols: list[str]) -> tuple[dict, list
     ``raw`` is not mutated, matching ``from_heritability_dict``'s own contract. Note the
     scrubbed copy is what both plotters receive too, so a figure can never render a value
     the returned numbers disowned.
+
+    Separately — and NOT a scrub — this also collects the traits whose ``var_genetic`` and
+    ``var_residual`` are both exactly ``0``. Those are *kept*: the delegate scored them and
+    its verdict is not overridden here. But there is no variance to partition, so whatever
+    h2 it attached is not a measurement, and which number it attached depends on the branch
+    that produced it — ``no_variance`` hardcodes ``0.0``, whereas a mixed-model fit that
+    returned exact zeros computes ``0/0`` → ``nan`` → clamped to ``1.0``. Reporting a
+    *perfect* and a *zero* heritability for the same non-finding is exactly why the caller
+    needs the names. The check is done here rather than in a second pass because this loop
+    already reads both keys off every entry.
+
+    Exact ``== 0`` is deliberate, not a tolerance: it is the condition that makes the
+    delegate's denominator vanish. A tiny-but-nonzero variance (a near-constant column fits
+    at ~1e-19 rather than 0) still yields a real, if unremarkable, quotient.
     """
     scrubbed = dict(raw)
     nonfinite: list[str] = []
+    zero_variance: list[str] = []
     for trait in trait_cols:
         entry = scrubbed.get(trait)
         if not isinstance(entry, dict) or "heritability" not in entry:
@@ -263,7 +302,10 @@ def _scrub_delegate_result(raw: dict, trait_cols: list[str]) -> tuple[dict, list
                 "error": f"non-finite heritability result for key(s): {bad}"
             }
             nonfinite.append(trait)
-    return scrubbed, nonfinite
+            continue
+        if float(entry["var_genetic"]) == 0.0 and float(entry["var_residual"]) == 0.0:
+            zero_variance.append(trait)
+    return scrubbed, nonfinite, zero_variance
 
 
 def _comparison_frame(
@@ -387,6 +429,11 @@ def heritability_analysis(
     Note: the bar plot orders traits by H2 descending, while per_trait and the persisted
     table preserve the experiment's trait order — the same numbers, sliced differently, so
     the inline top-50 of a wide experiment is not the first plotted page.
+
+    Check zero_variance_traits before quoting mean_h2 or n_above_threshold: a trait listed
+    there had no variance to partition, so its reported h2 is not a measurement (it will be
+    0.0 or 1.0 depending on which upstream branch produced it) even though it counts toward
+    both aggregates.
     """
     reader = _ports.reader()
     store = _ports.store()
@@ -457,7 +504,9 @@ def heritability_analysis(
             ),
         )
 
-    scrubbed, nonfinite_traits = _scrub_delegate_result(h2_raw, trait_cols)
+    scrubbed, nonfinite_traits, zero_variance_traits = _scrub_delegate_result(
+        h2_raw, trait_cols
+    )
     result = HeritabilityResult.from_heritability_dict(scrubbed, params.threshold)
 
     rows = _rows(result, trait_cols)
@@ -545,6 +594,7 @@ def heritability_analysis(
         n_failed=len(failed_traits),
         failed_traits=failed_traits,
         nonfinite_traits=nonfinite_traits,
+        zero_variance_traits=zero_variance_traits,
         mean_h2=result.mean_h2 if rows else None,
         n_above_threshold=result.n_above_threshold,
         per_trait=per_trait,

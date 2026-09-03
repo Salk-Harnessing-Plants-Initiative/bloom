@@ -677,6 +677,7 @@ def heritability_result_checks(
     n_traits_reported: object,
     n_failed: object,
     nonfinite_traits: object,
+    zero_variance_traits: object = None,
 ) -> list[Check]:
     """Assert the tool's own result is structurally sound.
 
@@ -702,6 +703,16 @@ def heritability_result_checks(
             "heritability_analysis: no non-finite/dropped-key trait routing",
             nonfinite_traits == [],
             f"nonfinite_traits={nonfinite_traits!r}",
+        ),
+        # Reported, not asserted-empty: the seeded smoke experiments are synthetic, so a
+        # trait with no variance to partition is plausible there and is not a regression.
+        # What matters is that the tool NAMES it rather than folding a non-measurement
+        # silently into mean_h2 — so this check only fails if the field is missing
+        # entirely (a contract regression), never for being non-empty.
+        Check(
+            "heritability_analysis: zero-variance traits are reported as a list",
+            isinstance(zero_variance_traits, list),
+            f"zero_variance_traits={zero_variance_traits!r}",
         ),
     ]
 
@@ -1208,6 +1219,7 @@ def main() -> int:
         h2_reported: object = None
         h2_failed: object = None
         h2_nonfinite: object = None
+        h2_zero_variance: object = None
         try:
             h2_result = heritability_analysis(
                 HeritabilityAnalysisParams(experiment=QC_EXPERIMENT)
@@ -1218,6 +1230,7 @@ def main() -> int:
             h2_reported = h2_result.n_traits_reported
             h2_failed = h2_result.n_failed
             h2_nonfinite = h2_result.nonfinite_traits
+            h2_zero_variance = h2_result.zero_variance_traits
             checks.append(Check("heritability_analysis commits a run", True))
         except BloomMCPError as exc:
             checks.append(
@@ -1236,7 +1249,11 @@ def main() -> int:
         if h2_committed:
             checks.extend(
                 heritability_result_checks(
-                    h2_requested, h2_reported, h2_failed, h2_nonfinite
+                    h2_requested,
+                    h2_reported,
+                    h2_failed,
+                    h2_nonfinite,
+                    h2_zero_variance,
                 )
             )
             h2_stored = retry(

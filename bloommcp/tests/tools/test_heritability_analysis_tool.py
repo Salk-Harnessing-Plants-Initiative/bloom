@@ -3,9 +3,8 @@
 The 9th granular consumer, and the first that *replaces* rather than adds: it retires
 ``plot_heritability_bar`` and ``plot_variance_decomposition`` into its ``include_plots`` /
 ``plots`` parameters. So this file has two jobs — pin the new tool's contract, and pin the
-retirement (the absence assertions live in ``test_retirement.py``'s companion checks here
-too, because a test that only asserts the new name would pass with both old tools still
-registered).
+retirement. The retirement checks are the last section of this file (a test that only
+asserted the new name would pass with both old tools still registered).
 
 The golden is a **characterization snapshot** of the delegate on turface_19, not ground
 truth: a REML mixed-model fit has no closed form to hand-check against. See
@@ -740,6 +739,103 @@ def test_the_delegates_own_return_is_not_mutated(injected_ports, monkeypatch):
     assert captured["dict"]["Solidity"] == captured["before"]
 
 
+# ── zero-variance traits: a reported number that is not a measurement ────────
+
+
+def _constant_trait_df() -> pd.DataFrame:
+    """A certified-clean-shaped frame carrying one genuinely constant trait.
+
+    Reachable through a real pipeline, not only by hand: `qc_clean` strips zero-variance
+    traits, but `remove_outliers` trims *rows* from an already-cleaned version, and a trait
+    whose variance lived only in the trimmed samples is constant in what survives.
+    """
+    df = _synthetic_df(2)
+    df["constant_trait"] = 7.0
+    return df
+
+
+def test_zero_variance_trait_is_named_through_the_real_delegate(synthetic_ports):
+    """The real (non-monkeypatched) delegate, end to end.
+
+    A literally constant column takes the delegate's own `no_variance` branch, which
+    reports h2=0.0 with var_genetic == var_residual == 0.0 — no variance to partition, so
+    the 0.0 is a non-finding rather than a measured absence of heritability. The trait is
+    still reported (the delegate's verdict is not overridden here), but it is named, so a
+    reader of mean_h2 can see one of its terms is not an estimate.
+    """
+    _reader, _store = synthetic_ports(_constant_trait_df())
+    result = heritability_analysis(
+        HeritabilityAnalysisParams(experiment="synthetic.csv")
+    )
+
+    assert result.zero_variance_traits == ["constant_trait"]
+    row = _trait(result, "constant_trait")
+    assert row.var_genetic == 0.0 and row.var_residual == 0.0
+    assert row.model_type == "no_variance"
+    # Reported, not routed out — unlike a non-finite or missing-key entry.
+    assert "constant_trait" not in result.failed_traits
+    assert result.nonfinite_traits == []
+    assert result.n_traits_reported == 3
+
+
+def test_zero_variance_flag_catches_the_degenerate_perfect_heritability(
+    injected_ports, monkeypatch
+):
+    """The other branch of the same non-finding, which reports 1.0 instead of 0.0.
+
+    When a mixed-model fit returns exact zeros for both variance components, the delegate
+    computes `var_genetic / (var_genetic + var_residual / mean_n_reps)` = `0.0 / 0.0`.
+    `mean_n_reps` is a numpy float, so that is `nan` with a RuntimeWarning rather than a
+    ZeroDivisionError, and `max(0, min(1, nan))` clamps it to **1.0** — a *perfect*
+    heritability with all-finite components, indistinguishable downstream from a real one.
+
+    Monkeypatched because that exact-zero fit is not reproducible on demand: statsmodels
+    returns tiny-but-nonzero variances (~1e-19) even for a near-constant column, which
+    yields an ordinary quotient. So this is upstream defense-in-depth, while the test above
+    covers what real data actually reaches. Both land in the same list, which is the point:
+    the caller should not have to know which branch produced their number.
+    """
+    _patched_delegate(
+        monkeypatch,
+        lambda d: d["Solidity"].update(
+            {"heritability": 1.0, "var_genetic": 0.0, "var_residual": 0.0}
+        ),
+    )
+    result = _run()
+
+    assert result.zero_variance_traits == ["Solidity"]
+    assert _trait(result, "Solidity").h2 == 1.0
+    # It DOES inflate both aggregates — which is exactly why the name is surfaced rather
+    # than the value silently dropped or recomputed away from the persisted result.
+    assert result.n_above_threshold == sum(
+        1 for r in result.per_trait if r.h2 >= result.threshold
+    )
+
+
+def test_ordinary_traits_are_not_flagged_as_zero_variance(injected_ports):
+    """The flag must stay quiet on the golden fixture — 19 real traits, none degenerate."""
+    assert _run().zero_variance_traits == []
+
+
+def test_near_constant_trait_is_not_flagged(synthetic_ports):
+    """Exact `== 0`, not a tolerance. A near-constant column fits at ~1e-19 rather than 0,
+    which still divides into a real (if unremarkable) quotient — flagging it would call a
+    working estimate a non-finding."""
+    import numpy as np
+
+    df = _synthetic_df(2)
+    rng = np.random.default_rng(0)
+    df["near_constant"] = 7.0 + rng.normal(scale=1e-9, size=len(df))
+    _reader, _store = synthetic_ports(df)
+    result = heritability_analysis(
+        HeritabilityAnalysisParams(experiment="synthetic.csv")
+    )
+
+    assert "near_constant" not in result.zero_variance_traits
+    row = _trait(result, "near_constant")
+    assert row.var_residual > 0.0
+
+
 # ── 3.11 the 50-trait cap ────────────────────────────────────────────────────
 
 
@@ -1068,6 +1164,94 @@ def test_figures_close_on_every_failure_path(injected_ports, monkeypatch, failur
     assert plt.get_fignums() == []
 
 
+def _page_trait_labels(fig) -> list[str]:
+    """Trait names labeled on a heritability page, from whichever axis carries them.
+
+    Not fixed to one axis on purpose: on a full page the trait axis has the most ticks, but
+    on a short final page (1 trait) the *value* axis has more, so a "longest wins" heuristic
+    picks the wrong one. Select by content instead.
+    """
+    ax = fig.axes[0]
+    labels = [t.get_text() for t in ax.get_xticklabels()] + [
+        t.get_text() for t in ax.get_yticklabels()
+    ]
+    return [x for x in labels if x.startswith("trait_")]
+
+
+@pytest.mark.parametrize(
+    "n_traits,expected_pages",
+    [(50, 1), (51, 2)],
+    ids=["at-the-boundary", "one-over"],
+)
+def test_pagination_boundary_is_exactly_traits_per_page(
+    real_store_ports, n_traits, expected_pages
+):
+    """Pin the 50/51 split, and each page's trait *identity* — not just the page count.
+
+    The split itself lives entirely in `create_heritability_plot`'s `traits_per_page`
+    default, so this is the boundary at which a future sleap-roots-analyze bump silently
+    changes how many PNGs a run persists and what is on each. At exactly 50 the plotter
+    returns a bare `Figure` (one `<key>.png`); at 51 it returns a list and the run gains
+    `_page1`/`_page2` keys — a caller-visible output-key change from one extra trait.
+
+    Page contents are asserted against H2-descending order, which is the plotter's own
+    sort (design D1's documented divergence from the inline trait-order list), so a page
+    holding the right *count* of the wrong traits fails here.
+    """
+    import matplotlib.pyplot as plt
+    import sleap_roots_analyze.visualization as viz_mod
+
+    pages: list = []
+    real_bar = viz_mod.create_heritability_plot
+
+    def _spy(results, **kwargs):
+        out = real_bar(results, **kwargs)
+        pages.extend(out if isinstance(out, list) else [out])
+        return out
+
+    make, storage = real_store_ports
+    make(_synthetic_df(n_traits), experiment="synthetic.csv")
+    plt.close("all")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(viz_mod, "create_heritability_plot", _spy)
+        result = heritability_analysis(
+            HeritabilityAnalysisParams(
+                experiment="synthetic.csv",
+                include_plots=True,
+                plots=["create_heritability_plot"],
+            )
+        )
+
+    assert len(pages) == expected_pages
+    bar_keys = sorted(
+        k for k in result.outputs if k.startswith("create_heritability_plot")
+    )
+    if expected_pages == 1:
+        assert bar_keys == ["create_heritability_plot.png"]
+    else:
+        assert bar_keys == [
+            "create_heritability_plot_page1.png",
+            "create_heritability_plot_page2.png",
+        ]
+
+    # Per-page identity, not just per-page count. The plotter sorts H2-descending and
+    # then fills pages of 50, so page 1 must be exactly the top 50 and page 2 the single
+    # lowest-H2 trait. Read the full ordering from the persisted table rather than the
+    # inline list, which is itself capped at 50.
+    table = _table(storage, result)
+    by_h2 = list(table.sort_values("h2", ascending=False)["trait"])
+    assert len(by_h2) == n_traits
+
+    labeled = [_page_trait_labels(f) for f in pages]
+    assert [len(page) for page in labeled] == ([50] if expected_pages == 1 else [50, 1])
+    assert set(labeled[0]) == set(by_h2[:50])
+    if expected_pages == 2:
+        assert labeled[1] == by_h2[50:]
+    flat = [name for page in labeled for name in page]
+    assert len(set(flat)) == len(flat)  # no trait rendered on two pages
+
+
 def test_paginated_bar_plot_persists_one_png_per_page(synthetic_ports):
     """4.9 — create_heritability_plot returns a list above its traits_per_page default
     (50); each page must persist and close, not leak as a list under one key."""
@@ -1135,3 +1319,38 @@ def test_heritability_analysis_is_the_only_delegate_caller():
     assert callers == [
         "bloom_mcp/sections/sleap_roots/analysis/heritability_analysis.py"
     ]
+
+
+def test_no_module_outside_src_references_the_retired_modules():
+    """Catch a stray reference to either retired module anywhere in the package — tests
+    and scripts included, not just `src/`.
+
+    Motivated by a concrete merge hazard rather than tidiness: PR #724 imports both
+    retired modules at MODULE level in `tests/tools/test_viz_snapshot.py` and
+    `scripts/gen_plot_snapshots_golden.py`. If that lands before this change and those
+    references aren't removed, `python-audit` dies at *collection* — the entire bloommcp
+    suite, not two tests — with an ImportError that names a module but not why it went
+    away. This test can't prevent that collection error (nothing in-repo can order two
+    merges), but it names every offending file explicitly, and it does prevent the
+    reverse: a later reference that resolves at import time and rots quietly.
+    """
+    pkg_root = Path(heritability_module.__file__).resolve().parents[5]
+    retired = ("plot_heritability_bar", "plot_variance_decomposition")
+    offenders: dict[str, list[str]] = {}
+    for path in sorted(pkg_root.rglob("*.py")):
+        if ".venv" in path.parts or path.name == Path(__file__).name:
+            continue
+        text = path.read_text(encoding="utf-8")
+        # Only flag a real code reference — the names appear legitimately in prose
+        # (docstrings recording what was retired and why), which must stay readable.
+        hits = [
+            name
+            for name in retired
+            if f"import {name}" in text
+            or f"{name}_mod" in text
+            or f"{name}(" in text
+            or f"analysis.{name}" in text
+        ]
+        if hits:
+            offenders[path.relative_to(pkg_root).as_posix()] = hits
+    assert offenders == {}, f"retired modules still referenced in code: {offenders}"

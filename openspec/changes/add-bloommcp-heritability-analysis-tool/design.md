@@ -129,14 +129,40 @@ delegate's clamp. It does not: `max(0, min(1, nan))` evaluates to **`1`** in Pyt
 returns `1`, since every comparison with `nan` is False). So a non-finite `heritability` is
 reachable only by monkeypatch — the test is still writable, but the *rationale* was wrong.
 
-**The real hazard the clamp creates is worse, and is out of this change's scope to fix.** With
-`var_genetic == 0.0` and `var_residual == 0.0` (both finite), `heritability = var_genetic /
-(var_genetic + var_residual / mean_n_reps)` is `0.0 / np.float64(0.0)` → `nan` (a RuntimeWarning,
-not a `ZeroDivisionError`, because `mean_n_reps` is a numpy float) → clamped to **`1.0`**. A
-degenerate fit therefore emits a *perfect* heritability with all-finite components, undetectable by
-any scrub this tool can perform without re-deriving the delegate's arithmetic. This is an upstream
-defect: recorded here, filed upstream as a follow-up (tasks.md §10.4), and explicitly **not**
-worked around by second-guessing the delegate's own clamp inside a thin wrapper.
+**The real hazard the clamp creates is worse — and is now *labeled* locally, though still not
+fixed here.** With `var_genetic == 0.0` and `var_residual == 0.0` (both finite),
+`heritability = var_genetic / (var_genetic + var_residual / mean_n_reps)` is
+`0.0 / np.float64(0.0)` → `nan` (a RuntimeWarning, not a `ZeroDivisionError`, because
+`mean_n_reps` is a numpy float) → clamped to **`1.0`**. A degenerate fit therefore emits a
+*perfect* heritability with all-finite components, which no finiteness scrub can catch.
+
+Correcting the value would mean re-deriving the delegate's arithmetic inside a thin wrapper, which
+this tool does not do. But **classifying** it costs nothing: the scrub loop already reads
+`var_genetic` and `var_residual` off every entry, so it also collects the traits where both are
+exactly `0` into `zero_variance_traits` (a review finding — the earlier draft left a scientist
+reading `mean_h2` with no signal at all). Those traits stay in `per_trait` and in the persisted
+table, and still contribute to `mean_h2` / `n_above_threshold` — deliberately, so the returned
+aggregates cannot drift from what a reader of `heritability_result.json` would compute — but they
+are named, and the tool's description tells a caller to check the field before quoting either
+aggregate.
+
+Two things make this worth having rather than theoretical:
+
+* **The same condition has a second, genuinely reachable branch.** Verified against the real
+  delegate: a literally constant column takes its `no_variance` path, which reports
+  `h2 = 0.0` with both components `0.0` and `model_type="no_variance"`. So the *same* non-finding
+  ("no variance to partition") surfaces as `0.0` down one branch and `1.0` down the other. A
+  caller cannot be expected to know which they got; hence one list covering both.
+* **It is reachable through a real pipeline, not only a hand-crafted frame.** `qc_clean` strips
+  zero-variance traits, but `remove_outliers` trims *rows* from an already-cleaned version, and a
+  trait whose variance lived only in the trimmed samples is constant in what survives.
+
+Exact `== 0`, not a tolerance: that is the condition making the denominator vanish. Verified that a
+near-constant column fits at ~1e-19 rather than 0 and yields an ordinary quotient, so a tolerance
+would relabel working estimates as non-findings.
+
+The underlying clamp remains an upstream defect — recorded here and filed as a follow-up
+(tasks.md §10.4), not worked around by second-guessing the delegate's own arithmetic.
 
 ### D6 — `generate_figures` learns `list[Figure]`
 
