@@ -206,3 +206,84 @@ def test_local_reader_is_not_source_selectable(local_env):
     """LocalReader has no source-versioned substrate; unlike SupabaseReader,
     it must not satisfy SourceSelectable."""
     assert not isinstance(LocalReader(), SourceSelectable)
+
+
+# ── #573: foreign catalog surfaces as ForeignCatalogError ────────────────────
+
+
+def _foreignize_local_manifest(store_root, stem: str, tool_class: str = "qc") -> None:
+    """Hand-patch the on-disk sentinel — the only way to manufacture a foreign
+    catalog (write_manifest always re-stamps from active_backend_name(), and a
+    backend flip reads a physically different, empty store)."""
+    import json
+
+    path = store_root / "bloommcp_output" / f"{tool_class}_{stem}" / "manifest.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["storage_backend"] == "local"
+    raw["storage_backend"] = "supabase"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+
+def test_foreign_catalog_raises_foreign_catalog_error_not_clean_required(
+    local_env, monkeypatch
+):
+    """Spec: "require_clean surfaces the mismatch as ForeignCatalogError in
+    both readers" — NOT CleanedVersionRequiredError's "run the QC workflow
+    first", which would invite committing fresh runs on top of the foreign
+    catalog."""
+    from bloom_mcp.data_access import ForeignCatalogError
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    inp, store = local_env
+    (inp / "exp.csv").write_text(_RAW)
+    _seed_cleaned("exp.csv", pd.read_csv(io.StringIO(_RAW)))
+    _foreignize_local_manifest(store, "exp")
+
+    with pytest.raises(ForeignCatalogError) as exc:
+        LocalReader().load_experiment("exp.csv", require_clean=True)
+
+    assert not isinstance(exc.value, CleanedVersionRequiredError)
+    msg = str(exc.value)
+    assert "'supabase'" in msg and "'local'" in msg
+    assert str(store) not in msg  # no host path leak
+
+
+def test_foreign_catalog_never_falls_through_to_raw(local_env, monkeypatch):
+    """Spec: "A foreign catalog is a hard resolution error, never a
+    fall-through" — with a raw input present, a plain (require_clean=False)
+    load still raises rather than silently serving the raw frame."""
+    from bloom_mcp.data_access import ForeignCatalogError
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    inp, store = local_env
+    (inp / "exp.csv").write_text(_RAW)
+    _seed_cleaned("exp.csv", pd.read_csv(io.StringIO(_RAW)))
+    _foreignize_local_manifest(store, "exp")
+
+    with pytest.raises(ForeignCatalogError):
+        LocalReader().load_experiment("exp.csv")
+
+
+def test_escape_hatch_restores_resolution_with_warning_trail(
+    local_env, monkeypatch, caplog
+):
+    """Spec: "The escape hatch restores resolution with a warning trail" —
+    BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1 serves the cleaned version and the
+    per-read warning records are present."""
+    import logging
+
+    monkeypatch.setenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", "1")
+    inp, store = local_env
+    (inp / "exp.csv").write_text(_RAW)
+    _seed_cleaned("exp.csv", pd.read_csv(io.StringIO(_RAW)))
+    _foreignize_local_manifest(store, "exp")
+
+    with caplog.at_level(logging.WARNING, logger="bloom_mcp.manifest.manifest"):
+        caplog.clear()
+        frame = LocalReader().load_experiment("exp.csv", require_clean=True)
+
+    assert frame.source.startswith("v1")
+    warnings_ = [
+        r for r in caplog.records if "foreign catalog" in r.getMessage()
+    ]
+    assert warnings_, "expected at least one per-read warning under the hatch"
