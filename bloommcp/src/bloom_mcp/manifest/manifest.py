@@ -10,7 +10,7 @@ deployment topology bloommcp runs in.
 import logging
 from typing import Optional
 
-from bloom_mcp.storage_backend import active_backend_name
+from bloom_mcp.storage_backend import active_backend_name, allow_foreign_manifest
 from bloom_mcp.supabase_client import list_prefix, read_json, write_json
 
 from .schema import CURRENT_SCHEMA_VERSION, Manifest
@@ -88,6 +88,18 @@ def _check_backend_sentinel(prefix: str, manifest: Manifest) -> None:
         return
     active = active_backend_name()
     if recorded == active:
+        return
+    if allow_foreign_manifest():
+        # Deliberate foreign inspection (BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1):
+        # warn per guarded read — never once-per-process, the one-time-signal
+        # failure mode of #572's fresh-catalog log that #573 exists to avoid.
+        logger.warning(
+            "serving foreign catalog %s under the escape hatch: written by "
+            "storage backend %r, active backend is %r",
+            prefix.rstrip("/"),
+            recorded,
+            active,
+        )
         return
     raise ManifestBackendMismatchError(
         f"manifest at {prefix.rstrip('/')} was written by storage backend "

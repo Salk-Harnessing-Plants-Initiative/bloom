@@ -29,6 +29,7 @@ _BLOOM_ENV_VARS = (
     "BLOOM_OUTPUT_DIR",
     "BLOOM_PLOTS_DIR",
     "BLOOM_PLOTS_URL",
+    "BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST",
 )
 
 
@@ -53,6 +54,25 @@ def test_fresh_interpreter_imports_server_with_no_bloom_env():
     immune to env already set by conftest in this process.
     """
     env = {k: v for k, v in os.environ.items() if k not in _BLOOM_ENV_VARS}
+    result = subprocess.run(
+        [sys.executable, "-c", "import bloom_mcp.server"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_fresh_interpreter_imports_server_with_invalid_allow_foreign_value():
+    """Import succeeds even with an INVALID BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST.
+
+    The #573 guard reads the variable only at manifest-read or boot-validation
+    time — an import-time read (even one with a graceful default) could not
+    pass this probe with an invalid value in the env, so this is the shape that
+    actually distinguishes a lazy read from import-time-with-default.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _BLOOM_ENV_VARS}
+    env["BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST"] = "yes"
     result = subprocess.run(
         [sys.executable, "-c", "import bloom_mcp.server"],
         env=env,
