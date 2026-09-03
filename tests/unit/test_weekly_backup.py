@@ -90,6 +90,61 @@ def test_compose_args_never_hardcode_a_container_name():
 
 
 # --------------------------------------------------------------------------
+# Production only
+# --------------------------------------------------------------------------
+
+
+def test_the_only_environment_this_job_backs_up_is_production():
+    assert backup.BACKUP_ENV == "prod"
+
+
+def test_the_script_itself_refuses_any_other_environment(tmp_path, monkeypatch):
+    # The workflow no longer offers staging, but the workflow is not what a
+    # person rehearsing by hand runs. COMPOSE_FILE pins the production compose
+    # project, so a staging run reads staging's env file and still resolves the
+    # PRODUCTION container: a full prod dump, auth.users included, uploaded to
+    # staging's Box folder with every log line saying "staging".
+    _deploy_dir(tmp_path, env_name="staging")
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    resolved: list[str] = []
+    monkeypatch.setattr(backup, "resolve_container",
+                        lambda *a: resolved.append("resolved") or "container123")
+    dumped: list[str] = []
+    monkeypatch.setattr(backup, "dump_database", lambda *a: dumped.append("database"))
+
+    rc = backup.main(["--env", "staging", "--deploy-dir", str(tmp_path)])
+    assert rc == backup.EXIT_CONFIG
+    assert not resolved, "no container may be resolved for a non-production run"
+    assert not dumped, "no dump may be taken for a non-production run"
+
+
+def test_the_refusal_names_the_rehearsal_that_is_allowed(tmp_path, caplog):
+    # A refusal an operator cannot act on gets worked around instead.
+    _deploy_dir(tmp_path, env_name="staging")
+    with caplog.at_level("ERROR"):
+        backup.main(["--env", "staging", "--deploy-dir", str(tmp_path)])
+    assert "--env prod --dry-run" in caplog.text
+
+
+def test_a_non_production_run_cannot_even_print_a_destination(tmp_path, capsys):
+    # --print-destination is what the workflow summary calls. It must not become
+    # the way a staging path gets named anywhere.
+    _deploy_dir(tmp_path, env_name="staging")
+    rc = backup.main(["--env", "staging", "--deploy-dir", str(tmp_path),
+                      "--print-destination"])
+    assert rc == backup.EXIT_CONFIG
+    assert "staging" not in capsys.readouterr().out
+
+
+def test_the_compose_file_is_what_makes_this_production_only():
+    # If the compose file ever stops pinning the project name, the guard above
+    # is protecting against something that no longer applies — revisit both.
+    compose = (REPO_ROOT / backup.COMPOSE_FILE).read_text()
+    assert "name: bloom_v2_prod" in compose
+
+
+# --------------------------------------------------------------------------
 # Artifact verification
 # --------------------------------------------------------------------------
 
@@ -98,6 +153,36 @@ def _write_gz(path: Path, payload: bytes) -> Path:
     with gzip.open(path, "wb") as handle:
         handle.write(payload)
     return path
+
+
+def _database_dump(rows: int = backup.MIN_DATA_ROWS, complete: bool = True) -> bytes:
+    """A plain pg_dump, in the shape the content check reads."""
+    body = ["--", "-- PostgreSQL database dump", "--", "",
+            "COPY public.plants (id, barcode) FROM stdin;"]
+    body += [f"{n}\tBRC{n:05d}" for n in range(rows)]
+    body += ["\\.", ""]
+    if complete:
+        body.append(backup.DB_DUMP_COMPLETE_MARKER)
+    return ("\n".join(body) + "\n").encode()
+
+
+def _globals_dump(roles: int = backup.MIN_ROLE_STATEMENTS, complete: bool = True) -> bytes:
+    """A pg_dumpall --globals-only dump, in the shape the content check reads."""
+    body = ["--", "-- PostgreSQL database cluster dump", "--", ""]
+    for n in range(roles):
+        body += [f"CREATE ROLE bloom_role_{n};",
+                 f"ALTER ROLE bloom_role_{n} WITH NOSUPERUSER LOGIN;"]
+    if complete:
+        body.append(backup.GLOBALS_DUMP_COMPLETE_MARKER)
+    return ("\n".join(body) + "\n").encode()
+
+
+def _dump_writer(seen: list, payload: bytes):
+    """Stand in for the real pipeline: record the command, write a real dump."""
+    def _write(cmd, out):
+        seen.append(cmd)
+        _write_gz(out, payload)
+    return _write
 
 
 def test_a_good_artifact_verifies_and_returns_its_size(tmp_path):
@@ -126,6 +211,84 @@ def test_a_missing_artifact_is_rejected(tmp_path):
 
 def test_database_floor_is_above_the_globals_floor():
     assert backup.MIN_DATABASE_BYTES > backup.MIN_GLOBALS_BYTES > 0
+
+
+# --------------------------------------------------------------------------
+# Content verification
+# --------------------------------------------------------------------------
+
+
+def test_a_dump_full_of_rows_passes_its_content_check(tmp_path):
+    artifact = _write_gz(tmp_path / "db.sql.gz", _database_dump(rows=500))
+    assert backup.verify_database_content(artifact) == 500
+
+
+def test_a_dump_whose_tables_all_came_out_empty_is_rejected(tmp_path):
+    # The RLS case: if the dumping role loses its bypass privilege the dump is
+    # valid SQL with every COPY block empty, clears the size floor, and gzips
+    # cleanly. Size and integrity checks cannot tell it from a good backup.
+    artifact = _write_gz(tmp_path / "db.sql.gz", _database_dump(rows=0))
+    with pytest.raises(backup.VerificationError, match="could not read"):
+        backup.verify_database_content(artifact)
+
+
+def test_a_dump_that_stopped_partway_is_rejected(tmp_path):
+    # gzip closes its stream cleanly around a pg_dump that died mid-table, so
+    # the completion line pg_dump writes last is the only evidence it finished.
+    artifact = _write_gz(tmp_path / "db.sql.gz", _database_dump(rows=500, complete=False))
+    with pytest.raises(backup.VerificationError, match="stopped partway"):
+        backup.verify_database_content(artifact)
+
+
+def test_a_data_row_cannot_forge_the_completion_line(tmp_path):
+    # A row holding the marker text would otherwise let a truncated dump pass.
+    payload = ("COPY public.notes (body) FROM stdin;\n"
+               + backup.DB_DUMP_COMPLETE_MARKER + "\n") * 200
+    artifact = _write_gz(tmp_path / "db.sql.gz", payload.encode())
+    with pytest.raises(backup.VerificationError, match="stopped partway"):
+        backup.verify_database_content(artifact)
+
+
+def test_a_globals_dump_defining_roles_passes(tmp_path):
+    artifact = _write_gz(tmp_path / "globals.sql.gz", _globals_dump(roles=9))
+    assert backup.verify_globals_content(artifact) == 9
+
+
+def test_a_globals_dump_with_no_roles_is_rejected(tmp_path):
+    # The database dump's OWNER and GRANT statements name these roles.
+    artifact = _write_gz(tmp_path / "globals.sql.gz", _globals_dump(roles=0))
+    with pytest.raises(backup.VerificationError, match="nothing to bind to"):
+        backup.verify_globals_content(artifact)
+
+
+def test_a_truncated_globals_dump_is_rejected(tmp_path):
+    artifact = _write_gz(tmp_path / "globals.sql.gz",
+                         _globals_dump(roles=9, complete=False))
+    with pytest.raises(backup.VerificationError, match="stopped partway"):
+        backup.verify_globals_content(artifact)
+
+
+def test_the_content_floors_sit_below_any_real_cluster():
+    assert backup.MIN_DATA_ROWS > 0
+    # Supabase alone ships anon, authenticated, service_role, supabase_admin
+    # and authenticator, before any role this project adds.
+    assert 0 < backup.MIN_ROLE_STATEMENTS <= 5
+
+
+def test_an_empty_dump_fails_the_run_on_the_verification_code(tmp_path, monkeypatch):
+    # End to end: a content failure must land on 3, the same code a short or
+    # corrupt artifact does, so the wiki's table stays true.
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999999)
+    monkeypatch.setattr(backup, "_stream_to_gzip", _dump_writer([], _database_dump(rows=0)))
+    uploaded: list = []
+    monkeypatch.setattr(backup, "upload", lambda *a: uploaded.append(a))
+
+    assert backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)]) == backup.EXIT_VERIFY
+    assert not uploaded, "an empty dump must never reach Box"
 
 
 def test_a_bad_dump_exits_on_its_own_code_not_the_config_one(tmp_path, monkeypatch):
@@ -188,8 +351,47 @@ def test_destination_defaults_per_environment(monkeypatch):
 
 
 def test_exit_codes_are_distinct():
-    codes = {backup.EXIT_OK, backup.EXIT_SUBPROCESS, backup.EXIT_CONFIG}
-    assert len(codes) == 3, "each failure class needs its own exit code"
+    codes = {backup.EXIT_OK, backup.EXIT_SUBPROCESS, backup.EXIT_CONFIG,
+             backup.EXIT_VERIFY, backup.EXIT_SIGNAL}
+    assert len(codes) == 5, "each failure class needs its own exit code"
+
+
+def test_a_real_subprocess_failure_exits_on_the_subprocess_code(tmp_path, monkeypatch):
+    # The mirror of the EXIT_VERIFY test above, driven by a process that really
+    # exits non-zero rather than a raised CalledProcessError: without it, a
+    # change routing this path to EXIT_CONFIG would pass the whole suite.
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+
+    def _failing_dump(container, work_dir, timestamp):
+        backup._stream_to_gzip(
+            [sys.executable, "-c", "import sys; sys.stderr.write('boom\\n'); sys.exit(3)"],
+            work_dir / "database.sql.gz",
+        )
+
+    monkeypatch.setattr(backup, "dump_database", _failing_dump)
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
+    assert rc == backup.EXIT_SUBPROCESS
+    assert rc != backup.EXIT_CONFIG
+
+
+def test_a_cancelled_run_does_not_look_like_a_failed_dump(tmp_path):
+    # SystemExit carrying a string exits 1, which is the subprocess code. Being
+    # cancelled from the Actions tab, or hitting timeout-minutes, is not a
+    # failure of docker or pg_dump and must not read as one.
+    driver = f"""
+import importlib.util, os, signal
+spec = importlib.util.spec_from_file_location("wb", {str(_SCRIPT)!r})
+backup = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(backup)
+signal.signal(signal.SIGTERM, backup._terminate)
+os.kill(os.getpid(), signal.SIGTERM)
+"""
+    done = subprocess.run([sys.executable, "-c", driver], capture_output=True, text=True)
+    assert done.returncode == backup.EXIT_SIGNAL
+    assert done.returncode != backup.EXIT_SUBPROCESS
 
 
 # Every rclone subcommand that can remove something at the destination.
@@ -255,7 +457,25 @@ def test_the_job_only_ever_copies_to_the_remote(tmp_path, monkeypatch):
     assert cmd[0] == "rclone"
     assert cmd[1] == "copy", f"rclone must only ever copy, not {cmd[1]!r}"
     assert cmd[2] == str(work), "copy the working directory, not a single file"
-    assert cmd[-1] == destination == "box:bloom-backups/prod/20260824T000000Z/"
+    assert cmd[3] == destination == "box:bloom-backups/prod/20260824T000000Z/"
+
+
+def test_the_upload_retries_rather_than_lose_a_verified_dump(tmp_path, monkeypatch):
+    # By the time the upload runs the dump is taken and verified; the next
+    # attempt is a week away. A transient blip must not be the end of the run.
+    seen: list[list[str]] = []
+    monkeypatch.setattr(backup, "_run", lambda cmd, cwd=None: seen.append(cmd))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setenv("BACKUP_RCLONE_REMOTE", "box")
+    work = tmp_path / "bloom-backup-run"
+    work.mkdir()
+
+    backup.upload([work / "database.sql.gz"], "prod", "20260824T000000Z")
+    cmd = seen[0]
+    assert "--retries" in cmd, "a blip must not discard the week's backup"
+    retries = int(cmd[cmd.index("--retries") + 1])
+    assert retries > 1
+    assert "--retries-sleep" in cmd, "retries with no backoff hammer a flaky link"
 
 
 def test_the_job_never_deletes_anything_on_the_remote():
@@ -339,6 +559,69 @@ def test_a_dump_left_by_a_killed_run_is_swept_at_startup(tmp_path, monkeypatch):
     assert not orphan.exists(), "an orphaned dump survived the next run"
 
 
+def test_an_orphan_is_swept_even_when_this_run_cannot_start(tmp_path, monkeypatch):
+    # The sweep used to sit after config loading, so a persistent config error
+    # — renamed deploy directory, unreadable env file — meant every run
+    # returned before reaching it and the orphaned plaintext dump stayed put
+    # indefinitely, well past the one week the wiki promises.
+    state = tmp_path / "state"
+    orphan = state / "bloom-backup-oldrun"
+    orphan.mkdir(parents=True)
+    (orphan / "postgres-postgres-20260824T021700Z.sql.gz").write_bytes(b"stale dump")
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(state))
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path / "gone")])
+    assert rc == backup.EXIT_CONFIG
+    assert not orphan.exists(), "a failing run stranded a full plaintext dump"
+
+
+def test_a_broken_sweep_does_not_mask_the_error_that_caused_it(tmp_path, monkeypatch):
+    # The sweep runs on an already-failing path; it must report the config
+    # error, not an OSError raised while tidying up.
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "state").mkdir()
+
+    def _explode(_state_dir):
+        raise OSError("state directory went away")
+
+    monkeypatch.setattr(backup, "sweep_stale_work_dirs", _explode)
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path / "gone")])
+    assert rc == backup.EXIT_CONFIG
+
+
+def test_the_working_copy_is_not_readable_by_other_users(tmp_path, monkeypatch):
+    # It holds a full plaintext dump, auth.users included, on a host whose
+    # runner runs other jobs.
+    state = tmp_path / "state"
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(state))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    monkeypatch.setattr(backup, "dump_database", lambda *a: tmp_path / "db.sql.gz")
+    monkeypatch.setattr(backup, "dump_globals", lambda *a: tmp_path / "globals.sql.gz")
+    monkeypatch.setattr(backup, "upload", lambda *a: None)
+
+    assert backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)]) == backup.EXIT_OK
+    assert state.stat().st_mode & 0o077 == 0, "group or other can read the dump"
+
+
+def test_a_state_directory_left_loose_by_an_earlier_run_is_tightened(tmp_path, monkeypatch):
+    # mode= on the create only applies when the create happens. This directory
+    # persists between runs, so a pre-existing loose one has to be fixed too.
+    state = tmp_path / "state"
+    state.mkdir(mode=0o755)
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(state))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    monkeypatch.setattr(backup, "dump_database", lambda *a: tmp_path / "db.sql.gz")
+    monkeypatch.setattr(backup, "dump_globals", lambda *a: tmp_path / "globals.sql.gz")
+    monkeypatch.setattr(backup, "upload", lambda *a: None)
+
+    assert backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)]) == backup.EXIT_OK
+    assert state.stat().st_mode & 0o077 == 0
+
+
 def _run_until_signalled(state: Path, install_handler: bool) -> list[str]:
     """Enter the real working dir, take a signal, report what was left behind."""
     driver = f"""
@@ -398,7 +681,7 @@ def test_the_database_dump_keeps_owners_and_privileges(tmp_path, monkeypatch):
     # The whole point of this change over PR #340: --no-owner/--no-privileges
     # produce a dump that restores into a database with no grants.
     seen: list[list[str]] = []
-    monkeypatch.setattr(backup, "_stream_to_gzip", lambda cmd, out: seen.append(cmd))
+    monkeypatch.setattr(backup, "_stream_to_gzip", _dump_writer(seen, _database_dump()))
     monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999999)
     monkeypatch.setattr(backup, "_which", lambda name: name)
     backup.dump_database("container123", tmp_path, "20260824T000000Z")
@@ -411,7 +694,7 @@ def test_the_database_dump_keeps_owners_and_privileges(tmp_path, monkeypatch):
 
 def test_globals_are_dumped_alongside_the_database(tmp_path, monkeypatch):
     seen: list[list[str]] = []
-    monkeypatch.setattr(backup, "_stream_to_gzip", lambda cmd, out: seen.append(cmd))
+    monkeypatch.setattr(backup, "_stream_to_gzip", _dump_writer(seen, _globals_dump()))
     monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999)
     monkeypatch.setattr(backup, "_which", lambda name: name)
     backup.dump_globals("container123", tmp_path, "20260824T000000Z")
@@ -446,8 +729,9 @@ def test_a_run_dumps_and_uploads_both_artifacts(tmp_path, monkeypatch):
 
 
 def test_both_artifacts_share_one_run_timestamp(tmp_path, monkeypatch):
-    monkeypatch.setattr(backup, "_stream_to_gzip", lambda cmd, out: None)
+    monkeypatch.setattr(backup, "_stream_to_gzip", _dump_writer([], _database_dump()))
     monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999)
+    monkeypatch.setattr(backup, "verify_globals_content", lambda *a, **k: 9)
     monkeypatch.setattr(backup, "_which", lambda name: name)
     stamp = "20260824T010203Z"
     db = backup.dump_database("c", tmp_path, stamp)

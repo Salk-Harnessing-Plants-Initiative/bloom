@@ -14,7 +14,9 @@ Exit codes:
   0 = verified backup uploaded
   1 = subprocess failure (docker / pg_dump / gzip / rclone)
   2 = configuration error (missing env, no remote, stack not running)
-  3 = an artifact failed verification (missing, undersized, or corrupt)
+  3 = an artifact failed verification (missing, undersized, corrupt, or empty)
+  4 = the run was terminated by a signal (cancelled from the Actions tab, or
+      timed out) — not a failure of anything it ran
 
 See `.env.{staging,prod}.defaults` for the BACKUP_* config surface, and
 _WIKI/SCHEDULEDJOBS/weekly-backup.md for setup.
@@ -23,6 +25,7 @@ _WIKI/SCHEDULEDJOBS/weekly-backup.md for setup.
 from __future__ import annotations
 
 import argparse
+import gzip
 import logging
 import os
 import shutil
@@ -36,6 +39,10 @@ from pathlib import Path
 logger = logging.getLogger("bloom_weekly_backup")
 
 COMPOSE_FILE = "docker-compose.prod.yml"
+# The only environment this job backs up. COMPOSE_FILE pins the production
+# compose project name, so every other value resolves the production container
+# while reading some other environment's env file.
+BACKUP_ENV = "prod"
 # Under the invoking user's own home, so no root-created directory is needed.
 DEFAULT_STATE_DIR = "~/.local/state/bloom-weekly-backup"
 DB_SERVICE = "db-prod"
@@ -45,10 +52,19 @@ DB_SERVICE = "db-prod"
 MIN_DATABASE_BYTES = 4096
 MIN_GLOBALS_BYTES = 256
 
+# Content floors. A dump can be well-formed, correctly sized and cleanly
+# gzipped while holding no rows at all — the shape a dump takes if the role
+# taking it ever loses its RLS-bypass privilege. Size alone never catches that.
+DB_DUMP_COMPLETE_MARKER = "-- PostgreSQL database dump complete"
+GLOBALS_DUMP_COMPLETE_MARKER = "-- PostgreSQL database cluster dump complete"
+MIN_DATA_ROWS = 100
+MIN_ROLE_STATEMENTS = 5
+
 EXIT_OK = 0
 EXIT_SUBPROCESS = 1
 EXIT_CONFIG = 2
 EXIT_VERIFY = 3
+EXIT_SIGNAL = 4
 
 
 class ConfigError(RuntimeError):
@@ -72,6 +88,11 @@ def load_env_file(path: Path) -> dict[str, str]:
     A systemd unit would have read this file for us; over SSH nothing does,
     and sourcing it in the
     shell would let a value containing spaces or quotes rewrite the command.
+
+    Deliberately not a shell: `export ` prefixes, inline `#` comments and
+    values spanning several lines are all read literally. The deploy env files
+    use none of them, and guessing at them would corrupt a value containing a
+    `#` far more quietly than refusing to.
     """
     values: dict[str, str] = {}
     for raw in path.read_text().splitlines():
@@ -161,8 +182,35 @@ def resolve_container(deploy_dir: Path, env_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _terminate(signum: int, _frame: object) -> None:
-    """Turn a kill signal into an exception so the working dir unwinds."""
-    raise SystemExit(f"terminated by signal {signum}")
+    """Turn a kill signal into an exception so the working dir unwinds.
+
+    Its own exit code: a SystemExit carrying a string exits 1, which would be
+    indistinguishable from a pg_dump or rclone failure. Being cancelled is not
+    a failure of anything this job ran.
+    """
+    logger.error("terminated by signal %d", signum)
+    raise SystemExit(EXIT_SIGNAL)
+
+
+def _state_dir() -> Path:
+    """Where working copies live. BACKUP_STATE_DIR is read from the env file."""
+    return Path(_env("BACKUP_STATE_DIR", DEFAULT_STATE_DIR)).expanduser()
+
+
+def sweep_best_effort() -> int:
+    """Sweep on a path that is already failing, without adding a new failure.
+
+    A run that dies in config loading returns before the sweep below, so a
+    persistent config error (renamed deploy dir, unreadable env file) would let
+    an orphaned plaintext dump — `auth.users` and all — outlive the one-week
+    bound this job promises.
+    """
+    try:
+        state_dir = _state_dir()
+        return sweep_stale_work_dirs(state_dir) if state_dir.is_dir() else 0
+    except OSError as exc:
+        logger.warning("could not sweep stale working directories: %s", exc)
+        return 0
 
 
 def sweep_stale_work_dirs(state_dir: Path) -> int:
@@ -218,6 +266,78 @@ def verify_artifact(path: Path, min_bytes: int) -> int:
     return size
 
 
+def scan_plain_dump(path: Path, marker: str) -> tuple[int, int, bool]:
+    """Read a gzipped plain dump once: data rows, CREATE ROLEs, did it finish.
+
+    pg_dump writes its completion line last, so seeing that line — outside any
+    COPY block, where a data row could otherwise forge it — is what proves the
+    dump ran to the end rather than stopping partway.
+    """
+    rows = 0
+    roles = 0
+    completed = False
+    in_copy = False
+    with gzip.open(path, "rt", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if in_copy:
+                if line.startswith("\\."):
+                    in_copy = False
+                else:
+                    rows += 1
+                continue
+            if line.startswith("COPY ") and line.rstrip().endswith("FROM stdin;"):
+                in_copy = True
+            elif line.startswith("CREATE ROLE "):
+                roles += 1
+            elif line.startswith(marker):
+                completed = True
+    return rows, roles, completed
+
+
+def verify_database_content(path: Path) -> int:
+    """Reject a database dump that cannot hold this database's contents.
+
+    The size floor and `gzip -t` both pass on a dump whose every table came out
+    empty. Returns the number of data rows seen.
+    """
+    rows, _, completed = scan_plain_dump(path, DB_DUMP_COMPLETE_MARKER)
+    if not completed:
+        raise VerificationError(
+            f"{path.name} never reached its '{DB_DUMP_COMPLETE_MARKER}' line — "
+            "the dump stopped partway"
+        )
+    if rows < MIN_DATA_ROWS:
+        raise VerificationError(
+            f"{path.name} holds {rows} data row(s), below the {MIN_DATA_ROWS}-row "
+            "floor — a dump this empty means the role taking it could not read "
+            "the tables, not that the database is empty"
+        )
+    logger.info("verified %s content: %d data row(s)", path.name, rows)
+    return rows
+
+
+def verify_globals_content(path: Path) -> int:
+    """Reject a globals dump with no roles in it. Returns the role count.
+
+    The database dump's OWNER and GRANT statements name these roles; a globals
+    artifact without them restores to a cluster that cannot own its own data.
+    """
+    _, roles, completed = scan_plain_dump(path, GLOBALS_DUMP_COMPLETE_MARKER)
+    if not completed:
+        raise VerificationError(
+            f"{path.name} never reached its '{GLOBALS_DUMP_COMPLETE_MARKER}' line — "
+            "the dump stopped partway"
+        )
+    if roles < MIN_ROLE_STATEMENTS:
+        raise VerificationError(
+            f"{path.name} defines {roles} role(s), below the {MIN_ROLE_STATEMENTS} "
+            "this cluster always has — the database dump's OWNER and GRANT "
+            "statements would have nothing to bind to"
+        )
+    logger.info("verified %s content: %d role(s)", path.name, roles)
+    return roles
+
+
 def dump_database(container: str, work_dir: Path, timestamp: str) -> Path:
     """Dump the whole database, keeping owners and privileges."""
     pg_user = _env("POSTGRES_USER", "supabase_admin")
@@ -230,6 +350,7 @@ def dump_database(container: str, work_dir: Path, timestamp: str) -> Path:
         out,
     )
     verify_artifact(out, MIN_DATABASE_BYTES)
+    verify_database_content(out)
     return out
 
 
@@ -244,6 +365,7 @@ def dump_globals(container: str, work_dir: Path, timestamp: str) -> Path:
         out,
     )
     verify_artifact(out, MIN_GLOBALS_BYTES)
+    verify_globals_content(out)
     return out
 
 
@@ -267,6 +389,12 @@ def format_summary(env_name: str, timestamp: str, artifacts: list[Path],
     return "\n".join(lines)
 
 
+# Retry the upload rather than lose a verified dump to a blip; rclone's own
+# backoff, so nothing here re-implements one.
+RCLONE_RETRY_ARGS = ["--retries", "5", "--retries-sleep", "30s",
+                     "--low-level-retries", "20"]
+
+
 def backup_destination(env_name: str) -> tuple[str, str]:
     """The remote and directory this environment's artifacts belong in."""
     remote = _env("BACKUP_RCLONE_REMOTE", "")
@@ -288,7 +416,9 @@ def upload(artifacts: list[Path], env_name: str, timestamp: str) -> str:
         raise ConfigError(f"artifacts span {len(work_dirs)} directories, expected one")
     destination = f"{remote}:{dest_dir}/{timestamp}/"
     logger.info("uploading %d artifact(s) to %s", len(artifacts), destination)
-    _run([_which("rclone"), "copy", str(work_dirs.pop()), destination])
+    # A transient blip on the way to Box would otherwise discard a dump that is
+    # already taken and verified, and the next attempt is a week away.
+    _run([_which("rclone"), "copy", str(work_dirs.pop()), destination, *RCLONE_RETRY_ARGS])
     return destination
 
 
@@ -322,6 +452,19 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("starting bloom-weekly-backup env=%s timestamp=%s", args.env, timestamp)
 
     try:
+        if args.env != BACKUP_ENV:
+            # The workflow stopped offering this, but the script is what someone
+            # rehearsing by hand actually runs. Under any other --env it reads
+            # that environment's env file and still resolves the PRODUCTION
+            # container, so it would upload a full prod dump — auth.users and
+            # all — into the other environment's Box folder, logging the wrong
+            # name at every line.
+            raise ConfigError(
+                f"--env {args.env} is refused: {COMPOSE_FILE} pins the production "
+                f"compose project, so a '{args.env}' run dumps production while "
+                f"reading {args.env}'s configuration. Rehearse with "
+                f"'--env {BACKUP_ENV} --dry-run' instead."
+            )
         deploy_dir = args.deploy_dir.resolve()
         if not deploy_dir.is_dir():
             raise ConfigError(f"deploy directory does not exist: {deploy_dir}")
@@ -331,9 +474,11 @@ def main(argv: list[str] | None = None) -> int:
             remote, dest_dir = backup_destination(args.env)
             print(f"{remote}:{dest_dir}")
             return EXIT_OK
-        state_dir = Path(_env("BACKUP_STATE_DIR", DEFAULT_STATE_DIR)).expanduser()
-        state_dir.mkdir(parents=True, exist_ok=True)
-        # The working copy holds a full dump; keep it off other users.
+        state_dir = _state_dir()
+        # The working copy holds a full dump; keep it off other users. mode= on
+        # the create leaves no window between the two calls; the chmod is what
+        # tightens a directory an earlier run left looser.
+        state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         state_dir.chmod(0o700)
         # Cancelling the job or hitting timeout-minutes kills this process from
         # outside; without a handler the working dir below is never unwound.
@@ -348,6 +493,9 @@ def main(argv: list[str] | None = None) -> int:
             backup_destination(args.env)
     except ConfigError as exc:
         logger.error("configuration error: %s", exc)
+        # This run is over, but a dump orphaned by an earlier SIGKILL must not
+        # outlive it just because the config is broken this week too.
+        sweep_best_effort()
         return EXIT_CONFIG
 
     # The working copy holds a full dump. The context manager covers returns

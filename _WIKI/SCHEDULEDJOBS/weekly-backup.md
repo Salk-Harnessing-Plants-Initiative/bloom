@@ -51,7 +51,37 @@ workflow**, optionally ticking "dry run" to dump and verify without uploading.
 There is deliberately no staging target. `docker-compose.prod.yml` pins the
 compose project name, so a staging run would read staging's env file — and so
 write to staging's Box folder — while still resolving the **production**
-container. Rehearse with a dry run against production instead.
+container. `backup.py` refuses any `--env` but `prod` with exit code 2, so this
+holds for the script run by hand on the server as well as for the workflow.
+Rehearse with a dry run against production instead:
+
+```bash
+sudo -u bloom-deploy python3 scheduled-jobs/weekly-backup/backup.py \
+  --env prod --deploy-dir "$PWD" --dry-run
+```
+
+## The backup and a deploy must not overlap
+
+A dump taken while a deploy is applying migrations captures a half-migrated
+schema. Nothing in either workflow's `concurrency:` block prevents that — they
+use separate groups on purpose, so that a queued deploy cannot cancel a backup
+and a backup cannot hold up a deploy.
+
+What actually prevents the overlap is that **both jobs run on the same single
+self-hosted runner** (`[self-hosted, linux, salk-network]`) and therefore queue
+behind one another. That is an operational fact, not a declared one: register a
+second runner on that label and the protection disappears silently, with
+nothing failing to announce it. If a second runner is ever added, give the two
+workflows a shared concurrency group, or add a deploy-in-progress check to this
+one, in the same change.
+
+The same shared runner is also why the Box credential's blast radius is wider
+than this job: the rclone token lives in `~/.config/rclone/rclone.conf` on the
+deploy host and is readable by anything that host runs as that user, and any
+job scheduled onto the runner — `deploy.yml`,
+`refresh-cyl-experiment-trait-counts.yml`, or a future one — reaches the same
+host by the same key. This job is not isolated from the runner, and the token is
+not isolated from other jobs.
 
 ## Nothing is ever deleted on Box
 
@@ -147,15 +177,20 @@ sudo -u bloom-deploy rclone lsl box:bloom-backups/prod
 
 ### Exit codes
 
-| Code | Meaning                                                     |
-| ---- | ----------------------------------------------------------- |
-| 0    | Verified backup uploaded                                    |
-| 1    | Subprocess failed (docker / pg_dump / gzip / rclone)        |
-| 2    | Configuration problem, or the stack is not running          |
-| 3    | An artifact failed verification — missing, short or corrupt |
+| Code | Meaning                                                               |
+| ---- | --------------------------------------------------------------------- |
+| 0    | Verified backup uploaded                                              |
+| 1    | Subprocess failed (docker / pg_dump / gzip / rclone)                  |
+| 2    | Configuration problem, the stack is not running, or `--env` was not `prod` |
+| 3    | An artifact failed verification — missing, short, corrupt or empty    |
+| 4    | The run was terminated by a signal — cancelled, or hit `timeout-minutes` |
 
 Code 3 is the one to read closely: the dump ran, but what came out cannot be a
 usable backup. Look at the database, not at the config.
+
+Code 4 is not a failure of anything the job ran. It gets its own code because a
+`SystemExit` carrying a message exits 1, which would make a cancelled run
+indistinguishable from a failed `pg_dump`.
 
 ## What is verified before an upload counts
 
@@ -168,9 +203,28 @@ anything is uploaded:
   gzip passes for a good backup;
 - `gzip -t` must pass on each artifact;
 - each artifact must clear a minimum-size floor;
-- the size is logged.
+- each artifact must carry the completion line its dumper writes **last**
+  (`-- PostgreSQL database dump complete`, and the cluster equivalent for the
+  globals file). `gzip` closes its stream cleanly around a `pg_dump` that died
+  mid-table, so integrity alone does not prove the dump finished;
+- the database dump must hold real rows, not just `COPY` blocks. If the role
+  taking the dump ever loses its RLS-bypass privilege — a plausible future
+  hardening change by someone unaware of this job — every guarded table dumps
+  empty, and the result is valid SQL that clears the size floor and gzips
+  cleanly. Size checking cannot see that; a row count can;
+- the globals dump must define roles, since the database dump's `OWNER` and
+  `GRANT` statements have nothing to bind to without them;
+- the sizes and counts are logged.
 
 Any failure ends the run without uploading anything.
+
+Reading the dump back for those last checks means decompressing it once on the
+host. That is CPU, not I/O against the database, and it happens after the
+container is done with.
+
+The upload itself is retried with backoff (`--retries`, `--retries-sleep`)
+rather than losing an already-verified dump to a transient blip, because the
+next attempt would otherwise be a week away.
 
 ## Restore
 
@@ -193,6 +247,12 @@ The dump contains `auth.users`. Do not leave a copy on disk.
 
 ## Notes on what this does not do
 
+- **A full Box quota, or a partial upload, is not verified against.** The job
+  checks what it produced, not what arrived. If Box fills or the transfer dies
+  after the retries are exhausted, the run fails and the summary shows the
+  dated folder as incomplete or absent — but nothing re-reads the uploaded
+  bytes back off Box to confirm them. The weekly glance at the listing is what
+  catches it.
 - **No point-in-time recovery.** Weekly full dumps. Anything written since the
   last Sunday is not covered. WAL archiving is a materially larger change.
 - **No encryption beyond Box's own.** The dump holds `auth.users` — email

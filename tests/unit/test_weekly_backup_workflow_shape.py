@@ -221,6 +221,24 @@ def test_the_summary_reads_the_file_the_run_step_wrote(workflow):
     assert set(written) == set(read), f"run wrote {written}, summary read {read}"
 
 
+def test_the_single_runner_dependency_is_documented(text):
+    # Nothing in the two workflows' concurrency groups keeps a backup off a
+    # database mid-migration; what does is that both land on one self-hosted
+    # runner. That is invisible in the YAML, so it has to be written down or it
+    # stops protecting anything the day a second runner is registered.
+    assert "SINGLE RUNNER" in text
+    assert "deploy.yml" in text
+    assert "second runner" in text
+
+
+def test_the_workflow_only_ever_targets_production(text):
+    # The env name reaching the script is a literal here, not an input, and
+    # there is no staging path to select.
+    assert "ENV_NAME=prod" in text
+    assert "--env 'staging'" not in text
+    assert "ENV_NAME=staging" not in text
+
+
 def test_concurrency_is_not_the_shared_deploy_group(workflow):
     group = workflow["concurrency"]["group"]
     assert "deploy-bloom" not in group, (

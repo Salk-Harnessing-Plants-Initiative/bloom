@@ -14,7 +14,17 @@ name: Weekly Postgres backup
 # PRODUCTION ONLY. Staging is not backed up, and there is no staging target:
 # the compose project name is pinned in docker-compose.prod.yml, so an
 # `--env staging` run would read staging's env file while still resolving the
-# production container. Rehearse with a dry run against production instead.
+# production container. backup.py refuses any `--env` but `prod` for that
+# reason, so the guarantee holds for someone running the script by hand too.
+# Rehearse with a dry run against production instead.
+#
+# SINGLE RUNNER, and the backup depends on it. This job and deploy.yml use
+# different concurrency groups on purpose (neither may cancel the other), so
+# what actually keeps a backup from running against a database mid-migration is
+# that both jobs land on the same one self-hosted runner and queue behind each
+# other there. Register a second runner on the `salk-network` label and that
+# protection is gone with nothing failing to say so — add a shared concurrency
+# group, or a deploy-in-progress check here, at the same time.
 #
 # Three things to know, all of which refresh-cyl-experiment-trait-counts.yml
 # documents at length and was bitten by first:
@@ -59,7 +69,8 @@ permissions:
 
 concurrency:
   # Its own group, NOT deploy-bloom: a queued or stuck deploy must not cancel a
-  # backup, and a backup must not hold up a deploy.
+  # backup, and a backup must not hold up a deploy. Overlap is prevented by the
+  # single shared runner instead — see the SINGLE RUNNER note at the top.
   group: weekly-backup-production
   cancel-in-progress: false
 
