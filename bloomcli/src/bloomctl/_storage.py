@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from .errors import is_network_error
+
 # Storage answers a caller whose token has expired with a 404 "Bucket not found" — it won't
 # confirm that a private bucket exists to someone who can't read it. A genuinely absent object
 # is also a 404, so the status alone can't tell them apart; the message is the only signal.
@@ -51,19 +53,6 @@ def status_of(error: BaseException) -> int | None:
         return None
 
 
-def _is_transport_error(error: BaseException) -> bool:
-    """True for a network-level httpx failure.
-
-    These have to be recognised by type: a timeout or a dropped connection carries no message
-    at all (`str(httpx.ReadTimeout())` is empty), so there is nothing to match text against.
-    """
-    try:
-        import httpx
-    except ImportError:  # pragma: no cover - httpx is a hard dependency of supabase
-        return False
-    return isinstance(error, httpx.TransportError)
-
-
 def is_retryable(error: BaseException) -> bool:
     """True for failures a second attempt could plausibly fix.
 
@@ -77,7 +66,7 @@ def is_retryable(error: BaseException) -> bool:
     status = status_of(error)
     if status is not None:
         return status == 429 or 500 <= status <= 599
-    return _is_transport_error(error)
+    return is_network_error(error)
 
 
 def describe_storage_error(error: BaseException) -> StorageError:

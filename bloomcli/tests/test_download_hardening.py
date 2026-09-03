@@ -192,6 +192,56 @@ def test_an_unlisted_scan_is_not_counted_as_one_failed_frame(tmp_path, monkeypat
     assert result.incomplete  # ...but the dataset is still not complete
 
 
+def test_an_unlisted_scan_records_a_sentence_not_the_error_body(tmp_path, monkeypatch):
+    """The log is the file we ask people to send us; a PostgREST body carries a connection
+    string in `hint` and the failing statement in `details`."""
+    from postgrest import APIError
+
+    def _fetch_images(client, scan_id):
+        raise APIError(
+            {
+                "message": "",
+                "code": "42501",
+                "hint": "connect as postgres://bloom_agent@10.0.3.14:5432/bloom",
+                "details": "SELECT * FROM cyl_images WHERE scan_id = 1",
+            }
+        )
+
+    monkeypatch.setattr(dl, "fetch_images", _fetch_images)
+
+    result = dl.download_images(_Client(), [SCAN], tmp_path, workers=1)
+    log = tmp_path / "log.txt"
+    dl.write_download_log(result, log)
+    written = log.read_text()
+
+    assert "list images: Bloom rejected the request (code 42501)" in written
+    assert "postgres://" not in written
+    assert "SELECT" not in written
+
+
+def test_an_unlisted_scan_survives_an_error_that_cannot_describe_itself(tmp_path, monkeypatch):
+    """This handler is the reason one unreadable scan costs one log line rather than the run.
+    Describing the failure must not become a second failure that nothing catches."""
+
+    class _Hostile(Exception):
+        @property
+        def code(self):
+            raise RuntimeError("the code property blew up")
+
+    def _fetch_images(client, scan_id):
+        if scan_id == 1:
+            raise _Hostile()
+        return _images(2)
+
+    monkeypatch.setattr(dl, "fetch_images", _fetch_images)
+
+    result = dl.download_images(_Client(), [SCAN, SCAN_B], tmp_path, workers=1)
+
+    assert result.scans_unlisted == 1
+    assert result.ok == 2, "the other scan's frames still downloaded"
+    assert "_Hostile" in [f.error.replace("list images: ", "") for f in result.frames if f.unlisted][0]
+
+
 # --- bounded submission -----------------------------------------------------
 
 

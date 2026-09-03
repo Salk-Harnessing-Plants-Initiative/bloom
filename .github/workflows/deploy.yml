@@ -38,6 +38,11 @@ jobs:
     # CI when the self-hosted runner is offline/hung. The deploy will still
     # fail (GitHub-hosted runners have no route to the Salk server), but
     # it fails fast instead of queuing for 24h.
+    #
+    # bloom#736: refresh-cyl-experiment-trait-counts.yml also depends on this same
+    # self-hosted salk-network runner (unconditionally, no escape hatch). It uses a
+    # different concurrency.group than this job, so a deploy occupying this single
+    # runner for up to timeout-minutes below can make that refresh job queue behind it.
     runs-on: ${{ github.event.inputs.runner == 'ubuntu-latest' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "salk-network"]') }}
     timeout-minutes: 30
     environment: production
@@ -771,8 +776,22 @@ jobs:
                   fi
                 fi
               fi
-              if [ \"\$kong_rollback_ok\" = \"true\" ]; then
+              # Reload caddy onto the reverted Caddyfile if this deploy changed it —
+              # the reset restored the file, but only caddy reload re-reads it.
+              caddy_rollback_ok=true
+              if [ \"${{ steps.pull_prod.outputs.caddyfile_changed }}\" = \"true\" ]; then
+                echo 'caddy/Caddyfile changed during this deploy — reloading caddy so the reverted config takes effect'
+                if ! timeout 60 docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T caddy caddy reload --config /etc/caddy/Caddyfile; then
+                  echo '::warning::caddy reload during rollback failed — the Caddyfile on disk was reverted but the running config could not be confirmed; caddy may still be serving the config from the failed deploy, or may not be running at all. Check whether it is running with: docker compose -f docker-compose.prod.yml --env-file .env.prod ps caddy — then, from the deploy directory, retry: docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T caddy caddy reload --config /etc/caddy/Caddyfile'
+                  caddy_rollback_ok=false
+                fi
+              fi
+              if [ \"\$kong_rollback_ok\" = \"true\" ] && [ \"\$caddy_rollback_ok\" = \"true\" ]; then
                 echo 'Rollback complete — previous version restored and healthy'
+              elif [ \"\$kong_rollback_ok\" = \"true\" ]; then
+                # Qualify the message, still exit 0 — no health wait to escalate on,
+                # and the code/env revert already succeeded.
+                echo '::warning::Rollback complete — previous version code/env restored, but the caddy reload could not be confirmed (see warning above) — caddy may still be serving the routing from the failed deploy; verify manually on the deploy host'
               else
                 echo '::warning::Rollback complete — previous version code/env restored, but kong health could not be confirmed (see warning above) — verify manually on the deploy host'
                 # Fail this step, not just warn — the critical code/env revert
@@ -1407,8 +1426,21 @@ jobs:
                   fi
                 fi
               fi
-              if [ \"\$kong_rollback_ok\" = \"true\" ]; then
+              # Reload caddy onto the reverted Caddyfile if this deploy changed it —
+              # see the matching comment on the production rollback step above.
+              caddy_rollback_ok=true
+              if [ \"${{ steps.pull_staging.outputs.caddyfile_changed }}\" = \"true\" ]; then
+                echo 'caddy/Caddyfile changed during this deploy — reloading caddy so the reverted config takes effect'
+                if ! timeout 60 docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T caddy caddy reload --config /etc/caddy/Caddyfile; then
+                  echo '::warning::caddy reload during rollback failed — the Caddyfile on disk was reverted but the running config could not be confirmed; caddy may still be serving the config from the failed deploy, or may not be running at all. Check whether it is running with: docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps caddy — then, from the deploy directory, retry: docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T caddy caddy reload --config /etc/caddy/Caddyfile'
+                  caddy_rollback_ok=false
+                fi
+              fi
+              if [ \"\$kong_rollback_ok\" = \"true\" ] && [ \"\$caddy_rollback_ok\" = \"true\" ]; then
                 echo 'Rollback complete — previous version restored and healthy'
+              elif [ \"\$kong_rollback_ok\" = \"true\" ]; then
+                # See the matching comment on the production rollback step above.
+                echo '::warning::Rollback complete — previous version code/env restored, but the caddy reload could not be confirmed (see warning above) — caddy may still be serving the routing from the failed deploy; verify manually on the deploy host'
               else
                 echo '::warning::Rollback complete — previous version code/env restored, but kong health could not be confirmed (see warning above) — verify manually on the deploy host'
                 # Fail this step, not just warn — the critical code/env revert

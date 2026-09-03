@@ -64,13 +64,18 @@ def explain(exc: BaseException) -> str:
     if isinstance(message, str) and message:
         return message
 
-    if _is_network_error(exc):
+    if is_network_error(exc):
         return f"could not reach Bloom ({type(exc).__name__}) — check your connection and retry"
+
+    # An API error carrying no wording: its str() is the whole body, hint and details included.
+    code = getattr(exc, "code", None)
+    if code and hasattr(exc, "message"):
+        return f"Bloom rejected the request (code {code})"
 
     return str(exc) or type(exc).__name__
 
 
-def _describe(exc: BaseException) -> str:
+def describe(exc: BaseException) -> str:
     """``explain(exc)``, falling back to the type name if describing it raises.
 
     `explain` runs `str()` and `getattr` on an exception this module has never seen, and
@@ -83,7 +88,7 @@ def _describe(exc: BaseException) -> str:
         return type(exc).__name__
 
 
-def _is_network_error(exc: BaseException) -> bool:
+def is_network_error(exc: BaseException) -> bool:
     """True for a connection-level httpx failure.
 
     Recognised by type: a dropped connection or a timeout often carries no message at all,
@@ -251,7 +256,7 @@ def main(args: Any = None) -> int:
 
         cli(args=args)
     except Exception as exc:
-        click.echo(f"Error: {_describe(exc)}", err=True)
+        click.echo(f"Error: {describe(exc)}", err=True)
         log = record(exc, sys.argv)
         if log is not None:  # not `log.exists()`: a touched file with no traceback in it
             click.echo(f"Details written to {log}", err=True)

@@ -31,7 +31,7 @@ RESULT_NOOP = {
 }
 
 # The exact RAISE EXCEPTION substrings from the RPC migration
-# (supabase/migrations/20260706170000_cyl_writeback_contract_a3.sql), with the
+# (supabase/migrations/20260831130000_cyl_writeback_contract_a7.sql), with the
 # `%` placeholders interpolated as Postgres would deliver them.
 RPC_ERRORS = [
     "invalid envelope: expected a JSON object",
@@ -39,7 +39,7 @@ RPC_ERRORS = [
     "invalid envelope: missing provenance.inputs object",
     "invalid envelope: traits must be an array",
     "invalid envelope: blobs must be an array",
-    "contract_version mismatch: got 0.0.0, pinned 0.1.0a3 (single leading v ignored)",
+    "contract_version mismatch: got 0.0.0, pinned 0.1.0a7 (single leading v ignored)",
     "empty or absent idempotency_key",
     "invalid envelope: missing provenance.scan_key",
     "trait scan_key disagrees with provenance.scan_key",
@@ -410,14 +410,14 @@ def test_cli_contract_version_mismatch_reports_both_versions(monkeypatch):
 
     def boom(client, env):
         raise _api_error(
-            "contract_version mismatch: got 0.0.0, pinned 0.1.0a3 (single leading v ignored)"
+            "contract_version mismatch: got 0.0.0, pinned 0.1.0a7 (single leading v ignored)"
         )
 
     monkeypatch.setattr(ing, "call_insert_envelope", boom)
     res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
     assert res.exit_code != 0
     assert "0.0.0" in res.output
-    assert "0.1.0a3" in res.output
+    assert "0.1.0a7" in res.output
 
 
 def test_cli_non_dict_rpc_response_errors(monkeypatch):

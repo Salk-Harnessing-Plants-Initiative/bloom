@@ -22,7 +22,10 @@ not the `video_jobs`/`pg_notify` mechanism above. Phase 1 enumerates/enqueues;
 Phase 2 (`dispatch_worker.py`, a separate process — see "Pipeline dispatch
 worker" below) claims each enqueued batch and submits it to Argo as a
 Kubernetes `Workflow` CRD, via the K8s API directly (not the `argo` CLI, not
-the in-cluster-only Argo Server).
+the in-cluster-only Argo Server). Phase 3 (`status_poller.py`, another
+separate process — see "Pipeline status poller" below, plus the read-only
+`GET /runs/{id}` route) periodically checks each submitted batch's real Argo
+outcome and progresses the run past dispatch outcome to `running`/`complete`.
 
 Run locally
 
@@ -50,6 +53,7 @@ internal-only and not exposed through the public proxy.
 | GET    | `/health`                                   | none (internal-only) | Liveness — kept for the in-container probe; **not** exposed via the public proxy |
 | POST   | `/cyl/experiments/{experiment_id}/scans/{scan_id}/video` | Supabase user JWT | Generate a scan's video, upload to Storage |
 | POST   | `/pipeline` (external: `/workflows/pipeline`) | Supabase user JWT | Trigger an A4 sleap-roots pipeline run for a scan/wave/experiment/explicit scan list |
+| GET    | `/runs/{run_id}` (external: `/workflows/runs/{run_id}`) | Supabase user JWT | Read a pipeline run's current status + its scans — a plain DB read, does **not** itself query Argo/K8s |
 
 ### Video generation
 
@@ -110,15 +114,25 @@ process, not an HTTP route — deployed as its own `cyl-pipeline-worker`
 container (same image as this service). It polls `claim_cyl_pipeline_batch`,
 and for each claimed batch:
 
-1. Constructs a `Workflow` CRD (`k8s_client.build_workflow_body`) — a DAG
-   referencing the four already-registered `WorkflowTemplate`s
-   (`sleap-roots-images-downloader-template` → `sleap-roots-predictor-template`
+1. Constructs a `Workflow` CRD (`k8s_client.build_workflow_body`) by loading a
+   vendored, CI-drift-checked copy of `sleap-roots-pipeline`'s canonical
+   `sleap-roots-pipeline.yaml` (`vendored/sleap-roots-pipeline.yaml`, pin
+   recorded in the sibling `SLEAP_ROOTS_PIPELINE_REF` — kept in sync with
+   upstream by a CI job, not hand-copied; see bloom #737) and applying exactly
+   four overrides on top of it: the batch's own `scan-ids`; attribution
+   labels — `submitted-by: bloom-pipeline`/`pipeline-run-id`/`batch-index`/
+   `environment`, **merged** into the vendored file's own labels rather than
+   replacing them (mandatory — raw K8s API submission gets none of Argo's
+   automatic `creator` label); a `ttlStrategy` (the submitting identity has no
+   `delete` RBAC, so Argo's own controller must clean up completed Workflows
+   instead — this override is dispatch-only, deliberately never added to the
+   shared file); and `metadata.namespace`, forced to the configured
+   `WORKFLOWS_K8S_NAMESPACE` (see below). Everything else — the DAG (which
+   references the four already-registered `WorkflowTemplate`s:
+   `sleap-roots-images-downloader-template` → `sleap-roots-predictor-template`
    → `sleap-roots-trait-extractor-template` → `sleap-roots-write-back-template`),
-   parameterized by that batch's own `scan-ids`, labeled with
-   `submitted-by: bloom-pipeline`/`pipeline-run-id`/`batch-index` (mandatory —
-   raw K8s API submission gets none of Argo's automatic `creator` label), and
-   carrying a `ttlStrategy` (the submitting identity has no `delete` RBAC, so
-   Argo's own controller must clean up completed Workflows instead).
+   `spec.volumes`, `spec.entrypoint`, `spec.serviceAccountName` — passes through
+   from the vendored file unmodified.
 2. POSTs it directly to the K8s API server
    (`{WORKFLOWS_K8S_API_URL}/apis/argoproj.io/v1alpha1/namespaces/{WORKFLOWS_K8S_NAMESPACE}/workflows`)
    with a Bearer token + CA cert — not the `argo` CLI, not the Argo Server.
@@ -128,11 +142,70 @@ and for each claimed batch:
 **Namespace is a single hardcoded value for v1** (`WORKFLOWS_K8S_NAMESPACE`,
 default `runai-busch-lab`) — no `lab`/`project` column exists on any
 scan/experiment/wave table to resolve a per-request namespace from. A known
-v1 limitation, not a bug.
+v1 limitation, not a bug. This value now reaches the K8s API **twice**: as
+the submission URL's namespace segment (as before), and — since bloom #737 —
+also forced into the submitted object's own `metadata.namespace`, overwriting
+whatever the vendored file hardcodes there. Both are always built from the
+same `NAMESPACE` variable, so they can't disagree; the Kubernetes API rejects
+a submission whose body namespace differs from the URL's.
+
+**`bloom-pipeline` vs. `bloom-workflow` — two different ServiceAccounts, easy
+to confuse by name.** `bloom-pipeline` (provisioned below) is the identity
+this worker authenticates as to *submit* Workflows to the K8s API.
+`bloom-workflow` (`spec.serviceAccountName`, set inside the submitted object,
+now loaded from the vendored file rather than hardcoded here) is the identity
+each DAG step's own *pod* runs as once Argo's controller picks it up, needed
+so each step can report results back to Argo (`workflowtaskresults
+create`/`patch`). This change doesn't alter either identity or its RBAC —
+only how the value `"bloom-workflow"` reaches the submitted object.
 
 ```bash
 cd services/workflows
 uv run python dispatch_worker.py
+```
+
+### Pipeline status poller
+
+`status_poller.py` (bloom #11, Phase 3 of 3 — see
+`openspec/changes/add-cyl-pipeline-status-polling/`) is a standalone process,
+distinct from `dispatch_worker.py` above — deployed as its own
+`cyl-status-poller` container (same image). Where `dispatch_worker.py` reacts
+to new pgmq messages, this poller runs on a fixed wall-clock cadence
+(`WORKFLOWS_STATUS_POLL_SECONDS`, default 15s) regardless of dispatch
+activity, sweeping every `cyl_pipeline_runs` row still `'submitted'`/
+`'running'`/`'partial'` (a `'partial'` run may still have genuinely-dispatched
+batches whose real Argo outcome hasn't been checked yet — it is not excluded
+merely because Phase 2 already settled its dispatch outcome). For each such
+run it fetches the real Argo phase of every distinct `argo_workflow_name`
+among that run's scans (`k8s_client.get_workflow_status` — a read-only `GET`,
+not the `create` `dispatch_worker.py` does) and, once it has enough evidence
+to conclude something that differs from the run's already-known status,
+writes the result via `update_cyl_pipeline_run_status`, progressing the run
+to `'running'`/`'complete'` (or a real-outcome `'failed'`/`'partial'`) —
+values `claim`/`complete`/`fail_cyl_pipeline_batch` (Phase 2) never reach,
+since those only ever describe dispatch outcome. A computed conclusion of
+`'running'` that merely reconfirms a run already known to be `'running'` is a
+no-op (no write) — `'running'` is the only status value this poller ever
+writes itself, so a known status of `'running'` unambiguously means a prior
+sweep already confirmed it. This same-value skip does **not** apply to
+`'partial'`: Phase 2's own dispatch-settle can *also* produce `'partial'` as a
+pre-poll guess this poller hasn't yet checked, so a `'partial'`-sourced
+candidate always writes its computed conclusion — even when that conclusion
+happens to be `'partial'` again — to avoid silently discarding a run's first
+real confirmation. A `'partial'` run whose dispatched batches are all already
+resolved does keep satisfying this candidate query and gets re-written
+identically forever (a documented, cosmetic trade-off — see `design.md`), but
+that's a strictly better failure mode than losing the first real write.
+
+The rollup rule that maps a run's per-workflow phases to one status is
+specified normatively in the `cyl-pipeline-status-polling` OpenSpec capability
+spec's "Rollup rule..." requirement — not restated here. See that change's
+`design.md` for why the computation happens in Python rather than SQL (a
+deliberate departure from Phase 2's own "aggregate in SQL" precedent).
+
+```bash
+cd services/workflows
+uv run python status_poller.py
 ```
 
 ### Auth model — two independent layers
@@ -166,17 +239,24 @@ and storage policies are the boundary**. The app user needs only:
 - `SELECT (scan_id, source_id)` on `cyl_scan_traits`, `SELECT (id, metadata)` on
   `cyl_trait_sources` (the pipeline-trigger dedup preview's all-sources join),
   and `SELECT (id)`-only existence-check access on `cyl_waves`/`cyl_experiments`
+- `SELECT` on `gravi_scans`, `gravi_images`, `gravi_scan_sessions` and
+  `gravi_plate_videos`, and read on the graviscan-images bucket — the plate
+  time-lapse frame set, the run it belongs to, and what a stored video covers
 - `EXECUTE` on `enqueue_cyl_pipeline_batch`, `claim_cyl_pipeline_batch`,
-  `complete_cyl_pipeline_batch`, `fail_cyl_pipeline_batch`
+  `complete_cyl_pipeline_batch`, `fail_cyl_pipeline_batch`,
+  `update_cyl_pipeline_run_status`
 
-Note this grant list is shared by **two processes** now: the `workflows` API
-(this route) and the separate `cyl-pipeline-worker` container
-(`dispatch_worker.py`) — both authenticate as the same `bloom_workflows` app
+Note this grant list is shared by **three processes** now: the `workflows` API
+(this route), the separate `cyl-pipeline-worker` container
+(`dispatch_worker.py`), and the separate `cyl-status-poller` container
+(`status_poller.py`) — all three authenticate as the same `bloom_workflows` app
 user. The first three grants are set up by the migration
 `…_create_workflows_role.sql`; the pipeline-trigger ones by
 `…_create_cyl_pipeline_runs.sql` (bloom #11/#404, Phase 1); the
 claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
-(Phase 2).
+(Phase 2); `update_cyl_pipeline_run_status` by
+`…_add_cyl_pipeline_run_status_polling.sql` (Phase 3); the gravi reads by
+`…_workflows_read_gravi.sql`.
 
 ## Provisioning (per environment)
 
@@ -209,13 +289,14 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 | `WORKFLOWS_RATE_LIMIT`         | `5`                     | Max requests per user per window, per process, shared across all application routes (429 over) |
 | `WORKFLOWS_RATE_WINDOW_SECONDS`| `60`                    | Rate-limit window                                    |
 | `WORKFLOWS_PUBLIC_SUPABASE_URL`| –                        | Public base that replaces the internal `SUPABASE_URL` host in signed URLs, so `download_url` works for outside callers (set to `NEXT_PUBLIC_SUPABASE_URL`). Unset → the internal URL is returned unchanged. |
-| `WORKFLOWS_K8S_TOKEN`          | –                        | `cyl-pipeline-worker` only. Bearer token for the `bloom-pipeline` ServiceAccount — a real credential, eagerly required (raises before any network call if missing) |
-| `WORKFLOWS_K8S_CA_CERT`        | –                        | `cyl-pipeline-worker` only. PEM cluster CA, stored with literal `\n` escapes (see Provisioning above) — a real credential, eagerly required |
-| `WORKFLOWS_K8S_API_URL`        | –                        | `cyl-pipeline-worker` only. K8s API server base URL (`https://<host>:6443`) — a real credential, eagerly required |
-| `WORKFLOWS_K8S_NAMESPACE`      | `runai-busch-lab`        | `cyl-pipeline-worker` only. Single hardcoded namespace for v1 (not a credential — never eagerly required) |
+| `WORKFLOWS_K8S_TOKEN`          | –                        | `cyl-pipeline-worker` **and** `cyl-status-poller`. Bearer token for the `bloom-pipeline` ServiceAccount — a real credential, eagerly required (raises before any network call if missing) |
+| `WORKFLOWS_K8S_CA_CERT`        | –                        | `cyl-pipeline-worker` **and** `cyl-status-poller`. PEM cluster CA, stored with literal `\n` escapes (see Provisioning above) — a real credential, eagerly required |
+| `WORKFLOWS_K8S_API_URL`        | –                        | `cyl-pipeline-worker` **and** `cyl-status-poller`. K8s API server base URL (`https://<host>:6443`) — a real credential, eagerly required |
+| `WORKFLOWS_K8S_NAMESPACE`      | `runai-busch-lab`        | `cyl-pipeline-worker` **and** `cyl-status-poller`. Single hardcoded namespace for v1 (not a credential — never eagerly required) |
 | `WORKFLOWS_K8S_TTL_SECONDS`    | `3600`                   | `cyl-pipeline-worker` only. `ttlStrategy.secondsAfterCompletion` on every submitted Workflow, since the submitting identity has no `delete` RBAC (not a credential — never eagerly required) |
 | `WORKFLOWS_K8S_ENV_LABEL`      | `dev`                    | `cyl-pipeline-worker` only. `environment` label on every submitted Workflow — prod and staging share the `runai-busch-lab` namespace and both `run_id` sequences start at 1, so this is what disambiguates them for a future reconciliation sweep (not a credential — never eagerly required) |
 | `WORKFLOWS_WORKER_POLL_SECONDS`| `5`                      | `cyl-pipeline-worker` only. Idle sleep between empty-queue polls, and the retry interval for the startup Supabase connection check |
+| `WORKFLOWS_STATUS_POLL_SECONDS`| `15`                     | `cyl-status-poller` only. Sleep between sweep cycles, and the retry interval for the startup Supabase connection check. Not wired into either compose file's `environment:` block, matching `WORKFLOWS_WORKER_POLL_SECONDS`'s own treatment — the code-side default governs every deployed environment today |
 | `WORKFLOWS_DISPATCH_VT_SECONDS`| `60`                     | `cyl-pipeline-worker` only. pgmq visibility timeout passed to `claim_cyl_pipeline_batch` — how long a claimed batch stays hidden from other claimants before redelivery |
 | `WORKFLOWS_DISPATCH_MAX_READS`| `5`                       | `cyl-pipeline-worker` only. Poison-message threshold passed to `claim_cyl_pipeline_batch` — a batch redelivered more than this many times is dead-lettered (marked failed) instead of claimed again |
 
