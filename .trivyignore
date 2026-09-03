@@ -134,19 +134,23 @@ CVE-2026-11940
 CVE-2026-59873
 
 # golang.org/x/crypto/ssh (compiled into the caddy binary via xcaddy) — affects: caddy
-# Auth bypass: an SSH server/client can fail to enforce a certificate's critical
-# `source-address` option. Caddy is used here only as an HTTPS reverse proxy + ACME
-# client (see caddy/Caddyfile) and runs no SSH server or client of its own — the
-# vulnerable code path is unreachable. golang.org/x/crypto ships every subpackage
-# (ssh, acme, bcrypt, ocsp, ...) under one module version, so the build pulls in the
-# vulnerable ssh subpackage as a byproduct of the OTHER x/crypto packages Caddy's own
-# ACME/TLS stack does use — nothing in this deployment calls into ssh itself.
-# No caddy release declares a patched x/crypto yet: 2.11.3 (what we build) declares
-# 0.50.0, 2.11.4 declares 0.52.0, unreleased `master` is on 0.54.0; the fix ships in
-# 0.55.0. Forcing the version via `xcaddy build --with golang.org/x/crypto@v0.55.0`
-# does not work — confirmed directly, it fails with "cannot find module providing
-# package golang.org/x/crypto" (`--with` pins Caddy plugin modules, not arbitrary
-# transitive dependency versions; see #775/#776). Reassess when a caddy release
-# declares golang.org/x/crypto >= 0.55.0.
+# Auth bypass: an SSH server can fail to enforce a certificate's critical
+# `source-address` option, letting a client connect from an address the certificate was
+# meant to exclude. Reaching it needs something speaking SSH. Caddy is used here only as
+# an HTTPS reverse proxy + ACME client (see caddy/Caddyfile): it serves :80, :443 and
+# :2021 and runs no SSH server or client, so the affected code path is unreachable.
+# The ssh code IS compiled in, rather than absent — it arrives with
+# github.com/smallstep/certificates, the certificate-issuing library Caddy embeds for its
+# PKI and ACME-server apps, which covers web and SSH certificates in one piece. This
+# deployment enables neither app, and Caddy exposes no SSH certificate feature to enable
+# in the first place. No caddy release declares a patched x/crypto yet: 2.11.3 (what we
+# build) declares 0.50.0, 2.11.4 declares 0.52.0, unreleased `master` is on 0.54.0; the
+# fix ships in 0.55.0. It CAN be forced at build time with
+# `xcaddy build --with golang.org/x/crypto/bcrypt@v0.55.0` — a subpackage path, because
+# xcaddy imports whatever path it is given and golang.org/x/crypto has no code at its
+# root; that spelling was verified to build and to link 0.55.0. Not taken deliberately:
+# it pins the library ahead of what Caddy is tested against, for no exposure this
+# deployment can reach. Reassess when a caddy release declares
+# golang.org/x/crypto >= 0.55.0. See bloom#775.
 # Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-56854
 CVE-2026-56854
