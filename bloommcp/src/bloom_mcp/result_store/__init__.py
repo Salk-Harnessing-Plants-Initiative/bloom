@@ -2,6 +2,7 @@
 
 from .fake_store import FakeResultStore
 from .ports import (
+    CatalogBackendMismatchError,
     CommitFailedError,
     CorruptRunLinksError,
     ManifestIncompatibleError,
@@ -17,6 +18,7 @@ from .ports import (
 from .supabase_store import SupabaseResultStore
 
 __all__ = [
+    "CatalogBackendMismatchError",
     "CommitFailedError",
     "CorruptRunLinksError",
     "FakeResultStore",
