@@ -806,7 +806,9 @@ jobs:
         run: |
           docker compose $COMPOSE_FILES --env-file .env.ci up -d supabase-minio
           echo "Waiting for MinIO to be healthy..."
-          timeout 60 bash -c 'until docker compose $COMPOSE_FILES --env-file .env.ci ps supabase-minio --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
+          # Docker prints one service per line, or all of them in one list
+          # depending on the version. Handle both.
+          timeout 60 bash -c 'until docker compose $COMPOSE_FILES --env-file .env.ci ps supabase-minio --format json | jq -e "if type == \"array\" then .[] else . end | select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
           echo "MinIO is healthy!"
           docker compose $COMPOSE_FILES --env-file .env.ci run --rm minio-init
           echo "Buckets created!"
@@ -815,7 +817,9 @@ jobs:
         run: |
           docker compose $COMPOSE_FILES --env-file .env.ci up -d db-prod
           echo "Waiting for database to be healthy..."
-          timeout 180 bash -c 'until docker compose $COMPOSE_FILES --env-file .env.ci ps db-prod --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
+          # Docker prints one service per line, or all of them in one list
+          # depending on the version. Handle both.
+          timeout 180 bash -c 'until docker compose $COMPOSE_FILES --env-file .env.ci ps db-prod --format json | jq -e "if type == \"array\" then .[] else . end | select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
           echo "Database is healthy!"
 
       - name: Start remaining services
@@ -827,14 +831,25 @@ jobs:
           COMPOSE_BAKE: "true"
         run: docker compose $COMPOSE_FILES -f docker-compose.ci-cache.yml --env-file .env.ci up -d --build
 
+      # Fails the job if any service is unhealthy, still starting, or has exited
+      # with an error. Must never pass while something is broken (issue #163).
       - name: Wait for services to be healthy
         run: |
+          set -euo pipefail
           echo "Waiting for services to become healthy..."
           TIMEOUT=180
           ELAPSED=0
           while [ $ELAPSED -lt $TIMEOUT ]; do
-            UNHEALTHY=$(docker compose $COMPOSE_FILES --env-file .env.ci ps --format json | jq -r '.[] | select(.Health == "unhealthy" or .Health == "starting") | .Name' 2>/dev/null | wc -l)
-            EXITED=$(docker compose $COMPOSE_FILES --env-file .env.ci ps --format json | jq -r '.[] | select(.State == "exited" and .ExitCode != 0) | .Name' 2>/dev/null | wc -l)
+            # Docker prints one service per line, or all of them in one list
+            # depending on the version. Turn both into one service per line.
+            PS_JSON=$(docker compose $COMPOSE_FILES --env-file .env.ci ps --format json | jq -c 'if type == "array" then .[] else . end')
+            # An empty list means nothing started, not that everything is fine.
+            if [ -z "$PS_JSON" ]; then
+              echo "::error::docker compose ps listed no services — the stack never started"
+              exit 1
+            fi
+            UNHEALTHY=$(echo "$PS_JSON" | jq -r 'select(.Health == "unhealthy" or .Health == "starting") | .Name' | wc -l)
+            EXITED=$(echo "$PS_JSON" | jq -r 'select(.State == "exited" and .ExitCode != 0) | .Name' | wc -l)
             if [ "$UNHEALTHY" -eq 0 ] && [ "$EXITED" -eq 0 ]; then
               echo "All services healthy!"
               docker compose $COMPOSE_FILES --env-file .env.ci ps
