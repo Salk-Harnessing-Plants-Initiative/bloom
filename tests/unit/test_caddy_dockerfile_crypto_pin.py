@@ -12,6 +12,12 @@ a redundant flag. The CVE scan would catch it, but only on a branch that runs
 the image build, and only if someone reads a red gate rather than assuming it is
 red for the usual reasons.
 
+It also holds the path to a subpackage. `--with golang.org/x/crypto@v0.55.0`
+reads like the obvious spelling and does not compile: xcaddy blank-imports the
+path it is given, and the module root holds no Go package. Only the image build
+proves the image builds, but this at least keeps the one shape that already got
+through from getting through twice.
+
 When a Caddy release pins 0.55.0 or later, bump the builder and delete both the
 override and this file — the assertion below is meant to fail at that point, so
 the removal is a decision rather than a side effect.
@@ -30,7 +36,10 @@ DOCKERFILE = REPO_ROOT / "caddy" / "Dockerfile"
 # whole stack.
 FIXED_VERSION = (0, 55, 0)
 
-_OVERRIDE = re.compile(r"--with\s+golang\.org/x/crypto@v(\d+)\.(\d+)\.(\d+)")
+_OVERRIDE = re.compile(
+    r"--with\s+golang\.org/x/crypto(?P<subpackage>(?:/[a-z0-9]+)*)"
+    r"@v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
+)
 
 
 def _joined(strip_comments: bool = False) -> str:
@@ -62,10 +71,25 @@ def test_xcaddy_forces_a_patched_x_crypto():
         "CVE-2026-56854 and the CVE scan fails. If a Caddy release now pins "
         "0.55.0 or later, bump the builder image and delete this test with it."
     )
-    version = tuple(int(part) for part in match.groups())
+    version = tuple(int(match.group(part)) for part in ("major", "minor", "patch"))
     assert version >= FIXED_VERSION, (
         f"x/crypto is forced to v{'.'.join(map(str, version))}, which is below "
         f"the {'.'.join(map(str, FIXED_VERSION))} that fixes CVE-2026-56854"
+    )
+
+
+def test_the_override_names_a_subpackage_not_the_module_root():
+    """`golang.org/x/crypto` has no Go package at its root — only subdirectories
+    like `bcrypt` and `ssh` hold code. xcaddy blank-imports whatever path it is
+    handed, so the bare module path fails with "cannot find module providing
+    package" and no image is built at all. The version applies to the whole
+    module either way, so naming a subpackage costs nothing."""
+    match = _OVERRIDE.search(_joined(strip_comments=True))
+    assert match, "the x/crypto override is gone from the xcaddy build"
+    assert match.group("subpackage"), (
+        "the override names golang.org/x/crypto itself, which has no Go package "
+        "at its root — the image will not build. Name a subpackage Caddy already "
+        "imports, e.g. golang.org/x/crypto/bcrypt@v0.55.0"
     )
 
 
