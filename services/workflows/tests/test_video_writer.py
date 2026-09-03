@@ -217,3 +217,20 @@ def test_the_first_frame_opens_the_video_and_the_second_must_match(monkeypatch):
     with pytest.raises(ValueError, match="opened at 300x200"):
         w.add(np.zeros((150, 250, 3), dtype=np.uint8))
     assert len(w.process.stdin.chunks) == 1
+
+
+@pytest.mark.parametrize("shape", [(200, 300, 4), (200, 300, 2), (200, 300, 1), (5,)])
+def test_add_refuses_a_frame_that_is_not_three_channel(shape):
+    """The video is written as rgb24. An image with alpha decodes to 4
+    channels, changing the bytes per frame without changing width or height."""
+    w = _opened_writer(300, 200)
+    with pytest.raises(ValueError, match="3-channel"):
+        w.add(np.zeros(shape, dtype=np.uint8))
+    assert w.process.stdin.chunks == []
+
+
+def test_add_still_widens_grayscale_before_the_channel_check():
+    """Mono capture stays supported: 2D is expanded to RGB first."""
+    w = _opened_writer(300, 200)
+    w.add(np.zeros((200, 300), dtype=np.uint8))
+    assert len(w.process.stdin.chunks[0]) == 300 * 200 * 3
