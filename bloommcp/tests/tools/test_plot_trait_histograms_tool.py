@@ -437,6 +437,42 @@ def test_no_figure_handle_leak_and_agg_backend(injected_ports):
     assert len(plt.get_fignums()) == before
 
 
+# ── FIGURE_REGISTRY_LOCK participation (#466 review round 6 — the pre-#466 versions of
+# these 3 tool files acquire this same process-wide lock around their figure-creating
+# delegate call, per sibling PR #726/#721; this tool's rewritten body must too, or these
+# 3 newly-converged tools become the only matplotlib call sites left unprotected against
+# the concurrent-figure-creation race the lock exists to close) ───────────────────────
+
+
+def test_shares_the_same_figure_registry_lock_object():
+    from bloom_mcp.tools import _plots
+
+    assert (
+        plot_trait_histograms_tool.FIGURE_REGISTRY_LOCK is _plots.FIGURE_REGISTRY_LOCK
+    )
+
+
+def test_acquires_figure_registry_lock_around_the_delegate_call(
+    injected_ports, monkeypatch
+):
+    calls = {"enter": 0, "exit": 0}
+    real_lock = plot_trait_histograms_tool.FIGURE_REGISTRY_LOCK
+
+    class _SpyLock:
+        def __enter__(self):
+            calls["enter"] += 1
+            return real_lock.__enter__()
+
+        def __exit__(self, *exc):
+            calls["exit"] += 1
+            return real_lock.__exit__(*exc)
+
+    monkeypatch.setattr(plot_trait_histograms_tool, "FIGURE_REGISTRY_LOCK", _SpyLock())
+    _run()
+    assert calls["enter"] == 1
+    assert calls["exit"] == 1
+
+
 # ── error envelope ───────────────────────────────────────────────────────────
 
 

@@ -25,6 +25,19 @@ into the persisted run's ``params``, so a later reader of the manifest doesn't h
 re-run (data-dependent) auto-detection against data that may have drifted; and ``page_traits``
 names which traits landed on which page of a batched (paginated) render, previously only
 discoverable by opening an image and reading its axis labels.
+
+**Unlike ``plot_correlation_matrix``, a zero-variance or all-NaN trait is NOT guarded or
+disclosed here** — a constant trait renders as a degenerate boxplot with no error and no flag
+in the result, an all-NaN trait's delegate-rendered panel shows a literal ``"No data"`` text
+(confirmed against the live delegate, not assumed) rather than being silently blank, and
+neither is the far more consequential gap that a genotype group reduced to
+a handful of points by missingness renders as a normal-looking box with zero signal (no sample
+size disclosed anywhere, not even in the subplot title — unlike ``plot_trait_histograms``,
+whose delegate titles each panel ``f"{trait}\n(n={count})"``). This is a real, unmitigated
+scientific-rigor gap, not mere polish: a box built from 2 points looks identical to one built
+from 200. Tracked at
+https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/748 (#466 review; re-scoped
+in round 5 to lead with this exact gap, priority raised further in round 6).
 """
 
 from __future__ import annotations
@@ -46,6 +59,7 @@ from bloom_mcp.contract import BloomMCPError, Provenance, RunLinks, as_mcp_tool
 from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools._plots import FIGURE_REGISTRY_LOCK
 from bloom_mcp.tools._qc_shared import _validate_experiment_name
 
 from ._viz_shared import TRAIT_BATCH_THRESHOLD, resolve_trait_columns
@@ -153,18 +167,22 @@ def plot_trait_boxplots(
     )
     figures: list = []
     try:
-        if batched:
-            figures = list(
-                create_trait_boxplots_by_genotype_batched(
-                    frame.df, trait_cols, genotype_col=frame.genotype_col
+        # FIGURE_REGISTRY_LOCK: allocates figures against the shared global matplotlib
+        # registry, which a concurrent figure-creating call elsewhere in the process could
+        # otherwise interleave with (see that lock's own comment in bloom_mcp.tools._plots).
+        with FIGURE_REGISTRY_LOCK:
+            if batched:
+                figures = list(
+                    create_trait_boxplots_by_genotype_batched(
+                        frame.df, trait_cols, genotype_col=frame.genotype_col
+                    )
                 )
-            )
-        else:
-            figures = [
-                create_trait_boxplots_by_genotype(
-                    frame.df, trait_cols, genotype_col=frame.genotype_col
-                )
-            ]
+            else:
+                figures = [
+                    create_trait_boxplots_by_genotype(
+                        frame.df, trait_cols, genotype_col=frame.genotype_col
+                    )
+                ]
 
         outputs: dict[str, str] = {}
         page_traits: dict[str, list[str]] = {}

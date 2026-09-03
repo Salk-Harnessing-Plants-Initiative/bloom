@@ -232,16 +232,27 @@ def test_delegate_batch_size_matches_live_default():
 def _titled_traits(fig) -> list[str]:
     """Extract the trait name each subplot's title actually names — create_trait_boxplots_
     by_genotype_batched titles each axis with the bare trait name (verified against the
-    live delegate). Filters to visible axes only: this delegate does not pad a
-    not-exactly-full page with extra blank axes (confirmed against the live delegate for a
-    one-leftover-trait page), unlike create_trait_histograms_batched, but filtering
-    defensively costs nothing and guards against a future delegate version that does."""
+    live delegate). Filters to visible axes only: this delegate DOES pad a not-exactly-full
+    page with extra, invisible, blank-titled axes, same as create_trait_histograms_batched —
+    corrected in #466 review round 6 after a prior version of this comment wrongly claimed
+    it doesn't. Its grid-sizing is adaptive (an n_traits=65 page happened to land on an
+    exact 1x1 fit with no padding at all, which is what led to that wrong claim), so a
+    remainder that doesn't fit its chosen grid exactly (confirmed directly against the live
+    delegate for remainders of 5 and 8 out of a 16-per-page-equivalent count, not assumed
+    from the one n_traits=65 case) pads just like the fixed-4-column histograms delegate.
+    """
     return [ax.get_title() for ax in fig.axes if ax.get_visible()]
 
 
 @pytest.mark.parametrize(
-    "n_traits", [60, 64, 65]
-)  # 64: an exact multiple of batch_size (16); 65: one leftover trait alone on the last page
+    "n_traits", [60, 64, 65, 69]
+)  # 64: an exact multiple of batch_size (16); 65: one leftover trait, which this
+# delegate's adaptive grid happens to fit exactly (no padding); 69: 5 leftover traits,
+# which it does NOT fit exactly — genuinely exercises the invisible-blank-axes filter
+# for this tool (#466 review round 6 — a prior version of this suite wrongly assumed
+# this delegate never pads based only on the n_traits=65 case, which is misleading:
+# it's this delegate's *adaptive* grid sizing landing on an exact fit at that specific
+# remainder, not an absence of padding in general).
 def test_page_traits_maps_each_page_to_its_actual_traits(n_traits, monkeypatch):
     """#466 review round 3: which traits landed on which page was previously only
     discoverable by opening the image and reading axis labels — page_traits must name them
@@ -475,6 +486,40 @@ def test_no_figure_handle_leak_and_agg_backend(injected_ports):
     before = len(plt.get_fignums())
     _run()
     assert len(plt.get_fignums()) == before
+
+
+# ── FIGURE_REGISTRY_LOCK participation (#466 review round 6 — the pre-#466 versions of
+# these 3 tool files acquire this same process-wide lock around their figure-creating
+# delegate call, per sibling PR #726/#721; this tool's rewritten body must too, or these
+# 3 newly-converged tools become the only matplotlib call sites left unprotected against
+# the concurrent-figure-creation race the lock exists to close) ───────────────────────
+
+
+def test_shares_the_same_figure_registry_lock_object():
+    from bloom_mcp.tools import _plots
+
+    assert plot_trait_boxplots_tool.FIGURE_REGISTRY_LOCK is _plots.FIGURE_REGISTRY_LOCK
+
+
+def test_acquires_figure_registry_lock_around_the_delegate_call(
+    injected_ports, monkeypatch
+):
+    calls = {"enter": 0, "exit": 0}
+    real_lock = plot_trait_boxplots_tool.FIGURE_REGISTRY_LOCK
+
+    class _SpyLock:
+        def __enter__(self):
+            calls["enter"] += 1
+            return real_lock.__enter__()
+
+        def __exit__(self, *exc):
+            calls["exit"] += 1
+            return real_lock.__exit__(*exc)
+
+    monkeypatch.setattr(plot_trait_boxplots_tool, "FIGURE_REGISTRY_LOCK", _SpyLock())
+    _run()
+    assert calls["enter"] == 1
+    assert calls["exit"] == 1
 
 
 # ── error envelope ───────────────────────────────────────────────────────────

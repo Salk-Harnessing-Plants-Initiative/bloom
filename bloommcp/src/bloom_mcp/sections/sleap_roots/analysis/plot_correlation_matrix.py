@@ -6,10 +6,15 @@ persistence) — the same read-only, pre-clean EDA pattern as ``qc_inspect``: re
 frame via the :class:`ExperimentReader` port (no ``require_clean``), since a correlation view
 is exactly what an agent uses *before* deciding ``qc_clean``'s thresholds.
 
-Delegates rendering to ``sleap_roots_analyze.visualization.create_correlation_heatmap``; this
-file owns no plotting logic of its own. The reported strong-correlation counts are a plain
-``pandas`` summary of the same selection, computed directly here (not delegated) — unchanged
-from the tool's pre-conversion behavior.
+Delegates the heatmap's actual rendering (the colored grid itself) to
+``sleap_roots_analyze.visualization.create_correlation_heatmap``; this file owns no *plotting*
+logic of its own — it does not compute or draw anything resembling a chart element. It does,
+however, call ``Figure.text(...)`` directly on the delegate's returned ``Figure`` to draw the
+``heatmap_caveat`` disclosure footnote (#466 review round 6 — "delegates rendering" should not
+be read as "never touches the returned Figure object"; see the masking-mismatch paragraph
+below for why that footnote exists and is tested separately from the delegate's own render).
+The reported strong-correlation counts are a plain ``pandas`` summary of the same selection,
+computed directly here (not delegated) — unchanged from the tool's pre-conversion behavior.
 
 **Zero-variance / all-NaN traits are excluded from the strong-correlation counts with no
 error** — ``pandas``' Pearson correlation is ``NaN`` for a constant or all-NaN column, and
@@ -60,7 +65,13 @@ before ``savefig`` whenever either disclosure list is non-empty (#466 review rou
 first version of this fix left the image itself untouched, a JSON-only disclosure a PNG-only
 consumer would never see); (2) ``heatmap_caveat`` is also stamped into the persisted run's
 ``params`` (mirroring ``resolved_trait_columns`` below), not just the live response, so a later
-manifest read gets the same signal a live call did.
+manifest read gets the same signal a live call did; (3) the footnote names the actual flagged
+trait(s)/pair(s) (capped at 10), not just a count (#466 review round 6 — a bare count told a
+PNG-only viewer a problem existed with no way to tell *which* cell to distrust; since
+``create_correlation_heatmap`` draws its axis tick labels from this same ``trait_cols`` list in
+this same order, naming the flagged names directly lets that viewer cross-reference labels
+they can already see on the image, with none of the "wrong cell" geometry risk a per-cell
+hatch/marker would carry).
 
 Persists a versioned run under its own tool class ``correlation_matrix`` (not the shared,
 unclaimed legacy ``viz`` slot — see ``openspec/changes/converge-bloommcp-viz-tools/design.md``
@@ -85,6 +96,7 @@ from bloom_mcp.contract import BloomMCPError, Provenance, RunLinks, as_mcp_tool
 from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools._plots import FIGURE_REGISTRY_LOCK
 from bloom_mcp.tools._qc_shared import (
     _CANONICAL_MIN_SAMPLES_PER_TRAIT,
     _validate_experiment_name,
@@ -154,9 +166,11 @@ class PlotCorrelationMatrixResult(RunLinks):
         description="Populated only when zero_variance_traits or low_overlap_trait_pairs is "
         "non-empty: some cell(s) in the rendered heatmap are not backed by enough real data to "
         "trust, but the image still colors them as if they were a genuine strong correlation. "
-        "The same warning is also drawn as a footnote directly on the saved PNG. Cross-check "
-        "zero_variance_traits/low_overlap_trait_pairs before trusting a highlighted cell in "
-        "the image.",
+        "Names the affected trait(s)/pair(s) directly (capped at 10, '+N more' beyond that) so "
+        "a PNG-only viewer can match them against the image's own axis labels — not just a "
+        "count. The same text is also drawn as a footnote directly on the saved PNG and stamped "
+        "into the persisted run's params. Cross-check zero_variance_traits/low_overlap_trait_"
+        "pairs for the complete, uncapped list before trusting a highlighted cell in the image.",
     )
     resolved_trait_columns: list[str] = Field(
         description="The exact trait columns used to render/persist this run, in selection "
@@ -226,14 +240,31 @@ def plot_correlation_matrix(
     high_pos = int((upper > 0.7).sum().sum())
     high_neg = int((upper < -0.7).sum().sum())
 
-    n_flagged = len(zero_variance_traits) + len(low_overlap_trait_pairs)
-    heatmap_caveat = (
-        f"{n_flagged} trait/pair below has too little real data behind it to trust as "
-        f"drawn — the image still colors it like a genuine strong correlation. See "
-        f"zero_variance_traits/low_overlap_trait_pairs for exactly which cell(s)."
-        if n_flagged
-        else None
-    )
+    # Names the actual flagged trait(s)/pair(s), not just a count (#466 review round 6):
+    # create_correlation_heatmap draws its axis tick labels from this same trait_cols list,
+    # in this same order, so a PNG-only viewer can cross-reference a name here against a
+    # label they can already see on the image — closing the "told a problem exists, no way
+    # to tell which cell" gap a bare count left open. Capped so a wide (cylinder-scale)
+    # selection with many flagged pairs doesn't produce an unreadably long footnote; the
+    # full, uncapped lists are always in zero_variance_traits/low_overlap_trait_pairs.
+    _flagged_names = list(zero_variance_traits) + [
+        f"{a}×{b}" for a, b in low_overlap_trait_pairs
+    ]
+    _MAX_CAVEAT_NAMES = 10
+    if _flagged_names:
+        _shown = _flagged_names[:_MAX_CAVEAT_NAMES]
+        _remainder = len(_flagged_names) - len(_shown)
+        _names_text = ", ".join(_shown) + (
+            f", +{_remainder} more" if _remainder else ""
+        )
+        heatmap_caveat = (
+            f"Cell(s) involving {_names_text} have too little real data behind them "
+            f"to trust as drawn — the image still colors them like a genuine strong "
+            f"correlation. Match these names against the image's own axis labels; see "
+            f"zero_variance_traits/low_overlap_trait_pairs for the complete list."
+        )
+    else:
+        heatmap_caveat = None
 
     prov = provenance.model_copy(
         update={
@@ -255,7 +286,11 @@ def plot_correlation_matrix(
     )
     fig = None
     try:
-        fig = create_correlation_heatmap(frame.df, trait_cols)
+        # FIGURE_REGISTRY_LOCK: allocates a figure against the shared global matplotlib
+        # registry, which a concurrent figure-creating call elsewhere in the process could
+        # otherwise interleave with (see that lock's own comment in bloom_mcp.tools._plots).
+        with FIGURE_REGISTRY_LOCK:
+            fig = create_correlation_heatmap(frame.df, trait_cols)
         if heatmap_caveat is not None:
             # Cheap, in-scope: a footnote drawn directly onto the already-rendered Figure,
             # not a per-cell hatch/marker — the latter would require reverse-engineering the

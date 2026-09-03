@@ -294,7 +294,9 @@ def test_zero_variance_trait_excluded_from_counts_and_reported(injected_ports):
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
     assert "constant_trait" in result.zero_variance_traits
     assert result.heatmap_caveat is not None
-    assert "1" in result.heatmap_caveat  # names the flagged count
+    # Names the actual flagged trait, not just a count (#466 review round 6) — a PNG-only
+    # viewer can cross-reference this name against the image's own axis labels.
+    assert "constant_trait" in result.heatmap_caveat
 
 
 def test_all_selected_traits_zero_variance_is_assumption_violated(monkeypatch):
@@ -339,6 +341,38 @@ def test_heatmap_caveat_is_none_when_nothing_is_flagged(injected_ports):
     assert result.zero_variance_traits == []
     assert result.low_overlap_trait_pairs == []
     assert result.heatmap_caveat is None
+
+
+def test_heatmap_caveat_caps_names_at_ten_with_a_remainder_count():
+    """#466 review round 6: heatmap_caveat now names actual flagged traits, not just a
+    count — capped so a wide (cylinder-scale) selection with many flagged traits doesn't
+    produce an unreadably long footnote. 15 constant traits: the first 10 are named, the
+    remaining 5 collapse to a "+5 more" — the full, uncapped list is always in
+    zero_variance_traits."""
+    n = 12
+    data = {
+        "Barcode": [f"b{i}" for i in range(n)],
+        "geno": ["g1", "g2"] * (n // 2),
+        # 2 non-constant traits so the >=2-non-constant guard doesn't fire before
+        # the 15 constant traits below ever reach zero_variance_traits/heatmap_caveat.
+        "t1": [float(i) for i in range(n)],
+        "t2": [float(2 * i + 1) for i in range(n)],
+    }
+    for i in range(15):
+        data[f"const_{i:02d}"] = [float(i)] * n
+    df = pd.DataFrame(data)
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, df)
+    _ports.configure(reader=reader, store=FakeResultStore())
+    try:
+        result = plot_correlation_matrix(
+            PlotCorrelationMatrixParams(experiment=_EXPERIMENT)
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    assert len(result.zero_variance_traits) == 15
+    assert result.heatmap_caveat.count("const_") == 10
+    assert "+5 more" in result.heatmap_caveat
 
 
 def test_heatmap_still_renders_from_the_full_unmasked_frame(
@@ -516,6 +550,9 @@ def test_low_overlap_pair_excluded_from_counts_and_reported(injected_ports):
     assert result.strong_positive_correlations == 0
     assert result.zero_variance_traits == []
     assert result.heatmap_caveat is not None
+    # Names the actual flagged pair, not just a count (#466 review round 6).
+    assert "sparse_a" in result.heatmap_caveat
+    assert "sparse_b" in result.heatmap_caveat
 
 
 @pytest.mark.parametrize(
@@ -573,9 +610,13 @@ def test_reads_raw_even_when_a_cleaned_version_already_exists():
 # ── delegation pinning (spy) ─────────────────────────────────────────────────
 
 
-def test_delegates_rendering_and_never_calls_vendored_cleanup(
-    injected_ports, monkeypatch
-):
+def test_delegates_rendering_exactly_once(injected_ports, monkeypatch):
+    """Renamed in #466 review round 6: this test's body only ever checked the delegate
+    call count — it never asserted anything about vendored cleanup, so the original name
+    (`..._and_never_calls_vendored_cleanup`) promised more than it verified. The "never
+    calls the vendored bloom_mcp.data_cleanup" guarantee is structural (this module has no
+    import of it at all — see the module docstring), not something a runtime spy on an
+    unrelated module would meaningfully test here."""
     calls = {"n": 0}
     real = plot_correlation_matrix_tool.create_correlation_heatmap
 
@@ -601,6 +642,44 @@ def test_no_figure_handle_leak_and_agg_backend(injected_ports):
     before = len(plt.get_fignums())
     _run()
     assert len(plt.get_fignums()) == before
+
+
+# ── FIGURE_REGISTRY_LOCK participation (#466 review round 6 — the pre-#466 versions of
+# these 3 tool files acquire this same process-wide lock around their figure-creating
+# delegate call, per sibling PR #726/#721; this tool's rewritten body must too, or these
+# 3 newly-converged tools become the only matplotlib call sites left unprotected against
+# the concurrent-figure-creation race the lock exists to close) ───────────────────────
+
+
+def test_shares_the_same_figure_registry_lock_object():
+    from bloom_mcp.tools import _plots
+
+    assert (
+        plot_correlation_matrix_tool.FIGURE_REGISTRY_LOCK is _plots.FIGURE_REGISTRY_LOCK
+    )
+
+
+def test_acquires_figure_registry_lock_around_the_delegate_call(
+    injected_ports, monkeypatch
+):
+    calls = {"enter": 0, "exit": 0}
+    real_lock = plot_correlation_matrix_tool.FIGURE_REGISTRY_LOCK
+
+    class _SpyLock:
+        def __enter__(self):
+            calls["enter"] += 1
+            return real_lock.__enter__()
+
+        def __exit__(self, *exc):
+            calls["exit"] += 1
+            return real_lock.__exit__(*exc)
+
+    monkeypatch.setattr(
+        plot_correlation_matrix_tool, "FIGURE_REGISTRY_LOCK", _SpyLock()
+    )
+    _run()
+    assert calls["enter"] == 1
+    assert calls["exit"] == 1
 
 
 # ── error envelope ───────────────────────────────────────────────────────────
