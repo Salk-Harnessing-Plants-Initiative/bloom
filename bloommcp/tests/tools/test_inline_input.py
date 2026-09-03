@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 from unittest.mock import patch
 
 import pandas as pd
@@ -799,3 +800,172 @@ def test_kill_switch_is_read_per_call_not_at_import(monkeypatch):
     assert helper.resolve_inline_or_experiment(
         experiment=None, csv_content=_ROLE_CSV
     ).is_inline
+
+
+def test_a_real_near_cap_payload_is_rejected_by_the_row_cap_not_the_byte_cap():
+    """The scenario MAX_INLINE_CSV_ROWS exists for, built for real rather than
+    argued arithmetically.
+
+    A payload sized just under MAX_INLINE_CSV_BYTES parses in well under a second
+    and yields hundreds of thousands of rows — which is a quadratic-time problem
+    for hierarchical clustering and an all-pairs problem for correlations. This
+    asserts the row cap is what stops it, and names the row count so a future
+    reader can see the gap between the two limits."""
+    helper = _import_helper()
+    header = "Barcode,geno,traitA,traitB\n"
+    row = "S,g,1.0,2.0\n"
+    rows = (helper.MAX_INLINE_CSV_BYTES - len(header)) // len(row)
+    payload = header + row * rows
+
+    size = len(payload.encode("utf-8"))
+    assert size <= helper.MAX_INLINE_CSV_BYTES, "must be under the byte cap"
+    assert rows > 10 * helper.MAX_INLINE_CSV_ROWS, (
+        f"a compliant payload should carry far more rows than the row cap; "
+        f"got {rows} vs a cap of {helper.MAX_INLINE_CSV_ROWS}"
+    )
+
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame(payload)
+
+    # The row cap, not the byte cap, is what rejected it.
+    assert str(helper.MAX_INLINE_CSV_ROWS) in exc.value.message
+    assert "row" in exc.value.message
+    assert str(rows) in exc.value.message
+
+
+def test_serialize_table_csv_ignores_the_platform_line_separator(monkeypatch):
+    """Direct evidence for the platform-independence claim: even with os.linesep
+    reporting CRLF, the serialized text is LF. Asserting "no \\r on this machine"
+    would pass vacuously on Linux and CI, which are the only places it runs."""
+    helper = _import_helper()
+    monkeypatch.setattr(os, "linesep", "\r\n")
+    text = helper.serialize_table_csv(pd.DataFrame({"a": [1, 2]}))
+    assert "\r" not in text
+    assert text == "a\n1\n2\n"
+
+
+def test_round_trip_guard_accepts_a_table_that_re_resolves_correctly():
+    helper = _import_helper()
+    frame = helper.parse_inline_csv_frame(_VALID_CSV)
+    text = helper.serialize_table_csv(
+        frame.df, field="cleaned_csv", verify_trait_cols=frame.trait_cols
+    )
+    assert "traitA" in text
+
+
+def test_round_trip_guard_rejects_a_table_missing_a_certified_trait():
+    helper = _import_helper()
+    frame = helper.parse_inline_csv_frame(_VALID_CSV)
+    with pytest.raises(BloomMCPError) as exc:
+        helper.serialize_table_csv(
+            frame.df.drop(columns=["traitA"]),
+            field="cleaned_csv",
+            verify_trait_cols=frame.trait_cols,
+        )
+    assert exc.value.code == "assumption_violated"
+    assert "traitA" in exc.value.message
+    assert "would be lost" in exc.value.message
+
+
+def test_round_trip_guard_rejects_a_table_that_gains_an_undeclared_trait():
+    """The mirror failure: a column the producer did not certify being detected as
+    a trait by the consumer. Just as wrong as losing one — the next call would
+    analyze a column this one never reported on."""
+    helper = _import_helper()
+    frame = helper.parse_inline_csv_frame(_VALID_CSV)
+    extra = frame.df.assign(traitC=[7.0, 8.0, 9.0])
+    with pytest.raises(BloomMCPError) as exc:
+        helper.serialize_table_csv(
+            extra, field="cleaned_csv", verify_trait_cols=frame.trait_cols
+        )
+    assert exc.value.code == "assumption_violated"
+    assert "traitC" in exc.value.message
+    assert "would be picked up" in exc.value.message
+
+
+def test_round_trip_guard_is_off_by_default():
+    """Producers opt in; the generic serializer stays generic."""
+    helper = _import_helper()
+    text = helper.serialize_table_csv(pd.DataFrame({"only_metadata": ["x", "y"]}))
+    assert text == "only_metadata\nx\ny\n"
+
+
+# ── registered-only rejection wording is accurate per parameter ─────────────
+
+
+def test_user_label_rejection_explains_labels_not_source_pins():
+    """A generic "only applies to a registered experiment's stored versions and
+    sources" is true of the pins and plainly wrong for user_label, which is about
+    writing rather than reading. An inaccurate rejection message is the drift this
+    module exists to prevent."""
+    helper = _import_helper()
+    with pytest.raises(BloomMCPError) as exc:
+        helper.resolve_inline_or_experiment(
+            experiment=None,
+            csv_content=_ROLE_CSV,
+            registered_only={"user_label": "my-run"},
+        )
+    message = exc.value.message
+    assert "version directory" in message
+    assert "no run is created" in message
+    assert "sources" not in message
+
+
+def test_source_pin_rejection_explains_reading_not_labelling():
+    helper = _import_helper()
+    with pytest.raises(BloomMCPError) as exc:
+        helper.resolve_inline_or_experiment(
+            experiment=None, csv_content=_ROLE_CSV, registered_only={"source_id": 9}
+        )
+    assert "pins which stored raw source to read" in exc.value.message
+    assert "version directory" not in exc.value.message
+
+
+def test_each_offender_gets_its_own_reason_when_several_are_supplied():
+    helper = _import_helper()
+    with pytest.raises(BloomMCPError) as exc:
+        helper.resolve_inline_or_experiment(
+            experiment=None,
+            csv_content=_ROLE_CSV,
+            registered_only={"source_id": 9, "user_label": "x"},
+        )
+    message = exc.value.message
+    assert "pins which stored raw source to read" in message
+    assert "version directory" in message
+
+
+def test_plot_companion_parameters_inherit_the_plot_reason_by_prefix():
+    """A new plot_* knob on any tool should get correct wording without anyone
+    remembering to add it to the table."""
+    helper = _import_helper()
+    for name in ("include_plots", "plots", "plot_font_family", "plot_alpha"):
+        with pytest.raises(BloomMCPError) as exc:
+            helper.resolve_inline_or_experiment(
+                experiment=None, csv_content=_ROLE_CSV, registered_only={name: "x"}
+            )
+        assert "persisted as run artifacts" in exc.value.message, name
+
+
+def test_every_rostered_parameter_has_a_specific_reason():
+    """No parameter this rollout rejects should fall through to the generic
+    clause — that fallback exists for safety, not for the known roster."""
+    helper = _import_helper()
+    roster = [
+        "source_id",
+        "run_id",
+        "version",
+        "version_1",
+        "version_2",
+        "user_label",
+        "include_plots",
+        "plots",
+        "plot_font_family",
+        "plot_font_size",
+        "plot_alpha",
+        "plot_cmap",
+        "plot_point_size",
+    ]
+    generic = "only applies to a registered experiment"
+    for name in roster:
+        reason = helper._registered_only_reason(name, "csv_content")
+        assert generic not in reason, f"{name} fell through to the generic clause"

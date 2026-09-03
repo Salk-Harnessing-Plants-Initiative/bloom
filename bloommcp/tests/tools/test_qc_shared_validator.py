@@ -160,3 +160,31 @@ def test_default_mode_is_unaffected_by_the_certified_flag(frame):
     with pytest.raises(BloomMCPError) as inline:
         _validate_trait_subset(frame, ["nope"], _EXPERIMENT, certified=False)
     assert strict.value.message == inline.value.message
+
+
+def test_certified_mode_wording_is_byte_identical_to_the_pre_582_text(frame):
+    """A presentation flag must not quietly reword eight existing call sites'
+    errors. Pins the exact pre-#582 strings rather than comparing the default
+    against `certified=True`, which is tautological — both are the same branch."""
+    with pytest.raises(BloomMCPError) as empty:
+        _validate_trait_subset(frame, [], _EXPERIMENT, require_certified=True)
+    assert empty.value.message == (
+        f"trait_columns for {_EXPERIMENT!r} was given as an empty list."
+    )
+    assert empty.value.remedy == (
+        "Omit trait_columns to analyze all certified-clean traits, or name at "
+        "least one certified trait column."
+    )
+
+    with pytest.raises(BloomMCPError) as outside:
+        _validate_trait_subset(
+            frame, ["Replicate"], _EXPERIMENT, require_certified=True
+        )
+    assert outside.value.message == (
+        f"trait_columns includes columns that are not certified-clean traits of "
+        f"{_EXPERIMENT!r}: ['Replicate']."
+    )
+    assert outside.value.remedy == (
+        "Pass only cleaned trait columns (see load_experiment_data on the cleaned "
+        "version), or omit trait_columns to use all of them."
+    )

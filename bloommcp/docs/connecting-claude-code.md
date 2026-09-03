@@ -109,7 +109,9 @@ pca_analysis(csv_content=result.cleaned_csv)
 ```
 
 The chaining is yours, not the server's: bloommcp keeps no copy of `cleaned_csv` and records no
-link between the two calls. `cleaned_csv_sha256` is there so you can prove to yourself that the
+link between the two calls. What comes back is your own data, echoed verbatim — bloommcp does
+not escape or sanitize cell values, so if you save the result and open it in a spreadsheet, a
+cell that started with `=`, `+`, `-` or `@` in your input is still a formula in the output. `cleaned_csv_sha256` is there so you can prove to yourself that the
 second call analyzed the table the first one produced. `return_cleaned_csv` is off by default
 (the table can be large) and is rejected with a registered `experiment`, which already persists
 the cleaned CSV as a downloadable run artifact.

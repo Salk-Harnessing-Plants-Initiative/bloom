@@ -25,7 +25,7 @@ import hashlib
 import io
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 import pandas as pd
 
@@ -314,7 +314,12 @@ def compute_input_sha256(csv_content: str) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def serialize_table_csv(df: pd.DataFrame, *, field: str = "csv") -> str:
+def serialize_table_csv(
+    df: pd.DataFrame,
+    *,
+    field: str = "csv",
+    verify_trait_cols: Optional[Iterable[str]] = None,
+) -> str:
     """Serialize *df* to CSV text for an opt-in inline table return (#582).
 
     Used by the two producer tools (``qc_clean``'s ``return_cleaned_csv`` and
@@ -335,6 +340,24 @@ def serialize_table_csv(df: pd.DataFrame, *, field: str = "csv") -> str:
     ``MAX_INLINE_CSV_BYTES``. Reusing the *input* cap avoids inventing a second
     number and is conservative: cleaning and trimming only ever remove rows and
     columns, so a result over the cap means the input was already near it.
+
+    ``verify_trait_cols`` makes the handoff **structural instead of coincidental**.
+    A producer certifies a specific set of trait columns; the consumer that
+    receives this text re-derives its own trait set by running
+    :func:`resolve_columns` over the *re-parsed* frame. That those two agree is
+    the whole basis for chaining, and today it holds only because upstream's
+    removal criteria and ``resolve_columns``' detection heuristic happen to
+    coincide — two independently-evolving pieces of logic. Passing the certified
+    set here re-parses the serialized text and checks the agreement for real,
+    raising rather than handing back a table that would fail (or, worse, silently
+    analyze the wrong columns) in the next call. The round trip is the right
+    place to check because the property is about the *text*: a dtype that shifts
+    on re-parse changes what ``resolve_columns`` detects, which a check against
+    the in-memory frame would miss entirely.
+
+    The extra parse is paid only on the opt-in table-return path, where the
+    caller has explicitly asked for bytes they intend to hand to another tool,
+    and is bounded by ``MAX_INLINE_CSV_BYTES``.
     """
     text = df.to_csv(index=False, lineterminator="\n")
     size = len(text.encode("utf-8"))
@@ -351,6 +374,28 @@ def serialize_table_csv(df: pd.DataFrame, *, field: str = "csv") -> str:
                 "experiment so the table is persisted as a downloadable artifact."
             ),
         )
+
+    if verify_trait_cols is not None:
+        expected = set(verify_trait_cols)
+        round_tripped = resolve_columns(pd.read_csv(io.StringIO(text)))
+        actual = set(round_tripped.trait_cols)
+        if actual != expected:
+            raise BloomMCPError(
+                code="assumption_violated",
+                message=(
+                    f"The table returned via {field} does not re-resolve to the "
+                    f"trait columns it was certified with: "
+                    f"{sorted(expected - actual)} would be lost and "
+                    f"{sorted(actual - expected)} would be picked up. Returning "
+                    f"it would hand the next call a different analysis than the "
+                    f"one just reported."
+                ),
+                remedy=(
+                    f"Omit {field} and use the summary, or register the data as "
+                    "an experiment so the next tool resolves a committed cleaned "
+                    "version instead of re-detecting roles from text."
+                ),
+            )
     return text
 
 
@@ -387,6 +432,60 @@ class InlineInput:
 
 _INLINE_LABEL = "csv_content"
 
+# Why each registered-only parameter cannot apply, single-sourced so ten tools
+# quote one wording. A generic "only applies to a registered experiment's stored
+# versions and sources" is true of the source/version pins but plainly wrong for
+# `user_label` (which is about writing, not reading) and for the plot flags — and
+# an inaccurate rejection message is exactly the kind of drift this module exists
+# to prevent. Each clause completes "<name> cannot be used with <csv_content>: it
+# <clause>."
+_REGISTERED_ONLY_REASONS: dict[str, str] = {
+    "source_id": (
+        "pins which stored raw source to read, and {inline} is read directly "
+        "rather than from a registered experiment's sources"
+    ),
+    "run_id": (
+        "pins which stored raw source to read by its pipeline run, and {inline} "
+        "is read directly rather than from a registered experiment's sources"
+    ),
+    "version": (
+        "pins which committed version to read, and {inline} is read directly "
+        "rather than from a registered experiment's version history"
+    ),
+    "version_1": (
+        "pins which committed version to read for side 1, which is supplied "
+        "inline rather than as a registered experiment"
+    ),
+    "version_2": (
+        "pins which committed version to read for side 2, which is supplied "
+        "inline rather than as a registered experiment"
+    ),
+    "user_label": (
+        "names the version directory a committed run is written into, and no run "
+        "is created for {inline}"
+    ),
+}
+
+_PLOT_PARAM_REASON = (
+    "configures figures that are persisted as run artifacts, and no run is "
+    "created for {inline}"
+)
+
+
+def _registered_only_reason(name: str, inline_field: str) -> str:
+    """The clause explaining why *name* cannot apply, or a safe generic fallback.
+
+    Plot-companion parameters share one reason and are matched by prefix so a new
+    ``plot_*`` knob on any tool inherits correct wording instead of silently
+    falling through to the generic clause.
+    """
+    template = _REGISTERED_ONLY_REASONS.get(name)
+    if template is None and (name == "include_plots" or name.startswith("plot")):
+        template = _PLOT_PARAM_REASON
+    if template is None:
+        template = "only applies to a registered experiment, which {inline} is not"
+    return template.format(inline=inline_field)
+
 
 def reject_registered_only_params(
     registered_only: Mapping[str, Any],
@@ -411,15 +510,13 @@ def reject_registered_only_params(
     if not offenders:
         return
     listed = ", ".join(offenders)
+    clauses = "; ".join(
+        f"{name} {_registered_only_reason(name, csv_content_field)}"
+        for name in offenders
+    )
     raise BloomMCPError(
         code="invalid_input",
-        message=(
-            f"{listed} cannot be used with {csv_content_field}: "
-            f"{'these parameters' if len(offenders) > 1 else 'it'} only "
-            f"appl{'y' if len(offenders) > 1 else 'ies'} to a registered "
-            f"experiment's stored versions and sources, which "
-            f"{csv_content_field} bypasses entirely."
-        ),
+        message=f"{listed} cannot be used with {csv_content_field}: {clauses}.",
         remedy=(
             f"Omit {listed} when using {csv_content_field}, or supply a "
             f"registered experiment instead of {csv_content_field}."
@@ -492,9 +589,7 @@ def resolve_inline_or_experiment(
     if not inline_enabled():
         raise BloomMCPError(
             code="invalid_input",
-            message=(
-                f"Inline {csv_content_field} input is disabled on this server."
-            ),
+            message=(f"Inline {csv_content_field} input is disabled on this server."),
             remedy=(
                 f"Register the data as an experiment and supply "
                 f"{registered_field} instead, or ask an administrator to "

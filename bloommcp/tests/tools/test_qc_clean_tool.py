@@ -1551,11 +1551,25 @@ def test_returned_cleaned_csv_is_platform_independent(injected_ports):
 
 
 def test_returned_cleaned_csv_re_resolves_to_the_same_analysis_shape(injected_ports):
-    """The invariant that makes client-side chaining sound, and the one nothing
-    else pins: qc_clean's no-NaN guarantee is scoped to the *kept* trait columns,
-    while the serialized table also carries metadata and removed columns that may
-    hold NaN. If re-resolution re-detected a removed trait, a downstream tool
-    selecting "all detected traits" would pick it up and fail on it."""
+    """The invariant that makes client-side chaining sound: a consumer handed this
+    text re-derives its own trait set by running `resolve_columns` over the
+    re-parsed frame, so that set must equal what qc_clean certified.
+
+    What this actually exercises is **idempotent role detection** — that
+    `resolve_columns` classifies the cleaned table the same way it classified the
+    raw one, e.g. numeric metadata like `Computation.Time.s` staying excluded
+    rather than being promoted to a trait on the second pass.
+
+    It does *not* exercise a removed-but-serialized NaN-bearing column, which an
+    earlier version of this docstring claimed. Measured against the real fixture:
+    `clean_traits_for_analysis` physically drops removed traits (23 columns in,
+    21 out) and leaves zero NaN cells anywhere in the frame, so there is nothing
+    for re-resolution to re-detect. That agreement is a coincidence between
+    upstream's removal criteria and `resolve_columns`' detection heuristic, not a
+    guarantee — which is why `serialize_table_csv(verify_trait_cols=...)` now
+    checks it at runtime instead of leaving it to this test.
+    See `test_serialized_table_that_would_lose_a_certified_trait_is_rejected` for
+    the failure mode itself."""
     result = _inline_clean(return_cleaned_csv=True)
     reparsed = pd.read_csv(io.StringIO(result.cleaned_csv))
     roles = resolve_columns(reparsed)
@@ -1564,6 +1578,41 @@ def test_returned_cleaned_csv_re_resolves_to_the_same_analysis_shape(injected_po
     assert roles.genotype == result.genotype_column
     assert roles.sample_id == result.sample_id_column
     assert roles.replicate == result.replicate_column
+
+
+def test_serialized_table_that_would_lose_a_certified_trait_is_rejected(
+    injected_ports, monkeypatch
+):
+    """The failure mode the round-trip guard exists for, forced rather than hoped
+    for: a serialized table whose re-detected trait set disagrees with the
+    certified one.
+
+    Upstream drops removed traits today, so no real fixture reaches this state —
+    which is exactly why it is worth pinning. If a future upstream release
+    started *retaining* a removed column (or a dtype shifted on re-parse and
+    changed what `resolve_columns` sees), the five consumers PR 2 puts on this
+    path would silently analyze a different column set than the one qc_clean just
+    reported. Here that surfaces as a structured error instead."""
+    real = qc_clean_tool._inline_input.serialize_table_csv
+
+    def _drop_a_certified_trait(df, *, field="csv", verify_trait_cols=None):
+        # Serialize a frame missing one certified trait, while still claiming the
+        # full certified set — the shape a retained-but-undetected column produces
+        # from the guard's point of view.
+        victim = sorted(verify_trait_cols)[0]
+        return real(
+            df.drop(columns=[victim]), field=field, verify_trait_cols=verify_trait_cols
+        )
+
+    monkeypatch.setattr(
+        qc_clean_tool._inline_input, "serialize_table_csv", _drop_a_certified_trait
+    )
+    with pytest.raises(BloomMCPError) as exc:
+        _inline_clean(return_cleaned_csv=True)
+
+    assert exc.value.code == "assumption_violated"
+    assert "would be lost" in exc.value.message
+    assert "cleaned_csv" in exc.value.message
 
 
 def test_returned_cleaned_csv_carries_no_nans_in_its_detected_traits(injected_ports):
@@ -1618,7 +1667,7 @@ def test_oversized_cleaned_table_is_rejected_not_truncated(injected_ports, monke
     bypass it."""
     calls: list[str] = []
 
-    def _refuse(df, *, field="csv"):
+    def _refuse(df, *, field="csv", verify_trait_cols=None):
         calls.append(field)
         raise BloomMCPError(
             code="invalid_input",

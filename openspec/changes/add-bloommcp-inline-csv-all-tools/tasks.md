@@ -208,6 +208,11 @@ inline `qc_inspect` call.
 
 ## 9. `cross_experiment_correlations` — per-side (PR 3)
 
+- [ ] 9.0 **Use a per-side label, not `InlineInput.label`.** The resolver's `label` reads
+      `"csv_content"` for *either* inline side, so an error naming it is ambiguous the moment both
+      sides are inline. `_qc_shared._validate_experiment_name` already solved this with its own
+      `label=` parameter — follow that pattern and thread a per-side label
+      (`csv_content_1` / `csv_content_2`) through this tool's messages. Raised in PR #778's review.
 - [ ] 9.1 Test: exactly-one-of enforced **per side** — both-on-side-1, neither-on-side-2, each
       naming the offending side.
 - [ ] 9.2 Test: mixed call `experiment_1` + `csv_content_2` succeeds, persists nothing,
@@ -412,3 +417,8 @@ marker, run in the `dev-stack-smoke` CI job.
 - [ ] 15.6 Fix `BLOOM_PLOTS_URL`: the configured `/plots` path has no Caddy route and 404s.
 - [ ] 15.7 Add auth to `langchain/server.py`'s `/plots` static mount, which is reachable
       unauthenticated from the public ingress.
+- [ ] 15.8 Consider whether the opt-in table returns should escape formula-prefixed cells. Low
+      severity as scoped — the tools echo a caller's own data back to that same caller, and the
+      field description and connect guide now say so — but PR 2's `return_trimmed_csv` adds a
+      second echo-back surface, and a third would be the point to decide once rather than
+      re-disclose per tool.

@@ -92,14 +92,6 @@ from bloom_mcp.tools._qc_shared import (
     _validate_trait_subset,
 )
 
-# Placeholder used in error messages on the csv_content path, where there is no
-# experiment name to interpolate (see QC Clean Enforces Mutually Exclusive Input
-# Selection / the next_step-suppression scenario in the #582 spec delta). Kept
-# short and free of embedded punctuation since it is always interpolated with
-# `!r` alongside a real experiment name in the same f-strings — "csv_content"
-# reads cleanly as 'csv_content'; a full sentence would read awkwardly quoted.
-_INLINE_EXPERIMENT_LABEL = "csv_content"
-
 _TOOL_CLASS = QC_TOOL_CLASS
 _LOG_NAME = "cleanup_log.json"
 _VALIDATION_MODE = "warn"
@@ -280,7 +272,10 @@ class QCCleanResult(BaseModel):
             "The cleaned table as CSV text. Only set when return_cleaned_csv was "
             "requested on the csv_content path. Pass it as the csv_content of a "
             "later tool call to chain client-side; the server keeps no copy and "
-            "records no lineage between the two calls."
+            "records no lineage between the two calls. Cell values are echoed "
+            "back verbatim from what you supplied — including any that a "
+            "spreadsheet would treat as a formula — so treat this as your own "
+            "data returned, not as sanitized output."
         ),
     )
     cleaned_csv_sha256: Optional[str] = Field(
@@ -342,6 +337,26 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
             run_id=params.run_id,
         )
 
+    # Checked before the resolver, because the resolver's registered branch performs
+    # the actual storage read — no point paying a full raw-frame read only to reject
+    # the call on a parameter combination we can rule out from the params alone.
+    # (`experiment is not None` rather than `not is_inline`: if neither input was
+    # supplied the resolver's exactly-one-of error is the one that should surface,
+    # and the ordering rule in `resolve_inline_or_experiment` says so.)
+    if params.experiment is not None and params.return_cleaned_csv:
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                "return_cleaned_csv cannot be used with experiment: the registered "
+                "path already persists the cleaned table as a run artifact."
+            ),
+            remedy=(
+                f"Omit return_cleaned_csv and read the cleaned CSV from the run's "
+                f"output links ({CLEANED_CSV_NAME}), or supply csv_content instead "
+                "of experiment for a one-off analysis."
+            ),
+        )
+
     # Exactly one of experiment / csv_content, plus the rejection of pins that only
     # mean something against the DB-backed raw tier — both owned by the shared
     # resolver so this tool speaks the same vocabulary as every other one (#582).
@@ -368,24 +383,6 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     # Used in error messages where an experiment name would normally be interpolated —
     # there is no experiment identity on the inline path.
     experiment_label = resolved_input.label
-
-    # The mirror of the registered-only roster: return_cleaned_csv is *inline*-only.
-    # The registered path already persists the cleaned CSV and returns a link to it,
-    # so echoing a durable artifact back through the response would duplicate it for
-    # no benefit — reject rather than silently ignore, same principle as the pins.
-    if not is_inline and params.return_cleaned_csv:
-        raise BloomMCPError(
-            code="invalid_input",
-            message=(
-                "return_cleaned_csv cannot be used with experiment: the registered "
-                "path already persists the cleaned table as a run artifact."
-            ),
-            remedy=(
-                f"Omit return_cleaned_csv and read the cleaned CSV from the run's "
-                f"output links ({CLEANED_CSV_NAME}), or supply csv_content instead "
-                "of experiment for a one-off analysis."
-            ),
-        )
 
     if not is_inline:
         # #626: when neither source_id nor run_id was given and the experiment has
@@ -694,7 +691,15 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
             # lineage for this path. Serialized through the shared helper so the
             # size cap and the pinned line terminator are the same everywhere.
             cleaned_csv = _inline_input.serialize_table_csv(
-                cleaned_df, field="cleaned_csv"
+                cleaned_df,
+                field="cleaned_csv",
+                # The certified set, checked against what a consumer would
+                # re-detect from this very text. Upstream physically drops the
+                # removed traits, so today the two agree — but that is a
+                # coincidence between upstream's removal criteria and
+                # resolve_columns' detection heuristic, and PR 2 puts five
+                # consumers on top of it. Verified, not assumed.
+                verify_trait_cols=kept_cols,
             )
             cleaned_csv_sha256 = _inline_input.compute_input_sha256(cleaned_csv)
         else:

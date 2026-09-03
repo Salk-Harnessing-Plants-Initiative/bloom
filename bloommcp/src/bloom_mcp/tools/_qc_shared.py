@@ -131,11 +131,16 @@ def _validate_trait_subset(
     detected trait columns without changing which columns are accepted. It defaults to
     ``True`` so all eight existing call sites are unaffected.
     """
-    _set_name = (
-        "certified-clean traits" if certified else "detected trait columns"
-    )
-    _all_hint = (
-        "all certified-clean traits" if certified else "all detected trait columns"
+    _set_name = "certified-clean traits" if certified else "detected trait columns"
+    # Byte-identical to the pre-#582 text when certified=True — eight call sites
+    # depend on the default, and a presentation flag has no business quietly
+    # rewording their errors. Only the certified=False branch is new.
+    _empty_remedy = (
+        "Omit trait_columns to analyze all certified-clean traits, or name at "
+        "least one certified trait column."
+        if certified
+        else "Omit trait_columns to analyze all detected trait columns, or name "
+        "at least one trait column from the supplied content."
     )
     _outside_remedy = (
         "Pass only cleaned trait columns (see load_experiment_data on the cleaned "
@@ -149,10 +154,7 @@ def _validate_trait_subset(
             raise BloomMCPError(
                 code="invalid_input",
                 message=f"trait_columns for {experiment!r} was given as an empty list.",
-                remedy=(
-                    f"Omit trait_columns to analyze {_all_hint}, or name at "
-                    f"least one trait column."
-                ),
+                remedy=_empty_remedy,
             )
         duplicates = sorted({c for c in requested if requested.count(c) > 1})
         if duplicates:
@@ -164,8 +166,10 @@ def _validate_trait_subset(
                 ),
                 remedy="List each trait column at most once.",
             )
-        certified = set(frame.trait_cols)
-        outside = [c for c in requested if c not in certified]
+        # Named for the set it holds, not `certified` — that is the bool parameter
+        # above, and shadowing it here would silently break any later use.
+        certified_cols = set(frame.trait_cols)
+        outside = [c for c in requested if c not in certified_cols]
         if outside:
             raise BloomMCPError(
                 code="invalid_input",
