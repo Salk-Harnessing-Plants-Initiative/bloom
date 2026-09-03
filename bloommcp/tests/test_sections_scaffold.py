@@ -68,8 +68,9 @@ def test_sleap_roots_and_core_sections_registered():
 
 
 def test_sleap_roots_section_exposes_the_expected_namespaced_tools():
-    """The 7 sleap-roots-analyze consumers + 5 surviving plots are namespaced
-    sleap_roots_<tool> on the combined surface."""
+    """The 10 sleap-roots-analyze consumers (the original 7 + the 3 plotting tools
+    #466 converged onto @as_mcp_tool) + the 2 remaining bare-mcp.tool() plots are
+    namespaced sleap_roots_<tool> on the combined surface."""
     import asyncio
 
     tools = {t.name for t in asyncio.run(server.mcp.list_tools())}

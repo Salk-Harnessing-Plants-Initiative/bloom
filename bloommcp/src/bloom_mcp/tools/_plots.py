@@ -11,6 +11,7 @@ importable with no live stack and no matplotlib import at module level.
 
 from __future__ import annotations
 
+import threading
 from collections import Counter
 from typing import TYPE_CHECKING, Callable
 
@@ -96,6 +97,29 @@ def apply_font_style(
             text.set_fontfamily(font_family)
         if font_size is not None:
             text.set_fontsize(font_size)
+
+
+# Process-wide, not per-key, and NOT bloommcp.tools._plots-private: matplotlib's pyplot
+# figure registry (`Gcf.figs`, in `matplotlib._pylab_helpers`) is a single class-level
+# `OrderedDict` shared by the whole process, not scoped per thread. FastMCP dispatches sync
+# tool handlers via a thread pool (see `bloom_mcp/result_store/_locks.py`'s module
+# docstring for the same fact, verified there against FastMCP's own dispatch code), so any
+# two figure-creating tool calls in this process can genuinely run concurrently.
+#
+# Every matplotlib-figure-creating call site in the sleap_roots analysis tools —
+# `qc_inspect.py`'s `_render_report`, `remove_outliers.py`'s `_make_figures`,
+# `plot_trait_histograms.py`/`plot_trait_boxplots.py`/`plot_correlation_matrix.py`'s
+# delegate calls, and (once PR #726/#721 lands) `generate_figures` above's own
+# allocate-then-raise cleanup — must import and acquire this SAME lock around the delegate
+# call that actually allocates a figure, so that no two figure-creating calls interleave
+# from matplotlib's shared registry's point of view (#466/#721 PR review — flagged as an
+# unresolved conflict between the two in-flight PRs each independently rewriting these
+# call sites; landed here first so neither ships a newly-converged/newly-fixed tool with
+# no lock participation, whichever of the two PRs merges second).
+#
+# Non-reentrant: a future plotter that transitively re-enters a lock-acquiring call from
+# inside its own locked call would deadlock. Nothing in this codebase does that today.
+FIGURE_REGISTRY_LOCK = threading.Lock()
 
 
 def generate_figures(

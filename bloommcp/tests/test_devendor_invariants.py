@@ -93,9 +93,9 @@ def test_no_shipped_module_imports_vendored_analysis():
     offenders: list[str] = []
     for py in _SRC.rglob("*.py"):
         offenders.extend(_vendored_imports_in(py))
-    assert not offenders, (
-        "shipped modules still import vendored analysis code:\n" + "\n".join(offenders)
-    )
+    assert (
+        not offenders
+    ), "shipped modules still import vendored analysis code:\n" + "\n".join(offenders)
 
 
 def test_vendored_analysis_modules_absent():
@@ -438,7 +438,8 @@ def test_expected_tool_surface():
         "sleap_roots_umap_analysis",
         "sleap_roots_descriptive_stats",
         "sleap_roots_cross_experiment_correlations",
-        # sleap_roots: the 5 surviving plots
+        # sleap_roots: the 5 surviving plots (3 converged onto @as_mcp_tool per #466, 2
+        # still bare mcp.tool() pending #462's heritability_analysis retirement)
         "sleap_roots_plot_trait_histograms",
         "sleap_roots_plot_trait_boxplots",
         "sleap_roots_plot_correlation_matrix",

@@ -11,6 +11,7 @@ import pytest
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.tools._plots import (
+    FIGURE_REGISTRY_LOCK,
     apply_font_style,
     close_figures,
     generate_figures,
@@ -360,3 +361,19 @@ def test_generate_figures_records_figure_before_styling(monkeypatch):
     with pytest.raises(RuntimeError):
         generate_figures({"a": lambda: plt.figure()}, figures, font_family="serif")
     assert "a" in figures  # recorded before the (simulated) styling failure
+
+
+# ── FIGURE_REGISTRY_LOCK (#466 review round 6) ───────────────────────────────
+
+
+def test_figure_registry_lock_is_a_real_process_wide_lock():
+    """A minimal smoke test that the lock exists, is acquirable/releasable, and is
+    genuinely process-wide (module-level singleton, not per-import) — the 3
+    #466-converged viz tools and (once #726/#721 lands) generate_figures's own
+    allocate-then-raise cleanup all import and acquire this SAME object."""
+    import threading
+
+    assert isinstance(FIGURE_REGISTRY_LOCK, type(threading.Lock()))
+    acquired = FIGURE_REGISTRY_LOCK.acquire(blocking=False)
+    assert acquired
+    FIGURE_REGISTRY_LOCK.release()
