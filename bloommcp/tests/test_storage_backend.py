@@ -2150,3 +2150,104 @@ def test_get_object_size_real_dispatch_through_active_backend(monkeypatch):
 
     assert size == 12
     sb.reset_backend_for_tests()
+
+
+# ─── 9. Foreign-catalog manifest read guard (#573) ─────────────────────────────
+#
+# A foreign manifest can only be manufactured by hand-patching the stored
+# sentinel: `write_manifest` always re-stamps from `active_backend_name()`, and
+# flipping `BLOOM_STORAGE_BACKEND` between write and read points at a
+# physically different store (which has NO manifest), never a mismatched one.
+
+_SENTINEL_ABSENT = object()
+
+
+def _patch_sentinel(root: Path, stem: str, tool_class: str, value) -> None:
+    """Rewrite the on-disk manifest's `storage_backend` field directly."""
+    path = root / "bloommcp_output" / f"{tool_class}_{stem}" / "manifest.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if value is _SENTINEL_ABSENT:
+        raw.pop("storage_backend", None)
+    else:
+        raw["storage_backend"] = value
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+
+def _bloom_records(caplog) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.name.startswith("bloom_mcp")]
+
+
+def test_read_manifest_foreign_catalog_fails_closed(
+    monkeypatch, local_manifest_backend, tmp_path
+):
+    """Spec: "A foreign catalog fails closed" — the raise names both backends
+    and the storage prefix, and leaks no absolute host path."""
+    from bloom_mcp.manifest import AnalysisDir, ManifestBackendMismatchError
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+    _patch_sentinel(tmp_path / "root", "exp", "qc", "supabase")
+
+    with pytest.raises(ManifestBackendMismatchError) as exc_info:
+        AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    msg = str(exc_info.value)
+    assert "'supabase'" in msg and "'local'" in msg
+    assert "bloommcp_output/qc_exp" in msg
+    assert str(tmp_path) not in msg
+
+
+def test_read_manifest_matching_sentinel_reads_as_before(
+    monkeypatch, local_manifest_backend, tmp_path, caplog
+):
+    """Spec: "A matching sentinel reads as before" — returned unchanged, and no
+    new bloom_mcp log record at any level."""
+    from bloom_mcp.manifest import AnalysisDir
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+
+    with caplog.at_level(logging.DEBUG):
+        caplog.clear()
+        manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    assert manifest is not None
+    assert manifest.latest == "v1"
+    assert manifest.storage_backend == "local"
+    assert _bloom_records(caplog) == []
+
+
+@pytest.mark.parametrize("sentinel", [_SENTINEL_ABSENT, None, ""])
+def test_read_manifest_missing_or_empty_sentinel_passes(
+    monkeypatch, local_manifest_backend, tmp_path, sentinel
+):
+    """Spec: "A manifest with no usable sentinel passes" — pre-v5 manifests
+    (absent/None) and a stripped empty string are served unguarded."""
+    from bloom_mcp.manifest import AnalysisDir
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+    _patch_sentinel(tmp_path / "root", "exp", "qc", sentinel)
+
+    manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    assert manifest is not None
+    assert manifest.latest == "v1"
+
+
+def test_schema_error_takes_precedence_over_foreign_sentinel(
+    monkeypatch, local_manifest_backend
+):
+    """Spec: "Schema validation takes precedence over the guard" — a manifest
+    that is both schema-incompatible and foreign raises ManifestSchemaError."""
+    from bloom_mcp.manifest import AnalysisDir, ManifestSchemaError
+    from bloom_mcp.supabase_client import write_json
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_json(
+        "bloommcp_output/qc_exp/manifest.json",
+        {"manifest_schema_version": 999, "storage_backend": "supabase"},
+    )
+
+    with pytest.raises(ManifestSchemaError):
+        AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
