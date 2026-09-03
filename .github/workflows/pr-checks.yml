@@ -167,6 +167,21 @@ jobs:
           SUPABASE_URL: ""
           BLOOM_AGENT_KEY: ""
 
+      # A real test_viz_snapshot.py (#713) failure names a *-failed-diff.png
+      # (matplotlib.testing.compare.compare_images's own diagnostic) under pytest's
+      # tmp_path, which never survives past this job — nothing let a reviewer actually
+      # see what changed. Upload it as a downloadable artifact instead (flagged by a
+      # PR review as a real gap; see openspec/changes/add-bloommcp-plot-snapshot-tests/
+      # design.md Decision 9).
+      - name: Upload plot-snapshot diff images (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plot-snapshot-diffs
+          path: /tmp/pytest-of-*/**/*-failed-diff.png
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Run bloomctl package tests
         # Exclude the env-gated integration test (needs live staging creds); it
         # also self-skips at collection time, so this is defense-in-depth.
