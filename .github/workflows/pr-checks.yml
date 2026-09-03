@@ -1349,18 +1349,24 @@ jobs:
           {
             echo "## Pinned Image CVE Report"
             echo ""
-            echo "| Image | Critical | High | CVEs |"
-            echo "|-------|----------|------|------|"
+            echo "| Image | Critical | High |"
+            echo "|-------|----------|------|"
+            cve_lines=""
             for file in results/trivy-pinned-*/summary.txt; do
               if [ -f "$file" ]; then
                 IFS='|' read -r img crit high cves < "$file"
+                echo "| ${img} | ${crit} | ${high} |"
                 if [ -n "$cves" ]; then
-                  echo "| ${img} | ${crit} | ${high} | ${cves} |"
-                else
-                  echo "| ${img} | ${crit} | ${high} | — |"
+                  cve_lines="${cve_lines}- **${img}**: ${cves}"$'\n'
                 fi
               fi
             done
+            if [ -n "$cve_lines" ]; then
+              echo ""
+              echo "### CVEs by image"
+              echo ""
+              printf '%s' "$cve_lines"
+            fi
           } > pinned-report.md
 
       - name: Post as PR comment
