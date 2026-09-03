@@ -3,36 +3,52 @@
 ### Requirement: Foreign-Catalog Manifest Read Guard
 
 Every manifest read through `bloom_mcp.manifest.read_manifest` SHALL compare
-the resolved manifest's `storage_backend` sentinel, when present, against
-`storage_backend.active_backend_name()` (the same function that stamps the
-sentinel at write time, so stamp and check cannot disagree).
+the resolved manifest's `storage_backend` sentinel, when present and
+non-empty, against `storage_backend.active_backend_name()` (the same function
+that stamps the sentinel at write time, so stamp and check cannot disagree).
 `read_manifest` is the single chokepoint behind `AnalysisDir.get_version`,
 `AnalysisDir.read_manifest`, and `AnalysisDir.list_versions`, and therefore
 behind `get_run`, `list_runs`, `create_run`, `commit`'s allocation and
 re-check reads, `get_download_links`, and the reader's cleaned-tier
 resolution — so the comparison structurally covers every one of those paths
-with no per-call-site opt-in. On a mismatch —
-a *foreign catalog*: a manifest written by a backend other than the one now
-serving it — the read SHALL fail closed by raising
-`ManifestBackendMismatchError` (defined beside `ManifestSchemaError` in
-`bloom_mcp.manifest`) instead of returning the manifest. The error message
-SHALL name both backends and the logical catalog identity and SHALL carry the
-remedy, and SHALL NOT contain any absolute host filesystem path.
+with no per-call-site opt-in. On a mismatch — a *foreign catalog*: a manifest
+written by a backend other than the one now serving it — the read SHALL fail
+closed by raising `ManifestBackendMismatchError` (defined beside
+`ManifestSchemaError` in `bloom_mcp.manifest`) instead of returning the
+manifest. The error message SHALL name both backends and the logical catalog
+identity (the manifest's storage prefix, e.g. `bloommcp_output/qc_<stem>`)
+and SHALL carry the remedy, and SHALL NOT contain any absolute host
+filesystem path.
 
-A manifest with no `storage_backend` sentinel (written before manifest schema
-v5) SHALL pass unguarded — failing it would brick every pre-#572 catalog —
-and this limitation SHALL be documented (the window closes when the catalog's
-next commit re-stamps the manifest).
+The sentinel comparison SHALL run only after the existing schema validation
+(`validate_schema` and `Manifest.model_validate`) has accepted the manifest:
+a manifest that is both schema-incompatible and foreign SHALL surface as
+`ManifestSchemaError`, preserving the existing error precedence. A manifest
+whose `storage_backend` field is absent, `None`, or empty (written before
+manifest schema v5, or stripped) SHALL pass unguarded — failing it would
+brick every pre-#572 catalog — and this limitation SHALL be documented (the
+window closes when the catalog's next commit re-stamps the manifest).
 
 Setting `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1` SHALL downgrade the failure
-to a warning-level log line per guarded read (naming both backends and the
-catalog) that returns the manifest — the sanctioned path for deliberately
-inspecting an offline copy of another backend's catalog. The variable's
-accepted values are unset, `0`, and `1`; any other value SHALL fail fast at
-server startup through the same boot-time validation as
-`BLOOM_STORAGE_BACKEND`, naming the offending value and the accepted values.
-The variable SHALL be read lazily (at guard or validation time, never at
-import), preserving the package's side-effect-free import contract.
+to a warning-level log line **per guarded read** (naming both backends and
+the catalog prefix; never once-per-process) that returns the manifest — the
+sanctioned path for deliberately inspecting an offline copy of another
+backend's catalog. The escape hatch sanctions **reads only**: the
+`ResultStore` write path (`create_run`, `commit`) SHALL reject a foreign
+catalog even when the hatch is set (see `bloommcp-result-store`'s
+`Foreign-Catalog Mismatch Surfaces as a Distinguishable Structured Error`),
+so the hatch can never sanction extending or re-stamping a foreign catalog.
+The variable's accepted values are unset, empty/whitespace (≡ unset, so the
+dev-compose `${VAR:-}` passthrough pattern delivers the default), `0`, and
+`1`; any other value SHALL fail fast at server startup through the same
+boot-time validation as `BLOOM_STORAGE_BACKEND`, naming the offending value
+and the accepted values. At guard time, only the exact value `1` enables the
+hatch — an invalid value that escaped boot validation (e.g. the env mutated
+mid-run) SHALL keep the guard fail-closed, never silently enable it. The
+variable SHALL be read lazily at guard or validation time on every call
+(never at import, and never memoized — unlike the backend object itself),
+preserving the package's side-effect-free import contract and the per-read
+warning semantics.
 
 This guard is a self-consistency check, not full mixing detection: two
 physically disjoint catalogs each remain self-consistent, so a backend flip
@@ -47,55 +63,84 @@ shared-root catalogs, and sentinel tampering).
   sentinel names a backend other than `active_backend_name()` and
   `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST` is unset (or `0`)
 - **THEN** the read raises `ManifestBackendMismatchError` naming both the
-  recorded and the active backend and the remedy, does not return the
-  manifest, and leaks no absolute host filesystem path
+  recorded and the active backend and the catalog's storage prefix, does not
+  return the manifest, and leaks no absolute host filesystem path
 
 #### Scenario: A matching sentinel reads as before
 
 - **WHEN** `read_manifest` resolves a manifest whose sentinel equals the
-  active backend's name
-- **THEN** the manifest is returned exactly as before this change — no new
-  log line, no behavior change on the supported single-backend path
+  active backend's name (with or without the escape hatch set)
+- **THEN** the manifest is returned exactly as before this change, and no new
+  log record is emitted at any level
 
-#### Scenario: A pre-v5 manifest with no sentinel passes
+#### Scenario: A manifest with no usable sentinel passes
 
 - **WHEN** `read_manifest` resolves a manifest whose `storage_backend` field
-  is absent/None (written before schema v5)
+  is absent, `None`, or empty (e.g. written before schema v5)
 - **THEN** the manifest is returned and no error is raised — the guard
   protects only sentinel-carrying catalogs, a documented limitation
 
-#### Scenario: The escape hatch downgrades to a warning and serves the read
+#### Scenario: Schema validation takes precedence over the guard
+
+- **WHEN** `read_manifest` reads a manifest that is both schema-incompatible
+  (e.g. a newer `manifest_schema_version`) and foreign
+- **THEN** it raises `ManifestSchemaError`, exactly as before this change —
+  the sentinel comparison runs only on a schema-valid manifest
+
+#### Scenario: The escape hatch downgrades to a warning on every read
 
 - **WHEN** `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1` and `read_manifest`
-  resolves a foreign catalog
-- **THEN** the manifest is returned and a warning-level log line names the
-  recorded backend, the active backend, and the catalog — once per guarded
-  read, so a deliberate foreign-inspection session leaves an audit trail
+  resolves the same foreign catalog twice in one process
+- **THEN** both reads return the manifest and each emits its own
+  warning-level log record naming the recorded backend, the active backend,
+  and the catalog prefix — per guarded read, never once-per-process (the
+  one-time-signal failure mode of #572's fresh-catalog log is exactly what
+  this change exists to avoid)
+
+#### Scenario: An empty value behaves as unset
+
+- **WHEN** `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST` is set to `""` or
+  whitespace (as the dev-compose `${VAR:-}` interpolation delivers when a
+  developer has not opted in) and a foreign catalog is read
+- **THEN** boot validation passes and the guard stays active (the read
+  raises), identical to the variable being unset
 
 #### Scenario: An invalid escape-hatch value fails fast at startup
 
 - **WHEN** `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST` is set to an unrecognized
   value (e.g. `yes`) and the server runs its boot-time validation
 - **THEN** validation raises a clear error naming the offending value and the
-  accepted values (unset, `0`, `1`), rather than the guard misreading the
-  intent mid-run
+  accepted values (unset/empty, `0`, `1`), rather than the guard misreading
+  the intent mid-run
 
-#### Scenario: Import stays side-effect-free
+#### Scenario: An invalid value at guard time keeps the guard closed
 
-- **WHEN** `import bloom_mcp.server` runs in a fresh interpreter with no bloom
-  environment set
-- **THEN** the import succeeds without reading
-  `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST` or resolving a backend — the guard's
-  env read happens only at manifest-read or boot-validation time
+- **WHEN** the env var holds an unrecognized value (e.g. `yes`) at
+  manifest-read time — it escaped boot validation because the environment
+  was mutated after startup — and a foreign catalog is read
+- **THEN** the guard stays fail-closed (the read raises); only the exact
+  value `1` enables the hatch
+
+#### Scenario: Import stays side-effect-free even with an invalid value set
+
+- **WHEN** `import bloom_mcp.server` runs in a fresh interpreter with
+  `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=yes` (an invalid value) in the
+  environment and no other bloom env set
+- **THEN** the import succeeds — the variable is read only at manifest-read
+  or boot-validation time, so an invalid value cannot crash import (the only
+  observable proof the read is lazy rather than import-time-with-default)
 
 #### Scenario: The guard and its limits are documented together
 
 - **WHEN** a developer reads the storage docs after this change
 - **THEN** they learn what the guard rejects (a catalog served by a backend
   that did not write it), the `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1` escape
-  hatch and its warning trail, that pre-v5 manifests pass unguarded, and that
-  an A → B → A flip across disjoint catalogs remains undetectable locally
-  (#395/#572 non-goal, unchanged)
+  hatch (reads only, with its per-read warning trail, and that in
+  containerized deployments the variable reaches the process only where
+  compose passes it through — dev does; staging/prod deliberately do not),
+  that pre-v5 manifests pass unguarded, and that an A → B → A flip across
+  disjoint catalogs remains undetectable locally (#395/#572 non-goal,
+  unchanged)
 
 ## MODIFIED Requirements
 
@@ -121,16 +166,16 @@ backend (out of scope); instead, every manifest write SHALL stamp a `storage_bac
 naming the backend that produced it, and allocating a fresh catalog (no existing manifest for
 the (experiment, tool_class) pair) SHALL log an informational message naming the experiment,
 tool class, and active backend — the only locally-observable signal that a split may be
-starting. The stamped sentinel is additionally enforced at read time by the
-`Foreign-Catalog Manifest Read Guard` requirement (this capability), which fails a read
-whose manifest names a different backend than the active one. This SHALL be logged at a
-level below warning/error (informational), since it fires
+starting. This SHALL be logged at a level below warning/error (informational), since it fires
 on every brand-new experiment's first commit — the common, non-mixing case — and a
 warning-level log would page on-call in any environment alerting on warning-and-above for a
 near-always-benign event. This signal SHALL NOT be relied upon to catch every mixing event:
 it fires only when no manifest yet exists for the active backend, so a repeated flip back to a
 backend that already has a catalog (e.g. `supabase` → `local` → `supabase`) SHALL NOT log again
-on the return trip, even though history diverged in between.
+on the return trip, even though history diverged in between. The stamped sentinel is
+additionally enforced at read time by the `Foreign-Catalog Manifest Read Guard` requirement
+(this capability), which fails a read whose manifest names a different backend than the
+active one.
 
 #### Scenario: Manifest and provenance are byte-identical across backends
 

@@ -25,8 +25,11 @@ sentinel names a backend other than the one currently serving the read.
   - The failure is structurally distinguishable (its own exception type in each
     layer's taxonomy), names both backends, carries a remedy, and leaks no host
     path.
-  - A deliberate foreign read (offline inspection of a copied bucket) has a
-    sanctioned, explicit, logged escape hatch.
+  - A deliberate foreign **read** (offline inspection of a copied bucket) has a
+    sanctioned, explicit, logged escape hatch that is actually reachable in the
+    standard dev flow (compose passthrough + `.env.dev.example`).
+  - A foreign catalog is never **written to** — not extended, not re-stamped —
+    under any configuration.
 - Non-Goals:
   - Detecting the disjoint-split staleness case (A → B → A flips): each
     backend's own catalog is self-consistent, so the sentinel it serves always
@@ -35,6 +38,7 @@ sentinel names a backend other than the one currently serving the read.
   - Surfacing `storage_backend` in tool-facing provenance output (#574).
   - Any manifest schema change. The guard reads the existing v5 field.
   - Migration tooling for legitimately moving a catalog between backends.
+  - Prod/staging compose passthrough for the escape hatch (see Decisions).
 
 ## When can the guard actually fire? (honest trigger analysis)
 
@@ -61,6 +65,13 @@ sentinel from a passive forensic field into an active integrity check at every
 read. The A → B → A staleness case remains covered only by the fresh-catalog
 log + sentinel forensics (#572) and by #574's surfacing.
 
+The same physics constrains **tests**: flipping the backend between write and
+read can never produce a mismatch, because the other backend sees no manifest
+at all. A foreign manifest is manufactured only by hand-patching the stored
+sentinel (edit the JSON under the local root, or mutate/seed the in-memory
+Supabase store's bytes) — every guard test uses that recipe, never
+flip-and-read.
+
 ## Decisions
 
 - **Decision: guard at the `read_manifest` chokepoint, not per caller.**
@@ -70,33 +81,53 @@ log + sentinel forensics (#572) and by #574's surfacing.
   `commit`'s allocation/re-check reads, `get_download_links`,
   `_resolve_one_class`, and the staleness helpers structurally — no call site
   can forget it. Symmetric with the stamp, which lives in the sibling
-  `write_manifest`.
+  `write_manifest`. The comparison runs after `validate_schema` +
+  `Manifest.model_validate`, so `ManifestSchemaError` keeps precedence and the
+  guard reads the validated model, not the raw dict.
   - Alternatives considered: (a) guard only `ResultStore.get_run` — misses the
-    `require_clean` path entirely, which reads `AnalysisDir` directly, and
-    misses commit-time reads (a commit would silently *re-stamp and take over*
-    a foreign catalog, since `write_manifest` overwrites the sentinel);
+    `require_clean` path entirely, which reads `AnalysisDir` directly;
     (b) guard in `AnalysisDir.get_version` — misses `list_versions` and direct
     `read_manifest` callers. Both rejected as leaving silent paths.
 - **Decision: comparison uses `active_backend_name()`** — the same
   isinstance-derived function the stamp uses (PR #572 review moved it off
   `selected_backend_name()`), so stamp and check cannot disagree about naming.
-- **Decision: an absent sentinel passes.** Manifests written before schema v5
-  carry no `storage_backend`; failing them would brick every pre-#572 catalog.
-  Documented limitation: the guard protects only catalogs written after #572.
-  (First post-upgrade commit re-stamps the manifest, closing the window.)
-- **Decision: fail-closed by default; explicit env-var opt-out.**
-  `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1` downgrades the raise to a
-  warning-level log (per read — it is opt-in and abnormal, so the
-  #572 "info, not warning" paging argument does not apply) and returns the
-  manifest. Accepted values: unset, `0`, `1`; anything else fails
+  An absent, `None`, or empty sentinel passes (pre-v5 manifests; failing them
+  would brick all pre-#572 history — window closes on the catalog's next
+  re-stamping commit).
+- **Decision: the escape hatch sanctions reads only; the write path checks the
+  sentinel unconditionally.** `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1`
+  downgrades the manifest-layer raise to a warning-level log *per guarded read*
+  (it is opt-in and abnormal, so #572's "info, not warning" paging argument
+  does not apply) and returns the manifest. But `create_run` and `commit`
+  perform their own comparison on the manifest object they just read —
+  independent of the hatch — and raise `CatalogBackendMismatchError` before any
+  staging, upload, or manifest write. Without this, hatch=1 would let a commit
+  proceed to `write_manifest`, which re-stamps the sentinel with the active
+  backend's name — a silent *take-over* of the foreign catalog. Reads-only is
+  also exactly the hatch's stated use case (inspection).
+- **Decision: env-var semantics.** Accepted values: unset, empty/whitespace
+  (≡ unset — mandatory because the dev-compose `${VAR:-}` passthrough pattern
+  delivers `""` inside the container, exactly as `_selected_backend_name`
+  already treats `BLOOM_STORAGE_BACKEND`), `0`, and `1`. Anything else fails
   `validate_storage_backend()` at boot, mirroring `BLOOM_STORAGE_BACKEND`'s
-  fail-fast discipline. Read lazily at guard time, never at import (Tier-0
-  side-effect-free import contract). Without the hatch, a deliberately copied
-  catalog is unreadable with no sanctioned remedy except hand-editing every
-  `manifest.json` in a bucket.
-  - Alternative considered: no escape hatch (rely on hand-editing manifests) —
-    rejected; it punishes the one legitimate flow (offline inspection) and
-    invites operators to blunt the sentinel itself.
+  fail-fast discipline. At guard time only the exact value `1` enables the
+  hatch — an invalid value that escaped boot validation keeps the guard closed.
+  Read lazily on every call, never memoized (unlike `_active`, which memoizes
+  the backend object in the same module — a copy-pasted memo would break the
+  per-read warning contract and test isolation), never at import (Tier-0
+  side-effect-free import contract; CI's clean-env wheel-import gate enforces
+  this).
+- **Decision: reachability — dev yes, prod/staging no.** The variable is passed
+  through `docker-compose.dev.yml` via the existing `${VAR:-}` pattern and
+  documented as an empty opt-in line in `.env.dev.example` (both conventions
+  are specced in `development-environment`, hence that capability's MODIFIED
+  delta). Staging/prod compose files keep their closed `environment:` lists:
+  adding the var there would drag in the full defaults-file cascade (entries in
+  both `.env.prod.defaults` and `.env.staging.defaults`, non-empty values for
+  `validate_env.sh`) for a knob that should be a deliberate, rare operator
+  action. The docs and the error remedy say plainly: in containerized
+  staging/prod the hatch requires a compose edit + redeploy (or a revert);
+  host-run and dev-compose processes can set the env var directly.
 - **Decision: two-layer error taxonomy, mirroring the existing pattern.**
   Manifest layer raises `ManifestBackendMismatchError` (sibling of
   `ManifestSchemaError` in `bloom_mcp/manifest/manifest.py`, exported from
@@ -105,64 +136,94 @@ log + sentinel forensics (#572) and by #574's surfacing.
   exactly how `ManifestSchemaError` maps to
   `ManifestIncompatibleError(ManifestReadError)` today, so every existing
   `except ManifestReadError` / `except ResultStoreError` handler keeps working
-  and a caller that needs to distinguish can `isinstance()`-check.
-- **Decision: hard error in cleaned-tier resolution, handled explicitly.**
-  `_resolve_one_class` already catches `ManifestSchemaError` explicitly and has
-  a generic `except Exception` fallback that would technically catch the new
-  error too (as a hard error — its soft-miss/hard-error contract already
-  prevents fall-through). We still add an explicit
-  `except ManifestBackendMismatchError` branch so the returned error string is
-  the precise both-backends message, not a generic "could not read manifest"
-  wrapper, and so the contract is pinned by test rather than by accident of the
-  fallback branch. The error must never surface as
-  `CleanedVersionRequiredError`: the "run `qc_clean` first" remedy would send
-  an agent straight into committing new runs against the foreign catalog
-  (which the commit-time guard would then refuse — safe, but a misleading
-  two-step failure).
-- **Decision: message content.** Both backend names, the logical
-  `<tool_class>/<stem>` catalog identity, and the remedy (stop mixing backends;
-  for a deliberate offline copy set `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1`).
-  Logical storage keys only — never absolute host paths (matching the local
-  backend's existing no-path-leak rule).
+  and a caller that needs to distinguish can `isinstance()`-check. On the
+  commit path the error surfaces as itself with do-not-retry semantics,
+  mirroring the existing `KeyScopeGuardError` branch — never wrapped into the
+  generic `CommitFailedError`, whose "transient — retry" message would mislead
+  about a permanent condition.
+- **Decision: typed propagation through the reader layer.** Today
+  `_resolve_one_class` stringifies unknown failures and both reader adapters
+  *discard* the string: `LocalReader.load_experiment` demotes every
+  resolution failure under `require_clean=True` to
+  `CleanedVersionRequiredError` ("run the QC workflow first") and
+  `SupabaseReader.load_experiment` to `ExperimentNotFoundError` — so a
+  string-level fix would change nothing observable. Instead
+  `ManifestBackendMismatchError` propagates out of `_resolve_one_class`
+  (excluded from its generic `except Exception`, alongside the explicit
+  `ManifestSchemaError` branch), and both readers surface it as
+  `ForeignCatalogError(ExperimentReadError)` (new, in `data_access/ports.py`)
+  naming both backends. Consumer tools already declare
+  `errors=(ExperimentReadError, CommitFailedError, ManifestReadError)`
+  (verified in `pca_analysis.py:274` / `qc_clean.py:281`), so the message
+  passes through the `@as_mcp_tool` envelope as a structured `tool_error` with
+  **zero per-tool code changes** — and `pca_analysis`'s explicit
+  `except CleanedVersionRequiredError` re-raise (the "run qc_clean first"
+  remedy) is never hit, because `ForeignCatalogError` is a sibling, not a
+  subclass, of it. Remaining `load_experiment_data` /
+  `_resolve_versioned_cleaned` callers are audited during implementation so no
+  path lets the raw manifest-layer error escape undeclared.
+- **Decision: message content.** Both backend names, the logical catalog
+  identity as the manifest's storage prefix (`bloommcp_output/qc_<stem>` — the
+  only identity `read_manifest(prefix)` has), and the remedy (stop mixing
+  backends; for a deliberate offline copy set
+  `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1`, noting the containerized-deploy
+  caveat). Logical storage keys only — never absolute host paths (matching the
+  local backend's existing no-path-leak rule).
 
 ## Risks / Trade-offs
 
-- **A single foreign catalog could brick multi-experiment listings.**
-  `list_existing_analyses` iterates many experiments' manifests; if one read's
-  raise aborts the whole listing, one bad catalog hides every healthy one.
-  → Mitigation: implementation task verifies the listing path's per-experiment
-  error isolation and adds a regression test (report the mismatch for that
-  experiment's entry; keep listing the rest). If isolation does not exist
-  today, it is added for this error type as part of this change.
+- **A single foreign catalog and multi-class listings.** Verified during
+  review: `list_existing_analyses` already isolates failures **per tool class
+  for one experiment** (`except Exception → errors.append → continue`), so the
+  new error cannot abort a listing; the foreign class contributes an error
+  entry and healthy classes still list. The risk is regression, not a gap →
+  pinned by a characterization test (mind the module's 30s `_RESPONSE_CACHE`
+  and that `trim_staleness`'s own manifest reads may add a second error entry).
 - **Fakes are blind to the guard.** `FakeResultStore` and `FakeReader` never
   construct a `Manifest` and have no backend concept (called out in #572's
   design), so fake-based suites can never exercise the guard. → Tests are
-  written against the real manifest path: the local backend on a temp root
-  (write a manifest, flip/patch the sentinel, read) and the
-  `_FakeSbStorageClient` harness in `tests/test_storage_backend.py` — the one
-  fixture that runs real backend dispatch. The parity-suite exemption is
-  recorded in the spec deltas so it cannot be mistaken for missing coverage.
+  written against the real manifest path: the local backend on a temp root and
+  the in-memory Supabase boundary (`fake_supabase_storage` patches the manifest
+  module's storage helpers but *not* `active_backend_name()`, so the guard is
+  exercisable there too), with the foreign sentinel hand-patched (see trigger
+  analysis). The parity-suite exemptions are recorded in both parity files and
+  in the spec deltas so the gap is a documented boundary, not missing coverage.
+- **Test hygiene.** There is no repo-wide autouse backend reset: tests that
+  flip `BLOOM_STORAGE_BACKEND` or touch the memoized `_active` must use the
+  opt-in `local_manifest_backend` fixture or call `reset_backend_for_tests()`
+  in setup+teardown, and every test asserting default (fail-closed) behavior
+  must `monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST",
+  raising=False)` so an ambient export can't flip it. The new var joins
+  `test_package_baseline.py`'s env scrub list.
 - **Pre-v5 manifests pass silently.** Accepted (see Decisions); the alternative
   bricks all history written before #572. Window closes on first re-commit.
 - **The guard can be mistaken for full mixing detection.** → The docs section
   and both spec deltas state what it cannot catch (A → B → A) in the same
   breath as what it can.
-- **New optional env var vs. env-parity checks.** The deploy-env-parity gate
-  compares committed env-defaults files. → Implementation task runs the parity
-  checker; the variable is optional-with-default so it should not need
-  defaults-file entries, but this is verified, not assumed.
+- **A staging/prod bucket that is already foreign would start failing on
+  deploy, where the hatch is not reachable without a compose edit.** Risk is
+  low (prod/staging never run `local`; a foreign sentinel there would require a
+  hand-uploaded catalog), and the failure would be the intended surfacing — but
+  it is verified, not assumed: a one-time pre-merge audit queries the
+  staging/prod `bloommcp-data` buckets for any `manifest.json` whose
+  `storage_backend` is present and ≠ `supabase`.
 
 ## Migration Plan
 
-No schema change, no data migration. Deploys pick up the guard on restart;
-supported (unmixed) deployments see no behavior change. If a deployment is
-unknowingly serving a foreign catalog today, its reads start failing loudly
-with the remedy in the message — that is the intended surfacing, and
-`BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1` restores service (with warnings) while
-the operator untangles the catalogs. Rollback: revert the commit; the sentinel
-field itself is untouched.
+No schema change, no data migration, no new required env var. Deploys pick up
+the guard on restart; supported (unmixed) deployments see no behavior change.
+If a deployment is unknowingly serving a foreign catalog today, its reads start
+failing loudly with the remedy in the message — that is the intended surfacing.
+Restoring read access: host-run or dev-compose processes set
+`BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1` (warning trail per read);
+containerized staging/prod require a compose `environment:` edit + redeploy, or
+reverting the merge commit. The pre-merge bucket audit (Risks) makes the
+staging/prod case a verified non-event rather than a hope. Rollback: revert the
+commit; the sentinel field itself is untouched, and
+`CatalogBackendMismatchError ⊂ ManifestReadError` /
+`ForeignCatalogError ⊂ ExperimentReadError` mean downstream handlers are valid
+both before and after.
 
 ## Open Questions
 
-None blocking. The `list_existing_analyses` isolation behavior is a verify-task
-rather than an open design question (both outcomes have a defined resolution).
+None blocking.
