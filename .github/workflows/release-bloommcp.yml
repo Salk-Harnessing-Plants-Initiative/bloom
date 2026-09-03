@@ -1,0 +1,304 @@
+name: release-bloommcp
+
+# Builds and publishes the bloommcp package to PyPI.
+#
+# Trigger: a *published* GitHub Release (the developer-gated entry point, with a
+# home for release notes and a pre-release flag) or a manual workflow_dispatch.
+#
+# A dispatch run validates + builds + smoke-tests but NEVER publishes — use it
+# as a dry run. There is intentionally no push/tag publish trigger.
+#
+# Three jobs: validate-release (tag/version/changelog/lint/test) -> build-and-verify
+# (build, twine check, wheel-import + entry-point smoke test — no publish
+# credential) -> build-and-publish (holds the OIDC token and does nothing else).
+# This mirrors the hardened shape release-bloomcli.yml has on `main` (via #629,
+# rolled up from `staging` by #667) — the credential/third-party-code split, the
+# exhaustive pkgutil.walk_packages import walk, the --prerelease=allow
+# double-resolution check, and a check that an entry-point failure surfaces
+# loudly rather than silently or by hanging. build-and-verify records the built
+# artifact's checksum before twine/the wheel's own dependency chain run and
+# uploads it; build-and-publish downloads it, re-checks the hash, and only then
+# publishes — so the credential never shares a job with freshly-built or
+# third-party code, and a build-time artifact swap can't slip past unnoticed.
+#
+# Tag scoping: validate-release carries a job-level guard so a Release cut for a
+# different monorepo package (bloomctl-vX.Y.Z) is skipped, not failed — this
+# workflow only reacts to a release tagged bloommcp-vX.Y.Z (or workflow_dispatch,
+# which has no release tag and always passes the guard). See
+# release-bloomcli.yml's reciprocal guard. Note: `startsWith()`'s GitHub Actions
+# semantics are case-insensitive, while the bash prefix-strip in "Validate tag
+# matches version" below is case-sensitive — an all-caps tag (e.g.
+# `BLOOMMCP-v1.0.0`) would pass this guard but then fail cleanly at the
+# tag/version mismatch check, never silently skipped or silently accepted.
+#
+# Auth is PyPI trusted publishing (OIDC) — no API token is stored. The publisher
+# is bound to this repo + this workflow filename + the `pypi` environment; that
+# pending publisher must be registered on PyPI before the first release (see
+# bloommcp/RELEASE_PROCESS.md).
+#
+# Pre-releases (aN/bN/rcN) publish to real PyPI and are marked "pre-release" on
+# the GitHub Release.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-bloommcp
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: bloommcp
+
+jobs:
+  validate-release:
+    name: Validate release
+    runs-on: ubuntu-latest
+    # Skip cleanly (not a failing run) when a Release belongs to a different
+    # monorepo package. workflow_dispatch has no release tag, so it always
+    # passes this guard.
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'bloommcp-')
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+
+      - name: Read version from pyproject.toml
+        id: version
+        run: |
+          VERSION=$(uv version | awk '{print $NF}')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "bloommcp version: $VERSION"
+
+      # Release tag must equal the package version. Accepts only `bloommcp-vX`
+      # (the only form ever used or documented for this package — see
+      # bloommcp/RELEASE_PROCESS.md).
+      # Untrusted inputs (the release tag) go through env, never interpolated
+      # into the script text, so a crafted tag can't break out of the command.
+      - name: Validate tag matches version
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          TAG_VERSION="${TAG#bloommcp-v}"
+          if [ "$TAG_VERSION" != "$VERSION" ]; then
+            echo "::error::Release tag ($TAG -> $TAG_VERSION) does not match bloommcp/pyproject.toml version ($VERSION)"
+            exit 1
+          fi
+          echo "Tag $TAG matches version $VERSION"
+
+      - name: Validate changelog entry exists
+        if: github.event_name == 'release'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if ! grep -q "^## \[$VERSION\]" CHANGELOG.md; then
+            echo "::error::No changelog entry '## [$VERSION]' found in bloommcp/CHANGELOG.md"
+            exit 1
+          fi
+          echo "Changelog entry found for $VERSION"
+
+      # Lint via uvx (pinned to the repo's .pre-commit-config.yaml ruff version)
+      # so ruff is not a project dependency.
+      - name: Lint (ruff)
+        run: uvx ruff@0.9.9 check .
+
+      - name: Run tests
+        # Exclude the same markers pr-checks.yml's python-audit job excludes:
+        # `integration` needs the full statsmodels/umap oracle fixtures and is
+        # known to intermittently stall in CI containers; `live_smoke` needs
+        # the live Docker Compose + Supabase + MinIO stack, unavailable here.
+        run: uv run --extra test pytest -m "not integration and not live_smoke" -q
+
+  # Builds the artifact and proves it, WITHOUT the publishing credential.
+  #
+  # Every step here executes third-party code: `twine check`, and a smoke run
+  # that imports the freshly built wheel's own dependency chain. Run inside the
+  # publishing job, that code would execute alongside
+  # ACTIONS_ID_TOKEN_REQUEST_TOKEN and with write access to the dist/ uploaded
+  # seconds later; `--isolated` isolates the virtualenv, not the process. So
+  # this job carries no `id-token: write` and no `pypi` environment.
+  build-and-verify:
+    name: Build and verify
+    needs: validate-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+
+      # Freeze repo links to the release tag so PyPI's sidebar links
+      # ([project.urls]) resolve to the exact immutable commit this version
+      # shipped, not a moving branch. Rewrites the build checkout only —
+      # committed files stay on `main`. No-op if no matching link exists;
+      # skipped on workflow_dispatch dry runs. Untrusted release tag goes
+      # through env, never inlined into script text.
+      - name: Pin repo links to the release tag
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import os, re, pathlib
+          tag = os.environ["TAG"]
+          subs = [
+              (r'/tree/[^/]+/bloommcp', f'/tree/{tag}/bloommcp'),
+              (r'/blob/[^/]+/bloommcp/CHANGELOG\.md', f'/blob/{tag}/bloommcp/CHANGELOG.md'),
+          ]
+          p = pathlib.Path("pyproject.toml")
+          s = p.read_text()
+          for pat, repl in subs:
+              # A callable replacement (not the string itself) so a tag
+              # containing a backslash-digit sequence (e.g. r"\1") can't be
+              # misread as a backreference — repl is inserted literally.
+              s = re.sub(pat, lambda m, r=repl: r, s)
+          p.write_text(s)
+          print("--- pyproject.toml ---")
+          print(s)
+          PY
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      # Recorded before anything third-party runs. Every step below
+      # deliberately executes dependency code — that is how they prove the
+      # wheel works — and they run with write access to dist/. Removing the
+      # credential from the publishing job stops an attacker minting a token;
+      # it does not stop them swapping the parcel a trusted job then uploads.
+      # The checksum is what makes that swap fail instead of ship.
+      - name: Record the built artifact's checksum
+        run: sha256sum dist/* | tee dist.sha256
+
+      # Validate packaging metadata (e.g. long-description rendering) so a
+      # malformed metadata fails here, before the immutable PyPI upload.
+      # Pinned (unlike release-bloomcli.yml's inherited unpinned `uvx twine
+      # check`) since this is new code with no existing inconsistency to copy.
+      - name: Check package metadata
+        run: uvx twine@7.0.0 check dist/*
+
+      # Immutable-upload insurance: prove the built wheel imports and the
+      # entry point runs from an isolated install BEFORE publishing.
+      #
+      # Commands/sections import supabase lazily, so `import bloom_mcp` alone
+      # stays green while a broken adapter dies — this walks every submodule
+      # instead. It runs twice because --pre applies to every dependency, not
+      # just bloom_mcp; a failure on the second pass means a dependency needs
+      # an upper bound — or, if it is someone else's broken beta, that the
+      # release waits rather than being capped against it (#629).
+      #
+      # build_app() alone does not reach bloom_mcp.data_access.SupabaseReader /
+      # bloom_mcp.result_store.SupabaseResultStore — those are wired only by
+      # main()'s composition root, after the --version early return. The walk
+      # imports their modules either way, but the explicit class imports (with
+      # their postgrest/supabase transitive imports) pin the exact names a
+      # broken adapter or lazily-imported dependency would otherwise let slip.
+      - name: Verify wheel imports
+        run: |
+          cat > /tmp/import_smoke.py <<'PY'
+          import importlib
+          import pkgutil
+
+          import bloom_mcp, bloom_mcp.tools, bloom_mcp.manifest, bloom_mcp.server
+
+          assert "site-packages" in bloom_mcp.__file__, bloom_mcp.__file__
+
+          for module in pkgutil.walk_packages(bloom_mcp.__path__, "bloom_mcp."):
+              importlib.import_module(module.name)
+
+          bloom_mcp.server.build_app()
+          from bloom_mcp.data_access import SupabaseReader  # noqa: F401
+          from bloom_mcp.result_store import SupabaseResultStore  # noqa: F401
+          from postgrest import APIError  # noqa: F401
+          from supabase import create_client  # noqa: F401
+
+          print("import smoke OK", bloom_mcp.__version__)
+          PY
+          echo "== default resolution =="
+          uv run --isolated --no-project --with dist/*.whl python /tmp/import_smoke.py
+          echo "== pre-release resolution =="
+          uv run --isolated --no-project --prerelease=allow --with dist/*.whl python /tmp/import_smoke.py
+        env:
+          SUPABASE_URL: ""
+          BLOOM_AGENT_KEY: ""
+
+      # Not a try/except wrapper like bloomctl.errors:main — bloom_mcp's
+      # console script is the bare `bloom_mcp.server:main`, so there is no
+      # handler-vs-bare-CLI distinction to prove. What could still regress
+      # silently is main()'s own documented contract (server.py): `--version`
+      # returns before validate_data_env()/validate_supabase_env() run, and a
+      # real invocation with no env configured fails loudly instead of
+      # silently starting the server or hanging on uvicorn.run(). `--version`
+      # alone can't tell either apart from a passing run, so this drives both
+      # paths explicitly and pins the registered console-script target.
+      - name: Verify entry point
+        run: |
+          uv run --isolated --no-project --with dist/*.whl bloom-mcp --version
+          cat > /tmp/entrypoint_check.py <<'PY'
+          import subprocess
+          from importlib.metadata import entry_points
+
+          script = next(e for e in entry_points(group="console_scripts") if e.name == "bloom-mcp")
+          assert script.value == "bloom_mcp.server:main", f"console script is {script.value}"
+
+          # No BLOOM_*/SUPABASE_* env at all: validate_data_env() must reject this
+          # before uvicorn ever binds a port. The timeout catches a regression that
+          # skips validation and hangs in uvicorn.run() instead of failing fast.
+          try:
+              done = subprocess.run(["bloom-mcp"], capture_output=True, text=True, timeout=10)
+          except subprocess.TimeoutExpired:
+              raise AssertionError("bloom-mcp hung instead of failing fast on missing env")
+          print(done.stdout, done.stderr)
+          assert done.returncode != 0, "bloom-mcp exited 0 with no env configured"
+          assert "RuntimeError" in done.stderr, "no clear error surfaced for missing env"
+          print("entry point wired: bloom_mcp.server:main, fails fast with no env")
+          PY
+          uv run --isolated --no-project --with dist/*.whl python /tmp/entrypoint_check.py
+
+      - name: Verify the artifact is the one that was built
+        run: sha256sum -c dist.sha256
+
+      - name: Upload the verified artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: bloommcp-dist
+          path: |
+            bloommcp/dist/
+            bloommcp/dist.sha256
+          if-no-files-found: error
+
+  # Holds the credential and does nothing else. It runs no third-party code:
+  # the artifact was built and proved in build-and-verify, and `uv publish`
+  # only uploads the files.
+  build-and-publish:
+    name: Publish
+    needs: build-and-verify
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write # OIDC token for PyPI trusted publishing
+    steps:
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+
+      - name: Download the verified artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: bloommcp-dist
+          path: bloommcp/
+
+      # The last point at which a swap could still be caught, and the only
+      # check standing between the build job's filesystem and an upload that
+      # cannot be undone.
+      - name: Verify the artifact matches what was built
+        run: sha256sum -c dist.sha256
+
+      # Publishes only on a real Release; a workflow_dispatch dry run stops here.
+      - name: Publish to PyPI (trusted publishing)
+        if: github.event_name == 'release'
+        run: uv publish --trusted-publishing always

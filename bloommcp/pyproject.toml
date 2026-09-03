@@ -1,6 +1,6 @@
 [project]
 name = "bloommcp"
-version = "0.1.0"
+version = "0.1.0a1"
 description = "Bloom MCP server exposing SLEAP root-trait analysis tools over the Model Context Protocol"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,7 +13,11 @@ classifiers = [
 ]
 dependencies = [
     "fastmcp>=2.0.0",
-    "httpx>=0.27.0",
+    # Both upper bounds are load-bearing: httpx 1.0 and supabase 3.0 each remove
+    # something bloom_mcp.supabase_client imports, so a --pre install picks them
+    # up and nothing runs (#629, #663 review) — mirrors bloomcli/pyproject.toml's
+    # identical pins. Lifted once those ship stable.
+    "httpx>=0.27.0,<1.0",
     "python-dotenv>=1.0.0",
     # Security floors for transitive FastAPI-stack deps (see issue #311):
     # pin past upstream CVE fix versions. Open floors per repo convention.
@@ -32,8 +36,9 @@ dependencies = [
     # repo convention.
     "mcp>=1.28.1",
     # Supabase PostgREST + Storage client, used by bloom_mcp.supabase_client
-    # for CSV exchange via the bloommcp-data bucket.
-    "supabase>=2.0.0",
+    # for CSV exchange via the bloommcp-data bucket. Upper bound load-bearing,
+    # see the httpx pin above.
+    "supabase>=2.0.0,<3",
     # X-Bloom-Identity header verification (bloom_mcp.identity, #406). Already
     # a transitive dependency via supabase-py's supabase_auth sub-dependency
     # (resolved 2.13.0 in uv.lock) — promoted to direct since bloommcp now
@@ -62,6 +67,11 @@ dependencies = [
     # (fixed in 4.4.1), disclosed 2026-08-06. Open floor per repo convention.
     "h2>=4.4.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/tree/main/bloommcp"
+Repository = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom"
+Changelog = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/main/bloommcp/CHANGELOG.md"
 
 [project.scripts]
 bloom-mcp = "bloom_mcp.server:main"
@@ -97,4 +107,3 @@ markers = [
     "live_smoke: needs the real running dev stack (Docker Compose + Supabase + MinIO); excluded from python-audit's per-PR run; the CI-safe subset runs in dev-stack-smoke, the full set via /pre-merge",
     "live_smoke_slow: live_smoke tests whose delegate is numerically ill-conditioned at scale (rank-deficient covariance, per-trait MixedLM fits); always also carries live_smoke; excluded from dev-stack-smoke, runs only via /pre-merge",
 ]
-
