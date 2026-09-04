@@ -121,24 +121,48 @@ matplotlib-figure-creating call site in `bloommcp` acquires it too (added after 
 review round).** `generate_figures`'s cleanup can be confused by _any_ figure that appears
 in the shared registry during its locked window, not just one from another
 `umap_analysis`/`pca_analysis` call. `qc_inspect.py`'s `_render_report`, `remove_outliers.py`'s
-`_make_figures`, and each of the 5 legacy `plot_*` tools (`plot_trait_boxplots.py`,
-`plot_correlation_matrix.py`, `plot_heritability_bar.py`, `plot_variance_decomposition.py`,
-`plot_trait_histograms.py`) all create figures against that same registry, independently of
-`generate_figures`, and none of them previously synchronized with it at all —
-`qc_inspect.py` even carried its own pre-existing comment naming a "single-writer
-assumption" for the shared registry, without ever enforcing it. A `umap_analysis`/
-`pca_analysis` failure could therefore have silently corrupted or blanked a concurrent,
-unrelated tool call's plot — the exact failure mode Decision 5 claims to close, just via an
-uncovered caller. Fixed by having each of those 7 other call sites acquire the same
-`bloom_mcp.tools._plots.FIGURE_REGISTRY_LOCK` around only their own figure-_creating_
-delegate call (not their full save/persist/commit span): since the lock is a mutex, no other
-call's creation step can execute while any one call holds it, regardless of how long that
-holder then takes afterward — none of these other call sites do fignum-diffing themselves
-(they close by direct object reference, already safe regardless of registry contents), so
-they only need to participate in the lock to protect themselves _from_
-`generate_figures`'s diff, not to protect each other. `FIGURE_REGISTRY_LOCK` is a plain
-`threading.Lock` (non-reentrant) — documented on the lock itself, since nothing today
-transitively re-enters it, but a future plotter that did would deadlock.
+`_make_figures`, `clustering.py`, and each of the 5 legacy `plot_*` tools
+(`plot_trait_boxplots.py`, `plot_correlation_matrix.py`, `plot_heritability_bar.py`,
+`plot_variance_decomposition.py`, `plot_trait_histograms.py`) all create figures against
+that same registry, independently of `generate_figures`, and none of them previously
+synchronized with it at all — `qc_inspect.py` even carried its own pre-existing comment
+naming a "single-writer assumption" for the shared registry, without ever enforcing it. A
+`umap_analysis`/`pca_analysis` failure could therefore have silently corrupted or blanked a
+concurrent, unrelated tool call's plot — the exact failure mode Decision 5 claims to close,
+just via an uncovered caller. `FIGURE_REGISTRY_LOCK` is a plain `threading.Lock`
+(non-reentrant) — documented on the lock itself, since nothing today transitively re-enters
+it, but a future plotter that did would deadlock.
+
+**Decision 5e — the shared cleanup logic was extracted into
+`bloom_mcp.tools._plots.call_with_figure_cleanup` (added after a third PR review round),
+replacing both `generate_figures`'s own inline lock-and-diff loop and every one of the 8
+other call sites' ad hoc `with FIGURE_REGISTRY_LOCK: fig = <delegate>()`.** Two problems
+surfaced with the ad hoc version this decision fixes:
+
+1. Every one of those 8 sites wraps its delegate call in its _own_ `except Exception:
+return "<message>"` (best-effort, pre-existing, predates this PR) — which, without
+   `generate_figures`'s allocate-then-raise cleanup, silently swallowed the exception
+   without closing whatever the delegate had already allocated mid-render. This was a
+   real, currently-shipping leak at 7 of those 8 sites (everywhere except
+   `remove_outliers.py`, which has no such swallow), not merely a documentation gap
+   about the lock's own comment overstating "closes by direct object reference" safety
+   — that claim is only true if the delegate never raises after partially rendering,
+   and several of these delegates (batched multi-page plotters especially) can.
+2. `generate_figures` held `FIGURE_REGISTRY_LOCK` across its _entire_ multi-plot loop,
+   not per key — coarser than strictly necessary, since each key's own diff only cares
+   about figures created during that one key's `fn()` call.
+
+`call_with_figure_cleanup(fn)` is the single, tested implementation of "call `fn` under
+`FIGURE_REGISTRY_LOCK`; on exception, close any figure(s) newly registered since before
+the call, then re-raise" — `generate_figures` now calls it once per key inside its loop
+(fixing the coarser-than-necessary lock scope as a side effect), and every one of the
+other 8 call sites calls it directly around its own delegate call instead of the old
+`with FIGURE_REGISTRY_LOCK:` block, which both plugs each site's leak for real and
+reduces the amount of test surface needing direct coverage to one shared helper (tested
+thoroughly once in `test_plots_helpers.py`) plus one targeted "allocate-then-raise, still
+closed" regression test per call site (matching the precedent every existing shared
+`_plots.py` helper — `validate_plot_keys`, `apply_font_style` — already followed: tested
+once, centrally, not re-tested bespoke at each call site).
 
 **Decision 5c — the internal PCA fit for `create_umap_colored_by_top_traits` moved outside
 `generate_figures`'s lock window (added after the same review round).** That fit
@@ -163,6 +187,30 @@ constraint) became inconsistent with the two fields this change touched. Restore
 `plot_point_size` analog) — `json_schema_extra` injects raw JSON Schema keywords into
 `model_json_schema()`'s output without Pydantic enforcing them, so the schema documents the
 bound while `check_plot_style_ceiling` remains the sole enforcement path.
+
+**Decision 5f — `clustering.py`'s `create_cluster_scatter_pca` had the identical
+lazy-PCA-fit-inside-the-plot-callable bug Decision 5c fixed for UMAP, and was missed in that
+pass (added after a third PR review round).** `clustering.py`'s `_scatter_pca` closure ran
+its own internal, non-persisted `perform_pca_analysis` call lazily, the same anti-pattern
+`_compute_top_traits_pca` was extracted out of `umap_analysis.py` to avoid — and
+`clustering.py` shares `generate_figures`, so this PCA fit was running inside
+`FIGURE_REGISTRY_LOCK`'s window too, an audit gap (searched for existing lock-adjacent call
+sites rather than checking every consumer of `generate_figures`) rather than a deliberate
+scope cut. Fixed identically: a new `_compute_scatter_pca` helper, called eagerly by the
+tool body before `_clustering_plot_calls`/`generate_figures`, only when
+`create_cluster_scatter_pca` is actually requested.
+
+**Decision 5g — `plot_cmap`'s length cap moved from a Pydantic `Field(max_length=...)`
+constraint into the tool body (added after the same review round), for the same reason
+Decision 6 moved the numeric ceilings.** Shipping `max_length=32` as a `Field` constraint
+(as this change originally did, in response to the previous round's suggestion) produced
+the one remaining opaque-message inconsistency: every other `plot_cmap`/ceiling rejection in
+this change names the submitted value, but an over-length `plot_cmap` would have raised
+Pydantic's generic `ValidationError` instead. Checked in the tool body now, before the
+allowlist membership check (a cheap early-exit that also avoids hashing an arbitrarily long
+string just to look it up in `_ALLOWED_CMAPS`), naming both the actual length and the limit.
+The cap is still discoverable via `json_schema_extra={"maxLength": ...}`, matching Decision
+5d's pattern for the numeric fields.
 
 **Decision 6 — `plot_font_size`/`plot_point_size` ceilings checked in the tool body too
 (added after PR review), not as `Field(gt=0, le=...)` constraints.** Decision 3's rationale
@@ -195,14 +243,24 @@ derived purely from the request, with no reason to pay for a full experiment rea
   regression test alone couldn't have caught this PR's own `berlin`/`managua`/`vanimo`
   floor-mismatch bug, since the locked matplotlib (3.10.8) is newer than the floor
   (`>=3.7.0`) and already has those three names.
-- **Concurrent plot generation is now fully serialized process-wide** (Decisions 5/5b) — a
-  correctness-over-throughput trade-off, now covering not just `umap_analysis`/
-  `pca_analysis` but every matplotlib-figure-creating call in `bloommcp`. Plot generation is
-  an opt-in (`include_plots=True`) path, not the default, so this is not expected to be a
-  hot path under real concurrency; revisit if profiling ever shows otherwise. Decision 5c
-  narrows the actual held-duration for UMAP's `create_umap_colored_by_top_traits` (the fit
-  moved outside the lock); the other 7 call sites lock only their own figure-_creation_
-  step, not their full save/persist span, for the same reason.
+- **Concurrent plot generation is now fully serialized process-wide** (Decisions 5/5b/5e) —
+  a correctness-over-throughput trade-off, covering not just `umap_analysis`/`pca_analysis`
+  but every matplotlib-figure-creating call in `bloommcp`. Genuinely flagged as worth
+  watching, not dismissed as purely theoretical: plotting is the feature researchers reach
+  for specifically to look at their results, so "opt-in" (`include_plots=True`) doesn't
+  obviously mean "rare" the way a true edge-case flag would. Narrowed twice since first
+  introduced: Decision 5c/5f move the internal PCA fits (UMAP's
+  `create_umap_colored_by_top_traits`, clustering's `create_cluster_scatter_pca`) outside
+  the lock entirely; Decision 5e's `call_with_figure_cleanup` extraction narrows
+  `generate_figures`'s hold from its whole multi-plot loop to one lock acquisition per key,
+  and every other call site locks only its own figure-creating delegate call, not a full
+  save/persist span. The lock itself remains unbounded and timeout-free — a caller
+  rendering a genuinely large/slow figure still blocks every other concurrent
+  figure-creating call server-wide for that render's real duration, not just a brief
+  registry-bookkeeping instant. Accepted for now; worth a profiling follow-up against real
+  plot-generation latencies (not just this design's own reasoning about the ceilings) if
+  concurrent plotting ever becomes a reported pain point, rather than assuming today's
+  "not expected to be a hot path" holds indefinitely.
 - **Ceilings are not validated against dataset scale**: `plot_point_size=10000` against a
   very large experiment still draws that many oversized markers in one `savefig()` — no
   test exercises the ceiling at realistic data scale, only at the boundary value itself.
@@ -227,6 +285,20 @@ derived purely from the request, with no reason to pay for a full experiment rea
     PR just fixed for `plot_font_size`/`plot_point_size` — but unlike those two, without any
     measured cost data behind a specific ceiling. Pre-existing, out of #721's stated scope;
     worth the same profile-then-bound treatment in a dedicated follow-up.
+- **Follow-up issues worth filing separately** so the gaps above don't get lost once #721
+  closes: `extra="forbid"` for the plot-style params models; profiled ceilings for
+  `n_neighbors`/`min_dist`; `plot_alpha` near-zero point invisibility (issue #721's own
+  follow-up comment, finding 7); colormap-list drift against a future matplotlib bump.
+  Not filed as part of this change — deliberately left as a decision for whoever owns
+  `bloommcp`'s backlog, not assumed here.
+- **CI's "Build Docker Images & Scan for CVEs" job is failing on this PR, unrelated to this
+  PR's diff**: `CVE-2026-56854` (`golang.org/x/crypto/ssh` auth bypass, fixed upstream in
+  `0.55.0`, currently resolving to `0.50.0`) in the `caddy:ci` image's Trivy scan — confirmed
+  via the job's own log. This PR's diff is Python-only (`bloommcp/` + `openspec/`) and never
+  touches `caddy/` or its Dockerfile; a prior PR merged immediately before this branch's tip
+  passed the identical job cleanly. Repo-wide CI gate issue (needs a `caddy` base-image bump
+  or an accepted-risk `.trivyignore` entry), not something this change should try to fix —
+  noted here so a reviewer doesn't wait on this specific check turning green on its own.
 
 ## Migration Plan
 

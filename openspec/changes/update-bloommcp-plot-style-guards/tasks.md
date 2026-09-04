@@ -279,3 +279,60 @@ pytest tests/ -m "not integration and not live_smoke" -v --tb=short` (the exact
 - [x] 8.6 Ran the full `bloommcp` test suite, `openspec validate --strict`, and the repo's
       actual pre-commit lint/format hooks on every file touched across all three rounds;
       confirmed green before pushing.
+
+## 9. Post-review fixes, round 4 (5-subagent PR review of commit ad4f243f)
+
+- [x] 9.1 **Important**: `clustering.py`'s `_scatter_pca` had the identical
+      lazy-PCA-fit-inside-the-plot-callable bug fixed for UMAP in round 3 (task 8.4) — an
+      audit gap, since round 3 searched for existing lock-adjacent call sites rather than
+      every consumer of `generate_figures`. Extracted the identical fix: a new
+      `_compute_scatter_pca` helper, called eagerly by the tool body before
+      `_clustering_plot_calls`/`generate_figures`, only when `create_cluster_scatter_pca`
+      is requested. Fixed the existing
+      `test_figure_cleanup_on_partial_plotter_failure_no_run_committed` test's
+      `_clustering_plot_calls` wrapper, which still used the old 4-positional-arg
+      signature and was passing for the wrong reason (a `TypeError` from the signature
+      mismatch, not the `RuntimeError` scenario it claims to test — both happened to map
+      to the same `internal_error` code, masking the bug). New regression test proves the
+      fit now runs eagerly, mirroring task 8.4's UMAP test.
+- [x] 9.2 **Important**: extracted `bloom_mcp.tools._plots.call_with_figure_cleanup` — the
+      single, shared "call under `FIGURE_REGISTRY_LOCK`; on exception, close any newly
+      registered figure(s), then re-raise" implementation — replacing both
+      `generate_figures`'s inline lock-and-diff loop and every one of the 8 other call
+      sites' ad hoc `with FIGURE_REGISTRY_LOCK: fig = <delegate>()`. This fixes two things
+      at once (design.md Decision 5e): (a) a real, pre-existing figure leak at 7 of those 8
+      sites, whose own `except Exception: return "<message>"` swallow was silently
+      discarding whatever the delegate had already allocated mid-render — not merely a
+      misleading code comment, as it might have first appeared; (b) `generate_figures`
+      holding the lock across its whole multi-plot loop rather than per key, coarser than
+      necessary. Added thorough direct tests for the new helper (success passthrough,
+      single-figure cleanup, multi-figure/batched cleanup, and "must not touch a
+      pre-existing figure it didn't create") plus one "allocate-then-raise, still closed"
+      regression test per call site: `qc_inspect.py` (both its call sites),
+      `remove_outliers.py`, and a single parametrized test covering all 5 legacy `plot_*`
+      tools in `test_viz_tools.py` (reusing that file's existing `_TOOLS` fixture list) —
+      closing the "3 of 8 sites tested" gap without re-testing the shared mechanism 8
+      times over, matching how `validate_plot_keys`/`apply_font_style` are already tested
+      once each in `test_plots_helpers.py`, not per call site.
+- [x] 9.3 Moved `plot_cmap`'s length cap from `Field(max_length=32)` into the tool body
+      (design.md Decision 5g) — the one remaining field whose rejection message named only
+      the field, not the submitted value, after this change's own stated principle for
+      every other field it touches. Checked before the allowlist membership check (cheap
+      early-exit, avoids hashing an arbitrarily long string for nothing); still discoverable
+      via `json_schema_extra={"maxLength": 32}`. Updated the existing max_length test to go
+      through the real tool call and assert the named-value `BloomMCPError` instead of a
+      generic Pydantic `ValidationError`.
+- [x] 9.4 Added an explicit `-inf` case alongside `check_plot_style_ceiling`'s existing
+      `+inf`/`nan` test coverage (logically already covered by the same short-circuit, now
+      also explicitly tested).
+- [x] 9.5 Verified (via `gh pr checks 726` + the failing job's own log) that the one red CI
+      check is `CVE-2026-56854` in the `caddy:ci` image's Trivy scan — confirmed unrelated
+      to this PR's Python-only diff, a repo-wide CI gate issue. Documented in design.md's
+      Risks rather than attempting an out-of-scope fix.
+- [x] 9.6 Documented (design.md Risks) that filing follow-up issues for the
+      previously-identified, deliberately-unfixed gaps (`extra="forbid"`, unbounded
+      `n_neighbors`/`min_dist`, `plot_alpha` near-zero invisibility, colormap-list drift) is
+      a decision left to whoever owns `bloommcp`'s backlog, not assumed here.
+- [x] 9.7 Ran the full `bloommcp` test suite, `openspec validate --strict`, and the repo's
+      actual pre-commit lint/format hooks on every file touched across all four rounds;
+      confirmed green before pushing.

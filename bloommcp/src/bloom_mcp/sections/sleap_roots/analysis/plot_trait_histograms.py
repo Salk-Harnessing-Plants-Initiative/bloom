@@ -12,7 +12,7 @@ from sleap_roots_analyze.visualization import (
     create_trait_histograms_batched,
 )
 from bloom_mcp.experiment_utils import load_experiment_data as _load_data
-from bloom_mcp.tools._plots import FIGURE_REGISTRY_LOCK
+from bloom_mcp.tools._plots import call_with_figure_cleanup
 
 from ._viz_shared import (
     TRAIT_BATCH_THRESHOLD,
@@ -49,16 +49,18 @@ def plot_trait_histograms(filename: str, traits: str = "") -> str:
     if not selected:
         return "No valid traits found."
 
+    def _make_histograms():
+        if len(selected) > TRAIT_BATCH_THRESHOLD:
+            return create_trait_histograms_batched(df, selected)
+        return create_trait_histograms(df, selected)
+
     try:
-        # FIGURE_REGISTRY_LOCK: allocates figures against the shared global matplotlib
-        # registry, which a concurrent umap_analysis/pca_analysis call's
-        # allocate-then-raise cleanup could otherwise mistake for its own (#721 PR
-        # review — see that lock's own comment in bloom_mcp.tools._plots).
-        with FIGURE_REGISTRY_LOCK:
-            if len(selected) > TRAIT_BATCH_THRESHOLD:
-                fig_or_figs = create_trait_histograms_batched(df, selected)
-            else:
-                fig_or_figs = create_trait_histograms(df, selected)
+        # call_with_figure_cleanup: acquires the shared FIGURE_REGISTRY_LOCK around
+        # this delegate call (#721 PR review) and closes any figure(s) it allocates
+        # before raising, instead of leaking them — this file's own
+        # `except Exception: return ...` below would otherwise swallow such an
+        # exception without closing whatever was already rendered.
+        fig_or_figs = call_with_figure_cleanup(_make_histograms)
     except Exception:
         return "Histogram generation failed: the plot could not be generated for the selected traits."
 

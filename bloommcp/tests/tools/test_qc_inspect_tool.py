@@ -934,6 +934,51 @@ def test_run_commits_without_heatmap_when_summary_plots_fail(
     assert store.get_run(_EXPERIMENT, "qc_inspect", "latest").run_ref == "v1"
 
 
+# ── #721 PR review round 4: figure allocated then abandoned mid-render ──────────
+
+
+def test_eda_plots_figure_allocated_then_abandoned_is_still_closed(
+    injected_ports, monkeypatch
+):
+    """Unlike a `_boom` stand-in that raises with zero figure allocation, a real
+    delegate failure can allocate a figure and *then* raise later in the same call —
+    the shape `call_with_figure_cleanup` exists to handle. `create_trait_eda_plots`'s
+    call site has no surrounding `except`, so before this fix such a figure would leak
+    forever (never even best-effort-swallowed)."""
+    import matplotlib.pyplot as plt
+
+    def _allocate_then_boom(*a, **k):
+        plt.figure()
+        raise RuntimeError("render failed after allocating a figure")
+
+    monkeypatch.setattr(qc_inspect_tool, "create_trait_eda_plots", _allocate_then_boom)
+
+    with pytest.raises(BloomMCPError):
+        _run()
+    assert plt.get_fignums() == []
+
+
+def test_summary_plots_figure_allocated_then_abandoned_is_still_closed(
+    injected_ports, monkeypatch
+):
+    """Same as above, for create_exploratory_summary_plots's call site — which DOES
+    have a surrounding `except Exception: ... summary_figs = {}` best-effort swallow,
+    exactly the shape that would otherwise leak a partially-rendered figure."""
+    import matplotlib.pyplot as plt
+
+    def _allocate_then_boom(*a, **k):
+        plt.figure()
+        raise RuntimeError("degenerate frame, but only after allocating a figure")
+
+    monkeypatch.setattr(
+        qc_inspect_tool, "create_exploratory_summary_plots", _allocate_then_boom
+    )
+
+    result = _run()
+    assert "missing_data_pattern.png" not in result.outputs  # best-effort omission
+    assert plt.get_fignums() == []
+
+
 # ── cylinder oracle (#483) ───────────────────────────────────────────────────
 #
 # See tests/fixtures/README.md's "Cross-tier oracle fixtures (cylinder)" section.

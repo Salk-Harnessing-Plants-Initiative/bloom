@@ -12,6 +12,7 @@ import pytest
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.tools._plots import (
     apply_font_style,
+    call_with_figure_cleanup,
     check_plot_style_ceiling,
     close_figures,
     generate_figures,
@@ -77,7 +78,9 @@ def test_check_plot_style_ceiling_in_range_is_accepted(value):
     )  # no exc
 
 
-@pytest.mark.parametrize("value", [0, -1, 101, float("inf"), float("nan")])
+@pytest.mark.parametrize(
+    "value", [0, -1, 101, float("inf"), float("-inf"), float("nan")]
+)
 def test_check_plot_style_ceiling_out_of_range_names_value_and_ceiling(value):
     """The whole point of this helper vs. a Field(gt=0, le=...) constraint: the message
     must name the actual submitted value and the ceiling, not just a field name (#721).
@@ -143,6 +146,80 @@ def test_generate_figures_partial_failure_then_close_leaves_no_open_figures():
     assert (
         plt.get_fignums() == []
     )  # closed via the same dict generate_figures populated
+
+
+# ── call_with_figure_cleanup ─────────────────────────────────────────────────
+
+
+def test_call_with_figure_cleanup_returns_fn_result_on_success():
+    assert call_with_figure_cleanup(lambda: "result") == "result"
+
+
+def test_call_with_figure_cleanup_closes_a_figure_allocated_then_abandoned():
+    """#721 PR review round 4: the same leak `generate_figures` was fixed for, now
+    verified directly against the shared helper itself — `qc_inspect.py`,
+    `remove_outliers.py`, `clustering.py`, and the 5 legacy `plot_*` tools all rely on
+    this exact behavior via their own `except Exception: return "<message>"` blocks,
+    which would otherwise silently swallow the exception without closing whatever the
+    delegate had already allocated mid-render."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    def _allocate_then_boom():
+        plt.figure()
+        raise RuntimeError("delegate blew up after allocating its figure")
+
+    with pytest.raises(RuntimeError):
+        call_with_figure_cleanup(_allocate_then_boom)
+
+    assert plt.get_fignums() == []
+
+
+def test_call_with_figure_cleanup_closes_multiple_figures_from_a_batched_delegate():
+    """A batched delegate (e.g. create_trait_histograms_batched) can allocate several
+    figures before raising on, say, the third page — all of them must be closed, not
+    just the first."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    def _allocate_three_then_boom():
+        plt.figure()
+        plt.figure()
+        plt.figure()
+        raise RuntimeError("batched delegate blew up on the third page")
+
+    with pytest.raises(RuntimeError):
+        call_with_figure_cleanup(_allocate_three_then_boom)
+
+    assert plt.get_fignums() == []
+
+
+def test_call_with_figure_cleanup_does_not_close_figures_that_predate_the_call():
+    """Only figures allocated *during* this call are the caller's responsibility —
+    something already open before it started (e.g. a figure another, unrelated call is
+    still legitimately using) must survive untouched."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    pre_existing = plt.figure()
+    try:
+
+        def _allocate_then_boom():
+            plt.figure()
+            raise RuntimeError("blew up")
+
+        with pytest.raises(RuntimeError):
+            call_with_figure_cleanup(_allocate_then_boom)
+
+        assert plt.get_fignums() == [pre_existing.number]
+    finally:
+        plt.close(pre_existing)
 
 
 def test_generate_figures_closes_a_figure_allocated_then_abandoned_mid_call():

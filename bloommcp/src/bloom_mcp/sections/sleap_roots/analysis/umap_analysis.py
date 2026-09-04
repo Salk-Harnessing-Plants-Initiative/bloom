@@ -197,6 +197,17 @@ _ALLOWED_CMAPS: frozenset[str] = frozenset(
     _ALLOWED_CMAP_BASE_NAMES | {f"{name}_r" for name in _ALLOWED_CMAP_BASE_NAMES}
 )
 
+# plot_cmap length cap (#721 PR review round 4): checked in the tool body, alongside the
+# allowlist membership check, rather than a Pydantic Field(max_length=...) constraint —
+# the same reason plot_font_size/plot_point_size's ceilings moved out of Field (see
+# check_plot_style_ceiling's docstring): a Field constraint's violation is mapped by the
+# contract layer into a message naming only the field and error type, never the submitted
+# value, which would have been the ONE inconsistent field left doing that after this PR.
+# 32 is generous — the longest real allowlisted name (with its _r variant) is 11 chars —
+# and mainly guards against an arbitrarily long string being fully parsed and compared
+# before the cheap allowlist rejection ever runs.
+_MAX_PLOT_CMAP_LENGTH = 32
+
 
 class UMAPAnalysisParams(BaseModel):
     """Inputs for ``umap_analysis``. Stochastic: the resolved ``seed`` drives the fit."""
@@ -286,14 +297,15 @@ class UMAPAnalysisParams(BaseModel):
     )
     plot_cmap: str | None = Field(
         default=None,
-        max_length=32,
+        json_schema_extra={"maxLength": _MAX_PLOT_CMAP_LENGTH},
         description="Colormap for create_umap_single_trait's continuous trait coloring "
         "(e.g. 'plasma', 'viridis'). Restricted to matplotlib's documented sequential and "
         "diverging colormap names (plus each name's _r reversed variant); an unrecognized "
         "or excluded name (e.g. hsv, tab10 — valid matplotlib names but not sequential or "
-        "diverging, and misleading for continuous trait data) is rejected as invalid_input "
-        "naming the value, before any computation runs — regardless of include_plots. Has "
-        "no effect on create_umap_colored_by_top_traits (its upstream signature does not "
+        f"diverging, and misleading for continuous trait data), or one longer than "
+        f"{_MAX_PLOT_CMAP_LENGTH} characters, is rejected as invalid_input naming the "
+        "value, before any computation runs — regardless of include_plots. Has no "
+        "effect on create_umap_colored_by_top_traits (its upstream signature does not "
         "accept cmap, and — separately, #721 — hardcodes its own cmap/point_size/alpha "
         "unconditionally; this field never reaches it).",
     )
@@ -348,7 +360,7 @@ def _compute_top_traits_pca(frame: ExperimentFrame, trait_cols: list[str]) -> di
 
     Called by the tool body *before* ``generate_figures`` runs (#721 PR review) — not
     lazily from inside the plot callable itself — specifically so this real PCA fit
-    executes outside ``_FIGURE_REGISTRY_LOCK``'s held window. That lock only needs to
+    executes outside ``FIGURE_REGISTRY_LOCK``'s held window. That lock only needs to
     cover the actual matplotlib rendering call; holding it for an unrelated PCA fit too
     would needlessly block every other concurrent plot-generating call for longer than
     the rendering itself takes.
@@ -473,6 +485,18 @@ def umap_analysis(
         field_name="plot_point_size",
         max_value=MAX_PLOT_POINT_SIZE,
     )
+    if params.plot_cmap is not None and len(params.plot_cmap) > _MAX_PLOT_CMAP_LENGTH:
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                f"plot_cmap={params.plot_cmap!r} is {len(params.plot_cmap)} characters "
+                f"long, exceeding the {_MAX_PLOT_CMAP_LENGTH}-character limit."
+            ),
+            remedy=(
+                "Use a real matplotlib colormap name — none is anywhere close to "
+                f"{_MAX_PLOT_CMAP_LENGTH} characters."
+            ),
+        )
     if params.plot_cmap is not None and params.plot_cmap not in _ALLOWED_CMAPS:
         raise BloomMCPError(
             code="invalid_input",
@@ -626,7 +650,7 @@ def umap_analysis(
             )
             # Computed here, before _umap_plot_calls/generate_figures, and only when
             # actually needed — not lazily inside the plot callable itself — so this
-            # real PCA fit runs outside _FIGURE_REGISTRY_LOCK's held window (#721 PR
+            # real PCA fit runs outside FIGURE_REGISTRY_LOCK's held window (#721 PR
             # review; see _compute_top_traits_pca's docstring).
             top_traits_pca_result_dict = (
                 _compute_top_traits_pca(frame, trait_cols)

@@ -955,15 +955,17 @@ def test_plot_font_size_and_point_size_ceilings_are_in_the_json_schema():
     UMAPAnalysisParams(experiment="x.csv", plot_font_size=99999)  # must not raise
 
 
-def test_plot_cmap_max_length_rejects_a_pathologically_long_string():
-    """#721 PR review (suggestion): plot_cmap had no max_length, so an arbitrarily long
-    string would be fully parsed and stored before the cheap allowlist check ever ran.
-    32 is generous — the longest real allowlisted name (with its _r variant) is 11
-    chars."""
-    from pydantic import ValidationError
-
-    with pytest.raises(ValidationError):
-        UMAPAnalysisParams(experiment="x.csv", plot_cmap="x" * 1000)
+def test_plot_cmap_max_length_rejects_a_pathologically_long_string(injected_ports):
+    """#721 PR review: plot_cmap had no length cap, so an arbitrarily long string would
+    be fully parsed and compared before the cheap allowlist check ever ran. 32 is
+    generous — the longest real allowlisted name (with its _r variant) is 11 chars.
+    Checked in the tool body (round 4), not a Pydantic Field(max_length=...) constraint
+    — the same reason the numeric ceilings moved out of Field: a Field constraint's
+    violation names only the field, never the submitted value's actual length."""
+    with pytest.raises(BloomMCPError) as exc:
+        umap_analysis({"experiment": _EXPERIMENT, "plot_cmap": "x" * 1000})
+    assert exc.value.code == "invalid_input"
+    assert "1000" in exc.value.message
 
 
 def test_allowed_cmaps_are_all_registered_in_installed_matplotlib():
