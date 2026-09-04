@@ -5,19 +5,21 @@
 The reader's cleaned-tier resolution SHALL treat a
 `ManifestBackendMismatchError` raised by the manifest read as a **hard
 error** that reaches the caller as a typed exception naming both the recorded
-and the active backend. Concretely: the resolution helpers
-(`_resolve_one_class` / `_resolve_versioned_cleaned`, behind
-`load_experiment` version selection and `require_clean=True`) SHALL let
-`ManifestBackendMismatchError` propagate (excluded from their generic
-catch-and-stringify handling, alongside the existing explicit
-`ManifestSchemaError` branch), and **both** reader adapters (`LocalReader`
-and `SupabaseReader`) SHALL surface it as `ForeignCatalogError` — a new
+and the active backend. Concretely: the shared resolution helper
+(`_resolve_one_class`, behind `_resolve_versioned_cleaned`,
+`load_experiment_data`, `load_experiment` version selection, and
+`require_clean=True`) SHALL exclude `ManifestBackendMismatchError` from its
+generic catch-and-stringify handling (an explicit branch alongside the
+existing `ManifestSchemaError` one) and raise `ForeignCatalogError` — a new
 subclass of `ExperimentReadError` in the reader-port taxonomy
-(`data_access/ports.py`) — rather than discarding the resolution error and
-demoting it to their generic conditions, as both do today for resolution
-failures. Because every consumer tool already declares
-`errors=(ExperimentReadError, …)`, the mismatch then passes through the
-`@as_mcp_tool` envelope as a message-preserving structured error with no
+(`data_access/ports.py`) — with the mismatch message passed through. Raising
+at the shared helper means **both** reader adapters (`LocalReader` and
+`SupabaseReader`) surface `ForeignCatalogError` — rather than discarding the
+resolution error and demoting it to their generic conditions, as both do
+today for resolution failures — and so does every tool that reads through
+`load_experiment_data` directly. Because every consumer tool already
+declares `errors=(ExperimentReadError, …)`, the mismatch then passes through
+the `@as_mcp_tool` envelope as a message-preserving structured error with no
 per-tool changes.
 
 The mismatch SHALL NOT be treated as a soft miss: resolution SHALL NOT fall

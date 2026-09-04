@@ -713,7 +713,9 @@ def test_create_run_foreign_catalog_fails_before_any_write(
 
 
 @pytest.mark.parametrize("hatch", [None, "1"])
-def test_commit_foreign_catalog_never_restamps(fake_supabase_storage, monkeypatch, hatch):
+def test_commit_foreign_catalog_never_restamps(
+    fake_supabase_storage, monkeypatch, hatch
+):
     """Spec: "A commit never re-stamps a foreign catalog" — the commit raises
     CatalogBackendMismatchError (never the generic "transient — retry"
     CommitFailedError), uploads nothing, appends nothing, and the foreign

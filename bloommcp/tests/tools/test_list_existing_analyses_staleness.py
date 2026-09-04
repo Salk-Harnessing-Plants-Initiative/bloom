@@ -375,7 +375,10 @@ def test_foreign_tool_class_catalog_does_not_hide_healthy_classes(
         b"a,b\n1,2\n",
     )
     manifest_path = (
-        local_manifest_backend / "root" / "bloommcp_output" / "outliers_exp"
+        local_manifest_backend
+        / "root"
+        / "bloommcp_output"
+        / "outliers_exp"
         / "manifest.json"
     )
     raw = json.loads(manifest_path.read_text())
@@ -383,7 +386,9 @@ def test_foreign_tool_class_catalog_does_not_hide_healthy_classes(
     raw["storage_backend"] = "supabase"
     manifest_path.write_text(json.dumps(raw))
 
-    response = json.loads(list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT))
+    response = json.loads(
+        list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
+    )
 
     assert "qc" in response["analyses"], "healthy class must still list"
     assert "outliers" not in response["analyses"]

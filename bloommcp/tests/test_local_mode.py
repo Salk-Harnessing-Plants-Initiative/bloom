@@ -774,7 +774,9 @@ def test_fully_local_qc_clean_to_pca_via_local_root_only(
     assert (root / "plots").is_dir()
 
 
-def test_foreign_catalog_blocks_consumers_end_to_end(monkeypatch, tmp_path, reset_ports):
+def test_foreign_catalog_blocks_consumers_end_to_end(
+    monkeypatch, tmp_path, reset_ports
+):
     """#573 end-to-end over real local manifests: a hand-foreignized qc catalog
     makes `pca_analysis` fail with a structured envelope naming both backends
     (never `internal_error`'s opaque message, never the run-`qc_clean`-first

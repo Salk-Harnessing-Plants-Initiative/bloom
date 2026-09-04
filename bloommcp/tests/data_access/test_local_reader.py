@@ -283,7 +283,5 @@ def test_escape_hatch_restores_resolution_with_warning_trail(
         frame = LocalReader().load_experiment("exp.csv", require_clean=True)
 
     assert frame.source.startswith("v1")
-    warnings_ = [
-        r for r in caplog.records if "foreign catalog" in r.getMessage()
-    ]
+    warnings_ = [r for r in caplog.records if "foreign catalog" in r.getMessage()]
     assert warnings_, "expected at least one per-read warning under the hatch"

@@ -143,16 +143,18 @@ def test_retained_heavy_deps_are_each_imported():
         "matplotlib": "matplotlib",
     }
     unused = {dist for dist, mod in retained.items() if mod not in imported}
-    assert (
-        not unused
-    ), f"declared deps not imported by shipped code (prune them): {sorted(unused)}"
+    assert not unused, (
+        f"declared deps not imported by shipped code (prune them): {sorted(unused)}"
+    )
 
 
 def _pyproject() -> dict:
     import tomllib
 
     return tomllib.loads(
-        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
     )
 
 
@@ -289,7 +291,9 @@ def _boot_env(monkeypatch, tmp_path, *, local: bool) -> None:
         monkeypatch.setenv("BLOOM_AGENT_KEY", "fake-jwt")
 
 
-def test_main_prints_active_backend_before_uvicorn_run_supabase(monkeypatch, tmp_path, capsys):
+def test_main_prints_active_backend_before_uvicorn_run_supabase(
+    monkeypatch, tmp_path, capsys
+):
     """server.main() must print which storage backend is active (#478) — the
     supabase branch — so a stray shell-exported BLOOM_STORAGE_BACKEND=local
     (newly possible now the compose toggle is ${VAR:-}-interpolated, not
@@ -304,7 +308,9 @@ def test_main_prints_active_backend_before_uvicorn_run_supabase(monkeypatch, tmp
     assert "storage backend: supabase" in capsys.readouterr().out
 
 
-def test_main_prints_active_backend_before_uvicorn_run_local(monkeypatch, tmp_path, capsys):
+def test_main_prints_active_backend_before_uvicorn_run_local(
+    monkeypatch, tmp_path, capsys
+):
     """Same as above, fully-local branch."""
     import bloom_mcp.server as server
 
