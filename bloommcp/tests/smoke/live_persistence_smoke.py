@@ -227,9 +227,10 @@ def summarize(checks: list[Check]) -> tuple[str, int]:
     lines.append(
         "SMOKE PASSED ✅ — the qc_clean cleaned run, remove_outliers trimmed run "
         "(incl. the generic v5-provenance + version-advance guarantee), AND the granular "
-        "clustering(kmeans), clustering(hierarchical), and descriptive_stats consumers "
-        "all persist full provenance through the real ports; the qc_clean → "
-        "remove_outliers → {clustering,descriptive_stats}(require_clean=True) "
+        "clustering(kmeans), clustering(hierarchical), descriptive_stats, and "
+        "heritability_analysis consumers all persist full provenance through the real "
+        "ports; the qc_clean → remove_outliers → "
+        "{clustering,descriptive_stats,heritability_analysis}(require_clean=True) "
         "composition resolves and summarizes the trimmed table."
     )
     return "\n".join(lines), 0
