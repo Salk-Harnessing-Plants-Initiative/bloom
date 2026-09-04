@@ -76,7 +76,14 @@ from bloom_mcp.data_access import (
 from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
 from bloom_mcp.tools._consumer_utils import _build_output_frame, snapshot_frame
-from bloom_mcp.tools._plots import close_figures, generate_figures, validate_plot_keys
+from bloom_mcp.tools._plots import (
+    MAX_PLOT_FONT_SIZE,
+    MAX_PLOT_POINT_SIZE,
+    check_plot_style_ceiling,
+    close_figures,
+    generate_figures,
+    validate_plot_keys,
+)
 from bloom_mcp.tools._qc_shared import _validate_trait_subset
 
 logger = logging.getLogger(__name__)
@@ -98,6 +105,108 @@ _UMAP_CATALOG_KEYS: frozenset[str] = frozenset(
 # real embedding/visualization use (2-3 dims is typical; a few dozen is already unusual) while
 # still catching a runaway or adversarial request.
 _MAX_N_COMPONENTS = 50
+
+# plot_font_size/plot_point_size ceilings (#721) live in bloom_mcp.tools._plots as
+# MAX_PLOT_FONT_SIZE/MAX_PLOT_POINT_SIZE — shared with pca_analysis.py so the two tools
+# can't silently desync on the same ceiling value.
+
+# Allowlist for plot_cmap (#721): matplotlib exposes no runtime categorization of its own
+# colormap registry (matplotlib.colormaps is a flat name -> Colormap mapping with no
+# sequential/diverging/qualitative metadata), so this list is hand-authored from matplotlib's
+# documented "Choosing Colormaps" reference categories: Perceptually Uniform Sequential,
+# Sequential, Sequential (2), and Diverging. Restricting to these two families (as opposed to
+# Qualitative/Cyclic/Miscellaneous) keeps plot_cmap limited to colormaps that render a
+# continuous trait faithfully — a qualitative map like tab10 chops a continuous value into
+# discrete-looking bands, and a cyclic map like hsv puts the same color at both ends of the
+# scale. A future matplotlib release could rename or add colormaps this list doesn't know
+# about yet — accepted risk (design.md Decision 3): the failure direction is a legitimate new
+# name being rejected until this list is updated, never an invalid one being silently
+# accepted. Note the "Sequential (2)" category (spring/summer/copper/etc.) and Spectral are
+# flagged by matplotlib's own docs as not perceptually uniform — a real but weaker gap than
+# the qualitative/cyclic maps (tab10/hsv) this allowlist is specifically guarding against;
+# accepted as still a strict improvement over admitting those too.
+#
+# Tied to bloommcp's declared dependency floor: pyproject.toml pins "matplotlib>=3.7.0" (no
+# upper bound). Every name below must be registered as of that FLOOR version, not just in
+# whatever matplotlib happens to be installed here — otherwise an install that resolves to an
+# older-but-still-permitted matplotlib would pass this allowlist check for a name it doesn't
+# actually have, then hit the exact opaque matplotlib error this allowlist exists to prevent.
+# Diverging colormaps "berlin"/"managua"/"vanimo" (Crameri's scientific colour maps) were only
+# added in matplotlib 3.10.0 — excluded here for that reason. Re-add them if/when the
+# pyproject.toml floor is bumped to >=3.10.0.
+_ALLOWED_CMAP_BASE_NAMES: frozenset[str] = frozenset(
+    {
+        # Perceptually Uniform Sequential
+        "viridis",
+        "plasma",
+        "inferno",
+        "magma",
+        "cividis",
+        # Sequential
+        "Greys",
+        "Purples",
+        "Blues",
+        "Greens",
+        "Oranges",
+        "Reds",
+        "YlOrBr",
+        "YlOrRd",
+        "OrRd",
+        "PuRd",
+        "RdPu",
+        "BuPu",
+        "GnBu",
+        "PuBu",
+        "YlGnBu",
+        "PuBuGn",
+        "BuGn",
+        "YlGn",
+        # Sequential (2)
+        "binary",
+        "gist_yarg",
+        "gist_gray",
+        "gray",
+        "bone",
+        "pink",
+        "spring",
+        "summer",
+        "autumn",
+        "winter",
+        "cool",
+        "Wistia",
+        "hot",
+        "afmhot",
+        "gist_heat",
+        "copper",
+        # Diverging
+        "PiYG",
+        "PRGn",
+        "BrBG",
+        "PuOr",
+        "RdGy",
+        "RdBu",
+        "RdYlBu",
+        "RdYlGn",
+        "Spectral",
+        "coolwarm",
+        "bwr",
+        "seismic",
+    }
+)
+_ALLOWED_CMAPS: frozenset[str] = frozenset(
+    _ALLOWED_CMAP_BASE_NAMES | {f"{name}_r" for name in _ALLOWED_CMAP_BASE_NAMES}
+)
+
+# plot_cmap length cap (#721 PR review round 4): checked in the tool body, alongside the
+# allowlist membership check, rather than a Pydantic Field(max_length=...) constraint —
+# the same reason plot_font_size/plot_point_size's ceilings moved out of Field (see
+# check_plot_style_ceiling's docstring): a Field constraint's violation is mapped by the
+# contract layer into a message naming only the field and error type, never the submitted
+# value, which would have been the ONE inconsistent field left doing that after this PR.
+# 32 is generous — the longest real allowlisted name (with its _r variant) is 11 chars —
+# and mainly guards against an arbitrarily long string being fully parsed and compared
+# before the cheap allowlist rejection ever runs.
+_MAX_PLOT_CMAP_LENGTH = 32
 
 
 class UMAPAnalysisParams(BaseModel):
@@ -176,25 +285,42 @@ class UMAPAnalysisParams(BaseModel):
     )
     plot_font_size: float | None = Field(
         default=None,
-        gt=0,
-        description="Font size (points) override applied to every text element on each "
-        "generated plot. Omit for each plot's default size. Ignored when "
-        "include_plots=False.",
+        json_schema_extra={"exclusiveMinimum": 0, "maximum": MAX_PLOT_FONT_SIZE},
+        description=f"Font size (points) override applied to every text element on each "
+        f"generated plot (0-{MAX_PLOT_FONT_SIZE}, exclusive of 0). The upper bound is a "
+        f"sanity ceiling on this LLM-driven input surface, not a design limit (#721). "
+        f"Checked in the tool body — not a Pydantic Field constraint, so the rejection "
+        f"message names the value you submitted and the ceiling, not just a field name. "
+        f"A valid value has no effect when include_plots=False (nothing is rendered to "
+        f"style); an out-of-range value is rejected as invalid_input regardless of "
+        f"include_plots.",
     )
     plot_cmap: str | None = Field(
         default=None,
+        json_schema_extra={"maxLength": _MAX_PLOT_CMAP_LENGTH},
         description="Colormap for create_umap_single_trait's continuous trait coloring "
-        "(e.g. 'plasma', 'viridis'). Not validated against matplotlib's colormap registry — "
-        "an unknown name raises ValueError from matplotlib itself at figure-generation "
-        "time. Has no effect on create_umap_colored_by_top_traits (its upstream signature "
-        "does not accept cmap). Ignored (not rejected) when include_plots=False.",
+        "(e.g. 'plasma', 'viridis'). Restricted to matplotlib's documented sequential and "
+        "diverging colormap names (plus each name's _r reversed variant); an unrecognized "
+        "or excluded name (e.g. hsv, tab10 — valid matplotlib names but not sequential or "
+        f"diverging, and misleading for continuous trait data), or one longer than "
+        f"{_MAX_PLOT_CMAP_LENGTH} characters, is rejected as invalid_input naming the "
+        "value, before any computation runs — regardless of include_plots. Has no "
+        "effect on create_umap_colored_by_top_traits (its upstream signature does not "
+        "accept cmap, and — separately, #721 — hardcodes its own cmap/point_size/alpha "
+        "unconditionally; this field never reaches it).",
     )
     plot_point_size: float | None = Field(
         default=None,
-        gt=0,
-        description="Scatter point size for create_umap_single_trait. Has no effect on "
-        "create_umap_colored_by_top_traits (its upstream signature does not accept "
-        "point_size). Ignored (not rejected) when include_plots=False.",
+        json_schema_extra={"exclusiveMinimum": 0, "maximum": MAX_PLOT_POINT_SIZE},
+        description=f"Scatter point size for create_umap_single_trait (0-"
+        f"{MAX_PLOT_POINT_SIZE}, exclusive of 0). Checked in the tool body — not a "
+        f"Pydantic Field constraint, so the rejection message names the value you "
+        f"submitted and the ceiling, not just a field name. A valid value has no effect "
+        f"when include_plots=False (nothing is rendered to style); an out-of-range value "
+        f"is rejected as invalid_input regardless of include_plots. Has no effect on "
+        f"create_umap_colored_by_top_traits (its upstream signature does not accept "
+        f"point_size, and — separately, #721 — hardcodes its own cmap/point_size/alpha "
+        f"unconditionally; this field never reaches it).",
     )
     plot_alpha: float | None = Field(
         default=None,
@@ -226,6 +352,51 @@ class UMAPAnalysisResult(RunLinks):
     seed: int
 
 
+def _compute_top_traits_pca(frame: ExperimentFrame, trait_cols: list[str]) -> dict:
+    """Run the internal, non-persisted PCA fit ``create_umap_colored_by_top_traits``
+    needs to rank trait contributions, over the exact same certified-clean trait
+    selection already validated and used for the UMAP embedding — see design.md's
+    Decision #3. Never committed as its own versioned run.
+
+    Called by the tool body *before* ``generate_figures`` runs (#721 PR review) — not
+    lazily from inside the plot callable itself — specifically so this real PCA fit
+    executes outside ``FIGURE_REGISTRY_LOCK``'s held window. That lock only needs to
+    cover the actual matplotlib rendering call; holding it for an unrelated PCA fit too
+    would needlessly block every other concurrent plot-generating call for longer than
+    the rendering itself takes.
+
+    Same failure-translation as the main UMAP delegate call (including the same
+    exception tuple — a degenerate selection can fail PCA even though it fit UMAP
+    successfully, since PCA's standardization/eigendecomposition is stricter about
+    near-constant columns than UMAP is), and this call happens before
+    ``store.create_run()`` (so no run is ever orphaned by it either way) — but without
+    this except, the raw exception would propagate as an opaque ``internal_error``
+    instead of the actionable ``assumption_violated`` every other delegate failure in
+    this tool surfaces.
+    """
+    try:
+        return perform_pca_analysis(frame.df[trait_cols])
+    except (ValueError, KeyError, RuntimeError, TypeError) as exc:
+        logger.debug(
+            "internal perform_pca_analysis call for create_umap_colored_by_top_traits "
+            "failed, translating to assumption_violated: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        raise BloomMCPError(
+            code="assumption_violated",
+            message=(
+                "Could not rank trait contributions for "
+                "create_umap_colored_by_top_traits — the certified-clean trait "
+                "selection is degenerate for PCA."
+            ),
+            remedy=(
+                "Select a broader set of numeric trait columns, or omit "
+                "create_umap_colored_by_top_traits from plots, then retry."
+            ),
+        ) from None
+
+
 def _umap_plot_calls(
     result_dict: dict,
     frame: ExperimentFrame,
@@ -234,6 +405,7 @@ def _umap_plot_calls(
     plot_cmap: str | None = None,
     plot_point_size: float | None = None,
     plot_alpha: float | None = None,
+    top_traits_pca_result_dict: dict | None = None,
 ) -> dict:
     """Return zero-arg callables for each catalog plot key, lazily importing plotters.
 
@@ -247,6 +419,12 @@ def _umap_plot_calls(
     signature accepts any of them (see design.md's per-plotter support table) — and only
     when set, so an unset (``None``) field reproduces the plotter's own hardcoded default
     exactly rather than passing that default back explicitly.
+
+    ``top_traits_pca_result_dict`` must already be the *computed* result of
+    ``_compute_top_traits_pca`` (or ``None`` if the caller knows
+    ``create_umap_colored_by_top_traits`` won't be generated) — this function no longer
+    runs that PCA fit itself, so the callable it returns for that key only ever does
+    matplotlib rendering, never a fit (see ``_compute_top_traits_pca``'s docstring).
     """
     from sleap_roots_analyze import (
         create_umap_colored_by_top_traits,
@@ -261,53 +439,17 @@ def _umap_plot_calls(
     if plot_alpha is not None:
         single_trait_kwargs["alpha"] = plot_alpha
 
-    def _top_traits():
-        # Internal, non-persisted PCA call over the exact same certified-clean trait
-        # selection already validated and used for the UMAP embedding — see design.md's
-        # Decision #3. This is never committed as its own versioned run.
-        #
-        # Same failure-translation as the main UMAP delegate call (including the same
-        # exception tuple — a degenerate selection can fail PCA even though it fit UMAP
-        # successfully, since PCA's standardization/eigendecomposition is stricter about
-        # near-constant columns than UMAP is), and this call happens before
-        # store.create_run() (so no run is ever orphaned by it either way) — but without
-        # this except, the raw exception would propagate as an opaque internal_error
-        # instead of the actionable assumption_violated every other delegate failure in
-        # this tool surfaces.
-        try:
-            pca_result_dict = perform_pca_analysis(frame.df[trait_cols])
-        except (ValueError, KeyError, RuntimeError, TypeError) as exc:
-            logger.debug(
-                "internal perform_pca_analysis call for create_umap_colored_by_top_traits "
-                "failed, translating to assumption_violated: %s: %s",
-                type(exc).__name__,
-                exc,
-            )
-            raise BloomMCPError(
-                code="assumption_violated",
-                message=(
-                    "Could not rank trait contributions for "
-                    "create_umap_colored_by_top_traits — the certified-clean trait "
-                    "selection is degenerate for PCA."
-                ),
-                remedy=(
-                    "Select a broader set of numeric trait columns, or omit "
-                    "create_umap_colored_by_top_traits from plots, then retry."
-                ),
-            ) from None
-        return create_umap_colored_by_top_traits(
-            result_dict,
-            frame.df,
-            trait_cols,
-            trait_cols,
-            pca_result_dict,
-        )
-
     return {
         "create_umap_single_trait": lambda: create_umap_single_trait(
             result_dict, frame.df, trait_cols[0], **single_trait_kwargs
         ),
-        "create_umap_colored_by_top_traits": _top_traits,
+        "create_umap_colored_by_top_traits": lambda: create_umap_colored_by_top_traits(
+            result_dict,
+            frame.df,
+            trait_cols,
+            trait_cols,
+            top_traits_pca_result_dict,
+        ),
     }
 
 
@@ -322,6 +464,53 @@ def umap_analysis(
     """Run UMAP on a cleaned ``experiment`` via ``perform_umap_analysis`` and persist it."""
     reader = _ports.reader()
     store = _ports.store()
+
+    # Plot-style field validation (#721): checked here, first, before any I/O — these
+    # three fields are derived entirely from the request, not from the loaded experiment,
+    # so there is no reason to pay for reader.load_experiment (a full data read) or the
+    # np.isfinite scan below before rejecting a bad one (PR review: validation this cheap
+    # belongs before any computation, not just before the UMAP fit). plot_cmap is checked
+    # in the tool body rather than a Pydantic @field_validator for the same reason
+    # plot_font_size/plot_point_size are checked via check_plot_style_ceiling rather than
+    # Field(gt=0, le=...): a Field constraint's violation is mapped by the contract layer's
+    # BloomMCPError.from_input_validation into a generic message naming only the field and
+    # error type, never the submitted value or the ceiling/allowlist (see
+    # qc_clean.py's exactly-one-of-experiment/csv_content note for the same,
+    # empirically-verified reasoning about @field_validator specifically).
+    check_plot_style_ceiling(
+        params.plot_font_size, field_name="plot_font_size", max_value=MAX_PLOT_FONT_SIZE
+    )
+    check_plot_style_ceiling(
+        params.plot_point_size,
+        field_name="plot_point_size",
+        max_value=MAX_PLOT_POINT_SIZE,
+    )
+    if params.plot_cmap is not None and len(params.plot_cmap) > _MAX_PLOT_CMAP_LENGTH:
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                f"plot_cmap={params.plot_cmap!r} is {len(params.plot_cmap)} characters "
+                f"long, exceeding the {_MAX_PLOT_CMAP_LENGTH}-character limit."
+            ),
+            remedy=(
+                "Use a real matplotlib colormap name — none is anywhere close to "
+                f"{_MAX_PLOT_CMAP_LENGTH} characters."
+            ),
+        )
+    if params.plot_cmap is not None and params.plot_cmap not in _ALLOWED_CMAPS:
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                f"plot_cmap={params.plot_cmap!r} is not a recognized sequential or "
+                f"diverging colormap."
+            ),
+            remedy=(
+                "Use a matplotlib sequential or diverging colormap name (e.g. 'viridis', "
+                "'plasma', 'RdBu', 'coolwarm') or its '_r' reversed variant. Qualitative "
+                "colormaps (e.g. 'tab10') and cyclic colormaps (e.g. 'hsv') are not "
+                "accepted — they render a continuous trait misleadingly."
+            ),
+        )
 
     # Consumer: require a cleaned version. A missing one is a precondition failure with a
     # concrete remedy — caught here so it carries "run qc_clean first" rather than the
@@ -454,6 +643,20 @@ def umap_analysis(
 
             matplotlib.use("Agg")
             validate_plot_keys(params.plots, _UMAP_CATALOG_KEYS)
+            keys_to_generate = (
+                list(params.plots)
+                if params.plots is not None
+                else list(_UMAP_CATALOG_KEYS)
+            )
+            # Computed here, before _umap_plot_calls/generate_figures, and only when
+            # actually needed — not lazily inside the plot callable itself — so this
+            # real PCA fit runs outside FIGURE_REGISTRY_LOCK's held window (#721 PR
+            # review; see _compute_top_traits_pca's docstring).
+            top_traits_pca_result_dict = (
+                _compute_top_traits_pca(frame, trait_cols)
+                if "create_umap_colored_by_top_traits" in keys_to_generate
+                else None
+            )
             calls = _umap_plot_calls(
                 result_dict,
                 frame,
@@ -461,11 +664,7 @@ def umap_analysis(
                 plot_cmap=params.plot_cmap,
                 plot_point_size=params.plot_point_size,
                 plot_alpha=params.plot_alpha,
-            )
-            keys_to_generate = (
-                list(params.plots)
-                if params.plots is not None
-                else list(_UMAP_CATALOG_KEYS)
+                top_traits_pca_result_dict=top_traits_pca_result_dict,
             )
             generate_figures(
                 {k: calls[k] for k in keys_to_generate},

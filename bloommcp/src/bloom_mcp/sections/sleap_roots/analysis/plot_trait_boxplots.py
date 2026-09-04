@@ -13,6 +13,7 @@ from sleap_roots_analyze.visualization import (
     create_trait_boxplots_by_genotype_batched,
 )
 from bloom_mcp.experiment_utils import load_experiment_data as _load_data
+from bloom_mcp.tools._plots import call_with_figure_cleanup
 
 from ._viz_shared import (
     TRAIT_BATCH_THRESHOLD,
@@ -53,15 +54,22 @@ def plot_trait_boxplots(filename: str, traits: str = "") -> str:
     if not selected:
         return "No valid traits found."
 
-    try:
+    def _make_boxplots():
         if len(selected) > TRAIT_BATCH_THRESHOLD:
-            fig_or_figs = create_trait_boxplots_by_genotype_batched(
+            return create_trait_boxplots_by_genotype_batched(
                 df, selected, genotype_col=genotype_col
             )
-        else:
-            fig_or_figs = create_trait_boxplots_by_genotype(
-                df, selected, genotype_col=genotype_col
-            )
+        return create_trait_boxplots_by_genotype(
+            df, selected, genotype_col=genotype_col
+        )
+
+    try:
+        # call_with_figure_cleanup: acquires the shared FIGURE_REGISTRY_LOCK around
+        # this delegate call (#721 PR review) and closes any figure(s) it allocates
+        # before raising, instead of leaking them — this file's own
+        # `except Exception: return ...` below would otherwise swallow such an
+        # exception without closing whatever was already rendered.
+        fig_or_figs = call_with_figure_cleanup(_make_boxplots)
     except Exception:
         return "Boxplot generation failed: the plot could not be generated for the selected traits."
 

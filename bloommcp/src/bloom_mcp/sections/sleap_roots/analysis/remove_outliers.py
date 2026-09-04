@@ -105,6 +105,7 @@ from bloom_mcp.experiment_utils import (
     fit_is_trustworthy,
 )
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools._plots import call_with_figure_cleanup
 from bloom_mcp.tools._qc_shared import _role_kwargs, _validate_trait_subset
 
 if TYPE_CHECKING:  # matplotlib stays out of the runtime import graph (Tier-0)
@@ -595,14 +596,19 @@ def _make_figures(
 
     matplotlib.use("Agg")
 
-    available = plot_outlier_analysis(
-        frame.df,
-        trait_cols,
-        method=params.method,
-        random_state=random_state,
-        which=None,
-        **_role_kwargs(frame),
-        **detect_kwargs,
+    # call_with_figure_cleanup: acquires the shared FIGURE_REGISTRY_LOCK around this
+    # delegate call (#721 PR review) and closes any figure(s) it allocates before
+    # raising, instead of leaking them.
+    available = call_with_figure_cleanup(
+        lambda: plot_outlier_analysis(
+            frame.df,
+            trait_cols,
+            method=params.method,
+            random_state=random_state,
+            which=None,
+            **_role_kwargs(frame),
+            **detect_kwargs,
+        )
     )
     if params.plots is None:
         return available

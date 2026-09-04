@@ -91,9 +91,11 @@ def test_trait_batch_threshold_matches_heritability_plot_default():
 
     from sleap_roots_analyze.visualization import create_heritability_plot
 
-    default = inspect.signature(create_heritability_plot).parameters[
-        "traits_per_page"
-    ].default
+    default = (
+        inspect.signature(create_heritability_plot)
+        .parameters["traits_per_page"]
+        .default
+    )
     assert default == _viz_shared.TRAIT_BATCH_THRESHOLD
 
 
@@ -430,4 +432,28 @@ def test_internal_failure_does_not_leak_raw_exception_text(
 
     assert "/secret/backend/path" not in result
     assert "token=abc123" not in result
+    assert plt.get_fignums() == []
+
+
+@pytest.mark.parametrize("module,fn_name,delegate_name", _TOOLS, ids=_TOOL_IDS)
+def test_figure_allocated_then_abandoned_mid_render_is_still_closed(
+    module, fn_name, delegate_name, viz_env, monkeypatch
+):
+    """#721 PR review round 4: unlike the `_boom` stand-in above (which raises with
+    zero figure allocation), a real delegate failure can allocate a figure and *then*
+    raise later in the same call — the shape `call_with_figure_cleanup` exists to
+    handle. Each of these 5 tools wraps its delegate call in
+    `call_with_figure_cleanup`'s own `except Exception: return "<message>"`, which
+    would otherwise swallow such an exception without closing whatever was already
+    rendered — this proves it doesn't."""
+
+    def _allocate_then_boom(*_args, **_kwargs):
+        plt.figure()
+        raise RuntimeError("delegate blew up after allocating its figure")
+
+    monkeypatch.setattr(module, delegate_name, _allocate_then_boom)
+    fn = getattr(module, fn_name)
+
+    fn(_EXPERIMENT)
+
     assert plt.get_fignums() == []
