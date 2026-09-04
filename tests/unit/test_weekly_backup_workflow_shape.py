@@ -70,13 +70,18 @@ def test_cron_is_weekly_and_structurally_valid(workflow):
     assert hour.isdigit()
 
 
-def test_dispatch_offers_a_dry_run_and_no_environment_choice(workflow):
-    # Production is the only target. A staging option would read staging's env
-    # file while still resolving the production container, because the compose
-    # project name is pinned in docker-compose.prod.yml.
+def test_dispatch_offers_a_dry_run_and_an_environment_choice(workflow):
+    # Staging is a real target: backup.py resolves the compose project per
+    # environment (`-p bloom_v2_staging`), the way deploy.yml brings that stack
+    # up. Without that `-p` a staging run would read staging's env file while
+    # resolving the PRODUCTION container.
     inputs = workflow["on"]["workflow_dispatch"]["inputs"]
     assert "dry_run" in inputs
-    assert "environment" not in inputs
+    assert set(inputs["environment"]["options"]) == {"prod", "staging"}
+    assert inputs["environment"]["default"] == "prod", (
+        "the safe default for a hand-run backup is the environment the "
+        "schedule uses, not the one someone last rehearsed with"
+    )
 
 
 def test_the_default_branch_requirement_is_documented(text):
@@ -129,28 +134,40 @@ def test_the_target_host_and_the_approval_gate_stay_distinct(workflow, text):
 
 
 @pytest.mark.parametrize(
-    "event_name,expected_gate",
+    "event_name,requested,expected_gate",
     [
-        ("schedule", SCHEDULED_ENVIRONMENT),
-        ("workflow_dispatch", "production"),
+        ("schedule", None, SCHEDULED_ENVIRONMENT),
+        ("workflow_dispatch", "prod", "production"),
+        ("workflow_dispatch", "staging", "staging"),
     ],
 )
-def test_the_approval_gate_truth_table(workflow, event_name, expected_gate):
-    """Evaluate the live GitHub expression, both halves, rather than restating it."""
+def test_the_approval_gate_truth_table(workflow, event_name, requested, expected_gate):
+    """Evaluate the live GitHub expression, every branch, rather than restating it."""
 
     def evaluate(expression: str) -> str:
-        # `A && 'x' || 'y'` — GitHub's ternary idiom. Parse BOTH literals: a
-        # regex that reads only the && half turns this into a tautology.
+        # Nested `A && 'x' || (B && 'y' || 'z')`. Parse EVERY literal: a regex
+        # reading only the first && half turns this into a tautology.
         match = re.fullmatch(
-            r"\$\{\{\s*github\.event_name == 'schedule'\s*"
-            r"&&\s*'([^']*)'\s*\|\|\s*'([^']*)'\s*\}\}",
+            r"\$\{\{\s*github\.event_name == 'schedule'\s*&&\s*'([^']*)'\s*"
+            r"\|\|\s*\(\s*github\.event\.inputs\.environment == 'staging'\s*"
+            r"&&\s*'([^']*)'\s*\|\|\s*'([^']*)'\s*\)\s*\}\}",
             expression.strip(),
         )
         assert match, f"unrecognised ternary: {expression}"
-        scheduled, dispatched = match.groups()
-        return scheduled if event_name == "schedule" else dispatched
+        scheduled, staging, production = match.groups()
+        if event_name == "schedule":
+            return scheduled
+        return staging if requested == "staging" else production
 
     assert evaluate(_job(workflow)["environment"]) == expected_gate
+
+
+def test_a_staging_rehearsal_is_not_gated_by_productions_reviewers(workflow):
+    # And the reverse: production must not be reachable through staging's gate.
+    environment = _job(workflow)["environment"]
+    assert "'staging'" in environment
+    assert "'production'" in environment
+    assert SCHEDULED_ENVIRONMENT in environment
 
 
 # --------------------------------------------------------------------------
@@ -231,12 +248,25 @@ def test_the_single_runner_dependency_is_documented(text):
     assert "second runner" in text
 
 
-def test_the_workflow_only_ever_targets_production(text):
-    # The env name reaching the script is a literal here, not an input, and
-    # there is no staging path to select.
-    assert "ENV_NAME=prod" in text
-    assert "--env 'staging'" not in text
-    assert "ENV_NAME=staging" not in text
+def test_each_environment_resolves_its_own_deploy_path(text):
+    # The failure worth guarding: one environment's env name paired with the
+    # other's deploy path, which is how a "staging" run dumps production.
+    assert "ENV_NAME=prod" in text and "ENV_NAME=staging" in text
+    prod_branch = text.split("prod)", 1)[1].split("staging)", 1)[0]
+    staging_branch = text.split("staging)", 1)[1].split("*)", 1)[0]
+    assert "PROD_DEPLOY_PATH" in prod_branch and "STAGING" not in prod_branch
+    assert "STAGING_DEPLOY_PATH" in staging_branch
+
+
+def test_an_unrecognised_environment_does_not_fall_through_to_production(text):
+    # A new option added to the input's list with no branch here must fail the
+    # run, not silently inherit whichever path the case statement leaves set.
+    assert "unknown environment" in text
+
+
+def test_a_scheduled_run_uses_the_default_environment(text):
+    # A schedule carries no inputs at all, so the || default is what it gets.
+    assert "github.event.inputs.environment || 'prod'" in text
 
 
 def test_concurrency_is_not_the_shared_deploy_group(workflow):
@@ -249,7 +279,7 @@ def test_concurrency_is_not_the_shared_deploy_group(workflow):
 
 def test_deploy_paths_come_from_secrets_not_literals(text):
     assert "secrets.PROD_DEPLOY_PATH" in text
-    assert "secrets.STAGING_DEPLOY_PATH" not in text, "production is the only target"
+    assert "secrets.STAGING_DEPLOY_PATH" in text
     assert "/data/bloom" not in text, "deploy paths differ per host; never hardcode one"
 
 

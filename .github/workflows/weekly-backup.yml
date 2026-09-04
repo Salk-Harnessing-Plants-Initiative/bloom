@@ -11,12 +11,17 @@ name: Weekly Postgres backup
 # The job UPLOADS ONLY. It never deletes anything on Box; old backups are
 # removed by hand, deliberately.
 #
-# PRODUCTION ONLY. Staging is not backed up, and there is no staging target:
-# the compose project name is pinned in docker-compose.prod.yml, so an
-# `--env staging` run would read staging's env file while still resolving the
-# production container. backup.py refuses any `--env` but `prod` for that
-# reason, so the guarantee holds for someone running the script by hand too.
-# Rehearse with a dry run against production instead.
+# THE SCHEDULE BACKS UP PRODUCTION. Staging is reachable from the dispatch
+# menu so the whole path — dump, verify, upload, summary — can be rehearsed
+# without production being the first real run.
+#
+# Both stacks run docker-compose.prod.yml on the same host and are told apart
+# only by the compose project name, which that file pins to production's. So
+# `-p` is what selects a stack: backup.py maps each environment to the project
+# deploy.yml brings it up under (`bloom_v2_staging` for staging, the pinned
+# name for production). Resolve a container without `-p` and you land on
+# PRODUCTION whatever `--env` says — which is why the mapping is explicit and
+# tested against deploy.yml rather than left to compose's default.
 #
 # SINGLE RUNNER, and the backup depends on it. This job and deploy.yml use
 # different concurrency groups on purpose (neither may cancel the other), so
@@ -51,6 +56,14 @@ name: Weekly Postgres backup
 on:
   workflow_dispatch:
     inputs:
+      environment:
+        description: "Which stack to back up"
+        required: false
+        type: choice
+        default: prod
+        options:
+          - prod
+          - staging
       dry_run:
         description: "Dump and verify, but do not upload"
         required: false
@@ -71,17 +84,22 @@ concurrency:
   # Its own group, NOT deploy-bloom: a queued or stuck deploy must not cancel a
   # backup, and a backup must not hold up a deploy. Overlap is prevented by the
   # single shared runner instead — see the SINGLE RUNNER note at the top.
-  group: weekly-backup-production
+  # Per environment, so a staging rehearsal cannot cancel a production run.
+  group: weekly-backup-${{ github.event.inputs.environment || 'prod' }}
   cancel-in-progress: false
 
 jobs:
   backup:
-    name: Back up production
+    name: Back up ${{ github.event.inputs.environment || 'prod' }}
     runs-on: [self-hosted, linux, salk-network]
     timeout-minutes: 60
-    # Deliberately a DIFFERENT literal than the target resolution below: this
-    # is the approval-gate name, and the scheduled path must not be gated.
-    environment: ${{ github.event_name == 'schedule' && 'production-scheduled-backup' || 'production' }}
+    # Approval gate, deliberately DIFFERENT literals from the deploy path
+    # resolved below. The scheduled run must not be gated (nobody is awake to
+    # approve it); a staging rehearsal is gated by `staging` rather than by
+    # production's reviewers.
+    environment: >-
+      ${{ github.event_name == 'schedule' && 'production-scheduled-backup'
+       || (github.event.inputs.environment == 'staging' && 'staging' || 'production') }}
     steps:
       - name: Set up SSH
         run: |
@@ -91,23 +109,42 @@ jobs:
           echo "${{ secrets.DEPLOY_HOST_KEY }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-      # `prod` is what the env file and the script call it; the GitHub
-      # Environment is called `production`. Name both here so the rest of the
-      # job has one name for each.
+      # `prod`/`staging` are what the env files and the script call them; the
+      # GitHub Environments are `production`/`staging`. Name both here so the
+      # rest of the job has one name for each. A schedule carries no inputs, so
+      # the default is what the weekly run uses.
       - name: Resolve target
         id: target
         env:
+          REQUESTED: ${{ github.event.inputs.environment || 'prod' }}
           PROD_DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
+          STAGING_DEPLOY_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
         run: |
           set -euo pipefail
-          ENV_NAME=prod
-          DEPLOY_PATH="$PROD_DEPLOY_PATH"
+          case "$REQUESTED" in
+            prod)
+              ENV_NAME=prod
+              DEPLOY_PATH="$PROD_DEPLOY_PATH"
+              PATH_SECRET=PROD_DEPLOY_PATH
+              ;;
+            staging)
+              ENV_NAME=staging
+              DEPLOY_PATH="$STAGING_DEPLOY_PATH"
+              PATH_SECRET=STAGING_DEPLOY_PATH
+              ;;
+            *)
+              # Only reachable if the input's options list gains a value with
+              # no branch here; refuse rather than fall through to production.
+              echo "::error::unknown environment '$REQUESTED'"
+              exit 1
+              ;;
+          esac
           # An empty deploy path would make the remote `cd` land in $HOME and
           # the backup run against whatever happens to be there.
-          : "${DEPLOY_PATH:?PROD_DEPLOY_PATH secret is empty}"
+          : "${DEPLOY_PATH:?$PATH_SECRET secret is empty}"
           echo "env_name=$ENV_NAME" >> "$GITHUB_OUTPUT"
           echo "deploy_path=$DEPLOY_PATH" >> "$GITHUB_OUTPUT"
-          echo "Backing up production ($ENV_NAME) from $DEPLOY_PATH"
+          echo "Backing up $ENV_NAME from $DEPLOY_PATH"
 
       - name: Run the backup on the deploy host
         id: run

@@ -39,10 +39,19 @@ from pathlib import Path
 logger = logging.getLogger("bloom_weekly_backup")
 
 COMPOSE_FILE = "docker-compose.prod.yml"
-# The only environment this job backs up. COMPOSE_FILE pins the production
-# compose project name, so every other value resolves the production container
-# while reading some other environment's env file.
-BACKUP_ENV = "prod"
+# Both environments run this one compose file on the same host, told apart only
+# by the project name. The file pins the production one, so `-p` is what selects
+# a stack: deploy.yml passes `-p bloom_v2_staging` for staging and lets the
+# pinned name stand for production. Resolving a container without `-p` therefore
+# lands on PRODUCTION whatever --env says, which is the whole reason this
+# mapping exists rather than being left implicit.
+COMPOSE_PROJECTS = {
+    "prod": "bloom_v2_prod",
+    "staging": "bloom_v2_staging",
+}
+# The environment the schedule backs up. Staging is reachable by hand and by
+# workflow_dispatch, for rehearsing the whole path end to end.
+DEFAULT_ENV = "prod"
 # Under the invoking user's own home, so no root-created directory is needed.
 DEFAULT_STATE_DIR = "~/.local/state/bloom-weekly-backup"
 DB_SERVICE = "db-prod"
@@ -52,9 +61,10 @@ DB_SERVICE = "db-prod"
 MIN_DATABASE_BYTES = 4096
 MIN_GLOBALS_BYTES = 256
 
-# Content floors. A dump can be well-formed, correctly sized and cleanly
-# gzipped while holding no rows at all — the shape a dump takes if the role
-# taking it ever loses its RLS-bypass privilege. Size alone never catches that.
+# Content floors. A dump of a database that holds no data is well-formed,
+# clears the size floor and gzips cleanly — which is what a run against the
+# wrong database looks like, POSTGRES_DB naming one that exists but is empty.
+# Size alone never catches that.
 DB_DUMP_COMPLETE_MARKER = "-- PostgreSQL database dump complete"
 GLOBALS_DUMP_COMPLETE_MARKER = "-- PostgreSQL database cluster dump complete"
 MIN_DATA_ROWS = 100
@@ -140,9 +150,26 @@ def _run(cmd: list[str], cwd: Path | None = None) -> str:
         )
     return result.stdout
 
+def compose_project(env_name: str) -> str:
+    """The compose project this environment's stack was brought up under."""
+    try:
+        return COMPOSE_PROJECTS[env_name]
+    except KeyError:
+        raise ConfigError(
+            f"no compose project known for --env {env_name}; "
+            f"known environments: {', '.join(sorted(COMPOSE_PROJECTS))}"
+        ) from None
+
+
 def compose_args(deploy_dir: Path, env_name: str) -> list[str]:
-    """The compose invocation this environment's stack was brought up with."""
+    """The compose invocation this environment's stack was brought up with.
+
+    `-p` is not decoration. Without it compose falls back to the name pinned in
+    the file, which is production's — so a staging run would read staging's env
+    file and dump the PRODUCTION database into staging's Box folder.
+    """
     return [
+        "-p", compose_project(env_name),
         "-f", str(deploy_dir / COMPOSE_FILE),
         "--env-file", str(deploy_dir / f".env.{env_name}"),
     ]
@@ -309,8 +336,8 @@ def verify_database_content(path: Path) -> int:
     if rows < MIN_DATA_ROWS:
         raise VerificationError(
             f"{path.name} holds {rows} data row(s), below the {MIN_DATA_ROWS}-row "
-            "floor — a dump this empty means the role taking it could not read "
-            "the tables, not that the database is empty"
+            "floor — check POSTGRES_DB and the resolved container before "
+            "assuming the database really is this empty"
         )
     logger.info("verified %s content: %d data row(s)", path.name, rows)
     return rows
@@ -429,7 +456,9 @@ def upload(artifacts: list[Path], env_name: str, timestamp: str) -> str:
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Weekly Postgres backup to Box.")
-    parser.add_argument("--env", required=True, choices=["staging", "prod"],
+    # Choices come from the project map so the two cannot drift: an environment
+    # this script will accept is one it knows how to resolve a container for.
+    parser.add_argument("--env", required=True, choices=sorted(COMPOSE_PROJECTS),
                         help="Which deploy environment to back up.")
     parser.add_argument("--deploy-dir", required=True, type=Path,
                         help="Deploy directory holding the compose file and env file.")
@@ -452,19 +481,11 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("starting bloom-weekly-backup env=%s timestamp=%s", args.env, timestamp)
 
     try:
-        if args.env != BACKUP_ENV:
-            # The workflow stopped offering this, but the script is what someone
-            # rehearsing by hand actually runs. Under any other --env it reads
-            # that environment's env file and still resolves the PRODUCTION
-            # container, so it would upload a full prod dump — auth.users and
-            # all — into the other environment's Box folder, logging the wrong
-            # name at every line.
-            raise ConfigError(
-                f"--env {args.env} is refused: {COMPOSE_FILE} pins the production "
-                f"compose project, so a '{args.env}' run dumps production while "
-                f"reading {args.env}'s configuration. Rehearse with "
-                f"'--env {BACKUP_ENV} --dry-run' instead."
-            )
+        # Fail here rather than at `compose ps`: an unknown --env would otherwise
+        # fall through to the project name pinned in the compose file, which is
+        # production's, and dump production under another environment's name.
+        project = compose_project(args.env)
+        logger.info("targeting compose project %s", project)
         deploy_dir = args.deploy_dir.resolve()
         if not deploy_dir.is_dir():
             raise ConfigError(f"deploy directory does not exist: {deploy_dir}")

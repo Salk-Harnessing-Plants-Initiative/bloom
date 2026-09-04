@@ -37,8 +37,9 @@ not acceptable in a backup.
 |             |                                                    |
 | ----------- | -------------------------------------------------- |
 | Runs        | Sat evening at Salk — 02:17 UTC Sun, automatically |
-| Scope       | Production only — staging is not backed up         |
+| Scope       | The schedule backs up production                   |
 | Destination | `box:bloom-backups/prod/<timestamp>/`              |
+| Rehearsal   | Staging, on demand — `box:bloom-backups/staging/`  |
 
 Cron is always UTC and never shifts for daylight saving, so the schedule reads
 `Sunday 02:17` while the run actually lands **Saturday 19:17 PDT** in summer and
@@ -46,19 +47,45 @@ Cron is always UTC and never shifts for daylight saving, so the schedule reads
 watch on Saturday evening.
 
 Run it by hand any time from the Actions tab: **Weekly Postgres backup → Run
-workflow**, optionally ticking "dry run" to dump and verify without uploading.
+workflow**. Pick the stack (`prod` is the default), and optionally tick "dry
+run" to dump and verify without uploading.
 
-There is deliberately no staging target. `docker-compose.prod.yml` pins the
-compose project name, so a staging run would read staging's env file — and so
-write to staging's Box folder — while still resolving the **production**
-container. `backup.py` refuses any `--env` but `prod` with exit code 2, so this
-holds for the script run by hand on the server as well as for the workflow.
-Rehearse with a dry run against production instead:
+## Rehearsing on staging
+
+Staging exists as a target so production is never the first real run. A staging
+run exercises the whole path — dump, verify, upload to Box, job summary — against
+a database nobody depends on, and lands in `box:bloom-backups/staging/`.
+
+**Do this before the first production run**, and again after any change to how
+the dump is taken. What it tells you that a dry run cannot: whether the upload
+credential works, what a real artifact looks like on Box, and roughly how long
+the whole thing takes.
+
+What it does **not** tell you is whether production's dump fits on disk. The
+working copy is written to the deploy host before upload, and staging's database
+is far smaller. Check free space on that host against a realistic estimate before
+the first production run.
+
+By hand on the server, same thing:
 
 ```bash
 sudo -u bloom-deploy python3 scheduled-jobs/weekly-backup/backup.py \
-  --env prod --deploy-dir "$PWD" --dry-run
+  --env staging --deploy-dir /path/to/staging/deploy --dry-run
 ```
+
+### How a run knows which stack it is talking to
+
+Both environments run `docker-compose.prod.yml` on the same host, told apart
+only by the compose project name — and that file pins production's. `deploy.yml`
+passes `-p bloom_v2_staging` to bring staging up and lets the pinned name stand
+for production, so `backup.py` maps each environment to the same project and
+passes `-p` when it resolves the database container.
+
+Without that `-p`, compose falls back to the pinned name and a staging run would
+read staging's settings — and so staging's Box folder — while dumping the
+**production** database, logging "staging" at every line. A test asserts the
+mapping still matches what `deploy.yml` actually uses, so renaming a project
+there fails here rather than silently pointing this job at the wrong stack.
 
 ## The backup and a deploy must not overlap
 
@@ -181,7 +208,7 @@ sudo -u bloom-deploy rclone lsl box:bloom-backups/prod
 | ---- | --------------------------------------------------------------------- |
 | 0    | Verified backup uploaded                                              |
 | 1    | Subprocess failed (docker / pg_dump / gzip / rclone)                  |
-| 2    | Configuration problem, the stack is not running, or `--env` was not `prod` |
+| 2    | Configuration problem, the stack is not running, or `--env` is not a known environment |
 | 3    | An artifact failed verification — missing, short, corrupt or empty    |
 | 4    | The run was terminated by a signal — cancelled, or hit `timeout-minutes` |
 
@@ -207,11 +234,13 @@ anything is uploaded:
   (`-- PostgreSQL database dump complete`, and the cluster equivalent for the
   globals file). `gzip` closes its stream cleanly around a `pg_dump` that died
   mid-table, so integrity alone does not prove the dump finished;
-- the database dump must hold real rows, not just `COPY` blocks. If the role
-  taking the dump ever loses its RLS-bypass privilege — a plausible future
-  hardening change by someone unaware of this job — every guarded table dumps
-  empty, and the result is valid SQL that clears the size floor and gzips
-  cleanly. Size checking cannot see that; a row count can;
+- the database dump must hold real rows, not just `COPY` blocks. A dump taken
+  against the wrong database — `POSTGRES_DB` naming one that exists but is
+  empty, or a container resolved from the wrong stack — is valid SQL that
+  clears the size floor and gzips cleanly. Size checking cannot see that; a row
+  count can. (Losing RLS-bypass privilege is *not* this case: `pg_dump` sets
+  `row_security = off` and aborts outright if the role cannot do that, which
+  the pipeline's exit-status check already catches.);
 - the globals dump must define roles, since the database dump's `OWNER` and
   `GRANT` statements have nothing to bind to without them;
 - the sizes and counts are logged.

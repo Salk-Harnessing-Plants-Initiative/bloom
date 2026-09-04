@@ -66,23 +66,24 @@ def test_compose_args_point_at_this_environments_files(tmp_path):
     assert str(tmp_path / ".env.prod") in args
 
 
-def test_the_compose_project_is_pinned_by_the_file_not_the_directory():
-    # Why this job is production-only. compose_args passes no -p, and
-    # docker-compose.prod.yml pins `name: bloom_v2_prod`, which outranks the
-    # directory basename. So `ps -q db-prod` resolves the PRODUCTION container
-    # from any deploy directory — a staging target would read staging's env
-    # file (and so its Box folder) while dumping production. Adding a staging
-    # path again requires -p matching deploy.yml's `-p bloom_v2_staging`.
-    assert "-p" not in backup.compose_args(Path("/srv/bloom"), "prod")
-    compose = (REPO_ROOT / "docker-compose.prod.yml").read_text()
-    assert "\nname: bloom_v2_prod\n" in compose
+def test_the_compose_project_comes_from_the_environment_not_the_directory():
+    # Compose would otherwise derive a project from the directory basename,
+    # which differs per host, or fall back to the name pinned in the file —
+    # production's. Neither is a property of the environment being asked for.
+    for env_name in ("prod", "staging"):
+        args = backup.compose_args(Path("/srv/whatever-this-host-calls-it"), env_name)
+        assert args[0] == "-p"
+        assert args[1] == backup.COMPOSE_PROJECTS[env_name]
+        assert "whatever-this-host-calls-it" not in args[1]
 
 
 def test_compose_args_never_hardcode_a_container_name():
     # The bug this replaces: a hardcoded `bloom_v2_{env}-db-prod-1` is wrong on
-    # any host whose deploy directory is named differently.
+    # any host whose deploy directory is named differently. Project names are
+    # fine — compose maps those to containers itself; assembled container names
+    # are not.
     source = _SCRIPT.read_text()
-    assert "bloom_v2_" not in source, "container name must not be reconstructed by hand"
+    assert "-db-prod-" not in source, "container name must not be reconstructed by hand"
     # Resolution goes through `compose ps -q <service>`, so it is correct on any
     # host regardless of what the deploy directory is called.
     assert 'DB_SERVICE = "db-prod"' in source
@@ -90,58 +91,67 @@ def test_compose_args_never_hardcode_a_container_name():
 
 
 # --------------------------------------------------------------------------
-# Production only
+# Which stack a run targets
 # --------------------------------------------------------------------------
 
-
-def test_the_only_environment_this_job_backs_up_is_production():
-    assert backup.BACKUP_ENV == "prod"
+DEPLOY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 
 
-def test_the_script_itself_refuses_any_other_environment(tmp_path, monkeypatch):
-    # The workflow no longer offers staging, but the workflow is not what a
-    # person rehearsing by hand runs. COMPOSE_FILE pins the production compose
-    # project, so a staging run reads staging's env file and still resolves the
-    # PRODUCTION container: a full prod dump, auth.users included, uploaded to
-    # staging's Box folder with every log line saying "staging".
-    _deploy_dir(tmp_path, env_name="staging")
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(backup, "_which", lambda name: name)
-    resolved: list[str] = []
-    monkeypatch.setattr(backup, "resolve_container",
-                        lambda *a: resolved.append("resolved") or "container123")
-    dumped: list[str] = []
-    monkeypatch.setattr(backup, "dump_database", lambda *a: dumped.append("database"))
-
-    rc = backup.main(["--env", "staging", "--deploy-dir", str(tmp_path)])
-    assert rc == backup.EXIT_CONFIG
-    assert not resolved, "no container may be resolved for a non-production run"
-    assert not dumped, "no dump may be taken for a non-production run"
+def test_each_environment_resolves_its_own_compose_project():
+    assert backup.compose_project("prod") == "bloom_v2_prod"
+    assert backup.compose_project("staging") == "bloom_v2_staging"
 
 
-def test_the_refusal_names_the_rehearsal_that_is_allowed(tmp_path, caplog):
-    # A refusal an operator cannot act on gets worked around instead.
-    _deploy_dir(tmp_path, env_name="staging")
-    with caplog.at_level("ERROR"):
-        backup.main(["--env", "staging", "--deploy-dir", str(tmp_path)])
-    assert "--env prod --dry-run" in caplog.text
+def test_the_two_projects_are_not_the_same_stack():
+    # The failure this whole mapping exists to prevent: a staging run that
+    # reads staging's env file and dumps the PRODUCTION database into staging's
+    # Box folder, logging "staging" at every line.
+    assert backup.compose_project("staging") != backup.compose_project("prod")
 
 
-def test_a_non_production_run_cannot_even_print_a_destination(tmp_path, capsys):
-    # --print-destination is what the workflow summary calls. It must not become
-    # the way a staging path gets named anywhere.
-    _deploy_dir(tmp_path, env_name="staging")
-    rc = backup.main(["--env", "staging", "--deploy-dir", str(tmp_path),
-                      "--print-destination"])
-    assert rc == backup.EXIT_CONFIG
-    assert "staging" not in capsys.readouterr().out
+def test_an_unknown_environment_is_refused_rather_than_defaulted():
+    # Falling through to compose's own default would silently mean the name
+    # pinned in the file — production's.
+    with pytest.raises(backup.ConfigError, match="no compose project known"):
+        backup.compose_project("qa")
 
 
-def test_the_compose_file_is_what_makes_this_production_only():
-    # If the compose file ever stops pinning the project name, the guard above
-    # is protecting against something that no longer applies — revisit both.
+def test_the_project_name_is_passed_to_compose(tmp_path):
+    args = backup.compose_args(tmp_path, "staging")
+    assert args[:2] == ["-p", "bloom_v2_staging"], (
+        "without -p, compose falls back to the name pinned in the file, which "
+        "is production's"
+    )
+    assert str(tmp_path / ".env.staging") in args
+
+
+def test_the_projects_match_the_ones_deploy_actually_brings_the_stacks_up_with():
+    # This script attaches to stacks another workflow created. If deploy.yml
+    # ever renames a project, resolving a container here starts finding nothing
+    # — or, worse, finding the other environment's.
+    deploy = DEPLOY_WORKFLOW.read_text()
+    assert "-p bloom_v2_staging" in deploy, (
+        "deploy.yml no longer brings staging up under bloom_v2_staging — "
+        "backup.py's COMPOSE_PROJECTS is now wrong"
+    )
+    # Production is the pinned default, so deploy.yml passes no -p for it.
     compose = (REPO_ROOT / backup.COMPOSE_FILE).read_text()
-    assert "name: bloom_v2_prod" in compose
+    assert f"name: {backup.compose_project('prod')}" in compose, (
+        "the compose file no longer pins the production project name that "
+        "deploy.yml relies on for prod"
+    )
+
+
+def test_the_scheduled_environment_is_production():
+    # Staging is reachable for rehearsal; the weekly run is not about staging.
+    assert backup.DEFAULT_ENV == "prod"
+
+
+def test_only_environments_with_a_known_project_are_accepted(tmp_path):
+    # argparse choices are derived from the project map; a value it accepts is
+    # one a container can actually be resolved for.
+    with pytest.raises(SystemExit):
+        backup._parse_args(["--env", "qa", "--deploy-dir", str(tmp_path)])
 
 
 # --------------------------------------------------------------------------
@@ -224,11 +234,16 @@ def test_a_dump_full_of_rows_passes_its_content_check(tmp_path):
 
 
 def test_a_dump_whose_tables_all_came_out_empty_is_rejected(tmp_path):
-    # The RLS case: if the dumping role loses its bypass privilege the dump is
+    # The wrong-database case: POSTGRES_DB naming a database that exists but
+    # holds nothing, or a container resolved from the wrong stack. The dump is
     # valid SQL with every COPY block empty, clears the size floor, and gzips
-    # cleanly. Size and integrity checks cannot tell it from a good backup.
+    # cleanly, so size and integrity checks cannot tell it from a good backup.
+    #
+    # Note this is NOT the RLS case: pg_dump sets row_security = off and aborts
+    # with "query would be affected by row-level security policy" if the role
+    # cannot bypass it, which the pipeline's exit-status check already catches.
     artifact = _write_gz(tmp_path / "db.sql.gz", _database_dump(rows=0))
-    with pytest.raises(backup.VerificationError, match="could not read"):
+    with pytest.raises(backup.VerificationError, match="POSTGRES_DB"):
         backup.verify_database_content(artifact)
 
 
