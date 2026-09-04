@@ -1,0 +1,214 @@
+name: Weekly Postgres backup
+
+# Dumps the Supabase Postgres database and its global roles to Box, weekly.
+#
+# The work happens on the deploy host: this workflow SSHes in and runs
+# scheduled-jobs/weekly-backup/backup.py there, the same way deploy.yml reaches
+# the server. Nothing is dumped onto the runner and no database port is opened
+# — the dump is taken inside the db-prod container and streamed straight to a
+# file on the host, then uploaded to Box by that host's own rclone remote.
+#
+# The job UPLOADS ONLY. It never deletes anything on Box; old backups are
+# removed by hand, deliberately.
+#
+# THE SCHEDULE BACKS UP PRODUCTION. Staging is reachable from the dispatch
+# menu so the whole path — dump, verify, upload, summary — can be rehearsed
+# without production being the first real run.
+#
+# Both stacks run docker-compose.prod.yml on the same host and are told apart
+# only by the compose project name, which that file pins to production's. So
+# `-p` is what selects a stack: backup.py maps each environment to the project
+# deploy.yml brings it up under (`bloom_v2_staging` for staging, the pinned
+# name for production). Resolve a container without `-p` and you land on
+# PRODUCTION whatever `--env` says — which is why the mapping is explicit and
+# tested against deploy.yml rather than left to compose's default.
+#
+# SINGLE RUNNER, and the backup depends on it. This job and deploy.yml use
+# different concurrency groups on purpose (neither may cancel the other), so
+# what actually keeps a backup from running against a database mid-migration is
+# that both jobs land on the same one self-hosted runner and queue behind each
+# other there. Register a second runner on the `salk-network` label and that
+# protection is gone with nothing failing to say so — add a shared concurrency
+# group, or a deploy-in-progress check here, at the same time.
+#
+# Three things to know, all of which refresh-cyl-experiment-trait-counts.yml
+# documents at length and was bitten by first:
+#
+#   1. BOTH `schedule:` and `workflow_dispatch` require this file to be present
+#      on the repo's DEFAULT branch (`main`) before either can fire at all --
+#      dispatch is gated on it exactly as schedule is. Nothing runs until the
+#      normal staging -> main promotion carries this file there.
+#   2. A `schedule` event carries no `github.event.inputs`, so the approval
+#      gate below is resolved off `github.event_name`, not off an input.
+#   3. The scheduled run uses a SEPARATE, ungated GitHub Environment
+#      (`production-scheduled-backup`) rather than `production` itself. Routing
+#      an unattended 02:00 run through production's required-reviewer gate
+#      would leave it stuck "Waiting" for an approval nobody is awake to give,
+#      and a backup that silently never runs is the whole failure mode this job
+#      exists to prevent. The concurrency group and the deploy path still
+#      resolve to the real `production` host -- only the approval-gate name
+#      differs.
+#
+# Each run writes a short summary (artifact names, byte sizes, destination, and
+# the current contents of the Box folder) to the job summary, so the weekly
+# check is one glance at the Actions tab rather than a log read.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which stack to back up"
+        required: false
+        type: choice
+        default: prod
+        options:
+          - prod
+          - staging
+      dry_run:
+        description: "Dump and verify, but do not upload"
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    # Sunday 02:17 UTC, which at Salk is SATURDAY evening: 19:17 PDT or
+    # 18:17 PST. Cron here is always UTC and never shifts for DST, so the UTC
+    # day reads Sunday while the run happens on Saturday locally.
+    # Off the hour deliberately — GitHub's own docs flag the top of the hour as
+    # a period of elevated scheduler load and delay.
+    - cron: "17 2 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  # Its own group, NOT deploy-bloom: a queued or stuck deploy must not cancel a
+  # backup, and a backup must not hold up a deploy. Overlap is prevented by the
+  # single shared runner instead — see the SINGLE RUNNER note at the top.
+  # Per environment, so a staging rehearsal cannot cancel a production run.
+  group: weekly-backup-${{ github.event.inputs.environment || 'prod' }}
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Back up ${{ github.event.inputs.environment || 'prod' }}
+    runs-on: [self-hosted, linux, salk-network]
+    timeout-minutes: 60
+    # Approval gate, deliberately DIFFERENT literals from the deploy path
+    # resolved below. The scheduled run must not be gated (nobody is awake to
+    # approve it); a staging rehearsal is gated by `staging` rather than by
+    # production's reviewers.
+    environment: >-
+      ${{ github.event_name == 'schedule' && 'production-scheduled-backup'
+       || (github.event.inputs.environment == 'staging' && 'staging' || 'production') }}
+    steps:
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "${{ secrets.DEPLOY_HOST_KEY }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      # `prod`/`staging` are what the env files and the script call them; the
+      # GitHub Environments are `production`/`staging`. Name both here so the
+      # rest of the job has one name for each. A schedule carries no inputs, so
+      # the default is what the weekly run uses.
+      - name: Resolve target
+        id: target
+        env:
+          REQUESTED: ${{ github.event.inputs.environment || 'prod' }}
+          PROD_DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
+          STAGING_DEPLOY_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          case "$REQUESTED" in
+            prod)
+              ENV_NAME=prod
+              DEPLOY_PATH="$PROD_DEPLOY_PATH"
+              PATH_SECRET=PROD_DEPLOY_PATH
+              ;;
+            staging)
+              ENV_NAME=staging
+              DEPLOY_PATH="$STAGING_DEPLOY_PATH"
+              PATH_SECRET=STAGING_DEPLOY_PATH
+              ;;
+            *)
+              # Only reachable if the input's options list gains a value with
+              # no branch here; refuse rather than fall through to production.
+              echo "::error::unknown environment '$REQUESTED'"
+              exit 1
+              ;;
+          esac
+          # An empty deploy path would make the remote `cd` land in $HOME and
+          # the backup run against whatever happens to be there.
+          : "${DEPLOY_PATH:?$PATH_SECRET secret is empty}"
+          echo "env_name=$ENV_NAME" >> "$GITHUB_OUTPUT"
+          echo "deploy_path=$DEPLOY_PATH" >> "$GITHUB_OUTPUT"
+          echo "Backing up $ENV_NAME from $DEPLOY_PATH"
+
+      - name: Run the backup on the deploy host
+        id: run
+        env:
+          ENV_NAME: ${{ steps.target.outputs.env_name }}
+          DEPLOY_PATH: ${{ steps.target.outputs.deploy_path }}
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          # The script reads its own config out of the deploy env file, so
+          # nothing has to be sourced into this shell.
+          ssh -i ~/.ssh/deploy_key "${DEPLOY_USER}@${DEPLOY_HOST}" "
+            set -euo pipefail
+            cd '${DEPLOY_PATH}'
+            python3 scheduled-jobs/weekly-backup/backup.py \
+              --env '${ENV_NAME}' --deploy-dir '${DEPLOY_PATH}' ${DRY_RUN}
+          " | tee "${RUNNER_TEMP}/backup-output.txt"
+
+      # What the weekly check reads: sizes this run, and everything currently
+      # sitting on Box. A shrinking artifact or a missing week is visible here
+      # without opening the job log.
+      - name: Write the run summary
+        id: summary
+        if: always()
+        env:
+          ENV_NAME: ${{ steps.target.outputs.env_name }}
+          DEPLOY_PATH: ${{ steps.target.outputs.deploy_path }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -uo pipefail
+          {
+            echo "## Weekly Postgres backup — ${ENV_NAME}"
+            echo
+            if [ "${{ steps.run.outcome }}" = "success" ]; then
+              echo "Result: **succeeded**"
+            else
+              echo "Result: **FAILED** — see the job log, then the listing below."
+              echo "A run that died mid-upload leaves an incomplete dated folder."
+            fi
+            echo
+            echo '### This run'
+            echo '```'
+            # The script's own summary block: artifact names and byte sizes.
+            sed -n '/^env: /,$p' "${RUNNER_TEMP}/backup-output.txt" 2>/dev/null || echo "(no summary produced)"
+            echo '```'
+            echo
+            echo '### Currently on Box'
+            echo '```'
+            # The script owns env-file parsing; a second copy in shell drifts.
+            if listing=$(ssh -i ~/.ssh/deploy_key "${DEPLOY_USER}@${DEPLOY_HOST}" "
+                  set -euo pipefail
+                  cd '${DEPLOY_PATH}'
+                  dest=\$(python3 scheduled-jobs/weekly-backup/backup.py \
+                    --env '${ENV_NAME}' --deploy-dir '${DEPLOY_PATH}' --print-destination)
+                  rclone lsl \"\${dest}/\"
+                "); then
+              printf '%s\n' "$listing" | sort -k2 | tail -20
+            else
+              echo "(could not list the Box folder — see the job log)"
+            fi
+            echo '```'
+            echo
+            echo "_This job only uploads. Nothing on Box is ever deleted by it._"
+          } >> "$GITHUB_STEP_SUMMARY"
