@@ -772,3 +772,83 @@ def test_fully_local_qc_clean_to_pca_via_local_root_only(
     assert len(manifests) >= 2  # qc + pca
     assert list((root / "output").rglob("_cleaned.csv"))
     assert (root / "plots").is_dir()
+
+
+def test_foreign_catalog_blocks_consumers_end_to_end(
+    monkeypatch, tmp_path, reset_ports
+):
+    """#573 end-to-end over real local manifests: a hand-foreignized qc catalog
+    makes `pca_analysis` fail with a structured envelope naming both backends
+    (never `internal_error`'s opaque message, never the run-`qc_clean`-first
+    remedy — which would invite committing on top of the foreign catalog), and
+    a `qc_clean` re-run refuses at create_run without re-stamping the foreign
+    manifest or appending a version."""
+    import json
+
+    import bloom_mcp.supabase_client as sc
+    from bloom_mcp.contract import BloomMCPError
+    from bloom_mcp.data_access import LocalReader
+    from bloom_mcp.result_store import SupabaseResultStore
+    from bloom_mcp.tools import _ports
+    from bloom_mcp.sections.sleap_roots.analysis.pca_analysis import (
+        PCAAnalysisParams,
+        pca_analysis,
+    )
+    from bloom_mcp.sections.sleap_roots.analysis.qc_clean import (
+        QCCleanParams,
+        qc_clean,
+    )
+
+    inp = tmp_path / "input"
+    inp.mkdir()
+    store = tmp_path / "store"
+    store.mkdir()
+    rows = "".join(f"g{i},p{i},{float(i + 1)},{float(i * 2 + 1)}\n" for i in range(15))
+    (inp / "offline_e2e.csv").write_text("Genotype,plant_id,trait_a,trait_b\n" + rows)
+    monkeypatch.setattr(eu, "TRAITS_DIR", inp)
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(store))
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    monkeypatch.delenv("BLOOM_STORAGE_URL", raising=False)
+    monkeypatch.delenv("BLOOM_EXPERIMENT_LOCAL_ROOT", raising=False)
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("BLOOM_AGENT_KEY", raising=False)
+    sb.reset_backend_for_tests()
+
+    def _no_net(*a, **k):
+        raise AssertionError("supabase.create_client called — the run hit the network")
+
+    monkeypatch.setattr(sc.supabase, "create_client", _no_net)
+
+    _ports.configure(reader=LocalReader(), store=SupabaseResultStore())
+
+    assert qc_clean(QCCleanParams(experiment="offline_e2e.csv")).run_ref
+
+    manifest_path = store / "bloommcp_output" / "qc_offline_e2e" / "manifest.json"
+    raw = json.loads(manifest_path.read_text())
+    assert raw["storage_backend"] == "local"
+    raw["storage_backend"] = "supabase"
+    manifest_path.write_text(json.dumps(raw))
+    manifest_before = manifest_path.read_bytes()
+
+    # Consumer gate: pca_analysis(require_clean) surfaces the mismatch.
+    with pytest.raises(BloomMCPError) as exc:
+        pca_analysis(
+            PCAAnalysisParams(
+                experiment="offline_e2e.csv", trait_columns=["trait_a", "trait_b"]
+            )
+        )
+    assert exc.value.code != "internal_error"
+    assert "'supabase'" in exc.value.message and "'local'" in exc.value.message
+    assert "run the QC workflow" not in exc.value.message
+    assert "qc_clean" not in exc.value.remedy
+    assert not (store / "bloommcp_output" / "pca_offline_e2e").exists()
+
+    # Producer gate: a qc_clean re-run refuses at create_run, hatch-independent
+    # of any read behavior — the foreign manifest is never re-stamped/extended.
+    with pytest.raises(BloomMCPError) as exc2:
+        qc_clean(QCCleanParams(experiment="offline_e2e.csv"))
+    assert exc2.value.code != "internal_error"
+    assert "'supabase'" in exc2.value.message and "'local'" in exc2.value.message
+    assert manifest_path.read_bytes() == manifest_before
+    assert len(json.loads(manifest_path.read_text())["versions"]) == 1

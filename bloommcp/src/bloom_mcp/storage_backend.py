@@ -534,6 +534,27 @@ def is_local_backend() -> bool:
     return _selected_backend_name() == "local"
 
 
+_ALLOW_FOREIGN_MANIFEST_VAR = "BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST"
+# Empty/whitespace ≡ unset: the dev-compose `${VAR:-}` passthrough delivers ""
+# inside the container, matching `_selected_backend_name`'s treatment of
+# BLOOM_STORAGE_BACKEND.
+_ALLOW_FOREIGN_MANIFEST_VALUES = ("", "0", "1")
+
+
+def allow_foreign_manifest() -> bool:
+    """Whether the #573 foreign-catalog read guard is downgraded to a warning.
+
+    Read lazily on **every** call — never at import (side-effect-free import
+    contract) and never memoized (unlike ``_active``): the guard logs its
+    warning per read, and tests flip the variable within one process. Only the
+    exact value ``1`` enables the hatch; anything else — including an invalid
+    value that escaped boot validation via a post-boot env mutation — keeps
+    the guard fail-closed. The hatch sanctions reads only: the ``ResultStore``
+    write path re-checks the sentinel unconditionally.
+    """
+    return (os.environ.get(_ALLOW_FOREIGN_MANIFEST_VAR) or "").strip() == "1"
+
+
 def self_serve_base_url() -> str:
     """bloommcp's own address, for defaulting local-mode served URLs (#642).
 
@@ -679,6 +700,12 @@ def validate_storage_backend() -> None:
     name = _selected_backend_name()
     if name not in VALID_BACKENDS:
         raise _unrecognized_backend_error(name)
+    allow_foreign = (os.environ.get(_ALLOW_FOREIGN_MANIFEST_VAR) or "").strip()
+    if allow_foreign not in _ALLOW_FOREIGN_MANIFEST_VALUES:
+        raise RuntimeError(
+            f"{_ALLOW_FOREIGN_MANIFEST_VAR}={allow_foreign!r} is not a "
+            f"recognized value; accepted values are unset/empty, '0', and '1'."
+        )
     if name == "local":
         root = _resolve_local_root()
         # A relative BLOOM_LOCAL_ROOT/BLOOM_STORAGE_LOCAL_ROOT/BLOOM_OUTPUT_DIR

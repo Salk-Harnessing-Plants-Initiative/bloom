@@ -44,6 +44,23 @@ class CleanedVersionRequiredError(ExperimentReadError):
     """``require_clean=True`` was requested but no cleaned version exists."""
 
 
+class ForeignCatalogError(ExperimentReadError):
+    """The experiment's cleaned catalog was written by a different storage
+    backend than the active one — #573's *foreign catalog* (a copied/synced
+    bucket, a restored backup, a shared root, or a tampered
+    ``storage_backend`` sentinel).
+
+    Deliberately a sibling of :class:`CleanedVersionRequiredError`, never a
+    subclass: the "run ``qc_clean`` first" remedy would direct an agent to
+    commit fresh runs on top of the foreign catalog, and
+    :class:`ExperimentNotFoundError` would misreport a present-but-foreign
+    catalog as absent. Subclasses :class:`ExperimentReadError` so every
+    consumer tool's existing ``errors=(ExperimentReadError, …)`` declaration
+    passes the message (both backend names + the catalog's logical storage
+    prefix — leak-safe by construction) through the contract envelope.
+    """
+
+
 class AmbiguousSourceSelectionError(ExperimentReadError):
     """Both ``source_id`` and ``run_id`` were given; the DB read surface rejects that."""
 

@@ -344,3 +344,53 @@ def test_no_storage_backend_configured_is_reported_not_raised(injected_ports):
 
     assert "trim_is_stale" not in response
     assert any(e.startswith("trim_staleness: ") for e in response["errors"])
+
+
+def test_foreign_tool_class_catalog_does_not_hide_healthy_classes(
+    injected_ports, local_manifest_backend, monkeypatch
+):
+    """#573 characterization pin: the per-tool-class error isolation
+    (`except Exception → errors.append → continue`) already contains a foreign
+    catalog — one foreignized class contributes an error entry naming both
+    backends while the experiment's healthy classes still list. Pinned so this
+    error type can never abort the whole listing. (`trim_staleness` reads the
+    same foreign manifest and contributes its own advisory error entry — also
+    isolated, also expected.)"""
+    reader, _fake_store = injected_ports
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    # The fake store has no manifest concept — list over the real (local
+    # backend) manifests instead, keeping the fixture's cache/restore behavior.
+    _ports.configure(reader=reader, store=SupabaseResultStore())
+    list_existing_analyses_mod._RESPONSE_CACHE.clear()
+
+    write_cleaned_manifest(
+        local_manifest_backend, "exp", "qc", "v1", "2026-07-06T00:00:00Z", b"a,b\n1,2\n"
+    )
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp",
+        "outliers",
+        "v1",
+        "2026-07-06T00:01:00Z",
+        b"a,b\n1,2\n",
+    )
+    manifest_path = (
+        local_manifest_backend
+        / "root"
+        / "bloommcp_output"
+        / "outliers_exp"
+        / "manifest.json"
+    )
+    raw = json.loads(manifest_path.read_text())
+    assert raw["storage_backend"] == "local"
+    raw["storage_backend"] = "supabase"
+    manifest_path.write_text(json.dumps(raw))
+
+    response = json.loads(
+        list_existing_analyses_mod.list_existing_analyses(_EXPERIMENT)
+    )
+
+    assert "qc" in response["analyses"], "healthy class must still list"
+    assert "outliers" not in response["analyses"]
+    errors = response.get("errors", [])
+    assert any("supabase" in e and "local" in e for e in errors), errors
