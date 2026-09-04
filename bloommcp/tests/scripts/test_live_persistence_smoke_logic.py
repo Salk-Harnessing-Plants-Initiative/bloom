@@ -485,3 +485,106 @@ def test_stats_result_checks_flags_zero_traits_reported():
 def test_stats_result_checks_flags_nonzero_failed():
     checks = smoke.stats_result_checks(18, 1)
     assert any("n_failed == 0" in c.name and not c.ok for c in checks)
+
+
+# --- heritability_analysis leg checks (#462) -----------------------------------
+def _good_heritability_kwargs():
+    return dict(
+        schema_version=5,
+        seed=None,
+        tool="heritability_analysis",
+        source="v3_cleaned",
+        output_keys={
+            "heritability.csv": "bloommcp_output/heritability_turface_raw/v1/heritability.csv",
+            "heritability_result.json": "bloommcp_output/heritability_turface_raw/v1/heritability_result.json",
+        },
+        output_sha256={"heritability.csv": "dead", "heritability_result.json": "beef"},
+        expected_outputs={"heritability.csv", "heritability_result.json"},
+    )
+
+
+def test_heritability_persist_checks_all_pass_on_valid_v5_entry():
+    checks = smoke.heritability_persist_checks(**_good_heritability_kwargs())
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_heritability_persist_checks_flags_non_null_seed():
+    # The statsmodels MixedLM delegate has no RNG — a recorded seed would be a
+    # reproducibility lie.
+    kwargs = _good_heritability_kwargs()
+    kwargs["seed"] = 42
+    checks = smoke.heritability_persist_checks(**kwargs)
+    assert any("seed == None" in c.name and not c.ok for c in checks)
+
+
+def test_heritability_persist_checks_flags_wrong_tool():
+    kwargs = _good_heritability_kwargs()
+    kwargs["tool"] = "plot_heritability_bar"
+    checks = smoke.heritability_persist_checks(**kwargs)
+    assert any("tool == 'heritability_analysis'" in c.name and not c.ok for c in checks)
+
+
+def test_heritability_persist_checks_flags_raw_source():
+    """The require_clean guard neither retired plot tool had — a raw source here would
+    mean the replacement reintroduced the defect it exists to close."""
+    kwargs = _good_heritability_kwargs()
+    kwargs["source"] = "raw"
+    checks = smoke.heritability_persist_checks(**kwargs)
+    assert any("consumed a cleaned source" in c.name and not c.ok for c in checks)
+
+
+def test_heritability_persist_checks_flags_missing_result_json():
+    kwargs = _good_heritability_kwargs()
+    kwargs["output_keys"] = {
+        k: v for k, v in kwargs["output_keys"].items() if k.endswith(".csv")
+    }
+    kwargs["output_sha256"] = {"heritability.csv": "dead"}
+    checks = smoke.heritability_persist_checks(**kwargs)
+    assert any("committed outputs include" in c.name and not c.ok for c in checks)
+
+
+def test_heritability_result_checks_all_pass_on_valid_result():
+    checks = smoke.heritability_result_checks(19, 19, 0, [], [])
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_heritability_result_checks_tolerate_some_failed_traits():
+    """Deliberately NOT n_failed == 0: this leg runs live on every PR against thin
+    synthetic seed data, where a mixed model failing to fit a given trait is a
+    legitimate outcome, not a regression."""
+    checks = smoke.heritability_result_checks(19, 17, 2, [], [])
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_heritability_result_checks_flags_zero_traits_reported():
+    checks = smoke.heritability_result_checks(19, 0, 19, [], [])
+    assert any("n_traits_reported > 0" in c.name and not c.ok for c in checks)
+
+
+def test_heritability_result_checks_flags_unreconciled_counts():
+    """requested == reported + failed must hold: a trait that is neither reported nor
+    failed has been silently dropped."""
+    checks = smoke.heritability_result_checks(19, 17, 0, [], [])
+    assert any("counts reconcile" in c.name and not c.ok for c in checks)
+
+
+def test_heritability_result_checks_flags_nonfinite_routing():
+    """A trait routed out for a non-finite value or a dropped delegate key IS a real
+    contract regression, unlike a thin-data fit failure."""
+    checks = smoke.heritability_result_checks(19, 18, 1, ["Solidity"], [])
+    assert any("non-finite/dropped-key" in c.name and not c.ok for c in checks)
+
+
+def test_heritability_result_checks_tolerate_named_zero_variance_traits():
+    """A zero-variance trait in the seeded synthetic data is plausible and is NOT a
+    regression — the check exists so the tool keeps NAMING them, not so the list stays
+    empty."""
+    checks = smoke.heritability_result_checks(19, 19, 0, [], ["flat_trait"])
+    assert all(c.ok for c in checks), [c for c in checks if not c.ok]
+
+
+def test_heritability_result_checks_flags_missing_zero_variance_field():
+    """Losing the field entirely IS a contract regression — a non-measurement would then
+    fold into mean_h2 with nothing to signal it."""
+    checks = smoke.heritability_result_checks(19, 19, 0, [], None)
+    assert any("zero-variance traits" in c.name and not c.ok for c in checks)

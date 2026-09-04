@@ -99,7 +99,7 @@ def apply_font_style(
 
 
 def generate_figures(
-    resolved_calls: dict[str, "Callable[[], Figure]"],
+    resolved_calls: dict[str, "Callable[[], Figure | list[Figure]]"],
     figures: "dict[str, Figure]",
     *,
     font_family: str | None = None,
@@ -112,16 +112,65 @@ def generate_figures(
     already-successful figure in the caller's dict for ``close_figures`` to
     reach in ``finally``. The caller passes the same dict it later closes.
 
+    **A plotter may return a single ``Figure`` or a ``list[Figure]``.** A list is
+    expanded into one ``<key>_page<N>`` entry per figure (1-indexed); a single figure
+    keeps its bare ``<key>``, byte-identical to this function's pre-pagination
+    behavior, so ``pca_analysis``/``umap_analysis``/``clustering`` output keys are
+    unaffected. Expanding here (rather than storing the list under one key) is what
+    lets ``apply_font_style`` and ``close_figures`` keep operating on a flat
+    ``dict[str, Figure]`` with no special case of their own.
+
+    The motivating case is ``sleap_roots_analyze.create_heritability_plot``, which
+    returns a single figure at or below its ``traits_per_page`` default (50 traits) and
+    a paginated list above it — cylinder's ~846 traits reach it. This mirrors the
+    precedent ``sections/sleap_roots/analysis/_viz_shared.save_plot_or_plots`` already
+    set for the legacy plotting tools' multi-page output.
+
+    Detection is a strict ``isinstance(..., list)`` check, deliberately not a
+    duck-typed ``__iter__`` probe: this module's own tests pass string sentinels
+    (``lambda: "fig_a"``), which an iterable check would silently shred into
+    one page per character.
+
+    **Limit of the cleanup guarantee.** Everything this function *records* is reachable by
+    the caller's ``close_figures`` in ``finally``. What a plotter allocates internally and
+    then abandons by raising *before returning* is not: the assignment never happens, so
+    those figures sit in matplotlib's registry unrecorded. A paginating plotter widens that
+    window — it may build several pages before failing on a later one — so the exposure is
+    larger here than for a single-figure plotter, though the kind of leak is the same one
+    that predates pagination.
+
+    Closing them requires diffing ``plt.get_fignums()`` around the call, and that diff is
+    only sound while no other call can be creating figures concurrently: matplotlib's
+    registry is process-wide, and FastMCP dispatches sync tool handlers on a thread pool, so
+    an unsynchronised diff would happily close a *different* call's figure — trading a leak
+    for silent corruption of someone else's plot. bloom#721 / PR #726 adds exactly that
+    diff together with the process-wide lock that makes it safe; it is deliberately not
+    duplicated here without the lock. ``test_plots_helpers.py`` pins where the guarantee
+    currently stops so the gap is recorded rather than assumed covered.
+
     ``font_family``/``font_size`` (both default ``None``) are applied via
-    ``apply_font_style`` to each figure immediately after it is recorded into
-    ``figures`` — a no-op when both are ``None``. Recording happens *before* styling
-    (not after) so that if ``apply_font_style`` itself ever raised, the figure would
-    already be in ``figures`` for ``close_figures`` to reach in ``finally``, rather than
-    leaking from matplotlib's registry unrecorded and unreachable.
+    ``apply_font_style`` to each recorded figure — a no-op when both are ``None``.
+    **Every page of a call is recorded into ``figures`` before any page of that call is
+    styled.** Recording before styling is what makes a raising ``apply_font_style``
+    survivable at all (the figure is already reachable by the caller's
+    ``close_figures`` in ``finally``); doing it per-page in an interleaved
+    record→style→record loop would honor that only up to the failing page, and would
+    strand every later page of the same list — already allocated by ``fn()``, live in
+    matplotlib's registry, never recorded, unreachable. Hence the two-pass shape below.
     """
     for key, fn in resolved_calls.items():
-        figures[key] = fn()
-        apply_font_style(figures[key], font_family=font_family, font_size=font_size)
+        result = fn()
+        if isinstance(result, list):
+            page_keys = [f"{key}_page{i}" for i in range(1, len(result) + 1)]
+            for page_key, fig in zip(page_keys, result):
+                figures[page_key] = fig
+        else:
+            page_keys = [key]
+            figures[key] = result
+        for page_key in page_keys:
+            apply_font_style(
+                figures[page_key], font_family=font_family, font_size=font_size
+            )
 
 
 def close_figures(figures: "dict[str, Figure]") -> None:

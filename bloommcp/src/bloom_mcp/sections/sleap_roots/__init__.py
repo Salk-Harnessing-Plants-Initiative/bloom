@@ -9,10 +9,14 @@ one package it happens to populate today. See
 rationale (D3 in this change's ``design.md``).
 
 Two subgroups:
-  - ``analysis/`` — the 8 granular ``sleap-roots-analyze`` consumers
+  - ``analysis/`` — the 9 granular ``sleap-roots-analyze`` consumers
     (``pca_analysis``, ``qc_clean``, ``qc_inspect``, ``remove_outliers``,
     ``clustering``, ``umap_analysis``, ``descriptive_stats``,
-    ``cross_experiment_correlations``) + the 5 surviving plotting tools.
+    ``cross_experiment_correlations``, ``heritability_analysis``) + the 3
+    surviving plotting tools. ``heritability_analysis`` (#462) absorbed the two
+    that used to make it 5 — ``plot_heritability_bar`` and
+    ``plot_variance_decomposition`` — as its ``include_plots``/``plots``
+    parameters, so its numbers and its figures come from one computation.
     Populated here.
   - ``extraction/`` — reserved for future ``sleap-roots`` trait-extraction
     tools. Empty; not built in this change.
@@ -31,12 +35,11 @@ from .analysis import (
     clustering,
     cross_experiment_correlations,
     descriptive_stats,
+    heritability_analysis,
     pca_analysis,
     plot_correlation_matrix,
-    plot_heritability_bar,
     plot_trait_boxplots,
     plot_trait_histograms,
-    plot_variance_decomposition,
     qc_clean,
     qc_inspect,
     remove_outliers,
@@ -56,9 +59,8 @@ register(
     umap_analysis.umap_analysis,
     descriptive_stats.descriptive_stats,
     cross_experiment_correlations.cross_experiment_correlations,
+    heritability_analysis.heritability_analysis,
     plot_trait_histograms.plot_trait_histograms,
     plot_trait_boxplots.plot_trait_boxplots,
     plot_correlation_matrix.plot_correlation_matrix,
-    plot_heritability_bar.plot_heritability_bar,
-    plot_variance_decomposition.plot_variance_decomposition,
 )

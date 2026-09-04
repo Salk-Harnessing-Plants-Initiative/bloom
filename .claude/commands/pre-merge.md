@@ -108,8 +108,11 @@ make dev-down
 
 Runs every `live_smoke`-marked test under `bloommcp/tests/smoke/` — the CI-safe subset
 `dev-stack-smoke` already runs, **plus** the `live_smoke_slow` cases CI skips
-(mahalanobis/gmm on cylinder, the per-trait MixedLM heritability/variance-decomposition
-plots, correlation-matrix-on-cylinder). Requires `BLOOMMCP_PORT` / `BLOOMMCP_API_KEY`
+(mahalanobis/gmm on cylinder, correlation-matrix / histograms / boxplots on cylinder).
+The per-trait MixedLM heritability and variance-decomposition plot tools used to be in
+this list; bloom#462 retired both into `heritability_analysis`, whose smoke runs in the
+CI-safe subset — it reads the DB-seeded smoke experiments rather than the 846-trait
+cylinder CSV those tools loaded, so the cost that made them slow no longer applies. Requires `BLOOMMCP_PORT` / `BLOOMMCP_API_KEY`
 from `.env.dev` (same as the Makefile targets above).
 
 ```bash

@@ -47,7 +47,7 @@ bloommcp/
     │                            # list_existing_analyses (not sleap-roots-analyze wrappers)
     ├── sleap_roots/             # umbrella for the sleap-roots pipeline family
     │   ├── analysis/             # pca_analysis, qc_clean, qc_inspect, remove_outliers,
-    │   │                         # clustering, + 5 plot_*.py — one file per tool,
+    │   │                         # clustering, + 3 plot_*.py — one file per tool,
     │   │                         # each delegating to sleap_roots_analyze
     │   └── extraction/           # reserved for future sleap-roots tools (empty)
     └── phenotyping_segmentation/ # Lin's segmentation tools

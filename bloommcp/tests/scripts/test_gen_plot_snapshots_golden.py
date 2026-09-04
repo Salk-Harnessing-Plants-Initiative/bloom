@@ -4,7 +4,7 @@
 `bloommcp/scripts/` is not a package (mirrors `test_audit_stale_outlier_trims.py`'s own
 note), so the module is loaded by path. `_report_regeneration` does no I/O beyond the two
 reads `compare_images` itself performs (no copying, no printing). The `build()` gate tests
-below DO exercise the real 5 tool calls against the real `turface_19` fixture (same as a
+below DO exercise the real 3 tool calls against the real `turface_19` fixture (same as a
 real regeneration run) but monkeypatch `gen._BASELINES` to a `tmp_path` first -- `build()`
 writes to the module-level `_BASELINES` constant, which otherwise points at this repo's
 real committed baselines; a test must never overwrite those as a side effect of the suite
@@ -23,7 +23,9 @@ from PIL import Image, ImageEnhance
 _SCRIPT_PATH = (
     Path(__file__).resolve().parents[2] / "scripts" / "gen_plot_snapshots_golden.py"
 )
-_spec = importlib.util.spec_from_file_location("gen_plot_snapshots_golden", _SCRIPT_PATH)
+_spec = importlib.util.spec_from_file_location(
+    "gen_plot_snapshots_golden", _SCRIPT_PATH
+)
 assert _spec and _spec.loader
 gen = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gen)
@@ -105,7 +107,7 @@ def _dimension_matched_markers() -> dict[str, bytes]:
     """One marker PNG per real baseline name, each a 50%-dimmed copy of THAT specific
     baseline -- same pixel dimensions as what the corresponding tool will actually
     re-render (`compare_images` raises `ImageComparisonFailure` on a dimension mismatch,
-    so a single marker shared across all 5 differently-sized baselines doesn't work), but
+    so a single marker shared across all 3 differently-sized baselines doesn't work), but
     different content, so it's distinguishable from a fresh, correct re-render.
     """
     markers = {}

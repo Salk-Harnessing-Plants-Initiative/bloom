@@ -56,6 +56,10 @@ TOOL_CLASSES = (
     "pca",
     "umap",
     "qc_inspect",
+    # bloom#462: reserved in manifest.CANONICAL_TOOL_CLASSES since before any tool wrote
+    # to it — `heritability_analysis` is the first, so without this entry its runs would
+    # persist correctly but be structurally undiscoverable here, exactly the bloom#669 gap.
+    "heritability",
 )
 
 # Public MCP tool name for each tool_class this loop iterates that maps to a
@@ -73,6 +77,7 @@ _TOOL_CLASS_TO_PUBLIC_NAME: dict[str, str] = {
     "pca": "pca_analysis",
     "umap": "umap_analysis",
     "qc_inspect": "qc_inspect",
+    "heritability": "heritability_analysis",
 }
 
 # Tiny per-experiment response cache. Each list_existing_analyses call walks

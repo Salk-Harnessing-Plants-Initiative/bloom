@@ -3,7 +3,7 @@
 Cylinder is additionally marked ``live_smoke_slow``. ``plot_trait_boxplots`` now
 routes cylinder's 846 traits through ``create_trait_boxplots_by_genotype_batched``
 (53 pages) instead of the unbatched single-figure delegate (see ``_viz_shared.py``'s
-``TRAIT_BATCH_THRESHOLD``) -- fixing the same class of bug ``plot_heritability_bar``
+``TRAIT_BATCH_THRESHOLD``) -- fixing the same class of bug the heritability bar plot
 hit, and producing legible paginated output for a real user. That pagination fix does
 NOT meaningfully reduce total wall-clock time (still ~109-111s observed across runs,
 same total rendering work just reorganized), so the cylinder case stays

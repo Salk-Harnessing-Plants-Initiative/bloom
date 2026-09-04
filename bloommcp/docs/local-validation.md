@@ -147,6 +147,40 @@ unlike `remove_outliers`'s trim, its output does not compose as another tool's i
 proves the `qc_clean` → … → `descriptive_stats(require_clean=True)` composition without claiming
 its output feeds back into the cleaned-version resolution chain.
 
+### Leg 5 — `heritability_analysis` (granular tool, #462, deterministic)
+
+The granular `heritability_analysis` tool on the same cleaned `turface_raw.csv`. Runs
+`heritability_analysis(experiment="turface_raw.csv")` through the same real ports and asserts:
+
+- the tool resolves the latest **cleaned** version via `require_clean=True` (`source` is
+  `v<N>_cleaned`, **not** `raw`) — the guard neither retired plot tool had, and the reason a
+  raw `source` here would mean the replacement reintroduced the defect it exists to close;
+- **structural** invariants on the tool's own result — `n_traits_reported > 0`, the counts
+  reconcile (`n_traits_requested == n_traits_reported + n_failed`), and `nonfinite_traits` is
+  empty. Deliberately **not** `n_failed == 0`, unlike Leg 4: this leg runs live in
+  `dev-stack-smoke` on every PR against thin synthetic seed data, where a mixed model failing
+  to fit a given trait is a legitimate outcome. A trait routed out for a *non-finite value or a
+  dropped delegate key*, on the other hand, is a real contract regression — hence the
+  `nonfinite_traits` check;
+- the committed run's outputs include **`heritability.csv`** (the full per-trait table,
+  uncapped) and **`heritability_result.json`** (the serialized typed `HeritabilityResult`);
+- the run's manifest is **`manifest_schema_version == 5`**, `tool == "heritability_analysis"`,
+  and records **`seed == None`** (the statsmodels MixedLM delegate has no RNG);
+- the recorded `output_sha256` matches the actual stored bytes for both artifacts.
+
+`heritability_analysis` persists under the **`heritability`** tool class — reserved in
+`CANONICAL_TOOL_CLASSES` long before any tool wrote to it, and first written here. Like
+Leg 4's `stats`, its output does not compose as another tool's input, so this leg proves the
+`qc_clean` → … → `heritability_analysis(require_clean=True)` composition without claiming its
+output feeds back into the cleaned-version resolution chain.
+
+This leg replaces the two retired `plot_heritability_bar` / `plot_variance_decomposition`
+smoke tests (#462). Those wrote loose PNGs to `PLOTS_DIR` and no manifest entry, so nothing
+about them was checkable here; both figures are now optional outputs of this run, persisted
+through the `ResultStore` alongside the numbers. See
+[connecting-claude-code.md](connecting-claude-code.md#retired-tools-and-what-replaced-them)
+for the caller-facing migration.
+
 > **Note on raw inputs.** The deployed reader currently resolves _raw_ experiment inputs from
 > the local `BLOOM_TRAITS_DIR`, so the qc_clean leg seeds `turface_raw.csv` there (matching
 > the clustering leg's fixture-upload pattern). When raw inputs migrate to the
@@ -156,17 +190,18 @@ A green run ends with:
 
 ```
 SMOKE PASSED ✅ — the qc_clean cleaned run, remove_outliers trimmed run (incl. the generic
-v3-provenance + version-advance guarantee), AND the granular clustering(kmeans),
-clustering(hierarchical), and descriptive_stats consumers all persist full provenance through
-the real ports; the qc_clean → remove_outliers → {clustering,descriptive_stats}(require_clean=True)
-composition resolves and summarizes the trimmed table.
+v5-provenance + version-advance guarantee), AND the granular clustering(kmeans),
+clustering(hierarchical), descriptive_stats, and heritability_analysis consumers all persist
+full provenance through the real ports; the qc_clean → remove_outliers →
+{clustering,descriptive_stats,heritability_analysis}(require_clean=True) composition resolves
+and summarizes the trimmed table.
 ```
 
 ## Unit tests (no live stack)
 
 The driver's pure decision logic — manifest/provenance assertions, the hash-compare loop,
-version-advance detection, the qc_clean, remove_outliers, clustering, and descriptive_stats
-persist/read checks, and the summary/exit aggregation — is factored into importable helpers and
+version-advance detection, the qc_clean, remove_outliers, clustering, descriptive_stats, and
+heritability_analysis persist/read checks, and the summary/exit aggregation — is factored into importable helpers and
 unit-tested with **no** Supabase:
 
 ```bash
@@ -273,6 +308,15 @@ Either client satisfies the dogfood — pick whichever is installed.
       capture the per-trait summary (`stats_per_trait`, `n_traits_reported`, links); then on a
       wide experiment (e.g. cylinder) capture `truncated_in_summary=true` +
       `omitted_traits` naming the cut traits → `images/qc-clean-descriptive-stats.png`.
+
+- [ ] **(#462, not yet run)** Ask Claude to run `heritability_analysis` **after** `qc_clean`
+      and capture the per-trait H² numbers (`per_trait`, `mean_h2`, `n_above_threshold`, links);
+      then re-run with `include_plots=true` and capture **both** figures coming back from the
+      **same call** that returned those numbers. On a wide experiment, capture
+      `truncated_in_summary=true` and the paginated `create_heritability_plot_page<N>.png`
+      outputs → `images/qc-clean-heritability-analysis.png`. Also confirm
+      `plot_heritability_bar` and `plot_variance_decomposition` **no longer appear** in the
+      tool list.
 
 ### Screenshots
 
