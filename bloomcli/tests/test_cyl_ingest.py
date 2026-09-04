@@ -61,6 +61,15 @@ def _api_error(message, code="P0001"):
     return APIError({"message": message, "code": code, "details": None, "hint": None})
 
 
+@pytest.fixture(autouse=True)
+def _clear_argo_workflow_name_env(monkeypatch):
+    """Every test starts with ARGO_WORKFLOW_NAME unset, regardless of the
+    ambient shell — deterministic for the many pre-existing tests that don't
+    care about it, and every test that DOES care sets it explicitly via
+    monkeypatch.setenv (auto-reverted)."""
+    monkeypatch.delenv("ARGO_WORKFLOW_NAME", raising=False)
+
+
 # --- 3.x pure helpers -------------------------------------------------------
 
 
@@ -179,13 +188,92 @@ def test_call_insert_envelope_builds_rpc_call():
     assert captured["params"] == {"envelope": ENVELOPE}
 
 
+# --- fix-cyl-pipeline-run-scan-status: ARGO_WORKFLOW_NAME threading ---------
+
+
+def test_call_insert_envelope_includes_argo_workflow_name_when_given():
+    captured = {}
+
+    class _RPC:
+        def execute(self):
+            return type("R", (), {"data": RESULT_OK})()
+
+    class _Client:
+        def rpc(self, name, params):
+            captured["params"] = params
+            return _RPC()
+
+    ing.call_insert_envelope(_Client(), ENVELOPE, argo_workflow_name="wf-abc")
+    assert captured["params"] == {"envelope": ENVELOPE, "p_argo_workflow_name": "wf-abc"}
+
+
+def test_call_insert_envelope_omits_the_key_when_argo_workflow_name_is_none():
+    captured = {}
+
+    class _RPC:
+        def execute(self):
+            return type("R", (), {"data": RESULT_OK})()
+
+    class _Client:
+        def rpc(self, name, params):
+            captured["params"] = params
+            return _RPC()
+
+    ing.call_insert_envelope(_Client(), ENVELOPE, argo_workflow_name=None)
+    assert "p_argo_workflow_name" not in captured["params"]
+
+
+def test_resolve_argo_workflow_name_reads_the_env_var(monkeypatch):
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "sleap-roots-pipeline-abc123")
+    assert ing.resolve_argo_workflow_name() == "sleap-roots-pipeline-abc123"
+
+
+def test_resolve_argo_workflow_name_returns_none_when_unset():
+    assert ing.resolve_argo_workflow_name() is None
+
+
+def test_resolve_argo_workflow_name_returns_none_when_empty(monkeypatch):
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "")
+    assert ing.resolve_argo_workflow_name() is None
+
+
+def test_ingest_one_envelope_threads_argo_workflow_name_from_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-batch-1")
+    captured = {}
+
+    def cap(client, env, **kw):
+        captured.update(kw)
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", cap)
+    envelope_path = tmp_path / "scan_1.result.json"
+    envelope_path.write_text(json.dumps(ENVELOPE), encoding="utf-8")
+    result = ing.ingest_one_envelope(object(), envelope_path)
+    assert result.status == "ok"
+    assert captured == {"argo_workflow_name": "wf-batch-1"}
+
+
+def test_ingest_one_envelope_omits_argo_workflow_name_when_env_unset(tmp_path, monkeypatch):
+    captured = {}
+
+    def cap(client, env, **kw):
+        captured.update(kw)
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", cap)
+    envelope_path = tmp_path / "scan_1.result.json"
+    envelope_path.write_text(json.dumps(ENVELOPE), encoding="utf-8")
+    ing.ingest_one_envelope(object(), envelope_path)
+    assert captured == {"argo_workflow_name": None}
+
+
 def _patch_authed(monkeypatch):
     monkeypatch.setattr(climod, "_authed_client", lambda profile: object())
 
 
 def test_cli_happy_path(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
     assert res.exit_code == 0, res.output
     assert "55" in res.output
@@ -194,7 +282,7 @@ def test_cli_happy_path(monkeypatch):
 def test_cli_sends_original_envelope_unchanged(monkeypatch):
     captured = {}
 
-    def cap(client, env):
+    def cap(client, env, **_kw):
         captured["env"] = env
         return RESULT_OK
 
@@ -211,7 +299,7 @@ def test_cli_sends_original_envelope_unchanged(monkeypatch):
 
 def test_cli_noop_is_not_an_error(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_NOOP)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_NOOP)
     res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
     assert res.exit_code == 0, res.output
     assert "already ingested" in res.output.lower()
@@ -220,7 +308,7 @@ def test_cli_noop_is_not_an_error(monkeypatch):
 def test_cli_no_scan_is_actionable(monkeypatch):
     _patch_authed(monkeypatch)
 
-    def boom(client, env):
+    def boom(client, env, **_kw):
         raise _api_error("unresolvable image_ids: matched 1 of 2 to a scan")
 
     monkeypatch.setattr(ing, "call_insert_envelope", boom)
@@ -236,7 +324,7 @@ def test_cli_validation_fails_before_auth_or_call(monkeypatch):
         called["auth"] = True
         return object()
 
-    def mark_rpc(client, env):
+    def mark_rpc(client, env, **_kw):
         called["rpc"] = True
         return RESULT_OK
 
@@ -265,7 +353,7 @@ def test_cli_bad_json_makes_no_call(monkeypatch, tmp_path):
 
 def test_cli_json_output(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE), "--json"])
     assert res.exit_code == 0, res.output
     out = json.loads(res.output)
@@ -275,7 +363,7 @@ def test_cli_json_output(monkeypatch):
 
 def test_cli_json_output_on_noop(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_NOOP)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_NOOP)
     res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE), "--json"])
     assert res.exit_code == 0, res.output
     out = json.loads(res.output)
@@ -289,7 +377,7 @@ def test_cli_missing_credentials_hints_login(monkeypatch, tmp_path):
     monkeypatch.setattr(creds, "default_config_dir", lambda: tmp_path / ".bloom")
     # Would raise if reached — proves creds fail before the RPC call.
     monkeypatch.setattr(
-        ing, "call_insert_envelope", lambda c, e: (_ for _ in ()).throw(AssertionError("reached"))
+        ing, "call_insert_envelope", lambda c, e, **_kw: (_ for _ in ()).throw(AssertionError("reached"))
     )
     res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
     assert res.exit_code != 0
@@ -299,7 +387,7 @@ def test_cli_missing_credentials_hints_login(monkeypatch, tmp_path):
 def test_cli_permission_denied_names_role(monkeypatch):
     _patch_authed(monkeypatch)
 
-    def boom(client, env):
+    def boom(client, env, **_kw):
         raise _api_error("permission denied for function insert_cyl_result_envelope", code="42501")
 
     monkeypatch.setattr(ing, "call_insert_envelope", boom)
@@ -311,7 +399,7 @@ def test_cli_permission_denied_names_role(monkeypatch):
 def test_cli_blobs_pass_through_unchanged(monkeypatch):
     captured = {}
 
-    def cap(client, env):
+    def cap(client, env, **_kw):
         captured["env"] = env
         return RESULT_OK
 
@@ -333,7 +421,7 @@ def test_cli_blobs_pass_through_unchanged(monkeypatch):
 
 def test_cli_stdin_end_to_end(monkeypatch):
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     res = CliRunner().invoke(
         cli, ["cyl", "ingest-result", "-"], input=FIXTURE.read_text(encoding="utf-8")
     )
@@ -367,7 +455,9 @@ def test_cli_non_object_json_makes_no_call(monkeypatch):
         climod, "_authed_client", lambda p: called.__setitem__("auth", True) or object()
     )
     monkeypatch.setattr(
-        ing, "call_insert_envelope", lambda c, e: called.__setitem__("rpc", True) or RESULT_OK
+        ing,
+        "call_insert_envelope",
+        lambda c, e, **_kw: called.__setitem__("rpc", True) or RESULT_OK,
     )
     res = CliRunner().invoke(cli, ["cyl", "ingest-result", "-"], input="[1, 2, 3]")
     assert res.exit_code != 0
@@ -384,7 +474,7 @@ def test_cli_source_only_envelope_reports_zero_counts(monkeypatch):
         "blob_count": 0,
         "was_noop": False,
     }
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda c, e: source_only)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda c, e, **_kw: source_only)
     env = json.loads(FIXTURE.read_text(encoding="utf-8"))
     env["traits"] = []
     res = CliRunner().invoke(cli, ["cyl", "ingest-result", "-"], input=json.dumps(env))
@@ -396,7 +486,7 @@ def test_cli_source_only_envelope_reports_zero_counts(monkeypatch):
 def test_cli_unknown_rpc_error_surfaced_verbatim(monkeypatch):
     _patch_authed(monkeypatch)
 
-    def boom(client, env):
+    def boom(client, env, **_kw):
         raise _api_error("some brand new server error not in the match table")
 
     monkeypatch.setattr(ing, "call_insert_envelope", boom)
@@ -408,7 +498,7 @@ def test_cli_unknown_rpc_error_surfaced_verbatim(monkeypatch):
 def test_cli_contract_version_mismatch_reports_both_versions(monkeypatch):
     _patch_authed(monkeypatch)
 
-    def boom(client, env):
+    def boom(client, env, **_kw):
         raise _api_error(
             "contract_version mismatch: got 0.0.0, pinned 0.1.0a7 (single leading v ignored)"
         )
@@ -423,7 +513,7 @@ def test_cli_contract_version_mismatch_reports_both_versions(monkeypatch):
 def test_cli_non_dict_rpc_response_errors(monkeypatch):
     # If the RPC ever returns a non-object, fail cleanly (not a bare AttributeError).
     _patch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda c, e: None)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda c, e, **_kw: None)
     res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
     assert res.exit_code != 0
     assert "unexpected rpc response" in res.output.lower()
@@ -685,7 +775,7 @@ def test_cli_predictions_dir_omitted_pass_through_unchanged(monkeypatch):
     behavior at all (spec: 'No predictions-dir, envelope carrying blobs')."""
     captured = {}
 
-    def cap(client, env):
+    def cap(client, env, **_kw):
         captured["env"] = env
         return RESULT_OK
 
@@ -708,7 +798,7 @@ def test_cli_predictions_dir_omitted_pass_through_unchanged(monkeypatch):
 def test_cli_predictions_dir_constructs_and_uploads_blobs(monkeypatch):
     captured = {}
 
-    def cap(client, env):
+    def cap(client, env, **_kw):
         captured["env"] = env
         return RESULT_OK
 
@@ -737,7 +827,7 @@ def test_cli_predictions_dir_constructs_and_uploads_blobs(monkeypatch):
 def test_cli_predictions_dir_upload_failure_makes_no_rpc_call(monkeypatch):
     called = {"rpc": False}
 
-    def mark_rpc(client, env):
+    def mark_rpc(client, env, **_kw):
         called["rpc"] = True
         return RESULT_OK
 
@@ -770,7 +860,7 @@ def test_cli_predictions_dir_conflicting_blob_makes_no_upload_or_rpc_call(monkey
         called["upload"] = True
         return ing.BlobUploadReport([])
 
-    def mark_rpc(client, env):
+    def mark_rpc(client, env, **_kw):
         called["rpc"] = True
         return RESULT_OK
 
@@ -799,7 +889,9 @@ def test_cli_predictions_dir_missing_manifest_makes_no_call(monkeypatch, tmp_pat
         climod, "_authed_client", lambda p: called.__setitem__("auth", True) or object()
     )
     monkeypatch.setattr(
-        ing, "call_insert_envelope", lambda c, e: called.__setitem__("rpc", True) or RESULT_OK
+        ing,
+        "call_insert_envelope",
+        lambda c, e, **_kw: called.__setitem__("rpc", True) or RESULT_OK,
     )
     res = CliRunner().invoke(
         cli,
@@ -821,7 +913,9 @@ def test_cli_predictions_dir_missing_idempotency_key_fails_actionably(monkeypatc
         climod, "_authed_client", lambda p: called.__setitem__("auth", True) or object()
     )
     monkeypatch.setattr(
-        ing, "call_insert_envelope", lambda c, e: called.__setitem__("rpc", True) or RESULT_OK
+        ing,
+        "call_insert_envelope",
+        lambda c, e, **_kw: called.__setitem__("rpc", True) or RESULT_OK,
     )
     env = json.loads(FIXTURE.read_text(encoding="utf-8"))
     del env["provenance"]["idempotency_key"]
@@ -1138,7 +1232,7 @@ def _skip_contract_validation(monkeypatch):
 def test_ingest_one_envelope_success(monkeypatch, tmp_path):
     _skip_contract_validation(monkeypatch)
     path = _write_envelope(tmp_path, "scan_ok")
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     result = ing.ingest_one_envelope(object(), path)
     assert result.status == "ok"
     assert result.scan_key == "scan_ok"
@@ -1147,7 +1241,7 @@ def test_ingest_one_envelope_success(monkeypatch, tmp_path):
 def test_ingest_one_envelope_noop_is_skipped(monkeypatch, tmp_path):
     _skip_contract_validation(monkeypatch)
     path = _write_envelope(tmp_path, "scan_dup")
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_NOOP)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_NOOP)
     result = ing.ingest_one_envelope(object(), path)
     assert result.status == "skipped"
 
@@ -1156,7 +1250,7 @@ def test_ingest_one_envelope_rpc_error_is_mapped(monkeypatch, tmp_path):
     _skip_contract_validation(monkeypatch)
     path = _write_envelope(tmp_path, "scan_err")
 
-    def boom(client, env):
+    def boom(client, env, **_kw):
         raise _api_error("unresolvable image_ids: matched 1 of 2 to a scan")
 
     monkeypatch.setattr(ing, "call_insert_envelope", boom)
@@ -1172,7 +1266,7 @@ def test_ingest_one_envelope_isolates_unexpected_error(monkeypatch, tmp_path):
     _skip_contract_validation(monkeypatch)
     path = _write_envelope(tmp_path, "scan_timeout")
 
-    def boom(client, env):
+    def boom(client, env, **_kw):
         raise TimeoutError("simulated network timeout")
 
     monkeypatch.setattr(ing, "call_insert_envelope", boom)
@@ -1182,10 +1276,52 @@ def test_ingest_one_envelope_isolates_unexpected_error(monkeypatch, tmp_path):
     assert "simulated network timeout" in result.error
 
 
+def test_ingest_one_envelope_isolates_unreadable_file_error(tmp_path):
+    """load_envelope's Path.read_text can raise UnicodeDecodeError (a ValueError, not
+    OSError) on a truncated/corrupt file — e.g. one an OOM-killed producer pod left
+    mid-write. Review finding: this propagated past ingest_one_envelope's isolation
+    entirely, since the try/except around the load_envelope call only caught
+    EnvelopeError, and the broad `except Exception` catch only wrapped the later
+    blob/RPC block, not this one — a real file with invalid UTF-8 bytes reproduces it
+    without any monkeypatching."""
+    path = tmp_path / "scan_corrupt.result.json"
+    path.write_bytes(b"\xff\xfe\x00bad-utf8")
+
+    result = ing.ingest_one_envelope(object(), path)
+
+    assert result.status == "failed"
+    assert result.scan_key == "scan_corrupt"
+
+
+def test_batch_ingest_cli_isolates_unreadable_file_among_several(monkeypatch, tmp_path):
+    """The same corrupt-file failure, exercised through the full batch command: it must
+    be isolated to its own ScanResult, not abort ingestion of the other envelopes or
+    skip the end-of-batch reconciliation call."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-corrupt")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+    calls = []
+    monkeypatch.setattr(
+        ing, "reconcile_unresolved_scans", lambda client, name: calls.append(name) or 0
+    )
+    _write_envelope(tmp_path, "scan_1")
+    (tmp_path / "scan_corrupt.result.json").write_bytes(b"\xff\xfe\x00bad-utf8")
+    _write_envelope(tmp_path, "scan_3")
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code != 0
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_1"]["status"] == "ok"
+    assert payload["scan_corrupt"]["status"] == "failed"
+    assert payload["scan_3"]["status"] == "ok"
+    assert calls == ["wf-corrupt"], "reconciliation must still run despite the corrupt file"
+
+
 def test_batch_ingest_cli_isolates_unexpected_network_error_among_several(monkeypatch, tmp_path):
     _patch_batch_authed(monkeypatch)
 
-    def _flaky_call(client, env):
+    def _flaky_call(client, env, **_kw):
         if env["provenance"]["scan_key"] == "scan_2":
             raise TimeoutError("simulated network timeout")
         return RESULT_OK
@@ -1209,7 +1345,7 @@ def test_ingest_one_envelope_sends_envelope_unchanged(monkeypatch, tmp_path):
     captured = {}
     path = _write_envelope(tmp_path, "scan_ok")
 
-    def cap(client, env):
+    def cap(client, env, **_kw):
         captured["env"] = env
         return RESULT_OK
 
@@ -1245,7 +1381,7 @@ def _nested_predictions_dir(base_dir, scan_key):
 def test_ingest_one_envelope_predictions_dir_missing_manifest(monkeypatch, tmp_path):
     _skip_contract_validation(monkeypatch)
     path = _write_envelope(tmp_path, "scan_ok")
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
 
     result = ing.ingest_one_envelope(object(), path, predictions_dir=tmp_path / "predictions")
     assert result.status == "failed"
@@ -1293,7 +1429,7 @@ def test_ingest_one_envelope_predictions_dir_uploads_blobs(tmp_path, monkeypatch
     predictions_root = tmp_path / "predictions"
     _nested_predictions_dir(predictions_root, SCAN_KEY)
 
-    def cap(client, env):
+    def cap(client, env, **_kw):
         captured["env"] = env
         return RESULT_OK
 
@@ -1319,7 +1455,7 @@ def test_ingest_one_envelope_predictions_dir_upload_failure(tmp_path, monkeypatc
     predictions_root = tmp_path / "predictions"
     _nested_predictions_dir(predictions_root, SCAN_KEY)
 
-    def mark_rpc(client, env):
+    def mark_rpc(client, env, **_kw):
         called["rpc"] = True
         return RESULT_OK
 
@@ -1346,7 +1482,7 @@ def _patch_batch_authed(monkeypatch):
 
 def test_batch_ingest_cli_happy_path(monkeypatch, tmp_path):
     _patch_batch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     for key in ("scan_1", "scan_2", "scan_3"):
         _write_envelope(tmp_path, key)
 
@@ -1355,9 +1491,205 @@ def test_batch_ingest_cli_happy_path(monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
 
 
+# --- fix-cyl-pipeline-run-scan-status: batch reconciliation call -----------
+
+
+def test_batch_ingest_cli_reconciles_after_all_envelopes_when_workflow_name_set(
+    monkeypatch, tmp_path
+):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-batch-1")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+    calls = []
+    monkeypatch.setattr(
+        ing, "reconcile_unresolved_scans", lambda client, name: calls.append(name) or 0
+    )
+    for key in ("scan_1", "scan_2"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["wf-batch-1"], "must be called exactly once, after every envelope"
+
+
+def test_batch_ingest_cli_no_reconcile_call_when_workflow_name_unset(monkeypatch, tmp_path):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+
+    def boom(client, name):
+        raise AssertionError("must not be called when ARGO_WORKFLOW_NAME is unset")
+
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
+    _write_envelope(tmp_path, "scan_1")
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_batch_ingest_cli_reconciles_even_with_zero_envelopes(monkeypatch, tmp_path):
+    """The reconciliation call must fire even when there is nothing to ingest —
+    every scan under this workflow name failed prediction before producing any
+    file at all. Must not be gated on `if discovered.paths: ...`."""
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-empty")
+    called = {"auth": False}
+    monkeypatch.setattr(
+        climod, "_authed_client", lambda p: called.__setitem__("auth", True) or object()
+    )
+    calls = []
+    monkeypatch.setattr(
+        ing, "reconcile_unresolved_scans", lambda client, name: calls.append(name) or 0
+    )
+    # tmp_path is empty: no envelope files, no run_manifest.json
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert called["auth"] is True
+    assert calls == ["wf-empty"]
+
+
+def test_batch_ingest_result_missing_scan_key_alone_still_reconciles_when_workflow_name_set(
+    monkeypatch, tmp_path
+):
+    """Only manifest-declared-missing entries, no files at all — the existing
+    'never authenticate' behavior (see the sibling _makes_no_auth_call test)
+    is for when ARGO_WORKFLOW_NAME is unset; when it IS set, a client is still
+    needed purely to make the one reconciliation call."""
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-missing-only")
+    called = {"auth": False}
+    monkeypatch.setattr(
+        climod, "_authed_client", lambda p: called.__setitem__("auth", True) or object()
+    )
+    calls = []
+    monkeypatch.setattr(
+        ing, "reconcile_unresolved_scans", lambda client, name: calls.append(name) or 0
+    )
+    _write_run_manifest(tmp_path, scan_keys=["scan_1", "scan_2"])
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code != 0  # both declared scan_keys are still reported failed
+    assert called["auth"] is True
+    assert calls == ["wf-missing-only"]
+
+
+def test_batch_ingest_cli_reconcile_failure_does_not_crash_and_is_reported(monkeypatch, tmp_path):
+    """Review finding: the reconciliation call had no exception handling of its own, unlike
+    every other RPC call in this file — a transient failure on this one closing call, after
+    every real envelope already ingested successfully, crashed the whole command with an
+    unhandled traceback instead of the batch's own summary."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-reconcile-boom")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+
+    def boom(client, name):
+        raise _api_error("simulated transient reconciliation failure")
+
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
+    for key in ("scan_1", "scan_2"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    # A clean click ctx.exit(1) surfaces as result.exception == SystemExit(1); an unhandled
+    # crash (the pre-fix behavior) surfaces as the raw exception itself with no parseable JSON
+    # on stdout — assert on the latter, not on `exception is None`, which SystemExit fails too.
+    assert isinstance(result.exception, SystemExit), (
+        f"must exit cleanly via click, not crash with a raw exception: {result.exception!r}"
+    )
+    assert result.exit_code != 0
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_1"]["status"] == "ok"
+    assert payload["scan_2"]["status"] == "ok"
+    reconciliation_entries = [e for e in payload.values() if e["status"] == "failed"]
+    assert len(reconciliation_entries) == 1
+    assert "simulated transient reconciliation failure" in reconciliation_entries[0]["error"]
+
+
+def test_batch_ingest_cli_reconcile_permission_error_does_not_name_the_wrong_rpc(
+    monkeypatch, tmp_path
+):
+    """Round 2 /review-pr finding: map_rpc_error's 'permission denied' branch is
+    hardcoded to insert_cyl_result_envelope's own grant (bloom_writer/bloom_admin) — but
+    the reconciliation call is against fail_cyl_pipeline_run_scans_without_result, which
+    is granted to bloom_workflows only, a different role entirely. Reusing that mapper
+    here would tell an operator to log in with the wrong account for the wrong RPC."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-perm-denied")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+
+    def boom(client, name):
+        raise _api_error("permission denied for function fail_cyl_pipeline_run_scans_without_result")
+
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
+    _write_envelope(tmp_path, "scan_1")
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    reconciliation_entries = [e for e in payload.values() if e["status"] == "failed"]
+    assert len(reconciliation_entries) == 1
+    error = reconciliation_entries[0]["error"]
+    assert "insert_cyl_result_envelope" not in error, (
+        "must not name the wrong RPC in the hint"
+    )
+    assert "bloom_writer" not in error and "bloom_admin" not in error, (
+        "must not suggest the wrong role — fail_cyl_pipeline_run_scans_without_result "
+        "is granted to bloom_workflows only"
+    )
+
+
+def test_batch_ingest_cli_reconcile_failure_on_empty_batch_is_reported(monkeypatch, tmp_path):
+    """Same isolation, exercised through the zero-envelopes early-return branch, which has its
+    own bespoke 'nothing to ingest' message/exit path distinct from the main batch flow."""
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-empty-boom")
+    monkeypatch.setattr(
+        climod, "_authed_client", lambda p: object()
+    )
+
+    def boom(client, name):
+        raise _api_error("simulated transient reconciliation failure")
+
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
+    # tmp_path is empty: no envelope files, no run_manifest.json
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert isinstance(result.exception, SystemExit), (
+        f"must exit cleanly via click, not crash with a raw exception: {result.exception!r}"
+    )
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert len(payload) == 1
+    assert payload[0]["status"] == "failed"
+    assert "simulated transient reconciliation failure" in payload[0]["error"]
+
+
+def test_batch_ingest_cli_reconcile_success_logs_the_reconciled_count(
+    monkeypatch, tmp_path, caplog
+):
+    """The reconciliation call's return value (how many scans it closed out) was previously
+    discarded silently — review finding: no CLI-visible signal that N scans were just marked
+    failed by this batch."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-logs-count")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", lambda client, name: 3)
+    _write_envelope(tmp_path, "scan_1")
+
+    with caplog.at_level("INFO", logger="bloomctl.cyl.ingest"):
+        result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    info_records = [r for r in caplog.records if r.levelname == "INFO"]
+    assert any("3" in r.message and "wf-logs-count" in r.message for r in info_records)
+
+
 def test_batch_ingest_cli_json_all_ok(monkeypatch, tmp_path):
     _patch_batch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     for key in ("scan_1", "scan_2"):
         _write_envelope(tmp_path, key)
 
@@ -1375,7 +1707,7 @@ def test_batch_ingest_cli_mixed_statuses_json_output(monkeypatch, tmp_path):
     download side's equivalent test."""
     _patch_batch_authed(monkeypatch)
 
-    def _selective_call(client, env):
+    def _selective_call(client, env, **_kw):
         scan_key = env["provenance"]["scan_key"]
         if scan_key == "scan_2":
             return RESULT_NOOP
@@ -1400,7 +1732,7 @@ def test_batch_ingest_cli_mixed_statuses_json_output(monkeypatch, tmp_path):
 def test_batch_ingest_cli_mixed_statuses_default_output(monkeypatch, tmp_path):
     _patch_batch_authed(monkeypatch)
 
-    def _selective_call(client, env):
+    def _selective_call(client, env, **_kw):
         scan_key = env["provenance"]["scan_key"]
         if scan_key == "scan_2":
             return RESULT_NOOP
@@ -1424,7 +1756,7 @@ def test_batch_ingest_cli_isolates_one_bad_envelope(monkeypatch, tmp_path):
     """Always runs (mocked, no importorskip) — the core isolation guarantee."""
     _patch_batch_authed(monkeypatch)
 
-    def selective_call(client, env):
+    def selective_call(client, env, **_kw):
         if env["provenance"]["scan_key"] == "scan_bad":
             raise _api_error("invalid envelope: missing provenance.inputs object")
         return RESULT_OK
@@ -1459,7 +1791,7 @@ def test_batch_ingest_oracle_matches_extract_batch_output_shape(tmp_path, monkey
 
 def test_batch_ingest_cli_malformed_envelope_file_is_isolated(monkeypatch, tmp_path):
     _patch_batch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     _write_envelope(tmp_path, "scan_1")
     _write_envelope(tmp_path, "scan_3")
     (tmp_path / "scan_bad.result.json").write_text("{ not json", encoding="utf-8")
@@ -1501,7 +1833,7 @@ def test_batch_ingest_result_missing_run_manifest_scan_key_is_reported_failed_js
     monkeypatch, tmp_path
 ):
     _patch_batch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     _write_envelope(tmp_path, "scan_1")
     _write_run_manifest(tmp_path, scan_keys=["scan_1", "scan_9"])
 
@@ -1518,7 +1850,7 @@ def test_batch_ingest_result_missing_run_manifest_scan_key_is_reported_failed_de
     monkeypatch, tmp_path
 ):
     _patch_batch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     _write_envelope(tmp_path, "scan_1")
     _write_run_manifest(tmp_path, scan_keys=["scan_1", "scan_9"])
 
@@ -1560,7 +1892,7 @@ def test_batch_ingest_result_missing_scan_key_alone_makes_no_auth_call(monkeypat
 
 def test_batch_ingest_result_mixed_present_and_missing_scan_keys(monkeypatch, tmp_path):
     _patch_batch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     _write_envelope(tmp_path, "scan_1")
     _write_run_manifest(tmp_path, scan_keys=["scan_1", "scan_2"])
 
@@ -1576,7 +1908,7 @@ def test_batch_ingest_cli_run_manifest_present_all_scan_keys_ingest_successfully
     monkeypatch, tmp_path
 ):
     _patch_batch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     _write_envelope(tmp_path, "scan_1")
     _write_envelope(tmp_path, "scan_2")
     _write_run_manifest(tmp_path, scan_keys=["scan_1", "scan_2"])
@@ -1597,7 +1929,7 @@ def test_batch_ingest_result_body_scan_key_mismatch_resolves_to_single_entry(
     reconciliation, the same scan_key could appear twice in one batch with contradictory
     ok/failed statuses, silently shadowing a real successful write-back."""
     _patch_batch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     # File is named scan_A.result.json, but its own body claims scan_key = scan_B.
     mismatched = _envelope_for("scan_B")
     (tmp_path / "scan_A.result.json").write_text(json.dumps(mismatched), encoding="utf-8")
@@ -1617,7 +1949,7 @@ def test_batch_ingest_result_collision_drop_logs_debug(monkeypatch, tmp_path, ca
     path (a resolved filename/body mismatch) should too, for the same operator-trail
     reason — otherwise the dropped filename disappears from the record entirely."""
     _patch_batch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     mismatched = _envelope_for("scan_B")
     (tmp_path / "scan_A.result.json").write_text(json.dumps(mismatched), encoding="utf-8")
     _write_run_manifest(tmp_path, scan_keys=["scan_A", "scan_B"])
@@ -1638,7 +1970,7 @@ def test_batch_ingest_result_mismatch_resolved_alongside_a_genuinely_missing_key
     a separate, genuinely-missing manifest key (scan_D, no file at all) in the same batch
     — the reconciliation must only drop the collided entry, not the unrelated one."""
     _patch_batch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     mismatched = _envelope_for("scan_C")
     (tmp_path / "scan_A.result.json").write_text(json.dumps(mismatched), encoding="utf-8")
     _write_run_manifest(tmp_path, scan_keys=["scan_A", "scan_C", "scan_D"])
@@ -1654,7 +1986,7 @@ def test_batch_ingest_result_mismatch_resolved_alongside_a_genuinely_missing_key
 
 def test_batch_ingest_cli_noop_reported_as_skipped(monkeypatch, tmp_path):
     _patch_batch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_NOOP)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_NOOP)
     _write_envelope(tmp_path, "scan_1")
 
     result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
@@ -1666,7 +1998,7 @@ def test_batch_ingest_cli_noop_reported_as_skipped(monkeypatch, tmp_path):
 
 def test_batch_ingest_cli_predictions_dir_uploads_blobs(monkeypatch, tmp_path):
     _patch_batch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
 
     def fake_upload(client, pending, *, scan_key, idempotency_key):
         for p in pending:
@@ -1699,7 +2031,7 @@ def test_batch_ingest_cli_predictions_dir_uploads_blobs(monkeypatch, tmp_path):
 
 def test_batch_ingest_cli_predictions_dir_missing_manifest_isolates_one(monkeypatch, tmp_path):
     _patch_batch_authed(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
 
     envelopes_dir = tmp_path / "envelopes"
     envelopes_dir.mkdir()
@@ -1734,7 +2066,7 @@ def test_batch_ingest_cli_profile_option_passed_through(monkeypatch, tmp_path):
 
     monkeypatch.setattr(climod, "_authed_client", fake_authed_client)
     _skip_contract_validation(monkeypatch)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env: RESULT_OK)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     _write_envelope(tmp_path, "scan_1")
 
     result = CliRunner().invoke(

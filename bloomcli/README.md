@@ -511,6 +511,12 @@ bloomctl cyl ingest-result <envelope.json | ->   [-p/--profile PROFILE] [--json]
   RPC call — on a missing/malformed manifest, a missing `.slp` file, a
   checksum mismatch, or a blob already present in the envelope. Omit to
   forward `blobs` unchanged, exactly as before this flag existed.
+- When the `ARGO_WORKFLOW_NAME` environment variable is set (Argo sets it
+  automatically inside the write-back container — see
+  `sleap-roots-write-back-template.yaml`), also links the matching
+  `cyl_pipeline_run_scans` row to this write-back (`'written'`), so the
+  pipeline run's `done_count`/`failed_count` can reflect it. Omit or unset it
+  for the existing manual/ad-hoc invocation shape, which is unaffected.
 
 The most common real-world error is `inputs.image_ids` not resolving to exactly
 one scan on the target server — the command explains that the scan's images must
@@ -565,6 +571,19 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
   envelope succeeded, was a no-op re-delivery, or the directory was empty
   (a directory containing only a manifest with no matching files is not the
   empty case — it exits non-zero).
+- When `ARGO_WORKFLOW_NAME` is set, after every discovered envelope has been
+  processed, marks every scan dispatched under that workflow name that never
+  produced a result as `'failed'` (one call, regardless of batch size —
+  including a batch of zero envelopes, since every scan under that workflow
+  name having failed prediction before producing any file is exactly the
+  case this closes out). Skipped entirely when the env var is unset (manual/
+  local runs, unaffected). A failure of this call is isolated, not a crash —
+  it's reported as its own failed entry (`scan_key="<reconciliation>"`) in the
+  batch's summary/`--json` output and reflected in the exit code, alongside
+  every real envelope's own outcome; a successful call logs how many scans it
+  closed out. An unreadable envelope file at any earlier stage (e.g. a
+  truncated file left by an OOM-killed producer) is isolated the same way and
+  never prevents this call from running.
 
 Auth: same saved login profile as `ingest-result` (must have write access).
 
