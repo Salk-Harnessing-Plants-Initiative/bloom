@@ -29,9 +29,10 @@ own delegate.
 lacking *either* column. Upstream documents ``replicate_col`` as optional and never uses
 its values in the fitted model (``value ~ 1 + (1|genotype)``), so H² is identical whether
 it is supplied or ``None`` (talmolab/sleap-roots-analyze#142; the repo settled the same
-question in ``docs/data-access-roadmap.md``, closed 2026-06-10). This is not a marginal
-loosening: ``SupabaseReader`` produces every frame with ``replicate_col=None``, so
-requiring one would make every DB-backed experiment unanalyzable here.
+question in ``docs/data-access-roadmap.md``, closed 2026-06-10) — and a test pins that
+equivalence bit-for-bit rather than trusting the docstring. Gating on a column the model
+never reads is a false precondition, so it is dropped: an experiment whose cleaned frame
+carries no detectable replicate column is analyzed rather than rejected.
 
 **One delegate call feeds the numbers and the figures.** The single
 ``calculate_heritability_estimates`` return is the source for the inline rows, the
@@ -57,8 +58,9 @@ it, and which number depends on which branch produced it: its ``no_variance`` br
 hardcodes ``0.0``, while a mixed-model fit that returned exact zeros divides ``0/0``, gets
 ``nan``, and clamps it to ``1.0`` (``max(0, min(1, nan))`` is ``1`` in Python). A *perfect*
 heritability and a *zero* heritability for the same underlying non-finding. Those traits are
-listed in ``zero_variance_traits`` so a reader of ``mean_h2`` / ``n_above_threshold`` can see
-that some contributing values are not estimates. They are still reported in ``per_trait`` and
+listed in ``zero_variance_traits``, and ``mean_h2_excluding_zero_variance`` carries the mean
+recomputed without them — so a *programmatic* consumer can detect and correct a skewed
+``mean_h2`` without reading this docstring or the tool description. They are still reported in ``per_trait`` and
 the persisted table — the delegate's own verdict is not overridden here, only labeled.
 
 Persists a versioned run under tool class ``heritability`` — reserved in
@@ -118,6 +120,13 @@ _REQUIRED_TRAIT_KEYS = (
     "model_type",
 )
 _FINITE_TRAIT_KEYS = ("heritability", "var_genetic", "var_residual")
+# Keys `HeritabilityResult.from_heritability_dict` feeds to `int(...)` / `str(...)`. For the
+# int pair, present-but-malformed is as fatal as absent: `int(None)` raises TypeError and
+# `int("abc")` raises ValueError, either of which escapes that constructor and aborts the
+# whole run rather than failing one trait. `str(...)` never raises, so `model_type` cannot
+# abort anything -- validated anyway so a non-string doesn't surface as the row value "None".
+_INT_TRAIT_KEYS = ("n_genotypes", "n_observations")
+_STR_TRAIT_KEYS = ("model_type",)
 
 
 class HeritabilityAnalysisParams(BaseModel):
@@ -219,18 +228,47 @@ class HeritabilityAnalysisResult(RunLinks):
             "failed_traits: nothing failed, the trait simply carried no signal."
         ),
     )
+    mean_h2_excluding_zero_variance: Optional[float] = Field(
+        default=None,
+        description=(
+            "mean_h2 recomputed over only the traits that had variance to partition — i.e. "
+            "excluding every trait named in zero_variance_traits. Equal to mean_h2 when "
+            "that list is empty (the common case); null when no trait survives the "
+            "exclusion. Provided so a programmatic consumer can detect and correct for a "
+            "skewed mean_h2 without having to read the tool description or recompute from "
+            "per_trait — which a truncated per_trait could not support anyway."
+        ),
+    )
     mean_h2: Optional[float] = Field(
         default=None,
         description=(
             "Mean H2 over scored traits, or null when no trait scored. Deliberately null "
             "rather than 0.0 in that case (which HeritabilityResult.mean_h2 returns) — "
-            "'no data' must not read as 'heritability is zero'."
+            "'no data' must not read as 'heritability is zero'. Includes any trait named "
+            "in zero_variance_traits, whose h2 is not a measurement; compare against "
+            "mean_h2_excluding_zero_variance when that list is non-empty."
         ),
     )
     n_above_threshold: int
     per_trait: list[TraitH2] = Field(default_factory=list)
     truncated_in_summary: bool = False
     omitted_traits: list[str] = Field(default_factory=list)
+
+
+def _is_int_coercible(value: object) -> bool:
+    """Whether ``int(value)`` would succeed — the exact operation upstream performs.
+
+    Deliberately not a type allow-list: ``from_heritability_dict`` does
+    ``int(entry.get("n_genotypes", 0))``, so what matters is not whether the value *is* an
+    ``int`` but whether that call raises. ``int("5")`` is fine; ``int(None)`` and
+    ``int("abc")`` are not. Testing the operation itself keeps this correct if the delegate
+    ever starts returning, say, numpy integers.
+    """
+    try:
+        int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def _scrub_delegate_result(
@@ -252,6 +290,15 @@ def _scrub_delegate_result(
        ``_comparison_frame`` never runs to catch it. This is precisely what the
        ``bloommcp-packaging`` spec forbids, so key **presence** is checked on every path,
        not only when a figure is requested.
+
+       Presence alone is not enough for the two integer keys. That constructor also does
+       ``int(entry.get("n_genotypes", 0))``, and a present-but-malformed value (``None``,
+       a non-numeric string) raises straight out of it, aborting the *entire* run with an
+       opaque ``internal_error`` — destroying exactly the per-trait graceful degradation
+       this scrub exists to provide. So each required key is checked for being *usable*,
+       not merely for being there. (``str(...)`` never raises, so ``model_type`` cannot
+       abort a run; it is validated anyway so a non-string does not surface as the literal
+       row value ``"None"``.)
 
     2. **Non-finite floats abort the whole run.** ``HeritabilityResult.to_json()``
        defaults to ``allow_nan=False`` and *raises* on any non-finite float. Catching that
@@ -289,6 +336,15 @@ def _scrub_delegate_result(
         if missing:
             scrubbed[trait] = {
                 "error": f"delegate result missing required key(s): {missing}"
+            }
+            continue
+        unusable = [k for k in _INT_TRAIT_KEYS if not _is_int_coercible(entry[k])]
+        unusable += [k for k in _STR_TRAIT_KEYS if not isinstance(entry[k], str)]
+        if unusable:
+            # Same family as a missing key — a delegate contract breakage, not a numeric
+            # edge case — so it routes to failed_traits and NOT to nonfinite_traits.
+            scrubbed[trait] = {
+                "error": f"delegate result has unusable required key(s): {unusable}"
             }
             continue
         bad = [
@@ -472,7 +528,8 @@ def heritability_analysis(
             ),
         )
     # Deliberately NOT required: the delegate never uses replicate values
-    # (value ~ 1 + (1|genotype)), and SupabaseReader resolves it as None for every frame.
+    # (value ~ 1 + (1|genotype)), so gating on this column would reject experiments the
+    # model could score perfectly well. Passed through as-is, None included.
     replicate_col = frame.replicate_col
 
     if params.trait_columns is None:
@@ -581,6 +638,13 @@ def heritability_analysis(
     finally:
         close_figures(figures)
 
+    # Recomputed from `rows` — the trait_cols-reconciled set — rather than from the
+    # delegate's own aggregate, so the exclusion is over exactly the traits this call
+    # reported. Left as None when nothing survives, for the same reason mean_h2 is.
+    scored_with_variance = [
+        r.h2 for r in rows if r.trait not in set(zero_variance_traits)
+    ]
+
     return HeritabilityAnalysisResult(
         experiment=params.experiment,
         source=frame.source,
@@ -596,6 +660,11 @@ def heritability_analysis(
         nonfinite_traits=nonfinite_traits,
         zero_variance_traits=zero_variance_traits,
         mean_h2=result.mean_h2 if rows else None,
+        mean_h2_excluding_zero_variance=(
+            sum(scored_with_variance) / len(scored_with_variance)
+            if scored_with_variance
+            else None
+        ),
         n_above_threshold=result.n_above_threshold,
         per_trait=per_trait,
         truncated_in_summary=len(rows) > _SUMMARY_TRAIT_CAP,

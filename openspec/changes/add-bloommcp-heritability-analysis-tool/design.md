@@ -66,11 +66,20 @@ and `required_cols = [genotype_col]` unless a truthy replicate name is passed
 analyzed with `replicate_col="rep"` and with `replicate_col=None` yields **bit-identical** H² for
 all 19 traits.
 
-The loosening is not an edge-case courtesy. `SupabaseReader` hard-codes `replicate_col=None` on
-every frame it produces (there is no replicate constant in that adapter at all), so requiring a
-replicate column would make **every DB-backed experiment unanalyzable** by this tool. A reviewer
-should treat D3 as a precondition of the tool working at all, not as an optional nicety. Corollary:
-the replicate-equivalence test is only exercisable through `FakeReader`, never live.
+**Correction (review round 2).** An earlier draft justified this by claiming `SupabaseReader`
+hard-codes `replicate_col=None` on every frame it produces, making the loosening a precondition of
+the tool working at all for DB-backed experiments. That is **wrong**, and the claim is withdrawn:
+reading `supabase_reader.py`, `replicate_col=None` is hard-coded only in the two **raw**-tier
+constructions (both carry `source="raw"`). The cleaned tier passes
+`detect_columns(df)["replicate_col"]` through, so it returns real values — and since this tool is
+always `require_clean=True`, the cleaned tier is the only one it ever reads. The overstated
+claim did not affect the code, which was already right for the other reason.
+
+The decision stands on that other reason, which is the sound one: the delegate's model formula
+never reads replicate values, so gating on the column is a false precondition — it would reject
+experiments the model scores perfectly well. What the loosening actually buys is narrower than the
+withdrawn claim: an experiment whose *cleaned* frame carries no detectable replicate column is
+analyzed instead of rejected.
 
 The repo already settled the underlying question — `bloommcp/docs/data-access-roadmap.md` records
 it as closed 2026-06-10 ("heritability groups by genotype, not replicate"). Cited once here rather
@@ -155,7 +164,9 @@ Two things make this worth having rather than theoretical:
   caller cannot be expected to know which they got; hence one list covering both.
 * **It is reachable through a real pipeline, not only a hand-crafted frame.** `qc_clean` strips
   zero-variance traits, but `remove_outliers` trims *rows* from an already-cleaned version, and a
-  trait whose variance lived only in the trimmed samples is constant in what survives.
+  trait whose variance lived only in the trimmed samples is constant in what survives. Stated as
+  a reachability argument, not a demonstrated one: the test builds the constant column directly
+  and drives it through the real delegate, rather than chaining `remove_outliers` to produce it.
 
 Exact `== 0`, not a tolerance: that is the condition making the denominator vanish. Verified that a
 near-constant column fits at ~1e-19 rather than 0 and yields an ordinary quotient, so a tolerance

@@ -149,8 +149,8 @@ reader resolved. The tool SHALL NOT require a replicate column: it SHALL pass th
 H² SHALL be identical either way.
 
 This is a behavior change relative to the retired plot tools, which rejected any experiment
-lacking **either** column (see design.md D3 for the rationale and for why it is load-bearing
-rather than an edge case).
+lacking **either** column: gating on a column the model never reads rejects experiments the
+delegate scores perfectly well (see design.md D3).
 
 #### Scenario: An experiment with no replicate column is analyzed
 
@@ -179,7 +179,8 @@ data — not merely a figure link and an aggregate count. Each reported trait SH
 `model_type`. The result SHALL additionally carry `experiment`, `source`, `n_samples`,
 `genotype_col`, `replicate_col`, `method`, `threshold`, `mean_h2`, `n_above_threshold`,
 `n_traits_requested`, `n_traits_reported`, `n_failed`, `failed_traits`, `nonfinite_traits`,
-and `zero_variance_traits`, plus the inherited `RunLinks` fields. The invariant
+`zero_variance_traits`, and `mean_h2_excluding_zero_variance`, plus the inherited `RunLinks`
+fields. The invariant
 `n_traits_requested == n_traits_reported + n_failed` SHALL hold for every successful call.
 
 The inline `per_trait` list SHALL be capped at the first 50 traits, with `truncated_in_summary`
@@ -231,6 +232,12 @@ verdict rather than overriding it, so the returned aggregates cannot drift from 
 reader of the persisted result JSON would compute. The tool's description SHALL direct a
 caller to check this field before quoting either aggregate.
 
+Because a description is invisible to a programmatic consumer, the result SHALL additionally
+carry `mean_h2_excluding_zero_variance` — `mean_h2` recomputed over only the traits that had
+variance to partition. It SHALL equal `mean_h2` when no trait is flagged, and SHALL be null
+when no trait survives the exclusion. Recomputing from `per_trait` is not an available
+substitute for a caller, since that list is capped.
+
 The test SHALL be exact equality with zero, not a tolerance: a near-constant trait fits with
 tiny-but-nonzero variance components and yields an ordinary quotient, which is a real
 estimate and SHALL NOT be flagged.
@@ -248,6 +255,12 @@ estimate and SHALL NOT be flagged.
   heritability of `1.0`
 - **THEN** that trait appears in `zero_variance_traits`, so a caller can tell the reported
   `1.0` apart from a genuine one
+
+#### Scenario: The corrected mean is available to a programmatic consumer
+
+- **WHEN** a run flags at least one zero-variance trait
+- **THEN** `mean_h2_excluding_zero_variance` is the mean over the unflagged traits only, and
+  differs from `mean_h2`; when nothing is flagged the two are equal
 
 #### Scenario: An ordinary trait is not flagged
 
@@ -430,6 +443,12 @@ figure. A per-trait entry whose `heritability`, `var_genetic`, or `var_residual`
 **or absent** SHALL be routed to `failed_traits` before the typed result is constructed. A
 non-finite value SHALL additionally be named in `nonfinite_traits`.
 
+A required key that is present but **unusable** — one whose value would raise out of the
+upstream constructor's `int(...)` coercion, such as `None` or a non-numeric string — SHALL be
+routed the same way as a missing key. Without this, a single malformed value aborts the whole
+run with an opaque `internal_error` rather than failing one trait, destroying the per-trait
+graceful degradation the routing exists to provide.
+
 The absence half is not redundant with the non-finite half:
 `HeritabilityResult.from_heritability_dict` defaults a missing `var_genetic` / `var_residual` to
 `0.0` and a missing `n_genotypes` to `0`, so a renamed upstream key would otherwise be emitted as
@@ -453,6 +472,14 @@ The delegate's own returned dict SHALL NOT be mutated.
   `var_genetic`, `var_residual`, or `n_genotypes`, with no figures requested
 - **THEN** that trait appears in `failed_traits` and is absent from `per_trait`, the persisted
   per-trait table, and the persisted result JSON — never emitted with a `0.0` variance component
+
+#### Scenario: A present-but-malformed required key fails one trait, not the run
+
+- **WHEN** the delegate returns a per-trait entry whose `n_genotypes` or `n_observations` is
+  a value the upstream constructor's `int(...)` coercion would reject, such as `null` or a
+  non-numeric string
+- **THEN** that trait appears in `failed_traits` and **not** in `nonfinite_traits`, every
+  other requested trait is still reported, and the run is persisted
 
 #### Scenario: The delegate's own return is not mutated
 

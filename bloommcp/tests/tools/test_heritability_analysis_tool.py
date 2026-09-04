@@ -61,7 +61,18 @@ _EXPERIMENT = "turface_19.csv"
 # smallest h2 is ~7.7e-09 (see fixtures/README.md), where `rel` alone asserts nothing
 # survivable across a BLAS/statsmodels change.
 _H2_REL = 1e-5
-_H2_ABS = 1e-6
+# Tightened from 1e-6 in review round 2. The floor exists because `rel` alone is
+# meaningless at the fixture's smallest H² (~7.67e-09 — `rel=1e-5` there is a 7.7e-14
+# window, which no cross-BLAS run would survive), but 1e-6 was ~130x LARGER than the value
+# it was protecting, so any recomputation in [0, 1.4e-6] passed silently — it could not
+# catch drift at exactly the trait it was added for. 1e-7 still leaves ~13x headroom over
+# that value, far above real cross-platform noise, while catching drift an order of
+# magnitude earlier. The tolerance still cannot *discriminate* at that magnitude, so the
+# near-zero trait additionally gets the structural assertion below, which does.
+_H2_ABS = 1e-7
+
+# The fixture's smallest H² and the next smallest, seven orders of magnitude apart.
+_NEAR_ZERO_TRAIT = "Lower.Root.Area.mm2"
 
 
 def _roles(det: dict) -> dict[str, str]:
@@ -201,6 +212,26 @@ def test_golden_h2_through_the_tool(injected_ports):
     assert result.method == _GOLDEN["method"] == "mixed_model"
     # Discrete count — the BLAS/optimizer-robust guard (see test_oracle.py).
     assert result.n_above_threshold == _GOLDEN["n_above_threshold"] == 8
+
+
+def test_near_zero_trait_stays_orders_of_magnitude_below_the_rest(injected_ports):
+    """A structural guard where the numeric one cannot discriminate.
+
+    `Lower.Root.Area.mm2` sits at H² ≈ 7.67e-09 while the next-smallest trait is ≈ 8.07e-02
+    — seven orders of magnitude up. No absolute tolerance can be both loose enough to
+    survive cross-platform noise and tight enough to police a value that small, so the
+    assertion here is about *rank and scale* rather than digits: it is the unique minimum,
+    it is negligible in absolute terms, and the gap to the next trait is enormous. That
+    fails loudly if a future delegate bump moves this trait into the ordinary range, which
+    is the drift the tolerance genuinely cannot see.
+    """
+    result = _run()
+    by_h2 = sorted(result.per_trait, key=lambda r: r.h2)
+
+    assert by_h2[0].trait == _NEAR_ZERO_TRAIT
+    assert by_h2[0].h2 < 1e-6  # negligible, not merely "small"
+    assert by_h2[1].h2 > 1e-3  # and the gap to the next trait is not marginal
+    assert by_h2[1].h2 / max(by_h2[0].h2, 1e-30) > 1e5
 
 
 def test_golden_variance_components_through_the_tool(injected_ports):
@@ -460,8 +491,9 @@ def test_explicit_subset_narrows_both_the_result_and_the_delegate_call(
 
 
 def test_missing_replicate_column_still_analyzes(synthetic_ports):
-    """3.7a — the deliberate loosening. SupabaseReader resolves replicate_col=None for
-    every frame it produces, so this is the ONLY path a DB-backed experiment has."""
+    """3.7a — the deliberate loosening: an experiment whose cleaned frame has no detectable
+    replicate column is analyzed rather than rejected, because the model never reads it.
+    """
     df = _cleaned_df().drop(columns=["rep"])
     _reader, store = synthetic_ports(df, experiment="no_rep.csv")
     result = heritability_analysis(HeritabilityAnalysisParams(experiment="no_rep.csv"))
@@ -720,6 +752,63 @@ def test_missing_variance_key_is_routed_not_zero_filled(
     assert all(e["trait"] != "Solidity" for e in payload["per_trait"])
 
 
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("n_genotypes", None),
+        ("n_genotypes", "abc"),
+        ("n_observations", None),
+        ("model_type", None),
+    ],
+    ids=[
+        "n_genotypes-None",
+        "n_genotypes-str",
+        "n_observations-None",
+        "model_type-None",
+    ],
+)
+def test_malformed_required_key_is_routed_not_fatal(
+    real_store_ports, monkeypatch, key, value
+):
+    """Present-but-malformed must degrade one trait, not abort the run.
+
+    `from_heritability_dict` does `int(entry.get("n_genotypes", 0))`, so `None` raises
+    TypeError and a non-numeric string raises ValueError — both straight out of that
+    constructor, aborting every other trait's result with an opaque internal_error.
+    Verified against the real constructor before this guard existed. `model_type` is the
+    odd one out: `str(...)` never raises, so it cannot abort a run, but an unvalidated
+    non-string would surface as the literal row value "None" — so it is checked too.
+
+    Routed to failed_traits and NOT to nonfinite_traits: a malformed value is a delegate
+    contract breakage, the same family as a missing key, not a numeric edge case.
+    """
+    make, storage = real_store_ports
+    make(_cleaned_df())
+    _patched_delegate(monkeypatch, lambda d: d["Solidity"].update({key: value}))
+
+    result = _run()
+
+    assert "Solidity" in result.failed_traits
+    assert result.nonfinite_traits == []
+    assert all(r.trait != "Solidity" for r in result.per_trait)
+    # Every other trait still reported — the point of routing rather than raising.
+    assert result.n_traits_reported == 18
+    assert result.n_traits_requested == result.n_traits_reported + result.n_failed
+    assert "Solidity" not in set(_table(storage, result)["trait"])
+    payload = _payload(storage, result)
+    assert all(e["trait"] != "Solidity" for e in payload["per_trait"])
+
+
+def test_int_coercible_string_key_is_accepted(injected_ports, monkeypatch):
+    """The guard tests the operation upstream performs, not a type allow-list: upstream
+    does `int(...)`, and `int("5")` succeeds, so a numeric string must NOT be rejected.
+    """
+    _patched_delegate(monkeypatch, lambda d: d["Solidity"].update({"n_genotypes": "5"}))
+    result = _run()
+    assert "Solidity" not in result.failed_traits
+    assert _trait(result, "Solidity").n_genotypes == 5
+
+
 def test_the_delegates_own_return_is_not_mutated(injected_ports, monkeypatch):
     """3.10 — from_heritability_dict promises not to mutate; so does the scrub."""
     captured: dict = {}
@@ -745,9 +834,13 @@ def test_the_delegates_own_return_is_not_mutated(injected_ports, monkeypatch):
 def _constant_trait_df() -> pd.DataFrame:
     """A certified-clean-shaped frame carrying one genuinely constant trait.
 
-    Reachable through a real pipeline, not only by hand: `qc_clean` strips zero-variance
-    traits, but `remove_outliers` trims *rows* from an already-cleaned version, and a trait
-    whose variance lived only in the trimmed samples is constant in what survives.
+    Built directly rather than produced by a chained run. The argument that this shape is
+    reachable in production — `qc_clean` strips zero-variance traits, but `remove_outliers`
+    trims *rows* from an already-cleaned version, so a trait whose variance lived only in
+    the trimmed samples is constant in what survives — is a reachability argument, NOT
+    something this fixture demonstrates. What it does exercise is the tool's handling of the
+    shape, through the real delegate. A chained `qc_clean` -> `remove_outliers` ->
+    `heritability_analysis` test would be needed to demonstrate the production path itself.
     """
     df = _synthetic_df(2)
     df["constant_trait"] = 7.0
@@ -810,6 +903,59 @@ def test_zero_variance_flag_catches_the_degenerate_perfect_heritability(
     assert result.n_above_threshold == sum(
         1 for r in result.per_trait if r.h2 >= result.threshold
     )
+
+
+def test_mean_excluding_zero_variance_lets_a_consumer_correct_the_aggregate(
+    injected_ports, monkeypatch
+):
+    """The machine-checkable half of the zero-variance signal.
+
+    A programmatic consumer reading the JSON payload never sees the tool description, so
+    the instruction to cross-check would be invisible to it. Recomputing from `per_trait`
+    is not an option either — that list is capped at 50. This field carries the corrected
+    mean directly.
+    """
+    _patched_delegate(
+        monkeypatch,
+        lambda d: d["Solidity"].update(
+            {"heritability": 1.0, "var_genetic": 0.0, "var_residual": 0.0}
+        ),
+    )
+    result = _run()
+
+    assert result.zero_variance_traits == ["Solidity"]
+    assert result.mean_h2 is not None
+    assert result.mean_h2_excluding_zero_variance is not None
+    # The degenerate 1.0 pulls the plain mean up; the corrected one drops it back.
+    assert result.mean_h2_excluding_zero_variance < result.mean_h2
+    honest = [r.h2 for r in result.per_trait if r.trait != "Solidity"]
+    assert result.mean_h2_excluding_zero_variance == pytest.approx(
+        sum(honest) / len(honest), rel=1e-12
+    )
+
+
+def test_mean_excluding_zero_variance_equals_mean_when_nothing_is_flagged(
+    injected_ports,
+):
+    """The common case: no flagged trait, so the two aggregates agree exactly and a
+    consumer comparing them sees no discrepancy to act on."""
+    result = _run()
+    assert result.zero_variance_traits == []
+    assert result.mean_h2_excluding_zero_variance == result.mean_h2
+
+
+def test_mean_excluding_zero_variance_is_none_when_every_trait_is_flagged(
+    synthetic_ports,
+):
+    """Nothing survives the exclusion — null, not 0.0, for the same reason mean_h2 is."""
+    df = _synthetic_df(1)
+    df["trait_000"] = 7.0
+    _reader, _store = synthetic_ports(df)
+    result = heritability_analysis(
+        HeritabilityAnalysisParams(experiment="synthetic.csv")
+    )
+    assert result.zero_variance_traits == ["trait_000"]
+    assert result.mean_h2_excluding_zero_variance is None
 
 
 def test_ordinary_traits_are_not_flagged_as_zero_variance(injected_ports):

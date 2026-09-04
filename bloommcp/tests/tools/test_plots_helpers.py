@@ -461,3 +461,58 @@ def test_generate_figures_records_all_pages_before_styling_any(monkeypatch):
     assert set(figures) == {"multi_page1", "multi_page2", "multi_page3"}
     close_figures(figures)
     assert plt.get_fignums() == []
+
+
+def test_generate_figures_records_pages_from_earlier_keys_when_a_later_key_raises():
+    """Where the cleanup guarantee holds, and where it stops.
+
+    HOLDS: every page of an earlier, successfully-returned key stays in the caller's dict,
+    so `close_figures` reaches all of them in `finally` — the multi-page analogue of the
+    single-figure partial-failure test above.
+
+    DOES NOT HOLD: figures a plotter allocates internally and then abandons by raising
+    *before returning* are never recorded, so they leak. That is asserted here as current
+    behaviour rather than left silent, because a paginating plotter widens the window (it
+    may build several pages before failing on a later one). Fixing it needs a
+    `plt.get_fignums()` diff around the call, which is only sound under a process-wide lock
+    — matplotlib's registry is shared and FastMCP dispatches sync handlers on a thread
+    pool, so an unsynchronised diff would close other calls' figures. bloom#721 / PR #726
+    adds the diff and the lock together; this test should be updated to assert no leak once
+    that lands.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from bloom_mcp.tools._plots import close_figures
+
+    plt.close("all")
+
+    def _builds_two_pages_then_raises():
+        plt.figure()
+        plt.figure()
+        raise RuntimeError("plotter died mid-pagination")
+
+    figures: dict = {}
+    with pytest.raises(RuntimeError):
+        generate_figures(
+            {
+                "first": lambda: [plt.figure() for _ in range(3)],
+                "second": _builds_two_pages_then_raises,
+            },
+            figures,
+        )
+
+    # Everything the first key returned is recorded and therefore closable.
+    assert set(figures) == {"first_page1", "first_page2", "first_page3"}
+    close_figures(figures)
+
+    # The two the second key abandoned are the documented gap: unrecorded, still open.
+    leaked = plt.get_fignums()
+    assert len(leaked) == 2, (
+        "expected the 2 abandoned pages to leak; if this now passes with 0, PR #726's "
+        "fignums diff has landed — tighten this assertion to `== 0` and update the "
+        "docstring in generate_figures accordingly"
+    )
+    plt.close("all")

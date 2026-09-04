@@ -1,4 +1,4 @@
-"""Regenerate the 5 plotting-tool baseline PNGs under
+"""Regenerate the 3 plotting-tool baseline PNGs under
 ``tests/fixtures/plot_baselines/`` (#713).
 
 Unlike every other ``gen_*_golden.py`` script in this directory, this one's output is a
@@ -60,10 +60,8 @@ from bloom_mcp import experiment_utils as eu
 from bloom_mcp.sections.sleap_roots.analysis import (
     _viz_shared,
     plot_correlation_matrix as plot_correlation_matrix_mod,
-    plot_heritability_bar as plot_heritability_bar_mod,
     plot_trait_boxplots as plot_trait_boxplots_mod,
     plot_trait_histograms as plot_trait_histograms_mod,
-    plot_variance_decomposition as plot_variance_decomposition_mod,
 )
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "tests" / "fixtures"
@@ -87,16 +85,6 @@ _TOOLS = [
         "correlation_matrix_turface_19_baseline.png",
         plot_correlation_matrix_mod.plot_correlation_matrix,
         "correlation_matrix_turface_19.png",
-    ),
-    (
-        "heritability_turface_19_baseline.png",
-        plot_heritability_bar_mod.plot_heritability_bar,
-        "heritability_turface_19.png",
-    ),
-    (
-        "variance_decomposition_turface_19_baseline.png",
-        plot_variance_decomposition_mod.plot_variance_decomposition,
-        "variance_decomposition_turface_19.png",
     ),
 ]
 

@@ -65,10 +65,10 @@ Closes #462.
   the one documented exception — see design.md D1.
 - **CHANGE (deliberate): a replicate column is no longer required.** Both retired tools rejected
   any experiment lacking one. `heritability_analysis` requires only a detected **genotype** column
-  and passes `frame.replicate_col` through unchanged, `None` included. This is not a marginal
-  loosening: `SupabaseReader` hard-codes `replicate_col=None` on every frame it produces, so it is
-  the **only** way a DB-backed experiment can reach this tool at all. Rationale and evidence in
-  design.md D3.
+  and passes `frame.replicate_col` through unchanged, `None` included — the delegate's model
+  formula never reads replicate values, so gating on that column rejects experiments the model
+  scores perfectly well. A test pins the equivalence bit-for-bit. Rationale, and a withdrawn
+  overstatement about `SupabaseReader` from an earlier draft, in design.md D3.
 - **EXTEND** `bloom_mcp.tools._plots.generate_figures` to accept a plotter returning
   `list[Figure]`, expanding a list into `<key>_page<N>` entries. `create_heritability_plot`
   paginates above 50 traits; existing single-`Figure` callers are unaffected. Design.md D6.

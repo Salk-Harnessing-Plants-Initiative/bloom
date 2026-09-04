@@ -226,10 +226,9 @@ catch a matplotlib/Pillow/numpy dependency bump or a refactor that silently chan
 *pixel* content (color mapping, plot geometry, layout) — `test_viz_tools.py` only ever
 asserted `.is_file()` on the generated PNG.
 
-- `plot_baselines/{histograms,boxplots,correlation_matrix,heritability,
-  variance_decomposition}_turface_19_baseline.png` — one baseline PNG per dedicated
-  plotting tool (`plot_trait_histograms`, `plot_trait_boxplots`,
-  `plot_correlation_matrix`, `plot_heritability_bar`, `plot_variance_decomposition`),
+- `plot_baselines/{histograms,boxplots,correlation_matrix}_turface_19_baseline.png` — one
+  baseline PNG per dedicated plotting tool (`plot_trait_histograms`,
+  `plot_trait_boxplots`, `plot_correlation_matrix`),
   rendered against `turface_19_final_data.csv` via each tool's real MCP entrypoint (not
   its delegate directly). `tests/tools/test_viz_snapshot.py` compares each tool's live
   output against its baseline with `matplotlib.testing.compare.compare_images` at a
@@ -237,16 +236,29 @@ asserted `.is_file()` on the generated PNG.
   `openspec/changes/add-bloommcp-plot-snapshot-tests/design.md` Decision 2) — loose
   enough to absorb legitimate cross-platform FreeType-hinting noise, tight enough that a
   genuine rendering regression still fails the comparison.
+
+  There were **five**, until bloom#462 retired `plot_heritability_bar` and
+  `plot_variance_decomposition` into `heritability_analysis`; their two baselines were
+  deleted with the tools. `heritability_analysis` renders the same two figures, but
+  persists them through the `ResultStore` port instead of writing to `PLOTS_DIR`, so this
+  harness — built entirely around the `viz_env`/`PLOTS_DIR` fixture — cannot reach them.
+  Restoring pixel coverage for those two figures needs a different fixture and is a
+  follow-up, not a silent loss: it is called out in `test_viz_snapshot.py`'s own module
+  docstring too.
 - `plot_baselines/MANIFEST.json` — records the rendering environment's provenance
   (matplotlib/Pillow/sleap-roots-analyze versions, platform) for the committed PNGs above.
   **Not** asserted by any test; documentation only. These baselines were generated on
   macOS at authoring time (Docker was unavailable to produce a Linux-rendered baseline
   matching the `python-audit` CI job's `ubuntu-latest` runner) — see design.md Decision 3
   for the accepted cross-platform risk. **Confirmed resolved**: PR #724's own CI run passed
-  all 5 comparisons on `ubuntu-latest` against these macOS-generated baselines, so `_TOL`
-  held cross-platform on the first try; the fallback there (regenerate from Linux) applies
-  only if a *future* PR's CI run fails on RMS grounds.
-- Regenerate all 5 + the manifest via
+  all 5 comparisons then present on `ubuntu-latest` against these macOS-generated
+  baselines, so `_TOL` held cross-platform on the first try; the fallback there (regenerate
+  from Linux) applies only if a *future* PR's CI run fails on RMS grounds. (That run
+  covered the 3 baselines still here plus the 2 since retired — the result stands for the
+  survivors; it was not re-run for the reduced set, because nothing about them changed.)
+  `MANIFEST.json` records environment provenance only and lists no filenames, so removing
+  two PNGs left nothing in it to update.
+- Regenerate all 3 + the manifest via
   `cd bloommcp && uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py --yes`
   after any intentional rendering change (matplotlib bump, plot-style-kwargs default change,
   delegate upgrade) — never hand-edit these PNGs. **If you're regenerating over existing

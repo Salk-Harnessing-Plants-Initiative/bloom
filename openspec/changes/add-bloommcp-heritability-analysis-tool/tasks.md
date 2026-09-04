@@ -462,7 +462,17 @@
       (its scenario over "the five plotting tools"). They are proposals, not published truth, so a
       corrective delta from this change cannot target them — edit them in place, noting #462 as the
       reason. Re-run `openspec validate --strict` on both afterward.
-- [ ] 7.14 **Not applicable at implementation time — PR #724 is still OPEN** (re-check before
+- [x] 7.14 **DONE (review round 2).** PR #724 merged to `staging` on 2026-09-03, ahead of
+      this change, and CI went red exactly as predicted — at *collection*, taking the whole
+      bloommcp suite with it. Executed on rebase: dropped both retired tools from
+      `test_viz_snapshot.py`'s `_SNAPSHOT_TOOLS` and `_LOCALIZED_REGRESSION_CASES` and from
+      `scripts/gen_plot_snapshots_golden.py`'s `_TOOLS` (plus both module-level imports),
+      deleted `tests/fixtures/plot_baselines/{heritability,variance_decomposition}_turface_19_baseline.png`,
+      and updated the count claims in `tests/fixtures/README.md` and both files' docstrings.
+      `MANIFEST.json` records environment provenance only and names no PNGs, so it needed no
+      edit. The measured `_TOL` figures are left as recorded (a measurement over the 5
+      baselines that existed then) rather than restated for 3, which would imply a
+      re-measurement that did not happen. Original contingency text: If PR #724 has landed (re-check before
       merge; if it lands first, this becomes required). If PR #724 has landed by then, also in this commit: drop the `heritability_bar` /
       `variance_decomposition` parametrize cases and the two module-level imports from
       `tests/tools/test_viz_snapshot.py` and `scripts/gen_plot_snapshots_golden.py`, delete
@@ -548,6 +558,18 @@ expects every `- [ ]` to become `- [x]`.)
   §5 lands (design D9).
 - **10.3** Consolidating the 3 surviving plot tools onto the granular contract — #466, already in
   flight as PR #683.
+- **10.5** `_SUMMARY_TRAIT_CAP = 50` is now declared independently in a third place
+  (`heritability_analysis`, alongside `descriptive_stats` and `_viz_shared`'s
+  `TRAIT_BATCH_THRESHOLD`), kept in sync only by a cross-file test. Hoisting it to one shared
+  constant is a small cross-module refactor, deliberately not folded into an already-large
+  breaking change.
+- **10.6** Pixel-snapshot coverage for the two figures `heritability_analysis` now renders.
+  PR #724's harness is built around `viz_env`/`PLOTS_DIR`, which this tool never writes to
+  (it persists through `ResultStore`), so its baselines were deleted with the retired tools
+  rather than re-pointed. Restoring equivalent coverage needs a different fixture.
+- **10.7** Once bloom#721 / PR #726 lands its `plt.get_fignums()` diff and process-wide
+  lock, tighten `test_generate_figures_records_pages_from_earlier_keys_when_a_later_key_raises`
+  from "asserts 2 leak" to "asserts 0 leak" and update `generate_figures`' docstring.
 - **10.4** **File upstream (talmolab/sleap-roots-analyze):** a degenerate fit with
   `var_genetic == 0.0` and `var_residual == 0.0` computes `0.0 / np.float64(0.0)` → `nan`, which
   `max(0, min(1, nan))` clamps to **`1.0`** — reporting a *perfect* heritability with all-finite

@@ -131,6 +131,23 @@ def generate_figures(
     (``lambda: "fig_a"``), which an iterable check would silently shred into
     one page per character.
 
+    **Limit of the cleanup guarantee.** Everything this function *records* is reachable by
+    the caller's ``close_figures`` in ``finally``. What a plotter allocates internally and
+    then abandons by raising *before returning* is not: the assignment never happens, so
+    those figures sit in matplotlib's registry unrecorded. A paginating plotter widens that
+    window — it may build several pages before failing on a later one — so the exposure is
+    larger here than for a single-figure plotter, though the kind of leak is the same one
+    that predates pagination.
+
+    Closing them requires diffing ``plt.get_fignums()`` around the call, and that diff is
+    only sound while no other call can be creating figures concurrently: matplotlib's
+    registry is process-wide, and FastMCP dispatches sync tool handlers on a thread pool, so
+    an unsynchronised diff would happily close a *different* call's figure — trading a leak
+    for silent corruption of someone else's plot. bloom#721 / PR #726 adds exactly that
+    diff together with the process-wide lock that makes it safe; it is deliberately not
+    duplicated here without the lock. ``test_plots_helpers.py`` pins where the guarantee
+    currently stops so the gap is recorded rather than assumed covered.
+
     ``font_family``/``font_size`` (both default ``None``) are applied via
     ``apply_font_style`` to each recorded figure — a no-op when both are ``None``.
     **Every page of a call is recorded into ``figures`` before any page of that call is
