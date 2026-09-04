@@ -18,7 +18,7 @@ every test asserting default fail-closed behavior.
 
 ## 1. Manifest-layer guard (`bloom_mcp.manifest`)
 
-- [ ] 1.1 RED: in `bloommcp/tests/test_storage_backend.py` (import the
+- [x] 1.1 RED: in `bloommcp/tests/test_storage_backend.py` (import the
       new error inside the test functions so collection survives the RED
       phase), failing tests for `read_manifest` over a hand-patched foreign
       manifest:
@@ -33,12 +33,12 @@ every test asserting default fail-closed behavior.
       no raise;
       (d) precedence: a manifest that is both schema-incompatible and foreign
       raises `ManifestSchemaError` (guard runs only after schema validation).
-- [ ] 1.2 GREEN: add `ManifestBackendMismatchError` beside
+- [x] 1.2 GREEN: add `ManifestBackendMismatchError` beside
       `ManifestSchemaError` in `bloom_mcp/manifest/manifest.py`, export it from
       `bloom_mcp/manifest/__init__.py`, and add the sentinel comparison to
       `read_manifest` after `Manifest.model_validate` (compare against
       `active_backend_name()`; skip when the field is None/empty).
-- [ ] 1.3 RED: failing tests for the escape hatch:
+- [x] 1.3 RED: failing tests for the escape hatch:
       (a) `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1`: **two consecutive**
       `read_manifest` calls over the same foreign catalog each return the
       manifest and each emit their own warning-level record naming both
@@ -49,17 +49,17 @@ every test asserting default fail-closed behavior.
       keeps the guard fail-closed — only the exact value `1` enables the hatch;
       (e) `allow_foreign_manifest()` is not memoized: flip the env var between
       two calls in one process and assert the second call sees the new value.
-- [ ] 1.4 GREEN: implement the lazily-read, unmemoized
+- [x] 1.4 GREEN: implement the lazily-read, unmemoized
       `allow_foreign_manifest()` accessor in `bloom_mcp/storage_backend.py` and
       wire it into the guard's warning branch.
-- [ ] 1.5 RED: failing tests for boot validation: an unrecognized value (e.g.
+- [x] 1.5 RED: failing tests for boot validation: an unrecognized value (e.g.
       `yes`) makes `validate_storage_backend()` raise naming the offending
       value and the accepted values; unset, `""`, whitespace, `0`, and `1` all
       pass.
-- [ ] 1.6 GREEN: extend `validate_storage_backend()` accordingly (empty ≡
+- [x] 1.6 GREEN: extend `validate_storage_backend()` accordingly (empty ≡
       unset, mirroring `_selected_backend_name`'s treatment of
       `BLOOM_STORAGE_BACKEND`).
-- [ ] 1.7 RED+GREEN: subprocess test — with
+- [x] 1.7 RED+GREEN: subprocess test — with
       `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=yes` (an invalid value) in the
       environment and no other bloom env, `import bloom_mcp.server` exits 0
       (the only shape that distinguishes a lazy read from an
@@ -68,7 +68,7 @@ every test asserting default fail-closed behavior.
 
 ## 2. ResultStore surfacing (`bloom_mcp.result_store`)
 
-- [ ] 2.1 RED: in `bloommcp/tests/result_store/test_supabase_result_store.py`,
+- [x] 2.1 RED: in `bloommcp/tests/result_store/test_supabase_result_store.py`,
       failing tests over a hand-patched foreign catalog:
       (a) parametrized over the existing `_CALL_SITES`
       (`create_run`/`list_runs`/`get_run`, mirroring the schema/generic-error
@@ -83,14 +83,14 @@ every test asserting default fail-closed behavior.
       branch, not the generic `CommitFailedError` wrapper), uploads no object,
       appends no version entry, and never reaches `write_manifest` (the foreign
       sentinel is not re-stamped) — **also when the escape hatch is set**.
-- [ ] 2.2 GREEN: add `CatalogBackendMismatchError(ManifestReadError)` to
+- [x] 2.2 GREEN: add `CatalogBackendMismatchError(ManifestReadError)` to
       `result_store/ports.py`; catch `ManifestBackendMismatchError` in
       `_guarded_manifest_read` (before the generic branch, logging server-side
       like the `ManifestIncompatibleError` branch); add the hatch-independent
       sentinel check on the manifest object `create_run`/`commit` read in
       `result_store/supabase_store.py`, surfacing on the commit path with
       do-not-retry semantics.
-- [ ] 2.3 Record the `FakeResultStore` exemption where
+- [x] 2.3 Record the `FakeResultStore` exemption where
       `tests/result_store/test_store_parity.py` defines the shared scenario
       set, and the `FakeReader` exemption where
       `tests/data_access/test_reader_parity.py` defines its scenarios
@@ -98,7 +98,7 @@ every test asserting default fail-closed behavior.
 
 ## 3. Reader / cleaned-tier resolution and consumer surface
 
-- [ ] 3.1 RED: failing tests that resolution treats the mismatch as a typed
+- [x] 3.1 RED: failing tests that resolution treats the mismatch as a typed
       hard error:
       (a) `_resolve_one_class`/`_resolve_versioned_cleaned` let
       `ManifestBackendMismatchError` propagate — with a foreign
@@ -112,15 +112,15 @@ every test asserting default fail-closed behavior.
       (c) `SupabaseReader.load_experiment(require_clean=True)` likewise — not
       `ExperimentNotFoundError` (today's discard-and-demote at
       `supabase_reader.py:~89`).
-- [ ] 3.2 GREEN: add `ForeignCatalogError(ExperimentReadError)` to
+- [x] 3.2 GREEN: add `ForeignCatalogError(ExperimentReadError)` to
       `data_access/ports.py`; exclude `ManifestBackendMismatchError` from
       `_resolve_one_class`'s generic `except Exception` in
-      `bloom_mcp/experiment_utils.py` (explicit re-raise branch beside the
-      `ManifestSchemaError` one); wrap it into `ForeignCatalogError` in both
-      `data_access/local_reader.py` and `data_access/supabase_reader.py`;
-      audit the remaining `load_experiment_data`/`_resolve_versioned_cleaned`
-      callers so no path lets the raw manifest-layer error escape undeclared.
-- [ ] 3.3 RED+GREEN: end-to-end tool tests (local backend on a temp root,
+      `bloom_mcp/experiment_utils.py` with an explicit branch (beside the
+      `ManifestSchemaError` one) that raises `ForeignCatalogError` at the
+      shared helper — so both reader adapters AND every direct
+      `load_experiment_data` caller (the viz tools) surface the same typed
+      error with no per-file wrapping, closing the caller audit structurally.
+- [x] 3.3 RED+GREEN: end-to-end tool tests (local backend on a temp root,
       commit a cleaned run, hand-patch the sentinel): `pca_analysis` returns a
       structured `BloomMCPError` naming both backends (not `internal_error`,
       not the run-`qc_clean`-first remedy) and persists no run; `qc_clean`
@@ -129,14 +129,14 @@ every test asserting default fail-closed behavior.
       `errors=(ExperimentReadError, CommitFailedError, ManifestReadError)` —
       verify the declared tuples cover the two new subclasses and fix only if
       a tool's declaration differs.
-- [ ] 3.4 Characterization pin (test-first, expected green on arrival):
+- [x] 3.4 Characterization pin (test-first, expected green on arrival):
       `list_existing_analyses` with a foreign `outliers` catalog and a healthy
       `qc` catalog still lists the healthy class and reports the mismatch in
       the per-tool-class `errors` entries (via `safe_error_text`, naming both
       backends). Mind the module-level 30s `_RESPONSE_CACHE` (unique
       experiment name or cache clear) and that `trim_staleness`'s own manifest
       reads may contribute a second error entry.
-- [ ] 3.5 Escape-hatch end-to-end: with
+- [x] 3.5 Escape-hatch end-to-end: with
       `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1`, the same `require_clean=True`
       read resolves the cleaned version and the per-read warning records are
       present — while a `qc_clean` commit against the foreign catalog still
@@ -144,7 +144,7 @@ every test asserting default fail-closed behavior.
 
 ## 4. Docs, env plumbing, and housekeeping
 
-- [ ] 4.1 Update `bloommcp/docs/storage-backends.md` — rewrite, not append;
+- [x] 4.1 Update `bloommcp/docs/storage-backends.md` — rewrite, not append;
       these existing sentences become wrong or stale and must change:
       (a) "This can't be *prevented* from purely local information … It is made
       **observable** instead" (~line 272) → serving a foreign catalog IS now
@@ -161,12 +161,12 @@ every test asserting default fail-closed behavior.
       migration now fails at read time instead of silently taking over.
       Also document the containerized-deploy reachability caveat (dev compose
       passes the var through; staging/prod require a compose edit + redeploy).
-- [ ] 4.2 Update `bloommcp/CHANGELOG.md` under `[Unreleased]`, split per Keep a
+- [x] 4.2 Update `bloommcp/CHANGELOG.md` under `[Unreleased]`, split per Keep a
       Changelog: **Added** — the guard, the two/three new error types, the env
       var (pointer to `docs/storage-backends.md`); **Changed** — reads over a
       foreign catalog, previously served silently, now fail closed;
       single-backend usage unaffected.
-- [ ] 4.3 Add `${BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST:-}` passthrough to the
+- [x] 4.3 Add `${BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST:-}` passthrough to the
       `bloommcp` service in `docker-compose.dev.yml` (beside the existing
       `BLOOM_STORAGE_*` family) and the empty opt-in entry with comment to
       `.env.dev.example` (the `development-environment` conventions). Do NOT
@@ -175,21 +175,21 @@ every test asserting default fail-closed behavior.
       compose/env/docs pins (`test_compose_dev_env_files.py`,
       `test_env_dev_example.py`, `test_env_defaults.py`,
       `test_bloommcp_local_mode_docs.py`) are the gate for this task.
-- [ ] 4.4 Mark this tasks.md complete and re-validate the change.
+- [x] 4.4 Mark this tasks.md complete and re-validate the change.
 
 ## 5. Verification
 
-- [ ] 5.1 `openspec validate add-bloommcp-foreign-catalog-read-guard --strict`
+- [x] 5.1 `openspec validate add-bloommcp-foreign-catalog-read-guard --strict`
       passes.
-- [ ] 5.2 CI-equivalent bloommcp suite passes: in `bloommcp/`,
+- [x] 5.2 CI-equivalent bloommcp suite passes: in `bloommcp/`,
       `uv run --frozen --extra test pytest tests/ -m "not integration and not
       live_smoke"` (matching `python-audit`), with the pre-existing
       storage/parity/result-store suites unchanged except where tasks above
       touch them.
-- [ ] 5.3 Root unit suite passes: `uv run --extra test pytest tests/unit/`
+- [x] 5.3 Root unit suite passes: `uv run --extra test pytest tests/unit/`
       (env-defaults, compose-shape, and storage-docs pins live here and run in
       CI's `python-audit`).
-- [ ] 5.4 `pre-commit run --files <touched files>` clean (black, ruff,
+- [x] 5.4 `pre-commit run --files <touched files>` clean (black, ruff,
       ruff-format on Python; prettier on the touched `.md`).
 - [ ] 5.5 Run the dev-stack live smoke once after section 3
       (`make bloommcp-smoke` against `make dev-up` + `make migrate-local`, or
@@ -200,3 +200,14 @@ every test asserting default fail-closed behavior.
       `manifest.json` objects under `bloommcp_output/` in each `bloommcp-data`
       bucket and confirm none carries a `storage_backend` other than
       `supabase`, so the guard's activation on deploy is a verified non-event.
+
+## Status notes
+
+- 5.5 is not runnable in this session (the Docker daemon is not running on
+  this machine); analysis in the PR description explains why the smoke cannot
+  fire the guard (single backend throughout, self-consistent sentinels) — run
+  `make dev-up && make migrate-local && make bloommcp-smoke` (or `/pre-merge`)
+  before merging to verify.
+- 5.6 is an operator step (needs staging/prod bucket access): list
+  `manifest.json` objects under `bloommcp_output/` in each `bloommcp-data`
+  bucket and confirm none carries a `storage_backend` other than `supabase`.
