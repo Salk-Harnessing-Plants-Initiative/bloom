@@ -130,6 +130,58 @@ def test_plate_video_route_calls_the_renderer(monkeypatch):
         main.app.dependency_overrides.clear()
 
 
+def test_a_refused_plate_video_is_logged_like_one_that_worked(caplog):
+    """The answer a caller actually sees when the button seems to do nothing.
+    Logged only on the way out, it left no record of who asked for what."""
+    import main
+    import plate_request
+    from auth import require_supabase_user
+
+    def _no_frames(experiment_id, body):
+        raise HTTPException(status_code=404, detail="this plate has no captures")
+
+    main.plate_request = plate_request
+    original = plate_request.render
+    plate_request.render = _no_frames
+    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
+    try:
+        with caplog.at_level("INFO", logger="main"):
+            resp = TestClient(main.app).post(
+                "/gravi/experiments/12/plate-video",
+                json={"plate_id": "P7", "wave_number": 1},
+            )
+    finally:
+        plate_request.render = original
+        main.app.dependency_overrides.clear()
+
+    assert resp.status_code == 404
+    assert "experiment 12" in caplog.text
+    assert "'P7'" in caplog.text
+    assert "user-1" in caplog.text
+    assert "404" in caplog.text
+
+
+def test_a_rejected_body_is_logged_without_being_echoed_back(caplog):
+    """A plate id is caller-supplied text going into a log a person reads. A
+    newline in it would put a second, invented line under a real one."""
+    import main
+    from auth import require_supabase_user
+
+    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
+    try:
+        with caplog.at_level("INFO", logger="main"):
+            resp = TestClient(main.app).post(
+                "/gravi/experiments/12/plate-video",
+                json={"plate_id": "P7\nplate video for experiment 99: rendered"},
+            )
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert resp.status_code == 400
+    assert "\\n" in caplog.text, "the newline reached the log unescaped"
+    assert "\nplate video for experiment 99" not in caplog.text
+
+
 def test_plate_video_route_401_without_auth(monkeypatch):
     import main
     import plate_request
