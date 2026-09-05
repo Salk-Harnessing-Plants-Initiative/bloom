@@ -212,6 +212,11 @@ services:
     # holds only the finished MP4s (~3.5 MB each), not its 512m cap. Four
     # 32-bit plates would exceed 2g, which is the intended outcome.
     mem_limit: 2g
+    # Without this Docker allows twice mem_limit in swap, so a runaway render
+    # would grind against disk indefinitely instead of being killed — slowing
+    # every other container on the box, which is the outcome mem_limit is here
+    # to avoid. Equal values mean no swap: hit the ceiling and stop.
+    memswap_limit: 2g
     tmpfs:
       # Size-capped so the temp MP4 can't exhaust host RAM (sized for concurrent encodes
       # in the one worker, with headroom).
