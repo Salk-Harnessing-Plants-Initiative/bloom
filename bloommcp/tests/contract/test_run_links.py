@@ -5,7 +5,8 @@ Maps the spec "RunLinks Base Model" scenarios under bloommcp-tool-contract:
   2. Consumer result models inherit RunLinks without redeclaring fields
      (PCAAnalysisResult and RemoveOutliersResult — both must be guarded)
   3. RunLinks fields survive round-trip serialization
-  4. Missing / wrong-typed run-link fields are rejected at construction
+  4. Wrong-typed run-link fields are rejected at construction; null ones are
+     accepted (#582 — an ephemeral inline call creates no run)
 """
 
 from __future__ import annotations
@@ -227,9 +228,24 @@ def test_run_links_output_links_round_trip_via_pca_result():
 # ---------------------------------------------------------------------------
 
 
-def test_run_ref_required():
+def test_run_links_accepts_null_run_links_for_an_ephemeral_result():
+    """#582: an inline `csv_content` call creates no run, so there is no run
+    reference, version directory, or manifest to name. The three run-link fields
+    are Optional and `outputs` defaults to empty — a placeholder string would name
+    an object that does not exist. Supersedes the former `test_run_ref_required`."""
+    links = RunLinks()
+    assert links.run_ref is None
+    assert links.version_dir is None
+    assert links.manifest_path is None
+    assert links.outputs == {}
+    assert links.output_links == {}
+
+
+def test_run_ref_wrong_type_is_still_rejected():
+    """Widening to Optional[str] must not weaken type checking: `None` is valid,
+    an int is not."""
     with pytest.raises(ValidationError) as exc_info:
-        RunLinks(version_dir="v1", manifest_path="m.json", outputs={})
+        RunLinks(run_ref=42, version_dir="v1", manifest_path="m.json", outputs={})
     errors = {e["loc"][0] for e in exc_info.value.errors()}
     assert "run_ref" in errors
 

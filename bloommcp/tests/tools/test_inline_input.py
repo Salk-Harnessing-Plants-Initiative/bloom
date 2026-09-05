@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 from unittest.mock import patch
 
 import pandas as pd
@@ -67,18 +68,53 @@ def test_oversized_content_is_rejected_before_parsing():
 
 
 def test_content_at_the_limit_is_accepted():
+    """A payload sized right at the byte cap is accepted.
+
+    Built as many ordinary rows rather than one enormous one. An earlier version
+    of this test padded a *single* data row out to 5 MiB, which measured the byte
+    cap correctly but is not a shape any real trait table takes — and it is now
+    refused by the leading-row scan bound (see
+    `test_a_single_row_too_wide_to_measure_cheaply_is_refused`), which cannot
+    measure a row larger than `_MAX_HEADER_SCAN_BYTES` without defeating its own
+    purpose. Rows here stay well under both the row cap and the scan bound.
+    """
     helper = _import_helper()
     header = "Barcode,geno,traitA\n"
-    row_prefix = "S1,g1,"
-    # Pad exactly to the byte limit with digits, keeping the CSV well-formed.
-    filler_len = helper.MAX_INLINE_CSV_BYTES - len(
-        (header + row_prefix + "\n").encode("utf-8")
-    )
-    content = header + row_prefix + ("1" * max(filler_len, 1)) + "\n"
+    rows = helper.MAX_INLINE_CSV_ROWS
+    # Size each row so the total lands just under the byte cap.
+    per_row = (helper.MAX_INLINE_CSV_BYTES - len(header.encode("utf-8"))) // rows
+    filler = "1" * max(per_row - len("S1,g1,\n"), 1)
+    content = header + f"S1,g1,{filler}\n" * rows
+
     assert len(content.encode("utf-8")) <= helper.MAX_INLINE_CSV_BYTES
+    assert (
+        len(content.encode("utf-8")) > helper.MAX_INLINE_CSV_BYTES * 0.9
+    ), "the point of this test is a payload genuinely near the cap"
 
     frame = helper.parse_inline_csv_frame(content)
     assert isinstance(frame, ExperimentFrame)
+    assert len(frame.df) == rows
+
+
+def test_a_single_row_too_wide_to_measure_cheaply_is_refused():
+    """A deliberate narrowing that came with closing the wide-data-row bypass.
+
+    The pre-parse scan reads the header *and* the first data row, bounded to
+    `_MAX_HEADER_SCAN_BYTES`. A single row larger than that bound cannot be
+    measured without reading the very payload the bound exists to avoid reading,
+    so it is refused rather than waved through. No real trait table has a
+    multi-hundred-kilobyte row; a payload that does is either malformed or the
+    DoS shape itself.
+    """
+    helper = _import_helper()
+    giant_cell = "1" * (helper._MAX_HEADER_SCAN_BYTES + 1024)
+    content = f"Barcode,geno,traitA\nS1,g1,{giant_cell}\n"
+    assert len(content.encode("utf-8")) < helper.MAX_INLINE_CSV_BYTES
+
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame(content)
+    assert exc.value.code == "invalid_input"
+    assert str(helper._MAX_HEADER_SCAN_BYTES) in exc.value.message
 
 
 def test_byte_vs_character_size_guard_uses_encoded_bytes():
@@ -433,3 +469,723 @@ def test_parsing_touches_no_persistence_port():
     with patch.object(_ports, "store") as mock_store:
         helper.parse_inline_csv_frame(_VALID_CSV)
         mock_store.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# #582 rollout — the shared resolver, the row cap, the serializer, the flag
+#
+# `resolve_inline_or_experiment` is what stops ten tools from growing ten
+# copies of "exactly one is required". Tested here once, and then *used* by
+# every tool rather than reimplemented — the per-tool suites assert the
+# behavior reaches them; these assert what the behavior is.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+_ROLE_CSV = _VALID_CSV
+
+
+def _reader_call_returning(frame):
+    """A stand-in for a tool's own reader call, recording whether it ran."""
+    calls: list[int] = []
+
+    def _call():
+        calls.append(1)
+        return frame
+
+    return _call, calls
+
+
+# ── exactly one of experiment / csv_content ─────────────────────────────────
+
+
+def test_resolver_rejects_both_inputs_without_reading_or_parsing():
+    helper = _import_helper()
+    reader_call, calls = _reader_call_returning(object())
+
+    with patch.object(helper.pd, "read_csv") as read_csv:
+        with pytest.raises(BloomMCPError) as exc:
+            helper.resolve_inline_or_experiment(
+                experiment="turface_19.csv",
+                csv_content=_ROLE_CSV,
+                reader_call=reader_call,
+            )
+
+    assert exc.value.code == "invalid_input"
+    assert "exactly one" in exc.value.message.lower()
+    read_csv.assert_not_called()
+    assert calls == [], "the reader must not run when the call is already invalid"
+
+
+def test_resolver_rejects_neither_input():
+    helper = _import_helper()
+    reader_call, calls = _reader_call_returning(object())
+
+    with pytest.raises(BloomMCPError) as exc:
+        helper.resolve_inline_or_experiment(
+            experiment=None, csv_content=None, reader_call=reader_call
+        )
+
+    assert exc.value.code == "invalid_input"
+    assert "exactly one" in exc.value.message.lower()
+    assert calls == []
+
+
+def test_resolver_reports_the_input_conflict_before_a_parameter_conflict():
+    """Ordering is specified, not incidental: a call that is wrong in two ways
+    names the input conflict. Without this, a per-tool assertion like "the error
+    names version_2 only" would depend on check order and flake."""
+    helper = _import_helper()
+
+    with pytest.raises(BloomMCPError) as exc:
+        helper.resolve_inline_or_experiment(
+            experiment="turface_19.csv",
+            csv_content=_ROLE_CSV,
+            registered_only={"version": "v2"},
+        )
+
+    assert "exactly one" in exc.value.message.lower()
+    assert "version" not in exc.value.message
+
+
+# ── the two resolved shapes ─────────────────────────────────────────────────
+
+
+def test_resolver_inline_path_matches_the_parse_helper_and_hash_helper():
+    helper = _import_helper()
+    reader_call, calls = _reader_call_returning(object())
+
+    resolved = helper.resolve_inline_or_experiment(
+        experiment=None, csv_content=_ROLE_CSV, reader_call=reader_call
+    )
+
+    expected = helper.parse_inline_csv_frame(_ROLE_CSV)
+    assert resolved.is_inline is True
+    assert resolved.label == "csv_content"
+    assert resolved.input_sha256 == helper.compute_input_sha256(_ROLE_CSV)
+    assert resolved.frame.df.equals(expected.df)
+    assert resolved.frame.trait_cols == expected.trait_cols
+    assert resolved.frame.source == "inline"
+    assert calls == [], "the inline path must bypass the reader entirely"
+
+
+def test_resolver_registered_path_returns_the_tools_own_frame():
+    helper = _import_helper()
+    sentinel = object()
+    reader_call, calls = _reader_call_returning(sentinel)
+
+    resolved = helper.resolve_inline_or_experiment(
+        experiment="turface_19.csv", csv_content=None, reader_call=reader_call
+    )
+
+    assert resolved.frame is sentinel, (
+        "the registered path must return the tool's own read, so require_clean, "
+        "version pinning and read-error mapping stay in the tool"
+    )
+    assert resolved.is_inline is False
+    assert resolved.input_sha256 is None
+    assert resolved.label == "turface_19.csv"
+    assert calls == [1]
+
+
+def test_resolver_registered_path_requires_a_reader_call():
+    """A tool that forgets to pass its own read must fail loudly here rather
+    than returning a frameless result that explodes later."""
+    helper = _import_helper()
+    with pytest.raises(ValueError):
+        helper.resolve_inline_or_experiment(
+            experiment="turface_19.csv", csv_content=None, reader_call=None
+        )
+
+
+# ── one vocabulary, parameterized by the registered field's name ────────────
+
+
+def test_resolver_names_the_tools_own_registered_parameter():
+    """`load_experiment_data` pairs csv_content with `filename`, and
+    cross_experiment_correlations resolves per side. One vocabulary still has to
+    produce all of them, so the resolver takes the parameter's name."""
+    helper = _import_helper()
+
+    with pytest.raises(BloomMCPError) as exc:
+        helper.resolve_inline_or_experiment(
+            experiment=None,
+            csv_content=None,
+            registered_field="filename",
+            csv_content_field="csv_content",
+        )
+    assert "filename" in exc.value.message
+    assert "experiment" not in exc.value.message
+
+    with pytest.raises(BloomMCPError) as side2:
+        helper.resolve_inline_or_experiment(
+            experiment="a",
+            csv_content="b",
+            registered_field="experiment_2",
+            csv_content_field="csv_content_2",
+        )
+    assert "experiment_2" in side2.value.message
+    assert "csv_content_2" in side2.value.message
+
+
+def test_resolver_message_is_identical_modulo_the_parameter_names():
+    """The anti-drift property: substituting the field names makes two tools'
+    messages equal. This is what task 11.1 asserts across the roster."""
+    helper = _import_helper()
+
+    def _message(registered_field, csv_field):
+        with pytest.raises(BloomMCPError) as exc:
+            helper.resolve_inline_or_experiment(
+                experiment=None,
+                csv_content=None,
+                registered_field=registered_field,
+                csv_content_field=csv_field,
+            )
+        return exc.value.message, exc.value.remedy
+
+    msg_a, rem_a = _message("experiment", "csv_content")
+    msg_b, rem_b = _message("filename", "csv_content")
+    assert msg_a == msg_b.replace("filename", "experiment")
+    assert rem_a == rem_b.replace("filename", "experiment")
+
+
+# ── registered-only parameters: reject, never ignore ────────────────────────
+
+
+def test_registered_only_parameter_is_rejected_on_the_inline_path():
+    helper = _import_helper()
+
+    with pytest.raises(BloomMCPError) as exc:
+        helper.resolve_inline_or_experiment(
+            experiment=None,
+            csv_content=_ROLE_CSV,
+            registered_only={"version": "v2"},
+        )
+
+    assert exc.value.code == "invalid_input"
+    assert "version" in exc.value.message
+    assert "csv_content" in exc.value.message
+
+
+def test_registered_only_parameter_that_is_none_is_a_no_op():
+    helper = _import_helper()
+    resolved = helper.resolve_inline_or_experiment(
+        experiment=None,
+        csv_content=_ROLE_CSV,
+        registered_only={"version": None, "user_label": None},
+    )
+    assert resolved.is_inline is True
+
+
+def test_registered_only_parameters_are_untouched_on_the_registered_path():
+    helper = _import_helper()
+    reader_call, _calls = _reader_call_returning(object())
+    resolved = helper.resolve_inline_or_experiment(
+        experiment="turface_19.csv",
+        csv_content=None,
+        registered_only={"version": "v2", "user_label": "x"},
+        reader_call=reader_call,
+    )
+    assert resolved.is_inline is False
+
+
+def test_registered_only_rejection_names_every_offender_not_just_the_first():
+    helper = _import_helper()
+    with pytest.raises(BloomMCPError) as exc:
+        helper.resolve_inline_or_experiment(
+            experiment=None,
+            csv_content=_ROLE_CSV,
+            registered_only={"version": "v2", "user_label": "x"},
+        )
+    assert "user_label" in exc.value.message
+    assert "version" in exc.value.message
+
+
+def test_registered_only_false_is_still_a_supplied_value():
+    """`include_plots=False` is the default, not a request — it must not trip the
+    guard. `include_plots=True` must. A truthiness test on the *value* is wrong
+    for `version="latest"` (a real pin) but right for a bool flag, so the caller
+    passes only what it means; this pins that a False flag is filtered out by the
+    caller, not silently accepted as a rejection-worthy value."""
+    helper = _import_helper()
+    resolved = helper.resolve_inline_or_experiment(
+        experiment=None,
+        csv_content=_ROLE_CSV,
+        registered_only={"include_plots": None},
+    )
+    assert resolved.is_inline is True
+
+
+# ── row cap (design.md Decision 9) ──────────────────────────────────────────
+
+
+def test_row_count_above_the_cap_is_rejected():
+    helper = _import_helper()
+    rows = helper.MAX_INLINE_CSV_ROWS + 1
+    body = "".join(f"S{i},g1,1.0,2.0\n" for i in range(rows))
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame("Barcode,geno,traitA,traitB\n" + body)
+    assert exc.value.code == "invalid_input"
+    assert str(rows) in exc.value.message
+    assert str(helper.MAX_INLINE_CSV_ROWS) in exc.value.message
+
+
+def test_row_count_at_the_cap_is_accepted():
+    helper = _import_helper()
+    rows = helper.MAX_INLINE_CSV_ROWS
+    body = "".join(f"S{i},g1,1.0,2.0\n" for i in range(rows))
+    frame = helper.parse_inline_csv_frame("Barcode,geno,traitA,traitB\n" + body)
+    assert len(frame.df) == rows
+
+
+def test_row_cap_is_well_under_what_the_byte_cap_admits():
+    """The point of the row cap: a payload can sit under MAX_INLINE_CSV_BYTES and
+    still carry hundreds of thousands of rows, which is a quadratic-time problem
+    for hierarchical clustering and an all-pairs problem for correlations."""
+    helper = _import_helper()
+    narrow_row = "S,g,1,2\n"
+    rows_the_byte_cap_admits = helper.MAX_INLINE_CSV_BYTES // len(narrow_row)
+    assert rows_the_byte_cap_admits > 10 * helper.MAX_INLINE_CSV_ROWS
+
+
+# ── table serialization for the opt-in producer returns ─────────────────────
+
+
+def test_serialize_table_csv_round_trips_without_an_index_column():
+    helper = _import_helper()
+    df = pd.DataFrame({"Barcode": ["S1", "S2"], "traitA": [1.0, 2.0]})
+    text = helper.serialize_table_csv(df)
+    restored = pd.read_csv(io.StringIO(text))
+    assert list(restored.columns) == ["Barcode", "traitA"]
+    assert restored["traitA"].tolist() == [1.0, 2.0]
+
+
+def test_serialize_table_csv_pins_the_line_terminator():
+    """pandas defaults `lineterminator` to os.linesep, which would make every
+    returned digest platform-dependent. The repo already forces LF on CSVs via
+    .gitattributes for the same class of bug."""
+    helper = _import_helper()
+    df = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
+    text = helper.serialize_table_csv(df)
+    assert "\r" not in text
+    assert text.count("\n") == 3  # header + two rows
+
+
+def test_serialize_table_csv_is_stable_across_calls():
+    helper = _import_helper()
+    df = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
+    first = hashlib.sha256(helper.serialize_table_csv(df).encode()).hexdigest()
+    second = hashlib.sha256(helper.serialize_table_csv(df).encode()).hexdigest()
+    assert first == second
+
+
+def test_serialize_table_csv_rejects_an_oversized_table():
+    helper = _import_helper()
+    wide = "x" * 4096
+    df = pd.DataFrame({"a": [wide] * 2048})
+    with pytest.raises(BloomMCPError) as exc:
+        helper.serialize_table_csv(df, field="cleaned_csv")
+    assert exc.value.code == "invalid_input"
+    assert "cleaned_csv" in exc.value.message
+    assert str(helper.MAX_INLINE_CSV_BYTES) in exc.value.message
+
+
+# ── kill switch (design.md Decision 10) ─────────────────────────────────────
+
+
+def test_inline_path_is_rejected_when_the_kill_switch_is_off(monkeypatch):
+    helper = _import_helper()
+    monkeypatch.setenv("BLOOMMCP_INLINE_CSV_ENABLED", "false")
+
+    with pytest.raises(BloomMCPError) as exc:
+        helper.resolve_inline_or_experiment(experiment=None, csv_content=_ROLE_CSV)
+
+    assert exc.value.code == "invalid_input"
+    assert "experiment" in exc.value.remedy
+
+
+def test_registered_path_is_untouched_when_the_kill_switch_is_off(monkeypatch):
+    helper = _import_helper()
+    monkeypatch.setenv("BLOOMMCP_INLINE_CSV_ENABLED", "false")
+    reader_call, calls = _reader_call_returning(object())
+
+    resolved = helper.resolve_inline_or_experiment(
+        experiment="turface_19.csv", csv_content=None, reader_call=reader_call
+    )
+    assert resolved.is_inline is False
+    assert calls == [1]
+
+
+def test_kill_switch_defaults_to_enabled(monkeypatch):
+    helper = _import_helper()
+    monkeypatch.delenv("BLOOMMCP_INLINE_CSV_ENABLED", raising=False)
+    resolved = helper.resolve_inline_or_experiment(
+        experiment=None, csv_content=_ROLE_CSV
+    )
+    assert resolved.is_inline is True
+
+
+def test_kill_switch_is_read_per_call_not_at_import(monkeypatch):
+    """Read at call time so an operator can flip it with a container restart
+    rather than needing a rebuild — and so tests can toggle it."""
+    helper = _import_helper()
+    monkeypatch.setenv("BLOOMMCP_INLINE_CSV_ENABLED", "false")
+    with pytest.raises(BloomMCPError):
+        helper.resolve_inline_or_experiment(experiment=None, csv_content=_ROLE_CSV)
+    monkeypatch.setenv("BLOOMMCP_INLINE_CSV_ENABLED", "true")
+    assert helper.resolve_inline_or_experiment(
+        experiment=None, csv_content=_ROLE_CSV
+    ).is_inline
+
+
+def test_a_real_near_cap_payload_is_rejected_by_the_row_cap_not_the_byte_cap():
+    """The scenario MAX_INLINE_CSV_ROWS exists for, built for real rather than
+    argued arithmetically.
+
+    A payload sized just under MAX_INLINE_CSV_BYTES parses in well under a second
+    and yields hundreds of thousands of rows — which is a quadratic-time problem
+    for hierarchical clustering and an all-pairs problem for correlations. This
+    asserts the row cap is what stops it, and names the row count so a future
+    reader can see the gap between the two limits."""
+    helper = _import_helper()
+    header = "Barcode,geno,traitA,traitB\n"
+    row = "S,g,1.0,2.0\n"
+    rows = (helper.MAX_INLINE_CSV_BYTES - len(header)) // len(row)
+    payload = header + row * rows
+
+    size = len(payload.encode("utf-8"))
+    assert size <= helper.MAX_INLINE_CSV_BYTES, "must be under the byte cap"
+    assert rows > 10 * helper.MAX_INLINE_CSV_ROWS, (
+        f"a compliant payload should carry far more rows than the row cap; "
+        f"got {rows} vs a cap of {helper.MAX_INLINE_CSV_ROWS}"
+    )
+
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame(payload)
+
+    # The row cap, not the byte cap, is what rejected it.
+    assert str(helper.MAX_INLINE_CSV_ROWS) in exc.value.message
+    assert "row" in exc.value.message
+    assert str(rows) in exc.value.message
+
+
+def test_serialize_table_csv_ignores_the_platform_line_separator(monkeypatch):
+    """Direct evidence for the platform-independence claim: even with os.linesep
+    reporting CRLF, the serialized text is LF. Asserting "no \\r on this machine"
+    would pass vacuously on Linux and CI, which are the only places it runs."""
+    helper = _import_helper()
+    monkeypatch.setattr(os, "linesep", "\r\n")
+    text = helper.serialize_table_csv(pd.DataFrame({"a": [1, 2]}))
+    assert "\r" not in text
+    assert text == "a\n1\n2\n"
+
+
+def test_round_trip_guard_accepts_a_table_that_re_resolves_correctly():
+    helper = _import_helper()
+    frame = helper.parse_inline_csv_frame(_VALID_CSV)
+    text = helper.serialize_table_csv(
+        frame.df, field="cleaned_csv", verify_trait_cols=frame.trait_cols
+    )
+    assert "traitA" in text
+
+
+def test_round_trip_guard_rejects_a_table_missing_a_certified_trait():
+    helper = _import_helper()
+    frame = helper.parse_inline_csv_frame(_VALID_CSV)
+    with pytest.raises(BloomMCPError) as exc:
+        helper.serialize_table_csv(
+            frame.df.drop(columns=["traitA"]),
+            field="cleaned_csv",
+            verify_trait_cols=frame.trait_cols,
+        )
+    assert exc.value.code == "assumption_violated"
+    assert "traitA" in exc.value.message
+    assert "would be lost" in exc.value.message
+
+
+def test_round_trip_guard_rejects_a_table_that_gains_an_undeclared_trait():
+    """The mirror failure: a column the producer did not certify being detected as
+    a trait by the consumer. Just as wrong as losing one — the next call would
+    analyze a column this one never reported on."""
+    helper = _import_helper()
+    frame = helper.parse_inline_csv_frame(_VALID_CSV)
+    extra = frame.df.assign(traitC=[7.0, 8.0, 9.0])
+    with pytest.raises(BloomMCPError) as exc:
+        helper.serialize_table_csv(
+            extra, field="cleaned_csv", verify_trait_cols=frame.trait_cols
+        )
+    assert exc.value.code == "assumption_violated"
+    assert "traitC" in exc.value.message
+    assert "would be picked up" in exc.value.message
+
+
+def test_round_trip_guard_is_off_by_default():
+    """Producers opt in; the generic serializer stays generic."""
+    helper = _import_helper()
+    text = helper.serialize_table_csv(pd.DataFrame({"only_metadata": ["x", "y"]}))
+    assert text == "only_metadata\nx\ny\n"
+
+
+# ── registered-only rejection wording is accurate per parameter ─────────────
+
+
+def test_user_label_rejection_explains_labels_not_source_pins():
+    """A generic "only applies to a registered experiment's stored versions and
+    sources" is true of the pins and plainly wrong for user_label, which is about
+    writing rather than reading. An inaccurate rejection message is the drift this
+    module exists to prevent."""
+    helper = _import_helper()
+    with pytest.raises(BloomMCPError) as exc:
+        helper.resolve_inline_or_experiment(
+            experiment=None,
+            csv_content=_ROLE_CSV,
+            registered_only={"user_label": "my-run"},
+        )
+    message = exc.value.message
+    assert "version directory" in message
+    assert "no run is created" in message
+    assert "sources" not in message
+
+
+def test_source_pin_rejection_explains_reading_not_labelling():
+    helper = _import_helper()
+    with pytest.raises(BloomMCPError) as exc:
+        helper.resolve_inline_or_experiment(
+            experiment=None, csv_content=_ROLE_CSV, registered_only={"source_id": 9}
+        )
+    assert "pins which stored raw source to read" in exc.value.message
+    assert "version directory" not in exc.value.message
+
+
+def test_each_offender_gets_its_own_reason_when_several_are_supplied():
+    helper = _import_helper()
+    with pytest.raises(BloomMCPError) as exc:
+        helper.resolve_inline_or_experiment(
+            experiment=None,
+            csv_content=_ROLE_CSV,
+            registered_only={"source_id": 9, "user_label": "x"},
+        )
+    message = exc.value.message
+    assert "pins which stored raw source to read" in message
+    assert "version directory" in message
+
+
+def test_plot_companion_parameters_inherit_the_plot_reason_by_prefix():
+    """A new plot_* knob on any tool should get correct wording without anyone
+    remembering to add it to the table."""
+    helper = _import_helper()
+    for name in ("include_plots", "plots", "plot_font_family", "plot_alpha"):
+        with pytest.raises(BloomMCPError) as exc:
+            helper.resolve_inline_or_experiment(
+                experiment=None, csv_content=_ROLE_CSV, registered_only={name: "x"}
+            )
+        assert "persisted as run artifacts" in exc.value.message, name
+
+
+def test_every_rostered_parameter_has_a_specific_reason():
+    """No parameter this rollout rejects should fall through to the generic
+    clause — that fallback exists for safety, not for the known roster."""
+    helper = _import_helper()
+    roster = [
+        "source_id",
+        "run_id",
+        "version",
+        "version_1",
+        "version_2",
+        "user_label",
+        "include_plots",
+        "plots",
+        "plot_font_family",
+        "plot_font_size",
+        "plot_alpha",
+        "plot_cmap",
+        "plot_point_size",
+    ]
+    generic = "only applies to a registered experiment"
+    for name in roster:
+        reason = helper._registered_only_reason(name, "csv_content")
+        assert generic not in reason, f"{name} fell through to the generic clause"
+
+
+# ── the wide-DATA-row bypass (PR #778 review, blocking) ─────────────────────
+#
+# Every column-cap test above builds a wide *header*. The guard measured only
+# the header, so pairing a narrow header with enormous data rows walked straight
+# past it. Reproduced before fixing: a 3-field header with 480,000-field data
+# rows (1.92 MB, well under every declared cap) was ACCEPTED after 16.03s in
+# `pandas.read_csv` — and silently, because `read_csv` absorbs the surplus
+# fields into an implicit index rather than raising, leaving a 3-column frame
+# that the post-parse `df.shape[1]` backstop happily waved through. After the
+# fix the same payload is refused in 0.0007s.
+
+
+def _wide_data_row_payload(fields: int, rows: int = 2) -> str:
+    """A narrow header paired with `fields`-wide data rows."""
+    row = ",".join(str(i % 10) for i in range(fields)) + "\n"
+    return "a,b,c\n" + row * rows
+
+
+def test_wide_data_rows_are_rejected_despite_a_narrow_header():
+    """The reproduced bypass: the payload that used to be accepted in 16s."""
+    helper = _import_helper()
+    payload = _wide_data_row_payload(480_000)
+    assert (
+        len(payload.encode("utf-8")) < helper.MAX_INLINE_CSV_BYTES
+    ), "the point of this shape is that it sits under the byte cap"
+
+    with patch("pandas.read_csv") as mock_read_csv:
+        with pytest.raises(BloomMCPError) as exc:
+            helper.parse_inline_csv_frame(payload)
+        mock_read_csv.assert_not_called()
+
+    assert exc.value.code == "invalid_input"
+
+
+def test_wide_data_rows_are_rejected_fast():
+    """Rejection must be cheap, not merely eventual — the whole point is to not
+    pay the parse. Guarded generously (0.0007s measured) so the assertion is
+    about the algorithm, not about CI machine speed."""
+    import time
+
+    helper = _import_helper()
+    payload = _wide_data_row_payload(480_000)
+
+    start = time.perf_counter()
+    with pytest.raises(BloomMCPError):
+        helper.parse_inline_csv_frame(payload)
+    elapsed = time.perf_counter() - start
+
+    assert (
+        elapsed < 2.0
+    ), f"rejection took {elapsed:.2f}s; the parse it avoids took ~16s"
+
+
+def test_wide_data_row_inside_the_scan_bound_is_rejected_by_the_column_cap():
+    """The variant the scan bound does *not* catch for free.
+
+    A 3,000-field row is only ~6 KB, so it fits inside `_MAX_HEADER_SCAN_BYTES`
+    and the bounded reader returns it happily. It is the data-row column check
+    itself — not the scan bound — that has to reject this one, so this test
+    fails if that check is ever removed as redundant.
+    """
+    helper = _import_helper()
+    fields = helper.MAX_INLINE_CSV_COLUMNS + 1000
+    payload = _wide_data_row_payload(fields)
+    assert (
+        len(payload.encode("utf-8")) < helper._MAX_HEADER_SCAN_BYTES
+    ), "this payload must fit inside the scan bound for the test to mean anything"
+
+    with patch("pandas.read_csv") as mock_read_csv:
+        with pytest.raises(BloomMCPError) as exc:
+            helper.parse_inline_csv_frame(payload)
+        mock_read_csv.assert_not_called()
+
+    assert str(fields) in exc.value.message
+    assert "data row" in exc.value.message
+
+
+def test_header_data_divergence_is_rejected_rather_than_silently_realigned():
+    """Divergence is a correctness bug, not just a cost one.
+
+    Measured on a 3-name header against 4-field rows: the default `read_csv`
+    promotes the first field to the index, so every remaining value lands under
+    the WRONG column name — the barcodes became the index and the genotypes
+    became "Barcode". `index_col=False` instead silently drops the last field.
+    A misaligned frame cleans and analyzes without complaint and reports
+    confident nonsense, which for a traceability-focused tool is worse than the
+    DoS this check was originally added for.
+    """
+    helper = _import_helper()
+    payload = "Barcode,geno,traitA\nS1,g1,1.0,extra\nS2,g2,2.0,extra2\n"
+
+    with patch("pandas.read_csv") as mock_read_csv:
+        with pytest.raises(BloomMCPError) as exc:
+            helper.parse_inline_csv_frame(payload)
+        mock_read_csv.assert_not_called()
+
+    assert exc.value.code == "invalid_input"
+    assert "3 fields" in exc.value.message
+    assert "4" in exc.value.message
+
+
+def test_index_column_round_trip_still_parses():
+    """The non-regression that makes rejecting divergence safe.
+
+    `to_csv(index=True)` is the common shape a user pastes after saving a frame,
+    and it looks like divergence but is not: pandas emits an *empty* first header
+    name, so the field counts still match (verified: 4 and 4). Rejecting genuine
+    divergence must not reject this.
+    """
+    helper = _import_helper()
+    payload = pd.DataFrame(
+        {"Barcode": ["S1", "S2"], "geno": ["g1", "g2"], "traitA": [1.0, 2.0]}
+    ).to_csv(index=True)
+
+    frame = helper.parse_inline_csv_frame(payload)
+    assert list(frame.df["Barcode"]) == ["S1", "S2"]
+    assert "traitA" in frame.trait_cols
+
+
+def test_a_lone_wide_row_among_narrow_rows_is_still_rejected():
+    """Why sampling ONE data row is sufficient rather than merely convenient.
+
+    A wide row hiding beyond the scan window is either consistent with row 1 —
+    and therefore caught by the checks above — or inconsistent, in which case
+    `read_csv`'s own tokenizer rejects it in ~0.00s (measured). Either way the
+    expensive silent path is unreachable; this pins the second half of that
+    argument so a future refactor cannot quietly rely on the first alone.
+    """
+    helper = _import_helper()
+    payload = "a,b,c\n" + "1,2,3\n" * 500 + ",".join("9" for _ in range(200_000)) + "\n"
+    import time
+
+    start = time.perf_counter()
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame(payload)
+    elapsed = time.perf_counter() - start
+
+    assert exc.value.code == "invalid_input"
+    assert elapsed < 2.0, f"inconsistent-row rejection took {elapsed:.2f}s"
+
+
+def test_oversized_content_short_circuits_before_encoding():
+    """The byte cap's O(1) pre-check.
+
+    A payload whose *character* count already exceeds the cap is over the byte
+    cap too (UTF-8 uses at least one byte per character), so it can be refused
+    without materializing a second full copy of it as encoded bytes just to
+    measure. The two branches are distinguishable by their wording: the
+    pre-check says "at least N bytes" because it is reporting a lower bound,
+    while the exact check reports the encoded length.
+    """
+    helper = _import_helper()
+    oversized = "a,b,c\n1,2,3\n" + "x" * (helper.MAX_INLINE_CSV_BYTES + 1)
+    assert len(oversized) > helper.MAX_INLINE_CSV_BYTES
+
+    with patch("pandas.read_csv") as mock_read_csv:
+        with pytest.raises(BloomMCPError) as exc:
+            helper.parse_inline_csv_frame(oversized)
+        mock_read_csv.assert_not_called()
+
+    assert exc.value.code == "invalid_input"
+    assert "at least" in exc.value.message, (
+        "an oversized-by-character-count payload should take the O(1) "
+        "pre-check branch, not the encode-then-measure one"
+    )
+
+
+def test_multibyte_content_under_the_character_bound_still_gets_the_exact_check():
+    """The pre-check must not replace the exact one: multi-byte characters mean
+    a payload can be under the cap by character count and over it by bytes."""
+    helper = _import_helper()
+    n_chars = helper.MAX_INLINE_CSV_BYTES // 2
+    content = f"Barcode,geno,traitA\nS1,g1,{'日' * n_chars}\n"
+    assert len(content) < helper.MAX_INLINE_CSV_BYTES
+    assert len(content.encode("utf-8")) > helper.MAX_INLINE_CSV_BYTES
+
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame(content)
+    assert exc.value.code == "invalid_input"
+    assert "at least" not in exc.value.message, (
+        "this payload is only over the cap once encoded, so it must reach the "
+        "exact byte check rather than the character-count short circuit"
+    )

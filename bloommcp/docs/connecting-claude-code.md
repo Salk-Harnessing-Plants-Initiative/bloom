@@ -97,6 +97,45 @@ description (surfaced in the tool's schema) for exactly what is and isn't preser
 there's no run to look up afterward, so treat this as a one-off check, not a registered
 experiment.
 
+### Carrying an inline clean forward
+
+Because nothing is persisted, there is no cleaned version for a later tool to resolve — the
+`based_on_version` chaining a registered experiment gets is not available here. To feed the
+cleaned table into another analysis, ask `qc_clean` to hand it back and pass it on yourself:
+
+```
+result = qc_clean(csv_content="<the CSV file's text>", return_cleaned_csv=true)
+# result.cleaned_csv now holds the cleaned table as text.
+```
+
+**Which tools accept that text is still growing.** `qc_clean` is the only tool with a
+`csv_content` parameter today; `pca_analysis`, `clustering`, `umap_analysis`,
+`descriptive_stats` and `remove_outliers` gain one in the follow-up work tracked by
+[#582](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/582). Until then
+`cleaned_csv` is something you hold onto or write to a file — passing it to another tool will
+fail schema validation, because the parameter does not exist yet. Check a tool's schema for
+`csv_content` before reaching for it.
+
+The chaining is yours, not the server's: bloommcp keeps no copy of `cleaned_csv` and records no
+link between the two calls. `cleaned_csv_sha256` is there so you can prove to yourself that a
+later call analyzed the table this one produced. `return_cleaned_csv` is off by default (the
+table can be large) and is rejected with a registered `experiment`, which already persists the
+cleaned CSV as a downloadable run artifact.
+
+Two things about the returned text specifically. It is your own data echoed verbatim — bloommcp
+does not escape or sanitize cell values, so if you save it and open it in a spreadsheet, a cell
+that started with `=`, `+`, `-` or `@` in your input is still a formula in the output. And the
+no-NaN guarantee `qc_clean` reports covers the trait columns it kept, not the whole table:
+identifier and metadata columns can legitimately still be blank, so don't read an empty cell
+outside `kept_trait_columns` as a cleaning failure.
+
+### One caveat worth stating plainly
+
+`csv_content` is never written anywhere and never logged — but that guarantee is about
+bloommcp's normal operation. Raising the server's log level to `DEBUG` makes the MCP transport
+log whole request bodies, inline CSV included, into the container's logs. Don't run a shared
+bloommcp at `DEBUG` while callers are passing data they chose not to register.
+
 ## Claude Desktop / Claude Enterprise
 
 **Not yet written.** Claude Desktop and Claude Enterprise custom connectors work differently from

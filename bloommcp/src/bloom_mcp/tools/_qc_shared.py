@@ -98,6 +98,7 @@ def _validate_trait_subset(
     experiment: str,
     *,
     require_certified: bool = False,
+    certified: bool = True,
 ) -> None:
     """Reject a caller-supplied ``trait_columns`` subset up front with a clear remedy.
 
@@ -119,16 +120,41 @@ def _validate_trait_subset(
       silent-``dropna()`` path — a NaN-bearing numeric column ``qc_clean`` did not adopt as a
       surviving trait cannot be selected. Keeping the *default* behavior byte-identical is what
       lets ``qc_inspect`` keep consuming this helper unchanged.
+
+    ``certified`` is **presentation only** (#582). On a consumer's inline
+    ``csv_content`` path the same three checks still apply — ``frame.trait_cols`` is
+    populated by the same :func:`resolve_columns` for an inline frame, so the accepted
+    column set is byte-identical — but the *wording* "certified-clean traits of
+    ``'my.csv'``" would be false twice over: there is no experiment, and no
+    certification was ever made (certification lives in the manifest, and the inline
+    path has none). Passing ``certified=False`` swaps the wording for language about
+    detected trait columns without changing which columns are accepted. It defaults to
+    ``True`` so all eight existing call sites are unaffected.
     """
+    _set_name = "certified-clean traits" if certified else "detected trait columns"
+    # Byte-identical to the pre-#582 text when certified=True — eight call sites
+    # depend on the default, and a presentation flag has no business quietly
+    # rewording their errors. Only the certified=False branch is new.
+    _empty_remedy = (
+        "Omit trait_columns to analyze all certified-clean traits, or name at "
+        "least one certified trait column."
+        if certified
+        else "Omit trait_columns to analyze all detected trait columns, or name "
+        "at least one trait column from the supplied content."
+    )
+    _outside_remedy = (
+        "Pass only cleaned trait columns (see load_experiment_data on the cleaned "
+        "version), or omit trait_columns to use all of them."
+        if certified
+        else "Pass only trait columns detected in the supplied content, or omit "
+        "trait_columns to use all of them."
+    )
     if require_certified:
         if not requested:
             raise BloomMCPError(
                 code="invalid_input",
                 message=f"trait_columns for {experiment!r} was given as an empty list.",
-                remedy=(
-                    "Omit trait_columns to analyze all certified-clean traits, or name at "
-                    "least one certified trait column."
-                ),
+                remedy=_empty_remedy,
             )
         duplicates = sorted({c for c in requested if requested.count(c) > 1})
         if duplicates:
@@ -140,19 +166,18 @@ def _validate_trait_subset(
                 ),
                 remedy="List each trait column at most once.",
             )
-        certified = set(frame.trait_cols)
-        outside = [c for c in requested if c not in certified]
+        # Named for the set it holds, not `certified` — that is the bool parameter
+        # above, and shadowing it here would silently break any later use.
+        certified_cols = set(frame.trait_cols)
+        outside = [c for c in requested if c not in certified_cols]
         if outside:
             raise BloomMCPError(
                 code="invalid_input",
                 message=(
-                    f"trait_columns includes columns that are not certified-clean traits of "
+                    f"trait_columns includes columns that are not {_set_name} of "
                     f"{experiment!r}: {outside}."
                 ),
-                remedy=(
-                    "Pass only cleaned trait columns (see load_experiment_data on the cleaned "
-                    "version), or omit trait_columns to use all of them."
-                ),
+                remedy=_outside_remedy,
             )
         non_numeric = [
             c for c in requested if not pd.api.types.is_numeric_dtype(frame.df[c])
