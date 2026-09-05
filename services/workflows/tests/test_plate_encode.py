@@ -1076,3 +1076,71 @@ def test_an_unsupported_depth_is_not_reported_as_a_corrupt_file():
     )
     # Still a FrameUnreadable, so every existing handler keeps working.
     assert isinstance(ei.value, pe.FrameUnreadable)
+
+
+def _scan(cycle, path="12/wave-1/P7.tif"):
+    """A frame row as `get_plate_frames` returns it, timed in scan order."""
+    from datetime import datetime, timedelta, timezone
+
+    return {
+        "object_path": path,
+        "cycle_number": cycle,
+        "capture_date": datetime(2026, 3, 6, tzinfo=timezone.utc)
+        + timedelta(minutes=7 * cycle),
+    }
+
+
+def test_a_clock_that_moved_backwards_is_refused_rather_than_scrambled():
+    """Frames are sorted by capture time, and capture time is a clock reading.
+
+    A clock corrected backwards mid-run stamps a later capture with an earlier
+    time, so the time sort plays the run in an order the plate was never
+    photographed in — and nothing downstream objects, because the elapsed label
+    renders a negative rather than refusing.
+    """
+    # Sorted by time, as the query returns them; the counter says otherwise.
+    frames = [_scan(1), _scan(2), _scan(9), _scan(3), _scan(4)]
+
+    with pytest.raises(pe.FrameUnreadable, match="clock moved"):
+        pe._refuse_a_disagreeing_scan_order(frames)
+
+
+def test_a_run_scanned_in_order_is_left_alone():
+    frames = [_scan(c) for c in (1, 2, 3, 4, 5)]
+    assert pe._refuse_a_disagreeing_scan_order(frames) is None
+
+
+def test_a_gap_in_the_scan_counter_is_not_a_disagreement():
+    """A powered-off scanner allocates no cycle numbers, so a run with a gap is
+    ordinary. Only going backwards means the clock moved."""
+    frames = [_scan(c) for c in (1, 2, 40, 41)]
+    assert pe._refuse_a_disagreeing_scan_order(frames) is None
+
+
+def test_frames_without_a_counter_do_not_block_the_render():
+    """The column is nullable. A run that carries no counter cannot be checked,
+    and must not therefore be refused."""
+    frames = [_scan(1), {**_scan(2), "cycle_number": None}, _scan(3)]
+    assert pe._refuse_a_disagreeing_scan_order(frames) is None
+
+
+def test_the_check_runs_before_anything_is_downloaded():
+    """A run this cannot be made from must not cost a minute of downloads
+    first — and must not leave a part-written file behind."""
+    downloaded = []
+
+    class _Images:
+        def download(self, path):
+            downloaded.append(path)
+            return b""
+
+    class _Client:
+        class storage:
+            @staticmethod
+            def from_(bucket):
+                return _Images()
+
+    with pytest.raises(pe.FrameUnreadable, match="clock moved"):
+        pe.encode_plate_video(_Client(), [_scan(1), _scan(9), _scan(2)], "/tmp/x.mp4")
+
+    assert downloaded == [], "frames were fetched for a run that cannot be ordered"

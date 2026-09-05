@@ -226,6 +226,37 @@ class PlateBusy(EncoderBusy):
     subclass so a caller that answers one of these answers both."""
 
 
+def _refuse_a_disagreeing_scan_order(frames: list[dict]) -> None:
+    """Refuse a run whose capture times contradict the order it was scanned in.
+
+    Frames arrive sorted by `capture_date`, which is the only total order the
+    table offers — `cycle_number` is nullable, so it cannot be the sort key.
+    But `capture_date` is a clock reading, and a clock can move: an NTP
+    correction, a manual set, or a reboot with a dead RTC all stamp a later
+    capture with an earlier time. Sorting by it then plays the run in an order
+    the plate was never photographed in, and nothing downstream notices —
+    `label_for` renders a negative elapsed rather than refusing, so the video
+    comes out internally consistent and wrong throughout.
+
+    `cycle_number` is the scanner's own counter and cannot move backwards, so
+    where the two disagree the clock is what changed. Refusing beats rendering:
+    a scientist watching roots retract looks for a biological explanation.
+    """
+    previous = None
+    for frame in frames:
+        cycle = frame.get("cycle_number")
+        if cycle is None:
+            continue
+        if previous is not None and cycle < previous:
+            raise FrameUnreadable(
+                f"this plate's capture times disagree with the order it was "
+                f"scanned in: cycle {cycle} is timed after cycle {previous}. "
+                "The scanner's clock moved during the run, so the frames "
+                "cannot be put in the order they were taken."
+            )
+        previous = cycle
+
+
 def encode_plate_video(client, frames: list[dict], out_path: str) -> int:
     """Encode `frames` into an MP4 at `out_path`. Returns the frames written.
 
@@ -237,6 +268,8 @@ def encode_plate_video(client, frames: list[dict], out_path: str) -> int:
     """
     if not frames:
         raise FrameUnreadable("no frames to encode")
+
+    _refuse_a_disagreeing_scan_order(frames)
 
     started = first_capture(frames)
     images = client.storage.from_(GRAVISCAN_IMAGES_BUCKET)
