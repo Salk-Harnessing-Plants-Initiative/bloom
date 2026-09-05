@@ -29,7 +29,7 @@ from plate_video_path import (
     GRAVISCAN_VIDEOS_BUCKET,
     plate_video_path,
 )
-from video_writer import VideoWriter
+from video_writer import ENCODE_TIMEOUT_SECONDS, VideoWriter
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +244,12 @@ def encode_plate_video(client, frames: list[dict], out_path: str) -> int:
 
     started = first_capture(frames)
     images = client.storage.from_(GRAVISCAN_IMAGES_BUCKET)
-    writer = VideoWriter(filename=out_path, fps=PLATE_FPS)
+    # Opt in to the stall deadline. The cyl path does not, so its behaviour is
+    # unchanged: it is shipped, and a ceiling it never asked for would surface
+    # as dozens of "skipping frame" warnings before the real failure.
+    writer = VideoWriter(
+        filename=out_path, fps=PLATE_FPS, deadline=ENCODE_TIMEOUT_SECONDS
+    )
     written = 0
 
     try:

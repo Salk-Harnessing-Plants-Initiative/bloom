@@ -421,7 +421,7 @@ def test_an_ffmpeg_that_never_reads_is_killed_rather_than_blocking_forever(
     assert isinstance(failure, VideoEncodeError), (
         f"the encode must fail as an encode error, got {failure!r}"
     )
-    assert "stopped accepting frames" in str(failure)
+    assert "accepted no frame" in str(failure)
     assert elapsed < 20, f"the deadline did not fire: took {elapsed:.1f}s"
 
 
@@ -438,20 +438,41 @@ def test_a_healthy_encode_is_not_killed_by_its_own_deadline(monkeypatch, tmp_pat
     assert writer._watchdog is None, "the watchdog outlived the encode"
 
 
-def test_the_deadline_cannot_kill_an_encode_that_already_finished(monkeypatch, tmp_path):
-    """Disarming has to survive a timer that is already running.
+def test_a_slow_but_progressing_encode_is_not_killed(monkeypatch, tmp_path):
+    """The deadline is a stall clock, not a stopwatch.
 
-    `cancel()` only stops a timer that has not fired yet. One that fired a
-    moment before close() is past cancelling, so without the disarm flag it
-    would kill a process that finished normally — a healthy encode failing
-    rarely, with nothing in the logs to explain it.
+    Timing the whole encode would time the caller's download loop too — 86
+    frames at 0.68s is most of a two-minute budget before ffmpeg has been slow
+    at all — so a plate that is merely large would be killed and reported as a
+    stuck ffmpeg. Here every frame is accepted, with gaps longer than the
+    deadline between them, and the encode must survive.
     """
     _stub_ffmpeg(monkeypatch, "import sys\nsys.stdin.buffer.read()\n")
 
-    writer = VideoWriter(filename=str(tmp_path / "out.mp4"), deadline=60.0)
-    writer.add(_BIG_FRAME)
+    writer = VideoWriter(filename=str(tmp_path / "out.mp4"), deadline=0.5)
+    started = time.monotonic()
+    for _ in range(8):
+        writer.add(_BIG_FRAME)
+        time.sleep(0.15)  # each gap well inside the deadline
+    elapsed = time.monotonic() - started
     writer.close(timeout=5)
 
-    # Exactly what a timer firing at the wrong moment would do.
-    writer._kill_past_deadline()
-    assert not writer._deadline_expired, "a disarmed deadline still fired"
+    assert elapsed > 0.5, (
+        f"the run finished in {elapsed:.2f}s, inside the deadline — this test "
+        "only means something if the total outlives it"
+    )
+    assert not writer._deadline_expired, "a progressing encode was killed"
+
+
+def test_a_writer_given_no_deadline_starts_no_watchdog(monkeypatch, tmp_path):
+    """The cyl path passes no deadline and must keep its previous behaviour —
+    it catches per-frame errors and continues, so a ceiling it never asked for
+    surfaces as a run of misleading 'skipping frame' warnings."""
+    _stub_ffmpeg(monkeypatch, "import sys\nsys.stdin.buffer.read()\n")
+
+    writer = VideoWriter(filename=str(tmp_path / "out.mp4"))
+    writer.add(_BIG_FRAME)
+
+    assert writer.deadline is None
+    assert writer._watchdog is None, "an unasked-for watchdog was armed"
+    writer.close(timeout=5)
