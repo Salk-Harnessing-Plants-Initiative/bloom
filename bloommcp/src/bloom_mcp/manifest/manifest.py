@@ -7,12 +7,15 @@ error). Writes overwrite via upsert — safe under the single-writer
 deployment topology bloommcp runs in.
 """
 
+import logging
 from typing import Optional
 
-from bloom_mcp.storage_backend import active_backend_name
+from bloom_mcp.storage_backend import active_backend_name, allow_foreign_manifest
 from bloom_mcp.supabase_client import list_prefix, read_json, write_json
 
 from .schema import CURRENT_SCHEMA_VERSION, Manifest
+
+logger = logging.getLogger(__name__)
 
 KNOWN_SCHEMA_VERSION = CURRENT_SCHEMA_VERSION
 
@@ -21,6 +24,16 @@ _MANIFEST_BASENAME = "manifest.json"
 
 class ManifestSchemaError(Exception):
     """Raised when a manifest's schema version is newer than this code understands."""
+
+
+class ManifestBackendMismatchError(Exception):
+    """Raised when a manifest's `storage_backend` sentinel names a backend other
+    than the one now serving the read — a *foreign catalog* (#573): a bucket
+    copied to a local root, a restored backup, a shared/overlapping root, or a
+    tampered sentinel. Never raised for a manifest with no usable sentinel
+    (absent/empty — written before schema v5), and never for the disjoint
+    A→B→A flip, where each catalog's own sentinel always matches the backend
+    serving it (the #395/#572 locally-undetectable non-goal)."""
 
 
 def validate_schema(manifest: dict) -> None:
@@ -43,12 +56,59 @@ def _manifest_key(prefix: str) -> str:
 
 
 def read_manifest(prefix: str) -> Optional[Manifest]:
-    """Return the manifest at `<prefix>/manifest.json`, or None if absent."""
+    """Return the manifest at `<prefix>/manifest.json`, or None if absent.
+
+    Every manifest read in the process funnels through here
+    (`AnalysisDir.read_manifest`/`get_version`/`list_versions`), so the #573
+    foreign-catalog check below covers `get_run`, `list_runs`, `create_run`,
+    `commit`'s reads, and the reader's cleaned-tier resolution structurally.
+    """
     if _MANIFEST_BASENAME not in list_prefix(prefix):
         return None
     raw = read_json(_manifest_key(prefix))
     validate_schema(raw)
-    return Manifest.model_validate(raw)
+    manifest = Manifest.model_validate(raw)
+    _check_backend_sentinel(prefix, manifest)
+    return manifest
+
+
+def _check_backend_sentinel(prefix: str, manifest: Manifest) -> None:
+    """Fail closed when the manifest was written by a different backend (#573).
+
+    Runs only after schema validation (so `ManifestSchemaError` keeps
+    precedence) and compares against `active_backend_name()` — the same
+    function `write_manifest` stamps from, so stamp and check cannot disagree.
+    An absent/empty sentinel (pre-v5 manifest) passes: failing it would brick
+    every catalog written before #572; the window closes when the catalog's
+    next commit re-stamps it. The message carries only the logical storage
+    prefix — never an absolute host path.
+    """
+    recorded = (manifest.storage_backend or "").strip()
+    if not recorded:
+        return
+    active = active_backend_name()
+    if recorded == active:
+        return
+    if allow_foreign_manifest():
+        # Deliberate foreign inspection (BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1):
+        # warn per guarded read — never once-per-process, the one-time-signal
+        # failure mode of #572's fresh-catalog log that #573 exists to avoid.
+        logger.warning(
+            "serving foreign catalog %s under the escape hatch: written by "
+            "storage backend %r, active backend is %r",
+            prefix.rstrip("/"),
+            recorded,
+            active,
+        )
+        return
+    raise ManifestBackendMismatchError(
+        f"manifest at {prefix.rstrip('/')} was written by storage backend "
+        f"{recorded!r} but the active backend is {active!r} — refusing to "
+        f"serve a catalog another backend wrote. Do not mix storage backends "
+        f"for one experiment; for a deliberate offline copy set "
+        f"BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1 (reads only; a containerized "
+        f"deployment must pass the variable through compose)."
+    )
 
 
 def write_manifest(prefix: str, manifest: Manifest) -> None:

@@ -267,16 +267,36 @@ and then flip to `local` (or vice-versa), the second store starts a fresh catalo
 and re-allocates `v1`: version ids collide and each store's `latest` points at a
 different lineage. A later read sees only the store the current backend points at
 and is blind to the other's versions. **Pick one backend per experiment and keep
-it stable** for the life of that experiment's analysis history.
+it stable** for the life of that experiment's analysis history. (Uploading one
+store's catalog into the other as a hand-rolled "migration" now fails at read
+time instead of silently taking over — see the read guard below.)
 
-This can't be _prevented_ from purely local information — the `local` backend
-never contacts `supabase` and has no way to check whether `supabase` already
-has history for an experiment (and vice versa) without doing so, which would
-defeat the point. It is made **observable** instead (#395):
+Full cross-backend detection can't be done from purely local information — the
+`local` backend never contacts `supabase` and has no way to check whether
+`supabase` already has history for an experiment (and vice versa) without doing
+so, which would defeat the point. Two locally-available signals exist (#395),
+and one is now **enforced** at read time (#573):
 
 - Every `manifest.json` records a `storage_backend` field naming whichever
-  backend most recently wrote it, so inspecting either store's file directly
-  identifies which backend produced it.
+  backend most recently wrote it. Since #573 this sentinel is enforced, not
+  just recorded: **any manifest read whose sentinel names a backend other than
+  the active one fails closed** (`ManifestBackendMismatchError`, naming both
+  backends and the catalog's storage prefix), at the single read chokepoint
+  every consumer passes through — `get_run`/`list_runs`, `require_clean`
+  resolution, `create_run`/`commit`, download links. Manifests written before
+  the sentinel existed (pre-v5) pass unguarded until their next commit
+  re-stamps them. For a **deliberate** foreign read — e.g. inspecting an
+  offline copy of a prod bucket via the `local` backend — set
+  `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1`: each guarded read then succeeds
+  and logs a warning naming both backends (a per-read audit trail, not a
+  one-time line). The hatch sanctions **reads only** — `create_run`/`commit`
+  refuse a foreign catalog unconditionally, so it can never be extended or
+  silently re-stamped. Accepted values: unset/empty (guard active, the
+  default), `0`, `1`; anything else fails boot validation. In dev the variable
+  passes through `docker-compose.dev.yml` (set it in your `.env.dev`);
+  containerized staging/prod deliberately do **not** pass it through — using
+  the hatch there requires a compose `environment:` edit + redeploy (or
+  reverting the change that surfaced the failure).
 - The first commit for an (experiment, tool_class) pair under a given
   backend — i.e. allocating a fresh catalog, `v1` — logs an info-level
   message naming the experiment, tool class, and active backend. It's `info`,
@@ -284,13 +304,16 @@ defeat the point. It is made **observable** instead (#395):
   (the common, non-mixing case), and warning-level would page on-call for
   routine new-experiment onboarding.
 
-**Known limitation:** the signal only fires when a backend's own catalog
-doesn't exist yet. Flipping `supabase` → `local` → `supabase` logs on the
+**Known limitation:** both signals — and the read guard — see only the active
+backend's own catalog. Flipping `supabase` → `local` → `supabase` logs on the
 first flip (`local` starts fresh) but **not** on the return trip (`supabase`'s
-manifest already exists), even though a `local`-backed run happened in
-between and `supabase`'s catalog is now silently stale relative to it. Neither
-the sentinel nor the log line can join the two catalogs — they only make the
-_moment_ of a potential split observable, not the mixing itself.
+manifest already exists), and the guard stays silent throughout: each
+catalog's sentinel always matches the backend serving it, even though a
+`local`-backed run happened in between and `supabase`'s `latest` is now
+silently stale relative to it. The guard rejects a catalog served by a backend
+that did not write it (a copied/synced bucket, a restored backup, a shared
+root, a tampered sentinel); it cannot join two disjoint catalogs or detect the
+mixing itself.
 
 **This is a dev / power-user path, not a normal-user packaged distribution.**
 Bench scientists use the deployed web product; fully-local mode is for driving

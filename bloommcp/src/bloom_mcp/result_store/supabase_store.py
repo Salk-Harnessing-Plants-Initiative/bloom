@@ -22,6 +22,7 @@ from bloom_mcp.manifest import (
     AnalysisDir,
     ExperimentBlock,
     Manifest,
+    ManifestBackendMismatchError,
     ManifestSchemaError,
     next_version_id,
     version_dir_name,
@@ -44,6 +45,7 @@ from ._artifacts import (
 )
 from ._locks import KeyedLock
 from .ports import (
+    CatalogBackendMismatchError,
     CommitFailedError,
     CorruptRunLinksError,
     ManifestIncompatibleError,
@@ -136,6 +138,16 @@ def _guarded_manifest_read(adir: AnalysisDir, read: Callable[[], T]) -> T:
     """
     try:
         return read()
+    except ManifestBackendMismatchError as exc:
+        # #573: the catalog was written by a different backend than the active
+        # one. The manifest-layer message carries only logical identities (both
+        # backend names + the storage prefix) by construction, so passing it
+        # through leaks nothing — unlike the generic branch below, which must
+        # redact an arbitrary exception.
+        logger.error(
+            "foreign catalog for %s/%s", adir.tool_class, adir.stem, exc_info=True
+        )
+        raise CatalogBackendMismatchError(str(exc)) from exc
     except ManifestSchemaError as exc:
         # `validate_schema` raises this both for "too new" and for "missing
         # the manifest_schema_version field" — the message says "unsupported",
@@ -154,6 +166,31 @@ def _guarded_manifest_read(adir: AnalysisDir, read: Callable[[], T]) -> T:
         raise ManifestReadError(
             f"manifest read failed for {adir.tool_class}/{adir.stem}"
         ) from exc
+
+
+def _reject_foreign_manifest(adir: AnalysisDir, manifest: Optional[Manifest]) -> None:
+    """Hatch-independent write-path sentinel check (#573).
+
+    `read_manifest`'s own guard fails closed by default, but under
+    `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1` it downgrades to a warning and
+    returns the manifest — acceptable for reads, never for the write path:
+    extending the catalog and re-stamping its sentinel via `write_manifest`
+    would silently take over a foreign catalog. So `create_run` and `commit`
+    re-check the manifest they just read, unconditionally.
+    """
+    if manifest is None:
+        return
+    recorded = (manifest.storage_backend or "").strip()
+    if not recorded or recorded == active_backend_name():
+        return
+    raise CatalogBackendMismatchError(
+        f"catalog for {adir.tool_class}/{adir.stem} was written by storage "
+        f"backend {recorded!r} but the active backend is "
+        f"{active_backend_name()!r} — refusing to extend or re-stamp a foreign "
+        f"catalog (permanent condition, do not retry; the "
+        f"BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST escape hatch sanctions reads "
+        f"only)."
+    )
 
 
 @dataclass
@@ -198,6 +235,10 @@ class SupabaseResultStore:
         # topology; a compare-and-set (or re-allocate-at-commit) is on the
         # roadmap (#324).
         manifest = _guarded_manifest_read(adir, adir.read_manifest)
+        # #573: hatch-independent — under BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1
+        # the read above succeeds with a warning, but the write path must never
+        # extend a foreign catalog, so re-check before any staging dir exists.
+        _reject_foreign_manifest(adir, manifest)
         version_id = next_version_id(manifest)
         version_dir = version_dir_name(version_id, user_label)
         # No orphan cleanup if commit() is never reached (crash, or the tool errors
@@ -247,6 +288,7 @@ class SupabaseResultStore:
                 attempts = 0
                 while True:
                     existing = adir.read_manifest()
+                    _reject_foreign_manifest(adir, existing)
                     if existing is None or not any(
                         v.id == version_id for v in existing.versions
                     ):
@@ -329,6 +371,7 @@ class SupabaseResultStore:
                 # bypasses the lock (e.g. a future direct manifest writer) and
                 # against the still-open multi-instance case documented below.
                 fresh = adir.read_manifest()
+                _reject_foreign_manifest(adir, fresh)
                 if fresh is not None and any(
                     v.id == version_id for v in fresh.versions
                 ):
@@ -389,6 +432,17 @@ class SupabaseResultStore:
                 logger.exception(
                     "ResultStore.commit failed for %s/%s", adir.tool_class, adir.stem
                 )
+                if isinstance(exc, CatalogBackendMismatchError):
+                    # #573: already the right caller-facing type, with
+                    # do-not-retry semantics — never wrap it into the generic
+                    # "transient — retry" CommitFailedError below.
+                    raise
+                if isinstance(exc, ManifestBackendMismatchError):
+                    # #573: the manifest-layer guard fired (hatch off) inside
+                    # commit's own read. Same permanent condition; surface it
+                    # as the store's distinguishable type, message passthrough
+                    # (logical identities only, safe by construction).
+                    raise CatalogBackendMismatchError(str(exc)) from exc
                 if isinstance(exc, KeyScopeGuardError):
                     # #598: this is a structural bug (a key outside this run's
                     # own prefix), not a transient condition — it will fail
