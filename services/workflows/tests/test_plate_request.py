@@ -11,8 +11,10 @@ import logging
 import pytest
 from fastapi import HTTPException
 
+import plate_encode as pe
 import plate_request as pr
 from plate_encode import EncoderBusy, FrameUnreadable, NotRecorded
+from video_writer import VideoEncodeError
 
 
 @pytest.fixture(autouse=True)
@@ -185,3 +187,80 @@ def test_a_wave_that_is_not_a_whole_non_negative_number_is_refused(monkeypatch, 
     with pytest.raises(HTTPException) as ei:
         pr.render(12, {"plate_id": "P7", "wave_number": wave})
     assert ei.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "failure,status,detail",
+    [
+        (
+            pe.FrameDepthUnsupported("a I;16 frame carries no fixed full scale"),
+            422,
+            "full scale",
+        ),
+        (
+            VideoEncodeError("ffmpeg accepted no frame for 120.0s and was killed"),
+            500,
+            "could not be encoded",
+        ),
+        (BrokenPipeError("broken pipe"), 500, "could not be encoded"),
+        (
+            pe.PlateMismatch("refusing to store 12/wave-1/P8.mp4"),
+            500,
+            "could not be stored",
+        ),
+    ],
+)
+def test_every_encoder_failure_gets_a_status_rather_than_a_bare_500(
+    monkeypatch, failure, status, detail
+):
+    """Each of these reached the caller as an unexplained 500.
+
+    The worst was VideoEncodeError: it is what the stall watchdog raises, so
+    the likeliest genuine failure arrived after two minutes as
+    {"detail": "Internal Server Error"} with its own explanation discarded.
+    """
+
+    def fails(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(pr, "render_plate_video", fails)
+
+    with pytest.raises(HTTPException) as ei:
+        pr.render(12, {"plate_id": "P7", "wave_number": 1})
+
+    assert ei.value.status_code == status
+    assert detail in ei.value.detail
+
+
+def test_an_encoder_failure_is_logged_with_its_real_reason(monkeypatch, caplog):
+    """The detail is generic, so the log is the only place the reason survives —
+    a caller cannot be handed ffmpeg's stderr, which carries internal paths."""
+
+    def fails(*args, **kwargs):
+        raise VideoEncodeError("ffmpeg exited 1: No space left on device")
+
+    monkeypatch.setattr(pr, "render_plate_video", fails)
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(HTTPException) as ei:
+            pr.render(12, {"plate_id": "P7", "wave_number": 1})
+
+    assert "No space left on device" in caplog.text, "the reason reached nobody"
+    assert "No space left" not in ei.value.detail, "ffmpeg's output reached the caller"
+
+
+def test_an_unsupported_depth_is_not_reported_as_an_upstream_failure(monkeypatch):
+    """FrameDepthUnsupported subclasses FrameUnreadable, so without its own
+    branch it lands on 502 — asserting a gateway failure that did not happen,
+    and sending someone to rescan a plate whose file is intact."""
+
+    def fails(*args, **kwargs):
+        raise pe.FrameDepthUnsupported("12/wave-1/P7_37.tif: a I frame peaks at 2**30")
+
+    monkeypatch.setattr(pr, "render_plate_video", fails)
+
+    with pytest.raises(HTTPException) as ei:
+        pr.render(12, {"plate_id": "P7", "wave_number": 1})
+
+    assert ei.value.status_code != 502, "an intact file was blamed on an upstream failure"
+    assert ei.value.status_code == 422

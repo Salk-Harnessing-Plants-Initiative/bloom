@@ -11,8 +11,16 @@ import logging
 
 from fastapi import HTTPException
 
-from plate_encode import EncoderBusy, FrameUnreadable, NotRecorded, render_plate_video
+from plate_encode import (
+    EncoderBusy,
+    FrameDepthUnsupported,
+    FrameUnreadable,
+    NotRecorded,
+    PlateMismatch,
+    render_plate_video,
+)
 from plate_video_path import is_valid_plate_id
+from video_writer import VideoEncodeError
 from supabase_client import app_client
 
 logger = logging.getLogger(__name__)
@@ -35,6 +43,13 @@ def render(experiment_id: int, body: dict) -> dict:
         outcome = render_plate_video(app_client(), experiment_id, plate_id, wave_number)
     except EncoderBusy as exc:
         raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "30"}) from exc
+    except FrameDepthUnsupported as exc:
+        # Before FrameUnreadable, which it subclasses. Its own status because
+        # the action differs: the file is intact and it is the scanner's output
+        # depth this encoder does not cover, so 502 would send someone to look
+        # for an upstream failure that did not happen.
+        logger.warning("plate video refused an unsupported frame depth: %s", exc)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FrameUnreadable as exc:
         # Naming the frame is the point — "a frame failed" sends someone to the
         # scanner, "12/wave-1/P7_40.tif could not be downloaded" sends them to it.
@@ -45,6 +60,23 @@ def render(experiment_id: int, body: dict) -> dict:
     except NotRecorded as exc:
         logger.error("plate video stored but not recorded: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except (VideoEncodeError, BrokenPipeError) as exc:
+        # The encoder's own failures: a stall the watchdog killed, a non-zero
+        # ffmpeg exit, a pipe that broke. Without this branch each arrives as an
+        # unexplained 500 — including "ffmpeg accepted no frame for 120.0s and
+        # was killed", which is the one line a caller waiting two minutes needs.
+        logger.error("plate video encode failed: %s", exc)
+        raise HTTPException(
+            status_code=500, detail="the video could not be encoded"
+        ) from exc
+    except PlateMismatch as exc:
+        # A crossed key and identity: this run would have stored one plate's
+        # video under another's name. Nothing to retry, and nothing the caller
+        # can act on, so the detail stays generic and the reason is logged.
+        logger.error("plate video refused a crossed plate identity: %s", exc)
+        raise HTTPException(
+            status_code=500, detail="the video could not be stored"
+        ) from exc
 
     if outcome["action"] == "refuse":
         raise HTTPException(
