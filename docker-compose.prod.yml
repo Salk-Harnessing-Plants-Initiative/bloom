@@ -198,6 +198,25 @@ services:
       context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
+    # The ceiling MAX_CONCURRENT_ENCODES is sized against. Without it a render
+    # spike goes at the host, and the kernel's OOM killer picks by resident
+    # size across all ~15 containers on a 16 GB box — which means db-prod or
+    # minio, not the service that caused it. With it, the kill lands inside
+    # this container: the uvicorn worker dies and `restart: unless-stopped`
+    # brings it back, so a runaway render costs this service a restart rather
+    # than costing the stack its database.
+    #
+    # 2g covers four concurrent 16-bit plates: 162 MB of frame each measured by
+    # tracemalloc, plus Pillow's decode buffer outside it, plus the interpreter
+    # — about 1.4 GB. The tmpfs below is RAM-backed and counts here too, but
+    # holds only the finished MP4s (~3.5 MB each), not its 512m cap. Four
+    # 32-bit plates would exceed 2g, which is the intended outcome.
+    mem_limit: 2g
+    # Without this Docker allows twice mem_limit in swap, so a runaway render
+    # would grind against disk indefinitely instead of being killed — slowing
+    # every other container on the box, which is the outcome mem_limit is here
+    # to avoid. Equal values mean no swap: hit the ceiling and stop.
+    memswap_limit: 2g
     tmpfs:
       # Size-capped so the temp MP4 can't exhaust host RAM (sized for concurrent encodes
       # in the one worker, with headroom).
@@ -228,10 +247,13 @@ services:
       - kong
       - db-prod
     restart: unless-stopped
-    # One worker: the per-scan lock in video.py holds only within a single process, so raising
-    # this reopens the overwrite race it closes. Start here and watch — raise it when this one
-    # is actually saturated, or once the encode moves to a worker container and the database
-    # enforces the serialisation instead, whichever comes first.
+    # One worker: the per-scan lock in video.py and the per-plate lock in
+    # plate_encode.py both hold only within a single process, so raising this reopens the
+    # overwrite race they close — the object keys are deterministic and unversioned, so two
+    # workers would race to write the same one. The encode semaphore bounds concurrency but
+    # not that. Start here and watch — raise it when this one is actually saturated, or once
+    # the encode moves to a worker container and the database enforces the serialisation
+    # instead, whichever comes first.
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "1"]
 
   # Consumes the cyl_pipeline_dispatch pgmq queue (bloom #11/#404 Phase 2) and
