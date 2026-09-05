@@ -7,6 +7,8 @@ label, and a fake would only prove the calls were made in some order.
 from __future__ import annotations
 
 import io
+import os
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
@@ -1399,3 +1401,171 @@ def test_a_real_sized_plate_is_not_refused():
 
     frame = pe.prepare_frame(_png(4960, 6850), LABEL)
     assert frame.shape[1] == pe.PLATE_VIDEO_WIDTH
+
+
+# --------------------------------------------------------------------------
+# render_plate_video — decide, encode, store, record
+# --------------------------------------------------------------------------
+#
+# The function the route calls, and until these tests it had none: its whole
+# body could be replaced with `return plan_render(...)` — never encoding,
+# uploading or recording — with the entire suite still green.
+
+
+def _plan(action="render", **over):
+    return {
+        "action": action,
+        "reason": "no video stored; encoding 3 frames",
+        "key": "12/wave-1/P7.mp4",
+        "code": "",
+        "frames": _frames(3),
+        "coverage": {"state": "complete", "summary": "3 frames"},
+        **over,
+    }
+
+
+def _wire(monkeypatch, plans, *, on_encode=None):
+    """Stand in for the three calls a render makes, and record what happened.
+
+    `plans` is what successive `plan_render` calls return, so a test can make
+    the second look disagree with the first — which is the case the double plan
+    exists for and the one that cannot be reached any other way.
+    """
+    seen = {"plans": 0, "encoded": [], "published": [], "slot_held": [], "lock_held": []}
+
+    def plan_render(*args, **kwargs):
+        seen["plans"] += 1
+        return plans[min(seen["plans"] - 1, len(plans) - 1)]
+
+    def encode(client, frames, out_path):
+        # Sampled while the render is in flight: afterwards both are released
+        # and the difference between holding them and not is invisible.
+        seen["slot_held"].append(pe._encode_slots._value)
+        seen["lock_held"].append(pe._plate_locks["12/wave-1/P7.mp4"].locked())
+        seen["encoded"].append(out_path)
+        if on_encode is not None:
+            on_encode()
+        return len(frames)
+
+    def publish(client, key, video_path, **kwargs):
+        seen["published"].append((key, kwargs["frame_count"]))
+        return {"object_path": key, "frame_count": kwargs["frame_count"]}
+
+    monkeypatch.setattr(pe, "plan_render", plan_render)
+    monkeypatch.setattr(pe, "encode_plate_video", encode)
+    monkeypatch.setattr(pe, "publish_plate_video", publish)
+    return seen
+
+
+def test_a_render_encodes_stores_and_records(monkeypatch):
+    """The body is the feature. Replacing it with the plan alone left the whole
+    suite green, so this asserts each of the three things actually happened."""
+    seen = _wire(monkeypatch, [_plan()])
+
+    result = pe.render_plate_video(object(), 12, "P7", 1)
+
+    assert result["action"] == "rendered"
+    assert len(seen["encoded"]) == 1, "nothing was encoded"
+    assert seen["published"] == [("12/wave-1/P7.mp4", 3)], "nothing was recorded"
+    assert result["recorded"]["frame_count"] == 3
+
+
+def test_the_second_look_under_the_lock_turns_a_race_into_a_keep(monkeypatch):
+    """Between deciding and holding the lock, another request may have rendered
+    this plate. Re-encoding would overwrite a video identical to the one about
+    to be made, so the second plan is what makes the first one safe."""
+    seen = _wire(monkeypatch, [_plan(), _plan(action="keep", reason="already covers 3")])
+
+    result = pe.render_plate_video(object(), 12, "P7", 1)
+
+    assert result["action"] == "keep"
+    assert seen["plans"] == 2, "the plan was not taken again under the lock"
+    assert seen["encoded"] == [], "it encoded over a video that was already current"
+
+
+def test_a_plan_that_says_no_never_reaches_the_lock(monkeypatch):
+    seen = _wire(monkeypatch, [_plan(action="refuse", reason="no captures")])
+
+    assert pe.render_plate_video(object(), 12, "P7", 1)["action"] == "refuse"
+    assert seen["plans"] == 1
+    assert seen["encoded"] == []
+
+
+def test_both_guards_are_held_while_the_encode_runs(monkeypatch):
+    """Sampled inside the encode: a slot consumed and the plate's lock held.
+    Removing either leaves every other assertion in this file unchanged."""
+    seen = _wire(monkeypatch, [_plan()])
+
+    pe.render_plate_video(object(), 12, "P7", 1)
+
+    assert seen["slot_held"] == [pe.MAX_CONCURRENT_ENCODES - 1], "no encode slot was taken"
+    assert seen["lock_held"] == [True], "the plate was not locked while it rendered"
+
+
+def test_the_slot_is_taken_before_the_plate_lock(monkeypatch):
+    """An unstated order that is now the behaviour, so it is written down.
+
+    Slot first means a duplicate request for a plate already rendering is told
+    the encoder is busy when every slot is taken, rather than that its own plate
+    is in progress. Lock first would hold a plate lock while queueing for a
+    slot. Whichever is chosen, a silent swap should fail here.
+    """
+    order = []
+    real_slot, real_lock = pe.encode_slot, pe.plate_lock
+
+    @contextmanager
+    def slot(*a, **k):
+        order.append("slot")
+        with real_slot(*a, **k):
+            yield
+
+    @contextmanager
+    def lock(*a, **k):
+        order.append("lock")
+        with real_lock(*a, **k):
+            yield
+
+    monkeypatch.setattr(pe, "encode_slot", slot)
+    monkeypatch.setattr(pe, "plate_lock", lock)
+    _wire(monkeypatch, [_plan()])
+
+    pe.render_plate_video(object(), 12, "P7", 1)
+
+    assert order == ["slot", "lock"]
+
+
+def test_the_output_name_never_comes_from_the_plate_id(monkeypatch):
+    """The plate id is caller-supplied. A constant name keeps it out of the
+    filesystem and off the ffmpeg command line, where a leading dash is an
+    option and a scheme is a destination."""
+    seen = _wire(monkeypatch, [_plan()])
+
+    pe.render_plate_video(object(), 12, "P7", 1)
+
+    written = seen["encoded"][0]
+    assert written.endswith("plate.mp4")
+    assert "P7" not in os.path.basename(written)
+
+
+@pytest.mark.parametrize(
+    "plans,on_encode",
+    [
+        ([_plan()], None),
+        ([_plan(), _plan(action="keep")], None),
+        ([_plan()], lambda: (_ for _ in ()).throw(pe.FrameUnreadable("bad frame"))),
+    ],
+    ids=["success", "keep-under-the-lock", "the-encode-raises"],
+)
+def test_the_slot_and_the_lock_are_handed_back_on_every_path(monkeypatch, plans, on_encode):
+    """A slot leaked on any path takes a permanent bite out of capacity, and a
+    plate whose lock is never released can never be rendered again."""
+    _wire(monkeypatch, plans, on_encode=on_encode)
+    before = pe._encode_slots._value
+
+    try:
+        pe.render_plate_video(object(), 12, "P7", 1)
+    except pe.FrameUnreadable:
+        pass
+
+    assert pe._encode_slots._value == before, "an encode slot was not released"
+    assert not pe._plate_locks["12/wave-1/P7.mp4"].locked(), "the plate stayed locked"
