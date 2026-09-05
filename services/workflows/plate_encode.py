@@ -51,6 +51,25 @@ PLATE_VIDEO_WIDTH = 1440
 # of the source made the same measurement 578 MB.
 MAX_CONCURRENT_ENCODES = 4
 
+# What a plate scan can plausibly be, checked against the header before
+# anything is decoded. A file's size on disk says nothing about its size in
+# memory: lossless compression squeezes uniformity, so a blank 12000x12000
+# frame is 2 MB stored and 288 MB decoded, where a real 4960x6850 plate is
+# 93 MB stored and 68 MB decoded. Without this the encoder builds whatever the
+# header claims.
+#
+# Deliberately not derived from the container's memory limit. Measured at 5.0
+# bytes per pixel through prepare_frame (12 including Pillow's own decode
+# buffer, which is outside the Python allocator), four concurrent *real* plates
+# already sit near that limit — so a bound that guaranteed the budget would
+# have to reject real plates. Keeping four renders inside 2g is
+# MAX_CONCURRENT_ENCODES' job. This is the narrower question of whether the
+# frame could be a plate at all.
+#
+# A plate is 34.0 Mpx; 6000x8000 would be 48. A 12000x12000 frame is 144 and is
+# not a plate.
+MAX_PLATE_PIXELS = 60_000_000
+
 # The modes carrying more than 8 bits per channel, and the full scale they are
 # reduced from. `F` is absent deliberately — see `_to_8bit_rgb`.
 DEEP_MODES = ("I;16", "I;16B", "I;16L", "I")
@@ -136,6 +155,15 @@ def prepare_frame(image_bytes: bytes, label: str) -> np.ndarray:
     Returns 8-bit RGB, `PLATE_VIDEO_WIDTH` wide, with the label band beneath.
     """
     with Image.open(io.BytesIO(image_bytes)) as image:
+        # Before load(), which is what actually builds the picture in memory.
+        # open() has only read the header, so this costs nothing and refuses a
+        # frame while it is still bytes.
+        pixels = image.width * image.height
+        if pixels > MAX_PLATE_PIXELS:
+            raise FrameUnreadable(
+                f"{image.width}x{image.height} is {pixels / 1e6:.0f} megapixels, "
+                f"past the {MAX_PLATE_PIXELS / 1e6:.0f} a plate scan can be"
+            )
         image.load()
         rgb = _to_8bit_rgb(image)
         scaled = _downscale(rgb)

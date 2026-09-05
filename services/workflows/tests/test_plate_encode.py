@@ -1351,3 +1351,51 @@ def test_the_encoder_opts_into_the_stall_deadline(ffmpeg, tmp_path, monkeypatch)
         "the encoder built its writer without a deadline, so a stalled ffmpeg "
         "would pin this thread and never release the encode slot or plate lock"
     )
+
+
+def test_a_frame_larger_than_a_plate_is_refused_before_it_is_decoded():
+    """Refused off the header, while it is still bytes.
+
+    A file's size on disk says nothing about its size in memory. Lossless
+    compression squeezes uniformity, so a blank frame of absurd dimensions is
+    small on the wire and enormous once built: measured, 12000x12000 is 2 MB
+    stored and 288 MB of raw pixels, and more again once it is made RGB. One
+    such frame fills the container's entire budget, and the route that reaches
+    this code is callable by any authenticated user.
+
+    The check is a sanity bound, not a consistency check — such a file's header
+    is perfectly honest, it is simply not a plate.
+    """
+    import tracemalloc
+
+    bomb = io.BytesIO()
+    Image.new("I;16", (12000, 12000)).save(bomb, "TIFF", compression="tiff_lzw")
+    payload = bomb.getvalue()
+
+    assert len(payload) < 5_000_000, "the fixture is not the small-file case"
+
+    tracemalloc.start()
+    try:
+        with pytest.raises(pe.FrameUnreadable, match="megapixels"):
+            pe.prepare_frame(payload, LABEL)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 50_000_000, (
+        f"peaked at {peak / 1e6:.0f} MB — the frame was decoded before being "
+        "refused, so the refusal saved nothing"
+    )
+
+
+def test_a_real_sized_plate_is_not_refused():
+    """The bound has to leave real scans alone, including a larger scanner.
+
+    A plate is 4960x6850 = 34.0 Mpx. Asserted against the constant so that
+    lowering it below a real plate fails here rather than in production.
+    """
+    assert 4960 * 6850 < pe.MAX_PLATE_PIXELS, "a real plate no longer fits"
+    assert 6000 * 8000 < pe.MAX_PLATE_PIXELS, "no room for a higher-res scanner"
+
+    frame = pe.prepare_frame(_png(4960, 6850), LABEL)
+    assert frame.shape[1] == pe.PLATE_VIDEO_WIDTH
