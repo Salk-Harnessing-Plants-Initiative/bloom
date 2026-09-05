@@ -98,22 +98,52 @@ def test_a_busy_encoder_says_come_back_rather_than_failing(monkeypatch):
     assert ei.value.headers["Retry-After"] == "30"
 
 
-def test_an_unreadable_frame_names_it_in_the_response(monkeypatch):
-    """"A frame failed" sends someone to the scanner. Naming it sends them to it."""
+def test_an_unreadable_frame_names_it_without_naming_the_cause(monkeypatch):
+    """"A frame failed" sends someone to the scanner. Naming it sends them to it.
+
+    The path only. The rest of the message is the storage client's own error,
+    which in the real failure carries the internal gateway host and port, the
+    database role and PostgREST's codes — and Caddy publishes this service
+    directly, so whatever goes in `detail` reaches the caller unfiltered.
+    """
+    cause = (
+        "{'statusCode':'403','error':'InvalidJwt','message':'jwt expired for role "
+        "bloom_workflows at http://kong:8000/storage/v1/object/graviscan-images/...'}"
+    )
+
     def unreadable(*a, **k):
-        raise FrameUnreadable("could not download 12/wave-1/P7_40.tif: connection reset")
+        raise FrameUnreadable(
+            f"could not download 12/wave-1/P7_40.tif: {cause}", "12/wave-1/P7_40.tif"
+        )
 
     monkeypatch.setattr(pr, "render_plate_video", unreadable)
     with pytest.raises(HTTPException) as ei:
         pr.render(12, {"plate_id": "P7", "wave_number": 1})
 
     assert ei.value.status_code == 502
-    assert "P7_40.tif" in ei.value.detail
+    assert "P7_40.tif" in ei.value.detail, "the caller cannot tell which frame failed"
+    for leaked in ("kong:8000", "bloom_workflows", "InvalidJwt", "403"):
+        assert leaked not in ei.value.detail, f"{leaked!r} reached the caller"
+
+
+def test_a_frame_failure_carrying_no_path_still_answers(monkeypatch):
+    """`FrameUnreadable` is also raised for a whole run — "no frames to encode"
+    has no object to name, and must not render as "None could not be read"."""
+
+    def unreadable(*a, **k):
+        raise FrameUnreadable("no frames to encode")
+
+    monkeypatch.setattr(pr, "render_plate_video", unreadable)
+    with pytest.raises(HTTPException) as ei:
+        pr.render(12, {"plate_id": "P7", "wave_number": 1})
+
+    assert "None" not in ei.value.detail
+    assert "frame could not be read" in ei.value.detail
 
 
 def test_an_unreadable_frame_is_logged_as_well_as_returned(monkeypatch, caplog):
-    """The response body is not a record. The web proxy discards 502 detail, so
-    an operator's only copy of the failing object path is this log line."""
+    """The response body is not a record, and it no longer carries the reason —
+    only the frame. This log line is the operator's only copy of why."""
     def unreadable(*a, **k):
         raise FrameUnreadable("could not download 12/wave-1/P7_40.tif: connection reset")
 

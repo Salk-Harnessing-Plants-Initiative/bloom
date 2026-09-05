@@ -52,11 +52,14 @@ def render(experiment_id: int, body: dict) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FrameUnreadable as exc:
         # Naming the frame is the point — "a frame failed" sends someone to the
-        # scanner, "12/wave-1/P7_40.tif could not be downloaded" sends them to it.
-        # Logged as well as returned: the web proxy suppresses 502 detail, so
-        # without this the object path is recorded nowhere.
+        # scanner, "12/wave-1/P7_40.tif could not be read" sends them to it. The
+        # path only: the rest of the message is the storage client's own error,
+        # which carries the internal gateway host, the database role and
+        # PostgREST's codes. Caddy publishes this service directly, so whatever
+        # goes in `detail` reaches the caller unfiltered.
         logger.warning("plate video render failed: %s", exc)
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        named = f"{exc.path} could not be read" if exc.path else "a frame could not be read"
+        raise HTTPException(status_code=502, detail=named) from exc
     except NotRecorded as exc:
         logger.error("plate video stored but not recorded: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc

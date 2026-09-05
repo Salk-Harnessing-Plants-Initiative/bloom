@@ -256,7 +256,17 @@ def _even(image: Image.Image) -> Image.Image:
 
 
 class FrameUnreadable(RuntimeError):
-    """A frame could not be fetched or decoded, and the render must not go on."""
+    """A frame could not be fetched or decoded, and the render must not go on.
+
+    `path` is the object it happened to, carried separately from the message so
+    a caller can be told which frame without being told why. The why is the
+    storage client's own error, which names the internal gateway, the database
+    role and PostgREST's codes — an operator's information, not a caller's.
+    """
+
+    def __init__(self, message: str, path: str | None = None):
+        super().__init__(message)
+        self.path = path
 
 
 class FrameDepthUnsupported(FrameUnreadable):
@@ -362,18 +372,18 @@ def _fetch_frame(images, path: str, label: str) -> np.ndarray:
     try:
         data = images.download(path)
     except Exception as exc:
-        raise FrameUnreadable(f"could not download {path}: {exc}") from exc
+        raise FrameUnreadable(f"could not download {path}: {exc}", path) from exc
 
     if not data:
-        raise FrameUnreadable(f"{path} is empty")
+        raise FrameUnreadable(f"{path} is empty", path)
 
     try:
         return prepare_frame(data, label)
     except FrameDepthUnsupported as exc:
         # Intact, just not reducible. Named, but not called a decode failure.
-        raise FrameDepthUnsupported(f"{path}: {exc}") from exc
+        raise FrameDepthUnsupported(f"{path}: {exc}", path) from exc
     except Exception as exc:
-        raise FrameUnreadable(f"could not decode {path}: {exc}") from exc
+        raise FrameUnreadable(f"could not decode {path}: {exc}", path) from exc
 
 
 # --- publishing --------------------------------------------------------------
