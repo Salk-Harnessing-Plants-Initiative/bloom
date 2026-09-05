@@ -1233,7 +1233,6 @@ def test_earlier_frames_are_released_before_the_next_is_fetched(
     limit assumes away. So this checks, at each fetch, that every frame handed
     out before it has already been collected.
     """
-    import gc
     import weakref
 
     frames = _frames(5)
@@ -1243,7 +1242,11 @@ def test_earlier_frames_are_released_before_the_next_is_fetched(
     fetch = pe._fetch_frame
 
     def tracking_fetch(images, path, label):
-        gc.collect()
+        # No gc.collect() here on purpose. Collecting first would weaken the
+        # question from "was it released" to "was it releasable", and a frame
+        # stranded in a reference cycle — freed only by a generational sweep
+        # that triggers on allocation counts, not bytes — would pass while the
+        # whole run stayed resident.
         alive_at_each_fetch.append(sum(ref() is not None for ref in handed_out))
         frame = fetch(images, path, label)
         handed_out.append(weakref.ref(frame))
@@ -1256,4 +1259,28 @@ def test_earlier_frames_are_released_before_the_next_is_fetched(
         "frames from earlier in the run were still resident when the next was "
         f"fetched, so the run is accumulating rather than streaming: "
         f"{alive_at_each_fetch}"
+    )
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [(0, 0), (255, 0), (256, 1), (4096, 16), (32768, 128), (60000, 234), (65535, 255)],
+)
+def test_a_16_bit_value_reduces_to_a_known_8_bit_value(source, expected):
+    """The transfer function, pinned to values rather than to shape.
+
+    Every other assertion about the reduction is a property — max above 200,
+    min below 40, a spread of distinct levels. A wrapped function satisfies all
+    of them: shifting by 7 instead of 8 maps the range onto 0-511, which the
+    cast then truncates modulo 256, so the brightest half of the sensor folds
+    back onto the darkest. The result is a plate rendered as two overlaid
+    ramps, with the brightest tissue drawn black — and it passes every
+    shape-based test in this file.
+    """
+    frame = _deep("I;16", np.full((4, 4), source, dtype=np.uint16))
+    reduced = np.asarray(pe._to_8bit_rgb(frame))
+
+    assert reduced[0, 0, 0] == expected, (
+        f"{source} rendered as {reduced[0, 0, 0]}, expected {expected} "
+        f"({source} >> 8)"
     )
