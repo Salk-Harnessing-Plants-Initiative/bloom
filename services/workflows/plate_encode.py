@@ -520,7 +520,11 @@ def render_plate_video(
     if plan["action"] != "render":
         return plan
 
-    with encode_slot(), plate_lock(plan["key"]):
+    # The plate's own lock first: with every slot taken and this plate one of
+    # the four rendering, "already being rendered" is the true answer and
+    # "the encoder is busy" is not. Neither acquire waits, so ordering them
+    # costs nothing.
+    with plate_lock(plan["key"]), encode_slot():
         plan = plan_render(client, experiment_id, plate_id, wave_number)
         if plan["action"] != "render":
             return plan

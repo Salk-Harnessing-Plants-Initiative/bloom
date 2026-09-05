@@ -1502,13 +1502,13 @@ def test_both_guards_are_held_while_the_encode_runs(monkeypatch):
     assert seen["lock_held"] == [True], "the plate was not locked while it rendered"
 
 
-def test_the_slot_is_taken_before_the_plate_lock(monkeypatch):
-    """An unstated order that is now the behaviour, so it is written down.
+def test_the_plate_lock_is_taken_before_the_slot(monkeypatch):
+    """The order decides which of two true things the caller is told.
 
-    Slot first means a duplicate request for a plate already rendering is told
-    the encoder is busy when every slot is taken, rather than that its own plate
-    is in progress. Lock first would hold a plate lock while queueing for a
-    slot. Whichever is chosen, a silent swap should fail here.
+    With every slot taken and this plate one of the four rendering, slot first
+    answers "the encoder is busy" and lock first answers "this plate is already
+    being rendered" — the second is the one the caller can act on. Nothing is
+    held while waiting either way, because neither acquire waits.
     """
     order = []
     real_slot, real_lock = pe.encode_slot, pe.plate_lock
@@ -1531,7 +1531,26 @@ def test_the_slot_is_taken_before_the_plate_lock(monkeypatch):
 
     pe.render_plate_video(object(), 12, "P7", 1)
 
-    assert order == ["slot", "lock"]
+    assert order == ["lock", "slot"]
+
+
+def test_a_full_encoder_still_says_which_plate_is_rendering(monkeypatch):
+    """The reason the order is what it is, from the caller's side."""
+    _wire(monkeypatch, [_plan()])
+    key = "12/wave-1/P7.mp4"
+    held = [pe.encode_slot() for _ in range(pe.MAX_CONCURRENT_ENCODES)]
+    for slot in held:
+        slot.__enter__()
+    try:
+        with pe.plate_lock(key):
+            with pytest.raises(pe.PlateBusy) as caught:
+                pe.render_plate_video(object(), 12, "P7", 1)
+    finally:
+        for slot in held:
+            slot.__exit__(None, None, None)
+
+    assert key in str(caught.value)
+    assert pe._encode_slots._value == pe.MAX_CONCURRENT_ENCODES
 
 
 def test_the_output_name_never_comes_from_the_plate_id(monkeypatch):
