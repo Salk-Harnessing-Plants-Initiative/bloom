@@ -56,6 +56,10 @@ def _bytes(value) -> int:
     if isinstance(value, int):
         return value
     text = str(value).strip().lower()
+    # Compose accepts b/kb/mb/gb as well as the bare letter, so `2gb` and `2g`
+    # are one limit. Dropping a trailing `b` first keeps the lookup to one form.
+    if text.endswith("b") and len(text) > 1 and text[-2].isalpha():
+        text = text[:-1]
     for suffix, scale in (("g", 1 << 30), ("m", 1 << 20), ("k", 1 << 10), ("b", 1)):
         if text.endswith(suffix):
             return int(float(text[: -len(suffix)]) * scale)

@@ -1310,11 +1310,44 @@ def test_a_source_that_does_not_fill_the_scale_says_so(caplog):
     assert "4095" in caplog.text and "15/255" in caplog.text
 
 
-def test_a_full_scale_source_is_not_warned_about(caplog):
-    """The warning has to stay rare, or it is noise nobody reads."""
-    ramp = np.linspace(0, 65535, 64, dtype=np.uint16).reshape(8, 8)
+@pytest.mark.parametrize("peak", [65535, 60000, 40000])
+def test_a_source_that_fills_the_scale_is_not_warned_about(caplog, peak):
+    """The warning has to stay rare, or it is noise nobody reads.
+
+    Parametrised past exact saturation on purpose: a fixture that only peaks at
+    65535 leaves the threshold free to be anything below it, so warning on
+    every real frame that tops out at 65000 would pass.
+    """
+    ramp = np.linspace(0, peak, 64, dtype=np.uint16).reshape(8, 8)
 
     with caplog.at_level("WARNING"):
         pe._to_8bit_rgb(_deep("I;16", ramp))
 
     assert "full-scale" not in caplog.text
+
+
+def test_the_encoder_opts_into_the_stall_deadline(ffmpeg, tmp_path, monkeypatch):
+    """The watchdog only guards a writer that is handed a deadline.
+
+    `test_an_ffmpeg_that_never_reads_is_killed_rather_than_blocking_forever`
+    proves the writer kills a wedged child when given one, and its sibling
+    proves the cyl path is left alone by not giving one. Neither proves this
+    path asks for it — and dropping the argument here is invisible: every test
+    still passes while a stalled encode holds its slot and its plate lock for
+    the life of the worker, which is the whole reason the deadline exists.
+    """
+    built = {}
+    real = pe.VideoWriter
+
+    def recording_writer(*args, **kwargs):
+        built.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pe, "VideoWriter", recording_writer)
+    frames = _frames(2)
+    pe.encode_plate_video(_EncodeClient(_payloads(frames)), frames, str(tmp_path / "o.mp4"))
+
+    assert built.get("deadline"), (
+        "the encoder built its writer without a deadline, so a stalled ffmpeg "
+        "would pin this thread and never release the encode slot or plate lock"
+    )

@@ -476,3 +476,19 @@ def test_a_writer_given_no_deadline_starts_no_watchdog(monkeypatch, tmp_path):
     assert writer.deadline is None
     assert writer._watchdog is None, "an unasked-for watchdog was armed"
     writer.close(timeout=5)
+
+
+def test_a_timer_that_fires_alongside_close_does_not_touch_the_process():
+    """close() clears the process handle before it waits; that clearing is the
+    whole race guard, and it replaced a flag that had two tests.
+
+    Without it a timer winning the race either reports a genuine ffmpeg failure
+    as a stall that never happened, or re-arms a deadline nothing will cancel.
+    """
+    writer = VideoWriter(filename="unused.mp4", deadline=60.0)
+    writer.process = None  # exactly the state close() leaves before waiting
+
+    writer._kill_if_stalled()
+
+    assert not writer._deadline_expired, "a finished encode was marked stalled"
+    assert writer._watchdog is None, "a deadline was re-armed after the process went"
