@@ -35,6 +35,11 @@ _REFUSAL_STATUS = {
     "too_large": 413,  # more than one request may pull
 }
 
+# `gravi_scans.wave_number` is a Postgres INT, so a larger number cannot be
+# stored and can never match a row — the query errors rather than answering
+# empty. A real wave is a small number; this is only where the arithmetic stops.
+MAX_WAVE_NUMBER = 2**31 - 1
+
 
 def render(experiment_id: int, body: dict) -> dict:
     """Render one plate's time-lapse, or explain why not."""
@@ -92,6 +97,12 @@ def render(experiment_id: int, body: dict) -> dict:
             detail=outcome["reason"],
         )
 
+    # The encoder's own count when something was encoded, and the planned list
+    # otherwise — a keep or a refusal never reached the encoder. The two agree
+    # today, because one unreadable frame fails the whole render; this is what
+    # keeps the number honest if that ever stops being true.
+    recorded = outcome.get("recorded") or {}
+
     return {
         "experiment_id": experiment_id,
         "plate_id": plate_id,
@@ -99,7 +110,7 @@ def render(experiment_id: int, body: dict) -> dict:
         "action": outcome["action"],
         "reason": outcome["reason"],
         "object_path": outcome["key"],
-        "frames": len(outcome.get("frames") or []),
+        "frames": recorded.get("frame_count", len(outcome.get("frames") or [])),
         "coverage": outcome.get("coverage"),
     }
 
@@ -131,5 +142,10 @@ def _read(body: dict) -> tuple[str, int | None]:
         raise HTTPException(status_code=400, detail="wave_number must be a whole number or null")
     if wave_number < 0:
         raise HTTPException(status_code=400, detail="wave_number may not be negative")
+    if wave_number > MAX_WAVE_NUMBER:
+        raise HTTPException(
+            status_code=400,
+            detail=f"wave_number may not be greater than {MAX_WAVE_NUMBER}",
+        )
 
     return plate_id, wave_number

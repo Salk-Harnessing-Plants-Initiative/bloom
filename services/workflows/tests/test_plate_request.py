@@ -66,6 +66,44 @@ def test_keeping_a_current_video_is_success_not_an_error(monkeypatch):
     assert pr.render(12, {"plate_id": "P7", "wave_number": 1})["action"] == "keep"
 
 
+def test_a_wave_number_too_large_for_the_column_is_refused(monkeypatch):
+    """`gravi_scans.wave_number` is a Postgres INT. Sent through, a bigger
+    number makes the query error out and the caller gets an unexplained 500
+    instead of being told the wave is not one."""
+    monkeypatch.setattr(pr, "render_plate_video", _renders(_rendered()))
+    with pytest.raises(HTTPException) as ei:
+        pr.render(12, {"plate_id": "P7", "wave_number": 10**400})
+
+    assert ei.value.status_code == 400
+    assert "wave_number" in ei.value.detail
+
+
+def test_the_largest_wave_the_column_holds_is_still_accepted(monkeypatch):
+    """The bound is the column's, not a guess about how many waves a study has."""
+    monkeypatch.setattr(pr, "render_plate_video", _renders(_rendered()))
+    result = pr.render(12, {"plate_id": "P7", "wave_number": pr.MAX_WAVE_NUMBER})
+
+    assert result["wave_number"] == pr.MAX_WAVE_NUMBER
+
+
+def test_a_render_reports_the_frames_the_encoder_wrote(monkeypatch):
+    """Not the number planned. They agree today — one unreadable frame fails
+    the whole render — so a test that used a plan of the same length would pass
+    whichever was reported."""
+    outcome = _rendered(frames=[{}] * 9, recorded={"frame_count": 7})
+    monkeypatch.setattr(pr, "render_plate_video", _renders(outcome))
+
+    assert pr.render(12, {"plate_id": "P7", "wave_number": 1})["frames"] == 7
+
+
+def test_a_keep_reports_the_frames_the_plate_has(monkeypatch):
+    """Nothing was encoded, so there is no encoder count to prefer."""
+    outcome = _rendered(action="keep", reason="already covers 4", frames=[{}] * 4)
+    monkeypatch.setattr(pr, "render_plate_video", _renders(outcome))
+
+    assert pr.render(12, {"plate_id": "P7", "wave_number": 1})["frames"] == 4
+
+
 @pytest.mark.parametrize(
     "code,status",
     [

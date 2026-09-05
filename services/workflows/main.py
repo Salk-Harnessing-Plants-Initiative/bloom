@@ -115,8 +115,10 @@ def gravi_plate_video(
     transfer to it.
 
     Requires a valid Supabase user JWT (Bearer). Rate-limited per user, which
-    is what stops a button being clicked repeatedly from starting a render each
-    time.
+    bounds how fast one account can ask — not how often a plate is rendered:
+    five clicks inside the window are five renders. What absorbs a repeated
+    click is the plate lock and the second look at the plan, both in
+    `render_plate_video`.
     """
     enforce_rate_limit(user_id)
     result = plate_request.render(experiment_id, body)
