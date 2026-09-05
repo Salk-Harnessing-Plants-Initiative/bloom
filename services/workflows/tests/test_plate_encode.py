@@ -1255,3 +1255,73 @@ def test_a_mismatch_is_not_reported_as_a_recording_failure(tmp_path):
     assert not isinstance(ei.value, pe.NotRecorded), (
         "a run that stored nothing was reported as a recording failure"
     )
+
+
+def test_a_frame_reaches_the_encoder_before_the_next_is_downloaded(ffmpeg, tmp_path):
+    """One frame in flight at a time, which is the module's stated reason for
+    existing in this shape.
+
+    A plate image is ~97 MB decoded and about twice that while the label is
+    drawn, so holding the run would be gigabytes — and the container's memory
+    limit is set on the assumption that it is not held. Counting frames at the
+    end cannot tell streaming from buffering; only the interleaving can, so
+    this records how much has reached ffmpeg at the moment each download
+    starts.
+    """
+    frames = _frames(5)
+    client = _EncodeClient(_payloads(frames))
+    written_when_downloaded = []
+    fetch = client.images.download
+
+    def recording_download(path):
+        # ffmpeg is spawned by the first frame, so there is nothing to count
+        # until it exists.
+        written_when_downloaded.append(len(ffmpeg[0].stdin.chunks) if ffmpeg else 0)
+        return fetch(path)
+
+    client.images.download = recording_download
+
+    assert pe.encode_plate_video(client, frames, str(tmp_path / "out.mp4")) == 5
+    assert written_when_downloaded == [0, 1, 2, 3, 4], (
+        "frames were collected before any was encoded — the run is being held "
+        f"in memory, not streamed (saw {written_when_downloaded})"
+    )
+
+
+def test_earlier_frames_are_released_before_the_next_is_fetched(
+    ffmpeg, tmp_path, monkeypatch
+):
+    """One frame in flight at a time — the module's stated reason for its shape.
+
+    Neither the order nor the state afterwards can show this. A render that
+    appends every frame to a list downloads and writes them in exactly the same
+    order, and that list is a local, so it is collected the moment the function
+    returns — leaving nothing to find. The regression is what is resident
+    *during* the run, at ~97 MB a frame, which is what the container's memory
+    limit assumes away. So this checks, at each fetch, that every frame handed
+    out before it has already been collected.
+    """
+    import gc
+    import weakref
+
+    frames = _frames(5)
+    client = _EncodeClient(_payloads(frames))
+    handed_out: list[weakref.ref] = []
+    alive_at_each_fetch: list[int] = []
+    fetch = pe._fetch_frame
+
+    def tracking_fetch(images, path, label):
+        gc.collect()
+        alive_at_each_fetch.append(sum(ref() is not None for ref in handed_out))
+        frame = fetch(images, path, label)
+        handed_out.append(weakref.ref(frame))
+        return frame
+
+    monkeypatch.setattr(pe, "_fetch_frame", tracking_fetch)
+    assert pe.encode_plate_video(client, frames, str(tmp_path / "out.mp4")) == 5
+
+    assert alive_at_each_fetch == [0, 0, 0, 0, 0], (
+        "frames from earlier in the run were still resident when the next was "
+        f"fetched, so the run is accumulating rather than streaming: "
+        f"{alive_at_each_fetch}"
+    )
