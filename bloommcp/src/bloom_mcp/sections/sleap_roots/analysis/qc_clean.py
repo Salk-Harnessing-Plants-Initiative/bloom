@@ -275,7 +275,10 @@ class QCCleanResult(BaseModel):
             "records no lineage between the two calls. Cell values are echoed "
             "back verbatim from what you supplied — including any that a "
             "spreadsheet would treat as a formula — so treat this as your own "
-            "data returned, not as sanitized output."
+            "data returned, not as sanitized output. The no-NaN guarantee this "
+            "tool reports covers kept_trait_columns, not the whole table: "
+            "identifier and metadata columns can still be blank, so an empty "
+            "cell outside the kept traits is not a cleaning failure."
         ),
     )
     cleaned_csv_sha256: Optional[str] = Field(
@@ -340,10 +343,19 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     # Checked before the resolver, because the resolver's registered branch performs
     # the actual storage read — no point paying a full raw-frame read only to reject
     # the call on a parameter combination we can rule out from the params alone.
-    # (`experiment is not None` rather than `not is_inline`: if neither input was
-    # supplied the resolver's exactly-one-of error is the one that should surface,
-    # and the ordering rule in `resolve_inline_or_experiment` says so.)
-    if params.experiment is not None and params.return_cleaned_csv:
+    #
+    # Deliberately narrow: this fires only when the call is *unambiguously* the
+    # registered path (experiment supplied, csv_content not). Testing
+    # `experiment is not None` alone would pre-empt the resolver on a call that is
+    # invalid two ways — both inputs supplied *and* return_cleaned_csv — reporting
+    # the narrower conflict and contradicting `resolve_inline_or_experiment`'s own
+    # documented rule that the exactly-one-of check comes first. Leaving the
+    # ambiguous case to the resolver keeps one ordering story across every tool.
+    if (
+        params.experiment is not None
+        and params.csv_content is None
+        and params.return_cleaned_csv
+    ):
         raise BloomMCPError(
             code="invalid_input",
             message=(

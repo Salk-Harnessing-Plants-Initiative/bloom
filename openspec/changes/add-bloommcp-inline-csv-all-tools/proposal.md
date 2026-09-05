@@ -192,15 +192,24 @@ that experiments are *always* identified by an experiment identifier — are all
     has no test module today.
 - **Dependencies:** none new.
 - **Sequencing.** Based on `origin/staging`. **Not independent of in-flight work**, contrary to an
-  earlier draft of this line:
-  1. `egao28/bloommcp-plot-guards-721` should merge first — it rewrites `umap_analysis.py`
-     (+295) and `test_umap_analysis_tool.py` (+337), four of this change's tools and two of its
-     largest test modules.
-  2. `#462` (`egao28/bloommcp-heritability-analysis-462`) second — it edits
-     `connecting-claude-code.md` immediately adjacent to the section §9 rewrites, and changes the
-     tool roster this change's roster tests enumerate.
-  3. Then this change. `egao28/bloommcp-converge-viz-tools-466` overlaps only lightly
-     (`_qc_shared.py`) but should not land concurrently with the resolver work.
+  earlier draft of this line. Trial-merged with `git merge-tree` rather than eyeballed, because an
+  earlier draft understated exactly this:
+  1. **#777** (`egao28/bloommcp-heritability-analysis-462`) — **a real conflict, verified**:
+     `git merge-tree` reports `CONFLICT (content)` in `bloommcp/docs/connecting-claude-code.md`.
+     Both changes insert a new section at the same anchor. Whichever lands second resolves it by
+     hand; it is a doc-prose conflict, so the resolution is mechanical but not automatic. #777
+     also changes the tool roster this change's roster tests enumerate.
+  2. **#683** (`egao28/bloommcp-converge-viz-tools-466`) — file-level overlap in
+     `bloommcp/src/bloom_mcp/tools/_qc_shared.py`, which **auto-merges clean today** (verified).
+     Do not read that as "no interaction": #683 rewrites `_validate_trait_subset`'s duplicate
+     detection in the same function PR 1 adds the `certified` presentation flag to, so a textually
+     clean merge can still produce an incoherent function. Whoever lands second should re-read
+     that function whole rather than trusting the merge.
+  3. `egao28/bloommcp-plot-guards-721` — rewrites `umap_analysis.py` (+295) and
+     `test_umap_analysis_tool.py` (+337). No overlap with PR 1's files; this matters for PR 2,
+     which touches `umap_analysis` directly.
+  - PR 1 itself only collides with #777 (docs) and #683 (`_qc_shared.py`). PR 2 and PR 3 have the
+    broader exposure.
   - **Archive order:** after `add-bloommcp-inline-csv-input`, for the reason recorded in the
     `bloommcp-qc-clean-tool` delta.
 - **PR strategy.** Three sequential PRs to `staging`, not one — see `design.md` Decision 11.

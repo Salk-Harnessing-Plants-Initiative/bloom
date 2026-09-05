@@ -19,6 +19,16 @@ inline `qc_inspect` call.
       `remove_outliers`, `cross_experiment_correlations`, `qc_inspect`): a **registered** call
       still returns non-`None` run links and non-empty `outputs`. Widening removes the Pydantic
       guarantee that a persisting tool populated them; this replaces it rather than losing it.
+- [ ] 0.3b **`clustering` and `qc_inspect` do not inherit `RunLinks`** — they redeclare
+      `run_ref`/`version_dir`/`manifest_path`/`experiment` directly, so PR 1's `RunLinks`
+      widening does not reach them. Each needs its own `Optional` widening in the PR that adds
+      its inline path (PR 2 for `clustering`, PR 3 for `qc_inspect`), or the inline branch will
+      fail output validation. Raised in PR #778's review.
+- [ ] 0.3c **`_validate_trait_subset`'s `certified` flag has no integration coverage yet.** It is
+      unit-tested in `test_qc_shared_validator.py`, but `qc_clean` — PR 1's only consumer — does
+      not pass `require_certified=True`, so no tool actually exercises it end to end. The first
+      PR-2 consumer to call it with `certified=False` must assert the inline wording reaches the
+      caller, not just the validator. Raised in PR #778's review.
 - [~] 0.4 *(PR 1: `RunLinks` widened. The seven per-tool result models' `experiment` / `experiment_N` / `source_N` fields and their `input_sha256` widen with each tool in PR 2 and PR 3 — widening them ahead of a consumer would ship dead surface.)* Implement: widen `RunLinks`'s three run-link fields to `Optional[str]` (default `None`)
       and `outputs` to default `{}`; update `RunLinks`'s docstring, which says the fields are
       "returned by every consumer tool result". Widen the redeclared run-link fields on
@@ -417,6 +427,14 @@ marker, run in the `dev-stack-smoke` CI job.
 - [ ] 15.6 Fix `BLOOM_PLOTS_URL`: the configured `/plots` path has no Caddy route and 404s.
 - [ ] 15.7 Add auth to `langchain/server.py`'s `/plots` static mount, which is reachable
       unauthenticated from the public ingress.
+- [ ] 15.9 Consider refusing `DEBUG` log levels in a deployed environment while the inline path
+      is enabled. The MCP transport logs full tool-call arguments — `csv_content` included — at
+      `DEBUG`; confirmed in the installed dependency, not merely inferred from docs. PR 1
+      documents the hazard in `connecting-claude-code.md` and `csv_content`'s field description,
+      but that leaves confidentiality resting entirely on operator discipline for data a
+      researcher deliberately chose not to register. A startup check (refuse to boot at `DEBUG`
+      when inline input is enabled, or force the inline path off) would make it structural.
+      Raised in PR #778's review.
 - [ ] 15.8 Consider whether the opt-in table returns should escape formula-prefixed cells. Low
       severity as scoped — the tools echo a caller's own data back to that same caller, and the
       field description and connect guide now say so — but PR 2's `return_trimmed_csv` adds a

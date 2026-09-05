@@ -111,10 +111,16 @@ unavailable on the inline path.
 For that chaining to be sound, the serialized table SHALL re-resolve to the same analysis shape
 it was cleaned into: parsing `cleaned_csv` back and running the shared column resolution SHALL
 yield a trait set equal to the result's `kept_trait_columns` and the same genotype, sample-id,
-and replicate roles. This matters because `qc_clean`'s no-NaN guarantee is scoped to the *kept*
-trait columns, while the serialized table also carries metadata and removed columns that may
-hold NaN — without this requirement a downstream tool could re-detect a removed trait and fail
-on it.
+and replicate roles, and the tool SHALL verify this before returning rather than assume it.
+
+The reason is not, as an earlier draft of this requirement claimed, that removed trait columns
+survive into the serialized table carrying NaN. Measured against the real fixture, they do not:
+`clean_traits_for_analysis` physically drops them (23 columns in, 21 out) and leaves no NaN cell
+anywhere in the frame. The reason is that a consumer re-derives its trait set by running the
+detection heuristic over the *re-parsed* text, so the agreement between what a producer certifies
+and what a consumer detects rests on two independently-evolving pieces of logic happening to
+coincide — and on dtypes surviving a text round trip unchanged. That is a coincidence worth
+checking, not a guarantee worth assuming, particularly as further consumer tools adopt this path.
 
 The serialized cleaned CSV SHALL be checked against `MAX_INLINE_CSV_BYTES` before being placed
 in the response. If it exceeds that cap the call SHALL raise `BloomMCPError` (`invalid_input`)

@@ -166,6 +166,10 @@ def test_provenance_stamped_seed_none_and_links_returned(injected_ports):
     assert set(stored.output_keys) == {"_cleaned.csv", "cleanup_log.json"}
 
     # Result returns links (run ref + manifest + object keys), never the table.
+    # #582 widened RunLinks' run-link fields to Optional, so Pydantic no longer
+    # rejects a persisting tool that leaves them unset. `==` alone would pass
+    # vacuously if a regression made BOTH sides None, so pin non-null explicitly.
+    assert result.run_ref is not None
     assert result.run_ref == stored.run_ref
     assert result.manifest_path == stored.manifest_path
     assert set(result.outputs) == {"_cleaned.csv", "cleanup_log.json"}
@@ -1732,3 +1736,42 @@ def test_user_label_with_csv_content_is_rejected_not_silently_dropped(injected_p
     assert exc.value.code == "invalid_input"
     assert "user_label" in exc.value.message
     assert "csv_content" in exc.value.message
+
+
+def test_both_inputs_plus_return_cleaned_csv_reports_the_input_conflict_first(
+    injected_ports,
+):
+    """A call invalid two ways must report the exactly-one-of conflict, not the
+    narrower return_cleaned_csv one.
+
+    qc_clean rejects return_cleaned_csv+experiment *before* the resolver runs, to
+    avoid paying a full raw read for a call it can rule out from the params
+    alone. That pre-check has to stay narrow enough not to pre-empt the
+    resolver's documented "exactly-one-of comes first" rule, or two tools would
+    tell a caller different things about the same broken call."""
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(
+                experiment=_EXPERIMENT,
+                csv_content=_RAW.read_text(encoding="utf-8"),
+                return_cleaned_csv=True,
+            )
+        )
+    assert "Exactly one" in exc.value.message
+    assert "return_cleaned_csv" not in exc.value.message
+
+
+def test_return_cleaned_csv_with_experiment_alone_still_rejects_before_reading(
+    injected_ports, monkeypatch
+):
+    """The optimization the narrow pre-check preserves: the unambiguous registered
+    case is still refused without paying the raw read."""
+    reader, _store = injected_ports
+    monkeypatch.setattr(
+        reader,
+        "load_experiment",
+        lambda *a, **k: pytest.fail("must reject before reading"),
+    )
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment=_EXPERIMENT, return_cleaned_csv=True))
+    assert "return_cleaned_csv" in exc.value.message

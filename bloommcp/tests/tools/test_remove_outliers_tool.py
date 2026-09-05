@@ -374,6 +374,10 @@ def test_provenance_seed_recorded_and_links_returned(injected_ports):
     assert set(stored.output_keys) == {"_cleaned.csv", "outlier_report.json"}
 
     # Result returns links (run ref + manifest + object keys), never the table.
+    # #582 widened RunLinks' run-link fields to Optional, so Pydantic no longer
+    # rejects a persisting tool that leaves them unset. `==` alone would pass
+    # vacuously if a regression made BOTH sides None, so pin non-null explicitly.
+    assert result.run_ref is not None
     assert result.run_ref == stored.run_ref
     assert result.manifest_path == stored.manifest_path
     assert set(result.outputs) == {"_cleaned.csv", "outlier_report.json"}

@@ -101,7 +101,12 @@ def _bounded_lines(text: str):
     """Yield ``text``'s lines like iterating ``io.StringIO(text)``, but raise
     ``BloomMCPError`` if more than `_MAX_HEADER_SCAN_BYTES` is consumed without
     the caller stopping — the guard against an unterminated quote forcing
-    `_estimate_header_columns` to scan the whole payload (see its docstring).
+    `_scan_leading_row_widths` to scan the whole payload (see its docstring).
+
+    This bound is load-bearing beyond the unterminated-quote case: a single
+    legitimately-terminated but enormous row (the wide-data-row DoS shape) also
+    exhausts it, so an oversized leading row is refused here in milliseconds
+    rather than measured and then refused.
     """
     consumed = 0
     for line in io.StringIO(text):
@@ -110,11 +115,12 @@ def _bounded_lines(text: str):
             raise BloomMCPError(
                 code="invalid_input",
                 message=(
-                    f"csv_content's header row could not be determined within "
-                    f"the first {_MAX_HEADER_SCAN_BYTES} bytes."
+                    f"csv_content's header and first data row could not be "
+                    f"read within the first {_MAX_HEADER_SCAN_BYTES} bytes — "
+                    f"a leading row is either malformed or unusably wide."
                 ),
                 remedy=(
-                    "Ensure the header row is well-formed (every quote closed) "
+                    "Ensure the first rows are well-formed (every quote closed) "
                     "and not unusually large, or register the data as an "
                     "experiment instead of passing it inline."
                 ),
@@ -122,8 +128,11 @@ def _bounded_lines(text: str):
         yield line
 
 
-def _estimate_header_columns(csv_content: str) -> int:
-    """Cheap column-count estimate for the header row — does not parse the body.
+def _scan_leading_row_widths(csv_content: str) -> tuple[int, Optional[int]]:
+    """Cheap field-count scan of the header **and the first data row**.
+
+    Returns ``(header_fields, first_data_fields)``; the second is ``None`` when
+    the content has no data row. Does not parse the body.
 
     Feeds `csv.reader` a bounded line iterator (`_bounded_lines`), not a naive
     ``csv_content.split("\\n", 1)[0]``. The naive split cuts a row short the
@@ -138,14 +147,38 @@ def _estimate_header_columns(csv_content: str) -> int:
     closing quote is found and the row is complete, the same way iterating a
     real file handles a multi-line quoted CSV field. `_bounded_lines` caps how
     far it will do that (an unterminated quote would otherwise force scanning
-    the entire payload), rejecting outright rather than guessing when the
-    header's true extent can't be found cheaply.
+    the entire payload), rejecting outright rather than guessing when a row's
+    true extent can't be found cheaply.
+
+    **Why the first data row and not just the header.** Measuring the header
+    alone left the column cap fully bypassable, reproduced on this machine: a
+    3-field header paired with data rows of 480,000 fields (1.92 MB — nowhere
+    near any cap) was *accepted* after 16s in `pandas.read_csv`. `read_csv` does
+    not require data rows to match the header's width; when they are
+    consistently wider it silently absorbs the surplus into an implicit index
+    rather than raising, which is both expensive and invisible — the resulting
+    frame had 3 columns, so even the post-parse `df.shape[1]` backstop passed.
+    Parse cost tracks the *widest row's* field count, not the header's, so the
+    guard has to see a data row.
+
+    Sampling one data row is sufficient rather than merely convenient: the
+    silent-and-slow path requires the divergence to be *consistent*. A single
+    wide row among narrow ones is inconsistent, and `read_csv` rejects that with
+    a `ParserError` in ~0.00s (measured), which is already mapped to
+    ``invalid_input``. So a wide row hiding beyond the scan window is either
+    consistent with row 1 — and caught here — or inconsistent, and caught
+    cheaply by the parser itself.
     """
+    reader = csv.reader(_bounded_lines(csv_content))
     try:
-        row = next(csv.reader(_bounded_lines(csv_content)))
+        header = next(reader)
     except StopIteration:
-        return 0
-    return len(row)
+        return 0, None
+    try:
+        data = next(reader)
+    except StopIteration:
+        return len(header), None
+    return len(header), len(data)
 
 
 def parse_inline_csv_frame(csv_content: str) -> ExperimentFrame:
@@ -161,21 +194,22 @@ def parse_inline_csv_frame(csv_content: str) -> ExperimentFrame:
     # name (e.g. "﻿Barcode"), silently breaking role detection for it.
     csv_content = csv_content.lstrip(_BOM)
 
-    # Cheap pre-parse guard FIRST — before the byte-size check even, since both
-    # are cheap, but this one is what actually prevents the wide-CSV CPU DoS
-    # (see MAX_INLINE_CSV_COLUMNS above). Must run before pandas.read_csv, not
-    # after.
-    estimated_columns = _estimate_header_columns(csv_content)
-    if estimated_columns > MAX_INLINE_CSV_COLUMNS:
+    # O(1) short-circuit before anything touches the string: UTF-8 encodes each
+    # character to at least one byte, so a character count over the cap is
+    # already over the byte cap. Rejecting here avoids materializing a second
+    # full copy of a grossly oversized payload just to measure it (the encode
+    # below doubles peak memory for the duration of the check). Content under
+    # this bound still gets the exact byte check further down — multi-byte
+    # characters mean fewer characters can still be more bytes.
+    if len(csv_content) > MAX_INLINE_CSV_BYTES:
         raise BloomMCPError(
             code="invalid_input",
             message=(
-                f"csv_content's header implies approximately {estimated_columns} "
-                f"columns, exceeding the {MAX_INLINE_CSV_COLUMNS}-column limit "
-                f"for inline content."
+                f"csv_content is at least {len(csv_content)} bytes, exceeding "
+                f"the {MAX_INLINE_CSV_BYTES}-byte limit for inline content."
             ),
             remedy=(
-                "Reduce the number of columns, or register the data as an "
+                "Reduce the CSV content size, or register the data as an "
                 "experiment instead of passing it inline."
             ),
         )
@@ -205,6 +239,71 @@ def parse_inline_csv_frame(csv_content: str) -> ExperimentFrame:
             remedy=(
                 "Reduce the CSV content size, or register the data as an "
                 "experiment instead of passing it inline."
+            ),
+        )
+
+    # Width guards — what actually prevent the wide-CSV CPU DoS (see
+    # MAX_INLINE_CSV_COLUMNS above). They run after the size checks and before
+    # `pandas.read_csv`: after, so a payload that is simply too large is reported
+    # as too large rather than as an unreadable leading row (the scan bound would
+    # otherwise fire first on a single oversized row and blame the wrong thing);
+    # before the parse, because the post-parse backstop cannot help once the
+    # parse has been paid, and in the divergence case below it never fires at all.
+    # Encoding a payload already known to be within the cap is bounded work, so
+    # nothing is lost by checking size first.
+    header_columns, data_columns = _scan_leading_row_widths(csv_content)
+    if header_columns > MAX_INLINE_CSV_COLUMNS:
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                f"csv_content's header implies approximately {header_columns} "
+                f"columns, exceeding the {MAX_INLINE_CSV_COLUMNS}-column limit "
+                f"for inline content."
+            ),
+            remedy=(
+                "Reduce the number of columns, or register the data as an "
+                "experiment instead of passing it inline."
+            ),
+        )
+    if data_columns is not None and data_columns > MAX_INLINE_CSV_COLUMNS:
+        # The header-only check left this fully bypassable — see
+        # `_scan_leading_row_widths` for the reproduced 1.92 MB / 16s case.
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                f"csv_content's first data row has {data_columns} fields, "
+                f"exceeding the {MAX_INLINE_CSV_COLUMNS}-column limit for "
+                f"inline content."
+            ),
+            remedy=(
+                "Reduce the number of fields per row, or register the data as "
+                "an experiment instead of passing it inline."
+            ),
+        )
+    if data_columns is not None and data_columns != header_columns:
+        # Rejecting divergence outright, rather than letting pandas resolve it,
+        # is a correctness fix as much as a cost one. Measured on a 3-name
+        # header against 4-field rows: the default read silently promotes the
+        # first field to the index, so every remaining value lands under the
+        # WRONG column name (the barcodes became the index and the genotypes
+        # became "Barcode"); `index_col=False` instead silently drops the last
+        # field. For a tool whose whole point is traceable, contract-valid trait
+        # data, either outcome is worse than a refusal — a misaligned frame
+        # cleans and analyzes without complaint and reports confident nonsense.
+        #
+        # This does not reject the common "saved with the index" round trip:
+        # `to_csv(index=True)` emits an empty first header name, so the field
+        # counts still match (verified: 4 and 4).
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                f"csv_content's header has {header_columns} fields but its "
+                f"first data row has {data_columns}. A row wider than the "
+                f"header would silently shift values into the wrong columns."
+            ),
+            remedy=(
+                "Give every row the same number of fields as the header "
+                "(quote any field that contains a comma), then retry."
             ),
         )
 

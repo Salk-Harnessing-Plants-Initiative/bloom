@@ -68,18 +68,53 @@ def test_oversized_content_is_rejected_before_parsing():
 
 
 def test_content_at_the_limit_is_accepted():
+    """A payload sized right at the byte cap is accepted.
+
+    Built as many ordinary rows rather than one enormous one. An earlier version
+    of this test padded a *single* data row out to 5 MiB, which measured the byte
+    cap correctly but is not a shape any real trait table takes — and it is now
+    refused by the leading-row scan bound (see
+    `test_a_single_row_too_wide_to_measure_cheaply_is_refused`), which cannot
+    measure a row larger than `_MAX_HEADER_SCAN_BYTES` without defeating its own
+    purpose. Rows here stay well under both the row cap and the scan bound.
+    """
     helper = _import_helper()
     header = "Barcode,geno,traitA\n"
-    row_prefix = "S1,g1,"
-    # Pad exactly to the byte limit with digits, keeping the CSV well-formed.
-    filler_len = helper.MAX_INLINE_CSV_BYTES - len(
-        (header + row_prefix + "\n").encode("utf-8")
-    )
-    content = header + row_prefix + ("1" * max(filler_len, 1)) + "\n"
+    rows = helper.MAX_INLINE_CSV_ROWS
+    # Size each row so the total lands just under the byte cap.
+    per_row = (helper.MAX_INLINE_CSV_BYTES - len(header.encode("utf-8"))) // rows
+    filler = "1" * max(per_row - len("S1,g1,\n"), 1)
+    content = header + f"S1,g1,{filler}\n" * rows
+
     assert len(content.encode("utf-8")) <= helper.MAX_INLINE_CSV_BYTES
+    assert (
+        len(content.encode("utf-8")) > helper.MAX_INLINE_CSV_BYTES * 0.9
+    ), "the point of this test is a payload genuinely near the cap"
 
     frame = helper.parse_inline_csv_frame(content)
     assert isinstance(frame, ExperimentFrame)
+    assert len(frame.df) == rows
+
+
+def test_a_single_row_too_wide_to_measure_cheaply_is_refused():
+    """A deliberate narrowing that came with closing the wide-data-row bypass.
+
+    The pre-parse scan reads the header *and* the first data row, bounded to
+    `_MAX_HEADER_SCAN_BYTES`. A single row larger than that bound cannot be
+    measured without reading the very payload the bound exists to avoid reading,
+    so it is refused rather than waved through. No real trait table has a
+    multi-hundred-kilobyte row; a payload that does is either malformed or the
+    DoS shape itself.
+    """
+    helper = _import_helper()
+    giant_cell = "1" * (helper._MAX_HEADER_SCAN_BYTES + 1024)
+    content = f"Barcode,geno,traitA\nS1,g1,{giant_cell}\n"
+    assert len(content.encode("utf-8")) < helper.MAX_INLINE_CSV_BYTES
+
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame(content)
+    assert exc.value.code == "invalid_input"
+    assert str(helper._MAX_HEADER_SCAN_BYTES) in exc.value.message
 
 
 def test_byte_vs_character_size_guard_uses_encoded_bytes():
@@ -969,3 +1004,188 @@ def test_every_rostered_parameter_has_a_specific_reason():
     for name in roster:
         reason = helper._registered_only_reason(name, "csv_content")
         assert generic not in reason, f"{name} fell through to the generic clause"
+
+
+# ── the wide-DATA-row bypass (PR #778 review, blocking) ─────────────────────
+#
+# Every column-cap test above builds a wide *header*. The guard measured only
+# the header, so pairing a narrow header with enormous data rows walked straight
+# past it. Reproduced before fixing: a 3-field header with 480,000-field data
+# rows (1.92 MB, well under every declared cap) was ACCEPTED after 16.03s in
+# `pandas.read_csv` — and silently, because `read_csv` absorbs the surplus
+# fields into an implicit index rather than raising, leaving a 3-column frame
+# that the post-parse `df.shape[1]` backstop happily waved through. After the
+# fix the same payload is refused in 0.0007s.
+
+
+def _wide_data_row_payload(fields: int, rows: int = 2) -> str:
+    """A narrow header paired with `fields`-wide data rows."""
+    row = ",".join(str(i % 10) for i in range(fields)) + "\n"
+    return "a,b,c\n" + row * rows
+
+
+def test_wide_data_rows_are_rejected_despite_a_narrow_header():
+    """The reproduced bypass: the payload that used to be accepted in 16s."""
+    helper = _import_helper()
+    payload = _wide_data_row_payload(480_000)
+    assert (
+        len(payload.encode("utf-8")) < helper.MAX_INLINE_CSV_BYTES
+    ), "the point of this shape is that it sits under the byte cap"
+
+    with patch("pandas.read_csv") as mock_read_csv:
+        with pytest.raises(BloomMCPError) as exc:
+            helper.parse_inline_csv_frame(payload)
+        mock_read_csv.assert_not_called()
+
+    assert exc.value.code == "invalid_input"
+
+
+def test_wide_data_rows_are_rejected_fast():
+    """Rejection must be cheap, not merely eventual — the whole point is to not
+    pay the parse. Guarded generously (0.0007s measured) so the assertion is
+    about the algorithm, not about CI machine speed."""
+    import time
+
+    helper = _import_helper()
+    payload = _wide_data_row_payload(480_000)
+
+    start = time.perf_counter()
+    with pytest.raises(BloomMCPError):
+        helper.parse_inline_csv_frame(payload)
+    elapsed = time.perf_counter() - start
+
+    assert (
+        elapsed < 2.0
+    ), f"rejection took {elapsed:.2f}s; the parse it avoids took ~16s"
+
+
+def test_wide_data_row_inside_the_scan_bound_is_rejected_by_the_column_cap():
+    """The variant the scan bound does *not* catch for free.
+
+    A 3,000-field row is only ~6 KB, so it fits inside `_MAX_HEADER_SCAN_BYTES`
+    and the bounded reader returns it happily. It is the data-row column check
+    itself — not the scan bound — that has to reject this one, so this test
+    fails if that check is ever removed as redundant.
+    """
+    helper = _import_helper()
+    fields = helper.MAX_INLINE_CSV_COLUMNS + 1000
+    payload = _wide_data_row_payload(fields)
+    assert (
+        len(payload.encode("utf-8")) < helper._MAX_HEADER_SCAN_BYTES
+    ), "this payload must fit inside the scan bound for the test to mean anything"
+
+    with patch("pandas.read_csv") as mock_read_csv:
+        with pytest.raises(BloomMCPError) as exc:
+            helper.parse_inline_csv_frame(payload)
+        mock_read_csv.assert_not_called()
+
+    assert str(fields) in exc.value.message
+    assert "data row" in exc.value.message
+
+
+def test_header_data_divergence_is_rejected_rather_than_silently_realigned():
+    """Divergence is a correctness bug, not just a cost one.
+
+    Measured on a 3-name header against 4-field rows: the default `read_csv`
+    promotes the first field to the index, so every remaining value lands under
+    the WRONG column name — the barcodes became the index and the genotypes
+    became "Barcode". `index_col=False` instead silently drops the last field.
+    A misaligned frame cleans and analyzes without complaint and reports
+    confident nonsense, which for a traceability-focused tool is worse than the
+    DoS this check was originally added for.
+    """
+    helper = _import_helper()
+    payload = "Barcode,geno,traitA\nS1,g1,1.0,extra\nS2,g2,2.0,extra2\n"
+
+    with patch("pandas.read_csv") as mock_read_csv:
+        with pytest.raises(BloomMCPError) as exc:
+            helper.parse_inline_csv_frame(payload)
+        mock_read_csv.assert_not_called()
+
+    assert exc.value.code == "invalid_input"
+    assert "3 fields" in exc.value.message
+    assert "4" in exc.value.message
+
+
+def test_index_column_round_trip_still_parses():
+    """The non-regression that makes rejecting divergence safe.
+
+    `to_csv(index=True)` is the common shape a user pastes after saving a frame,
+    and it looks like divergence but is not: pandas emits an *empty* first header
+    name, so the field counts still match (verified: 4 and 4). Rejecting genuine
+    divergence must not reject this.
+    """
+    helper = _import_helper()
+    payload = pd.DataFrame(
+        {"Barcode": ["S1", "S2"], "geno": ["g1", "g2"], "traitA": [1.0, 2.0]}
+    ).to_csv(index=True)
+
+    frame = helper.parse_inline_csv_frame(payload)
+    assert list(frame.df["Barcode"]) == ["S1", "S2"]
+    assert "traitA" in frame.trait_cols
+
+
+def test_a_lone_wide_row_among_narrow_rows_is_still_rejected():
+    """Why sampling ONE data row is sufficient rather than merely convenient.
+
+    A wide row hiding beyond the scan window is either consistent with row 1 —
+    and therefore caught by the checks above — or inconsistent, in which case
+    `read_csv`'s own tokenizer rejects it in ~0.00s (measured). Either way the
+    expensive silent path is unreachable; this pins the second half of that
+    argument so a future refactor cannot quietly rely on the first alone.
+    """
+    helper = _import_helper()
+    payload = "a,b,c\n" + "1,2,3\n" * 500 + ",".join("9" for _ in range(200_000)) + "\n"
+    import time
+
+    start = time.perf_counter()
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame(payload)
+    elapsed = time.perf_counter() - start
+
+    assert exc.value.code == "invalid_input"
+    assert elapsed < 2.0, f"inconsistent-row rejection took {elapsed:.2f}s"
+
+
+def test_oversized_content_short_circuits_before_encoding():
+    """The byte cap's O(1) pre-check.
+
+    A payload whose *character* count already exceeds the cap is over the byte
+    cap too (UTF-8 uses at least one byte per character), so it can be refused
+    without materializing a second full copy of it as encoded bytes just to
+    measure. The two branches are distinguishable by their wording: the
+    pre-check says "at least N bytes" because it is reporting a lower bound,
+    while the exact check reports the encoded length.
+    """
+    helper = _import_helper()
+    oversized = "a,b,c\n1,2,3\n" + "x" * (helper.MAX_INLINE_CSV_BYTES + 1)
+    assert len(oversized) > helper.MAX_INLINE_CSV_BYTES
+
+    with patch("pandas.read_csv") as mock_read_csv:
+        with pytest.raises(BloomMCPError) as exc:
+            helper.parse_inline_csv_frame(oversized)
+        mock_read_csv.assert_not_called()
+
+    assert exc.value.code == "invalid_input"
+    assert "at least" in exc.value.message, (
+        "an oversized-by-character-count payload should take the O(1) "
+        "pre-check branch, not the encode-then-measure one"
+    )
+
+
+def test_multibyte_content_under_the_character_bound_still_gets_the_exact_check():
+    """The pre-check must not replace the exact one: multi-byte characters mean
+    a payload can be under the cap by character count and over it by bytes."""
+    helper = _import_helper()
+    n_chars = helper.MAX_INLINE_CSV_BYTES // 2
+    content = f"Barcode,geno,traitA\nS1,g1,{'日' * n_chars}\n"
+    assert len(content) < helper.MAX_INLINE_CSV_BYTES
+    assert len(content.encode("utf-8")) > helper.MAX_INLINE_CSV_BYTES
+
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame(content)
+    assert exc.value.code == "invalid_input"
+    assert "at least" not in exc.value.message, (
+        "this payload is only over the cap once encoded, so it must reach the "
+        "exact byte check rather than the character-count short circuit"
+    )
