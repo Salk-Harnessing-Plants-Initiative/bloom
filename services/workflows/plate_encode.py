@@ -54,6 +54,11 @@ MAX_CONCURRENT_ENCODES = 4
 # reduced from. `F` is absent deliberately — see `_to_8bit_rgb`.
 DEEP_MODES = ("I;16", "I;16B", "I;16L", "I")
 DEEP_FULL_SCALE = 65535
+# Half scale. Below this a frame reduces to under half the output range, which
+# on a 12-bit source is 15 of 255 — unreadable. A plate is lit from behind and
+# its background sits near saturation, so a real full-scale frame clears this
+# comfortably; one that does not is a source this reduction does not fit.
+DEEP_MIN_PEAK = DEEP_FULL_SCALE // 2
 
 # Nothing here bounds a single download. The storage client takes no per-call
 # timeout, so that belongs on its HTTP client rather than in this module — the
@@ -164,18 +169,33 @@ def _to_8bit_rgb(image: Image.Image) -> Image.Image:
 
     if image.mode in DEEP_MODES:
         data = np.asarray(image)
+        # Measured for every deep mode, not only the wider ones. DEEP_FULL_SCALE
+        # is an assumption about the source, and a frame that does not match it
+        # is reduced into a picture nobody can read — dark if the source is
+        # narrower, white if it is wider. Checking costs one pass over an array
+        # the decode has already paid for.
+        peak = int(data.max()) if data.size else 0
+        if peak > DEEP_FULL_SCALE:
+            raise FrameDepthUnsupported(
+                f"a {image.mode} frame peaks at {peak}, past the "
+                f"{DEEP_FULL_SCALE} full scale this reduces from — every "
+                "pixel above it would come out white"
+            )
+        if peak < DEEP_MIN_PEAK:
+            # Warned, not refused. A 12-bit sensor in a 16-bit container tops
+            # out at 4095 and reduces to 15 of 255 — a black video with a
+            # legible timestamp — but refusing on peak would make acceptance
+            # depend on frame content, and a dim frame must reduce the same way
+            # a bright one does or the run is not comparable frame to frame.
+            # So: say so once, loudly enough that "the video is black" is one
+            # grep rather than a bisect, and leave the scale alone.
+            logger.warning(
+                "a %s frame peaks at %d, far short of the %d full scale it is "
+                "reduced from — it will render at %d/255. The source is "
+                "probably not full-scale 16-bit.",
+                image.mode, peak, DEEP_FULL_SCALE, peak >> 8,
+            )
         if data.dtype != np.uint16:
-            # Mode I is int32, so it can hold values this reduction has no scale
-            # for. Clipping them would not rescale the frame, it would flatten
-            # every one of them to white — refuse for the same reason F is
-            # refused, rather than return a white video that looks encoded.
-            peak = int(data.max()) if data.size else 0
-            if peak > DEEP_FULL_SCALE:
-                raise FrameDepthUnsupported(
-                    f"a {image.mode} frame peaks at {peak}, past the "
-                    f"{DEEP_FULL_SCALE} full scale this reduces from — every "
-                    "pixel above it would come out white"
-                )
             # A negative value wraps round to a bright pixel on the way to
             # uint8. Clipping a uint16 frame cannot change it, and would cost a
             # full-resolution copy to say so.

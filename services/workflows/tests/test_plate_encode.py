@@ -1277,10 +1277,44 @@ def test_a_16_bit_value_reduces_to_a_known_8_bit_value(source, expected):
     ramps, with the brightest tissue drawn black — and it passes every
     shape-based test in this file.
     """
-    frame = _deep("I;16", np.full((4, 4), source, dtype=np.uint16))
+    # A full-scale pixel in the corner, so the frame exercises the reduction
+    # rather than the low-peak warning; the value under test sits at [0, 0].
+    pixels = np.full((4, 4), source, dtype=np.uint16)
+    pixels[-1, -1] = 65535
+    frame = _deep("I;16", pixels)
     reduced = np.asarray(pe._to_8bit_rgb(frame))
 
     assert reduced[0, 0, 0] == expected, (
         f"{source} rendered as {reduced[0, 0, 0]}, expected {expected} "
         f"({source} >> 8)"
     )
+
+
+def test_a_source_that_does_not_fill_the_scale_says_so(caplog):
+    """A 12-bit sensor in a 16-bit container renders black, and must say why.
+
+    Not a refusal. Whether a frame is accepted cannot depend on how bright it
+    is, or a run fails partway through when one frame happens to be dimmer than
+    another — and the fixed-scale property this reduction rests on is exactly
+    that a dim frame reduces the same way a bright one does. So the scale is
+    left alone and the observation is logged, which turns "the time-lapse came
+    out black" from a bisect into one grep.
+    """
+    twelve_bit = np.full((8, 8), 4095, dtype=np.uint16)
+
+    with caplog.at_level("WARNING"):
+        reduced = np.asarray(pe._to_8bit_rgb(_deep("I;16", twelve_bit)))
+
+    assert reduced.max() == 15, "the frame should still be reduced, just darkly"
+    assert "not full-scale 16-bit" in caplog.text
+    assert "4095" in caplog.text and "15/255" in caplog.text
+
+
+def test_a_full_scale_source_is_not_warned_about(caplog):
+    """The warning has to stay rare, or it is noise nobody reads."""
+    ramp = np.linspace(0, 65535, 64, dtype=np.uint16).reshape(8, 8)
+
+    with caplog.at_level("WARNING"):
+        pe._to_8bit_rgb(_deep("I;16", ramp))
+
+    assert "full-scale" not in caplog.text
