@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 import plate_encode as pe
 import plate_request as pr
+import plate_video as pv
 from plate_encode import EncoderBusy, FrameUnreadable, NotRecorded
 from video_writer import VideoEncodeError
 
@@ -337,3 +338,76 @@ def test_a_recording_failure_still_reaches_the_log_in_full(monkeypatch, caplog):
             pr.render(12, {"plate_id": "P7", "wave_number": 1})
 
     assert "permission denied" in caplog.text, "the reason reached nobody"
+
+
+# --------------------------------------------------------------------------
+# The code contract, end to end
+# --------------------------------------------------------------------------
+#
+# `plate_video` attaches a code to a refusal; this module maps it to a status.
+# Both halves were tested, and neither read the other: the mapping test types
+# the code strings as literals of its own, with the producer mocked. So
+# renaming a literal on either side, or dropping the key from the outcome
+# entirely, changed every refusal to 409 with nothing failing.
+
+from test_plate_video import (  # noqa: E402
+    _PlanClient,
+    _big,
+    _frames as _plan_frames,
+    _recorded,
+)
+
+
+def _through_the_route(client, monkeypatch):
+    """A real plan, all the way to the status a caller receives."""
+    monkeypatch.setattr(pr, "app_client", lambda: client)
+    with pytest.raises(HTTPException) as ei:
+        pr.render(12, {"plate_id": "P7", "wave_number": 1})
+    return ei.value
+
+
+def test_a_plate_with_no_captures_is_a_404_through_the_real_plan(monkeypatch):
+    """Not "typed the string 404 next to the string no_frames" — the refusal is
+    produced by plate_video and the status read off what it produced."""
+    failure = _through_the_route(_PlanClient(frames=[]), monkeypatch)
+
+    assert failure.status_code == 404
+
+
+def test_a_run_too_large_to_render_is_a_413_through_the_real_plan(monkeypatch):
+    failure = _through_the_route(_PlanClient(frames=_big(200)), monkeypatch)
+
+    assert failure.status_code == 413
+
+
+def test_storage_that_did_not_answer_is_a_503_through_the_real_plan(monkeypatch):
+    """Transient, and distinguishable from a plate that has nothing — one is
+    worth retrying and the other never will be."""
+    # A recorded row, so the object is probed at all — with nothing recorded
+    # the answer is "absent" and storage is never asked.
+    failure = _through_the_route(
+        _PlanClient(
+            frames=_plan_frames(3),
+            row=_recorded(frames=3),
+            raises=Exception("504 Gateway Timeout"),
+        ),
+        monkeypatch,
+    )
+
+    assert failure.status_code == 503
+
+
+def test_every_code_the_planner_emits_has_a_status(monkeypatch):
+    """A refusal carrying an unmapped code falls to 409 Conflict, which says
+    nothing true about any of these. Read out of the source so a new refusal
+    added to plate_video without a status here fails rather than defaults.
+    """
+    import re
+    from pathlib import Path
+
+    source = Path(pv.__file__).read_text()
+    emitted = set(re.findall(r'code[=:]\s*"([a-z_]+)"', source))
+
+    assert emitted, "no codes found — the pattern this reads has changed"
+    missing = emitted - set(pr._REFUSAL_STATUS)
+    assert not missing, f"{sorted(missing)} would answer 409 Conflict"
