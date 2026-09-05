@@ -70,6 +70,16 @@ MAX_CONCURRENT_ENCODES = 4
 # not a plate.
 MAX_PLATE_PIXELS = 60_000_000
 
+# A bound on one frame's bytes, not a claim about the record of them. The
+# whole-plate guard in plate_video sums gravi_images.file_size_bytes, which is
+# what the desktop wrote at upload — fine as a record, and not something to bet
+# memory on: an interrupted upload, a resumed transfer or an app bug all leave
+# it disagreeing with the object, and this path holds whatever arrives.
+#
+# A real frame is ~59 MB nominal and 93 MB for a detailed 16-bit scan, so this
+# refuses nothing the scanners produce. The bucket's own cap is 500 MB.
+MAX_FRAME_BYTES = 256 * 1024**2
+
 # The modes carrying more than 8 bits per channel, and the full scale they are
 # reduced from. `F` is absent deliberately — see `_to_8bit_rgb`.
 DEEP_MODES = ("I;16", "I;16B", "I;16L", "I")
@@ -376,6 +386,13 @@ def _fetch_frame(images, path: str, label: str) -> np.ndarray:
 
     if not data:
         raise FrameUnreadable(f"{path} is empty", path)
+
+    if len(data) > MAX_FRAME_BYTES:
+        raise FrameUnreadable(
+            f"{path} is {len(data) / 1024**2:.0f} MB, past the "
+            f"{MAX_FRAME_BYTES // 1024**2} MB a plate frame can be",
+            path,
+        )
 
     try:
         return prepare_frame(data, label)

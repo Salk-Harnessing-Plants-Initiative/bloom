@@ -1569,3 +1569,32 @@ def test_the_slot_and_the_lock_are_handed_back_on_every_path(monkeypatch, plans,
 
     assert pe._encode_slots._value == before, "an encode slot was not released"
     assert not pe._plate_locks["12/wave-1/P7.mp4"].locked(), "the plate stayed locked"
+
+
+def test_a_frame_far_larger_than_a_scan_is_refused_before_it_is_decoded():
+    """A bound on what this path will hold, not a check on the recorded size.
+
+    The whole-plate guard sums `gravi_images.file_size_bytes`, which is what the
+    desktop wrote at upload. That is a record, not something to bet memory on:
+    an interrupted upload, a resumed transfer or an app bug all leave it
+    disagreeing with the object, and without this the download holds whatever
+    actually arrives.
+    """
+    oversized = b"\x00" * (pe.MAX_FRAME_BYTES + 1)
+    images = _Images({"12/wave-1/P7_0.tif": oversized})
+
+    with pytest.raises(pe.FrameUnreadable, match="MB a plate frame can be") as ei:
+        pe._fetch_frame(images, "12/wave-1/P7_0.tif", LABEL)
+
+    assert "12/wave-1/P7_0.tif" in str(ei.value), "the frame was not named"
+
+
+def test_a_normal_sized_frame_is_not_refused():
+    """A real frame is ~59 MB nominal and 93 MB for a detailed 16-bit scan, so
+    the cap has to sit clear of both or it refuses the plates it exists for."""
+    assert pe.MAX_FRAME_BYTES > 100 * 1024**2, "a real 16-bit frame would be refused"
+
+    frame = pe._fetch_frame(
+        _Images({"12/wave-1/P7_0.tif": _png(400, 600)}), "12/wave-1/P7_0.tif", LABEL
+    )
+    assert frame.dtype == np.uint8
