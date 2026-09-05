@@ -835,7 +835,9 @@ class _Stdin:
 
 
 class _Stderr:
-    def read(self):
+    # Same signature as a real pipe: the drain reads in fixed-size chunks, and
+    # a fake that takes no size argument makes its thread die on the first read.
+    def read(self, size=-1):
         return b""
 
     def close(self):
