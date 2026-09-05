@@ -294,3 +294,46 @@ def test_an_unsupported_depth_is_not_reported_as_an_upstream_failure(monkeypatch
 
     assert ei.value.status_code != 502, "an intact file was blamed on an upstream failure"
     assert ei.value.status_code == 422
+
+
+def test_a_recording_failure_names_the_video_without_naming_the_database(monkeypatch):
+    """The message wraps the database client's own error.
+
+    Measured on the real route before this: the caller received the SQLSTATE
+    and "permission denied for function record_gravi_plate_video" — the schema
+    and the role, to anyone with an account. The object key is the caller's own
+    plate and is worth naming; the rest belongs in the log.
+    """
+    cause = "{'code':'42501','message':'permission denied for function record_gravi_plate_video'}"
+
+    def unrecorded(*a, **k):
+        raise NotRecorded(
+            f"12/wave-1/P7.mp4 was stored but recording it failed: {cause}",
+            "12/wave-1/P7.mp4",
+        )
+
+    monkeypatch.setattr(pr, "render_plate_video", unrecorded)
+    with pytest.raises(HTTPException) as ei:
+        pr.render(12, {"plate_id": "P7", "wave_number": 1})
+
+    assert ei.value.status_code == 500
+    assert "12/wave-1/P7.mp4" in ei.value.detail
+    for leaked in ("42501", "permission denied", "record_gravi_plate_video"):
+        assert leaked not in ei.value.detail, f"{leaked!r} reached the caller"
+
+
+def test_a_recording_failure_still_reaches_the_log_in_full(monkeypatch, caplog):
+    """The detail is now narrow, so the log is the only copy of the reason."""
+
+    def unrecorded(*a, **k):
+        raise NotRecorded(
+            "12/wave-1/P7.mp4 was stored but recording it failed: permission denied",
+            "12/wave-1/P7.mp4",
+        )
+
+    monkeypatch.setattr(pr, "render_plate_video", unrecorded)
+    with caplog.at_level(logging.ERROR, logger=pr.logger.name):
+        with pytest.raises(HTTPException):
+            pr.render(12, {"plate_id": "P7", "wave_number": 1})
+
+    assert "permission denied" in caplog.text, "the reason reached nobody"

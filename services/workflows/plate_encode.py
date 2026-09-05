@@ -390,7 +390,17 @@ def _fetch_frame(images, path: str, label: str) -> np.ndarray:
 
 
 class NotRecorded(RuntimeError):
-    """The video is stored but its row was not written."""
+    """The video is stored but its row was not written.
+
+    `key` is the object it concerns, carried separately from the message for
+    the reason `FrameUnreadable.path` is: the message wraps the database
+    client's own error, which names the role and PostgREST's SQLSTATEs, and the
+    caller is not the audience for either.
+    """
+
+    def __init__(self, message: str, key: str | None = None):
+        super().__init__(message)
+        self.key = key
 
 
 class PlateMismatch(RuntimeError):
@@ -445,7 +455,7 @@ def publish_plate_video(
         video = handle.read()
 
     if not video:
-        raise NotRecorded(f"the encoder produced an empty file at {video_path}")
+        raise NotRecorded(f"the encoder produced an empty file at {video_path}", key)
 
     videos = client.storage.from_(GRAVISCAN_VIDEOS_BUCKET)
     videos.upload(key, video, {"content-type": "video/mp4", "upsert": "true"})
@@ -470,7 +480,7 @@ def publish_plate_video(
         # videos. Reporting success for a video the page cannot find is worse
         # than an error the caller can retry: the object is already stored, so
         # the next attempt overwrites it and records the row.
-        raise NotRecorded(f"{key} was stored but recording it failed: {exc}") from exc
+        raise NotRecorded(f"{key} was stored but recording it failed: {exc}", key) from exc
 
     logger.info("recorded %s: %s frames", key, frame_count)
     return {k.removeprefix("p_"): v for k, v in recorded.items()}

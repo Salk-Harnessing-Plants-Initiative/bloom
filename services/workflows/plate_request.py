@@ -61,8 +61,12 @@ def render(experiment_id: int, body: dict) -> dict:
         named = f"{exc.path} could not be read" if exc.path else "a frame could not be read"
         raise HTTPException(status_code=502, detail=named) from exc
     except NotRecorded as exc:
+        # The message wraps the database client's error — the role name and
+        # PostgREST's SQLSTATEs. The object key is the caller's own plate and is
+        # worth naming; the rest is the log's business.
         logger.error("plate video stored but not recorded: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        named = f"the video for {exc.key} was not recorded" if exc.key else "the video was not recorded"
+        raise HTTPException(status_code=500, detail=named) from exc
     except (VideoEncodeError, BrokenPipeError) as exc:
         # The encoder's own failures: a stall the watchdog killed, a non-zero
         # ffmpeg exit, a pipe that broke. Without this branch each arrives as an
