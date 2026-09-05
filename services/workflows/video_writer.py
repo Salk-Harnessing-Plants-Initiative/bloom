@@ -53,10 +53,12 @@ class _StderrTail:
                 with self._guard:
                     self._tail.extend(chunk)
                     del self._tail[:-STDERR_TAIL_BYTES]
-        except Exception:
-            # A drain that raises must not take the encode with it; the worst
-            # case is an error message that cannot be quoted.
-            pass
+        except Exception as exc:
+            # A drain that raises must not take the encode with it. Record why
+            # rather than swallowing it: a silently dead drain reports ffmpeg's
+            # failure with an empty reason, and looks identical to a clean exit.
+            with self._guard:
+                self._tail.extend(f"[stderr drain failed: {exc!r}]".encode())
 
     def finish(self, timeout: float = STDERR_DRAIN_TIMEOUT_SECONDS) -> bytes:
         """The tail, once the pipe has reached EOF. Call after ffmpeg exits."""
@@ -76,14 +78,31 @@ class VideoEncodeError(RuntimeError):
 class VideoWriter:
     """Write video frames to a file using FFmpeg."""
 
-    def __init__(self, filename: str, fps: float = 30.0):
-        """Initialize the writer for `filename` at `fps` frames per second."""
+    def __init__(
+        self,
+        filename: str,
+        fps: float = 30.0,
+        deadline: float = ENCODE_TIMEOUT_SECONDS,
+    ):
+        """Initialize the writer for `filename` at `fps` frames per second.
+
+        `deadline` bounds the whole encode, not just the wait in close(). A
+        write to a full pipe blocks with no timeout of its own, so without this
+        an ffmpeg that stops reading pins the calling thread forever and the
+        caller's `finally` — the one that hands back its concurrency slot —
+        never runs.
+        """
         self.filename = filename
         self.fps = fps
+        self.deadline = deadline
         self.process = None
         self.width = None
         self.height = None
         self._stderr = None
+        self._watchdog = None
+        self._deadline_expired = False
+        self._deadline_guard = threading.Lock()
+        self._disarmed = False
 
     @staticmethod
     def _to_even(img: np.ndarray) -> np.ndarray:
@@ -120,7 +139,17 @@ class VideoWriter:
         if img.dtype != np.uint8:
             img = img.astype(np.uint8)
 
-        self.process.stdin.write(img.tobytes())
+        try:
+            self.process.stdin.write(img.tobytes())
+        except (BrokenPipeError, OSError):
+            if self._deadline_expired:
+                raise VideoEncodeError(
+                    f"ffmpeg stopped accepting frames and was killed after "
+                    f"{self.deadline}s"
+                ) from None
+            # Any other broken pipe means ffmpeg exited on its own; close()
+            # reads its status and reports the reason it gave.
+            raise
 
     def _open(self, width: int, height: int):
         """Open the FFmpeg process, inferring video dimensions from the first frame."""
@@ -164,6 +193,35 @@ class VideoWriter:
         )
         self._stderr = _StderrTail(self.process.stderr)
 
+        # Killing the child is what unblocks a write that is waiting on a full
+        # pipe: the pipe closes, the write raises, and the caller's finally can
+        # finally run. A timeout inside close() cannot do this — a wedged
+        # encode never reaches close().
+        self._watchdog = threading.Timer(self.deadline, self._kill_past_deadline)
+        self._watchdog.daemon = True
+        self._watchdog.start()
+
+    def _kill_past_deadline(self):
+        """Kill ffmpeg once the encode has run past its deadline.
+
+        Under `_deadline_guard` because close() disarms the watchdog under the
+        same lock: without it a timer firing as close() begins would kill a
+        process that was finishing normally, and a healthy encode would fail
+        once in a very long while with nothing to explain it.
+        """
+        with self._deadline_guard:
+            if self._disarmed:
+                return
+            proc = self.process
+            if proc is None:
+                return
+            self._deadline_expired = True
+            try:
+                proc.kill()
+            except OSError:
+                # Already gone; close() reads the exit status either way.
+                pass
+
     def close(self, timeout: float = ENCODE_TIMEOUT_SECONDS):
         """Finalize the video, raising VideoEncodeError if ffmpeg failed.
 
@@ -176,6 +234,16 @@ class VideoWriter:
 
         proc, self.process = self.process, None
         tail, self._stderr = self._stderr, None
+
+        # Disarm before waiting, or a slow-but-healthy finish gets killed by a
+        # timer that is no longer guarding anything. cancel() alone is not
+        # enough: a timer already running is past cancelling, so the flag is
+        # what makes it a no-op.
+        with self._deadline_guard:
+            self._disarmed = True
+            if self._watchdog is not None:
+                self._watchdog.cancel()
+                self._watchdog = None
 
         try:
             proc.stdin.close()

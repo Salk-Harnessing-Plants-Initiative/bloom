@@ -191,7 +191,7 @@ def test_every_deep_mode_is_reduced_rather_than_clamped(mode):
 def test_a_floating_point_frame_is_refused_rather_than_given_a_scale():
     """There is no full scale to divide by; picking one would rescale the frame
     by a number nothing chose, silently."""
-    with pytest.raises(ValueError, match="full scale"):
+    with pytest.raises(pe.FrameDepthUnsupported, match="full scale"):
         pe._to_8bit_rgb(Image.new("F", (40, 60)))
 
 
@@ -767,10 +767,18 @@ def test_asking_past_the_limit_refuses_rather_than_queueing():
     for slot in held:
         slot.__enter__()
     try:
-        with pytest.raises(pe.EncoderBusy) as ei:
+        # Off-thread for the same reason the plate-lock test is: if the refusal
+        # regresses into a wait, asserting on this thread blocks forever and the
+        # run dies on the CI timeout with no failing test to point at.
+        def take_one_more():
             with pe.encode_slot():
                 pass
-        assert str(pe.MAX_CONCURRENT_ENCODES) in str(ei.value)
+
+        refusal = _off_thread(take_one_more)
+        assert isinstance(refusal, pe.EncoderBusy), (
+            f"asking past the limit must refuse, got {refusal!r}"
+        )
+        assert str(pe.MAX_CONCURRENT_ENCODES) in str(refusal)
     finally:
         for slot in held:
             slot.__exit__(None, None, None)
@@ -1003,3 +1011,68 @@ def test_a_plate_with_no_wave_records_a_null_rather_than_a_number(tmp_path):
         frame_count=10,
     )
     assert client.calls[0][1]["p_wave_number"] is None
+
+
+def test_a_32_bit_frame_past_the_full_scale_is_refused_not_whitened():
+    """Mode I is int32, so it can carry values this reduction has no scale for.
+
+    Clipping them to 65535 does not rescale the frame — it flattens every value
+    above the scale to pure white, and the result is a playable, correctly
+    labelled, entirely white video. Mode F is already refused for exactly this
+    reason ("carries no fixed full scale"); I has the same problem.
+    """
+    import numpy as np
+    from PIL import Image
+
+    # An int32 gradient over the real 32-bit range, as a machine-vision TIFF
+    # from a 32-bit sensor would arrive.
+    data = np.linspace(0, 2**31 - 1, 256 * 256, dtype=np.int64).reshape(256, 256)
+    frame = Image.fromarray(data.astype(np.int32), mode="I")
+
+    with pytest.raises(pe.FrameDepthUnsupported, match="past the"):
+        pe._to_8bit_rgb(frame)
+
+
+def test_a_32_bit_frame_inside_the_full_scale_still_works():
+    """Plenty of 16-bit TIFFs load as mode I. Refusing those would reject real
+    plates, so the check is on the values, not on the mode."""
+    import numpy as np
+    from PIL import Image
+
+    data = np.linspace(0, 65535, 256 * 256, dtype=np.int64).reshape(256, 256)
+    frame = Image.fromarray(data.astype(np.int32), mode="I")
+
+    out = np.asarray(pe._to_8bit_rgb(frame))
+    assert out.dtype == np.uint8
+    # A real gradient, not a white field: the reduction preserved the range.
+    assert len(np.unique(out)) > 200, "the frame flattened instead of scaling"
+    assert out.max() == 255 and out.min() == 0
+
+
+def test_an_unsupported_depth_is_not_reported_as_a_corrupt_file():
+    """The two need different actions, so they must not read the same.
+
+    "could not decode P7_37.tif" sends someone to rescan a plate whose file is
+    perfectly fine. What actually happened is that the scanner wrote a depth
+    this encoder has no scale for, which is a scanner setting, not a bad image.
+    """
+    import numpy as np
+    from PIL import Image
+
+    data = np.full((16, 16), 2**30, dtype=np.int32)
+    buf = io.BytesIO()
+    Image.fromarray(data, mode="I").save(buf, "TIFF")
+
+    class _Images:
+        def download(self, path):
+            return buf.getvalue()
+
+    with pytest.raises(pe.FrameDepthUnsupported) as ei:
+        pe._fetch_frame(_Images(), "12/wave-1/P7_37.tif", LABEL)
+
+    assert "12/wave-1/P7_37.tif" in str(ei.value), "the frame was not named"
+    assert "could not decode" not in str(ei.value), (
+        "an intact file was reported as a decode failure"
+    )
+    # Still a FrameUnreadable, so every existing handler keeps working.
+    assert isinstance(ei.value, pe.FrameUnreadable)

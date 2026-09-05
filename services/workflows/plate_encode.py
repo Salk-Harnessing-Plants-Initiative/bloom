@@ -153,7 +153,7 @@ def _to_8bit_rgb(image: Image.Image) -> Image.Image:
     if image.mode == "F":
         # No defined full scale to divide by. Refusing says so; picking one
         # would silently rescale a frame by a number nothing chose.
-        raise ValueError(
+        raise FrameDepthUnsupported(
             f"a {image.mode} frame carries no fixed full scale, so it cannot be "
             "reduced to 8 bits without inventing one"
         )
@@ -161,9 +161,19 @@ def _to_8bit_rgb(image: Image.Image) -> Image.Image:
     if image.mode in DEEP_MODES:
         data = np.asarray(image)
         if data.dtype != np.uint16:
-            # Only the signed and wider modes need this: mode I is int32, and a
-            # negative value wraps round to a bright pixel on the way to uint8.
-            # Clipping a uint16 frame cannot change it, and would cost a
+            # Mode I is int32, so it can hold values this reduction has no scale
+            # for. Clipping them would not rescale the frame, it would flatten
+            # every one of them to white — refuse for the same reason F is
+            # refused, rather than return a white video that looks encoded.
+            peak = int(data.max()) if data.size else 0
+            if peak > DEEP_FULL_SCALE:
+                raise FrameDepthUnsupported(
+                    f"a {image.mode} frame peaks at {peak}, past the "
+                    f"{DEEP_FULL_SCALE} full scale this reduces from — every "
+                    "pixel above it would come out white"
+                )
+            # A negative value wraps round to a bright pixel on the way to
+            # uint8. Clipping a uint16 frame cannot change it, and would cost a
             # full-resolution copy to say so.
             data = np.clip(data, 0, DEEP_FULL_SCALE).astype(np.uint16)
         image = Image.fromarray((data >> 8).astype(np.uint8), mode="L")
@@ -194,6 +204,17 @@ def _even(image: Image.Image) -> Image.Image:
 
 class FrameUnreadable(RuntimeError):
     """A frame could not be fetched or decoded, and the render must not go on."""
+
+
+class FrameDepthUnsupported(FrameUnreadable):
+    """The image is intact; its bit depth has no defined reduction to 8 bits.
+
+    Its own type because the operator action differs: "could not decode" reads
+    as a corrupt file and sends someone to rescan the plate, when the file is
+    fine and it is the scanner's output depth this encoder does not cover.
+    Deliberately not a ValueError — the frame loop reads that as a size
+    mismatch and would report it as "does not match the rest of the plate".
+    """
 
 
 class EncoderBusy(RuntimeError):
@@ -290,6 +311,9 @@ def _fetch_frame(images, path: str, label: str) -> np.ndarray:
 
     try:
         return prepare_frame(data, label)
+    except FrameDepthUnsupported as exc:
+        # Intact, just not reducible. Named, but not called a decode failure.
+        raise FrameDepthUnsupported(f"{path}: {exc}") from exc
     except Exception as exc:
         raise FrameUnreadable(f"could not decode {path}: {exc}") from exc
 

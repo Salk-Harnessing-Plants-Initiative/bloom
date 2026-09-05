@@ -366,3 +366,92 @@ def test_a_stuck_ffmpeg_is_still_killed_within_the_timeout(monkeypatch, tmp_path
 
     assert isinstance(failure, VideoEncodeError) and "timed out" in str(failure)
     assert time.monotonic() - started < 15, "close() outran its own timeout"
+
+
+def test_a_drain_that_cannot_read_says_so_instead_of_reporting_nothing():
+    """A stderr stream the drain cannot read must not look like a clean exit.
+
+    The drain reads in fixed-size chunks. A stream whose `read` takes no size
+    argument raises on the very first call, and swallowing that silently left
+    the thread dead and the tail empty — so ffmpeg's failure was reported with
+    no reason after it, indistinguishable from ffmpeg exiting quietly. This is
+    not hypothetical: the cylinder pipeline's own test double had exactly that
+    signature, and three tests exercised a drain that died immediately while
+    still passing.
+    """
+
+    class _Unreadable:
+        def read(self):  # no size parameter — the shape of the real bug
+            return b""
+
+        def close(self):
+            pass
+
+    drain = _StderrTail(_Unreadable())
+    tail = drain.finish(timeout=1.0).decode()
+    assert "stderr drain failed" in tail, (
+        "a drain that died left an empty tail, so a failed encode reports no reason"
+    )
+    assert "TypeError" in tail, "the tail should name what actually went wrong"
+
+
+def test_an_ffmpeg_that_never_reads_is_killed_rather_than_blocking_forever(
+    monkeypatch, tmp_path
+):
+    """A write to a full pipe has no timeout of its own, so the deadline has to
+    kill the child; nothing else can unblock it.
+
+    The sibling test above feeds a child that drains stdin before sleeping, so
+    `add` never blocks and only close()'s wait is exercised. Here the child
+    never reads at all. Before the writer had its own deadline this pinned the
+    calling thread for the life of the worker — and because the caller releases
+    its encode slot and plate lock in a `finally`, a body that never returns
+    meant the slot and the lock were never handed back: capacity lost, and that
+    plate unrenderable, until the container restarted.
+    """
+    _stub_ffmpeg(monkeypatch, "import time\ntime.sleep(120)\n")
+
+    writer = VideoWriter(filename=str(tmp_path / "out.mp4"), deadline=1.0)
+    started = time.monotonic()
+    # Enough frames to overrun the 64KB pipe buffer and block on the write.
+    failure, _ = _encode_off_thread(writer, [_BIG_FRAME] * 4, close_timeout=5)
+    elapsed = time.monotonic() - started
+
+    assert failure is not None, "a wedged ffmpeg completed successfully"
+    assert isinstance(failure, VideoEncodeError), (
+        f"the encode must fail as an encode error, got {failure!r}"
+    )
+    assert "stopped accepting frames" in str(failure)
+    assert elapsed < 20, f"the deadline did not fire: took {elapsed:.1f}s"
+
+
+def test_a_healthy_encode_is_not_killed_by_its_own_deadline(monkeypatch, tmp_path):
+    """The watchdog must be cancelled once close() takes over, or a slow but
+    perfectly good encode is killed by a timer guarding nothing."""
+    _stub_ffmpeg(monkeypatch, "import sys\nsys.stdin.buffer.read()\n")
+
+    writer = VideoWriter(filename=str(tmp_path / "out.mp4"), deadline=0.5)
+    writer.add(_BIG_FRAME)
+    writer.close(timeout=5)
+    time.sleep(1.0)  # past the deadline, with the encode already finished
+
+    assert writer._watchdog is None, "the watchdog outlived the encode"
+
+
+def test_the_deadline_cannot_kill_an_encode_that_already_finished(monkeypatch, tmp_path):
+    """Disarming has to survive a timer that is already running.
+
+    `cancel()` only stops a timer that has not fired yet. One that fired a
+    moment before close() is past cancelling, so without the disarm flag it
+    would kill a process that finished normally — a healthy encode failing
+    rarely, with nothing in the logs to explain it.
+    """
+    _stub_ffmpeg(monkeypatch, "import sys\nsys.stdin.buffer.read()\n")
+
+    writer = VideoWriter(filename=str(tmp_path / "out.mp4"), deadline=60.0)
+    writer.add(_BIG_FRAME)
+    writer.close(timeout=5)
+
+    # Exactly what a timer firing at the wrong moment would do.
+    writer._kill_past_deadline()
+    assert not writer._deadline_expired, "a disarmed deadline still fired"
