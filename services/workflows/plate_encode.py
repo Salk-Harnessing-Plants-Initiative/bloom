@@ -24,7 +24,11 @@ from PIL import Image
 
 from plate_timelapse import PLATE_FPS, annotate, label_for
 from plate_video import first_capture
-from plate_video_path import GRAVISCAN_IMAGES_BUCKET, GRAVISCAN_VIDEOS_BUCKET
+from plate_video_path import (
+    GRAVISCAN_IMAGES_BUCKET,
+    GRAVISCAN_VIDEOS_BUCKET,
+    plate_video_path,
+)
 from video_writer import VideoWriter
 
 logger = logging.getLogger(__name__)
@@ -358,6 +362,18 @@ class NotRecorded(RuntimeError):
     """The video is stored but its row was not written."""
 
 
+class PlateMismatch(RuntimeError):
+    """The destination does not name the plate being recorded; nothing stored.
+
+    Its own type, and deliberately not a `NotRecorded`: that one means the
+    video reached storage and only the row is missing, which the next request
+    repairs. This is the opposite — the run stopped before writing anything,
+    on purpose, because storing it would have overwritten a different plate's
+    video with this one. Nothing to repair, and nothing to retry: the caller
+    passed a pair that cannot both be right.
+    """
+
+
 def publish_plate_video(
     client,
     key: str,
@@ -377,6 +393,23 @@ def publish_plate_video(
     does not check the object, so a row without its file renders a broken
     player, while a file without its row simply reads as no video yet.
     """
+    # The key and the identity arrive separately, so nothing but this stops a
+    # caller crossing them — and a crossed pair is invisible afterwards: the
+    # object is upserted, so plate A's video silently replaces plate B's, and
+    # the row files it under A. Plate ids repeat across waves by design, so
+    # nobody looks at a video and thinks it belongs to a different plate.
+    expected = plate_video_path(experiment_id, wave_number, plate_id)
+    if expected is None:
+        raise PlateMismatch(
+            f"experiment {experiment_id}, plate {plate_id!r}, wave "
+            f"{wave_number} does not name a plate a video can be stored for"
+        )
+    if key != expected:
+        raise PlateMismatch(
+            f"refusing to store {key}: experiment {experiment_id}, plate "
+            f"{plate_id!r}, wave {wave_number} belongs at {expected}"
+        )
+
     with open(video_path, "rb") as handle:
         video = handle.read()
 

@@ -1144,3 +1144,114 @@ def test_the_check_runs_before_anything_is_downloaded():
         pe.encode_plate_video(_Client(), [_scan(1), _scan(9), _scan(2)], "/tmp/x.mp4")
 
     assert downloaded == [], "frames were fetched for a run that cannot be ordered"
+
+
+def test_a_key_that_does_not_match_the_plate_is_refused_before_anything_is_written(
+    tmp_path,
+):
+    """The key and the identity arrive separately; crossing them is silent.
+
+    The upload upserts, so storing plate 8's video at plate 7's key replaces
+    plate 7's video outright, and the row files it under plate 8. Nothing after
+    this point can notice — plate ids repeat across waves by design, so a
+    scientist looking at the wrong roots has no reason to doubt the label.
+    """
+    video = tmp_path / "out.mp4"
+    video.write_bytes(b"\x00" * 128)
+    uploaded, recorded = [], []
+
+    class _Videos:
+        def upload(self, key, data, opts):
+            uploaded.append(key)
+
+    class _Client:
+        class storage:
+            @staticmethod
+            def from_(bucket):
+                return _Videos()
+
+        def rpc(self, name, params):
+            recorded.append(params)
+            raise AssertionError("a mismatched pair must never reach the database")
+
+    with pytest.raises(pe.PlateMismatch, match="belongs at"):
+        pe.publish_plate_video(
+            _Client(),
+            "12/wave-1/P8.mp4",  # plate 8's key ...
+            str(video),
+            experiment_id=12,
+            plate_id="P7",  # ... recorded against plate 7
+            wave_number=1,
+            frame_count=86,
+        )
+
+    assert uploaded == [], "the wrong plate's video was overwritten"
+    assert recorded == [], "a mismatched pair reached the database"
+
+
+def test_a_key_that_matches_the_plate_is_stored_as_before(tmp_path):
+    """The check must not stand between a correct caller and a stored video."""
+    video = tmp_path / "out.mp4"
+    video.write_bytes(b"\x00" * 128)
+    uploaded = []
+
+    class _Videos:
+        def upload(self, key, data, opts):
+            uploaded.append(key)
+
+    class _Rpc:
+        def execute(self):
+            return None
+
+    class _Client:
+        class storage:
+            @staticmethod
+            def from_(bucket):
+                return _Videos()
+
+        def rpc(self, name, params):
+            return _Rpc()
+
+    row = pe.publish_plate_video(
+        _Client(),
+        "12/wave-1/P7.mp4",
+        str(video),
+        experiment_id=12,
+        plate_id="P7",
+        wave_number=1,
+        frame_count=86,
+    )
+
+    assert uploaded == ["12/wave-1/P7.mp4"]
+    assert row["object_path"] == "12/wave-1/P7.mp4"
+
+
+def test_a_mismatch_is_not_reported_as_a_recording_failure(tmp_path):
+    """`NotRecorded` means the video reached storage and only the row is
+    missing — which the next request repairs by re-rendering. A mismatch is the
+    opposite: nothing was written, on purpose, and retrying the same call
+    fails the same way. Reporting one as the other sends the operator looking
+    for an orphaned object that does not exist."""
+    video = tmp_path / "out.mp4"
+    video.write_bytes(b"\x00" * 128)
+
+    class _Client:
+        class storage:
+            @staticmethod
+            def from_(bucket):
+                raise AssertionError("storage was touched for a mismatched pair")
+
+    with pytest.raises(pe.PlateMismatch) as ei:
+        pe.publish_plate_video(
+            _Client(),
+            "12/wave-1/P8.mp4",
+            str(video),
+            experiment_id=12,
+            plate_id="P7",
+            wave_number=1,
+            frame_count=86,
+        )
+
+    assert not isinstance(ei.value, pe.NotRecorded), (
+        "a run that stored nothing was reported as a recording failure"
+    )
