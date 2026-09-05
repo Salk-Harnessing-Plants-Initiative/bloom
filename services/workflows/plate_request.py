@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # caller asked a reasonable question and the answer is no.
 _REFUSAL_STATUS = {
     "storage_unavailable": 503,  # transient; the same request may succeed later
+    "database_unavailable": 503,  # the same, one read further back
     "no_frames": 404,  # nothing to render for this plate and wave
     "unusable_plate": 400,  # the plate id cannot become an object key
     "too_large": 413,  # more than one request may pull

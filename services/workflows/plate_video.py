@@ -486,6 +486,38 @@ def _outcome(action: str, reason: str, key: str | None, code: str = "") -> dict:
     return {"action": action, "reason": reason, "key": key, "code": code}
 
 
+def _answered(what: str, read):
+    """A planning read's result, or None when the database did not answer.
+
+    Wraps the call and nothing around it, so a bug in this module still raises
+    rather than reaching the caller as a passing outage.
+    """
+    try:
+        return read()
+    except Exception as exc:
+        logger.warning("the database did not answer for %s: %s", what, exc)
+        return None
+
+
+def _unavailable(key: str | None) -> dict:
+    """The database equivalent of the storage outage refusal above.
+
+    Both are transient and neither has changed anything, so both say come back
+    — an uncaught read failure would say 500, which reads as "do not retry".
+    """
+    return {
+        **_outcome(
+            "refuse",
+            "this video cannot be made right now — the database did not answer. "
+            "Nothing has been changed; try again in a few minutes",
+            key,
+            code="database_unavailable",
+        ),
+        "frames": [],
+        "coverage": None,
+    }
+
+
 # --- the whole question, in one call -----------------------------------------
 
 
@@ -508,8 +540,22 @@ def plan_render(
     path nothing reads it, and it costs a second query. #756 covers the case
     that makes visible.
     """
-    frames = get_plate_frames(client, experiment_id, plate_id, wave_number)
-    stored = stored_video(client, experiment_id, plate_id, wave_number)
+    key = plate_video_path(experiment_id, wave_number, plate_id)
+
+    frames = _answered(
+        "this plate's frames",
+        lambda: get_plate_frames(client, experiment_id, plate_id, wave_number),
+    )
+    if frames is None:
+        return _unavailable(key)
+
+    stored = _answered(
+        "this plate's stored video",
+        lambda: stored_video(client, experiment_id, plate_id, wave_number),
+    )
+    if stored is None:
+        return _unavailable(key)
+
     decision = render_decision(frames, stored)
 
     if decision["action"] != "render":
@@ -526,9 +572,15 @@ def plan_render(
             "coverage": None,
         }
 
+    # Unknown either way here: both already return None when the run recorded
+    # no plan, and an unanswered read is the same absence of an answer. Coverage
+    # is a note about the video, so losing it is not a reason to refuse one.
     coverage = completeness(
         frames,
-        planned_cycles(client, frames),
-        session_cycle_range(client, frames, experiment_id, wave_number),
+        _answered("the run's planned cycles", lambda: planned_cycles(client, frames)),
+        _answered(
+            "the run's cycle range",
+            lambda: session_cycle_range(client, frames, experiment_id, wave_number),
+        ),
     )
     return {**decision, "frames": frames, "coverage": coverage}

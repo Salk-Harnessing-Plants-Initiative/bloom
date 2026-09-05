@@ -914,6 +914,69 @@ def _big(n):
     return rows
 
 
+class _Down(_Query):
+    """A table the database will not answer for."""
+
+    def execute(self):
+        raise Exception("server closed the connection unexpectedly")
+
+
+def _outage(table, **kwargs):
+    client = _PlanClient(**kwargs)
+    client.queries[table] = _Down([])
+    return client
+
+
+def test_an_unanswered_frame_query_refuses_rather_than_raising():
+    """A blip reading the frames is transient and has changed nothing, so it
+    gets the same answer a storage blip does — come back — not a raised error
+    the route can only report as "something went wrong"."""
+    plan = pv.plan_render(_outage("gravi_scans"), 12, "P7", 1)
+
+    assert plan["action"] == "refuse"
+    assert plan["code"] == "database_unavailable"
+    assert plan["frames"] == []
+
+
+def test_an_unanswered_stored_video_query_refuses_the_same_way():
+    plan = pv.plan_render(_outage("gravi_plate_videos", frames=_frames(3)), 12, "P7", 1)
+
+    assert plan["action"] == "refuse"
+    assert plan["code"] == "database_unavailable"
+
+
+def test_the_refusal_still_names_the_key_it_would_have_written():
+    plan = pv.plan_render(_outage("gravi_scans"), 12, "P7", 1)
+
+    assert plan["key"] == "12/wave-1/P7.mp4"
+
+
+def test_an_unanswered_coverage_query_still_renders():
+    """Coverage is a note about the video, not a condition on making one."""
+    client = _outage("gravi_scan_sessions", frames=_frames(3), row=None)
+    plan = pv.plan_render(client, 12, "P7", 1)
+
+    assert plan["action"] == "render"
+    assert plan["coverage"]["state"] == "unknown"
+
+
+def test_a_bug_in_planning_is_not_reported_as_an_outage(monkeypatch):
+    """The guard wraps the reads, not the reasoning around them. A TypeError
+    here answering "try again in a few minutes" would hide it forever."""
+
+    def broken(*args, **kwargs):
+        raise TypeError("render_decision got an unexpected argument")
+
+    monkeypatch.setattr(pv, "render_decision", broken)
+
+    with pytest.raises(TypeError) as caught:
+        pv.plan_render(_PlanClient(frames=_frames(3)), 12, "P7", 1)
+
+    # The bug's own message: swallowing it and tripping over the None it left
+    # behind raises a TypeError too, and would pass a bare `raises(TypeError)`.
+    assert "unexpected argument" in str(caught.value)
+
+
 def test_plan_renders_when_frames_have_arrived_since_the_stored_video():
     client = _PlanClient(frames=_frames(200), row=_recorded(frames=140))
     plan = pv.plan_render(client, 12, "P7", 1)

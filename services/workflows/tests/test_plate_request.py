@@ -354,6 +354,7 @@ from test_plate_video import (  # noqa: E402
     _PlanClient,
     _big,
     _frames as _plan_frames,
+    _outage,
     _recorded,
 )
 
@@ -393,6 +394,14 @@ def test_storage_that_did_not_answer_is_a_503_through_the_real_plan(monkeypatch)
         ),
         monkeypatch,
     )
+
+    assert failure.status_code == 503
+
+
+def test_a_database_that_did_not_answer_is_a_503_through_the_real_plan(monkeypatch):
+    """The same answer storage gets. Both are a read that failed and neither
+    changed anything, so a 500 would tell the caller to stop trying."""
+    failure = _through_the_route(_outage("gravi_scans"), monkeypatch)
 
     assert failure.status_code == 503
 
