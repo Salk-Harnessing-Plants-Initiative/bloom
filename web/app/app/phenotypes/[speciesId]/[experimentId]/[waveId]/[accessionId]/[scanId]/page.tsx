@@ -31,8 +31,6 @@ export default async function Image({
   );
   const speciesName : any = species?.common_name ?? "";
   const scan : any = await getScan(Number(scanId));
-  // Resolved once here so the viewer's icon and the generate button agree on
-  // whether a video exists, instead of each deciding for itself.
   const videoUrl = scan ? await getStoredScanVideoUrl(scan.id) : null;
   const wave = scan?.cyl_plants?.cyl_waves;
 
@@ -85,15 +83,18 @@ export default async function Image({
         {experiment?.people && <ScientistBadge person={experiment.people} />}
       </div>
       <div className="table-auto pr-8 pb-8">
-        {scan && <ScanFrameViewer scan={scan} />}
+        {/* Above the frame: the box is a fixed height, so below it can land off-screen. */}
         {scan && (
-          <ScanVideoButton
-            experimentId={Number(experimentId)}
-            scanId={scan.id}
-            initialVideoUrl={videoUrl}
-            completenessWarning={completenessWarning(scan.cyl_images)}
-          />
+          <div className="mb-4">
+            <ScanVideoButton
+              experimentId={Number(experimentId)}
+              scanId={scan.id}
+              initialVideoUrl={videoUrl}
+              completenessWarning={completenessWarning(scan.cyl_images)}
+            />
+          </div>
         )}
+        {scan && <ScanFrameViewer scan={scan} />}
       </div>
     </div>
   );

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
+import { GRAVISCAN_VIDEOS_BUCKET } from "@/lib/supabase/plate-video-path";
 
 interface PlateVideoProps {
   objectPath: string | null;
@@ -15,7 +16,7 @@ type State =
 async function resolveVideo(path: string): Promise<State> {
   const supabase = createClientSupabaseClient();
   const { data, error } = await supabase.storage
-    .from("graviscan-videos")
+    .from(GRAVISCAN_VIDEOS_BUCKET)
     .createSignedUrl(path, 3600);
   if (error || !data?.signedUrl) return { status: "missing" };
 

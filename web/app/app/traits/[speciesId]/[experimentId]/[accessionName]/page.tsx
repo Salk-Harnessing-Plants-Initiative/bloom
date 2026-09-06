@@ -100,6 +100,11 @@ export default async function Accession({
                                 <PlantImage
                                   path={image.object_path}
                                   thumb={true}
+                                  altText={
+                                    scan.plant_age_days === null
+                                      ? "Plant image"
+                                      : `Plant image, day ${scan.plant_age_days}`
+                                  }
                                 />
                               </Link>
                             </div>

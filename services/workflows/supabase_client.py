@@ -18,22 +18,24 @@ APP_EMAIL = os.environ.get("WORKFLOWS_SUPABASE_EMAIL")
 APP_PASSWORD = os.environ.get("WORKFLOWS_SUPABASE_PASSWORD")
 
 # supabase-py defaults postgrest_client_timeout to 120s (postgrest/constants.py's
-# DEFAULT_POSTGREST_CLIENT_TIMEOUT). The dispatch worker's stop_grace_period
-# (docker-compose.{dev,prod}.yml, 30s) doesn't actually cover that — a hung
-# claim/complete/fail RPC could still be SIGKILLed mid-request — and every RPC
-# it calls (claim_cyl_pipeline_batch/complete_cyl_pipeline_batch/
-# fail_cyl_pipeline_batch) is a single-batch, small, indexed operation with no
-# large-payload case to protect, so a tight bound is safe for it specifically.
-# But app_client() is shared with pipeline.py's trigger_pipeline() (up to
-# MAX_SCAN_IDS=5000 scans, up to 200 sequential enqueue_cyl_pipeline_batch
-# calls plus a bulk insert) and video.py — neither has that same small-payload
-# guarantee, so this bound is opt-in per caller, not a new module-wide
-# default; only dispatch_worker.py passes it. Unlike bloommcp's own
-# supabase_client.py (which deliberately keeps the 120s default globally
-# because its one shared client also serves multi-million-row experiment
-# fetches), this service's callers have different enough payload profiles to
-# warrant a per-call override instead of one shared constant.
-DISPATCH_WORKER_POSTGREST_TIMEOUT_SECONDS = 10
+# DEFAULT_POSTGREST_CLIENT_TIMEOUT). Neither the dispatch worker's
+# stop_grace_period (30s) nor the status poller's own, larger one (60s, sized
+# for its own N-GETs-per-sweep worst case — see design.md) actually covers
+# that — a hung RPC could still be SIGKILLed mid-request — and every RPC either
+# service calls (claim_cyl_pipeline_batch/complete_cyl_pipeline_batch/
+# fail_cyl_pipeline_batch/update_cyl_pipeline_run_status) is a single-row,
+# small, indexed operation with no large-payload case to protect, so a tight
+# bound is safe for both. But app_client() is also shared with pipeline.py's
+# trigger_pipeline() (up to MAX_SCAN_IDS=5000 scans, up to 200 sequential
+# enqueue_cyl_pipeline_batch calls plus a bulk insert) and video.py — neither
+# has that same small-payload guarantee, so this bound is opt-in per caller,
+# not a new module-wide default; only dispatch_worker.py and status_poller.py
+# pass it. Unlike bloommcp's own supabase_client.py (which deliberately keeps
+# the 120s default globally because its one shared client also serves
+# multi-million-row experiment fetches), this service's callers have different
+# enough payload profiles to warrant a per-call override instead of one shared
+# constant.
+SINGLE_ROW_RPC_TIMEOUT_SECONDS = 10
 
 
 def app_client(*, timeout_seconds: float | None = None):
@@ -41,8 +43,9 @@ def app_client(*, timeout_seconds: float | None = None):
 
     `timeout_seconds`, when given, overrides supabase-py's postgrest_client_timeout
     default (120s) for every request made through the returned client. Leave unset
-    to keep that default — only dispatch_worker.py's RPCs are small/bounded enough
-    to safely tighten it (see DISPATCH_WORKER_POSTGREST_TIMEOUT_SECONDS above).
+    to keep that default — only dispatch_worker.py's and status_poller.py's RPCs
+    are small/bounded enough to safely tighten it (see SINGLE_ROW_RPC_TIMEOUT_SECONDS
+    above).
     """
     # Validate config BEFORE importing supabase so a misconfigured service fails
     # fast and cleanly without loading the (heavy) client stack.

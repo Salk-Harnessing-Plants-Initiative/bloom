@@ -8,7 +8,29 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a6] - 2026-08-25 — plate download on the PyPI page
+
+### Fixed
+
+- The PyPI project page now documents `plate download`. `pyproject.toml` ships
+  `README.pypi.md`, not `README.md`, and only the latter had been updated — so the page for
+  `0.1.0a5`, whose headline feature is plate download, described only cylinder downloads. Adds a
+  plate quickstart and a Commands row. The published `0.1.0a5` page cannot be changed; PyPI
+  renders the description baked into each distribution, so this takes effect with the next
+  release.
+
+## [0.1.0a5] - 2026-08-24 — plate download + shared download mechanism
+
 ### Added
+
+- `bloomctl cyl download-for-predict` / `batch-download-for-predict` now fetch a scan's frames
+  through a configurable worker pool (`-n`/`--workers`, 1-64, default 8) instead of one at a
+  time — the same pattern PR #623 already applied to `cyl download` (#652). `--workers 1` runs
+  sequentially with no pool at all. The per-frame worker is built on the same shared `download_to`
+  primitive `plate download` already uses (rather than re-deriving download/atomic-write/retry
+  logic), so it also gains `download_to`'s disk-full protection for the first time — at any
+  `--workers` value, including `--workers 1`, a full disk or spent quota now stops further
+  queued frames instead of letting each one independently fail.
 
 - `bloomctl cyl batch-download-for-predict` now writes/merges a
   `sleap_roots_contracts.RunManifest` (`run_manifest.json`) into `OUT_DIR` after every scan
@@ -18,12 +40,14 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   `pipeline_run_id` is sourced from `ARGO_WORKFLOW_NAME` when set, or a generated
   `local-<8 hex chars>` placeholder outside Argo. Bumped the `sleap-roots-contracts` floor to
   `>=0.1.0a7` for `RunManifest`/`RUN_MANIFEST_FILENAME` (#653).
+
 - `bloomctl cyl batch-download-for-predict` now holds a per-scan lock (scoped to
   `out_dir/.locks/{scan_key}.lock`) around each scan's skip-check through its sidecar write,
   and a separate lock around the manifest read-merge-write — closing a race where two invocations
   targeting the same scan_id could both pass the skip-check and clobber each other's writes
   (#533). A stale lock (past `--lock-staleness-seconds`, default `900`, new option) is
   reclaimed rather than permanently wedging the directory.
+
 - `bloomctl plate download` — pull a plate (GraviScan) experiment or single scan out of Bloom:
   `plates.csv`, `plate_sections.csv`, and the plate images. Selected the same way as
   `cyl download` (`--experiment-id` / `--scan-id` / `--experiment-name` with `--species`), and
@@ -33,11 +57,26 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   An ambiguous `--experiment-name` lists each candidate's rig, because plate experiments are
   unique on _(species, name, system)_ and one name can legitimately exist on two rigs.
   Needs the `gravi_scans_extended` view and `gravi_experiment_search` function on the server.
+
 - Plate resume verifies size. `gravi_images` records `file_size_bytes` where `cyl_images` does
   not, so a file is skipped only when its size matches the database — a truncated file is
   re-fetched rather than treated as complete forever. When the recorded size is itself wrong the
   download still succeeds and the log carries a `note=`, so an object that will be re-fetched on
   every run is diagnosable instead of silently repeating.
+
+- Progress shows the percentage to one decimal, the download rate, and an estimate of the time
+  remaining. Failures that arrived since the last line are marked `(+N)`, so the marker
+  disappearing means they have stopped, and the first failure says that re-running resumes.
+
+- `~/.bloom/errors.log` records the traceback behind an unexpected failure. Written `0600`
+  alongside the credentials, with the values of `--password` and `--anon-key` redacted and any
+  credentials stripped out of `--api-url`/`--server` — the host is kept, since which server a
+  command was pointed at is worth reading. Opened so that a symlink left at that path is
+  refused rather than written through, which on a shared machine would otherwise let another
+  local user choose the file a traceback lands in. Capped
+  at 256KB: once past it the log is renamed to `errors.log.1` and a fresh one started, keeping
+  the filled log whole rather than discarding half of it, and leaving nothing for a second
+  `bloomctl` failing at the same moment to overwrite.
 
 ### Changed
 
@@ -48,25 +87,64 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   each method. The storage bucket is now a required argument rather than a default, so no
   command can read another's bucket. `cyl download`'s observable behaviour is unchanged apart
   from the genotype batching noted below.
+
 - `cyl download` fetches genotypes in batches rather than as a single `in_()` query. An
   experiment with enough accessions built a request URL long enough for PostgREST to reject,
   failing the whole download; the batched form cannot. The output is identical.
+
 - A download directory now records which scan method filled it, and a download from the other
   is refused instead of resuming into it. The two commands share the directory's layout but not
   its meaning — scan id 5 is a different row on each — so without this a `plate download` into a
   `cyl download` directory looked like the same selection and overwrote its log. Directories
   written before this release carry no method and still resume under `cyl download`.
+
 - Both commands write the manifest before the CSV. A run killed between the two left a directory
   holding one method's CSV with no manifest and no `images/` — which the other command accepted,
   ending with `plates.csv` and `scans.csv` side by side under one stamp.
+
 - `plate download`'s `--limit` warning no longer fires on the `--scan-id` path, which applies no
   cap, and no longer prints above `No scans matched` for `--limit 0`. Its wording now matches
   what it can distinguish: returning exactly `--limit` rows may mean the newest captures were
   dropped, or may be the whole experiment, and it says so rather than asserting the first.
 
-## [0.1.0a5] - 2026-08-13 — cylinder download reliability
+- `cyl download` now uses the shared mechanism for the last four pieces it still duplicated —
+  containment, object fetching, collision detection and the selector. Its download behaviour is
+  unchanged, apart from the read-failure messages below; its tests pass unedited.
+
+- A failed metadata read now names the read that failed — "Could not read this experiment's scans
+  from Bloom", then the server's own sentence — rather than the server's sentence alone, which
+  said nothing about what the command had been doing. It also exits without writing a traceback
+  to the error log, which an expected server condition never warranted. Every read that ends the
+  run goes through this on both commands, including the experiment-name search. The per-scan frame
+  listing keeps its own handling — one unreadable scan must not end a run — and is reported in the
+  download log as before.
+
+- A message the server raised for a user to read is passed on as written, without that prefix. A
+  PL/pgSQL `RAISE EXCEPTION` is someone's sentence, not a failed read: the search's own
+  "search query too long (max 200 characters)" is the user's input to fix, and framing it as a
+  read failure sends them to check the network instead. This applies to any such message from
+  either command, where before only the name search on `plate` was exempt.
+
+- An error the server sends without any wording no longer reaches the terminal or the download log
+  as its own raw body. The body carries `hint` and `details`, which is where PostgREST puts the
+  connection string and the failing statement, and `download_log.txt` is the file we ask people to
+  send us. Such a failure now reads `Bloom rejected the request (code 42501)`.
+
+- `plate download`'s retry hint names captures rather than frames, so a failing run no longer
+  prints `1/3 captures` immediately above a sentence about frames.
+
+- `cyl download` creates only the last directory of the output path, and fails if the parent
+  is missing. It used to build the whole chain, so `cyl download /Volumes/LabDrive/run3` with
+  the drive unmounted created that path on the boot disk and filled it with an experiment that
+  was meant to go on the drive.
 
 ### Fixed
+
+- `bloomctl cyl batch-ingest-result`'s envelope discovery is now scoped to a `run_manifest.json`
+  in `envelopes_dir` when one is present: only the `.result.json` files it lists are ingested
+  (a leftover file from a stale or concurrently-staging run is excluded, not silently
+  re-ingested), and a manifest-declared `scan_key` with no matching file is reported as a batch
+  failure rather than a silent gap. With no manifest present, discovery is unchanged (#678).
 
 - Installing with `--pre` / `--prerelease=allow` produced a build where no command ran. Those
   flags are not specific to `bloomctl` — they let every dependency install an unfinished
@@ -74,56 +152,43 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   imports) and `supabase 3.0.0a1` (no `create_client`). Install by exact version instead —
   `uv tool install "bloomctl==0.1.0a5"` — which needs no flag; `httpx` and `supabase` are
   also capped so the same versions cannot be selected once they ship as stable releases.
+
 - A full disk ended in a traceback with no summary. The counts are now printed before the log
   is written, the log is written atomically so a failed write leaves the previous one intact,
   and the error names the disk as the cause.
+
 - `scans.csv` is written atomically too. It is rewritten on every run, including a re-run that
   resumes, and opening it for writing emptied it before the first row was written — so a full
   disk destroyed the previous run's metadata instead of leaving it in place.
+
 - A download that runs into a filled quota now stops, as one that fills the disk already did.
   Shared lab storage is usually quota-limited, where the kernel reports `EDQUOT` and never
   `ENOSPC`, so such a run kept pulling every remaining frame off the server and discarding it.
+
 - `cyl download` checks the output directory is writable before signing in, rather than
   failing after every metadata query has run.
+
 - A run that stops for want of space no longer reports the frames it had already fetched as
   missing. It tested "has the disk filled?" before "is this frame already here?", so a resumed
   run that ran out of space partway listed every remaining frame as `FAIL` — including the
   ones sitting complete on disk — in the log we ask people to send us.
+
 - The sweep for temp files left by a killed run now covers the whole output directory.
   `scans.csv` and `download_log.txt` are written atomically too and leave their temp file
   beside themselves, where a sweep of `images/` alone never reached it. It takes only temps
   left untouched for an hour: a temp cannot be told from a live one by name, and the sweep
   runs at the start of every download, so a second run started into the same directory used
   to delete the first one's in-flight writes and fail its renames.
+
 - A failed write names the file that was asked for. It reported the temp file it writes
   through, so a full disk pointed at a `.dl-*.tmp` the user never chose and which had already
   been deleted — on screen, and in the `error=` field of every `FAIL` line in the download log.
+
 - A disk that fills while `scans.csv` or the manifest is being written now says so and what to
   do about it, rather than ending the run as an unhandled error. The output directory is
   probed before the metadata queries run, but the disk can fill in the time between.
+
 - Failures that no command anticipated are reported as one line rather than a stack trace.
-
-### Changed
-
-- `cyl download` creates only the last directory of the output path, and fails if the parent
-  is missing. It used to build the whole chain, so `cyl download /Volumes/LabDrive/run3` with
-  the drive unmounted created that path on the boot disk and filled it with an experiment that
-  was meant to go on the drive.
-
-### Added
-
-- Progress shows the percentage to one decimal, the download rate, and an estimate of the time
-  remaining. Failures that arrived since the last line are marked `(+N)`, so the marker
-  disappearing means they have stopped, and the first failure says that re-running resumes.
-- `~/.bloom/errors.log` records the traceback behind an unexpected failure. Written `0600`
-  alongside the credentials, with the values of `--password` and `--anon-key` redacted and any
-  credentials stripped out of `--api-url`/`--server` — the host is kept, since which server a
-  command was pointed at is worth reading. Opened so that a symlink left at that path is
-  refused rather than written through, which on a shared machine would otherwise let another
-  local user choose the file a traceback lands in. Capped
-  at 256KB: once past it the log is renamed to `errors.log.1` and a fresh one started, keeping
-  the filled log whole rather than discarding half of it, and leaving nothing for a second
-  `bloomctl` failing at the same moment to overwrite.
 
 ## [0.1.0a4] - 2026-08-06
 

@@ -2,11 +2,13 @@
 storage, or supabase client needed — a fake fluent client is used)."""
 
 import io
+import subprocess
 import threading
 import time
 
 import pytest
 from fastapi import HTTPException
+import numpy as np
 from PIL import Image
 
 import video
@@ -810,3 +812,198 @@ def test_generate_scan_video_500_on_empty_output(monkeypatch):
     with pytest.raises(HTTPException) as ei:
         video.generate_scan_video(_StorageClient(_png_bytes()), 5)
     assert ei.value.status_code == 500
+
+
+# --- the encoder seam -------------------------------------------------------
+#
+# Every generate test above stubs VideoWriter, and the tests in
+# test_video_writer.py call add() directly. Neither side sees what this module
+# does when a real guard fires: add() raises, the per-frame `except Exception`
+# catches it, and the frame is skipped rather than failing the request. These
+# drive the real VideoWriter with a stand-in for ffmpeg so both halves run.
+
+
+class _Stdin:
+    def __init__(self):
+        self.chunks = []
+
+    def write(self, data):
+        self.chunks.append(data)
+
+    def close(self):
+        pass
+
+
+class _Stderr:
+    # Same signature as a real pipe: the drain reads in fixed-size chunks, and
+    # a fake that takes no size argument makes its thread die on the first read.
+    def read(self, size=-1):
+        return b""
+
+    def close(self):
+        pass
+
+
+class _Ffmpeg:
+    """Enough of Popen for VideoWriter: records what was piped in, and writes
+    the output file the caller checks for after close().
+
+    Exits non-zero on a frame that is not the size it was opened at. Real
+    ffmpeg would accept those bytes, shear the rest of the video and still
+    exit 0 — so a fake that accepts them too puts the mismatch in a stored
+    video instead of in a test.
+    """
+
+    spawned: list = []
+
+    def __init__(self, cmd, **_kw):
+        self.cmd = cmd
+        self.stdin = _Stdin()
+        self.stderr = _Stderr()
+        self.returncode = 0
+        _Ffmpeg.spawned.append(self)
+
+    @property
+    def frame_size(self):
+        width, height = self.cmd[self.cmd.index("-s") + 1].split("x")
+        return int(width) * int(height) * 3
+
+    def wait(self, timeout=None):
+        if any(len(chunk) != self.frame_size for chunk in self.stdin.chunks):
+            self.returncode = 1
+            return 1
+        with open(self.cmd[-1], "wb") as fh:
+            fh.write(b"\x00\x01")
+        return 0
+
+    def kill(self):  # pragma: no cover - only reached on a timeout
+        pass
+
+
+class _SizedBucket(_GenBucket):
+    """Serves a different image per object_path."""
+
+    def __init__(self, outer, by_path):
+        super().__init__(outer)
+        self._by_path = by_path
+
+    def download(self, path):
+        if path not in self._by_path:
+            raise KeyError(f"no fixture image for {path!r}")
+        return self._by_path[path]
+
+
+class _SizedGenClient(_GenClient):
+    def __init__(self, images, by_path):
+        self._by_path = by_path
+        super().__init__(images)
+
+    @property
+    def storage(self):
+        outer = self
+
+        class _S:
+            def from_(self, _name):
+                return _SizedBucket(outer, outer._by_path)
+
+        return _S()
+
+
+def _png(width, height, mode="RGB") -> bytes:
+    """A patterned image. An all-black frame is byte-identical to its own
+    transpose, so a flat fill cannot tell a width/height swap from a good one.
+    """
+    bands = len(Image.new(mode, (1, 1)).getbands())
+    rows = np.arange(height, dtype=np.uint16)[:, None, None]
+    cols = np.arange(width, dtype=np.uint16)[None, :, None]
+    chans = np.arange(bands, dtype=np.uint16)[None, None, :]
+    data = ((rows * 37 + cols * 11 + chans * 5) % 251).astype(np.uint8)
+    if mode == "RGBA":
+        data[..., 3] = 255  # a varying alpha is not preserved the same way
+
+    buf = io.BytesIO()
+    Image.fromarray(data, mode).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _pixels(png: bytes) -> bytes:
+    """The bytes video.py pipes for this image, at decimate=1."""
+    return np.asarray(Image.open(io.BytesIO(png))).tobytes()
+
+
+@pytest.fixture
+def ffmpeg(monkeypatch):
+    """The real VideoWriter, talking to a fake ffmpeg. Yields the spawn list.
+
+    Owned by the fixture rather than the class, so a test that fakes Popen
+    inline — the dominant idiom in this file — cannot read another test's.
+    """
+    spawned: list = []
+    monkeypatch.setattr(_Ffmpeg, "spawned", spawned)
+    monkeypatch.setattr(subprocess, "Popen", _Ffmpeg)
+    return spawned
+
+
+def _scan_of(by_path):
+    return [{"object_path": p, "frame_number": i} for i, p in enumerate(by_path)]
+
+
+def test_an_odd_first_frame_costs_every_frame_after_it(ffmpeg):
+    """The size guard raises, and this module skips the frame rather than
+    failing — so the first frame decides the video and the rest are dropped.
+
+    Frame 0 is the outlier, so the majority loses: three good frames are
+    skipped and a one-frame video is uploaded and recorded as this scan's.
+    """
+    odd, even = _png(8, 6), _png(8, 8)
+    by_path = {"o0": odd, "o1": even, "o2": even, "o3": even}
+    client = _SizedGenClient(_scan_of(by_path), by_path)
+
+    result = video.generate_scan_video(client, 5, decimate=1)
+
+    assert result["frames"] == 1
+    assert result["frames_expected"] == 4
+    assert result["regenerated"] is True
+    assert client.uploads == 1
+
+    # Only frame 0 reached ffmpeg; the guard stopped the rest at the boundary.
+    assert len(ffmpeg) == 1
+    assert ffmpeg[0].cmd[ffmpeg[0].cmd.index("-s") + 1] == "8x6"
+    assert ffmpeg[0].stdin.chunks == [_pixels(odd)]
+
+
+def test_every_frame_of_a_uniform_scan_reaches_the_encoder(ffmpeg):
+    """The companion to the test above: nothing about driving the real writer
+    is itself lossy, and the frames arrive whole and in order."""
+    by_path = {f"o{i}": _png(8, 8) for i in range(4)}
+    client = _SizedGenClient(_scan_of(by_path), by_path)
+
+    result = video.generate_scan_video(client, 5, decimate=1)
+
+    assert result["frames"] == 4
+    assert result["frames_expected"] == 4
+    assert ffmpeg[0].stdin.chunks == [_pixels(by_path[f"o{i}"]) for i in range(4)]
+
+
+def test_an_rgba_frame_is_piped_at_the_wrong_byte_count(ffmpeg):
+    """A PNG with alpha decodes to 4 channels and nothing normalises it —
+    `Image.open(...)` at the download is not `.convert("RGB")`.
+
+    ffmpeg is told rgb24 and reads w*h*3 bytes per frame, so w*h*4 shears
+    every frame after the first. Real ffmpeg exits 0 on that and the sheared
+    MP4 is stored; the 500 here is the fake refusing what production accepts,
+    which is the only way this shows up as a failure rather than a bad video.
+
+    When this test fails, the caller was fixed: expect 3 channels, a normal
+    success, and drop this note.
+    """
+    by_path = {f"o{i}": _png(8, 8, mode="RGBA") for i in range(2)}
+    client = _SizedGenClient(_scan_of(by_path), by_path)
+
+    with pytest.raises(HTTPException) as ei:
+        video.generate_scan_video(client, 5, decimate=1)
+
+    assert ei.value.status_code == 500
+    assert ffmpeg[0].cmd[ffmpeg[0].cmd.index("-s") + 1] == "8x8"
+    assert len(ffmpeg[0].stdin.chunks[0]) == 8 * 8 * 4, "four channels, not three"
+    assert client.uploads == 0, "a sheared encode must not reach the videos bucket"

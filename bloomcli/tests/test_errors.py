@@ -531,7 +531,7 @@ def _in_fresh_python(body: str, *, broken: str = ""):
 def test_a_half_built_httpx_does_not_escape_the_handler():
     """`httpx 1.0.dev3` imported fine and dropped names this CLI used — that is #629.
 
-    `_is_network_error` reaches for `httpx.TransportError`; guarding only ImportError
+    `is_network_error` reaches for `httpx.TransportError`; guarding only ImportError
     let the AttributeError out of the handler as a stack trace.
     """
     done = _in_fresh_python(
@@ -548,6 +548,22 @@ def test_a_half_built_httpx_does_not_escape_the_handler():
     assert "Traceback" not in done.stderr
 
 
+def test_a_half_built_httpx_does_not_break_the_download_retry():
+    """`is_retryable` runs inside `download_object`'s own except, so a predicate that raises
+    replaces the storage error and skips the retry — every frame fails instead of one."""
+    done = _in_fresh_python(
+        "from bloomctl import _storage\n"
+        "print('RETRYABLE:', _storage.is_retryable(ConnectionResetError('reset')))\n",
+        broken=(
+            "import sys, types\n"
+            "sys.modules['httpx'] = types.ModuleType('httpx')\n"
+        ),
+    )
+
+    assert "RETRYABLE: False" in done.stdout, done.stdout + done.stderr
+    assert "AttributeError" not in done.stderr
+
+
 class _Hostile(Exception):
     """An exception that raises while being described — `explain()` calls str() on it."""
 
@@ -556,7 +572,7 @@ class _Hostile(Exception):
 
 
 def test_an_exception_that_cannot_describe_itself_still_gets_one_line():
-    assert errors._describe(_Hostile()) == "_Hostile"
+    assert errors.describe(_Hostile()) == "_Hostile"
 
 
 def test_a_failure_that_cannot_describe_itself_still_leaves_main_cleanly(

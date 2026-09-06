@@ -35,6 +35,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
+import sleap_roots_analyze
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, RunStateError, SupabaseResultStore
@@ -778,6 +779,112 @@ def test_include_plots_false_with_plots_param_is_silently_ignored(injected_ports
     assert set(result.outputs) == {"embedding_coords.csv", "umap_result.json"}
 
 
+# ── plot style kwargs: plot_cmap/plot_point_size/plot_alpha (#662) ──────────
+
+
+def test_plot_style_fields_forwarded_to_create_umap_single_trait(
+    injected_ports, monkeypatch
+):
+    """Patches the real defining module, not ``umap_analysis_tool`` — the plotter is
+    imported function-locally inside ``_umap_plot_calls`` and is never a
+    ``umap_analysis_tool`` module attribute (see design.md)."""
+    captured = {}
+    real = sleap_roots_analyze.create_umap_single_trait
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_umap_single_trait", _spy)
+    _run(
+        include_plots=True,
+        plots=["create_umap_single_trait"],
+        plot_cmap="plasma",
+        plot_point_size=50,
+        plot_alpha=0.4,
+    )
+    assert captured["cmap"] == "plasma"
+    assert captured["point_size"] == 50
+    assert captured["alpha"] == 0.4
+
+
+def test_unset_plot_style_fields_are_omitted_not_passed_as_none(
+    injected_ports, monkeypatch
+):
+    captured = {}
+    real = sleap_roots_analyze.create_umap_single_trait
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_umap_single_trait", _spy)
+    _run(include_plots=True, plots=["create_umap_single_trait"])
+    assert "cmap" not in captured
+    assert "point_size" not in captured
+    assert "alpha" not in captured
+
+
+def test_plot_cmap_has_no_effect_on_create_umap_colored_by_top_traits(
+    injected_ports, monkeypatch
+):
+    captured = {}
+    real = sleap_roots_analyze.create_umap_colored_by_top_traits
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_umap_colored_by_top_traits", _spy)
+    _run(
+        include_plots=True,
+        plots=["create_umap_single_trait", "create_umap_colored_by_top_traits"],
+        plot_cmap="plasma",
+    )
+    assert "cmap" not in captured
+
+
+def test_plot_style_fields_ignored_when_include_plots_false(injected_ports):
+    result = _run(
+        include_plots=False, plot_cmap="plasma", plot_point_size=50, plot_alpha=0.4
+    )
+    assert not any(k.endswith(".png") for k in result.outputs)
+
+
+@pytest.mark.parametrize("include_plots", [True, False])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("plot_point_size", 0),
+        ("plot_point_size", -1),
+        ("plot_alpha", 1.5),
+        ("plot_alpha", -0.1),
+    ],
+)
+def test_out_of_range_plot_style_field_is_invalid_input_regardless_of_include_plots(
+    injected_ports, field, value, include_plots
+):
+    with pytest.raises(BloomMCPError) as exc:
+        umap_analysis(
+            {"experiment": _EXPERIMENT, "include_plots": include_plots, field: value}
+        )
+    assert exc.value.code == "invalid_input"
+
+
+@pytest.mark.parametrize("alpha", [0.0, 1.0])
+def test_plot_alpha_boundary_values_accepted(injected_ports, monkeypatch, alpha):
+    captured = {}
+    real = sleap_roots_analyze.create_umap_single_trait
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_umap_single_trait", _spy)
+    _run(include_plots=True, plots=["create_umap_single_trait"], plot_alpha=alpha)
+    assert captured["alpha"] == alpha
+
+
 def test_umap_single_trait_plot_png_round_trip(injected_ports, monkeypatch):
     """Real delegate: one genuine embedding through one real plotter, guarding against
     silent plotter-API drift (design.md's "Plotter API drift" risk)."""
@@ -917,8 +1024,8 @@ def test_figure_cleanup_get_fignums_empty_on_partial_plotter_failure(
     def _boom(*a, **k):
         raise RuntimeError("second plotter blew up")
 
-    def _patched(result_dict, frame, trait_cols):
-        calls = real(result_dict, frame, trait_cols)
+    def _patched(result_dict, frame, trait_cols, **kwargs):
+        calls = real(result_dict, frame, trait_cols, **kwargs)
         calls["create_umap_colored_by_top_traits"] = _boom
         return calls
 
@@ -951,7 +1058,7 @@ def test_plot_font_family_and_size_forwarded_and_applied(injected_ports, monkeyp
 
     captured = {}
 
-    def _fake_calls(result_dict, frame, trait_cols):
+    def _fake_calls(result_dict, frame, trait_cols, **kwargs):
         def _make():
             fig, ax = plt.subplots()
             ax.set_title("t")
@@ -1008,7 +1115,7 @@ def test_plots_subset_with_font_override_never_generates_non_requested_plots(
 
     called = {"single_trait": 0, "top_traits": 0}
 
-    def _fake_calls(result_dict, frame, trait_cols):
+    def _fake_calls(result_dict, frame, trait_cols, **kwargs):
         def _single_trait():
             called["single_trait"] += 1
             fig, ax = plt.subplots()

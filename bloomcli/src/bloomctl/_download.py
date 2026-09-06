@@ -1,13 +1,12 @@
 """The download mechanism, shared by every scan method's download command.
 
-Nothing here names a database table or column, and nothing branches on which method is
-calling. What belongs in a command's own module: its queries, its CSV columns, its on-disk
-path layout, and the loop that walks its rows. What belongs here: everything about *doing*
-the download safely — atomic writes, resume, bounded concurrency, collision detection,
-progress and logging.
+Nothing here queries a table, decides a path layout, or branches on which method is calling.
+Those belong in a command's own module, along with its CSV columns and the loop that walks its
+rows. What belongs here: everything about *doing* the download safely — atomic writes, resume,
+bounded concurrency, collision detection, progress and logging.
 
-That line is the rule for adding to this file. A change that needs to know a column name, or
-needs an ``if method == ...``, belongs in the caller instead.
+That is the rule for adding to this file: a change needing an ``if method == ...`` belongs in
+the caller instead.
 """
 
 from __future__ import annotations
@@ -30,7 +29,14 @@ import click
 
 from ._storage import already_downloaded, atomic_write_bytes, download_object
 
-RETRY_HINT = "Some frames are failing — re-run this command afterwards and it will retry them."
+
+def retry_hint(noun: str = "frames") -> str:
+    """The retry hint, worded for what this method downloads."""
+    return f"Some {noun} are failing — re-run this command afterwards and it will retry them."
+
+
+# The cyl wording, kept as a name because the cyl tests assert against it.
+RETRY_HINT = retry_hint()
 
 
 # How far the rate must fall below the window's before the window is started again. Well clear
@@ -490,7 +496,7 @@ class ProgressReporter:
         click.echo(f"  {line}", err=True)
         if failed and not self._mentioned_retry:  # once, when failures first appear
             self._mentioned_retry = True
-            click.echo(f"  {RETRY_HINT}", err=True)
+            click.echo(f"  {retry_hint(self._noun)}", err=True)
 
     def _pace(self, moment: float, done: int, total: int) -> tuple[float | None, float | None]:
         """Frames per second and seconds remaining, over a recent window.

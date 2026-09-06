@@ -198,6 +198,25 @@ services:
       context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
+    # The ceiling MAX_CONCURRENT_ENCODES is sized against. Without it a render
+    # spike goes at the host, and the kernel's OOM killer picks by resident
+    # size across all ~15 containers on a 16 GB box — which means db-prod or
+    # minio, not the service that caused it. With it, the kill lands inside
+    # this container: the uvicorn worker dies and `restart: unless-stopped`
+    # brings it back, so a runaway render costs this service a restart rather
+    # than costing the stack its database.
+    #
+    # 2g covers four concurrent 16-bit plates: 162 MB of frame each measured by
+    # tracemalloc, plus Pillow's decode buffer outside it, plus the interpreter
+    # — about 1.4 GB. The tmpfs below is RAM-backed and counts here too, but
+    # holds only the finished MP4s (~3.5 MB each), not its 512m cap. Four
+    # 32-bit plates would exceed 2g, which is the intended outcome.
+    mem_limit: 2g
+    # Without this Docker allows twice mem_limit in swap, so a runaway render
+    # would grind against disk indefinitely instead of being killed — slowing
+    # every other container on the box, which is the outcome mem_limit is here
+    # to avoid. Equal values mean no swap: hit the ceiling and stop.
+    memswap_limit: 2g
     tmpfs:
       # Size-capped so the temp MP4 can't exhaust host RAM (sized for concurrent encodes
       # in the one worker, with headroom).
@@ -228,10 +247,13 @@ services:
       - kong
       - db-prod
     restart: unless-stopped
-    # One worker: the per-scan lock in video.py holds only within a single process, so raising
-    # this reopens the overwrite race it closes. Start here and watch — raise it when this one
-    # is actually saturated, or once the encode moves to a worker container and the database
-    # enforces the serialisation instead, whichever comes first.
+    # One worker: the per-scan lock in video.py and the per-plate lock in
+    # plate_encode.py both hold only within a single process, so raising this reopens the
+    # overwrite race they close — the object keys are deterministic and unversioned, so two
+    # workers would race to write the same one. The encode semaphore bounds concurrency but
+    # not that. Start here and watch — raise it when this one is actually saturated, or once
+    # the encode moves to a worker container and the database enforces the serialisation
+    # instead, whichever comes first.
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "1"]
 
   # Consumes the cyl_pipeline_dispatch pgmq queue (bloom #11/#404 Phase 2) and
@@ -286,6 +308,56 @@ services:
     # section already flags for crashes.
     stop_grace_period: 30s
     command: ["python", "dispatch_worker.py"]
+
+  # Periodically polls Argo for each in-flight run's real Workflow phase(s)
+  # and progresses cyl_pipeline_runs.status past dispatch outcome (bloom #11
+  # Phase 3) — a separate process from cyl-pipeline-worker above (event-driven
+  # dispatch vs. this poller's fixed wall-clock sweep). Same image; read-only
+  # use of the K8s API (get, not create), so only four of the five
+  # WORKFLOWS_K8S_* vars are needed — TTL_SECONDS/ENV_LABEL are
+  # submission-only (build_workflow_body), never read by this poller.
+  # WORKFLOWS_STATUS_POLL_SECONDS is deliberately NOT referenced here — its
+  # Python-side default (15s) governs it; adding it here without a real
+  # default-file entry would make compose inject an empty string and
+  # silently override that default.
+  # Also safe to scale by replicas, for a different reason than cyl-pipeline-
+  # worker above: each sweep is an idempotent recompute from Argo's current
+  # state (see design.md's "rollup computation happens in Python" decision),
+  # not a claimed, exactly-once event — redundant concurrent sweeps just
+  # mean harmless, wasted-work overlap, not a correctness risk.
+  cyl-status-poller:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      WORKFLOWS_K8S_TOKEN: ${WORKFLOWS_K8S_TOKEN}
+      WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
+      WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
+      WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE}
+    networks:
+      - supanet
+    depends_on:
+      - kong
+      - db-prod
+    restart: unless-stopped
+    command: ["python", "status_poller.py"]
+    # Larger than cyl-pipeline-worker's 30s (found during /review-pr round 1,
+    # not a blind copy): one sweep can issue one get_workflow_status GET per
+    # distinct workflow name across EVERY candidate run this cycle, not a
+    # single call per claim, so 30s isn't necessarily enough headroom for
+    # _stop()'s documented "let the in-flight sweep finish" guarantee.
+    stop_grace_period: 60s
 
   # -------------------
   # Bloom MCP Server
@@ -538,7 +610,10 @@ services:
   # MinIO
   # -------------------
   supabase-minio:
-    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
+    # Digest-pinned: the edge security headers reach this console, and the
+    # standing precondition is to re-measure its assets whenever the image
+    # moves. A tag can be re-pushed without this file changing; a digest cannot.
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z@sha256:ed9be66eb5f2636c18289c34c3b725ddf57815f2777c77b5938543b78a44f144
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -741,7 +816,8 @@ services:
   # Supabase Studio
   # -------------------
   studio:
-    image: supabase/studio:2026.03.30-sha-12a43e5
+    # Digest-pinned for the same reason as supabase-minio above.
+    image: supabase/studio:2026.03.30-sha-12a43e5@sha256:d73df17a81b897bb61326b3160b29558ca4c2cdbe32d25b7bb11e15a2cd13488
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

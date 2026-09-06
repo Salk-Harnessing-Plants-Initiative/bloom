@@ -1,0 +1,171 @@
+name: Refresh cyl_experiment_trait_counts
+
+# bloom#637 / bloom#656 (fix-cyl-scan-traits-latest-rollup, design.md D5/D8): n_traits in
+# get_experiment_summary_counts's unpinned path is cached in cyl_experiment_trait_counts rather
+# than recomputed live (a full scan, 6.6s at prod scale, no shortcut available). The cache is
+# refreshed on demand rather than a per-write trigger, because one write-back upload inserts on
+# the order of hundreds of trait rows in a loop -- a per-row trigger would fire that many
+# full-experiment recomputes for one upload.
+#
+# pg_cron isn't installed in this stack, so this lives here instead. Staging has low write
+# volume and doesn't need frequent automatic refreshes -- it stays workflow_dispatch-only.
+# Production gets an automatic `on: schedule` cron (bloom#708, see below).
+#
+# Both `schedule:` AND `workflow_dispatch` require this file to be registered from the repo's
+# DEFAULT branch (`main`) before EITHER can fire at all -- neither trigger works until this
+# repo's normal `staging -> main` promotion practice carries this file forward; see design.md
+# D8's addendum (fix-cyl-scan-traits-latest-rollup) for the full reasoning and verification.
+#
+# Calls the refresh function as an ordinary PostgREST RPC (the same surface every other caller in
+# this repo uses), rather than SSH+psql, so it doesn't touch the "manual DB access is
+# emergency-only" deploy policy design.md's predecessor (PR #654) ran into for its own backfill.
+#
+# `environment` (mirrors deploy.yml's own input) selects which host/secret pair to call --
+# STAGING_API_URL/PROD_API_URL are both hardcoded literals (the same public, stable hostnames
+# already committed as each environment's own .env.*.defaults API_EXTERNAL_URL, and documented
+# non-sensitive by the Committed Defaults contract, tests/unit/test_env_defaults.py), and
+# STAGING_SERVICE_ROLE_KEY/PROD_SERVICE_ROLE_KEY are the real secrets, both already provisioned
+# before this workflow existed. This job also deliberately never checks out the repo (see
+# `permissions: {}` below), so it can't read either .env.*.defaults file at runtime; hardcoded
+# literals are simpler than adding checkout just to read one line out of each. No default on the
+# `environment` input -- forces an explicit choice every dispatch, rather than silently refreshing
+# staging when someone meant to pick production.
+#
+# The job-level `environment:` below (round 9 finding) makes this dispatch subject to whichever
+# approval rules this repo's GitHub "staging"/"production" Environments carry (required reviewers,
+# wait timers) -- the same gate deploy.yml's own production/staging jobs already go through.
+# Without it, this job could fire an RLS-bypass RPC at either database with zero approval, unlike
+# every other path that reaches them.
+#
+# bloom#708: production now has an automatic daily `on: schedule` cron (see the `on:` block
+# below) rather than staying on-demand-only indefinitely. `staging` still needs no fixed cadence
+# at all -- dispatch it (environment: staging) as needed for testing, whenever a fresher count
+# would help. A `schedule` event carries no `github.event.inputs` context, so the job's
+# `environment:` key and ENVIRONMENT below resolve off `github.event_name` instead of the
+# dispatch input directly -- see the inline comments at each site, and design.md D8's addendum
+# (fix-cyl-scan-traits-latest-rollup) for the full reasoning, including why the scheduled path
+# uses a separate, ungated GitHub Environment rather than `production` itself.
+#
+# bloom#736: this job runs on the same self-hosted `salk-network` runner deploy.yml uses (see
+# its own runs-on comment), not a GitHub-hosted one -- GitHub-hosted runners have no network
+# route to the Salk server at all, confirmed empirically when this workflow's first live
+# scheduled run failed its curl call outright. See design.md's D8 addendum, part 2
+# (fix-cyl-scan-traits-latest-rollup) for the full investigation and the accepted trade-offs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to refresh'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+  # bloom#708: production's write volume is expected to eventually outgrow on-demand
+  # dispatch. staging keeps no automatic cadence at all -- see this file's header
+  # comment above for why. Once daily, deliberately off the top of the hour (GitHub's
+  # own docs flag midnight UTC as a period of elevated scheduler load/delay); a
+  # reasoned default, not benchmarked against real production write-cadence data,
+  # which doesn't exist yet (design.md D8 addendum, fix-cyl-scan-traits-latest-rollup).
+  schedule:
+    - cron: '17 0 * * *'
+
+# This job only makes an outbound curl call -- no checkout, no repo-content access needed.
+permissions: {}
+
+# The target-host expression below is repeated verbatim (not centralized in a
+# workflow-level `env:`) because the `concurrency:` context cannot read `env:` --
+# GitHub Actions only exposes `github`/`inputs`/`vars`/`needs` contexts there.
+#
+# Scoped by target HOST (round 9 fix), not by the job's own environment: key below --
+# previously a single shared group meant a staging dispatch and a production dispatch
+# could cancel each other, even though they touch entirely independent databases and
+# never actually race. A scheduled production run and a manual workflow_dispatch
+# production run share this group deliberately (bloom#708) -- both hit the same
+# database, and the refresh RPC's own advisory lock (design.md D5b) makes it safe for
+# one to cancel/replace the other. Safe to cancel in general: the refresh RPC is a
+# single statement in one transaction, so an aborted client connection (what
+# cancelling this job's curl call amounts to) rolls it back cleanly -- no partial
+# state either way.
+concurrency:
+  group: refresh-cyl-experiment-trait-counts-${{ github.event_name == 'schedule' && 'production' || github.event.inputs.environment }}
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    # bloom#736: a GitHub-hosted runner (the previous `ubuntu-latest`) has no network route
+    # to either host -- same self-hosted label deploy.yml's own jobs use, and for the same
+    # reason (see that file's own comment near its runs-on ternary). Applied unconditionally
+    # to both staging and production -- this job has no per-host boundary, and no
+    # ubuntu-latest escape-hatch input like deploy.yml's own `runner` input, since this job
+    # isn't a required/blocking check and an escape hatch wouldn't help the unattended
+    # `schedule` trigger anyway. If this runner is offline, a run queues rather than failing
+    # fast -- accepted, not mitigated; see design.md's D8 addendum, part 2 for the full
+    # reasoning, including this job now sharing a runner pool with deploy.yml's deploy jobs.
+    runs-on: ["self-hosted", "linux", "salk-network"]
+    # bloom#708: a SEPARATE expression from ENVIRONMENT below and concurrency.group
+    # above. A `schedule` event has no `github.event.inputs` context, so a scheduled
+    # run always targets production -- but it must NOT go through `production`'s own
+    # `required_reviewers` approval gate (there's no human present to click "Approve"
+    # on an unattended cron; it would sit "Waiting" indefinitely). Resolves instead to
+    # `production-scheduled-refresh`, a second, purpose-created GitHub Environment
+    # with no protection rules -- GitHub auto-creates a referenced Environment with no
+    # protection rules on first use, so this needs no manual repository-settings step,
+    # and no new secret provisioning (PROD_SERVICE_ROLE_KEY is a repository-level
+    # secret, visible regardless of which Environment name is referenced). A manual
+    # workflow_dispatch is completely unaffected -- still resolves to the dispatched
+    # `environment` input, still gated by that Environment's own protection rules
+    # exactly as before. See design.md's D8 addendum (fix-cyl-scan-traits-latest-rollup)
+    # for the full reasoning, including an accepted, retry-safe risk this shares a
+    # concurrency group with manual production dispatches.
+    environment: ${{ github.event_name == 'schedule' && 'production-scheduled-refresh' || github.event.inputs.environment }}
+    # Only bounds execution time once a runner is assigned -- does NOT bound how long a run
+    # can sit queued waiting for the self-hosted runner (bloom#736).
+    timeout-minutes: 2
+    steps:
+      - name: Call refresh_cyl_experiment_trait_counts()
+        env:
+          ENVIRONMENT: ${{ github.event_name == 'schedule' && 'production' || github.event.inputs.environment }}
+          STAGING_API_URL: https://staging.bloom.salk.edu:8443/api
+          PROD_API_URL: https://bloom.salk.edu/api
+          STAGING_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SERVICE_ROLE_KEY }}
+          PROD_SERVICE_ROLE_KEY: ${{ secrets.PROD_SERVICE_ROLE_KEY }}
+        run: |
+          case "${ENVIRONMENT}" in
+            staging)
+              API_URL="${STAGING_API_URL}"
+              SERVICE_ROLE_KEY="${STAGING_SERVICE_ROLE_KEY}"
+              ;;
+            production)
+              API_URL="${PROD_API_URL}"
+              SERVICE_ROLE_KEY="${PROD_SERVICE_ROLE_KEY}"
+              ;;
+            *)
+              echo "::error::Unknown environment '${ENVIRONMENT}' -- expected staging or production."
+              exit 1
+              ;;
+          esac
+          if [ -z "${SERVICE_ROLE_KEY}" ]; then
+            echo "::error::No service-role key configured for environment '${ENVIRONMENT}' -- see this workflow's own header comment."
+            exit 1
+          fi
+          case "${API_URL}" in
+            https://*) ;;
+            *)
+              echo "::error::API_URL must be https:// -- a plain http:// URL would send SERVICE_ROLE_KEY (a full-bypass-RLS credential) in cleartext on every run."
+              exit 1
+              ;;
+          esac
+          status=$(curl -s -S --connect-timeout 5 --max-time 30 -o /tmp/refresh_response.json -w "%{http_code}" \
+            -X POST "${API_URL}/rest/v1/rpc/refresh_cyl_experiment_trait_counts" \
+            -H "apikey: ${SERVICE_ROLE_KEY}" \
+            -H "Authorization: Bearer ${SERVICE_ROLE_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          echo "HTTP ${status}"
+          cat /tmp/refresh_response.json
+          if [ "$status" != "200" ] && [ "$status" != "204" ]; then
+            echo "::error::refresh_cyl_experiment_trait_counts call failed (HTTP ${status})"
+            exit 1
+          fi

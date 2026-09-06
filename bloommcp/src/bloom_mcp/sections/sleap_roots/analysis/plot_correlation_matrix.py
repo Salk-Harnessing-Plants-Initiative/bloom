@@ -89,13 +89,23 @@ signal a live call did" true: that string is capped at 10 names and then tells t
 "see zero_variance_traits/low_overlap_trait_pairs for the complete list", which a manifest-only
 reader had no way to do past the cap (#466 review round 7). Both lists are now recoverable from
 a stored run, so the claim holds at any number of flagged cells; (3) the footnote names the
-actual flagged
-trait(s)/pair(s) (capped at 10), not just a count (#466 review round 6 — a bare count told a
+actual flagged trait(s)/pair(s) (capped at 10), not just a count (#466 review round 6 — a bare
+count told a
 PNG-only viewer a problem existed with no way to tell *which* cell to distrust; since
 ``create_correlation_heatmap`` draws its axis tick labels from this same ``trait_cols`` list in
 this same order, naming the flagged names directly lets that viewer cross-reference labels
 they can already see on the image, with none of the "wrong cell" geometry risk a per-cell
 hatch/marker would carry).
+
+**Known test-coverage gap (#768, carried forward from PR #724 via staging):**
+``tests/tools/test_viz_snapshot.py``'s pixel-diff regression check cannot reliably catch a
+single-cell rendering defect in this heatmap — one real cell is a tiny fraction of the whole
+image, small enough that even the most-detectable-possible miscoloring scores an RMS in the
+same range as ordinary cross-platform rendering noise. See that test file's module docstring
+and ``openspec/changes/add-bloommcp-plot-snapshot-tests/design.md`` (Decisions 2 & 7) for the
+full measurement and why this is a structural limit, not a TODO. Note this compounds the
+``heatmap_caveat`` disclosure above: the rendered PNG's untrustworthy cells are caught by
+neither the vendored delegate's own masking (there is none, #747) nor the snapshot test.
 
 Persists a versioned run under its own tool class ``correlation_matrix`` (not the shared,
 unclaimed legacy ``viz`` slot — see ``openspec/changes/converge-bloommcp-viz-tools/design.md``
