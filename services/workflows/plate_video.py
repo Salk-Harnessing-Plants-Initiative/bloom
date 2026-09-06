@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
+import httpx
+
 from plate_video_path import GRAVISCAN_VIDEOS_BUCKET, plate_video_path
 
 logger = logging.getLogger(__name__)
@@ -487,24 +489,20 @@ def _outcome(action: str, reason: str, key: str | None, code: str = "") -> dict:
 
 
 def _answered(what: str, read):
-    """A planning read's result, or None when the database did not answer.
+    """A planning read's result, or None when the database could not be reached.
 
-    Wraps the call and nothing around it, so a bug in this module still raises
-    rather than reaching the caller as a passing outage.
+    Transport failures only. A database that answered with a reason -- a denied
+    grant, a row that will not parse -- is not something a retry fixes.
     """
     try:
         return read()
-    except Exception as exc:
+    except httpx.TransportError as exc:
         logger.warning("the database did not answer for %s: %s", what, exc)
         return None
 
 
 def _unavailable(key: str | None) -> dict:
-    """The database equivalent of the storage outage refusal above.
-
-    Both are transient and neither has changed anything, so both say come back
-    — an uncaught read failure would say 500, which reads as "do not retry".
-    """
+    """A refusal the caller can act on by waiting."""
     return {
         **_outcome(
             "refuse",

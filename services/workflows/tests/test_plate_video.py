@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
+from postgrest.exceptions import APIError
 
 import plate_video as pv
 
@@ -915,15 +917,30 @@ def _big(n):
 
 
 class _Down(_Query):
-    """A table the database will not answer for."""
+    """A table the database cannot be reached for."""
 
     def execute(self):
-        raise Exception("server closed the connection unexpectedly")
+        raise httpx.ConnectError("connection refused")
+
+
+class _Denied(_Query):
+    """A table the database answers about, with a refusal."""
+
+    def execute(self):
+        raise APIError(
+            {"code": "42501", "message": "permission denied for table gravi_scans"}
+        )
 
 
 def _outage(table, **kwargs):
     client = _PlanClient(**kwargs)
     client.queries[table] = _Down([])
+    return client
+
+
+def _denied(table, **kwargs):
+    client = _PlanClient(**kwargs)
+    client.queries[table] = _Denied([])
     return client
 
 
@@ -975,6 +992,24 @@ def test_a_bug_in_planning_is_not_reported_as_an_outage(monkeypatch):
     # The bug's own message: swallowing it and tripping over the None it left
     # behind raises a TypeError too, and would pass a bare `raises(TypeError)`.
     assert "unexpected argument" in str(caught.value)
+
+
+def test_a_denied_grant_is_not_answered_with_come_back_later(monkeypatch):
+    """The database answered, and said no. Waiting will never change that, and
+    "the database did not answer" sends whoever investigates the wrong way."""
+    with pytest.raises(APIError) as caught:
+        pv.plan_render(_denied("gravi_scans"), 12, "P7", 1)
+
+    assert "permission denied" in str(caught.value)
+
+
+def test_a_row_that_will_not_parse_is_not_answered_with_come_back_later():
+    """Permanent for that plate, however many times it is asked for."""
+    broken = _PlanClient(frames=[_row(0, "a.tif")])
+    broken.queries["gravi_scans"]._rows[0]["capture_date"] = "not a date"
+
+    with pytest.raises(ValueError):
+        pv.plan_render(broken, 12, "P7", 1)
 
 
 def test_plan_renders_when_frames_have_arrived_since_the_stored_video():

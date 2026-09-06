@@ -406,6 +406,7 @@ def test_a_recording_failure_still_reaches_the_log_in_full(monkeypatch, caplog):
 from test_plate_video import (  # noqa: E402
     _PlanClient,
     _big,
+    _denied,
     _frames as _plan_frames,
     _outage,
     _recorded,
@@ -457,6 +458,26 @@ def test_a_database_that_did_not_answer_is_a_503_through_the_real_plan(monkeypat
     failure = _through_the_route(_outage("gravi_scans"), monkeypatch)
 
     assert failure.status_code == 503
+
+
+def test_a_denied_grant_asks_the_caller_to_get_help_not_to_wait(monkeypatch):
+    """A missing GRANT is the failure this project has actually shipped. Telling
+    a scientist to retry hides it; telling them to ask sends it somewhere it can
+    be fixed. The reason itself names a table and a role, so it stays in the log."""
+    failure = _through_the_route(_denied("gravi_scans"), monkeypatch)
+
+    assert failure.status_code == 500
+    assert "reach out to the Bloom team" in failure.detail
+    assert "permission denied" not in failure.detail
+    assert "gravi_scans" not in failure.detail
+
+
+def test_the_denied_grant_reason_reaches_the_log(monkeypatch, caplog):
+    with caplog.at_level("ERROR"):
+        _through_the_route(_denied("gravi_scans"), monkeypatch)
+
+    assert "permission denied for table gravi_scans" in caplog.text
+    assert "Traceback" in caplog.text, "no traceback to work from"
 
 
 def test_every_code_the_planner_emits_has_a_status(monkeypatch):

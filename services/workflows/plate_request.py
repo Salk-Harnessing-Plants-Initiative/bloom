@@ -79,6 +79,18 @@ def render(experiment_id: int, body: dict) -> dict:
         raise HTTPException(
             status_code=500, detail="the video could not be stored"
         ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # A denied grant, a row that will not parse, a storage upload that
+        # failed. Waiting does not fix any of them, so the caller is not told
+        # to. The cause is the log's, with a traceback.
+        logger.exception("plate video failed for an unhandled reason")
+        raise HTTPException(
+            status_code=500,
+            detail="this video cannot be made right now — please reach out to "
+            "the Bloom team",
+        ) from exc
 
     if outcome["action"] == "refuse":
         raise HTTPException(
