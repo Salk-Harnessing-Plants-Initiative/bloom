@@ -36,9 +36,7 @@ _REFUSAL_STATUS = {
     "too_large": 413,  # more than one request may pull
 }
 
-# `gravi_scans.wave_number` is a Postgres INT, so a larger number cannot be
-# stored and can never match a row — the query errors rather than answering
-# empty. A real wave is a small number; this is only where the arithmetic stops.
+# The largest wave `gravi_scans.wave_number` can hold.
 MAX_WAVE_NUMBER = 2**31 - 1
 
 
@@ -51,48 +49,32 @@ def render(experiment_id: int, body: dict) -> dict:
     except EncoderBusy as exc:
         raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "30"}) from exc
     except FrameDepthUnsupported as exc:
-        # Before FrameUnreadable, which it subclasses. Its own status because
-        # the action differs: the file is intact and it is the scanner's output
-        # depth this encoder does not cover, so 502 would send someone to look
-        # for an upstream failure that did not happen.
+        # Before FrameUnreadable, which it subclasses. The file is intact.
         logger.warning("plate video refused an unsupported frame depth: %s", exc)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FrameTooLarge as exc:
-        # Before FrameUnreadable, which it subclasses. The frame is intact and
-        # only too big to hold, so the message says the size and the limit —
-        # neither of which comes from the storage client.
+        # Before FrameUnreadable, which it subclasses. The size is safe to send.
         logger.warning("plate video refused an oversized frame: %s", exc)
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     except FrameUnreadable as exc:
-        # Naming the frame is the point — "a frame failed" sends someone to the
-        # scanner, "12/wave-1/P7_40.tif could not be read" sends them to it. The
-        # path only: the rest of the message is the storage client's own error,
-        # which carries the internal gateway host, the database role and
-        # PostgREST's codes. Caddy publishes this service directly, so whatever
-        # goes in `detail` reaches the caller unfiltered.
+        # The path only: the rest is the storage client's error, which names
+        # internal hosts and roles and reaches the caller unfiltered.
         logger.warning("plate video render failed: %s", exc)
         named = f"{exc.path} could not be read" if exc.path else "a frame could not be read"
         raise HTTPException(status_code=502, detail=named) from exc
     except NotRecorded as exc:
-        # The message wraps the database client's error — the role name and
-        # PostgREST's SQLSTATEs. The object key is the caller's own plate and is
-        # worth naming; the rest is the log's business.
+        # The key only, for the reason above.
         logger.error("plate video stored but not recorded: %s", exc)
         named = f"the video for {exc.key} was not recorded" if exc.key else "the video was not recorded"
         raise HTTPException(status_code=500, detail=named) from exc
     except (VideoEncodeError, BrokenPipeError) as exc:
-        # The encoder's own failures: a stall the watchdog killed, a non-zero
-        # ffmpeg exit, a pipe that broke. Without this branch each arrives as an
-        # unexplained 500 — including "ffmpeg accepted no frame for 120.0s and
-        # was killed", which is the one line a caller waiting two minutes needs.
+        # The encoder's own failures: a stall, a non-zero exit, a broken pipe.
         logger.error("plate video encode failed: %s", exc)
         raise HTTPException(
             status_code=500, detail="the video could not be encoded"
         ) from exc
     except PlateMismatch as exc:
-        # A crossed key and identity: this run would have stored one plate's
-        # video under another's name. Nothing to retry, and nothing the caller
-        # can act on, so the detail stays generic and the reason is logged.
+        # A crossed key and identity. Nothing the caller can act on.
         logger.error("plate video refused a crossed plate identity: %s", exc)
         raise HTTPException(
             status_code=500, detail="the video could not be stored"
@@ -104,10 +86,7 @@ def render(experiment_id: int, body: dict) -> dict:
             detail=outcome["reason"],
         )
 
-    # The encoder's own count when something was encoded, and the planned list
-    # otherwise — a keep or a refusal never reached the encoder. The two agree
-    # today, because one unreadable frame fails the whole render; this is what
-    # keeps the number honest if that ever stops being true.
+    # The encoder's own count when something was encoded, the plan otherwise.
     recorded = outcome.get("recorded") or {}
 
     return {

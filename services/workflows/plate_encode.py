@@ -51,25 +51,14 @@ PLATE_VIDEO_WIDTH = 1440
 # of the source made the same measurement 578 MB.
 MAX_CONCURRENT_ENCODES = 4
 
-# What one frame may cost to decode. Bytes, not pixels: 60 Mpx costs 369 MB as
-# 8-bit and 819 MB as 16-bit, so a pixel ceiling admitting the first admits the
-# second. Sits above a 1600 dpi plate (369 MB) and below a 16-bit one at full
-# size (487 MB), four of which do not fit 2g.
+# What one frame may cost to decode, four of which fit the container.
 MAX_FRAME_DECODED_BYTES = 450 * 1024**2
 
-# Peak RSS per source pixel through prepare_frame, measured on 4960x6850 and
-# 6613x9133: 6.4-7.1 for 8-bit, 14.3-15.0 for 16-bit.
+# Peak resident bytes per source pixel through prepare_frame.
 DEEP_BYTES_PER_PIXEL = 15
 SHALLOW_BYTES_PER_PIXEL = 7
 
-# A bound on one frame's bytes, not a claim about the record of them. The
-# whole-plate guard in plate_video sums gravi_images.file_size_bytes, which is
-# what the desktop wrote at upload — fine as a record, and not something to bet
-# memory on: an interrupted upload, a resumed transfer or an app bug all leave
-# it disagreeing with the object, and this path holds whatever arrives.
-#
-# A real frame is ~59 MB nominal and 93 MB for a detailed 16-bit scan, so this
-# refuses nothing the scanners produce. The bucket's own cap is 500 MB.
+# The largest object this will hold, whatever its row claims.
 MAX_FRAME_BYTES = 256 * 1024**2
 
 # The modes carrying more than 8 bits per channel, and the full scale they are
@@ -165,8 +154,7 @@ def prepare_frame(image_bytes: bytes, label: str) -> np.ndarray:
     Returns 8-bit RGB, `PLATE_VIDEO_WIDTH` wide, with the label band beneath.
     """
     with Image.open(io.BytesIO(image_bytes)) as image:
-        # Before load(), which is what builds the picture in memory. open() has
-        # read only the header, which carries both halves of the cost.
+        # Before load(), which is what builds the picture in memory.
         cost = decoded_bytes(image.width, image.height, image.mode)
         if cost > MAX_FRAME_DECODED_BYTES:
             raise FrameTooLarge(
@@ -291,11 +279,7 @@ class FrameDepthUnsupported(FrameUnreadable):
 
 
 class FrameTooLarge(FrameUnreadable):
-    """The frame is intact; it is too big for one render to hold.
-
-    Its own type because "could not be read" sends someone to rescan a plate
-    that scanned correctly — the same reason FrameDepthUnsupported exists.
-    """
+    """The frame is intact; it is too big for one render to hold."""
 
 
 class EncoderBusy(RuntimeError):
@@ -530,10 +514,7 @@ def render_plate_video(
     if plan["action"] != "render":
         return plan
 
-    # The plate's own lock first: with every slot taken and this plate one of
-    # the four rendering, "already being rendered" is the true answer and
-    # "the encoder is busy" is not. Neither acquire waits, so ordering them
-    # costs nothing.
+    # Plate first, so a duplicate request is told about its own plate.
     with plate_lock(plan["key"]), encode_slot():
         plan = plan_render(client, experiment_id, plate_id, wave_number)
         if plan["action"] != "render":
