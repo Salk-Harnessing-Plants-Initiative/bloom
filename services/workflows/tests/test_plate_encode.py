@@ -1423,6 +1423,12 @@ def test_an_oversized_frame_says_so_rather_than_being_called_unreadable():
 # uploading or recording — with the entire suite still green.
 
 
+# A real encoder can write fewer frames than were planned. The stand-in has to
+# be able to, or "record what was encoded" and "record what was planned" are
+# the same assertion.
+ENCODED_SHORTFALL = 1
+
+
 def _plan(action="render", **over):
     return {
         "action": action,
@@ -1442,7 +1448,16 @@ def _wire(monkeypatch, plans, *, on_encode=None):
     the second look disagree with the first — which is the case the double plan
     exists for and the one that cannot be reached any other way.
     """
-    seen = {"plans": 0, "encoded": [], "published": [], "slot_held": [], "lock_held": []}
+    # ENCODED_SHORTFALL keeps the encoder's count different from the plan's, so
+    # a test asserting one of them cannot pass on the other.
+    seen = {
+        "plans": 0,
+        "encoded": [],
+        "published": [],
+        "identity": [],
+        "slot_held": [],
+        "lock_held": [],
+    }
 
     def plan_render(*args, **kwargs):
         seen["plans"] += 1
@@ -1456,10 +1471,13 @@ def _wire(monkeypatch, plans, *, on_encode=None):
         seen["encoded"].append(out_path)
         if on_encode is not None:
             on_encode()
-        return len(frames)
+        return len(frames) - ENCODED_SHORTFALL
 
     def publish(client, key, video_path, **kwargs):
         seen["published"].append((key, kwargs["frame_count"]))
+        seen["identity"].append(
+            (kwargs["experiment_id"], kwargs["plate_id"], kwargs["wave_number"])
+        )
         return {"object_path": key, "frame_count": kwargs["frame_count"]}
 
     monkeypatch.setattr(pe, "plan_render", plan_render)
@@ -1475,10 +1493,43 @@ def test_a_render_encodes_stores_and_records(monkeypatch):
 
     result = pe.render_plate_video(object(), 12, "P7", 1)
 
+    encoded = 3 - ENCODED_SHORTFALL
+
     assert result["action"] == "rendered"
     assert len(seen["encoded"]) == 1, "nothing was encoded"
-    assert seen["published"] == [("12/wave-1/P7.mp4", 3)], "nothing was recorded"
-    assert result["recorded"]["frame_count"] == 3
+    assert seen["published"] == [("12/wave-1/P7.mp4", encoded)], "nothing was recorded"
+    assert result["recorded"]["frame_count"] == encoded
+
+
+def test_what_is_recorded_is_what_the_encoder_wrote(monkeypatch):
+    """Not what the plan asked for. The two are the same number in real runs,
+    because one unreadable frame fails the whole render — so the stand-in
+    encoder returns a different one, or this cannot be asserted at all."""
+    seen = _wire(monkeypatch, [_plan(frames=_frames(9))])
+
+    pe.render_plate_video(object(), 12, "P7", 1)
+
+    assert seen["published"][0][1] == 9 - ENCODED_SHORTFALL
+    assert seen["published"][0][1] != 9, "the planned count was recorded"
+
+
+def test_the_video_is_recorded_against_the_plate_it_was_made_from(monkeypatch):
+    """A crossed identity stores one plate's video under another's name, which
+    is what PlateMismatch exists to refuse. Nothing checked the values handed
+    over, so they could be anything."""
+    seen = _wire(monkeypatch, [_plan()])
+
+    pe.render_plate_video(object(), 12, "P7", 1)
+
+    assert seen["identity"] == [(12, "P7", 1)]
+
+
+def test_a_plate_with_no_wave_is_recorded_as_having_none(monkeypatch):
+    seen = _wire(monkeypatch, [_plan(key="12/wave-none/P7.mp4")])
+
+    pe.render_plate_video(object(), 12, "P7", None)
+
+    assert seen["identity"] == [(12, "P7", None)]
 
 
 def test_the_second_look_under_the_lock_turns_a_race_into_a_keep(monkeypatch):
