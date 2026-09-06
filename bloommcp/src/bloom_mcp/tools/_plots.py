@@ -11,6 +11,7 @@ importable with no live stack and no matplotlib import at module level.
 
 from __future__ import annotations
 
+import threading
 from collections import Counter
 from typing import TYPE_CHECKING, Callable
 
@@ -98,6 +99,41 @@ def apply_font_style(
             text.set_fontsize(font_size)
 
 
+# Process-wide, not per-key, and NOT bloommcp.tools._plots-private: matplotlib's pyplot
+# figure registry (`Gcf.figs`, in `matplotlib._pylab_helpers`) is a single class-level
+# `OrderedDict` shared by the whole process, not scoped per thread. FastMCP dispatches sync
+# tool handlers via a thread pool (see `bloom_mcp/result_store/_locks.py`'s module
+# docstring for the same fact, verified there against FastMCP's own dispatch code), so any
+# two figure-creating tool calls in this process can genuinely run concurrently.
+#
+# The contract is BOTH SIDES of a figure's life, not just creation. Creation mutates the
+# registry (`Gcf.set_active` does `figs[manager.num] = manager` then `move_to_end`), and
+# so does destruction — but `plt.close(fig)` -> `Gcf.destroy_fig` first *scans*
+# `Gcf.figs.values()` to find the manager owning that figure, and that scan is
+# unsynchronized. A create mutating the dict mid-scan raises
+# `RuntimeError("OrderedDict mutated during iteration")` out of an unrelated caller's
+# cleanup. Locking creation alone therefore does NOT close the race (#466 review round 7,
+# which caught round 6 shipping exactly that half-fix); every call site must hold this
+# lock around figure creation AND around `plt.close`/`close_figures`.
+#
+# Call sites in the sleap_roots analysis tools that must participate:
+# `plot_trait_histograms.py`/`plot_trait_boxplots.py`/`plot_correlation_matrix.py` (both
+# sides — done, #466), `close_figures` below (done, #466), and — still OUTSTANDING,
+# because those files belong to sibling PR #726/#721's diff and are deliberately not
+# touched here to avoid widening that merge conflict — `qc_inspect.py`'s `_render_report`,
+# `remove_outliers.py`'s `_make_figures`, `_viz_shared.py`'s `save_plot`, and
+# `generate_figures` above's own allocate-then-raise cleanup. Until #726/#721 lands and
+# wires those, an unlocked close in one of THEM can still race a locked create here; this
+# lock is a precondition for closing the race process-wide, not by itself sufficient
+# (#466/#721 PR review — flagged as an unresolved conflict between the two in-flight PRs
+# each independently rewriting these call sites; landed here first so neither ships a
+# newly-converged/newly-fixed tool with no lock participation, whichever merges second).
+#
+# Non-reentrant: a future plotter that transitively re-enters a lock-acquiring call from
+# inside its own locked call would deadlock. Nothing in this codebase does that today.
+FIGURE_REGISTRY_LOCK = threading.Lock()
+
+
 def generate_figures(
     resolved_calls: dict[str, "Callable[[], Figure]"],
     figures: "dict[str, Figure]",
@@ -129,16 +165,24 @@ def close_figures(figures: "dict[str, Figure]") -> None:
 
     Returns immediately on an empty dict to avoid importing matplotlib on the
     default no-plots path (Tier-0 import-clean guarantee).
+
+    Holds ``FIGURE_REGISTRY_LOCK`` across the closes: ``plt.close`` scans the
+    shared ``Gcf.figs`` registry, so an unlocked close here could race a locked
+    create elsewhere in the process (see that lock's comment above). Acquired
+    once around the whole batch rather than per figure — the lock is
+    non-reentrant and nothing under it re-enters, and one acquisition keeps a
+    multi-figure cleanup from interleaving with a create halfway through.
     """
     if not figures:
         return
     try:
         import matplotlib.pyplot as plt
 
-        for fig in figures.values():
-            try:
-                plt.close(fig)
-            except Exception:  # pragma: no cover — best-effort cleanup
-                pass
+        with FIGURE_REGISTRY_LOCK:
+            for fig in figures.values():
+                try:
+                    plt.close(fig)
+                except Exception:  # pragma: no cover — best-effort cleanup
+                    pass
     except Exception:  # pragma: no cover — best-effort cleanup
         pass
