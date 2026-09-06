@@ -31,21 +31,42 @@ preclude drawing a plain text disclosure directly onto a delegate-returned `Figu
 - **THEN** it raises a `BloomMCPError` with `code="invalid_input"` rather than silently
   dropping the unrecognized field
 
-### Requirement: Figure-Creation Concurrency Safety
+### Requirement: Figure-Registry Concurrency Safety
 
-Each of the 3 tools SHALL acquire `bloom_mcp.tools._plots.FIGURE_REGISTRY_LOCK` around its
-figure-creating delegate call (the call that allocates a new `Figure` against matplotlib's
-shared, process-wide pyplot figure registry), matching the same lock every other matplotlib-
-figure-creating call site in this section of bloommcp participates in. This closes a genuine
-concurrent-figure-creation race: FastMCP dispatches tool handlers via a thread pool, so two
-figure-creating calls in this process can genuinely interleave against that single shared
-registry.
+Each of the 3 tools SHALL acquire `bloom_mcp.tools._plots.FIGURE_REGISTRY_LOCK` around **both**
+registry-mutating phases of a figure's life: the figure-creating delegate call (which allocates
+a new `Figure` against matplotlib's shared, process-wide pyplot registry), and the
+`plt.close()` cleanup that destroys it. FastMCP dispatches tool handlers via a thread pool, so
+two such calls in this process can genuinely interleave against that single shared registry.
+
+Locking creation alone is NOT sufficient and SHALL NOT be treated as satisfying this
+requirement: `plt.close(fig)` → `Gcf.destroy_fig` scans `Gcf.figs.values()` to find the owning
+manager, and that scan is unsynchronized, so a concurrent locked create mutating the dict
+mid-scan raises `RuntimeError("OrderedDict mutated during iteration")` out of an unrelated
+caller's cleanup.
+
+The two phases SHALL be acquired separately rather than held across the intervening
+`savefig`/commit work, so process-wide lock hold time stays proportional to registry mutation
+rather than to disk I/O.
 
 #### Scenario: The delegate call is lock-protected
 
 - **WHEN** any of the 3 tools renders a figure via its `sleap_roots_analyze` delegate call
 - **THEN** that call executes while `FIGURE_REGISTRY_LOCK` is held, and the lock is released
   again once the call returns (or raises)
+
+#### Scenario: The close/cleanup path is lock-protected
+
+- **WHEN** any of the 3 tools closes the figure(s) it created, on either the success or the
+  failure path
+- **THEN** every `plt.close()` call executes while `FIGURE_REGISTRY_LOCK` is held, and the lock
+  is released again once cleanup returns
+
+#### Scenario: Nothing to close acquires no lock
+
+- **WHEN** a tool's figure creation raises before allocating any figure
+- **THEN** the cleanup path acquires `FIGURE_REGISTRY_LOCK` not at all, adding no lock traffic
+  to the error path
 
 ### Requirement: Raw (Pre-Clean) Experiment Read
 
