@@ -467,3 +467,63 @@ live code and held up.
       (13.6) rather than treating it as a placeholder claim.
 - [x] 13.11 Re-ran the full suite (1488 passed) + the isolated diff-relevant suite (313 passed)
       + `openspec validate --strict`.
+
+## 14. Seventh PR review pass (#466)
+
+- [x] 14.1 **Blocking**: round 6's `FIGURE_REGISTRY_LOCK` fix only covered figure *creation* —
+      `plt.close` → `Gcf.destroy_fig` scans the same shared `Gcf.figs` dict unsynchronized, so
+      the race it claimed to close was still open. Locked the close/cleanup path in all 3 tools
+      and in `close_figures`, as a second separate acquisition (keeps `savefig`/`commit` I/O off
+      a process-wide lock) and skipped when nothing was allocated. Verified against matplotlib
+      3.10.8's source AND reproduced deterministically (`RuntimeError: OrderedDict mutated
+      during iteration`); confirmed no caller nests `close_figures` inside the lock, which the
+      non-reentrant `Lock` would deadlock on.
+- [x] 14.2 **Blocking**: tests assert the *property* (was the lock held at the moment
+      `plt.close` ran?) rather than counting acquisitions, so a refactor that keeps two `with`
+      blocks but moves the close back out still fails. Confirmed red against the round-6 code
+      before landing the fix.
+- [x] 14.3 **Blocking**: rewrote the lock's own contract comment — it said "around the delegate
+      call that actually allocates a figure," which is exactly what round 6 implemented. Now
+      states both registry-mutating phases, names the call sites still outstanding
+      (`qc_inspect`, `remove_outliers`, `_viz_shared.save_plot`, `generate_figures` — sibling PR
+      #726/#721's files, deliberately untouched here), and drops the claim that this lock alone
+      closes the race process-wide.
+- [x] 14.4 **Blocking**: resolved the `CONFLICTING` mergeable state by merging `staging`. The one
+      textual conflict (`plot_correlation_matrix.py`'s docstring) resolved as ours-plus-theirs,
+      carrying forward #724's #768 disclosure rather than dropping it with a plain "ours."
+- [x] 14.5 **Blocking**: fixed the semantic merge break git could not flag — staging's new
+      plot-snapshot suite (#713/#724) drives all 5 tools the legacy way and this PR converts 3,
+      producing 8 runtime failures. Adapted `test_viz_snapshot.py` and
+      `scripts/gen_plot_snapshots_golden.py` to render the converged 3 through the ports seam
+      and capture the committed PNG in a `commit` spy. All 5 baselines still match within
+      `_TOL=15` — including the converged 3 against pre-#466-generated baselines, evidence the
+      convergence is render-neutral.
+- [x] 14.6 **Important**: stamped the FULL `zero_variance_traits`/`low_overlap_trait_pairs` into
+      the run's `params`. The capped `heatmap_caveat` told manifest readers to consult lists
+      that were never persisted, making the module's "a later manifest read gets the same signal
+      a live call did" claim false past 10 flagged cells. Covered by a 15-flagged-trait recovery
+      test and a JSON round-trip shape test.
+- [x] 14.7 **Important**: corrected the `min_periods` docstring — a degeneracy floor, not a
+      significance test (r=0.7 at n=10 has a 95% CI of about [0.13, 0.92], computed via Fisher
+      z, not guessed). Filed #784 for reporting per-pair overlap n.
+- [x] 14.8 **Important**: renamed `plot_correlation_matrix`'s `n_traits` → `n_traits_plotted` to
+      match its two siblings; confirmed first that the field is new in this PR, so nothing
+      existing breaks.
+- [x] 14.9 **Important**: corrected the PR description's CI-failure attribution — the failing
+      step is `Check caddy for critical CVEs` (CVE-2026-56854), not the #334 disk-headroom
+      flake, whose step passed.
+- [x] 14.10 **Important**: reconciled the 313-vs-191 test-count discrepancy. Both numbers are
+      real, for two *different* file sets; the PR description quoted design.md's number against
+      its own different list. Measured both at `902bae86` (191 and 313, confirming the
+      reviewer), and made both documents name one explicit list with one number.
+- [x] 14.11 **Suggestion**: corrected `zero_variance_traits`' description — a trait with exactly
+      one non-null value lands there too (std is NaN, not 0, at ddof=1). Verified against
+      pandas and pinned by a test.
+- [x] 14.12 **Suggestion**: filed #785 for the locally-constant-within-overlap taxonomy gap, the
+      only disclosed gap in that docstring without a tracking issue.
+- [x] 14.13 **Suggestion**: removed a copy-paste duplicated assert block in the boxplots
+      pagination test.
+- [x] 14.14 Re-ran post-merge: full suite **1551 passed / 33 deselected** via the exact CI
+      invocation (1555 passed / 29 skipped unfiltered), canonical isolated suite **199 passed**,
+      dedup-backport set **333 passed**, all 0 failed. `ruff check` clean on every touched file.
+

@@ -112,7 +112,9 @@ _BASELINES = Path(__file__).resolve().parents[1] / "fixtures" / "plot_baselines"
 _EXPERIMENT = "turface_19.csv"
 # The same CSV `viz_env` copies into TRAITS_DIR — the converged tools read through the
 # ExperimentReader port instead, so their FakeReader has to be seeded from it directly.
-_RAW_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "turface_19_final_data.csv"
+_RAW_FIXTURE = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "turface_19_final_data.csv"
+)
 
 # The converged 3 name their committed PNG after the tool, not after the experiment, so the
 # legacy `<label>_turface_19.png` names in _SNAPSHOT_TOOLS don't apply to them. Baselines

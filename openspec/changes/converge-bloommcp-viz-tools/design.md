@@ -577,13 +577,44 @@ warning already shows this suite exercises) rather than anything this diff intro
 fix — UMAP code is untouched by #466.
 
 Given that, the **portable, reliably-reproducing claim is the isolated suite of files this diff
-actually touches** (the 4 tool-specific files + `test_viz_tools.py` + `test_plots_helpers.py` +
-`test_pca_analysis_tool.py`/`test_clustering_tool.py`, the latter two covering the
-`_qc_shared`/`resolve_trait_columns` dedup backport): **313 passed, 0 failed**, reproduced
-across every round of this review. The full-suite number is still recorded below for
-completeness, but should be read as "clean in this environment as of this commit," not as an
-unconditional, environment-independent guarantee the way earlier rounds implicitly presented
-it: **1488 passed, 33 deselected, 1521 total** (`1488 + 33 = 1521` — checked).
+actually touches**. Round 6 recorded that as **313 passed** over "the 4 tool-specific files +
+`test_viz_tools.py` + `test_plots_helpers.py` + `test_pca_analysis_tool.py`/
+`test_clustering_tool.py`" (the latter two covering the `_qc_shared`/`resolve_trait_columns`
+dedup backport).
+
+**Round 7: that 313 was attached to the wrong file list in the PR description, and the mismatch
+is the whole discrepancy.** A reviewer independently counted the 8 files the PR *description*
+called "isolated, diff-relevant" and got 191, not 313 — confirmed twice, by manual count and by
+`--collect-only`. Both numbers are real; they are simply counts of **two different file sets**,
+and the PR description had quoted this section's number against its own, different list.
+Measured at this PR's then-tip (`902bae86`) in an isolated worktree:
+
+| File set | Count at `902bae86` |
+| --- | --- |
+| The PR description's 8 (3 tool files, `test_plots_helpers`, `test_viz_tool_classes_discovery`, `test_viz_tools`, `test_devendor_invariants`, `test_sections_scaffold`) | **191** |
+| This section's 8 (3 tool files, `test_viz_tool_classes_discovery`, `test_viz_tools`, `test_plots_helpers`, `test_pca_analysis_tool`, `test_clustering_tool`) | **313** |
+
+Nothing was fabricated and no test was missing — but two documents naming "the isolated,
+diff-relevant suite" while meaning different file lists is precisely the accuracy failure this
+section exists to catch, so **both now name the same list explicitly and quote the same
+number**. The canonical set going forward is the PR description's 8 (the files this diff
+actually touches or that cover it directly); `test_pca_analysis_tool`/`test_clustering_tool`
+are reported separately as the dedup-backport coverage they are, not folded into the headline.
+
+Re-measured for round 7, after this round's own additions (2 lock tests per tool file, 2
+`close_figures` lock tests, 2 manifest-recovery tests, 1 single-non-null-value test) and after
+merging `staging`:
+
+- **Canonical isolated suite (the 8 files above): 199 passed, 0 failed** (191 + this round's 8).
+- Dedup-backport coverage (`test_pca_analysis_tool` + `test_clustering_tool`, with the 6 shared
+  files): **333 passed, 0 failed** (the 313 set, same arithmetic: 313 + 8 + 12 from `staging`).
+- Full suite via the exact CI invocation, post-merge: **1551 passed, 33 deselected, 1584 total**
+  (`1551 + 33 = 1584` — checked), 0 failed. Read as "clean in this environment as of this
+  commit," not an unconditional, environment-independent guarantee.
+- Full suite with no marker filter: **1555 passed, 29 skipped**, 0 failed.
+
+The round-6 cross-environment UMAP caveat above still stands unchanged; this round did not
+re-litigate it.
 
 ## Incidental Fix
 
@@ -628,3 +659,119 @@ only ever asserted the delegate call count, never anything about vendored cleanu
 no import of it at all) rather than something a runtime spy on an unrelated module would
 meaningfully test here, so the name is corrected rather than the test body padded out to match
 a claim it was never really positioned to verify.
+
+## Round 7: The Lock Only Covered Half the Race
+
+**Blocking — round 6's `FIGURE_REGISTRY_LOCK` fix was a half-fix, and its headline claim
+("closes the concurrent-figure-creation race across all 3 tools") was not true.** Round 6
+wrapped each tool's figure-*creating* delegate call in the lock and stopped there; the
+`finally: plt.close(...)` cleanup ran unlocked in all 3 files. Both sides mutate the same
+shared registry:
+
+- **Create** — `Gcf.set_active` does `figs[manager.num] = manager` then `move_to_end`.
+- **Destroy** — `plt.close(fig)` → `Gcf.destroy_fig` first *scans* `Gcf.figs.values()` to find
+  the manager owning that figure, and that scan is **unsynchronized**.
+
+So one call's unlocked close could still interleave with another's locked create. Verified
+against the vendored matplotlib 3.10.8 source (`matplotlib/_pylab_helpers.py`), and then
+**reproduced deterministically** rather than argued from source alone: pausing inside the
+`destroy_fig` scan (via a sentinel object whose `__eq__` blocks) and popping from `Gcf.figs` on
+another thread raises exactly
+
+    RuntimeError: OrderedDict mutated during iteration
+
+Two natural-timing stress reproductions (6-8 threads, thousands of create/close cycles, 300
+ballast figures, `sys.setswitchinterval(1e-6)`) did **not** fire, which is worth recording: the
+GIL makes the window narrow enough that this is a rare-but-real production hazard, not
+something a stress test would have caught. That is an argument for locking it, not against —
+an unreproducible-under-load race is exactly the kind that surfaces once in production and is
+never diagnosed.
+
+Fixed in all 3 tools, plus `close_figures` (the shared cleanup helper `pca_analysis`/
+`umap_analysis`/`clustering` use, which was violating the very contract its own module
+documents). Acquired as a **second, separate acquisition** rather than one long hold, so
+`savefig` + `store.commit` disk I/O stays off a process-wide lock; skipped entirely when
+creation allocated nothing, so the error path adds no lock traffic. Verified no caller holds
+the lock across `close_figures` — the `Lock` is non-reentrant, so a nested acquisition would
+deadlock.
+
+The lock's own contract comment was the root cause and is rewritten: it said to acquire the
+lock "around the delegate call that actually allocates a figure," which is what round 6
+faithfully implemented. It now states that the contract covers **both** registry-mutating
+phases, and — importantly — **drops the implication that this lock alone closes the race
+process-wide**. `qc_inspect`, `remove_outliers`, `_viz_shared.save_plot` and `generate_figures`
+are still unlocked; they belong to sibling PR #726/#721's diff and are deliberately not touched
+here (touching them would widen exactly the merge conflict that PR already faces). Until
+#726/#721 lands, an unlocked close in one of *those* can still race a locked create here. This
+lock is a **precondition** for closing the race, not by itself sufficient — and the PR
+description now says so instead of overstating it.
+
+**Blocking — the `CONFLICTING` mergeable state, and a merge risk that was worse than
+"trivial."** Resolved by merging `staging` (which had since gained PR #724). One textual
+conflict, in `plot_correlation_matrix.py`'s module docstring: `staging` had added a "known
+test-coverage gap (#768)" disclosure to the *pre-#466* docstring this branch rewrites
+wholesale. Resolved as **ours-plus-theirs, not "ours"** — taking "ours" would have silently
+dropped a disclosure `staging` had just gained, which is the precise failure mode flagged on
+this PR.
+
+The more serious risk was the one git *couldn't* flag. The merge was textually clean everywhere
+else, but PR #713/#724's new pixel-regression suite drives all 5 plotting tools the legacy way
+(bare experiment string, `"Plot saved:"` string return, PNG under `PLOTS_DIR`) and this PR
+converts 3 of them — surfacing only at runtime, as 8 failures. Adapted rather than dropped (see
+the commit): the converged 3 are now driven through `FakeReader`/`FakeResultStore` with their
+committed PNG copied out inside a `commit` spy. **All 5 baselines still match within `_TOL=15`
+— including the 3 converged tools against baselines `staging` generated from the *pre-#466*
+tools**, which is the strongest available evidence that this convergence is render-neutral.
+
+**Important — the manifest-persistence claim was false past 10 flagged cells.** The module
+claimed "a later manifest read gets the same signal a live call did," but only the *capped*
+`heatmap_caveat` string was persisted — a string that itself says "see zero_variance_traits/
+low_overlap_trait_pairs for the complete list," lists that were never stamped. A manifest-only
+reader was told to consult something it could not reach. Both full lists are now stamped into
+the run's `params`, with a test that recovers all 15 flagged traits from a stored run where the
+caveat can only name 10, plus a JSON round-trip test pinning `list[list[str]]` (a tuple would
+come back as a list and silently break equality for any manifest reader).
+
+**Important — `min_periods=10` conflated "numerically valid" with "trustworthy."** Corrected in
+the docstring: it is a **degeneracy floor, not a significance test**. It rules out the n=2/n=3
+arithmetic artifact (2 points are *always* perfectly correlated); it does not make a surviving
+coefficient trustworthy. r=0.7 at n=10 has a 95% CI of roughly **[0.13, 0.92]** (Fisher z,
+computed not guessed), so a pair can clear the floor, be counted in
+`strong_positive_correlations`, and still be consistent with a weak underlying relationship.
+`strong_*_correlations` is a count of coefficients past a magnitude cutoff, not of established
+findings. Per-pair overlap n is computed internally but only the sub-threshold pairs are
+surfaced; filed **#784** to report it for the pairs that make up the counts.
+
+**Important — `n_traits` vs `n_traits_plotted`.** Renamed `plot_correlation_matrix`'s `n_traits`
+to `n_traits_plotted`, matching its two siblings. Checked first that the field is **new in this
+PR** (the pre-#466 tool returned a formatted string with no such field), so the rename breaks
+nothing existing. It does diverge from `qc_inspect.n_traits`, deliberately: the 3 tools this
+change converges onto one contract should agree with each other first, and `qc_inspect` is not
+part of that set.
+
+**Important — the PR description blamed the wrong CI failure.** It attributed the one failing
+check to the #334 runner disk-headroom flake. Checked the actual job: the `Free up disk space`
+step **passed**; the failing step is `Check caddy for critical CVEs` (1 critical in `caddy:ci`,
+CVE-2026-56854 in `golang.org/x/crypto/ssh`). Repo-wide gate issue, unrelated to this
+Python-only diff — the same CVE independently surfaced on sibling PR #726 — but the description
+said something checkably false and is corrected.
+
+**Suggestion — `zero_variance_traits`' description covered 2 of 3 cases.** A trait with exactly
+**one** non-null value also lands there, because its sample std is `NaN` (not `0`) at `ddof=1`,
+and the check is `not (std(skipna=True) > 0)`. Verified against pandas, corrected in the field
+description, and pinned by a test — the grouping is right (all three are unconditionally
+uncorrelatable), the documentation just described two thirds of it.
+
+**Suggestion — the one disclosed gap without a tracking issue.** The "locally-constant-within-
+overlap" `NaN` cell (in neither disclosure list) was the only disclosed gap in that docstring
+lacking an issue number, unlike its siblings #747/#748. Filed **#785**.
+
+**Suggestion — a copy-paste duplicated assert block** in `test_plot_trait_boxplots_tool.py`'s
+pagination test (the same 3 lines twice). Removed, with a note on why the length assertion
+earns its place next to the `sorted()` comparison.
+
+**Not changed, and why.** `black --check` reports 2 files needing reformatting
+(`test_clustering_tool.py`, `test_cross_experiment_correlations_tool.py`). Both are pre-existing
+on `staging`, untouched by this diff, and **not gated by CI** (`pr-checks.yml` runs neither
+`black` nor `ruff`). Left alone rather than swept into this PR's diff; noted here so the next
+reader does not re-discover it as a mystery.
