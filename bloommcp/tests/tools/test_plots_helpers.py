@@ -377,3 +377,34 @@ def test_figure_registry_lock_is_a_real_process_wide_lock():
     acquired = FIGURE_REGISTRY_LOCK.acquire(blocking=False)
     assert acquired
     FIGURE_REGISTRY_LOCK.release()
+
+
+def test_close_figures_holds_the_registry_lock_while_closing(monkeypatch):
+    """``close_figures`` closes under the lock, not just around creation.
+
+    ``plt.close`` -> ``Gcf.destroy_fig`` scans the shared ``Gcf.figs`` dict to find
+    the owning manager, so an unlocked close here can race a locked create in
+    another thread and raise ``RuntimeError("OrderedDict mutated during iteration")``
+    out of an unrelated caller (#466 review round 7).
+    """
+    import matplotlib.pyplot as plt
+
+    real_close = plt.close
+    held: list[bool] = []
+
+    def _spy_close(fig):
+        held.append(FIGURE_REGISTRY_LOCK.locked())
+        return real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _spy_close)
+    close_figures({"a": plt.figure(), "b": plt.figure()})
+    assert held == [True, True]
+
+
+def test_close_figures_releases_the_registry_lock_afterwards():
+    """The lock must not be left held once cleanup returns — a leaked acquisition
+    would deadlock the next figure-creating tool call in the process."""
+    import matplotlib.pyplot as plt
+
+    close_figures({"a": plt.figure()})
+    assert not FIGURE_REGISTRY_LOCK.locked()

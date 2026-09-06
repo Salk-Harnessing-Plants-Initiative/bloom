@@ -73,7 +73,7 @@ def test_pins_one_off_diagonal_cell_and_high_correlation_counts(injected_ports):
 
     result = _run()
 
-    assert result.n_traits == len(trait_cols)
+    assert result.n_traits_plotted == len(trait_cols)
 
     a, b = trait_cols[0], trait_cols[1]
     assert expected_corr.loc[a, b] == pytest.approx(
@@ -264,7 +264,7 @@ def test_source_content_addressed_in_manifest(injected_ports):
 def test_resolved_trait_columns_recorded_when_trait_columns_omitted(injected_ports):
     """When trait_columns is omitted, auto-detection resolves the actual trait list — that
     exact list must be recoverable from the manifest later, not just its count (#466 review:
-    previously only n_traits was recorded, and auto-detection is data-dependent so it can't
+    previously only n_traits_plotted was recorded, and auto-detection is data-dependent so it can't
     be safely re-derived from a manifest read months later)."""
     _reader, store = injected_ports
     result = _run()
@@ -334,6 +334,38 @@ def test_all_selected_traits_zero_variance_is_assumption_violated(monkeypatch):
     assert exc.value.code == "assumption_violated"
     assert calls["n"] == 0
     assert store.list_runs(_EXPERIMENT, "correlation_matrix") == []
+
+
+def test_single_non_null_value_trait_is_reported_as_zero_variance(injected_ports):
+    """A trait with exactly ONE non-null value has std NaN, not 0 (ddof=1 needs two
+    observations), so `not (std > 0)` sweeps it into zero_variance_traits alongside the
+    constant and all-NaN cases. That grouping is correct — all three are unconditionally
+    uncorrelatable — but the field described only two of the three until #466 round 7.
+    Pinned so the documented taxonomy and the actual behaviour stay in step."""
+    n = 20
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(n)],
+            "geno": ["g1", "g2"] * (n // 2),
+            "t1": [float(i) for i in range(n)],
+            "t2": [float(2 * i + 1) for i in range(n)],
+            "one_value": [3.0] + [None] * (n - 1),
+        }
+    )
+    assert df["one_value"].notna().sum() == 1
+    assert pd.isna(df["one_value"].std(skipna=True))  # NaN, not 0 — the subtle case
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, df)
+    _ports.configure(reader=reader, store=FakeResultStore())
+    try:
+        result = plot_correlation_matrix(
+            PlotCorrelationMatrixParams(experiment=_EXPERIMENT)
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    assert "one_value" in result.zero_variance_traits
+    # and it is not double-reported under the other reason
+    assert all("one_value" not in pair for pair in result.low_overlap_trait_pairs)
 
 
 def test_heatmap_caveat_is_none_when_nothing_is_flagged(injected_ports):
@@ -493,6 +525,79 @@ def test_heatmap_caveat_stamped_as_none_when_nothing_flagged(injected_ports):
     assert stored.params["heatmap_caveat"] is None
 
 
+def test_full_uncapped_disclosure_lists_are_recoverable_from_the_manifest(
+    injected_ports,
+):
+    """#466 review round 7: the stamped heatmap_caveat is capped at 10 names and then
+    tells the reader to "see zero_variance_traits/low_overlap_trait_pairs for the
+    complete list" — but those lists lived only in the live response, so a manifest-only
+    reader could not follow that instruction past the cap. This is the case the module's
+    "a later manifest read gets the same signal a live call did" claim was false for:
+    15 flagged traits, only 10 nameable in the caveat, all 15 recoverable from the run.
+    """
+    _reader, store = injected_ports
+    n = 12
+    data = {
+        "Barcode": [f"b{i}" for i in range(n)],
+        "geno": ["g1", "g2"] * (n // 2),
+        "t1": [float(i) for i in range(n)],
+        "t2": [float(2 * i + 1) for i in range(n)],
+    }
+    for i in range(15):
+        data[f"const_{i:02d}"] = [float(i)] * n
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, pd.DataFrame(data))
+    _ports.configure(reader=reader, store=store)
+    try:
+        result = plot_correlation_matrix(
+            PlotCorrelationMatrixParams(experiment=_EXPERIMENT)
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    # the caveat itself can only name 10 of the 15 — that is the gap being closed
+    assert result.heatmap_caveat.count("const_") == 10
+    assert "+5 more" in result.heatmap_caveat
+
+    stored = store.get_run(_EXPERIMENT, "correlation_matrix", "latest")
+    assert stored.params["zero_variance_traits"] == result.zero_variance_traits
+    assert len(stored.params["zero_variance_traits"]) == 15
+    assert stored.params["low_overlap_trait_pairs"] == result.low_overlap_trait_pairs
+
+
+def test_low_overlap_pairs_survive_a_manifest_json_round_trip(injected_ports):
+    """The pairs are list[list[str]], not tuples — a tuple would come back from JSON as a
+    list and silently break equality for any manifest reader comparing against the live
+    response. Pins the serialized shape, not just the in-memory one."""
+    _reader, store = injected_ports
+    n = 20
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(n)],
+            "geno": ["g1", "g2"] * (n // 2),
+            # Disjoint missingness — same shape as the low-overlap oracle above: only
+            # rows 8-9 overlap, and neither column is constant, so the pair lands in
+            # low_overlap_trait_pairs rather than being absorbed by zero_variance_traits.
+            "sparse_a": [float(i) if i < 10 else None for i in range(n)],
+            "sparse_b": [float(i) if i >= 8 else None for i in range(n)],
+        }
+    )
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, df)
+    _ports.configure(reader=reader, store=store)
+    try:
+        result = plot_correlation_matrix(
+            PlotCorrelationMatrixParams(experiment=_EXPERIMENT)
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    assert result.low_overlap_trait_pairs
+    stored = store.get_run(_EXPERIMENT, "correlation_matrix", "latest")
+    round_tripped = json.loads(json.dumps(stored.params["low_overlap_trait_pairs"]))
+    assert round_tripped == stored.params["low_overlap_trait_pairs"]
+    assert all(isinstance(pair, list) for pair in round_tripped)
+
+
 def test_single_trait_selection_is_invalid_input(injected_ports, monkeypatch):
     """A correlation view needs a pair — a lone trait must be rejected, not silently
     committed as a meaningless 1x1 heatmap (#466 review)."""
@@ -648,7 +753,10 @@ def test_no_figure_handle_leak_and_agg_backend(injected_ports):
 # these 3 tool files acquire this same process-wide lock around their figure-creating
 # delegate call, per sibling PR #726/#721; this tool's rewritten body must too, or these
 # 3 newly-converged tools become the only matplotlib call sites left unprotected against
-# the concurrent-figure-creation race the lock exists to close) ───────────────────────
+# the concurrent-figure-creation race the lock exists to close. Round 7: creation-only
+# locking was a HALF-fix — `plt.close` -> `Gcf.destroy_fig` scans the same shared
+# `Gcf.figs` dict a concurrent create mutates, so the close path is locked and pinned
+# too) ────────────────────────────────────────────────────────────────────────────────
 
 
 def test_shares_the_same_figure_registry_lock_object():
@@ -659,7 +767,7 @@ def test_shares_the_same_figure_registry_lock_object():
     )
 
 
-def test_acquires_figure_registry_lock_around_the_delegate_call(
+def test_acquires_figure_registry_lock_around_creation_and_close(
     injected_ports, monkeypatch
 ):
     calls = {"enter": 0, "exit": 0}
@@ -678,8 +786,33 @@ def test_acquires_figure_registry_lock_around_the_delegate_call(
         plot_correlation_matrix_tool, "FIGURE_REGISTRY_LOCK", _SpyLock()
     )
     _run()
-    assert calls["enter"] == 1
-    assert calls["exit"] == 1
+    # one acquisition for the creating delegate call, one for the close batch
+    assert calls["enter"] == 2
+    assert calls["exit"] == 2
+
+
+def test_closes_figures_while_holding_the_figure_registry_lock(
+    injected_ports, monkeypatch
+):
+    """The close runs under the lock — the round-6 gap this pins shut.
+
+    Asserts the property directly (was the lock actually held at the moment
+    ``plt.close`` ran?) rather than counting acquisitions, so a later refactor
+    that still enters the lock twice but moves the close back outside it fails
+    here rather than silently reopening the race (#466 review round 7).
+    """
+    real_lock = plot_correlation_matrix_tool.FIGURE_REGISTRY_LOCK
+    real_close = plot_correlation_matrix_tool.plt.close
+    held: list[bool] = []
+
+    def _spy_close(fig):
+        held.append(real_lock.locked())
+        return real_close(fig)
+
+    monkeypatch.setattr(plot_correlation_matrix_tool.plt, "close", _spy_close)
+    _run()
+    assert held, "the tool never closed a figure"
+    assert all(held), "plt.close ran without FIGURE_REGISTRY_LOCK held"
 
 
 # ── error envelope ───────────────────────────────────────────────────────────

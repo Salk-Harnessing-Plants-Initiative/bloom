@@ -42,7 +42,7 @@
       before importing any `sleap_roots_analyze` delegate (design.md's matplotlib Decision);
       `PlotCorrelationMatrixParams` (`experiment: str`, `trait_columns: Optional[list[str]] =
       None`, `user_label: Optional[str] = None`) / `PlotCorrelationMatrixResult(RunLinks)`
-      (`experiment`, `source`, `n_traits`, `strong_positive_correlations: int`,
+      (`experiment`, `source`, `n_traits_plotted`, `strong_positive_correlations: int`,
       `strong_negative_correlations: int`); `@as_mcp_tool(errors=(ExperimentReadError,))`; read
       via `reader.load_experiment(experiment, version="raw")`; persist under new tool class
       `"correlation_matrix"` with `source_csv=_ports.raw_source_for(experiment)` and

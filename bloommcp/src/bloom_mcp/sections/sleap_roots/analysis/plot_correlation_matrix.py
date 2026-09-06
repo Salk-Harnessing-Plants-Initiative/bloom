@@ -35,12 +35,30 @@ it, so it is excluded from the counts exactly like a zero-variance trait. ``low_
 pairs`` names exactly which pairs this affects (excluding any pair already explained by a
 zero-variance trait, to avoid double-reporting the same ``NaN`` cell under two reasons).
 
+**What that threshold does and does not buy you.** It is a *degeneracy* floor, not a
+significance test, and the two should not be confused (#466 review round 7). Clearing it means
+only that a coefficient is not the arithmetic artifact an n=2 or n=3 overlap guarantees; it does
+NOT mean the coefficient is trustworthy. The value is inherited wholesale from an unrelated
+QC-cleanup convention, and at n=10 a Pearson r still carries a very wide confidence interval —
+r=0.7 at n=10 has a 95% CI of roughly [0.13, 0.92] (Fisher z), so a pair can clear
+``min_periods``, be counted in ``strong_positive_correlations``, and still be entirely
+consistent with a weak underlying relationship. ``strong_*_correlations`` is therefore a count
+of coefficients past a fixed magnitude cutoff, not a count of established findings; a caller
+drawing a scientific conclusion should check the actual pairwise n rather than treating
+presence in the count as sufficient. The overlap counts behind each pair are computed
+internally but only the *sub-threshold* ones are surfaced (via ``low_overlap_trait_pairs``);
+reporting per-pair n for the pairs that make up the counts is tracked at
+https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/784.
+
 **Known, narrow taxonomy gap (not fixed, disclosed):** a pair that is globally non-constant and
 clears ``min_periods`` overlap can still be *locally* constant within that shared overlap (one
 trait happens to take the same value on exactly the rows where both are non-null), producing a
 ``NaN`` cell named in neither ``zero_variance_traits`` nor ``low_overlap_trait_pairs``. Not a
 false-positive risk — the vendored heatmap independently produces the same ``NaN`` — just an
-incompleteness in *why* a given blank cell is blank. Deferred as out of scope for this pass.
+incompleteness in *why* a given blank cell is blank. Deferred as out of scope for this pass;
+tracked at https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/785 so it is not
+lost (#466 review round 7 — the only disclosed gap in this docstring that lacked an issue
+number, unlike its siblings #747/#748/#784).
 
 **At least 2 resolved trait columns are required, and at least 2 of them must carry non-zero
 variance.** A correlation view of a single trait is not meaningful (there is no pair to
@@ -64,8 +82,14 @@ gets a signal: (1) a warning footnote is drawn directly onto the already-rendere
 before ``savefig`` whenever either disclosure list is non-empty (#466 review round 4 — the
 first version of this fix left the image itself untouched, a JSON-only disclosure a PNG-only
 consumer would never see); (2) ``heatmap_caveat`` is also stamped into the persisted run's
-``params`` (mirroring ``resolved_trait_columns`` below), not just the live response, so a later
-manifest read gets the same signal a live call did; (3) the footnote names the actual flagged
+``params`` (mirroring ``resolved_trait_columns`` below), not just the live response — and,
+alongside it, the FULL ``zero_variance_traits``/``low_overlap_trait_pairs`` lists, uncapped.
+Stamping the caveat string alone was not enough to make "a later manifest read gets the same
+signal a live call did" true: that string is capped at 10 names and then tells the reader to
+"see zero_variance_traits/low_overlap_trait_pairs for the complete list", which a manifest-only
+reader had no way to do past the cap (#466 review round 7). Both lists are now recoverable from
+a stored run, so the claim holds at any number of flagged cells; (3) the footnote names the
+actual flagged
 trait(s)/pair(s) (capped at 10), not just a count (#466 review round 6 — a bare count told a
 PNG-only viewer a problem existed with no way to tell *which* cell to distrust; since
 ``create_correlation_heatmap`` draws its axis tick labels from this same ``trait_cols`` list in
@@ -109,6 +133,9 @@ _HEATMAP_PNG = "correlation_matrix.png"
 # Reuses qc_clean/qc_inspect's "enough samples to trust a trait" convention as the minimum
 # pairwise overlap .corr() requires before reporting a coefficient — below it, pandas returns
 # NaN instead of a numerically valid but statistically meaningless value (see module docstring).
+# A DEGENERACY floor, not a significance threshold: it rules out the n=2/n=3 arithmetic artifact,
+# it does not make a surviving coefficient trustworthy (r at n=10 still has a very wide CI).
+# See the module docstring's "What that threshold does and does not buy you" (#466 round 7).
 _MIN_CORR_OVERLAP = _CANONICAL_MIN_SAMPLES_PER_TRAIT
 
 
@@ -139,7 +166,13 @@ class PlotCorrelationMatrixResult(RunLinks):
 
     experiment: str
     source: str
-    n_traits: int
+    n_traits_plotted: int = Field(
+        description="Number of trait columns correlated and drawn on the heatmap — "
+        "always len(resolved_trait_columns). Named to match plot_trait_histograms/"
+        "plot_trait_boxplots rather than qc_inspect's n_traits, so the 3 tools #466 "
+        "converges onto one contract report the same concept under one name "
+        "(#466 review round 7)."
+    )
     strong_positive_correlations: int = Field(
         description="Off-diagonal trait pairs with Pearson correlation > 0.7."
     )
@@ -148,10 +181,15 @@ class PlotCorrelationMatrixResult(RunLinks):
     )
     zero_variance_traits: list[str] = Field(
         default_factory=list,
-        description="Selected traits with zero variance (constant) or entirely NaN in the "
-        "raw data. Pearson correlation against a zero-variance trait is NaN, which counts "
-        "toward neither strong_positive_correlations nor strong_negative_correlations — "
-        "empty when none were affected.",
+        description="Selected traits whose correlation against anything is unconditionally "
+        "NaN because the trait itself carries no usable variance. Three cases land here, "
+        "via `not (std(skipna=True) > 0)`: constant (std 0), entirely NaN (std NaN), and — "
+        "less obviously — exactly one non-null value, whose sample std is NaN rather than 0 "
+        "because ddof=1 needs two observations (#466 review round 7: the field previously "
+        "described only the first two). All three are genuinely uncorrelatable, so the "
+        "grouping is intentional, not an accident of the NaN check. Pearson correlation "
+        "against such a trait is NaN, counting toward neither strong_positive_correlations "
+        "nor strong_negative_correlations — empty when none were affected.",
     )
     low_overlap_trait_pairs: list[list[str]] = Field(
         default_factory=list,
@@ -169,8 +207,10 @@ class PlotCorrelationMatrixResult(RunLinks):
         "Names the affected trait(s)/pair(s) directly (capped at 10, '+N more' beyond that) so "
         "a PNG-only viewer can match them against the image's own axis labels — not just a "
         "count. The same text is also drawn as a footnote directly on the saved PNG and stamped "
-        "into the persisted run's params. Cross-check zero_variance_traits/low_overlap_trait_"
-        "pairs for the complete, uncapped list before trusting a highlighted cell in the image.",
+        "into the persisted run's params, as are the full uncapped zero_variance_traits/"
+        "low_overlap_trait_pairs lists, so the cap is never the only record of what was "
+        "flagged. Cross-check those two lists for the complete, uncapped set before trusting "
+        "a highlighted cell in the image.",
     )
     resolved_trait_columns: list[str] = Field(
         description="The exact trait columns used to render/persist this run, in selection "
@@ -273,6 +313,15 @@ def plot_correlation_matrix(
                 **provenance.params,
                 "resolved_trait_columns": trait_cols,
                 "heatmap_caveat": heatmap_caveat,
+                # The FULL, uncapped lists, not just the capped caveat string: the
+                # caveat text itself tells the reader to "see zero_variance_traits/
+                # low_overlap_trait_pairs for the complete list", which a manifest-only
+                # reader could not do while those lived solely in the live response.
+                # Stamping them is what makes this module's "a later manifest read gets
+                # the same signal a live call did" claim actually true past 10 flagged
+                # cells (#466 review round 7).
+                "zero_variance_traits": zero_variance_traits,
+                "low_overlap_trait_pairs": low_overlap_trait_pairs,
             },
         }
     )
@@ -316,12 +365,20 @@ def plot_correlation_matrix(
         raise
     finally:
         if fig is not None:
-            plt.close(fig)
+            # Held for the SAME reason as the creation call above, and this is not
+            # belt-and-braces: plt.close -> Gcf.destroy_fig scans `Gcf.figs.values()`
+            # to find the manager owning this figure, and that scan is unsynchronized.
+            # A concurrent locked create (Gcf.set_active -> `figs[num] = manager` +
+            # move_to_end) mutating the dict mid-scan raises RuntimeError("OrderedDict
+            # mutated during iteration"). Creation-only locking therefore does NOT close
+            # the race it claims to (#466 review round 7).
+            with FIGURE_REGISTRY_LOCK:
+                plt.close(fig)
 
     return PlotCorrelationMatrixResult(
         experiment=params.experiment,
         source=frame.source,
-        n_traits=len(trait_cols),
+        n_traits_plotted=len(trait_cols),
         strong_positive_correlations=high_pos,
         strong_negative_correlations=high_neg,
         zero_variance_traits=zero_variance_traits,

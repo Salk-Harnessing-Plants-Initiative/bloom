@@ -292,9 +292,7 @@ def test_page_traits_maps_each_page_to_its_actual_traits(n_traits, monkeypatch):
         name = f"trait_boxplots_page{i}.png"
         assert result.page_traits[name] == _titled_traits(fig)
     all_paged = [t for traits in result.page_traits.values() for t in traits]
-    assert sorted(all_paged) == sorted(all_trait_cols)
-    assert len(all_paged) == len(all_trait_cols)
-    all_paged = [t for traits in result.page_traits.values() for t in traits]
+    # sorted() alone would pass on a duplicated/dropped trait pair, so pin the count too
     assert sorted(all_paged) == sorted(all_trait_cols)
     assert len(all_paged) == len(all_trait_cols)
 
@@ -492,7 +490,10 @@ def test_no_figure_handle_leak_and_agg_backend(injected_ports):
 # these 3 tool files acquire this same process-wide lock around their figure-creating
 # delegate call, per sibling PR #726/#721; this tool's rewritten body must too, or these
 # 3 newly-converged tools become the only matplotlib call sites left unprotected against
-# the concurrent-figure-creation race the lock exists to close) ───────────────────────
+# the concurrent-figure-creation race the lock exists to close. Round 7: creation-only
+# locking was a HALF-fix — `plt.close` -> `Gcf.destroy_fig` scans the same shared
+# `Gcf.figs` dict a concurrent create mutates, so the close path is locked and pinned
+# too) ────────────────────────────────────────────────────────────────────────────────
 
 
 def test_shares_the_same_figure_registry_lock_object():
@@ -501,7 +502,7 @@ def test_shares_the_same_figure_registry_lock_object():
     assert plot_trait_boxplots_tool.FIGURE_REGISTRY_LOCK is _plots.FIGURE_REGISTRY_LOCK
 
 
-def test_acquires_figure_registry_lock_around_the_delegate_call(
+def test_acquires_figure_registry_lock_around_creation_and_close(
     injected_ports, monkeypatch
 ):
     calls = {"enter": 0, "exit": 0}
@@ -518,8 +519,33 @@ def test_acquires_figure_registry_lock_around_the_delegate_call(
 
     monkeypatch.setattr(plot_trait_boxplots_tool, "FIGURE_REGISTRY_LOCK", _SpyLock())
     _run()
-    assert calls["enter"] == 1
-    assert calls["exit"] == 1
+    # one acquisition for the creating delegate call, one for the close batch
+    assert calls["enter"] == 2
+    assert calls["exit"] == 2
+
+
+def test_closes_figures_while_holding_the_figure_registry_lock(
+    injected_ports, monkeypatch
+):
+    """The close runs under the lock — the round-6 gap this pins shut.
+
+    Asserts the property directly (was the lock actually held at the moment
+    ``plt.close`` ran?) rather than counting acquisitions, so a later refactor
+    that still enters the lock twice but moves the close back outside it fails
+    here rather than silently reopening the race (#466 review round 7).
+    """
+    real_lock = plot_trait_boxplots_tool.FIGURE_REGISTRY_LOCK
+    real_close = plot_trait_boxplots_tool.plt.close
+    held: list[bool] = []
+
+    def _spy_close(fig):
+        held.append(real_lock.locked())
+        return real_close(fig)
+
+    monkeypatch.setattr(plot_trait_boxplots_tool.plt, "close", _spy_close)
+    _run()
+    assert held, "the tool never closed a figure"
+    assert all(held), "plt.close ran without FIGURE_REGISTRY_LOCK held"
 
 
 # ── error envelope ───────────────────────────────────────────────────────────

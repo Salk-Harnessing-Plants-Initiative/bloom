@@ -177,8 +177,18 @@ def plot_trait_histograms(
         rmtree(run.staging_dir, ignore_errors=True)
         raise
     finally:
-        for fig in figures:
-            plt.close(fig)
+        # Held for the SAME reason as the creation call above, and this is not
+        # belt-and-braces: plt.close -> Gcf.destroy_fig scans `Gcf.figs.values()` to
+        # find the manager owning each figure, and that scan is unsynchronized. A
+        # concurrent locked create (Gcf.set_active -> `figs[num] = manager` +
+        # move_to_end) mutating the dict mid-scan raises RuntimeError("OrderedDict
+        # mutated during iteration"). Creation-only locking therefore does NOT close
+        # the race it claims to (#466 review round 7). Skipped entirely when creation
+        # failed before allocating anything, so the error path adds no lock traffic.
+        if figures:
+            with FIGURE_REGISTRY_LOCK:
+                for fig in figures:
+                    plt.close(fig)
 
     return PlotTraitHistogramsResult(
         experiment=params.experiment,

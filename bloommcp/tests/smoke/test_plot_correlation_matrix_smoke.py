@@ -29,7 +29,7 @@ def test_plot_correlation_matrix_smoke(call_tool, db_experiment_id: str) -> None
     )
 
     assert result["experiment"] == db_experiment_id
-    assert result["n_traits"] > 0
+    assert result["n_traits_plotted"] > 0
     assert result["outputs"]
     assert result["run_ref"]
     assert result["manifest_path"]
