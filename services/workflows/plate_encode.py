@@ -51,24 +51,16 @@ PLATE_VIDEO_WIDTH = 1440
 # of the source made the same measurement 578 MB.
 MAX_CONCURRENT_ENCODES = 4
 
-# What a plate scan can plausibly be, checked against the header before
-# anything is decoded. A file's size on disk says nothing about its size in
-# memory: lossless compression squeezes uniformity, so a blank 12000x12000
-# frame is 2 MB stored and 288 MB decoded, where a real 4960x6850 plate is
-# 93 MB stored and 68 MB decoded. Without this the encoder builds whatever the
-# header claims.
-#
-# Deliberately not derived from the container's memory limit. Measured at 5.0
-# bytes per pixel through prepare_frame (12 including Pillow's own decode
-# buffer, which is outside the Python allocator), four concurrent *real* plates
-# already sit near that limit — so a bound that guaranteed the budget would
-# have to reject real plates. Keeping four renders inside 2g is
-# MAX_CONCURRENT_ENCODES' job. This is the narrower question of whether the
-# frame could be a plate at all.
-#
-# A plate is 34.0 Mpx; 6000x8000 would be 48. A 12000x12000 frame is 144 and is
-# not a plate.
-MAX_PLATE_PIXELS = 60_000_000
+# What one frame may cost to decode. Bytes, not pixels: 60 Mpx costs 369 MB as
+# 8-bit and 819 MB as 16-bit, so a pixel ceiling admitting the first admits the
+# second. Sits above a 1600 dpi plate (369 MB) and below a 16-bit one at full
+# size (487 MB), four of which do not fit 2g.
+MAX_FRAME_DECODED_BYTES = 450 * 1024**2
+
+# Peak RSS per source pixel through prepare_frame, measured on 4960x6850 and
+# 6613x9133: 6.4-7.1 for 8-bit, 14.3-15.0 for 16-bit.
+DEEP_BYTES_PER_PIXEL = 15
+SHALLOW_BYTES_PER_PIXEL = 7
 
 # A bound on one frame's bytes, not a claim about the record of them. The
 # whole-plate guard in plate_video sums gravi_images.file_size_bytes, which is
@@ -159,20 +151,28 @@ def encode_slot(timeout: float | None = None):
         _encode_slots.release()
 
 
+def decoded_bytes(width: int, height: int, mode: str) -> int:
+    """Roughly what this frame will cost in memory, from its header alone."""
+    per_pixel = (
+        DEEP_BYTES_PER_PIXEL if mode in DEEP_MODES else SHALLOW_BYTES_PER_PIXEL
+    )
+    return width * height * per_pixel
+
+
 def prepare_frame(image_bytes: bytes, label: str) -> np.ndarray:
     """One stored image as a labelled, encodable frame.
 
     Returns 8-bit RGB, `PLATE_VIDEO_WIDTH` wide, with the label band beneath.
     """
     with Image.open(io.BytesIO(image_bytes)) as image:
-        # Before load(), which is what actually builds the picture in memory.
-        # open() has only read the header, so this costs nothing and refuses a
-        # frame while it is still bytes.
-        pixels = image.width * image.height
-        if pixels > MAX_PLATE_PIXELS:
-            raise FrameUnreadable(
-                f"{image.width}x{image.height} is {pixels / 1e6:.0f} megapixels, "
-                f"past the {MAX_PLATE_PIXELS / 1e6:.0f} a plate scan can be"
+        # Before load(), which is what builds the picture in memory. open() has
+        # read only the header, which carries both halves of the cost.
+        cost = decoded_bytes(image.width, image.height, image.mode)
+        if cost > MAX_FRAME_DECODED_BYTES:
+            raise FrameTooLarge(
+                f"{image.width}x{image.height} {image.mode} needs about "
+                f"{cost // 1024**2} MB to decode, past the "
+                f"{MAX_FRAME_DECODED_BYTES // 1024**2} MB one render may hold"
             )
         image.load()
         rgb = _to_8bit_rgb(image)
@@ -290,6 +290,14 @@ class FrameDepthUnsupported(FrameUnreadable):
     """
 
 
+class FrameTooLarge(FrameUnreadable):
+    """The frame is intact; it is too big for one render to hold.
+
+    Its own type because "could not be read" sends someone to rescan a plate
+    that scanned correctly — the same reason FrameDepthUnsupported exists.
+    """
+
+
 class EncoderBusy(RuntimeError):
     """Every encode slot is taken. Not a failure — a reason to come back."""
 
@@ -388,7 +396,7 @@ def _fetch_frame(images, path: str, label: str) -> np.ndarray:
         raise FrameUnreadable(f"{path} is empty", path)
 
     if len(data) > MAX_FRAME_BYTES:
-        raise FrameUnreadable(
+        raise FrameTooLarge(
             f"{path} is {len(data) / 1024**2:.0f} MB, past the "
             f"{MAX_FRAME_BYTES // 1024**2} MB a plate frame can be",
             path,
@@ -399,6 +407,8 @@ def _fetch_frame(images, path: str, label: str) -> np.ndarray:
     except FrameDepthUnsupported as exc:
         # Intact, just not reducible. Named, but not called a decode failure.
         raise FrameDepthUnsupported(f"{path}: {exc}", path) from exc
+    except FrameTooLarge as exc:
+        raise FrameTooLarge(f"{path}: {exc}", path) from exc
     except Exception as exc:
         raise FrameUnreadable(f"could not decode {path}: {exc}", path) from exc
 

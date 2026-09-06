@@ -66,6 +66,21 @@ def test_keeping_a_current_video_is_success_not_an_error(monkeypatch):
     assert pr.render(12, {"plate_id": "P7", "wave_number": 1})["action"] == "keep"
 
 
+def test_an_oversized_frame_is_413_and_says_the_size(monkeypatch):
+    """Not 502 "could not be read" — that sends someone to rescan a plate that
+    scanned correctly. The message carries dimensions and a limit, neither of
+    which comes from the storage client."""
+    def too_large(*a, **k):
+        raise pr.FrameTooLarge("12000x12000 I;16 needs about 2059 MB to decode, past the 450 MB one render may hold")
+
+    monkeypatch.setattr(pr, "render_plate_video", too_large)
+    with pytest.raises(HTTPException) as ei:
+        pr.render(12, {"plate_id": "P7", "wave_number": 1})
+
+    assert ei.value.status_code == 413
+    assert "12000x12000" in ei.value.detail
+
+
 def test_a_wave_number_too_large_for_the_column_is_refused(monkeypatch):
     """`gravi_scans.wave_number` is a Postgres INT. Sent through, a bigger
     number makes the query error out and the caller gets an unexplained 500

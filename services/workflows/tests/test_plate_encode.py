@@ -1355,52 +1355,63 @@ def test_the_encoder_opts_into_the_stall_deadline(ffmpeg, tmp_path, monkeypatch)
     )
 
 
-def test_a_frame_larger_than_a_plate_is_refused_before_it_is_decoded():
+def test_an_oversized_frame_is_refused_without_being_decoded(monkeypatch):
     """Refused off the header, while it is still bytes.
 
-    A file's size on disk says nothing about its size in memory. Lossless
-    compression squeezes uniformity, so a blank frame of absurd dimensions is
-    small on the wire and enormous once built: measured, 12000x12000 is 2 MB
-    stored and 288 MB of raw pixels, and more again once it is made RGB. One
-    such frame fills the container's entire budget, and the route that reaches
-    this code is callable by any authenticated user.
-
-    The check is a sanity bound, not a consistency check — such a file's header
-    is perfectly honest, it is simply not a plate.
+    A file's size on disk says nothing about its size in memory: 12000x12000
+    is 3 MB stored and 1760 MB once built. Proven by making the decode itself
+    fail — an assertion on memory cannot, because peak RSS is a high-water mark
+    that an earlier test may already have raised, and tracemalloc cannot see
+    Pillow's decode buffer at all.
     """
-    import tracemalloc
-
     bomb = io.BytesIO()
     Image.new("I;16", (12000, 12000)).save(bomb, "TIFF", compression="tiff_lzw")
     payload = bomb.getvalue()
 
     assert len(payload) < 5_000_000, "the fixture is not the small-file case"
 
-    tracemalloc.start()
-    try:
-        with pytest.raises(pe.FrameUnreadable, match="megapixels"):
-            pe.prepare_frame(payload, LABEL)
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
+    def never(self, *args, **kwargs):
+        raise AssertionError("the frame was decoded before being refused")
 
-    assert peak < 50_000_000, (
-        f"peaked at {peak / 1e6:.0f} MB — the frame was decoded before being "
-        "refused, so the refusal saved nothing"
-    )
+    monkeypatch.setattr(Image.Image, "load", never)
+
+    with pytest.raises(pe.FrameTooLarge, match="MB to decode"):
+        pe.prepare_frame(payload, LABEL)
 
 
-def test_a_real_sized_plate_is_not_refused():
-    """The bound has to leave real scans alone, including a larger scanner.
+def test_the_ceiling_counts_bytes_not_pixels():
+    """The whole point of the constant. The same 60 megapixels is 369 MB as
+    8-bit and 819 MB as 16-bit; four of the second is 3.3 GB against a 2 GB
+    container, and a pixel count cannot tell them apart."""
+    wide, high = 7745, 7745
 
-    A plate is 4960x6850 = 34.0 Mpx. Asserted against the constant so that
-    lowering it below a real plate fails here rather than in production.
-    """
-    assert 4960 * 6850 < pe.MAX_PLATE_PIXELS, "a real plate no longer fits"
-    assert 6000 * 8000 < pe.MAX_PLATE_PIXELS, "no room for a higher-res scanner"
+    assert pe.decoded_bytes(wide, high, "L") <= pe.MAX_FRAME_DECODED_BYTES
+    assert pe.decoded_bytes(wide, high, "I;16") > pe.MAX_FRAME_DECODED_BYTES
+
+
+def test_a_real_plate_and_a_finer_scan_of_it_are_both_accepted():
+    """A plate is 4960x6850 at the scanners' current 1200 dpi. The same plate
+    at 1600 dpi is 6613x9133, and refusing it would make one scanner setting
+    un-renderable — which is what a pixel ceiling of 60 Mpx did, by 0.7%."""
+    assert pe.decoded_bytes(4960, 6850, "L") <= pe.MAX_FRAME_DECODED_BYTES
+    assert pe.decoded_bytes(6613, 9133, "L") <= pe.MAX_FRAME_DECODED_BYTES
 
     frame = pe.prepare_frame(_png(4960, 6850), LABEL)
     assert frame.shape[1] == pe.PLATE_VIDEO_WIDTH
+
+
+def test_an_oversized_frame_says_so_rather_than_being_called_unreadable():
+    """`FrameUnreadable` sends someone to rescan a plate that scanned fine."""
+    assert issubclass(pe.FrameTooLarge, pe.FrameUnreadable)
+
+    bomb = io.BytesIO()
+    Image.new("I;16", (12000, 12000)).save(bomb, "TIFF", compression="tiff_lzw")
+
+    with pytest.raises(pe.FrameTooLarge) as caught:
+        pe.prepare_frame(bomb.getvalue(), LABEL)
+
+    assert "12000x12000" in str(caught.value)
+    assert "450 MB" in str(caught.value)
 
 
 # --------------------------------------------------------------------------

@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from plate_encode import (
     EncoderBusy,
     FrameDepthUnsupported,
+    FrameTooLarge,
     FrameUnreadable,
     NotRecorded,
     PlateMismatch,
@@ -56,6 +57,12 @@ def render(experiment_id: int, body: dict) -> dict:
         # for an upstream failure that did not happen.
         logger.warning("plate video refused an unsupported frame depth: %s", exc)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except FrameTooLarge as exc:
+        # Before FrameUnreadable, which it subclasses. The frame is intact and
+        # only too big to hold, so the message says the size and the limit —
+        # neither of which comes from the storage client.
+        logger.warning("plate video refused an oversized frame: %s", exc)
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     except FrameUnreadable as exc:
         # Naming the frame is the point — "a frame failed" sends someone to the
         # scanner, "12/wave-1/P7_40.tif could not be read" sends them to it. The
