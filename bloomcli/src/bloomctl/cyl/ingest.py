@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -459,12 +460,96 @@ def map_rpc_error(message: str | None, *, profile: str | None = None) -> str:
 # --- supabase / storage I/O -------------------------------------------------
 
 
-def call_insert_envelope(client: Any, envelope: dict[str, Any]) -> dict[str, Any]:
+def resolve_argo_workflow_name() -> str | None:
+    """`ARGO_WORKFLOW_NAME` when set and non-empty (Argo sets it inside the
+    write-back container — see sleap-roots-write-back-template.yaml), else
+    None for the existing manual/ad-hoc invocation shape."""
+    return os.environ.get("ARGO_WORKFLOW_NAME") or None
+
+
+def call_insert_envelope(
+    client: Any, envelope: dict[str, Any], *, argo_workflow_name: str | None = None
+) -> dict[str, Any]:
     """Call the SECURITY DEFINER RPC with the original envelope; return its jsonb summary.
+
+    `argo_workflow_name`, when given, links the write-back to the matching
+    `cyl_pipeline_run_scans` row (fix-cyl-pipeline-run-scan-status) — omitted
+    from the payload entirely when None, relying on the RPC's own
+    `DEFAULT NULL` rather than sending an explicit null, matching the
+    existing manual-invocation call shape exactly.
 
     Lets ``postgrest.APIError`` propagate so the command can map it to a message.
     """
-    return client.rpc("insert_cyl_result_envelope", {"envelope": envelope}).execute().data
+    payload: dict[str, Any] = {"envelope": envelope}
+    if argo_workflow_name is not None:
+        payload["p_argo_workflow_name"] = argo_workflow_name
+    return client.rpc("insert_cyl_result_envelope", payload).execute().data
+
+
+def reconcile_unresolved_scans(client: Any, argo_workflow_name: str) -> int:
+    """Close out, as `'failed'`, any scan dispatched under `argo_workflow_name`
+    that write-back never resolved either way — a prediction failure before
+    write-back was ever attempted, or an envelope otherwise never produced
+    (including the "manifest-declared scan_key with no matching file" case).
+    Called once, at the end of a batch, only when `ARGO_WORKFLOW_NAME` is set.
+    Returns the number of scans marked failed."""
+    result = (
+        client.rpc(
+            "fail_cyl_pipeline_run_scans_without_result",
+            {
+                "p_argo_workflow_name": argo_workflow_name,
+                "p_error_message": "no result produced for this scan by write-back",
+            },
+        )
+        .execute()
+        .data
+    )
+    return result or 0
+
+
+def _reconcile_unresolved_scans_result(client: Any, argo_workflow_name: str) -> ScanResult | None:
+    """Call `reconcile_unresolved_scans`, isolating any failure instead of raising — matching
+    the per-envelope isolation the rest of this file already gives every other RPC call, so a
+    transient error on this one closing call can never crash a batch whose every envelope may
+    have already ingested successfully (review finding: this call had no isolation of its own).
+
+    Returns `None` on success, after logging how many scans were closed out (previously
+    discarded silently). On failure, returns a synthetic `'failed'` `ScanResult` describing it,
+    so it surfaces in the batch's own summary/`--json` output and exit code rather than crashing
+    the command with an unhandled traceback.
+    """
+    from postgrest import APIError
+
+    try:
+        count = reconcile_unresolved_scans(client, argo_workflow_name)
+    except APIError as exc:
+        # Deliberately NOT map_rpc_error: that mapper's hints (e.g. "permission
+        # denied" -> "log in with a bloom_writer / bloom_admin account") are
+        # hardcoded to insert_cyl_result_envelope's own grant, but this call is
+        # against fail_cyl_pipeline_run_scans_without_result — granted to
+        # bloom_workflows only, a different role entirely (review finding:
+        # reusing that mapper here would name the wrong RPC and suggest the
+        # wrong role). The raw message is returned verbatim instead.
+        message = getattr(exc, "message", None) or str(exc)
+        return ScanResult(
+            "<reconciliation>",
+            "failed",
+            f"failed to reconcile unresolved scans for workflow {argo_workflow_name!r}: "
+            f"{message}",
+        )
+    except Exception as exc:
+        return ScanResult(
+            "<reconciliation>",
+            "failed",
+            f"failed to reconcile unresolved scans for workflow {argo_workflow_name!r}: {exc}",
+        )
+    if count:
+        logger.info(
+            "Reconciled %d scan(s) with no write-back result as 'failed' for workflow %s",
+            count,
+            argo_workflow_name,
+        )
+    return None
 
 
 # --- batch: non-raising per-envelope core ------------------------------------
@@ -492,19 +577,13 @@ def ingest_one_envelope(
 
     try:
         data = load_envelope(str(envelope_path))
-    except EnvelopeError as exc:
-        return ScanResult(scan_key, "failed", str(exc))
 
-    # Prefer the envelope's own provenance.scan_key once it's readable, so a failure after this
-    # point is reported under the scan's real key rather than the filename stem.
-    scan_key = (data.get("provenance") or {}).get("scan_key") or scan_key
+        # Prefer the envelope's own provenance.scan_key once it's readable, so a failure after
+        # this point is reported under the scan's real key rather than the filename stem.
+        scan_key = (data.get("provenance") or {}).get("scan_key") or scan_key
 
-    try:
         validate_envelope(data)
-    except EnvelopeValidationError as exc:
-        return ScanResult(scan_key, "failed", str(exc))
 
-    try:
         pending: list[PendingBlob] = []
         idempotency_key = ""
         if predictions_dir is not None:
@@ -554,7 +633,9 @@ def ingest_one_envelope(
         from postgrest import APIError
 
         try:
-            result = call_insert_envelope(client, data)
+            result = call_insert_envelope(
+                client, data, argo_workflow_name=resolve_argo_workflow_name()
+            )
         except APIError as exc:
             return ScanResult(
                 scan_key,
@@ -568,9 +649,13 @@ def ingest_one_envelope(
         if result.get("was_noop"):
             return ScanResult(scan_key, "skipped")
         return ScanResult(scan_key, "ok")
-    except Exception as exc:  # batch isolation: a transient network/auth error on one
-        # envelope must never abort the rest of the batch (review finding: this was
-        # previously uncaught for anything other than postgrest.APIError/BlobConstructionError).
+    except Exception as exc:  # batch isolation: any failure at any stage (an unreadable/corrupt
+        # file, a contract-validation error, a blob problem, a transient network/auth error) must
+        # never abort the rest of the batch. Deliberately covers the whole read->validate->blob->RPC
+        # pipeline in one block, not just the RPC call — review finding: load_envelope's
+        # Path.read_text can raise UnicodeDecodeError (a ValueError, not the OSError load_envelope
+        # itself catches), which previously escaped this function entirely since the narrower
+        # try/except around load_envelope only caught EnvelopeError.
         return ScanResult(scan_key, "failed", str(exc))
 
 
@@ -671,7 +756,9 @@ def ingest_result(
     from postgrest import APIError
 
     try:
-        result = call_insert_envelope(client, data)
+        result = call_insert_envelope(
+            client, data, argo_workflow_name=resolve_argo_workflow_name()
+        )
     except APIError as exc:
         raise click.ClickException(
             map_rpc_error(getattr(exc, "message", None), profile=profile)
@@ -749,7 +836,33 @@ def batch_ingest_result(
         for key in discovered.missing_scan_keys
     ]
 
+    argo_workflow_name = resolve_argo_workflow_name()
+
     if not discovered.paths and not missing_results:
+        # Still reconcile when ARGO_WORKFLOW_NAME is set — even an empty batch
+        # (every scan's prediction failed before producing any file at all)
+        # must close out this workflow's scans as 'failed', not leave them
+        # 'queued' forever. Unset, this is the pre-existing manual/local
+        # no-envelopes-no-manifest shape: no client, no RPC call, unchanged.
+        if argo_workflow_name:
+            from ..cli import _authed_client
+
+            client = _authed_client(profile)
+            reconcile_failure = _reconcile_unresolved_scans_result(client, argo_workflow_name)
+            if reconcile_failure is not None:
+                batch_result = BatchResult([reconcile_failure])
+                if as_json:
+                    click.echo(format_json(batch_result))
+                else:
+                    click.echo(
+                        format_summary(
+                            batch_result,
+                            verb="Ingested",
+                            noun="envelope",
+                            destination=str(envelopes_dir),
+                        )
+                    )
+                ctx.exit(1)
         click.echo("No envelope files found; nothing to ingest.")
         return
 
@@ -780,7 +893,20 @@ def batch_ingest_result(
         missing_results = [r for r in missing_results if r.scan_key not in ingested_scan_keys]
         scan_results = ingest_results + missing_results
     else:
+        # Only manifest-declared-missing entries, no files at all. The
+        # pre-existing "never authenticate" behavior is preserved when
+        # ARGO_WORKFLOW_NAME is unset; when it IS set, a client is needed
+        # purely to make the one reconciliation call below.
+        if argo_workflow_name:
+            from ..cli import _authed_client
+
+            client = _authed_client(profile)
         scan_results = missing_results
+
+    if argo_workflow_name:
+        reconcile_failure = _reconcile_unresolved_scans_result(client, argo_workflow_name)
+        if reconcile_failure is not None:
+            scan_results = [*scan_results, reconcile_failure]
 
     batch_result = BatchResult(scan_results)
 

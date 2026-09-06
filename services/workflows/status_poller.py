@@ -4,14 +4,17 @@ Pipeline status poller (bloom #11 Phase 3).
 Periodically re-checks every `cyl_pipeline_runs` row still `'submitted'`/
 `'running'`/`'partial'`, fetches the real Argo Workflow phase for each of
 that run's distinct `argo_workflow_name`s via k8s_client.get_workflow_status,
-computes the run's rollup status (see the rollup rule below), and writes it
-via the `update_cyl_pipeline_run_status` SECURITY DEFINER RPC — skipping the
-write entirely when the computed status already matches a known `'running'`
-status, so a stable in-progress run doesn't get needlessly re-confirmed
-forever (this skip does NOT apply to `'partial'`: Phase 2's dispatch-settle
-can also produce `'partial'` as a pre-poll guess this poller hasn't yet
-checked, so a `'partial'`-sourced candidate always writes its computed
-conclusion — see design.md's round-3 fix).
+computes the run's rollup status and per-scan `done_count`/`failed_count`
+(see the rollup rule below), and writes them via the
+`update_cyl_pipeline_run_status` SECURITY DEFINER RPC — every cycle a
+candidate run has scan rows to check, even when the computed status matches
+the run's already-known status, since `done_count`/`failed_count` can
+advance between cycles while the overall status does not (see design.md's
+Decision 3). Before writing a run's status whenever the computed conclusion
+is anything other than `'running'`, this poller also reconciles — via
+`fail_cyl_pipeline_run_scans_without_result` — any of that run's scans still
+`'queued'`, since a run whose status write just went terminal will never be
+polled again to fix them otherwise (see design.md's Decision 6).
 Distinct from `dispatch_worker.py`: that worker reacts to new pgmq messages
 (event-driven); this poller runs on a fixed wall-clock cadence regardless of
 dispatch activity, sweeping every currently-active run. Runs as the
@@ -29,9 +32,20 @@ import os
 import signal
 import time
 
+from postgrest import APIError
+
 from k8s_client import get_workflow_status
 from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS
 from supabase_client import app_client as _app_client
+
+# PostgREST's "function/signature not found in schema cache" code — expected,
+# transient, and self-healing during the brief window between an application
+# deploy and its accompanying migration actually applying (this repo's
+# deploy.yml applies app code before migrations; see design.md's
+# fix-cyl-pipeline-run-scan-status deploy-ordering risk). Distinguished from a
+# generic isolated error so a burst of these during that window doesn't also
+# trigger an unnecessary proactive reconnect.
+_SIGNATURE_NOT_FOUND_CODE = "PGRST202"
 
 
 def app_client():
@@ -125,11 +139,7 @@ def _fetch_candidate_runs(client) -> list[dict]:
     batches whose real Argo outcome hasn't been checked yet — see design.md's
     "'partial' runs are included in the polling candidate set" decision,
     found during /review-pr round 1). A 'queued' run was never dispatched;
-    anything already 'complete'/'failed' is fully terminal. Also selects
-    `status` (not just `id`) so sweep_once can skip re-writing a conclusion
-    that hasn't actually changed (found during /review-pr round 2 — see
-    design.md's "repeated same-value reconfirmation no longer rewrites the
-    row" decision)."""
+    anything already 'complete'/'failed' is fully terminal."""
     return (
         client.table("cyl_pipeline_runs")
         .select("id, status")
@@ -140,7 +150,9 @@ def _fetch_candidate_runs(client) -> list[dict]:
     )
 
 
-def _fetch_effective_phases(client, run_id) -> tuple[list[str], bool]:
+def _fetch_effective_phases(
+    client, run_id
+) -> tuple[list[str], bool, int, int, list[str]]:
     """One run's effective-phase list: 'Failed' for each scan whose dispatch
     itself failed (status='failed', argo_workflow_name IS NULL), plus the
     real Argo phase of each distinct argo_workflow_name among the run's
@@ -151,7 +163,25 @@ def _fetch_effective_phases(client, run_id) -> tuple[list[str], bool]:
     /review-pr round 1 — see design.md's "a partial 404 must not let the
     rollup conclude 'complete'" decision). A K8sConfigError/K8sStatusError
     from get_workflow_status propagates to the caller, which is responsible
-    for leaving this run unsettled and moving on to the next candidate."""
+    for leaving this run unsettled and moving on to the next candidate.
+
+    Also returns done_count/failed_count (bloom #716,
+    fix-cyl-pipeline-run-scan-status): counted from the SAME `rows` fetch
+    above rather than a second query — done_count is the number of this
+    run's scans with status IN ('written', 'reused') (a real per-scan
+    pipeline success — 'reused' stays included for forward compatibility
+    with the separate, still-unimplemented pre-dispatch skip-if-done
+    mechanism, even though nothing in this program currently produces it);
+    failed_count is the number with status = 'failed' (real per-scan
+    failure OR a dispatch-level failure — both mean "this scan produced no
+    useful result").
+
+    Also returns queued_workflow_names (fix-cyl-pipeline-run-scan-status
+    round 2 — see design.md's Decision 6): the sorted, distinct
+    argo_workflow_names among this run's rows still status = 'queued'. Used
+    by sweep_once as the backstop reconciliation list once this run's
+    rollup concludes a terminal status — a scan can otherwise stay
+    'queued' forever if write-back never ran at all for it."""
     rows = (
         client.table("cyl_pipeline_run_scans")
         .select("argo_workflow_name, status")
@@ -179,12 +209,86 @@ def _fetch_effective_phases(client, run_id) -> tuple[list[str], bool]:
             continue
         phases.append(phase)
 
-    return phases, any_unknown
+    done_count = sum(1 for r in rows if r.get("status") in ("written", "reused"))
+    failed_count = sum(1 for r in rows if r.get("status") == "failed")
+    queued_workflow_names = sorted(
+        {
+            r["argo_workflow_name"]
+            for r in rows
+            if r.get("status") == "queued" and r.get("argo_workflow_name")
+        }
+    )
+
+    return phases, any_unknown, done_count, failed_count, queued_workflow_names
 
 
-def update_run_status(client, run_id, status: str) -> None:
+def _reconcile_unresolved_scans(client, argo_workflow_name: str) -> int:
+    """Close out, as 'failed', any cyl_pipeline_run_scans row for
+    argo_workflow_name still 'queued' — the backstop for a scan whose
+    write-back step never ran at all (fix-cyl-pipeline-run-scan-status
+    round 2; see design.md's Decision 6). Called by sweep_once only once a
+    run's rollup has concluded a terminal (non-'running') status, since a
+    run that never polls again has no other remaining chance to resolve
+    such a scan. Returns the number of rows marked failed."""
+    result = (
+        client.rpc(
+            "fail_cyl_pipeline_run_scans_without_result",
+            {
+                "p_argo_workflow_name": argo_workflow_name,
+                "p_error_message": (
+                    "workflow reached a terminal status before write-back "
+                    "produced a result for this scan"
+                ),
+            },
+        )
+        .execute()
+        .data
+    )
+    return result or 0
+
+
+def _count_done_and_failed(client, run_id) -> tuple[int, int]:
+    """Fresh done_count/failed_count for run_id, from a plain re-read of
+    cyl_pipeline_run_scans — deliberately independent of _fetch_effective_phases's
+    phases/K8s lookups (fix-cyl-pipeline-run-scan-status round 2, found during
+    /review-pr round 2's second pass). _fetch_effective_phases's own counts are a
+    snapshot taken before the reconciliation RPC (and before this cycle's K8s
+    lookups) even run; if a scan's write-back genuinely resolves ('queued' ->
+    'written') in that window, the reconciliation RPC correctly leaves it alone
+    (its own WHERE status='queued' guard no longer matches) — but incrementing
+    the STALE snapshot's failed_count by the reconciled count would never credit
+    that scan's completion to done_count either, permanently undercounting a run
+    that then goes terminal and is never revisited. sweep_once calls this for a
+    fresh recount immediately after reconciling, rather than reusing the earlier
+    snapshot."""
+    rows = (
+        client.table("cyl_pipeline_run_scans")
+        .select("status")
+        .eq("run_id", run_id)
+        .execute()
+        .data
+        or []
+    )
+    done_count = sum(1 for r in rows if r.get("status") in ("written", "reused"))
+    failed_count = sum(1 for r in rows if r.get("status") == "failed")
+    return done_count, failed_count
+
+
+def update_run_status(
+    client,
+    run_id,
+    status: str,
+    done_count: int | None = None,
+    failed_count: int | None = None,
+) -> None:
     client.rpc(
-        "update_cyl_pipeline_run_status", {"p_run_id": run_id, "p_status": status}
+        "update_cyl_pipeline_run_status",
+        {
+            "p_run_id": run_id,
+            "p_status": status,
+            "p_done_count": done_count,
+            "p_failed_count": failed_count,
+        },
     ).execute()
 
 
@@ -218,9 +322,14 @@ def sweep_once(client) -> bool:
 
     for run in candidates:
         run_id = run["id"]
-        known_status = run.get("status")
         try:
-            phases, any_unknown = _fetch_effective_phases(client, run_id)
+            (
+                phases,
+                any_unknown,
+                done_count,
+                failed_count,
+                queued_workflow_names,
+            ) = _fetch_effective_phases(client, run_id)
         except Exception as exc:
             logger.warning(
                 "status_poller: run %s status check failed, leaving unsettled "
@@ -242,33 +351,78 @@ def sweep_once(client) -> bool:
                 run_id,
             )
             continue
-        if status == known_status == "running":
-            # Nothing has changed since the last confirmed conclusion — skip
-            # the write entirely rather than re-writing an identical value
-            # for a run whose outcome has already stabilized (found during
-            # /review-pr round 2). Only safe for 'running': Phase 2's
-            # dispatch-settle never writes 'running' itself, so a known
-            # status of 'running' unambiguously means this poller already
-            # confirmed it. 'partial' is NOT eligible for this skip — Phase
-            # 2's dispatch-settle *can* produce 'partial' as a pre-poll
-            # guess never yet checked by this poller, so a same-string match
-            # there doesn't mean "already confirmed" and would silently
-            # discard the run's first real conclusion (found during
-            # /review-pr round 3 — see design.md's "the same-value
-            # write-skip only applies to 'running'" decision).
-            logger.debug(
-                "status_poller: run %s reconfirmed 'running', no change — "
-                "skipping the write",
-                run_id,
-            )
-            continue
 
+        # Backstop reconciliation (fix-cyl-pipeline-run-scan-status round 2 —
+        # see design.md's Decision 6): once this run's rollup has concluded
+        # anything other than 'running', it will not be checked again after
+        # this cycle's status write (a terminal write drops it from
+        # _fetch_candidate_runs's candidate set for good). Any scan row still
+        # 'queued' at that point can only mean write-back never ran for it at
+        # all (its workflow failed before reaching write-back, or the
+        # write-back container never started) — nothing else will ever
+        # resolve it. Reconcile BEFORE writing the status, not after: if
+        # reconciliation itself fails, skip the status write entirely this
+        # cycle so the run stays a candidate and is retried next cycle,
+        # matching this loop's existing per-run isolation discipline.
+        if status != "running" and queued_workflow_names:
+            try:
+                for name in queued_workflow_names:
+                    _reconcile_unresolved_scans(client, name)
+                # Re-derive both counts fresh, rather than incrementing the
+                # snapshot _fetch_effective_phases already returned — that
+                # snapshot was taken before this cycle's K8s lookups and the
+                # reconciliation call above even ran, and can go stale if a
+                # scan's write-back genuinely resolved in that window (see
+                # _count_done_and_failed's own docstring for the failure mode
+                # this avoids).
+                done_count, failed_count = _count_done_and_failed(client, run_id)
+            except Exception as exc:
+                logger.warning(
+                    "status_poller: run %s failed to reconcile unresolved "
+                    "scans before writing terminal status %s, leaving "
+                    "unsettled for the next cycle: %s",
+                    run_id,
+                    status,
+                    exc,
+                )
+                ok = False
+                continue
+
+        # No same-value skip for 'running' anymore (removed by
+        # fix-cyl-pipeline-run-scan-status): done_count/failed_count can
+        # advance every cycle even while the overall status doesn't, so the
+        # write must happen every cycle a candidate run reaches this point —
+        # skipping it would freeze the "N/M scans done" progress display at
+        # whatever it read on the run's first 'running' cycle.
         try:
-            update_run_status(client, run_id, status)
+            update_run_status(client, run_id, status, done_count, failed_count)
+        except APIError as exc:
+            if exc.code == _SIGNATURE_NOT_FOUND_CODE:
+                # Expected during the brief window between this deploy's app
+                # code going live and its migration actually applying — log
+                # quietly and do NOT mark the cycle unclean, so a burst of
+                # these doesn't also trigger run()'s proactive reconnect.
+                logger.info(
+                    "status_poller: run %s update to %s deferred — RPC "
+                    "signature not yet migrated (expected transient "
+                    "deploy-ordering window): %s",
+                    run_id,
+                    status,
+                    exc,
+                )
+            else:
+                logger.error(
+                    "status_poller: run %s update to %s failed, will retry "
+                    "next cycle: %s",
+                    run_id,
+                    status,
+                    exc,
+                )
+                ok = False
+            continue
         except Exception as exc:
             logger.error(
-                "status_poller: run %s update to %s failed, will retry next "
-                "cycle: %s",
+                "status_poller: run %s update to %s failed, will retry next cycle: %s",
                 run_id,
                 status,
                 exc,
@@ -350,8 +504,7 @@ def run():
                     consecutive_error_cycles = 0
                 except Exception as reconnect_exc:
                     logger.error(
-                        "status_poller: proactive reconnect failed, will "
-                        "retry: %s",
+                        "status_poller: proactive reconnect failed, will retry: %s",
                         reconnect_exc,
                     )
 
