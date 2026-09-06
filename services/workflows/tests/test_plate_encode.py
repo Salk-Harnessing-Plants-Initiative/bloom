@@ -7,6 +7,8 @@ label, and a fake would only prove the calls were made in some order.
 from __future__ import annotations
 
 import io
+import os
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
@@ -604,9 +606,9 @@ def test_each_frame_carries_its_own_elapsed_label(ffmpeg, tmp_path):
 
 # --- bounded -----------------------------------------------------------------
 #
-# Not a memory bound: the host has 633 GB free and a render peaks around
-# 194 MB. The semaphore is so forty simultaneous clicks do not saturate the
-# link to storage; the lock is so two requests for one plate do not both encode.
+# The semaphore keeps four renders inside the container's memory limit and
+# stops forty clicks saturating the link to storage; the lock stops two
+# requests for one plate both encoding it.
 
 import threading  # noqa: E402
 import time  # noqa: E402
@@ -1049,6 +1051,50 @@ def test_a_32_bit_frame_inside_the_full_scale_still_works():
     assert out.max() == 255 and out.min() == 0
 
 
+def test_a_download_failure_carries_the_path_it_happened_to():
+    """`path` is what the HTTP layer names the frame by. Tested only against
+    exceptions built by hand, the raise sites could stop setting it and every
+    caller would silently fall back to "a frame could not be read"."""
+
+    class _Images:
+        def download(self, path):
+            raise Exception("connection reset by peer")
+
+    with pytest.raises(pe.FrameUnreadable) as caught:
+        pe._fetch_frame(_Images(), "12/wave-1/P7_40.tif", LABEL)
+
+    assert caught.value.path == "12/wave-1/P7_40.tif"
+
+
+def test_a_recording_failure_carries_the_key_it_concerns(tmp_path):
+    """The same, for the key `NotRecorded` is named by."""
+    video = tmp_path / "plate.mp4"
+    video.write_bytes(b"\x00" * 32)
+
+    class _Videos:
+        def upload(self, *a, **k):
+            return None
+
+    class _Client:
+        storage = type("_S", (), {"from_": lambda self, b: _Videos()})()
+
+        def rpc(self, name, params):
+            raise Exception("permission denied for function record_gravi_plate_video")
+
+    with pytest.raises(pe.NotRecorded) as caught:
+        pe.publish_plate_video(
+            _Client(),
+            "12/wave-1/P7.mp4",
+            str(video),
+            experiment_id=12,
+            plate_id="P7",
+            wave_number=1,
+            frame_count=86,
+        )
+
+    assert caught.value.key == "12/wave-1/P7.mp4"
+
+
 def test_an_unsupported_depth_is_not_reported_as_a_corrupt_file():
     """The two need different actions, so they must not read the same.
 
@@ -1351,3 +1397,329 @@ def test_the_encoder_opts_into_the_stall_deadline(ffmpeg, tmp_path, monkeypatch)
         "the encoder built its writer without a deadline, so a stalled ffmpeg "
         "would pin this thread and never release the encode slot or plate lock"
     )
+
+
+def test_an_oversized_frame_is_refused_without_being_decoded(monkeypatch):
+    """Refused off the header, while it is still bytes.
+
+    A file's size on disk says nothing about its size in memory: 12000x12000
+    is 3 MB stored and 1760 MB once built. Proven by making the decode itself
+    fail — an assertion on memory cannot, because peak RSS is a high-water mark
+    that an earlier test may already have raised, and tracemalloc cannot see
+    Pillow's decode buffer at all.
+    """
+    bomb = io.BytesIO()
+    Image.new("I;16", (12000, 12000)).save(bomb, "TIFF", compression="tiff_lzw")
+    payload = bomb.getvalue()
+
+    assert len(payload) < 5_000_000, "the fixture is not the small-file case"
+
+    def never(self, *args, **kwargs):
+        raise AssertionError("the frame was decoded before being refused")
+
+    monkeypatch.setattr(Image.Image, "load", never)
+
+    with pytest.raises(pe.FrameTooLarge, match="MB to decode"):
+        pe.prepare_frame(payload, LABEL)
+
+
+def test_the_ceiling_counts_bytes_not_pixels():
+    """The whole point of the constant. The same 60 megapixels is 369 MB as
+    8-bit and 819 MB as 16-bit; four of the second is 3.3 GB against a 2 GB
+    container, and a pixel count cannot tell them apart."""
+    wide, high = 7745, 7745
+
+    assert pe.decoded_bytes(wide, high, "L") <= pe.MAX_FRAME_DECODED_BYTES
+    assert pe.decoded_bytes(wide, high, "I;16") > pe.MAX_FRAME_DECODED_BYTES
+
+
+def test_a_real_plate_and_a_finer_scan_of_it_are_both_accepted():
+    """A plate is 4960x6850 at the scanners' current 1200 dpi. The same plate
+    at 1600 dpi is 6613x9133, and refusing it would make one scanner setting
+    un-renderable — which is what a pixel ceiling of 60 Mpx did, by 0.7%."""
+    assert pe.decoded_bytes(4960, 6850, "L") <= pe.MAX_FRAME_DECODED_BYTES
+    assert pe.decoded_bytes(6613, 9133, "L") <= pe.MAX_FRAME_DECODED_BYTES
+
+    frame = pe.prepare_frame(_png(4960, 6850), LABEL)
+    assert frame.shape[1] == pe.PLATE_VIDEO_WIDTH
+
+
+def test_an_oversized_frame_says_so_rather_than_being_called_unreadable():
+    """`FrameUnreadable` sends someone to rescan a plate that scanned fine."""
+    assert issubclass(pe.FrameTooLarge, pe.FrameUnreadable)
+
+    bomb = io.BytesIO()
+    Image.new("I;16", (12000, 12000)).save(bomb, "TIFF", compression="tiff_lzw")
+
+    with pytest.raises(pe.FrameTooLarge) as caught:
+        pe.prepare_frame(bomb.getvalue(), LABEL)
+
+    assert "12000x12000" in str(caught.value)
+    assert "450 MB" in str(caught.value)
+
+
+# --------------------------------------------------------------------------
+# render_plate_video — decide, encode, store, record
+# --------------------------------------------------------------------------
+#
+# The function the route calls, and until these tests it had none: its whole
+# body could be replaced with `return plan_render(...)` — never encoding,
+# uploading or recording — with the entire suite still green.
+
+
+# A real encoder can write fewer frames than were planned. The stand-in has to
+# be able to, or "record what was encoded" and "record what was planned" are
+# the same assertion.
+ENCODED_SHORTFALL = 1
+
+
+def _plan(action="render", **over):
+    return {
+        "action": action,
+        "reason": "no video stored; encoding 3 frames",
+        "key": "12/wave-1/P7.mp4",
+        "code": "",
+        "frames": _frames(3),
+        "coverage": {"state": "complete", "summary": "3 frames"},
+        **over,
+    }
+
+
+def _wire(monkeypatch, plans, *, on_encode=None):
+    """Stand in for the three calls a render makes, and record what happened.
+
+    `plans` is what successive `plan_render` calls return, so a test can make
+    the second look disagree with the first — which is the case the double plan
+    exists for and the one that cannot be reached any other way.
+    """
+    # ENCODED_SHORTFALL keeps the encoder's count different from the plan's, so
+    # a test asserting one of them cannot pass on the other.
+    seen = {
+        "plans": 0,
+        "encoded": [],
+        "published": [],
+        "identity": [],
+        "slot_held": [],
+        "lock_held": [],
+    }
+
+    def plan_render(*args, **kwargs):
+        seen["plans"] += 1
+        return plans[min(seen["plans"] - 1, len(plans) - 1)]
+
+    def encode(client, frames, out_path):
+        # Sampled while the render is in flight: afterwards both are released
+        # and the difference between holding them and not is invisible.
+        seen["slot_held"].append(pe._encode_slots._value)
+        seen["lock_held"].append(pe._plate_locks["12/wave-1/P7.mp4"].locked())
+        seen["encoded"].append(out_path)
+        if on_encode is not None:
+            on_encode()
+        return len(frames) - ENCODED_SHORTFALL
+
+    def publish(client, key, video_path, **kwargs):
+        seen["published"].append((key, kwargs["frame_count"]))
+        seen["identity"].append(
+            (kwargs["experiment_id"], kwargs["plate_id"], kwargs["wave_number"])
+        )
+        return {"object_path": key, "frame_count": kwargs["frame_count"]}
+
+    monkeypatch.setattr(pe, "plan_render", plan_render)
+    monkeypatch.setattr(pe, "encode_plate_video", encode)
+    monkeypatch.setattr(pe, "publish_plate_video", publish)
+    return seen
+
+
+def test_a_render_encodes_stores_and_records(monkeypatch):
+    """The body is the feature. Replacing it with the plan alone left the whole
+    suite green, so this asserts each of the three things actually happened."""
+    seen = _wire(monkeypatch, [_plan()])
+
+    result = pe.render_plate_video(object(), 12, "P7", 1)
+
+    encoded = 3 - ENCODED_SHORTFALL
+
+    assert result["action"] == "rendered"
+    assert len(seen["encoded"]) == 1, "nothing was encoded"
+    assert seen["published"] == [("12/wave-1/P7.mp4", encoded)], "nothing was recorded"
+    assert result["recorded"]["frame_count"] == encoded
+
+
+def test_what_is_recorded_is_what_the_encoder_wrote(monkeypatch):
+    """Not what the plan asked for. The two are the same number in real runs,
+    because one unreadable frame fails the whole render — so the stand-in
+    encoder returns a different one, or this cannot be asserted at all."""
+    seen = _wire(monkeypatch, [_plan(frames=_frames(9))])
+
+    pe.render_plate_video(object(), 12, "P7", 1)
+
+    assert seen["published"][0][1] == 9 - ENCODED_SHORTFALL
+    assert seen["published"][0][1] != 9, "the planned count was recorded"
+
+
+def test_the_video_is_recorded_against_the_plate_it_was_made_from(monkeypatch):
+    """A crossed identity stores one plate's video under another's name, which
+    is what PlateMismatch exists to refuse. Nothing checked the values handed
+    over, so they could be anything."""
+    seen = _wire(monkeypatch, [_plan()])
+
+    pe.render_plate_video(object(), 12, "P7", 1)
+
+    assert seen["identity"] == [(12, "P7", 1)]
+
+
+def test_a_plate_with_no_wave_is_recorded_as_having_none(monkeypatch):
+    seen = _wire(monkeypatch, [_plan(key="12/wave-none/P7.mp4")])
+
+    pe.render_plate_video(object(), 12, "P7", None)
+
+    assert seen["identity"] == [(12, "P7", None)]
+
+
+def test_the_second_look_under_the_lock_turns_a_race_into_a_keep(monkeypatch):
+    """Between deciding and holding the lock, another request may have rendered
+    this plate. Re-encoding would overwrite a video identical to the one about
+    to be made, so the second plan is what makes the first one safe."""
+    seen = _wire(monkeypatch, [_plan(), _plan(action="keep", reason="already covers 3")])
+
+    result = pe.render_plate_video(object(), 12, "P7", 1)
+
+    assert result["action"] == "keep"
+    assert seen["plans"] == 2, "the plan was not taken again under the lock"
+    assert seen["encoded"] == [], "it encoded over a video that was already current"
+
+
+def test_a_plan_that_says_no_never_reaches_the_lock(monkeypatch):
+    seen = _wire(monkeypatch, [_plan(action="refuse", reason="no captures")])
+
+    assert pe.render_plate_video(object(), 12, "P7", 1)["action"] == "refuse"
+    assert seen["plans"] == 1
+    assert seen["encoded"] == []
+
+
+def test_both_guards_are_held_while_the_encode_runs(monkeypatch):
+    """Sampled inside the encode: a slot consumed and the plate's lock held.
+    Removing either leaves every other assertion in this file unchanged."""
+    seen = _wire(monkeypatch, [_plan()])
+
+    pe.render_plate_video(object(), 12, "P7", 1)
+
+    assert seen["slot_held"] == [pe.MAX_CONCURRENT_ENCODES - 1], "no encode slot was taken"
+    assert seen["lock_held"] == [True], "the plate was not locked while it rendered"
+
+
+def test_the_plate_lock_is_taken_before_the_slot(monkeypatch):
+    """The order decides which of two true things the caller is told.
+
+    With every slot taken and this plate one of the four rendering, slot first
+    answers "the encoder is busy" and lock first answers "this plate is already
+    being rendered" — the second is the one the caller can act on. Nothing is
+    held while waiting either way, because neither acquire waits.
+    """
+    order = []
+    real_slot, real_lock = pe.encode_slot, pe.plate_lock
+
+    @contextmanager
+    def slot(*a, **k):
+        order.append("slot")
+        with real_slot(*a, **k):
+            yield
+
+    @contextmanager
+    def lock(*a, **k):
+        order.append("lock")
+        with real_lock(*a, **k):
+            yield
+
+    monkeypatch.setattr(pe, "encode_slot", slot)
+    monkeypatch.setattr(pe, "plate_lock", lock)
+    _wire(monkeypatch, [_plan()])
+
+    pe.render_plate_video(object(), 12, "P7", 1)
+
+    assert order == ["lock", "slot"]
+
+
+def test_a_full_encoder_still_says_which_plate_is_rendering(monkeypatch):
+    """The reason the order is what it is, from the caller's side."""
+    _wire(monkeypatch, [_plan()])
+    key = "12/wave-1/P7.mp4"
+    held = [pe.encode_slot() for _ in range(pe.MAX_CONCURRENT_ENCODES)]
+    for slot in held:
+        slot.__enter__()
+    try:
+        with pe.plate_lock(key):
+            with pytest.raises(pe.PlateBusy) as caught:
+                pe.render_plate_video(object(), 12, "P7", 1)
+    finally:
+        for slot in held:
+            slot.__exit__(None, None, None)
+
+    assert key in str(caught.value)
+    assert pe._encode_slots._value == pe.MAX_CONCURRENT_ENCODES
+
+
+def test_the_output_name_never_comes_from_the_plate_id(monkeypatch):
+    """The plate id is caller-supplied. A constant name keeps it out of the
+    filesystem and off the ffmpeg command line, where a leading dash is an
+    option and a scheme is a destination."""
+    seen = _wire(monkeypatch, [_plan()])
+
+    pe.render_plate_video(object(), 12, "P7", 1)
+
+    written = seen["encoded"][0]
+    assert written.endswith("plate.mp4")
+    assert "P7" not in os.path.basename(written)
+
+
+@pytest.mark.parametrize(
+    "plans,on_encode",
+    [
+        ([_plan()], None),
+        ([_plan(), _plan(action="keep")], None),
+        ([_plan()], lambda: (_ for _ in ()).throw(pe.FrameUnreadable("bad frame"))),
+    ],
+    ids=["success", "keep-under-the-lock", "the-encode-raises"],
+)
+def test_the_slot_and_the_lock_are_handed_back_on_every_path(monkeypatch, plans, on_encode):
+    """A slot leaked on any path takes a permanent bite out of capacity, and a
+    plate whose lock is never released can never be rendered again."""
+    _wire(monkeypatch, plans, on_encode=on_encode)
+    before = pe._encode_slots._value
+
+    try:
+        pe.render_plate_video(object(), 12, "P7", 1)
+    except pe.FrameUnreadable:
+        pass
+
+    assert pe._encode_slots._value == before, "an encode slot was not released"
+    assert not pe._plate_locks["12/wave-1/P7.mp4"].locked(), "the plate stayed locked"
+
+
+def test_a_frame_far_larger_than_a_scan_is_refused_before_it_is_decoded():
+    """A bound on what this path will hold, not a check on the recorded size.
+
+    The whole-plate guard sums `gravi_images.file_size_bytes`, which is what the
+    desktop wrote at upload. That is a record, not something to bet memory on:
+    an interrupted upload, a resumed transfer or an app bug all leave it
+    disagreeing with the object, and without this the download holds whatever
+    actually arrives.
+    """
+    oversized = b"\x00" * (pe.MAX_FRAME_BYTES + 1)
+    images = _Images({"12/wave-1/P7_0.tif": oversized})
+
+    with pytest.raises(pe.FrameUnreadable, match="MB a plate frame can be") as ei:
+        pe._fetch_frame(images, "12/wave-1/P7_0.tif", LABEL)
+
+    assert "12/wave-1/P7_0.tif" in str(ei.value), "the frame was not named"
+
+
+def test_a_normal_sized_frame_is_not_refused():
+    """A real frame is ~59 MB nominal and 93 MB for a detailed 16-bit scan, so
+    the cap has to sit clear of both or it refuses the plates it exists for."""
+    assert pe.MAX_FRAME_BYTES > 100 * 1024**2, "a real 16-bit frame would be refused"
+
+    frame = pe._fetch_frame(
+        _Images({"12/wave-1/P7_0.tif": _png(400, 600)}), "12/wave-1/P7_0.tif", LABEL
+    )
+    assert frame.dtype == np.uint8

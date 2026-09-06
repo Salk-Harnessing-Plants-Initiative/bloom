@@ -90,3 +90,177 @@ def test_get_run_rate_limited_returns_429(monkeypatch):
         assert called["n"] == 0  # get_run never ran — rate limit gates first
     finally:
         main.app.dependency_overrides.clear()
+
+
+# --- the plate video route ---------------------------------------------------
+#
+# The handler must not be reached when auth or the rate limit refuses. A 401 or
+# a 429 alone does not prove that: it proves only what the client was told.
+
+
+def test_plate_video_route_calls_the_renderer(monkeypatch):
+    import main
+    import plate_request
+    from auth import require_supabase_user
+
+    monkeypatch.setattr(
+        plate_request,
+        "render",
+        lambda experiment_id, body: {
+            "experiment_id": experiment_id,
+            "plate_id": body["plate_id"],
+            "wave_number": body.get("wave_number"),
+            "action": "rendered",
+            "reason": "encoded 3 frames",
+            "object_path": "12/wave-1/P7.mp4",
+            "frames": 3,
+            "coverage": None,
+        },
+    )
+    monkeypatch.setattr(main, "enforce_rate_limit", lambda user_id: None)
+    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
+    try:
+        resp = TestClient(main.app).post(
+            "/gravi/experiments/12/plate-video",
+            json={"plate_id": "P7", "wave_number": 1},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["action"] == "rendered"
+        assert resp.json()["object_path"] == "12/wave-1/P7.mp4"
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_a_refused_plate_video_is_logged_like_one_that_worked(caplog):
+    """The answer a caller actually sees when the button seems to do nothing.
+    Logged only on the way out, it left no record of who asked for what."""
+    import main
+    import plate_request
+    from auth import require_supabase_user
+
+    def _no_frames(experiment_id, body):
+        raise HTTPException(status_code=404, detail="this plate has no captures")
+
+    main.plate_request = plate_request
+    original = plate_request.render
+    plate_request.render = _no_frames
+    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
+    try:
+        with caplog.at_level("INFO", logger="main"):
+            resp = TestClient(main.app).post(
+                "/gravi/experiments/12/plate-video",
+                json={"plate_id": "P7", "wave_number": 1},
+            )
+    finally:
+        plate_request.render = original
+        main.app.dependency_overrides.clear()
+
+    assert resp.status_code == 404
+    assert "experiment 12" in caplog.text
+    assert "'P7'" in caplog.text
+    assert "user-1" in caplog.text
+    assert "404" in caplog.text
+
+
+def test_a_refusal_reason_is_logged_without_being_echoed_back(caplog):
+    """The plate id is escaped on this line; the reason beside it carries
+    `gravi_images.object_path`, which is free text the desktop writes."""
+    import main
+    import plate_request
+    from auth import require_supabase_user
+
+    forged = "12/wave-1/P7.tif\n2026-09-05 - INFO - plate ADMIN: rendered"
+
+    def unreadable(experiment_id, body):
+        raise HTTPException(status_code=502, detail=f"{forged} could not be read")
+
+    original = plate_request.render
+    plate_request.render = unreadable
+    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
+    try:
+        with caplog.at_level("INFO", logger="main"):
+            resp = TestClient(main.app).post(
+                "/gravi/experiments/12/plate-video",
+                json={"plate_id": "P7", "wave_number": 1},
+            )
+    finally:
+        plate_request.render = original
+        main.app.dependency_overrides.clear()
+
+    assert resp.status_code == 502
+    assert "\\n" in caplog.text, "the newline reached the log unescaped"
+    assert "\nplate ADMIN" not in caplog.text
+
+
+def test_a_rejected_body_is_logged_without_being_echoed_back(caplog):
+    """A plate id is caller-supplied text going into a log a person reads. A
+    newline in it would put a second, invented line under a real one."""
+    import main
+    from auth import require_supabase_user
+
+    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
+    try:
+        with caplog.at_level("INFO", logger="main"):
+            resp = TestClient(main.app).post(
+                "/gravi/experiments/12/plate-video",
+                json={"plate_id": "P7\nplate video for experiment 99: rendered"},
+            )
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert resp.status_code == 400
+    assert "\\n" in caplog.text, "the newline reached the log unescaped"
+    assert "\nplate video for experiment 99" not in caplog.text
+
+
+def test_plate_video_route_401_without_auth(monkeypatch):
+    import main
+    import plate_request
+    from auth import require_supabase_user
+
+    def _raise_401():
+        raise HTTPException(status_code=401, detail="missing token")
+
+    called = {"n": 0}
+    monkeypatch.setattr(
+        plate_request,
+        "render",
+        lambda *a, **k: called.__setitem__("n", called["n"] + 1),
+    )
+    main.app.dependency_overrides[require_supabase_user] = _raise_401
+    try:
+        resp = TestClient(main.app).post(
+            "/gravi/experiments/12/plate-video", json={"plate_id": "P7"}
+        )
+        assert resp.status_code == 401
+        assert called["n"] == 0, "the renderer ran for an unauthenticated request"
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_plate_video_route_429_before_any_work(monkeypatch):
+    """The button can be clicked repeatedly. The limit has to bite before a
+    render starts, or clicking five times starts five encodes."""
+    import main
+    import plate_request
+    from auth import require_supabase_user
+
+    def _rate_limited(user_id):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
+    called = {"n": 0}
+    monkeypatch.setattr(
+        plate_request,
+        "render",
+        lambda *a, **k: called.__setitem__("n", called["n"] + 1),
+    )
+    monkeypatch.setattr(main, "enforce_rate_limit", _rate_limited)
+    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
+    try:
+        resp = TestClient(main.app).post(
+            "/gravi/experiments/12/plate-video", json={"plate_id": "P7"}
+        )
+        assert resp.status_code == 429
+        assert called["n"] == 0, "a render started for a rate-limited request"
+    finally:
+        main.app.dependency_overrides.clear()

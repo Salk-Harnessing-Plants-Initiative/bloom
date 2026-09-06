@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
+import httpx
+
 from plate_video_path import GRAVISCAN_VIDEOS_BUCKET, plate_video_path
 
 logger = logging.getLogger(__name__)
@@ -417,17 +419,24 @@ def render_decision(frames: list[dict], stored: dict) -> dict:
             "this video cannot be made right now — storage did not answer. "
             "Nothing has been changed; try again in a few minutes",
             key,
+            code="storage_unavailable",
         )
 
     if key is None:
         return _outcome(
-            "refuse", "this plate's id or wave number cannot be used in a video", key
+            "refuse",
+            "this plate's id or wave number cannot be used in a video",
+            key,
+            code="unusable_plate",
         )
 
     if state == "absent":
         if not available:
             return _outcome(
-                "refuse", "none of this plate's images have finished uploading yet", key
+                "refuse",
+                "none of this plate's images have finished uploading yet",
+                key,
+                code="no_frames",
             )
         return _outcome("render", f"no video stored; encoding {available} frames", key)
 
@@ -473,8 +482,38 @@ def render_decision(frames: list[dict], stored: dict) -> dict:
     )
 
 
-def _outcome(action: str, reason: str, key: str | None) -> dict:
-    return {"action": action, "reason": reason, "key": key}
+def _outcome(action: str, reason: str, key: str | None, code: str = "") -> dict:
+    """`code` names why, for a caller that has to choose a status. The reason is
+    prose for a human; matching on it would break the first time it is reworded."""
+    return {"action": action, "reason": reason, "key": key, "code": code}
+
+
+def _answered(what: str, read):
+    """A planning read's result, or None when the database could not be reached.
+
+    Transport failures only. A database that answered with a reason -- a denied
+    grant, a row that will not parse -- is not something a retry fixes.
+    """
+    try:
+        return read()
+    except httpx.TransportError as exc:
+        logger.warning("the database did not answer for %s: %s", what, exc)
+        return None
+
+
+def _unavailable(key: str | None) -> dict:
+    """A refusal the caller can act on by waiting."""
+    return {
+        **_outcome(
+            "refuse",
+            "this video cannot be made right now — the database did not answer. "
+            "Nothing has been changed; try again in a few minutes",
+            key,
+            code="database_unavailable",
+        ),
+        "frames": [],
+        "coverage": None,
+    }
 
 
 # --- the whole question, in one call -----------------------------------------
@@ -499,12 +538,43 @@ def plan_render(
     path nothing reads it, and it costs a second query. #756 covers the case
     that makes visible.
     """
-    frames = get_plate_frames(client, experiment_id, plate_id, wave_number)
-    stored = stored_video(client, experiment_id, plate_id, wave_number)
+    key = plate_video_path(experiment_id, wave_number, plate_id)
+    if key is None:
+        # Permanent, and knowable without asking the database anything.
+        return {
+            **_outcome(
+                "refuse",
+                "this plate's id or wave number cannot be used in a video",
+                key,
+                code="unusable_plate",
+            ),
+            "frames": [],
+            "coverage": None,
+        }
+
+    frames = _answered(
+        "this plate's frames",
+        lambda: get_plate_frames(client, experiment_id, plate_id, wave_number),
+    )
+    if frames is None:
+        return _unavailable(key)
+
+    stored = _answered(
+        "this plate's stored video",
+        lambda: stored_video(client, experiment_id, plate_id, wave_number),
+    )
+    if stored is None:
+        return _unavailable(key)
+
     decision = render_decision(frames, stored)
 
     if decision["action"] != "render":
-        return {**decision, "frames": frames, "coverage": None}
+        return {
+            **decision,
+            "frames": frames,
+            "coverage": None,
+            "stored_frames": stored.get("frame_count"),
+        }
 
     oversized = too_large_to_render(frames)
     if oversized:
@@ -512,13 +582,20 @@ def plan_render(
             "action": "refuse",
             "reason": oversized,
             "key": stored["key"],
+            "code": "too_large",
             "frames": frames,
             "coverage": None,
         }
 
+    # Unknown either way here: both already return None when the run recorded
+    # no plan, and an unanswered read is the same absence of an answer. Coverage
+    # is a note about the video, so losing it is not a reason to refuse one.
     coverage = completeness(
         frames,
-        planned_cycles(client, frames),
-        session_cycle_range(client, frames, experiment_id, wave_number),
+        _answered("the run's planned cycles", lambda: planned_cycles(client, frames)),
+        _answered(
+            "the run's cycle range",
+            lambda: session_cycle_range(client, frames, experiment_id, wave_number),
+        ),
     )
     return {**decision, "frames": frames, "coverage": coverage}
