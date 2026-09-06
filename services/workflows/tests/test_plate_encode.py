@@ -606,9 +606,9 @@ def test_each_frame_carries_its_own_elapsed_label(ffmpeg, tmp_path):
 
 # --- bounded -----------------------------------------------------------------
 #
-# Not a memory bound: the host has 633 GB free and a render peaks around
-# 194 MB. The semaphore is so forty simultaneous clicks do not saturate the
-# link to storage; the lock is so two requests for one plate do not both encode.
+# The semaphore keeps four renders inside the container's memory limit and
+# stops forty clicks saturating the link to storage; the lock stops two
+# requests for one plate both encoding it.
 
 import threading  # noqa: E402
 import time  # noqa: E402
@@ -1049,6 +1049,50 @@ def test_a_32_bit_frame_inside_the_full_scale_still_works():
     # A real gradient, not a white field: the reduction preserved the range.
     assert len(np.unique(out)) > 200, "the frame flattened instead of scaling"
     assert out.max() == 255 and out.min() == 0
+
+
+def test_a_download_failure_carries_the_path_it_happened_to():
+    """`path` is what the HTTP layer names the frame by. Tested only against
+    exceptions built by hand, the raise sites could stop setting it and every
+    caller would silently fall back to "a frame could not be read"."""
+
+    class _Images:
+        def download(self, path):
+            raise Exception("connection reset by peer")
+
+    with pytest.raises(pe.FrameUnreadable) as caught:
+        pe._fetch_frame(_Images(), "12/wave-1/P7_40.tif", LABEL)
+
+    assert caught.value.path == "12/wave-1/P7_40.tif"
+
+
+def test_a_recording_failure_carries_the_key_it_concerns(tmp_path):
+    """The same, for the key `NotRecorded` is named by."""
+    video = tmp_path / "plate.mp4"
+    video.write_bytes(b"\x00" * 32)
+
+    class _Videos:
+        def upload(self, *a, **k):
+            return None
+
+    class _Client:
+        storage = type("_S", (), {"from_": lambda self, b: _Videos()})()
+
+        def rpc(self, name, params):
+            raise Exception("permission denied for function record_gravi_plate_video")
+
+    with pytest.raises(pe.NotRecorded) as caught:
+        pe.publish_plate_video(
+            _Client(),
+            "12/wave-1/P7.mp4",
+            str(video),
+            experiment_id=12,
+            plate_id="P7",
+            wave_number=1,
+            frame_count=86,
+        )
+
+    assert caught.value.key == "12/wave-1/P7.mp4"
 
 
 def test_an_unsupported_depth_is_not_reported_as_a_corrupt_file():

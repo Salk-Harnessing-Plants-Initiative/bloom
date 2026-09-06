@@ -14,6 +14,11 @@ Endpoints:
                                                        Storage, return a signed
                                                        download URL
                                                        (requires a Supabase user JWT)
+    POST /gravi/experiments/{experiment_id}/plate-video
+                                                     - on-demand: render one plate's
+                                                       time-lapse for one wave, store
+                                                       it and record it
+                                                       (requires a Supabase user JWT)
     POST /pipeline                                  - externally reachable as
                                                        POST /workflows/pipeline
                                                        (Caddy strips the /workflows
@@ -134,7 +139,7 @@ def gravi_plate_video(
         # render returns, so the log held every request that worked and none of
         # the ones anyone would look up.
         logger.info(
-            "plate video for experiment %s plate %r wave %r requested by %s: %s refused — %s",
+            "plate video for experiment %s plate %r wave %r requested by %s: %s refused — %r",
             experiment_id,
             asked.get("plate_id"),
             asked.get("wave_number"),

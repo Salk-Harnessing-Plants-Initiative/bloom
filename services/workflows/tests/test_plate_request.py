@@ -55,13 +55,19 @@ def test_the_request_keys_are_echoed_back(monkeypatch):
     monkeypatch.setattr(pr, "render_plate_video", _renders(_rendered()))
     result = pr.render(12, {"plate_id": "P7", "wave_number": 3})
 
-    assert (result["experiment_id"], result["plate_id"], result["wave_number"]) == (12, "P7", 3)
+    assert (result["experiment_id"], result["plate_id"], result["wave_number"]) == (
+        12,
+        "P7",
+        3,
+    )
 
 
 def test_keeping_a_current_video_is_success_not_an_error(monkeypatch):
     """Nothing was encoded, and nothing went wrong."""
     monkeypatch.setattr(
-        pr, "render_plate_video", _renders(_rendered(action="keep", reason="already covers 3"))
+        pr,
+        "render_plate_video",
+        _renders(_rendered(action="keep", reason="already covers 3")),
     )
     assert pr.render(12, {"plate_id": "P7", "wave_number": 1})["action"] == "keep"
 
@@ -70,8 +76,11 @@ def test_an_oversized_frame_is_413_and_says_the_size(monkeypatch):
     """Not 502 "could not be read" — that sends someone to rescan a plate that
     scanned correctly. The message carries dimensions and a limit, neither of
     which comes from the storage client."""
+
     def too_large(*a, **k):
-        raise pr.FrameTooLarge("12000x12000 I;16 needs about 2059 MB to decode, past the 450 MB one render may hold")
+        raise pr.FrameTooLarge(
+            "12000x12000 I;16 needs about 2059 MB to decode, past the 450 MB one render may hold"
+        )
 
     monkeypatch.setattr(pr, "render_plate_video", too_large)
     with pytest.raises(HTTPException) as ei:
@@ -79,6 +88,32 @@ def test_an_oversized_frame_is_413_and_says_the_size(monkeypatch):
 
     assert ei.value.status_code == 413
     assert "12000x12000" in ei.value.detail
+
+
+@pytest.mark.parametrize("experiment_id", [0, -1, 10**400])
+def test_an_experiment_id_the_column_cannot_hold_is_refused(monkeypatch, experiment_id):
+    """The same INT bound wave_number gets. Unbounded, it reached the query, the
+    operator's log line, and a 400-character object key."""
+    monkeypatch.setattr(pr, "render_plate_video", _renders(_rendered()))
+    with pytest.raises(HTTPException) as ei:
+        pr.render(experiment_id, {"plate_id": "P7", "wave_number": 1})
+
+    assert ei.value.status_code == 400
+    assert "experiment_id" in ei.value.detail
+
+
+def test_a_keep_reports_what_the_stored_video_holds(monkeypatch):
+    """Rows can go away after a render, so the plate can hold fewer frames than
+    the video does. The video is what the caller is being handed."""
+    outcome = _rendered(
+        action="keep",
+        reason="the stored video covers 86 frames; only 5 are in the database now",
+        frames=[{}] * 5,
+        stored_frames=86,
+    )
+    monkeypatch.setattr(pr, "render_plate_video", _renders(outcome))
+
+    assert pr.render(12, {"plate_id": "P7", "wave_number": 1})["frames"] == 86
 
 
 def test_a_wave_number_too_large_for_the_column_is_refused(monkeypatch):
@@ -133,7 +168,9 @@ def test_each_refusal_gets_a_status_a_caller_can_act_on(monkeypatch, code, statu
     """A transient storage failure is worth retrying; a plate with no captures
     is not. One status for both would make them indistinguishable."""
     monkeypatch.setattr(
-        pr, "render_plate_video", _renders(_rendered(action="refuse", code=code, reason="no"))
+        pr,
+        "render_plate_video",
+        _renders(_rendered(action="refuse", code=code, reason="no")),
     )
     with pytest.raises(HTTPException) as ei:
         pr.render(12, {"plate_id": "P7", "wave_number": 1})
@@ -153,7 +190,7 @@ def test_a_busy_encoder_says_come_back_rather_than_failing(monkeypatch):
 
 
 def test_an_unreadable_frame_names_it_without_naming_the_cause(monkeypatch):
-    """"A frame failed" sends someone to the scanner. Naming it sends them to it.
+    """ "A frame failed" sends someone to the scanner. Naming it sends them to it.
 
     The path only. The rest of the message is the storage client's own error,
     which in the real failure carries the internal gateway host and port, the
@@ -198,8 +235,11 @@ def test_a_frame_failure_carrying_no_path_still_answers(monkeypatch):
 def test_an_unreadable_frame_is_logged_as_well_as_returned(monkeypatch, caplog):
     """The response body is not a record, and it no longer carries the reason —
     only the frame. This log line is the operator's only copy of why."""
+
     def unreadable(*a, **k):
-        raise FrameUnreadable("could not download 12/wave-1/P7_40.tif: connection reset")
+        raise FrameUnreadable(
+            "could not download 12/wave-1/P7_40.tif: connection reset"
+        )
 
     monkeypatch.setattr(pr, "render_plate_video", unreadable)
     with caplog.at_level(logging.WARNING, logger=pr.logger.name):
@@ -243,7 +283,9 @@ def test_the_render_is_never_reached_for_a_bad_plate_id(monkeypatch):
 
 
 def test_a_plate_with_no_wave_is_accepted(monkeypatch):
-    monkeypatch.setattr(pr, "render_plate_video", _renders(_rendered(key="12/wave-none/P7.mp4")))
+    monkeypatch.setattr(
+        pr, "render_plate_video", _renders(_rendered(key="12/wave-none/P7.mp4"))
+    )
     assert pr.render(12, {"plate_id": "P7", "wave_number": None})["wave_number"] is None
 
 
@@ -346,7 +388,9 @@ def test_an_unsupported_depth_is_not_reported_as_an_upstream_failure(monkeypatch
     with pytest.raises(HTTPException) as ei:
         pr.render(12, {"plate_id": "P7", "wave_number": 1})
 
-    assert ei.value.status_code != 502, "an intact file was blamed on an upstream failure"
+    assert ei.value.status_code != 502, (
+        "an intact file was blamed on an upstream failure"
+    )
     assert ei.value.status_code == 422
 
 
@@ -489,7 +533,9 @@ def test_every_code_the_planner_emits_has_a_status(monkeypatch):
     from pathlib import Path
 
     source = Path(pv.__file__).read_text()
-    emitted = set(re.findall(r'code[=:]\s*"([a-z_]+)"', source))
+    # Both spellings: `_outcome(..., code="x")` and a `"code": "x"` literal.
+    # Matching only the first missed `too_large`.
+    emitted = set(re.findall(r'"?code"?\s*[=:]\s*"([a-z_]+)"', source))
 
     assert emitted, "no codes found — the pattern this reads has changed"
     missing = emitted - set(pr._REFUSAL_STATUS)

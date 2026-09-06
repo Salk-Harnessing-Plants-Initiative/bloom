@@ -36,18 +36,27 @@ _REFUSAL_STATUS = {
     "too_large": 413,  # more than one request may pull
 }
 
-# The largest wave `gravi_scans.wave_number` can hold.
+# The largest value the INT columns behind these can hold.
 MAX_WAVE_NUMBER = 2**31 - 1
+MAX_EXPERIMENT_ID = 2**31 - 1
 
 
 def render(experiment_id: int, body: dict) -> dict:
     """Render one plate's time-lapse, or explain why not."""
     plate_id, wave_number = _read(body)
 
+    if experiment_id < 1 or experiment_id > MAX_EXPERIMENT_ID:
+        raise HTTPException(
+            status_code=400,
+            detail=f"experiment_id must be between 1 and {MAX_EXPERIMENT_ID}",
+        )
+
     try:
         outcome = render_plate_video(app_client(), experiment_id, plate_id, wave_number)
     except EncoderBusy as exc:
-        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "30"}) from exc
+        raise HTTPException(
+            status_code=429, detail=str(exc), headers={"Retry-After": "30"}
+        ) from exc
     except FrameDepthUnsupported as exc:
         # Before FrameUnreadable, which it subclasses. The file is intact.
         logger.warning("plate video refused an unsupported frame depth: %s", exc)
@@ -60,12 +69,18 @@ def render(experiment_id: int, body: dict) -> dict:
         # The path only: the rest is the storage client's error, which names
         # internal hosts and roles and reaches the caller unfiltered.
         logger.warning("plate video render failed: %s", exc)
-        named = f"{exc.path} could not be read" if exc.path else "a frame could not be read"
+        named = (
+            f"{exc.path} could not be read" if exc.path else "a frame could not be read"
+        )
         raise HTTPException(status_code=502, detail=named) from exc
     except NotRecorded as exc:
         # The key only, for the reason above.
         logger.error("plate video stored but not recorded: %s", exc)
-        named = f"the video for {exc.key} was not recorded" if exc.key else "the video was not recorded"
+        named = (
+            f"the video for {exc.key} was not recorded"
+            if exc.key
+            else "the video was not recorded"
+        )
         raise HTTPException(status_code=500, detail=named) from exc
     except (VideoEncodeError, BrokenPipeError) as exc:
         # The encoder's own failures: a stall, a non-zero exit, a broken pipe.
@@ -98,8 +113,10 @@ def render(experiment_id: int, body: dict) -> dict:
             detail=outcome["reason"],
         )
 
-    # The encoder's own count when something was encoded, the plan otherwise.
+    # What the video holds: the encoder's count when one was made, the stored
+    # video's own when it was kept, and the plan only when neither exists.
     recorded = outcome.get("recorded") or {}
+    held = recorded.get("frame_count", outcome.get("stored_frames"))
 
     return {
         "experiment_id": experiment_id,
@@ -108,7 +125,7 @@ def render(experiment_id: int, body: dict) -> dict:
         "action": outcome["action"],
         "reason": outcome["reason"],
         "object_path": outcome["key"],
-        "frames": recorded.get("frame_count", len(outcome.get("frames") or [])),
+        "frames": held if held is not None else len(outcome.get("frames") or []),
         "coverage": outcome.get("coverage"),
     }
 
@@ -137,7 +154,9 @@ def _read(body: dict) -> tuple[str, int | None]:
 
     # bool is an int subclass, and True would become wave 1.
     if isinstance(wave_number, bool) or not isinstance(wave_number, int):
-        raise HTTPException(status_code=400, detail="wave_number must be a whole number or null")
+        raise HTTPException(
+            status_code=400, detail="wave_number must be a whole number or null"
+        )
     if wave_number < 0:
         raise HTTPException(status_code=400, detail="wave_number may not be negative")
     if wave_number > MAX_WAVE_NUMBER:

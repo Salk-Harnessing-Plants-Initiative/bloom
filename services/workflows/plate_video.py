@@ -539,6 +539,18 @@ def plan_render(
     that makes visible.
     """
     key = plate_video_path(experiment_id, wave_number, plate_id)
+    if key is None:
+        # Permanent, and knowable without asking the database anything.
+        return {
+            **_outcome(
+                "refuse",
+                "this plate's id or wave number cannot be used in a video",
+                key,
+                code="unusable_plate",
+            ),
+            "frames": [],
+            "coverage": None,
+        }
 
     frames = _answered(
         "this plate's frames",
@@ -557,7 +569,12 @@ def plan_render(
     decision = render_decision(frames, stored)
 
     if decision["action"] != "render":
-        return {**decision, "frames": frames, "coverage": None}
+        return {
+            **decision,
+            "frames": frames,
+            "coverage": None,
+            "stored_frames": stored.get("frame_count"),
+        }
 
     oversized = too_large_to_render(frames)
     if oversized:
