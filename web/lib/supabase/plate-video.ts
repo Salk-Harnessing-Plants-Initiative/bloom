@@ -1,17 +1,19 @@
 // Where a plate's time-lapse is stored, and whether one is there.
 //
-// Mirrors `scan-video.ts` for the cylinder path, and reuses its `isNotFound`:
+// Mirrors `scan-video.ts` for the cylinder path, over the same `isNotFound`:
 // Storage answers a missing object with HTTP 400 and a *string* `statusCode`,
 // so that code decides and the wording is only the fallback.
 
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { toPublicStorageUrl } from "@/lib/supabase/storage-url";
-import { isNotFound } from "@/lib/supabase/scan-video";
+import { isNotFound } from "@/lib/supabase/storage-errors";
 import {
   GRAVISCAN_VIDEOS_BUCKET,
   plateVideoPath,
 } from "@/lib/supabase/plate-video-path";
 
+// An hour: long enough to open the page, start the video and scrub back through
+// it. The link is re-signed on every poll, so a longer one buys nothing.
 const VIDEO_URL_TTL = 3600;
 
 // `unknown` exists because a failed lookup is not an absence. The poll answers
@@ -75,20 +77,10 @@ export async function getStoredPlateVideo(
     );
   } else if (!row) {
     console.warn(
-      `no metadata present for stored plate video ${key}; serving it without a frame count`
+      `no metadata present for stored plate video ${key} (or its row is not written ` +
+        `yet); serving it without a frame count`
     );
   }
 
   return { status: "present", url, frames: row?.frame_count ?? null };
-}
-
-// The URL when one is stored, else null. For read-only callers that only need
-// something to link to — never for deciding whether it is safe to render.
-export async function getStoredPlateVideoUrl(
-  experimentId: number,
-  plateId: string,
-  waveNumber: number | null
-): Promise<string | null> {
-  const stored = await getStoredPlateVideo(experimentId, plateId, waveNumber);
-  return stored.status === "present" ? stored.url : null;
 }

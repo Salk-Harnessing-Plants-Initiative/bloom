@@ -26,7 +26,7 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/supabase/server";
 import { getStoredPlateVideo } from "@/lib/supabase/plate-video";
 import { isValidPlateId } from "@/lib/supabase/plate-video-path";
-import { parseId } from "@/components/scan-video.helpers";
+import { parseId } from "@/lib/route-params";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -177,11 +177,18 @@ export async function POST(
         { status: 504 }
       );
     }
+    console.error("plate video: the workflows service could not be reached", err);
     return NextResponse.json(
       { detail: "The video service is unavailable." },
       { status: 502 }
     );
   }
+
+  // Only one plate encodes at a time, so 429 is the ordinary answer to a second
+  // click rather than a rare one. Without Retry-After the button has to guess
+  // how long to wait, so it is read before anything can return without it.
+  const retryAfter = upstream.headers.get("retry-after");
+  const waitHint = retryAfter ? { "Retry-After": retryAfter } : undefined;
 
   const text = await upstream.text();
   let parsed: unknown;
@@ -194,21 +201,14 @@ export async function POST(
           ? "Unexpected response from the video service."
           : GENERIC_FAILURE,
       },
-      { status: upstream.ok ? 502 : upstream.status }
+      { status: upstream.ok ? 502 : upstream.status, headers: waitHint }
     );
   }
 
   if (!upstream.ok) {
-    // Only one plate encodes at a time, so 429 is the ordinary answer to a
-    // second click rather than a rare one. Without Retry-After the button has
-    // to guess how long to wait.
-    const retryAfter = upstream.headers.get("retry-after");
     return NextResponse.json(
       { detail: callerSafeDetail(upstream.status, parsed) },
-      {
-        status: upstream.status,
-        headers: retryAfter ? { "Retry-After": retryAfter } : undefined,
-      }
+      { status: upstream.status, headers: waitHint }
     );
   }
 
@@ -242,6 +242,9 @@ export async function GET(
   if (stored.status === "unknown") {
     // Not an absence. Saying "no video" here would have the button offer to
     // render a plate that already has one.
+    console.warn(
+      `plate video poll could not read storage for ${experiment}/${plateId}: ${stored.reason}`
+    );
     return noStore(
       NextResponse.json(
         { detail: "Could not check whether this plate has a video." },

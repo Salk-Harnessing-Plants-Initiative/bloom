@@ -14,15 +14,6 @@ export type ScanVideoResult = {
   download_url: string;
 };
 
-// A route param that is safe to interpolate into the upstream URL. Anything
-// non-integer is rejected rather than escaped: these land in a path segment, so
-// a value like "1/../../health" would otherwise retarget the request.
-export function parseId(value: string | undefined | null): number | null {
-  if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
-  const id = Number(value);
-  return Number.isSafeInteger(id) && id > 0 ? id : null;
-}
-
 // A 200 is not enough — the fields below get rendered straight to the user, so
 // a shape drift would surface as "Encoded undefined frames" or a link with no
 // href rather than an error.

@@ -460,6 +460,35 @@ describe("POST", () => {
     expect((await res.json()).detail).toContain("Unexpected response");
   });
 
+  it("keeps the wait hint even when the reply is not JSON", async () => {
+    // A gateway can answer a 429 with its own error page. The status still says
+    // "too fast", so throwing the only hint of how long to wait away leaves the
+    // button guessing on the one status where the answer was sent.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("<html>429 Too Many Requests</html>", {
+          status: 429,
+          headers: { "Retry-After": "30" },
+        })
+      )
+    );
+
+    const res = await post({ plate_id: "P7", wave_number: 1 });
+
+    expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe("30");
+  });
+
+  it("logs a service it could not reach, since nothing upstream saw the request", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+
+    await post({ plate_id: "P7", wave_number: 1 });
+
+    expect(error).toHaveBeenCalled();
+  });
+
   it("lets nothing but Retry-After cross from the service", async () => {
     // The upstream headers are the service's own -- its server banner, its
     // cookies, whatever a gateway added. Only the wait hint is for the browser.
@@ -595,6 +624,17 @@ describe("GET", () => {
 
     await get("plate_id=P7");
     expect(mockedStored).toHaveBeenCalledWith(12, "P7", null);
+  });
+
+  it("logs why a poll could not read storage, so the failure is not silent", async () => {
+    // The caller gets one sentence by design. Without this, "why does this plate
+    // never settle?" has no answer anywhere.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockedStored.mockResolvedValue({ status: "unknown", reason: "gateway timeout" });
+
+    await get("plate_id=P7&wave_number=1");
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("gateway timeout"));
   });
 
   it("forbids storing the answer that carries the download link", async () => {

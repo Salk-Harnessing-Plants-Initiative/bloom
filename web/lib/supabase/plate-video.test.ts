@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { getStoredPlateVideo, getStoredPlateVideoUrl } from "./plate-video";
+import { getStoredPlateVideo } from "./plate-video";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 vi.mock("@/lib/supabase/server", () => ({
@@ -236,39 +236,5 @@ describe("getStoredPlateVideo", () => {
     await getStoredPlateVideo(7, "P1", 2);
 
     expect(tableFrom).not.toHaveBeenCalled();
-  });
-});
-
-describe("getStoredPlateVideoUrl", () => {
-  const ORIGINAL_PUBLIC_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    delete process.env.NEXT_PUBLIC_SUPABASE_URL;
-  });
-
-  afterEach(() => {
-    if (ORIGINAL_PUBLIC_URL !== undefined)
-      process.env.NEXT_PUBLIC_SUPABASE_URL = ORIGINAL_PUBLIC_URL;
-  });
-
-  it("gives back the URL when a video is stored", async () => {
-    clientReturning({ data: { signedUrl: "https://cdn.example/v.mp4" } });
-
-    await expect(getStoredPlateVideoUrl(7, "P1", 2)).resolves.toBe(
-      "https://cdn.example/v.mp4"
-    );
-  });
-
-  it("gives back null for anything short of a confirmed video", async () => {
-    // Including `unknown`: this is a read-only convenience, so it must not turn an
-    // undecided answer into something a caller could mistake for a stored video.
-    for (const result of [
-      { error: { message: "Object not found", statusCode: "404" } },
-      { error: { message: "gateway timeout", status: 504 } },
-    ]) {
-      clientReturning(result);
-      await expect(getStoredPlateVideoUrl(7, "P1", 2)).resolves.toBeNull();
-    }
   });
 });
