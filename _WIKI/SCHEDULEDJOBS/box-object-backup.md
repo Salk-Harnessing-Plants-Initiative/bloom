@@ -421,14 +421,23 @@ doing that on the strength of one Box hiccup is work done for nothing on advice
 that was wrong.
 
 `verify_checked` is what was actually answered, so it can be smaller than the N
-requested. If it reaches **zero** while objects were sampled, the run says
-**verification proved NOTHING this run** and the summary carries a notice. That
-still does not fail the run — the copies were confirmed as they were made — but
-a check that silently ran on nothing, on a night reporting success, is the one
-outcome verification exists to rule out. The stat calls fire straight after a
-run that may have pushed hundreds of thousands of objects, which is exactly
-when Box throttles; if it repeats, lower `BACKUP_VERIFY` or move the schedule
-off Box's busy hours.
+requested. **Whenever it is**, the run says **verification did NOT cover its
+sample**, the summary carries a notice, and the headline shows the shortfall
+beside the count — `50 verified` and `2 verified (48 unanswered)` describe very
+different nights and must not look alike.
+
+Any shortfall counts, not only a total blackout: 2 answers out of 50 is still a
+night whose headline claims far more than was established. None of it fails the
+run — the copies were confirmed as they were made, so an unanswered stat is
+evidence of nothing — but a check reporting success on a sample it mostly did
+not cover is the one outcome verification exists to rule out.
+
+The stat calls fire straight after a run that may have pushed hundreds of
+thousands of objects, which is exactly when Box throttles. If it repeats, the
+lever is the workflow's `verify` input — lower it, or move the schedule off
+Box's busy hours. It is set on the workflow itself (`verify` under
+`workflow_dispatch`, and the value passed on the scheduled path); there is no
+`.env` setting for it.
 
 **A mismatched object is not retried automatically.** The ledger recorded it as
 copied before verification ran, so every later run skips it as

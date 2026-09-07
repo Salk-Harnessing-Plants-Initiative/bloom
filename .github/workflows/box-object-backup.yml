@@ -324,11 +324,16 @@ jobs:
           # current" would not.
           done_line="$(grep -oE 'done — copied [0-9]+, failed [0-9]+, already current [0-9]+, skipped [0-9]+' \
             "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
-          verify_line="$(grep -oE 'verify: [0-9]+ checked, [0-9]+ mismatched' \
+          # The trailing ", N unverified" is optional because the job only
+          # prints it when there is a shortfall — but when there is one it
+          # belongs in the headline, or "50 verified" reads as a clean check
+          # on a night where Box answered twice.
+          verify_line="$(grep -oE 'verify: [0-9]+ checked, [0-9]+ mismatched(, [0-9]+ unverified)?' \
             "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
           copied="$(printf '%s' "$done_line" | grep -oE 'copied [0-9]+' | grep -oE '[0-9]+' || true)"
           current="$(printf '%s' "$done_line" | grep -oE 'already current [0-9]+' | grep -oE '[0-9]+' || true)"
           checked="$(printf '%s' "$verify_line" | grep -oE '[0-9]+ checked' | grep -oE '[0-9]+' || true)"
+          unverified="$(printf '%s' "$verify_line" | grep -oE '[0-9]+ unverified' | grep -oE '[0-9]+' || true)"
 
           # Thousands separators, so eight million reads as eight million.
           # Not printf "%'d" (needs a numeric locale the runner may not have,
@@ -352,6 +357,12 @@ jobs:
           fi
           if [ -n "${checked:-}" ] && [ "$checked" -gt 0 ]; then
             counts="${counts}, $(group "$checked") verified"
+          fi
+          if [ -n "${unverified:-}" ] && [ "$unverified" -gt 0 ]; then
+            # Qualifies the number beside it rather than sitting apart from
+            # it: "2 verified" alone is a true statement that reads as a
+            # checked night when the other 48 went unanswered.
+            counts="${counts} ($(group "$unverified") unanswered)"
           fi
 
           {
@@ -423,19 +434,22 @@ jobs:
               echo "> objects with this run's, and cost a full re-seed. See"
               echo "> 'If the deploy host itself is gone' in the wiki."
             fi
-            # Also additive, and for the same reason: a verification that
-            # established nothing happens on a night that copied fine.
-            if grep -q 'verification proved NOTHING this run' \
+            # Also additive, and for the same reason: a check that covered
+            # less than it was asked to happens on a night that copied fine.
+            if grep -q 'verification did NOT cover its sample' \
               "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
               echo
-              echo "> **Verification checked nothing.** Box did not answer any"
-              echo "> of the sampled objects, so the spot-check confirmed"
-              echo "> nothing was on Box. The copies were confirmed as they"
-              echo "> were made, so this is not a reason to re-copy — but a"
-              echo "> night that reports success on the strength of a check"
-              echo "> that never ran is exactly what the check exists to"
-              echo "> prevent. If it repeats, see 'What verification does, and"
-              echo "> does not, prove' in the wiki."
+              echo "> **Verification did not cover its whole sample.** Box did"
+              echo "> not answer for some of the objects it was asked about,"
+              echo "> so those were neither confirmed present nor found"
+              echo "> missing — the \`N verified\` count above is what was"
+              echo "> actually established, not what was checked for. The"
+              echo "> copies were confirmed as they were made, so this is"
+              echo "> not a reason to re-copy anything. But a night reporting"
+              echo "> success on the strength of a check that mostly did not"
+              echo "> run is what the check exists to prevent, so if it"
+              echo "> repeats see 'What verification does, and does not,"
+              echo "> prove' in the wiki. The job log has the exact counts."
             fi
             echo
             echo '### This run'

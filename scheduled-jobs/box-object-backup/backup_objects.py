@@ -77,11 +77,13 @@ LEDGER_STALE_MARKER = "the Box copy of the ledger is STALE"
 # exact disaster the size guard exists to prevent.
 LEDGER_AHEAD_MARKER = "the ledger on Box is AHEAD of this host"
 
-# Printed when every sampled object went unanswered, so the pass established
-# nothing. A failed stat is not evidence against the backup and must not fail
-# the run — but a verification that silently checked zero objects, on a night
-# reporting "succeeded", is the no-op this pass exists to rule out.
-VERIFY_BLACKOUT_MARKER = "verification proved NOTHING this run"
+# Printed when Box did not answer for every object the pass sampled. A failed
+# stat is not evidence against the backup and must not fail the run — but a
+# check that silently covered less than it reported, on a night reading
+# "succeeded", is the no-op this pass exists to rule out. Any shortfall counts,
+# not only a total blackout: 2 answers out of 50 is still a night whose
+# "2 verified" headline claims far more than was established.
+VERIFY_INCOMPLETE_MARKER = "verification did NOT cover its sample"
 
 # How many objects the preflight probes, and how far into the manifest it looks
 # for them. Several rather than one, because a single orphaned row must not be
@@ -89,13 +91,6 @@ VERIFY_BLACKOUT_MARKER = "verification proved NOTHING this run"
 # against an 8M-row manifest.
 PREFLIGHT_SAMPLE = 5
 PREFLIGHT_SCAN = 10_000
-
-# Objects checked on Box after a run, when --verify is not given a value.
-# Deliberately a flat number rather than a share of the run: it reliably
-# catches a systemic fault (wrong path, broken auth, nothing landing) and is
-# not meant to be statistical assurance about rare corruption. Whether it
-# should scale with the run is an open question — see the wiki page.
-DEFAULT_VERIFY_SAMPLE = 50
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -175,6 +170,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="plan and report, copy nothing; still contacts Postgres",
     )
     parser.add_argument(
+        # 0 here, so a manual run checks nothing unless asked. The scheduled
+        # value lives in the workflow, which always passes it explicitly —
+        # that is the only place the sample size is set, and the only lever
+        # for changing it. There is deliberately no env default: a second
+        # place to set it would silently lose to the explicit argument.
         "--verify",
         type=int,
         default=0,
@@ -363,34 +363,33 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             totals.verify_mismatched, totals.verify_checked,
             state_dir / "ledger.db",
         )
-    elif totals.verify_checked:
+    elif totals.verify_checked and not totals.verify_unverified:
         logger.info("verified %d object(s) on Box, all present and correct",
                     totals.verify_checked)
-    if totals.verify_unverified and totals.verify_checked:
-        # Says nothing about the backup, so it fails nothing. It is said out
-        # loud because the line above reports only what was actually answered,
-        # and a sample that shrank without explanation invites the wrong one.
-        logger.warning(
-            "%d sampled object(s) could not be checked — Box did not answer. "
-            "This is not a finding against the backup and nothing needs doing; "
-            "they stay in the mirror and are re-checked only if a later run "
-            "copies them again.",
-            totals.verify_unverified,
-        )
-    elif totals.verify_unverified:
-        # Nothing was answered at all. The copies themselves were confirmed as
-        # they were made, so this still does not fail the run — but --verify
-        # was asked for and delivered no evidence, and a night reporting
-        # "succeeded" with a silent no-op check is what this pass exists to
-        # rule out. The stat calls fire straight after a run that may have
-        # pushed hundreds of thousands of objects, which is when Box throttles.
+    if totals.verify_unverified:
+        # One marker for any shortfall, not only for a total blackout. Gating
+        # this on `checked == 0` made it a cliff at exactly zero: 2 answered
+        # out of 50 printed "verified 2 object(s), all present and correct"
+        # and a headline of "succeeded — 200,000 copied, 2 verified", which
+        # states the night was checked when 96% of the sample went unanswered.
+        #
+        # Still not a failure. The copies were each confirmed as they were
+        # made, so an unanswered stat is evidence of nothing and must not fail
+        # the run or move the watermark. It has to be said out loud instead,
+        # because the count above otherwise reads as a clean bill of health.
+        sampled = totals.verify_checked + totals.verify_unverified
         logger.error(
-            "%s: all %d sampled object(s) went unanswered by Box, so nothing "
-            "was confirmed present. The copies were confirmed as they were "
-            "made, so this is not a reason to re-copy — but if it repeats, "
-            "verification is not doing its job. Lower BACKUP_VERIFY or move "
-            "the run off Box's busy hours.",
-            VERIFY_BLACKOUT_MARKER, totals.verify_unverified,
+            "%s: Box answered for %d of the %d object(s) sampled, so the "
+            "other %d were neither confirmed present nor found missing. The "
+            "copies were confirmed as they were made, so this is not a reason "
+            "to re-copy anything — but the night is less checked than the "
+            "count says, and if it repeats the check is not doing its job. "
+            "The sample size is the workflow's `verify` input; lowering it, "
+            "or moving the schedule off Box's busy hours, is the lever. "
+            "These stat calls fire straight after a run that may have pushed "
+            "hundreds of thousands of objects, which is when Box throttles.",
+            VERIFY_INCOMPLETE_MARKER, totals.verify_checked, sampled,
+            totals.verify_unverified,
         )
     if totals.failed:
         logger.error(

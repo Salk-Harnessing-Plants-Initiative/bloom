@@ -162,7 +162,7 @@ class TestSkipMarkerContract:
             SKIP_MARKER,
             job.LEDGER_STALE_MARKER,
             job.LEDGER_AHEAD_MARKER,
-            job.VERIFY_BLACKOUT_MARKER,
+            job.VERIFY_INCOMPLETE_MARKER,
             "were missing or the wrong size on Box",
             "were NOT backed up",
         }
@@ -204,7 +204,7 @@ class TestSkipMarkerContract:
         the backup — so the summary is the only place it can surface. A night
         reporting "succeeded" on a check that silently ran on nothing is the
         exact no-op the check exists to rule out."""
-        assert job.VERIFY_BLACKOUT_MARKER in _strip_comments(summary_script), (
+        assert job.VERIFY_INCOMPLETE_MARKER in _strip_comments(summary_script), (
             "the summary cannot report a verification that checked nothing"
         )
 
@@ -237,22 +237,22 @@ class TestSkipMarkerContract:
         assert "Do NOT upload" in branch, "does not warn against uploading"
         assert "was refused on purpose" in branch, "reads as a fault, not a guard"
 
-    def test_the_blackout_notice_is_not_a_branch(self, summary_script: str):
+    def test_the_incomplete_verify_notice_is_not_a_branch(self, summary_script: str):
         # Same reason as the stale ledger: this happens on nights that copied
         # fine, so as an elif the success branch would hide it.
         script = _strip_comments(summary_script)
         assert re.search(
-            r"(?<!el)if grep -q '" + re.escape(job.VERIFY_BLACKOUT_MARKER), script
-        ), "the blackout notice is a branch, so another result hides it"
+            r"(?<!el)if grep -q '" + re.escape(job.VERIFY_INCOMPLETE_MARKER), script
+        ), "the incomplete-verify notice is a branch, so another result hides it"
 
-    def test_the_blackout_notice_does_not_tell_anyone_to_re_copy(
+    def test_the_incomplete_verify_notice_does_not_tell_anyone_to_re_copy(
         self, summary_script: str
     ):
         """The failure mode this whole change removes: reading "Box did not
         answer" as "the object is missing" and acting on it."""
         script = _strip_comments(summary_script)
-        opener = "if grep -q '" + job.VERIFY_BLACKOUT_MARKER
-        assert opener in script, "there is no blackout notice to check"
+        opener = "if grep -q '" + job.VERIFY_INCOMPLETE_MARKER
+        assert opener in script, "there is no incomplete-verify notice to check"
         branch = script[script.index(opener):][:900]
         assert "not a reason to re-copy" in branch
         assert "DELETE FROM" not in branch, "steers an operator into the ledger"
@@ -659,9 +659,33 @@ class TestTheHeadlineCarriesTheCounts:
     DONE = "2026-08-31 02:20:00,1 INFO done — copied {c}, failed 0, already current {a}, skipped 0\n"
     VERIFY = "2026-08-31 02:41:00,1 INFO verify: {n} checked, 0 mismatched\n"
 
+    PARTIAL_VERIFY = (
+        "2026-08-31 02:41:00,1 INFO verify: {n} checked, 0 mismatched, {u} unverified\n"
+    )
+
     def test_a_busy_week_names_how_many_were_copied(self, parsed):
         log = self.DONE.format(c=4211, a=0) + self.VERIFY.format(n=50)
         assert "4,211 images copied" in self.run_summary(parsed, log)
+
+    def test_the_headline_says_how_much_of_the_sample_went_unanswered(self, parsed):
+        """"2 verified" is a true statement that reads as a checked night.
+
+        Box answered 2 of 50 and the other 48 were neither confirmed present
+        nor found missing. Without the qualifier beside it, the headline
+        claims far more than the run established — and the headline is what
+        most people read.
+        """
+        log = self.DONE.format(c=200000, a=0) + self.PARTIAL_VERIFY.format(n=2, u=48)
+        headline = self.run_summary(parsed, log)
+        assert "2 verified" in headline
+        assert "48 unanswered" in headline, (
+            f"the shortfall is invisible in the headline: {headline}"
+        )
+
+    def test_a_fully_answered_sample_is_not_qualified(self, parsed):
+        """The qualifier must not appear on a normal night."""
+        log = self.DONE.format(c=4211, a=0) + self.VERIFY.format(n=50)
+        assert "unanswered" not in self.run_summary(parsed, log)
 
     def test_a_quiet_week_says_the_mirror_is_still_there(self, parsed):
         # The case this exists for: nothing copied is only reassuring if the

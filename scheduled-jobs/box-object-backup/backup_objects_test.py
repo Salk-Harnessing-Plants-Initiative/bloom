@@ -959,8 +959,30 @@ class TestRunLockedWiresItsPartsTogether:
         )
         code = job.run_locked(self.args(tmp_path, verify=4), tmp_path)
         assert code == 0, f"an unanswered stat failed the run, got exit {code}"
-        assert "could not be checked" in caplog.text, "it was not mentioned at all"
-        assert job.VERIFY_BLACKOUT_MARKER not in caplog.text
+        assert job.VERIFY_INCOMPLETE_MARKER in caplog.text, "it was not mentioned"
+        assert "3 of the 4" in caplog.text, "does not say how much was covered"
+
+    def test_a_partly_answered_check_is_not_reported_as_a_clean_one(
+        self, harness, monkeypatch, caplog
+    ):
+        """The cliff this used to have at exactly zero.
+
+        Gating the notice on `checked == 0` meant 2 answers out of 50 printed
+        "verified 2 object(s), all present and correct" and a headline of
+        "succeeded — 2 verified", stating the night was checked when 96% of
+        the sample went unanswered. Any shortfall has to say so.
+        """
+        state, tmp_path = harness
+        monkeypatch.setattr(
+            job, "verify_sample",
+            lambda *a: copier.VerifyResult(checked=2, mismatched=0, unverified=48),
+        )
+        code = job.run_locked(self.args(tmp_path, verify=50), tmp_path)
+        assert code == 0, "an unanswered stat is not a bad backup"
+        assert job.VERIFY_INCOMPLETE_MARKER in caplog.text
+        assert "all present and correct" not in caplog.text, (
+            "claimed a clean check on a sample that was 96% unanswered"
+        )
 
     def test_a_verification_that_answered_nothing_says_so(
         self, harness, monkeypatch, caplog
@@ -979,7 +1001,21 @@ class TestRunLockedWiresItsPartsTogether:
         )
         code = job.run_locked(self.args(tmp_path, verify=4), tmp_path)
         assert code == 0, "a blackout is not a bad backup and must not fail the run"
-        assert job.VERIFY_BLACKOUT_MARKER in caplog.text
+        assert job.VERIFY_INCOMPLETE_MARKER in caplog.text
+
+    def test_a_fully_answered_check_is_still_reported_as_clean(
+        self, harness, monkeypatch, caplog
+    ):
+        """The other side of it — the notice must not cry wolf every night."""
+        state, tmp_path = harness
+        caplog.set_level(logging.INFO)
+        monkeypatch.setattr(
+            job, "verify_sample",
+            lambda *a: copier.VerifyResult(checked=4, mismatched=0, unverified=0),
+        )
+        assert job.run_locked(self.args(tmp_path, verify=4), tmp_path) == 0
+        assert "all present and correct" in caplog.text
+        assert job.VERIFY_INCOMPLETE_MARKER not in caplog.text
 
     def test_the_run_report_records_what_went_unanswered(
         self, harness, monkeypatch, tmp_path
