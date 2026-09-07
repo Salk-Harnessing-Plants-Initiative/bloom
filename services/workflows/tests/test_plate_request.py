@@ -114,6 +114,24 @@ def test_an_object_path_cannot_forge_a_log_line(monkeypatch, caplog):
     assert "\nplate video for experiment 999" not in caplog.text
 
 
+@pytest.mark.parametrize("experiment_id", [1, pr.MAX_EXPERIMENT_ID])
+def test_an_experiment_id_the_column_can_hold_is_accepted(monkeypatch, experiment_id):
+    """The reject side was parametrised and the accept side was not, so a bound
+    that refused experiment 1, or the largest valid id, would pass."""
+    monkeypatch.setattr(pr, "render_plate_video", _renders(_rendered()))
+    result = pr.render(experiment_id, {"plate_id": "P7", "wave_number": 1})
+
+    assert result["experiment_id"] == experiment_id
+
+
+def test_the_id_bounds_are_the_columns_they_stand_for():
+    """Both tests read these back and reject with 10**400, which any bound
+    refuses -- so either could be widened to a 64-bit limit with the suite green,
+    reintroducing the unexplained 500 from a Postgres INT overflow."""
+    assert pr.MAX_WAVE_NUMBER == 2**31 - 1
+    assert pr.MAX_EXPERIMENT_ID == 2**31 - 1
+
+
 def test_an_oversized_frame_is_413_and_says_the_size(monkeypatch):
     """Not 502 "could not be read" — that sends someone to rescan a plate that
     scanned correctly. The message carries dimensions and a limit, neither of

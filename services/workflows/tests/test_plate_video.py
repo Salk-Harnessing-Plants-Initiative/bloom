@@ -1035,6 +1035,27 @@ def test_a_coverage_read_that_fails_still_renders():
 
 
 
+def test_an_unusable_plate_is_refused_without_asking_the_database():
+    """Knowable from the id alone. Asking first spends a query on an answer that
+    cannot change, and made a permanent refusal depend on the database being up."""
+    client = _PlanClient(frames=_frames(3))
+    plan = pv.plan_render(client, 12, "..", 1)
+
+    assert plan["action"] == "refuse"
+    assert plan["code"] == "unusable_plate"
+    assert client.queries["gravi_scans"].calls == 0, "the database was asked anyway"
+
+
+def test_a_keep_carries_what_the_stored_video_holds():
+    """The count the response reports on a keep. Asserted here, against the real
+    planner, because the consumer's own test types the number itself."""
+    client = _PlanClient(frames=_frames(5), row=_recorded(frames=86))
+    plan = pv.plan_render(client, 12, "P7", 1)
+
+    assert plan["action"] == "keep"
+    assert plan["stored_frames"] == 86, "the video's own count is not carried"
+
+
 def test_plan_renders_when_frames_have_arrived_since_the_stored_video():
     client = _PlanClient(frames=_frames(200), row=_recorded(frames=140))
     plan = pv.plan_render(client, 12, "P7", 1)

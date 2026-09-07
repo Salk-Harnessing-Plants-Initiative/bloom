@@ -572,6 +572,9 @@ def test_a_mismatched_frame_reads_as_this_plate_s_data(ffmpeg, tmp_path):
         pe.encode_plate_video(_EncodeClient(payloads), frames, str(tmp_path / "o.mp4"))
 
     assert "P7_1.tif" in str(ei.value)
+    # Both sizes, from the writer's own message. Asserting only the path let the
+    # `: {exc}` be dropped, and the sizes are the whole point of the 422.
+    assert "402x680" in str(ei.value) and "400x680" in str(ei.value)
     # `path` is what the HTTP layer names the frame by, and asserting only the
     # message cannot tell whether the raise site set it.
     assert ei.value.path == frames[1]["object_path"]
@@ -1448,6 +1451,50 @@ def test_a_real_plate_and_a_finer_scan_of_it_are_both_accepted():
 
     frame = pe.prepare_frame(_png(4960, 6850), LABEL)
     assert frame.shape[1] == pe.PLATE_VIDEO_WIDTH
+
+
+def test_an_oversized_frame_stays_too_large_through_the_fetch():
+    """The caller reaches this through _fetch_frame, not prepare_frame. Without
+    the re-raise there, FrameTooLarge falls to the generic handler and the 413
+    becomes 502 "could not be read" -- the misdiagnosis the type exists to avoid.
+    """
+    bomb = io.BytesIO()
+    Image.new("I;16", (12000, 12000)).save(bomb, "TIFF", compression="tiff_lzw")
+    payload = bomb.getvalue()
+
+    class _Images:
+        def download(self, path):
+            return payload
+
+    with pytest.raises(pe.FrameTooLarge) as caught:
+        pe._fetch_frame(_Images(), "12/wave-1/P7_40.tif", LABEL)
+
+    assert caught.value.path == "12/wave-1/P7_40.tif"
+    assert "could not decode" not in str(caught.value)
+
+
+def test_the_ceiling_is_enforced_and_not_merely_computed(monkeypatch):
+    """Three tests assert decoded_bytes against the constant, which says nothing
+    about whether prepare_frame refuses at it. Loosening the comparison left the
+    suite green and admitted a full-size 16-bit plate."""
+    payload = _png(600, 400)
+    cost = pe.decoded_bytes(600, 400, "RGB")
+
+    monkeypatch.setattr(pe, "MAX_FRAME_DECODED_BYTES", cost - 1)
+    with pytest.raises(pe.FrameTooLarge):
+        pe.prepare_frame(payload, LABEL)
+
+    # Exactly at the ceiling is allowed -- the refusal is for what exceeds it.
+    monkeypatch.setattr(pe, "MAX_FRAME_DECODED_BYTES", cost)
+    pe.prepare_frame(payload, LABEL)
+
+
+def test_the_per_pixel_costs_are_the_measured_ones():
+    """Every other assertion reads these back, so both could be halved with the
+    suite green -- and the ceiling would then admit twice the frame. Measured as
+    peak RSS on 4960x6850 and 6613x9133 sources."""
+    assert pe.SHALLOW_BYTES_PER_PIXEL == 7
+    assert pe.DEEP_BYTES_PER_PIXEL == 15
 
 
 def test_a_16_bit_plate_at_full_size_is_deliberately_refused():
