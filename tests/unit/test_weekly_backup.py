@@ -1125,6 +1125,105 @@ def test_a_blank_line_counts_as_absent_for_every_key(tmp_path, monkeypatch):
         assert key not in os.environ, f"{key} was imported as an empty string"
 
 
+@pytest.mark.parametrize("relative", [".", "backup-work", "./work", "../work"])
+def test_a_relative_working_directory_is_refused(relative, tmp_path, monkeypatch):
+    # The workflow runs the script from inside the deploy directory, so a
+    # relative path resolves there: the dump lands in the git checkout and the
+    # chmod below tightens the deploy tree to 0700. Same harm the blank-value
+    # case produces, through a value that is not blank.
+    _deploy_dir(tmp_path)
+    tmp_path.chmod(0o755)  # a deploy directory others can traverse
+    monkeypatch.setenv("BACKUP_STATE_DIR", relative)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    resolved: list = []
+    monkeypatch.setattr(
+        backup, "resolve_container", lambda *a: resolved.append(a) or "container123"
+    )
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
+    assert rc == backup.EXIT_CONFIG
+    assert not resolved, "the run must fail before it touches the stack"
+    assert tmp_path.stat().st_mode & 0o777 == 0o755, (
+        "the run tightened the deploy directory it was pointed at"
+    )
+
+
+def test_an_env_file_that_is_not_utf8_is_a_config_error(tmp_path, monkeypatch):
+    # A byte that is not UTF-8 raises UnicodeDecodeError, which is a ValueError
+    # and not an OSError — so the guard for an unreadable file does not cover it.
+    # Unguarded it is a traceback and exit 1, documented as "subprocess failed".
+    (tmp_path / ".env.prod").write_bytes(b"POSTGRES_PASSWORD=caf\xe9\n")
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
+    assert rc == backup.EXIT_CONFIG
+    assert rc != backup.EXIT_SUBPROCESS
+
+
+def test_the_working_directory_mode_is_not_applied_through_a_symlink(
+        tmp_path, monkeypatch):
+    # The one mode change this job makes to the host. Following a symlink would
+    # apply it to the target, which can be any directory the deploy user owns.
+    target = tmp_path / "somebody-elses-directory"
+    target.mkdir(mode=0o755)
+    link = tmp_path / "state"
+    link.symlink_to(target, target_is_directory=True)
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(link))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    artifact = tmp_path / "db.sql.gz"
+    artifact.write_bytes(b"x" * 5000)
+    monkeypatch.setattr(backup, "dump_database", lambda *a: artifact)
+    monkeypatch.setattr(backup, "dump_globals", lambda *a: artifact)
+
+    backup.main(["--env", "prod", "--deploy-dir", str(tmp_path), "--dry-run"])
+    assert target.stat().st_mode & 0o777 == 0o755, (
+        "the mode change followed the symlink to its target"
+    )
+
+
+@pytest.mark.parametrize("remote", [
+    ":s3,provider=AWS,access_key_id=AK,secret_access_key=SK,endpoint=evil.example",
+    "/data/bloom/backups",
+    "box:extra",
+    "box remote",
+])
+def test_a_remote_that_is_not_a_plain_name_is_refused(remote, monkeypatch):
+    # The destination is built by concatenation, and rclone accepts a whole
+    # backend definition in this position — credentials included — so anything
+    # richer than a name can send the dump somewhere that is not Box.
+    monkeypatch.setenv("BACKUP_RCLONE_REMOTE", remote)
+    with pytest.raises(backup.ConfigError, match="plain remote name"):
+        backup.backup_destination("prod")
+
+
+def test_the_configured_remote_is_still_accepted(monkeypatch):
+    monkeypatch.setenv("BACKUP_RCLONE_REMOTE", "box")
+    monkeypatch.setenv("BACKUP_RCLONE_DEST_DIR", "bloom-backups/prod")
+    assert backup.backup_destination("prod") == ("box", "bloom-backups/prod")
+
+
+def test_printing_the_destination_never_sweeps(tmp_path, monkeypatch):
+    # The summary step runs this on every job, including failed ones, while a
+    # cancelled run may still be dumping. A read-only query must not share the
+    # failure handler that removes working directories.
+    _deploy_dir(tmp_path)
+    state = _host_state_dir(tmp_path)
+    live = state / "bloom-backup-stillrunning"
+    live.mkdir()
+    (live / "postgres-postgres-20260907T000000Z.sql.gz").write_bytes(b"a live dump")
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(state))
+    monkeypatch.delenv("BACKUP_RCLONE_REMOTE", raising=False)
+    (tmp_path / ".env.prod").write_text(f"BACKUP_STATE_DIR={state}\n")
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path),
+                      "--print-destination"])
+    assert rc == backup.EXIT_CONFIG
+    assert live.exists(), "a read-only query removed another run's working copy"
+
+
 def test_a_blank_working_directory_does_not_become_the_current_one(tmp_path, monkeypatch):
     # The harm this guards: the workflow cds into the deploy directory before
     # running, so an empty BACKUP_STATE_DIR resolves to the git checkout — which

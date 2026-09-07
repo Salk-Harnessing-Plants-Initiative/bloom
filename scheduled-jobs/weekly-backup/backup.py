@@ -107,6 +107,11 @@ LOCK_WAIT_TIMEOUT_MS = 60_000
 # remove it.
 DB_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_$]{0,62}\Z")
 
+# An rclone remote name. The destination is built by concatenation, so anything
+# richer than a name — rclone accepts a full backend definition with inline
+# credentials in this position — would redirect the dump off Box entirely.
+RCLONE_REMOTE_PATTERN = re.compile(r"[A-Za-z0-9_.-]+\Z")
+
 EXIT_OK = 0
 EXIT_SUBPROCESS = 1
 EXIT_CONFIG = 2
@@ -177,8 +182,9 @@ def apply_env_file(path: Path) -> dict[str, str]:
         raise ConfigError(f"env file not found: {path}")
     try:
         values = load_env_file(path)
-    except OSError as exc:
-        # The runner writes .env.<env> at mode 600 and the deploy user reads it.
+    except (OSError, ValueError) as exc:
+        # OSError: the runner writes .env.<env> at mode 600 and the deploy user
+        # reads it. ValueError: a byte in it that is not UTF-8.
         raise ConfigError(f"cannot read env file {path}: {exc}") from exc
     found: dict[str, str] = {}
     for key in ENV_KEYS:
@@ -338,8 +344,18 @@ def _terminate(signum: int, _frame: object) -> None:
 
 
 def _state_dir() -> Path:
-    """Where working copies live. BACKUP_STATE_DIR is read from the env file."""
-    return Path(_env("BACKUP_STATE_DIR", DEFAULT_STATE_DIR)).expanduser()
+    """Where working copies live. BACKUP_STATE_DIR is read from the env file.
+
+    Absolute only: the workflow runs this from inside the deploy directory, so a
+    relative path resolves there — which is the one place a plaintext dump must
+    never land, and whose mode the caller then tightens to 0700.
+    """
+    state_dir = Path(_env("BACKUP_STATE_DIR", DEFAULT_STATE_DIR)).expanduser()
+    if not state_dir.is_absolute():
+        raise ConfigError(
+            f"BACKUP_STATE_DIR must be an absolute path, not {str(state_dir)!r}"
+        )
+    return state_dir
 
 
 def _min_free_bytes() -> int:
@@ -402,7 +418,7 @@ def sweep_best_effort(env_file: Path) -> int:
                 if env_file.is_file()
                 else ""
             )
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             logger.warning(
                 "cannot read %s, so leaving any working directory in place: %s",
                 env_file,
@@ -592,6 +608,12 @@ def backup_destination(env_name: str) -> tuple[str, str]:
     remote = _env("BACKUP_RCLONE_REMOTE", "")
     if not remote:
         raise ConfigError("BACKUP_RCLONE_REMOTE is not set")
+    if not RCLONE_REMOTE_PATTERN.match(remote):
+        # rclone reads a whole backend definition here, credentials included, so
+        # anything but a plain name can send the dump somewhere that is not Box.
+        raise ConfigError(
+            f"BACKUP_RCLONE_REMOTE is not a plain remote name: {remote!r}"
+        )
     return remote, _env("BACKUP_RCLONE_DEST_DIR", f"bloom-backups/{env_name}")
 
 
@@ -680,8 +702,15 @@ def main(argv: list[str] | None = None) -> int:
             raise ConfigError(f"deploy directory does not exist: {deploy_dir}")
         env_values = apply_env_file(args.env_file or deploy_dir / f".env.{args.env}")
         if args.print_destination:
-            # So the workflow never re-implements this parsing in shell.
-            remote, dest_dir = backup_destination(args.env)
+            # So the workflow never re-implements this parsing in shell. Its own
+            # error handling: the summary step runs this on every job, including
+            # ones that failed, and a read-only query must not reach a sweep that
+            # could remove a working directory another run is still using.
+            try:
+                remote, dest_dir = backup_destination(args.env)
+            except ConfigError as exc:
+                logger.error("configuration error: %s", exc)
+                return EXIT_CONFIG
             print(f"{remote}:{dest_dir}")
             return EXIT_OK
         state_dir = _state_dir()
@@ -699,7 +728,9 @@ def main(argv: list[str] | None = None) -> int:
         # It persists between runs, so a directory left loose has to be fixed
         # rather than trusted: it holds a full plaintext dump.
         try:
-            state_dir.chmod(0o700)
+            # Not through a symlink: this is the only mode change this job makes
+            # to the host, and following one would apply it somewhere else.
+            os.chmod(state_dir, 0o700, follow_symlinks=False)
         except OSError as exc:
             raise ConfigError(
                 f"cannot use {state_dir} as the working directory: {exc}"
