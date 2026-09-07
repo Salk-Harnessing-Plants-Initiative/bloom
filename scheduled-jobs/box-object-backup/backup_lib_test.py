@@ -570,6 +570,22 @@ def test_redact_hides_a_secret_that_needed_quoting():
         assert "user" not in out.replace("bloom-storage", "")
 
 
+def test_the_source_object_does_not_print_its_credentials():
+    # A dataclass prints every field by default, and `redact` cannot rescue
+    # this one: it matches rclone's connection-string names, not the field
+    # names, so a repr passes through it untouched. One
+    # `logger.exception("... %s", minio)` would put MinIO's ROOT keys into an
+    # Actions log that anyone with repo access can read.
+    minio = MinioSource("http://m:9000", "rootuser", "s3cr3t-value", "bloom-storage")
+    for rendered in (repr(minio), str(minio), f"{minio}", redact(repr(minio))):
+        assert "s3cr3t-value" not in rendered
+        assert "rootuser" not in rendered
+    # Still identifiable: the point is to lose the keys, not the ability to
+    # tell which source failed.
+    assert "http://m:9000" in repr(minio)
+    assert "bloom-storage" in repr(minio)
+
+
 def test_redact_leaves_an_ordinary_message_alone():
     assert redact("object not found") == "object not found"
 

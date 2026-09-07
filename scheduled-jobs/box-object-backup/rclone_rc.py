@@ -19,7 +19,7 @@ import re
 import urllib.error
 import urllib.request
 from base64 import b64encode
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +49,18 @@ class MinioSource:
     ended up asking MinIO for a bucket called `images` — a bucket that
     exists, and does not hold these objects. Naming the bucket here means a
     remote can never be silently reinterpreted as one.
+
+    The two credentials are kept out of the generated repr. They are MinIO's
+    ROOT keys, and `redact()` cannot save them here: it matches rclone's
+    connection-string names (`access_key_id=`, `secret_access_key=`), not
+    these field names, so a repr passes through it untouched. Nothing reprs
+    this object today — one `logger.exception("... %s", minio)` is all it
+    would take.
     """
 
     endpoint: str
-    access_key: str
-    secret_key: str
+    access_key: str = field(repr=False)
+    secret_key: str = field(repr=False)
     bucket: str
     prefix: str = ""
     region: str = "us-east-1"
