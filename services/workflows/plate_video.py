@@ -14,8 +14,6 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-import httpx
-
 from plate_video_path import GRAVISCAN_VIDEOS_BUCKET, plate_video_path
 
 logger = logging.getLogger(__name__)
@@ -488,29 +486,32 @@ def _outcome(action: str, reason: str, key: str | None, code: str = "") -> dict:
     return {"action": action, "reason": reason, "key": key, "code": code}
 
 
-def _answered(what: str, read):
-    """A planning read's result, or None when the database could not be reached.
+# The one answer for anything that goes wrong out of the caller's reach. True
+# whether waiting helps or not, so nothing has to work out which it is.
+UNAVAILABLE = (
+    "this video cannot be made right now. Try again shortly — if it keeps "
+    "happening, let the Bloom team know"
+)
 
-    Transport failures only. A database that answered with a reason -- a denied
-    grant, a row that will not parse -- is not something a retry fixes.
+
+def _answered(what: str, read):
+    """A planning read's result, or None when it failed.
+
+    Broad on purpose. Whether a retry helps depends on the cause, and the caller
+    is given one answer that holds either way, so nothing here has to decide.
+    The traceback is what tells the two apart, and it goes to the log.
     """
     try:
         return read()
-    except httpx.TransportError as exc:
-        logger.warning("the database did not answer for %s: %s", what, exc)
+    except Exception:
+        logger.warning("a planning read failed for %s", what, exc_info=True)
         return None
 
 
 def _unavailable(key: str | None) -> dict:
-    """A refusal the caller can act on by waiting."""
+    """A refusal that is true whether or not waiting will fix it."""
     return {
-        **_outcome(
-            "refuse",
-            "this video cannot be made right now — the database did not answer. "
-            "Nothing has been changed; try again in a few minutes",
-            key,
-            code="database_unavailable",
-        ),
+        **_outcome("refuse", UNAVAILABLE, key, code="database_unavailable"),
         "frames": [],
         "coverage": None,
     }

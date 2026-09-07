@@ -504,24 +504,30 @@ def test_a_database_that_did_not_answer_is_a_503_through_the_real_plan(monkeypat
     assert failure.status_code == 503
 
 
-def test_a_denied_grant_asks_the_caller_to_get_help_not_to_wait(monkeypatch):
-    """A missing GRANT is the failure this project has actually shipped. Telling
-    a scientist to retry hides it; telling them to ask sends it somewhere it can
-    be fixed. The reason itself names a table and a role, so it stays in the log."""
+def test_a_denied_grant_gets_the_one_message_and_no_internals(monkeypatch):
+    """A missing GRANT is the failure this project has actually shipped. The
+    reason names a table and a role, so it stays in the log."""
     failure = _through_the_route(_denied("gravi_scans"), monkeypatch)
 
-    assert failure.status_code == 500
-    assert "reach out to the Bloom team" in failure.detail
+    assert failure.status_code == 503
+    assert "let the Bloom team know" in failure.detail
     assert "permission denied" not in failure.detail
     assert "gravi_scans" not in failure.detail
 
 
-def test_the_denied_grant_reason_reaches_the_log(monkeypatch, caplog):
-    with caplog.at_level("ERROR"):
-        _through_the_route(_denied("gravi_scans"), monkeypatch)
+def test_an_unhandled_failure_gets_the_same_message(monkeypatch):
+    """One sentence for anything out of the caller's reach, wherever it came
+    from — a storage upload, a bug, a read. Two wordings meant guessing which."""
+    def boom(*a, **k):
+        raise RuntimeError("storage upload failed: 502 Bad Gateway")
 
-    assert "permission denied for table gravi_scans" in caplog.text
-    assert "Traceback" in caplog.text, "no traceback to work from"
+    monkeypatch.setattr(pr, "render_plate_video", boom)
+    with pytest.raises(HTTPException) as ei:
+        pr.render(12, {"plate_id": "P7", "wave_number": 1})
+
+    assert ei.value.detail == pr.UNAVAILABLE
+    assert "502" not in ei.value.detail
+
 
 
 def test_every_code_the_planner_emits_has_a_status(monkeypatch):

@@ -994,41 +994,45 @@ def test_a_bug_in_planning_is_not_reported_as_an_outage(monkeypatch):
     assert "unexpected argument" in str(caught.value)
 
 
-def test_a_denied_grant_is_not_answered_with_come_back_later(monkeypatch):
-    """The database answered, and said no. Waiting will never change that, and
-    "the database did not answer" sends whoever investigates the wrong way."""
-    with pytest.raises(APIError) as caught:
+def test_a_denied_grant_is_answered_the_way_an_outage_is(monkeypatch):
+    """One answer for both. Whether waiting helps depends on the cause, and the
+    wording holds either way, so nothing has to guess which it was."""
+    plan = pv.plan_render(_denied("gravi_scans"), 12, "P7", 1)
+
+    assert plan["action"] == "refuse"
+    assert plan["code"] == "database_unavailable"
+
+
+def test_the_denied_grant_reason_reaches_the_log_with_a_traceback(caplog):
+    """The caller gets one sentence; the cause is the log's, and a missing GRANT
+    is unreadable without the traceback."""
+    with caplog.at_level("WARNING"):
         pv.plan_render(_denied("gravi_scans"), 12, "P7", 1)
 
-    assert "permission denied" in str(caught.value)
+    assert "permission denied for table gravi_scans" in caplog.text
+    assert "Traceback" in caplog.text
 
 
-def test_a_row_that_will_not_parse_is_not_answered_with_come_back_later():
-    """Permanent for that plate, however many times it is asked for."""
+def test_a_row_that_will_not_parse_is_answered_the_same_way():
     broken = _PlanClient(frames=[_row(0, "a.tif")])
     broken.queries["gravi_scans"]._rows[0]["capture_date"] = "not a date"
 
-    with pytest.raises(ValueError):
-        pv.plan_render(broken, 12, "P7", 1)
-
-
-def test_an_unusable_plate_is_refused_without_asking_the_database():
-    """Knowable from the id alone. Asking first spends a query on an answer that
-    cannot change, and made a permanent refusal depend on the database being up."""
-    client = _PlanClient(frames=_frames(3))
-    plan = pv.plan_render(client, 12, "..", 1)
+    plan = pv.plan_render(broken, 12, "P7", 1)
 
     assert plan["action"] == "refuse"
-    assert plan["code"] == "unusable_plate"
-    assert client.queries["gravi_scans"].calls == 0, "the database was asked anyway"
+    assert plan["code"] == "database_unavailable"
 
 
-def test_a_keep_carries_what_the_stored_video_holds():
-    client = _PlanClient(frames=_frames(5), row=_recorded(frames=86))
+def test_a_coverage_read_that_fails_still_renders():
+    """Coverage is a note about the video, not a condition on making one. The
+    sessions table is a separate GRANT from the frames table, so it can be the
+    only one denied — and losing it must not cost the render."""
+    client = _denied("gravi_scan_sessions", frames=_frames(3), row=None)
     plan = pv.plan_render(client, 12, "P7", 1)
 
-    assert plan["action"] == "keep"
-    assert plan["stored_frames"] == 86
+    assert plan["action"] == "render"
+    assert plan["coverage"]["state"] == "unknown"
+
 
 
 def test_plan_renders_when_frames_have_arrived_since_the_stored_video():

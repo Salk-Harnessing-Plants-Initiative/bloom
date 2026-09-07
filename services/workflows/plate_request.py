@@ -20,6 +20,7 @@ from plate_encode import (
     PlateMismatch,
     render_plate_video,
 )
+from plate_video import UNAVAILABLE
 from plate_video_path import is_valid_plate_id
 from video_writer import VideoEncodeError
 from supabase_client import app_client
@@ -97,15 +98,9 @@ def render(experiment_id: int, body: dict) -> dict:
     except HTTPException:
         raise
     except Exception as exc:
-        # A denied grant, a row that will not parse, a storage upload that
-        # failed. Waiting does not fix any of them, so the caller is not told
-        # to. The cause is the log's, with a traceback.
+        # Same answer the planner gives, for the same reason.
         logger.exception("plate video failed for an unhandled reason")
-        raise HTTPException(
-            status_code=500,
-            detail="this video cannot be made right now — please reach out to "
-            "the Bloom team",
-        ) from exc
+        raise HTTPException(status_code=500, detail=UNAVAILABLE) from exc
 
     if outcome["action"] == "refuse":
         raise HTTPException(
