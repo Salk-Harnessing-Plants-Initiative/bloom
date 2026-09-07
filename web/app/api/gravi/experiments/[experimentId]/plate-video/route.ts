@@ -35,12 +35,15 @@ export const runtime = "nodejs";
 // rather than an opaque UND_ERR — the encode itself carries on upstream.
 const UPSTREAM_TIMEOUT_MS = 240_000;
 
-// Upstream details are written for operators. 404 and 413 say something the
-// caller needs — "this plate has no captures with an image", "this plate is at
-// least 49.0 GB" — and neither names anything internal. Every other status
-// falls back to the client's own wording: 5xx carry the internal gateway URL
-// and the service account's env key names, and 502 names an object path.
-const DETAIL_PASSTHROUGH_STATUSES = new Set([404, 413]);
+// Which upstream details reach the caller. The test is whether *every* source of
+// that status is the service's own text about this plate: 404 has no captures,
+// 413 too large, 422 a frame the encoder cannot use, 429 already encoding.
+//
+// 503 fails that test even though the plate-video one is written to be read —
+// `auth.py` also answers 503 with the auth client's error, which names the
+// internal gateway. 502 names an object path. Anything unlisted falls back to
+// our own wording.
+const DETAIL_PASSTHROUGH_STATUSES = new Set([404, 413, 422, 429]);
 
 function callerSafeDetail(status: number, parsed: unknown): string | null {
   if (!DETAIL_PASSTHROUGH_STATUSES.has(status)) return null;
@@ -156,9 +159,16 @@ export async function POST(
   }
 
   if (!upstream.ok) {
+    // Only one plate encodes at a time, so 429 is the ordinary answer to a
+    // second click rather than a rare one. Without Retry-After the button has
+    // to guess how long to wait.
+    const retryAfter = upstream.headers.get("retry-after");
     return NextResponse.json(
       { detail: callerSafeDetail(upstream.status, parsed) },
-      { status: upstream.status }
+      {
+        status: upstream.status,
+        headers: retryAfter ? { "Retry-After": retryAfter } : undefined,
+      }
     );
   }
 

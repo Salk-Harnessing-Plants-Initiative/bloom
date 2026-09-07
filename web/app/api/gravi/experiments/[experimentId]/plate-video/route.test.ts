@@ -49,9 +49,13 @@ function get(query: string, experimentId = "12") {
   );
 }
 
-function upstreamReturns(status: number, payload: unknown) {
+function upstreamReturns(
+  status: number,
+  payload: unknown,
+  headers?: Record<string, string>
+) {
   return vi.fn().mockResolvedValue(
-    new Response(JSON.stringify(payload), { status })
+    new Response(JSON.stringify(payload), { status, headers })
   );
 }
 
@@ -197,7 +201,7 @@ describe("POST", () => {
     expect((await res.json()).detail).toContain("Still encoding");
   });
 
-  it.each([[404], [413]])(
+  it.each([[404], [413], [422], [429]])(
     "passes an upstream %i detail through, because it is written for the caller",
     async (status) => {
       vi.stubGlobal(
@@ -212,11 +216,40 @@ describe("POST", () => {
     }
   );
 
+  it("hands back the upstream Retry-After, so the button need not guess", async () => {
+    // One plate encodes at a time, so a second click gets 429 as the ordinary
+    // answer. Without the header the caller has no idea how long to wait.
+    vi.stubGlobal(
+      "fetch",
+      upstreamReturns(
+        429,
+        { detail: "another plate video is already encoding; try again shortly" },
+        { "Retry-After": "30" }
+      )
+    );
+
+    const res = await post({ plate_id: "P7", wave_number: 1 });
+
+    expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe("30");
+    expect((await res.json()).detail).toContain("already encoding");
+  });
+
+  it("omits Retry-After when upstream sends none", async () => {
+    vi.stubGlobal("fetch", upstreamReturns(404, { detail: "no captures" }));
+
+    const res = await post({ plate_id: "P7", wave_number: 1 });
+
+    expect(res.headers.get("Retry-After")).toBeNull();
+  });
+
   it.each([[500], [502], [503]])(
     "suppresses an upstream %i detail, which names internal things",
     async (status) => {
       // 5xx details carry the internal gateway URL, the service account's env
-      // key names, and object paths.
+      // key names, and object paths. 503 is the one that looks safe and is not:
+      // the plate-video 503 is written to be read, but `auth.py` answers 503
+      // with the auth client's error, and status cannot tell the two apart.
       vi.stubGlobal(
         "fetch",
         upstreamReturns(status, { detail: "http://kong:8000 rejected WORKFLOWS_SUPABASE_EMAIL" })
