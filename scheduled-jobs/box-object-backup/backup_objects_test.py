@@ -876,7 +876,31 @@ class TestRunLockedWiresItsPartsTogether:
         monkeypatch.setenv("MINIO_ROOT_USER", "root")
         monkeypatch.setenv("MINIO_ROOT_PASSWORD", "secret")
         state["client"] = FakeClient()
+        # publish_report and publish_ledger build their own client from the
+        # daemon's credentials rather than taking the one the run already has,
+        # so faking `wait_for_daemon` alone left both uploads talking to a real
+        # socket on 127.0.0.1:5572 — DEFAULT_RC_PORT, the port this job's own
+        # rclone daemon binds on the deploy host. Thirty tests here were
+        # quietly logging "upload failed: Connection refused" and exercising
+        # the error path, and publish_report's success path had never run.
+        #
+        # They passed only because nothing was listening locally. On the
+        # deploy host during a seed something is: a daemon holding the Box
+        # OAuth token and MinIO's root credentials, which these tests would
+        # have POSTed operations/copyfile at.
+        monkeypatch.setattr(job, "RcloneRC", lambda *a, **kw: state["client"])
         return state, tmp_path
+
+    def object_copies(self, state):
+        """The mirrored objects, without the report and ledger uploads.
+
+        Those two reach the fake now, so anything counting `copied` sees them
+        unless it says otherwise.
+        """
+        return [
+            c for c in state["copied"]
+            if c[1] != "ledger.db" and not c[2].endswith(".json")
+        ]
 
     def args(self, tmp_path, **overrides):
         argv = [
@@ -890,14 +914,52 @@ class TestRunLockedWiresItsPartsTogether:
             argv += [f"--{flag.replace('_', '-')}", str(value)]
         return job.parse_args(argv)
 
+    def test_the_run_always_ends_with_a_status_the_summary_can_read(
+        self, harness, caplog
+    ):
+        """Without it the summary falls back to the step's own outcome, and
+        every branch keyed on a flag — stale ledger, refused name, incomplete
+        verification — silently stops firing."""
+        import logging as _logging
+
+        caplog.set_level(_logging.INFO)
+        state, tmp_path = harness
+        job.run_locked(self.args(tmp_path), tmp_path)
+        assert f"{job.STATUS_KEY}=ok" in caplog.text
+        assert f"{job.FLAGS_KEY}=" in caplog.text
+
+    def test_the_status_line_carries_the_flags_that_apply(self, harness, caplog):
+        """A run can succeed AND have left the Box ledger behind. The flags
+        are separate from the verdict for exactly that reason."""
+        import logging as _logging
+
+        caplog.set_level(_logging.INFO)
+        state, tmp_path = harness
+        monkeypatch_target = state["client"]
+
+        def refuse(src_fs, src_remote, dst_fs, dst_remote):
+            if src_remote == "ledger.db":
+                raise RcloneError("Box said no")
+            return None
+
+        monkeypatch_target.copy_file = refuse
+        job.run_locked(self.args(tmp_path), tmp_path)
+        flags = [
+            ln.split("=", 1)[1]
+            for ln in caplog.text.splitlines()
+            if f"{job.FLAGS_KEY}=" in ln
+        ]
+        assert flags and "ledger_stale" in flags[-1], flags
+
     def test_the_run_copies_from_the_tenant_prefixed_path(self, harness):
         # The prefix was dropped from the run and no test noticed: the shared
         # MinIO fixture was built with prefix="", so copy_all was only ever
         # exercised without one.
         state, tmp_path = harness
         assert job.run_locked(self.args(tmp_path), tmp_path) == 0
-        assert state["copied"], "nothing was copied"
-        for src_fs, src_remote, _ in state["copied"]:
+        copies = self.object_copies(state)
+        assert copies, "nothing was copied"
+        for src_fs, src_remote, _ in copies:
             assert src_fs.endswith(":bloom-storage"), src_fs
             assert src_remote.startswith("storage-single-tenant/images/"), src_remote
 
@@ -926,7 +988,9 @@ class TestRunLockedWiresItsPartsTogether:
         })
         with pytest.raises(job.lib.BackupError, match="preflight failed"):
             job.run_locked(self.args(tmp_path), tmp_path)
-        assert state["copied"] == [], "copied despite the source layout being wrong"
+        assert self.object_copies(state) == [], (
+            "copied despite the source layout being wrong"
+        )
 
     def test_one_orphaned_row_does_not_reject_a_correct_configuration(self, harness):
         """The reason the preflight samples several objects rather than one.
@@ -1858,7 +1922,8 @@ class TestACollisionIsVisibleInAWholeRun:
 
     def test_only_one_object_is_copied(self, harness, monkeypatch):
         state, _, _ = self.run_it(harness, monkeypatch)
-        assert len(state["copied"]) == 1, (
+        copies = TestRunLockedWiresItsPartsTogether().object_copies(state)
+        assert len(copies) == 1, (
             "both were copied — the second overwrote the first on Box"
         )
 
@@ -2045,6 +2110,23 @@ class TestStoppingReachesTheOutcomeAndTheExitCode:
         return TestRunLockedWiresItsPartsTogether().harness.__wrapped__(
             TestRunLockedWiresItsPartsTogether(), monkeypatch, tmp_path
         )
+
+    def test_a_stopped_run_says_so_in_its_status_line(self, harness, caplog):
+        """The summary reads the status line, not the exit code.
+
+        Stopped on purpose is the ONE outcome meaning "this is fine" — the
+        Actions time limit during the seed lands here every night, having
+        copied and recorded thousands of objects. Emitted as anything else it
+        reads FAILED, with "the mirror was not updated this run" underneath,
+        and both halves are false.
+        """
+        import logging as _logging
+
+        caplog.set_level(_logging.INFO)
+        state, tmp_path = harness
+        stopping._request_stop(15, None)
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        assert f"{job.STATUS_KEY}=stopped" in caplog.text
 
     def test_a_run_stopped_mid_copy_records_partial(self, harness):
         import sqlite3

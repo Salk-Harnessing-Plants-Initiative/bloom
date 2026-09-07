@@ -68,12 +68,64 @@ def workflow() -> str:
 class TestSkipMarkerContract:
     """The one string that has to match across the two files."""
 
-    def test_the_workflow_greps_a_prefix_of_the_marker(self, summary_script: str):
-        # The YAML greps a plain ASCII prefix: the full marker carries an
-        # em dash, which is a poor thing to put in a shell string literal.
-        prefix = "box-object-backup: SKIPPED"
-        assert SKIP_MARKER.startswith(prefix)
-        assert prefix in _strip_comments(summary_script)
+    def test_the_summary_reads_a_status_no_object_name_can_forge(
+        self, summary_script: str
+    ):
+        """The summary used to decide what to print by searching the log for
+        English phrases, and object names are in that log.
+
+        An image called `box-object-backup: SKIPPED.png` — the colon
+        guarantees it is refused, hence logged — made a night with thousands
+        of failed copies render as "skipped, this is expected". Every branch
+        forged the same way, and a colon in a filename is ordinary enough to
+        do it by accident.
+
+        The match is anchored to the start of a line: timestamp, level, then
+        the key. A name only ever appears once a message has begun.
+        """
+        script = _strip_comments(summary_script)
+        assert job.STATUS_KEY in script, "the summary does not read the status line"
+        assert "^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_STATUS=" in script, (
+            "the status match is not anchored, so a log line could forge it"
+        )
+        assert "^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_FLAGS=" in script, (
+            "the flags match is not anchored, so a log line could forge it"
+        )
+
+    def test_a_forged_status_in_an_object_name_cannot_steer_the_summary(self):
+        """The attack itself, against the anchored pattern.
+
+        `report_skips` prints every refused object, and only escapes a path
+        that is non-ASCII — so a plain-ASCII name reaches the log verbatim.
+        """
+        import re as _re
+        pattern = _re.compile(
+            r"^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_STATUS=[a-z_]+", _re.M
+        )
+        forged = (
+            "2026-09-07 02:00:01,100 WARNING skipping "
+            "images/poc/BOX_BACKUP_STATUS=skipped.png: "
+            "Box-illegal character(s) in object name: :\n"
+        )
+        assert not pattern.search(forged), "an object name forged the status"
+        real = "2026-09-07 02:00:02,100 INFO BOX_BACKUP_STATUS=failed\n"
+        assert pattern.search(real), "the real status line does not match"
+
+    def test_the_job_emits_a_status_the_summary_knows(self, tmp_path, monkeypatch, caplog):
+        """Both halves of the contract, in one place.
+
+        The vocabulary is closed on the Python side and branched on in the
+        YAML; a value in one and not the other is a branch that never fires.
+        """
+        import logging as _logging
+
+        caplog.set_level(_logging.INFO)
+        job.emit_status("skipped")
+        assert f"{job.STATUS_KEY}=skipped" in caplog.text
+        with pytest.raises(ValueError):
+            job.emit_status("no-such-status")
+        with pytest.raises(ValueError):
+            job.emit_status("ok", ["no-such-flag"])
 
     def test_the_python_actually_prints_the_marker(self, tmp_path, monkeypatch, caplog):
         """Run the stand-down and read the log, rather than grep the source.
@@ -102,7 +154,7 @@ class TestSkipMarkerContract:
         """The summary greps for specific phrases, so a message that matches
         none of them never reaches the operator. A refused collision means an
         object is not backed up and needs a person; it was invisible here."""
-        assert "were NOT backed up" in _strip_comments(summary_script), (
+        assert "has_flag collisions" in _strip_comments(summary_script), (
             "the summary cannot report a refused collision"
         )
 
@@ -122,7 +174,7 @@ class TestSkipMarkerContract:
         """Position and grep phrase are not enough — the body could say
         anything, including that the run succeeded."""
         script = _strip_comments(summary_script)
-        start = script.index("were NOT backed up")
+        start = script.index("elif has_flag collisions")
         branch = script[start:start + 700]
         assert "OBJECTS NOT BACKED UP" in branch
         assert "rename" in branch.lower(), "does not say what to do"
@@ -130,8 +182,8 @@ class TestSkipMarkerContract:
 
     def test_the_collision_branch_precedes_the_success_branch(self, summary_script: str):
         script = _strip_comments(summary_script)
-        assert script.index("were NOT backed up") < script.index(
-            'steps.run.outcome }}" = "success"'
+        assert script.index("elif has_flag collisions") < script.index(
+            '[ "$status" = "ok" ]'
         ), "the success branch would win and the summary would read succeeded"
 
     def test_a_name_box_cannot_store_is_reported_in_the_summary(self, summary_script: str):
@@ -142,7 +194,7 @@ class TestSkipMarkerContract:
         block also filtered out was the entire trace, on a run recorded `ok`
         whose watermark then moved past the object for good.
         """
-        assert job.SKIPPED_NAME_MARKER in _strip_comments(summary_script), (
+        assert "has_flag skipped_names" in _strip_comments(summary_script), (
             "the summary cannot report an object refused for its name"
         )
 
@@ -151,7 +203,7 @@ class TestSkipMarkerContract:
         # success branch would hide it.
         script = _strip_comments(summary_script)
         assert re.search(
-            r"(?<!el)if grep -q '" + re.escape(job.SKIPPED_NAME_MARKER), script
+            r"(?<!el)if has_flag skipped_names", script
         ), "the skipped-names notice is a branch, so another result hides it"
 
     def test_the_skipped_names_notice_says_only_a_rename_fixes_it(
@@ -160,7 +212,7 @@ class TestSkipMarkerContract:
         """Nothing on this side can back the object up, so a notice that does
         not say a rename is required leaves the reader with no action."""
         script = _strip_comments(summary_script)
-        opener = "if grep -q '" + job.SKIPPED_NAME_MARKER
+        opener = "if has_flag skipped_names"
         assert opener in script, "there is no skipped-names notice to check"
         branch = script[script.index(opener):][:1000]
         assert "renaming them in Supabase" in branch, "does not say what to do"
@@ -171,40 +223,34 @@ class TestSkipMarkerContract:
         the run at exit 0 and the summary reading "succeeded". What went stale
         is the record of which objects are already mirrored — the thing that
         makes a re-seed unnecessary — and it now exists only on the host."""
-        assert job.LEDGER_STALE_MARKER in _strip_comments(summary_script), (
+        assert "has_flag ledger_stale" in _strip_comments(summary_script), (
             "the summary cannot report that the ledger on Box is stale"
         )
 
-    def test_every_phrase_the_summary_greps_for_is_one_something_can_print(
+    def test_every_flag_the_summary_branches_on_is_one_the_job_can_set(
         self, summary_script: str
     ):
-        """A grep phrase no code emits is a branch that can never fire.
-
-        This replaces two tests that asserted `MARKER in backup_objects.py
-        source`. That could not fail: the constant's own definition line
-        satisfied it, and the constant has to exist or the test's own
-        reference raises first. Stripping every USE of both markers left them
-        green — the same defect class as the test satisfied by an import line.
-
-        Comparing against the constants' VALUES is the contract that can
-        actually drift, because the two sides are different files in
-        different languages.
+        """A branch on a flag nothing emits can never fire, and a flag nothing
+        branches on is invisible. Both sides are closed vocabularies in
+        different files and different languages, which is exactly the contract
+        that rots quietly.
         """
-        emitted = {
-            SKIP_MARKER,
-            job.LEDGER_STALE_MARKER,
-            job.LEDGER_AHEAD_MARKER,
-            job.VERIFY_INCOMPLETE_MARKER,
-            job.SKIPPED_NAME_MARKER,
-            "were missing or the wrong size on Box",
-            "were NOT backed up",
-        }
-        grepped = set(re.findall(r"grep -q '([^']+)'", _strip_comments(summary_script)))
-        assert grepped, "the summary greps for nothing at all"
-        # Substring, not equality: the skip grep is deliberately the stable
-        # prefix of a longer sentence.
-        orphans = {g for g in grepped if not any(g in e for e in emitted)}
-        assert not orphans, f"the summary greps for phrases nothing prints: {orphans}"
+        script = _strip_comments(summary_script)
+        branched = set(re.findall(r"has_flag ([a-z_]+)", script))
+        assert branched, "the summary branches on no flags at all"
+        unknown = branched - set(job.FLAG_VALUES)
+        assert not unknown, f"the summary branches on flags nothing sets: {unknown}"
+        unreported = set(job.FLAG_VALUES) - branched
+        assert not unreported, f"the job sets flags nothing reports: {unreported}"
+
+    def test_every_status_the_summary_branches_on_is_one_the_job_can_emit(
+        self, summary_script: str
+    ):
+        script = _strip_comments(summary_script)
+        branched = set(re.findall(r'\$status" = "([a-z_]+)"', script))
+        assert branched, "the summary branches on no status at all"
+        unknown = branched - set(job.STATUS_VALUES)
+        assert not unknown, f"the summary branches on a status nothing emits: {unknown}"
 
     def test_the_stale_ledger_notice_is_not_a_branch(self, summary_script: str):
         """It must survive whichever result won.
@@ -215,7 +261,7 @@ class TestSkipMarkerContract:
         """
         script = _strip_comments(summary_script)
         assert re.search(
-            r"(?<!el)if grep -q '" + re.escape(job.LEDGER_STALE_MARKER), script
+            r"(?<!el)if has_flag ledger_stale", script
         ), "the stale-ledger notice is a branch, so another result hides it"
 
     def test_the_stale_ledger_notice_says_what_is_and_is_not_wrong(
@@ -224,7 +270,7 @@ class TestSkipMarkerContract:
         """Position and phrase are not enough — the body could say anything,
         and here the easy mistake is implying the images did not copy."""
         script = _strip_comments(summary_script)
-        opener = "if grep -q '" + job.LEDGER_STALE_MARKER
+        opener = "if has_flag ledger_stale"
         assert opener in script, "there is no stale-ledger notice to check"
         start = script.index(opener)
         branch = script[start:start + 900]
@@ -237,7 +283,7 @@ class TestSkipMarkerContract:
         the backup — so the summary is the only place it can surface. A night
         reporting "succeeded" on a check that silently ran on nothing is the
         exact no-op the check exists to rule out."""
-        assert job.VERIFY_INCOMPLETE_MARKER in _strip_comments(summary_script), (
+        assert "has_flag verify_incomplete" in _strip_comments(summary_script), (
             "the summary cannot report a verification that checked nothing"
         )
 
@@ -251,11 +297,11 @@ class TestSkipMarkerContract:
         a full re-seed. That is the disaster the size guard exists to prevent.
         """
         script = _strip_comments(summary_script)
-        assert job.LEDGER_AHEAD_MARKER in script, (
+        assert "has_flag ledger_ahead" in script, (
             "a refused ledger upload cannot be told from a failed one"
         )
         assert re.search(
-            r"(?<!el)if grep -q '" + re.escape(job.LEDGER_AHEAD_MARKER), script
+            r"(?<!el)if has_flag ledger_ahead", script
         ), "the ahead-ledger notice is a branch, so another result hides it"
 
     def test_the_ahead_ledger_notice_says_restore_and_not_upload(
@@ -263,7 +309,7 @@ class TestSkipMarkerContract:
     ):
         """The whole point of splitting it: the remedy is the opposite one."""
         script = _strip_comments(summary_script)
-        opener = "if grep -q '" + job.LEDGER_AHEAD_MARKER
+        opener = "if has_flag ledger_ahead"
         assert opener in script, "there is no ahead-ledger notice to check"
         branch = script[script.index(opener):][:1000]
         assert "Restore the Box copy" in branch, "does not say to restore"
@@ -275,7 +321,7 @@ class TestSkipMarkerContract:
         # fine, so as an elif the success branch would hide it.
         script = _strip_comments(summary_script)
         assert re.search(
-            r"(?<!el)if grep -q '" + re.escape(job.VERIFY_INCOMPLETE_MARKER), script
+            r"(?<!el)if has_flag verify_incomplete", script
         ), "the incomplete-verify notice is a branch, so another result hides it"
 
     def test_the_incomplete_verify_notice_does_not_tell_anyone_to_re_copy(
@@ -284,7 +330,7 @@ class TestSkipMarkerContract:
         """The failure mode this whole change removes: reading "Box did not
         answer" as "the object is missing" and acting on it."""
         script = _strip_comments(summary_script)
-        opener = "if grep -q '" + job.VERIFY_INCOMPLETE_MARKER
+        opener = "if has_flag verify_incomplete"
         assert opener in script, "there is no incomplete-verify notice to check"
         branch = script[script.index(opener):][:900]
         assert "not a reason to re-copy" in branch
@@ -298,7 +344,7 @@ class TestSkipMarkerContract:
         # Comments stripped first — deleting this branch entirely used to pass,
         # because the marker survived in the comment above it.
         script = _strip_comments(summary_script)
-        skipped_at = script.find("box-object-backup: SKIPPED")
+        skipped_at = script.find('"$status" = "skipped"')
         succeeded_at = script.find("**succeeded**")
         assert skipped_at != -1, "the skip branch is gone from the summary"
         assert succeeded_at != -1
@@ -626,10 +672,12 @@ class TestTheSummaryCanActuallyReport:
         )
 
     def test_a_failed_verification_is_called_out_in_the_headline(self, workflow: str):
-        # Distinct from a plain failure: the copy reported success, so the
-        # useful thing to tell someone is that the ledger needs clearing.
+        # Distinct from a plain failure: the copy reported success and the
+        # check disagreed, so the useful thing to say is that the objects are
+        # already queued to be copied again and nothing needs doing by hand.
         assert "VERIFICATION FAILED" in workflow
-        assert "were missing or the wrong size on Box" in workflow
+        assert "has_flag verify_mismatch" in workflow
+        assert "nothing to do by hand" in workflow
 
 
 class TestTheHeadlineCarriesTheCounts:
@@ -689,6 +737,22 @@ class TestTheHeadlineCarriesTheCounts:
         line = [ln for ln in body.splitlines() if ln.startswith("Result:")]
         return line[0] if line else ""
 
+    @staticmethod
+    def verdict(status: str, *flags: str) -> str:
+        """The two lines the job emits, in the format it emits them.
+
+        Built from the job's own constants, so a rename on either side of the
+        contract shows up here rather than silently making these tests
+        exercise a log the job never produces.
+        """
+        assert status in job.STATUS_VALUES, status
+        for flag in flags:
+            assert flag in job.FLAG_VALUES, flag
+        return (
+            f"2026-08-31 02:45:00,1 INFO {job.STATUS_KEY}={status}\n"
+            f"2026-08-31 02:45:00,1 INFO {job.FLAGS_KEY}={','.join(flags)}\n"
+        )
+
     DONE = "2026-08-31 02:20:00,1 INFO done — copied {c}, failed 0, already current {a}, skipped 0\n"
     VERIFY = "2026-08-31 02:41:00,1 INFO verify: {n} checked, 0 mismatched\n"
 
@@ -737,19 +801,27 @@ class TestTheHeadlineCarriesTheCounts:
         assert "no counts in the log" in headline
 
     def test_a_failed_verification_still_wins_the_headline(self, parsed):
-        log = (
-            self.DONE.format(c=10, a=0)
-            + "2026-08-31 02:41:00,1 ERROR 3 of 50 verified object(s) were "
-              "missing or the wrong size on Box.\n"
-        )
+        log = self.DONE.format(c=10, a=0) + self.verdict("partial", "verify_mismatch")
         assert "VERIFICATION FAILED" in self.run_summary(parsed, log)
 
     def test_a_stood_down_run_still_wins_the_headline(self, parsed):
         log = (
             "2026-08-31 02:20:00,1 WARNING box-object-backup: SKIPPED — "
             "another run holds the lock\n"
-        )
+        ) + self.verdict("skipped")
         assert "skipped" in self.run_summary(parsed, log)
+
+    def test_a_run_stopped_on_purpose_is_not_reported_as_a_failure(self, parsed):
+        """The Actions time limit during the seed lands here every night.
+
+        It copied and recorded thousands of objects and kept its progress, and
+        it used to read "FAILED — the mirror was not updated this run". Both
+        halves were false, and there was no branch for it at all.
+        """
+        log = self.DONE.format(c=4211, a=0) + self.verdict("stopped")
+        headline = self.run_summary(parsed, log, outcome="failure")
+        assert "stopped, progress kept" in headline
+        assert "FAILED" not in headline
 
     def test_a_failed_run_is_not_reported_as_succeeded(self, parsed):
         headline = self.run_summary(parsed, "ERROR boom\n", outcome="failure")

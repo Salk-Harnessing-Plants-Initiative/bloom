@@ -335,6 +335,33 @@ jobs:
           checked="$(printf '%s' "$verify_line" | grep -oE '[0-9]+ checked' | grep -oE '[0-9]+' || true)"
           unverified="$(printf '%s' "$verify_line" | grep -oE '[0-9]+ unverified' | grep -oE '[0-9]+' || true)"
 
+          # The verdict, read from a line only the job can produce.
+          #
+          # This used to search the whole log for English phrases. Object names
+          # are in that log and are partly chosen by whoever uploads the file,
+          # so an image called "box-object-backup: SKIPPED.png" — the colon
+          # guarantees it is refused, hence logged — made a night with
+          # thousands of failed copies render as "skipped, this is expected".
+          # Every branch forged the same way, and a colon in a filename is
+          # ordinary enough to do it by accident.
+          #
+          # Anchored to the start of a line: timestamp, level, then the key. A
+          # name can only appear once a message has begun, so no name can
+          # produce a matching line. `tail -1` because a manual re-run appends.
+          status="$(grep -oE '^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_STATUS=[a-z_]+' \
+            "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
+          status="${status##*=}"
+          flags="$(grep -oE '^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_FLAGS=[a-z_,]*' \
+            "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
+          flags=",${flags##*=},"
+
+          # A run that died before emitting one (preflight, config, a crash)
+          # leaves this empty, and the step's own outcome is then the verdict.
+          if [ -z "$status" ]; then
+            if [ "${{ steps.run.outcome }}" = "success" ]; then status=ok; else status=failed; fi
+          fi
+          has_flag() { case "$flags" in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+
           # Thousands separators, so eight million reads as eight million.
           # Not printf "%'d" (needs a numeric locale the runner may not have,
           # and silently prints ungrouped without one) and not sed (the label
@@ -368,19 +395,30 @@ jobs:
           {
             echo "## Nightly Box object mirror — ${ENV_NAME}"
             echo
-            if grep -q 'box-object-backup: SKIPPED' "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
+            if [ "$status" = "skipped" ]; then
               echo "Result: **skipped** — another run holds the lock, almost"
               echo "certainly the initial seed. Nothing was mirrored tonight;"
               echo "the seed is doing that work. This is expected until it ends."
-            elif grep -q 'were missing or the wrong size on Box' "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
+            elif [ "$status" = "stopped" ]; then
+              # Its own branch, because this is the ONE outcome that means
+              # "this is fine". The Actions job hitting its time limit during
+              # the seed lands here every night, having copied and recorded
+              # thousands of objects; it used to read FAILED, "the mirror was
+              # not updated this run" — both halves false.
+              echo "Result: **stopped, progress kept** — the run was asked to"
+              echo "stop before it finished the table, almost certainly the"
+              echo "job's own time limit. Everything it copied is recorded and"
+              echo "on Box; the next run carries on from there. Nothing is"
+              echo "lost and nothing needs doing."
+              [ -n "$counts" ] && echo "It got through ${counts}."
+            elif has_flag verify_mismatch; then
               echo "Result: **VERIFICATION FAILED** — objects the copy reported"
-              echo "as successful are not on Box. They are **not** retried"
-              echo "automatically: the ledger already records them as copied, so"
-              echo "later runs skip them. Clear their ledger rows by hand now"
-              echo "(the job log prints the command) — this warning does NOT"
-              echo "repeat, because the next run skips the objects rather than"
-              echo "re-checking them."
-            elif grep -q 'were NOT backed up' "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
+              echo "as successful are not on Box. They are named in the run"
+              echo "report under \`_runs/\`, and the run has already queued them"
+              echo "to be copied again — nothing to do by hand. If the same"
+              echo "objects appear again next run, the copy is failing rather"
+              echo "than the record being stale, and that needs looking at."
+            elif has_flag collisions; then
               echo "Result: **OBJECTS NOT BACKED UP** — two object names"
               echo "normalize onto one path on Box, so only one of each pair"
               echo "can be stored and the job refused to overwrite the other."
@@ -390,22 +428,22 @@ jobs:
               echo "recorded **partial**, so they stay in view until it is"
               echo "done. Check the log for failures too; this line does not"
               echo "mean nothing else went wrong."
-            elif [ "${{ steps.run.outcome }}" = "success" ]; then
+            elif [ "$status" = "ok" ] || [ "$status" = "partial" ]; then
               if [ -n "$counts" ]; then
                 echo "Result: **succeeded** — ${counts}"
               else
                 echo "Result: **succeeded** (no counts in the log — check it)"
               fi
             else
-              echo "Result: **FAILED** — see the job log. The mirror was not"
-              echo "updated this run."
+              echo "Result: **FAILED** — see the job log. Some or all of"
+              echo "tonight's objects were not mirrored; anything that did"
+              echo "copy is recorded and will not be copied again."
             fi
             # Deliberately its own `if`, not another elif: the ledger upload is
             # best-effort, so this can happen on a night that otherwise
             # succeeded AND on one that reported a collision. As a branch it
             # would be hidden by whichever result won.
-            if grep -q 'the Box copy of the ledger is STALE' \
-              "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
+            if has_flag ledger_stale; then
               echo
               echo "> **The ledger on Box was NOT updated.** Objects still"
               echo "> copied fine — this is about the record of WHICH objects"
@@ -420,8 +458,7 @@ jobs:
             # Additive for the same reason as the rest: an object refused for
             # its name can happen on a night that otherwise copied fine, and
             # it is the same permanent non-backup a collision is.
-            if grep -q 'object(s) were SKIPPED for their names' \
-              "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
+            if has_flag skipped_names; then
               echo
               echo "> **Some images were not backed up because of their"
               echo "> filenames.** Box cannot store a name containing certain"
@@ -436,8 +473,7 @@ jobs:
             # merged with it: there, the host has the good ledger and Box is
             # behind. Here Box has the good one. An operator told to "fix a
             # stale Box copy" would overwrite eight million rows with twenty.
-            if grep -q 'the ledger on Box is AHEAD of this host' \
-              "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
+            if has_flag ledger_ahead; then
               echo
               echo "> **The ledger on Box is newer than this host's — the"
               echo "> upload was refused on purpose.** Box holds the record of"
@@ -451,8 +487,7 @@ jobs:
             fi
             # Also additive, and for the same reason: a check that covered
             # less than it was asked to happens on a night that copied fine.
-            if grep -q 'verification did NOT cover its sample' \
-              "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
+            if has_flag verify_incomplete; then
               echo
               echo "> **Verification did not cover its whole sample.** Box did"
               echo "> not answer for some of the objects it was asked about,"

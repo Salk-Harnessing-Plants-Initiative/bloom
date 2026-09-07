@@ -99,6 +99,88 @@ VERIFY_INCOMPLETE_MARKER = "verification did NOT cover its sample"
 # which carries collision-specific advice.
 SKIPPED_NAME_MARKER = "object(s) were SKIPPED for their names"
 
+# The summary used to decide what to print by searching the whole job log for
+# English phrases. Object names are in that log — `report_skips` prints every
+# refused one — and names are partly chosen by whoever uploads the file. So an
+# image called `box-object-backup: SKIPPED.png` (the colon guarantees it is
+# refused, hence logged) made a night with thousands of failed copies render
+# as "skipped — this is expected until the seed ends". Every marker forged the
+# same way, and it happens by accident too: a colon in a filename is ordinary.
+#
+# These two lines carry the verdict instead. Both are emitted only by
+# `emit_status`, and the workflow matches them ANCHORED to the start of a log
+# line — timestamp, level, then the key. An object name can only ever appear
+# after a message has already begun, so no name can produce a matching line.
+STATUS_KEY = "BOX_BACKUP_STATUS"
+FLAGS_KEY = "BOX_BACKUP_FLAGS"
+
+# The whole vocabulary. Anything else is a bug, not a new condition.
+STATUS_VALUES = ("ok", "skipped", "stopped", "partial", "failed")
+FLAG_VALUES = (
+    "collisions",
+    "skipped_names",
+    "verify_mismatch",
+    "verify_incomplete",
+    "ledger_stale",
+    "ledger_ahead",
+)
+
+
+def emit_status(status: str, flags=()) -> None:
+    """Print the run's verdict in a form no object name can imitate.
+
+    One line for the headline verdict and one for the independent conditions,
+    both from a closed vocabulary, both anchored by the workflow. Flags are
+    separate from the status because they are not alternatives: a night can
+    succeed AND have left the Box ledger stale AND have refused a name.
+    """
+    if status not in STATUS_VALUES:
+        raise ValueError(f"unknown run status: {status!r}")
+    unknown = [f for f in flags if f not in FLAG_VALUES]
+    if unknown:
+        raise ValueError(f"unknown run flags: {unknown!r}")
+    logger.info("%s=%s", STATUS_KEY, status)
+    logger.info("%s=%s", FLAGS_KEY, ",".join(flags))
+
+
+def _status_for(code: int, outcome: str) -> str:
+    """The headline verdict, from the exit code the run is about to return.
+
+    `stopped` is its own value rather than folding into failed. A run stopped
+    on purpose — the Actions job hitting its time limit, which is every night
+    of the seed — has copied and recorded thousands of objects and kept its
+    progress. Reported as FAILED, with "the mirror was not updated this run"
+    underneath, the one outcome meaning "this is fine, re-run" was
+    indistinguishable from a real failure.
+    """
+    if code == 3:
+        return "stopped"
+    if code == 0:
+        return "partial" if outcome == "partial" else "ok"
+    return "failed"
+
+
+def _flags_for(totals: "Totals") -> tuple:
+    """The conditions that are independent of the headline verdict.
+
+    Each can occur on a night that otherwise succeeded, so none of them can be
+    a branch of the result — that is what made the ledger notice invisible
+    before, and it applies to all of these.
+    """
+    flags = []
+    if totals.collisions:
+        flags.append("collisions")
+    if totals.skipped - totals.collisions > 0:
+        flags.append("skipped_names")
+    if totals.verify_mismatched:
+        flags.append("verify_mismatch")
+    if totals.verify_unverified:
+        flags.append("verify_incomplete")
+    if totals.ledger_flag:
+        flags.append(totals.ledger_flag)
+    return tuple(flags)
+
+
 # How many objects the preflight probes, and how far into the manifest it looks
 # for them. Several rather than one, because a single orphaned row must not be
 # able to reject a correct configuration; bounded, so the check stays instant
@@ -210,6 +292,7 @@ def run_backup(args: argparse.Namespace) -> int:
     except LockHeld as held:
         logger.warning("%s", SKIP_MARKER)
         logger.warning("held by %s", held.holder.describe())
+        emit_status("skipped")
         return 0
     try:
         return run_locked(args, state_dir)
@@ -356,7 +439,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             # ledger.db on its own would be missing them. close() checkpoints
             # the WAL into the file, which makes the uploaded copy complete.
             ledger.close()
-            publish_ledger(
+            totals.ledger_flag = publish_ledger(
                 daemon, state_dir, box_fs, args,
                 copied=totals.copied, crashed=crashed,
             )
@@ -427,12 +510,14 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             "%d object(s) failed after %d attempts each — re-run to retry them",
             totals.failed, MAX_ATTEMPTS,
         )
-    return exit_code(
+    code = exit_code(
         failed=totals.failed,
         verify_mismatched=totals.verify_mismatched,
         stopped=stopping.stopping(),
         collisions=totals.collisions,
     )
+    emit_status(_status_for(code, outcome), _flags_for(totals))
+    return code
 
 
 @dataclass
@@ -450,6 +535,10 @@ class Totals:
     # changes no exit code — it only stops `verify_checked` claiming them.
     verify_unverified: int = 0
     verify_pool: object = None
+    # Which way the ledger upload went, if it did not go cleanly. Set by
+    # publish_ledger, read by _flags_for — the two conditions are
+    # opposites and the summary must tell them apart.
+    ledger_flag: str | None = None
     failures: list = field(default_factory=list)
     # Objects refused before any copy was attempted, and objects the check
     # found missing from Box. Both end up in the run report on Box, because
@@ -503,11 +592,10 @@ def exit_code(
     the mirror is misreporting itself rather than some copies having errored,
     and those want telling apart in a job log.
 
-    It fires once, not until someone acts. The object is already recorded as
-    copied, so the next run plans it `already_current`, never re-copies it and
-    never re-checks it — the count returns to 0 and the run reports clean.
-    Clearing the ledger row by hand is what puts it back in view, and the run's
-    own error message prints that command.
+    It fires once, not until someone acts — but the run now clears the proved-
+    wrong ledger row itself, so the next run re-copies the object rather than
+    planning it `already_current`. If it appears here again, the copy is
+    failing rather than the record being stale.
     """
     if failed:
         return 1
@@ -663,7 +751,7 @@ def publish_ledger(
     *,
     copied: int,
     crashed: bool,
-) -> None:
+) -> str | None:
     """Copy the ledger to Box, so losing the host does not mean re-seeding.
 
     The ledger records which version of every object is on Box, and it is what
@@ -685,10 +773,10 @@ def publish_ledger(
     """
     if crashed:
         logger.info("ledger not uploaded: the run did not finish cleanly")
-        return
+        return None
     if not copied:
         logger.info("ledger not uploaded: nothing was copied this run")
-        return
+        return None
     local = state_dir / report.LEDGER_FILENAME
     try:
         local_size = local.stat().st_size
@@ -696,7 +784,7 @@ def publish_ledger(
         logger.error(
             "cannot read %s: %s — %s", local, exc, LEDGER_STALE_MARKER
         )
-        return
+        return "ledger_stale"
     destination = report.box_ledger_path(args.box_root)
     try:
         client = RcloneRC(daemon.url, daemon.user, daemon.password)
@@ -720,7 +808,7 @@ def publish_ledger(
                 LEDGER_AHEAD_MARKER, destination,
                 lib.format_bytes(remote_size), lib.format_bytes(local_size),
             )
-            return
+            return "ledger_ahead"
         client.copy_file(
             dock.STATE_MOUNT, report.LEDGER_FILENAME, box_fs, destination
         )
@@ -732,6 +820,7 @@ def publish_ledger(
             "ledger stayed on the host only — upload failed: %s — %s",
             exc, LEDGER_STALE_MARKER,
         )
+        return "ledger_stale"
 
 
 def plan_batches(

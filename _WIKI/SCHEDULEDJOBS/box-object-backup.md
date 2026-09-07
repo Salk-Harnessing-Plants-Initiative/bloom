@@ -322,6 +322,25 @@ configuration or preflight error, `3` interrupted (progress kept), `4`
 verification found objects missing or the wrong size on Box, `5` objects were
 refused because two names collide on one Box path.
 
+**A run stopped on purpose reports "stopped, progress kept", not FAILED.** Exit
+`3` is what the job's own cancellation produces and what the Actions time limit
+produces — which, during the seed, is most nights. Everything copied up to that
+point is recorded and on Box, and the next run carries on from there. It used
+to render as "FAILED — the mirror was not updated this run", which was wrong on
+both counts and made the one outcome meaning "this is fine" look like a real
+failure.
+
+**The summary reads a status line, not the log's prose.** The job prints
+`BOX_BACKUP_STATUS=` and `BOX_BACKUP_FLAGS=` at the end of a run, and the
+summary matches them anchored to the start of a line. Before that it searched
+the whole log for English phrases — and object names are in that log, so an
+image called `box-object-backup: SKIPPED.png` (the colon guarantees it is
+refused, hence logged) made a night with thousands of failed copies render as
+"skipped, this is expected until the seed ends". Every branch could be forged
+that way, by anyone who can upload a file, and by accident too. If you are
+reading a job log by hand, those two lines are the fastest summary of what
+happened.
+
 ### Objects that were refused
 
 Exit `5`, and **OBJECTS NOT BACKED UP** in the summary. Two object names can
