@@ -88,6 +88,11 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
+
+it("runs in the runtime these tests run in", () => {
+  expect(routeModule.runtime).toBe("nodejs");
 });
 
 describe("POST", () => {
@@ -145,7 +150,7 @@ describe("POST", () => {
     await post({ plate_id: "P7", wave_number: 1 });
 
     expect(timeout).toHaveBeenCalledWith(240_000);
-    expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+    expect(fetchMock.mock.calls[0][1].signal).toBe(timeout.mock.results[0].value);
   });
 
   it("refuses a body that is not JSON without reaching upstream", async () => {
