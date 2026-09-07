@@ -222,10 +222,11 @@ def test_a_render_reports_the_frames_the_encoder_wrote(monkeypatch):
     assert pr.render(12, {"plate_id": "P7", "wave_number": 1})["frames"] == 7
 
 
-def test_a_keep_with_no_recorded_count_reports_none_not_zero(monkeypatch):
+def test_a_keep_with_no_recorded_count_says_so_rather_than_claiming_zero(monkeypatch):
     """The stored video is what is handed back, and the plate's own frames are
-    not what it holds. Reporting them said a real, playable video held zero
-    frames on the one branch where both are empty."""
+    not what it holds. `frames` stays a number because the client's shape guard
+    requires one -- the cyl route carries the same pair -- so `frames_unknown`
+    is what stops a caller reading the zero as a fact."""
     outcome = _rendered(
         action="keep",
         reason="the stored video is kept; no frames are visible",
@@ -233,8 +234,25 @@ def test_a_keep_with_no_recorded_count_reports_none_not_zero(monkeypatch):
         stored_frames=None,
     )
     monkeypatch.setattr(pr, "render_plate_video", _renders(outcome))
+    result = pr.render(12, {"plate_id": "P7", "wave_number": 1})
 
-    assert pr.render(12, {"plate_id": "P7", "wave_number": 1})["frames"] is None
+    assert isinstance(result["frames"], int), "the client's shape guard needs a number"
+    assert result["frames_unknown"] is True
+
+
+@pytest.mark.parametrize(
+    "outcome,expected",
+    [
+        (_rendered(frames=[{}] * 9, recorded={"frame_count": 7}), 7),
+        (_rendered(action="keep", reason="covers 86", frames=[{}] * 5, stored_frames=86), 86),
+    ],
+)
+def test_a_known_count_is_never_flagged_unknown(monkeypatch, outcome, expected):
+    monkeypatch.setattr(pr, "render_plate_video", _renders(outcome))
+    result = pr.render(12, {"plate_id": "P7", "wave_number": 1})
+
+    assert result["frames"] == expected
+    assert result["frames_unknown"] is False
 
 
 @pytest.mark.parametrize(

@@ -121,11 +121,16 @@ def render(experiment_id: int, body: dict) -> dict:
         )
 
     # What the video holds: the encoder's count when one was made, the stored
-    # video's own when it was kept. On a keep an unrecorded count stays null --
-    # the plate's own frames are not what the stored video holds, and reporting
-    # them said a playable video held zero.
+    # video's own when it was kept. A kept video whose row never recorded a
+    # count is the one case with no answer -- the plate's own frames are not
+    # what it holds, and saying zero of a playable video is worse than saying
+    # nothing. `frames` still carries a number because the client's shape guard
+    # requires one, exactly as the cyl route does; `frames_unknown` is what says
+    # not to trust it.
     recorded = outcome.get("recorded") or {}
     held = recorded.get("frame_count", outcome.get("stored_frames"))
+    if held is None and outcome["action"] != "keep":
+        held = len(outcome.get("frames") or [])
 
     return {
         "experiment_id": experiment_id,
@@ -134,9 +139,8 @@ def render(experiment_id: int, body: dict) -> dict:
         "action": outcome["action"],
         "reason": outcome["reason"],
         "object_path": outcome["key"],
-        "frames": held
-        if outcome["action"] == "keep" or held is not None
-        else len(outcome.get("frames") or []),
+        "frames": held if held is not None else 0,
+        "frames_unknown": held is None,
         "coverage": outcome.get("coverage"),
     }
 
