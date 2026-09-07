@@ -61,6 +61,16 @@ the dump is taken. What it tells you that a dry run cannot: whether the upload
 credential works, what a real artifact looks like on Box, and roughly how long
 the whole thing takes.
 
+**Dispatch it with the `staging` branch selected, not `main`.** A staging run
+resolves to the `staging` GitHub Environment, whose deployment branch policy
+admits only the branch of the same name — dispatched from `main` it fails
+immediately with "Branch main is not allowed to deploy to staging", having run
+no steps. That environment also requires a reviewer, so the run waits for an
+approval; for a rehearsal somebody is there to give it. The production paths are
+unaffected: the schedule uses `production-scheduled-backup` and a manual
+production dispatch uses `production`, neither of which restricts the branch
+this way.
+
 What it does **not** tell you is whether production's dump fits on disk: the
 working copy is written to the deploy host before upload, and staging's database
 is far smaller. The job checks free space itself before every dump and refuses
