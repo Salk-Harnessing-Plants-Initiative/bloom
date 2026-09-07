@@ -295,8 +295,13 @@ script over `ssh` without a TTY, so cancelling the run — or hitting
 signal a non-PTY remote command. The script carries on, finishes its dump, and
 **still uploads**. So a red run is not proof that nothing reached Box; check the
 folder listing in the job summary, or Box itself, before concluding a week is
-missing. Code 4 is reachable when the script is run by hand on the host and
-someone interrupts it.
+missing.
+
+Code 4 comes from a `SIGTERM` or a `SIGHUP` — `kill` on a by-hand run, or the
+process group going away. **Ctrl-C is not one of them.** That sends `SIGINT`,
+which the script does not handle, so you get Python's own interrupt message and
+exit 130. The working directory is still cleaned up either way; only the exit
+code differs.
 
 The dump waits at most 60 seconds for any table lock (`--lock-wait-timeout`).
 Only DDL conflicts with what `pg_dump` takes, and a deploy's migrations cannot

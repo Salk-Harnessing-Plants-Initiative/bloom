@@ -15,10 +15,11 @@ Exit codes:
   1 = subprocess failure (docker / pg_dump / gzip / rclone)
   2 = configuration error (missing env, no remote, stack not running)
   3 = an artifact failed verification (missing, undersized, corrupt, or empty)
-  4 = the run was terminated by a signal — not a failure of anything it ran.
-      Reachable when this script is run by hand on the host; a cancelled or
-      timed-out workflow run kills the ssh client only, and this script keeps
-      going. See _WIKI/SCHEDULEDJOBS/weekly-backup.md.
+  4 = the run was killed by SIGTERM or SIGHUP — not a failure of anything it
+      ran. Ctrl-C is SIGINT, which is not handled, and exits 130. A cancelled
+      or timed-out workflow run kills the ssh client only and this script keeps
+      going, so it does not produce this code either. See
+      _WIKI/SCHEDULEDJOBS/weekly-backup.md.
 
 See `.env.{staging,prod}.defaults` for the BACKUP_* config surface, and
 _WIKI/SCHEDULEDJOBS/weekly-backup.md for setup.
