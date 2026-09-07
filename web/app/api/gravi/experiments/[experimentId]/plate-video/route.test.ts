@@ -9,6 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Session } from "@supabase/supabase-js";
 
 import * as routeModule from "@/app/api/gravi/experiments/[experimentId]/plate-video/route";
 
@@ -29,7 +30,24 @@ const RESULT = {
   reason: "no video stored; encoding 86 frames",
   object_path: "12/wave-1/P7.mp4",
   frames: 86,
+  frames_unknown: false,
   coverage: null,
+};
+
+// A real session, not one field cast past the type checker: the route reads
+// `access_token`, and a fixture shaped like the type is what keeps that honest.
+const SESSION: Session = {
+  access_token: "token",
+  refresh_token: "refresh",
+  expires_in: 3600,
+  token_type: "bearer",
+  user: {
+    id: "00000000-0000-0000-0000-000000000001",
+    aud: "authenticated",
+    app_metadata: {},
+    user_metadata: {},
+    created_at: "2026-01-01T00:00:00.000Z",
+  },
 };
 
 function post(body: unknown, experimentId = "12") {
@@ -63,7 +81,7 @@ beforeEach(() => {
   // Call history survives restoreAllMocks, so a test asserting "never called"
   // would see the previous test's calls.
   vi.clearAllMocks();
-  mockedGetSession.mockResolvedValue({ access_token: "token" } as never);
+  mockedGetSession.mockResolvedValue(SESSION);
   mockedStored.mockResolvedValue({ status: "absent" });
 });
 
@@ -293,6 +311,109 @@ describe("POST", () => {
       expect(detail).not.toContain("WORKFLOWS_");
     }
   );
+
+  it("carries frames_unknown through, so a kept video is not read as empty", async () => {
+    // The service sends this whenever it cannot say what a stored video holds.
+    // `frames` still carries a number, and this is what says not to trust it.
+    vi.stubGlobal(
+      "fetch",
+      upstreamReturns(200, { ...RESULT, action: "keep", frames: 0, frames_unknown: true })
+    );
+
+    const body = await (await post({ plate_id: "P7", wave_number: 1 })).json();
+
+    expect(body.frames_unknown).toBe(true);
+  });
+
+  it("reports the video service being unreachable without naming it", async () => {
+    // The commonest real failure: the container is down, so `fetch` rejects
+    // before any reply. The rejection message holds the internal address.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(
+        new TypeError("fetch failed: connect ECONNREFUSED http://workflows:5100")
+      )
+    );
+
+    const res = await post({ plate_id: "P7", wave_number: 1 });
+    const { detail } = await res.json();
+
+    expect(res.status).toBe(502);
+    expect(detail).toBe("The video service is unavailable.");
+    expect(detail).not.toContain("workflows");
+    expect(detail).not.toContain("5100");
+  });
+
+  it("distinguishes a service that is down from one that is still working", async () => {
+    // A timeout means the encode is still running upstream; a refused connection
+    // means there is nothing to wait for. Told apart, the button waits or stops.
+    const timeout = new Error("timed out");
+    timeout.name = "TimeoutError";
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(timeout));
+
+    expect((await post({ plate_id: "P7", wave_number: 1 })).status).toBe(504);
+
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+
+    expect((await post({ plate_id: "P7", wave_number: 1 })).status).toBe(502);
+  });
+
+  it("answers a reply that is not JSON, rather than passing the page on", async () => {
+    // A proxy or gateway in front of the service answers with an HTML error
+    // page. Handed on, it reaches the browser as the body of a JSON API.
+    const page = "<html><body>502 Bad Gateway — nginx/1.24.0 upstream workflows:5100</body></html>";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(page, { status: 502 }))
+    );
+
+    const res = await post({ plate_id: "P7", wave_number: 1 });
+    const { detail } = await res.json();
+
+    expect(res.status).toBe(502);
+    expect(detail).toContain("could not be made right now");
+    expect(detail).not.toContain("nginx");
+    expect(detail).not.toContain("workflows");
+  });
+
+  it("does not report success when a 200 body cannot be read", async () => {
+    // A truncated or non-JSON 200 is not a rendered video. Answered 200, the
+    // button would report a video that does not exist.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("not json at all", { status: 200 }))
+    );
+
+    const res = await post({ plate_id: "P7", wave_number: 1 });
+
+    expect(res.status).toBe(502);
+    expect((await res.json()).detail).toContain("Unexpected response");
+  });
+
+  it("lets nothing but Retry-After cross from the service", async () => {
+    // The upstream headers are the service's own -- its server banner, its
+    // cookies, whatever a gateway added. Only the wait hint is for the browser.
+    vi.stubGlobal(
+      "fetch",
+      upstreamReturns(
+        429,
+        { detail: "this plate is already being rendered" },
+        {
+          "Retry-After": "30",
+          "Set-Cookie": "workflows_session=abc; Path=/",
+          Server: "uvicorn",
+          "X-Upstream-Host": "workflows:5100",
+        }
+      )
+    );
+
+    const res = await post({ plate_id: "P7", wave_number: 1 });
+
+    expect(res.headers.get("Retry-After")).toBe("30");
+    expect(res.headers.get("Set-Cookie")).toBeNull();
+    expect(res.headers.get("Server")).toBeNull();
+    expect(res.headers.get("X-Upstream-Host")).toBeNull();
+  });
 });
 
 describe("GET", () => {
@@ -359,6 +480,45 @@ describe("GET", () => {
     expect(res.status).toBe(400);
     expect(mockedStored).not.toHaveBeenCalled();
   });
+
+  it("asks storage for the wave the caller named", async () => {
+    // Nothing else pins this. Ignored, every plate that has a wave would be
+    // answered from the wrong wave's video, or from none.
+    mockedStored.mockResolvedValue({ status: "absent" });
+
+    await get("plate_id=P7&wave_number=3");
+
+    expect(mockedStored).toHaveBeenCalledWith(12, "P7", 3);
+  });
+
+  it("treats wave zero as a wave, not as no wave", async () => {
+    mockedStored.mockResolvedValue({ status: "absent" });
+
+    await get("plate_id=P7&wave_number=0");
+
+    expect(mockedStored).toHaveBeenCalledWith(12, "P7", 0);
+  });
+
+  it.each([["wave_number=-1"], ["wave_number=1.5"], ["wave_number=abc"]])(
+    "refuses the poll's %s without touching storage",
+    async (wave) => {
+      const res = await get(`plate_id=P7&${wave}`);
+
+      expect(res.status).toBe(400);
+      expect(mockedStored).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([["0"], ["-3"], ["12abc"], ["1e3"]])(
+    "refuses the poll's experiment id %s without touching storage",
+    async (experimentId) => {
+      const res = await get("plate_id=P7&wave_number=1", experimentId);
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).detail).toContain("experimentId");
+      expect(mockedStored).not.toHaveBeenCalled();
+    }
+  );
 
   it("reads a missing wave as no wave", async () => {
     mockedStored.mockResolvedValue({ status: "absent" });
