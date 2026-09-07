@@ -372,16 +372,35 @@ def verify_free_space(state_dir: Path) -> int:
     return free
 
 
-def sweep_best_effort() -> int:
+def sweep_best_effort(env_file: Path) -> int:
     """Sweep on a path that is already failing, without adding a new failure.
 
     A run that dies in config loading returns before the sweep below, so a
-    persistent config error (renamed deploy dir, unreadable env file) would let
-    an orphaned plaintext dump — `auth.users` and all — outlive the one-week
-    bound this job promises.
+    persistent config error would let an orphaned plaintext dump — `auth.users`
+    and all — outlive the one-week bound this job promises.
+
+    The working directory is read out of the env file here rather than out of
+    the environment, because the failures this runs on are exactly the ones
+    where that file was never loaded — leaving `_state_dir` to fall back to a
+    default that has nothing to do with this deployment. If the file cannot be
+    read, nothing is swept: a directory we had to guess at is not one to delete
+    from.
     """
+    configured = _env("BACKUP_STATE_DIR")
+    if not configured:
+        try:
+            configured = load_env_file(env_file).get("BACKUP_STATE_DIR", "") \
+                if env_file.is_file() else ""
+        except OSError as exc:
+            logger.warning("cannot read %s, so leaving any working directory "
+                           "in place: %s", env_file, exc)
+            return 0
+    if not configured:
+        logger.warning("no BACKUP_STATE_DIR in %s, so leaving any working "
+                       "directory in place", env_file)
+        return 0
     try:
-        state_dir = _state_dir()
+        state_dir = Path(configured).expanduser()
         return sweep_stale_work_dirs(state_dir) if state_dir.is_dir() else 0
     except OSError as exc:
         logger.warning("could not sweep stale working directories: %s", exc)
@@ -389,14 +408,31 @@ def sweep_best_effort() -> int:
 
 
 def sweep_stale_work_dirs(state_dir: Path) -> int:
-    """Remove dumps left by a run that was killed before its cleanup ran."""
-    stale = list(state_dir.glob("bloom-backup-*"))
-    for leftover in stale:
+    """Remove working directories left by a run killed before its cleanup ran.
+
+    Deliberately narrow: only entries directly inside state_dir, and only ones
+    named with this job's own prefix. Files and symlinks are skipped — rmtree
+    refuses both anyway, so this is about not reporting them as leftovers it
+    failed to remove. Returns how many were actually removed, not how many were
+    found.
+    """
+    removed = 0
+    stuck: list[str] = []
+    for leftover in state_dir.glob("bloom-backup-*"):
+        if leftover.is_symlink() or not leftover.is_dir():
+            continue
         shutil.rmtree(leftover, ignore_errors=True)
-    if stale:
+        if leftover.exists():
+            stuck.append(leftover.name)
+        else:
+            removed += 1
+    if removed:
         logger.warning("removed %d working dir(s) left by an interrupted run",
-                       len(stale))
-    return len(stale)
+                       removed)
+    for name in stuck:
+        logger.error("could not remove %s — it may still hold a plaintext dump",
+                     name)
+    return removed
 
 
 def _stream_to_gzip(cmd: list[str], out: Path, env: dict[str, str] | None = None) -> None:
@@ -707,7 +743,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("configuration error: %s", exc)
         # This run is over, but a dump orphaned by an earlier SIGKILL must not
         # outlive it just because the config is broken this week too.
-        sweep_best_effort()
+        sweep_best_effort(args.env_file or args.deploy_dir / f".env.{args.env}")
         return EXIT_CONFIG
 
     # The working copy holds a full dump. The context manager covers returns

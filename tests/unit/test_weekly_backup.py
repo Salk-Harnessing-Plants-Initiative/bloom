@@ -798,20 +798,155 @@ def test_a_dump_left_by_a_killed_run_is_swept_at_startup(tmp_path, monkeypatch):
     assert not orphan.exists(), "an orphaned dump survived the next run"
 
 
-def test_an_orphan_is_swept_even_when_this_run_cannot_start(tmp_path, monkeypatch):
-    # The sweep used to sit after config loading, so a persistent config error
-    # — renamed deploy directory, unreadable env file — meant every run
-    # returned before reaching it and the orphaned plaintext dump stayed put
-    # indefinitely, well past the one week the wiki promises.
-    state = tmp_path / "state"
+def _orphan_in(state: Path) -> Path:
+    """A working directory left behind by a run that was killed."""
     orphan = state / "bloom-backup-oldrun"
     orphan.mkdir(parents=True)
     (orphan / "postgres-postgres-20260824T021700Z.sql.gz").write_bytes(b"stale dump")
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(state))
+    return orphan
 
-    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path / "gone")])
-    assert rc == backup.EXIT_CONFIG
+
+def test_a_failing_run_sweeps_the_directory_the_env_file_names(tmp_path, monkeypatch):
+    # The path is only in the environment once the env file has been read, and
+    # the failures this runs on are the ones where that did not happen. Reading
+    # the environment instead of the file sent it to a default directory that
+    # has nothing to do with this deployment, so the orphan stayed put.
+    state = tmp_path / "state"
+    orphan = _orphan_in(state)
+    env_file = tmp_path / ".env.prod"
+    env_file.write_text(f"BACKUP_STATE_DIR={state}\n")
+    monkeypatch.delenv("BACKUP_STATE_DIR", raising=False)
+
+    assert backup.sweep_best_effort(env_file) == 1
     assert not orphan.exists(), "a failing run stranded a full plaintext dump"
+
+
+def test_an_unreadable_env_file_sweeps_nothing_rather_than_guessing(
+        tmp_path, monkeypatch):
+    # The safety net has a limit, and this is it. With no readable config there
+    # is no way to know which directory is this job's, and a directory we had to
+    # guess at is not one to delete from.
+    default_location = tmp_path / "home/.local/state/bloom-weekly-backup"
+    not_ours = _orphan_in(default_location)
+    monkeypatch.delenv("BACKUP_STATE_DIR", raising=False)
+    monkeypatch.setattr(backup, "DEFAULT_STATE_DIR", str(default_location))
+
+    assert backup.sweep_best_effort(tmp_path / "no-such.env") == 0
+    assert not_ours.exists(), "the default location must not be swept blind"
+
+
+def test_the_sweep_leaves_everything_that_is_not_its_own_working_directory(tmp_path, caplog):
+    # It runs unattended on a host holding the deploy tree and the database.
+    state = tmp_path / "state"
+    ours = _orphan_in(state)
+    a_file = state / "bloom-backup-notes.txt"
+    a_file.write_text("not a working directory")
+    elsewhere = tmp_path / "somebody-elses-data"
+    elsewhere.mkdir()
+    (elsewhere / "keep.txt").write_text("keep me")
+    link = state / "bloom-backup-link"
+    link.symlink_to(elsewhere, target_is_directory=True)
+    unrelated = state / "important-data"
+    unrelated.mkdir()
+
+    with caplog.at_level("ERROR"):
+        assert backup.sweep_stale_work_dirs(state) == 1
+    assert "could not remove" not in caplog.text, (
+        "a file or a symlink is not a leftover working directory, and calling "
+        "one out as a dump that could not be removed sends someone looking"
+    )
+    assert not ours.exists()
+    assert a_file.exists(), "a file is not a working directory"
+    assert link.is_symlink(), "a symlink must be left alone, not followed"
+    assert (elsewhere / "keep.txt").exists(), "deleting through a symlink escaped"
+    assert unrelated.exists()
+
+
+def test_the_script_deletes_in_exactly_one_place():
+    # The whole delete surface of a job that runs unattended, as root's
+    # neighbour, on a host holding the deploy tree and the live database.
+    # TemporaryDirectory removing the directory it created itself is not
+    # counted here — it can only ever remove its own.
+    source = _SCRIPT.read_text()
+    for call in ("rmtree(", "os.remove(", "os.unlink(", "os.rmdir(",
+                 ".unlink(", "shutil.move("):
+        expected = 1 if call == "rmtree(" else 0
+        assert source.count(call) == expected, (
+            f"{call} appears {source.count(call)} time(s); this job deletes in "
+            "one place and nowhere else"
+        )
+    # And that one call sits inside the sweep, not somewhere new.
+    sweep = source.split("def sweep_stale_work_dirs")[1].split("\ndef ")[0]
+    assert "rmtree(" in sweep
+
+
+def test_the_sweep_matches_only_this_jobs_own_directories_and_never_recurses():
+    source = _SCRIPT.read_text()
+    assert 'glob("bloom-backup-*")' in source, (
+        "the pattern decides what gets deleted; it must name this job's prefix"
+    )
+    assert "rglob" not in source, (
+        "a recursive glob would reach below the working directory and delete "
+        "matches anywhere underneath it"
+    )
+    assert 'prefix="bloom-backup-"' in source, (
+        "the prefix the sweep deletes and the prefix a run creates must match"
+    )
+
+
+def test_a_sweep_touches_nothing_outside_its_own_directory(tmp_path):
+    # The host layout as it really is: the deploy tree, the database's data,
+    # and the manual backups all live under the same /data/bloom parent as the
+    # working directory this job is allowed to delete from.
+    root = tmp_path
+    state = root / "data/bloom/backup-work/prod"
+    state.mkdir(parents=True)
+    ours = _orphan_in(state)
+
+    keep = [
+        root / "data/bloom/production/docker-compose.prod.yml",
+        root / "data/bloom/production/.env.prod",
+        root / "data/bloom/production/volumes/db/data/postgresql.conf",
+        root / "data/bloom/staging/.env.staging",
+        root / "data/bloom/backups/manual-dump.sql.gz",
+        root / "data/bloom/backup-work/staging/bloom-backup-otherenv/dump.sql.gz",
+    ]
+    for path in keep:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"do not touch")
+
+    assert backup.sweep_stale_work_dirs(state) == 1
+    assert not ours.exists()
+    for path in keep:
+        assert path.exists(), f"the sweep reached {path.relative_to(root)}"
+        assert path.read_bytes() == b"do not touch"
+
+
+def test_the_sweep_counts_what_it_removed_not_what_it_found(tmp_path):
+    # It reported the number it globbed. A leftover owned by another user
+    # cannot be removed, and saying it was is how a plaintext dump outlives the
+    # week the runbook promises while the log says it is gone.
+    state = tmp_path / "state"
+    stuck = _orphan_in(state)
+    state.chmod(0o500)  # readable and listable, but nothing can be unlinked
+    try:
+        assert backup.sweep_stale_work_dirs(state) == 0, "reported a removal that failed"
+        assert stuck.exists()
+    finally:
+        state.chmod(0o700)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root removes files regardless")
+def test_a_leftover_that_cannot_be_removed_is_reported(tmp_path, caplog):
+    state = tmp_path / "state"
+    _orphan_in(state)
+    state.chmod(0o500)
+    try:
+        with caplog.at_level("ERROR"):
+            backup.sweep_stale_work_dirs(state)
+        assert "may still hold a plaintext dump" in caplog.text
+    finally:
+        state.chmod(0o700)
 
 
 def test_a_broken_sweep_does_not_mask_the_error_that_caused_it(tmp_path, monkeypatch):
