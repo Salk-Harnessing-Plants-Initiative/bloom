@@ -214,9 +214,16 @@ class TestSkipMarkerContract:
         script = _strip_comments(summary_script)
         opener = "if has_flag skipped_names"
         assert opener in script, "there is no skipped-names notice to check"
-        branch = script[script.index(opener):][:1000]
+        branch = script[script.index(opener):][:1200]
         assert "renaming them in Supabase" in branch, "does not say what to do"
-        assert "partial" in branch, "does not say they stay in view"
+        # It does NOT stay in view: the run stays clean so one unfixable
+        # filename cannot freeze the watermark and make every later night
+        # re-read the whole table. That makes this the only notification, so
+        # the notice has to say so and point at the durable record.
+        assert "only night that will say so" in branch, (
+            "does not warn that this is the single notification"
+        )
+        assert "report on Box" in branch, "does not point at the durable record"
 
     def test_a_stale_ledger_on_box_is_reported_in_the_summary(self, summary_script: str):
         """The ledger upload is best-effort, so a refused or failed one leaves

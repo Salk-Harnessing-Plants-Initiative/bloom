@@ -462,24 +462,35 @@ class TestVerificationCanFailARun:
             crashed=False, failed=0, copied=100, limit=None, verify_mismatched=0
         ) == "ok"
 
-    def test_a_name_box_cannot_store_stops_the_run_being_a_watermark(self):
-        """The same permanent non-backup a refused collision is, and it used
-        to be treated as its opposite.
+    def test_a_name_box_cannot_store_does_not_hold_the_watermark(self):
+        """A deliberate trade, and the one place a skip differs from a
+        collision.
 
-        `skipped` was not a parameter at all, so the run recorded `ok`, the
-        watermark advanced past the object, and its `updated_at` never
-        changes — so no later incremental run enumerates it again. Gone from
-        the mirror for good, with a WARNING the summary did not surface as
-        the only trace.
+        Holding it would keep the object enumerated until someone renamed it —
+        but nothing clears it on its own, so one filename with a colon in it
+        freezes the watermark for good, and every night then re-reads all
+        eight million rows inside a 240-minute job. That is the scenario the
+        workflow header describes as failing nightly.
+
+        So it is reported rather than enforced: named with its reason in the
+        run report, and called out in the summary on the night it happens. One
+        notification, not a standing one. The object stays unbacked-up until a
+        person renames it at the source.
         """
         assert job.run_outcome(
-            crashed=False, failed=0, copied=100, limit=None, skipped=1
-        ) == "partial"
-
-    def test_no_skips_still_leaves_the_run_ok(self):
-        assert job.run_outcome(
-            crashed=False, failed=0, copied=100, limit=None, skipped=0
+            crashed=False, failed=0, copied=100, limit=None,
         ) == "ok"
+
+    def test_a_collision_still_holds_the_watermark(self):
+        """The neighbouring case, which keeps the opposite treatment.
+
+        Two names competing for one Box path is rarer, and a refused collision
+        can be cleared by renaming either one — so keeping it in view costs a
+        slow night, not a permanently frozen watermark.
+        """
+        assert job.run_outcome(
+            crashed=False, failed=0, copied=100, limit=None, collisions=1,
+        ) == "partial"
 
     def test_a_crash_still_outranks_a_mismatch(self):
         assert job.run_outcome(
@@ -1249,6 +1260,67 @@ class TestRunLockedWiresItsPartsTogether:
         assert job.run_locked(self.args(tmp_path, verify=4), tmp_path) == 0
         assert "all present and correct" in caplog.text
         assert job.VERIFY_INCOMPLETE_MARKER not in caplog.text
+
+    ILLEGAL = "exp-42/plate:7.png"   # a colon; Box cannot store it
+
+    def test_a_name_box_cannot_store_is_reported_but_does_not_freeze_the_run(
+        self, harness, monkeypatch, caplog
+    ):
+        """The decision, end to end.
+
+        Nothing on this side can fix such a name, so holding the watermark
+        would freeze it permanently and make every later night re-read all
+        eight million rows. The run stays clean and says so once instead —
+        which makes the report the durable record, and this test the only
+        thing standing between that trade and a silent drop.
+        """
+        import logging
+        import sqlite3 as _sqlite3
+
+        monkeypatch.setattr(
+            TestRunLockedWiresItsPartsTogether, "MANIFEST",
+            f"images\t{self.ILLEGAL}\tv1\t100\t2026-08-31T00:00:00+00\n"
+            "images\texp-42/fine.png\tv2\t200\t2026-08-31T00:00:01+00\n",
+        )
+        state, tmp_path = harness
+        with caplog.at_level(logging.INFO, logger="bloom_box_object_backup"):
+            code = job.run_locked(self.args(tmp_path), tmp_path)
+
+        assert code == 0, f"one bad filename failed the whole run (exit {code})"
+        with _sqlite3.connect(str(tmp_path / "ledger.db")) as conn:
+            outcome = conn.execute(
+                "SELECT outcome FROM runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+        assert outcome == "ok", (
+            f"recorded {outcome!r}: the watermark is frozen by a name nothing "
+            "here can fix, so every later night re-reads the whole table"
+        )
+        # Reported, or the trade becomes a silent drop.
+        assert job.SKIPPED_NAME_MARKER in caplog.text, "the skip is not reported"
+        assert "only night that will say so" in caplog.text.lower() or \
+               "ONLY NIGHT" in caplog.text, "does not warn it will not repeat"
+        assert f"{job.FLAGS_KEY}=skipped_names" in caplog.text, (
+            "the skip does not reach the summary"
+        )
+        # And the good object still copied.
+        assert any("fine.png" in c[2] for c in self.object_copies(state))
+
+    def test_a_skipped_name_is_named_in_the_run_report(
+        self, harness, monkeypatch, tmp_path
+    ):
+        """The report is now the only durable record, so it has to carry it."""
+        monkeypatch.setattr(
+            TestRunLockedWiresItsPartsTogether, "MANIFEST",
+            f"images\t{self.ILLEGAL}\tv1\t100\t2026-08-31T00:00:00+00\n",
+        )
+        state, tmp_path = harness
+        job.run_locked(self.args(tmp_path), tmp_path)
+        written = sorted((tmp_path / "_runs").glob("*.json"))
+        assert written, "no run report was written"
+        body = json.loads(written[-1].read_text())
+        assert body["skips"], "the report does not name the skipped object"
+        assert "plate" in body["skips"][0], body["skips"]
+        assert body["stats"]["skipped"] == 1
 
     def test_the_run_report_carries_the_run_s_verdict(self, harness, tmp_path):
         """The report is the verdict's second route home.

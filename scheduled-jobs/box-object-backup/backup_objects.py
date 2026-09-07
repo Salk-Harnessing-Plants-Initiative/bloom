@@ -413,7 +413,6 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             bucket_scoped=bool(args.buckets.strip()),
             stopped=stopping.stopping(),
             collisions=totals.collisions,
-            skipped=totals.skipped,
         )
         # The verdict is computed HERE, before the report is written, rather
         # than at the end of the function — so the report carries it.
@@ -491,9 +490,12 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             "%d %s Box cannot store. They are NOT backed up and nothing here "
             "can change that — only renaming them in Supabase can. Each is "
             "named with its reason in the run report under _runs/ on Box, and "
-            "in the `skipping` lines above. The run is recorded partial, so "
-            "they stay in view every night until they are renamed rather than "
-            "dropping out of sight after tonight.",
+            "in the `skipping` lines above.\n"
+            "THIS IS THE ONLY NIGHT THAT WILL SAY SO. The run is still "
+            "recorded clean, deliberately: holding the watermark for a name "
+            "nothing can fix on its own would make every later night re-read "
+            "the whole table. The report on Box is the durable record — read "
+            "it, and rename them at the source.",
             name_skips, SKIPPED_NAME_MARKER,
         )
     if totals.verify_mismatched:
@@ -664,7 +666,6 @@ def run_outcome(
     bucket_scoped: bool = False,
     stopped: bool = False,
     collisions: int = 0,
-    skipped: int = 0,
 ) -> str:
     """Classify a finished run — and decide whether it can be a watermark.
 
@@ -699,22 +700,29 @@ def run_outcome(
     them, so nothing would ever look at them again — the check would have
     found the fault and then buried it.
 
-    A run that skipped an object because Box cannot store its name is the same
-    situation as a refused collision, and was treated as its opposite. The
-    object is not backed up, nothing on this side can make it so, and only a
-    rename in Supabase fixes it — but `skipped` was not a parameter here at
-    all, so the run recorded `ok`, the watermark moved past it, and the
-    object's `updated_at` never changes, so no later incremental run ever
-    enumerates it again. Permanently absent from the mirror, with a WARNING
-    the summary did not surface as the only trace. It holds the watermark now,
-    on the same reasoning and at the same cost as a collision.
+    A run that skipped an object because Box cannot store its name does NOT
+    hold the watermark, deliberately, and this is the one case that differs
+    from a collision.
+
+    Holding it would keep the object enumerated every night until someone
+    renamed it — but nothing would ever clear it on its own, so one filename
+    with a colon in it freezes the watermark for good. Every night then
+    re-reads all eight million rows inside a 240-minute job, which is the
+    scenario the workflow header describes as failing nightly. A single
+    ordinary filename should not cost that.
+
+    So it is reported instead of enforced: named with its reason in the run
+    report on Box, which outlives the job log, and called out in the summary
+    on the night it happens. That is one notification rather than a standing
+    one, and it is a deliberate trade — the object stays unbacked-up until a
+    person renames it at the source.
     """
     if crashed:
         return "error"
     truncated = limit is not None and copied >= limit
     if (
         failed or truncated or verify_mismatched
-        or bucket_scoped or stopped or collisions or skipped
+        or bucket_scoped or stopped or collisions
     ):
         return "partial"
     return "ok"

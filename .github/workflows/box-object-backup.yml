@@ -519,9 +519,13 @@ jobs:
               echo "> characters, so those images were refused rather than"
               echo "> copied wrong. Nothing on this side can fix it — only"
               echo "> renaming them in Supabase can. Each is named with its"
-              echo "> reason in the run report under \`_runs/\` on Box. The run"
-              echo "> is recorded **partial**, so they stay in view every"
-              echo "> night until renamed instead of dropping out of sight."
+              echo "> reason in the run report under \`_runs/\` on Box."
+              echo ">"
+              echo "> **This is the only night that will say so.** The run is"
+              echo "> still recorded clean on purpose: holding the mirror's"
+              echo "> progress marker for a filename nothing can fix on its"
+              echo "> own would make every later night re-read all eight"
+              echo "> million rows. The report on Box is the durable record."
             fi
             # The mirror image of the notice above, and it must never be
             # merged with it: there, the host has the good ledger and Box is

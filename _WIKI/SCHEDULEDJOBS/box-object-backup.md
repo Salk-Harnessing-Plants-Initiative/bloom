@@ -293,11 +293,24 @@ scratch bucket for in-flight resumable uploads) is excluded by default.
 
 **A skipped object is not backed up, and only a rename in Supabase can change
 that.** The run says so — **Some images were not backed up because of their
-filenames** in the summary — and is recorded `partial`, which holds the
-watermark so the object stays enumerated every night until it is renamed. It
-used to record `ok`: the watermark moved past the object, its `updated_at`
-never changes, so no later incremental run enumerated it again and it was gone
-from the mirror for good, with one WARNING line as the only trace.
+filenames** in the summary — and names each one, with its reason, in the run
+report on Box.
+
+**That night is the only notification.** The run is still recorded clean, and
+the watermark advances past the object, so no later run enumerates it again.
+That is deliberate: nothing on this side can ever fix such a name, so holding
+the watermark would freeze it permanently, and every night would then re-read
+all eight million rows inside a 240-minute job — the scenario this page warns
+about under *Seed before promoting to `main`*. One ordinary filename should not
+cost that.
+
+The trade is that the reminder does not repeat. The report under `_runs/` on
+Box is the durable record, and it outlives the Actions log. Read it after a
+night that reports skips, and rename the objects at the source.
+
+A refused **name collision** is treated the opposite way and still holds the
+watermark — that one is rarer, and renaming either of the pair clears it, so
+keeping it in view costs a slow night rather than a frozen mirror.
 
 The report on Box names each one with its reason. Reading the report is the
 durable check — a journal rotates and an Actions log expires:
