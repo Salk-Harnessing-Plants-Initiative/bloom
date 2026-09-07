@@ -611,7 +611,7 @@ def test_each_frame_carries_its_own_elapsed_label(ffmpeg, tmp_path):
 
 # --- bounded -----------------------------------------------------------------
 #
-# The semaphore keeps four renders inside the container's memory limit and
+# The semaphore keeps concurrent renders inside the container's memory limit and
 # stops forty clicks saturating the link to storage; the lock stops two
 # requests for one plate both encoding it.
 
@@ -793,9 +793,10 @@ def test_asking_past_the_limit_refuses_rather_than_queueing():
 
 def test_the_encode_limit_is_the_number_the_service_is_sized_for():
     """Nothing else pins this: every other assertion reads the constant back.
-    Four 16-bit plates peak under 700MB together, which is the number a
-    container memory limit has to be read from."""
-    assert pe.MAX_CONCURRENT_ENCODES == 4
+    Four at the frame ceiling need 2133 MB against a 2g container, so the
+    service renders three at once. The arithmetic lives in
+    tests/unit/test_workflows_single_worker.py."""
+    assert pe.MAX_CONCURRENT_ENCODES == 3
 
 
 def test_releasing_a_slot_that_was_never_taken_is_caught():
@@ -1450,16 +1451,17 @@ def test_a_real_plate_and_a_finer_scan_of_it_are_both_accepted():
 
 
 def test_a_16_bit_plate_at_full_size_is_deliberately_refused():
-    """The scanners emit 8-bit RGB, so this is the insurance path, not a live
-    one. Refusing one legibly beats letting four reach the container limit. If a
-    16-bit scanner ever arrives this fails, which is the point."""
+    """The scanners emit 8-bit RGB, and the deep-mode reduction has never seen
+    real 16-bit data -- every test of it uses synthetic frames. So a full-size
+    16-bit plate is refused legibly rather than reduced by arithmetic nothing
+    has validated. If a 16-bit scanner arrives this fails, which is the point:
+    the reduction wants checking against a real frame first.
+
+    The container budget is a separate question and lives in
+    tests/unit/test_workflows_single_worker.py.
+    """
     assert pe.decoded_bytes(4960, 6850, "L") <= pe.MAX_FRAME_DECODED_BYTES
     assert pe.decoded_bytes(4960, 6850, "I;16") > pe.MAX_FRAME_DECODED_BYTES
-
-    # What four 16-bit frames would leave of the 2g limit for the interpreter
-    # (69 MB measured) and four ffmpeg children.
-    left = 2 * 1024**3 - 4 * pe.decoded_bytes(4960, 6850, "I;16")
-    assert left < 150 * 1024**2, "four would fit, so refusing them is not the trade"
 
 
 def test_an_oversized_frame_says_so_rather_than_being_called_unreadable():

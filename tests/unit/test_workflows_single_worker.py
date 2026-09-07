@@ -84,11 +84,24 @@ def _max_concurrent_encodes() -> int:
     return int(match.group(1))
 
 
-# What one render costs at 16-bit, all in: ~162 MB of frame measured by
-# tracemalloc, plus Pillow's decode buffer, which is allocated outside the
-# Python allocator and so is not in that figure. Recorded in plate_encode.py's
-# MAX_CONCURRENT_ENCODES comment.
-PER_ENCODE_BYTES = 350 * (1 << 20)
+def _max_frame_decoded_bytes() -> int:
+    """Read the ceiling the encoder enforces, not a figure recorded beside it.
+
+    A literal here drifts the moment the encoder's own number changes, which is
+    how this budget stopped being checked once the ceiling moved.
+    """
+    source = (REPO_ROOT / "services" / "workflows" / "plate_encode.py").read_text()
+    match = re.search(
+        r"^MAX_FRAME_DECODED_BYTES = (\d+) \* 1024\*\*2$", source, re.MULTILINE
+    )
+    assert match, "MAX_FRAME_DECODED_BYTES is no longer a plain literal"
+    return int(match.group(1)) * (1 << 20)
+
+
+# What the interpreter and one ffmpeg child cost, measured as peak RSS: 69 MB
+# for the service's imports, 54 MB per child at 1440x1990.
+BASELINE_BYTES = 69 * (1 << 20)
+PER_FFMPEG_BYTES = 54 * (1 << 20)
 
 
 def test_workflows_has_a_memory_limit():
@@ -143,12 +156,19 @@ def test_the_memory_limit_covers_the_encodes_the_service_allows():
     service = _workflows_service()
     concurrent = _max_concurrent_encodes()
     tmpfs = next(e for e in service["tmpfs"] if e.startswith("/tmp:"))
-    needed = concurrent * PER_ENCODE_BYTES + _bytes(_mount_options(tmpfs)["size"])
+    needed = (
+        concurrent * _max_frame_decoded_bytes()
+        + concurrent * PER_FFMPEG_BYTES
+        + BASELINE_BYTES
+        + _bytes(_mount_options(tmpfs)["size"])
+    )
 
     assert _bytes(service["mem_limit"]) >= needed, (
-        f"{concurrent} concurrent encodes need about {needed // (1 << 20)}m "
-        f"with the tmpfs, against a limit of {service['mem_limit']!r}. Raise "
-        "the limit or lower MAX_CONCURRENT_ENCODES."
+        f"{concurrent} encodes at the frame ceiling need about "
+        f"{needed // (1 << 20)}m with the interpreter, the ffmpeg children and "
+        f"the tmpfs, against a limit of {service['mem_limit']!r}. Raise the "
+        "limit, lower MAX_CONCURRENT_ENCODES, or lower "
+        "MAX_FRAME_DECODED_BYTES."
     )
 
 

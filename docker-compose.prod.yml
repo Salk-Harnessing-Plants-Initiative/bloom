@@ -206,13 +206,12 @@ services:
     # brings it back, so a runaway render costs this service a restart rather
     # than costing the stack its database.
     #
-    # 2g covers four concurrent 8-bit plates, which is what the scanners
-    # produce: 227 MB of frame each, measured as peak RSS. A 16-bit plate is
-    # 485 MB, and four would leave 104 MB of this limit for the interpreter and
-    # four ffmpeg children, so MAX_FRAME_DECODED_BYTES refuses one
-    # rather than letting four reach this limit. The tmpfs below is RAM-backed
-    # and counts here too, but holds only the finished MP4s (~3.5 MB each), not
-    # its 512m cap.
+    # Sized against MAX_CONCURRENT_ENCODES and MAX_FRAME_DECODED_BYTES, with
+    # the arithmetic in tests/unit/test_workflows_single_worker.py so the three
+    # cannot drift apart. Three renders at the 450 MB frame ceiling, plus a
+    # 69 MB interpreter, three 54 MB ffmpeg children and the tmpfs below, is
+    # 1709 MB. Peak RSS for a real 8-bit plate is 227 MB, so ordinary load is
+    # far under this.
     mem_limit: 2g
     # Without this Docker allows twice mem_limit in swap, so a runaway render
     # would grind against disk indefinitely instead of being killed — slowing
@@ -220,9 +219,9 @@ services:
     # to avoid. Equal values mean no swap: hit the ceiling and stop.
     memswap_limit: 2g
     tmpfs:
-      # Size-capped so the temp MP4 can't exhaust host RAM (sized for concurrent encodes
-      # in the one worker, with headroom).
-      - /tmp:mode=1777,size=512m
+      # RAM-backed, so this counts against mem_limit and is budgeted with the
+      # frames. Three concurrent MP4s are ~11 MB; 128m is the headroom.
+      - /tmp:mode=1777,size=128m
     security_opt:
       - no-new-privileges:true
     cap_drop:

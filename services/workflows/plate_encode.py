@@ -44,11 +44,12 @@ PLATE_VIDEO_WIDTH = 1440
 # not saturate the link to storage and make every other request slower — but it
 # is also the multiplier on a render's memory, so it is where a container limit
 # has to be read from. Peak RSS around `prepare_frame` on a 4960x6850 source:
-# 227 MB for 8-bit, 485 MB for 16-bit. Four 8-bit plates is under 1 GB; four
-# 16-bit would be 1.9 GB and are refused by MAX_FRAME_DECODED_BYTES instead.
-MAX_CONCURRENT_ENCODES = 4
+# 227 MB for 8-bit, 485 MB for 16-bit. Three at the frame ceiling, plus the
+# interpreter and their ffmpeg children, is what fits the container's 2g.
+MAX_CONCURRENT_ENCODES = 3
 
-# What one frame may cost to decode, four of which fit the container.
+# What one frame may cost to decode. MAX_CONCURRENT_ENCODES of these fit the
+# container; tests/unit/test_workflows_single_worker.py does the arithmetic.
 MAX_FRAME_DECODED_BYTES = 450 * 1024**2
 
 # Peak resident bytes per source pixel through prepare_frame.
