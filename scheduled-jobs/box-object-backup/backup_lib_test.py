@@ -679,6 +679,19 @@ class TestTheClientRedactsWhereTheErrorIsBuilt:
 
     SECRET = 'pa,ss"w:rd'
 
+    @staticmethod
+    def as_written(fs: str) -> str:
+        """The secret exactly as it appears inside a connection string.
+
+        Not `SECRET` itself: `_escape` wraps it in quotes and doubles the
+        one it contains, so the raw value never appears in an fs string and
+        `assert SECRET not in message` was true of every message ever
+        written, redacted or not.
+        """
+        written = fs.split("secret_access_key=", 1)[1].split(",region=", 1)[0]
+        assert written != "", fs
+        return written
+
     def client(self, monkeypatch, raises):
         import urllib.request
 
@@ -698,13 +711,31 @@ class TestTheClientRedactsWhereTheErrorIsBuilt:
         )
 
     def test_an_http_error_body_carrying_the_secret_is_redacted(self, monkeypatch):
+        """`json.dumps`, because an fs string is full of quotes.
+
+        Interpolated raw, the body was not valid JSON, so `_error_detail`
+        took its decode-failure path and returned the reason phrase — "err".
+        Both assertions then held against a string that had never contained
+        a credential, and `redact` could be deleted from this path with the
+        suite green. These are MinIO's ROOT keys.
+        """
+        import json
+
         from rclone_rc import RcloneError
 
         fs = MinioSource("http://m:9000", "rootuser", self.SECRET, "bloom-storage").fs()
-        client = self.client(monkeypatch, self.http_error(f'{{"error": "cannot read {fs}"}}'))
+        secret = self.as_written(fs)
+        body = json.dumps({"error": f"cannot read {fs}"})
+        # Against the DECODED value: JSON backslash-escapes the quotes that
+        # `_escape` put around the secret, and the client redacts what it
+        # decoded, not the wire bytes.
+        assert secret in json.loads(body)["error"], (
+            "the body under test does not carry the secret"
+        )
+        client = self.client(monkeypatch, self.http_error(body))
         with pytest.raises(RcloneError) as caught:
             client.copy_file("src", "a", "dst", "b")
-        assert self.SECRET not in str(caught.value)
+        assert secret not in str(caught.value)
         assert "rootuser" not in str(caught.value)
 
     def test_a_transport_error_carrying_the_secret_is_redacted(self, monkeypatch):
@@ -713,10 +744,32 @@ class TestTheClientRedactsWhereTheErrorIsBuilt:
         from rclone_rc import RcloneError
 
         fs = MinioSource("http://m:9000", "rootuser", self.SECRET, "bloom-storage").fs()
+        secret = self.as_written(fs)
         client = self.client(monkeypatch, urllib.error.URLError(f"refused for {fs}"))
         with pytest.raises(RcloneError) as caught:
             client.copy_file("src", "a", "dst", "b")
-        assert self.SECRET not in str(caught.value)
+        assert secret not in str(caught.value)
+        assert "rootuser" not in str(caught.value)
+
+    def test_a_body_that_is_not_json_at_all_is_still_redacted(self, monkeypatch):
+        """The decode-failure path falls back to the reason phrase.
+
+        rclone answers a malformed request with a plain-text body, and the
+        reason line is where the failing remote lands then — so it carries
+        the connection string exactly as the JSON path does, and it is the
+        branch that redacts by a different call.
+        """
+        from rclone_rc import RcloneError
+
+        fs = MinioSource("http://m:9000", "rootuser", self.SECRET, "bloom-storage").fs()
+        secret = self.as_written(fs)
+        err = self.http_error("<html>gateway</html>")
+        err.msg = f"cannot read {fs}"
+        client = self.client(monkeypatch, err)
+        with pytest.raises(RcloneError) as caught:
+            client.copy_file("src", "a", "dst", "b")
+        assert secret not in str(caught.value)
+        assert "rootuser" not in str(caught.value)
 
     def test_a_throttle_is_marked_retryable(self, monkeypatch):
         from rclone_rc import RcloneError
@@ -1038,6 +1091,40 @@ def test_a_direction_override_cannot_reorder_a_rendered_filename():
     rendered = loggable("images/exp\u202egnp.txt")
     assert "\u202e" not in rendered
     assert "\\u202e" in rendered, rendered
+
+
+def test_a_newline_in_a_name_cannot_start_a_line_of_its_own():
+    """A newline is plain ASCII, so an ASCII-only test let it through.
+
+    The workflow reads this run's verdict by anchoring on
+    `^<date> <time> <LEVEL> BOX_BACKUP_STATUS=`. An object whose name carries
+    a newline puts everything after it at the start of a log line — which is
+    the one position the anchor was added to protect. The name reaches a log
+    line on every refusal, retry and verification failure.
+    """
+    forged = "images/a\n2026-08-31 02:45:00,1 INFO BOX_BACKUP_STATUS=ok"
+    rendered = loggable(forged)
+    assert "\n" not in rendered, "the name still spans two lines"
+    assert "\\n" in rendered
+    assert not any(
+        line.startswith("2026-") for line in rendered.splitlines()[1:]
+    )
+
+
+def test_a_carriage_return_cannot_overwrite_the_line_it_is_on():
+    """The other half: \r redraws a terminal line from the start.
+
+    Not a forged log line but a hidden one — everything before the return
+    disappears from view in the Actions log.
+    """
+    rendered = loggable("images/a\rmirror complete")
+    assert "\r" not in rendered
+    assert "\\r" in rendered, rendered
+
+
+def test_a_path_that_is_merely_non_ascii_is_still_escaped():
+    """The printability test must not have replaced the ASCII one."""
+    assert loggable("images/caf\u00e9.png") != "images/caf\u00e9.png"
 
 
 # ---------- torn responses from the daemon ----------

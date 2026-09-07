@@ -72,7 +72,10 @@ def copy_all(
         try:
             copy_one(client, src_fs, lib.source_remote(obj, minio.prefix), box_fs, dst, obj)
         except RcloneError as exc:
-            logger.error("failed %s: %s", lib.loggable(obj.storage_path), exc)
+            logger.error(
+                "failed %s: %s",
+                lib.loggable(obj.storage_path), lib.loggable(str(exc)),
+            )
             with lock:
                 state["failed"] += 1
                 # Bounded: a bad night can fail millions of objects, and the
@@ -184,7 +187,8 @@ def copy_one(
             delay = RETRY_BASE_SECONDS * (2 ** (attempt - 1))
             logger.warning(
                 "retry %d/%d for %s in %ds: %s",
-                attempt, MAX_ATTEMPTS - 1, lib.loggable(obj.storage_path), delay, exc,
+                attempt, MAX_ATTEMPTS - 1, lib.loggable(obj.storage_path), delay,
+                lib.loggable(str(exc)),
             )
             time.sleep(delay)
 
@@ -256,7 +260,13 @@ def verify_sample(
         except RcloneError as exc:
             # Not a mismatch: Box was asked and did not answer. Warning, not
             # error, so it cannot be read as a missing object.
-            logger.warning("verify: could not check %s: %s", lib.loggable(dst), exc)
+            logger.warning(
+                # The path is in the exception text too: rclone echoes the
+                # remote it failed on. Escaping only the argument beside it
+                # printed the same name raw on the same line.
+                "verify: could not check %s: %s",
+                lib.loggable(dst), lib.loggable(str(exc)),
+            )
             unverified += 1
             continue
         checked += 1

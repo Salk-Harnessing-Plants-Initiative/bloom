@@ -1125,8 +1125,9 @@ def preflight_source(client: RcloneRC, minio: MinioSource, samples: list) -> Non
                 )
                 return
         except RcloneError as exc:
-            errors.append(str(exc))
-    listed = "\n".join(f"    {path}" for path in tried)
+            # rclone names the remote it failed on, so this is a path.
+            errors.append(lib.loggable(str(exc)))
+    listed = "\n".join(f"    {lib.loggable(path)}" for path in tried)
     detail = "\nErrors: " + "; ".join(errors) if errors else ""
     raise lib.BackupError(
         f"preflight failed: none of {len(tried)} sampled object(s) is in MinIO "

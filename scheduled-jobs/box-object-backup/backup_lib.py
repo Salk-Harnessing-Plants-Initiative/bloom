@@ -200,11 +200,16 @@ def iter_manifest(lines: Iterable[str]) -> Iterator[StorageObject]:
     """Stream objects out of tab-separated psql output, one line at a time.
 
     Prod has millions of rows, so the manifest is written to a file and
-    walked lazily rather than held as one string. Object names may contain
-    almost anything except a tab or a newline (Postgres would have to quote
-    those, and the Storage API never writes them), so a plain split is safe.
-    A row with the wrong field count is a parser bug, not a recoverable
-    condition — surface it rather than mirror garbage.
+    walked lazily rather than held as one string.
+
+    psql's unaligned tuples-only output does NOT quote or escape a tab or a
+    newline inside a value — it writes them through, and the row silently
+    becomes two lines or six fields. Nothing upstream forbids such a name
+    either; the Storage API has never written one, which is not the same as
+    being unable to. So the field count is the only thing standing between a
+    name like that and a misparsed row, and it must stay fatal: five fields
+    that came from two different objects parse perfectly and would mirror one
+    object's bytes under another's name.
     """
     for lineno, line in enumerate(lines, start=1):
         line = line.rstrip("\n")
@@ -242,11 +247,15 @@ def batches(objects: Iterable[StorageObject], size: int) -> Iterator[list[Storag
 # Path safety
 # ---------------------------------------------------------------------------
 
-def loggable(path: str) -> str:
-    """A path safe to put in a log line, and in the job summary it feeds.
+def loggable(text: str) -> str:
+    """Text safe to put in a log line, and in the job summary it feeds.
 
-    Escaped only when it is not plain ASCII, so ordinary paths stay readable.
-    Two reasons it has to be escaped at all:
+    Takes a path, or any message with a path inside it — rclone echoes the
+    failing remote back in its errors, so an exception's own text carries the
+    name just as directly as the argument beside it does.
+
+    Escaped when it is not plain ASCII, or not printable, so ordinary paths
+    stay readable. Three reasons it has to be escaped at all:
 
     Names that LOOK identical are the whole point of the collision guard —
     `café.png` composed and decomposed are different objects and the same Box
@@ -256,12 +265,18 @@ def loggable(path: str) -> str:
     And these lines reach `$GITHUB_STEP_SUMMARY`, where a right-to-left
     override in a name reorders the rendered filename for everyone reading it.
 
+    Printability is the third, and it is not cosmetic: the workflow reads the
+    run's verdict by anchoring on `^<date> <time> <LEVEL> BOX_BACKUP_STATUS=`.
+    A newline inside an object name is plain ASCII, so an ASCII-only test let
+    it through — and a name carrying one puts the rest of itself at the start
+    of a line, where it can forge the very line the summary trusts.
+
     One function rather than the idiom repeated at each call site: it was
     written inline in one module and simply not in the other, which is how
     the verification lines came to print raw paths while the skip lines did
     not.
     """
-    return path if path.isascii() else ascii(path)
+    return text if text.isascii() and text.isprintable() else ascii(text)
 
 
 def unsafe_reason(obj: StorageObject) -> str | None:

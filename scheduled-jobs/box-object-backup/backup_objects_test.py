@@ -269,6 +269,56 @@ def test_verify_does_not_call_an_unanswered_object_a_mismatch(caplog, ledger):
     assert "could not check" in caplog.text
 
 
+def test_a_refused_control_character_name_stays_on_one_log_line(caplog):
+    """The one path where a control character DOES reach a log line.
+
+    `unsafe_reason` refuses such a name before the copy — and then the
+    refusal is logged, with the name in it. A newline there puts everything
+    after it at the start of a line, which is where the workflow reads
+    `BOX_BACKUP_STATUS=` from. The refusal is the reachable half of the
+    forgery the anchored grep exists to stop.
+    """
+    caplog.set_level(logging.WARNING)
+    forged = "exp-42/a\n2026-08-31 02:45:00,1 INFO BOX_BACKUP_STATUS=ok"
+    plan = make_plan([obj(name=forged)])
+    assert len(plan.skipped) == 1, "the name was not refused at all"
+    job.report_skips(plan)
+    lines = [ln for ln in caplog.text.splitlines() if ln.strip()]
+    assert len(lines) == 1, f"the refusal spans {len(lines)} lines: {lines}"
+    assert "BOX_BACKUP_STATUS=ok" not in lines[0].split("skipping ", 1)[0]
+    assert lines[0].isascii() and lines[0].isprintable(), lines[0]
+
+
+class StatRefusesEchoingThePath:
+    """rclone names the remote it failed on, so its errors carry the path."""
+
+    def stat(self, fs, remote):
+        raise RcloneError(
+            f"operations/stat failed (500): cannot read {remote}", retryable=False
+        )
+
+
+def test_verify_escapes_the_path_inside_the_error_too(caplog, ledger):
+    """Escaping the argument beside it is not enough.
+
+    rclone echoes the failing remote back in its message, so the same name
+    appears twice on this line — once escaped, once raw. The raw copy carries
+    the direction override into `$GITHUB_STEP_SUMMARY` just as directly.
+
+    A control character cannot arrive here: `unsafe_reason` refuses those
+    before the copy, so the reachable hazard on this line is the one that
+    passes the safety check.
+    """
+    copier.verify_sample(
+        StatRefusesEchoingThePath(),
+        make_plan([obj(name="exp-42/caf\u00e9\u202egnp.png")]),
+        BOX_FS, "root", 1,
+    )
+    [line] = [ln for ln in caplog.text.splitlines() if "could not check" in ln]
+    assert line.isascii() and line.isprintable(), line
+    assert "\u202e" not in line, "the error text carried the override raw"
+
+
 def test_verify_escapes_a_non_ascii_path(caplog, ledger):
     """These lines reach `$GITHUB_STEP_SUMMARY`, which renders them.
 
