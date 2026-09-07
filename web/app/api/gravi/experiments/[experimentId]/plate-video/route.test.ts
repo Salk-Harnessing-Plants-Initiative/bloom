@@ -98,7 +98,11 @@ describe("POST", () => {
   it("does not refuse a plate that already has a video", async () => {
     // A plate keeps gaining captures, so a stored video is usually not wrong,
     // just short. Whether to re-render is the service's decision.
-    mockedStored.mockResolvedValue({ status: "present", url: "https://x/y.mp4" });
+    mockedStored.mockResolvedValue({
+      status: "present",
+      url: "https://x/y.mp4",
+      frames: 86,
+    });
     const fetchMock = upstreamReturns(200, RESULT);
     vi.stubGlobal("fetch", fetchMock);
 
@@ -270,12 +274,46 @@ describe("POST", () => {
 
 describe("GET", () => {
   it("reports the stored video's url", async () => {
-    mockedStored.mockResolvedValue({ status: "present", url: "https://x/y.mp4" });
+    mockedStored.mockResolvedValue({
+      status: "present",
+      url: "https://x/y.mp4",
+      frames: 86,
+    });
 
     const res = await get("plate_id=P7&wave_number=1");
 
     expect(res.status).toBe(200);
     expect((await res.json()).download_url).toBe("https://x/y.mp4");
+  });
+
+  it("reports what the stored video holds, not just that it exists", async () => {
+    // The count is recorded on gravi_plate_videos when the video is made; the
+    // poll is where a caller finds out without a second round trip.
+    mockedStored.mockResolvedValue({
+      status: "present",
+      url: "https://x/y.mp4",
+      frames: 86,
+    });
+
+    const res = await get("plate_id=P7&wave_number=1");
+
+    expect((await res.json()).frames).toBe(86);
+  });
+
+  it("still serves a video whose row is missing, with no count", async () => {
+    // Storage decides whether it exists. A missing row is a broken record, not
+    // an empty video -- the object plays either way.
+    mockedStored.mockResolvedValue({
+      status: "present",
+      url: "https://x/y.mp4",
+      frames: null,
+    });
+
+    const res = await get("plate_id=P7&wave_number=1");
+    const body = await res.json();
+
+    expect(body.download_url).toBe("https://x/y.mp4");
+    expect(body.frames).toBeNull();
   });
 
   it("reports no url when nothing is stored", async () => {

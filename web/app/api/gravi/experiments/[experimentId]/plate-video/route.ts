@@ -216,7 +216,10 @@ export async function GET(
     );
   }
 
+  // `frames` is null both when nothing is stored and when a stored video's row
+  // is missing. The caller has `download_url` to tell those apart.
   return NextResponse.json({
     download_url: stored.status === "present" ? stored.url : null,
+    frames: stored.status === "present" ? stored.frames : null,
   });
 }

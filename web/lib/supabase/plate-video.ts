@@ -17,8 +17,10 @@ const VIDEO_URL_TTL = 3600;
 // `unknown` exists because a failed lookup is not an absence. The plate page
 // reads it to decide what to offer, and reporting "no video" for a plate that
 // has one sends a scientist to re-render something that was already fine.
+// `frames` is null when the object is there and its row is not, which is a
+// broken record rather than an empty video — the object still plays.
 export type StoredPlateVideo =
-  | { status: "present"; url: string }
+  | { status: "present"; url: string; frames: number | null }
   | { status: "absent" }
   | { status: "unknown"; reason: string };
 
@@ -48,7 +50,29 @@ export async function getStoredPlateVideo(
   if (!url) {
     return { status: "unknown", reason: "storage returned no signed url" };
   }
-  return { status: "present", url };
+
+  // Storage decides whether a video exists; the row says what it holds. Read in
+  // that order, because a row can outlive its object — trusting it for presence
+  // would offer a player for a file that is gone.
+  // A plate with no wave is a real case, and `= NULL` matches nothing — the
+  // same branch the service makes on this column.
+  const base = supabase
+    .from("gravi_plate_videos")
+    .select("frame_count")
+    .eq("experiment_id", experimentId)
+    .eq("plate_id", plateId);
+  const { data: row } = await (waveNumber === null
+    ? base.is("wave_number", null)
+    : base.eq("wave_number", waveNumber)
+  ).maybeSingle();
+
+  if (!row) {
+    console.warn(
+      `no metadata present for stored plate video ${key}; serving it without a frame count`
+    );
+  }
+
+  return { status: "present", url, frames: row?.frame_count ?? null };
 }
 
 // The URL when one is stored, else null. For read-only callers that only need
