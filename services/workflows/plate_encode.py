@@ -408,6 +408,18 @@ def _fetch_frame(images, path: str, label: str) -> np.ndarray:
 # --- publishing --------------------------------------------------------------
 
 
+class VideoNotStored(RuntimeError):
+    """The encode succeeded; storage would not take the video.
+
+    Its own type because the answer differs from every other failure here: the
+    render is repeatable and nothing was changed, so this is worth retrying.
+    """
+
+    def __init__(self, message: str, key: str | None = None):
+        super().__init__(message)
+        self.key = key
+
+
 class NotRecorded(RuntimeError):
     """The video is stored but its row was not written.
 
@@ -477,7 +489,10 @@ def publish_plate_video(
         raise NotRecorded(f"the encoder produced an empty file at {video_path}", key)
 
     videos = client.storage.from_(GRAVISCAN_VIDEOS_BUCKET)
-    videos.upload(key, video, {"content-type": "video/mp4", "upsert": "true"})
+    try:
+        videos.upload(key, video, {"content-type": "video/mp4", "upsert": "true"})
+    except Exception as exc:
+        raise VideoNotStored(f"{key} could not be stored: {exc}", key) from exc
 
     recorded = {
         "p_experiment_id": experiment_id,

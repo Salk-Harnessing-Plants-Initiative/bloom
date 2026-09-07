@@ -18,6 +18,7 @@ from plate_encode import (
     FrameTooLarge,
     FrameUnreadable,
     NotRecorded,
+    VideoNotStored,
     PlateMismatch,
     render_plate_video,
 )
@@ -80,6 +81,11 @@ def render(experiment_id: int, body: dict) -> dict:
             f"{exc.path} could not be read" if exc.path else "a frame could not be read"
         )
         raise HTTPException(status_code=502, detail=named) from exc
+    except VideoNotStored as exc:
+        # A storage read that fails during planning already answers 503. The
+        # same failure one call later said 500, which reads as "do not retry".
+        logger.warning("plate video could not be stored: %r", exc)
+        raise HTTPException(status_code=503, detail=UNAVAILABLE) from exc
     except NotRecorded as exc:
         # The key only, for the reason above.
         logger.error("plate video stored but not recorded: %r", exc)
@@ -115,7 +121,9 @@ def render(experiment_id: int, body: dict) -> dict:
         )
 
     # What the video holds: the encoder's count when one was made, the stored
-    # video's own when it was kept, and the plan only when neither exists.
+    # video's own when it was kept. On a keep an unrecorded count stays null --
+    # the plate's own frames are not what the stored video holds, and reporting
+    # them said a playable video held zero.
     recorded = outcome.get("recorded") or {}
     held = recorded.get("frame_count", outcome.get("stored_frames"))
 
@@ -126,7 +134,9 @@ def render(experiment_id: int, body: dict) -> dict:
         "action": outcome["action"],
         "reason": outcome["reason"],
         "object_path": outcome["key"],
-        "frames": held if held is not None else len(outcome.get("frames") or []),
+        "frames": held
+        if outcome["action"] == "keep" or held is not None
+        else len(outcome.get("frames") or []),
         "coverage": outcome.get("coverage"),
     }
 

@@ -132,6 +132,22 @@ def test_the_id_bounds_are_the_columns_they_stand_for():
     assert pr.MAX_EXPERIMENT_ID == 2**31 - 1
 
 
+def test_a_storage_failure_on_upload_says_come_back_not_stop(monkeypatch):
+    """The same storage blip during planning already answers 503. One call later
+    it said 500, which reads as "do not retry" -- for the more likely of the two,
+    since the upload takes longer than the check."""
+    def wont_store(*a, **k):
+        raise pr.VideoNotStored("12/wave-1/P7.mp4 could not be stored: 502", "12/wave-1/P7.mp4")
+
+    monkeypatch.setattr(pr, "render_plate_video", wont_store)
+    with pytest.raises(HTTPException) as ei:
+        pr.render(12, {"plate_id": "P7", "wave_number": 1})
+
+    assert ei.value.status_code == 503
+    assert ei.value.detail == pr.UNAVAILABLE
+    assert "502" not in ei.value.detail
+
+
 def test_an_oversized_frame_is_413_and_says_the_size(monkeypatch):
     """Not 502 "could not be read" — that sends someone to rescan a plate that
     scanned correctly. The message carries dimensions and a limit, neither of
@@ -206,12 +222,19 @@ def test_a_render_reports_the_frames_the_encoder_wrote(monkeypatch):
     assert pr.render(12, {"plate_id": "P7", "wave_number": 1})["frames"] == 7
 
 
-def test_a_keep_reports_the_frames_the_plate_has(monkeypatch):
-    """Nothing was encoded, so there is no encoder count to prefer."""
-    outcome = _rendered(action="keep", reason="already covers 4", frames=[{}] * 4)
+def test_a_keep_with_no_recorded_count_reports_none_not_zero(monkeypatch):
+    """The stored video is what is handed back, and the plate's own frames are
+    not what it holds. Reporting them said a real, playable video held zero
+    frames on the one branch where both are empty."""
+    outcome = _rendered(
+        action="keep",
+        reason="the stored video is kept; no frames are visible",
+        frames=[],
+        stored_frames=None,
+    )
     monkeypatch.setattr(pr, "render_plate_video", _renders(outcome))
 
-    assert pr.render(12, {"plate_id": "P7", "wave_number": 1})["frames"] == 4
+    assert pr.render(12, {"plate_id": "P7", "wave_number": 1})["frames"] is None
 
 
 @pytest.mark.parametrize(

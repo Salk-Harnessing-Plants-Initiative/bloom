@@ -1075,6 +1075,38 @@ def test_a_download_failure_carries_the_path_it_happened_to():
     assert caught.value.path == "12/wave-1/P7_40.tif"
 
 
+def test_a_failed_upload_is_its_own_failure_not_a_recording_one(tmp_path):
+    """Nothing was stored, so this is not NotRecorded -- that one means the
+    object is there and only the row is missing, which the next request repairs.
+    Driven through the real upload so the raise site is what is tested."""
+    video = tmp_path / "plate.mp4"
+    video.write_bytes(b"\x00" * 32)
+
+    class _Videos:
+        def upload(self, *a, **k):
+            raise Exception("502 Bad Gateway from storage")
+
+    class _Client:
+        storage = type("_S", (), {"from_": lambda self, b: _Videos()})()
+
+        def rpc(self, name, params):
+            raise AssertionError("nothing may be recorded for a video never stored")
+
+    with pytest.raises(pe.VideoNotStored) as caught:
+        pe.publish_plate_video(
+            _Client(),
+            "12/wave-1/P7.mp4",
+            str(video),
+            experiment_id=12,
+            plate_id="P7",
+            wave_number=1,
+            frame_count=86,
+        )
+
+    assert caught.value.key == "12/wave-1/P7.mp4"
+    assert not isinstance(caught.value, pe.NotRecorded)
+
+
 def test_a_recording_failure_carries_the_key_it_concerns(tmp_path):
     """The same, for the key `NotRecorded` is named by."""
     video = tmp_path / "plate.mp4"
