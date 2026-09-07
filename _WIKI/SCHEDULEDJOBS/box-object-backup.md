@@ -81,8 +81,15 @@ objects — inside a job that GitHub kills at 240 minutes. It would fail every
 night until someone intervened. Once a seed is under way the lock makes the
 scheduled job stand down, but the lock cannot help if no seed has started.
 
-Safe order: merge to `staging` → deploy → dry run → smoke test → seed by hand
-over several nights → then promote to `main`.
+Safe order: merge to `staging` → deploy → dry run → smoke test → **second
+smoke test more than an hour later** → seed by hand over several nights →
+promote to `main` → **approve the production deploy** → first scheduled night.
+
+**The production deploy is a step, not a formality.** Promoting to `main` arms
+the 02:17 schedule immediately, but the prod tree is only updated inside the
+deploy job, which waits for an approval. Leave that approval pending and the
+first scheduled night SSHes to a prod tree holding neither this script nor the
+`BACKUP_*` keys in `.env.prod`, and fails at the first config lookup.
 
 **The workflow cannot fire until this file reaches `main`.** GitHub honours
 `schedule:` and `workflow_dispatch` only from the default branch, so merging
@@ -146,7 +153,8 @@ script out of the staging tree still mirrors production.
 Prove the path end to end before committing to days of transfer:
 
 ```bash
-# 1. reads Postgres only, copies nothing
+# 1. copies nothing. Checks every setting above, the rclone config and the
+#    Box root BEFORE reading the table, then lists what a real run would do.
 python3 "$DEPLOY/scheduled-jobs/box-object-backup/backup_objects.py" \
     --env prod --dry-run
 
@@ -156,6 +164,23 @@ python3 "$DEPLOY/scheduled-jobs/box-object-backup/backup_objects.py" \
 ```
 
 Then open the Box folder and confirm the images preview.
+
+**3. Run step 2 again, more than an hour later, before starting the seed.**
+Box access tokens last about an hour. The rclone config is mounted read-only,
+so a refresh lives in the daemon's memory and is never written back — which is
+fine within one run and unproven across two. If Box rotates the refresh token,
+the copy on disk is spent and this second run is where that shows up, in
+minutes, instead of on night three of a seed. If it fails to authenticate, run
+`rclone config reconnect box:` and start the pair again.
+
+**The ledger remembers where it mirrored to.** The first real run records
+`<BACKUP_BOX_REMOTE>:<BACKUP_BOX_ROOT>`, and any later run pointed somewhere
+else is refused before it reads a row. That is deliberate: the ledger tracks
+which objects are copied, not where, so against a different folder it would
+report millions of objects as already backed up while that folder stayed
+empty. If the mirror genuinely has to move, move the folder on Box and keep
+the recorded value, or point `BACKUP_STATE_DIR` at a new directory and seed
+the new location from scratch.
 
 **On a rebuilt host, restore the ledger before step 2.** Step 1 is a dry run
 and copies nothing, but step 2 copies twenty objects, and a run that copies
@@ -396,10 +421,11 @@ The two names look identical, which is why they collide, so the log escapes
 them: one reads `cafe\u0301.png` and the other `caf\xe9.png`. Match the escaped
 form against what Supabase shows.
 
-Do **not** delete the ledger row here, even though that is the remedy for a
-verification mismatch. The row belongs to the object that won the path; delete
-it and the refused object takes the path and overwrites the winner's file on
-Box, which nothing then repairs.
+Do **not** delete the ledger row here. Nothing in this job deletes a ledger
+row — it has no way to — and doing it by hand is worse than it looks: the row
+belongs to the object that **won** the path, so removing it lets the refused
+object take that path and overwrite the winner's file on Box, which nothing
+then repairs. The rename is the whole remedy.
 
 Such a run is recorded `partial`, deliberately, so the watermark does not move
 past an object that is not on Box. Until the rename, each night re-reads
@@ -573,10 +599,19 @@ both halves, in this order:
 
 1. Restore the Postgres dump. That brings back `storage.objects`, including
    each object's `version`.
-2. For each row, upload the Box copy at `<bucket_id>/<name>` back to MinIO
-   at `<BACKUP_MINIO_BUCKET>/<BACKUP_MINIO_PREFIX>/<bucket_id>/<name>/<version>`
+2. For each row, upload the Box copy back to MinIO at
+   `<BACKUP_MINIO_BUCKET>/<BACKUP_MINIO_PREFIX>/<bucket_id>/<name>/<version>`
    — with the deployed defaults, that is
    `bloom-storage/storage-single-tenant/<bucket_id>/<name>/<version>`.
+
+   **Read the Box copy at the NFC-normalized name, not the raw one.** The job
+   writes to `<bucket_id>/` + `unicodedata.normalize("NFC", name)`, because
+   that is the only way two spellings of the same accented filename cannot
+   silently become two different Box paths. Ask Box for the raw row name and
+   an accented filename 404s — which is exactly the set of names the
+   collision guard exists for, so the failures land on the rows that were
+   hardest to get right in the first place. Write back to MinIO under the
+   **raw** name: that is what storage-api serves.
 
    **Rows with a NULL `version` take no suffix**, matching what the job read:
    `…/<bucket_id>/<name>`. Appending a version to those creates an object

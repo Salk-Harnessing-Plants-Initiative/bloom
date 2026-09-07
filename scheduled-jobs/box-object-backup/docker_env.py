@@ -276,10 +276,19 @@ def start_rc_daemon(
     copy it from its own environment, where only the owner can read it.
 
     The config file is mounted read-only: it holds the Box OAuth token, and
-    a run that refreshes the token in a throwaway container copy would lose
-    the refresh. Box tokens are long-lived, so the tradeoff is a token the
-    operator refreshes with `rclone config reconnect box:` if it ever
-    expires — not silent, and not a credential the container can rewrite.
+    a container that could rewrite it is a container that could exfiltrate a
+    rewritten one.
+
+    The cost is that a refresh cannot be persisted. Box access tokens last
+    about an hour, so a run longer than that refreshes at least once —
+    in the daemon's memory, which is enough for the run itself and is why the
+    end-to-end test passed. What is NOT established is whether the refresh
+    token on disk still works for the NEXT run: if Box rotates it, the copy
+    in the read-only file is spent and every later run fails to authenticate.
+    The runbook gates the seed on two smoke runs more than an hour apart for
+    exactly this, and the remedy either way is
+    `rclone config reconnect box:` — not silent, and not something the
+    container can do to itself.
     """
     name = f"{RC_CONTAINER_PREFIX}-{secrets.token_hex(4)}"
     user = "bloom"

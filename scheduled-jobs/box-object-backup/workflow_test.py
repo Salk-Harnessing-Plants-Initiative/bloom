@@ -1,13 +1,15 @@
 """Tests for the cross-file contract between this job and its workflow.
 
-`runlock.SKIP_MARKER` is printed by the Python and grepped by the YAML. That
-is a contract spanning two files in two languages with nothing but a comment
-holding it together — exactly the kind that rots silently. An earlier version
-of this job carried a comment naming a workflow file that did not exist at
-all, and nothing noticed.
+The job prints `BOX_BACKUP_STATUS=` and `BOX_BACKUP_FLAGS=` and the YAML reads
+them, anchored to the start of a log line. That is a contract spanning two
+files in two languages, over a closed vocabulary defined in only one of them —
+exactly the kind that rots silently. An earlier version of this job carried a
+comment naming a workflow file that did not exist at all, and nothing noticed.
 
-These assertions are deliberately about *shape*, not behaviour: they cannot
-prove the workflow runs, only that it still agrees with the code it drives.
+Some assertions here are about *shape*: they cannot prove the workflow runs,
+only that it still agrees with the code it drives. The ones that matter most
+execute the real step under `bash -e` against a real log instead, because the
+order of a branch chain is not visible in any single line of it.
 """
 
 from __future__ import annotations

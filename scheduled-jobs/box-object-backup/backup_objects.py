@@ -93,12 +93,13 @@ LEDGER_AHEAD_MARKER = "the ledger on Box is AHEAD of this host"
 # "2 verified" headline claims far more than was established.
 VERIFY_INCOMPLETE_MARKER = "verification did NOT cover its sample"
 
-# Objects refused before any copy because Box cannot store the name. Same
-# outcome as a refused collision — not backed up, and only a rename in
-# Supabase fixes it — so it gets the same treatment: the run is `partial`, the
-# object stays enumerated, and the summary says so. Deliberately NOT sharing
-# the collision phrase ("were NOT backed up"), which the summary greps for and
-# which carries collision-specific advice.
+# Objects refused before any copy because Box cannot store the name. A
+# collision is the other kind of permanent non-backup, and the two carry
+# opposite advice — rename either of the colliding pair, versus rename this
+# one and nothing else will do — so they stay separate lines with separate
+# flags. Unlike a collision this one does NOT hold the watermark: nothing on
+# this side can ever fix such a name, so holding it would freeze the mirror's
+# progress for good.
 SKIPPED_NAME_MARKER = "object(s) were SKIPPED for their names"
 
 # The summary used to decide what to print by searching the whole job log for
@@ -679,19 +680,18 @@ def exit_code(
     never re-checks it — the count returns to 0 and the run reports clean. The
     run deliberately does not touch the ledger to compensate: this is a backup,
     and nothing here deletes a record of what is on Box. Restoring the object
-    needs a person, and the run report names it.
+    needs a person, and the run report names it under `verify_failures`.
     """
     if failed:
         return 1
     if verify_mismatched:
         return 4
-    # Its own code rather than 4, because the remedies are opposite and one
-    # is dangerous here. Exit 4 says delete the ledger row so the object is
-    # copied again. Do that for a collision and the row you delete belongs to
-    # the object that WON the path — the refused one has no row. The winner is
-    # then behind the watermark and not re-enumerated, so the refused object
-    # takes the path and overwrites the winner's file on Box, permanently.
-    # This needs a rename in Supabase instead.
+    # Its own code rather than 4, because the two need opposite things done.
+    # A mismatch is about an object the ledger says is on Box and is not; a
+    # collision is about an object that never got there, whose path is held
+    # by a different object's row. Only a rename in Supabase clears it, and
+    # renaming the wrong one of the pair leaves the refused object refused
+    # for ever.
     if collisions:
         return 5
     # The ledger's Box copy is not what it should be — either stale or ahead
@@ -1243,10 +1243,12 @@ def wait_for_daemon(daemon: dock.RcDaemon, attempts: int = 30) -> RcloneRC:
 def report_collisions(count: int) -> None:
     """The line a run prints when it refused objects, real or dry.
 
-    The workflow summary greps this phrase, so it is the difference between a
-    night that says OBJECTS NOT BACKED UP and one that says succeeded. Shared
-    with the dry run deliberately: a dry run is what an operator runs first,
-    and it was the one path where a refused collision stayed invisible.
+    What the summary branches on is the `collisions` flag, not this text —
+    the phrase greps are gone, because an object name can contain any phrase.
+    This is the line that says WHICH objects and what to do about them, which
+    the flag cannot carry. Shared with the dry run deliberately: a dry run is
+    what an operator runs first, and it was the one path where a refused
+    collision stayed invisible.
     """
     logger.error(
         "%d object(s) were NOT backed up: their names normalize onto a path "
