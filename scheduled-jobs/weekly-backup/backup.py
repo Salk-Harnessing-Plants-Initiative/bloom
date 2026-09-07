@@ -132,9 +132,11 @@ class ConfigError(RuntimeError):
 class VerificationError(RuntimeError):
     """An artifact was produced but cannot be a usable dump."""
 
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
@@ -230,8 +232,9 @@ def _pg_database() -> str:
     return name
 
 
-def dump_command(container: str, argv: list[str],
-                 password: str) -> tuple[list[str], dict[str, str]]:
+def dump_command(
+    container: str, argv: list[str], password: str
+) -> tuple[list[str], dict[str, str]]:
     """A docker exec of argv, plus the environment it must be run with.
 
     `-e PGPASSWORD` carries no `=value` on purpose: that form tells docker to
@@ -249,6 +252,7 @@ def _which(name: str) -> str:
         raise ConfigError(f"required binary not on PATH: {name}")
     return found
 
+
 def _run(cmd: list[str], cwd: Path | None = None) -> str:
     """Run a command, log its output to the journal, raise on non-zero exit."""
     logger.info("running: %s", " ".join(cmd))
@@ -260,6 +264,7 @@ def _run(cmd: list[str], cwd: Path | None = None) -> str:
             result.returncode, cmd, output=result.stdout, stderr=result.stderr
         )
     return result.stdout
+
 
 def compose_project(env_name: str) -> str:
     """The compose project this environment's stack was brought up under."""
@@ -280,10 +285,14 @@ def compose_args(deploy_dir: Path, env_name: str) -> list[str]:
     file and dump the PRODUCTION database into staging's Box folder.
     """
     return [
-        "-p", compose_project(env_name),
-        "-f", str(deploy_dir / COMPOSE_FILE),
-        "--env-file", str(deploy_dir / f".env.{env_name}"),
+        "-p",
+        compose_project(env_name),
+        "-f",
+        str(deploy_dir / COMPOSE_FILE),
+        "--env-file",
+        str(deploy_dir / f".env.{env_name}"),
     ]
+
 
 def parse_container_id(ps_output: str) -> str:
     """Pick the container id out of `compose ps -q` output.
@@ -308,16 +317,25 @@ def resolve_container(deploy_dir: Path, env_name: str) -> str:
     differs per host, so a hardcoded container name is wrong somewhere.
     """
     out = _run(
-        [_which("docker"), "compose", *compose_args(deploy_dir, env_name), "ps", "-q", DB_SERVICE],
+        [
+            _which("docker"),
+            "compose",
+            *compose_args(deploy_dir, env_name),
+            "ps",
+            "-q",
+            DB_SERVICE,
+        ],
         cwd=deploy_dir,
     )
     container = parse_container_id(out)
     logger.info("resolved %s container: %s", DB_SERVICE, container[:12])
     return container
 
+
 # ---------------------------------------------------------------------------
 # Dump + verify
 # ---------------------------------------------------------------------------
+
 
 def _terminate(signum: int, _frame: object) -> None:
     """Turn a kill signal into an exception so the working dir unwinds.
@@ -390,15 +408,23 @@ def sweep_best_effort(env_file: Path) -> int:
     configured = _env("BACKUP_STATE_DIR")
     if not configured:
         try:
-            configured = load_env_file(env_file).get("BACKUP_STATE_DIR", "") \
-                if env_file.is_file() else ""
+            configured = (
+                load_env_file(env_file).get("BACKUP_STATE_DIR", "")
+                if env_file.is_file()
+                else ""
+            )
         except OSError as exc:
-            logger.warning("cannot read %s, so leaving any working directory "
-                           "in place: %s", env_file, exc)
+            logger.warning(
+                "cannot read %s, so leaving any working directory in place: %s",
+                env_file,
+                exc,
+            )
             return 0
     if not configured:
-        logger.warning("no BACKUP_STATE_DIR in %s, so leaving any working "
-                       "directory in place", env_file)
+        logger.warning(
+            "no BACKUP_STATE_DIR in %s, so leaving any working directory in place",
+            env_file,
+        )
         return 0
     try:
         state_dir = Path(configured).expanduser()
@@ -428,15 +454,15 @@ def sweep_stale_work_dirs(state_dir: Path) -> int:
         else:
             removed += 1
     if removed:
-        logger.warning("removed %d working dir(s) left by an interrupted run",
-                       removed)
+        logger.warning("removed %d working dir(s) left by an interrupted run", removed)
     for name in stuck:
-        logger.error("could not remove %s — it may still hold a plaintext dump",
-                     name)
+        logger.error("could not remove %s — it may still hold a plaintext dump", name)
     return removed
 
 
-def _stream_to_gzip(cmd: list[str], out: Path, env: dict[str, str] | None = None) -> None:
+def _stream_to_gzip(
+    cmd: list[str], out: Path, env: dict[str, str] | None = None
+) -> None:
     """Run cmd, pipe it through gzip into out, and check BOTH exit statuses.
 
     A shell pipeline reports only the last process, which is how a truncated
@@ -467,8 +493,12 @@ def _stream_to_gzip(cmd: list[str], out: Path, env: dict[str, str] | None = None
         # source exit non-zero too — so checking the source first reports a full
         # disk as "pg_dump died". The other direction still works: a source that
         # fails closes its stdout, gzip sees EOF and exits 0.
-        logger.error("gzip failed writing %s — %s bytes free on %s", out.name,
-                     f"{shutil.disk_usage(out.parent).free:,}", out.parent)
+        logger.error(
+            "gzip failed writing %s — %s bytes free on %s",
+            out.name,
+            f"{shutil.disk_usage(out.parent).free:,}",
+            out.parent,
+        )
         raise subprocess.CalledProcessError(gzip_proc.returncode, ["gzip"])
     if src_proc.returncode != 0:
         raise subprocess.CalledProcessError(src_proc.returncode, cmd, stderr=src_err)
@@ -567,8 +597,9 @@ def verify_globals_content(path: Path) -> int:
     return roles
 
 
-def dump_database(container: str, work_dir: Path, timestamp: str,
-                  password: str) -> Path:
+def dump_database(
+    container: str, work_dir: Path, timestamp: str, password: str
+) -> Path:
     """Dump the whole database, keeping owners and privileges."""
     pg_user = _env("POSTGRES_USER", "supabase_admin")
     pg_db = _pg_database()
@@ -576,8 +607,15 @@ def dump_database(container: str, work_dir: Path, timestamp: str,
     logger.info("dumping database %s -> %s", pg_db, out.name)
     cmd, env = dump_command(
         container,
-        ["pg_dump", "-U", pg_user, "-d", pg_db, "--format=plain",
-         f"--lock-wait-timeout={LOCK_WAIT_TIMEOUT_MS}"],
+        [
+            "pg_dump",
+            "-U",
+            pg_user,
+            "-d",
+            pg_db,
+            "--format=plain",
+            f"--lock-wait-timeout={LOCK_WAIT_TIMEOUT_MS}",
+        ],
         password,
     )
     _stream_to_gzip(cmd, out, env=env)
@@ -586,8 +624,7 @@ def dump_database(container: str, work_dir: Path, timestamp: str,
     return out
 
 
-def dump_globals(container: str, work_dir: Path, timestamp: str,
-                 password: str) -> Path:
+def dump_globals(container: str, work_dir: Path, timestamp: str, password: str) -> Path:
     """Dump the roles the database dump's OWNER/GRANT statements reference."""
     pg_user = _env("POSTGRES_USER", "supabase_admin")
     out = work_dir / f"globals-{timestamp}.sql.gz"
@@ -606,13 +643,22 @@ def dump_globals(container: str, work_dir: Path, timestamp: str,
 # ---------------------------------------------------------------------------
 
 
-def format_summary(env_name: str, timestamp: str, artifacts: list[Path],
-                   destination: str, uploaded: bool) -> str:
+def format_summary(
+    env_name: str,
+    timestamp: str,
+    artifacts: list[Path],
+    destination: str,
+    uploaded: bool,
+) -> str:
     """A short human-readable record of the run, for the weekly glance."""
     lines = [
         f"env: {env_name}",
         f"run: {timestamp}",
-        f"destination: {destination}" if uploaded else "destination: (dry run — not uploaded)",
+        (
+            f"destination: {destination}"
+            if uploaded
+            else "destination: (dry run — not uploaded)"
+        ),
         "artifacts:",
     ]
     for artifact in artifacts:
@@ -623,8 +669,14 @@ def format_summary(env_name: str, timestamp: str, artifacts: list[Path],
 
 # Retry the upload rather than lose a verified dump to a blip; rclone's own
 # backoff, so nothing here re-implements one.
-RCLONE_RETRY_ARGS = ["--retries", "5", "--retries-sleep", "30s",
-                     "--low-level-retries", "20"]
+RCLONE_RETRY_ARGS = [
+    "--retries",
+    "5",
+    "--retries-sleep",
+    "30s",
+    "--low-level-retries",
+    "20",
+]
 
 
 def backup_destination(env_name: str) -> tuple[str, str]:
@@ -650,7 +702,15 @@ def upload(artifacts: list[Path], env_name: str, timestamp: str) -> str:
     logger.info("uploading %d artifact(s) to %s", len(artifacts), destination)
     # A transient blip on the way to Box would otherwise discard a dump that is
     # already taken and verified, and the next attempt is a week away.
-    _run([_which("rclone"), "copy", str(work_dirs.pop()), destination, *RCLONE_RETRY_ARGS])
+    _run(
+        [
+            _which("rclone"),
+            "copy",
+            str(work_dirs.pop()),
+            destination,
+            *RCLONE_RETRY_ARGS,
+        ]
+    )
     return destination
 
 
@@ -663,16 +723,32 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Weekly Postgres backup to Box.")
     # Choices come from the project map so the two cannot drift: an environment
     # this script will accept is one it knows how to resolve a container for.
-    parser.add_argument("--env", required=True, choices=sorted(COMPOSE_PROJECTS),
-                        help="Which deploy environment to back up.")
-    parser.add_argument("--deploy-dir", required=True, type=Path,
-                        help="Deploy directory holding the compose file and env file.")
-    parser.add_argument("--env-file", type=Path, default=None,
-                        help="Env file to read config from (default: <deploy-dir>/.env.<env>).")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Dump and verify, but skip the upload.")
-    parser.add_argument("--print-destination", action="store_true",
-                        help="Print this environment's Box destination and exit.")
+    parser.add_argument(
+        "--env",
+        required=True,
+        choices=sorted(COMPOSE_PROJECTS),
+        help="Which deploy environment to back up.",
+    )
+    parser.add_argument(
+        "--deploy-dir",
+        required=True,
+        type=Path,
+        help="Deploy directory holding the compose file and env file.",
+    )
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=None,
+        help="Env file to read config from (default: <deploy-dir>/.env.<env>).",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Dump and verify, but skip the upload."
+    )
+    parser.add_argument(
+        "--print-destination",
+        action="store_true",
+        help="Print this environment's Box destination and exit.",
+    )
     return parser.parse_args(argv)
 
 
@@ -768,8 +844,9 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_SUBPROCESS
 
         if args.dry_run:
-            logger.info("DRY RUN — %d artifact(s) verified, skipping upload",
-                        len(artifacts))
+            logger.info(
+                "DRY RUN — %d artifact(s) verified, skipping upload", len(artifacts)
+            )
             print(format_summary(args.env, timestamp, artifacts, "", uploaded=False))
             return EXIT_OK
 
@@ -782,8 +859,9 @@ def main(argv: list[str] | None = None) -> int:
             logger.error("upload failed: %s", exc)
             return EXIT_SUBPROCESS
 
-        print(format_summary(args.env, timestamp, artifacts,
-                             destination, uploaded=True))
+        print(
+            format_summary(args.env, timestamp, artifacts, destination, uploaded=True)
+        )
 
     logger.info("bloom-weekly-backup env=%s timestamp=%s complete", args.env, timestamp)
     return EXIT_OK

@@ -120,7 +120,11 @@ def test_compose_args_never_hardcode_a_container_name():
     # Resolution goes through `compose ps -q <service>`, so it is correct on any
     # host regardless of what the deploy directory is called.
     assert 'DB_SERVICE = "db-prod"' in source
-    assert '"ps", "-q", DB_SERVICE' in source
+    # Whitespace-insensitive: the formatter is free to wrap this call, and the
+    # guarantee is the arguments, not the line they sit on.
+    assert re.search(r'"ps",\s*"-q",\s*DB_SERVICE', source), (
+        "the container is no longer resolved by asking compose for the service"
+    )
 
 
 # --------------------------------------------------------------------------
