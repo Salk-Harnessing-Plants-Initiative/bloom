@@ -82,9 +82,18 @@ ENV_KEYS = (
     "POSTGRES_PASSWORD",
     "POSTGRES_DB",
     "BACKUP_STATE_DIR",
+    "BACKUP_MIN_FREE_BYTES",
     "BACKUP_RCLONE_REMOTE",
     "BACKUP_RCLONE_DEST_DIR",
 )
+
+# Free space the working copy needs before a dump starts. The state directory
+# sits under the deploy user's home, on the same filesystem as the bind mount
+# db-prod keeps its data on, so a dump that fills the volume stops Postgres
+# writing WAL. This is not a prediction of the dump's size — it is a floor that
+# refuses to run on a volume already too full to hold one. Tune per host with
+# BACKUP_MIN_FREE_BYTES.
+DEFAULT_MIN_FREE_BYTES = 20 * 1024**3  # 20 GiB
 
 # An unquoted Postgres identifier, which is all a database name may be here:
 # the name reaches an artifact filename, and `../` in it would write a
@@ -294,6 +303,44 @@ def _state_dir() -> Path:
     return Path(_env("BACKUP_STATE_DIR", DEFAULT_STATE_DIR)).expanduser()
 
 
+def _min_free_bytes() -> int:
+    """The free-space floor for this host, or the default if none is set."""
+    raw = _env("BACKUP_MIN_FREE_BYTES", "")
+    if not raw:
+        return DEFAULT_MIN_FREE_BYTES
+    try:
+        floor = int(raw)
+    except ValueError:
+        raise ConfigError(
+            f"BACKUP_MIN_FREE_BYTES is not a number of bytes: {raw!r}"
+        ) from None
+    if floor <= 0:
+        raise ConfigError(
+            f"BACKUP_MIN_FREE_BYTES must be positive, not {floor} — a run with "
+            "no floor can fill the filesystem the database is running on"
+        )
+    return floor
+
+
+def verify_free_space(state_dir: Path) -> int:
+    """Refuse to dump onto a volume too full to hold one. Returns free bytes.
+
+    The working copy and `volumes/db/data` share a filesystem, so this is the
+    difference between a run that fails on its own and a run that takes
+    Postgres' ability to write with it.
+    """
+    free = shutil.disk_usage(state_dir).free
+    floor = _min_free_bytes()
+    if free < floor:
+        raise ConfigError(
+            f"{free:,} bytes free on {state_dir}, below the {floor:,}-byte "
+            "floor — the working copy shares this filesystem with the "
+            "database, and filling it would stop Postgres writing"
+        )
+    logger.info("%s has %s bytes free", state_dir, f"{free:,}")
+    return free
+
+
 def sweep_best_effort() -> int:
     """Sweep on a path that is already failing, without adding a new failure.
 
@@ -341,10 +388,17 @@ def _stream_to_gzip(cmd: list[str], out: Path, env: dict[str, str] | None = None
         gzip_proc.wait()
     for line in (src_err or b"").decode(errors="replace").rstrip().splitlines():
         logger.warning("  stderr: %s", line)
+    if gzip_proc.returncode != 0:
+        # Checked before the source's status on purpose. When the volume fills,
+        # gzip is what fails first, and the SIGPIPE it sends upstream makes the
+        # source exit non-zero too — so checking the source first reports a full
+        # disk as "pg_dump died". The other direction still works: a source that
+        # fails closes its stdout, gzip sees EOF and exits 0.
+        logger.error("gzip failed writing %s — %s bytes free on %s", out.name,
+                     f"{shutil.disk_usage(out.parent).free:,}", out.parent)
+        raise subprocess.CalledProcessError(gzip_proc.returncode, ["gzip"])
     if src_proc.returncode != 0:
         raise subprocess.CalledProcessError(src_proc.returncode, cmd, stderr=src_err)
-    if gzip_proc.returncode != 0:
-        raise subprocess.CalledProcessError(gzip_proc.returncode, ["gzip"])
 
 
 def verify_artifact(path: Path, min_bytes: int) -> int:
@@ -576,7 +630,12 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGTERM, _terminate)
         signal.signal(signal.SIGHUP, _terminate)
         # SIGKILL and power loss cannot be caught, so sweep what they left.
+        # Before the space check, so a run is not refused over room an orphaned
+        # dump is holding.
         sweep_stale_work_dirs(state_dir)
+        # Before the dump, not during it: a volume this run would fill is the
+        # one the database is writing WAL to.
+        verify_free_space(state_dir)
         # Same reasoning as the destination check below: these are config, and
         # a run that finds them wrong has already spent the dump window.
         _pg_password()

@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -36,10 +37,25 @@ backup = _load()
 DEPLOY_PASSWORD = "s3cret-prod-pw"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_env(monkeypatch):
+    """Keep one test's env file out of the next test's environment.
+
+    apply_env_file writes straight to os.environ and nothing undoes that, so
+    without this a floor or a password loaded by one test silently sets the
+    starting conditions of the next one — and the order decides the result.
+    """
+    for key in backup.ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
 def _deploy_dir(tmp_path, env_name="prod", **extra):
     """A deploy directory with the env file the script reads its config from."""
     lines = ["BACKUP_RCLONE_REMOTE=box", f"BACKUP_RCLONE_DEST_DIR=bloom-backups/{env_name}",
-             f"POSTGRES_PASSWORD={DEPLOY_PASSWORD}"]
+             f"POSTGRES_PASSWORD={DEPLOY_PASSWORD}",
+             # A floor of one byte: these tests are about everything except the
+             # host's own free space, which its own tests pin explicitly.
+             "BACKUP_MIN_FREE_BYTES=1"]
     lines += [f"{k}={v}" for k, v in extra.items()]
     (tmp_path / f".env.{env_name}").write_text("\n".join(lines) + "\n")
     return tmp_path
@@ -843,6 +859,7 @@ def test_main_installs_the_termination_handlers(tmp_path, monkeypatch):
 def test_the_database_dump_keeps_owners_and_privileges(tmp_path, monkeypatch):
     # The whole point of this change over PR #340: --no-owner/--no-privileges
     # produce a dump that restores into a database with no grants.
+    monkeypatch.setenv("POSTGRES_PASSWORD", DEPLOY_PASSWORD)
     seen: list[list[str]] = []
     monkeypatch.setattr(backup, "_stream_to_gzip", _dump_writer(seen, _database_dump()))
     monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999999)
@@ -856,6 +873,7 @@ def test_the_database_dump_keeps_owners_and_privileges(tmp_path, monkeypatch):
 
 
 def test_globals_are_dumped_alongside_the_database(tmp_path, monkeypatch):
+    monkeypatch.setenv("POSTGRES_PASSWORD", DEPLOY_PASSWORD)
     seen: list[list[str]] = []
     monkeypatch.setattr(backup, "_stream_to_gzip", _dump_writer(seen, _globals_dump()))
     monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999)
@@ -957,6 +975,133 @@ def test_an_empty_password_counts_as_missing(monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# Free space, which the database also depends on
+# --------------------------------------------------------------------------
+
+
+def _free_bytes(monkeypatch, free: int):
+    """Pin what disk_usage reports, so no test depends on the host's own disk."""
+    monkeypatch.setattr(
+        backup.shutil, "disk_usage",
+        lambda path: SimpleNamespace(total=free * 2, used=free, free=free),
+    )
+
+
+def test_room_for_the_dump_lets_the_run_start(tmp_path, monkeypatch):
+    _free_bytes(monkeypatch, backup.DEFAULT_MIN_FREE_BYTES + 1)
+    assert backup.verify_free_space(tmp_path) == backup.DEFAULT_MIN_FREE_BYTES + 1
+
+
+def test_a_volume_too_full_to_hold_a_dump_stops_the_run(tmp_path, monkeypatch):
+    # The working copy shares a filesystem with volumes/db/data, so a dump that
+    # fills it stops Postgres writing WAL — a backup job taking production with
+    # it, unattended, at 02:17 on a Sunday.
+    _free_bytes(monkeypatch, backup.DEFAULT_MIN_FREE_BYTES - 1)
+    with pytest.raises(backup.ConfigError, match="below the"):
+        backup.verify_free_space(tmp_path)
+
+
+def test_the_floor_says_how_much_was_free_and_how_much_was_needed(tmp_path, monkeypatch):
+    # "not enough space" with no numbers leaves the operator running df by hand.
+    _free_bytes(monkeypatch, 1024)
+    monkeypatch.setenv("BACKUP_MIN_FREE_BYTES", "4096")
+    with pytest.raises(backup.ConfigError) as refused:
+        backup.verify_free_space(tmp_path)
+    assert "1,024" in str(refused.value) and "4,096" in str(refused.value)
+
+
+def test_the_floor_is_tunable_per_host(tmp_path, monkeypatch):
+    # Hosts differ, and a floor nobody can lower is one somebody works around.
+    _free_bytes(monkeypatch, 5000)
+    monkeypatch.setenv("BACKUP_MIN_FREE_BYTES", "4096")
+    assert backup.verify_free_space(tmp_path) == 5000
+
+
+@pytest.mark.parametrize("value", ["20GB", "", "-1", "0", "1.5"])
+def test_an_unusable_floor_is_a_config_error_not_a_silent_default(value, monkeypatch):
+    # Falling back to the default on a typo would run with a floor nobody chose;
+    # an empty value is the one case that legitimately means "use the default".
+    monkeypatch.setenv("BACKUP_MIN_FREE_BYTES", value)
+    if value == "":
+        assert backup._min_free_bytes() == backup.DEFAULT_MIN_FREE_BYTES
+    else:
+        with pytest.raises(backup.ConfigError, match="BACKUP_MIN_FREE_BYTES"):
+            backup._min_free_bytes()
+
+
+def test_a_full_volume_stops_the_run_before_the_dump_window(tmp_path, monkeypatch):
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setenv("BACKUP_MIN_FREE_BYTES", "4096")
+    _free_bytes(monkeypatch, 1024)
+    resolved: list = []
+    monkeypatch.setattr(backup, "resolve_container",
+                        lambda *a: resolved.append(a) or "container123")
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
+    assert rc == backup.EXIT_CONFIG
+    assert not resolved, "the run must fail before it starts writing"
+
+
+def test_room_an_orphan_is_holding_is_reclaimed_before_the_space_check(
+        tmp_path, monkeypatch):
+    # A killed run's leftover dump can be gigabytes. Measuring before sweeping
+    # would refuse a run over space that was about to come back.
+    _deploy_dir(tmp_path)
+    state = tmp_path / "state"
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(state))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    order: list[str] = []
+    monkeypatch.setattr(backup, "sweep_stale_work_dirs",
+                        lambda d: order.append("sweep") or 0)
+    monkeypatch.setattr(backup, "verify_free_space",
+                        lambda d: order.append("check space") or 1)
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    artifact = tmp_path / "db.sql.gz"
+    artifact.write_bytes(b"x" * 32)
+    monkeypatch.setattr(backup, "dump_database", lambda *a: artifact)
+    monkeypatch.setattr(backup, "dump_globals", lambda *a: artifact)
+
+    backup.main(["--env", "prod", "--deploy-dir", str(tmp_path), "--dry-run"])
+    assert order == ["sweep", "check space"]
+
+
+def test_the_defaults_files_carry_the_floor():
+    # The floor is a host property, so it belongs in the env surface rather
+    # than only in the script's own default.
+    for name in ("prod", "staging"):
+        text = (REPO_ROOT / f".env.{name}.defaults").read_text()
+        assert "BACKUP_MIN_FREE_BYTES=" in text, f".env.{name}.defaults"
+
+
+def test_a_full_disk_is_not_reported_as_a_dead_pg_dump(tmp_path, monkeypatch, caplog):
+    # gzip fails first when the volume fills, and the SIGPIPE it sends upstream
+    # makes the source exit non-zero too. Checking the source first sends the
+    # operator to look at the database for a disk problem.
+    # A gzip that dies without draining stdin, so the source upstream takes a
+    # SIGPIPE and exits non-zero too — both processes failing, which is what a
+    # full volume actually looks like and the only case where the order decides
+    # which one gets reported.
+    fake_gzip = tmp_path / "gzip"
+    fake_gzip.write_text("#!/bin/sh\nexit 1\n")
+    fake_gzip.chmod(0o755)
+    monkeypatch.setattr(backup, "_which",
+                        lambda name: str(fake_gzip) if name == "gzip" else name)
+    flood = "import sys\nfor _ in range(20000): sys.stdout.write('x' * 4096)"
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(subprocess.CalledProcessError) as failure:
+            backup._stream_to_gzip([sys.executable, "-c", flood],
+                                   tmp_path / "out.gz")
+    assert failure.value.cmd == ["gzip"], (
+        "the write side is what failed; reporting the source sends the operator "
+        "to look at the database for a disk problem"
+    )
+    assert "bytes free" in caplog.text, "the log must name the real cause"
+
+
+# --------------------------------------------------------------------------
 # The database name, which reaches a filename
 # --------------------------------------------------------------------------
 
@@ -1043,6 +1188,7 @@ def test_a_run_dumps_and_uploads_both_artifacts(tmp_path, monkeypatch):
 
 
 def test_both_artifacts_share_one_run_timestamp(tmp_path, monkeypatch):
+    monkeypatch.setenv("POSTGRES_PASSWORD", DEPLOY_PASSWORD)
     monkeypatch.setattr(backup, "_stream_to_gzip", _dump_writer([], _database_dump()))
     monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999)
     monkeypatch.setattr(backup, "verify_globals_content", lambda *a, **k: 9)

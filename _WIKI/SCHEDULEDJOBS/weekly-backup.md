@@ -61,10 +61,14 @@ the dump is taken. What it tells you that a dry run cannot: whether the upload
 credential works, what a real artifact looks like on Box, and roughly how long
 the whole thing takes.
 
-What it does **not** tell you is whether production's dump fits on disk. The
+What it does **not** tell you is whether production's dump fits on disk: the
 working copy is written to the deploy host before upload, and staging's database
-is far smaller. Check free space on that host against a realistic estimate before
-the first production run.
+is far smaller. The job checks free space itself before every dump and refuses
+to start below `BACKUP_MIN_FREE_BYTES` (20 GiB by default), because the working
+copy shares a filesystem with the database's own data directory and filling it
+would stop Postgres writing. Compare that floor against a realistic estimate of
+the dump before the first production run and adjust it per host — a floor set
+too high means no backups at all, and one set too low is no protection.
 
 By hand on the server, same thing:
 
@@ -161,9 +165,9 @@ by environment rather than on the command line, so it stays out of the host's
 process list. Nothing extra to configure; a missing value exits 2 before the
 dump starts.
 
-Six keys are read out of `.env.<env>` and nothing else — `POSTGRES_USER`,
-`POSTGRES_PASSWORD`, `POSTGRES_DB`, `BACKUP_STATE_DIR`, `BACKUP_RCLONE_REMOTE`
-and `BACKUP_RCLONE_DEST_DIR`. The rest of the file stays out of the job's
+Seven keys are read out of `.env.<env>` and nothing else — `POSTGRES_USER`,
+`POSTGRES_PASSWORD`, `POSTGRES_DB`, `BACKUP_STATE_DIR`,
+`BACKUP_MIN_FREE_BYTES`, `BACKUP_RCLONE_REMOTE` and `BACKUP_RCLONE_DEST_DIR`. The rest of the file stays out of the job's
 environment, so nothing in it reaches rclone or any other child process.
 `POSTGRES_DB` also has to be a plain database name, because it becomes part of
 the artifact's filename.
@@ -226,6 +230,10 @@ sudo -u bloom-deploy rclone lsl box:bloom-backups/prod
 | 2    | Configuration problem, the stack is not running, or `--env` is not a known environment |
 | 3    | An artifact failed verification — missing, short, corrupt or empty    |
 | 4    | The run was terminated by a signal — cancelled, or hit `timeout-minutes` |
+
+Code 2 also covers a deploy host with too little free space for a dump. That
+is checked before the dump starts, so the run costs seconds rather than failing
+partway with a half-written artifact.
 
 Code 3 is the one to read closely: the dump ran, but what came out cannot be a
 usable backup. Look at the database, not at the config.
