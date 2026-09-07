@@ -159,6 +159,57 @@ def test_only_environments_with_a_known_project_are_accepted(tmp_path):
         backup._parse_args(["--env", "qa", "--deploy-dir", str(tmp_path)])
 
 
+def _run_recorder(seen: list, output: str):
+    """Stand in for _run: record the command, return canned stdout."""
+    def _fake(cmd, cwd=None):
+        seen.append((cmd, cwd))
+        return output
+    return _fake
+
+
+def test_the_container_is_looked_up_under_this_environments_project(tmp_path, monkeypatch):
+    # compose_args is a pure function with six tests; this is its only caller,
+    # and the caller is where "staging run dumps production" would come back —
+    # a hardcoded compose_args(deploy_dir, "prod") here is invisible to all six.
+    seen: list = []
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "_run", _run_recorder(seen, "abc123def456\n"))
+    assert backup.resolve_container(tmp_path, "staging") == "abc123def456"
+    cmd, cwd = seen[0]
+    assert "bloom_v2_staging" in cmd
+    assert "bloom_v2_prod" not in cmd, "a staging lookup must not reach production"
+    assert cmd[-3:] == ["ps", "-q", backup.DB_SERVICE]
+    assert cwd == tmp_path
+
+
+def test_a_staging_run_looks_up_the_staging_stack(tmp_path, monkeypatch):
+    # End to end through main(): --env has to reach the container lookup, not
+    # just compose_args' argument list.
+    _deploy_dir(tmp_path, env_name="staging")
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    seen: list = []
+    monkeypatch.setattr(backup, "_run", _run_recorder(seen, "abc123def456\n"))
+    artifact = tmp_path / "db.sql.gz"
+    artifact.write_bytes(b"x" * 32)
+    monkeypatch.setattr(backup, "dump_database", lambda *a: artifact)
+    monkeypatch.setattr(backup, "dump_globals", lambda *a: artifact)
+
+    rc = backup.main(["--env", "staging", "--deploy-dir", str(tmp_path), "--dry-run"])
+    assert rc == backup.EXIT_OK
+    lookup = next(cmd for cmd, _ in seen if "ps" in cmd)
+    assert "bloom_v2_staging" in lookup
+    assert "bloom_v2_prod" not in lookup
+
+
+def test_a_stopped_stack_is_a_config_error_not_an_empty_backup(tmp_path, monkeypatch):
+    # parse_container_id's error has to survive the trip through its caller.
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "_run", _run_recorder([], "\n"))
+    with pytest.raises(backup.ConfigError, match="no running"):
+        backup.resolve_container(tmp_path, "prod")
+
+
 # --------------------------------------------------------------------------
 # Artifact verification
 # --------------------------------------------------------------------------
@@ -505,6 +556,88 @@ def test_the_upload_retries_rather_than_lose_a_verified_dump(tmp_path, monkeypat
     retries = int(cmd[cmd.index("--retries") + 1])
     assert retries > 1
     assert "--retries-sleep" in cmd, "retries with no backoff hammer a flaky link"
+
+
+def test_a_nonzero_rclone_fails_the_upload(tmp_path, monkeypatch):
+    # A real non-zero exit, not a raised CalledProcessError: upload() must not
+    # swallow one and hand main() a destination for a folder Box never got.
+    fake_rclone = tmp_path / "rclone"
+    fake_rclone.write_text("#!/bin/sh\necho 'quota exceeded' >&2\nexit 7\n")
+    fake_rclone.chmod(0o755)
+    monkeypatch.setenv("BACKUP_RCLONE_REMOTE", "box")
+    monkeypatch.setattr(backup, "_which",
+                        lambda name: str(fake_rclone) if name == "rclone" else name)
+    work = tmp_path / "bloom-backup-run"
+    work.mkdir()
+
+    with pytest.raises(subprocess.CalledProcessError) as failure:
+        backup.upload([work / "database.sql.gz"], "prod", "20260824T000000Z")
+    assert failure.value.returncode == 7
+
+
+def test_a_failed_upload_never_reports_a_destination(tmp_path, monkeypatch, capsys):
+    # The failure this guards: rclone fails, the run still exits 0 and prints a
+    # destination, GitHub goes green and nothing is on Box. The summary is what
+    # the weekly glance reads, so it must not name a folder that does not exist.
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    artifact = tmp_path / "db.sql.gz"
+    artifact.write_bytes(b"x" * 32)
+    monkeypatch.setattr(backup, "dump_database", lambda *a: artifact)
+    monkeypatch.setattr(backup, "dump_globals", lambda *a: artifact)
+
+    def _failing_upload(artifacts, env_name, timestamp):
+        raise subprocess.CalledProcessError(7, ["rclone", "copy"])
+
+    monkeypatch.setattr(backup, "upload", _failing_upload)
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
+    assert rc == backup.EXIT_SUBPROCESS
+    assert rc != backup.EXIT_OK
+    assert "destination:" not in capsys.readouterr().out
+
+
+def test_an_upload_that_cannot_be_configured_is_a_config_error(tmp_path, monkeypatch):
+    # The other branch out of upload(): exit 2 sends the operator to .env and
+    # rclone, which is where a missing remote is fixed.
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    artifact = tmp_path / "db.sql.gz"
+    artifact.write_bytes(b"x" * 32)
+    monkeypatch.setattr(backup, "dump_database", lambda *a: artifact)
+    monkeypatch.setattr(backup, "dump_globals", lambda *a: artifact)
+
+    def _unconfigured_upload(artifacts, env_name, timestamp):
+        raise backup.ConfigError("BACKUP_RCLONE_REMOTE is not set")
+
+    monkeypatch.setattr(backup, "upload", _unconfigured_upload)
+
+    assert backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)]) == \
+        backup.EXIT_CONFIG
+
+
+def test_a_successful_upload_reports_the_folder_it_wrote(tmp_path, monkeypatch, capsys):
+    # The mirror of the two above: the summary names the real destination, so a
+    # green run can be checked against Box by eye.
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_RCLONE_REMOTE", "box")
+    monkeypatch.setenv("BACKUP_RCLONE_DEST_DIR", "bloom-backups/prod")
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    artifact = tmp_path / "db.sql.gz"
+    artifact.write_bytes(b"x" * 32)
+    monkeypatch.setattr(backup, "dump_database", lambda *a: artifact)
+    monkeypatch.setattr(backup, "dump_globals", lambda *a: artifact)
+    monkeypatch.setattr(backup, "_run", lambda cmd, cwd=None: "")
+
+    assert backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)]) == backup.EXIT_OK
+    out = capsys.readouterr().out
+    assert "destination: box:bloom-backups/prod/" in out
 
 
 def test_the_job_never_deletes_anything_on_the_remote():
