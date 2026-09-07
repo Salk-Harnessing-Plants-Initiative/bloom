@@ -33,6 +33,7 @@ def captured(monkeypatch):
     def fake_run(cmd, *, input_text=None, check=True, env=None):
         calls.append(cmd)
         scripted.setdefault("envs", []).append(env)
+        scripted.setdefault("stdins", []).append(input_text)
         return scripted["stdout"]
 
     monkeypatch.setattr(dock, "run", fake_run)
@@ -63,7 +64,7 @@ class TestDatabaseNow:
         calls, scripted = captured
         scripted["stdout"] = "2026-08-31T02:17:03+00\n"
         dock.database_now("c", "u", "d")
-        sql = calls[0][-1]
+        sql = scripted["stdins"][0]
         assert "AT TIME ZONE 'UTC'" in sql
         assert "now()" in sql
 
@@ -76,7 +77,7 @@ class TestDatabaseNow:
         scripted["stdout"] = "2026-08-31T02:17:03+00\n"
         dock.database_now("c", "u", "d")
         fmt = 'YYYY-MM-DD"T"HH24:MI:SSOF'
-        assert fmt in calls[0][-1]
+        assert fmt in scripted["stdins"][0]
         assert fmt in lib.objects_query(), "the two formats have diverged"
 
     def test_only_the_first_line_is_taken(self, captured):
@@ -92,13 +93,27 @@ class TestDatabaseNow:
         with pytest.raises(dock.DockerError):
             dock.database_now("c", "u", "d")
 
-    def test_the_sql_travels_as_one_argument(self, captured):
-        # No shell is involved anywhere: `run` takes a list. The quotes inside
-        # the to_char format are literal text for psql, not shell quoting.
+    def test_the_sql_never_reaches_an_argv(self, captured):
+        # No shell is involved anywhere: `run` takes a list, and the SQL now
+        # travels on stdin. The quotes inside the to_char format are literal
+        # text for psql, not shell quoting.
         calls, scripted = captured
         scripted["stdout"] = "2026-08-31T02:17:03+00\n"
         dock.database_now("c", "u", "d")
-        assert calls[0][-2] == "-c"
+        assert calls[0][-2:] == ["-f", "-"]
+        assert not any("now()" in arg for arg in calls[0])
+
+    def test_the_clock_session_is_pinned_read_only(self, captured):
+        # The one psql call that used to skip the pin. It reads no table
+        # today, so this guards the next query added here, not this one:
+        # the job connects as superuser and nothing else refuses a write.
+        calls, scripted = captured
+        scripted["stdout"] = "2026-08-31T02:17:03+00\n"
+        dock.database_now("c", "u", "d")
+        stdin = scripted["stdins"][0]
+        assert "default_transaction_read_only = on" in stdin
+        # Ahead of the query: the setting only governs later transactions.
+        assert stdin.index("read_only") < stdin.index("now()")
 
 
 class TestManifestQueryIsBoundedAndReadOnly:

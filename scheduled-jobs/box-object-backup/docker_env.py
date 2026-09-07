@@ -47,6 +47,12 @@ RC_PASS_ENV = "RCLONE_RC_PASS"
 # the manifest read regardless of how many objects the deploy holds.
 FETCH_COUNT = 10_000
 
+# Sent ahead of the SQL in every psql session this job opens. The backup
+# connects as the Postgres superuser, so nothing server-side would refuse a
+# write; this is the only thing that does. One constant rather than a literal
+# per call site, so a new query cannot be added without it.
+READ_ONLY_PREAMBLE = "SET default_transaction_read_only = on;\n"
+
 # The rclone daemon shares the host with the whole Bloom stack, so it gets a
 # hard ceiling rather than whatever it decides to take. Its own transfer
 # buffers are the bulk of it, and they scale with --transfers.
@@ -155,7 +161,7 @@ def psql_query_to_file(
         "-v", f"FETCH_COUNT={FETCH_COUNT}",
         "-f", "-",
     ]
-    preamble = "SET default_transaction_read_only = on;\nSET statement_timeout = '60min';\n"
+    preamble = READ_ONLY_PREAMBLE + "SET statement_timeout = '60min';\n"
     rows = 0
     with destination.open("w", encoding="utf-8") as out:
         process = subprocess.Popen(
@@ -180,16 +186,27 @@ def database_now(container: str, user: str, database: str) -> str:
     never enumerated again, silently and permanently. Containers share the
     host kernel clock today, so this is latent rather than active — but the
     comparison should not depend on that staying true.
+
+    The SQL goes on stdin rather than in `-c` so the read-only preamble can
+    precede it. psql runs a multi-statement `-c` as one transaction, and
+    `default_transaction_read_only` only governs transactions opened after it
+    is set, so a pin sitting beside the SELECT would not cover it.
     """
+    sql = (
+        "SELECT to_char(now() AT TIME ZONE 'UTC', "
+        "'YYYY-MM-DD\"T\"HH24:MI:SSOF');\n"
+    )
     out = run(
         [
             which("docker"), "exec", "-i", container,
             "psql", "-U", user, "-d", database,
             "--no-align", "--tuples-only", "--quiet", "--no-psqlrc",
             "-v", "ON_ERROR_STOP=1",
-            "-c", "SELECT to_char(now() AT TIME ZONE 'UTC', "
-                  "'YYYY-MM-DD\"T\"HH24:MI:SSOF')",
-        ]
+            "-f", "-",
+        ],
+        # --quiet suppresses psql's `SET` command tags, so the preamble adds
+        # no lines of its own and the first line is still the timestamp.
+        input_text=READ_ONLY_PREAMBLE + sql,
     ).strip()
     if not out:
         raise DockerError("could not read the database clock for the watermark")
