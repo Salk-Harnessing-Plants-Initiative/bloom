@@ -1191,7 +1191,8 @@ def test_the_working_directory_mode_is_not_applied_through_a_symlink(
     monkeypatch.setattr(backup, "dump_database", lambda *a: artifact)
     monkeypatch.setattr(backup, "dump_globals", lambda *a: artifact)
 
-    backup.main(["--env", "prod", "--deploy-dir", str(tmp_path), "--dry-run"])
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path), "--dry-run"])
+    assert rc == backup.EXIT_CONFIG, "a symlinked working directory must be refused"
     assert target.stat().st_mode & 0o777 == 0o755, (
         "the mode change followed the symlink to its target"
     )

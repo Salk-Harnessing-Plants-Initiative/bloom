@@ -727,10 +727,17 @@ def main(argv: list[str] | None = None) -> int:
             )
         # It persists between runs, so a directory left loose has to be fixed
         # rather than trusted: it holds a full plaintext dump.
+        # Refused rather than followed. This is the only mode change this job
+        # makes to the host, and through a symlink it would land somewhere else.
+        # Refusing rather than chmod-ing the link itself because changing a mode
+        # without following symlinks is not available on Linux.
+        if state_dir.is_symlink():
+            raise ConfigError(
+                f"{state_dir} is a symlink; the working directory must be a real "
+                "directory, since this job changes its mode"
+            )
         try:
-            # Not through a symlink: this is the only mode change this job makes
-            # to the host, and following one would apply it somewhere else.
-            os.chmod(state_dir, 0o700, follow_symlinks=False)
+            state_dir.chmod(0o700)
         except OSError as exc:
             raise ConfigError(
                 f"cannot use {state_dir} as the working directory: {exc}"
