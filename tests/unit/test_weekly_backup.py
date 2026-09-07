@@ -1184,6 +1184,41 @@ def test_an_unusable_state_directory_is_a_config_error(tmp_path, monkeypatch):
     assert rc == backup.EXIT_CONFIG
 
 
+def test_an_artifact_is_readable_only_by_the_user_that_wrote_it(tmp_path):
+    # It is a full plaintext dump, auth.users included. The 0700 directories
+    # above it are what stop other accounts today; an owner-only file is what
+    # keeps one loosened directory from being enough on its own.
+    out = tmp_path / "dump.sql.gz"
+    backup._stream_to_gzip(["printf", "dump"], out)
+    assert out.stat().st_mode & 0o777 == 0o600
+
+
+def test_an_artifact_is_owner_only_from_the_moment_it_exists(tmp_path):
+    # Tightening the mode after the dump finishes would leave it loose for the
+    # whole dump — the only part of the run where the file is growing and the
+    # window is measured in tens of minutes. A dump that fails partway proves
+    # which of the two it is.
+    out = tmp_path / "partial.sql.gz"
+    with pytest.raises(subprocess.CalledProcessError):
+        backup._stream_to_gzip(["false"], out)
+    assert out.exists(), "the partial artifact is the thing being checked"
+    assert out.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_dumped_artifact_reaches_disk_owner_only(tmp_path, monkeypatch):
+    # The same guarantee through the real dump path rather than the helper.
+    monkeypatch.setenv("POSTGRES_PASSWORD", DEPLOY_PASSWORD)
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999999)
+    monkeypatch.setattr(backup, "verify_database_content", lambda *a, **k: 999)
+    monkeypatch.setattr(
+        backup, "dump_command",
+        lambda container, argv: ([sys.executable, "-c", "print('dump')"], None),
+    )
+    artifact = backup.dump_database("container123", tmp_path, "20260824T000000Z")
+    assert artifact.stat().st_mode & 0o077 == 0, "group or other can read the dump"
+
+
 def test_a_full_disk_is_not_reported_as_a_dead_pg_dump(tmp_path, monkeypatch, caplog):
     # gzip fails first when the volume fills, and the SIGPIPE it sends upstream
     # makes the source exit non-zero too. Checking the source first sends the

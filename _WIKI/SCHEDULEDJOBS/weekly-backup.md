@@ -199,6 +199,13 @@ directory it is given, because it persists between runs and holds a full
 plaintext dump — but a POSIX ACL survives a `chmod`, so check `getfacl` on a
 host where `/data` grants default ACLs.
 
+Each artifact is created `0600` rather than tightened after the fact, so its
+mode does not depend on the host's umask or an inherited default ACL, and the
+file is owner-only for the whole time it is being written rather than only once
+it is finished. The `0700` directories are what stop other accounts reading it
+today; the file mode is what keeps one loosened directory from being enough on
+its own.
+
 ### 3. Create the `production-scheduled-backup` GitHub Environment
 
 Settings → Environments → New environment, named exactly

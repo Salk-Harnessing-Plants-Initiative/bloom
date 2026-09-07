@@ -378,7 +378,12 @@ def _stream_to_gzip(cmd: list[str], out: Path, env: dict[str, str] | None = None
 
     env goes to cmd alone; gzip has no business holding the password.
     """
-    with out.open("wb") as handle:
+    # Opened 0600 rather than chmod'ed afterwards: this file holds plaintext
+    # auth.users for the whole dump, so a mode fixed only once the dump finishes
+    # would be right for none of the window that matters. Owner-only here means
+    # the guarantee does not rest on the host's umask or its inherited ACLs.
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with open(fd, "wb") as handle:
         gzip_proc = subprocess.Popen(
             [_which("gzip"), "-c"], stdin=subprocess.PIPE, stdout=handle
         )
