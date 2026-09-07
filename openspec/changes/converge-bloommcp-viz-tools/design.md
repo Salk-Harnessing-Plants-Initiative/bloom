@@ -706,6 +706,26 @@ here (touching them would widen exactly the merge conflict that PR already faces
 lock is a **precondition** for closing the race, not by itself sufficient — and the PR
 description now says so instead of overstating it.
 
+**One part of that review item is not correct, and is worth recording rather than silently
+accepting.** The review also called this lock "inert future-proofing" that "protects against a
+race that doesn't exist yet on staging," locating the hazard specifically in `generate_figures`'s
+allocate-then-raise fignum-diffing, which sibling PR #726 introduces. That understates what
+these 3 tools do on their own: **each one both creates and closes figures**, so two concurrent
+calls to them race each other today, with no #726 code involved at all.
+
+Instrumenting `Gcf.set_active` / `Gcf.destroy_fig` and firing 3 concurrent
+`plot_trait_histograms` calls (this PR's own tool, nothing else) records:
+
+    Gcf.figs MUTATIONS from create : 3   threads=[tool-call-0, tool-call-1, tool-call-2]
+    Gcf.figs SCANS     from close  : 3   threads=[tool-call-0, tool-call-1, tool-call-2]
+
+Both sides of the race originate inside this PR's diff. So the correct statement is narrower
+than either framing: the lock **is** load-bearing today for these 3 tools against each other,
+and is **not yet sufficient** to close the race process-wide, because the call sites listed
+above remain unlocked until #726/#721 lands. Both halves matter — and this is precisely why the
+round-6 create-only version was a real bug rather than a cosmetic one: the unlocked close it
+left behind was reachable from these tools alone.
+
 **Blocking — the `CONFLICTING` mergeable state, and a merge risk that was worse than
 "trivial."** Resolved by merging `staging` (which had since gained PR #724). One textual
 conflict, in `plot_correlation_matrix.py`'s module docstring: `staging` had added a "known
