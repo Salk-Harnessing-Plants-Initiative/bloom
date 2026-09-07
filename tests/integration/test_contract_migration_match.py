@@ -416,7 +416,7 @@ def _probe_accepted(cur, source_id, scan_id, *, column, fixed, candidates) -> se
 def test_db_kind_vocab_matches_contract_blobref_enum(pg_conn):
     """The DB `kind` CHECK vocabulary equals the pinned contract `BlobRef.kind` enum,
     proved by a behavioral INSERT probe. Unconditional since the contract is pinned at
-    `v0.1.0a3` (`BlobRef.kind == {predictions_slp}`, unchanged since `v0.1.0a2`); a future
+    `v0.1.0a7` (`BlobRef.kind == {predictions_slp}`, unchanged since `v0.1.0a2`); a future
     re-pin diverging from the DB CHECK fails loudly."""
     contract_kinds = _blobref_enum(_load_schema(), "kind")
     negatives = {"h5", "labels", "qc_image", "bogus"} - contract_kinds
@@ -438,7 +438,7 @@ def test_db_kind_vocab_matches_contract_blobref_enum(pg_conn):
 
 def test_db_root_type_vocab_matches_contract_blobref_enum(pg_conn):
     """The DB `root_type` CHECK vocabulary equals the pinned contract `BlobRef.root_type`
-    enum — symmetric with the `kind` probe. As of `v0.1.0a3` the contract owns `root_type`
+    enum — symmetric with the `kind` probe. As of `v0.1.0a7` the contract owns `root_type`
     (`{primary, lateral, crown}`, unchanged since `v0.1.0a2`), so it is contract-anchored
     (design D3, revised): a contract/DB divergence on `root_type` fails CI just like `kind`."""
     contract_root_types = _blobref_enum(_load_schema(), "root_type")

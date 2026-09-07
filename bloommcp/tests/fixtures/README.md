@@ -197,3 +197,40 @@ turface_19's.
   component/feature set), so under-sampling the golden would leave the tool's one
   genuinely scale-specific risk — a column-ordering bug, the 50-trait inline-summary
   cap misapplying, or a truncated persisted CSV silently losing rows — unexercised.
+
+# Plot rendering baselines (`plot_baselines/`)
+
+Added for #713 to close a gap the other goldens in this file don't touch: every entry
+above is a **numeric** oracle/characterization snapshot (JSON), so none of them would
+catch a matplotlib/Pillow/numpy dependency bump or a refactor that silently changes
+*pixel* content (color mapping, plot geometry, layout) — `test_viz_tools.py` only ever
+asserted `.is_file()` on the generated PNG.
+
+- `plot_baselines/{histograms,boxplots,correlation_matrix,heritability,
+  variance_decomposition}_turface_19_baseline.png` — one baseline PNG per dedicated
+  plotting tool (`plot_trait_histograms`, `plot_trait_boxplots`,
+  `plot_correlation_matrix`, `plot_heritability_bar`, `plot_variance_decomposition`),
+  rendered against `turface_19_final_data.csv` via each tool's real MCP entrypoint (not
+  its delegate directly). `tests/tools/test_viz_snapshot.py` compares each tool's live
+  output against its baseline with `matplotlib.testing.compare.compare_images` at a
+  tolerance calibrated from a real measurement (see that file's module docstring and
+  `openspec/changes/add-bloommcp-plot-snapshot-tests/design.md` Decision 2) — loose
+  enough to absorb legitimate cross-platform FreeType-hinting noise, tight enough that a
+  genuine rendering regression still fails the comparison.
+- `plot_baselines/MANIFEST.json` — records the rendering environment's provenance
+  (matplotlib/Pillow/sleap-roots-analyze versions, platform) for the committed PNGs above.
+  **Not** asserted by any test; documentation only. These baselines were generated on
+  macOS at authoring time (Docker was unavailable to produce a Linux-rendered baseline
+  matching the `python-audit` CI job's `ubuntu-latest` runner) — see design.md Decision 3
+  for the accepted cross-platform risk. **Confirmed resolved**: PR #724's own CI run passed
+  all 5 comparisons on `ubuntu-latest` against these macOS-generated baselines, so `_TOL`
+  held cross-platform on the first try; the fallback there (regenerate from Linux) applies
+  only if a *future* PR's CI run fails on RMS grounds.
+- Regenerate all 5 + the manifest via
+  `cd bloommcp && uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py --yes`
+  after any intentional rendering change (matplotlib bump, plot-style-kwargs default change,
+  delegate upgrade) — never hand-edit these PNGs. **If you're regenerating over existing
+  baselines** (not creating this directory for the first time), the script prints the
+  old-vs-new RMS for each file it overwrites (design.md Decision 5) — a PR that touches
+  these PNGs MUST state, per file, what that RMS was and why the visual change is expected;
+  an RMS near 0 means nothing actually changed and no explanation is needed beyond that.
