@@ -77,6 +77,14 @@ const badWave = () =>
     { status: 400 }
   );
 
+// Marks an answer as never reusable. The poll carries a signed link made for one
+// reader and a state a later call is meant to contradict, so a stored copy of
+// either is served to the wrong person or long after it stopped being true.
+function noStore(response: NextResponse): NextResponse {
+  response.headers.set("Cache-Control", "no-store");
+  return response;
+}
+
 /** A wave from the request: a whole number, null, or invalid. */
 function parseWave(raw: unknown): number | null | undefined {
   if (raw === null || raw === undefined || raw === "") return null;
@@ -198,33 +206,40 @@ export async function GET(
   const { experimentId } = await params;
   const experiment = parseId(experimentId);
   if (experiment === null) {
-    return NextResponse.json(
-      { detail: "experimentId must be a positive integer" },
-      { status: 400 }
+    return noStore(
+      NextResponse.json(
+        { detail: "experimentId must be a positive integer" },
+        { status: 400 }
+      )
     );
   }
 
   const query = new URL(request.url).searchParams;
   const plateId = query.get("plate_id");
-  if (typeof plateId !== "string" || !isValidPlateId(plateId)) return badPlate();
+  if (typeof plateId !== "string" || !isValidPlateId(plateId))
+    return noStore(badPlate());
 
   const wave = parseWave(query.get("wave_number"));
-  if (wave === undefined) return badWave();
+  if (wave === undefined) return noStore(badWave());
 
   const stored = await getStoredPlateVideo(experiment, plateId, wave);
   if (stored.status === "unknown") {
     // Not an absence. Saying "no video" here would have the button offer to
     // render a plate that already has one.
-    return NextResponse.json(
-      { detail: "Could not check whether this plate has a video." },
-      { status: 503 }
+    return noStore(
+      NextResponse.json(
+        { detail: "Could not check whether this plate has a video." },
+        { status: 503 }
+      )
     );
   }
 
   // `frames` is null both when nothing is stored and when a stored video's row
   // is missing. The caller has `download_url` to tell those apart.
-  return NextResponse.json({
-    download_url: stored.status === "present" ? stored.url : null,
-    frames: stored.status === "present" ? stored.frames : null,
-  });
+  return noStore(
+    NextResponse.json({
+      download_url: stored.status === "present" ? stored.url : null,
+      frames: stored.status === "present" ? stored.frames : null,
+    })
+  );
 }

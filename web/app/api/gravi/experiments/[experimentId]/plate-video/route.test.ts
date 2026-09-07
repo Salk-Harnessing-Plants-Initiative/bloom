@@ -366,4 +366,46 @@ describe("GET", () => {
     await get("plate_id=P7");
     expect(mockedStored).toHaveBeenCalledWith(12, "P7", null);
   });
+
+  it("forbids storing the answer that carries the download link", async () => {
+    // The link is signed for one reader and expires. A stored copy is either
+    // served to someone it was not made for, or served after it stopped working.
+    mockedStored.mockResolvedValue({
+      status: "present",
+      url: "https://x/y.mp4?token=t",
+      frames: 86,
+    });
+
+    const res = await get("plate_id=P7&wave_number=1");
+
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("forbids storing a not-yet answer, which a later poll is meant to contradict", async () => {
+    // Polling only works because the answer changes. A stored "no video" leaves
+    // the button waiting on one that has already been made.
+    mockedStored.mockResolvedValue({ status: "absent" });
+
+    const res = await get("plate_id=P7&wave_number=1");
+
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("forbids storing any of its answers, so none of them stick", async () => {
+    mockedStored.mockResolvedValue({
+      status: "unknown",
+      reason: "gateway timeout",
+    });
+
+    const answers = [
+      await get("plate_id=P7&wave_number=1"), // 503, storage could not say
+      await get("plate_id=../secrets"), // 400, bad plate id
+      await get("plate_id=P7&wave_number=-1"), // 400, bad wave
+      await get("plate_id=P7", "0"), // 400, bad experiment id
+    ];
+
+    for (const res of answers) {
+      expect(res.headers.get("Cache-Control")).toBe("no-store");
+    }
+  });
 });
