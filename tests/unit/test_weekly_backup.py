@@ -1221,6 +1221,29 @@ def test_neither_environment_writes_into_a_deploy_directory():
         assert not _defaults_value(name, "BACKUP_STATE_DIR").startswith(deploy_dir)
 
 
+# The folders that exist on Box today. Pinned verbatim rather than merely
+# asserted to differ: a run uploads wherever this points, so changing it is a
+# decision to be made deliberately, not a line edit that CI waves through.
+BOX_DESTINATIONS = {
+    "prod": "bloom-backups/prod",
+    "staging": "bloom-backups/staging",
+}
+
+
+@pytest.mark.parametrize("env_name", sorted(BOX_DESTINATIONS))
+def test_each_environment_uploads_to_the_folder_that_exists_on_box(env_name):
+    assert _defaults_value(env_name, "BACKUP_RCLONE_DEST_DIR") == BOX_DESTINATIONS[env_name]
+    assert _defaults_value(env_name, "BACKUP_RCLONE_REMOTE") == "box"
+
+
+def test_the_two_environments_do_not_share_a_box_folder():
+    # A staging dump landing in the production folder is two files with the
+    # right names, the right shape and the wrong database — indistinguishable
+    # from that week's backup in a listing.
+    assert (_defaults_value("prod", "BACKUP_RCLONE_DEST_DIR")
+            != _defaults_value("staging", "BACKUP_RCLONE_DEST_DIR"))
+
+
 def test_the_two_environments_do_not_share_a_working_directory():
     # They share the host, and the startup sweep removes what it finds, so one
     # directory means a rehearsal can delete a production run's working copy.
