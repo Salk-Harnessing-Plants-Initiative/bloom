@@ -98,7 +98,10 @@ describe("POST", () => {
     const res = await post({ plate_id: "P7", wave_number: 1 });
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual(RESULT);
+    // Everything the service sent except `frames_unknown`, which the caller is
+    // told as `frames: null` instead.
+    const { frames_unknown: _unused, ...expected } = RESULT;
+    expect(await res.json()).toEqual(expected);
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("http://workflows:5100/gravi/experiments/12/plate-video");
@@ -368,9 +371,10 @@ describe("POST", () => {
     }
   );
 
-  it("carries frames_unknown through, so a kept video is not read as empty", async () => {
-    // The service sends this whenever it cannot say what a stored video holds.
-    // `frames` still carries a number, and this is what says not to trust it.
+  it("says null when the service cannot say how many frames a kept video holds", async () => {
+    // The service says this as zero with a flag beside it. Zero is a claim about
+    // the video -- an empty one -- and a kept video is never empty. Null is the
+    // same word the poll uses, so a caller reads one shape from both.
     vi.stubGlobal(
       "fetch",
       upstreamReturns(200, { ...RESULT, action: "keep", frames: 0, frames_unknown: true })
@@ -378,7 +382,17 @@ describe("POST", () => {
 
     const body = await (await post({ plate_id: "P7", wave_number: 1 })).json();
 
-    expect(body.frames_unknown).toBe(true);
+    expect(body.frames).toBeNull();
+    expect(body).not.toHaveProperty("frames_unknown");
+  });
+
+  it("keeps a real count, and never mentions the flag", async () => {
+    vi.stubGlobal("fetch", upstreamReturns(200, RESULT));
+
+    const body = await (await post({ plate_id: "P7", wave_number: 1 })).json();
+
+    expect(body.frames).toBe(86);
+    expect(body).not.toHaveProperty("frames_unknown");
   });
 
   it("reports the video service being unreachable without naming it", async () => {

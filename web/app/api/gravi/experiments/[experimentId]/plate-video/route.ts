@@ -92,6 +92,15 @@ function noStore(response: NextResponse): NextResponse {
   return response;
 }
 
+// One vocabulary for a frame count across both answers: a number, or null when
+// it is not known. The service says that second case as zero with a flag beside
+// it, and zero is a claim about the video rather than a missing record.
+function withFrameCount(parsed: unknown): unknown {
+  if (typeof parsed !== "object" || parsed === null) return parsed;
+  const { frames_unknown: notKnown, ...rest } = parsed as Record<string, unknown>;
+  return notKnown ? { ...rest, frames: null } : rest;
+}
+
 /** A wave from the request: a whole number, null, or invalid. */
 function parseWave(raw: unknown): number | null | undefined {
   if (raw === null || raw === undefined || raw === "") return null;
@@ -203,7 +212,7 @@ export async function POST(
     );
   }
 
-  return NextResponse.json(parsed, { status: 200 });
+  return NextResponse.json(withFrameCount(parsed), { status: 200 });
 }
 
 export async function GET(
