@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import os
 import sys
 from pathlib import Path
@@ -432,6 +433,25 @@ class TestVerificationCanFailARun:
     def test_a_clean_verification_leaves_the_run_ok(self):
         assert job.run_outcome(
             crashed=False, failed=0, copied=100, limit=None, verify_mismatched=0
+        ) == "ok"
+
+    def test_a_name_box_cannot_store_stops_the_run_being_a_watermark(self):
+        """The same permanent non-backup a refused collision is, and it used
+        to be treated as its opposite.
+
+        `skipped` was not a parameter at all, so the run recorded `ok`, the
+        watermark advanced past the object, and its `updated_at` never
+        changes — so no later incremental run enumerates it again. Gone from
+        the mirror for good, with a WARNING the summary did not surface as
+        the only trace.
+        """
+        assert job.run_outcome(
+            crashed=False, failed=0, copied=100, limit=None, skipped=1
+        ) == "partial"
+
+    def test_no_skips_still_leaves_the_run_ok(self):
+        assert job.run_outcome(
+            crashed=False, failed=0, copied=100, limit=None, skipped=0
         ) == "ok"
 
     def test_a_crash_still_outranks_a_mismatch(self):
@@ -983,6 +1003,106 @@ class TestRunLockedWiresItsPartsTogether:
         assert "all present and correct" not in caplog.text, (
             "claimed a clean check on a sample that was 96% unanswered"
         )
+
+    def missing(self, tmp_path, name="exp-42/a.png"):
+        """One object the check reports as absent from Box.
+
+        Deliberately one the harness really copies, so there is a ledger row
+        to clear. A name the run never saw would leave nothing to delete, and
+        the test would pass whatever the code did.
+        """
+        return StorageObject(
+            bucket_id="images", name=name, version="v1", size=100,
+            updated_at="2026-08-31T00:00:00+00",
+        )
+
+    def test_a_missing_object_is_queued_for_re_copy_without_anyone_typing_sql(
+        self, harness, monkeypatch, caplog
+    ):
+        """The run clears its own row instead of printing a DELETE.
+
+        The old message told an operator to run DELETE against the production
+        ledger, having stripped the Box root off a path by hand and supplied
+        the NORMALIZED name rather than the one Postgres holds. Wrong on any
+        of those and it deleted nothing, silently, while the alarm was
+        documented as never repeating.
+        """
+        state, tmp_path = harness
+        gone = self.missing(tmp_path)
+        monkeypatch.setattr(
+            job, "verify_sample",
+            lambda *a: copier.VerifyResult(
+                checked=1, mismatched=1, unverified=0, failures=(gone,)
+            ),
+        )
+        job.run_locked(self.args(tmp_path, verify=1), tmp_path)
+        assert "DELETE FROM" not in caplog.text, "still tells a person to run SQL"
+        assert "sqlite3" not in caplog.text, "still sends a person to the ledger"
+        assert "queued 1 object(s) for re-copy" in caplog.text
+        with sqlite3.connect(str(tmp_path / "ledger.db")) as conn:
+            rows = conn.execute(
+                "SELECT count(*) FROM copied WHERE name = ?", (gone.ledger_key[1],)
+            ).fetchone()[0]
+        assert rows == 0, "the row proved wrong is still recorded as mirrored"
+
+    def test_a_missing_object_is_named_in_the_run_report(
+        self, harness, monkeypatch, tmp_path
+    ):
+        """A count leaves the identity nowhere durable.
+
+        The job log is a GitHub Actions log under retention and the alarm does
+        not repeat, so the report on Box is the only place that can still
+        answer "which object?" next month. Two messages claimed it already
+        did; neither was true.
+        """
+        state, tmp_path = harness
+        gone = self.missing(tmp_path)
+        monkeypatch.setattr(
+            job, "verify_sample",
+            lambda *a: copier.VerifyResult(
+                checked=1, mismatched=1, unverified=0, failures=(gone,)
+            ),
+        )
+        job.run_locked(self.args(tmp_path, verify=1), tmp_path)
+        written = sorted((tmp_path / "_runs").glob("*.json"))
+        assert written, "no run report was written"
+        body = json.loads(written[-1].read_text())
+        assert body["verify_failures"], "the report does not name what is missing"
+        assert "exp-42/a.png" in body["verify_failures"][0]
+
+    def test_a_missing_object_is_not_re_queued_when_a_collision_was_refused(
+        self, harness, monkeypatch, caplog
+    ):
+        """The one case where clearing a row destroys a backup.
+
+        With two names competing for one Box path, the row belongs to the
+        object that WON it. Drop it and the twin takes the path and overwrites
+        a good backup — the exact outcome the collision guard exists to
+        prevent. So the run refuses to re-queue at all and says why.
+        """
+        state, tmp_path = harness
+        gone = self.missing(tmp_path)
+        monkeypatch.setattr(
+            job, "verify_sample",
+            lambda *a: copier.VerifyResult(
+                checked=1, mismatched=1, unverified=0, failures=(gone,)
+            ),
+        )
+        real = job.copy_manifest
+
+        def with_a_collision(*a, **kw):
+            real(*a, **kw)
+            kw.get("totals", a[-1]).collisions += 1
+
+        monkeypatch.setattr(job, "copy_manifest", with_a_collision)
+        job.run_locked(self.args(tmp_path, verify=1), tmp_path)
+        assert "NOT queued for re-copy" in caplog.text
+        assert "queued 1 object(s) for re-copy" not in caplog.text
+        with sqlite3.connect(str(tmp_path / "ledger.db")) as conn:
+            rows = conn.execute(
+                "SELECT count(*) FROM copied WHERE name = ?", (gone.ledger_key[1],)
+            ).fetchone()[0]
+        assert rows == 1, "cleared a row while a collision was competing for the path"
 
     def test_a_verification_that_answered_nothing_says_so(
         self, harness, monkeypatch, caplog

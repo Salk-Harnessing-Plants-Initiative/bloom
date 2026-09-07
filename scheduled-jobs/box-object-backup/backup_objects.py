@@ -43,7 +43,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 import backup_lib as lib  # noqa: E402
 import docker_env as dock  # noqa: E402
 import report  # noqa: E402
-from copier import MAX_ATTEMPTS, VerifyReservoir, copy_all, verify_sample  # noqa: E402
+from copier import (  # noqa: E402
+    MAX_ATTEMPTS,
+    MAX_TRACKED_FAILURES,
+    VerifyReservoir,
+    copy_all,
+    verify_sample,
+)
 from ledger import Ledger  # noqa: E402
 from rclone_rc import MinioSource, RcloneError, RcloneRC  # noqa: E402
 import stopping  # noqa: E402
@@ -84,6 +90,14 @@ LEDGER_AHEAD_MARKER = "the ledger on Box is AHEAD of this host"
 # not only a total blackout: 2 answers out of 50 is still a night whose
 # "2 verified" headline claims far more than was established.
 VERIFY_INCOMPLETE_MARKER = "verification did NOT cover its sample"
+
+# Objects refused before any copy because Box cannot store the name. Same
+# outcome as a refused collision — not backed up, and only a rename in
+# Supabase fixes it — so it gets the same treatment: the run is `partial`, the
+# object stays enumerated, and the summary says so. Deliberately NOT sharing
+# the collision phrase ("were NOT backed up"), which the summary greps for and
+# which carries collision-specific advice.
+SKIPPED_NAME_MARKER = "object(s) were SKIPPED for their names"
 
 # How many objects the preflight probes, and how far into the manifest it looks
 # for them. Several rather than one, because a single orphaned row must not be
@@ -281,6 +295,10 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             totals.verify_checked = result.checked
             totals.verify_mismatched = result.mismatched
             totals.verify_unverified = result.unverified
+            totals.verify_failures = [
+                lib.box_path(obj, args.box_root) for obj in result.failures
+            ]
+            requeue_missing(ledger, result.failures, totals)
     except BaseException:
         # Recorded before re-raising so the Box report still names the run
         # that died — a failed run is the one most worth a record.
@@ -307,6 +325,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             bucket_scoped=bool(args.buckets.strip()),
             stopped=stopping.stopping(),
             collisions=totals.collisions,
+            skipped=totals.skipped,
         )
         # Nested so the teardown below cannot be skipped. Everything in this
         # block can raise — publish_report catches only OSError and
@@ -322,6 +341,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
                 daemon, state_dir, box_fs, args,
                 run_id=run_id, started_at=started_at, outcome=outcome,
                 stats=stats, failures=totals.failures,
+                skips=totals.skips, verify_failures=totals.verify_failures,
             )
             ledger.commit()
         # Inside the finally, not after it. A run that raised is the one whose
@@ -350,18 +370,29 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     )
     if totals.collisions:
         report_collisions(totals.collisions)
+    # Collisions are counted in `skipped` too, so subtract them: a run that
+    # only refused a collision must not also claim a name Box cannot store.
+    name_skips = totals.skipped - totals.collisions
+    if name_skips > 0:
+        logger.error(
+            "%d %s Box cannot store. They are NOT backed up and nothing here "
+            "can change that — only renaming them in Supabase can. Each is "
+            "named with its reason in the run report under _runs/ on Box, and "
+            "in the `skipping` lines above. The run is recorded partial, so "
+            "they stay in view every night until they are renamed rather than "
+            "dropping out of sight after tonight.",
+            name_skips, SKIPPED_NAME_MARKER,
+        )
     if totals.verify_mismatched:
         logger.error(
-            "%d of %d verified object(s) were missing or the wrong size on Box. "
-            "These are NOT retried automatically — the ledger already records "
-            "them as copied, so every later run skips them. To force a re-copy, "
-            "delete their rows by hand:\n"
-            "    sqlite3 %s \"DELETE FROM copied WHERE bucket_id='<bucket>' "
-            "AND name='<name>';\"\n"
-            "The failing paths are named in the ERROR lines above and in the "
-            "run report under _runs/ on Box.",
+            "%d of %d verified object(s) were missing or the wrong size on "
+            "Box. They are named in the run report under _runs/ on Box, and "
+            "in the ERROR lines above. The run has already queued them to be "
+            "copied again — no ledger surgery, and nothing on Box was "
+            "deleted. If the same objects appear here on the next run, the "
+            "copy is failing rather than the record being wrong, and that is "
+            "worth looking at.",
             totals.verify_mismatched, totals.verify_checked,
-            state_dir / "ledger.db",
         )
     elif totals.verify_checked and not totals.verify_unverified:
         logger.info("verified %d object(s) on Box, all present and correct",
@@ -420,6 +451,13 @@ class Totals:
     verify_unverified: int = 0
     verify_pool: object = None
     failures: list = field(default_factory=list)
+    # Objects refused before any copy was attempted, and objects the check
+    # found missing from Box. Both end up in the run report on Box, because
+    # both name an object that is NOT backed up and the job log is a GitHub
+    # Actions log under retention — the one place that answers "which one?"
+    # must outlive it.
+    skips: list = field(default_factory=list)
+    verify_failures: list = field(default_factory=list)
 
 
 def sample_planned_objects(manifest: Path, count: int = PREFLIGHT_SAMPLE) -> list:
@@ -503,6 +541,7 @@ def run_outcome(
     bucket_scoped: bool = False,
     stopped: bool = False,
     collisions: int = 0,
+    skipped: int = 0,
 ) -> str:
     """Classify a finished run — and decide whether it can be a watermark.
 
@@ -536,13 +575,23 @@ def run_outcome(
     that are not there. Recording it clean would advance the watermark past
     them, so nothing would ever look at them again — the check would have
     found the fault and then buried it.
+
+    A run that skipped an object because Box cannot store its name is the same
+    situation as a refused collision, and was treated as its opposite. The
+    object is not backed up, nothing on this side can make it so, and only a
+    rename in Supabase fixes it — but `skipped` was not a parameter here at
+    all, so the run recorded `ok`, the watermark moved past it, and the
+    object's `updated_at` never changes, so no later incremental run ever
+    enumerates it again. Permanently absent from the mirror, with a WARNING
+    the summary did not surface as the only trace. It holds the watermark now,
+    on the same reasoning and at the same cost as a collision.
     """
     if crashed:
         return "error"
     truncated = limit is not None and copied >= limit
     if (
         failed or truncated or verify_mismatched
-        or bucket_scoped or stopped or collisions
+        or bucket_scoped or stopped or collisions or skipped
     ):
         return "partial"
     return "ok"
@@ -559,12 +608,20 @@ def publish_report(
     outcome: str,
     stats: dict,
     failures: list,
+    skips: list | None = None,
+    verify_failures: list | None = None,
 ) -> None:
     """Write the run report locally, then copy it to Box beside the mirror.
 
     Best-effort by design: the objects are already on Box, and losing the
     report must not turn a good run into a failed one. It is logged loudly
     instead, and the local copy under the state dir survives either way.
+
+    `skips` and `verify_failures` name the objects that are NOT on Box for a
+    reason other than a copy failure. They belong here rather than only in the
+    job log because this file is the durable record — the log is a GitHub
+    Actions log under retention, and the verification alarm is documented as
+    never repeating.
     """
     entry = report.RunReport(
         env=args.env,
@@ -574,6 +631,8 @@ def publish_report(
         outcome=outcome,
         box_root=args.box_root,
         stats=stats,
+        skips=list(skips or []),
+        verify_failures=list(verify_failures or []),
         failures=failures,
     )
     try:
@@ -733,6 +792,15 @@ def copy_manifest(
             return
         report_skips(plan)
         totals.skipped += len(plan.skipped)
+        for refused in plan.skipped:
+            # Capped like the copy failures, and for the same reason: a seed
+            # run must not grow an unbounded list on a host running the whole
+            # stack. The count in `stats` stays exact.
+            if len(totals.skips) < MAX_TRACKED_FAILURES:
+                path = refused.obj.storage_path
+                totals.skips.append(
+                    f"{path if path.isascii() else ascii(path)}: {refused.reason}"
+                )
         totals.collisions += plan.collisions
         totals.already_current += plan.already_current
         if not plan.copies:
@@ -918,6 +986,55 @@ def report_collisions(count: int) -> None:
         "refused for ever.",
         count,
     )
+
+
+def requeue_missing(ledger: Ledger, failures, totals: Totals) -> None:
+    """Queue a re-copy for objects verification found are not on Box.
+
+    The ledger row saying "this is on Box at this version" is what makes every
+    later run skip the object. When the check proves that row wrong, dropping
+    it IS the whole remedy: nothing on Box is touched, and the next run copies
+    the object over its own path.
+
+    This used to be an instruction — the run printed a DELETE statement for
+    someone to type against the production ledger, with the Box root stripped
+    off by hand and the NORMALIZED name rather than the one Postgres holds.
+    Get any of it wrong and it deleted nothing, silently, while the alarm was
+    documented as never repeating. Doing it here removes the typing, the
+    transcription, and the reason to open the ledger at all.
+
+    Refused on a run that saw a name collision, and only then. There, one
+    object holds the path and its twin was turned away; dropping the holder's
+    row lets the twin take the path and overwrite a good backup. That is the
+    one case where this is destructive, so it is not attempted — the objects
+    stay named in the report and the collision is reported alongside.
+    """
+    if not failures:
+        return
+    if totals.collisions:
+        logger.error(
+            "%d object(s) are missing from Box and were NOT queued for "
+            "re-copy, because this run also refused a name collision. "
+            "Re-copying while two names compete for one path can overwrite "
+            "the object that holds it. Resolve the collision first — the "
+            "objects are named in the run report — then re-run.",
+            len(failures),
+        )
+        return
+    removed = ledger.forget(obj.ledger_key for obj in failures)
+    logger.warning(
+        "queued %d object(s) for re-copy on the next run (%d ledger row(s) "
+        "cleared). Nothing on Box was deleted — the rows only said an object "
+        "was already mirrored, which the check just disproved.",
+        len(failures), removed,
+    )
+    if removed != len(failures):
+        logger.error(
+            "expected to clear %d ledger row(s) and cleared %d. The rest are "
+            "still recorded as mirrored, so later runs will keep skipping "
+            "them; they are named in the run report.",
+            len(failures), removed,
+        )
 
 
 def report_skips(plan: lib.CopyPlan) -> None:

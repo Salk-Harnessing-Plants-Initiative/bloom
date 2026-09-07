@@ -291,13 +291,19 @@ rejects (`\ : * ? " < > |`), has a path segment ending in a space or period,
 holds a control character, or exceeds Box's per-file cap. `tus-files` (the
 scratch bucket for in-flight resumable uploads) is excluded by default.
 
-Check for skips after a run:
+**A skipped object is not backed up, and only a rename in Supabase can change
+that.** The run says so — **Some images were not backed up because of their
+filenames** in the summary — and is recorded `partial`, which holds the
+watermark so the object stays enumerated every night until it is renamed. It
+used to record `ok`: the watermark moved past the object, its `updated_at`
+never changes, so no later incremental run enumerated it again and it was gone
+from the mirror for good, with one WARNING line as the only trace.
 
-Skips appear in the run's log and its count in the report on Box. Reading the
-report is the durable one — a journal rotates:
+The report on Box names each one with its reason. Reading the report is the
+durable check — a journal rotates and an Actions log expires:
 
 ```bash
-rclone cat "box:$BACKUP_BOX_ROOT/_runs/<latest>.json" | jq '.stats.skipped'
+rclone cat "box:$BACKUP_BOX_ROOT/_runs/<latest>.json" | jq '.stats.skipped, .skips'
 ```
 
 ## Monitoring
@@ -397,8 +403,16 @@ difference, but it lives in `/var/lib` behind SSH and SQLite.
 Each report carries the run's outcome (`ok`, `partial`, `error`), its
 duration, the counts (`listed`, `copied`, `failed`, `skipped`,
 `already_current`, `verify_checked`, `verify_mismatched`, `verify_unverified`),
-and the paths of failed objects — capped, with `failure_count` keeping the true
-total. Reports are written for failed runs too.
+and the paths of every object that is **not** on Box, by all three routes:
+`failures` (the copy failed), `skips` (refused for its name, with the reason),
+and `verify_failures` (the copy reported success and the check found it
+absent). All three are capped, with `failure_count` and `skips_truncated`
+saying so; the counts in `stats` remain exact. Reports are written for failed
+runs too.
+
+Those lists are the point of this file. A count tells you something is
+missing; only the list tells you *which*, and the job log that also carries it
+is a GitHub Actions log under retention.
 
 `verify_checked` and `verify_mismatched` are what make the report a record of
 a *checked* backup rather than an attempted one. `verify_checked: 0` means
@@ -439,29 +453,32 @@ Box's busy hours. It is set on the workflow itself (`verify` under
 `workflow_dispatch`, and the value passed on the scheduled path); there is no
 `.env` setting for it.
 
-**A mismatched object is not retried automatically.** The ledger recorded it as
-copied before verification ran, so every later run skips it as
-`already_current` — `--full` does not help, since that bypasses the watermark
-and not the ledger. Forcing a re-copy means deleting its ledger row by hand:
+**A mismatched object is queued for re-copy automatically.** The ledger row
+saying "this is on Box" is what makes every later run skip the object; when the
+check proves that row wrong, the run drops it itself and the next run copies
+the object again. Nothing on Box is deleted — the row only ever claimed
+something that turned out not to be true.
 
-```bash
-sqlite3 /var/lib/bloom-box-object-backup/ledger.db \
-  "DELETE FROM copied WHERE bucket_id='images' AND name='exp-42/frame.png';"
-```
+You are never asked to run SQL against the ledger for this, and should not.
+The old instruction required stripping the Box root off a path by hand, then
+supplying the *normalized* name rather than the one Postgres holds; anything
+wrong and it deleted nothing, silently, on an alarm that does not repeat.
 
-The failing paths are in the run's log and in the report under `_runs/` on Box.
-Until this is automated, **check `verify_mismatched` in the run report after
-each backup** — it is the one number that says whether what was copied is
-actually there.
+The one exception, which the run reports rather than attempts: if the same run
+also refused a **name collision**, nothing is re-queued. There the ledger row
+belongs to the object that won the path, and dropping it lets its twin take
+that path and overwrite a good backup. Resolve the collision first, then
+re-run.
+
+The failing paths are in the run's log and named in `verify_failures` in the
+report under `_runs/` on Box. **Check `verify_mismatched` in the run report
+after each backup** — it is the one number that says whether what was copied is
+actually there. If the same objects appear again on the next run, the copy is
+failing rather than the record being wrong, and that is worth looking at.
 
 The N objects are a uniform sample of the run's **successful** copies, chosen
 by a hash of each object's path rather than by arrival order, so the same set
 of copies always yields the same sample no matter which worker finished first.
-
-That makes the sample stable, not the finding: a mismatched object is recorded
-as copied before verification runs, so the next run skips it as
-`already_current` and never re-checks it. Re-running does **not** reproduce a
-mismatch — see *A mismatched object is not retried automatically* above.
 
 **N defaults to 50 on every scheduled run**, set by the workflow, and is a
 `verify` input you can change when running by hand. The command-line default

@@ -50,12 +50,22 @@ class RunReport:
     box_root: str
     stats: dict = field(default_factory=dict)
     failures: list[str] = field(default_factory=list)
+    # Objects that are NOT on Box by the two routes that are not a copy
+    # failure: refused before the attempt because Box cannot store the name,
+    # and found missing by verification after the copy reported success. A
+    # count alone left the identity of a missing object nowhere but a GitHub
+    # Actions log under retention — and this file exists precisely because
+    # /var/lib and a rotating log cannot answer "which one?" later.
+    skips: list[str] = field(default_factory=list)
+    verify_failures: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         listed = self.failures[:MAX_REPORTED_FAILURES]
         # The copier stops collecting paths past its own ceiling, so the list
         # cannot be trusted for the total — `stats["failed"]` counts them all.
         total_failures = self.stats.get("failed", len(self.failures))
+        skips = self.skips[:MAX_REPORTED_FAILURES]
+        total_skips = self.stats.get("skipped", len(self.skips))
         return {
             "schema": SCHEMA_VERSION,
             "env": self.env,
@@ -71,6 +81,11 @@ class RunReport:
             "failures": listed,
             "failures_truncated": total_failures > len(listed),
             "failure_count": total_failures,
+            # Names, not just counts. `stats["skipped"]` and
+            # `stats["verify_mismatched"]` remain the exact totals.
+            "skips": skips,
+            "skips_truncated": total_skips > len(skips),
+            "verify_failures": self.verify_failures[:MAX_REPORTED_FAILURES],
         }
 
     def to_json(self) -> str:

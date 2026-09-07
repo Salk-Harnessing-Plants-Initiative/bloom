@@ -134,6 +134,38 @@ class TestSkipMarkerContract:
             'steps.run.outcome }}" = "success"'
         ), "the success branch would win and the summary would read succeeded"
 
+    def test_a_name_box_cannot_store_is_reported_in_the_summary(self, summary_script: str):
+        """The same permanent non-backup a refused collision is.
+
+        The object is not on Box and only a rename in Supabase can change
+        that, but there was no branch for it at all — a WARNING the fenced
+        block also filtered out was the entire trace, on a run recorded `ok`
+        whose watermark then moved past the object for good.
+        """
+        assert job.SKIPPED_NAME_MARKER in _strip_comments(summary_script), (
+            "the summary cannot report an object refused for its name"
+        )
+
+    def test_the_skipped_names_notice_is_not_a_branch(self, summary_script: str):
+        # It happens on nights that otherwise copied fine, so as an elif the
+        # success branch would hide it.
+        script = _strip_comments(summary_script)
+        assert re.search(
+            r"(?<!el)if grep -q '" + re.escape(job.SKIPPED_NAME_MARKER), script
+        ), "the skipped-names notice is a branch, so another result hides it"
+
+    def test_the_skipped_names_notice_says_only_a_rename_fixes_it(
+        self, summary_script: str
+    ):
+        """Nothing on this side can back the object up, so a notice that does
+        not say a rename is required leaves the reader with no action."""
+        script = _strip_comments(summary_script)
+        opener = "if grep -q '" + job.SKIPPED_NAME_MARKER
+        assert opener in script, "there is no skipped-names notice to check"
+        branch = script[script.index(opener):][:1000]
+        assert "renaming them in Supabase" in branch, "does not say what to do"
+        assert "partial" in branch, "does not say they stay in view"
+
     def test_a_stale_ledger_on_box_is_reported_in_the_summary(self, summary_script: str):
         """The ledger upload is best-effort, so a refused or failed one leaves
         the run at exit 0 and the summary reading "succeeded". What went stale
@@ -163,6 +195,7 @@ class TestSkipMarkerContract:
             job.LEDGER_STALE_MARKER,
             job.LEDGER_AHEAD_MARKER,
             job.VERIFY_INCOMPLETE_MARKER,
+            job.SKIPPED_NAME_MARKER,
             "were missing or the wrong size on Box",
             "were NOT backed up",
         }

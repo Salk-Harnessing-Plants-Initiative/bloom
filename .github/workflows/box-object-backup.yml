@@ -417,6 +417,21 @@ jobs:
               echo "> upload failed, and 'If the deploy host itself is gone'"
               echo "> in the wiki says what losing it costs."
             fi
+            # Additive for the same reason as the rest: an object refused for
+            # its name can happen on a night that otherwise copied fine, and
+            # it is the same permanent non-backup a collision is.
+            if grep -q 'object(s) were SKIPPED for their names' \
+              "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
+              echo
+              echo "> **Some images were not backed up because of their"
+              echo "> filenames.** Box cannot store a name containing certain"
+              echo "> characters, so those images were refused rather than"
+              echo "> copied wrong. Nothing on this side can fix it — only"
+              echo "> renaming them in Supabase can. Each is named with its"
+              echo "> reason in the run report under \`_runs/\` on Box. The run"
+              echo "> is recorded **partial**, so they stay in view every"
+              echo "> night until renamed instead of dropping out of sight."
+            fi
             # The mirror image of the notice above, and it must never be
             # merged with it: there, the host has the good ledger and Box is
             # behind. Here Box has the good one. An operator told to "fix a

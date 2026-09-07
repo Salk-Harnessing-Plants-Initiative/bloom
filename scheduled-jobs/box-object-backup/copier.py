@@ -204,14 +204,21 @@ class VerifyResult:
     `unverified` is what it could not answer for: the stat call itself failed,
     so the object may be perfectly fine. Keeping that apart from `mismatched`
     is the whole point of this type. Counted together, one Box hiccup on an
-    otherwise clean night produced VERIFICATION FAILED and told an operator to
-    hand-delete the ledger row of a healthy object — and taught the team to
-    discount the only alarm a genuinely missing object has.
+    otherwise clean night produced VERIFICATION FAILED and sent an operator to
+    the ledger for a healthy object — and taught the team to discount the only
+    alarm a genuinely missing object has.
+
+    `failures` names the objects behind `mismatched`. A count alone left the
+    identity of a missing object nowhere but a job log under retention, on the
+    one alarm documented as never repeating, while the message claimed the
+    paths were in the run report. It is also what lets the run queue its own
+    re-copy instead of printing a DELETE for someone to type.
     """
 
     checked: int
     mismatched: int
     unverified: int
+    failures: tuple = ()
 
 
 def verify_sample(
@@ -235,6 +242,7 @@ def verify_sample(
     copies = plan.copies
     stride = max(1, len(copies) // max(1, sample_size))
     checked = mismatched = unverified = 0
+    failures = []
     for obj in copies[::stride][:sample_size]:
         dst = lib.box_path(obj, box_root)
         try:
@@ -249,14 +257,19 @@ def verify_sample(
         if item is None:
             logger.error("verify: missing on Box: %s", dst)
             mismatched += 1
+            failures.append(obj)
         elif obj.size is not None and item.get("Size") != obj.size:
             logger.error(
                 "verify: size mismatch %s — Box %s, Postgres %s",
                 dst, item.get("Size"), obj.size,
             )
             mismatched += 1
+            failures.append(obj)
     # The workflow summary extracts the leading "verify: N checked, N
     # mismatched"; anything appended here is outside that pattern.
     tail = f", {unverified} unverified" if unverified else ""
     logger.info("verify: %d checked, %d mismatched%s", checked, mismatched, tail)
-    return VerifyResult(checked=checked, mismatched=mismatched, unverified=unverified)
+    return VerifyResult(
+        checked=checked, mismatched=mismatched, unverified=unverified,
+        failures=tuple(failures),
+    )
