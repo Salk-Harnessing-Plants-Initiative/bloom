@@ -14,7 +14,7 @@ Exit codes:
   0 = verified backup uploaded
   1 = subprocess failure (docker / pg_dump / gzip / rclone)
   2 = configuration error (missing env, no remote, stack not running)
-  3 = an artifact failed verification (missing, undersized, corrupt, or empty)
+  3 = an artifact is missing or too small to be a real dump
   4 = the run was killed by SIGTERM or SIGHUP — not a failure of anything it
       ran. Ctrl-C is SIGINT, which is not handled, and exits 130. A cancelled
       or timed-out workflow run kills the ssh client only and this script keeps
@@ -59,8 +59,9 @@ DEFAULT_ENV = "prod"
 DEFAULT_STATE_DIR = "~/.local/state/bloom-weekly-backup"
 DB_SERVICE = "db-prod"
 
-# Size floors. An empty or truncated dump is the failure this job exists to
-# avoid reporting as success; both floors sit far below any real dump.
+# Size floors. What they catch is a dump that came out empty; a truncated one
+# is caught by the pipeline's exit statuses, since pg_dump dying part-way exits
+# non-zero. Both floors sit far below any real dump.
 MIN_DATABASE_BYTES = 4096
 MIN_GLOBALS_BYTES = 256
 

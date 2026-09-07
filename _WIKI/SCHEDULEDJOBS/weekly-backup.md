@@ -275,15 +275,18 @@ sudo -u bloom-deploy rclone lsl box:bloom-backups/prod
 | 0    | Verified backup uploaded                                              |
 | 1    | Subprocess failed (docker / pg_dump / gzip / rclone)                  |
 | 2    | Configuration problem, the stack is not running, or `--env` is not a known environment |
-| 3    | An artifact failed verification — missing, short, corrupt or empty    |
+| 3    | An artifact is missing, or too small to be a real dump                |
 | 4    | The run was terminated by a signal — see below, it is not what a cancelled workflow run produces |
 
 Code 2 also covers a deploy host with too little free space for a dump. That
 is checked before the dump starts, so the run costs seconds rather than failing
 partway with a half-written artifact.
 
-Code 3 is the one to read closely: the dump ran, but what came out cannot be a
-usable backup. Look at the database, not at the config.
+Code 3 means the dump ran and produced almost nothing. In practice that is a
+configuration problem rather than a database one — `POSTGRES_DB` naming the
+wrong database, or a container resolved from the wrong stack — so start with
+`.env.<env>` and the resolved container named in the log. Nothing checks the
+artifact for corruption; that is what checking it on Box is for.
 
 Code 4 is not a failure of anything the job ran. It gets its own code because a
 `SystemExit` carrying a message exits 1, which would make a terminated run
