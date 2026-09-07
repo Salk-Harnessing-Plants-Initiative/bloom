@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from plate_encode import (
     EncoderBusy,
     FrameDepthUnsupported,
+    FrameSizeMismatch,
     FrameTooLarge,
     FrameUnreadable,
     NotRecorded,
@@ -61,6 +62,11 @@ def render(experiment_id: int, body: dict) -> dict:
     except FrameDepthUnsupported as exc:
         # Before FrameUnreadable, which it subclasses. The file is intact.
         logger.warning("plate video refused an unsupported frame depth: %s", exc)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except FrameSizeMismatch as exc:
+        # Before FrameUnreadable, which it subclasses. This message is this
+        # service's own -- two frame sizes -- so it is safe to send whole.
+        logger.warning("plate video refused a mixed frame size: %s", exc)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FrameTooLarge as exc:
         # Before FrameUnreadable, which it subclasses. The size is safe to send.

@@ -43,12 +43,9 @@ PLATE_VIDEO_WIDTH = 1440
 # How many plates may encode at once. Chiefly so forty simultaneous clicks do
 # not saturate the link to storage and make every other request slower — but it
 # is also the multiplier on a render's memory, so it is where a container limit
-# has to be read from. tracemalloc around `prepare_frame` on a 4960x6850
-# source: 18 MB for an 8-bit frame, 170 MB for 16-bit. Four together is under
-# 700 MB, plus Pillow's own decode buffer, which is allocated outside the
-# Python allocator and so is not in those figures. Reducing in integer
-# arithmetic is what holds the 16-bit number down; a full-resolution float copy
-# of the source made the same measurement 578 MB.
+# has to be read from. Peak RSS around `prepare_frame` on a 4960x6850 source:
+# 227 MB for 8-bit, 485 MB for 16-bit. Four 8-bit plates is under 1 GB; four
+# 16-bit would be 1.9 GB and are refused by MAX_FRAME_DECODED_BYTES instead.
 MAX_CONCURRENT_ENCODES = 4
 
 # What one frame may cost to decode, four of which fit the container.
@@ -142,10 +139,15 @@ def encode_slot(timeout: float | None = None):
 
 def decoded_bytes(width: int, height: int, mode: str) -> int:
     """Roughly what this frame will cost in memory, from its header alone."""
-    per_pixel = (
-        DEEP_BYTES_PER_PIXEL if mode in DEEP_MODES else SHALLOW_BYTES_PER_PIXEL
-    )
+    per_pixel = DEEP_BYTES_PER_PIXEL if mode in DEEP_MODES else SHALLOW_BYTES_PER_PIXEL
     return width * height * per_pixel
+
+
+def depth_of(mode: str) -> str:
+    """A Pillow mode as bits per channel, for a message someone has to read."""
+    if mode in ("I", "F"):
+        return "32-bit"
+    return "16-bit" if mode in DEEP_MODES else "8-bit"
 
 
 def prepare_frame(image_bytes: bytes, label: str) -> np.ndarray:
@@ -158,9 +160,10 @@ def prepare_frame(image_bytes: bytes, label: str) -> np.ndarray:
         cost = decoded_bytes(image.width, image.height, image.mode)
         if cost > MAX_FRAME_DECODED_BYTES:
             raise FrameTooLarge(
-                f"{image.width}x{image.height} {image.mode} needs about "
-                f"{cost // 1024**2} MB to decode, past the "
-                f"{MAX_FRAME_DECODED_BYTES // 1024**2} MB one render may hold"
+                f"this plate scanned at {image.width}x{image.height} in "
+                f"{depth_of(image.mode)}, which needs about {cost // 1024**2} MB "
+                f"to render — past the {MAX_FRAME_DECODED_BYTES // 1024**2} MB "
+                "limit. Let the Bloom team know if this plate needs a video"
             )
         image.load()
         rgb = _to_8bit_rgb(image)
@@ -282,6 +285,10 @@ class FrameTooLarge(FrameUnreadable):
     """The frame is intact; it is too big for one render to hold."""
 
 
+class FrameSizeMismatch(FrameUnreadable):
+    """The frames are intact; this plate holds more than one frame size."""
+
+
 class EncoderBusy(RuntimeError):
     """Every encode slot is taken. Not a failure — a reason to come back."""
 
@@ -325,8 +332,8 @@ def encode_plate_video(client, frames: list[dict], out_path: str) -> int:
                 # or below the target width keeps its own evened width, so 1439
                 # and 1440 both arrive as themselves. That is this plate's data,
                 # not a fault in the encoder, so it reads as one.
-                raise FrameUnreadable(
-                    f"{path} does not match the rest of the plate: {exc}"
+                raise FrameSizeMismatch(
+                    f"{path} does not match the rest of the plate: {exc}", path
                 ) from exc
             written += 1
         writer.close()

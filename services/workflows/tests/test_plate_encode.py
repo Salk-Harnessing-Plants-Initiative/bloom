@@ -568,9 +568,14 @@ def test_a_mismatched_frame_reads_as_this_plate_s_data(ffmpeg, tmp_path):
     payloads = _payloads(frames)
     payloads[frames[1]["object_path"]] = _png(402, 600)
 
-    with pytest.raises(pe.FrameUnreadable) as ei:
+    with pytest.raises(pe.FrameSizeMismatch) as ei:
         pe.encode_plate_video(_EncodeClient(payloads), frames, str(tmp_path / "o.mp4"))
+
     assert "P7_1.tif" in str(ei.value)
+    # `path` is what the HTTP layer names the frame by, and asserting only the
+    # message cannot tell whether the raise site set it.
+    assert ei.value.path == frames[1]["object_path"]
+    assert isinstance(ei.value, pe.FrameUnreadable), "existing handlers still catch it"
 
 
 def test_a_broken_pipe_gives_up_the_reason_ffmpeg_died(ffmpeg, tmp_path):
@@ -1419,7 +1424,7 @@ def test_an_oversized_frame_is_refused_without_being_decoded(monkeypatch):
 
     monkeypatch.setattr(Image.Image, "load", never)
 
-    with pytest.raises(pe.FrameTooLarge, match="MB to decode"):
+    with pytest.raises(pe.FrameTooLarge, match="MB to render"):
         pe.prepare_frame(payload, LABEL)
 
 
@@ -1444,6 +1449,19 @@ def test_a_real_plate_and_a_finer_scan_of_it_are_both_accepted():
     assert frame.shape[1] == pe.PLATE_VIDEO_WIDTH
 
 
+def test_a_16_bit_plate_at_full_size_is_deliberately_refused():
+    """The scanners emit 8-bit RGB, so this is the insurance path, not a live
+    one. Refusing one legibly beats letting four reach the container limit. If a
+    16-bit scanner ever arrives this fails, which is the point."""
+    assert pe.decoded_bytes(4960, 6850, "L") <= pe.MAX_FRAME_DECODED_BYTES
+    assert pe.decoded_bytes(4960, 6850, "I;16") > pe.MAX_FRAME_DECODED_BYTES
+
+    # What four 16-bit frames would leave of the 2g limit for the interpreter
+    # (69 MB measured) and four ffmpeg children.
+    left = 2 * 1024**3 - 4 * pe.decoded_bytes(4960, 6850, "I;16")
+    assert left < 150 * 1024**2, "four would fit, so refusing them is not the trade"
+
+
 def test_an_oversized_frame_says_so_rather_than_being_called_unreadable():
     """`FrameUnreadable` sends someone to rescan a plate that scanned fine."""
     assert issubclass(pe.FrameTooLarge, pe.FrameUnreadable)
@@ -1456,6 +1474,8 @@ def test_an_oversized_frame_says_so_rather_than_being_called_unreadable():
 
     assert "12000x12000" in str(caught.value)
     assert "450 MB" in str(caught.value)
+    assert "16-bit" in str(caught.value), "the caller was shown a Pillow mode"
+    assert "I;16" not in str(caught.value)
 
 
 # --------------------------------------------------------------------------

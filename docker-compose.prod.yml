@@ -206,11 +206,13 @@ services:
     # brings it back, so a runaway render costs this service a restart rather
     # than costing the stack its database.
     #
-    # 2g covers four concurrent 16-bit plates: 162 MB of frame each measured by
-    # tracemalloc, plus Pillow's decode buffer outside it, plus the interpreter
-    # — about 1.4 GB. The tmpfs below is RAM-backed and counts here too, but
-    # holds only the finished MP4s (~3.5 MB each), not its 512m cap. Four
-    # 32-bit plates would exceed 2g, which is the intended outcome.
+    # 2g covers four concurrent 8-bit plates, which is what the scanners
+    # produce: 227 MB of frame each, measured as peak RSS. A 16-bit plate is
+    # 485 MB, and four would leave 104 MB of this limit for the interpreter and
+    # four ffmpeg children, so MAX_FRAME_DECODED_BYTES refuses one
+    # rather than letting four reach this limit. The tmpfs below is RAM-backed
+    # and counts here too, but holds only the finished MP4s (~3.5 MB each), not
+    # its 512m cap.
     mem_limit: 2g
     # Without this Docker allows twice mem_limit in swap, so a runaway render
     # would grind against disk indefinitely instead of being killed — slowing

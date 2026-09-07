@@ -72,6 +72,27 @@ def test_keeping_a_current_video_is_success_not_an_error(monkeypatch):
     assert pr.render(12, {"plate_id": "P7", "wave_number": 1})["action"] == "keep"
 
 
+def test_a_mixed_frame_size_names_the_frame_and_the_sizes(monkeypatch):
+    """This message is the service's own -- two dimensions -- not the storage
+    client's, so it is the one frame failure safe to send whole. A scientist can
+    act on it: this plate's captures are not all the same size."""
+    def mismatched(*a, **k):
+        raise pr.FrameSizeMismatch(
+            "12/wave-1/P7_40.tif does not match the rest of the plate: "
+            "frame is 1438x1988, but the video was opened at 1440x1990",
+            "12/wave-1/P7_40.tif",
+        )
+
+    monkeypatch.setattr(pr, "render_plate_video", mismatched)
+    with pytest.raises(HTTPException) as ei:
+        pr.render(12, {"plate_id": "P7", "wave_number": 1})
+
+    assert ei.value.status_code == 422
+    assert "12/wave-1/P7_40.tif" in ei.value.detail
+    assert "1438x1988" in ei.value.detail
+    assert ei.value.detail != "a frame could not be read"
+
+
 def test_an_oversized_frame_is_413_and_says_the_size(monkeypatch):
     """Not 502 "could not be read" — that sends someone to rescan a plate that
     scanned correctly. The message carries dimensions and a limit, neither of
