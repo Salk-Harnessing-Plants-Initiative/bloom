@@ -716,16 +716,28 @@ def test_a_caller_may_wait_for_a_plate_if_it_chooses():
 
 
 def test_waiting_for_a_plate_gives_up_at_the_timeout():
-    """A caller that asks to wait 200ms must not wait for the whole encode."""
+    """A caller that asks to wait 200ms must not wait for the whole encode.
+
+    Off-thread for the reason `_off_thread` exists: if the timeout stops being
+    honoured this waits forever, and on this thread that is a stuck CI job with
+    no failing test in it rather than a red build.
+    """
     key = "12/wave-1/never-freed.mp4"
-    with pe.plate_lock(key):
+    waited = []
+
+    def wait_for_it():
         started = time.monotonic()
-        with pytest.raises(pe.PlateBusy):
+        try:
             with pe.plate_lock(key, timeout=0.2):
                 pass
-        waited = time.monotonic() - started
+        finally:
+            waited.append(time.monotonic() - started)
 
-    assert 0.15 <= waited < 3, f"waited {waited:.2f}s for a 0.2s timeout"
+    with pe.plate_lock(key):
+        refusal = _off_thread(wait_for_it)
+
+    assert isinstance(refusal, pe.PlateBusy), f"expected a refusal, got {refusal!r}"
+    assert 0.15 <= waited[0] < 3, f"waited {waited[0]:.2f}s for a 0.2s timeout"
 
 
 def test_racing_requests_for_one_plate_still_serialise():
@@ -812,20 +824,31 @@ def test_releasing_a_slot_that_was_never_taken_is_caught():
 
 
 def test_waiting_for_a_slot_gives_up_at_the_timeout():
-    """A caller asking to wait 200ms must not wait for a whole encode."""
+    """A caller asking to wait 200ms must not wait for a whole encode.
+
+    Off-thread for the same reason as its plate-lock twin above.
+    """
     held = [pe.encode_slot() for _ in range(pe.MAX_CONCURRENT_ENCODES)]
     for slot in held:
         slot.__enter__()
-    try:
+    waited = []
+
+    def wait_for_it():
         started = time.monotonic()
-        with pytest.raises(pe.EncoderBusy):
+        try:
             with pe.encode_slot(timeout=0.2):
                 pass
-        waited = time.monotonic() - started
-        assert 0.15 <= waited < 3, f"waited {waited:.2f}s for a 0.2s timeout"
+        finally:
+            waited.append(time.monotonic() - started)
+
+    try:
+        refusal = _off_thread(wait_for_it)
     finally:
         for slot in held:
             slot.__exit__(None, None, None)
+
+    assert isinstance(refusal, pe.EncoderBusy), f"expected a refusal, got {refusal!r}"
+    assert 0.15 <= waited[0] < 3, f"waited {waited[0]:.2f}s for a 0.2s timeout"
 
 
 def test_a_caller_may_wait_for_a_slot_if_it_chooses():
