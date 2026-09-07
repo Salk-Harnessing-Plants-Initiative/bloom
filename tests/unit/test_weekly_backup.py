@@ -1111,6 +1111,45 @@ def test_the_two_environments_do_not_share_a_working_directory():
             != _defaults_value("staging", "BACKUP_STATE_DIR"))
 
 
+def test_a_missing_parent_is_refused_rather_than_created(tmp_path, monkeypatch):
+    # The host's working directory is set up by hand. Creating the whole path
+    # here would turn a typo in BACKUP_STATE_DIR into a new tree with a full
+    # plaintext dump in it, somewhere nobody is looking.
+    _deploy_dir(tmp_path)
+    typo = tmp_path / "dtaa" / "bloom" / "backup-work" / "prod"
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(typo))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    resolved: list = []
+    monkeypatch.setattr(backup, "resolve_container",
+                        lambda *a: resolved.append(a) or "container123")
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
+    assert rc == backup.EXIT_CONFIG
+    assert not typo.parent.exists(), "the run must not build the path it was given"
+    assert not resolved
+
+
+def test_the_working_directory_itself_is_created_when_its_parent_exists(
+        tmp_path, monkeypatch):
+    # The leaf is this job's own; only the location it sits in is set up by hand.
+    _deploy_dir(tmp_path)
+    parent = tmp_path / "backup-work"
+    parent.mkdir()
+    state_dir = parent / "prod"
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(state_dir))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    artifact = tmp_path / "db.sql.gz"
+    artifact.write_bytes(b"x" * 32)
+    monkeypatch.setattr(backup, "dump_database", lambda *a: artifact)
+    monkeypatch.setattr(backup, "dump_globals", lambda *a: artifact)
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path), "--dry-run"])
+    assert rc == backup.EXIT_OK
+    assert state_dir.is_dir()
+    assert state_dir.stat().st_mode & 0o777 == 0o700
+
+
 def test_an_unusable_state_directory_is_a_config_error(tmp_path, monkeypatch):
     # Creating it can fail on a volume this user does not own. Exit 2 naming the
     # path beats a PermissionError traceback that exits 1 as "subprocess failed".

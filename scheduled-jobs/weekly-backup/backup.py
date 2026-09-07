@@ -625,8 +625,16 @@ def main(argv: list[str] | None = None) -> int:
         # The working copy holds a full dump; keep it off other users. mode= on
         # the create leaves no window between the two calls; the chmod is what
         # tightens a directory an earlier run left looser.
+        # The parent is created by hand as part of host setup, never here: with
+        # parents=True a typo in BACKUP_STATE_DIR would build a fresh tree and
+        # quietly write a plaintext dump into it.
+        if not state_dir.parent.is_dir():
+            raise ConfigError(
+                f"{state_dir.parent} does not exist — create the working "
+                "directory's parent on the host, or fix BACKUP_STATE_DIR"
+            )
         try:
-            state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            state_dir.mkdir(exist_ok=True, mode=0o700)
             state_dir.chmod(0o700)
         except OSError as exc:
             raise ConfigError(

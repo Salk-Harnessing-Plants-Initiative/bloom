@@ -182,7 +182,21 @@ environment, so nothing in it reaches rclone or any other child process.
 `POSTGRES_DB` also has to be a plain database name, because it becomes part of
 the artifact's filename.
 
-### 2. Create the `production-scheduled-backup` GitHub Environment
+### 2. Create the working directory on the data volume
+
+`BACKUP_STATE_DIR`'s parent is created by hand, once per host — the job will not
+build the path it is given, so a typo cannot quietly leave a plaintext dump in a
+directory nobody is watching.
+
+```bash
+sudo install -d -o bloom-deploy -g "$(id -gn bloom-deploy)" -m 700 \
+  /data/bloom/backup-work
+```
+
+Each environment's own subdirectory (`prod/`, `staging/`) is this job's to make;
+it creates them at `0700` on first run.
+
+### 3. Create the `production-scheduled-backup` GitHub Environment
 
 Settings → Environments → New environment, named exactly
 `production-scheduled-backup`. **Leave it with no required reviewers and no wait
@@ -193,14 +207,14 @@ gate would sit "Waiting" for an approval nobody gives at 02:00 on a Sunday — t
 backup would look configured and silently never run. Manual dispatches still go
 through the real `production` environment and its gates.
 
-### 3. Promote the workflow to `main`
+### 4. Promote the workflow to `main`
 
 Neither `schedule:` nor `workflow_dispatch` fires until the workflow file exists
 on the repo's **default branch**. Both triggers are gated on it. Until the
 normal staging → main promotion carries this file across, nothing runs and the
 workflow does not appear in the Actions tab at all.
 
-### 4. Prove it with a dry run first
+### 5. Prove it with a dry run first
 
 Dispatch the workflow with "dry run" ticked. That runs the real SSH hop, the
 real container resolution and a real `pg_dump`, verifies both artifacts, and
