@@ -161,6 +161,13 @@ by environment rather than on the command line, so it stays out of the host's
 process list. Nothing extra to configure; a missing value exits 2 before the
 dump starts.
 
+Six keys are read out of `.env.<env>` and nothing else — `POSTGRES_USER`,
+`POSTGRES_PASSWORD`, `POSTGRES_DB`, `BACKUP_STATE_DIR`, `BACKUP_RCLONE_REMOTE`
+and `BACKUP_RCLONE_DEST_DIR`. The rest of the file stays out of the job's
+environment, so nothing in it reaches rclone or any other child process.
+`POSTGRES_DB` also has to be a plain database name, because it becomes part of
+the artifact's filename.
+
 ### 2. Create the `production-scheduled-backup` GitHub Environment
 
 Settings → Environments → New environment, named exactly

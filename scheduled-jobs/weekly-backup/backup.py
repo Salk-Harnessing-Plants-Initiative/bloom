@@ -28,6 +28,7 @@ import argparse
 import gzip
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -69,6 +70,28 @@ DB_DUMP_COMPLETE_MARKER = "-- PostgreSQL database dump complete"
 GLOBALS_DUMP_COMPLETE_MARKER = "-- PostgreSQL database cluster dump complete"
 MIN_DATA_ROWS = 100
 MIN_ROLE_STATEMENTS = 5
+
+# The only keys this job reads out of a deploy env file. Importing the whole
+# file instead hands every child process whatever it happens to contain: rclone
+# takes its entire option surface from `RCLONE_*`, so one `RCLONE_CONFIG=` line
+# would send a plaintext dump to somebody else's remote, and `LD_PRELOAD` runs
+# code as the deploy user. Both files are checked in, so that reach would be
+# writable from a config-only change.
+ENV_KEYS = (
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "POSTGRES_DB",
+    "BACKUP_STATE_DIR",
+    "BACKUP_RCLONE_REMOTE",
+    "BACKUP_RCLONE_DEST_DIR",
+)
+
+# An unquoted Postgres identifier, which is all a database name may be here:
+# the name reaches an artifact filename, and `../` in it would write a
+# plaintext dump outside the 0700 state directory, outside the working
+# directory's cleanup and outside the sweep's glob — so nothing would ever
+# remove it.
+DB_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_$]{0,62}\Z")
 
 EXIT_OK = 0
 EXIT_SUBPROCESS = 1
@@ -121,14 +144,21 @@ def load_env_file(path: Path) -> dict[str, str]:
 
 
 def apply_env_file(path: Path) -> int:
-    """Load the env file as defaults. A real environment variable still wins."""
+    """Load this job's keys as defaults. A real environment variable still wins.
+
+    Only ENV_KEYS are taken. The rest of the file is left where it is rather
+    than exported into every child this script starts.
+    """
     if not path.is_file():
         raise ConfigError(f"env file not found: {path}")
     values = load_env_file(path)
-    for key, value in values.items():
-        os.environ.setdefault(key, value)
-    logger.info("loaded %d values from %s", len(values), path.name)
-    return len(values)
+    applied = 0
+    for key in ENV_KEYS:
+        if key in values:
+            os.environ.setdefault(key, values[key])
+            applied += 1
+    logger.info("loaded %d of %d values from %s", applied, len(values), path.name)
+    return applied
 
 
 def _pg_password() -> str:
@@ -146,6 +176,18 @@ def _pg_password() -> str:
             "for pg_dump to authenticate against " + DB_SERVICE
         )
     return password
+
+
+def _pg_database() -> str:
+    """The database to dump, checked because the name reaches a filename."""
+    name = _env("POSTGRES_DB", "postgres")
+    if not DB_NAME_PATTERN.match(name):
+        raise ConfigError(
+            f"POSTGRES_DB is not a plain database name: {name!r} — a name "
+            "carrying path separators would put the dump outside the state "
+            "directory, where nothing cleans it up"
+        )
+    return name
 
 
 def dump_command(container: str, argv: list[str]) -> tuple[list[str], dict[str, str]]:
@@ -400,7 +442,7 @@ def verify_globals_content(path: Path) -> int:
 def dump_database(container: str, work_dir: Path, timestamp: str) -> Path:
     """Dump the whole database, keeping owners and privileges."""
     pg_user = _env("POSTGRES_USER", "supabase_admin")
-    pg_db = _env("POSTGRES_DB", "postgres")
+    pg_db = _pg_database()
     out = work_dir / f"postgres-{pg_db}-{timestamp}.sql.gz"
     logger.info("dumping database %s -> %s", pg_db, out.name)
     cmd, env = dump_command(
@@ -535,9 +577,10 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGHUP, _terminate)
         # SIGKILL and power loss cannot be caught, so sweep what they left.
         sweep_stale_work_dirs(state_dir)
-        # Same reasoning as the destination check below: the password is config,
-        # and a run that discovers it missing has already spent the dump window.
+        # Same reasoning as the destination check below: these are config, and
+        # a run that finds them wrong has already spent the dump window.
         _pg_password()
+        _pg_database()
         # Resolve the destination before dumping: finding out afterwards costs
         # the whole dump window and discards the artifact.
         if not args.dry_run:

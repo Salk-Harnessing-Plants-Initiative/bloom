@@ -11,6 +11,7 @@ from __future__ import annotations
 import gzip
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -955,6 +956,66 @@ def test_an_empty_password_counts_as_missing(monkeypatch):
         backup._pg_password()
 
 
+# --------------------------------------------------------------------------
+# The database name, which reaches a filename
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["postgres", "bloom_v2", "_internal", "db$1"])
+def test_a_plain_database_name_is_accepted(name, monkeypatch):
+    monkeypatch.setenv("POSTGRES_DB", name)
+    assert backup._pg_database() == name
+
+
+@pytest.mark.parametrize("name", [
+    "../../../../tmp/pwned",   # the one that matters: escapes the state dir
+    "sub/dir",
+    "postgres\n",              # a `$` anchor accepts a trailing newline; \Z does not
+    "postgres\n../escape",
+    "",
+    "9lives",
+    "a" * 64,                  # past Postgres' own identifier limit
+])
+def test_a_database_name_that_is_not_an_identifier_is_refused(name, monkeypatch):
+    monkeypatch.setenv("POSTGRES_DB", name)
+    with pytest.raises(backup.ConfigError, match="POSTGRES_DB"):
+        backup._pg_database()
+
+
+def test_a_traversing_database_name_writes_nothing_outside_the_working_dir(
+        tmp_path, monkeypatch):
+    # Unchecked, `POSTGRES_DB=../../../../tmp/pwned` lands the dump outside the
+    # 0700 state directory at 0644, outside TemporaryDirectory's cleanup and
+    # outside the sweep's glob — so nothing ever removes a plaintext auth.users.
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    escape = tmp_path / "escape"
+    escape.mkdir()
+    monkeypatch.setenv("POSTGRES_DB", f"../{escape.name}/pwned")
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "_stream_to_gzip",
+                        _dump_writer([], _database_dump()))
+
+    with pytest.raises(backup.ConfigError):
+        backup.dump_database("container123", work_dir, "20260824T000000Z")
+    assert list(escape.iterdir()) == [], "a dump must never be written outside"
+    assert list(work_dir.iterdir()) == []
+
+
+def test_a_bad_database_name_stops_the_run_before_the_dump_window(tmp_path, monkeypatch):
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("POSTGRES_DB", "../../../../tmp/pwned")
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    resolved: list = []
+    monkeypatch.setattr(backup, "resolve_container",
+                        lambda *a: resolved.append(a) or "container123")
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
+    assert rc == backup.EXIT_CONFIG
+    assert not resolved, "the run must fail before it touches the stack"
+
+
 def test_a_run_dumps_and_uploads_both_artifacts(tmp_path, monkeypatch):
     # The sibling test proves dump_globals works when called. This proves a run
     # calls it: the database dump's GRANT statements name roles only the globals
@@ -1037,6 +1098,36 @@ def test_env_file_values_do_not_override_the_real_environment(tmp_path, monkeypa
 def test_a_missing_env_file_is_a_config_error(tmp_path):
     with pytest.raises(backup.ConfigError, match="env file not found"):
         backup.apply_env_file(tmp_path / "absent")
+
+
+def test_only_this_jobs_keys_are_imported_from_the_env_file(tmp_path, monkeypatch):
+    # Importing the whole file gives rclone its own option surface: one
+    # RCLONE_CONFIG line redirects a plaintext auth.users dump to another
+    # remote, and LD_PRELOAD runs code as the deploy user. Both defaults files
+    # are checked in, so this reach would be writable from a config-only change.
+    f = tmp_path / ".env.prod"
+    f.write_text(
+        "POSTGRES_DB=postgres\n"
+        "RCLONE_CONFIG=/tmp/somebody-elses-remotes.conf\n"
+        "RCLONE_CONFIG_BOX_TYPE=local\n"
+        "LD_PRELOAD=/tmp/evil.so\n"
+        "SERVICE_ROLE_KEY=a-jwt-this-job-has-no-use-for\n"
+    )
+    smuggled = ("RCLONE_CONFIG", "RCLONE_CONFIG_BOX_TYPE",
+                "LD_PRELOAD", "SERVICE_ROLE_KEY")
+    for key in smuggled:
+        monkeypatch.delenv(key, raising=False)
+
+    assert backup.apply_env_file(f) == 1, "only POSTGRES_DB is this job's to take"
+    for key in smuggled:
+        assert key not in os.environ, f"{key} must not reach any child process"
+
+
+def test_the_allowlist_covers_every_key_the_script_reads():
+    # Both directions. A new `_env("FOO")` left off the list would silently run
+    # on its default forever; a stale entry widens the import for nothing.
+    read = set(re.findall(r'_env\("([A-Z_]+)"', _SCRIPT.read_text()))
+    assert read == set(backup.ENV_KEYS)
 
 
 # --------------------------------------------------------------------------
