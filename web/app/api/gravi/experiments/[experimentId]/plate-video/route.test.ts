@@ -256,9 +256,14 @@ describe("POST", () => {
       );
 
       const res = await post({ plate_id: "P7", wave_number: 1 });
+      const { detail } = await res.json();
 
       expect(res.status).toBe(status);
-      expect((await res.json()).detail).toBeNull();
+      // One sentence for every suppressed case, rather than nothing at all --
+      // a null detail leaves the browser to invent wording per status.
+      expect(detail).toContain("could not be made right now");
+      expect(detail).not.toContain("kong");
+      expect(detail).not.toContain("WORKFLOWS_");
     }
   );
 });

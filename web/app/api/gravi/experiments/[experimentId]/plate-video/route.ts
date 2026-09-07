@@ -45,10 +45,17 @@ const UPSTREAM_TIMEOUT_MS = 240_000;
 // our own wording.
 const DETAIL_PASSTHROUGH_STATUSES = new Set([404, 413, 422, 429]);
 
-function callerSafeDetail(status: number, parsed: unknown): string | null {
-  if (!DETAIL_PASSTHROUGH_STATUSES.has(status)) return null;
+// What a caller is told when the upstream detail is suppressed. One sentence for
+// every such case: which of them it was is the log's business, and a scientist
+// can act on this whichever it is.
+const GENERIC_FAILURE =
+  "This video could not be made right now. Try again shortly — if it keeps " +
+  "happening, let the Bloom team know.";
+
+function callerSafeDetail(status: number, parsed: unknown): string {
+  if (!DETAIL_PASSTHROUGH_STATUSES.has(status)) return GENERIC_FAILURE;
   const detail = (parsed as { detail?: unknown } | null)?.detail;
-  return typeof detail === "string" && detail.trim() ? detail : null;
+  return typeof detail === "string" && detail.trim() ? detail : GENERIC_FAILURE;
 }
 
 /** A wave from the request: a whole number, null, or invalid. */
@@ -153,7 +160,11 @@ export async function POST(
     parsed = JSON.parse(text);
   } catch {
     return NextResponse.json(
-      { detail: upstream.ok ? "Unexpected response from the video service." : null },
+      {
+        detail: upstream.ok
+          ? "Unexpected response from the video service."
+          : GENERIC_FAILURE,
+      },
       { status: upstream.ok ? 502 : upstream.status }
     );
   }
