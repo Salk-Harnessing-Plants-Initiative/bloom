@@ -266,10 +266,15 @@ def completeness(
 def source_bytes(frames: list[dict]) -> tuple[int, int]:
     """Bytes to download, and how many frames did not say.
 
-    `file_size_bytes` is nullable, so the total is a floor: safe to refuse on,
-    never safe to read as "small enough".
+    A size at or below zero is not a measurement, so it counts as unsaid rather
+    than as a real zero — counted, it drags the estimate for every other unsized
+    frame down with it and the guard loses its floor.
     """
-    known = [f["file_size_bytes"] for f in frames if f["file_size_bytes"] is not None]
+    known = [
+        f["file_size_bytes"]
+        for f in frames
+        if isinstance(f["file_size_bytes"], int) and f["file_size_bytes"] > 0
+    ]
     return sum(known), len(frames) - len(known)
 
 
@@ -283,14 +288,21 @@ def too_large_to_render(
     would stop it eventually — this stops it in a millisecond, with a reason.
 
     A frame that recorded no size is estimated rather than counted as zero,
-    from this plate's own frames where it can be. Reading a missing size as
-    nothing lets a plate of any size past the guard.
+    from this plate's own frames where it can be, and never below the nominal.
+    Reading a missing size as nothing lets a plate of any size past the guard.
     """
     total, unknown = source_bytes(frames)
     counted = len(frames) - unknown
 
     if unknown:
-        per_frame = total // counted if counted else NOMINAL_FRAME_BYTES
+        logger.warning(
+            "%d of %d frames have no usable file_size_bytes; estimating them. "
+            "Every upload records one, so these rows are worth correcting.",
+            unknown,
+            len(frames),
+        )
+        measured = total // counted if counted else 0
+        per_frame = max(measured, NOMINAL_FRAME_BYTES)
         total += unknown * per_frame
 
     if total <= limit:

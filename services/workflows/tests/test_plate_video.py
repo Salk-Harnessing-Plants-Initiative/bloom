@@ -313,6 +313,39 @@ def test_an_unsized_frame_is_estimated_from_the_plates_own_frames():
     assert "15.0 GB" in pv.too_large_to_render(_sized(*([5 * GB] * 2 + [None])))
 
 
+def test_a_zero_size_is_read_as_unsaid_not_as_a_real_zero():
+    """A recorded zero is not a measurement. Counted as one it drags the average
+    down, and every other unsized frame is then estimated at nearly nothing --
+    which is worse than recording no size at all."""
+    assert pv.source_bytes(_sized(0, 57 * MB)) == (57 * MB, 1)
+    assert pv.source_bytes(_sized(-1, 57 * MB)) == (57 * MB, 1)
+
+
+def test_one_tiny_recorded_size_cannot_defeat_the_guard():
+    """199 unsized frames beside a single 1 KB one. Without a floor the average
+    is 1 KB, the whole plate estimates at 200 KB, and a run of any size passes."""
+    frames = _sized(*([None] * 199 + [1024]))
+
+    assert pv.too_large_to_render(frames) is not None
+
+
+def test_the_estimate_is_never_below_the_nominal_frame():
+    """The plate's own average is the better answer when it is a real one. The
+    nominal is the floor under it, not a replacement for it."""
+    # Two real 5 GB frames: the average wins, and it is well above the nominal.
+    assert "15.0 GB" in pv.too_large_to_render(_sized(*([5 * GB] * 2 + [None])))
+
+
+def test_unsized_frames_are_named_in_the_log_so_they_can_be_corrected(caplog):
+    """Every upload records a size, so a gap is a row worth fixing rather than a
+    plate to refuse. Saying so is what makes it fixable."""
+    with caplog.at_level("WARNING"):
+        pv.too_large_to_render(_sized(*([57 * MB] * 3 + [None] * 2)))
+
+    assert "2 of 5 frames" in caplog.text
+    assert "file_size_bytes" in caplog.text
+
+
 def test_the_size_is_fetched_with_the_frames_not_in_a_second_query():
     client = _Client([_row(0, "a.tif")])
     pv.get_plate_frames(client, 12, "P7", 1)
