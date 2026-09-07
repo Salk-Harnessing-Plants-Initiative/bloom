@@ -370,10 +370,55 @@ def test_an_empty_deploy_path_fails_rather_than_backing_up_home(text):
     assert ok.returncode == 0 and "fine" in ok.stdout
 
 
+# The same list the script-side guard uses. The summary step runs `rclone lsl`
+# against the production Box folder on every job, including failed ones, so this
+# file needs the full set rather than the three spellings it used to check.
+DESTRUCTIVE_RCLONE_VERBS = (
+    "sync", "move", "moveto", "purge", "delete", "deletefile",
+    "rmdir", "rmdirs", "cleanup",
+)
+
+
 def test_the_workflow_never_deletes_on_the_remote(text):
-    assert "rclone delete" not in text
-    assert "rclone sync" not in text, "sync deletes at the destination"
+    for verb in DESTRUCTIVE_RCLONE_VERBS:
+        assert f"rclone {verb}" not in text, (
+            f"rclone {verb} in the workflow would delete on Box"
+        )
     assert "--min-age" not in text
+
+
+def test_the_workflow_only_reads_from_box(workflow):
+    # Positive form: the one rclone call in this file is the listing.
+    verbs = [
+        line.split("rclone ")[1].split()[0]
+        for step in _job(workflow)["steps"]
+        for line in (step.get("run") or "").splitlines()
+        if "rclone " in line
+    ]
+    assert verbs == ["lsl"], f"the workflow runs rclone {verbs}, not just a listing"
+
+
+def test_the_script_matches_the_verbs_this_file_forbids():
+    # One list, not two that drift. Read out of the sibling suite's source
+    # rather than imported, since these files are not a package.
+    sibling = (REPO_ROOT / "tests/unit/test_weekly_backup.py").read_text()
+    block = sibling.split("DESTRUCTIVE_RCLONE_VERBS = (")[1].split(")")[0]
+    script_side = set(re.findall(r'"([a-z]+)"', block))
+    assert set(DESTRUCTIVE_RCLONE_VERBS) == script_side, (
+        "the two lists of destructive rclone verbs have drifted apart"
+    )
+
+
+def test_the_summary_step_cannot_run_out_the_jobs_clock(workflow):
+    # It makes two network calls with no timeouts of their own, and the deploy
+    # key is removed in the step after it. A hang here means the job hits its
+    # own limit and the key is left on a shared runner.
+    summary = _step(workflow, "summary")
+    timeout = summary.get("timeout-minutes")
+    assert timeout is not None, "an unbounded summary step can strand the key"
+    assert 0 < timeout < _job(workflow)["timeout-minutes"], (
+        "the step's bound must land before the job's, or it does nothing"
+    )
 
 
 def test_the_summary_is_written_even_when_the_backup_fails(workflow):

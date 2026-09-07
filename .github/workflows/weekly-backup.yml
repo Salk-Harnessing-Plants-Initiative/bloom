@@ -168,9 +168,13 @@ jobs:
       # What the weekly check reads: sizes this run, and everything currently
       # sitting on Box. A shrinking artifact or a missing week is visible here
       # without opening the job log.
+      # Bounded because the deploy key is removed in the step after this one:
+      # its two network calls have no timeouts of their own, so a hang would run
+      # out the job's clock and leave the key on a shared runner.
       - name: Write the run summary
         id: summary
         if: always()
+        timeout-minutes: 5
         env:
           ENV_NAME: ${{ steps.target.outputs.env_name }}
           DEPLOY_PATH: ${{ steps.target.outputs.deploy_path }}

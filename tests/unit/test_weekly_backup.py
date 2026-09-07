@@ -786,12 +786,20 @@ def test_the_script_deletes_in_exactly_one_place():
     # counted here — it can only ever remove its own.
     source = _SCRIPT.read_text()
     for call in ("rmtree(", "os.remove(", "os.unlink(", "os.rmdir(",
-                 ".unlink(", "shutil.move("):
+                 ".unlink(", "shutil.move(", ".rmdir(", "os.removedirs(",
+                 "os.rename(", ".rename(", "os.truncate(", "os.system("):
         expected = 1 if call == "rmtree(" else 0
         assert source.count(call) == expected, (
             f"{call} appears {source.count(call)} time(s); this job deletes in "
             "one place and nowhere else"
         )
+    # Shelling out is a plausible route in a script that already runs docker,
+    # gzip and rclone, and none of the spellings above would see it.
+    for line in source.splitlines():
+        if "subprocess" in line or "_run(" in line:
+            assert '"rm"' not in line and "'rm'" not in line, (
+                f"a shelled-out rm bypasses every check above: {line.strip()}"
+            )
     # And that one call sits inside the sweep, not somewhere new.
     sweep = source.split("def sweep_stale_work_dirs")[1].split("\ndef ")[0]
     assert "rmtree(" in sweep
@@ -821,6 +829,11 @@ def test_a_sweep_touches_nothing_outside_its_own_directory(tmp_path):
     ours = _orphan_in(state)
 
     keep = [
+        # Decoys the sweep's own pattern matches, one level up and two. Without
+        # these every name in this list is one the glob would never match, so
+        # widening the sweep to the parent goes unnoticed.
+        root / "data/bloom/backup-work/bloom-backup-decoy/dump.sql.gz",
+        root / "data/bloom/bloom-backup-decoy/dump.sql.gz",
         root / "data/bloom/production/docker-compose.prod.yml",
         root / "data/bloom/production/.env.prod",
         root / "data/bloom/production/volumes/db/data/postgresql.conf",
@@ -1435,6 +1448,20 @@ BOX_DESTINATIONS = {
     "prod": "bloom-backups/prod",
     "staging": "bloom-backups/staging",
 }
+
+# The directories created by hand on the deploy host. Pinned for the same reason
+# as the Box folders: the run chmods whatever this names and writes a plaintext
+# dump inside it, so pointing it at a sibling like /data/bloom/minio-data must be
+# a decision somebody argues for, not a line edit.
+WORKING_DIRECTORIES = {
+    "prod": "/data/bloom/backup-work/prod",
+    "staging": "/data/bloom/backup-work/staging",
+}
+
+
+@pytest.mark.parametrize("env_name", sorted(WORKING_DIRECTORIES))
+def test_each_environment_works_in_the_directory_that_exists_on_the_host(env_name):
+    assert _defaults_value(env_name, "BACKUP_STATE_DIR") == WORKING_DIRECTORIES[env_name]
 
 
 @pytest.mark.parametrize("env_name", sorted(BOX_DESTINATIONS))
