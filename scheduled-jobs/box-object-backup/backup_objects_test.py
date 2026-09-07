@@ -1223,6 +1223,36 @@ class TestRunLockedWiresItsPartsTogether:
         assert "all present and correct" in caplog.text
         assert job.VERIFY_INCOMPLETE_MARKER not in caplog.text
 
+    def test_the_run_report_carries_the_run_s_verdict(self, harness, tmp_path):
+        """The report is the verdict's second route home.
+
+        The status line is the last thing the run prints, and it travels back
+        over the ssh pipe the workflow holds open — so a cancel or the job
+        timeout kills that pipe before it is printed, on exactly the runs
+        worth explaining. The report is written on the host first, so the
+        summary can ask the host for it. Without the verdict in the file there
+        is nothing to ask for.
+        """
+        state, tmp_path = harness
+        job.run_locked(self.args(tmp_path), tmp_path)
+        written = sorted((tmp_path / "_runs").glob("*.json"))
+        assert written, "no run report was written"
+        body = json.loads(written[-1].read_text())
+        assert body["status"] == "ok", body.get("status")
+        assert body["status"] in job.STATUS_VALUES
+
+    def test_a_stopped_run_s_verdict_reaches_the_report(self, harness, tmp_path):
+        """The case the whole route exists for."""
+        state, tmp_path = harness
+        stopping._request_stop(15, None)
+        try:
+            job.run_locked(self.args(tmp_path), tmp_path)
+        finally:
+            stopping.reset()
+        written = sorted((tmp_path / "_runs").glob("*.json"))
+        assert written, "no run report was written"
+        assert json.loads(written[-1].read_text())["status"] == "stopped"
+
     def test_the_run_report_records_what_went_unanswered(
         self, harness, monkeypatch, tmp_path
     ):

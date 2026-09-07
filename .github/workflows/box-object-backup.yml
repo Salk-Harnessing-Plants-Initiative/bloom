@@ -302,6 +302,11 @@ jobs:
         if: always()
         env:
           ENV_NAME: ${{ steps.target.outputs.env_name }}
+          # Needed only for the fallback below: when the ssh pipe carrying the
+          # run's output died before it printed a verdict, the summary fetches
+          # that verdict from the report the run wrote on the host.
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
           set -uo pipefail
 
@@ -355,8 +360,40 @@ jobs:
             "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
           flags=",${flags##*=},"
 
-          # A run that died before emitting one (preflight, config, a crash)
-          # leaves this empty, and the step's own outcome is then the verdict.
+          # No verdict in the log means the ssh pipe died before the run
+          # printed it — which is what a cancel or the job timeout does, on
+          # exactly the runs worth explaining: a deliberate stop that had
+          # already copied and recorded thousands of objects, reported as
+          # FAILED. The run writes the same verdict into its report on the
+          # host BEFORE printing it, so fetch that instead.
+          #
+          # `-mmin -240` is the job's own timeout, and is evaluated entirely
+          # on the host — so no clock comparison between runner and server can
+          # skew it, and last night's report (24h old) can never be mistaken
+          # for tonight's.
+          # Guarded on both being set: the step runs under `set -u`, and an
+          # empty host would make ssh try to reach "user@". A missing secret
+          # must degrade to the step-outcome fallback, not kill the summary.
+          if [ -z "$status" ] && [ -n "${DEPLOY_USER:-}" ] && [ -n "${DEPLOY_HOST:-}" ]; then
+            report="$(ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "find /var/lib/bloom-box-object-backup/_runs -name '*.json' \
+                 -mmin -240 -printf '%T@ %p\\n' 2>/dev/null \
+               | sort -rn | head -1 | cut -d' ' -f2-" 2>/dev/null || true)"
+            if [ -n "$report" ]; then
+              status="$(ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
+                -o StrictHostKeyChecking=yes \
+                "${DEPLOY_USER}@${DEPLOY_HOST}" \
+                "cat -- '${report}'" 2>/dev/null \
+                | grep -oE '\"status\"[[:space:]]*:[[:space:]]*\"[a-z_]+\"' \
+                | head -1 | grep -oE '[a-z_]+\"$' | tr -d '\"' || true)"
+              [ -n "$status" ] && echo "verdict taken from the run report on the host: $status"
+            fi
+          fi
+
+          # Nothing in the log and nothing on the host — a run that died
+          # before it wrote either. The step's own outcome is then the verdict.
           if [ -z "$status" ]; then
             if [ "${{ steps.run.outcome }}" = "success" ]; then status=ok; else status=failed; fi
           fi

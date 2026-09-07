@@ -409,6 +409,30 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             collisions=totals.collisions,
             skipped=totals.skipped,
         )
+        # The verdict is computed HERE, before the report is written, rather
+        # than at the end of the function — so the report carries it.
+        #
+        # The status line the summary normally reads is the last thing this
+        # process prints, and it travels back over the ssh pipe the workflow
+        # holds open. GitHub cancelling or timing out the job kills that pipe,
+        # so on exactly the runs worth explaining — a deliberate stop that had
+        # already copied thousands of objects — the verdict never arrived and
+        # the summary fell back to FAILED. Putting it in the report gives it a
+        # second route home that does not depend on the connection surviving.
+        verdict = _status_for(
+            exit_code(
+                failed=totals.failed,
+                verify_mismatched=totals.verify_mismatched,
+                stopped=stopping.stopping(),
+                collisions=totals.collisions,
+            ),
+            outcome,
+        )
+        # Only the verdict, deliberately. The flags cannot be computed here:
+        # publish_ledger sets `ledger_flag` and runs AFTER the report is
+        # written, so a set captured now would always miss it. The flags stay
+        # on the log route, where they are complete; the report carries the
+        # headline, which is what a cancelled run loses.
         # Nested so the teardown below cannot be skipped. Everything in this
         # block can raise — publish_report catches only OSError and
         # RcloneError, and the ledger writes can raise sqlite3.Error on a full
@@ -424,6 +448,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
                 run_id=run_id, started_at=started_at, outcome=outcome,
                 stats=stats, failures=totals.failures,
                 skips=totals.skips, verify_failures=totals.verify_failures,
+                status=verdict,
             )
             ledger.commit()
         # Inside the finally, not after it. A run that raised is the one whose
@@ -516,7 +541,9 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         stopped=stopping.stopping(),
         collisions=totals.collisions,
     )
-    emit_status(_status_for(code, outcome), _flags_for(totals))
+    # Same verdict the report already carries; printed here because the log is
+    # the faster route when the connection does survive.
+    emit_status(verdict, _flags_for(totals))
     return code
 
 
@@ -700,6 +727,7 @@ def publish_report(
     failures: list,
     skips: list | None = None,
     verify_failures: list | None = None,
+    status: str = "",
 ) -> None:
     """Write the run report locally, then copy it to Box beside the mirror.
 
@@ -723,6 +751,7 @@ def publish_report(
         stats=stats,
         skips=list(skips or []),
         verify_failures=list(verify_failures or []),
+        status=status,
         failures=failures,
     )
     try:

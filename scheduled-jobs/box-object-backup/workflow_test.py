@@ -813,6 +813,68 @@ class TestTheHeadlineCarriesTheCounts:
         ) + self.verdict("skipped")
         assert "skipped" in self.run_summary(parsed, log)
 
+    def test_a_lost_verdict_is_recovered_from_the_report_on_the_host(self, parsed):
+        """The case the report route exists for.
+
+        A cancel or the job timeout kills the ssh pipe carrying the run's
+        output, and the verdict is the last thing printed — so on exactly the
+        runs worth explaining, a deliberate stop that had already copied
+        thousands of objects, the log arrives without one and the summary read
+        FAILED. The run writes the same verdict into its report on the host
+        BEFORE printing it, so the summary asks the host.
+
+        `ssh` is faked here: the point under test is that the summary uses
+        what comes back, not that ssh works.
+        """
+        import subprocess
+        import tempfile
+        from pathlib import Path as P
+
+        script = self.summary(parsed).replace("${{ steps.run.outcome }}", "$OUTCOME")
+        with tempfile.TemporaryDirectory() as tmp:
+            # A truncated log: batches, then nothing. No verdict.
+            (P(tmp) / "mirror-output.txt").write_text(
+                "2026-08-31 02:20:00,1 INFO batch: 20000 object(s), 4 GiB\n"
+            )
+            fake_bin = P(tmp) / "bin"
+            fake_bin.mkdir()
+            # First call lists the report path, second prints its contents.
+            (fake_bin / "ssh").write_text(
+                '#!/bin/sh\n'
+                'case "$*" in\n'
+                '  *find*) echo /var/lib/bloom-box-object-backup/_runs/r.json ;;\n'
+                '  *cat*)  echo \'{ "outcome": "partial", "status": "stopped" }\' ;;\n'
+                'esac\n'
+            )
+            (fake_bin / "ssh").chmod(0o755)
+            out = P(tmp) / "summary.md"
+            result = subprocess.run(
+                ["bash", "-e", "-c", script],
+                env={
+                    "PATH": f"{fake_bin}:/usr/bin:/bin", "RUNNER_TEMP": tmp,
+                    "ENV_NAME": "prod", "OUTCOME": "failure",
+                    "DEPLOY_USER": "deploy", "DEPLOY_HOST": "host",
+                    "GITHUB_STEP_SUMMARY": str(out), "LC_ALL": "C",
+                },
+                capture_output=True, text=True,
+            )
+            assert result.returncode == 0, result.stderr[:300]
+            body = out.read_text()
+        assert "stopped, progress kept" in body, (
+            f"the verdict on the host was not used: {body[:200]}"
+        )
+        assert "FAILED" not in body
+
+    def test_the_fallback_is_skipped_when_the_deploy_secrets_are_absent(self, parsed):
+        """It must degrade, not take the summary down with it.
+
+        The step runs under `set -u`, so an unset secret would abort it and
+        GitHub would show a red tick with no summary at all — the failure this
+        whole area spent seven rounds on.
+        """
+        log = self.DONE.format(c=10, a=0) + self.verdict("ok")
+        assert "succeeded" in self.run_summary(parsed, log)
+
     def test_a_run_stopped_on_purpose_is_not_reported_as_a_failure(self, parsed):
         """The Actions time limit during the seed lands here every night.
 

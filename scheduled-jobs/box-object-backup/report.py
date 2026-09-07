@@ -58,6 +58,13 @@ class RunReport:
     # /var/lib and a rotating log cannot answer "which one?" later.
     skips: list[str] = field(default_factory=list)
     verify_failures: list[str] = field(default_factory=list)
+    # The run's own verdict, in the same closed vocabulary the workflow
+    # branches on. It is here as well as in the log because the log travels
+    # back over an ssh pipe the workflow holds open, and a cancelled or
+    # timed-out job kills that pipe before the verdict is printed — on exactly
+    # the runs most worth explaining. This file is written on the host first,
+    # so it survives the connection dying.
+    status: str = ""
 
     def to_dict(self) -> dict:
         listed = self.failures[:MAX_REPORTED_FAILURES]
@@ -83,6 +90,7 @@ class RunReport:
             "failure_count": total_failures,
             # Names, not just counts. `stats["skipped"]` and
             # `stats["verify_mismatched"]` remain the exact totals.
+            "status": self.status,
             "skips": skips,
             "skips_truncated": total_skips > len(skips),
             "verify_failures": self.verify_failures[:MAX_REPORTED_FAILURES],

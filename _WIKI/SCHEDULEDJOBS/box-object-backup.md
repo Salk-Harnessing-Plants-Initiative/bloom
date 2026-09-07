@@ -323,12 +323,22 @@ verification found objects missing or the wrong size on Box, `5` objects were
 refused because two names collide on one Box path.
 
 **A run stopped on purpose reports "stopped, progress kept", not FAILED.** Exit
-`3` is what the job's own cancellation produces and what the Actions time limit
-produces — which, during the seed, is most nights. Everything copied up to that
-point is recorded and on Box, and the next run carries on from there. It used
-to render as "FAILED — the mirror was not updated this run", which was wrong on
-both counts and made the one outcome meaning "this is fine" look like a real
-failure.
+`3` is what a cancel and the job's own stop script produce. Everything copied up
+to that point is recorded and on Box, and the next run carries on from there. It
+used to render as "FAILED — the mirror was not updated this run", which was
+wrong on both counts and made the one outcome meaning "this is fine" look like
+a real failure.
+
+The verdict has two routes home, because the obvious one does not survive a
+cancel. Normally the run prints it and the workflow reads it off the log — but
+the log travels back over an ssh pipe the workflow holds open, and cancelling
+or timing out the job kills that pipe before the last line is printed. So the
+run also writes the verdict into its report on the host, *before* printing it,
+and the summary falls back to fetching that over a fresh connection. It looks
+only at reports written in the last 240 minutes — the job's own timeout —
+evaluated on the host, so no clock difference between runner and server can
+confuse tonight's report with last night's. If neither route produces one, the
+step's own outcome decides, as before.
 
 **The summary reads a status line, not the log's prose.** The job prints
 `BOX_BACKUP_STATUS=` and `BOX_BACKUP_FLAGS=` at the end of a run, and the
