@@ -23,7 +23,9 @@ from backup_lib import (  # noqa: E402
     loggable, objects_query, parse_manifest, unsafe_reason,
 )
 from ledger import Ledger, utcnow  # noqa: E402
-from rclone_rc import MinioSource, RcloneError, _is_retryable, redact  # noqa: E402
+from rclone_rc import (  # noqa: E402
+    MinioSource, RcloneError, RcloneRC, _is_retryable, redact,
+)
 
 VERSION = "0f8b1c2a-4d5e-4f60-9a1b-2c3d4e5f6a7b"
 OTHER_VERSION = "11112222-3333-4444-5555-666677778888"
@@ -1036,3 +1038,59 @@ def test_a_direction_override_cannot_reorder_a_rendered_filename():
     rendered = loggable("images/exp\u202egnp.txt")
     assert "\u202e" not in rendered
     assert "\\u202e" in rendered, rendered
+
+
+# ---------- torn responses from the daemon ----------
+
+def test_a_daemon_that_closes_the_connection_is_a_retryable_rclone_error(monkeypatch):
+    """Found by running the job for the first time.
+
+    A still-starting rclone container accepts the connection and closes it
+    without answering, which raises http.client.RemoteDisconnected. That is a
+    ConnectionResetError, NOT a urllib URLError — so it escaped `call`'s
+    handler entirely, `wait_for_daemon`'s `except RcloneError` never saw it,
+    and the run died with a raw traceback on the first poll instead of waiting
+    half a second and succeeding.
+    """
+    import http.client
+
+    import rclone_rc
+
+    def boom(*a, **kw):
+        raise http.client.RemoteDisconnected("closed without response")
+
+    monkeypatch.setattr(rclone_rc.urllib.request, "urlopen", boom)
+    client = RcloneRC("http://127.0.0.1:5572", "u", "p")
+    with pytest.raises(RcloneError) as caught:
+        client.noop()
+    assert caught.value.retryable, "a torn response is not treated as retryable"
+
+
+def test_a_reset_connection_is_a_retryable_rclone_error(monkeypatch):
+    """The same family: the container dying mid-copy."""
+    import rclone_rc
+
+    def boom(*a, **kw):
+        raise ConnectionResetError(104, "Connection reset by peer")
+
+    monkeypatch.setattr(rclone_rc.urllib.request, "urlopen", boom)
+    client = RcloneRC("http://127.0.0.1:5572", "u", "p")
+    with pytest.raises(RcloneError) as caught:
+        client.noop()
+    assert caught.value.retryable
+
+
+def test_an_incomplete_read_is_a_retryable_rclone_error(monkeypatch):
+    """http.client.IncompleteRead is an HTTPException, not an OSError."""
+    import http.client
+
+    import rclone_rc
+
+    def boom(*a, **kw):
+        raise http.client.IncompleteRead(b"", 10)
+
+    monkeypatch.setattr(rclone_rc.urllib.request, "urlopen", boom)
+    client = RcloneRC("http://127.0.0.1:5572", "u", "p")
+    with pytest.raises(RcloneError) as caught:
+        client.noop()
+    assert caught.value.retryable

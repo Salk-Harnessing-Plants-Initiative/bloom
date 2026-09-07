@@ -13,6 +13,7 @@ published to the host), with its RC port bound to loopback only.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import re
@@ -143,7 +144,15 @@ class RcloneRC:
                 f"{method} failed ({exc.code}): {detail}",
                 retryable=_is_retryable(exc.code, detail),
             ) from exc
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        # OSError rather than URLError: a daemon that closes the connection
+        # mid-response raises http.client.RemoteDisconnected, which is a
+        # ConnectionResetError and NOT a URLError — so it escaped as a raw
+        # traceback. That is exactly what a still-starting rclone container
+        # does, which meant `wait_for_daemon`'s retry loop never saw it and
+        # the run died on the first poll instead of waiting half a second.
+        # HTTPException covers the rest of the torn-response family
+        # (BadStatusLine, IncompleteRead); neither is an OSError.
+        except (OSError, http.client.HTTPException, json.JSONDecodeError) as exc:
             raise RcloneError(
                 f"{method} transport error: {redact(str(exc))}", retryable=True
             ) from exc
