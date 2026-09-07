@@ -574,7 +574,17 @@ class TestTheHeadlineCarriesTheCounts:
         )
 
     def run_summary(self, parsed: dict, log: str, outcome: str = "success") -> str:
-        """Execute the real step against a real log, and return the headline."""
+        """Execute the real step against a real log, and return the headline.
+
+        `bash -e`, because that is how GitHub invokes a `run:` block and this
+        harness ran it without. The step sets `pipefail` and every grep in it
+        is allowed to match nothing, so under errexit a stood-down or failed
+        or quiet night died before writing a byte — a red tick and an empty
+        summary, on every night of the seed. Plain `bash` hid that for seven
+        rounds. The return code is asserted for the same reason: the step
+        writing nothing and the step writing the wrong thing look identical
+        through the headline alone.
+        """
         import subprocess
         import tempfile
         from pathlib import Path as P
@@ -583,15 +593,21 @@ class TestTheHeadlineCarriesTheCounts:
         with tempfile.TemporaryDirectory() as tmp:
             (P(tmp) / "mirror-output.txt").write_text(log)
             out = P(tmp) / "summary.md"
-            subprocess.run(
-                ["bash", "-c", script],
+            result = subprocess.run(
+                ["bash", "-e", "-c", script],
                 env={
                     "PATH": "/usr/bin:/bin", "RUNNER_TEMP": tmp, "ENV_NAME": "prod",
                     "OUTCOME": outcome, "GITHUB_STEP_SUMMARY": str(out), "LC_ALL": "C",
                 },
                 capture_output=True, text=True,
             )
+            assert result.returncode == 0, (
+                "the summary step exited "
+                f"{result.returncode} — GitHub would show a red tick and no "
+                f"summary at all: {result.stderr.strip()[:200]}"
+            )
             body = out.read_text() if out.exists() else ""
+        assert body.strip(), "the summary step wrote nothing"
         line = [ln for ln in body.splitlines() if ln.startswith("Result:")]
         return line[0] if line else ""
 

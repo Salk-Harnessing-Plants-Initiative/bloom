@@ -305,6 +305,13 @@ jobs:
         run: |
           set -uo pipefail
 
+          # GitHub runs this as `bash -e {0}`, and every grep below is allowed
+          # to match nothing: a stood-down night prints no `done —` line, a
+          # quiet one prints no `verify:` line. Without `|| true` on each,
+          # pipefail turns that into a non-zero status and errexit kills the
+          # step — a red tick and an EMPTY summary on every night except one
+          # that both copied and verified. That is every night of the seed.
+          #
           # Pulled out of the line the run already prints, so nothing is
           # recomputed and nothing extra happens on the deploy host:
           #   done — copied 4211, failed 0, already current 0, skipped 0
@@ -316,9 +323,9 @@ jobs:
           # already on Box" says the mirror is intact; "0 copied, 0 already
           # current" would not.
           done_line="$(grep -oE 'done — copied [0-9]+, failed [0-9]+, already current [0-9]+, skipped [0-9]+' \
-            "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1)"
+            "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
           verify_line="$(grep -oE 'verify: [0-9]+ checked, [0-9]+ mismatched' \
-            "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1)"
+            "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
           copied="$(printf '%s' "$done_line" | grep -oE 'copied [0-9]+' | grep -oE '[0-9]+' || true)"
           current="$(printf '%s' "$done_line" | grep -oE 'already current [0-9]+' | grep -oE '[0-9]+' || true)"
           checked="$(printf '%s' "$verify_line" | grep -oE '[0-9]+ checked' | grep -oE '[0-9]+' || true)"
@@ -424,8 +431,12 @@ jobs:
             # `||` binds to the last command in a pipeline, and `tail` exits 0
             # on empty input, so the fallback could never fire either — the
             # block rendered as an empty fence. Capture first, then test.
+            #
+            # `|| true` for the same reason as the greps above: a run that
+            # died at preflight matches none of these prefixes, and under
+            # `bash -e` that killed the step before the fallback below.
             summary="$(grep -E '^[0-9-]+ [0-9:,]+ (INFO|WARNING|ERROR) (done —|verify:|listed|preflight|batch:)' \
-              "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -20)"
+              "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -20 || true)"
             if [ -n "$summary" ]; then
               echo "$summary"
             else
