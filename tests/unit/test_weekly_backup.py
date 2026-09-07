@@ -398,6 +398,53 @@ def test_an_empty_dump_fails_the_run_on_the_verification_code(tmp_path, monkeypa
     assert not uploaded, "an empty dump must never reach Box"
 
 
+def _writer_per_artifact(database: bytes, globals_: bytes):
+    """Write a different payload per artifact.
+
+    The shared-payload writer cannot tell the two content checks apart: one
+    database-shaped payload is rejected by whichever check is still there, so
+    removing either one alone goes unnoticed.
+    """
+    def _write(cmd, out, env=None):
+        _write_gz(out, database if out.name.startswith("postgres-") else globals_)
+    return _write
+
+
+def test_an_empty_database_dump_fails_the_run_even_when_the_globals_are_good(
+        tmp_path, monkeypatch):
+    # Pins the database content check at its call site. The size floor is
+    # stubbed out so nothing but that check can fail the run.
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999999)
+    monkeypatch.setattr(backup, "_stream_to_gzip",
+                        _writer_per_artifact(_database_dump(rows=0), _globals_dump()))
+    uploaded: list = []
+    monkeypatch.setattr(backup, "upload", lambda *a: uploaded.append(a))
+
+    assert backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)]) == backup.EXIT_VERIFY
+    assert not uploaded, "a dump of an empty database must never reach Box"
+
+
+def test_a_globals_dump_with_no_roles_fails_the_run_even_when_the_database_is_good(
+        tmp_path, monkeypatch):
+    # The mirror, pinning the globals content check at its call site.
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999999)
+    monkeypatch.setattr(backup, "_stream_to_gzip",
+                        _writer_per_artifact(_database_dump(), _globals_dump(roles=0)))
+    uploaded: list = []
+    monkeypatch.setattr(backup, "upload", lambda *a: uploaded.append(a))
+
+    assert backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)]) == backup.EXIT_VERIFY
+    assert not uploaded
+
+
 def test_a_bad_dump_exits_on_its_own_code_not_the_config_one(tmp_path, monkeypatch):
     # Exit 2 tells the operator to go and look at .env and rclone. A short or
     # corrupt dump is the one failure this job exists to catch, so it gets its
@@ -1186,10 +1233,19 @@ def test_room_an_orphan_is_holding_is_reclaimed_before_the_space_check(
 
 def test_the_defaults_files_carry_the_floor():
     # The floor is a host property, so it belongs in the env surface rather
-    # than only in the script's own default.
+    # than only in the script's own default. Asserted against a literal: the
+    # tests above take their expectations from the constant, so lowering it
+    # would otherwise change what they check rather than fail them.
     for name in ("prod", "staging"):
-        text = (REPO_ROOT / f".env.{name}.defaults").read_text()
-        assert "BACKUP_MIN_FREE_BYTES=" in text, f".env.{name}.defaults"
+        value = int(_defaults_value(name, "BACKUP_MIN_FREE_BYTES"))
+        assert value >= 10 * 1024**3, (
+            f".env.{name}.defaults sets a {value}-byte floor, which no longer "
+            "stands between a dump and a full volume"
+        )
+
+
+def test_the_scripts_own_floor_is_not_a_token_value():
+    assert backup.DEFAULT_MIN_FREE_BYTES >= 10 * 1024**3
 
 
 def _defaults_value(env_name: str, key: str) -> str:
