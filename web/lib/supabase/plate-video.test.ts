@@ -192,6 +192,25 @@ describe("getStoredPlateVideo", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("7/wave-2/P1.mp4"));
   });
 
+  it("names a database that could not answer, not a record that was never written", async () => {
+    // The two look identical in the result -- both serve the video with no count
+    // -- so the log is the only place the real cause can be told apart.
+    clientReturning(SIGNED, {
+      data: null,
+      error: { message: "canceling statement due to statement timeout" },
+    });
+
+    await expect(getStoredPlateVideo(7, "P1", 2)).resolves.toEqual({
+      status: "present",
+      url: PUBLIC_URL,
+      frames: null,
+    });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("canceling statement due to statement timeout")
+    );
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("no metadata present"));
+  });
+
   it("keeps a recorded count of zero rather than reading it as unknown", async () => {
     clientReturning(SIGNED, { data: { frame_count: 0 } });
 

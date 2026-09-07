@@ -2,7 +2,7 @@
 //
 // Mirrors `scan-video.ts` for the cylinder path, and reuses its `isNotFound`:
 // Storage answers a missing object with HTTP 400 and a *string* `statusCode`,
-// so a check on `status === 404` never matches and the wording is the guard.
+// so that code decides and the wording is only the fallback.
 
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { toPublicStorageUrl } from "@/lib/supabase/storage-url";
@@ -14,9 +14,9 @@ import {
 
 const VIDEO_URL_TTL = 3600;
 
-// `unknown` exists because a failed lookup is not an absence. The plate page
-// reads it to decide what to offer, and reporting "no video" for a plate that
-// has one sends a scientist to re-render something that was already fine.
+// `unknown` exists because a failed lookup is not an absence. The poll answers
+// from it, and reporting "no video" for a plate that has one sends a scientist
+// to re-render something that was already fine.
 // `frames` is null when the object is there and its row is not, which is a
 // broken record rather than an empty video — the object still plays.
 export type StoredPlateVideo =
@@ -61,12 +61,19 @@ export async function getStoredPlateVideo(
     .select("frame_count")
     .eq("experiment_id", experimentId)
     .eq("plate_id", plateId);
-  const { data: row } = await (waveNumber === null
+  const { data: row, error: rowError } = await (waveNumber === null
     ? base.is("wave_number", null)
     : base.eq("wave_number", waveNumber)
   ).maybeSingle();
 
-  if (!row) {
+  // The video is served either way, so the only thing at stake is naming the
+  // cause: a record that was never written, or a database that could not answer.
+  if (rowError) {
+    console.warn(
+      `could not read the frame count for stored plate video ${key}: ` +
+        `${rowError.message}; serving it without one`
+    );
+  } else if (!row) {
     console.warn(
       `no metadata present for stored plate video ${key}; serving it without a frame count`
     );
