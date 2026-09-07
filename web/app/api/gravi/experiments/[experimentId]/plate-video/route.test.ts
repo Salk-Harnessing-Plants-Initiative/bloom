@@ -108,6 +108,57 @@ describe("POST", () => {
     expect(JSON.parse(init.body)).toEqual({ plate_id: "P7", wave_number: 1 });
   });
 
+  it("asks the service to make a video, as JSON", async () => {
+    // The verb and the content type are what make this a render rather than a
+    // read. Neither was pinned, so either could be changed without a test noticing.
+    const fetchMock = upstreamReturns(200, RESULT);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await post({ plate_id: "P7", wave_number: 1 });
+    const init = fetchMock.mock.calls[0][1];
+
+    expect(init.method).toBe("POST");
+    expect(init.headers["Content-Type"]).toBe("application/json");
+  });
+
+  it("goes to the service the environment names", async () => {
+    // Every other test runs with the variable unset, so only the compose default
+    // was ever exercised and the setting could stop being read unnoticed.
+    vi.stubEnv("WORKFLOWS_URL", "http://workflows.internal:9000");
+    const fetchMock = upstreamReturns(200, RESULT);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await post({ plate_id: "P7", wave_number: 1 });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "http://workflows.internal:9000/gravi/experiments/12/plate-video"
+    );
+  });
+
+  it("gives up before undici does, so a slow encode is our own 504", async () => {
+    // Without this the wait runs to undici's 300s header timeout and surfaces as
+    // an opaque UND_ERR, which is the answer the 504 branch exists to replace.
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const fetchMock = upstreamReturns(200, RESULT);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await post({ plate_id: "P7", wave_number: 1 });
+
+    expect(timeout).toHaveBeenCalledWith(240_000);
+    expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("refuses a body that is not JSON without reaching upstream", async () => {
+    const fetchMock = upstreamReturns(200, RESULT);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await post("{not json");
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).detail).toBe("expected a JSON body");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("sends the token upstream rather than exposing it to the browser", async () => {
     const fetchMock = upstreamReturns(200, RESULT);
     vi.stubGlobal("fetch", fetchMock);
