@@ -165,6 +165,16 @@ by environment rather than on the command line, so it stays out of the host's
 process list. Nothing extra to configure; a missing value exits 2 before the
 dump starts.
 
+`BACKUP_STATE_DIR` is where each run's working copy is written before upload,
+and on the deploy host it points into `/data` — `/data/bloom/backup-work/<env>`,
+one directory per environment. That is deliberate on three counts: the data
+volume has room for a dump where the root filesystem does not, filling the root
+filesystem would take docker, sshd and the Actions runner with it, and keeping
+the directory outside `/data/bloom/<env>` means a deployment's checkout handling
+can never touch a plaintext dump. The script's own fallback if the key is unset
+is under the invoking user's home — fine for a laptop, wrong for this host,
+which is why both defaults files set it explicitly.
+
 Seven keys are read out of `.env.<env>` and nothing else — `POSTGRES_USER`,
 `POSTGRES_PASSWORD`, `POSTGRES_DB`, `BACKUP_STATE_DIR`,
 `BACKUP_MIN_FREE_BYTES`, `BACKUP_RCLONE_REMOTE` and `BACKUP_RCLONE_DEST_DIR`. The rest of the file stays out of the job's

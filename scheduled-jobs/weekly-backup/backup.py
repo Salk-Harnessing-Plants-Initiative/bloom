@@ -87,12 +87,14 @@ ENV_KEYS = (
     "BACKUP_RCLONE_DEST_DIR",
 )
 
-# Free space the working copy needs before a dump starts. The state directory
-# sits under the deploy user's home, on the same filesystem as the bind mount
-# db-prod keeps its data on, so a dump that fills the volume stops Postgres
-# writing WAL. This is not a prediction of the dump's size — it is a floor that
-# refuses to run on a volume already too full to hold one. Tune per host with
-# BACKUP_MIN_FREE_BYTES.
+# Free space the working copy needs before a dump starts, whichever volume
+# BACKUP_STATE_DIR puts it on. Both layouts have something to lose: the deploy
+# hosts point it at the roomy volume the database itself lives on, where filling
+# up stops Postgres writing WAL; left unset it falls back under the invoking
+# user's home, where filling the root filesystem takes docker, sshd and the
+# Actions runner with it. This is not a prediction of the dump's size — it is a
+# floor that refuses to run on a volume already too full to hold one. Tune per
+# host with BACKUP_MIN_FREE_BYTES.
 DEFAULT_MIN_FREE_BYTES = 20 * 1024**3  # 20 GiB
 
 # An unquoted Postgres identifier, which is all a database name may be here:
@@ -325,17 +327,17 @@ def _min_free_bytes() -> int:
 def verify_free_space(state_dir: Path) -> int:
     """Refuse to dump onto a volume too full to hold one. Returns free bytes.
 
-    The working copy and `volumes/db/data` share a filesystem, so this is the
-    difference between a run that fails on its own and a run that takes
-    Postgres' ability to write with it.
+    A dump that runs a volume out of space takes more than itself down with it,
+    so this is the difference between a run that fails on its own and a run
+    that fails on something else's behalf.
     """
     free = shutil.disk_usage(state_dir).free
     floor = _min_free_bytes()
     if free < floor:
         raise ConfigError(
             f"{free:,} bytes free on {state_dir}, below the {floor:,}-byte "
-            "floor — the working copy shares this filesystem with the "
-            "database, and filling it would stop Postgres writing"
+            "floor — a dump large enough to fill this volume would take more "
+            "than this backup down with it"
         )
     logger.info("%s has %s bytes free", state_dir, f"{free:,}")
     return free
@@ -623,8 +625,13 @@ def main(argv: list[str] | None = None) -> int:
         # The working copy holds a full dump; keep it off other users. mode= on
         # the create leaves no window between the two calls; the chmod is what
         # tightens a directory an earlier run left looser.
-        state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        state_dir.chmod(0o700)
+        try:
+            state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            state_dir.chmod(0o700)
+        except OSError as exc:
+            raise ConfigError(
+                f"cannot use {state_dir} as the working directory: {exc}"
+            ) from exc
         # Cancelling the job or hitting timeout-minutes kills this process from
         # outside; without a handler the working dir below is never unwound.
         signal.signal(signal.SIGTERM, _terminate)

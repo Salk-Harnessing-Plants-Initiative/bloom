@@ -1075,6 +1075,55 @@ def test_the_defaults_files_carry_the_floor():
         assert "BACKUP_MIN_FREE_BYTES=" in text, f".env.{name}.defaults"
 
 
+def _defaults_value(env_name: str, key: str) -> str:
+    for line in (REPO_ROOT / f".env.{env_name}.defaults").read_text().splitlines():
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1]
+    raise AssertionError(f"{key} missing from .env.{env_name}.defaults")
+
+
+def test_the_working_copy_is_configured_onto_the_data_volume():
+    # The script's own fallback is under the invoking user's home, which on the
+    # deploy host is the root filesystem — far too small for a dump of a
+    # database that lives on the data volume, and filling it takes docker, the
+    # Actions runner and sshd with it.
+    for name in ("prod", "staging"):
+        state_dir = _defaults_value(name, "BACKUP_STATE_DIR")
+        assert state_dir.startswith("/"), f"{name}: must be an absolute path"
+        assert not state_dir.startswith("/home/"), (
+            f"{name}: {state_dir} is on the root filesystem"
+        )
+        assert "/data/bloom/" in state_dir, f"{name}: {state_dir}"
+
+
+def test_neither_environment_writes_into_a_deploy_directory():
+    # A working copy inside a deploy directory is a full plaintext dump sitting
+    # in a git checkout that a deployment rewrites.
+    for name, deploy_dir in (("prod", "/data/bloom/production"),
+                             ("staging", "/data/bloom/staging")):
+        assert not _defaults_value(name, "BACKUP_STATE_DIR").startswith(deploy_dir)
+
+
+def test_the_two_environments_do_not_share_a_working_directory():
+    # They share the host, and the startup sweep removes what it finds, so one
+    # directory means a rehearsal can delete a production run's working copy.
+    assert (_defaults_value("prod", "BACKUP_STATE_DIR")
+            != _defaults_value("staging", "BACKUP_STATE_DIR"))
+
+
+def test_an_unusable_state_directory_is_a_config_error(tmp_path, monkeypatch):
+    # Creating it can fail on a volume this user does not own. Exit 2 naming the
+    # path beats a PermissionError traceback that exits 1 as "subprocess failed".
+    _deploy_dir(tmp_path)
+    blocked = tmp_path / "blocked"
+    blocked.mkdir(mode=0o500)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(blocked / "work"))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
+    assert rc == backup.EXIT_CONFIG
+
+
 def test_a_full_disk_is_not_reported_as_a_dead_pg_dump(tmp_path, monkeypatch, caplog):
     # gzip fails first when the volume fills, and the SIGPIPE it sends upstream
     # makes the source exit non-zero too. Checking the source first sends the
