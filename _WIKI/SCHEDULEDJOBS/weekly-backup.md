@@ -263,7 +263,7 @@ sudo -u bloom-deploy rclone lsl box:bloom-backups/prod
 | 1    | Subprocess failed (docker / pg_dump / gzip / rclone)                  |
 | 2    | Configuration problem, the stack is not running, or `--env` is not a known environment |
 | 3    | An artifact failed verification — missing, short, corrupt or empty    |
-| 4    | The run was terminated by a signal — cancelled, or hit `timeout-minutes` |
+| 4    | The run was terminated by a signal — see below, it is not what a cancelled workflow run produces |
 
 Code 2 also covers a deploy host with too little free space for a dump. That
 is checked before the dump starts, so the run costs seconds rather than failing
@@ -273,8 +273,24 @@ Code 3 is the one to read closely: the dump ran, but what came out cannot be a
 usable backup. Look at the database, not at the config.
 
 Code 4 is not a failure of anything the job ran. It gets its own code because a
-`SystemExit` carrying a message exits 1, which would make a cancelled run
+`SystemExit` carrying a message exits 1, which would make a terminated run
 indistinguishable from a failed `pg_dump`.
+
+**It is not what cancelling a workflow run produces.** The workflow reaches the
+script over `ssh` without a TTY, so cancelling the run — or hitting
+`timeout-minutes` — kills the local ssh client and nothing else: sshd does not
+signal a non-PTY remote command. The script carries on, finishes its dump, and
+**still uploads**. So a red run is not proof that nothing reached Box; check the
+folder listing in the job summary, or Box itself, before concluding a week is
+missing. Code 4 is reachable when the script is run by hand on the host and
+someone interrupts it.
+
+The dump waits at most 60 seconds for any table lock (`--lock-wait-timeout`).
+Only DDL conflicts with what `pg_dump` takes, and a deploy's migrations cannot
+overlap a backup while both run on the one shared runner — so a run that fails
+this way means something else is holding a lock, and a re-run is the answer.
+The wait is deliberately short because a queued `pg_dump` blocks every other
+reader on that table behind it.
 
 ## What is verified before an upload counts
 

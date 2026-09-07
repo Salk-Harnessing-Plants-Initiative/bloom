@@ -15,8 +15,10 @@ Exit codes:
   1 = subprocess failure (docker / pg_dump / gzip / rclone)
   2 = configuration error (missing env, no remote, stack not running)
   3 = an artifact failed verification (missing, undersized, corrupt, or empty)
-  4 = the run was terminated by a signal (cancelled from the Actions tab, or
-      timed out) — not a failure of anything it ran
+  4 = the run was terminated by a signal — not a failure of anything it ran.
+      Reachable when this script is run by hand on the host; a cancelled or
+      timed-out workflow run kills the ssh client only, and this script keeps
+      going. See _WIKI/SCHEDULEDJOBS/weekly-backup.md.
 
 See `.env.{staging,prod}.defaults` for the BACKUP_* config surface, and
 _WIKI/SCHEDULEDJOBS/weekly-backup.md for setup.
@@ -96,6 +98,15 @@ ENV_KEYS = (
 # floor that refuses to run on a volume already too full to hold one. Tune per
 # host with BACKUP_MIN_FREE_BYTES.
 DEFAULT_MIN_FREE_BYTES = 20 * 1024**3  # 20 GiB
+
+# How long pg_dump waits for a table lock before giving up. It takes ACCESS
+# SHARE on every table, which only DDL conflicts with — and a deploy's
+# migrations cannot overlap a backup, both landing on the one shared runner. So
+# this is a safety valve rather than something a run is expected to spend. Kept
+# short because a waiting pg_dump queues every other reader behind it: the wait
+# is a bound on how long the application stalls on that table, and waiting
+# longer does not make a lock somebody else holds any more likely to come free.
+LOCK_WAIT_TIMEOUT_MS = 60_000
 
 # An unquoted Postgres identifier, which is all a database name may be here:
 # the name reaches an artifact filename, and `../` in it would write a
@@ -507,7 +518,9 @@ def dump_database(container: str, work_dir: Path, timestamp: str) -> Path:
     out = work_dir / f"postgres-{pg_db}-{timestamp}.sql.gz"
     logger.info("dumping database %s -> %s", pg_db, out.name)
     cmd, env = dump_command(
-        container, ["pg_dump", "-U", pg_user, "-d", pg_db, "--format=plain"]
+        container,
+        ["pg_dump", "-U", pg_user, "-d", pg_db, "--format=plain",
+         f"--lock-wait-timeout={LOCK_WAIT_TIMEOUT_MS}"],
     )
     _stream_to_gzip(cmd, out, env=env)
     verify_artifact(out, MIN_DATABASE_BYTES)

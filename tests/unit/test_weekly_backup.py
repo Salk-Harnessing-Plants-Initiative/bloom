@@ -885,6 +885,31 @@ def test_the_database_dump_keeps_owners_and_privileges(tmp_path, monkeypatch):
     assert "--no-acl" not in cmd
 
 
+def test_the_dump_gives_up_on_a_lock_rather_than_queueing_behind_it(tmp_path, monkeypatch):
+    # pg_dump takes ACCESS SHARE on every table. Waiting unboundedly for one
+    # blocks every other reader on that table behind it, so a stuck dump becomes
+    # a stalled application.
+    monkeypatch.setenv("POSTGRES_PASSWORD", DEPLOY_PASSWORD)
+    seen: list[list[str]] = []
+    monkeypatch.setattr(backup, "_stream_to_gzip", _dump_writer(seen, _database_dump()))
+    monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999999)
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+
+    backup.dump_database("container123", tmp_path, "20260824T000000Z")
+    waits = [arg for arg in seen[0] if arg.startswith("--lock-wait-timeout=")]
+    assert waits, "an unbounded wait stalls readers for as long as the lock is held"
+    assert int(waits[0].split("=")[1]) > 0
+
+
+def test_the_lock_wait_is_short_enough_to_bound_a_stall():
+    # Asserted against a literal, not the constant: the fixture above would
+    # follow the constant anywhere, including up to an hour.
+    assert 0 < backup.LOCK_WAIT_TIMEOUT_MS <= 120_000, (
+        "the wait is how long the application can stall on a table before the "
+        "run gives up"
+    )
+
+
 def test_globals_are_dumped_alongside_the_database(tmp_path, monkeypatch):
     monkeypatch.setenv("POSTGRES_PASSWORD", DEPLOY_PASSWORD)
     seen: list[list[str]] = []
