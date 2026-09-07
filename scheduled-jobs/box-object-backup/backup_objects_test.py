@@ -8,6 +8,7 @@ a daemon, MinIO, or a Box account.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -222,47 +223,56 @@ def test_verify_accepts_a_matching_size(caplog, ledger):
     caplog.set_level(logging.INFO)
     client = FakeRclone()
     client.stats_by_path["root/images/exp-42/frame.png"] = {"Size": 100}
-    assert copier.verify_sample(client, make_plan([obj()]), BOX_FS, "root", 1) == 0
+    result = copier.verify_sample(client, make_plan([obj()]), BOX_FS, "root", 1)
+    assert (result.checked, result.mismatched, result.unverified) == (1, 0, 0)
     assert "1 checked, 0 mismatched" in caplog.text
 
 
 def test_verify_flags_a_missing_destination(caplog, ledger):
-    found = copier.verify_sample(FakeRclone(), make_plan([obj()]), BOX_FS, "root", 1)
-    assert found == 1, "an object absent from Box was not counted"
+    result = copier.verify_sample(FakeRclone(), make_plan([obj()]), BOX_FS, "root", 1)
+    assert result.mismatched == 1, "an object absent from Box was not counted"
     assert "missing on Box" in caplog.text
 
 
 def test_verify_flags_a_size_mismatch(caplog, ledger):
     client = FakeRclone()
     client.stats_by_path["root/images/exp-42/frame.png"] = {"Size": 7}
-    found = copier.verify_sample(client, make_plan([obj()]), BOX_FS, "root", 1)
-    assert found == 1, "a wrong-sized object on Box was not counted"
+    result = copier.verify_sample(client, make_plan([obj()]), BOX_FS, "root", 1)
+    assert result.mismatched == 1, "a wrong-sized object on Box was not counted"
     assert "size mismatch" in caplog.text
 
 
-def test_verify_counts_an_object_it_could_not_check(caplog, ledger):
-    """Box refusing the question, rather than answering it.
+class StatRefuses(FakeRclone):
+    """Box refusing the question rather than answering it."""
 
-    The likeliest of the three outcomes and the only one with no test: the 50
-    stat calls fire straight after a night that may have pushed hundreds of
-    thousands of objects, which is exactly when Box throttles. If this stopped
-    counting, every check could fail while the run recorded `ok`, advanced the
-    watermark, and reported that verification passed.
+    def stat(self, fs, remote):
+        raise RcloneError("429 too many requests", retryable=True)
+
+
+def test_verify_does_not_call_an_unanswered_object_a_mismatch(caplog, ledger):
+    """The likeliest of the three outcomes, and it used to be counted as a
+    missing object.
+
+    `mismatched` drives exit 4, `partial`, VERIFICATION FAILED in the summary,
+    and a message telling the operator to hand-delete the object's ledger row.
+    The 50 stat calls fire straight after a night that may have pushed hundreds
+    of thousands of objects, which is exactly when Box throttles — so one
+    hiccup on a perfect night sent someone editing the ledger for a healthy
+    object, and taught the team to discount the only alarm a genuinely missing
+    object has.
     """
-
-    class StatRefuses(FakeRclone):
-        def stat(self, fs, remote):
-            raise RcloneError("429 too many requests", retryable=True)
-
-    found = copier.verify_sample(StatRefuses(), make_plan([obj()]), BOX_FS, "root", 1)
-    assert found == 1, "an object that could not be checked was not counted"
-    assert "cannot stat" in caplog.text
+    result = copier.verify_sample(StatRefuses(), make_plan([obj()]), BOX_FS, "root", 1)
+    assert result.mismatched == 0, "an unanswered stat was reported as a bad object"
+    assert result.unverified == 1, "an unanswered stat was not counted at all"
+    assert result.checked == 0, "an object Box never answered for counts as checked"
+    assert "could not check" in caplog.text
 
 
 def test_verify_counts_every_bad_object_not_just_the_first(ledger):
     """The count is a count, not a flag — the summary reports `N of M`."""
     objects = [obj(name=f"exp-42/{n}.png") for n in range(3)]
-    assert copier.verify_sample(FakeRclone(), make_plan(objects), BOX_FS, "root", 3) == 3
+    result = copier.verify_sample(FakeRclone(), make_plan(objects), BOX_FS, "root", 3)
+    assert result.mismatched == 3
 
 
 def test_verify_checks_the_requested_number_of_objects(ledger):
@@ -922,7 +932,7 @@ class TestRunLockedWiresItsPartsTogether:
 
         def spy(client, plan, box_fs, box_root, sample):
             monkey["called"] = True
-            return 1  # one mismatch
+            return copier.VerifyResult(checked=1, mismatched=1, unverified=0)
 
         job.verify_sample = spy
         try:
@@ -932,6 +942,62 @@ class TestRunLockedWiresItsPartsTogether:
 
         assert monkey["called"], "verification never ran"
         assert code == 4, f"a mismatch must fail the run, got exit {code}"
+
+    def test_an_unanswered_object_does_not_fail_the_run(
+        self, harness, monkeypatch, caplog
+    ):
+        """Box not answering is not evidence against the backup.
+
+        Exit 4 says "delete the ledger row so it is copied again", and doing
+        that for an object that is fine is wasted work on the advice of a
+        false alarm. The copies themselves were confirmed as they were made.
+        """
+        state, tmp_path = harness
+        monkeypatch.setattr(
+            job, "verify_sample",
+            lambda *a: copier.VerifyResult(checked=3, mismatched=0, unverified=1),
+        )
+        code = job.run_locked(self.args(tmp_path, verify=4), tmp_path)
+        assert code == 0, f"an unanswered stat failed the run, got exit {code}"
+        assert "could not be checked" in caplog.text, "it was not mentioned at all"
+        assert job.VERIFY_BLACKOUT_MARKER not in caplog.text
+
+    def test_a_verification_that_answered_nothing_says_so(
+        self, harness, monkeypatch, caplog
+    ):
+        """The regression the old conflation was guarding against.
+
+        With unanswered stats no longer counted as mismatches, a night where
+        Box refused every stat would otherwise record `ok`, advance the
+        watermark, and report success — with the check silently a no-op. It
+        still must not fail the run, so it has to be said out loud instead.
+        """
+        state, tmp_path = harness
+        monkeypatch.setattr(
+            job, "verify_sample",
+            lambda *a: copier.VerifyResult(checked=0, mismatched=0, unverified=4),
+        )
+        code = job.run_locked(self.args(tmp_path, verify=4), tmp_path)
+        assert code == 0, "a blackout is not a bad backup and must not fail the run"
+        assert job.VERIFY_BLACKOUT_MARKER in caplog.text
+
+    def test_the_run_report_records_what_went_unanswered(
+        self, harness, monkeypatch, tmp_path
+    ):
+        """`verify_checked` is what the wiki tells operators to read. Without
+        the companion count, a sample that shrank to nothing is indistinguishable
+        from one that was never asked for."""
+        state, tmp_path = harness
+        monkeypatch.setattr(
+            job, "verify_sample",
+            lambda *a: copier.VerifyResult(checked=1, mismatched=0, unverified=3),
+        )
+        job.run_locked(self.args(tmp_path, verify=4), tmp_path)
+        written = sorted((tmp_path / "_runs").glob("*.json"))
+        assert written, "no run report was written"
+        stats = json.loads(written[-1].read_text())["stats"]
+        assert stats["verify_checked"] == 1
+        assert stats["verify_unverified"] == 3
 
     def test_a_clean_verification_leaves_the_run_successful(self, harness):
         state, tmp_path = harness

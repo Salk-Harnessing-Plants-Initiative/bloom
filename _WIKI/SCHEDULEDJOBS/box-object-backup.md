@@ -386,19 +386,39 @@ difference, but it lives in `/var/lib` behind SSH and SQLite.
 
 Each report carries the run's outcome (`ok`, `partial`, `error`), its
 duration, the counts (`listed`, `copied`, `failed`, `skipped`,
-`already_current`, `verify_checked`, `verify_mismatched`), and the paths of
-failed objects — capped, with `failure_count` keeping the true total. Reports
-are written for failed runs too.
+`already_current`, `verify_checked`, `verify_mismatched`, `verify_unverified`),
+and the paths of failed objects — capped, with `failure_count` keeping the true
+total. Reports are written for failed runs too.
 
 `verify_checked` and `verify_mismatched` are what make the report a record of
 a *checked* backup rather than an attempted one. `verify_checked: 0` means
-nobody looked, which is not the same as looking and finding nothing wrong.
+nobody looked, which is not the same as looking and finding nothing wrong —
+and `verify_unverified` says which of the two it was: zero means verification
+was never asked for, non-zero means it was asked and Box did not answer.
 
 ### What verification does, and does not, prove
 
 After copying, `--verify N` asks Box directly whether N of the objects this run
 copied are present and the expected size. A non-zero mismatch count records the
 run `partial`, which holds the watermark.
+
+**Only two answers count against the backup:** Box does not have the object, or
+has it at a different size. A stat call that fails outright — a 429, a dropped
+connection — is neither. Those are counted as `verify_unverified`, kept out of
+`verify_mismatched`, and change no exit code. The distinction matters because
+the remedy for a mismatch is deleting the object's ledger row by hand, and
+doing that on the strength of one Box hiccup is work done for nothing on advice
+that was wrong.
+
+`verify_checked` is what was actually answered, so it can be smaller than the N
+requested. If it reaches **zero** while objects were sampled, the run says
+**verification proved NOTHING this run** and the summary carries a notice. That
+still does not fail the run — the copies were confirmed as they were made — but
+a check that silently ran on nothing, on a night reporting success, is the one
+outcome verification exists to rule out. The stat calls fire straight after a
+run that may have pushed hundreds of thousands of objects, which is exactly
+when Box throttles; if it repeats, lower `BACKUP_VERIFY` or move the schedule
+off Box's busy hours.
 
 **A mismatched object is not retried automatically.** The ledger recorded it as
 copied before verification ran, so every later run skips it as

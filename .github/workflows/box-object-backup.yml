@@ -399,6 +399,20 @@ jobs:
               echo "> upload was refused, and 'If the deploy host itself is"
               echo "> gone' in the wiki says what losing it costs."
             fi
+            # Also additive, and for the same reason: a verification that
+            # established nothing happens on a night that copied fine.
+            if grep -q 'verification proved NOTHING this run' \
+              "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
+              echo
+              echo "> **Verification checked nothing.** Box did not answer any"
+              echo "> of the sampled objects, so the spot-check confirmed"
+              echo "> nothing was on Box. The copies were confirmed as they"
+              echo "> were made, so this is not a reason to re-copy — but a"
+              echo "> night that reports success on the strength of a check"
+              echo "> that never ran is exactly what the check exists to"
+              echo "> prevent. If it repeats, see 'What verification does, and"
+              echo "> does not, prove' in the wiki."
+            fi
             echo
             echo '### This run'
             echo '```'

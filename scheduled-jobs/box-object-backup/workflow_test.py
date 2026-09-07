@@ -177,6 +177,41 @@ class TestSkipMarkerContract:
         assert "copied fine" in branch, "does not say the objects are safe"
         assert "wiki" in branch, "does not say where to look"
 
+    def test_a_verification_that_answered_nothing_is_reported(self, summary_script: str):
+        """It cannot fail the run — Box not answering is not evidence against
+        the backup — so the summary is the only place it can surface. A night
+        reporting "succeeded" on a check that silently ran on nothing is the
+        exact no-op the check exists to rule out."""
+        assert job.VERIFY_BLACKOUT_MARKER in _strip_comments(summary_script), (
+            "the summary cannot report a verification that checked nothing"
+        )
+
+    def test_the_blackout_grep_matches_what_the_job_prints(self):
+        source = (Path(__file__).parent / "backup_objects.py").read_text()
+        assert job.VERIFY_BLACKOUT_MARKER in _strip_comments(source), (
+            "the workflow greps for a phrase the job no longer prints"
+        )
+
+    def test_the_blackout_notice_is_not_a_branch(self, summary_script: str):
+        # Same reason as the stale ledger: this happens on nights that copied
+        # fine, so as an elif the success branch would hide it.
+        script = _strip_comments(summary_script)
+        assert re.search(
+            r"(?<!el)if grep -q '" + re.escape(job.VERIFY_BLACKOUT_MARKER), script
+        ), "the blackout notice is a branch, so another result hides it"
+
+    def test_the_blackout_notice_does_not_tell_anyone_to_re_copy(
+        self, summary_script: str
+    ):
+        """The failure mode this whole change removes: reading "Box did not
+        answer" as "the object is missing" and acting on it."""
+        script = _strip_comments(summary_script)
+        opener = "if grep -q '" + job.VERIFY_BLACKOUT_MARKER
+        assert opener in script, "there is no blackout notice to check"
+        branch = script[script.index(opener):][:900]
+        assert "not a reason to re-copy" in branch
+        assert "DELETE FROM" not in branch, "steers an operator into the ledger"
+
     def test_a_stood_down_run_is_not_reported_as_success(self, summary_script: str):
         # The whole point: a skipped run exits 0 exactly as a good one does,
         # so the summary must distinguish them or a months-long gap in the

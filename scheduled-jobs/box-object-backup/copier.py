@@ -13,6 +13,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 import backup_lib as lib
 import stopping
@@ -196,30 +197,53 @@ def log_progress(done: int, total: int, byte_count: int, started: float) -> None
     )
 
 
+@dataclass(frozen=True)
+class VerifyResult:
+    """What a verification pass actually established.
+
+    `unverified` is what it could not answer for: the stat call itself failed,
+    so the object may be perfectly fine. Keeping that apart from `mismatched`
+    is the whole point of this type. Counted together, one Box hiccup on an
+    otherwise clean night produced VERIFICATION FAILED and told an operator to
+    hand-delete the ledger row of a healthy object — and taught the team to
+    discount the only alarm a genuinely missing object has.
+    """
+
+    checked: int
+    mismatched: int
+    unverified: int
+
+
 def verify_sample(
     client: RcloneRC,
     plan: lib.CopyPlan,
     box_fs: str,
     box_root: str,
     sample_size: int,
-) -> int:
+) -> VerifyResult:
     """Stat a spread of destination paths and compare sizes against Postgres.
 
     Strided rather than random, so the same pool is always checked in the same
     order. That does not make a mismatch reproducible across runs: the pool
     holds only what THIS run copied, and a mismatched object is already in the
-    ledger, so later runs skip it. Returns the number of mismatches.
+    ledger, so later runs skip it.
+
+    Only two findings are evidence against the backup: Box does not have the
+    object, or has it at a different size. A failed stat is evidence of
+    nothing.
     """
     copies = plan.copies
     stride = max(1, len(copies) // max(1, sample_size))
-    checked = mismatched = 0
+    checked = mismatched = unverified = 0
     for obj in copies[::stride][:sample_size]:
         dst = lib.box_path(obj, box_root)
         try:
             item = client.stat(box_fs, dst)
         except RcloneError as exc:
-            logger.error("verify: cannot stat %s: %s", dst, exc)
-            mismatched += 1
+            # Not a mismatch: Box was asked and did not answer. Warning, not
+            # error, so it cannot be read as a missing object.
+            logger.warning("verify: could not check %s: %s", dst, exc)
+            unverified += 1
             continue
         checked += 1
         if item is None:
@@ -231,5 +255,8 @@ def verify_sample(
                 dst, item.get("Size"), obj.size,
             )
             mismatched += 1
-    logger.info("verify: %d checked, %d mismatched", checked, mismatched)
-    return mismatched
+    # The workflow summary extracts the leading "verify: N checked, N
+    # mismatched"; anything appended here is outside that pattern.
+    tail = f", {unverified} unverified" if unverified else ""
+    logger.info("verify: %d checked, %d mismatched%s", checked, mismatched, tail)
+    return VerifyResult(checked=checked, mismatched=mismatched, unverified=unverified)

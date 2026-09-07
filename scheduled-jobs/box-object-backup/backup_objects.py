@@ -69,6 +69,12 @@ VERIFY_POOL_CAP = 5_000
 # The workflow summary greps this phrase; both failure paths must carry it.
 LEDGER_STALE_MARKER = "the Box copy of the ledger is STALE"
 
+# Printed when every sampled object went unanswered, so the pass established
+# nothing. A failed stat is not evidence against the backup and must not fail
+# the run — but a verification that silently checked zero objects, on a night
+# reporting "succeeded", is the no-op this pass exists to rule out.
+VERIFY_BLACKOUT_MARKER = "verification proved NOTHING this run"
+
 # How many objects the preflight probes, and how far into the manifest it looks
 # for them. Several rather than one, because a single orphaned row must not be
 # able to reject a correct configuration; bounded, so the check stays instant
@@ -254,14 +260,19 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         preflight_source(client, minio, sample_planned_objects(manifest))
         copy_manifest(client, manifest, ledger, minio, box_fs, args, totals)
         if args.verify and totals.verify_pool and len(totals.verify_pool):
-            totals.verify_checked = min(args.verify, len(totals.verify_pool))
-            totals.verify_mismatched = verify_sample(
+            result = verify_sample(
                 client,
                 lib.CopyPlan(tuple(totals.verify_pool.items), (), 0),
                 box_fs,
                 args.box_root,
                 args.verify,
             )
+            # From the pass itself, not the sample size asked for: a stat that
+            # failed checked nothing, and reporting it as checked overstates
+            # what the run proved.
+            totals.verify_checked = result.checked
+            totals.verify_mismatched = result.mismatched
+            totals.verify_unverified = result.unverified
     except BaseException:
         # Recorded before re-raising so the Box report still names the run
         # that died — a failed run is the one most worth a record.
@@ -277,6 +288,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             "already_current": totals.already_current,
             "verify_checked": totals.verify_checked,
             "verify_mismatched": totals.verify_mismatched,
+            "verify_unverified": totals.verify_unverified,
         }
         outcome = run_outcome(
             crashed=crashed,
@@ -346,6 +358,32 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     elif totals.verify_checked:
         logger.info("verified %d object(s) on Box, all present and correct",
                     totals.verify_checked)
+    if totals.verify_unverified and totals.verify_checked:
+        # Says nothing about the backup, so it fails nothing. It is said out
+        # loud because the line above reports only what was actually answered,
+        # and a sample that shrank without explanation invites the wrong one.
+        logger.warning(
+            "%d sampled object(s) could not be checked — Box did not answer. "
+            "This is not a finding against the backup and nothing needs doing; "
+            "they stay in the mirror and are re-checked only if a later run "
+            "copies them again.",
+            totals.verify_unverified,
+        )
+    elif totals.verify_unverified:
+        # Nothing was answered at all. The copies themselves were confirmed as
+        # they were made, so this still does not fail the run — but --verify
+        # was asked for and delivered no evidence, and a night reporting
+        # "succeeded" with a silent no-op check is what this pass exists to
+        # rule out. The stat calls fire straight after a run that may have
+        # pushed hundreds of thousands of objects, which is when Box throttles.
+        logger.error(
+            "%s: all %d sampled object(s) went unanswered by Box, so nothing "
+            "was confirmed present. The copies were confirmed as they were "
+            "made, so this is not a reason to re-copy — but if it repeats, "
+            "verification is not doing its job. Lower BACKUP_VERIFY or move "
+            "the run off Box's busy hours.",
+            VERIFY_BLACKOUT_MARKER, totals.verify_unverified,
+        )
     if totals.failed:
         logger.error(
             "%d object(s) failed after %d attempts each — re-run to retry them",
@@ -370,6 +408,9 @@ class Totals:
     already_current: int = 0
     verify_checked: int = 0
     verify_mismatched: int = 0
+    # Sampled, but Box did not answer. Not a finding against the backup, so it
+    # changes no exit code — it only stops `verify_checked` claiming them.
+    verify_unverified: int = 0
     verify_pool: object = None
     failures: list = field(default_factory=list)
 
