@@ -788,7 +788,7 @@ def test_asking_past_the_limit_refuses_rather_than_queueing():
         assert isinstance(refusal, pe.EncoderBusy), (
             f"asking past the limit must refuse, got {refusal!r}"
         )
-        assert str(pe.MAX_CONCURRENT_ENCODES) in str(refusal)
+        assert "already encoding" in str(refusal)
     finally:
         for slot in held:
             slot.__exit__(None, None, None)
@@ -796,10 +796,12 @@ def test_asking_past_the_limit_refuses_rather_than_queueing():
 
 def test_the_encode_limit_is_the_number_the_service_is_sized_for():
     """Nothing else pins this: every other assertion reads the constant back.
-    Four at the frame ceiling need 2133 MB against a 2g container, so the
-    service renders three at once. The arithmetic lives in
-    tests/unit/test_workflows_single_worker.py."""
-    assert pe.MAX_CONCURRENT_ENCODES == 3
+
+    One, so a render is sized against the whole container rather than a share
+    of it -- which is what leaves the frame ceilings room to be approximate.
+    The arithmetic lives in tests/unit/test_workflows_single_worker.py.
+    """
+    assert pe.MAX_CONCURRENT_ENCODES == 1
 
 
 def test_releasing_a_slot_that_was_never_taken_is_caught():
@@ -1529,18 +1531,52 @@ def test_the_per_pixel_costs_are_the_measured_ones():
     assert pe.DEEP_BYTES_PER_PIXEL == 15
 
 
-def test_a_16_bit_plate_at_full_size_is_deliberately_refused():
-    """The scanners emit 8-bit RGB, and the deep-mode reduction has never seen
-    real 16-bit data -- every test of it uses synthetic frames. So a full-size
-    16-bit plate is refused legibly rather than reduced by arithmetic nothing
-    has validated. If a 16-bit scanner arrives this fails, which is the point:
-    the reduction wants checking against a real frame first.
+# Every image the graviscan app can produce. Its scan regions are fixed in
+# millimetres (python/graviscan/scan_regions.py) and its resolutions are a fixed
+# set, so this is the whole space, not a sample.
+SCAN_REGIONS_MM = {"2grid": (140, 140), "4grid-wide": (110, 150), "4grid": (105, 145)}
+VALIDATED_DPI = (200, 400, 600, 800, 1200, 1600)
 
-    The container budget is a separate question and lives in
-    tests/unit/test_workflows_single_worker.py.
+
+def _scanned(region: str, dpi: int) -> tuple[int, int]:
+    width_mm, height_mm = SCAN_REGIONS_MM[region]
+    return int(width_mm * dpi / 25.4), int(height_mm * dpi / 25.4)
+
+
+def test_the_ceiling_accepts_every_plate_the_scanners_can_produce():
+    """The ceiling is sized from the app's own configuration, not from a sample.
+
+    The largest is the 2-grid region at 1600 dpi -- 8818x8818, square, and
+    larger than any 4-grid plate at the same setting. An earlier ceiling was
+    read off a 4-grid plate only and would have refused it.
     """
-    assert pe.decoded_bytes(4960, 6850, "L") <= pe.MAX_FRAME_DECODED_BYTES
-    assert pe.decoded_bytes(4960, 6850, "I;16") > pe.MAX_FRAME_DECODED_BYTES
+    for region in SCAN_REGIONS_MM:
+        for dpi in VALIDATED_DPI:
+            width, height = _scanned(region, dpi)
+            cost = pe.decoded_bytes(width, height, "RGB")
+            assert cost <= pe.MAX_FRAME_DECODED_BYTES, (
+                f"{region} at {dpi} dpi is {width}x{height}, {cost // 1024**2} MB, "
+                f"past the {pe.MAX_FRAME_DECODED_BYTES // 1024**2} MB ceiling"
+            )
+
+
+def test_a_16_bit_plate_at_full_size_now_passes_the_ceiling():
+    """A consequence of sizing for the 2-grid plate, accepted deliberately.
+
+    While the ceiling was read off a 4-grid plate it sat below a 16-bit one, so
+    the deep-mode path was unreachable in production. It is reachable now. The
+    scanners emit 8-bit RGB, so nothing exercises it -- but if a 16-bit scanner
+    ever arrives, its reduction has only ever been tested against synthetic
+    frames and wants checking against a real one before it is trusted.
+    """
+    assert pe.decoded_bytes(4960, 6850, "I;16") <= pe.MAX_FRAME_DECODED_BYTES
+
+
+def test_a_frame_no_scanner_could_produce_is_still_refused():
+    """The ceiling still has to mean something. 12000x12000 is 2.6x the largest
+    region at the highest validated resolution."""
+    assert pe.decoded_bytes(12000, 12000, "I;16") > pe.MAX_FRAME_DECODED_BYTES
+    assert pe.decoded_bytes(12000, 12000, "RGB") > pe.MAX_FRAME_DECODED_BYTES
 
 
 def test_an_oversized_frame_says_so_rather_than_being_called_unreadable():
@@ -1554,7 +1590,7 @@ def test_an_oversized_frame_says_so_rather_than_being_called_unreadable():
         pe.prepare_frame(bomb.getvalue(), LABEL)
 
     assert "12000x12000" in str(caught.value)
-    assert "450 MB" in str(caught.value)
+    assert f"{pe.MAX_FRAME_DECODED_BYTES // 1024**2} MB" in str(caught.value)
     assert "16-bit" in str(caught.value), "the caller was shown a Pillow mode"
     assert "I;16" not in str(caught.value)
 

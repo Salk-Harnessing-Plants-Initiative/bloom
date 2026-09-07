@@ -98,6 +98,18 @@ def _max_frame_decoded_bytes() -> int:
     return int(match.group(1)) * (1 << 20)
 
 
+def _max_frame_bytes() -> int:
+    """Read the download cap, for the same reason as the ceiling above.
+
+    The downloaded object stays resident while the frame is decoded from it, so
+    a render costs both at once and the budget has to count both.
+    """
+    source = (REPO_ROOT / "services" / "workflows" / "plate_encode.py").read_text()
+    match = re.search(r"^MAX_FRAME_BYTES = (\d+) \* 1024\*\*2$", source, re.MULTILINE)
+    assert match, "MAX_FRAME_BYTES is no longer a plain literal"
+    return int(match.group(1)) * (1 << 20)
+
+
 # What the interpreter and one ffmpeg child cost, measured as peak RSS: 69 MB
 # for the service's imports, 54 MB per child at 1440x1990.
 BASELINE_BYTES = 69 * (1 << 20)
@@ -108,20 +120,20 @@ def test_workflows_has_a_memory_limit():
     """`MAX_CONCURRENT_ENCODES` is sized against a container limit that has to
     actually exist.
 
-    A plate frame is ~162 MB decoded at 16-bit and the encoder runs four at
-    once, so a render spike is measured in gigabytes. Unbounded, that spike
-    goes at the host, and the kernel's OOM killer chooses by resident size —
-    which here means db-prod or minio rather than the service that caused it.
-    A limit turns a host-wide outage into a failed request.
+    The largest frame the scanners can produce is 519 MB decoded, and a render
+    holds the downloaded object beside it. Unbounded, that spike goes at the
+    host, and the kernel's OOM killer chooses by resident size — which here
+    means db-prod or minio rather than the service that caused it. A limit
+    turns a host-wide outage into a failed request.
     """
     service = _workflows_service()
 
     assert "mem_limit" in service, (
         "plate_encode.py sizes its concurrency limit against a container memory "
-        "limit; without one, four concurrent renders can take the host down"
+        "limit; without one, a render spike can take the host down"
     )
     assert _bytes(service["mem_limit"]) >= 2 * (1 << 30), (
-        f"the limit is {service['mem_limit']!r}; four 16-bit plates plus the "
+        f"the limit is {service['mem_limit']!r}; the largest plate plus the "
         "RAM-backed /tmp need more than 1g, and a limit below that fails "
         "healthy renders rather than runaway ones"
     )
@@ -156,19 +168,17 @@ def test_the_memory_limit_covers_the_encodes_the_service_allows():
     service = _workflows_service()
     concurrent = _max_concurrent_encodes()
     tmpfs = next(e for e in service["tmpfs"] if e.startswith("/tmp:"))
-    needed = (
-        concurrent * _max_frame_decoded_bytes()
-        + concurrent * PER_FFMPEG_BYTES
-        + BASELINE_BYTES
-        + _bytes(_mount_options(tmpfs)["size"])
+    per_encode = _max_frame_decoded_bytes() + _max_frame_bytes() + PER_FFMPEG_BYTES
+    needed = concurrent * per_encode + BASELINE_BYTES + _bytes(
+        _mount_options(tmpfs)["size"]
     )
 
     assert _bytes(service["mem_limit"]) >= needed, (
         f"{concurrent} encodes at the frame ceiling need about "
-        f"{needed // (1 << 20)}m with the interpreter, the ffmpeg children and "
-        f"the tmpfs, against a limit of {service['mem_limit']!r}. Raise the "
-        "limit, lower MAX_CONCURRENT_ENCODES, or lower "
-        "MAX_FRAME_DECODED_BYTES."
+        f"{needed // (1 << 20)}m with the downloaded objects, the interpreter, "
+        f"the ffmpeg children and the tmpfs, against a limit of "
+        f"{service['mem_limit']!r}. Raise the limit, lower "
+        "MAX_CONCURRENT_ENCODES, or lower one of the frame ceilings."
     )
 
 

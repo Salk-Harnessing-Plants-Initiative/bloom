@@ -40,24 +40,23 @@ logger = logging.getLogger(__name__)
 # legibility do.
 PLATE_VIDEO_WIDTH = 1440
 
-# How many plates may encode at once. Chiefly so forty simultaneous clicks do
-# not saturate the link to storage and make every other request slower — but it
-# is also the multiplier on a render's memory, so it is where a container limit
-# has to be read from. Peak RSS around `prepare_frame` on a 4960x6850 source:
-# 227 MB for 8-bit, 485 MB for 16-bit. Three at the frame ceiling, plus the
-# interpreter and their ffmpeg children, is what fits the container's 2g.
-MAX_CONCURRENT_ENCODES = 3
+# How many plates may encode at once. One, so a single render may be sized
+# against the whole container rather than a share of it, which leaves the
+# ceilings below room to be wrong. A queue would serve a refused caller better
+# and is the intended successor; until then the second caller is asked back.
+MAX_CONCURRENT_ENCODES = 1
 
-# What one frame may cost to decode. MAX_CONCURRENT_ENCODES of these fit the
-# container; tests/unit/test_workflows_single_worker.py does the arithmetic.
-MAX_FRAME_DECODED_BYTES = 450 * 1024**2
+# The largest frame the graviscan app can produce, plus headroom. Its scan
+# regions are fixed in millimetres and its resolutions are a fixed set, so the
+# largest is the 140x140mm 2-grid region at 1600 dpi: 8818x8818, 519 MB decoded
+# and 124 MB on the wire. tests/unit/test_workflows_single_worker.py checks both
+# against the container limit.
+MAX_FRAME_DECODED_BYTES = 560 * 1024**2
+MAX_FRAME_BYTES = 192 * 1024**2
 
 # Peak resident bytes per source pixel through prepare_frame.
 DEEP_BYTES_PER_PIXEL = 15
 SHALLOW_BYTES_PER_PIXEL = 7
-
-# The largest object this will hold, whatever its row claims.
-MAX_FRAME_BYTES = 256 * 1024**2
 
 # The modes carrying more than 8 bits per channel, and the full scale they are
 # reduced from. `F` is absent deliberately — see `_to_8bit_rgb`.
@@ -77,7 +76,7 @@ DEEP_MIN_PEAK = DEEP_FULL_SCALE // 2
 
 # BoundedSemaphore rather than Semaphore: a release that was never acquired is
 # a capacity leak in the direction nothing else would notice, and this raises on
-# it instead of quietly granting a fifth slot.
+# it instead of quietly granting a slot past MAX_CONCURRENT_ENCODES.
 _encode_slots = threading.BoundedSemaphore(MAX_CONCURRENT_ENCODES)
 # Per process, so it serialises only within one worker. The object key is
 # derived from the plate and carries no version, so two workers would race to
@@ -129,9 +128,7 @@ def encode_slot(timeout: float | None = None):
     while achieving nothing the client can see.
     """
     if not _encode_slots.acquire(blocking=timeout is not None, timeout=timeout):
-        raise EncoderBusy(
-            f"{MAX_CONCURRENT_ENCODES} plate videos are already encoding; try again shortly"
-        )
+        raise EncoderBusy("another plate video is already encoding; try again shortly")
     try:
         yield
     finally:
@@ -358,7 +355,7 @@ def _tear_down(writer: VideoWriter, out_path: str) -> Exception | None:
 
     The partial file goes because it is a playable MP4 of however many frames
     got through, indistinguishable from a complete one to anything downstream —
-    and because this container's filesystem is a 512 MB tmpfs, so a run of
+    and because this container's filesystem is a small tmpfs, so a run of
     failures would fill it and then every encode fails.
     """
     closing = None
