@@ -375,7 +375,17 @@ def _tear_down(writer: VideoWriter, out_path: str) -> Exception | None:
 
 
 def _fetch_frame(images, path: str, label: str) -> np.ndarray:
-    """One object, downloaded and prepared, or a failure naming it."""
+    """One object, downloaded and prepared, or a failure naming it.
+
+    `path` is `gravi_images.object_path`, which the desktop writes and any
+    signed-in role may also write. The storage client resolves `..` before the
+    request leaves, so an unconfined key reaches other paths on the internal
+    gateway as this service. Only the shape is refused, not the naming: the
+    filename embeds a user-typed experiment name.
+    """
+    if path.startswith("/") or ".." in path.split("/"):
+        raise FrameUnreadable(f"{path} is not a key in this bucket", path)
+
     try:
         data = images.download(path)
     except Exception as exc:

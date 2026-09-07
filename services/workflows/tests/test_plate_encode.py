@@ -1062,6 +1062,60 @@ def test_a_32_bit_frame_inside_the_full_scale_still_works():
     assert out.max() == 255 and out.min() == 0
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "../../videos/x.mp4",
+        "a/../../../object/videos/1.mp4",
+        "../../../../../rest/v1/users",
+        "/storage/v1/object/videos/1.mp4",
+    ],
+)
+def test_a_key_that_leaves_the_bucket_is_refused_before_it_is_fetched(path):
+    """The storage client resolves `..` before the request leaves, so an
+    unconfined key reaches other paths on the internal gateway as this service.
+    object_path is writable by any signed-in role, not only the desktop."""
+
+    fetched = []
+
+    class _Images:
+        def download(self, path):
+            fetched.append(path)
+            return _png(40, 60)
+
+    with pytest.raises(pe.FrameUnreadable) as caught:
+        pe._fetch_frame(_Images(), path, LABEL)
+
+    # Not just any FrameUnreadable: without the check the download succeeds and
+    # the frame decodes, so only the message and the untouched client can tell.
+    assert fetched == [], "the key was fetched before it was checked"
+    assert "not a key in this bucket" in str(caught.value)
+    assert caught.value.path == path
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "gravi-images/P7_c1_a3f9c2b1.tif",
+        "gravi-images/Root Study 2026_wave1_st_x_et_y_cy3_A01.tif",
+        "gravi-images/expérience_wave2_cy10_B02.tif",
+        "gravi-images/a..b_cy1.tif",
+    ],
+)
+def test_a_real_key_is_not_refused(path):
+    """The filename embeds a user-typed experiment name, so only the shape is
+    checked -- spaces, accents and dots inside a segment all pass."""
+    fetched = []
+
+    class _Images:
+        def download(self, path):
+            fetched.append(path)
+            return _png(40, 60)
+
+    pe._fetch_frame(_Images(), path, LABEL)
+    assert fetched == [path]
+
+
 def test_a_download_failure_carries_the_path_it_happened_to():
     """`path` is what the HTTP layer names the frame by. Tested only against
     exceptions built by hand, the raise sites could stop setting it and every
