@@ -337,8 +337,14 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     logger.info("listed %d object(s)", listed)
 
     if args.dry_run:
-        report_dry_run(manifest, ledger, args.limit)
+        totals = report_dry_run(manifest, ledger, args.limit)
         ledger.close()
+        # `partial` when it found objects a real run would refuse: nothing was
+        # copied either way, but "succeeded" on a dry run that turned things
+        # away is the same false clean bill the whole verdict exists to stop.
+        emit_status(
+            "partial" if totals.skipped else "ok", _flags_for(totals)
+        )
         return 0
 
     check_no_stale_daemon()
@@ -874,7 +880,16 @@ def plan_batches(
             yield plan
 
 
-def report_dry_run(manifest: Path, ledger: Ledger, limit: int | None) -> None:
+def report_dry_run(manifest: Path, ledger: Ledger, limit: int | None) -> Totals:
+    """Plan everything, copy nothing, and report what a real run would refuse.
+
+    Returns its totals so the caller can emit a verdict. A dry run used to
+    return none at all, which left the summary with nothing to read and
+    falling back to the step's own outcome — so a dry run that refused a
+    collision rendered "succeeded". It is step one of the pre-seed checklist
+    and the first thing run on a rebuilt host, which makes it the worst place
+    for a silent pass.
+    """
     totals = Totals()
     for plan in plan_batches(manifest, ledger, limit):
         totals.copied += len(plan.copies)
@@ -887,9 +902,14 @@ def report_dry_run(manifest: Path, ledger: Ledger, limit: int | None) -> None:
         totals.copied, totals.already_current, totals.skipped,
     )
     if totals.collisions:
-        # The same line a real run prints, so a dry run is not the one place a
-        # refused collision stays invisible. The summary greps for this phrase.
         report_collisions(totals.collisions)
+    name_skips = totals.skipped - totals.collisions
+    if name_skips > 0:
+        logger.error(
+            "%d %s Box cannot store. A real run would refuse them too.",
+            name_skips, SKIPPED_NAME_MARKER,
+        )
+    return totals
 
 
 def copy_manifest(

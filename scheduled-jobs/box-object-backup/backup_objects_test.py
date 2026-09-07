@@ -2044,12 +2044,35 @@ class TestACollisionIsVisibleInAWholeRun:
         state, tmp_path = harness
         args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
         args.dry_run = True   # a store_true flag, not a --flag value pair
-        with caplog.at_level(logging.ERROR, logger="bloom_box_object_backup"):
+        # INFO, not ERROR: the verdict lines are INFO, and this test now
+        # checks the verdict rather than the prose.
+        with caplog.at_level(logging.INFO, logger="bloom_box_object_backup"):
             job.run_locked(args, tmp_path)
         assert state["copied"] == [], "a dry run copied something"
-        assert "were NOT backed up" in caplog.text, (
-            "the summary greps this phrase; a dry run would read succeeded"
+        assert "were NOT backed up" in caplog.text, "the collision is not named"
+        # The verdict, not the phrase. The summary stopped reading prose when
+        # it started reading BOX_BACKUP_STATUS, and the dry run emitted none —
+        # so the summary fell back to the step outcome and rendered
+        # "succeeded" for a run that had just refused to back an object up.
+        # A dry run is step one of the pre-seed checklist.
+        assert f"{job.STATUS_KEY}=partial" in caplog.text, (
+            "a dry run that refused a collision reports no verdict"
         )
+        assert f"{job.FLAGS_KEY}=collisions" in caplog.text, (
+            "the collision does not reach the summary's flags"
+        )
+
+    def test_a_clean_dry_run_reports_ok(self, harness, monkeypatch, caplog):
+        """The other side: it must not cry wolf on an ordinary dry run."""
+        import logging
+
+        state, tmp_path = harness
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
+        args.dry_run = True
+        with caplog.at_level(logging.INFO, logger="bloom_box_object_backup"):
+            assert job.run_locked(args, tmp_path) == 0
+        assert state["copied"] == [], "a dry run copied something"
+        assert f"{job.STATUS_KEY}=ok" in caplog.text
 
     def test_the_run_tells_the_operator_what_to_do(self, harness, monkeypatch, caplog):
         import logging
