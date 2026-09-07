@@ -165,25 +165,40 @@ def load_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-def apply_env_file(path: Path) -> int:
-    """Load this job's keys as defaults. A real environment variable still wins.
+def apply_env_file(path: Path) -> dict[str, str]:
+    """Load this job's keys as defaults, and return the ones it found.
 
-    Only ENV_KEYS are taken. The rest of the file is left where it is rather
-    than exported into every child this script starts.
+    Only ENV_KEYS are taken; the rest of the file is left where it is. A real
+    environment variable still wins over the file.
+
+    The password is returned rather than exported: a child started without an
+    explicit environment inherits the whole of ours, so a secret left here would
+    reach gzip and rclone as well as the dump.
+
+    A blank value counts as absent, so the defaults still apply. Blanking a line
+    is how someone asks for the default, and an empty BACKUP_STATE_DIR would
+    otherwise resolve to the working directory.
     """
     if not path.is_file():
         raise ConfigError(f"env file not found: {path}")
-    values = load_env_file(path)
-    applied = 0
+    try:
+        values = load_env_file(path)
+    except OSError as exc:
+        # The runner writes .env.<env> at mode 600 and the deploy user reads it.
+        raise ConfigError(f"cannot read env file {path}: {exc}") from exc
+    found: dict[str, str] = {}
     for key in ENV_KEYS:
-        if key in values:
-            os.environ.setdefault(key, values[key])
-            applied += 1
-    logger.info("loaded %d of %d values from %s", applied, len(values), path.name)
-    return applied
+        value = values.get(key, "")
+        if not value:
+            continue
+        found[key] = value
+        if key != "POSTGRES_PASSWORD":
+            os.environ.setdefault(key, value)
+    logger.info("loaded %d of %d values from %s", len(found), len(values), path.name)
+    return found
 
 
-def _pg_password() -> str:
+def _pg_password(values: dict[str, str]) -> str:
     """The database password, which the deploy env file sets as POSTGRES_PASSWORD.
 
     db-prod authenticates every connection, including one opened from inside
@@ -191,7 +206,7 @@ def _pg_password() -> str:
     supplied`. Absent, that is a configuration error: exit 2 points the operator
     at the env file, which is where the answer is.
     """
-    password = _env("POSTGRES_PASSWORD")
+    password = _env("POSTGRES_PASSWORD") or values.get("POSTGRES_PASSWORD", "")
     if not password:
         raise ConfigError(
             "POSTGRES_PASSWORD is not set — the deploy env file must define it "
@@ -212,7 +227,8 @@ def _pg_database() -> str:
     return name
 
 
-def dump_command(container: str, argv: list[str]) -> tuple[list[str], dict[str, str]]:
+def dump_command(container: str, argv: list[str],
+                 password: str) -> tuple[list[str], dict[str, str]]:
     """A docker exec of argv, plus the environment it must be run with.
 
     `-e PGPASSWORD` carries no `=value` on purpose: that form tells docker to
@@ -220,7 +236,7 @@ def dump_command(container: str, argv: list[str]) -> tuple[list[str], dict[str, 
     host's process list for any user's `ps` to read.
     """
     cmd = [_which("docker"), "exec", "-i", "-e", "PGPASSWORD", container, *argv]
-    return cmd, {**os.environ, "PGPASSWORD": _pg_password()}
+    return cmd, {**os.environ, "PGPASSWORD": password}
 
 
 def _which(name: str) -> str:
@@ -511,7 +527,8 @@ def verify_globals_content(path: Path) -> int:
     return roles
 
 
-def dump_database(container: str, work_dir: Path, timestamp: str) -> Path:
+def dump_database(container: str, work_dir: Path, timestamp: str,
+                  password: str) -> Path:
     """Dump the whole database, keeping owners and privileges."""
     pg_user = _env("POSTGRES_USER", "supabase_admin")
     pg_db = _pg_database()
@@ -521,6 +538,7 @@ def dump_database(container: str, work_dir: Path, timestamp: str) -> Path:
         container,
         ["pg_dump", "-U", pg_user, "-d", pg_db, "--format=plain",
          f"--lock-wait-timeout={LOCK_WAIT_TIMEOUT_MS}"],
+        password,
     )
     _stream_to_gzip(cmd, out, env=env)
     verify_artifact(out, MIN_DATABASE_BYTES)
@@ -528,12 +546,15 @@ def dump_database(container: str, work_dir: Path, timestamp: str) -> Path:
     return out
 
 
-def dump_globals(container: str, work_dir: Path, timestamp: str) -> Path:
+def dump_globals(container: str, work_dir: Path, timestamp: str,
+                 password: str) -> Path:
     """Dump the roles the database dump's OWNER/GRANT statements reference."""
     pg_user = _env("POSTGRES_USER", "supabase_admin")
     out = work_dir / f"globals-{timestamp}.sql.gz"
     logger.info("dumping globals -> %s", out.name)
-    cmd, env = dump_command(container, ["pg_dumpall", "-U", pg_user, "--globals-only"])
+    cmd, env = dump_command(
+        container, ["pg_dumpall", "-U", pg_user, "--globals-only"], password
+    )
     _stream_to_gzip(cmd, out, env=env)
     verify_artifact(out, MIN_GLOBALS_BYTES)
     verify_globals_content(out)
@@ -633,7 +654,7 @@ def main(argv: list[str] | None = None) -> int:
         deploy_dir = args.deploy_dir.resolve()
         if not deploy_dir.is_dir():
             raise ConfigError(f"deploy directory does not exist: {deploy_dir}")
-        apply_env_file(args.env_file or deploy_dir / f".env.{args.env}")
+        env_values = apply_env_file(args.env_file or deploy_dir / f".env.{args.env}")
         if args.print_destination:
             # So the workflow never re-implements this parsing in shell.
             remote, dest_dir = backup_destination(args.env)
@@ -672,7 +693,7 @@ def main(argv: list[str] | None = None) -> int:
         verify_free_space(state_dir)
         # Same reasoning as the destination check below: these are config, and
         # a run that finds them wrong has already spent the dump window.
-        _pg_password()
+        password = _pg_password(env_values)
         _pg_database()
         # Resolve the destination before dumping: finding out afterwards costs
         # the whole dump window and discards the artifact.
@@ -693,8 +714,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             container = resolve_container(deploy_dir, args.env)
             artifacts = [
-                dump_database(container, work_dir, timestamp),
-                dump_globals(container, work_dir, timestamp),
+                dump_database(container, work_dir, timestamp, password),
+                dump_globals(container, work_dir, timestamp, password),
             ]
         except VerificationError as exc:
             logger.error("verification failed: %s", exc)

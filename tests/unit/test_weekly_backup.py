@@ -473,7 +473,7 @@ def test_a_real_subprocess_failure_exits_on_the_subprocess_code(tmp_path, monkey
     monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
 
-    def _failing_dump(container, work_dir, timestamp):
+    def _failing_dump(container, work_dir, timestamp, password):
         backup._stream_to_gzip(
             [sys.executable, "-c", "import sys; sys.stderr.write('boom\\n'); sys.exit(3)"],
             work_dir / "database.sql.gz",
@@ -877,7 +877,7 @@ def test_the_database_dump_keeps_owners_and_privileges(tmp_path, monkeypatch):
     monkeypatch.setattr(backup, "_stream_to_gzip", _dump_writer(seen, _database_dump()))
     monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999999)
     monkeypatch.setattr(backup, "_which", lambda name: name)
-    backup.dump_database("container123", tmp_path, "20260824T000000Z")
+    backup.dump_database("container123", tmp_path, "20260824T000000Z", DEPLOY_PASSWORD)
     cmd = seen[0]
     assert "pg_dump" in cmd
     assert "--no-owner" not in cmd
@@ -895,7 +895,7 @@ def test_the_dump_gives_up_on_a_lock_rather_than_queueing_behind_it(tmp_path, mo
     monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999999)
     monkeypatch.setattr(backup, "_which", lambda name: name)
 
-    backup.dump_database("container123", tmp_path, "20260824T000000Z")
+    backup.dump_database("container123", tmp_path, "20260824T000000Z", DEPLOY_PASSWORD)
     waits = [arg for arg in seen[0] if arg.startswith("--lock-wait-timeout=")]
     assert waits, "an unbounded wait stalls readers for as long as the lock is held"
     assert int(waits[0].split("=")[1]) > 0
@@ -916,7 +916,7 @@ def test_globals_are_dumped_alongside_the_database(tmp_path, monkeypatch):
     monkeypatch.setattr(backup, "_stream_to_gzip", _dump_writer(seen, _globals_dump()))
     monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999)
     monkeypatch.setattr(backup, "_which", lambda name: name)
-    backup.dump_globals("container123", tmp_path, "20260824T000000Z")
+    backup.dump_globals("container123", tmp_path, "20260824T000000Z", DEPLOY_PASSWORD)
     assert "pg_dumpall" in seen[0]
     assert "--globals-only" in seen[0]
 
@@ -936,7 +936,7 @@ def test_the_database_dump_authenticates(tmp_path, monkeypatch):
     monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999999)
     monkeypatch.setattr(backup, "_which", lambda name: name)
 
-    backup.dump_database("container123", tmp_path, "20260824T000000Z")
+    backup.dump_database("container123", tmp_path, "20260824T000000Z", DEPLOY_PASSWORD)
     cmd, env = calls[0]
     assert env["PGPASSWORD"] == DEPLOY_PASSWORD
     assert cmd[cmd.index("-e") + 1] == "PGPASSWORD"
@@ -949,7 +949,7 @@ def test_the_globals_dump_authenticates_too(tmp_path, monkeypatch):
     monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999)
     monkeypatch.setattr(backup, "_which", lambda name: name)
 
-    backup.dump_globals("container123", tmp_path, "20260824T000000Z")
+    backup.dump_globals("container123", tmp_path, "20260824T000000Z", DEPLOY_PASSWORD)
     cmd, env = calls[0]
     assert env["PGPASSWORD"] == DEPLOY_PASSWORD
     assert cmd[cmd.index("-e") + 1] == "PGPASSWORD"
@@ -961,32 +961,110 @@ def test_the_password_is_never_written_on_a_command_line(monkeypatch):
     # bare form makes docker copy it out of this process instead.
     monkeypatch.setenv("POSTGRES_PASSWORD", DEPLOY_PASSWORD)
     monkeypatch.setattr(backup, "_which", lambda name: name)
-    cmd, env = backup.dump_command("container123", ["pg_dump", "-U", "supabase_admin"])
+    cmd, env = backup.dump_command(
+        "container123", ["pg_dump", "-U", "supabase_admin"], DEPLOY_PASSWORD
+    )
     assert not any(DEPLOY_PASSWORD in arg for arg in cmd), cmd
     assert env["PGPASSWORD"] == DEPLOY_PASSWORD
 
 
 def test_only_the_dump_process_is_given_the_password(tmp_path, monkeypatch):
-    # gzip reads the dump on stdin; handing it the password too would widen the
-    # reach of the credential for nothing.
-    seen: list = []
-    real_popen = subprocess.Popen
-
-    def _recording_popen(cmd, **kwargs):
-        seen.append((cmd, kwargs.get("env")))
-        return real_popen(cmd, **kwargs)
-
-    monkeypatch.setattr(subprocess, "Popen", _recording_popen)
+    # gzip is started with env=None, which means "inherit everything this
+    # process has" — so asserting on that argument proves nothing. What matters
+    # is whether the password is in the environment it inherits.
+    monkeypatch.setattr(subprocess, "Popen", subprocess.Popen)
+    backup.apply_env_file(_deploy_dir(tmp_path) / ".env.prod")
+    assert "POSTGRES_PASSWORD" not in os.environ, (
+        "anything left here reaches gzip and rclone, which inherit it wholesale"
+    )
     backup._stream_to_gzip(
-        [sys.executable, "-c", "import os; print(os.environ['PGPASSWORD'])"],
+        [sys.executable, "-c",
+         "import os; print(os.environ.get('PGPASSWORD', 'absent'))"],
         tmp_path / "out.gz",
         env={**os.environ, "PGPASSWORD": DEPLOY_PASSWORD},
     )
-    gzip_env = next(env for cmd, env in seen if "gzip" in " ".join(cmd))
-    assert gzip_env is None, "gzip must not inherit the password"
     with gzip.open(tmp_path / "out.gz", "rb") as handle:
         assert handle.read().strip() == DEPLOY_PASSWORD.encode(), \
             "the dump process must receive the password it authenticates with"
+
+
+def test_the_password_does_not_reach_a_child_that_inherits_our_environment(
+        tmp_path, monkeypatch):
+    # The real shape of the leak: rclone and gzip are started with no explicit
+    # environment, so they receive a copy of everything this process holds.
+    backup.apply_env_file(_deploy_dir(tmp_path) / ".env.prod")
+    seen = subprocess.run(
+        [sys.executable, "-c",
+         "import os; print([k for k in os.environ if 'PASSWORD' in k])"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    assert seen == "[]", f"a child inheriting our environment sees {seen}"
+
+
+def test_the_password_still_reaches_the_dump_it_authenticates(tmp_path):
+    # The other half: keeping it out of the environment must not stop the one
+    # command that needs it from getting it.
+    found = backup.apply_env_file(_deploy_dir(tmp_path) / ".env.prod")
+    assert backup._pg_password(found) == DEPLOY_PASSWORD
+
+
+# --------------------------------------------------------------------------
+# A blank value is not a value
+# --------------------------------------------------------------------------
+
+
+def test_a_blank_line_counts_as_absent_for_every_key(tmp_path, monkeypatch):
+    # `KEY=` is how someone asks for the default. Taken literally it becomes an
+    # empty string, and `_env`'s fallback never fires.
+    f = tmp_path / ".env.prod"
+    f.write_text("".join(f"{key}=\n" for key in backup.ENV_KEYS))
+    for key in backup.ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+    assert backup.apply_env_file(f) == {}
+    for key in backup.ENV_KEYS:
+        assert key not in os.environ, f"{key} was imported as an empty string"
+
+
+def test_a_blank_working_directory_does_not_become_the_current_one(tmp_path, monkeypatch):
+    # The harm this guards: the workflow cds into the deploy directory before
+    # running, so an empty BACKUP_STATE_DIR resolves to the git checkout — which
+    # then gets chmodded to 0700 with a plaintext dump written inside it.
+    f = tmp_path / ".env.prod"
+    f.write_text("BACKUP_STATE_DIR=\n")
+    monkeypatch.delenv("BACKUP_STATE_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    backup.apply_env_file(f)
+    assert backup._state_dir() != Path("."), "an empty value became the cwd"
+    assert backup._state_dir() == Path(backup.DEFAULT_STATE_DIR).expanduser()
+
+
+def test_a_blank_destination_does_not_upload_to_the_root_of_the_remote(
+        tmp_path, monkeypatch):
+    f = tmp_path / ".env.prod"
+    f.write_text("BACKUP_RCLONE_REMOTE=box\nBACKUP_RCLONE_DEST_DIR=\n")
+    for key in ("BACKUP_RCLONE_REMOTE", "BACKUP_RCLONE_DEST_DIR"):
+        monkeypatch.delenv(key, raising=False)
+
+    backup.apply_env_file(f)
+    remote, dest_dir = backup.backup_destination("prod")
+    assert dest_dir == "bloom-backups/prod", f"uploads would land at {remote}:{dest_dir}/"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 0000 file regardless")
+def test_an_unreadable_env_file_is_a_config_error(tmp_path, monkeypatch):
+    # The runner writes .env.<env> at mode 600 and the deploy user reads it.
+    # deploy.yml carries a whole step for the case where those two diverge.
+    # Unguarded this exits 1, which the exit table defines as "subprocess
+    # failed" — sending the operator to look at docker for a permissions bug.
+    _deploy_dir(tmp_path)
+    (tmp_path / ".env.prod").chmod(0o000)
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
+    assert rc == backup.EXIT_CONFIG
+    assert rc != backup.EXIT_SUBPROCESS
 
 
 def test_a_missing_password_is_a_config_error_before_the_dump_window(tmp_path, monkeypatch):
@@ -1009,7 +1087,7 @@ def test_a_missing_password_is_a_config_error_before_the_dump_window(tmp_path, m
 def test_an_empty_password_counts_as_missing(monkeypatch):
     monkeypatch.setenv("POSTGRES_PASSWORD", "")
     with pytest.raises(backup.ConfigError, match="POSTGRES_PASSWORD"):
-        backup._pg_password()
+        backup._pg_password({})
 
 
 # --------------------------------------------------------------------------
@@ -1238,9 +1316,11 @@ def test_a_dumped_artifact_reaches_disk_owner_only(tmp_path, monkeypatch):
     monkeypatch.setattr(backup, "verify_database_content", lambda *a, **k: 999)
     monkeypatch.setattr(
         backup, "dump_command",
-        lambda container, argv: ([sys.executable, "-c", "print('dump')"], None),
+        lambda container, argv, password: ([sys.executable, "-c", "print('dump')"], None),
     )
-    artifact = backup.dump_database("container123", tmp_path, "20260824T000000Z")
+    artifact = backup.dump_database(
+        "container123", tmp_path, "20260824T000000Z", DEPLOY_PASSWORD
+    )
     assert artifact.stat().st_mode & 0o077 == 0, "group or other can read the dump"
 
 
@@ -1311,7 +1391,7 @@ def test_a_traversing_database_name_writes_nothing_outside_the_working_dir(
                         _dump_writer([], _database_dump()))
 
     with pytest.raises(backup.ConfigError):
-        backup.dump_database("container123", work_dir, "20260824T000000Z")
+        backup.dump_database("container123", work_dir, "20260824T000000Z", DEPLOY_PASSWORD)
     assert list(escape.iterdir()) == [], "a dump must never be written outside"
     assert list(work_dir.iterdir()) == []
 
@@ -1363,8 +1443,8 @@ def test_both_artifacts_share_one_run_timestamp(tmp_path, monkeypatch):
     monkeypatch.setattr(backup, "verify_globals_content", lambda *a, **k: 9)
     monkeypatch.setattr(backup, "_which", lambda name: name)
     stamp = "20260824T010203Z"
-    db = backup.dump_database("c", tmp_path, stamp)
-    globals_ = backup.dump_globals("c", tmp_path, stamp)
+    db = backup.dump_database("c", tmp_path, stamp, DEPLOY_PASSWORD)
+    globals_ = backup.dump_globals("c", tmp_path, stamp, DEPLOY_PASSWORD)
     assert stamp in db.name and stamp in globals_.name
 
 
@@ -1433,7 +1513,9 @@ def test_only_this_jobs_keys_are_imported_from_the_env_file(tmp_path, monkeypatc
     for key in smuggled:
         monkeypatch.delenv(key, raising=False)
 
-    assert backup.apply_env_file(f) == 1, "only POSTGRES_DB is this job's to take"
+    assert backup.apply_env_file(f) == {"POSTGRES_DB": "postgres"}, (
+        "only POSTGRES_DB is this job's to take"
+    )
     for key in smuggled:
         assert key not in os.environ, f"{key} must not reach any child process"
 
