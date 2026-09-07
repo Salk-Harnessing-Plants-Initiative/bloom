@@ -37,6 +37,17 @@ backup = _load()
 DEPLOY_PASSWORD = "s3cret-prod-pw"
 
 
+def _host_state_dir(tmp_path) -> Path:
+    """The working directory the host provides. The job never creates one.
+
+    Made loose on purpose: it persists between runs, so tightening it is the
+    job's business every time, not just when it is new.
+    """
+    path = tmp_path / "state"
+    path.mkdir(mode=0o755, exist_ok=True)
+    return path
+
+
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch):
     """Keep one test's env file out of the next test's environment.
@@ -203,7 +214,7 @@ def test_a_staging_run_looks_up_the_staging_stack(tmp_path, monkeypatch):
     # End to end through main(): --env has to reach the container lookup, not
     # just compose_args' argument list.
     _deploy_dir(tmp_path, env_name="staging")
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     seen: list = []
     monkeypatch.setattr(backup, "_run", _run_recorder(seen, "abc123def456\n"))
@@ -375,7 +386,7 @@ def test_an_empty_dump_fails_the_run_on_the_verification_code(tmp_path, monkeypa
     # End to end: a content failure must land on 3, the same code a short or
     # corrupt artifact does, so the wiki's table stays true.
     _deploy_dir(tmp_path)
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
     monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999999)
@@ -392,7 +403,7 @@ def test_a_bad_dump_exits_on_its_own_code_not_the_config_one(tmp_path, monkeypat
     # corrupt dump is the one failure this job exists to catch, so it gets its
     # own code and the wiki's table can stay true.
     _deploy_dir(tmp_path)
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
     monkeypatch.setattr(backup, "_stream_to_gzip",
@@ -458,7 +469,7 @@ def test_a_real_subprocess_failure_exits_on_the_subprocess_code(tmp_path, monkey
     # exits non-zero rather than a raised CalledProcessError: without it, a
     # change routing this path to EXIT_CONFIG would pass the whole suite.
     _deploy_dir(tmp_path)
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
 
@@ -503,7 +514,7 @@ def test_a_missing_remote_fails_before_the_dump_runs(tmp_path, monkeypatch):
     # costs the whole dump window and then throws the artifact away.
     (tmp_path / ".env.prod").write_text("POSTGRES_DB=postgres\n")
     monkeypatch.delenv("BACKUP_RCLONE_REMOTE", raising=False)
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     dumped: list[str] = []
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
@@ -519,7 +530,7 @@ def test_a_dry_run_still_needs_no_rclone(tmp_path, monkeypatch):
     # Proving the dump path before Box is set up is the point of --dry-run, so
     # the preflight above must not start demanding rclone.
     _deploy_dir(tmp_path)
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
     monkeypatch.setattr(backup, "dump_database", lambda *a: tmp_path / "db.sql.gz")
     monkeypatch.setattr(backup, "dump_globals", lambda *a: tmp_path / "globals.sql.gz")
@@ -597,7 +608,7 @@ def test_a_failed_upload_never_reports_a_destination(tmp_path, monkeypatch, caps
     # destination, GitHub goes green and nothing is on Box. The summary is what
     # the weekly glance reads, so it must not name a folder that does not exist.
     _deploy_dir(tmp_path)
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
     artifact = tmp_path / "db.sql.gz"
@@ -620,7 +631,7 @@ def test_an_upload_that_cannot_be_configured_is_a_config_error(tmp_path, monkeyp
     # The other branch out of upload(): exit 2 sends the operator to .env and
     # rclone, which is where a missing remote is fixed.
     _deploy_dir(tmp_path)
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
     artifact = tmp_path / "db.sql.gz"
@@ -641,7 +652,7 @@ def test_a_successful_upload_reports_the_folder_it_wrote(tmp_path, monkeypatch, 
     # The mirror of the two above: the summary names the real destination, so a
     # green run can be checked against Box by eye.
     _deploy_dir(tmp_path)
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     monkeypatch.setenv("BACKUP_RCLONE_REMOTE", "box")
     monkeypatch.setenv("BACKUP_RCLONE_DEST_DIR", "bloom-backups/prod")
     monkeypatch.setattr(backup, "_which", lambda name: name)
@@ -667,14 +678,14 @@ def test_the_job_never_deletes_anything_on_the_remote():
 
 
 def test_a_missing_deploy_dir_is_a_config_error(tmp_path, monkeypatch):
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path / "absent")])
     assert rc == backup.EXIT_CONFIG
 
 
 def test_dry_run_verifies_but_never_uploads(tmp_path, monkeypatch):
     _deploy_dir(tmp_path)
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     touched = []
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
     monkeypatch.setattr(backup, "dump_database", lambda *a: tmp_path / "db.sql.gz")
@@ -690,6 +701,7 @@ def test_the_working_directory_is_removed_on_failure(tmp_path, monkeypatch):
     # dir is created, and the glob below passes without reaching the cleanup.
     _deploy_dir(tmp_path)
     state = tmp_path / "state"
+    state.mkdir(mode=0o755)
     monkeypatch.setenv("BACKUP_STATE_DIR", str(state))
     monkeypatch.setattr(
         backup, "resolve_container",
@@ -705,6 +717,7 @@ def test_the_working_directory_is_removed_on_failure(tmp_path, monkeypatch):
 def test_the_working_directory_is_removed_on_success(tmp_path, monkeypatch):
     _deploy_dir(tmp_path)
     state = tmp_path / "state"
+    state.mkdir(mode=0o755)
     monkeypatch.setenv("BACKUP_STATE_DIR", str(state))
     # The preflight resolves rclone on PATH; without this the test passes only
     # on a machine that happens to have rclone installed.
@@ -757,8 +770,7 @@ def test_an_orphan_is_swept_even_when_this_run_cannot_start(tmp_path, monkeypatc
 def test_a_broken_sweep_does_not_mask_the_error_that_caused_it(tmp_path, monkeypatch):
     # The sweep runs on an already-failing path; it must report the config
     # error, not an OSError raised while tidying up.
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
-    (tmp_path / "state").mkdir()
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
 
     def _explode(_state_dir):
         raise OSError("state directory went away")
@@ -772,6 +784,7 @@ def test_the_working_copy_is_not_readable_by_other_users(tmp_path, monkeypatch):
     # It holds a full plaintext dump, auth.users included, on a host whose
     # runner runs other jobs.
     state = tmp_path / "state"
+    state.mkdir(mode=0o755)
     _deploy_dir(tmp_path)
     monkeypatch.setenv("BACKUP_STATE_DIR", str(state))
     monkeypatch.setattr(backup, "_which", lambda name: name)
@@ -837,7 +850,7 @@ def test_a_terminating_signal_still_removes_the_working_directory(tmp_path):
 
 def test_main_installs_the_termination_handlers(tmp_path, monkeypatch):
     _deploy_dir(tmp_path)
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
     monkeypatch.setattr(backup, "dump_database", lambda *a: tmp_path / "db.sql.gz")
     monkeypatch.setattr(backup, "dump_globals", lambda *a: tmp_path / "globals.sql.gz")
@@ -957,7 +970,7 @@ def test_a_missing_password_is_a_config_error_before_the_dump_window(tmp_path, m
     lines = ["BACKUP_RCLONE_REMOTE=box", "BACKUP_RCLONE_DEST_DIR=bloom-backups/prod"]
     (tmp_path / ".env.prod").write_text("\n".join(lines) + "\n")
     monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     resolved: list = []
     monkeypatch.setattr(backup, "resolve_container",
@@ -1031,7 +1044,7 @@ def test_an_unusable_floor_is_a_config_error_not_a_silent_default(value, monkeyp
 
 def test_a_full_volume_stops_the_run_before_the_dump_window(tmp_path, monkeypatch):
     _deploy_dir(tmp_path)
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setenv("BACKUP_MIN_FREE_BYTES", "4096")
     _free_bytes(monkeypatch, 1024)
@@ -1050,6 +1063,7 @@ def test_room_an_orphan_is_holding_is_reclaimed_before_the_space_check(
     # would refuse a run over space that was about to come back.
     _deploy_dir(tmp_path)
     state = tmp_path / "state"
+    state.mkdir(mode=0o755)
     monkeypatch.setenv("BACKUP_STATE_DIR", str(state))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     order: list[str] = []
@@ -1111,12 +1125,18 @@ def test_the_two_environments_do_not_share_a_working_directory():
             != _defaults_value("staging", "BACKUP_STATE_DIR"))
 
 
-def test_a_missing_parent_is_refused_rather_than_created(tmp_path, monkeypatch):
-    # The host's working directory is set up by hand. Creating the whole path
-    # here would turn a typo in BACKUP_STATE_DIR into a new tree with a full
+@pytest.mark.parametrize("relative", [
+    "dtaa/bloom/backup-work/prod",   # a typo above the working directory
+    "backup-work/prd",               # and one in its own name
+])
+def test_a_missing_working_directory_is_refused_rather_than_created(
+        relative, tmp_path, monkeypatch):
+    # The host's working directory is set up by hand. Creating it here would
+    # turn a typo in BACKUP_STATE_DIR into a new directory with a full
     # plaintext dump in it, somewhere nobody is looking.
     _deploy_dir(tmp_path)
-    typo = tmp_path / "dtaa" / "bloom" / "backup-work" / "prod"
+    (tmp_path / "backup-work").mkdir()
+    typo = tmp_path / relative
     monkeypatch.setenv("BACKUP_STATE_DIR", str(typo))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     resolved: list = []
@@ -1125,17 +1145,18 @@ def test_a_missing_parent_is_refused_rather_than_created(tmp_path, monkeypatch):
 
     rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
     assert rc == backup.EXIT_CONFIG
-    assert not typo.parent.exists(), "the run must not build the path it was given"
+    assert not typo.exists(), "the run must not build the path it was given"
     assert not resolved
 
 
-def test_the_working_directory_itself_is_created_when_its_parent_exists(
+def test_a_working_directory_the_host_provides_is_used_as_it_stands(
         tmp_path, monkeypatch):
-    # The leaf is this job's own; only the location it sits in is set up by hand.
+    # The one the host set up, tightened but never replaced.
     _deploy_dir(tmp_path)
     parent = tmp_path / "backup-work"
     parent.mkdir()
     state_dir = parent / "prod"
+    state_dir.mkdir(mode=0o755)
     monkeypatch.setenv("BACKUP_STATE_DIR", str(state_dir))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
@@ -1238,7 +1259,7 @@ def test_a_traversing_database_name_writes_nothing_outside_the_working_dir(
 def test_a_bad_database_name_stops_the_run_before_the_dump_window(tmp_path, monkeypatch):
     _deploy_dir(tmp_path)
     monkeypatch.setenv("POSTGRES_DB", "../../../../tmp/pwned")
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     resolved: list = []
     monkeypatch.setattr(backup, "resolve_container",
@@ -1254,7 +1275,7 @@ def test_a_run_dumps_and_uploads_both_artifacts(tmp_path, monkeypatch):
     # calls it: the database dump's GRANT statements name roles only the globals
     # file defines, so shipping one without the other is half a backup.
     _deploy_dir(tmp_path)
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
 

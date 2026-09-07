@@ -184,17 +184,20 @@ the artifact's filename.
 
 ### 2. Create the working directory on the data volume
 
-`BACKUP_STATE_DIR`'s parent is created by hand, once per host — the job will not
-build the path it is given, so a typo cannot quietly leave a plaintext dump in a
-directory nobody is watching.
+`BACKUP_STATE_DIR` is created by hand, once per host — the job will not build
+the path it is given, so a typo cannot quietly leave a plaintext dump in a
+directory nobody is watching. It fails at exit 2 naming the missing path
+instead.
 
 ```bash
-sudo install -d -o bloom-deploy -g "$(id -gn bloom-deploy)" -m 700 \
-  /data/bloom/backup-work
+mkdir -m 700 /data/bloom/backup-work
+mkdir -m 700 /data/bloom/backup-work/prod /data/bloom/backup-work/staging
 ```
 
-Each environment's own subdirectory (`prod/`, `staging/`) is this job's to make;
-it creates them at `0700` on first run.
+As the deploy user, which must own them. Every run re-applies `0700` to the
+directory it is given, because it persists between runs and holds a full
+plaintext dump — but a POSIX ACL survives a `chmod`, so check `getfacl` on a
+host where `/data` grants default ACLs.
 
 ### 3. Create the `production-scheduled-backup` GitHub Environment
 
