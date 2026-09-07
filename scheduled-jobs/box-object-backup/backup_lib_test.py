@@ -1181,3 +1181,28 @@ def test_an_incomplete_read_is_a_retryable_rclone_error(monkeypatch):
     with pytest.raises(RcloneError) as caught:
         client.noop()
     assert caught.value.retryable
+
+
+# ---------- the no-network ban must fail loudly, not plausibly ----------
+
+def test_the_network_ban_raises_something_the_client_does_not_catch():
+    """The exception type in conftest is load-bearing and was never asserted.
+
+    `RcloneRC.call` catches OSError and turns it into a *retryable*
+    RcloneError. So had the ban raised OSError — the obvious choice, and what
+    a real refused connection raises — a test that reached the network would
+    not fail: it would look like a daemon hiccup, retry, and pass. The ban
+    would be a no-op that nothing could see.
+    """
+    import socket
+
+    import conftest
+
+    with pytest.raises(BaseException) as caught:
+        conftest._refuse(socket.socket(), ("127.0.0.1", 5572))
+    assert not isinstance(caught.value, OSError), (
+        "the ban raises an OSError, which RcloneRC.call converts into a "
+        "retryable error — a test that opened a socket would pass"
+    )
+    assert not isinstance(caught.value, __import__("http.client", fromlist=["x"]).HTTPException)
+    assert "5572" in str(caught.value), "the message does not name the address"

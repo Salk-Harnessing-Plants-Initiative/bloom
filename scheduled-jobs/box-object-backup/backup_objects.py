@@ -329,6 +329,18 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         user=os.environ.get("POSTGRES_USER", "supabase_admin"),
         database=os.environ.get("POSTGRES_DB", "postgres"),
     )
+    # Config first, before the manifest read. Every check below is a string
+    # or a file on this host — none of them can pass at 02:00 and fail at
+    # 05:00 — and reading eight million rows before finding out that
+    # BACKUP_BOX_ROOT is empty spends four hours to learn something known in
+    # a millisecond. The dry run reaches them too now, which is the point:
+    # it is step one of the pre-seed checklist.
+    check_box_root(args)
+    destination = f"{args.box_remote}:{args.box_root.strip().strip('/')}"
+    check_destination(ledger, destination)
+    minio = minio_source_from_env(args)
+    require_rclone_config(args.rclone_config, args.box_remote)
+
     since = None if args.full else ledger.last_successful_run()
     logger.info(
         "enumerating storage.objects for %s (%s)",
@@ -359,10 +371,13 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         )
         return 0
 
+    # Left here rather than moved up with the config checks: it is the one
+    # that reads live state, and it is answered right before the daemon it
+    # is about would start.
     check_no_stale_daemon()
-    check_box_root(args)
-    minio = minio_source_from_env(args)
-    require_rclone_config(args.rclone_config, args.box_remote)
+    # Recorded only now — a dry run must not claim a destination it never
+    # wrote to.
+    ledger.remember_destination(destination)
     run_id = ledger.start_run(now=watermark)
     network = dock.find_network(project)
     daemon = dock.start_rc_daemon(
@@ -399,6 +414,12 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             totals.verify_failures = [
                 lib.box_path(obj, args.box_root) for obj in result.failures
             ]
+    except lib.Stopped as exc:
+        # NOT `crashed`. A stop is the one outcome that means "this is fine",
+        # and the run still has a report and a ledger to put away below — the
+        # same ones it would have written had the stop arrived a minute later,
+        # during the copies.
+        logger.warning("%s", exc)
     except BaseException:
         # Recorded before re-raising so the Box report still names the run
         # that died — a failed run is the one most worth a record.
@@ -1070,6 +1091,37 @@ def check_no_stale_daemon() -> None:
     )
 
 
+def check_destination(ledger: Ledger, destination: str) -> None:
+    """Refuse to run a ledger against a Box folder it did not fill.
+
+    The ledger says which objects are already mirrored. It does not say
+    WHERE, so pointed at a different folder it answers "already copied" about
+    a folder that is empty — and the run reports "nothing new to copy
+    (8,013,796 already on Box)" against nothing, every night, for ever. One
+    mistyped character during a hand-run seed is enough.
+
+    Refusing rather than flagging, because the flagged version still writes:
+    the night would go on filling the wrong folder while recording it in the
+    same ledger, and after that there is no run that can tell which of the two
+    folders any given row means.
+    """
+    recorded = ledger.destination()
+    if recorded is None or recorded == destination:
+        return
+    raise lib.BackupError(
+        "this ledger records objects mirrored to a different place on Box:\n"
+        f"    recorded:  {lib.loggable(recorded)}\n"
+        f"    requested: {lib.loggable(destination)}\n"
+        "It tracks WHICH objects are already copied, not where, so running it "
+        "against another folder would report millions of objects as already "
+        "backed up while that folder stays empty.\n"
+        "If BACKUP_BOX_ROOT or BACKUP_BOX_REMOTE was mistyped, correct it. If "
+        "the mirror is genuinely moving, move the folder on Box and keep the "
+        "recorded value, or point BACKUP_STATE_DIR at a new directory and "
+        "seed the new location from scratch."
+    )
+
+
 def check_box_root(args: argparse.Namespace) -> None:
     """Refuse a destination that would scatter the mirror across Box.
 
@@ -1155,14 +1207,31 @@ def require_rclone_config(path: str, remote: str) -> None:
         )
 
 
+# The readiness poll gets its own timeout. RcloneRC defaults to 900 seconds,
+# which is right for a single large object over a slow Box link and absurd for
+# "are you listening yet" — thirty attempts of it is up to seven and a half
+# hours, spent holding the run lock, in a job with a four-hour limit.
+DAEMON_READY_TIMEOUT_SECONDS = 10
+
+
 def wait_for_daemon(daemon: dock.RcDaemon, attempts: int = 30) -> RcloneRC:
     """Poll rc/noop until the daemon answers, so the first copy isn't a race."""
-    client = RcloneRC(daemon.url, daemon.user, daemon.password)
+    poll = RcloneRC(
+        daemon.url, daemon.user, daemon.password,
+        timeout=DAEMON_READY_TIMEOUT_SECONDS,
+    )
     for attempt in range(attempts):
+        # A stop arriving while the daemon is still starting used to be
+        # noticed only after the loop ended. It is checked between attempts
+        # like every other loop in the run.
+        if stopping.stopping():
+            raise lib.Stopped("stopped while waiting for the rclone daemon")
         try:
-            client.noop()
-            logger.info("rclone daemon ready (%s)", client.version())
-            return client
+            poll.noop()
+            logger.info("rclone daemon ready (%s)", poll.version())
+            # The long timeout is what the copies want; only the poll was
+            # ever meant to be impatient.
+            return RcloneRC(daemon.url, daemon.user, daemon.password)
         except RcloneError:
             time.sleep(0.5)
     raise lib.BackupError(

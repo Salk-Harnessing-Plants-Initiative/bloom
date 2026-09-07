@@ -148,6 +148,16 @@ class BackupError(Exception):
     """Configuration or input error that should stop the run."""
 
 
+class Stopped(Exception):
+    """A stop arrived before the run reached the work it was going to do.
+
+    Distinct from BackupError because the two end the run for opposite
+    reasons. A stop is the outcome the summary spends a whole branch calling
+    "this is fine"; treated as an error it would report FAILED, which is the
+    exact misreading the stopped branch exists to prevent.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Manifest query + parsing
 # ---------------------------------------------------------------------------

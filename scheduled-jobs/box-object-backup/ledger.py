@@ -93,6 +93,30 @@ class Ledger:
         )
         self.conn.commit()
 
+    def destination(self) -> str | None:
+        """The Box destination this ledger's rows were copied to, if recorded."""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT value FROM meta WHERE key='destination'"
+            ).fetchone()
+        return row[0] if row else None
+
+    def remember_destination(self, destination: str) -> None:
+        """Record the destination on first use. Never overwrites.
+
+        Overwriting is the whole failure this exists to stop: the rows say
+        "already on Box" about a folder that is no longer the one being
+        written to. `check_destination` refuses before this is reached, so a
+        silent update here would only re-open the hole.
+        """
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('destination', ?) "
+                "ON CONFLICT (key) DO NOTHING",
+                (destination,),
+            )
+            self.conn.commit()
+
     def copied_versions(self) -> dict[tuple[str, str], CopiedRecord]:
         with self._lock:
             rows = self.conn.execute(

@@ -13,6 +13,7 @@ import logging
 import sqlite3
 import os
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import backup_objects as job  # noqa: E402
 from runlock import SKIP_MARKER, LockHeld, RunLock  # noqa: E402
+import backup_lib as lib  # noqa: E402
 import copier  # noqa: E402
+import rclone_rc  # noqa: E402
 import stopping  # noqa: E402
 from backup_lib import CopyPlan, StorageObject, build_plan  # noqa: E402
 from ledger import Ledger  # noqa: E402
@@ -738,6 +741,13 @@ class TestWatermarkOrdering:
                 return 0
 
         monkeypatch.setattr(job, "dock", FakeDock)
+        # The connection config is validated before the manifest read now, so
+        # a dry run reaches both. Stubbed rather than supplied: this test is
+        # about call order, and the checks have their own.
+        monkeypatch.setattr(
+            job, "minio_source_from_env", lambda a: object()
+        )
+        monkeypatch.setattr(job, "require_rclone_config", lambda p, r: None)
         args = job.parse_args([
             "--env", "prod", "--dry-run",
             "--state-dir", str(tmp_path),
@@ -2048,6 +2058,31 @@ class TestTheLedgerIsCopiedToBox:
             "a failed upload reaches the summary as the wrong condition"
         )
 
+    def test_a_real_run_records_where_it_mirrored_to(self, harness):
+        """The other half of the destination guard.
+
+        The guard is only as good as the recording: with nothing written, a
+        ledger seeded against the wrong folder never has anything to be
+        compared against, and every later run is waved through.
+        """
+        state, tmp_path = harness
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
+        job.run_locked(args, tmp_path)
+        recorded = Ledger.open(str(tmp_path / "ledger.db")).destination()
+        assert recorded == f"{args.box_remote}:{args.box_root}", (
+            f"the run mirrored somewhere and recorded {recorded!r}"
+        )
+
+    def test_the_next_run_against_another_folder_is_refused(self, harness):
+        """End to end: one run records, the next one is stopped."""
+        state, tmp_path = harness
+        base = TestRunLockedWiresItsPartsTogether()
+        job.run_locked(base.args(tmp_path), tmp_path)
+        moved = base.args(tmp_path)
+        moved.box_root = "Bloom-Backups/BloomV2-Data-Backup/prod/storag"
+        with pytest.raises(lib.BackupError, match="different place on Box"):
+            job.run_locked(moved, tmp_path)
+
     def test_a_night_that_copied_nothing_is_not_called_stale(self, harness, caplog):
         """The copy is only stale if the ledger changed without it.
 
@@ -2745,3 +2780,244 @@ class TestTheStandDownVerdictReachesTheSummary:
         ])
         assert job.run_backup(args) == 0
         assert f"{job.STATUS_KEY}=skipped" not in caplog.text
+
+
+class TestTheLedgerRemembersWhereItMirroredTo:
+    """The ledger says WHICH objects are copied. It never said where.
+
+    A one-character typo in BACKUP_BOX_ROOT during the hand-run seed points
+    the run at an empty folder that the ledger swears holds eight million
+    objects. Every night after reports "nothing new to copy (8,013,796
+    already on Box)" — a green tick, for ever, over nothing.
+    """
+
+    def ledger_at(self, tmp_path):
+        return Ledger.open(str(tmp_path / "ledger.db"))
+
+    def test_a_fresh_ledger_has_no_destination(self, tmp_path):
+        assert self.ledger_at(tmp_path).destination() is None
+
+    def test_the_first_run_records_where_it_went(self, tmp_path):
+        led = self.ledger_at(tmp_path)
+        led.remember_destination("box:Bloom-Backups/prod/storage")
+        assert led.destination() == "box:Bloom-Backups/prod/storage"
+
+    def test_the_recorded_destination_is_never_overwritten(self, tmp_path):
+        """The whole failure in one line if this ever starts updating.
+
+        Rewritten, the rows would say "already on Box" about two different
+        folders with nothing recording which row means which.
+        """
+        led = self.ledger_at(tmp_path)
+        led.remember_destination("box:right/place")
+        led.remember_destination("box:wrong/place")
+        assert led.destination() == "box:right/place"
+
+    def test_the_same_destination_runs_normally(self, tmp_path):
+        led = self.ledger_at(tmp_path)
+        led.remember_destination("box:right/place")
+        job.check_destination(led, "box:right/place")
+
+    def test_a_different_root_stops_the_run(self, tmp_path):
+        led = self.ledger_at(tmp_path)
+        led.remember_destination("box:Bloom-Backups/prod/storage")
+        with pytest.raises(lib.BackupError) as caught:
+            job.check_destination(led, "box:Bloom-Backups/prod/storag")
+        message = str(caught.value)
+        assert "storage" in message and "storag\n" in message + "\n", (
+            f"the message does not show both paths: {message}"
+        )
+
+    def test_a_different_remote_stops_the_run_too(self, tmp_path):
+        """The remote is half the address: `box` and `box2` are two accounts."""
+        led = self.ledger_at(tmp_path)
+        led.remember_destination("box:same/root")
+        with pytest.raises(lib.BackupError):
+            job.check_destination(led, "box2:same/root")
+
+    def test_the_message_does_not_tell_anyone_to_upload_over_it(self, tmp_path):
+        """Both remedies must be safe ones.
+
+        "Point it at the new folder and carry on" is the failure, not the fix.
+        """
+        led = self.ledger_at(tmp_path)
+        led.remember_destination("box:right/place")
+        with pytest.raises(lib.BackupError) as caught:
+            job.check_destination(led, "box:wrong/place")
+        message = str(caught.value).lower()
+        assert "delete" not in message
+        assert "seed the new location" in message
+
+    def test_a_path_in_the_message_is_escaped(self, tmp_path):
+        """It is a message like any other, and it reaches the job log."""
+        led = self.ledger_at(tmp_path)
+        led.remember_destination("box:café‮gnp/place")
+        with pytest.raises(lib.BackupError) as caught:
+            job.check_destination(led, "box:other/place")
+        assert "‮" not in str(caught.value)
+
+
+class TestTheReadinessPollIsImpatient:
+    """It waits for "are you listening", not for a 50 GB upload."""
+
+    def test_it_does_not_inherit_the_copy_timeout(self):
+        assert job.DAEMON_READY_TIMEOUT_SECONDS < rclone_rc.DEFAULT_TIMEOUT_SECONDS
+        # 30 attempts of the copy timeout is seven and a half hours, with the
+        # run lock held, inside a job limited to four.
+        assert job.DAEMON_READY_TIMEOUT_SECONDS * 30 < 4 * 60 * 60
+
+    def test_the_poll_uses_the_short_one_and_the_run_uses_the_long_one(
+        self, monkeypatch
+    ):
+        """Making the poll impatient must not make every copy impatient."""
+        seen = []
+
+        class Recorder(job.RcloneRC):
+            def __init__(self, url, user, password, timeout=None):
+                seen.append(timeout)
+                super().__init__(url, user, password, *( [timeout] if timeout else [] ))
+
+            def noop(self):
+                return {}
+
+            def version(self):
+                return "test"
+
+        monkeypatch.setattr(job, "RcloneRC", Recorder)
+        daemon = types.SimpleNamespace(
+            url="http://127.0.0.1:5572", user="u", password="p", container="c"
+        )
+        client = job.wait_for_daemon(daemon)
+        assert seen[0] == job.DAEMON_READY_TIMEOUT_SECONDS
+        assert client.timeout == rclone_rc.DEFAULT_TIMEOUT_SECONDS, (
+            "the run would copy with the readiness timeout — a large object "
+            "over a slow Box link would be abandoned after ten seconds"
+        )
+
+    def test_a_stop_while_it_waits_ends_the_run_as_stopped(self, monkeypatch):
+        """Not as a crash.
+
+        A stop arriving during startup was noticed only once the loop ran
+        out — up to thirty attempts later — and then only by whatever the
+        loop failed into. Reported as an error it would read FAILED, which
+        is the misreading the stopped branch exists to prevent.
+        """
+        monkeypatch.setattr(job.stopping, "stopping", lambda: True)
+        daemon = types.SimpleNamespace(
+            url="http://127.0.0.1:5572", user="u", password="p", container="c"
+        )
+        with pytest.raises(lib.Stopped):
+            job.wait_for_daemon(daemon)
+
+    def test_a_stop_is_not_a_backup_error(self):
+        """They end the run for opposite reasons, so one cannot catch both."""
+        assert not issubclass(lib.Stopped, lib.BackupError)
+
+
+class TestConfigIsCheckedBeforeTheEightMillionRowRead:
+    """Every one of these answers in a millisecond from a string or a file.
+
+    Asked after the manifest read, a run learns that BACKUP_BOX_ROOT is empty
+    having already spent four hours — the job's whole time limit — reading
+    storage.objects. Nothing about them can pass at 02:00 and fail at 05:00.
+    """
+
+    def drive(self, monkeypatch, tmp_path, extra_argv=(), **stubs):
+        calls = []
+
+        class FakeDock:
+            DB_SERVICE = "db-prod"
+            DockerError = job.dock.DockerError
+
+            @staticmethod
+            def project_name(env):
+                return f"bloom_v2_{env}"
+
+            @staticmethod
+            def find_container(project, service):
+                return "container"
+
+            @staticmethod
+            def database_now(container, user, database):
+                return "2026-08-31T02:17:03+00"
+
+            @staticmethod
+            def psql_query_to_file(container, sql, user, database, destination):
+                calls.append("manifest")
+                destination.write_text("")
+                return 0
+
+        monkeypatch.setattr(job, "dock", FakeDock)
+        for name, value in stubs.items():
+            monkeypatch.setattr(job, name, value)
+        args = job.parse_args([
+            "--env", "prod", "--dry-run", "--state-dir", str(tmp_path),
+            "--minio-bucket", "bloom-storage", *extra_argv,
+        ])
+        return calls, args
+
+    def test_an_empty_box_root_is_refused_without_reading_the_table(
+        self, monkeypatch, tmp_path
+    ):
+        calls, args = self.drive(
+            monkeypatch, tmp_path, extra_argv=["--box-root", ""],
+            minio_source_from_env=lambda a: object(),
+            require_rclone_config=lambda p, r: None,
+        )
+        with pytest.raises(lib.BackupError, match="BACKUP_BOX_ROOT is empty"):
+            job.run_locked(args, tmp_path)
+        assert calls == [], "eight million rows were read before the check"
+
+    def test_a_missing_rclone_config_is_refused_without_reading_the_table(
+        self, monkeypatch, tmp_path
+    ):
+        calls, args = self.drive(
+            monkeypatch, tmp_path,
+            extra_argv=["--box-root", "Bloom-Backups/prod/storage"],
+            minio_source_from_env=lambda a: object(),
+        )
+        with pytest.raises(lib.BackupError, match="rclone config not found"):
+            job.run_locked(args, tmp_path)
+        assert calls == []
+
+    def test_a_ledger_pointed_at_another_folder_is_refused_first_of_all(
+        self, monkeypatch, tmp_path
+    ):
+        """The one that costs the most to discover late.
+
+        Left until after the read, the run would have enumerated the whole
+        table before finding out it was about to report eight million objects
+        as already backed up to an empty folder.
+        """
+        led = Ledger.open(str(tmp_path / "ledger.db"))
+        led.remember_destination("box:Bloom-Backups/prod/storage")
+        led.close()
+        calls, args = self.drive(
+            monkeypatch, tmp_path,
+            extra_argv=["--box-root", "Bloom-Backups/prod/elsewhere"],
+            minio_source_from_env=lambda a: object(),
+            require_rclone_config=lambda p, r: None,
+        )
+        with pytest.raises(lib.BackupError, match="different place on Box"):
+            job.run_locked(args, tmp_path)
+        assert calls == []
+
+    def test_a_dry_run_does_not_claim_a_destination_it_never_wrote_to(
+        self, monkeypatch, tmp_path
+    ):
+        """It copies nothing, so it has mirrored to nowhere.
+
+        Recording on a dry run would pin the ledger to whatever the first dry
+        run happened to be pointed at — including the mistyped root the check
+        exists to catch, which would then be the value every later run is
+        measured against.
+        """
+        calls, args = self.drive(
+            monkeypatch, tmp_path,
+            extra_argv=["--box-root", "Bloom-Backups/prod/storage"],
+            minio_source_from_env=lambda a: object(),
+            require_rclone_config=lambda p, r: None,
+        )
+        job.run_locked(args, tmp_path)
+        assert calls == ["manifest"], "the dry run never read the table"
+        assert Ledger.open(str(tmp_path / "ledger.db")).destination() is None

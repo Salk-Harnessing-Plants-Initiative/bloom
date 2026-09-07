@@ -75,6 +75,14 @@ concurrency:
   group: box-object-backup-production
   cancel-in-progress: false
 
+env:
+  # The job's own default for BACKUP_STATE_DIR, in one place. Three separate
+  # ssh sessions need it — the run stamps its marker there, the cancel step
+  # finds the lock there, the summary falls back to the reports there — and
+  # none of the last two reads the env file, so they cannot look it up. The
+  # run step refuses to start if the job's value differs from this one.
+  STATE_DIR: /var/lib/bloom-box-object-backup
+
 jobs:
   mirror:
     name: Mirror production objects to Box
@@ -133,6 +141,7 @@ jobs:
           DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
           VERIFY: ${{ github.event.inputs.verify || '50' }}
           RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}
+          STATE_DIR: ${{ env.STATE_DIR }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
@@ -162,13 +171,14 @@ jobs:
           # new commands inside them. The heredoc stays quoted for the separate
           # reason that the runner must substitute nothing into the script.
           remote_args="$(printf '%q ' \
-            "$DEPLOY_PATH" "$ENV_NAME" "$VERIFY" "$RUN_TAG" "$DRY_RUN")"
+            "$DEPLOY_PATH" "$ENV_NAME" "$VERIFY" "$RUN_TAG" "$STATE_DIR" "$DRY_RUN")"
 
           ssh -i ~/.ssh/deploy_key "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "bash -s -- $remote_args" \
             <<'REMOTE' 2>&1 | tee "${RUNNER_TEMP}/mirror-output.txt"
           set -euo pipefail
-          deploy_path="$1"; env_name="$2"; verify="$3"; run_tag="$4"; dry_run="${5:-}"
+          deploy_path="$1"; env_name="$2"; verify="$3"; run_tag="$4"
+          state_dir="$5"; dry_run="${6:-}"
 
           case "$verify" in
             ''|*[!0-9]*) echo "verify must be a whole number, got: $verify" >&2; exit 2 ;;
@@ -197,6 +207,18 @@ jobs:
           done < <(grep -E '^(BACKUP_[A-Z_]+|POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' \
                      "$env_file")
 
+          # The cancel step finds the run through "$state_dir/backup.lock" and
+          # the summary falls back to "$state_dir/_runs"; both are separate ssh
+          # sessions that read no env file. Pointed elsewhere, the job would
+          # work while those two silently watched an empty directory — a cancel
+          # that stops nothing and a verdict that is never recovered. Loud
+          # here rather than silent there.
+          if [ -n "${BACKUP_STATE_DIR:-}" ] && [ "$BACKUP_STATE_DIR" != "$state_dir" ]; then
+            echo "BACKUP_STATE_DIR is $BACKUP_STATE_DIR but this workflow" >&2
+            echo "watches $state_dir. Point them at the same directory." >&2
+            exit 2
+          fi
+
           # Stamped just before launching, so the cancel step can tell the run
           # THIS job starts from one that was already going. During the seed
           # that distinction matters: the seed holds the lock, a nightly finds
@@ -211,7 +233,7 @@ jobs:
           #
           # A failed write is not worth failing the backup for: the cancel step
           # then finds no marker and declines to signal anything.
-          marker=/var/lib/bloom-box-object-backup/actions-run.started
+          marker="$state_dir/actions-run.started"
           echo "$run_tag $(date +%s)" > "$marker" || echo "could not write $marker" >&2
 
           # --verify on every scheduled run: an unverified mirror cannot tell a
@@ -234,6 +256,7 @@ jobs:
         if: cancelled()
         env:
           RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}
+          STATE_DIR: ${{ env.STATE_DIR }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         timeout-minutes: 3
@@ -242,12 +265,12 @@ jobs:
           # Quoted for the same reason as the run step: ssh joins its trailing
           # words into one string for the remote shell to parse. This tag is a
           # run id and cannot carry a payload, but the pattern gets copied.
-          remote_args="$(printf '%q ' "$RUN_TAG")"
+          remote_args="$(printf '%q ' "$RUN_TAG" "$STATE_DIR")"
           ssh -i ~/.ssh/deploy_key -o ConnectTimeout=15 \
             "${DEPLOY_USER}@${DEPLOY_HOST}" "bash -s -- $remote_args" <<'REMOTE' || true
           set -uo pipefail
-          run_tag="$1"
-          lock=/var/lib/bloom-box-object-backup/backup.lock
+          run_tag="$1"; state_dir="$2"
+          lock="$state_dir/backup.lock"
           [ -r "$lock" ] || { echo "no lock file — nothing was running"; exit 0; }
 
           # runlock.py writes {"pid": ..., "started_at": ..., "argv": ...}
@@ -262,7 +285,7 @@ jobs:
           # down without touching the file, and cancelling THAT job would stop
           # the seed by mistake. So the run step stamps a marker naming itself,
           # and this only signals when the marker still names this job.
-          marker=/var/lib/bloom-box-object-backup/actions-run.started
+          marker="$state_dir/actions-run.started"
           [ -r "$marker" ] || { echo "no marker — this job started no run"; exit 0; }
           read -r marked_tag stamped_at _ < "$marker" || true
           if [ "${marked_tag:-}" != "$run_tag" ]; then
@@ -305,8 +328,15 @@ jobs:
           # Needed only for the fallback below: when the ssh pipe carrying the
           # run's output died before it printed a verdict, the summary fetches
           # that verdict from the report the run wrote on the host.
+          RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}
+          STATE_DIR: ${{ env.STATE_DIR }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        # This step fires exactly when the host may be wedged, and it is the
+        # only thing standing between a cancelled night and a summary that
+        # says FAILED. Bounded like the cancel step beside it, so a host that
+        # never answers costs five minutes rather than the runner.
+        timeout-minutes: 5
         run: |
           set -uo pipefail
 
@@ -376,25 +406,55 @@ jobs:
           # FAILED. The run writes the same verdict into its report on the
           # host BEFORE printing it, so fetch that instead.
           #
-          # `-mmin -240` is the job's own timeout, and is evaluated entirely
-          # on the host — so no clock comparison between runner and server can
-          # skew it, and last night's report (24h old) can never be mistaken
-          # for tonight's.
+          # Scoped to the run THIS job started, not to a time window. The run
+          # step stamps "$STATE_DIR/actions-run.started" with its own tag and
+          # the host's clock just before launching, so a report newer than
+          # that stamp, with the stamp still naming this job, is this job's
+          # report and nothing else can be. `-mmin -240` alone accepted any
+          # report from the last four hours — including the seed's, running
+          # in tmux beside a nightly that stood down against its lock, whose
+          # verdict then became this job's headline.
+          #
+          # Both halves are evaluated on the host, so no clock comparison
+          # between the runner and the server comes into it.
+          #
           # Guarded on both being set: the step runs under `set -u`, and an
           # empty host would make ssh try to reach "user@". A missing secret
           # must degrade to the step-outcome fallback, not kill the summary.
           if [ -z "$status" ] && [ -n "${DEPLOY_USER:-}" ] && [ -n "${DEPLOY_HOST:-}" ]; then
-            report="$(ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
-              -o StrictHostKeyChecking=yes \
+            # Read the marker, then look for a report newer than it. Two
+            # plain commands rather than a script on stdin: the runner only
+            # compares two strings, and every value it interpolates is either
+            # quoted with %q or checked to be digits first.
+            q_state="$(printf '%q' "$STATE_DIR")"
+            marker="$(ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
+              -o ConnectTimeout=15 -o StrictHostKeyChecking=yes \
               "${DEPLOY_USER}@${DEPLOY_HOST}" \
-              "find /var/lib/bloom-box-object-backup/_runs -name '*.json' \
-                 -mmin -240 -printf '%T@ %p\\n' 2>/dev/null \
-               | sort -rn | head -1 | cut -d' ' -f2-" 2>/dev/null || true)"
-            if [ -n "$report" ]; then
-              body="$(ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
-                -o StrictHostKeyChecking=yes \
+              "cat -- $q_state/actions-run.started" 2>/dev/null || true)"
+            marked_tag=""; stamped_at=""
+            read -r marked_tag stamped_at _ <<< "$marker" || true
+            # The stamp is the host's own clock, written just before the run
+            # was launched, and the find below runs on the host too — so no
+            # runner clock ever enters the comparison.
+            case "${stamped_at:-x}" in ''|*[!0-9]*) stamped_at="" ;; esac
+            report=""
+            if [ "${marked_tag:-}" = "$RUN_TAG" ] && [ -n "$stamped_at" ]; then
+              report="$(ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
+                -o ConnectTimeout=15 -o StrictHostKeyChecking=yes \
                 "${DEPLOY_USER}@${DEPLOY_HOST}" \
-                "cat -- '${report}'" 2>/dev/null || true)"
+                "find $q_state/_runs -name '*.json' -newermt @$stamped_at \
+                   -printf '%T@ %p\\n' 2>/dev/null \
+                 | sort -rn | head -1 | cut -d' ' -f2-" 2>/dev/null || true)"
+            fi
+            if [ -n "$report" ]; then
+              # %q, not a single-quoted literal. The name is the job's own —
+              # a timestamp and a run number — but this is the one place in
+              # the workflow that was building a remote command without it.
+              cat_args="$(printf '%q' "$report")"
+              body="$(ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
+                -o ConnectTimeout=15 -o StrictHostKeyChecking=yes \
+                "${DEPLOY_USER}@${DEPLOY_HOST}" \
+                "cat -- $cat_args" 2>/dev/null || true)"
               status="$(printf '%s' "$body" \
                 | grep -oE '\"status\"[[:space:]]*:[[:space:]]*\"[a-z_]+\"' \
                 | head -1 | grep -oE '[a-z_]+\"$' | tr -d '\"' || true)"

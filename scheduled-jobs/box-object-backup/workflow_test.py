@@ -362,15 +362,21 @@ class TestSkipMarkerContract:
 
 
 class TestScheduleShape:
-    def test_runs_every_night(self, workflow: str):
+    def test_runs_every_night(self, parsed: dict):
         # Nightly, so at most a day's scans exist only in MinIO. Still lands
         # before the Sunday Postgres dump, on the night before it.
-        assert 'cron: "17 2 * * *"' in workflow
+        #
+        # Read from the parsed schedule, not grepped: a comment quoting the
+        # cron line satisfied the raw search whatever the real trigger said.
+        assert [s["cron"] for s in parsed[True]["schedule"]] == ["17 2 * * *"]
 
-    def test_does_not_share_the_deploy_concurrency_group(self, workflow: str):
-        # A stuck deploy must not cancel the mirror, and vice versa.
-        assert "group: box-object-backup-" in workflow
-        assert "group: deploy-bloom" not in workflow
+    def test_does_not_share_the_deploy_concurrency_group(self, parsed: dict):
+        # A stuck deploy must not cancel the mirror, and vice versa. Parsed,
+        # for the same reason: this is the exact failure the test names, and
+        # a commented-out group would have satisfied a substring search.
+        group = parsed["concurrency"]["group"]
+        assert group.startswith("box-object-backup-"), group
+        assert "deploy-bloom" not in group
 
     def test_staging_cannot_be_mirrored(self, parsed: dict, workflow: str):
         """Both environments share this host, so they would share the ledger.
@@ -546,6 +552,7 @@ class TestDispatchInputCannotReachTheRemoteShell:
         env = {
             "DEPLOY_PATH": "/srv/bloom", "ENV_NAME": "prod", "VERIFY": "50",
             "RUN_TAG": "1-1", "DRY_RUN": "", "RUNNER_TEMP": "/tmp",
+            "STATE_DIR": "/var/lib/bloom-box-object-backup",
             "PATH": os.environ["PATH"],
         }
         env.update(values)
@@ -864,6 +871,24 @@ class TestTheHeadlineCarriesTheCounts:
         ) + self.verdict("skipped")
         assert "skipped" in self.run_summary(parsed, log)
 
+    @staticmethod
+    def fake_ssh(fake_bin, marker: str) -> None:
+        """Three calls: the marker, the report path, the report body.
+
+        The marker is read first and its tag decides whether the other two
+        happen at all — which is the scoping under test in the pair below.
+        """
+        script = (
+            '#!/bin/sh\n'
+            'case "$*" in\n'
+            '  *actions-run.started*) echo "%s" ;;\n'
+            '  *find*) echo /var/lib/x/_runs/r.json ;;\n'
+            '  *cat*)  echo \'{ "outcome": "partial", "status": "stopped" }\' ;;\n'
+            'esac\n'
+        ) % marker
+        (fake_bin / "ssh").write_text(script)
+        (fake_bin / "ssh").chmod(0o755)
+
     def test_a_lost_verdict_is_recovered_from_the_report_on_the_host(self, parsed):
         """The case the report route exists for.
 
@@ -889,15 +914,7 @@ class TestTheHeadlineCarriesTheCounts:
             )
             fake_bin = P(tmp) / "bin"
             fake_bin.mkdir()
-            # First call lists the report path, second prints its contents.
-            (fake_bin / "ssh").write_text(
-                '#!/bin/sh\n'
-                'case "$*" in\n'
-                '  *find*) echo /var/lib/bloom-box-object-backup/_runs/r.json ;;\n'
-                '  *cat*)  echo \'{ "outcome": "partial", "status": "stopped" }\' ;;\n'
-                'esac\n'
-            )
-            (fake_bin / "ssh").chmod(0o755)
+            self.fake_ssh(fake_bin, marker="1-1 1700000000")
             out = P(tmp) / "summary.md"
             result = subprocess.run(
                 ["bash", "-e", "-c", script],
@@ -905,6 +922,7 @@ class TestTheHeadlineCarriesTheCounts:
                     "PATH": f"{fake_bin}:/usr/bin:/bin", "RUNNER_TEMP": tmp,
                     "ENV_NAME": "prod", "OUTCOME": "failure",
                     "DEPLOY_USER": "deploy", "DEPLOY_HOST": "host",
+                    "RUN_TAG": "1-1", "STATE_DIR": "/var/lib/x",
                     "GITHUB_STEP_SUMMARY": str(out), "LC_ALL": "C",
                 },
                 capture_output=True, text=True,
@@ -915,6 +933,53 @@ class TestTheHeadlineCarriesTheCounts:
             f"the verdict on the host was not used: {body[:200]}"
         )
         assert "FAILED" not in body
+
+    def test_a_report_from_another_job_is_not_used_as_this_one_s_verdict(
+        self, parsed
+    ):
+        """The seed runs in tmux for days, and writes a report every chunk.
+
+        A nightly that stands down against the seed's lock, then loses its
+        pipe, would find the seed's report sitting in the same directory —
+        recent, and nothing to do with this job. Scoped by time alone it
+        became this job's headline: a stand-down reported as whatever the
+        seed happened to be doing.
+
+        The marker names the job that launched the run, so a marker naming
+        another job means this job has no report to find.
+        """
+        import subprocess
+        import tempfile
+        from pathlib import Path as P
+
+        script = self.summary(parsed).replace("${{ steps.run.outcome }}", "$OUTCOME")
+        with tempfile.TemporaryDirectory() as tmp:
+            (P(tmp) / "mirror-output.txt").write_text(
+                "2026-08-31 02:20:00,1 INFO batch: 20000 object(s), 4 GiB\n"
+            )
+            fake_bin = P(tmp) / "bin"
+            fake_bin.mkdir()
+            self.fake_ssh(fake_bin, marker="999-1 1700000000")
+            out = P(tmp) / "summary.md"
+            result = subprocess.run(
+                ["bash", "-e", "-c", script],
+                env={
+                    "PATH": f"{fake_bin}:/usr/bin:/bin", "RUNNER_TEMP": tmp,
+                    "ENV_NAME": "prod", "OUTCOME": "failure",
+                    "DEPLOY_USER": "deploy", "DEPLOY_HOST": "host",
+                    "RUN_TAG": "1-1", "STATE_DIR": "/var/lib/x",
+                    "GITHUB_STEP_SUMMARY": str(out), "LC_ALL": "C",
+                },
+                capture_output=True, text=True,
+            )
+            assert result.returncode == 0, result.stderr[:300]
+            body = out.read_text()
+        assert "stopped, progress kept" not in body, (
+            "another job's report became this job's verdict"
+        )
+        assert "FAILED" in body, (
+            "with no verdict of its own the step's own outcome is the verdict"
+        )
 
     def test_the_fallback_is_skipped_when_the_deploy_secrets_are_absent(self, parsed):
         """It must degrade, not take the summary down with it.
@@ -942,6 +1007,92 @@ class TestTheHeadlineCarriesTheCounts:
         headline = self.run_summary(parsed, "ERROR boom\n", outcome="failure")
         assert "FAILED" in headline
         assert "succeeded" not in headline
+
+
+class TestTheWorkflowAndTheJobWatchOneDirectory:
+    """Three ssh sessions, and only one of them reads the env file.
+
+    The run stamps its marker in the state directory, the cancel step finds
+    the lock there, and the summary falls back to the reports there. Pointed
+    somewhere else, the job would work perfectly while those two watched an
+    empty directory: a cancel that stops nothing, and a verdict never
+    recovered — both silent.
+    """
+
+    def test_the_directory_is_defined_once(self, parsed: dict, workflow: str):
+        assert parsed["env"]["STATE_DIR"] == job.DEFAULT_STATE_DIR, (
+            "the workflow and the job disagree about where the state lives"
+        )
+        # Every other mention must go through it.
+        body = workflow.split("env:", 1)[1]
+        assert body.count(job.DEFAULT_STATE_DIR) == 1, (
+            "the path is still written out somewhere a change would miss"
+        )
+
+    def test_a_job_pointed_elsewhere_refuses_to_start(self, parsed: dict, tmp_path):
+        """Loud on the run step rather than silent in the other two."""
+        import subprocess
+
+        steps = parsed["jobs"]["mirror"]["steps"]
+        outer = next(
+            s for s in steps if s.get("name", "").startswith("Run the mirror")
+        )["run"]
+        remote = outer.split("<<'REMOTE'", 1)[1].split("\n          REMOTE", 1)[0]
+        guard_at = remote.index("BACKUP_STATE_DIR is")
+        block = remote[:guard_at + remote[guard_at:].index("fi") + 2]
+        block = block[block.index("if [ -n \"${BACKUP_STATE_DIR:-}\""):]
+        result = subprocess.run(
+            ["bash", "-c", f'state_dir="$1"\n{block}\necho reached-the-run',
+             "bash", "/var/lib/bloom-box-object-backup"],
+            env={"BACKUP_STATE_DIR": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 2, result.stdout
+        assert "reached-the-run" not in result.stdout
+        assert "Point them at the same directory" in result.stderr
+
+    def test_the_matching_case_is_allowed_through(self, parsed: dict):
+        """The other half: the guard must not stop the ordinary night."""
+        import subprocess
+
+        steps = parsed["jobs"]["mirror"]["steps"]
+        outer = next(
+            s for s in steps if s.get("name", "").startswith("Run the mirror")
+        )["run"]
+        remote = outer.split("<<'REMOTE'", 1)[1].split("\n          REMOTE", 1)[0]
+        guard_at = remote.index("BACKUP_STATE_DIR is")
+        block = remote[:guard_at + remote[guard_at:].index("fi") + 2]
+        block = block[block.index("if [ -n \"${BACKUP_STATE_DIR:-}\""):]
+        for env in ({}, {"BACKUP_STATE_DIR": "/var/lib/bloom-box-object-backup"}):
+            result = subprocess.run(
+                ["bash", "-c", f'state_dir="$1"\n{block}\necho reached-the-run',
+                 "bash", "/var/lib/bloom-box-object-backup"],
+                env={"PATH": "/usr/bin:/bin", **env},
+                capture_output=True, text=True,
+            )
+            assert "reached-the-run" in result.stdout, (env, result.stderr)
+
+
+class TestTheSummaryStepCannotHangTheRunner:
+    """It fires exactly when the host may be wedged, on a shared runner."""
+
+    def step(self, parsed: dict) -> dict:
+        steps = parsed["jobs"]["mirror"]["steps"]
+        return next(
+            s for s in steps if s.get("name", "").startswith("Write the run summary")
+        )
+
+    def test_it_is_bounded(self, parsed: dict):
+        assert self.step(parsed).get("timeout-minutes") == 5
+
+    def test_every_ssh_it_makes_gives_up_on_an_unreachable_host(self, parsed: dict):
+        """A default connect can sit for two minutes, three times over."""
+        body = self.step(parsed)["run"]
+        calls = body.count("ssh -i ~/.ssh/deploy_key")
+        assert calls >= 2, "the fallback stopped using ssh — update this test"
+        assert body.count("-o ConnectTimeout=") == calls, (
+            "an ssh call in the summary step has no connect timeout"
+        )
 
 
 class TestCancellingTheJobStopsTheRun:
@@ -1026,7 +1177,7 @@ class TestTheRunStepStampsItsMarker:
 
     def test_the_marker_is_written_before_the_job_is_launched(self, parsed: dict):
         script = self.remote_script(parsed)
-        marker = "/var/lib/bloom-box-object-backup/actions-run.started"
+        marker = '"$state_dir/actions-run.started"'
         assert marker in script, "the run step never stamps the marker"
         launch = script.index("backup_objects.py")
         assert script.index(marker) < launch, (
@@ -1047,11 +1198,13 @@ class TestTheRunStepStampsItsMarker:
         lines = [ln.strip() for ln in script.splitlines()]
         start = next(i for i, ln in enumerate(lines) if ln.startswith("marker="))
         write = next(i for i, ln in enumerate(lines) if '> "$marker"' in ln)
-        block = "\n".join(lines[start:write + 1]).replace(
-            "/var/lib/bloom-box-object-backup/actions-run.started", str(marker)
-        )
+        block = "\n".join(lines[start:write + 1])
         subprocess.run(
-            ["bash", "-c", f'set -e\nrun_tag="$1"\n{block}', "bash", "42-7"],
+            [
+                "bash", "-c",
+                f'set -e\nrun_tag="$1"\nstate_dir="$2"\n{block}',
+                "bash", "42-7", str(tmp_path),
+            ],
             check=True, capture_output=True, text=True,
         )
         tag, stamped = marker.read_text().split()
@@ -1084,12 +1237,11 @@ class TestTheStopScriptBehaves:
         """
         import subprocess
 
-        script = self.remote_script(parsed).replace(
-            "/var/lib/bloom-box-object-backup/backup.lock", f"{lock_dir}/backup.lock"
-        ).replace(
-            "/var/lib/bloom-box-object-backup/actions-run.started",
-            f"{lock_dir}/actions-run.started",
-        )
+        # The state directory is an argument now, so the harness supplies a
+        # temporary one rather than rewriting paths out of the script — which
+        # means what runs here is the script as written, character for
+        # character.
+        script = self.remote_script(parsed)
         if contents is not None:
             (lock_dir / "backup.lock").write_text(contents)
         if marker is not None:
@@ -1098,7 +1250,7 @@ class TestTheStopScriptBehaves:
             stamped = 2_000_000_000 if marker == "stood-down" else 1
             (lock_dir / "actions-run.started").write_text(f"{tag} {stamped}\n")
         return subprocess.run(
-            ["bash", "-c", script, "bash", self.RUN_TAG],
+            ["bash", "-c", script, "bash", self.RUN_TAG, str(lock_dir)],
             capture_output=True, text=True,
         )
 
