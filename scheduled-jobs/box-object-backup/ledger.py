@@ -144,38 +144,6 @@ class Ledger:
                 (*obj.ledger_key, obj.version, obj.size, now or utcnow(), obj.name),
             )
 
-    def forget(self, keys) -> int:
-        """Drop the rows for these objects, so the next run copies them again.
-
-        The ledger says "this object is on Box at this version". When
-        verification finds one is NOT on Box, that row is wrong, and until it
-        goes every later run skips the object as already current. Removing it
-        is the whole remedy — nothing on Box is touched, and the next run
-        re-copies the object over its own path.
-
-        This exists so no one is ever told to run DELETE by hand against the
-        production ledger. That instruction needed a person to strip the Box
-        root off a path, split the bucket out, and supply the NORMALIZED name
-        rather than the one Postgres holds — and silently deleted nothing if
-        any of that was wrong, while the alarm never repeated. Worse, applied
-        to a refused name-collision it removes the row of the object that WON
-        the path, after which the other one takes it and overwrites a good
-        backup. Callers must not pass a collision's key; `run_locked` refuses
-        to call this at all on a run that saw one.
-
-        Returns the number of rows actually removed, which is what makes the
-        difference between "queued for re-copy" and "nothing matched"
-        reportable instead of silent.
-        """
-        removed = 0
-        with self._lock:
-            for bucket_id, name in keys:
-                removed += self.conn.execute(
-                    "DELETE FROM copied WHERE bucket_id = ? AND name = ?",
-                    (bucket_id, name),
-                ).rowcount
-        return removed
-
     def commit(self) -> None:
         with self._lock:
             self.conn.commit()

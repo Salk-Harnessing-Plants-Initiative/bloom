@@ -208,11 +208,15 @@ class VerifyResult:
     the ledger for a healthy object — and taught the team to discount the only
     alarm a genuinely missing object has.
 
-    `failures` names the objects behind `mismatched`. A count alone left the
-    identity of a missing object nowhere but a job log under retention, on the
-    one alarm documented as never repeating, while the message claimed the
-    paths were in the run report. It is also what lets the run queue its own
-    re-copy instead of printing a DELETE for someone to type.
+    `failures` names the objects behind `mismatched`, so the run report on Box
+    can list them. A count alone left the identity of a missing object nowhere
+    but a job log under retention, on the one alarm documented as never
+    repeating, while the message claimed the paths were in the run report.
+
+    Naming them is all it is for. The run does not act on them: it does not
+    touch the ledger to force a re-copy, because this is a backup and nothing
+    here removes a record of what is on Box. Restoring a missing object is a
+    person's decision, and the report is what tells them which one.
     """
 
     checked: int

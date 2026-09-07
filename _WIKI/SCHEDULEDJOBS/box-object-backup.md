@@ -448,10 +448,10 @@ run `partial`, which holds the watermark.
 **Only two answers count against the backup:** Box does not have the object, or
 has it at a different size. A stat call that fails outright — a 429, a dropped
 connection — is neither. Those are counted as `verify_unverified`, kept out of
-`verify_mismatched`, and change no exit code. The distinction matters because
-the remedy for a mismatch is deleting the object's ledger row by hand, and
-doing that on the strength of one Box hiccup is work done for nothing on advice
-that was wrong.
+`verify_mismatched`, and change no exit code. The distinction matters because a
+mismatch is reported as an object that is not on Box, and chasing that on the
+strength of one Box hiccup is work done for nothing on evidence that was never
+there.
 
 `verify_checked` is what was actually answered, so it can be smaller than the N
 requested. **Whenever it is**, the run says **verification did NOT cover its
@@ -472,28 +472,34 @@ Box's busy hours. It is set on the workflow itself (`verify` under
 `workflow_dispatch`, and the value passed on the scheduled path); there is no
 `.env` setting for it.
 
-**A mismatched object is queued for re-copy automatically.** The ledger row
-saying "this is on Box" is what makes every later run skip the object; when the
-check proves that row wrong, the run drops it itself and the next run copies
-the object again. Nothing on Box is deleted — the row only ever claimed
-something that turned out not to be true.
+**A mismatched object is NOT re-copied automatically, and the run changes
+nothing to compensate.** The ledger still records it as mirrored, so later runs
+skip it and the warning does not repeat. The run's job here is to say clearly
+that an object is missing and to name it; putting it back is a person's
+decision.
 
-You are never asked to run SQL against the ledger for this, and should not.
-The old instruction required stripping the Box root off a path by hand, then
-supplying the *normalized* name rather than the one Postgres holds; anything
-wrong and it deleted nothing, silently, on an alarm that does not repeat.
-
-The one exception, which the run reports rather than attempts: if the same run
-also refused a **name collision**, nothing is re-queued. There the ledger row
-belongs to the object that won the path, and dropping it lets its twin take
-that path and overwrite a good backup. Resolve the collision first, then
-re-run.
+That is deliberate. This is a backup, and the job does not remove its own
+record of what is on Box — not on a schedule, not unattended, not to fix
+itself. A version of this job briefly did, clearing the proved-wrong row so
+the next run would re-copy the object. It was removed: an automatic DELETE
+against production bookkeeping is not a decision a nightly job gets to make,
+and the guard written to make it safe did not hold under `--limit`,
+`--buckets` or a stop, which is how the job is actually run.
 
 The failing paths are in the run's log and named in `verify_failures` in the
 report under `_runs/` on Box. **Check `verify_mismatched` in the run report
-after each backup** — it is the one number that says whether what was copied is
-actually there. If the same objects appear again on the next run, the copy is
-failing rather than the record being wrong, and that is worth looking at.
+after each backup** — it is the one number that says whether what was copied
+is actually there.
+
+**Restoring one is a manual, considered change**, not a routine step, and
+there is no copy-paste command here on purpose. The object's row in the ledger
+is what makes later runs skip it; changing that is a database edit on the
+deploy host and should be done by someone who has read this section, with the
+run report open, and with one caveat in mind: **if the same run also reported a
+refused name collision, resolve that first.** There the row belongs to the
+object that won the Box path, and removing it lets its twin take that path and
+overwrite a good backup. The two are entangled; acting on one while the other
+stands is how a backup is lost.
 
 The N objects are a uniform sample of the run's **successful** copies, chosen
 by a hash of each object's path rather than by arrival order, so the same set

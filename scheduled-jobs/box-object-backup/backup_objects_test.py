@@ -1080,16 +1080,22 @@ class TestRunLockedWiresItsPartsTogether:
             updated_at="2026-08-31T00:00:00+00",
         )
 
-    def test_a_missing_object_is_queued_for_re_copy_without_anyone_typing_sql(
+    def test_a_verification_mismatch_deletes_nothing(
         self, harness, monkeypatch, caplog
     ):
-        """The run clears its own row instead of printing a DELETE.
+        """The run must not change the ledger to compensate for a bad copy.
 
-        The old message told an operator to run DELETE against the production
-        ledger, having stripped the Box root off a path by hand and supplied
-        the NORMALIZED name rather than the one Postgres holds. Wrong on any
-        of those and it deleted nothing, silently, while the alarm was
-        documented as never repeating.
+        This is a backup. A version of this job briefly cleared the proved-
+        wrong row itself so the next run would re-copy the object — an
+        automatic, unattended DELETE against production bookkeeping, which is
+        not a decision a nightly job gets to make. Restoring the object needs
+        a person; the run's job is to say clearly that one is missing and to
+        name it.
+
+        It must not print SQL either. Telling an operator to hand-type a
+        DELETE, with the Box root stripped off a path and the NORMALIZED name
+        rather than the one Postgres holds, is how a mistyped statement
+        silently matches nothing on an alarm that never repeats.
         """
         state, tmp_path = harness
         gone = self.missing(tmp_path)
@@ -1100,14 +1106,27 @@ class TestRunLockedWiresItsPartsTogether:
             ),
         )
         job.run_locked(self.args(tmp_path, verify=1), tmp_path)
-        assert "DELETE FROM" not in caplog.text, "still tells a person to run SQL"
-        assert "sqlite3" not in caplog.text, "still sends a person to the ledger"
-        assert "queued 1 object(s) for re-copy" in caplog.text
         with sqlite3.connect(str(tmp_path / "ledger.db")) as conn:
             rows = conn.execute(
                 "SELECT count(*) FROM copied WHERE name = ?", (gone.ledger_key[1],)
             ).fetchone()[0]
-        assert rows == 0, "the row proved wrong is still recorded as mirrored"
+        assert rows == 1, "the run deleted a ledger row"
+        assert "DELETE FROM" not in caplog.text, "tells a person to run SQL"
+        assert "sqlite3" not in caplog.text, "sends a person to the ledger"
+        assert "changed NOTHING" in caplog.text, "does not say it left the record alone"
+
+    def test_the_job_holds_no_way_to_delete_a_ledger_row(self):
+        """The capability itself is gone, not merely unused.
+
+        A method that deletes rows is one call site away from running
+        unattended again. Nothing in this job removes a record of what is on
+        Box.
+        """
+        from ledger import Ledger
+
+        assert not hasattr(Ledger, "forget"), "the ledger can still delete rows"
+        source = (Path(__file__).parent / "ledger.py").read_text()
+        assert "DELETE" not in source.upper(), "ledger.py contains a DELETE"
 
     def test_a_missing_object_is_named_in_the_run_report(
         self, harness, monkeypatch, tmp_path
@@ -1134,15 +1153,18 @@ class TestRunLockedWiresItsPartsTogether:
         assert body["verify_failures"], "the report does not name what is missing"
         assert "exp-42/a.png" in body["verify_failures"][0]
 
-    def test_a_missing_object_is_not_re_queued_when_a_collision_was_refused(
+    def test_a_mismatch_alongside_a_collision_still_deletes_nothing(
         self, harness, monkeypatch, caplog
     ):
-        """The one case where clearing a row destroys a backup.
+        """The combination that made the removed auto-delete dangerous.
 
-        With two names competing for one Box path, the row belongs to the
-        object that WON it. Drop it and the twin takes the path and overwrites
-        a good backup — the exact outcome the collision guard exists to
-        prevent. So the run refuses to re-queue at all and says why.
+        With two names competing for one Box path, the ledger row belongs to
+        the object that WON it. A version of this job deleted that row to
+        force a re-copy, which would have let the twin take the path and
+        overwrite a good backup. Nothing is deleted now in any case, so the
+        hazard is gone rather than guarded — but the run must still say both
+        things happened, because acting on one while the other stands is what
+        loses the backup.
         """
         state, tmp_path = harness
         gone = self.missing(tmp_path)
@@ -1160,13 +1182,13 @@ class TestRunLockedWiresItsPartsTogether:
 
         monkeypatch.setattr(job, "copy_manifest", with_a_collision)
         job.run_locked(self.args(tmp_path, verify=1), tmp_path)
-        assert "NOT queued for re-copy" in caplog.text
-        assert "queued 1 object(s) for re-copy" not in caplog.text
         with sqlite3.connect(str(tmp_path / "ledger.db")) as conn:
             rows = conn.execute(
                 "SELECT count(*) FROM copied WHERE name = ?", (gone.ledger_key[1],)
             ).fetchone()[0]
-        assert rows == 1, "cleared a row while a collision was competing for the path"
+        assert rows == 1, "a ledger row was deleted"
+        assert "changed NOTHING" in caplog.text
+        assert "were NOT backed up" in caplog.text, "the collision is not reported"
 
     def test_a_verification_that_answered_nothing_says_so(
         self, harness, monkeypatch, caplog

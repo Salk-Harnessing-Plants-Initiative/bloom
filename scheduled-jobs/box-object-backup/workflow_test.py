@@ -673,11 +673,13 @@ class TestTheSummaryCanActuallyReport:
 
     def test_a_failed_verification_is_called_out_in_the_headline(self, workflow: str):
         # Distinct from a plain failure: the copy reported success and the
-        # check disagreed, so the useful thing to say is that the objects are
-        # already queued to be copied again and nothing needs doing by hand.
+        # check disagreed. The useful thing to say is which objects, and that
+        # the run deliberately changed nothing to compensate — this is a
+        # backup, so putting them back is a person's decision.
         assert "VERIFICATION FAILED" in workflow
         assert "has_flag verify_mismatch" in workflow
-        assert "nothing to do by hand" in workflow
+        assert "changed nothing to compensate" in workflow
+        assert "DELETE" not in workflow, "the summary steers someone into the ledger"
 
 
 class TestTheHeadlineCarriesTheCounts:

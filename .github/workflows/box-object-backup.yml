@@ -413,11 +413,21 @@ jobs:
               [ -n "$counts" ] && echo "It got through ${counts}."
             elif has_flag verify_mismatch; then
               echo "Result: **VERIFICATION FAILED** — objects the copy reported"
-              echo "as successful are not on Box. They are named in the run"
-              echo "report under \`_runs/\`, and the run has already queued them"
-              echo "to be copied again — nothing to do by hand. If the same"
-              echo "objects appear again next run, the copy is failing rather"
-              echo "than the record being stale, and that needs looking at."
+              echo "as successful are not on Box. Every one is named in the run"
+              echo "report under \`_runs/\`."
+              echo
+              echo "The run changed nothing to compensate: the ledger still"
+              echo "records them as mirrored, so later runs skip them and this"
+              echo "warning does **not** repeat. Putting them back needs a"
+              echo "person — see 'What verification does, and does not, prove'"
+              echo "in the wiki. The run is recorded **partial**, so the"
+              echo "watermark is held in the meantime."
+              if has_flag collisions; then
+                echo
+                echo "This night **also** refused a name collision — see the"
+                echo "job log. Resolve that first: the two are entangled, and"
+                echo "acting on one while the other stands can lose a backup."
+              fi
             elif has_flag collisions; then
               echo "Result: **OBJECTS NOT BACKED UP** — two object names"
               echo "normalize onto one path on Box, so only one of each pair"

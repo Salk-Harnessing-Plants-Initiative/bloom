@@ -381,7 +381,6 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             totals.verify_failures = [
                 lib.box_path(obj, args.box_root) for obj in result.failures
             ]
-            requeue_missing(ledger, result.failures, totals)
     except BaseException:
         # Recorded before re-raising so the Box report still names the run
         # that died — a failed run is the one most worth a record.
@@ -469,12 +468,13 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     if totals.verify_mismatched:
         logger.error(
             "%d of %d verified object(s) were missing or the wrong size on "
-            "Box. They are named in the run report under _runs/ on Box, and "
-            "in the ERROR lines above. The run has already queued them to be "
-            "copied again — no ledger surgery, and nothing on Box was "
-            "deleted. If the same objects appear here on the next run, the "
-            "copy is failing rather than the record being wrong, and that is "
-            "worth looking at.",
+            "Box. Every one is named in the run report under _runs/ on Box, "
+            "and in the ERROR lines above.\n"
+            "This run changed NOTHING to compensate: the ledger still records "
+            "them as mirrored, so later runs will skip them and this warning "
+            "will not repeat. Putting them back needs a person — see "
+            "'What verification does, and does not, prove' in the wiki. The "
+            "run is recorded partial, so the watermark is held meanwhile.",
             totals.verify_mismatched, totals.verify_checked,
         )
     elif totals.verify_checked and not totals.verify_unverified:
@@ -592,10 +592,12 @@ def exit_code(
     the mirror is misreporting itself rather than some copies having errored,
     and those want telling apart in a job log.
 
-    It fires once, not until someone acts — but the run now clears the proved-
-    wrong ledger row itself, so the next run re-copies the object rather than
-    planning it `already_current`. If it appears here again, the copy is
-    failing rather than the record being stale.
+    It fires once, not until someone acts. The object is already recorded as
+    copied, so the next run plans it `already_current`, never re-copies it and
+    never re-checks it — the count returns to 0 and the run reports clean. The
+    run deliberately does not touch the ledger to compensate: this is a backup,
+    and nothing here deletes a record of what is on Box. Restoring the object
+    needs a person, and the run report names it.
     """
     if failed:
         return 1
@@ -1075,55 +1077,6 @@ def report_collisions(count: int) -> None:
         "refused for ever.",
         count,
     )
-
-
-def requeue_missing(ledger: Ledger, failures, totals: Totals) -> None:
-    """Queue a re-copy for objects verification found are not on Box.
-
-    The ledger row saying "this is on Box at this version" is what makes every
-    later run skip the object. When the check proves that row wrong, dropping
-    it IS the whole remedy: nothing on Box is touched, and the next run copies
-    the object over its own path.
-
-    This used to be an instruction — the run printed a DELETE statement for
-    someone to type against the production ledger, with the Box root stripped
-    off by hand and the NORMALIZED name rather than the one Postgres holds.
-    Get any of it wrong and it deleted nothing, silently, while the alarm was
-    documented as never repeating. Doing it here removes the typing, the
-    transcription, and the reason to open the ledger at all.
-
-    Refused on a run that saw a name collision, and only then. There, one
-    object holds the path and its twin was turned away; dropping the holder's
-    row lets the twin take the path and overwrite a good backup. That is the
-    one case where this is destructive, so it is not attempted — the objects
-    stay named in the report and the collision is reported alongside.
-    """
-    if not failures:
-        return
-    if totals.collisions:
-        logger.error(
-            "%d object(s) are missing from Box and were NOT queued for "
-            "re-copy, because this run also refused a name collision. "
-            "Re-copying while two names compete for one path can overwrite "
-            "the object that holds it. Resolve the collision first — the "
-            "objects are named in the run report — then re-run.",
-            len(failures),
-        )
-        return
-    removed = ledger.forget(obj.ledger_key for obj in failures)
-    logger.warning(
-        "queued %d object(s) for re-copy on the next run (%d ledger row(s) "
-        "cleared). Nothing on Box was deleted — the rows only said an object "
-        "was already mirrored, which the check just disproved.",
-        len(failures), removed,
-    )
-    if removed != len(failures):
-        logger.error(
-            "expected to clear %d ledger row(s) and cleared %d. The rest are "
-            "still recorded as mirrored, so later runs will keep skipping "
-            "them; they are named in the run report.",
-            len(failures), removed,
-        )
 
 
 def report_skips(plan: lib.CopyPlan) -> None:
