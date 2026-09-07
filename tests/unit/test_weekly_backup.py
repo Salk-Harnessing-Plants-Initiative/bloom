@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gzip
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -30,10 +31,14 @@ def _load():
 
 backup = _load()
 
+# Distinctive enough that a test can search a command line for it.
+DEPLOY_PASSWORD = "s3cret-prod-pw"
+
 
 def _deploy_dir(tmp_path, env_name="prod", **extra):
     """A deploy directory with the env file the script reads its config from."""
-    lines = ["BACKUP_RCLONE_REMOTE=box", f"BACKUP_RCLONE_DEST_DIR=bloom-backups/{env_name}"]
+    lines = ["BACKUP_RCLONE_REMOTE=box", f"BACKUP_RCLONE_DEST_DIR=bloom-backups/{env_name}",
+             f"POSTGRES_PASSWORD={DEPLOY_PASSWORD}"]
     lines += [f"{k}={v}" for k, v in extra.items()]
     (tmp_path / f".env.{env_name}").write_text("\n".join(lines) + "\n")
     return tmp_path
@@ -188,9 +193,17 @@ def _globals_dump(roles: int = backup.MIN_ROLE_STATEMENTS, complete: bool = True
 
 
 def _dump_writer(seen: list, payload: bytes):
-    """Stand in for the real pipeline: record the command, write a real dump."""
-    def _write(cmd, out):
+    """Stand in for the real pipeline: record the call, write a real dump."""
+    def _write(cmd, out, env=None):
         seen.append(cmd)
+        _write_gz(out, payload)
+    return _write
+
+
+def _dump_recorder(calls: list, payload: bytes):
+    """Like _dump_writer, but keeps the environment each command was given."""
+    def _write(cmd, out, env=None):
+        calls.append((cmd, env))
         _write_gz(out, payload)
     return _write
 
@@ -314,7 +327,8 @@ def test_a_bad_dump_exits_on_its_own_code_not_the_config_one(tmp_path, monkeypat
     monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
-    monkeypatch.setattr(backup, "_stream_to_gzip", lambda cmd, out: out.write_bytes(b""))
+    monkeypatch.setattr(backup, "_stream_to_gzip",
+                        lambda cmd, out, env=None: out.write_bytes(b""))
 
     rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
     assert rc == backup.EXIT_VERIFY
@@ -715,6 +729,97 @@ def test_globals_are_dumped_alongside_the_database(tmp_path, monkeypatch):
     backup.dump_globals("container123", tmp_path, "20260824T000000Z")
     assert "pg_dumpall" in seen[0]
     assert "--globals-only" in seen[0]
+
+
+# --------------------------------------------------------------------------
+# Authenticating against the database
+# --------------------------------------------------------------------------
+
+
+def test_the_database_dump_authenticates(tmp_path, monkeypatch):
+    # db-prod sets no PGPASSWORD of its own (docker-compose.dev.yml does, which
+    # is why dev calls work without one), so a dump that passes no password dies
+    # at `fe_sendauth: no password supplied` and the run produces no backup.
+    calls: list = []
+    monkeypatch.setenv("POSTGRES_PASSWORD", DEPLOY_PASSWORD)
+    monkeypatch.setattr(backup, "_stream_to_gzip", _dump_recorder(calls, _database_dump()))
+    monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999999)
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+
+    backup.dump_database("container123", tmp_path, "20260824T000000Z")
+    cmd, env = calls[0]
+    assert env["PGPASSWORD"] == DEPLOY_PASSWORD
+    assert cmd[cmd.index("-e") + 1] == "PGPASSWORD"
+
+
+def test_the_globals_dump_authenticates_too(tmp_path, monkeypatch):
+    calls: list = []
+    monkeypatch.setenv("POSTGRES_PASSWORD", DEPLOY_PASSWORD)
+    monkeypatch.setattr(backup, "_stream_to_gzip", _dump_recorder(calls, _globals_dump()))
+    monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999)
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+
+    backup.dump_globals("container123", tmp_path, "20260824T000000Z")
+    cmd, env = calls[0]
+    assert env["PGPASSWORD"] == DEPLOY_PASSWORD
+    assert cmd[cmd.index("-e") + 1] == "PGPASSWORD"
+
+
+def test_the_password_is_never_written_on_a_command_line(monkeypatch):
+    # `-e PGPASSWORD=<value>` — the form deploy.yml uses — puts production's
+    # password in the host's process list, where any user's `ps` reads it. The
+    # bare form makes docker copy it out of this process instead.
+    monkeypatch.setenv("POSTGRES_PASSWORD", DEPLOY_PASSWORD)
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    cmd, env = backup.dump_command("container123", ["pg_dump", "-U", "supabase_admin"])
+    assert not any(DEPLOY_PASSWORD in arg for arg in cmd), cmd
+    assert env["PGPASSWORD"] == DEPLOY_PASSWORD
+
+
+def test_only_the_dump_process_is_given_the_password(tmp_path, monkeypatch):
+    # gzip reads the dump on stdin; handing it the password too would widen the
+    # reach of the credential for nothing.
+    seen: list = []
+    real_popen = subprocess.Popen
+
+    def _recording_popen(cmd, **kwargs):
+        seen.append((cmd, kwargs.get("env")))
+        return real_popen(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", _recording_popen)
+    backup._stream_to_gzip(
+        [sys.executable, "-c", "import os; print(os.environ['PGPASSWORD'])"],
+        tmp_path / "out.gz",
+        env={**os.environ, "PGPASSWORD": DEPLOY_PASSWORD},
+    )
+    gzip_env = next(env for cmd, env in seen if "gzip" in " ".join(cmd))
+    assert gzip_env is None, "gzip must not inherit the password"
+    with gzip.open(tmp_path / "out.gz", "rb") as handle:
+        assert handle.read().strip() == DEPLOY_PASSWORD.encode(), \
+            "the dump process must receive the password it authenticates with"
+
+
+def test_a_missing_password_is_a_config_error_before_the_dump_window(tmp_path, monkeypatch):
+    # Exit 2 sends the operator to the env file. Reaching pg_dump first would
+    # spend the whole dump window and report a subprocess failure instead.
+    lines = ["BACKUP_RCLONE_REMOTE=box", "BACKUP_RCLONE_DEST_DIR=bloom-backups/prod"]
+    (tmp_path / ".env.prod").write_text("\n".join(lines) + "\n")
+    monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    resolved: list = []
+    monkeypatch.setattr(backup, "resolve_container",
+                        lambda *a: resolved.append(a) or "container123")
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
+    assert rc == backup.EXIT_CONFIG
+    assert not resolved, "the run must fail before it touches the stack"
+
+
+def test_an_empty_password_counts_as_missing(monkeypatch):
+    monkeypatch.setenv("POSTGRES_PASSWORD", "")
+    with pytest.raises(backup.ConfigError, match="POSTGRES_PASSWORD"):
+        backup._pg_password()
 
 
 def test_a_run_dumps_and_uploads_both_artifacts(tmp_path, monkeypatch):

@@ -153,6 +153,14 @@ sudo -u bloom-deploy rclone lsd box:
 The remote name must match `BACKUP_RCLONE_REMOTE` in the environment's
 `.env.<env>` file (default `box`).
 
+The same env file supplies the database password. `db-prod` authenticates every
+connection, including one opened from inside the container, so the dump reads
+`POSTGRES_PASSWORD` from `.env.<env>` — the value `deploy.yml` writes there from
+the environment's `*_POSTGRES_PASSWORD` secret — and hands it to `docker exec`
+by environment rather than on the command line, so it stays out of the host's
+process list. Nothing extra to configure; a missing value exits 2 before the
+dump starts.
+
 ### 2. Create the `production-scheduled-backup` GitHub Environment
 
 Settings → Environments → New environment, named exactly

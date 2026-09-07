@@ -131,6 +131,34 @@ def apply_env_file(path: Path) -> int:
     return len(values)
 
 
+def _pg_password() -> str:
+    """The database password, which the deploy env file sets as POSTGRES_PASSWORD.
+
+    db-prod authenticates every connection, including one opened from inside
+    the container, so a dump without this dies at `fe_sendauth: no password
+    supplied`. Absent, that is a configuration error: exit 2 points the operator
+    at the env file, which is where the answer is.
+    """
+    password = _env("POSTGRES_PASSWORD")
+    if not password:
+        raise ConfigError(
+            "POSTGRES_PASSWORD is not set — the deploy env file must define it "
+            "for pg_dump to authenticate against " + DB_SERVICE
+        )
+    return password
+
+
+def dump_command(container: str, argv: list[str]) -> tuple[list[str], dict[str, str]]:
+    """A docker exec of argv, plus the environment it must be run with.
+
+    `-e PGPASSWORD` carries no `=value` on purpose: that form tells docker to
+    copy the value out of this process, so the password never lands in the
+    host's process list for any user's `ps` to read.
+    """
+    cmd = [_which("docker"), "exec", "-i", "-e", "PGPASSWORD", container, *argv]
+    return cmd, {**os.environ, "PGPASSWORD": _pg_password()}
+
+
 def _which(name: str) -> str:
     """Resolve a binary, raising a config error rather than a traceback."""
     found = shutil.which(name)
@@ -251,17 +279,21 @@ def sweep_stale_work_dirs(state_dir: Path) -> int:
     return len(stale)
 
 
-def _stream_to_gzip(cmd: list[str], out: Path) -> None:
+def _stream_to_gzip(cmd: list[str], out: Path, env: dict[str, str] | None = None) -> None:
     """Run cmd, pipe it through gzip into out, and check BOTH exit statuses.
 
     A shell pipeline reports only the last process, which is how a truncated
     dump wrapped in valid gzip passes for a good backup.
+
+    env goes to cmd alone; gzip has no business holding the password.
     """
     with out.open("wb") as handle:
         gzip_proc = subprocess.Popen(
             [_which("gzip"), "-c"], stdin=subprocess.PIPE, stdout=handle
         )
-        src_proc = subprocess.Popen(cmd, stdout=gzip_proc.stdin, stderr=subprocess.PIPE)
+        src_proc = subprocess.Popen(
+            cmd, stdout=gzip_proc.stdin, stderr=subprocess.PIPE, env=env
+        )
         gzip_proc.stdin.close()  # type: ignore[union-attr]
         _, src_err = src_proc.communicate()
         gzip_proc.wait()
@@ -371,11 +403,10 @@ def dump_database(container: str, work_dir: Path, timestamp: str) -> Path:
     pg_db = _env("POSTGRES_DB", "postgres")
     out = work_dir / f"postgres-{pg_db}-{timestamp}.sql.gz"
     logger.info("dumping database %s -> %s", pg_db, out.name)
-    _stream_to_gzip(
-        [_which("docker"), "exec", "-i", container,
-         "pg_dump", "-U", pg_user, "-d", pg_db, "--format=plain"],
-        out,
+    cmd, env = dump_command(
+        container, ["pg_dump", "-U", pg_user, "-d", pg_db, "--format=plain"]
     )
+    _stream_to_gzip(cmd, out, env=env)
     verify_artifact(out, MIN_DATABASE_BYTES)
     verify_database_content(out)
     return out
@@ -386,11 +417,8 @@ def dump_globals(container: str, work_dir: Path, timestamp: str) -> Path:
     pg_user = _env("POSTGRES_USER", "supabase_admin")
     out = work_dir / f"globals-{timestamp}.sql.gz"
     logger.info("dumping globals -> %s", out.name)
-    _stream_to_gzip(
-        [_which("docker"), "exec", "-i", container,
-         "pg_dumpall", "-U", pg_user, "--globals-only"],
-        out,
-    )
+    cmd, env = dump_command(container, ["pg_dumpall", "-U", pg_user, "--globals-only"])
+    _stream_to_gzip(cmd, out, env=env)
     verify_artifact(out, MIN_GLOBALS_BYTES)
     verify_globals_content(out)
     return out
@@ -507,6 +535,9 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGHUP, _terminate)
         # SIGKILL and power loss cannot be caught, so sweep what they left.
         sweep_stale_work_dirs(state_dir)
+        # Same reasoning as the destination check below: the password is config,
+        # and a run that discovers it missing has already spent the dump window.
+        _pg_password()
         # Resolve the destination before dumping: finding out afterwards costs
         # the whole dump window and discards the artifact.
         if not args.dry_run:
