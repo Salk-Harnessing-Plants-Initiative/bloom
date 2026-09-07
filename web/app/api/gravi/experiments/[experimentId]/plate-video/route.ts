@@ -35,15 +35,21 @@ export const runtime = "nodejs";
 // rather than an opaque UND_ERR — the encode itself carries on upstream.
 const UPSTREAM_TIMEOUT_MS = 240_000;
 
-// Which upstream details reach the caller. The test is whether *every* source of
-// that status is the service's own text about this plate: 404 has no captures,
-// 413 too large, 422 a frame the encoder cannot use, 429 already encoding.
+// Which upstream details reach the caller. The test is whether nothing carrying
+// that status can name internal infrastructure — a host, an account, an
+// environment variable. An object key is not that: any signed-in user can
+// already read one.
 //
-// 503 fails that test even though the plate-video one is written to be read —
-// `auth.py` also answers 503 with the auth client's error, which names the
-// internal gateway. 502 names an object path. Anything unlisted falls back to
-// our own wording.
+// 503 fails the test: `auth.py` answers it with the auth client's error, which
+// names the internal gateway. 502 carries the storage client's. Anything
+// unlisted gets our own wording.
 const DETAIL_PASSTHROUGH_STATUSES = new Set([404, 413, 422, 429]);
+
+// Answered in our own words rather than the service's or the generic sentence.
+// The service says "Invalid or expired token", and "try again shortly, and tell
+// the Bloom team" is wrong twice: waiting cannot fix a login, and it is nobody's
+// fault. Signing in again is the only thing that helps.
+const SESSION_EXPIRED = "Your session has expired. Sign in again.";
 
 // What a caller is told when the upstream detail is suppressed. One sentence for
 // every such case: which of them it was is the log's business, and a scientist
@@ -53,6 +59,7 @@ const GENERIC_FAILURE =
   "happening, let the Bloom team know.";
 
 function callerSafeDetail(status: number, parsed: unknown): string {
+  if (status === 401) return SESSION_EXPIRED;
   if (!DETAIL_PASSTHROUGH_STATUSES.has(status)) return GENERIC_FAILURE;
   const detail = (parsed as { detail?: unknown } | null)?.detail;
   return typeof detail === "string" && detail.trim() ? detail : GENERIC_FAILURE;

@@ -312,6 +312,62 @@ describe("POST", () => {
     }
   );
 
+  it("tells an expired session to sign in, not to wait", async () => {
+    // Ordinary: a plate page left open past the session expiry. The generic
+    // sentence would send a scientist to wait for something waiting cannot fix,
+    // and to report it to a team who can do nothing about it.
+    vi.stubGlobal("fetch", upstreamReturns(401, { detail: "Invalid or expired token" }));
+
+    const res = await post({ plate_id: "P7", wave_number: 1 });
+    const { detail } = await res.json();
+
+    expect(res.status).toBe(401);
+    expect(detail).toBe("Your session has expired. Sign in again.");
+  });
+
+  it("does not hand the service's own wording for a login to a scientist", async () => {
+    vi.stubGlobal("fetch", upstreamReturns(401, { detail: "Bearer token required" }));
+
+    const { detail } = await (await post({ plate_id: "P7", wave_number: 1 })).json();
+
+    expect(detail).not.toContain("Bearer");
+    expect(detail).not.toContain("token");
+    expect(detail).not.toContain("Bloom team");
+  });
+
+  it("passes a rate limit through, though it is not about this plate", async () => {
+    // 429 has two sources: this plate is already rendering, and the caller is
+    // clicking too fast. Both are safe to read, which is the whole test for the
+    // list -- not whether the message is about the plate.
+    vi.stubGlobal(
+      "fetch",
+      upstreamReturns(429, { detail: "Rate limit exceeded (30/60s); retry later" }, {
+        "Retry-After": "60",
+      })
+    );
+
+    const res = await post({ plate_id: "P7", wave_number: 1 });
+
+    expect((await res.json()).detail).toContain("Rate limit exceeded");
+    expect(res.headers.get("Retry-After")).toBe("60");
+  });
+
+  it.each([[404], [413], [422]])(
+    "passes an object key through on %i, which a signed-in user can read anyway",
+    async (status) => {
+      // Named deliberately: the key is not internal infrastructure, and the path
+      // is often the most useful part of the message.
+      vi.stubGlobal(
+        "fetch",
+        upstreamReturns(status, { detail: "12/wave-1/P7.mp4 could not be used" })
+      );
+
+      const { detail } = await (await post({ plate_id: "P7", wave_number: 1 })).json();
+
+      expect(detail).toContain("12/wave-1/P7.mp4");
+    }
+  );
+
   it("carries frames_unknown through, so a kept video is not read as empty", async () => {
     // The service sends this whenever it cannot say what a stored video holds.
     // `frames` still carries a number, and this is what says not to trust it.
