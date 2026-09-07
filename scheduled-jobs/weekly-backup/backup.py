@@ -97,7 +97,7 @@ ENV_KEYS = (
 # Actions runner with it. This is not a prediction of the dump's size — it is a
 # floor that refuses to run on a volume already too full to hold one. Tune per
 # host with BACKUP_MIN_FREE_BYTES.
-DEFAULT_MIN_FREE_BYTES = 20 * 1024**3  # 20 GiB
+DEFAULT_MIN_FREE_BYTES = 20 * 1024**3  # 20 GiB, ~3x a current 6-7 GB dump
 
 # How long pg_dump waits for a table lock before giving up. It takes ACCESS
 # SHARE on every table, which only DDL conflicts with — and a deploy's

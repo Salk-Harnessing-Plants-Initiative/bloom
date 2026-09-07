@@ -76,9 +76,12 @@ working copy is written to the deploy host before upload, and staging's database
 is far smaller. The job checks free space itself before every dump and refuses
 to start below `BACKUP_MIN_FREE_BYTES` (20 GiB by default), because the working
 copy shares a filesystem with the database's own data directory and filling it
-would stop Postgres writing. Compare that floor against a realistic estimate of
-the dump before the first production run and adjust it per host — a floor set
-too high means no backups at all, and one set too low is no protection.
+would stop Postgres writing. The floor is set at about three times what a
+compressed dump of this database currently weighs — 6-7 GB — which leaves room
+for it to grow considerably before the floor stops being larger than an
+artifact. Revisit it if a dump ever approaches the floor: too high means no
+backups at all, too low is no protection. Each run's artifact sizes are in the
+job summary, so the number to check against is always the last run's.
 
 By hand on the server, same thing:
 
