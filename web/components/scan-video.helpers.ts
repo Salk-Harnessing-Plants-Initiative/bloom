@@ -1,5 +1,5 @@
-// Pure helpers for on-demand cyl scan video generation, split out so the id
-// validation and the user-facing messaging are unit-testable without a network
+// Pure helpers for on-demand cyl scan video generation, split out so the shape
+// check and the user-facing messaging are unit-testable without a network
 // round-trip or a rendered component.
 
 // The workflows endpoint's success payload.
