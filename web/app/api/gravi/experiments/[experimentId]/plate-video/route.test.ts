@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * Unit tests for the plate time-lapse proxy and its poll.
  *
@@ -217,7 +217,7 @@ describe("POST", () => {
   it("reports a timeout as still encoding, not as a failure", async () => {
     // The encode carries on upstream; telling the user it failed would have
     // them click Generate again and start a second one.
-    const timeout = Object.assign(new Error("timed out"), { name: "TimeoutError" });
+    const timeout = new DOMException("timed out", "TimeoutError");
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(timeout));
 
     const res = await post({ plate_id: "P7", wave_number: 1 });
@@ -417,8 +417,7 @@ describe("POST", () => {
   it("distinguishes a service that is down from one that is still working", async () => {
     // A timeout means the encode is still running upstream; a refused connection
     // means there is nothing to wait for. Told apart, the button waits or stops.
-    const timeout = new Error("timed out");
-    timeout.name = "TimeoutError";
+    const timeout = new DOMException("timed out", "TimeoutError");
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(timeout));
 
     expect((await post({ plate_id: "P7", wave_number: 1 })).status).toBe(504);
