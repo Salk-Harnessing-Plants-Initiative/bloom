@@ -84,8 +84,8 @@ concurrency:
   # Its own group, NOT deploy-bloom: a queued or stuck deploy must not cancel a
   # backup, and a backup must not hold up a deploy. Overlap is prevented by the
   # single shared runner instead — see the SINGLE RUNNER note at the top.
-  # Per environment, so a staging rehearsal cannot cancel a production run.
-  group: weekly-backup-${{ github.event.inputs.environment || 'prod' }}
+  # Per environment and trigger: a manual run's approval must not hold the schedule.
+  group: weekly-backup-${{ github.event_name }}-${{ github.event.inputs.environment || 'prod' }}
   cancel-in-progress: false
 
 jobs:
@@ -212,3 +212,8 @@ jobs:
             echo
             echo "_This job only uploads. Nothing on Box is ever deleted by it._"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The runner is shared and long-lived; the key must not outlive the job.
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

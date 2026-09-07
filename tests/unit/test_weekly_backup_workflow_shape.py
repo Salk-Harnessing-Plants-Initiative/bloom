@@ -277,6 +277,73 @@ def test_concurrency_is_not_the_shared_deploy_group(workflow):
     assert workflow["concurrency"]["cancel-in-progress"] is False
 
 
+def test_a_staging_rehearsal_cannot_queue_behind_production(workflow):
+    # Drop the environment from the group and the two stacks share one slot.
+    assert "inputs.environment" in workflow["concurrency"]["group"]
+
+
+def test_an_approval_on_the_manual_path_does_not_hold_the_schedule(workflow):
+    # A manual run sits in Waiting for its reviewer while holding its group.
+    # Shared with the schedule, that approval also stalls the Sunday run.
+    assert "github.event_name" in workflow["concurrency"]["group"]
+
+
+def test_the_deploy_key_does_not_outlive_the_job(workflow, text):
+    # The runner is shared with deploy.yml, which removes its own key twice.
+    steps = _job(workflow)["steps"]
+    cleanup = [s for s in steps if "rm -f ~/.ssh/deploy_key" in (s.get("run") or "")]
+    assert cleanup, "the deploy key is written to the runner and never removed"
+    assert all(s.get("if") == "always()" for s in cleanup), (
+        "a key left behind by a failed run is the case that matters most"
+    )
+    assert "chmod 600 ~/.ssh/deploy_key" in text
+
+
+def test_the_ssh_setup_step_is_present(workflow):
+    # Deleting the whole step passed every test in this file.
+    steps = _job(workflow)["steps"]
+    assert any(
+        "~/.ssh/deploy_key" in (s.get("run") or "") and "mkdir -p ~/.ssh" in (s.get("run") or "")
+        for s in steps
+    ), "no step establishes the SSH identity this job runs on"
+
+
+def test_host_key_checking_is_never_disabled(text):
+    # The pinned known_hosts is what stops this job trusting a new host.
+    assert "StrictHostKeyChecking" not in text
+
+
+def test_a_failed_backup_cannot_report_success(workflow):
+    # continue-on-error turns a failed backup into a green run.
+    for step in _job(workflow)["steps"]:
+        assert step.get("continue-on-error") is not True, (
+            f"step {step.get('name')!r} would hide a failed backup"
+        )
+    assert _job(workflow).get("continue-on-error") is not True
+
+
+def test_the_run_is_bounded_by_a_timeout(workflow):
+    # Cancelling does not stop the remote script, so this is the only bound.
+    timeout = _job(workflow).get("timeout-minutes")
+    assert timeout is not None, "an unbounded run can hold the only runner"
+    assert 0 < timeout <= 120
+
+
+def test_every_step_that_names_the_script_names_the_same_one(workflow):
+    # Only the run step's path was pinned; a typo in the summary step's copy
+    # broke the weekly Box listing with nothing failing.
+    # Whole paths, not substrings: `backup.pyy` contains `backup.py`.
+    script = "scheduled-jobs/weekly-backup/backup.py"
+    found = [
+        path
+        for step in _job(workflow)["steps"]
+        for path in re.findall(r"[\w./-]*backup\.py[\w.]*", step.get("run") or "")
+    ]
+    assert len(found) >= 2, "the run step and the summary step both invoke it"
+    for path in found:
+        assert path == script, f"the workflow names {path!r}, not {script!r}"
+
+
 def test_deploy_paths_come_from_secrets_not_literals(text):
     assert "secrets.PROD_DEPLOY_PATH" in text
     assert "secrets.STAGING_DEPLOY_PATH" in text
@@ -310,7 +377,7 @@ def test_the_workflow_never_deletes_on_the_remote(text):
 
 
 def test_the_summary_is_written_even_when_the_backup_fails(workflow):
-    summary = _job(workflow)["steps"][-1]
+    summary = _step(workflow, "summary")
     assert "summary" in summary["name"].lower()
     assert summary["if"] == "always()", (
         "a failed backup is exactly the week you need the summary for"
