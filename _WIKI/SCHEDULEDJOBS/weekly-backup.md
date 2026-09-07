@@ -320,13 +320,16 @@ anything is uploaded:
   (`-- PostgreSQL database dump complete`, and the cluster equivalent for the
   globals file). `gzip` closes its stream cleanly around a `pg_dump` that died
   mid-table, so integrity alone does not prove the dump finished;
-- the database dump must hold real rows, not just `COPY` blocks. A dump taken
-  against the wrong database — `POSTGRES_DB` naming one that exists but is
-  empty, or a container resolved from the wrong stack — is valid SQL that
-  clears the size floor and gzips cleanly. Size checking cannot see that; a row
-  count can. (Losing RLS-bypass privilege is *not* this case: `pg_dump` sets
-  `row_security = off` and aborts outright if the role cannot do that, which
-  the pipeline's exit-status check already catches.);
+- the database dump must hold rows, not just `COPY` blocks. A dump of a
+  database with nothing in it is valid SQL that clears the size floor and gzips
+  cleanly, and size checking cannot see that. Note what this row count does
+  **not** do: every applied migration is one row in a bookkeeping table, and
+  there are far more of those than the floor, so a database that was migrated
+  but never filled still clears it. Treat it as "something came out", not as
+  proof that the right database was dumped — that is what the compose project
+  mapping is for. (Losing RLS-bypass privilege is a different case again:
+  `pg_dump` sets `row_security = off` and aborts outright if the role cannot do
+  that, which the pipeline's exit-status check already catches.);
 - the globals dump must define roles, since the database dump's `OWNER` and
   `GRANT` statements have nothing to bind to without them;
 - the sizes and counts are logged.

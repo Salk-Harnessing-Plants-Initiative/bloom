@@ -64,10 +64,12 @@ DB_SERVICE = "db-prod"
 MIN_DATABASE_BYTES = 4096
 MIN_GLOBALS_BYTES = 256
 
-# Content floors. A dump of a database that holds no data is well-formed,
-# clears the size floor and gzips cleanly — which is what a run against the
-# wrong database looks like, POSTGRES_DB naming one that exists but is empty.
-# Size alone never catches that.
+# Content floors. A dump holding no data at all is well-formed, clears the size
+# floor and gzips cleanly, so size alone never catches it. The row count is a
+# floor on "did anything come out", not a check that the right database was
+# dumped: every applied migration is one row in a bookkeeping table, and there
+# are far more of those than this floor, so a migrated-but-empty database clears
+# it. Confirming which database was dumped is the compose project mapping's job.
 DB_DUMP_COMPLETE_MARKER = "-- PostgreSQL database dump complete"
 GLOBALS_DUMP_COMPLETE_MARKER = "-- PostgreSQL database cluster dump complete"
 MIN_DATA_ROWS = 100
@@ -484,10 +486,11 @@ def scan_plain_dump(path: Path, marker: str) -> tuple[int, int, bool]:
 
 
 def verify_database_content(path: Path) -> int:
-    """Reject a database dump that cannot hold this database's contents.
+    """Reject a database dump that finished but carries no data at all.
 
     The size floor and `gzip -t` both pass on a dump whose every table came out
-    empty. Returns the number of data rows seen.
+    empty. Returns the number of data rows seen — bookkeeping rows included, so
+    this does not distinguish a full database from a freshly migrated one.
     """
     rows, _, completed = scan_plain_dump(path, DB_DUMP_COMPLETE_MARKER)
     if not completed:
@@ -498,8 +501,8 @@ def verify_database_content(path: Path) -> int:
     if rows < MIN_DATA_ROWS:
         raise VerificationError(
             f"{path.name} holds {rows} data row(s), below the {MIN_DATA_ROWS}-row "
-            "floor — check POSTGRES_DB and the resolved container before "
-            "assuming the database really is this empty"
+            "floor — even a database with no records of its own carries more "
+            "than this, so check POSTGRES_DB and the resolved container"
         )
     logger.info("verified %s content: %d data row(s)", path.name, rows)
     return rows
