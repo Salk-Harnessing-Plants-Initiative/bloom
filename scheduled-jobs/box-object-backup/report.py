@@ -48,6 +48,12 @@ class RunReport:
     finished_at: datetime
     outcome: str
     box_root: str
+    # Where the bytes came FROM. The restore procedure needs both to rebuild a
+    # MinIO key, and said they were "recorded in every run report" — they were
+    # not. They live in .env.prod on the deploy host, which is the machine a
+    # restore assumes is gone.
+    minio_bucket: str = ""
+    minio_prefix: str = ""
     stats: dict = field(default_factory=dict)
     failures: list[str] = field(default_factory=list)
     # Objects that are NOT on Box by the two routes that are not a copy
@@ -57,6 +63,12 @@ class RunReport:
     # Actions log under retention — and this file exists precisely because
     # /var/lib and a rotating log cannot answer "which one?" later.
     skips: list[str] = field(default_factory=list)
+    # Objects Box cannot store BY NAME, listed separately from `skips`.
+    # Sharing one capped list meant collisions — which are recoverable by a
+    # rename either side — crowded out the name-skips, which are not: the
+    # watermark advances past them, so this file is the only record that they
+    # exist. 300 collisions ahead of 50 bad names left 0 of the 50 named.
+    name_skips: list[str] = field(default_factory=list)
     verify_failures: list[str] = field(default_factory=list)
     # The run's own verdict, in the same closed vocabulary the workflow
     # branches on. It is here as well as in the log because the log travels
@@ -65,6 +77,10 @@ class RunReport:
     # the runs most worth explaining. This file is written on the host first,
     # so it survives the connection dying.
     status: str = ""
+    # The flags known when the report was written. The two ledger flags are
+    # set by an upload that has not run yet, so they are never here; they
+    # reach a human through the exit code instead.
+    flags: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         listed = self.failures[:MAX_REPORTED_FAILURES]
@@ -84,6 +100,8 @@ class RunReport:
                 (self.finished_at - self.started_at).total_seconds(), 1
             ),
             "box_root": self.box_root,
+            "minio_bucket": self.minio_bucket,
+            "minio_prefix": self.minio_prefix,
             "stats": dict(self.stats),
             "failures": listed,
             "failures_truncated": total_failures > len(listed),
@@ -91,7 +109,10 @@ class RunReport:
             # Names, not just counts. `stats["skipped"]` and
             # `stats["verify_mismatched"]` remain the exact totals.
             "status": self.status,
+            "flags": list(self.flags),
             "skips": skips,
+            "name_skips": self.name_skips[:MAX_REPORTED_FAILURES],
+            "name_skips_truncated": len(self.name_skips) > MAX_REPORTED_FAILURES,
             "skips_truncated": total_skips > len(skips),
             "verify_failures": self.verify_failures[:MAX_REPORTED_FAILURES],
         }

@@ -333,7 +333,22 @@ gh run view <run-id> --log
 Exit codes: `0` clean, `1` some objects failed after retries, `2`
 configuration or preflight error, `3` interrupted (progress kept), `4`
 verification found objects missing or the wrong size on Box, `5` objects were
-refused because two names collide on one Box path.
+refused because two names collide on one Box path, `6` every object copied but
+the ledger's Box copy is stale or ahead of this host.
+
+**Exit 6 is a green night with a red tick, on purpose.** Every object reached
+Box; what did not is the record of *which* objects are already there, and that
+record is what makes a re-seed unnecessary. Every other route to a person is a
+notice inside a run that GitHub considers successful, and GitHub notifies
+nobody about those — so this one condition fails the run to raise an email. The
+watermark is unaffected: the exit code and the watermark are separate.
+
+**A verification mismatch (exit 4) does NOT hold the watermark.** It used to
+claim it did, and that claim was never true beyond one night: the next run finds
+the object already current, never re-copies it, so never re-checks it, records
+itself clean and advances anyway. Nothing here can put the object back either.
+It fails the run loudly instead, and `name_skips`/`verify_failures` in the run
+report on Box are the durable record of what is missing.
 
 **A run stopped on purpose reports "stopped, progress kept", not FAILED.** Exit
 `3` is what a cancel and the job's own stop script produce. Everything copied up

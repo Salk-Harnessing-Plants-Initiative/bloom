@@ -389,13 +389,28 @@ jobs:
                  -mmin -240 -printf '%T@ %p\\n' 2>/dev/null \
                | sort -rn | head -1 | cut -d' ' -f2-" 2>/dev/null || true)"
             if [ -n "$report" ]; then
-              status="$(ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
+              body="$(ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
                 -o StrictHostKeyChecking=yes \
                 "${DEPLOY_USER}@${DEPLOY_HOST}" \
-                "cat -- '${report}'" 2>/dev/null \
+                "cat -- '${report}'" 2>/dev/null || true)"
+              status="$(printf '%s' "$body" \
                 | grep -oE '\"status\"[[:space:]]*:[[:space:]]*\"[a-z_]+\"' \
                 | head -1 | grep -oE '[a-z_]+\"$' | tr -d '\"' || true)"
-              [ -n "$status" ] && echo "verdict taken from the run report on the host: $status"
+              # The flags too, not only the headline. Recovering the verdict
+              # and losing every notice meant a cancelled night — which during
+              # the seed is every night — reported its result and dropped the
+              # refused-filename notice, the one whose whole justification is
+              # that you get exactly one.
+              #
+              # The two ledger flags are never in the report: the upload that
+              # sets them runs after it is written. They reach a human by exit
+              # code 6 instead, which notifies whatever the summary renders.
+              flags="$(printf '%s' "$body" \
+                | tr -d ' \n' \
+                | grep -oE '\"flags\":\[[^]]*\]' \
+                | grep -oE '[a-z_]+' | grep -v '^flags$' | paste -sd, - || true)"
+              flags=",${flags},"
+              [ -n "$status" ] && echo "verdict taken from the run report on the host: $status ($flags)"
             fi
           fi
 

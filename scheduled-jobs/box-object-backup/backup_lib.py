@@ -102,6 +102,13 @@ class StorageObject:
 class SkippedObject:
     obj: StorageObject
     reason: str
+    # Whether the destination was already claimed by another object, rather
+    # than the object being unstorable in its own right. The two look alike in
+    # a count but not in what an operator can do: a collision is cleared by
+    # renaming either of the pair, a name Box cannot store is not clearable
+    # here at all. Carried as a field rather than inferred from the reason
+    # text, so the distinction cannot drift with the wording.
+    collision: bool = False
 
 
 @dataclass(frozen=True)
@@ -384,7 +391,7 @@ def build_plan(
             # existing ledger.
             holder = record.raw_name
         if holder is not None and holder != obj.name:
-            skipped.append(SkippedObject(obj, collision_reason(holder)))
+            skipped.append(SkippedObject(obj, collision_reason(holder), collision=True))
             collisions += 1
             continue
         claimed[key] = obj.name

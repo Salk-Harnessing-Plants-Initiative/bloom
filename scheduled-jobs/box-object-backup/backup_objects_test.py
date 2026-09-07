@@ -452,15 +452,26 @@ class TestVerificationCanFailARun:
     absent.
     """
 
-    def test_a_mismatch_stops_the_run_being_a_watermark(self):
-        assert job.run_outcome(
-            crashed=False, failed=0, copied=100, limit=None, verify_mismatched=1
-        ) == "partial"
+    def test_a_mismatch_does_not_hold_the_watermark(self):
+        """Holding it bought exactly one night, and never more.
 
-    def test_a_clean_verification_leaves_the_run_ok(self):
+        The next run finds the object `already_current`, never re-copies it
+        and so never re-checks it, records itself clean, and the watermark
+        advances anyway. The promise the messages made was not kept beyond a
+        single unattended night — and nothing here can put the object back, so
+        holding it properly would freeze the watermark until a person acted.
+
+        It fails the run instead (exit 4) and is named in the report.
+        """
         assert job.run_outcome(
-            crashed=False, failed=0, copied=100, limit=None, verify_mismatched=0
+            crashed=False, failed=0, copied=100, limit=None,
         ) == "ok"
+
+    def test_a_mismatch_still_fails_the_run(self):
+        """Not holding the watermark must not mean going quiet about it."""
+        assert job.exit_code(
+            failed=0, verify_mismatched=1, stopped=False, collisions=0
+        ) == 4
 
     def test_a_name_box_cannot_store_does_not_hold_the_watermark(self):
         """A deliberate trade, and the one place a skip differs from a
@@ -492,9 +503,9 @@ class TestVerificationCanFailARun:
             crashed=False, failed=0, copied=100, limit=None, collisions=1,
         ) == "partial"
 
-    def test_a_crash_still_outranks_a_mismatch(self):
+    def test_a_crash_is_still_an_error(self):
         assert job.run_outcome(
-            crashed=True, failed=0, copied=100, limit=None, verify_mismatched=5
+            crashed=True, failed=0, copied=100, limit=None,
         ) == "error"
 
     def test_not_verifying_is_not_the_same_as_verifying_clean(self):
@@ -1305,6 +1316,64 @@ class TestRunLockedWiresItsPartsTogether:
         # And the good object still copied.
         assert any("fine.png" in c[2] for c in self.object_copies(state))
 
+    def test_a_name_skip_is_not_crowded_out_by_collisions(
+        self, harness, monkeypatch, tmp_path
+    ):
+        """The report is the only record that a name-skipped object exists.
+
+        The watermark advances past it, so nothing enumerates it again. Sharing
+        one capped list with collisions — which ARE recoverable, by renaming
+        either of the pair — meant a run with many collisions named none of the
+        unrecoverable ones. 300 collisions ahead of 50 bad names left 0 of 50.
+        """
+        rows = []
+        for n in range(250):
+            rows.append(f"images\taaa/c{n}.png\tv1\t10\t2026-08-31T00:00:00+00")
+            rows.append(f"images\taaa/c{n}.png\tv2\t10\t2026-08-31T00:00:01+00")
+        rows.append("images\tzzz/plate:9.png\tv1\t10\t2026-08-31T00:00:02+00")
+        monkeypatch.setattr(
+            TestRunLockedWiresItsPartsTogether, "MANIFEST", "\n".join(rows) + "\n"
+        )
+        state, tmp_path = harness
+        job.run_locked(self.args(tmp_path), tmp_path)
+        body = json.loads(sorted((tmp_path / "_runs").glob("*.json"))[-1].read_text())
+        assert body["name_skips"], "the unrecoverable object is named nowhere"
+        assert any("plate" in entry for entry in body["name_skips"]), body["name_skips"]
+
+    def test_a_collision_is_not_listed_as_a_name_skip(
+        self, harness, monkeypatch, tmp_path
+    ):
+        """The two are counted together and must be listed apart.
+
+        A collision is cleared by renaming either of the pair; a name Box
+        cannot store is not clearable here at all. Listing collisions among the
+        unrecoverable ones defeats the separate list, since collisions are the
+        far more numerous kind.
+        """
+        monkeypatch.setattr(
+            TestRunLockedWiresItsPartsTogether, "MANIFEST",
+            "images\texp/café.png\tv1\t100\t2026-08-31T00:00:00+00\n"
+            "images\texp/café.png\tv2\t100\t2026-08-31T00:00:01+00\n",
+        )
+        state, tmp_path = harness
+        job.run_locked(self.args(tmp_path), tmp_path)
+        body = json.loads(sorted((tmp_path / "_runs").glob("*.json"))[-1].read_text())
+        assert body["stats"]["collisions"] == 1
+        assert body["skips"], "the collision is not named at all"
+        assert body["name_skips"] == [], (
+            f"a collision was listed as unrecoverable: {body['name_skips']}"
+        )
+
+    def test_the_report_carries_what_a_restore_needs(self, harness, tmp_path):
+        """The restore procedure said these were "recorded in every run
+        report". They were not — they live in .env.prod on the deploy host,
+        which is the machine a restore assumes is gone."""
+        state, tmp_path = harness
+        job.run_locked(self.args(tmp_path), tmp_path)
+        body = json.loads(sorted((tmp_path / "_runs").glob("*.json"))[-1].read_text())
+        assert body["minio_bucket"] == "bloom-storage"
+        assert body["minio_prefix"] == "storage-single-tenant"
+
     def test_a_skipped_name_is_named_in_the_run_report(
         self, harness, monkeypatch, tmp_path
     ):
@@ -1339,6 +1408,53 @@ class TestRunLockedWiresItsPartsTogether:
         body = json.loads(written[-1].read_text())
         assert body["status"] == "ok", body.get("status")
         assert body["status"] in job.STATUS_VALUES
+
+    def test_a_crashed_run_does_not_report_success(self, harness, monkeypatch, tmp_path):
+        """The verdict must know a crash happened.
+
+        A crash unwinds through `except BaseException`, so every counter the
+        exit code is built from is still zero and it returns 0 — which mapped
+        to `ok`. The report then carried `"outcome": "error", "status": "ok"`,
+        contradicting itself in one file, and because the report is the
+        fallback route a crashed night rendered "succeeded". The most likely
+        trigger at 8M scale is /var/lib filling during the ledger commit.
+        """
+        state, tmp_path = harness
+
+        def boom(*a, **kw):
+            raise job.dock.DockerError("the daemon container died")
+
+        monkeypatch.setattr(job, "copy_manifest", boom)
+        with pytest.raises(job.dock.DockerError):
+            job.run_locked(self.args(tmp_path), tmp_path)
+        written = sorted((tmp_path / "_runs").glob("*.json"))
+        assert written, "a crashed run wrote no report"
+        body = json.loads(written[-1].read_text())
+        assert body["outcome"] == "error"
+        assert body["status"] == "failed", (
+            f'a crashed run reports {body["status"]!r}; the report and the '
+            "outcome contradict each other and the summary reads succeeded"
+        )
+
+    def test_the_report_carries_the_flags_the_summary_branches_on(
+        self, harness, monkeypatch, tmp_path
+    ):
+        """Recovering the headline and losing every notice is not a recovery.
+
+        The report is the fallback route for a cancelled or timed-out night —
+        which during the seed is every night. An earlier version sent only the
+        verdict, so those nights dropped the refused-filename notice, whose
+        whole justification is that you get exactly one.
+        """
+        monkeypatch.setattr(
+            TestRunLockedWiresItsPartsTogether, "MANIFEST",
+            f"images\t{self.ILLEGAL}\tv1\t100\t2026-08-31T00:00:00+00\n"
+            "images\texp-42/fine.png\tv2\t200\t2026-08-31T00:00:01+00\n",
+        )
+        state, tmp_path = harness
+        job.run_locked(self.args(tmp_path), tmp_path)
+        body = json.loads(sorted((tmp_path / "_runs").glob("*.json"))[-1].read_text())
+        assert "skipped_names" in body["flags"], body.get("flags")
 
     def test_a_stopped_run_s_verdict_reaches_the_report(self, harness, tmp_path):
         """The case the whole route exists for."""
@@ -1792,7 +1908,11 @@ class TestTheLedgerIsCopiedToBox:
             TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
         )
         assert self.uploads(state) == [], "overwrote a larger ledger on Box"
-        assert code == 0, "a refused ledger upload failed the whole run"
+        assert code == 6, (
+            "a refused ledger upload must fail the run: every other route to a "
+            "human is a notice inside a SUCCESSFUL run's summary, and GitHub "
+            "notifies nobody on those"
+        )
         assert "NOT uploaded" in caplog.text
         assert "RESTORE it onto this host" in caplog.text, "did not say how to recover"
 
@@ -1976,7 +2096,7 @@ class TestTheLedgerIsCopiedToBox:
 
         monkeypatch.setattr(state["client"], "copy_file", refuse_the_ledger)
         code = job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        assert code == 0, "a failed ledger upload failed the whole run"
+        assert code == 6, "a failed ledger upload must fail the run"
         assert state["daemon_stopped"], "the rclone container was left behind"
         assert "upload failed" in caplog.text
 

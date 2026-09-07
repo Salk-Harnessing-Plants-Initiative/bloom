@@ -24,6 +24,8 @@ Exit codes:
   4 = copying reported success but verification found objects missing from Box
   5 = one or more objects were refused because two names collide on one Box
       path; rename one of each pair in Supabase
+  6 = every object copied, but the ledger's Box copy is stale or ahead of this
+      host — the record that makes a re-seed unnecessary is not safe
 """
 
 from __future__ import annotations
@@ -152,7 +154,17 @@ def _status_for(code: int, outcome: str) -> str:
     progress. Reported as FAILED, with "the mirror was not updated this run"
     underneath, the one outcome meaning "this is fine, re-run" was
     indistinguishable from a real failure.
+
+    `error` is checked FIRST and separately from the code. A crash unwinds
+    through `except BaseException`, so the counters this exit code is built
+    from are all still zero and it returns 0 — which mapped to `ok`. The
+    report then carried `"outcome": "error", "status": "ok"`, contradicting
+    itself in one file, and because the report is the fallback route a
+    crashed night rendered "succeeded". The outcome is the only input that
+    knows a crash happened.
     """
+    if outcome == "error":
+        return "failed"
     if code == 3:
         return "stopped"
     if code == 0:
@@ -409,7 +421,6 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             failed=totals.failed,
             copied=totals.copied,
             limit=args.limit,
-            verify_mismatched=totals.verify_mismatched,
             bucket_scoped=bool(args.buckets.strip()),
             stopped=stopping.stopping(),
             collisions=totals.collisions,
@@ -433,11 +444,19 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             ),
             outcome,
         )
-        # Only the verdict, deliberately. The flags cannot be computed here:
-        # publish_ledger sets `ledger_flag` and runs AFTER the report is
-        # written, so a set captured now would always miss it. The flags stay
-        # on the log route, where they are complete; the report carries the
-        # headline, which is what a cancelled run loses.
+        # The four flags that are already final go in too. An earlier version
+        # sent only the verdict, on the reasoning that `publish_ledger` sets
+        # `ledger_flag` after the report is written — true of that one flag,
+        # false of the other four, which `copy_manifest` and the verify block
+        # both finished with long before this point. The cost of leaving them
+        # out was that a cancelled night recovered its headline and lost every
+        # notice, including the refused-filename one whose whole justification
+        # is that you get exactly one.
+        #
+        # The ledger flags genuinely cannot be here — the upload has not run.
+        # They reach a human by the exit code instead (6), which fires a
+        # notification whether or not the summary renders anything.
+        report_flags = _flags_for(totals)
         # Nested so the teardown below cannot be skipped. Everything in this
         # block can raise — publish_report catches only OSError and
         # RcloneError, and the ledger writes can raise sqlite3.Error on a full
@@ -452,8 +471,9 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
                 daemon, state_dir, box_fs, args,
                 run_id=run_id, started_at=started_at, outcome=outcome,
                 stats=stats, failures=totals.failures,
-                skips=totals.skips, verify_failures=totals.verify_failures,
-                status=verdict,
+                skips=totals.skips, name_skips=totals.name_skips,
+                verify_failures=totals.verify_failures,
+                status=verdict, flags=report_flags,
             )
             ledger.commit()
         # Inside the finally, not after it. A run that raised is the one whose
@@ -507,7 +527,10 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             "them as mirrored, so later runs will skip them and this warning "
             "will not repeat. Putting them back needs a person — see "
             "'What verification does, and does not, prove' in the wiki. The "
-            "run is recorded partial, so the watermark is held meanwhile.",
+            "The run fails (exit 4) so this reaches you, but the watermark "
+            "is NOT held: holding it bought exactly one night — the next run "
+            "finds the object already current, never re-checks it, records "
+            "clean and advances anyway.",
             totals.verify_mismatched, totals.verify_checked,
         )
     elif totals.verify_checked and not totals.verify_unverified:
@@ -548,10 +571,11 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         verify_mismatched=totals.verify_mismatched,
         stopped=stopping.stopping(),
         collisions=totals.collisions,
+        ledger_flag=totals.ledger_flag,
     )
     # Same verdict the report already carries; printed here because the log is
     # the faster route when the connection does survive.
-    emit_status(verdict, _flags_for(totals))
+    emit_status(_status_for(code, outcome), _flags_for(totals))
     return code
 
 
@@ -581,6 +605,7 @@ class Totals:
     # Actions log under retention — the one place that answers "which one?"
     # must outlive it.
     skips: list = field(default_factory=list)
+    name_skips: list = field(default_factory=list)
     verify_failures: list = field(default_factory=list)
 
 
@@ -616,6 +641,7 @@ def exit_code(
     verify_mismatched: int,
     stopped: bool = False,
     collisions: int = 0,
+    ledger_flag: str | None = None,
 ) -> int:
     """What the run tells its caller, which for a scheduled run is everything.
 
@@ -647,6 +673,15 @@ def exit_code(
     # This needs a rename in Supabase instead.
     if collisions:
         return 5
+    # The ledger's Box copy is not what it should be — either stale or ahead
+    # of this host. Its own code, and non-zero deliberately: every other route
+    # to a human is a notice inside a SUCCESSFUL run's summary, which notifies
+    # nobody. This is the one condition that silently erodes the record that
+    # makes a re-seed unnecessary, so it is worth a red tick and an email even
+    # though every object copied fine. The run still records `ok`, so the
+    # watermark is unaffected — the exit code and the watermark are separate.
+    if ledger_flag:
+        return 6
     # 3 is already the documented "interrupted; progress is in the ledger and
     # the next run resumes". Installing a signal handler means SIGINT no longer
     # raises KeyboardInterrupt, so without this a stopped run would report the
@@ -662,7 +697,6 @@ def run_outcome(
     failed: int,
     copied: int,
     limit: int | None,
-    verify_mismatched: int = 0,
     bucket_scoped: bool = False,
     stopped: bool = False,
     collisions: int = 0,
@@ -695,10 +729,17 @@ def run_outcome(
     the whole table if no run has ever been clean. That is the intended trade,
     because an object nobody knows is missing is worse than a slow night.
 
-    A run whose verification found objects missing from Box has copied things
-    that are not there. Recording it clean would advance the watermark past
-    them, so nothing would ever look at them again — the check would have
-    found the fault and then buried it.
+    A run whose verification found objects missing from Box does NOT hold the
+    watermark, and this is deliberate. Holding it bought exactly one night:
+    the next run finds the object `already_current`, never re-copies it and so
+    never re-checks it, records itself clean, and the watermark advances
+    anyway. The promise was never kept beyond a single unattended night.
+
+    Nothing here can put the object back either — this job does not touch the
+    ledger to compensate — so holding the watermark would freeze it until a
+    person acted, and every night in between would re-read the whole table.
+    The run fails loudly instead (exit 4) and the object is named in the run
+    report, which is the durable record.
 
     A run that skipped an object because Box cannot store its name does NOT
     hold the watermark, deliberately, and this is the one case that differs
@@ -721,7 +762,7 @@ def run_outcome(
         return "error"
     truncated = limit is not None and copied >= limit
     if (
-        failed or truncated or verify_mismatched
+        failed or truncated
         or bucket_scoped or stopped or collisions
     ):
         return "partial"
@@ -740,8 +781,10 @@ def publish_report(
     stats: dict,
     failures: list,
     skips: list | None = None,
+    name_skips: list | None = None,
     verify_failures: list | None = None,
     status: str = "",
+    flags: tuple = (),
 ) -> None:
     """Write the run report locally, then copy it to Box beside the mirror.
 
@@ -762,10 +805,14 @@ def publish_report(
         finished_at=datetime.now(timezone.utc),
         outcome=outcome,
         box_root=args.box_root,
+        minio_bucket=args.minio_bucket,
+        minio_prefix=args.minio_prefix,
         stats=stats,
         skips=list(skips or []),
+        name_skips=list(name_skips or []),
         verify_failures=list(verify_failures or []),
         status=status,
+        flags=list(flags),
         failures=failures,
     )
     try:
@@ -946,9 +993,15 @@ def copy_manifest(
             # stack. The count in `stats` stays exact.
             if len(totals.skips) < MAX_TRACKED_FAILURES:
                 path = refused.obj.storage_path
-                totals.skips.append(
-                    f"{lib.loggable(path)}: {refused.reason}"
-                )
+                entry = f"{lib.loggable(path)}: {refused.reason}"
+                totals.skips.append(entry)
+                # Named apart as well as counted. A collision is recoverable
+                # by renaming either of the pair; a name Box cannot store is
+                # not, and the watermark advances past it — so the report is
+                # the only record that it exists, and it must not be crowded
+                # out of a shared cap by collisions.
+                if not refused.collision:
+                    totals.name_skips.append(entry)
         totals.collisions += plan.collisions
         totals.already_current += plan.already_current
         if not plan.copies:
