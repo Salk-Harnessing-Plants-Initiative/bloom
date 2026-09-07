@@ -334,6 +334,8 @@ jobs:
           # not run at all, report "200 verified". Anchoring to timestamp,
           # level, then the phrase means a name can never match: it only ever
           # appears once a message has already begun.
+          dry_line="$(grep -oE '^[0-9-]+ [0-9:,]+ [A-Z]+ dry run — would copy [0-9]+, [0-9]+ already current, [0-9]+ skipped' \
+            "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
           done_line="$(grep -oE '^[0-9-]+ [0-9:,]+ [A-Z]+ done — copied [0-9]+, failed [0-9]+, already current [0-9]+, skipped [0-9]+' \
             "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
           # The trailing ", N unverified" is optional because the job only
@@ -434,7 +436,14 @@ jobs:
             printf '%s%s' "$n" "$out"
           }
 
-          if [ -n "${copied:-}" ] && [ "$copied" -gt 0 ]; then
+          if [ -n "$dry_line" ]; then
+            # A dry run copies nothing by design, so the copy counts never
+            # applied to it — and without this it fell through to "no counts
+            # in the log", the phrase that means the log is malformed. It is
+            # step one of the pre-seed checklist.
+            would="$(printf '%s' "$dry_line" | grep -oE 'would copy [0-9]+' | grep -oE '[0-9]+' || true)"
+            counts="dry run — would copy $(group "${would:-0}"), nothing was copied"
+          elif [ -n "${copied:-}" ] && [ "$copied" -gt 0 ]; then
             counts="$(group "$copied") images copied"
           elif [ -n "${copied:-}" ]; then
             counts="nothing new to copy ($(group "${current:-0}") already on Box)"
@@ -443,6 +452,12 @@ jobs:
           fi
           if [ -n "${checked:-}" ] && [ "$checked" -gt 0 ]; then
             counts="${counts}, $(group "$checked") verified"
+          elif [ -n "${unverified:-}" ] && [ "$unverified" -gt 0 ]; then
+            # Nothing was answered. Without this the shortfall attaches to the
+            # copy count — "200,000 images copied (50 unanswered)" reads as 50
+            # of the copies being unanswered, and the notice below then refers
+            # to a "N verified" count that is not there.
+            counts="${counts}, 0 verified"
           fi
           if [ -n "${unverified:-}" ] && [ "$unverified" -gt 0 ]; then
             # Qualifies the number beside it rather than sitting apart from
@@ -469,8 +484,24 @@ jobs:
               echo "job's own time limit. Everything it copied is recorded and"
               echo "on Box; the next run carries on from there. Nothing is"
               echo "lost and nothing needs doing."
-              [ -n "$counts" ] && echo "It got through ${counts}."
+              if [ -n "${copied:-}" ] && [ "$copied" -gt 0 ]; then
+                echo "It got through ${counts}."
+              else
+                echo "It stopped before copying anything — most likely during"
+                echo "the manifest read, which a stop cannot interrupt."
+              fi
+            elif [ "$status" = "failed" ] && has_flag verify_mismatch; then
+              echo "Result: **FAILED, and verification found objects missing**"
+              echo "— objects failed to copy tonight AND the check found"
+              echo "others the copy had reported as successful are not on Box."
+              echo "Both are in the job log; the missing ones are named in the"
+              echo "run report under \`_runs/\`. Read the log first: a night"
+              echo "that failed copies outright is the larger problem."
             elif has_flag verify_mismatch; then
+              # Reached only when the run did NOT fail: the branch above takes
+              # a failed night first. Any flag branch added below this point
+              # must do the same, or it will headline a night that failed to
+              # copy 3,000 objects as a verification problem.
               echo "Result: **VERIFICATION FAILED** — objects the copy reported"
               echo "as successful are not on Box. Every one is named in the run"
               echo "report under \`_runs/\`."
@@ -495,8 +526,13 @@ jobs:
               echo "\`skipping\` line in the job log — renaming its twin"
               echo "instead leaves this one refused for ever. The run is"
               echo "recorded **partial**, so they stay in view until it is"
-              echo "done. Check the log for failures too; this line does not"
-              echo "mean nothing else went wrong."
+              echo "done."
+              if [ "$status" = "failed" ]; then
+                echo
+                echo "**Objects also failed to copy tonight.** See the job log"
+                echo "— that is the larger problem and this line does not"
+                echo "mean nothing else went wrong."
+              fi
             elif [ "$status" = "ok" ] || [ "$status" = "partial" ]; then
               if [ -n "$counts" ]; then
                 echo "Result: **succeeded** — ${counts}"
@@ -536,11 +572,18 @@ jobs:
               echo "> renaming them in Supabase can. Each is named with its"
               echo "> reason in the run report under \`_runs/\` on Box."
               echo ">"
-              echo "> **This is the only night that will say so.** The run is"
-              echo "> still recorded clean on purpose: holding the mirror's"
-              echo "> progress marker for a filename nothing can fix on its"
-              echo "> own would make every later night re-read all eight"
-              echo "> million rows. The report on Box is the durable record."
+              if [ "$status" = "ok" ]; then
+                # Only true on a clean night. A stopped or failed run is
+                # recorded partial, so the watermark IS held and tomorrow
+                # re-enumerates and says it again.
+                echo "> **This is the only night that will say so.** The run is"
+                echo "> still recorded clean on purpose: holding the mirror's"
+                echo "> progress timestamp for a filename nothing can fix on"
+                echo "> its own would make every later night re-read all eight"
+                echo "> million rows."
+              fi
+              echo "> The report on Box is the durable record — they are"
+              echo "> listed under \`name_skips\`, apart from the collisions."
             fi
             # The mirror image of the notice above, and it must never be
             # merged with it: there, the host has the good ledger and Box is

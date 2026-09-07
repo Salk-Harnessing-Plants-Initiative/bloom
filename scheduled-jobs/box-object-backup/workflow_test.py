@@ -1332,3 +1332,187 @@ class TestTheSummaryStepSurvivesErrexit:
             f"what GitHub renders is not what the tests check"
         )
         assert errexit_body.strip(), f"{night}: the step wrote nothing"
+
+
+class TestTheHeadlineMatchesTheWorstThingThatHappened:
+    """The branch chain is ordered by severity, not by which flag is set.
+
+    Every one of these ran the real step and read the wrong headline before
+    this class existed. They are executed rather than grepped because the
+    order of an `elif` chain is not visible in any single line of it: the bug
+    is always that some *earlier* branch claimed the night first.
+    """
+
+    def render(self, parsed: dict, log: str) -> str:
+        """The whole rendered summary, from the real step under `bash -e`."""
+        import subprocess
+        import tempfile
+        from pathlib import Path as P
+
+        steps = parsed["jobs"]["mirror"]["steps"]
+        script = next(
+            s["run"] for s in steps
+            if s.get("name", "").startswith("Write the run summary")
+        ).replace("${{ steps.run.outcome }}", "$OUTCOME")
+        with tempfile.TemporaryDirectory() as tmp:
+            (P(tmp) / "mirror-output.txt").write_text(log)
+            out = P(tmp) / "summary.md"
+            result = subprocess.run(
+                ["bash", "-e", "-c", script],
+                env={
+                    "PATH": "/usr/bin:/bin", "RUNNER_TEMP": tmp, "ENV_NAME": "prod",
+                    "OUTCOME": "success", "GITHUB_STEP_SUMMARY": str(out),
+                    "LC_ALL": "C",
+                },
+                capture_output=True, text=True,
+            )
+            assert result.returncode == 0, (
+                f"the step exited {result.returncode}: {result.stderr.strip()[:200]}"
+            )
+            body = out.read_text() if out.exists() else ""
+        assert body.strip(), "the summary step wrote nothing"
+        return body
+
+    @staticmethod
+    def headline(body: str) -> str:
+        line = [ln for ln in body.splitlines() if ln.startswith("Result:")]
+        return line[0] if line else ""
+
+    def night(self, status: str, *flags: str, log: str = "") -> str:
+        assert status in job.STATUS_VALUES, status
+        for flag in flags:
+            assert flag in job.FLAG_VALUES, flag
+        return log + (
+            f"2026-08-31 02:45:00,1 INFO {job.STATUS_KEY}={status}\n"
+            f"2026-08-31 02:45:00,1 INFO {job.FLAGS_KEY}={','.join(flags)}\n"
+        )
+
+    DONE = "2026-08-31 02:20:00,1 INFO done — copied {c}, failed {f}, already current {a}, skipped 0\n"
+
+    def test_a_night_that_failed_copies_does_not_headline_as_verification_failed(
+        self, parsed
+    ):
+        """3,000 objects failed to copy, and 2 turned out to be missing.
+
+        The larger problem is the 3,000. Ordered by flag, `verify_mismatch`
+        won the headline and the failures were mentioned nowhere above the
+        fold — the summary read VERIFICATION FAILED on a night that had not
+        managed to mirror anything.
+        """
+        log = self.night(
+            "failed", "verify_mismatch",
+            log=self.DONE.format(c=100, f=3000, a=0),
+        )
+        headline = self.headline(self.render(parsed, log))
+        assert "FAILED" in headline
+        assert "verification" in headline.lower(), (
+            f"the mismatch is invisible: {headline}"
+        )
+        assert not headline.startswith("Result: **VERIFICATION FAILED**"), (
+            f"3,000 failed copies headlined as a verification problem: {headline}"
+        )
+
+    def test_a_failed_night_that_also_refused_a_collision_says_both(self, parsed):
+        """The collision branch is the other one that used to swallow a failure.
+
+        Its advice — rename one of the pair — is right and stays. It just
+        cannot be the only thing the night says when copies also failed.
+        """
+        body = self.render(
+            parsed, self.night("failed", "collisions", log=self.DONE.format(c=0, f=12, a=0))
+        )
+        assert "OBJECTS NOT BACKED UP" in self.headline(body)
+        assert "also failed to copy" in body, (
+            "a night with 12 failed copies reported only the collision"
+        )
+
+    def test_the_entangled_remedy_is_reached_when_both_happen(self, parsed):
+        """A mismatch and a collision on one night, with copies otherwise fine.
+
+        This is the branch that carries "resolve the collision first" — the
+        one piece of advice in the summary whose order matters — and no test
+        reached it, so it could have been deleted with the suite green.
+        """
+        body = self.render(
+            parsed,
+            self.night("partial", "verify_mismatch", "collisions",
+                       log=self.DONE.format(c=40, f=0, a=0)),
+        )
+        assert "VERIFICATION FAILED" in self.headline(body)
+        assert "also** refused a name collision" in body
+        assert "entangled" in body
+
+    def test_a_dry_run_reports_what_it_would_have_done(self, parsed):
+        """Step one of the pre-seed checklist read as a malformed log.
+
+        A dry run prints no `done —` line, so the counts grep matched nothing
+        and the headline fell through to "(no counts in the log — check it)"
+        — the phrase reserved for a run whose output is broken.
+        """
+        log = self.night(
+            "ok",
+            log="2026-08-31 02:20:00,1 INFO dry run — would copy 12, 400 already current, 0 skipped; nothing was copied\n",
+        )
+        headline = self.headline(self.render(parsed, log))
+        assert "would copy 12" in headline, headline
+        assert "no counts in the log" not in headline
+        assert "nothing was copied" in headline
+
+    def test_a_verification_that_answered_nothing_does_not_qualify_the_copies(
+        self, parsed
+    ):
+        """Box answered for none of the 50 it was asked about.
+
+        With no `checked` count to attach it to, the shortfall landed on the
+        copy count: "200,000 images copied (50 unanswered)" reads as 50 of
+        the copies being unanswered, and the notice below then refers to an
+        "N verified" number that is not on the page.
+        """
+        log = self.night(
+            "ok", "verify_incomplete",
+            log=self.DONE.format(c=200000, f=0, a=0)
+            + "2026-08-31 02:41:00,1 INFO verify: 0 checked, 0 mismatched, 50 unverified\n",
+        )
+        headline = self.headline(self.render(parsed, log))
+        assert "0 verified (50 unanswered)" in headline, headline
+
+    def test_the_only_night_wording_is_not_claimed_when_it_is_untrue(self, parsed):
+        """"This is the only night that will say so" holds on a clean run only.
+
+        It is true because a clean run moves the watermark past the object.
+        A stopped run is recorded partial, so the watermark is held, tomorrow
+        re-enumerates the same rows and says it again — and someone who read
+        it as a one-off has been told the wrong thing about a permanent
+        non-backup.
+        """
+        clean = self.render(
+            parsed, self.night("ok", "skipped_names", log=self.DONE.format(c=9, f=0, a=0))
+        )
+        stopped = self.render(
+            parsed,
+            self.night("stopped", "skipped_names", log=self.DONE.format(c=9, f=0, a=0)),
+        )
+        assert "only night that will say so" in clean
+        assert "only night that will say so" not in stopped, (
+            "a stopped night claims the warning will not repeat, but it holds "
+            "the watermark and so it will"
+        )
+        assert "filenames" in stopped, "the stopped night dropped the notice entirely"
+        assert "name_skips" in stopped, (
+            "with the wording gone there is nothing pointing at the durable record"
+        )
+
+    def test_a_run_stopped_before_copying_says_so(self, parsed):
+        """A stop during the manifest read has no counts to report.
+
+        `copied = 0` rendered as "It got through nothing new to copy (0
+        already on Box)" — which states the mirror was already up to date,
+        on a night that never got far enough to know.
+        """
+        body = self.render(
+            parsed, self.night("stopped", log=self.DONE.format(c=0, f=0, a=0))
+        )
+        assert "stopped before copying anything" in body, body
+        assert "already on Box" not in body, (
+            "a run that copied nothing claims the mirror was already current"
+        )
