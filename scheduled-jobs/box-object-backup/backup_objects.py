@@ -62,12 +62,20 @@ BATCH_SIZE = 20_000
 # so a multi-million-object seed doesn't hold them all to check 50.
 VERIFY_POOL_CAP = 5_000
 
-# Printed whenever the ledger changed but its Box copy did not. The upload is
-# best-effort by design — the objects are already on Box — so the run still
-# exits 0 and the summary would otherwise read "succeeded" while the only copy
-# of the resume record sits on the host this job exists to survive losing.
-# The workflow summary greps this phrase; both failure paths must carry it.
+# Printed when the ledger changed and its Box copy did not, because the upload
+# could not be made. The upload is best-effort by design — the objects are
+# already on Box — so the run still exits 0 and the summary would otherwise read
+# "succeeded" while the only copy of the resume record sits on the host this job
+# exists to survive losing.
 LEDGER_STALE_MARKER = "the Box copy of the ledger is STALE"
+
+# The opposite situation, and it needs the opposite remedy, so it cannot share
+# the marker above. Here the upload was REFUSED because Box holds the larger
+# ledger: Box is the good copy and this host's is a stub — a rebuilt host, or a
+# wiped state dir. Told to "fix" a stale Box copy, an operator would overwrite
+# eight million rows with twenty and buy a three-week re-seed, which is the
+# exact disaster the size guard exists to prevent.
+LEDGER_AHEAD_MARKER = "the ledger on Box is AHEAD of this host"
 
 # Printed when every sampled object went unanswered, so the pass established
 # nothing. A failed stat is not evidence against the backup and must not fail
@@ -645,12 +653,13 @@ def publish_ledger(
         remote_size = existing.get("Size") if existing else None
         if isinstance(remote_size, int) and local_size < remote_size:
             logger.error(
-                "ledger NOT uploaded, so %s. The copy at %s is %s and this "
-                "run's is only %s, so this host is not the one that built "
-                "that mirror. Restore the Box copy before running again — see "
+                "ledger NOT uploaded: %s. The copy at %s is %s and this run's "
+                "is only %s, so this host is not the one that built that "
+                "mirror. The Box copy is the good one — RESTORE it onto this "
+                "host before running again, and do not upload over it. See "
                 "'If the deploy host itself is gone' in the wiki. Uploading "
                 "now would lose the record of what is already backed up.",
-                LEDGER_STALE_MARKER, destination,
+                LEDGER_AHEAD_MARKER, destination,
                 lib.format_bytes(remote_size), lib.format_bytes(local_size),
             )
             return

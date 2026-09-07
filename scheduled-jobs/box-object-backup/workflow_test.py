@@ -143,13 +143,35 @@ class TestSkipMarkerContract:
             "the summary cannot report that the ledger on Box is stale"
         )
 
-    def test_the_stale_ledger_grep_matches_what_the_job_prints(self):
-        """Two files, two languages. Comments stripped, because a phrase left
-        only in a comment satisfied the raw-source version of this before."""
-        source = (Path(__file__).parent / "backup_objects.py").read_text()
-        assert job.LEDGER_STALE_MARKER in _strip_comments(source), (
-            "the workflow greps for a phrase the job no longer prints"
-        )
+    def test_every_phrase_the_summary_greps_for_is_one_something_can_print(
+        self, summary_script: str
+    ):
+        """A grep phrase no code emits is a branch that can never fire.
+
+        This replaces two tests that asserted `MARKER in backup_objects.py
+        source`. That could not fail: the constant's own definition line
+        satisfied it, and the constant has to exist or the test's own
+        reference raises first. Stripping every USE of both markers left them
+        green — the same defect class as the test satisfied by an import line.
+
+        Comparing against the constants' VALUES is the contract that can
+        actually drift, because the two sides are different files in
+        different languages.
+        """
+        emitted = {
+            SKIP_MARKER,
+            job.LEDGER_STALE_MARKER,
+            job.LEDGER_AHEAD_MARKER,
+            job.VERIFY_BLACKOUT_MARKER,
+            "were missing or the wrong size on Box",
+            "were NOT backed up",
+        }
+        grepped = set(re.findall(r"grep -q '([^']+)'", _strip_comments(summary_script)))
+        assert grepped, "the summary greps for nothing at all"
+        # Substring, not equality: the skip grep is deliberately the stable
+        # prefix of a longer sentence.
+        orphans = {g for g in grepped if not any(g in e for e in emitted)}
+        assert not orphans, f"the summary greps for phrases nothing prints: {orphans}"
 
     def test_the_stale_ledger_notice_is_not_a_branch(self, summary_script: str):
         """It must survive whichever result won.
@@ -186,11 +208,34 @@ class TestSkipMarkerContract:
             "the summary cannot report a verification that checked nothing"
         )
 
-    def test_the_blackout_grep_matches_what_the_job_prints(self):
-        source = (Path(__file__).parent / "backup_objects.py").read_text()
-        assert job.VERIFY_BLACKOUT_MARKER in _strip_comments(source), (
-            "the workflow greps for a phrase the job no longer prints"
+    def test_a_ledger_on_box_that_is_ahead_gets_its_own_notice(self, summary_script: str):
+        """It must never share the stale-ledger notice.
+
+        Stale means the host has the good ledger and Box is behind. Ahead
+        means the reverse — Box holds eight million rows and this host holds a
+        stub. One notice covering both told an operator to "fix" the Box copy,
+        which for this case means overwriting the only good record and buying
+        a full re-seed. That is the disaster the size guard exists to prevent.
+        """
+        script = _strip_comments(summary_script)
+        assert job.LEDGER_AHEAD_MARKER in script, (
+            "a refused ledger upload cannot be told from a failed one"
         )
+        assert re.search(
+            r"(?<!el)if grep -q '" + re.escape(job.LEDGER_AHEAD_MARKER), script
+        ), "the ahead-ledger notice is a branch, so another result hides it"
+
+    def test_the_ahead_ledger_notice_says_restore_and_not_upload(
+        self, summary_script: str
+    ):
+        """The whole point of splitting it: the remedy is the opposite one."""
+        script = _strip_comments(summary_script)
+        opener = "if grep -q '" + job.LEDGER_AHEAD_MARKER
+        assert opener in script, "there is no ahead-ledger notice to check"
+        branch = script[script.index(opener):][:1000]
+        assert "Restore the Box copy" in branch, "does not say to restore"
+        assert "Do NOT upload" in branch, "does not warn against uploading"
+        assert "was refused on purpose" in branch, "reads as a fault, not a guard"
 
     def test_the_blackout_notice_is_not_a_branch(self, summary_script: str):
         # Same reason as the stale ledger: this happens on nights that copied

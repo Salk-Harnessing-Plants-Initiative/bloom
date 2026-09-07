@@ -1423,24 +1423,53 @@ class TestTheLedgerIsCopiedToBox:
         assert self.uploads(state) == [], "overwrote a larger ledger on Box"
         assert code == 0, "a refused ledger upload failed the whole run"
         assert "NOT uploaded" in caplog.text
-        assert "Restore the Box copy" in caplog.text, "did not say how to recover"
+        assert "RESTORE it onto this host" in caplog.text, "did not say how to recover"
 
-    def test_a_refused_upload_says_the_box_copy_is_stale(
+    def test_a_refused_upload_says_the_box_ledger_is_ahead_not_stale(
         self, harness, monkeypatch, caplog
     ):
-        """The run still exits 0, so the summary would read "succeeded".
+        """The run still exits 0, so the summary would read "succeeded" — but
+        this case needs the OPPOSITE remedy to a stale Box copy.
 
-        The objects reached Box, so failing the run would be wrong — but the
-        record of WHICH objects are already mirrored now exists only on the
-        host this job exists to survive losing, and every later night keeps
-        reporting green while that copy falls further behind. The workflow
-        summary greps for this marker; without it the night is
-        indistinguishable from a clean one.
+        Here Box holds the eight-million-row ledger and this host holds a
+        stub, which is exactly why the upload was refused. Reported as
+        "stale", an operator is told the host has the good copy and Box needs
+        fixing — so they overwrite the only good record and buy a three-week
+        re-seed, which is the disaster the size guard exists to prevent. The
+        two situations must never share a marker.
         """
         state, tmp_path = harness
         self.with_remote_size(state, monkeypatch, 1_700_000_000)
         job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        assert job.LEDGER_AHEAD_MARKER in caplog.text
+        assert job.LEDGER_STALE_MARKER not in caplog.text, (
+            "a refused upload was reported as a stale Box copy"
+        )
+        assert "RESTORE it onto this host" in caplog.text, "does not say to restore"
+
+    def test_a_ledger_that_cannot_be_read_says_the_box_copy_is_stale(
+        self, harness, monkeypatch, caplog
+    ):
+        """The third failure path, and the one that had no test at all.
+
+        Deleting this branch outright left the suite green, while the PR
+        described all three paths as covered. It is reached by the real
+        failures this feature exists for — a full disk, a wiped state dir, a
+        permissions change — and it is one where the run still exits 0 and
+        the summary would otherwise read "succeeded".
+        """
+        state, tmp_path = harness
+        real_stat = Path.stat
+
+        def refuse(self, *args, **kwargs):
+            if self.name == "ledger.db":
+                raise OSError(13, "Permission denied")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", refuse)
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
         assert job.LEDGER_STALE_MARKER in caplog.text
+        assert self.uploads(state) == [], "uploaded a ledger it could not read"
 
     def test_a_failed_upload_says_the_box_copy_is_stale(
         self, harness, monkeypatch, caplog

@@ -403,8 +403,25 @@ jobs:
               echo "> machine this job exists to survive losing. Every later"
               echo "> night can still report success while that copy falls"
               echo "> further behind, so fix it now: the job log says why the"
-              echo "> upload was refused, and 'If the deploy host itself is"
-              echo "> gone' in the wiki says what losing it costs."
+              echo "> upload failed, and 'If the deploy host itself is gone'"
+              echo "> in the wiki says what losing it costs."
+            fi
+            # The mirror image of the notice above, and it must never be
+            # merged with it: there, the host has the good ledger and Box is
+            # behind. Here Box has the good one. An operator told to "fix a
+            # stale Box copy" would overwrite eight million rows with twenty.
+            if grep -q 'the ledger on Box is AHEAD of this host' \
+              "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
+              echo
+              echo "> **The ledger on Box is newer than this host's — the"
+              echo "> upload was refused on purpose.** Box holds the record of"
+              echo "> what is already mirrored and this host holds a smaller"
+              echo "> one, which means this is not the machine that built the"
+              echo "> mirror: a rebuilt host, or a wiped state directory."
+              echo "> **Restore the Box copy onto this host. Do NOT upload"
+              echo "> over it** — that would replace the record of millions of"
+              echo "> objects with this run's, and cost a full re-seed. See"
+              echo "> 'If the deploy host itself is gone' in the wiki."
             fi
             # Also additive, and for the same reason: a verification that
             # established nothing happens on a night that copied fine.
