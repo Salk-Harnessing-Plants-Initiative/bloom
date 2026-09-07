@@ -939,7 +939,7 @@ def copy_manifest(
             if len(totals.skips) < MAX_TRACKED_FAILURES:
                 path = refused.obj.storage_path
                 totals.skips.append(
-                    f"{path if path.isascii() else ascii(path)}: {refused.reason}"
+                    f"{lib.loggable(path)}: {refused.reason}"
                 )
         totals.collisions += plan.collisions
         totals.already_current += plan.already_current
@@ -1139,7 +1139,7 @@ def report_skips(plan: lib.CopyPlan) -> None:
         path = skipped.obj.storage_path
         logger.warning(
             "skipping %s: %s",
-            path if path.isascii() else ascii(path),
+            lib.loggable(path),
             skipped.reason,
         )
 

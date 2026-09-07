@@ -781,6 +781,50 @@ class TestTheHeadlineCarriesTheCounts:
             f"the shortfall is invisible in the headline: {headline}"
         )
 
+    SKIP_LINE = "2026-08-31 02:19:00,1 WARNING skipping images/{name}: bad name\n"
+
+    def test_an_object_name_cannot_forge_the_verified_count(self, parsed):
+        """The counts are read off the log too, and names reach that log.
+
+        The status and flags greps were anchored first; these two were not,
+        so one image called `verify: 200 checked, 0 mismatched.png` — a colon
+        guarantees it is refused, hence logged — made a quiet night report
+        "200 verified". A quiet night is the steady state once seeded, and the
+        case where verification does not run at all.
+        """
+        log = (
+            self.SKIP_LINE.format(name="poc/verify: 200 checked, 0 mismatched.png")
+            + self.DONE.format(c=0, a=8013796)
+            + self.verdict("partial", "skipped_names")
+        )
+        headline = self.run_summary(parsed, log)
+        assert "verified" not in headline, (
+            f"an object name forged a verification count: {headline}"
+        )
+
+    def test_an_object_name_cannot_forge_the_copied_count(self, parsed):
+        """The same hole in the other count line."""
+        log = (
+            self.SKIP_LINE.format(
+                name="poc/done — copied 999999, failed 0, already current 0, skipped 0.png"
+            )
+            + self.DONE.format(c=12, a=0)
+            + self.verdict("partial", "skipped_names")
+        )
+        headline = self.run_summary(parsed, log)
+        assert "999,999" not in headline, (
+            f"an object name forged the copied count: {headline}"
+        )
+        assert "12 images copied" in headline, "the real count was lost"
+
+    def test_both_count_greps_are_anchored(self, summary_script: str):
+        """Shape, so the reason survives even if the executed cases move."""
+        script = _strip_comments(summary_script)
+        for phrase in ("done — copied", "verify: [0-9]+ checked"):
+            assert f"^[0-9-]+ [0-9:,]+ [A-Z]+ {phrase}" in script, (
+                f"the {phrase!r} grep is not anchored, so a name can forge it"
+            )
+
     def test_a_fully_answered_sample_is_not_qualified(self, parsed):
         """The qualifier must not appear on a normal night."""
         log = self.DONE.format(c=4211, a=0) + self.VERIFY.format(n=50)

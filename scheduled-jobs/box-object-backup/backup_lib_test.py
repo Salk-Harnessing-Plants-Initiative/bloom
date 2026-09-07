@@ -20,7 +20,7 @@ import backup_lib as lib  # noqa: E402
 from backup_lib import (  # noqa: E402
     BACKING_BUCKET, SQLITE_MAX_VARIABLES, BackupError, CopiedRecord, StorageObject,
     batches, box_path, build_plan, chunked, format_bytes, iter_manifest,
-    objects_query, parse_manifest, unsafe_reason,
+    loggable, objects_query, parse_manifest, unsafe_reason,
 )
 from ledger import Ledger, utcnow  # noqa: E402
 from rclone_rc import MinioSource, RcloneError, _is_retryable, redact  # noqa: E402
@@ -1003,3 +1003,36 @@ class TestTheLedgerStoresWhatItLooksUp:
         plan = lib.build_plan([o], ledger.versions_for([o.ledger_key]))
         assert plan.copies == (), "already copied, but planned again"
         assert plan.already_current == 1
+
+
+# ---------- paths that reach a log, and the summary it feeds ----------
+
+def test_a_plain_path_is_left_readable():
+    assert loggable("images/exp-42/frame_0001.png") == "images/exp-42/frame_0001.png"
+
+
+def test_two_names_that_look_identical_do_not_log_identically():
+    """The reason the collision guard exists is that they look the same.
+
+    `café.png` composed and decomposed are different objects in Postgres and
+    one path on Box. Logged raw, the two lines are byte-identical and name an
+    object nobody can pick out from its twin — so the rename the run asks for
+    cannot be performed.
+    """
+    composed = "images/caf\u00e9.png"
+    decomposed = "images/cafe\u0301.png"
+    assert composed != decomposed
+    assert loggable(composed) != loggable(decomposed), (
+        "the two collide in the log as well as on Box"
+    )
+
+
+def test_a_direction_override_cannot_reorder_a_rendered_filename():
+    """These lines reach $GITHUB_STEP_SUMMARY, which renders them.
+
+    A right-to-left override in a name reorders the displayed filename for
+    everyone reading the summary.
+    """
+    rendered = loggable("images/exp\u202egnp.txt")
+    assert "\u202e" not in rendered
+    assert "\\u202e" in rendered, rendered

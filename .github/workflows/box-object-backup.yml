@@ -327,13 +327,20 @@ jobs:
           # because the mirror had vanished. "nothing new to copy, 8,013,796
           # already on Box" says the mirror is intact; "0 copied, 0 already
           # current" would not.
-          done_line="$(grep -oE 'done — copied [0-9]+, failed [0-9]+, already current [0-9]+, skipped [0-9]+' \
+          # Anchored for the same reason as the status line below: object
+          # names reach this log, and a name is free text. One image called
+          # `verify: 200 checked, 0 mismatched.png` — a colon guarantees it is
+          # refused, hence logged — made a quiet night, when verification does
+          # not run at all, report "200 verified". Anchoring to timestamp,
+          # level, then the phrase means a name can never match: it only ever
+          # appears once a message has already begun.
+          done_line="$(grep -oE '^[0-9-]+ [0-9:,]+ [A-Z]+ done — copied [0-9]+, failed [0-9]+, already current [0-9]+, skipped [0-9]+' \
             "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
           # The trailing ", N unverified" is optional because the job only
           # prints it when there is a shortfall — but when there is one it
           # belongs in the headline, or "50 verified" reads as a clean check
           # on a night where Box answered twice.
-          verify_line="$(grep -oE 'verify: [0-9]+ checked, [0-9]+ mismatched(, [0-9]+ unverified)?' \
+          verify_line="$(grep -oE '^[0-9-]+ [0-9:,]+ [A-Z]+ verify: [0-9]+ checked, [0-9]+ mismatched(, [0-9]+ unverified)?' \
             "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
           copied="$(printf '%s' "$done_line" | grep -oE 'copied [0-9]+' | grep -oE '[0-9]+' || true)"
           current="$(printf '%s' "$done_line" | grep -oE 'already current [0-9]+' | grep -oE '[0-9]+' || true)"

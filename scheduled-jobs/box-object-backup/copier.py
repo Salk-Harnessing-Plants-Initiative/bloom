@@ -72,7 +72,7 @@ def copy_all(
         try:
             copy_one(client, src_fs, lib.source_remote(obj, minio.prefix), box_fs, dst, obj)
         except RcloneError as exc:
-            logger.error("failed %s: %s", obj.storage_path, exc)
+            logger.error("failed %s: %s", lib.loggable(obj.storage_path), exc)
             with lock:
                 state["failed"] += 1
                 # Bounded: a bad night can fail millions of objects, and the
@@ -121,8 +121,10 @@ class VerifyReservoir:
     What this buys is a stable sample, not a reproducible finding. A mismatched
     object is recorded as copied before verification runs, so the next run
     skips it as `already_current`, never copies it, and never offers it here
-    again — re-running does not re-check it. Forcing that means deleting its
-    ledger row by hand, which the run's own error message explains.
+    again — re-running does not re-check it. The run deliberately does not
+    change the ledger to compensate: this is a backup, and nothing here
+    removes a record of what is on Box. The report names the object; putting
+    it back is a person's decision.
     """
 
     def __init__(self, cap: int) -> None:
@@ -182,7 +184,7 @@ def copy_one(
             delay = RETRY_BASE_SECONDS * (2 ** (attempt - 1))
             logger.warning(
                 "retry %d/%d for %s in %ds: %s",
-                attempt, MAX_ATTEMPTS - 1, obj.storage_path, delay, exc,
+                attempt, MAX_ATTEMPTS - 1, lib.loggable(obj.storage_path), delay, exc,
             )
             time.sleep(delay)
 
@@ -254,18 +256,18 @@ def verify_sample(
         except RcloneError as exc:
             # Not a mismatch: Box was asked and did not answer. Warning, not
             # error, so it cannot be read as a missing object.
-            logger.warning("verify: could not check %s: %s", dst, exc)
+            logger.warning("verify: could not check %s: %s", lib.loggable(dst), exc)
             unverified += 1
             continue
         checked += 1
         if item is None:
-            logger.error("verify: missing on Box: %s", dst)
+            logger.error("verify: missing on Box: %s", lib.loggable(dst))
             mismatched += 1
             failures.append(obj)
         elif obj.size is not None and item.get("Size") != obj.size:
             logger.error(
                 "verify: size mismatch %s — Box %s, Postgres %s",
-                dst, item.get("Size"), obj.size,
+                lib.loggable(dst), item.get("Size"), obj.size,
             )
             mismatched += 1
             failures.append(obj)

@@ -235,6 +235,28 @@ def batches(objects: Iterable[StorageObject], size: int) -> Iterator[list[Storag
 # Path safety
 # ---------------------------------------------------------------------------
 
+def loggable(path: str) -> str:
+    """A path safe to put in a log line, and in the job summary it feeds.
+
+    Escaped only when it is not plain ASCII, so ordinary paths stay readable.
+    Two reasons it has to be escaped at all:
+
+    Names that LOOK identical are the whole point of the collision guard —
+    `café.png` composed and decomposed are different objects and the same Box
+    path. Printed raw, the two lines are byte-identical and name an object
+    nobody can pick out from its twin.
+
+    And these lines reach `$GITHUB_STEP_SUMMARY`, where a right-to-left
+    override in a name reorders the rendered filename for everyone reading it.
+
+    One function rather than the idiom repeated at each call site: it was
+    written inline in one module and simply not in the other, which is how
+    the verification lines came to print raw paths while the skip lines did
+    not.
+    """
+    return path if path.isascii() else ascii(path)
+
+
 def unsafe_reason(obj: StorageObject) -> str | None:
     """Why this object cannot be mirrored to Box under its logical path.
 

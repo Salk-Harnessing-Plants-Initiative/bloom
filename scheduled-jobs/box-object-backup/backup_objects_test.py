@@ -269,6 +269,33 @@ def test_verify_does_not_call_an_unanswered_object_a_mismatch(caplog, ledger):
     assert "could not check" in caplog.text
 
 
+def test_verify_escapes_a_non_ascii_path(caplog, ledger):
+    """These lines reach `$GITHUB_STEP_SUMMARY`, which renders them.
+
+    A right-to-left override in a name reorders the displayed filename for
+    everyone reading the summary. `report_skips` escaped its paths from the
+    start; the verification lines were added later and did not, which is the
+    drift a shared helper removes.
+
+    Note this is the BOX path, which is NFC-normalized — so it cannot tell
+    two colliding names apart, and is not meant to. Distinguishing twins is
+    `report_skips`' job, on the raw name.
+    """
+    copier.verify_sample(
+        FakeRclone(), make_plan([obj(name="exp-42/caf\u00e9\u202egnp.png")]),
+        BOX_FS, "root", 1,
+    )
+    [line] = [ln for ln in caplog.text.splitlines() if "missing on Box" in ln]
+    assert line.isascii(), line
+    assert "\u202e" not in line, "a direction override reached the summary raw"
+
+
+def test_verify_leaves_an_ordinary_path_readable(caplog, ledger):
+    """Escaping must not make the common case unreadable."""
+    copier.verify_sample(FakeRclone(), make_plan([obj()]), BOX_FS, "root", 1)
+    assert "root/images/exp-42/frame.png" in caplog.text
+
+
 def test_verify_counts_every_bad_object_not_just_the_first(ledger):
     """The count is a count, not a flag — the summary reports `N of M`."""
     objects = [obj(name=f"exp-42/{n}.png") for n in range(3)]
