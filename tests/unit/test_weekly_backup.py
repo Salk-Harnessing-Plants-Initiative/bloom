@@ -744,19 +744,29 @@ def test_dry_run_verifies_but_never_uploads(tmp_path, monkeypatch):
 
 
 def test_the_working_directory_is_removed_on_failure(tmp_path, monkeypatch):
-    # _deploy_dir matters: without the env file main() returns before the state
-    # dir is created, and the glob below passes without reaching the cleanup.
+    # The _which patch is what makes this test mean anything. Without it, a host
+    # with no rclone — CI included — fails the pre-flight and returns before a
+    # working directory is ever made, so every assertion below holds vacuously.
     _deploy_dir(tmp_path)
-    state = tmp_path / "state"
-    state.mkdir(mode=0o755)
+    state = _host_state_dir(tmp_path)
     monkeypatch.setenv("BACKUP_STATE_DIR", str(state))
-    monkeypatch.setattr(
-        backup, "resolve_container",
-        lambda *a: (_ for _ in ()).throw(backup.ConfigError("stack down")),
-    )
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    during_the_run: list[list[str]] = []
+
+    def _stack_is_down(*a):
+        # Called from inside the working directory's scope, so this is proof
+        # the directory existed rather than an assumption that it did.
+        during_the_run.append([p.name for p in state.glob("bloom-backup-*")])
+        raise backup.ConfigError("stack down")
+
+    monkeypatch.setattr(backup, "resolve_container", _stack_is_down)
+
     rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
     assert rc == backup.EXIT_CONFIG
-    assert state.is_dir(), "the run must have got far enough to create the state dir"
+    assert during_the_run and during_the_run[0], (
+        "the run never got as far as making a working directory, so this proves "
+        "nothing about removing one"
+    )
     leftovers = list(state.glob("bloom-backup-*"))
     assert not leftovers, f"a dump directory outlived a failed run: {leftovers}"
 
@@ -1737,8 +1747,57 @@ def test_only_this_jobs_keys_are_imported_from_the_env_file(tmp_path, monkeypatc
 def test_the_allowlist_covers_every_key_the_script_reads():
     # Both directions. A new `_env("FOO")` left off the list would silently run
     # on its default forever; a stale entry widens the import for nothing.
-    read = set(re.findall(r'_env\("([A-Z_]+)"', _SCRIPT.read_text()))
+    # Either quote style: matching only one lets a key be read without the list
+    # noticing, because both sides of this equality then shrink together.
+    read = set(re.findall(r"""_env\(["']([A-Z_][A-Z0-9_]*)["']""", _SCRIPT.read_text()))
     assert read == set(backup.ENV_KEYS)
+
+
+def test_settings_are_read_through_one_helper_and_nowhere_else():
+    # Reading os.environ directly would bypass the allowlist and the drift test
+    # above at once, so the job would run on a value nothing had vetted.
+    source = _SCRIPT.read_text()
+    helper = source.split("def _env(")[1].split("\ndef ")[0]
+    everywhere_else = source.replace(helper, "")
+    for way_in in ("os.environ.get(", "os.environ["):
+        assert way_in not in everywhere_else, (
+            f"{way_in} outside _env reads a setting the allowlist never sees"
+        )
+
+
+# --------------------------------------------------------------------------
+# Asking the script where the backup goes
+# --------------------------------------------------------------------------
+
+
+def test_printing_the_destination_reports_where_a_run_would_upload(
+        tmp_path, monkeypatch, capsys):
+    # The weekly summary asks the script for this rather than re-parsing the env
+    # file in shell. Nothing covered the flag, so deleting it left every test
+    # green while the Box listing in the summary stopped working.
+    _deploy_dir(tmp_path)
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path),
+                      "--print-destination"])
+    assert rc == backup.EXIT_OK
+    assert capsys.readouterr().out.strip() == "box:bloom-backups/prod"
+
+
+def test_printing_the_destination_takes_no_dump(tmp_path, monkeypatch):
+    # It runs in the summary step, which fires even when the backup failed. It
+    # must not touch the stack, and must not need the working directory that a
+    # failing run may be the reason we are here at all.
+    _deploy_dir(tmp_path)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(tmp_path / "never-created"))
+    touched: list = []
+    monkeypatch.setattr(backup, "resolve_container",
+                        lambda *a: touched.append(a) or "container123")
+    monkeypatch.setattr(backup, "upload", lambda *a: touched.append(a))
+
+    rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path),
+                      "--print-destination"])
+    assert rc == backup.EXIT_OK
+    assert not touched, "printing a destination must not reach the database or Box"
 
 
 # --------------------------------------------------------------------------
