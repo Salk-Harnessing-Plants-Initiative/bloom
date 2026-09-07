@@ -62,6 +62,13 @@ BATCH_SIZE = 20_000
 # so a multi-million-object seed doesn't hold them all to check 50.
 VERIFY_POOL_CAP = 5_000
 
+# Printed whenever the ledger changed but its Box copy did not. The upload is
+# best-effort by design — the objects are already on Box — so the run still
+# exits 0 and the summary would otherwise read "succeeded" while the only copy
+# of the resume record sits on the host this job exists to survive losing.
+# The workflow summary greps this phrase; both failure paths must carry it.
+LEDGER_STALE_MARKER = "the Box copy of the ledger is STALE"
+
 # How many objects the preflight probes, and how far into the manifest it looks
 # for them. Several rather than one, because a single orphaned row must not be
 # able to reject a correct configuration; bounded, so the check stays instant
@@ -579,7 +586,9 @@ def publish_ledger(
     try:
         local_size = local.stat().st_size
     except OSError as exc:
-        logger.error("ledger not uploaded: cannot read %s: %s", local, exc)
+        logger.error(
+            "cannot read %s: %s — %s", local, exc, LEDGER_STALE_MARKER
+        )
         return
     destination = report.box_ledger_path(args.box_root)
     try:
@@ -595,13 +604,13 @@ def publish_ledger(
         remote_size = existing.get("Size") if existing else None
         if isinstance(remote_size, int) and local_size < remote_size:
             logger.error(
-                "ledger NOT uploaded. The copy at %s is %s and this run's is "
-                "only %s, so this host is not the one that built that mirror. "
-                "Restore the Box copy before running again — see 'If the "
-                "deploy host itself is gone' in the wiki. Uploading now would "
-                "lose the record of what is already backed up.",
-                destination, lib.format_bytes(remote_size),
-                lib.format_bytes(local_size),
+                "ledger NOT uploaded, so %s. The copy at %s is %s and this "
+                "run's is only %s, so this host is not the one that built "
+                "that mirror. Restore the Box copy before running again — see "
+                "'If the deploy host itself is gone' in the wiki. Uploading "
+                "now would lose the record of what is already backed up.",
+                LEDGER_STALE_MARKER, destination,
+                lib.format_bytes(remote_size), lib.format_bytes(local_size),
             )
             return
         client.copy_file(
@@ -612,7 +621,8 @@ def publish_ledger(
         # Deliberately broad: this runs in the cleanup path, and anything
         # raised here would skip the container teardown below it.
         logger.error(
-            "ledger stayed on the host only — upload failed: %s", exc
+            "ledger stayed on the host only — upload failed: %s — %s",
+            exc, LEDGER_STALE_MARKER,
         )
 
 

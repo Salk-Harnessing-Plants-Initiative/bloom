@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import subprocess
 from pathlib import Path
 
 import pytest
+import backup_objects as job
 from runlock import SKIP_MARKER
 
 WORKFLOW = (
@@ -131,6 +133,49 @@ class TestSkipMarkerContract:
         assert script.index("were NOT backed up") < script.index(
             'steps.run.outcome }}" = "success"'
         ), "the success branch would win and the summary would read succeeded"
+
+    def test_a_stale_ledger_on_box_is_reported_in_the_summary(self, summary_script: str):
+        """The ledger upload is best-effort, so a refused or failed one leaves
+        the run at exit 0 and the summary reading "succeeded". What went stale
+        is the record of which objects are already mirrored — the thing that
+        makes a re-seed unnecessary — and it now exists only on the host."""
+        assert job.LEDGER_STALE_MARKER in _strip_comments(summary_script), (
+            "the summary cannot report that the ledger on Box is stale"
+        )
+
+    def test_the_stale_ledger_grep_matches_what_the_job_prints(self):
+        """Two files, two languages. Comments stripped, because a phrase left
+        only in a comment satisfied the raw-source version of this before."""
+        source = (Path(__file__).parent / "backup_objects.py").read_text()
+        assert job.LEDGER_STALE_MARKER in _strip_comments(source), (
+            "the workflow greps for a phrase the job no longer prints"
+        )
+
+    def test_the_stale_ledger_notice_is_not_a_branch(self, summary_script: str):
+        """It must survive whichever result won.
+
+        As an `elif` it would be invisible on a night that succeeded — which
+        is every night this actually happens — and on one that also refused a
+        collision.
+        """
+        script = _strip_comments(summary_script)
+        assert re.search(
+            r"(?<!el)if grep -q '" + re.escape(job.LEDGER_STALE_MARKER), script
+        ), "the stale-ledger notice is a branch, so another result hides it"
+
+    def test_the_stale_ledger_notice_says_what_is_and_is_not_wrong(
+        self, summary_script: str
+    ):
+        """Position and phrase are not enough — the body could say anything,
+        and here the easy mistake is implying the images did not copy."""
+        script = _strip_comments(summary_script)
+        opener = "if grep -q '" + job.LEDGER_STALE_MARKER
+        assert opener in script, "there is no stale-ledger notice to check"
+        start = script.index(opener)
+        branch = script[start:start + 900]
+        assert "NOT updated" in branch
+        assert "copied fine" in branch, "does not say the objects are safe"
+        assert "wiki" in branch, "does not say where to look"
 
     def test_a_stood_down_run_is_not_reported_as_success(self, summary_script: str):
         # The whole point: a skipped run exits 0 exactly as a good one does,

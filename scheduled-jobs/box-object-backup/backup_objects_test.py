@@ -1359,6 +1359,57 @@ class TestTheLedgerIsCopiedToBox:
         assert "NOT uploaded" in caplog.text
         assert "Restore the Box copy" in caplog.text, "did not say how to recover"
 
+    def test_a_refused_upload_says_the_box_copy_is_stale(
+        self, harness, monkeypatch, caplog
+    ):
+        """The run still exits 0, so the summary would read "succeeded".
+
+        The objects reached Box, so failing the run would be wrong — but the
+        record of WHICH objects are already mirrored now exists only on the
+        host this job exists to survive losing, and every later night keeps
+        reporting green while that copy falls further behind. The workflow
+        summary greps for this marker; without it the night is
+        indistinguishable from a clean one.
+        """
+        state, tmp_path = harness
+        self.with_remote_size(state, monkeypatch, 1_700_000_000)
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        assert job.LEDGER_STALE_MARKER in caplog.text
+
+    def test_a_failed_upload_says_the_box_copy_is_stale(
+        self, harness, monkeypatch, caplog
+    ):
+        """The other way it goes stale: the upload itself throws.
+
+        Caught broadly on purpose, because it runs in the cleanup path — so
+        without the marker it is one ERROR line in a job reporting success.
+        """
+        state, tmp_path = harness
+
+        def refuse(src_fs, src_remote, dst_fs, dst_remote):
+            if src_remote == "ledger.db":
+                raise RcloneError("Box said no")
+            return None
+
+        monkeypatch.setattr(state["client"], "copy_file", refuse)
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        assert job.LEDGER_STALE_MARKER in caplog.text
+
+    def test_a_night_that_copied_nothing_is_not_called_stale(self, harness, caplog):
+        """The copy is only stale if the ledger changed without it.
+
+        A quiet night changed nothing, so the copy on Box is still current.
+        Crying stale here would train people to ignore the marker, which is
+        the only signal the real case has.
+        """
+        state, tmp_path = harness
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
+        job.run_locked(args, tmp_path)
+        state["copied"].clear()
+        caplog.clear()
+        job.run_locked(args, tmp_path)
+        assert job.LEDGER_STALE_MARKER not in caplog.text
+
     def test_it_uploads_when_the_copy_on_box_is_smaller(self, harness, monkeypatch):
         state, tmp_path = harness
         self.with_remote_size(state, monkeypatch, 1)

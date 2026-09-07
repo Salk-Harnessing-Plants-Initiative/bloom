@@ -160,8 +160,9 @@ Then open the Box folder and confirm the images preview.
 **On a rebuilt host, restore the ledger before step 2.** Step 1 is a dry run
 and copies nothing, but step 2 copies twenty objects, and a run that copies
 something uploads its ledger. That upload refuses to replace a larger copy, so
-what you would actually see is `ledger NOT uploaded` in the log — the Box copy
-is safe, but it stops being updated until the local ledger is whole again.
+what you would actually see is `ledger NOT uploaded` in the log, and **The
+ledger on Box was NOT updated** in the summary — the Box copy is safe, but it
+stops being updated until the local ledger is whole again.
 Restore it first and both problems go away. See *If the deploy host itself is
 gone* below.
 
@@ -349,6 +350,20 @@ There are none in production today: every name is already in the normalized
 form, so nothing can collide. This exists for the day something uploads one
 that is not.
 
+### The ledger on Box was not updated
+
+No exit code — this one cannot fail the run, because the objects did reach Box
+and the mirror is fine. What did not reach Box is the **record of which objects
+are already mirrored**, which is the thing that makes a re-seed unnecessary.
+It now exists only on the deploy host, the machine this job exists to survive
+losing.
+
+The notice appears in the summary beside the night's result rather than instead
+of it, so it shows up on nights that otherwise succeeded — which is every night
+this actually happens. Later nights keep reporting success while the copy falls
+further behind, so treat it as due the same day. *If the deploy host itself is
+gone* below has the reasons an upload is refused, and how to restore.
+
 Progress lines report objects/second and a projected finish. Failures are
 retried with backoff — Box's 429s and 5xx are treated as transient; a 404 on
 the MinIO side is not, and is reported.
@@ -501,15 +516,22 @@ Normally the copy is one run behind at most, so restoring it may mean a few
 objects are copied again. That is harmless — the copy simply overwrites what
 is already there.
 
-It can fall further behind, though, and quietly. If a run's own ledger is
-smaller than the copy on Box the upload is refused, and the run still exits 0
-because the objects themselves were mirrored fine. That is the intended
-behaviour — it is what stops a rebuilt host replacing a good copy — but it
-means the Box copy stops being updated while nightly runs keep succeeding.
-The refusal is an `ERROR` in the job log reading `ledger NOT uploaded`; it does
-not appear in the Actions summary. If you have restored a ledger and want to
-know the copy is current again, look for `ledger on Box:` in the next run's
-log.
+It can fall further behind, though. If a run's own ledger is smaller than the
+copy on Box the upload is refused, and the run still exits 0 because the
+objects themselves were mirrored fine. That is the intended behaviour — it is
+what stops a rebuilt host replacing a good copy — but it means the Box copy
+stops being updated while nightly runs keep succeeding.
+
+The run summary says so: **The ledger on Box was NOT updated**, printed
+alongside whatever the night's result was rather than instead of it, because
+this can happen on a night that otherwise succeeded. The same notice covers an
+upload that failed outright. Neither fails the run — the objects are on Box
+either way — so the notice is the only thing standing between a stale resume
+record and weeks of green ticks. Act on it the night it appears.
+
+The job log carries the reason: `ledger NOT uploaded` for a refusal, `ledger
+stayed on the host only` for a failed upload. Once you have restored a ledger,
+`ledger on Box:` in the next run's log confirms the copy is current again.
 
 ## Configuration
 

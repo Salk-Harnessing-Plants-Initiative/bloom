@@ -382,6 +382,23 @@ jobs:
               echo "Result: **FAILED** — see the job log. The mirror was not"
               echo "updated this run."
             fi
+            # Deliberately its own `if`, not another elif: the ledger upload is
+            # best-effort, so this can happen on a night that otherwise
+            # succeeded AND on one that reported a collision. As a branch it
+            # would be hidden by whichever result won.
+            if grep -q 'the Box copy of the ledger is STALE' \
+              "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null; then
+              echo
+              echo "> **The ledger on Box was NOT updated.** Objects still"
+              echo "> copied fine — this is about the record of WHICH objects"
+              echo "> are already mirrored, which is what makes a re-seed"
+              echo "> unnecessary. It now exists only on the deploy host, the"
+              echo "> machine this job exists to survive losing. Every later"
+              echo "> night can still report success while that copy falls"
+              echo "> further behind, so fix it now: the job log says why the"
+              echo "> upload was refused, and 'If the deploy host itself is"
+              echo "> gone' in the wiki says what losing it costs."
+            fi
             echo
             echo '### This run'
             echo '```'
