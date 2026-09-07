@@ -205,6 +205,29 @@ describe("POST", () => {
     expect((await res.json()).detail).toContain("Still encoding");
   });
 
+  it("still explains itself on a second bad request", async () => {
+    // A Response carries its body as a stream that is spent when it is sent, so
+    // one built once and shared answered the first caller and left every later
+    // one with an empty body. Every other bad-input test reads only the status,
+    // which is why nothing noticed.
+    const first = await post({ plate_id: "Plate 9" });
+    const second = await post({ plate_id: "a/b" });
+
+    expect(first.status).toBe(400);
+    expect(second.status).toBe(400);
+    expect((await first.json()).detail).toContain("plateId must be");
+    expect((await second.json()).detail).toContain("plateId must be");
+    expect(first).not.toBe(second);
+  });
+
+  it("still explains a bad wave on a second request", async () => {
+    const first = await post({ plate_id: "P7", wave_number: -1 });
+    const second = await post({ plate_id: "P7", wave_number: 1.5 });
+
+    expect((await first.json()).detail).toContain("waveNumber must be");
+    expect((await second.json()).detail).toContain("waveNumber must be");
+  });
+
   it.each([[404], [413], [422], [429]])(
     "passes an upstream %i detail through, because it is written for the caller",
     async (status) => {

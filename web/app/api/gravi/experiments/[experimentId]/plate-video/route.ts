@@ -58,6 +58,25 @@ function callerSafeDetail(status: number, parsed: unknown): string {
   return typeof detail === "string" && detail.trim() ? detail : GENERIC_FAILURE;
 }
 
+// Built per call, never shared. A Response carries its body as a stream that is
+// spent when it is sent, so one held in a module constant answers the first
+// caller and every later one gets an empty body.
+const badPlate = () =>
+  NextResponse.json(
+    {
+      detail:
+        "plateId must be 1-64 characters of letters, digits, dot, dash or " +
+        "underscore, and may not begin with a dot",
+    },
+    { status: 400 }
+  );
+
+const badWave = () =>
+  NextResponse.json(
+    { detail: "waveNumber must be a whole number or null" },
+    { status: 400 }
+  );
+
 /** A wave from the request: a whole number, null, or invalid. */
 function parseWave(raw: unknown): number | null | undefined {
   if (raw === null || raw === undefined || raw === "") return null;
@@ -67,20 +86,6 @@ function parseWave(raw: unknown): number | null | undefined {
   if (!Number.isInteger(wave) || (wave as number) < 0) return undefined;
   return wave as number;
 }
-
-const BAD_PLATE = NextResponse.json(
-  {
-    detail:
-      "plateId must be 1-64 characters of letters, digits, dot, dash or " +
-      "underscore, and may not begin with a dot",
-  },
-  { status: 400 }
-);
-
-const BAD_WAVE = NextResponse.json(
-  { detail: "waveNumber must be a whole number or null" },
-  { status: 400 }
-);
 
 export async function POST(
   request: Request,
@@ -105,9 +110,9 @@ export async function POST(
   const { plate_id: plateId, wave_number: rawWave } =
     (body as { plate_id?: unknown; wave_number?: unknown }) ?? {};
 
-  if (typeof plateId !== "string" || !isValidPlateId(plateId)) return BAD_PLATE;
+  if (typeof plateId !== "string" || !isValidPlateId(plateId)) return badPlate();
   const wave = parseWave(rawWave);
-  if (wave === undefined) return BAD_WAVE;
+  if (wave === undefined) return badWave();
 
   // A short-circuit for the signed-out case, not the authorization decision:
   // the token is forwarded as-is and workflows verifies it against Supabase.
@@ -201,10 +206,10 @@ export async function GET(
 
   const query = new URL(request.url).searchParams;
   const plateId = query.get("plate_id");
-  if (typeof plateId !== "string" || !isValidPlateId(plateId)) return BAD_PLATE;
+  if (typeof plateId !== "string" || !isValidPlateId(plateId)) return badPlate();
 
   const wave = parseWave(query.get("wave_number"));
-  if (wave === undefined) return BAD_WAVE;
+  if (wave === undefined) return badWave();
 
   const stored = await getStoredPlateVideo(experiment, plateId, wave);
   if (stored.status === "unknown") {
