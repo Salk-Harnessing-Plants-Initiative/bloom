@@ -61,28 +61,28 @@ def render(experiment_id: int, body: dict) -> dict:
         ) from exc
     except FrameDepthUnsupported as exc:
         # Before FrameUnreadable, which it subclasses. The file is intact.
-        logger.warning("plate video refused an unsupported frame depth: %s", exc)
+        logger.warning("plate video refused an unsupported frame depth: %r", exc)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FrameSizeMismatch as exc:
         # Before FrameUnreadable, which it subclasses. This message is this
         # service's own -- two frame sizes -- so it is safe to send whole.
-        logger.warning("plate video refused a mixed frame size: %s", exc)
+        logger.warning("plate video refused a mixed frame size: %r", exc)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FrameTooLarge as exc:
         # Before FrameUnreadable, which it subclasses. The size is safe to send.
-        logger.warning("plate video refused an oversized frame: %s", exc)
+        logger.warning("plate video refused an oversized frame: %r", exc)
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     except FrameUnreadable as exc:
         # The path only: the rest is the storage client's error, which names
         # internal hosts and roles and reaches the caller unfiltered.
-        logger.warning("plate video render failed: %s", exc)
+        logger.warning("plate video render failed: %r", exc)
         named = (
             f"{exc.path} could not be read" if exc.path else "a frame could not be read"
         )
         raise HTTPException(status_code=502, detail=named) from exc
     except NotRecorded as exc:
         # The key only, for the reason above.
-        logger.error("plate video stored but not recorded: %s", exc)
+        logger.error("plate video stored but not recorded: %r", exc)
         named = (
             f"the video for {exc.key} was not recorded"
             if exc.key
@@ -91,13 +91,13 @@ def render(experiment_id: int, body: dict) -> dict:
         raise HTTPException(status_code=500, detail=named) from exc
     except (VideoEncodeError, BrokenPipeError) as exc:
         # The encoder's own failures: a stall, a non-zero exit, a broken pipe.
-        logger.error("plate video encode failed: %s", exc)
+        logger.error("plate video encode failed: %r", exc)
         raise HTTPException(
             status_code=500, detail="the video could not be encoded"
         ) from exc
     except PlateMismatch as exc:
         # A crossed key and identity. Nothing the caller can act on.
-        logger.error("plate video refused a crossed plate identity: %s", exc)
+        logger.error("plate video refused a crossed plate identity: %r", exc)
         raise HTTPException(
             status_code=500, detail="the video could not be stored"
         ) from exc

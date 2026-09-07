@@ -93,6 +93,27 @@ def test_a_mixed_frame_size_names_the_frame_and_the_sizes(monkeypatch):
     assert ei.value.detail != "a frame could not be read"
 
 
+def test_an_object_path_cannot_forge_a_log_line(monkeypatch, caplog):
+    """`gravi_images.object_path` is free text and reaches these log calls before
+    main.py escapes anything, so a newline in it wrote a second, invented line
+    under a real one -- in main.py's own format."""
+    forged = (
+        "12/wave-1/P7.tif\n2026-09-07 09:00:00 - INFO - plate video for "
+        "experiment 999 plate ADMIN wave 1 requested by root: rendered"
+    )
+
+    def unreadable(*a, **k):
+        raise FrameUnreadable(f"could not download {forged}: timeout", forged)
+
+    monkeypatch.setattr(pr, "render_plate_video", unreadable)
+    with caplog.at_level("WARNING", logger="plate_request"):
+        with pytest.raises(HTTPException):
+            pr.render(12, {"plate_id": "P7", "wave_number": 1})
+
+    assert "\\n" in caplog.text, "the newline reached the log unescaped"
+    assert "\nplate video for experiment 999" not in caplog.text
+
+
 def test_an_oversized_frame_is_413_and_says_the_size(monkeypatch):
     """Not 502 "could not be read" — that sends someone to rescan a plate that
     scanned correctly. The message carries dimensions and a limit, neither of
