@@ -1258,3 +1258,77 @@ class TestTheStopScriptBehaves:
             if child.poll() is None:
                 child.kill()
                 child.wait(timeout=5)
+
+
+class TestTheSummaryStepSurvivesErrexit:
+    """GitHub runs a `run:` block as `bash -e {0}`.
+
+    The step sets `pipefail` and every grep in it is allowed to match nothing
+    — a stood-down night prints no `done —` line, a quiet one prints no
+    `verify:` line. Without `|| true` on each, pipefail makes those non-zero
+    and errexit kills the step before it writes a byte: a red tick and a blank
+    summary on every night except one that both copied and verified. That is
+    every night of the seed.
+
+    It took seven review rounds to find, because the harness ran plain `bash`.
+    Asserting "the harness passes -e" would only test the harness. Running the
+    real step BOTH ways and requiring them to agree tests the property that
+    actually matters: nothing in the step may depend on errexit being off.
+    """
+
+    NIGHTS = {
+        "stood down": "2026-08-31 02:20:00,1 WARNING box-object-backup: SKIPPED — lock held\n",
+        "preflight died": "2026-08-31 02:20:00,1 ERROR preflight: no db-prod container\n",
+        "quiet": "2026-08-31 02:20:00,1 INFO done — copied 0, failed 0, already current 8013796, skipped 0\n",
+        "dry run": "2026-08-31 02:20:00,1 INFO dry run — would copy 12, 400 already current, 0 skipped; nothing was copied\n",
+        "busy": (
+            "2026-08-31 02:20:00,1 INFO done — copied 4211, failed 0, already current 0, skipped 0\n"
+            "2026-08-31 02:41:00,1 INFO verify: 50 checked, 0 mismatched\n"
+        ),
+        "empty log": "",
+    }
+
+    def render(self, parsed, log, argv):
+        import subprocess
+        import tempfile
+        from pathlib import Path as P
+
+        script = self.summary_of(parsed).replace("${{ steps.run.outcome }}", "$OUTCOME")
+        with tempfile.TemporaryDirectory() as tmp:
+            (P(tmp) / "mirror-output.txt").write_text(log)
+            out = P(tmp) / "summary.md"
+            result = subprocess.run(
+                argv + [script],
+                env={
+                    "PATH": "/usr/bin:/bin", "RUNNER_TEMP": tmp, "ENV_NAME": "prod",
+                    "OUTCOME": "success", "GITHUB_STEP_SUMMARY": str(out),
+                    "LC_ALL": "C",
+                },
+                capture_output=True, text=True,
+            )
+            body = out.read_text() if out.exists() else ""
+        return result.returncode, body
+
+    @staticmethod
+    def summary_of(parsed):
+        steps = parsed["jobs"]["mirror"]["steps"]
+        return next(
+            s["run"] for s in steps
+            if s.get("name", "").startswith("Write the run summary")
+        )
+
+    @pytest.mark.parametrize("night", sorted(NIGHTS))
+    def test_the_step_behaves_the_same_with_and_without_errexit(self, parsed, night):
+        log = self.NIGHTS[night]
+        plain_rc, plain_body = self.render(parsed, log, ["bash", "-c"])
+        errexit_rc, errexit_body = self.render(parsed, log, ["bash", "-e", "-c"])
+        assert errexit_rc == plain_rc == 0, (
+            f"{night}: the step exits {errexit_rc} under errexit — GitHub "
+            f"would show a red tick and no summary. stderr aside, this is the "
+            f"`|| true` regression."
+        )
+        assert errexit_body == plain_body, (
+            f"{night}: the step produces different output under errexit, so "
+            f"what GitHub renders is not what the tests check"
+        )
+        assert errexit_body.strip(), f"{night}: the step wrote nothing"

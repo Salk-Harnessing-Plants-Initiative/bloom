@@ -1810,6 +1810,7 @@ class TestTheLedgerIsCopiedToBox:
         two situations must never share a marker.
         """
         state, tmp_path = harness
+        caplog.set_level(logging.INFO)
         self.with_remote_size(state, monkeypatch, 1_700_000_000)
         job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
         assert job.LEDGER_AHEAD_MARKER in caplog.text
@@ -1817,6 +1818,14 @@ class TestTheLedgerIsCopiedToBox:
             "a refused upload was reported as a stale Box copy"
         )
         assert "RESTORE it onto this host" in caplog.text, "does not say to restore"
+        # The FLAG, not just the log line. The summary branches on this, and
+        # swapping the two return values survived the suite entirely — the
+        # operator would then be told to fix a stale Box copy, and overwrite
+        # eight million rows with twenty.
+        assert f"{job.FLAGS_KEY}=ledger_ahead" in caplog.text, (
+            "the refusal reaches the summary as the wrong condition"
+        )
+        assert "ledger_stale" not in caplog.text
 
     def test_a_ledger_that_cannot_be_read_says_the_box_copy_is_stale(
         self, harness, monkeypatch, caplog
@@ -1830,6 +1839,7 @@ class TestTheLedgerIsCopiedToBox:
         the summary would otherwise read "succeeded".
         """
         state, tmp_path = harness
+        caplog.set_level(logging.INFO)
         real_stat = Path.stat
 
         def refuse(self, *args, **kwargs):
@@ -1840,6 +1850,9 @@ class TestTheLedgerIsCopiedToBox:
         monkeypatch.setattr(Path, "stat", refuse)
         job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
         assert job.LEDGER_STALE_MARKER in caplog.text
+        assert f"{job.FLAGS_KEY}=ledger_stale" in caplog.text, (
+            "the unreadable-ledger path reaches the summary as nothing at all"
+        )
         assert self.uploads(state) == [], "uploaded a ledger it could not read"
 
     def test_a_failed_upload_says_the_box_copy_is_stale(
@@ -1851,6 +1864,7 @@ class TestTheLedgerIsCopiedToBox:
         without the marker it is one ERROR line in a job reporting success.
         """
         state, tmp_path = harness
+        caplog.set_level(logging.INFO)
 
         def refuse(src_fs, src_remote, dst_fs, dst_remote):
             if src_remote == "ledger.db":
@@ -1860,6 +1874,9 @@ class TestTheLedgerIsCopiedToBox:
         monkeypatch.setattr(state["client"], "copy_file", refuse)
         job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
         assert job.LEDGER_STALE_MARKER in caplog.text
+        assert f"{job.FLAGS_KEY}=ledger_stale" in caplog.text, (
+            "a failed upload reaches the summary as the wrong condition"
+        )
 
     def test_a_night_that_copied_nothing_is_not_called_stale(self, harness, caplog):
         """The copy is only stale if the ledger changed without it.
@@ -2415,3 +2432,146 @@ class TestStoppingBetweenBatches:
             f"kept planning batches after the stop — ran {len(batches_run)} of 3"
         )
         assert totals.copied == 1, f"copied {totals.copied}, expected the one in flight"
+
+
+# ---------- the verdict the summary branches on ----------
+
+class TestTheVerdictTheSummaryReads:
+    """`_status_for` and `_flags_for` decide what every night reports.
+
+    Neither had a direct test. The consequences were not subtle: deleting
+    `return "failed"` left the whole suite green while a night with 4,211
+    failed objects rendered "succeeded" — which is precisely the failure the
+    status line was introduced to prevent.
+    """
+
+    def test_a_failing_run_says_failed(self):
+        # Deleting `return "failed"` survived the entire suite.
+        for code in (1, 2, 4, 5):
+            assert job._status_for(code, "partial") == "failed", code
+
+    def test_a_clean_run_says_ok(self):
+        assert job._status_for(0, "ok") == "ok"
+
+    def test_a_clean_exit_on_a_partial_outcome_says_partial(self):
+        """`--limit` and `--buckets` exit 0 but did not see the whole table."""
+        assert job._status_for(0, "partial") == "partial"
+
+    def test_a_deliberate_stop_says_stopped(self):
+        """Exit 3 is the one outcome meaning "this is fine, it will resume"."""
+        assert job._status_for(3, "partial") == "stopped"
+
+    def test_every_verdict_is_one_the_summary_knows(self):
+        """A value outside the vocabulary is a branch that never fires."""
+        for code in range(0, 6):
+            for outcome in ("ok", "partial", "error"):
+                assert job._status_for(code, outcome) in job.STATUS_VALUES
+
+    def totals(self, **kw):
+        totals = job.Totals()
+        for key, value in kw.items():
+            setattr(totals, key, value)
+        return totals
+
+    def test_no_findings_sets_no_flags(self):
+        assert job._flags_for(self.totals()) == ()
+
+    def test_each_finding_sets_its_own_flag(self):
+        """Four of these five rules could be deleted with the suite green.
+
+        Drop the collisions rule and OBJECTS NOT BACKED UP never renders; drop
+        verify_mismatch and VERIFICATION FAILED never renders. The workflow
+        side does not catch it either — it compares the YAML against
+        FLAG_VALUES, the tuple literal, which a deleted rule leaves untouched.
+        """
+        cases = {
+            "collisions": self.totals(collisions=1, skipped=1),
+            "skipped_names": self.totals(skipped=1),
+            "verify_mismatch": self.totals(verify_mismatched=1),
+            "verify_incomplete": self.totals(verify_unverified=1),
+            "ledger_stale": self.totals(ledger_flag="ledger_stale"),
+            "ledger_ahead": self.totals(ledger_flag="ledger_ahead"),
+        }
+        for flag, totals in cases.items():
+            assert flag in job._flags_for(totals), f"{flag} never reaches the summary"
+
+    def test_a_collision_alone_is_not_also_a_name_skip(self):
+        """`skipped` counts collisions too, so the subtraction has to hold —
+        a run that only refused a collision must not also claim a name Box
+        cannot store."""
+        flags = job._flags_for(self.totals(collisions=2, skipped=2))
+        assert "collisions" in flags
+        assert "skipped_names" not in flags
+
+    def test_the_two_can_both_be_set(self):
+        flags = job._flags_for(self.totals(collisions=1, skipped=3))
+        assert "collisions" in flags and "skipped_names" in flags
+
+    def test_every_flag_is_one_the_summary_knows(self):
+        every = self.totals(
+            collisions=1, skipped=5, verify_mismatched=1,
+            verify_unverified=1, ledger_flag="ledger_stale",
+        )
+        flags = job._flags_for(every)
+        assert set(flags) <= set(job.FLAG_VALUES)
+        assert len(flags) == 5, flags
+
+    def test_the_flags_line_is_comma_separated(self, caplog):
+        """The workflow greps `[a-z_,]*` and matches on `,`. Space-joining
+        them means only the first flag is ever read, and every later notice
+        silently stops firing."""
+        import logging as _logging
+
+        caplog.set_level(_logging.INFO)
+        job.emit_status("ok", ("collisions", "ledger_stale"))
+        line = [ln for ln in caplog.text.splitlines() if job.FLAGS_KEY in ln][-1]
+        assert "collisions,ledger_stale" in line, line
+
+
+class TestTheStandDownVerdictReachesTheSummary:
+    """The verdict for the night the whole workflow is built around.
+
+    While the seed runs, every scheduled night stands down against the lock.
+    Deleting `emit_status("skipped")` from `run_backup` left the suite green
+    and made those nights render "succeeded" — months of green ticks over a
+    mirror nothing was adding to, which is the exact failure the skip branch
+    exists to prevent.
+
+    The two tests that looked like they covered it did not: one calls
+    `emit_status` directly, which its own implementation satisfies, and the
+    other asserts SKIP_MARKER, a phrase the workflow no longer greps.
+    """
+
+    def test_a_stood_down_run_emits_the_skipped_verdict(self, tmp_path, monkeypatch, caplog):
+        import logging as _logging
+
+        from runlock import RunLock
+
+        caplog.set_level(_logging.INFO)
+        monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 0)
+        args = job.parse_args([
+            "--env", "prod", "--state-dir", str(tmp_path),
+            "--box-root", "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
+        ])
+        holder = RunLock(tmp_path).acquire()
+        try:
+            assert job.run_backup(args) == 0
+        finally:
+            holder.release()
+        assert f"{job.STATUS_KEY}=skipped" in caplog.text, (
+            "a stood-down night reports no verdict, so the summary reads "
+            "succeeded and a months-long gap looks like months of green ticks"
+        )
+
+    def test_a_run_that_gets_the_lock_does_not_say_skipped(self, tmp_path, monkeypatch, caplog):
+        """The other side — it must not cry stand-down on an ordinary night."""
+        import logging as _logging
+
+        caplog.set_level(_logging.INFO)
+        monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 0)
+        args = job.parse_args([
+            "--env", "prod", "--state-dir", str(tmp_path),
+            "--box-root", "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
+        ])
+        assert job.run_backup(args) == 0
+        assert f"{job.STATUS_KEY}=skipped" not in caplog.text
