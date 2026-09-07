@@ -253,25 +253,25 @@ def _write_gz(path: Path, payload: bytes) -> Path:
     return path
 
 
-def _database_dump(rows: int = backup.MIN_DATA_ROWS, complete: bool = True) -> bytes:
-    """A plain pg_dump, in the shape the content check reads."""
+def _database_dump(rows: int = 100, complete: bool = True) -> bytes:
+    """A plain pg_dump, in the shape pg_dump really writes one."""
     body = ["--", "-- PostgreSQL database dump", "--", "",
             "COPY public.plants (id, barcode) FROM stdin;"]
     body += [f"{n}\tBRC{n:05d}" for n in range(rows)]
     body += ["\\.", ""]
     if complete:
-        body.append(backup.DB_DUMP_COMPLETE_MARKER)
+        body.append("-- PostgreSQL database dump complete")
     return ("\n".join(body) + "\n").encode()
 
 
-def _globals_dump(roles: int = backup.MIN_ROLE_STATEMENTS, complete: bool = True) -> bytes:
-    """A pg_dumpall --globals-only dump, in the shape the content check reads."""
+def _globals_dump(roles: int = 5, complete: bool = True) -> bytes:
+    """A pg_dumpall --globals-only dump, in the shape pg_dumpall writes one."""
     body = ["--", "-- PostgreSQL database cluster dump", "--", ""]
     for n in range(roles):
         body += [f"CREATE ROLE bloom_role_{n};",
                  f"ALTER ROLE bloom_role_{n} WITH NOSUPERUSER LOGIN;"]
     if complete:
-        body.append(backup.GLOBALS_DUMP_COMPLETE_MARKER)
+        body.append("-- PostgreSQL database cluster dump complete")
     return ("\n".join(body) + "\n").encode()
 
 
@@ -302,14 +302,6 @@ def test_an_undersized_artifact_is_rejected(tmp_path):
         backup.verify_artifact(artifact, min_bytes=backup.MIN_DATABASE_BYTES)
 
 
-def test_a_corrupt_artifact_is_rejected(tmp_path):
-    # Passes the size floor, fails integrity — the truncated-dump case.
-    artifact = tmp_path / "dump.sql.gz"
-    artifact.write_bytes(b"\x1f\x8b\x08" + b"\x00" * 5000)
-    with pytest.raises(backup.VerificationError, match="gzip integrity"):
-        backup.verify_artifact(artifact, min_bytes=64)
-
-
 def test_a_missing_artifact_is_rejected(tmp_path):
     with pytest.raises(backup.VerificationError, match="never written"):
         backup.verify_artifact(tmp_path / "absent.sql.gz", min_bytes=1)
@@ -319,129 +311,40 @@ def test_database_floor_is_above_the_globals_floor():
     assert backup.MIN_DATABASE_BYTES > backup.MIN_GLOBALS_BYTES > 0
 
 
-# --------------------------------------------------------------------------
-# Content verification
-# --------------------------------------------------------------------------
-
-
-def test_a_dump_full_of_rows_passes_its_content_check(tmp_path):
-    artifact = _write_gz(tmp_path / "db.sql.gz", _database_dump(rows=500))
-    assert backup.verify_database_content(artifact) == 500
-
-
-def test_a_dump_whose_tables_all_came_out_empty_is_rejected(tmp_path):
-    # The wrong-database case: POSTGRES_DB naming a database that exists but
-    # holds nothing, or a container resolved from the wrong stack. The dump is
-    # valid SQL with every COPY block empty, clears the size floor, and gzips
-    # cleanly, so size and integrity checks cannot tell it from a good backup.
-    #
-    # Note this is NOT the RLS case: pg_dump sets row_security = off and aborts
-    # with "query would be affected by row-level security policy" if the role
-    # cannot bypass it, which the pipeline's exit-status check already catches.
-    artifact = _write_gz(tmp_path / "db.sql.gz", _database_dump(rows=0))
-    with pytest.raises(backup.VerificationError, match="POSTGRES_DB"):
-        backup.verify_database_content(artifact)
-
-
-def test_a_dump_that_stopped_partway_is_rejected(tmp_path):
-    # gzip closes its stream cleanly around a pg_dump that died mid-table, so
-    # the completion line pg_dump writes last is the only evidence it finished.
-    artifact = _write_gz(tmp_path / "db.sql.gz", _database_dump(rows=500, complete=False))
-    with pytest.raises(backup.VerificationError, match="stopped partway"):
-        backup.verify_database_content(artifact)
-
-
-def test_a_data_row_cannot_forge_the_completion_line(tmp_path):
-    # A row holding the marker text would otherwise let a truncated dump pass.
-    payload = ("COPY public.notes (body) FROM stdin;\n"
-               + backup.DB_DUMP_COMPLETE_MARKER + "\n") * 200
-    artifact = _write_gz(tmp_path / "db.sql.gz", payload.encode())
-    with pytest.raises(backup.VerificationError, match="stopped partway"):
-        backup.verify_database_content(artifact)
-
-
-def test_a_globals_dump_defining_roles_passes(tmp_path):
-    artifact = _write_gz(tmp_path / "globals.sql.gz", _globals_dump(roles=9))
-    assert backup.verify_globals_content(artifact) == 9
-
-
-def test_a_globals_dump_with_no_roles_is_rejected(tmp_path):
-    # The database dump's OWNER and GRANT statements name these roles.
-    artifact = _write_gz(tmp_path / "globals.sql.gz", _globals_dump(roles=0))
-    with pytest.raises(backup.VerificationError, match="nothing to bind to"):
-        backup.verify_globals_content(artifact)
-
-
-def test_a_truncated_globals_dump_is_rejected(tmp_path):
-    artifact = _write_gz(tmp_path / "globals.sql.gz",
-                         _globals_dump(roles=9, complete=False))
-    with pytest.raises(backup.VerificationError, match="stopped partway"):
-        backup.verify_globals_content(artifact)
-
-
-def test_the_content_floors_sit_below_any_real_cluster():
-    assert backup.MIN_DATA_ROWS > 0
-    # Supabase alone ships anon, authenticated, service_role, supabase_admin
-    # and authenticator, before any role this project adds.
-    assert 0 < backup.MIN_ROLE_STATEMENTS <= 5
-
-
-def test_an_empty_dump_fails_the_run_on_the_verification_code(tmp_path, monkeypatch):
-    # End to end: a content failure must land on 3, the same code a short or
-    # corrupt artifact does, so the wiki's table stays true.
-    _deploy_dir(tmp_path)
-    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
-    monkeypatch.setattr(backup, "_which", lambda name: name)
-    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
-    monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999999)
-    monkeypatch.setattr(backup, "_stream_to_gzip", _dump_writer([], _database_dump(rows=0)))
-    uploaded: list = []
-    monkeypatch.setattr(backup, "upload", lambda *a: uploaded.append(a))
-
-    assert backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)]) == backup.EXIT_VERIFY
-    assert not uploaded, "an empty dump must never reach Box"
-
-
 def _writer_per_artifact(database: bytes, globals_: bytes):
-    """Write a different payload per artifact.
-
-    The shared-payload writer cannot tell the two content checks apart: one
-    database-shaped payload is rejected by whichever check is still there, so
-    removing either one alone goes unnoticed.
-    """
+    """Write a different payload per artifact, so one floor can fail alone."""
     def _write(cmd, out, env=None):
-        _write_gz(out, database if out.name.startswith("postgres-") else globals_)
+        out.write_bytes(database if out.name.startswith("postgres-") else globals_)
     return _write
 
 
-def test_an_empty_database_dump_fails_the_run_even_when_the_globals_are_good(
+def test_an_empty_database_dump_is_caught_even_when_the_globals_are_fine(
         tmp_path, monkeypatch):
-    # Pins the database content check at its call site. The size floor is
-    # stubbed out so nothing but that check can fail the run.
+    # Pins the size floor at the database dump's call site. Deleting that one
+    # line uploads a 0-byte artifact and exits 0 — there are two such files on
+    # Box already from before this check existed.
     _deploy_dir(tmp_path)
     monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
-    monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999999)
     monkeypatch.setattr(backup, "_stream_to_gzip",
-                        _writer_per_artifact(_database_dump(rows=0), _globals_dump()))
+                        _writer_per_artifact(b"", b"x" * 1000))
     uploaded: list = []
     monkeypatch.setattr(backup, "upload", lambda *a: uploaded.append(a))
 
     assert backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)]) == backup.EXIT_VERIFY
-    assert not uploaded, "a dump of an empty database must never reach Box"
+    assert not uploaded, "an empty database dump must never reach Box"
 
 
-def test_a_globals_dump_with_no_roles_fails_the_run_even_when_the_database_is_good(
+def test_an_empty_globals_dump_is_caught_even_when_the_database_is_fine(
         tmp_path, monkeypatch):
-    # The mirror, pinning the globals content check at its call site.
+    # The mirror, pinning the floor at the globals call site.
     _deploy_dir(tmp_path)
     monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
     monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
-    monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999999)
     monkeypatch.setattr(backup, "_stream_to_gzip",
-                        _writer_per_artifact(_database_dump(), _globals_dump(roles=0)))
+                        _writer_per_artifact(b"x" * 5000, b""))
     uploaded: list = []
     monkeypatch.setattr(backup, "upload", lambda *a: uploaded.append(a))
 
@@ -1541,7 +1444,6 @@ def test_a_dumped_artifact_reaches_disk_owner_only(tmp_path, monkeypatch):
     monkeypatch.setenv("POSTGRES_PASSWORD", DEPLOY_PASSWORD)
     monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999999)
-    monkeypatch.setattr(backup, "verify_database_content", lambda *a, **k: 999)
     monkeypatch.setattr(
         backup, "dump_command",
         lambda container, argv, password: ([sys.executable, "-c", "print('dump')"], None),
@@ -1668,7 +1570,6 @@ def test_both_artifacts_share_one_run_timestamp(tmp_path, monkeypatch):
     monkeypatch.setenv("POSTGRES_PASSWORD", DEPLOY_PASSWORD)
     monkeypatch.setattr(backup, "_stream_to_gzip", _dump_writer([], _database_dump()))
     monkeypatch.setattr(backup, "verify_artifact", lambda *a, **k: 999)
-    monkeypatch.setattr(backup, "verify_globals_content", lambda *a, **k: 9)
     monkeypatch.setattr(backup, "_which", lambda name: name)
     stamp = "20260824T010203Z"
     db = backup.dump_database("c", tmp_path, stamp, DEPLOY_PASSWORD)

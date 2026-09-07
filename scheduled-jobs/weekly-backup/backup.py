@@ -28,7 +28,6 @@ _WIKI/SCHEDULEDJOBS/weekly-backup.md for setup.
 from __future__ import annotations
 
 import argparse
-import gzip
 import logging
 import os
 import re
@@ -64,17 +63,6 @@ DB_SERVICE = "db-prod"
 # avoid reporting as success; both floors sit far below any real dump.
 MIN_DATABASE_BYTES = 4096
 MIN_GLOBALS_BYTES = 256
-
-# Content floors. A dump holding no data at all is well-formed, clears the size
-# floor and gzips cleanly, so size alone never catches it. The row count is a
-# floor on "did anything come out", not a check that the right database was
-# dumped: every applied migration is one row in a bookkeeping table, and there
-# are far more of those than this floor, so a migrated-but-empty database clears
-# it. Confirming which database was dumped is the compose project mapping's job.
-DB_DUMP_COMPLETE_MARKER = "-- PostgreSQL database dump complete"
-GLOBALS_DUMP_COMPLETE_MARKER = "-- PostgreSQL database cluster dump complete"
-MIN_DATA_ROWS = 100
-MIN_ROLE_STATEMENTS = 5
 
 # The only keys this job reads out of a deploy env file. Importing the whole
 # file instead hands every child process whatever it happens to contain: rclone
@@ -514,87 +502,8 @@ def verify_artifact(path: Path, min_bytes: int) -> int:
             f"{path.name} is {size} bytes, below the {min_bytes}-byte floor — "
             "treating as a failed dump rather than uploading it"
         )
-    try:
-        _run([_which("gzip"), "-t", str(path)])
-    except subprocess.CalledProcessError as exc:
-        # Same symptom as the checks above; reporting it as a subprocess
-        # failure would send the operator looking at docker instead.
-        raise VerificationError(f"{path.name} failed its gzip integrity check") from exc
     logger.info("verified %s: %d bytes", path.name, size)
     return size
-
-
-def scan_plain_dump(path: Path, marker: str) -> tuple[int, int, bool]:
-    """Read a gzipped plain dump once: data rows, CREATE ROLEs, did it finish.
-
-    pg_dump writes its completion line last, so seeing that line — outside any
-    COPY block, where a data row could otherwise forge it — is what proves the
-    dump ran to the end rather than stopping partway.
-    """
-    rows = 0
-    roles = 0
-    completed = False
-    in_copy = False
-    with gzip.open(path, "rt", encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            if in_copy:
-                if line.startswith("\\."):
-                    in_copy = False
-                else:
-                    rows += 1
-                continue
-            if line.startswith("COPY ") and line.rstrip().endswith("FROM stdin;"):
-                in_copy = True
-            elif line.startswith("CREATE ROLE "):
-                roles += 1
-            elif line.startswith(marker):
-                completed = True
-    return rows, roles, completed
-
-
-def verify_database_content(path: Path) -> int:
-    """Reject a database dump that finished but carries no data at all.
-
-    The size floor and `gzip -t` both pass on a dump whose every table came out
-    empty. Returns the number of data rows seen — bookkeeping rows included, so
-    this does not distinguish a full database from a freshly migrated one.
-    """
-    rows, _, completed = scan_plain_dump(path, DB_DUMP_COMPLETE_MARKER)
-    if not completed:
-        raise VerificationError(
-            f"{path.name} never reached its '{DB_DUMP_COMPLETE_MARKER}' line — "
-            "the dump stopped partway"
-        )
-    if rows < MIN_DATA_ROWS:
-        raise VerificationError(
-            f"{path.name} holds {rows} data row(s), below the {MIN_DATA_ROWS}-row "
-            "floor — even a database with no records of its own carries more "
-            "than this, so check POSTGRES_DB and the resolved container"
-        )
-    logger.info("verified %s content: %d data row(s)", path.name, rows)
-    return rows
-
-
-def verify_globals_content(path: Path) -> int:
-    """Reject a globals dump with no roles in it. Returns the role count.
-
-    The database dump's OWNER and GRANT statements name these roles; a globals
-    artifact without them restores to a cluster that cannot own its own data.
-    """
-    _, roles, completed = scan_plain_dump(path, GLOBALS_DUMP_COMPLETE_MARKER)
-    if not completed:
-        raise VerificationError(
-            f"{path.name} never reached its '{GLOBALS_DUMP_COMPLETE_MARKER}' line — "
-            "the dump stopped partway"
-        )
-    if roles < MIN_ROLE_STATEMENTS:
-        raise VerificationError(
-            f"{path.name} defines {roles} role(s), below the {MIN_ROLE_STATEMENTS} "
-            "this cluster always has — the database dump's OWNER and GRANT "
-            "statements would have nothing to bind to"
-        )
-    logger.info("verified %s content: %d role(s)", path.name, roles)
-    return roles
 
 
 def dump_database(
@@ -620,7 +529,6 @@ def dump_database(
     )
     _stream_to_gzip(cmd, out, env=env)
     verify_artifact(out, MIN_DATABASE_BYTES)
-    verify_database_content(out)
     return out
 
 
@@ -634,7 +542,6 @@ def dump_globals(container: str, work_dir: Path, timestamp: str, password: str) 
     )
     _stream_to_gzip(cmd, out, env=env)
     verify_artifact(out, MIN_GLOBALS_BYTES)
-    verify_globals_content(out)
     return out
 
 

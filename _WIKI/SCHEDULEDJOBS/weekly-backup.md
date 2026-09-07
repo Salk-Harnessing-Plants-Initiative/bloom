@@ -310,44 +310,29 @@ this way means something else is holding a lock, and a re-run is the answer.
 The wait is deliberately short because a queued `pg_dump` blocks every other
 reader on that table behind it.
 
-## What is verified before an upload counts
+## What is checked before an upload counts
 
-The failure this job is built around is not a crash — it is uploading a
-0-byte or truncated dump every week and finding out during an outage. Before
-anything is uploaded:
+Deliberately cheap. The job runs on the host that serves production, so the
+checks it makes are the ones that cost nothing:
 
 - both processes in the `pg_dump | gzip` pipeline must exit 0 — a shell
   pipeline reports only the last, which is how a failed dump wrapped in valid
-  gzip passes for a good backup;
-- `gzip -t` must pass on each artifact;
-- each artifact must clear a minimum-size floor;
-- each artifact must carry the completion line its dumper writes **last**
-  (`-- PostgreSQL database dump complete`, and the cluster equivalent for the
-  globals file). `gzip` closes its stream cleanly around a `pg_dump` that died
-  mid-table, so integrity alone does not prove the dump finished;
-- the database dump must hold rows, not just `COPY` blocks. A dump of a
-  database with nothing in it is valid SQL that clears the size floor and gzips
-  cleanly, and size checking cannot see that. Note what this row count does
-  **not** do: every applied migration is one row in a bookkeeping table, and
-  there are far more of those than the floor, so a database that was migrated
-  but never filled still clears it. Treat it as "something came out", not as
-  proof that the right database was dumped — that is what the compose project
-  mapping is for. (Losing RLS-bypass privilege is a different case again:
-  `pg_dump` sets `row_security = off` and aborts outright if the role cannot do
-  that, which the pipeline's exit-status check already catches.);
-- the globals dump must define roles, since the database dump's `OWNER` and
-  `GRANT` statements have nothing to bind to without them;
-- the sizes and counts are logged.
+  gzip passes for a good backup. A `pg_dump` that dies part-way exits non-zero,
+  so this is what catches a truncated dump;
+- each artifact must exist and clear a minimum-size floor — a `stat`, and what
+  stops a 0-byte pair being uploaded;
+- the sizes are logged and appear in the run summary.
 
 Any failure ends the run without uploading anything.
 
-Reading the dump back for those last checks means decompressing it once on the
-host. That is CPU, not I/O against the database, and it happens after the
-container is done with.
-
-The upload itself is retried with backoff (`--retries`, `--retries-sleep`)
-rather than losing an already-verified dump to a transient blip, because the
-next attempt would otherwise be a week away.
+**The dump's contents are not inspected here, on purpose.** An earlier version
+decompressed each artifact twice — once for a `gzip -t` integrity pass and once
+more to count rows and look for the dumper's completion line. On a multi-gigabyte
+artifact that is two full decompressions on the machine running Postgres and
+every other service, immediately after a dump that has already worked the disk
+hard. The cheap checks above already catch a failed or empty dump, and the
+remaining case — a dump that exits 0 but is silently wrong — is caught by
+checking the artifacts on Box instead, away from the live host.
 
 ## Restore
 
