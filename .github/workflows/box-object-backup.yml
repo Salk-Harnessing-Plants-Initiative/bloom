@@ -342,103 +342,55 @@ jobs:
         run: |
           set -uo pipefail
 
-          # `|| true` on every grep: this runs as `bash -e {0}` with pipefail,
-          # and each of these is allowed to match nothing.
-          #
-          # Anchored to timestamp, level, then phrase, because object names
-          # reach this log and a name is free text — unanchored, a file called
-          # `verify: 200 checked, 0 mismatched.png` forges a count.
-          dry_line="$(grep -oE '^[0-9-]+ [0-9:,]+ [A-Z]+ dry run — would copy [0-9]+, [0-9]+ already current, [0-9]+ skipped' \
-            "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
-          done_line="$(grep -oE '^[0-9-]+ [0-9:,]+ [A-Z]+ done — copied [0-9]+, failed [0-9]+, already current [0-9]+, skipped [0-9]+' \
-            "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
-          # The trailing ", N unverified" is optional because the job only
-          # prints it when there is a shortfall — but when there is one it
-          # belongs in the headline, or "50 verified" reads as a clean check
-          # on a night where Box answered twice.
-          verify_line="$(grep -oE '^[0-9-]+ [0-9:,]+ [A-Z]+ verify: [0-9]+ checked, [0-9]+ mismatched(, [0-9]+ unverified)?' \
-            "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
-          copied="$(printf '%s' "$done_line" | grep -oE 'copied [0-9]+' | grep -oE '[0-9]+' || true)"
-          current="$(printf '%s' "$done_line" | grep -oE 'already current [0-9]+' | grep -oE '[0-9]+' || true)"
+          # `|| true` everywhere: bash -e with pipefail, and each grep may match nothing.
+          log="${RUNNER_TEMP}/mirror-output.txt"
+          stamp='^[0-9-]+ [0-9:,]+ [A-Z]+ '
+          last() { grep -oE "$stamp$1" "$log" 2>/dev/null | tail -1 || true; }
+          num_in() { printf '%s' "$2" | grep -oE "$1[0-9]+" | grep -oE '[0-9]+' || true; }
+
+          dry_line="$(last 'dry run — would copy [0-9]+, [0-9]+ already current, [0-9]+ skipped')"
+          done_line="$(last 'done — copied [0-9]+, failed [0-9]+, already current [0-9]+, skipped [0-9]+')"
+          # The unverified count is optional — the job prints it only on a shortfall.
+          verify_line="$(last 'verify: [0-9]+ checked, [0-9]+ mismatched(, [0-9]+ unverified)?')"
+          copied="$(num_in 'copied ' "$done_line")"
+          current="$(num_in 'already current ' "$done_line")"
           checked="$(printf '%s' "$verify_line" | grep -oE '[0-9]+ checked' | grep -oE '[0-9]+' || true)"
           unverified="$(printf '%s' "$verify_line" | grep -oE '[0-9]+ unverified' | grep -oE '[0-9]+' || true)"
 
-          # The verdict, from a line only the job can produce: timestamp,
-          # level, then the key. A name only ever appears once a message has
-          # begun, so none can forge one. `tail -1` — a re-run appends.
-          status="$(grep -oE '^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_STATUS=[a-z_]+' \
-            "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
-          status="${status##*=}"
-          flags="$(grep -oE '^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_FLAGS=[a-z_,]*' \
-            "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
-          flags=",${flags##*=},"
+          status="$(last 'BOX_BACKUP_STATUS=[a-z_]+')"; status="${status##*=}"
+          flags="$(last 'BOX_BACKUP_FLAGS=[a-z_,]*')"; flags=",${flags##*=},"
 
-          # No verdict in the log means the ssh pipe died before the run
-          # printed it — a cancel or the job timeout. The run writes the same
-          # verdict into its report on the host first, so fetch that.
-          #
-          # Scoped to THIS job's run by the marker the run step stamps with
-          # its own tag and the host's clock, so the seed's report cannot
-          # become this night's verdict. Both halves evaluated host-side.
-          #
-          # Guarded on both secrets: under `set -u` an empty host would make
-          # ssh reach "user@", and a missing secret must degrade to the
-          # step-outcome fallback rather than kill the summary.
+          # The pipe dies on a cancel or timeout, so fall back to the report on the host.
           if [ -z "$status" ] && [ -n "${DEPLOY_USER:-}" ] && [ -n "${DEPLOY_HOST:-}" ]; then
-            # Read the marker, then look for a report newer than it. Two
-            # plain commands rather than a script on stdin: the runner only
-            # compares two strings, and every value it interpolates is either
-            # quoted with %q or checked to be digits first.
+            # Scoped to THIS job by the marker the run step stamped; both halves host-side.
             q_state="$(printf '%q' "$STATE_DIR")"
-            marker="$(ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
-              -o ConnectTimeout=15 -o StrictHostKeyChecking=yes \
-              "${DEPLOY_USER}@${DEPLOY_HOST}" \
-              "cat -- $q_state/actions-run.started" 2>/dev/null || true)"
+            remote() {
+              ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=15 \
+                -o StrictHostKeyChecking=yes \
+                "${DEPLOY_USER}@${DEPLOY_HOST}" "$1" 2>/dev/null || true
+            }
+            marker="$(remote "cat -- $q_state/actions-run.started")"
             marked_tag=""; stamped_at=""
             read -r marked_tag stamped_at _ <<< "$marker" || true
-            # The stamp is the host's own clock, written just before the run
-            # was launched, and the find below runs on the host too — so no
-            # runner clock ever enters the comparison.
             case "${stamped_at:-x}" in ''|*[!0-9]*) stamped_at="" ;; esac
             report=""
             if [ "${marked_tag:-}" = "$RUN_TAG" ] && [ -n "$stamped_at" ]; then
-              report="$(ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
-                -o ConnectTimeout=15 -o StrictHostKeyChecking=yes \
-                "${DEPLOY_USER}@${DEPLOY_HOST}" \
-                "find $q_state/_runs -name '*.json' -newermt @$stamped_at \
-                   -printf '%T@ %p\\n' 2>/dev/null \
-                 | sort -rn | head -1 | cut -d' ' -f2-" 2>/dev/null || true)"
+              report="$(remote "find $q_state/_runs -name '*.json' \
+                -newermt @$stamped_at -printf '%T@ %p\\n' 2>/dev/null \
+                | sort -rn | head -1 | cut -d' ' -f2-")"
             fi
             if [ -n "$report" ]; then
-              # %q, not a single-quoted literal. The name is the job's own —
-              # a timestamp and a run number — but this is the one place in
-              # the workflow that was building a remote command without it.
-              cat_args="$(printf '%q' "$report")"
-              body="$(ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
-                -o ConnectTimeout=15 -o StrictHostKeyChecking=yes \
-                "${DEPLOY_USER}@${DEPLOY_HOST}" \
-                "cat -- $cat_args" 2>/dev/null || true)"
+              body="$(remote "cat -- $(printf '%q' "$report")")"
               status="$(printf '%s' "$body" \
                 | grep -oE '\"status\"[[:space:]]*:[[:space:]]*\"[a-z_]+\"' \
                 | head -1 | grep -oE '[a-z_]+\"$' | tr -d '\"' || true)"
-              # The flags too, or a cancelled night keeps its headline and
-              # drops every notice — including the refused-filename one, whose
-              # whole justification is that you get exactly one.
-              #
-              # The two ledger flags are never in the report: the upload that
-              # sets them runs after it is written.
+              # Flags too, or a cancelled night keeps its headline and drops every notice.
               flags="$(printf '%s' "$body" \
                 | tr -d ' \n' \
                 | grep -oE '\"flags\":\[[^]]*\]' \
                 | grep -oE '[a-z_]+' | grep -v '^flags$' | paste -sd, - || true)"
               flags=",${flags},"
-              # The counts too, or the night this route exists for — a seed
-              # stopped by the time limit — renders "stopped before copying
-              # anything" against a report holding 400,000 copies.
-              #
-              # `tr -d` first so indentation cannot hide a value; digits only,
-              # so anything else stays empty and the branches below fall back
-              # as they would with no report.
+              # Counts too, or a seed stopped by the time limit reads as having copied nothing.
               stats="$(printf '%s' "$body" | tr -d ' \n')"
               num() {
                 printf '%s' "$stats" | grep -oE "\"$1\":[0-9]+" \
@@ -452,17 +404,13 @@ jobs:
             fi
           fi
 
-          # Nothing in the log and nothing on the host — a run that died
-          # before it wrote either. The step's own outcome is then the verdict.
+          # Nothing anywhere: the step's own outcome is the verdict.
           if [ -z "$status" ]; then
             if [ "${{ steps.run.outcome }}" = "success" ]; then status=ok; else status=failed; fi
           fi
           has_flag() { case "$flags" in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
-          # Thousands separators, so eight million reads as eight million.
-          # Not printf "%'d" (needs a numeric locale the runner may not have,
-          # and silently prints ungrouped without one) and not sed (the label
-          # syntax differs between GNU and BSD, so it would work only here).
+          # Thousands separators. Not printf %'d (needs a locale), not sed (GNU vs BSD).
           group() {
             local n="$1" out=""
             while [ "${#n}" -gt 3 ]; do
@@ -473,10 +421,7 @@ jobs:
           }
 
           if [ -n "$dry_line" ]; then
-            # A dry run copies nothing by design, so the copy counts never
-            # applied to it — and without this it fell through to "no counts
-            # in the log", the phrase that means the log is malformed. It is
-            # step one of the pre-seed checklist.
+            # A dry run copies nothing, so the copy counts never applied to it.
             would="$(printf '%s' "$dry_line" | grep -oE 'would copy [0-9]+' | grep -oE '[0-9]+' || true)"
             counts="dry run — would copy $(group "${would:-0}"), nothing was copied"
           elif [ -n "${copied:-}" ] && [ "$copied" -gt 0 ]; then
@@ -489,16 +434,10 @@ jobs:
           if [ -n "${checked:-}" ] && [ "$checked" -gt 0 ]; then
             counts="${counts}, $(group "$checked") verified"
           elif [ -n "${unverified:-}" ] && [ "$unverified" -gt 0 ]; then
-            # Nothing was answered. Without this the shortfall attaches to the
-            # copy count — "200,000 images copied (50 unanswered)" reads as 50
-            # of the copies being unanswered, and the notice below then refers
-            # to a "N verified" count that is not there.
+            # Nothing answered: without this the shortfall attaches to the copy count.
             counts="${counts}, 0 verified"
           fi
           if [ -n "${unverified:-}" ] && [ "$unverified" -gt 0 ]; then
-            # Qualifies the number beside it rather than sitting apart from
-            # it: "2 verified" alone is a true statement that reads as a
-            # checked night when the other 48 went unanswered.
             counts="${counts} ($(group "$unverified") unanswered)"
           fi
 
@@ -517,10 +456,7 @@ jobs:
               echo "run report under \`_runs/\`. Read the log first: a night"
               echo "that failed copies outright is the larger problem."
             elif has_flag verify_mismatch; then
-              # Reached only when the run did NOT fail: the branch above takes
-              # a failed night first. Any flag branch added below this point
-              # must do the same, or it will headline a night that failed to
-              # copy 3,000 objects as a verification problem.
+              # Reached only when the run did NOT fail — the branch above takes those first.
               echo "Result: **VERIFICATION FAILED** — objects the copy reported"
               echo "as successful are not on Box. Every one is named in the run"
               echo "report under \`_runs/\`."
@@ -558,11 +494,7 @@ jobs:
                 echo "mean nothing else went wrong."
               fi
             elif [ "$status" = "stopped" ]; then
-              # Its own branch, because this is the ONE outcome that means
-              # "this is fine". The Actions job hitting its time limit during
-              # the seed lands here every night, having copied and recorded
-              # thousands of objects; it used to read FAILED, "the mirror was
-              # not updated this run" — both halves false.
+              # Its own branch: this is the one outcome that means 'this is fine'.
               said_stopped=1
               echo "Result: **stopped, progress kept** — the run was asked to"
               echo "stop before it finished the table, almost certainly the"
@@ -586,10 +518,7 @@ jobs:
               echo "tonight's objects were not mirrored; anything that did"
               echo "copy is recorded and will not be copied again."
             fi
-            # Additive: a stop no longer wins the headline over a permanent
-            # non-backup, but it still explains why the counts are short and
-            # why the run is recorded partial. Skipped when the stopped branch
-            # already said it.
+            # Additive: a stop must not hide a permanent non-backup.
             if [ "$status" = "stopped" ] && [ -z "${said_stopped:-}" ]; then
               echo
               echo "> The run was also **asked to stop before it finished the"
@@ -597,10 +526,7 @@ jobs:
               echo "> Everything it copied is recorded and on Box, and the"
               echo "> next run carries on from there."
             fi
-            # Deliberately its own `if`, not another elif: the ledger upload is
-            # best-effort, so this can happen on a night that otherwise
-            # succeeded AND on one that reported a collision. As a branch it
-            # would be hidden by whichever result won.
+            # Its own `if`, not an elif: this happens on nights that otherwise succeeded.
             if has_flag ledger_stale; then
               echo
               echo "> **The ledger on Box was NOT updated.** Objects still"
@@ -613,9 +539,6 @@ jobs:
               echo "> upload failed, and 'If the deploy host itself is gone'"
               echo "> in the wiki says what losing it costs."
             fi
-            # Additive for the same reason as the rest: an object refused for
-            # its name can happen on a night that otherwise copied fine, and
-            # it is the same permanent non-backup a collision is.
             if has_flag skipped_names; then
               echo
               echo "> **Some images were not backed up because of their"
@@ -626,9 +549,7 @@ jobs:
               echo "> reason in the run report under \`_runs/\` on Box."
               echo ">"
               if [ "$status" = "ok" ]; then
-                # Only true on a clean night. A stopped or failed run is
-                # recorded partial, so the watermark IS held and tomorrow
-                # re-enumerates and says it again.
+                # True only on a clean night; a held watermark says it again tomorrow.
                 echo "> **This is the only night that will say so.** The run is"
                 echo "> still recorded clean on purpose: holding the mirror's"
                 echo "> progress timestamp for a filename nothing can fix on"
@@ -638,10 +559,6 @@ jobs:
               echo "> The report on Box is the durable record — they are"
               echo "> listed under \`name_skips\`, apart from the collisions."
             fi
-            # Additive, like the refused-filename notice and for the same
-            # reason: nothing on this side can ever copy these, so the run
-            # does not hold the watermark for them and this is the one night
-            # that says so.
             if has_flag source_gone; then
               echo
               echo "> **Some rows in the database have no image behind them.**"
@@ -655,10 +572,7 @@ jobs:
               echo "> under \`_runs/\` on Box. Someone has to decide whether"
               echo "> each row should still exist — nothing here will."
             fi
-            # The mirror image of the notice above, and it must never be
-            # merged with it: there, the host has the good ledger and Box is
-            # behind. Here Box has the good one. An operator told to "fix a
-            # stale Box copy" would overwrite eight million rows with twenty.
+            # Never merge with the notice above: there Box is behind, here Box is ahead.
             if has_flag ledger_ahead; then
               echo
               echo "> **The ledger on Box is newer than this host's — the"
@@ -671,8 +585,6 @@ jobs:
               echo "> objects with this run's, and cost a full re-seed. See"
               echo "> 'If the deploy host itself is gone' in the wiki."
             fi
-            # Also additive, and for the same reason: a check that covered
-            # less than it was asked to happens on a night that copied fine.
             if has_flag verify_incomplete; then
               echo
               echo "> **Verification did not cover its whole sample.** Box did"
@@ -690,9 +602,7 @@ jobs:
             echo
             echo '### This run'
             echo '```'
-            # The level is the THIRD field: asctime contains a space, so an
-            # anchor of ^\S+ never reaches INFO. Capture first then test,
-            # because `tail` exits 0 on empty input.
+            # The level is the THIRD field — asctime contains a space.
             summary="$(grep -E '^[0-9-]+ [0-9:,]+ (INFO|WARNING|ERROR) (done —|verify:|listed|preflight|batch:)' \
               "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -20 || true)"
             if [ -n "$summary" ]; then

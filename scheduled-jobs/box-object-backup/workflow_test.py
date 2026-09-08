@@ -87,11 +87,15 @@ class TestSkipMarkerContract:
         """
         script = _strip_comments(summary_script)
         assert job.STATUS_KEY in script, "the summary does not read the status line"
-        assert "^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_STATUS=" in script, (
-            "the status match is not anchored, so a log line could forge it"
+        assert job.FLAGS_KEY in script, "the summary does not read the flags line"
+        # Anchoring lives in one place now. Asserted as the property rather
+        # than as two literals: every read of the log goes through `last`,
+        # and `last` prepends the anchor, so no pattern can skip it.
+        assert "stamp='^[0-9-]+ [0-9:,]+ [A-Z]+ '" in script, (
+            "the shared anchor is gone; a pattern could now match mid-line"
         )
-        assert "^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_FLAGS=" in script, (
-            "the flags match is not anchored, so a log line could forge it"
+        assert 'last() { grep -oE "$stamp$1" "$log"' in script, (
+            "`last` no longer applies the anchor to its pattern"
         )
 
     def test_a_forged_status_in_an_object_name_cannot_steer_the_summary(self):
@@ -833,12 +837,23 @@ class TestTheHeadlineCarriesTheCounts:
         )
         assert "12 images copied" in headline, "the real count was lost"
 
-    def test_both_count_greps_are_anchored(self, summary_script: str):
-        """Shape, so the reason survives even if the executed cases move."""
+    def test_nothing_reads_the_log_without_the_anchor(self, summary_script: str):
+        """The property, not two literals.
+
+        Object names are in this log, so a pattern matched mid-line can be
+        forged by a filename. `last` is the only thing that may read the log,
+        and it prepends the anchor — so a new count added later cannot skip
+        it by accident.
+        """
         script = _strip_comments(summary_script)
+        reads = [
+            ln for ln in script.splitlines()
+            if '"$log"' in ln and "last()" not in ln
+        ]
+        assert reads == [], f"the log is read without the anchor: {reads}"
         for phrase in ("done — copied", "verify: [0-9]+ checked"):
-            assert f"^[0-9-]+ [0-9:,]+ [A-Z]+ {phrase}" in script, (
-                f"the {phrase!r} grep is not anchored, so a name can forge it"
+            assert f"last '{phrase}" in script or f'last "{phrase}' in script, (
+                f"the {phrase!r} count no longer goes through the anchor"
             )
 
     def test_a_fully_answered_sample_is_not_qualified(self, parsed):
@@ -1091,10 +1106,17 @@ class TestTheSummaryStepCannotHangTheRunner:
         """A default connect can sit for two minutes, three times over."""
         body = self.step(parsed)["run"]
         calls = body.count("ssh -i ~/.ssh/deploy_key")
-        assert calls >= 2, "the fallback stopped using ssh — update this test"
-        assert body.count("-o ConnectTimeout=") == calls, (
-            "an ssh call in the summary step has no connect timeout"
+        assert calls == 1, (
+            f"{calls} ssh invocations — they share one helper, so a second "
+            "one means an option was duplicated or omitted somewhere"
         )
+        assert body.count("-o ConnectTimeout=") == calls, (
+            "the ssh call in the summary step has no connect timeout"
+        )
+        # Everything remote must go through that helper, or a new call gets
+        # the default two-minute connect on a host that may be wedged.
+        assert 'remote() {' in body
+        assert '"${DEPLOY_USER}@${DEPLOY_HOST}" "$1"' in body
 
 
 class TestCancellingTheJobStopsTheRun:
