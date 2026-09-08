@@ -24,6 +24,7 @@ import backup_objects as job  # noqa: E402
 from runlock import SKIP_MARKER, LockHeld, RunLock  # noqa: E402
 import backup_lib as lib  # noqa: E402
 import copier  # noqa: E402
+import report  # noqa: E402
 import rclone_rc  # noqa: E402
 import stopping  # noqa: E402
 from backup_lib import CopyPlan, StorageObject, build_plan  # noqa: E402
@@ -3335,4 +3336,90 @@ class TestARowWithNoImageBehindIt:
         assert data["name_skips"] == [], (
             "a vanished source was filed as a filename problem, which tells "
             "the operator to rename something that will not help"
+        )
+
+
+class TestTheGuaranteesTheReportCarries:
+    """Three things this job promises rest on the run report existing.
+
+    A refused filename, an object verification found missing, and a row with
+    no image behind it are all permanently unbackupable, and for all three the
+    job deliberately does NOT hold the watermark — so the night it happens is
+    the only notification. The log is a GitHub Actions log under retention;
+    the report on Box is what outlives it.
+
+    Each mutation below left the whole suite green before this class existed.
+    """
+
+    @pytest.fixture
+    def harness(self, monkeypatch, tmp_path):
+        return TestRunLockedWiresItsPartsTogether().harness.__wrapped__(
+            TestRunLockedWiresItsPartsTogether(), monkeypatch, tmp_path
+        )
+
+    def test_the_report_is_actually_uploaded_to_box(self, harness):
+        """Deleting the upload entirely passed 547 tests.
+
+        The only test touching it looped over whatever had been copied and
+        asserted each destination looked right — satisfied by copying nothing.
+        """
+        state, tmp_path = harness
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        reports = [
+            dst for _, _, dst in state["copied"]
+            if dst.endswith(".json") and f"/{report.REPORTS_DIRNAME}/" in dst
+        ]
+        assert len(reports) == 1, (
+            f"the run report was not uploaded to Box: {state['copied']}"
+        )
+
+    def test_the_uploaded_report_is_named_for_this_run(self, harness):
+        """A hardcoded name survived too — every night would overwrite one file."""
+        state, tmp_path = harness
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        [dst] = [d for _, _, d in state["copied"] if d.endswith(".json")]
+        name = dst.rsplit("/", 1)[-1]
+        assert name.endswith("-prod-run00001.json"), name
+        assert name[:4].isdigit(), f"not a sortable timestamp: {name}"
+
+    def test_verification_records_which_object_was_missing(self, ledger):
+        """`verify_sample` never recorded WHICH object, under any test.
+
+        Emptying `failures` left the counts right and the report naming
+        nothing — and exit 4's whole justification is that the object is
+        named, because nothing re-copies it automatically (D1).
+        """
+        client = FakeRclone()
+        gone = obj(name="exp-42/lost.png")
+        client.stats_by_path["root/images/exp-42/frame.png"] = {"Size": 100}
+        result = copier.verify_sample(
+            client, make_plan([gone]), BOX_FS, "root", 1
+        )
+        assert result.mismatched == 1
+        assert [o.name for o in result.failures] == ["exp-42/lost.png"], (
+            "the check counted a missing object but did not say which"
+        )
+
+    def test_the_report_names_the_box_path_not_the_raw_name(self, harness, monkeypatch):
+        """The restore procedure fetches this path from Box.
+
+        Reporting `obj.name` instead passed, because the fixture object's name
+        is a substring of its Box path — so the assertion could not tell the
+        two apart, and the bucket and box root were never checked.
+        """
+        state, tmp_path = harness
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
+        state["missing"].add(f"{args.box_root}/images/exp-42/a.png")
+        monkeypatch.setattr(
+            job, "wait_for_daemon", lambda daemon, attempts=30: state["client"]
+        )
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path, verify=2), tmp_path)
+        written = json.loads(
+            next((tmp_path / report.REPORTS_DIRNAME).glob("*.json")).read_text()
+        )
+        assert written["verify_failures"] == [
+            f"{args.box_root}/images/exp-42/a.png"
+        ], (
+            "the report names something other than the path on Box, which is "
+            f"what a restore asks for: {written['verify_failures']}"
         )

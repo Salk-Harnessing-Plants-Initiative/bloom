@@ -1917,6 +1917,99 @@ class TestTheFallbackRecoversTheCountsToo:
         assert "50 verified" in body
         assert "no counts in the log" not in body
 
+    def search_args(self, parsed: dict, marker: str):
+        """Run the step with a stand-in `find`; return the args it was given.
+
+        Observed rather than executed for real: `-printf` is GNU-only, so on
+        a BSD/macOS box the real command returns nothing whatever the flags
+        say and an execution test cannot tell a mutation apart. What the step
+        BUILDS is the property that matters, and it holds anywhere.
+        """
+        import subprocess
+        import tempfile
+        from pathlib import Path as P
+
+        steps = parsed["jobs"]["mirror"]["steps"]
+        script = next(
+            s["run"] for s in steps
+            if s.get("name", "").startswith("Write the run summary")
+        ).replace("${{ steps.run.outcome }}", "$OUTCOME")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = P(tmp)
+            (root / "mirror-output.txt").write_text(self.TRUNCATED)
+            state = root / "state"
+            (state / "_runs").mkdir(parents=True)
+            (state / "actions-run.started").write_text(marker + chr(10))
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            seen = root / "find-args.txt"
+            (fake_bin / "ssh").write_text(chr(10).join([
+                "#!/bin/sh",
+                "while [ $# -gt 0 ]; do",
+                '  case "$1" in *@*) shift; break ;; *) shift ;; esac',
+                "done",
+                'exec /bin/sh -c "$*"',
+                "",
+            ]))
+            (fake_bin / "find").write_text(chr(10).join([
+                "#!/bin/sh",
+                f'printf "%s\\n" "$*" > {seen}',
+                "",
+            ]))
+            for name in ("ssh", "find"):
+                (fake_bin / name).chmod(0o755)
+            out = root / "summary.md"
+            result = subprocess.run(
+                ["bash", "-e", "-c", script],
+                env={
+                    "PATH": f"{fake_bin}:/usr/bin:/bin", "RUNNER_TEMP": str(root),
+                    "ENV_NAME": "prod", "OUTCOME": "failure",
+                    "DEPLOY_USER": "deploy", "DEPLOY_HOST": "host",
+                    "RUN_TAG": "1-1", "STATE_DIR": str(state),
+                    "GITHUB_STEP_SUMMARY": str(out), "LC_ALL": "C",
+                },
+                capture_output=True, text=True,
+            )
+            assert result.returncode == 0, result.stderr.strip()[:300]
+            return (seen.read_text() if seen.exists() else None), str(state)
+
+    def test_the_search_is_scoped_to_reports_written_after_this_run_began(
+        self, parsed
+    ):
+        """The seed writes into the same `_runs/` directory.
+
+        The marker names this job, so the tag check passes — but without
+        `-newermt` the newest report there is the seed's, and the seed's
+        verdict becomes this night's headline. That is the exact failure the
+        run-scoping was added to fix, and only the tag half had a test.
+        """
+        args, state = self.search_args(parsed, "1-1 1700000000")
+        assert args is not None, "the fallback never searched for a report"
+        assert "-newermt @1700000000" in args, (
+            f"the search is not scoped to this run's start: {args}"
+        )
+        assert f"{state}/_runs" in args
+
+    def test_the_search_does_not_run_when_the_marker_names_another_job(
+        self, parsed
+    ):
+        args, _ = self.search_args(parsed, "999-1 1700000000")
+        assert args is None, "it searched for a report belonging to another job"
+
+    def test_a_marker_without_a_usable_time_searches_for_nothing(self, parsed):
+        """A malformed marker must not produce an unscoped search.
+
+        Both guards matter and they fail differently: with no numeric check
+        the step builds `-newermt @<garbage>`, and with no emptiness check it
+        builds a bare `-newermt @`. Either way the scoping is gone, which is
+        the whole point of the flag.
+        """
+        for marker in ("1-1 garbage", "1-1", "1-1 17e9", "1-1 -5"):
+            args, _ = self.search_args(parsed, marker)
+            assert args is None, (
+                f"marker {marker!r} produced a search anyway: {args}"
+            )
+
     def test_the_log_still_wins_when_it_has_the_counts(self, parsed):
         """The fallback fills gaps; it must not overwrite a complete log."""
         log = (
