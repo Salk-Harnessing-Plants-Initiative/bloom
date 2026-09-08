@@ -1143,3 +1143,58 @@ class TestProductionIsTheOnlyTarget:
             if "DEPLOY_PATH" in s["env"]
         }
         assert paths == {"${{ secrets.PROD_DEPLOY_PATH }}"}, paths
+
+
+# Shell in a `run:` block cannot be called, so it can only be tested by
+# executing the step with a fabricated environment and asserting on its
+# output. That harness costs several lines of Python per line of shell, and
+# it still misses things: an earlier version of this workflow carried a
+# 279-line summary step whose 2,400-line test suite ran it under plain `bash`
+# while GitHub uses `bash -e`, so every quiet night would have produced a red
+# tick over an empty page — for seven rounds of review.
+#
+# Comments are not counted. They are not the problem, and this repo's
+# workflows are deliberately well commented.
+MAX_SHELL_LINES = 60
+
+
+def shell_lines(script: str) -> int:
+    """Lines of a `run:` block that do something, ignoring comments."""
+    return len(
+        [
+            ln
+            for ln in script.splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        ]
+    )
+
+
+class TestNoStepGrowsIntoAProgram:
+    """A `run:` block is for plumbing — ssh, secrets, `$GITHUB_OUTPUT`,
+    signalling a pid. Anything that parses, formats, or branches on state
+    belongs in a module beside the job, where a test can call it directly.
+    """
+
+    def test_every_step_is_plumbing(self, parsed: dict):
+        oversized = {
+            step.get("name", "(unnamed)"): shell_lines(step["run"])
+            for step in parsed["jobs"]["mirror"]["steps"]
+            if "run" in step and shell_lines(step["run"]) > MAX_SHELL_LINES
+        }
+        assert not oversized, (
+            f"these steps exceed {MAX_SHELL_LINES} lines of shell: {oversized}. "
+            "Move the logic into a module under scheduled-jobs/ and call it "
+            "from the step — see summary.py, which replaced a 279-line step."
+        )
+
+    def test_the_limit_is_low_enough_to_matter(self):
+        # The step that prompted this was 279 lines. A limit set above what it
+        # would have allowed is not a limit.
+        assert MAX_SHELL_LINES < 279
+
+    def test_the_check_actually_rejects_an_oversized_step(self):
+        # Otherwise a bug in `shell_lines` leaves it passing on everything.
+        program = "\n".join(f"echo {n}" for n in range(MAX_SHELL_LINES + 1))
+        assert shell_lines(program) > MAX_SHELL_LINES
+        commented = "\n".join(f"# comment {n}" for n in range(500))
+        assert shell_lines(commented) == 0, "comments must not count against a step"
