@@ -54,9 +54,21 @@ jobs:
   # mismatch, but this workflow fires independently off the same `release:
   # published` event — without this job, a bad tag would still let the
   # build below push a GHCR image mistagged with the wrong version.
+  #
+  # Also skips cleanly (not failed) for a Release that belongs to a
+  # different monorepo package (e.g. bloommcp-vX.Y.Z) — this workflow fires
+  # on every published Release regardless of which package it's for, but it
+  # only ever builds/pushes the bloomctl image. Without this guard, every
+  # bloommcp release produced a permanent, misleading red X here: the tag
+  # never starts with `bloomctl-v`/`v`, so the prefix-stripping below left it
+  # unchanged and it never equalled bloomcli/pyproject.toml's version
+  # (#663 review). build-and-push's own `if:` already treats a skipped
+  # validate-tag the same as a failed one (neither is `'success'`), so no
+  # change is needed there — this workflow now skips entirely for a
+  # bloommcp release, exactly like release-bloomcli.yml does.
   validate-tag:
     name: Validate release tag matches pyproject.toml version
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'bloomctl-')
     runs-on: ubuntu-latest
     defaults:
       run:

@@ -936,9 +936,14 @@ the more durable signal that M2 hasn't actually been rolled back.
     nightly run through that same approval gate — but GitHub Environment protection is keyed by
     environment *name*, not trigger type, so a scheduled run has no human present to click "Approve";
     it would sit "Waiting" indefinitely (or until GitHub's own multi-week protection-rule timeout),
-    silently never executing. Worse, with `cancel-in-progress: true` sharing one concurrency group, the
-    *next* night's run would cancel the still-pending prior one before anyone could approve it — a
-    compounding failure that surfaces no error at all. The two trigger types have genuinely different
+    silently never executing. Worse, with one concurrency group shared across nights, the *next* night's
+    run would cancel the still-pending prior one before anyone could approve it — a compounding failure
+    that surfaces no error at all. (**Correction, Section 15/bloom#736's own CI/CD pass: this
+    cancellation is GitHub's *default* pending-job-supersession behavior, not something `cancel-in-progress:
+    true` specifically causes** — that flag's only effect is additionally cancelling an already-**running**
+    job. The outcome described here is unchanged; only the earlier attribution to `cancel-in-progress`
+    specifically was imprecise. See Section 15's own addendum below for the corrected mechanism.) The two
+    trigger types have genuinely different
     risk shapes: `workflow_dispatch` lets any human with dispatch permission fire this RPC against
     production *at will, with parameters they choose in the moment* — the approval gate defends against
     exactly that discretion. A `schedule` trigger has no discretion: it always calls the same function,
@@ -969,10 +974,12 @@ the more durable signal that M2 hasn't actually been rolled back.
     section already fixed for schedule-vs-schedule, found in round 2's re-verification of this fix.**
     Sharing one concurrency group by target-host means a manual `workflow_dispatch` to `production` that
     is currently sitting in "Waiting" for `required_reviewers` approval, and the 00:17 UTC scheduled run,
-    both occupy the same group — confirmed via GitHub's own documented behavior that
-    `cancel-in-progress: true` cancels a job that is queued/pending approval, not only one already
-    executing. If the cron fires while a manual production dispatch is still pending approval, it
-    silently cancels that pending dispatch. Unlike the schedule-vs-schedule case this section's main fix
+    both occupy the same group — confirmed via GitHub's own documented behavior that a job that is
+    queued/pending approval is superseded by a newer trigger in the same group by default. (**Correction,
+    same Section 15/bloom#736 CI/CD finding as above: this default pending-job supersession is distinct
+    from `cancel-in-progress: true`, which only additionally cancels an already-running job — the
+    outcome below still holds, only the mechanism name was imprecise.**) If the cron fires while a manual
+    production dispatch is still pending approval, it silently cancels that pending dispatch. Unlike the schedule-vs-schedule case this section's main fix
     closes (which could compound into *no* run ever completing), this is a single, one-off cancellation
     of a specific manual request — safe to retry (D5b's advisory lock still makes any half-started state
     a clean no-op), and only reachable in the narrow window where someone manually dispatches production
@@ -1035,6 +1042,71 @@ the more durable signal that M2 hasn't actually been rolled back.
     on staging's normal, harmless multi-day quiet periods. A real, if narrow, cross-environment tension
     this section doesn't resolve — worth a follow-up once (or if) the reader threads environment context
     through this call path, not a blocker for the schedule itself shipping.
+
+  **D8 addendum, part 2 (Section 15, bloom#736) — the promotion/approval-gate story above was correct,
+  but incomplete: the RPC call itself has never once reached either host.** This workflow's first live
+  scheduled run, once actually promoted to `main` (2026-08-24/25), started executing immediately under
+  `production-scheduled-refresh` exactly as designed above — and then failed in 12s:
+  `curl: (28) Failed to connect to bloom.salk.edu port 443 after 5001 ms: Timeout was reached` (run
+  32799136668, `2026-08-25T01:51:22Z`). Root cause: `runs-on: ubuntu-latest` (a GitHub-hosted runner) has
+  no network route to the Salk server — a limitation `deploy.yml` already documents in its own comment
+  ("GitHub-hosted runners have no route to the Salk server") for its self-hosted-runner jobs, but one
+  this workflow never adopted, from PR #684's original introduction through this same section's own
+  bloom#708 cron addition. This means every claim in this addendum above about the scheduled cron
+  "working" was accurate only for the approval-gate/environment-resolution half — the actual delivery
+  half was never exercised successfully by any run, scheduled or dispatched, at any point in this
+  workflow's history.
+
+  Fixed by changing `runs-on` to the same self-hosted label `deploy.yml` uses,
+  `["self-hosted", "linux", "salk-network"]`, applied unconditionally (both hosts, all three trigger
+  paths — this workflow has one job, not a per-host split, and the user chose parity over leaving
+  staging on `ubuntu-latest` as a negative control). Deliberately not mirroring `deploy.yml`'s
+  `ubuntu-latest` escape-hatch input: that input exists because `deploy.yml`'s jobs are required/blocking
+  checks that need a way to fail fast when the self-hosted runner is hung; this job is neither, and the
+  escape hatch would do nothing for the unattended `schedule` trigger anyway. Accepted, not mitigated: if
+  `salk-network` is offline, a run now queues rather than failing in ~12s — the same trade-off
+  `deploy.yml` already accepts for real deploys, and lower-stakes here since nothing blocks on this job.
+  **Correction (`/review-openspec`'s CI/CD pass): the bound on this is NOT `concurrency.group`'s
+  `cancel-in-progress: true`** — that flag only cancels an already-**running** job; GitHub's own
+  documented default behavior already supersedes a **queued/pending** job in the same group once a newer
+  trigger arrives, independent of `cancel-in-progress`. The actual bound differs by host: `production`'s
+  daily cron supersedes a stuck queued run via that default behavior, on top of GitHub's own independent
+  ~24h hard-cancel-queued-job limit; `staging` has nothing that re-triggers automatically, so a queued
+  manual dispatch there relies solely on the same ~24h hard limit, not on anything this workflow's own
+  concurrency configuration adds.
+
+  **New risk, found by the same CI/CD pass, not previously documented anywhere in this design: this job
+  now shares a runner pool with `deploy.yml`'s deploy jobs, which `deploy.yml`'s own
+  `concurrency.group: deploy-bloom` comment states explicitly is a single physical machine ("single Salk
+  server, single docker daemon"), not an autoscaling fleet.** The two workflows use different
+  concurrency groups, so nothing serializes them against each other — a `deploy.yml` run
+  (`timeout-minutes: 30`) can occupy the only matching runner while this job queues behind it for up to
+  ~30 minutes, a distinct failure mode from "runner offline" that this addendum previously didn't
+  mention. Accepted, not mitigated: no human is waiting synchronously on this job, and `timeout-minutes:
+  2` only bounds execution time once a runner is assigned, not queued-for-a-runner time — both facts are
+  called out explicitly in the workflow's own comment (tasks.md 15.3) rather than left for a future
+  reader to assume incorrectly.
+
+  **New risk, found by `/review-pr` against PR #738 (the implementation of 15.1-15.6), not previously
+  documented: the shared, long-lived `salk-network` runner is a materially different trust boundary for
+  `SERVICE_ROLE_KEY` than the previous ephemeral `ubuntu-latest` VM was.** The `curl` call's
+  `Authorization: Bearer ${SERVICE_ROLE_KEY}` argument is visible via `ps`/`/proc/<pid>/cmdline` to any
+  other process on the same host for the few seconds the command runs. On the previous single-tenant,
+  throwaway `ubuntu-latest` VM that was a non-issue (the whole machine is destroyed after the job); the
+  shared `salk-network` runner also runs `deploy.yml`'s own deploy jobs, so a host-level compromise now
+  yields a path to a live, full-RLS-bypass credential across every future run, not just one. Accepted,
+  not mitigated: GitHub already masks the value in *logs*, and the process-list exposure is a materially
+  smaller, already-existing risk `deploy.yml`'s own jobs already accept for their own secrets on this
+  same host — documented here so a future reader isn't the first to notice it (tasks.md 15.11).
+
+  **Second new risk, same `/review-pr` pass: refresh-vs-refresh runner contention, distinct from the
+  deploy-vs-refresh contention documented immediately above.** With exactly one registered `salk-network`
+  runner (confirmed via 15.2's `gh api repos/.../actions/runners` check), a `staging` dispatch and a
+  `production` dispatch/schedule now also serialize against each other purely by runner scarcity — new
+  behavior, since the previous elastically-scaled `ubuntu-latest` runners never contended with each
+  other this way. Not a correctness bug: each host's own `concurrency.group` (scoped by target host, per
+  the file's own comment) is untouched and still fully independent, so nothing races or corrupts — just
+  a capacity-planning fact worth knowing (tasks.md 15.12).
 
     **Reinforced, not newly found — round 2's `/review-pr` pass on the pushed PR independently
     converged on the same two follow-up angles for tasks.md 14.9's post-promotion check.** (1)

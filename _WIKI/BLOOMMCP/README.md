@@ -190,8 +190,11 @@ automatically on a daily `on: schedule` cron** (bloom#708) while **staging remai
 via manual `workflow_dispatch` (`environment: staging|production`; staging doesn't need frequent
 automatic refreshes — see `design.md` D8's addendum for the full reasoning, including why the
 scheduled path resolves to a second, ungated GitHub Environment rather than `production` itself).
-Staleness is therefore bounded to roughly one refresh interval on production, but still unbounded on
-staging until someone dispatches a refresh there. A pinned call is fully live for both counts.
+Staleness is therefore bounded to roughly one refresh interval on production, once bloom#736
+(`fix-cyl-scan-traits-latest-rollup` Section 15) confirms an actual successful refresh —
+unbounded until then, identically to staging today, since the refresh workflow's `runs-on:
+ubuntu-latest` had no network route to either host and every RPC delivery had failed. A pinned
+call is fully live for both counts.
 
 See [`_WIKI/SUPABASE/README.md`](../SUPABASE/README.md) for the full
 role / RLS picture.

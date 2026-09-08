@@ -14,6 +14,11 @@ Endpoints:
                                                        Storage, return a signed
                                                        download URL
                                                        (requires a Supabase user JWT)
+    POST /gravi/experiments/{experiment_id}/plate-video
+                                                     - on-demand: render one plate's
+                                                       time-lapse for one wave, store
+                                                       it and record it
+                                                       (requires a Supabase user JWT)
     POST /pipeline                                  - externally reachable as
                                                        POST /workflows/pipeline
                                                        (Caddy strips the /workflows
@@ -37,8 +42,9 @@ import logging
 import os
 
 import pipeline
+import plate_request
 from auth import enforce_rate_limit, require_supabase_user
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from video import generate_experiment_scan_video
 
@@ -99,6 +105,59 @@ def cyl_experiment_scan_video(
             scan_id,
         )
     return {"experiment_id": experiment_id, **result}
+
+
+@app.post("/gravi/experiments/{experiment_id}/plate-video")
+def gravi_plate_video(
+    experiment_id: int,
+    body: dict,
+    user_id: str = Depends(require_supabase_user),
+):
+    """On-demand: render one plate's time-lapse for one wave.
+
+    `plate_id` and `wave_number` travel in the body, not the path — `plate_id`
+    is free text, and the cylinder route's integer-only path defence does not
+    transfer to it.
+
+    Requires a valid Supabase user JWT (Bearer). Rate-limited per user, which
+    bounds how fast one account can ask — not how often a plate is rendered:
+    five clicks inside the window are five renders. What absorbs a repeated
+    click is the plate lock and the second look at the plan, both in
+    `render_plate_video`.
+    """
+    # Read before anything can refuse, so a rejected body is still recorded as
+    # a request for something. `%r` below because neither has been validated on
+    # that path, and an unescaped newline in a plate id would forge a log line.
+    asked = body if isinstance(body, dict) else {}
+
+    try:
+        enforce_rate_limit(user_id)
+        result = plate_request.render(experiment_id, body)
+    except HTTPException as exc:
+        # A refusal is what a caller sees when the button appears to do nothing,
+        # and it used to leave no trace: the line below is reached only when a
+        # render returns, so the log held every request that worked and none of
+        # the ones anyone would look up.
+        logger.info(
+            "plate video for experiment %s plate %r wave %r requested by %s: %s refused — %r",
+            experiment_id,
+            asked.get("plate_id"),
+            asked.get("wave_number"),
+            user_id,
+            exc.status_code,
+            exc.detail,
+        )
+        raise
+
+    logger.info(
+        "plate video for experiment %s plate %s wave %s requested by %s: %s",
+        experiment_id,
+        result.get("plate_id"),
+        result.get("wave_number"),
+        user_id,
+        result["action"],
+    )
+    return result
 
 
 @app.post("/pipeline")

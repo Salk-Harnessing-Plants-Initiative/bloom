@@ -89,6 +89,17 @@ NOT NULL`, and the unnecessary `cyl_experiments` join is dropped. **These branch
     originally made — that `workflow_dispatch`, unlike `schedule:`, doesn't require this file to be
     promoted to the repo's default branch (`main`) before it can fire; both trigger types are gated on
     default-branch presence identically, confirmed against the live repo.
+  - **(bloom#736, Section 15)** The refresh job's `runs-on: ubuntu-latest` changes to the same
+    self-hosted runner label `deploy.yml` uses (`["self-hosted", "linux", "salk-network"]`), applied
+    unconditionally to both hosts (one job serves all three trigger paths, so there's no per-host
+    boundary to give staging a different runner). GitHub-hosted runners have no network route to the
+    Salk server — confirmed empirically by this workflow's first live scheduled run
+    (`2026-08-25T01:51:22Z`, run 32799136668), which failed its `curl` call in 12s despite the
+    approval-gate/environment-resolution design above working exactly as intended. Every run of this
+    workflow, scheduled or dispatched, against either host, had been unreachable on the network hop
+    since the workflow's introduction in PR #684 — unnoticed until now because the workflow was
+    undispatchable at all until this same change's own bloom#708 promotion made a live run possible for
+    the first time.
   - `tests/integration/` — new/rewritten test files for the trigger, inline backfill, the semi-join
     rewrite, the cache table, and the rewritten `get_experiment_summary_counts`; no `bloommcp`/Python
     changes.

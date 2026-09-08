@@ -14,11 +14,13 @@ from bloom_mcp.tools import _ports
 # `on: schedule` cron; staging remains on-demand (`workflow_dispatch`) only -- it doesn't
 # need frequent automatic refreshes. So a STAGING cache row can still go quiet
 # indefinitely with no signal beyond a timestamp that keeps looking like ordinary bounded
-# lag; a PRODUCTION row's lag is bounded to roughly one refresh interval, but a missed or
-# delayed scheduled run would otherwise look identical to ordinary lag too. Elapsed time
-# past a couple of days is flagged explicitly rather than printed as a plain "as of"
-# timestamp either way, since this tool has no way to tell which environment a given row
-# came from.
+# lag; a PRODUCTION row's lag is bounded to roughly one refresh interval ONCE bloom#736
+# (Section 15) confirms an actual successful refresh -- until then it is unbounded,
+# identically to staging, since the refresh workflow's runner had no network route to
+# either host and every RPC delivery had failed. Either way, a missed or delayed scheduled
+# run would otherwise look identical to ordinary lag too. Elapsed time past a couple of
+# days is flagged explicitly rather than printed as a plain "as of" timestamp either way,
+# since this tool has no way to tell which environment a given row came from.
 _STALE_AFTER = timedelta(days=2)
 
 

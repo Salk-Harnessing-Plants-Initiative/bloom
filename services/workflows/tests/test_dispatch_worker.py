@@ -127,6 +127,44 @@ def test_process_one_does_not_fail_batch_on_k8sconfigerror(monkeypatch):
     )
 
 
+def test_process_one_does_not_fail_batch_when_build_workflow_body_raises_k8sconfigerror(
+    monkeypatch,
+):
+    """The sibling test above only makes submit_workflow raise; both calls
+    share one try/except block (see process_one), but this PR (bloom #737)
+    is what first made build_workflow_body itself capable of raising
+    K8sConfigError (a missing/malformed vendored file, a drifted scan-ids
+    parameter). Confirms that failure mode gets the identical unsettled-
+    claim treatment, not just the pre-existing submit_workflow path — a
+    future refactor splitting the two calls into separate try blocks would
+    break this silently otherwise."""
+    calls = {}
+    monkeypatch.setattr(worker, "claim_batch", lambda c: dict(_BATCH))
+
+    def boom(*a):
+        raise K8sConfigError("vendored Workflow source is missing")
+
+    monkeypatch.setattr(worker, "build_workflow_body", boom)
+    monkeypatch.setattr(
+        worker,
+        "submit_workflow",
+        lambda body: (_ for _ in ()).throw(
+            AssertionError(
+                "submit_workflow must not be called if build_workflow_body raised"
+            )
+        ),
+    )
+    monkeypatch.setattr(worker, "complete_batch", lambda *a: calls.update(complete=a))
+    monkeypatch.setattr(worker, "fail_batch", lambda *a: calls.update(fail=a))
+
+    assert worker.process_one(object()) is True
+    assert "complete" not in calls
+    assert "fail" not in calls, (
+        "a config error from build_workflow_body must leave the claim "
+        "unsettled, exactly like one from submit_workflow"
+    )
+
+
 def test_process_one_does_not_fail_after_completion_error(monkeypatch):
     calls = {}
     monkeypatch.setattr(worker, "claim_batch", lambda c: dict(_BATCH))

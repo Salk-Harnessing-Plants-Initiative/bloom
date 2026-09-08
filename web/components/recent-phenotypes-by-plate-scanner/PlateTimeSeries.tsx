@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { PlateImage } from "./PlateImage";
+import { SCANNER_TIME_NOTE, formatScannerTime } from "./plate-times";
 
 export interface TimePoint {
   scan_id: number;
@@ -115,13 +116,15 @@ export function PlateTimeSeries({ points }: PlateTimeSeriesProps) {
         </div>
       </div>
 
+      <p className="mb-3 text-xs text-stone-500">{SCANNER_TIME_NOTE}</p>
+
       {selectedPoint && (
         <div className="mb-4 rounded-md border border-stone-200 bg-stone-50 p-3">
           <div className="mb-2 flex items-baseline justify-between gap-3">
             <div className="text-sm font-medium text-stone-700">
               Cycle {selectedPoint.cycle_number} ·{" "}
               <span className="text-stone-500 font-normal">
-                {formatStamp(selectedPoint.capture_date)}
+                {formatSelectedStamp(selectedPoint.capture_date)}
               </span>
             </div>
             <button
@@ -163,13 +166,19 @@ export function PlateTimeSeries({ points }: PlateTimeSeriesProps) {
   );
 }
 
+const STAMP: Intl.DateTimeFormatOptions = {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+};
+
+// The strip omits the zone; the note above it says it once.
 function formatStamp(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return formatScannerTime(iso, STAMP) ?? iso;
+}
+
+// The selected capture is read on its own, so it names its zone.
+function formatSelectedStamp(iso: string): string {
+  return formatScannerTime(iso, { ...STAMP, timeZoneName: "short" }) ?? iso;
 }
