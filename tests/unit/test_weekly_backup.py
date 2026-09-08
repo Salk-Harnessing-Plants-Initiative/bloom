@@ -328,7 +328,9 @@ def test_an_empty_database_dump_is_caught_even_when_the_globals_are_fine(
     monkeypatch.setattr(backup, "_which", lambda name: name)
     monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
     monkeypatch.setattr(backup, "_stream_to_gzip",
-                        _writer_per_artifact(b"", b"x" * 1000))
+                        # Above the globals floor and below the database one,
+                        # so swapping the two floors is caught.
+                        _writer_per_artifact(b"x" * 1000, b"x" * 1000))
     uploaded: list = []
     monkeypatch.setattr(backup, "upload", lambda *a: uploaded.append(a))
 
@@ -1016,9 +1018,10 @@ def test_the_dump_gives_up_on_a_lock_rather_than_queueing_behind_it(tmp_path, mo
 def test_the_lock_wait_is_short_enough_to_bound_a_stall():
     # Asserted against a literal, not the constant: the fixture above would
     # follow the constant anywhere, including up to an hour.
-    assert 0 < backup.LOCK_WAIT_TIMEOUT_MS <= 120_000, (
-        "the wait is how long the application can stall on a table before the "
-        "run gives up"
+    assert 30_000 <= backup.LOCK_WAIT_TIMEOUT_MS <= 120_000, (
+        "the upper bound is how long the application can stall on a table; the "
+        "lower bound matters just as much, since a wait of a few milliseconds "
+        "aborts the dump on any momentary contention and backs nothing up"
     )
 
 
@@ -1383,17 +1386,39 @@ def test_an_empty_password_counts_as_missing(monkeypatch):
 # --------------------------------------------------------------------------
 
 
-def _free_bytes(monkeypatch, free: int):
-    """Pin what disk_usage reports, so no test depends on the host's own disk."""
-    monkeypatch.setattr(
-        backup.shutil, "disk_usage",
-        lambda path: SimpleNamespace(total=free * 2, used=free, free=free),
-    )
+def _free_bytes(monkeypatch, free: int) -> list[Path]:
+    """Pin what disk_usage reports, and record which path it was asked about.
+
+    The path matters as much as the number: the working directory is on the data
+    volume precisely because home is on a small root filesystem, so measuring
+    the wrong one is the failure this check exists to prevent.
+    """
+    asked: list[Path] = []
+
+    def _usage(path):
+        asked.append(Path(path))
+        return SimpleNamespace(total=free * 2, used=free, free=free)
+
+    monkeypatch.setattr(backup.shutil, "disk_usage", _usage)
+    return asked
 
 
 def test_room_for_the_dump_lets_the_run_start(tmp_path, monkeypatch):
     _free_bytes(monkeypatch, backup.DEFAULT_MIN_FREE_BYTES + 1)
     assert backup.verify_free_space(tmp_path) == backup.DEFAULT_MIN_FREE_BYTES + 1
+
+
+def test_the_volume_measured_is_the_one_the_dump_lands_on(tmp_path, monkeypatch):
+    # Measuring the wrong volume is the failure this check exists for: the
+    # working directory is on the data volume because home is on a small root
+    # filesystem, so a floor checked against home protects nothing.
+    monkeypatch.delenv("BACKUP_MIN_FREE_BYTES", raising=False)
+    asked = _free_bytes(monkeypatch, backup.DEFAULT_MIN_FREE_BYTES + 1)
+    state = (tmp_path / "backup-work" / "prod").resolve()
+    state.mkdir(parents=True)
+
+    backup.verify_free_space(state)
+    assert asked == [state], f"the floor was checked against {asked}, not {state}"
 
 
 def test_a_volume_too_full_to_hold_a_dump_stops_the_run(tmp_path, monkeypatch):
@@ -1741,6 +1766,40 @@ def test_a_bad_database_name_stops_the_run_before_the_dump_window(tmp_path, monk
     rc = backup.main(["--env", "prod", "--deploy-dir", str(tmp_path)])
     assert rc == backup.EXIT_CONFIG
     assert not resolved, "the run must fail before it touches the stack"
+
+
+def test_a_staging_run_uploads_to_staging_not_production(tmp_path, monkeypatch):
+    # Every main() test until now passed --env prod, so no test had ever taken a
+    # staging run through to the upload. The destination comes from the env
+    # file, with the environment only as a fallback, so this pins the whole path
+    # end to end rather than the argument.
+    _deploy_dir(tmp_path, env_name="staging")
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(_host_state_dir(tmp_path)))
+    monkeypatch.setattr(backup, "_which", lambda name: name)
+    monkeypatch.setattr(backup, "resolve_container", lambda *a: "container123")
+    artifact = tmp_path / "db.sql.gz"
+    artifact.write_bytes(b"x" * 5000)
+    monkeypatch.setattr(backup, "dump_database", lambda *a: artifact)
+    monkeypatch.setattr(backup, "dump_globals", lambda *a: artifact)
+    destinations: list[str] = []
+    monkeypatch.setattr(backup, "_run",
+                        lambda cmd, cwd=None: destinations.append(cmd[3]) or "")
+
+    rc = backup.main(["--env", "staging", "--deploy-dir", str(tmp_path)])
+    assert rc == backup.EXIT_OK
+    assert destinations, "the run never reached the upload"
+    assert destinations[0].startswith("box:bloom-backups/staging/"), (
+        f"a staging run uploaded to {destinations[0]}"
+    )
+
+
+def test_printing_a_staging_destination_names_staging(tmp_path, monkeypatch, capsys):
+    # The same for the query the summary step runs.
+    _deploy_dir(tmp_path, env_name="staging")
+    rc = backup.main(["--env", "staging", "--deploy-dir", str(tmp_path),
+                      "--print-destination"])
+    assert rc == backup.EXIT_OK
+    assert capsys.readouterr().out.strip() == "box:bloom-backups/staging"
 
 
 def test_a_run_dumps_and_uploads_both_artifacts(tmp_path, monkeypatch):

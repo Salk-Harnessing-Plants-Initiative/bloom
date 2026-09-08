@@ -264,9 +264,17 @@ def test_an_unrecognised_environment_does_not_fall_through_to_production(text):
     assert "unknown environment" in text
 
 
-def test_a_scheduled_run_uses_the_default_environment(text):
+def test_a_scheduled_run_uses_the_default_environment(workflow):
     # A schedule carries no inputs at all, so the || default is what it gets.
-    assert "github.event.inputs.environment || 'prod'" in text
+    # Asserted on the step that decides it, not on the file: that same
+    # expression also appears in the concurrency group and the job name, so a
+    # whole-file search is satisfied while the one line that selects the
+    # database says something else — every label reading prod while the dump
+    # comes from staging.
+    assert (
+        _step(workflow, "target")["env"]["REQUESTED"]
+        == "${{ github.event.inputs.environment || 'prod' }}"
+    )
 
 
 def test_concurrency_is_not_the_shared_deploy_group(workflow):
