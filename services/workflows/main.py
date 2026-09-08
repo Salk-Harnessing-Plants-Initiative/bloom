@@ -47,6 +47,7 @@ from auth import enforce_rate_limit, require_supabase_user
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from video import generate_experiment_scan_video
+import plate_progress
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -105,6 +106,21 @@ def cyl_experiment_scan_video(
             scan_id,
         )
     return {"experiment_id": experiment_id, **result}
+
+
+@app.get("/gravi/experiments/{experiment_id}/plate-video/progress")
+def gravi_plate_video_progress(
+    experiment_id: int,
+    plate_id: str,
+    wave_number: int | None = None,
+    user_id: str = Depends(require_supabase_user),
+):
+    """How far the running render for this plate has got, or nothing.
+
+    Advisory: the page shows a plain wait when this says nothing, so a restart
+    or an older service costs a count, not a working poll.
+    """
+    return plate_progress.current(experiment_id, plate_id, wave_number) or {}
 
 
 @app.post("/gravi/experiments/{experiment_id}/plate-video")

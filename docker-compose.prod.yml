@@ -1,10 +1,17 @@
 # =============================================================================
 # Bloom v2 Production Stack
 #
-# Minimum Resource Requirements:
+# Minimum Resource Requirements — what this stack needs to run at all:
 #   CPU:     8 vCPU
 #   RAM:     16 GB
 #   Disk:    100 GB SSD
+#
+# The Bloom server it actually runs on (bloom-dev, measured 2026-09-08):
+#   RAM:     754 GB, of which ~620 GB free
+#   Swap:    8 GB
+#   Note:    the production and staging stacks both run here, so any per-
+#            container limit below is set against this machine, not against the
+#            16 GB minimum above. Do not size a limit from that number.
 #
 # Services: ~15 containers (caddy, bloom-web, langchain-agent, bloommcp,
 #   kong, auth, rest, realtime, minio, minio-init, storage, imgproxy,
@@ -198,29 +205,28 @@ services:
       context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
-    # The ceiling MAX_CONCURRENT_ENCODES is sized against. Without it a render
-    # spike goes at the host, and the kernel's OOM killer picks by resident
-    # size across all ~15 containers on a 16 GB box — which means db-prod or
-    # minio, not the service that caused it. With it, the kill lands inside
-    # this container: the uvicorn worker dies and `restart: unless-stopped`
-    # brings it back, so a runaway render costs this service a restart rather
-    # than costing the stack its database.
+    # Contains a runaway render inside this container: the kill lands on the
+    # uvicorn worker, `restart: unless-stopped` brings it back, and the rest of
+    # the stack is untouched. Without a limit the kernel's OOM killer would pick
+    # by resident size instead, which is not this service.
     #
-    # Sized against MAX_CONCURRENT_ENCODES and the two frame ceilings, with the
-    # arithmetic in tests/unit/test_workflows_single_worker.py so they cannot
-    # drift apart. One render at those ceilings, plus its ffmpeg child, the
-    # interpreter and the tmpfs below, is 1003 MB — half the limit, which is
-    # the room the ceilings need to be approximate in.
-    mem_limit: 2g
+    # 8g, not a tight fit. The first real plate on production was killed at 2g
+    # (ffmpeg SIGKILLed after all 72 frames downloaded), so the arithmetic in
+    # tests/unit/test_workflows_single_worker.py — one render at the frame
+    # ceilings costing 1003 MB — is optimistic about what a real GraviScan TIFF
+    # costs. Until that is measured properly the limit is set well clear of it.
+    # The host has 754 GB, so 8g is about 1% of the machine and no other
+    # container here is capped at all.
+    mem_limit: 8g
     # Without this Docker allows twice mem_limit in swap, so a runaway render
-    # would grind against disk indefinitely instead of being killed — slowing
-    # every other container on the box, which is the outcome mem_limit is here
-    # to avoid. Equal values mean no swap: hit the ceiling and stop.
-    memswap_limit: 2g
+    # would grind against disk indefinitely instead of being killed. Equal
+    # values mean no swap: hit the ceiling and stop.
+    memswap_limit: 8g
     tmpfs:
       # RAM-backed, so this counts against mem_limit and is budgeted with the
-      # frames. One plate video is 3-12 MB depending on how the run compresses.
-      - /tmp:mode=1777,size=128m
+      # frames. One plate video is 3-12 MB depending on how the run compresses;
+      # a long wave at a high cycle count is the case to watch.
+      - /tmp:mode=1777,size=512m
     security_opt:
       - no-new-privileges:true
     cap_drop:

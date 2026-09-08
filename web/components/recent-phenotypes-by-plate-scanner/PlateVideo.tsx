@@ -23,7 +23,9 @@ type Player =
   | { status: "unknown" }
   | { status: "ready"; url: string };
 
-type Stored = { player: Player; frames: number | null };
+type Stored = { player: Player; frames: number | null; progress: Progress | null };
+
+type Progress = { stage: string; done: number; total: number };
 
 type Action = "idle" | "generating" | "pending" | "stalled" | "error";
 
@@ -35,6 +37,7 @@ const POLL_LIMIT_MS = 600_000;
 // encoding, or whether the session has expired.
 const FAILED = "Could not generate the video. Try again in a moment.";
 const STALLED = "Still encoding. Check back in a few minutes.";
+const WORKING = "The video is being made now — please stay on this page.";
 const UNCHECKED = "Could not check whether this plate has a video.";
 
 /** What the service says is stored: a playable URL and what it holds.
@@ -53,15 +56,22 @@ async function fetchStored(
 
   try {
     const res = await fetch(`${endpoint}?${query}`);
-    if (!res.ok) return { player: { status: "unknown" }, frames: null };
+    if (!res.ok)
+      return { player: { status: "unknown" }, frames: null, progress: null };
 
     const body = await res.json();
     const frames = typeof body?.frames === "number" ? body.frames : null;
+    const progress =
+      typeof body?.progress?.stage === "string" ? body.progress : null;
     return typeof body?.download_url === "string"
-      ? { player: { status: "ready", url: body.download_url }, frames }
-      : { player: { status: "missing" }, frames: null };
+      ? {
+          player: { status: "ready", url: body.download_url },
+          frames,
+          progress: null,
+        }
+      : { player: { status: "missing" }, frames: null, progress };
   } catch {
-    return { player: { status: "unknown" }, frames: null };
+    return { player: { status: "unknown" }, frames: null, progress: null };
   }
 }
 
@@ -75,6 +85,15 @@ async function detailOf(res: Response): Promise<string> {
   } catch {
     return FAILED;
   }
+}
+
+/** Downloading is ~96% of a render and is countable; encoding is one opaque
+ *  ffmpeg call. Falls back when the service reports nothing. */
+function progressNote(progress: Progress | null): string {
+  if (progress?.stage === "downloading" && progress.total > 0)
+    return `Downloading frame ${progress.done + 1} of ${progress.total}`;
+  if (progress?.stage) return WORKING;
+  return "Encoding — this can take a few minutes.";
 }
 
 export function PlateVideo({
@@ -91,6 +110,7 @@ export function PlateVideo({
   const [player, setPlayer] = useState<Player>({ status: "loading" });
   const [action, setAction] = useState<Action>("idle");
   const [failure, setFailure] = useState(FAILED);
+  const [progress, setProgress] = useState<Progress | null>(null);
   const [retryAfter, setRetryAfter] = useState<number | null>(null);
 
   const endpoint = `/api/gravi/experiments/${experimentId}/plate-video`;
@@ -131,6 +151,12 @@ export function PlateVideo({
         setAction("idle");
         return;
       }
+      // Never backwards: two polls can land out of order.
+      setProgress((seen) =>
+        next.progress && (!seen || next.progress.done >= seen.done)
+          ? next.progress
+          : seen
+      );
       if (Date.now() - startedAt >= POLL_LIMIT_MS) setAction("stalled");
     }, POLL_INTERVAL_MS);
 
@@ -173,6 +199,7 @@ export function PlateVideo({
       // A 200 carries no playable link, so the answer to "can it be watched"
       // comes from the same place it always does.
       setFrames(typeof body.frames === "number" ? body.frames : null);
+      setProgress(null);
       const next = await ask();
       setPlayer(next.player);
       if (next.player.status === "ready") setFrames(next.frames);
@@ -196,7 +223,7 @@ export function PlateVideo({
       : action === "stalled"
         ? STALLED
         : busy
-          ? "Encoding — this can take a few minutes."
+          ? progressNote(progress)
           : stale && newFrames
             ? `${newFrames} new ${newFrames === 1 ? "frame" : "frames"} since this was made.`
             : "";

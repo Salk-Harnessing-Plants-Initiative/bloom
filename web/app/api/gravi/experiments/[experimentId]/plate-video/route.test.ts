@@ -810,6 +810,22 @@ describe("GET", () => {
     expect(Object.keys(body).sort()).toEqual(["download_url", "frames"]);
   });
 
+  it("does not fail the poll when progress cannot be read", async () => {
+    // Progress is decoration. A poll that fails because of it would stop the
+    // button ever learning the video is ready.
+    mockedStored.mockResolvedValue({ status: "absent" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new TypeError("fetch failed"))
+    );
+
+    const res = await get("plate_id=P7&wave_number=1");
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.progress).toBeNull();
+  });
+
   it("forbids storing the answer that carries the download link", async () => {
     // The link is signed for one reader and expires. A stored copy is either
     // served to someone it was not made for, or served after it stopped working.

@@ -218,6 +218,37 @@ export async function POST(
   return NextResponse.json(withFrameCount(parsed), { status: 200 });
 }
 
+/** How far a running render has got, or null. Advisory: never fails the poll. */
+async function renderProgress(
+  experiment: number,
+  plateId: string,
+  wave: number | null
+): Promise<{ stage: string; done: number; total: number } | null> {
+  const session = await getSession();
+  if (!session?.access_token) return null;
+
+  const query = new URLSearchParams({ plate_id: plateId });
+  if (wave !== null) query.set("wave_number", String(wave));
+  const workflowsUrl = process.env.WORKFLOWS_URL ?? "http://workflows:5100";
+
+  try {
+    const res = await fetch(
+      `${workflowsUrl}/gravi/experiments/${experiment}/plate-video/progress?${query}`,
+      {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        signal: AbortSignal.timeout(3000),
+      }
+    );
+    if (!res.ok) return null;
+    const body = await res.json();
+    return typeof body?.stage === "string" && typeof body?.total === "number"
+      ? { stage: body.stage, done: body.done, total: body.total }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ experimentId: string }> }
@@ -267,6 +298,9 @@ export async function GET(
   // is missing. The caller has `download_url` to tell those apart.
   return noStore(
     NextResponse.json({
+      ...(stored.status === "present"
+        ? {}
+        : { progress: await renderProgress(experiment, plateId, wave) }),
       download_url: stored.status === "present" ? stored.url : null,
       frames: stored.status === "present" ? stored.frames : null,
     })

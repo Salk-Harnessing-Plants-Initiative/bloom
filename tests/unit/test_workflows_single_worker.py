@@ -120,11 +120,16 @@ def test_workflows_has_a_memory_limit():
     """`MAX_CONCURRENT_ENCODES` is sized against a container limit that has to
     actually exist.
 
-    The largest frame the scanners can produce is 519 MB decoded, and a render
-    holds the downloaded object beside it. Unbounded, that spike goes at the
-    host, and the kernel's OOM killer chooses by resident size — which here
-    means db-prod or minio rather than the service that caused it. A limit
-    turns a host-wide outage into a failed request.
+    Unbounded, a render spike goes at the host and the kernel's OOM killer
+    chooses by resident size, which is not this service. A limit turns that
+    into a failed request in the container that caused it.
+
+    The floor is 4g because 2g was tried and was not enough: the first real
+    plate rendered on production was killed there, ffmpeg SIGKILLed after all
+    72 frames had downloaded. The arithmetic below — one render at the frame
+    ceilings costing about 1 GB — is therefore optimistic about what a real
+    GraviScan TIFF costs, and the limit stays well clear of it until that is
+    measured properly.
     """
     service = _workflows_service()
 
@@ -132,10 +137,10 @@ def test_workflows_has_a_memory_limit():
         "plate_encode.py sizes its concurrency limit against a container memory "
         "limit; without one, a render spike can take the host down"
     )
-    assert _bytes(service["mem_limit"]) >= 2 * (1 << 30), (
-        f"the limit is {service['mem_limit']!r}; the largest plate plus the "
-        "RAM-backed /tmp need more than 1g, and a limit below that fails "
-        "healthy renders rather than runaway ones"
+    assert _bytes(service["mem_limit"]) >= 4 * (1 << 30), (
+        f"the limit is {service['mem_limit']!r}; a real plate render was killed "
+        "at 2g on production, so a limit at or below that fails healthy renders "
+        "rather than runaway ones"
     )
 
 
@@ -194,4 +199,20 @@ def test_the_ram_backed_tmpfs_fits_inside_the_memory_limit():
     assert size < limit / 2, (
         f"/tmp is {size // (1 << 20)}m against a {limit // (1 << 20)}m limit, "
         "leaving too little for the frames being encoded into it"
+    )
+
+
+def test_the_progress_record_matches_the_worker_count():
+    """`plate_progress` keeps one slot, not a registry.
+
+    That is only correct while this service runs one uvicorn worker: a second
+    worker has its own module state, so two renders could each believe they are
+    the only one and report their frames under the other's plate.
+    """
+    service = _workflows_service()
+    command = service["command"]
+
+    assert command[command.index("--workers") + 1] == "1", (
+        "plate_progress keeps a single in-memory slot; more than one worker "
+        "makes it describe the wrong plate"
     )

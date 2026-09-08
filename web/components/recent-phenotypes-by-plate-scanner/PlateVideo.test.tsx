@@ -421,6 +421,84 @@ describe("what a refusal tells the scientist", () => {
   });
 });
 
+describe("what a scientist is told while it renders", () => {
+  const rendering = (progress: unknown) =>
+    serve((method) =>
+      method === "POST"
+        ? json({}, 504)
+        : json({ download_url: null, frames: null, progress })
+    );
+
+  async function clickAndPoll(ticks = 1) {
+    await act(async () => {
+      renderPlate();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button"));
+    });
+    for (let i = 0; i < ticks; i++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+    }
+  }
+
+  it("counts the frames as they download", async () => {
+    // Downloading is ~96% of a render, so this is the number they watch.
+    vi.useFakeTimers();
+    rendering({ stage: "downloading", done: 46, total: 86 });
+
+    await clickAndPoll();
+
+    expect(screen.getByText("Downloading frame 47 of 86")).toBeTruthy();
+  });
+
+  it("says the video is being made once the frames are in", async () => {
+    vi.useFakeTimers();
+    rendering({ stage: "encoding", done: 86, total: 86 });
+
+    await clickAndPoll();
+
+    expect(screen.getByText(/please stay on this page/)).toBeTruthy();
+  });
+
+  it("falls back to the plain wait when the service reports nothing", async () => {
+    // An older service, a restarted one, or the seconds before the first frame.
+    vi.useFakeTimers();
+    rendering(undefined);
+
+    await clickAndPoll();
+
+    expect(
+      screen.getByText(/Encoding — this can take a few minutes/)
+    ).toBeTruthy();
+  });
+
+  it("never lets the count go backwards", async () => {
+    // Two polls can land out of order; a count that jumps back reads as broken.
+    vi.useFakeTimers();
+    let asked = false;
+    let n = 0;
+    const counts = [60, 20];
+    serve((method) => {
+      if (method === "POST") {
+        asked = true;
+        return json({}, 504);
+      }
+      if (!asked) return json({ download_url: null, frames: null });
+      return json({
+        download_url: null,
+        frames: null,
+        progress: { stage: "downloading", done: counts[n++] ?? 20, total: 86 },
+      });
+    });
+
+    await clickAndPoll(2);
+
+    expect(screen.getByText("Downloading frame 61 of 86")).toBeTruthy();
+  });
+});
+
 describe("a 504, and the poll that follows", () => {
   it("polls until the video appears, then shows it", async () => {
     vi.useFakeTimers();
