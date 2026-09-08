@@ -146,8 +146,18 @@ def emit_status(status: str, flags=()) -> None:
     logger.info("%s=%s", FLAGS_KEY, ",".join(flags))
 
 
-def _status_for(code: int, outcome: str) -> str:
-    """The headline verdict, from the exit code the run is about to return.
+def _status_for(code: int, outcome: str, stopped: bool = False) -> str:
+    """What to tell the operator happened — NOT the exit code in words.
+
+    The two answer different questions. The exit code ranks conditions worth
+    a person's attention so the most pointed number reaches the notification;
+    this ranks what actually happened to the copying, which is what the
+    summary headlines. Deriving the second from the first meant every
+    non-zero code read as `failed`, so three nights where every copy
+    succeeded — a verification mismatch, a refused collision, a ledger upload
+    that did not land — each announced that objects had not been mirrored,
+    and the summary's verification branch became unreachable because a
+    mismatch always forced the status to `failed` first.
 
     `stopped` is its own value rather than folding into failed. A run stopped
     on purpose — the Actions job hitting its time limit, which is every night
@@ -166,11 +176,19 @@ def _status_for(code: int, outcome: str) -> str:
     """
     if outcome == "error":
         return "failed"
-    if code == 3:
+    # Only these two mean the copying itself did not work: objects failed
+    # after their retries, or the run could not start. Everything else that
+    # exits non-zero is a condition the run FOUND and reports through a flag.
+    if code in (1, 2):
+        return "failed"
+    # Taken directly rather than read off code 3, which a higher-ranked
+    # condition takes first. A seed night stopped by the job's time limit
+    # whose ledger upload was throttled exits 6, and it is still a stopped
+    # night — "stopped, progress kept" is exactly what its operator needs to
+    # read, and it is the one headline meaning "this is fine".
+    if stopped or code == 3:
         return "stopped"
-    if code == 0:
-        return "partial" if outcome == "partial" else "ok"
-    return "failed"
+    return "partial" if outcome == "partial" else "ok"
 
 
 def _flags_for(totals: "Totals") -> tuple:
@@ -465,6 +483,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
                 collisions=totals.collisions,
             ),
             outcome,
+            stopped=stopping.stopping(),
         )
         # The four flags that are already final go in too. An earlier version
         # sent only the verdict, on the reasoning that `publish_ledger` sets
@@ -597,7 +616,9 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     )
     # Same verdict the report already carries; printed here because the log is
     # the faster route when the connection does survive.
-    emit_status(_status_for(code, outcome), _flags_for(totals))
+    emit_status(
+        _status_for(code, outcome, stopped=stopping.stopping()), _flags_for(totals)
+    )
     return code
 
 
@@ -707,6 +728,12 @@ def exit_code(
     # the next run resumes". Installing a signal handler means SIGINT no longer
     # raises KeyboardInterrupt, so without this a stopped run would report the
     # clean 0 of a run that finished everything.
+    #
+    # Last, so a condition worth a person's attention keeps its own code. The
+    # headline does NOT come from here — `_status_for` takes `stopped`
+    # directly — because "which number do we exit with" and "what do we tell
+    # the operator happened" are different questions, and answering the second
+    # with the first is what made a stopped night read as a failure.
     if stopped:
         return 3
     return 0

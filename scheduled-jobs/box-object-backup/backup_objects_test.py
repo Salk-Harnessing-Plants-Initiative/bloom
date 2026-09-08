@@ -2083,6 +2083,81 @@ class TestTheLedgerIsCopiedToBox:
         with pytest.raises(lib.BackupError, match="different place on Box"):
             job.run_locked(moved, tmp_path)
 
+    def test_a_stopped_night_whose_ledger_upload_failed_still_says_stopped(
+        self, harness, monkeypatch, caplog
+    ):
+        """The commonest night of the seed, driven end to end.
+
+        The 240-minute job limit stops the run; the multi-GB ledger upload is
+        then throttled by Box. `exit_code` ranks the ledger condition above
+        the stop — deliberately, so it keeps its own number — which meant the
+        status line was computed from code 6 and the night reported FAILED,
+        with "some or all of tonight's objects were not mirrored" over a run
+        that had copied and recorded everything it reached.
+
+        Driven rather than asserted on `_status_for` directly, because the
+        defect was in what `run_locked` PASSES it: dropping the `stopped=`
+        argument leaves every unit test green.
+        """
+        state, tmp_path = harness
+        caplog.set_level(logging.INFO)
+
+        # The stop lands AFTER the first object, not before it: a run that
+        # copied nothing does not upload its ledger at all, so a
+        # stop-everything fake never reaches the condition under test.
+        stopped = [False]
+        original = state["client"].copy_file
+
+        def copy_then_stop(src_fs, src_remote, dst_fs, dst_remote):
+            if src_remote == "ledger.db":
+                raise RcloneError("Box said no")
+            result = original(src_fs, src_remote, dst_fs, dst_remote)
+            stopped[0] = True
+            return result
+
+        monkeypatch.setattr(state["client"], "copy_file", copy_then_stop)
+        monkeypatch.setattr(job.stopping, "stopping", lambda: stopped[0])
+        code = job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        assert state["copied"], "nothing was copied, so the ledger was never uploaded"
+        assert code == 6, "the ledger condition lost its own exit code"
+        assert f"{job.STATUS_KEY}=stopped" in caplog.text, (
+            "a stopped night reported something other than stopped: "
+            + next(
+                (ln for ln in caplog.text.splitlines() if job.STATUS_KEY in ln), "none"
+            )
+        )
+        assert f"{job.FLAGS_KEY}=ledger_stale" in caplog.text, (
+            "the ledger condition vanished when the headline changed"
+        )
+
+    def test_a_stop_while_the_daemon_starts_is_reported_as_stopped(
+        self, harness, monkeypatch, caplog
+    ):
+        """`lib.Stopped` exists so this is not reported as a crash.
+
+        Nothing exercised `run_locked` CATCHING it — disabling the catch left
+        the whole suite green while a stop during startup unwound as an
+        error, which renders FAILED on a night that is fine.
+        """
+        state, tmp_path = harness
+        caplog.set_level(logging.INFO)
+        monkeypatch.setattr(job.stopping, "stopping", lambda: True)
+
+        def stop_during_startup(daemon, attempts=30):
+            raise lib.Stopped("stopped while waiting for the rclone daemon")
+
+        monkeypatch.setattr(job, "wait_for_daemon", stop_during_startup)
+        code = job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        assert code == 3, f"a deliberate stop exited {code}"
+        assert f"{job.STATUS_KEY}=stopped" in caplog.text
+        assert f"{job.STATUS_KEY}=failed" not in caplog.text
+        assert state["daemon_stopped"], "the rclone container was left running"
+        # The run must still be recorded, or the next night cannot resume.
+        rows = Ledger.open(str(tmp_path / "ledger.db")).conn.execute(
+            "SELECT outcome FROM runs"
+        ).fetchall()
+        assert rows == [("partial",)], rows
+
     def test_a_night_that_copied_nothing_is_not_called_stale(self, harness, caplog):
         """The copy is only stale if the ledger changed without it.
 
@@ -2652,8 +2727,55 @@ class TestTheVerdictTheSummaryReads:
 
     def test_a_failing_run_says_failed(self):
         # Deleting `return "failed"` survived the entire suite.
-        for code in (1, 2, 4, 5):
+        # 1 = objects failed after retries, 2 = the run could not start.
+        for code in (1, 2):
             assert job._status_for(code, "partial") == "failed", code
+
+    def test_a_condition_the_run_found_is_not_a_failed_run(self):
+        """4, 5 and 6 exit non-zero, and none of them means copying failed.
+
+        Exit 4 is a verification mismatch, 5 a refused collision, 6 a ledger
+        upload that did not land — on all three, every copy the run attempted
+        succeeded. Reported as `failed`, the summary told the operator that
+        objects had not been mirrored on a night when they had, contradicting
+        the log two lines below it and, for exit 6, its own notice one line
+        below. The condition still reaches them: it is in the flags, and the
+        non-zero exit still raises the red tick.
+        """
+        for code in (4, 5, 6):
+            assert job._status_for(code, "ok") == "ok", code
+            assert job._status_for(code, "partial") == "partial", code
+
+    def test_the_verification_branch_can_actually_be_reached(self):
+        """The summary tests `verify_mismatch` on a run that did not fail.
+
+        While a mismatch forced the status to `failed`, that branch was dead
+        — and it is the only place the summary says the ledger still records
+        those objects as mirrored, that later runs will skip them, and that
+        the warning does not repeat. A night with a mismatch and no failed
+        copies has to produce a status the branch above it does not claim.
+        """
+        code = job.exit_code(failed=0, verify_mismatched=3)
+        assert code == 4
+        assert job._status_for(code, "ok") != "failed"
+
+    def test_a_stop_is_still_a_stop_when_a_condition_outranks_it(self):
+        """Exit code and headline answer different questions.
+
+        A seed night stopped by the job's 240-minute limit whose ledger
+        upload was throttled exits 6, because the ledger is the thing worth
+        a person's attention. It is still a stopped night, and "stopped,
+        progress kept — nothing is lost" is what its operator must read.
+        """
+        code = job.exit_code(
+            failed=0, verify_mismatched=0, stopped=True, ledger_flag="ledger_stale"
+        )
+        assert code == 6, "the ledger condition lost its own exit code"
+        assert job._status_for(code, "partial", stopped=True) == "stopped"
+
+    def test_failed_copies_outrank_a_stop_in_the_headline(self):
+        """The other direction: a stop must not hide real failures."""
+        assert job._status_for(1, "partial", stopped=True) == "failed"
 
     def test_a_clean_run_says_ok(self):
         assert job._status_for(0, "ok") == "ok"

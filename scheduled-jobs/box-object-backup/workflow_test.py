@@ -1670,3 +1670,265 @@ class TestTheHeadlineMatchesTheWorstThingThatHappened:
         assert "already on Box" not in body, (
             "a run that copied nothing claims the mirror was already current"
         )
+
+
+class TestAConditionFoundIsNotAFailedNight:
+    """Exit 4, 5 and 6 all exit non-zero, and on none of them did copying fail.
+
+    Every rendering in this class was produced by the real step and read
+    wrong before the verdict and the branch order were separated. They are
+    executed rather than grepped because the defect was never visible in any
+    single line: `_status_for` folded four exit codes into one word, and the
+    summary then used that word as if it meant something narrower.
+    """
+
+    def render(self, parsed: dict, log: str) -> str:
+        import subprocess
+        import tempfile
+        from pathlib import Path as P
+
+        steps = parsed["jobs"]["mirror"]["steps"]
+        script = next(
+            s["run"] for s in steps
+            if s.get("name", "").startswith("Write the run summary")
+        ).replace("${{ steps.run.outcome }}", "$OUTCOME")
+        with tempfile.TemporaryDirectory() as tmp:
+            (P(tmp) / "mirror-output.txt").write_text(log)
+            out = P(tmp) / "summary.md"
+            result = subprocess.run(
+                ["bash", "-e", "-c", script],
+                env={
+                    "PATH": "/usr/bin:/bin", "RUNNER_TEMP": tmp, "ENV_NAME": "prod",
+                    "OUTCOME": "failure", "GITHUB_STEP_SUMMARY": str(out),
+                    "LC_ALL": "C",
+                },
+                capture_output=True, text=True,
+            )
+            assert result.returncode == 0, result.stderr.strip()[:200]
+            body = out.read_text() if out.exists() else ""
+        assert body.strip(), "the summary step wrote nothing"
+        return body
+
+    @staticmethod
+    def headline(body: str) -> str:
+        line = [ln for ln in body.splitlines() if ln.startswith("Result:")]
+        return line[0] if line else ""
+
+    def night(self, status: str, *flags: str, copied=4211, failed=0) -> str:
+        assert status in job.STATUS_VALUES, status
+        for flag in flags:
+            assert flag in job.FLAG_VALUES, flag
+        return (
+            f"2026-08-31 02:20:00,1 INFO done — copied {copied}, failed {failed}, "
+            "already current 0, skipped 0\n"
+            f"2026-08-31 02:45:00,1 INFO {job.STATUS_KEY}={status}\n"
+            f"2026-08-31 02:45:00,1 INFO {job.FLAGS_KEY}={','.join(flags)}\n"
+        )
+
+    @staticmethod
+    def status_of(code: int, outcome: str, stopped: bool = False) -> str:
+        """Go through the real function, so these stay real combinations."""
+        return job._status_for(code, outcome, stopped=stopped)
+
+    def test_a_verification_mismatch_alone_does_not_claim_copies_failed(self, parsed):
+        """Every copy succeeded; 3 sampled objects are missing from Box."""
+        status = self.status_of(job.exit_code(failed=0, verify_mismatched=3), "ok")
+        body = self.render(parsed, self.night(status, "verify_mismatch"))
+        assert "VERIFICATION FAILED" in self.headline(body), self.headline(body)
+        assert "objects failed to copy tonight" not in body, (
+            "a night with 0 failed copies asserts that copies failed"
+        )
+
+    def test_the_verification_branch_carries_its_guidance(self, parsed):
+        """It was unreachable, and it is the only place this is said.
+
+        The mismatch alarm fires once by design — the objects are recorded as
+        copied, so the next run skips them and never warns again. The text
+        saying exactly that lived in a branch no run could reach.
+        """
+        status = self.status_of(job.exit_code(failed=0, verify_mismatched=3), "ok")
+        body = self.render(parsed, self.night(status, "verify_mismatch"))
+        assert "does **not** repeat" in body
+        assert "Putting them back needs a" in body
+        # The claim that replaced a false one: this branch used to say the
+        # watermark was held, which stopped being true when the mismatch was
+        # taken out of `run_outcome`. It was unreachable then, so nothing
+        # caught it; it is reachable now.
+        assert "watermark is not held" in body
+        assert "watermark is held in the meantime" not in body
+
+    def test_a_collision_alone_does_not_claim_copies_failed(self, parsed):
+        status = self.status_of(
+            job.exit_code(failed=0, verify_mismatched=0, collisions=2), "partial"
+        )
+        body = self.render(parsed, self.night(status, "collisions"))
+        assert "OBJECTS NOT BACKED UP" in self.headline(body)
+        assert "also failed to copy" not in body, (
+            "a night with 0 failed copies asserts that copies failed"
+        )
+
+    def test_a_ledger_upload_failure_is_a_night_that_worked(self, parsed):
+        """Exit 6 is 'a green night with a red tick, on purpose'.
+
+        It used to headline FAILED — 'Some or all of tonight's objects were
+        not mirrored' — directly above its own notice saying objects copied
+        fine.
+        """
+        status = self.status_of(
+            job.exit_code(failed=0, verify_mismatched=0, ledger_flag="ledger_stale"),
+            "ok",
+        )
+        body = self.render(parsed, self.night(status, "ledger_stale"))
+        headline = self.headline(body)
+        assert "succeeded" in headline, headline
+        assert "4,211 images copied" in headline
+        assert "were not mirrored" not in body, (
+            "the headline contradicts the notice beneath it"
+        )
+        assert "ledger on Box was NOT updated" in body
+
+    def test_a_stopped_seed_night_with_a_stale_ledger_still_reads_stopped(
+        self, parsed
+    ):
+        """The commonest night of the seed, and it exits 6, not 3."""
+        code = job.exit_code(
+            failed=0, verify_mismatched=0, stopped=True, ledger_flag="ledger_stale"
+        )
+        status = self.status_of(code, "partial", stopped=True)
+        body = self.render(parsed, self.night(status, "ledger_stale"))
+        assert "stopped, progress kept" in self.headline(body)
+        assert "It got through 4,211 images copied" in body
+        assert "ledger on Box was NOT updated" in body
+
+    def test_copies_that_really_failed_still_headline_as_failed(self, parsed):
+        """The other direction — this must not have gone soft."""
+        status = self.status_of(job.exit_code(failed=3000, verify_mismatched=0), "partial")
+        assert status == "failed"
+        body = self.render(parsed, self.night(status, copied=100, failed=3000))
+        assert "FAILED" in self.headline(body)
+
+    def test_failed_copies_plus_a_mismatch_still_say_both(self, parsed):
+        status = self.status_of(job.exit_code(failed=3000, verify_mismatched=2), "partial")
+        body = self.render(parsed, self.night(status, "verify_mismatch", copied=100, failed=3000))
+        assert "FAILED, and verification found objects missing" in self.headline(body)
+
+    def test_a_stop_does_not_hide_a_permanent_non_backup(self, parsed):
+        """A collision on a stopped night is still an object never backed up.
+
+        The stopped branch used to sit above the condition branches, so
+        during the seed — when every night is a stopped night — a refused
+        collision would have been swallowed by "nothing needs doing".
+        """
+        code = job.exit_code(failed=0, verify_mismatched=0, stopped=True, collisions=1)
+        body = self.render(parsed, self.night(self.status_of(code, "partial", stopped=True), "collisions"))
+        assert "OBJECTS NOT BACKED UP" in self.headline(body)
+        assert "asked to stop before it finished" in body, (
+            "the stop vanished entirely instead of moving below the headline"
+        )
+        assert "nothing needs doing" not in body
+
+
+class TestTheFallbackRecoversTheCountsToo:
+    """The night the report route exists for is a night that copied a lot."""
+
+    def render_with_report(self, parsed: dict, report: dict, log: str) -> str:
+        import json
+        import subprocess
+        import tempfile
+        from pathlib import Path as P
+
+        steps = parsed["jobs"]["mirror"]["steps"]
+        script = next(
+            s["run"] for s in steps
+            if s.get("name", "").startswith("Write the run summary")
+        ).replace("${{ steps.run.outcome }}", "$OUTCOME")
+        with tempfile.TemporaryDirectory() as tmp:
+            (P(tmp) / "mirror-output.txt").write_text(log)
+            fake_bin = P(tmp) / "bin"
+            fake_bin.mkdir()
+            body_json = json.dumps(report, indent=2, sort_keys=True)
+            (fake_bin / "ssh").write_text(
+                "#!/bin/sh\n"
+                'case "$*" in\n'
+                '  *actions-run.started*) echo "1-1 1700000000" ;;\n'
+                "  *find*) echo /var/lib/x/_runs/r.json ;;\n"
+                f"  *cat*)  cat <<'JSON'\n{body_json}\nJSON\n;;\n"
+                "esac\n"
+            )
+            (fake_bin / "ssh").chmod(0o755)
+            out = P(tmp) / "summary.md"
+            result = subprocess.run(
+                ["bash", "-e", "-c", script],
+                env={
+                    "PATH": f"{fake_bin}:/usr/bin:/bin", "RUNNER_TEMP": tmp,
+                    "ENV_NAME": "prod", "OUTCOME": "failure",
+                    "DEPLOY_USER": "deploy", "DEPLOY_HOST": "host",
+                    "RUN_TAG": "1-1", "STATE_DIR": "/var/lib/x",
+                    "GITHUB_STEP_SUMMARY": str(out), "LC_ALL": "C",
+                },
+                capture_output=True, text=True,
+            )
+            assert result.returncode == 0, result.stderr.strip()[:300]
+            return out.read_text() if out.exists() else ""
+
+    # A truncated log: the pipe died before the run printed anything final.
+    TRUNCATED = "2026-08-31 02:20:00,1 INFO batch: 20000 object(s), 4 GiB\n"
+
+    def test_a_timed_out_seed_night_reports_what_it_copied(self, parsed):
+        """412,000 objects copied, and the summary said it copied nothing.
+
+        The fallback recovered `status` and `flags` and left the counts
+        empty, so the stopped branch took its "copied nothing" path and
+        diagnosed a stall in the manifest read.
+        """
+        body = self.render_with_report(
+            parsed,
+            {
+                "status": "stopped", "flags": [], "outcome": "partial",
+                "stats": {
+                    "copied": 412000, "already_current": 0,
+                    "verify_checked": 0, "verify_unverified": 0,
+                },
+            },
+            self.TRUNCATED,
+        )
+        assert "stopped, progress kept" in body
+        assert "412,000 images copied" in body, body[:400]
+        assert "stopped before copying anything" not in body, (
+            "a night that copied 412,000 objects says it copied none"
+        )
+
+    def test_a_clean_night_recovered_from_the_report_is_not_called_malformed(
+        self, parsed
+    ):
+        """"(no counts in the log — check it)" means the log is broken."""
+        body = self.render_with_report(
+            parsed,
+            {
+                "status": "ok", "flags": [], "outcome": "ok",
+                "stats": {
+                    "copied": 4211, "already_current": 0,
+                    "verify_checked": 50, "verify_unverified": 0,
+                },
+            },
+            self.TRUNCATED,
+        )
+        assert "4,211 images copied" in body, body[:400]
+        assert "50 verified" in body
+        assert "no counts in the log" not in body
+
+    def test_the_log_still_wins_when_it_has_the_counts(self, parsed):
+        """The fallback fills gaps; it must not overwrite a complete log."""
+        log = (
+            "2026-08-31 02:20:00,1 INFO done — copied 7, failed 0, "
+            "already current 0, skipped 0\n"
+        )
+        body = self.render_with_report(
+            parsed,
+            {"status": "ok", "flags": [], "outcome": "ok",
+             "stats": {"copied": 999999, "already_current": 0,
+                       "verify_checked": 0, "verify_unverified": 0}},
+            log,
+        )
+        assert "7 images copied" in body, body[:300]
+        assert "999,999" not in body

@@ -472,6 +472,28 @@ jobs:
                 | grep -oE '\"flags\":\[[^]]*\]' \
                 | grep -oE '[a-z_]+' | grep -v '^flags$' | paste -sd, - || true)"
               flags=",${flags},"
+              # The counts too. Recovering the verdict and leaving these empty
+              # made the night the report route EXISTS for — the seed stopped
+              # by the job's time limit — render "It stopped before copying
+              # anything", against a report recording four hundred thousand
+              # copies. On a clean run recovered after a pipe blip it rendered
+              # "(no counts in the log — check it)", the phrase reserved for a
+              # log that is malformed.
+              #
+              # `tr -d` first so the values are found whatever indentation
+              # json.dumps used, then a digits-only match: these are numbers
+              # from the job's own report, and anything else is left empty so
+              # the branches below fall back exactly as they would with no
+              # report at all.
+              stats="$(printf '%s' "$body" | tr -d ' \n')"
+              num() {
+                printf '%s' "$stats" | grep -oE "\"$1\":[0-9]+" \
+                  | head -1 | grep -oE '[0-9]+$' || true
+              }
+              [ -z "${copied:-}" ] && copied="$(num copied)"
+              [ -z "${current:-}" ] && current="$(num already_current)"
+              [ -z "${checked:-}" ] && checked="$(num verify_checked)"
+              [ -z "${unverified:-}" ] && unverified="$(num verify_unverified)"
               [ -n "$status" ] && echo "verdict taken from the run report on the host: $status ($flags)"
             fi
           fi
@@ -533,23 +555,6 @@ jobs:
               echo "Result: **skipped** — another run holds the lock, almost"
               echo "certainly the initial seed. Nothing was mirrored tonight;"
               echo "the seed is doing that work. This is expected until it ends."
-            elif [ "$status" = "stopped" ]; then
-              # Its own branch, because this is the ONE outcome that means
-              # "this is fine". The Actions job hitting its time limit during
-              # the seed lands here every night, having copied and recorded
-              # thousands of objects; it used to read FAILED, "the mirror was
-              # not updated this run" — both halves false.
-              echo "Result: **stopped, progress kept** — the run was asked to"
-              echo "stop before it finished the table, almost certainly the"
-              echo "job's own time limit. Everything it copied is recorded and"
-              echo "on Box; the next run carries on from there. Nothing is"
-              echo "lost and nothing needs doing."
-              if [ -n "${copied:-}" ] && [ "$copied" -gt 0 ]; then
-                echo "It got through ${counts}."
-              else
-                echo "It stopped before copying anything — most likely during"
-                echo "the manifest read, which a stop cannot interrupt."
-              fi
             elif [ "$status" = "failed" ] && has_flag verify_mismatch; then
               echo "Result: **FAILED, and verification found objects missing**"
               echo "— objects failed to copy tonight AND the check found"
@@ -570,8 +575,13 @@ jobs:
               echo "records them as mirrored, so later runs skip them and this"
               echo "warning does **not** repeat. Putting them back needs a"
               echo "person — see 'What verification does, and does not, prove'"
-              echo "in the wiki. The run is recorded **partial**, so the"
-              echo "watermark is held in the meantime."
+              echo "in the wiki."
+              echo
+              echo "**The watermark is not held for this.** Nothing on this"
+              echo "side can restore the object, so holding it would freeze"
+              echo "the mirror's progress until someone acted and make every"
+              echo "later night re-read all eight million rows. Tonight is"
+              echo "the notice; the run report under \`_runs/\` is the record."
               if has_flag collisions; then
                 echo
                 echo "This night **also** refused a name collision — see the"
@@ -593,6 +603,24 @@ jobs:
                 echo "— that is the larger problem and this line does not"
                 echo "mean nothing else went wrong."
               fi
+            elif [ "$status" = "stopped" ]; then
+              # Its own branch, because this is the ONE outcome that means
+              # "this is fine". The Actions job hitting its time limit during
+              # the seed lands here every night, having copied and recorded
+              # thousands of objects; it used to read FAILED, "the mirror was
+              # not updated this run" — both halves false.
+              said_stopped=1
+              echo "Result: **stopped, progress kept** — the run was asked to"
+              echo "stop before it finished the table, almost certainly the"
+              echo "job's own time limit. Everything it copied is recorded and"
+              echo "on Box; the next run carries on from there. Nothing is"
+              echo "lost and nothing needs doing."
+              if [ -n "${copied:-}" ] && [ "$copied" -gt 0 ]; then
+                echo "It got through ${counts}."
+              else
+                echo "It stopped before copying anything — most likely during"
+                echo "the manifest read, which a stop cannot interrupt."
+              fi
             elif [ "$status" = "ok" ] || [ "$status" = "partial" ]; then
               if [ -n "$counts" ]; then
                 echo "Result: **succeeded** — ${counts}"
@@ -603,6 +631,17 @@ jobs:
               echo "Result: **FAILED** — see the job log. Some or all of"
               echo "tonight's objects were not mirrored; anything that did"
               echo "copy is recorded and will not be copied again."
+            fi
+            # Additive: a stop no longer wins the headline over a permanent
+            # non-backup, but it still explains why the counts are short and
+            # why the run is recorded partial. Skipped when the stopped branch
+            # already said it.
+            if [ "$status" = "stopped" ] && [ -z "${said_stopped:-}" ]; then
+              echo
+              echo "> The run was also **asked to stop before it finished the"
+              echo "> table** — almost certainly the job's own time limit."
+              echo "> Everything it copied is recorded and on Box, and the"
+              echo "> next run carries on from there."
             fi
             # Deliberately its own `if`, not another elif: the ledger upload is
             # best-effort, so this can happen on a night that otherwise
