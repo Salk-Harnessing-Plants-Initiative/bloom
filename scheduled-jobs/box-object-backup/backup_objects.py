@@ -56,7 +56,7 @@ from copier import (  # noqa: E402
 from ledger import Ledger  # noqa: E402
 from rclone_rc import MinioSource, RcloneError, RcloneRC  # noqa: E402
 import stopping  # noqa: E402
-from runlock import SKIP_MARKER, LockHeld, RunLock  # noqa: E402
+from runlock import ACTIONS_RUN_ENV, SKIP_MARKER, LockHeld, RunLock  # noqa: E402
 
 logger = logging.getLogger("bloom_box_object_backup")
 
@@ -949,6 +949,9 @@ def publish_report(
         box_root=args.box_root,
         minio_bucket=args.minio_bucket,
         minio_prefix=args.minio_prefix,
+        # Named in the report as well as the lock: the lock is blanked when
+        # the run ends, and the summary comes looking afterwards.
+        actions_run=os.environ.get(ACTIONS_RUN_ENV, ""),
         stats=stats,
         skips=list(skips or []),
         name_skips=list(name_skips or []),

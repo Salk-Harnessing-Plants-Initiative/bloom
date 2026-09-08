@@ -65,6 +65,11 @@ class RunReport:
     verify_failures: list[str] = field(default_factory=list)
     # The run's verdict, in the vocabulary the workflow branches on. Written on
     # the host, so it survives the ssh pipe dying.
+    # The GitHub job that started this run, empty when a person did. The
+    # workflow finds this night's report by matching it, which is why the
+    # report carries it as well as the lock: the lock is released and blanked
+    # when the run ends, and the summary looks afterwards.
+    actions_run: str = ""
     status: str = ""
     # Flags known at write time. The two ledger flags are set later, so they
     # never appear here — the exit code carries them instead.
@@ -95,6 +100,7 @@ class RunReport:
             "failure_count": total_failures,
             # Names, not just counts. `stats["skipped"]` and
             # `stats["verify_mismatched"]` remain the exact totals.
+            "actions_run": self.actions_run,
             "status": self.status,
             "flags": list(self.flags),
             "skips": skips,
@@ -137,6 +143,33 @@ def write_local(report: RunReport, state_dir: Path | str) -> Path:
     return path
 
 
+def find_local(state_dir: Path | str, actions_run: str) -> Path | None:
+    """The newest report on this host written by a given GitHub job.
+
+    The workflow calls this over ssh when a cancel or a timeout killed the log
+    before the run printed its verdict. Matching the job id rather than a time
+    window is what keeps a nightly from picking up the seed's report: the seed
+    is started by hand and carries no job id at all, so it can never match.
+
+    Filenames sort chronologically, so the last match is the newest.
+    """
+    if not actions_run:
+        return None
+    directory = Path(state_dir) / REPORTS_DIRNAME
+    try:
+        candidates = sorted(directory.glob("*.json"))
+    except OSError:
+        return None
+    for path in reversed(candidates):
+        try:
+            body = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(body, dict) and body.get("actions_run") == actions_run:
+            return path
+    return None
+
+
 def box_ledger_path(box_root: str) -> str:
     """Destination for the ledger copy, under the run's Box root."""
     root = box_root.strip("/")
@@ -149,3 +182,22 @@ def box_remote_path(report: RunReport) -> str:
     root = report.box_root.strip("/")
     parts = [part for part in (root, REPORTS_DIRNAME, report.filename()) if part]
     return "/".join(parts)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Print this job's own run report, for the workflow's summary step."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument("--state-dir", required=True)
+    parser.add_argument("--actions-run", required=True)
+    args = parser.parse_args(argv)
+    found = find_local(args.state_dir, args.actions_run)
+    if found is None:
+        return 1
+    print(found.read_text(encoding="utf-8", errors="replace"), end="")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

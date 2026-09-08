@@ -446,13 +446,17 @@ cancel. Normally the run prints it and the workflow reads it off the log — but
 the log travels back over an ssh pipe the workflow holds open, and cancelling
 or timing out the job kills that pipe before the last line is printed. So the
 run also writes the verdict into its report on the host, *before* printing it,
-and the summary falls back to fetching that over a fresh connection. It accepts only a report belonging to THIS run: the run step stamps a marker
-naming its own job id and the host's clock just before launching, and the
-summary reads that marker, checks it still names this job, and looks only for
-reports written after it. Both halves are evaluated on the host, so no clock
-difference between runner and server enters into it, and a seed running in
-tmux beside a nightly cannot hand over its verdict. If neither route produces
-one, the step's own outcome decides, as before.
+and the summary falls back to fetching that over a fresh connection. It
+accepts only a report belonging to THIS run: every run records the id of the
+GitHub job that started it, in the lock it takes and in the report it writes,
+and the summary asks the host for the newest report carrying its own id. A
+seed started by hand carries no job id at all, so it can never hand over its
+verdict to a nightly. If neither route produces one, the step's own outcome
+decides.
+
+The same id answers the cancel step. Cancelling a job that stood down against
+the seed's lock must not stop the seed — days of copying, halted silently —
+so the step signals a process only when the lock says this job started it.
 
 **The summary reads a status line, not the log's prose.** The job prints
 `BOX_BACKUP_STATUS=`, `BOX_BACKUP_FLAGS=` and `BOX_BACKUP_STATS=` (the counts,

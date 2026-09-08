@@ -22,10 +22,13 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 import backup_objects as job
+import report
+import runlock
 import summary
 from runlock import SKIP_MARKER
 
@@ -610,10 +613,12 @@ class TestCancellingTheJobStopsTheRun:
         assert stop < summary
 
     def test_it_finds_the_process_through_the_lock_file(self, parsed: dict):
-        # runlock.py writes the pid there; nothing else knows what is running.
+        # runlock.py writes the pid and the owning job there; nothing else
+        # knows what is running or who started it.
         script = self.step(parsed)["run"]
         assert "backup.lock" in script
-        assert '"pid"' in script
+        assert "read_lock pid" in script
+        assert "read_lock actions_run" in script
 
     def test_it_asks_rather_than_kills(self, parsed: dict):
         # SIGKILL is the hard kill this whole change exists to avoid: it would
@@ -647,13 +652,13 @@ class TestCancellingTheJobStopsTheRun:
         assert result.returncode == 0, result.stderr
 
 
-class TestTheRunStepStampsItsMarker:
+class TestTheRunNamesTheJobThatStartedIt:
     """The other half of the ownership guard.
 
-    The cancel step refuses to signal anything unless the marker names this
-    job. If the run step stops writing it, the cancel step stays silent and a
-    cancelled run keeps going on the host — the leak the whole step exists to
-    close, and nothing else in the suite would notice.
+    The cancel step refuses to signal anything unless the run was started by
+    this job, and the summary finds this night's report the same way. If the
+    run step stops passing the name, a cancelled run keeps going on the host
+    and a lost verdict is never recovered — and nothing else would notice.
     """
 
     def remote_script(self, parsed: dict) -> str:
@@ -663,46 +668,59 @@ class TestTheRunStepStampsItsMarker:
         )["run"]
         return outer.split("<<'REMOTE'", 1)[1].split("\n          REMOTE", 1)[0]
 
-    def test_the_marker_is_written_before_the_job_is_launched(self, parsed: dict):
+    def test_the_name_is_exported_before_the_job_is_launched(self, parsed: dict):
         script = self.remote_script(parsed)
-        marker = '"$state_dir/actions-run.started"'
-        assert marker in script, "the run step never stamps the marker"
-        launch = script.index("backup_objects.py")
-        assert script.index(marker) < launch, (
-            "stamped after the job starts — the window where it is missing is "
-            "exactly when a cancellation is most likely"
+        export = f"export {runlock.ACTIONS_RUN_ENV}="
+        assert export in script, "the run step never names the job to the run"
+        assert script.index(export) < script.index("backup_objects.py"), (
+            "exported after the job starts, so the run would not see it"
         )
 
-    def test_the_marker_names_this_job_and_the_time(self, parsed: dict, tmp_path):
-        """Run the stamping line for real and read back what it wrote.
+    def test_it_is_the_tag_the_cancel_and_summary_steps_compare(self, parsed: dict):
+        assert f'{runlock.ACTIONS_RUN_ENV}="$run_tag"' in self.remote_script(parsed)
+        for name in ("Ask the host to stop", "Write the run summary"):
+            step = next(
+                s
+                for s in parsed["jobs"]["mirror"]["steps"]
+                if s.get("name", "").startswith(name)
+            )
+            assert step["env"]["RUN_TAG"] == (
+                "${{ github.run_id }}-${{ github.run_attempt }}"
+            ), f"{name} compares against a different tag than the run records"
 
-        The tag alone lets a marker from an earlier job pass; the time alone
-        lets this job's own stand-down pass. Both, or the guard has a hole.
+    def test_the_run_records_that_name_where_both_steps_look(
+        self, tmp_path, monkeypatch
+    ):
+        """End to end through the real writers, not the string in the YAML.
+
+        The lock answers the cancel step and the report answers the summary,
+        and the two are written by different modules at different moments —
+        the lock as the run starts, the report as it ends.
         """
-        import subprocess
+        monkeypatch.setenv(runlock.ACTIONS_RUN_ENV, "42-7")
+        held = runlock.RunLock(tmp_path).acquire()
+        try:
+            recorded = json.loads((tmp_path / "backup.lock").read_text())
+        finally:
+            held.release()
+        assert recorded["actions_run"] == "42-7", recorded
 
-        script = self.remote_script(parsed)
-        marker = tmp_path / "actions-run.started"
-        lines = [ln.strip() for ln in script.splitlines()]
-        start = next(i for i, ln in enumerate(lines) if ln.startswith("marker="))
-        write = next(i for i, ln in enumerate(lines) if '> "$marker"' in ln)
-        block = "\n".join(lines[start : write + 1])
-        subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'set -e\nrun_tag="$1"\nstate_dir="$2"\n{block}',
-                "bash",
-                "42-7",
-                str(tmp_path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
+        written = report.write_local(
+            report.RunReport(
+                env="prod",
+                run_id=1,
+                started_at=datetime.now(timezone.utc),
+                finished_at=datetime.now(timezone.utc),
+                outcome="ok",
+                box_root="x",
+                minio_bucket="b",
+                minio_prefix="p",
+                actions_run="42-7",
+            ),
+            tmp_path,
         )
-        tag, stamped = marker.read_text().split()
-        assert tag == "42-7", f"the marker does not name the job: {tag}"
-        assert int(stamped) > 1_700_000_000, f"not a plausible timestamp: {stamped}"
+        assert report.find_local(tmp_path, "42-7") == written
+        assert report.find_local(tmp_path, "99-1") is None
 
 
 class TestTheStopScriptBehaves:
@@ -718,35 +736,30 @@ class TestTheStopScriptBehaves:
 
     RUN_TAG = "1234567890-1"
 
-    def run_remote(self, parsed: dict, lock_dir, contents=None, marker="same-job"):
-        """Run the remote half, with the lock and the marker under `lock_dir`.
+    def run_remote(self, parsed: dict, lock_dir, contents=None):
+        """Run the remote half against a real lock file under `lock_dir`.
 
-        `marker` says what this job left behind on the host:
-          "same-job"  this job started the run holding the lock (the norm)
-          "other-job" a marker from an earlier job — a stale file
-          "stood-down" this job's marker, but the lock predates it, which is
-                       what a nightly that found the seed's lock leaves
-          None        no marker at all
+        The state directory is an argument, so the harness supplies a
+        temporary one rather than rewriting paths out of the script — what
+        runs here is the script as written, character for character.
         """
         import subprocess
 
-        # The state directory is an argument now, so the harness supplies a
-        # temporary one rather than rewriting paths out of the script — which
-        # means what runs here is the script as written, character for
-        # character.
         script = self.remote_script(parsed)
         if contents is not None:
             (lock_dir / "backup.lock").write_text(contents)
-        if marker is not None:
-            tag = self.RUN_TAG if marker != "other-job" else "999-1"
-            # The stood-down case stamps the marker AFTER the lock was taken.
-            stamped = 2_000_000_000 if marker == "stood-down" else 1
-            (lock_dir / "actions-run.started").write_text(f"{tag} {stamped}\n")
         return subprocess.run(
             ["bash", "-c", script, "bash", self.RUN_TAG, str(lock_dir)],
             capture_output=True,
             text=True,
         )
+
+    def lock(self, pid, owner=RUN_TAG):
+        """A lock file as runlock.py writes one. `owner=None` for a hand-run."""
+        body = {"pid": pid, "started_at": 1_700_000_000}
+        if owner is not None:
+            body["actions_run"] = owner
+        return json.dumps(body)
 
     def test_no_lock_file_is_not_an_error(self, parsed: dict, tmp_path):
         result = self.run_remote(parsed, tmp_path)
@@ -754,18 +767,14 @@ class TestTheStopScriptBehaves:
         assert "nothing was running" in result.stdout
 
     def test_a_lock_without_a_pid_is_not_an_error(self, parsed: dict, tmp_path):
-        result = self.run_remote(
-            parsed, tmp_path, contents='{"started_at": 1700000000}'
-        )
+        result = self.run_remote(parsed, tmp_path, contents="{}")
         assert result.returncode == 0
         assert "nothing to stop" in result.stdout
 
     def test_a_stale_pid_is_not_an_error(self, parsed: dict, tmp_path):
         # The kernel drops the flock when the holder dies, but the metadata can
         # outlive it.
-        result = self.run_remote(
-            parsed, tmp_path, contents='{"pid": 999999, "started_at": 1700000000}'
-        )
+        result = self.run_remote(parsed, tmp_path, contents=self.lock(999999))
         assert result.returncode == 0
         assert "gone already" in result.stdout
 
@@ -808,23 +817,14 @@ class TestTheStopScriptBehaves:
             child.kill()
             reaper.join(timeout=10)
 
-    def test_a_marker_from_an_earlier_job_spares_the_run(self, parsed: dict, tmp_path):
-        """A marker is left on the host by every job that starts a run.
-
-        Reading one from last night and stopping whatever holds the lock today
-        is the same mistake as having no guard at all, so the tag has to match
-        this job before anything is signalled.
-        """
-        import json
-
+    def test_a_run_another_job_started_is_spared(self, parsed: dict, tmp_path):
+        """A lock read from last night's job and signalled today is the same
+        mistake as having no guard at all."""
         with self.live_child() as child:
             result = self.run_remote(
-                parsed,
-                tmp_path,
-                contents=json.dumps({"pid": child.pid, "started_at": 1_700_000_000}),
-                marker="other-job",
+                parsed, tmp_path, contents=self.lock(child.pid, owner="999-1")
             )
-            assert "another job" in result.stdout, result.stdout
+            assert "started by 999-1" in result.stdout, result.stdout
             assert child.poll() is None, "signalled a run this job never started"
 
     def test_the_seed_is_spared_when_a_stood_down_job_is_cancelled(
@@ -832,50 +832,30 @@ class TestTheStopScriptBehaves:
     ):
         """The case this guard exists for.
 
-        The seed holds the lock for days. A nightly starts, stamps its own
-        marker, finds the lock held and stands down — leaving the seed's pid in
-        the lock file and its own tag in the marker. Cancelling that stood-down
-        job must not stop the seed: weeks of copying, halted silently, with the
-        Actions run reporting only that it was cancelled.
+        The seed holds the lock for days. A nightly starts, finds it held, and
+        stands down — leaving the seed's pid in the lock. Cancelling that
+        stood-down job must not stop the seed: weeks of copying halted
+        silently, with the Actions run reporting only that it was cancelled.
 
-        The tag matches here, so only the start times tell the two apart.
+        The seed is started by hand, so its lock carries no job name, and no
+        job name can equal that.
         """
-        import json
-
         with self.live_child() as seed:
             result = self.run_remote(
-                parsed,
-                tmp_path,
-                contents=json.dumps({"pid": seed.pid, "started_at": 1_700_000_000}),
-                marker="stood-down",
+                parsed, tmp_path, contents=self.lock(seed.pid, owner=None)
             )
-            assert "already running before this job" in result.stdout, result.stdout
+            assert "a person, not a GitHub job" in result.stdout, result.stdout
             assert seed.poll() is None, "stopped the seed while cancelling another job"
 
-    def test_no_marker_at_all_spares_the_run(self, parsed: dict, tmp_path):
-        import json
-
+    def test_a_lock_that_names_no_job_at_all_spares_the_run(
+        self, parsed: dict, tmp_path
+    ):
+        # An empty value, which is what the run writes when nothing set it.
         with self.live_child() as child:
             result = self.run_remote(
-                parsed,
-                tmp_path,
-                contents=json.dumps({"pid": child.pid, "started_at": 1_700_000_000}),
-                marker=None,
+                parsed, tmp_path, contents=self.lock(child.pid, owner="")
             )
-            assert "no marker" in result.stdout, result.stdout
-            assert child.poll() is None, "signalled without knowing whose run it is"
-
-    def test_a_lock_with_no_start_time_spares_the_run(self, parsed: dict, tmp_path):
-        """Nothing writes such a lock today, but guessing is the wrong default."""
-        import json
-
-        with self.live_child() as child:
-            result = self.run_remote(
-                parsed,
-                tmp_path,
-                contents=json.dumps({"pid": child.pid}),
-            )
-            assert "cannot compare" in result.stdout, result.stdout
+            assert "leaving it alone" in result.stdout, result.stdout
             assert child.poll() is None
 
     def test_a_live_process_is_asked_to_stop(self, parsed: dict, tmp_path):
@@ -887,7 +867,6 @@ class TestTheStopScriptBehaves:
         exited. Real runs do not hit this: a seed in tmux is reaped by tmux,
         and a workflow run is orphaned to init when the ssh shell exits.
         """
-        import json
         import subprocess
         import sys
         import threading
@@ -911,11 +890,7 @@ class TestTheStopScriptBehaves:
         reaper = threading.Thread(target=lambda: status.setdefault("rc", child.wait()))
         reaper.start()
         try:
-            result = self.run_remote(
-                parsed,
-                tmp_path,
-                contents=json.dumps({"pid": child.pid, "started_at": 1_700_000_000}),
-            )
+            result = self.run_remote(parsed, tmp_path, contents=self.lock(child.pid))
             assert "asking pid" in result.stdout, result.stdout
             reaper.join(timeout=15)
             assert status.get("rc") == 3, "it was killed rather than asked to stop"
@@ -1058,46 +1033,20 @@ class TestTheSummaryStepFeedsTheRenderer:
         assert rc == 0 and "4,211 images copied" in page
         assert "REACHED-THE-HOST" not in err
 
-    def test_a_lost_verdict_is_recovered_from_the_report_on_the_host(
-        self, summary_script, tmp_path
-    ):
-        report = {"status": "stopped", "flags": [], "stats": {"copied": 400000}}
-        self.fake(tmp_path, "ssh", f"cat <<'JSON'\n{json.dumps(report)}\nJSON\n")
-        rc, page, _ = self.run_step(
-            summary_script,
-            self.NIGHTS["truncated"],
-            tmp_path,
-            OUTCOME="failure",
-            DEPLOY_USER="deploy",
-            DEPLOY_HOST="host",
-        )
-        assert rc == 0, page
-        assert "stopped, progress kept" in page
-        assert "It got through 400,000 images copied." in page
+    def real_host(self, tmp_path, reports):
+        """A stand-in ssh that runs the remote half here, against real files.
 
-    def test_the_fallback_is_skipped_when_the_deploy_secrets_are_absent(
-        self, summary_script, tmp_path
-    ):
-        # A dispatch from a fork has no secrets; the step must still render.
-        self.fake(tmp_path, "ssh", "echo REACHED-THE-HOST >&2; exit 1\n")
-        rc, page, err = self.run_step(
-            summary_script, self.NIGHTS["truncated"], tmp_path, OUTCOME="failure"
-        )
-        assert rc == 0 and page.strip()
-        assert "REACHED-THE-HOST" not in err
-
-    def search_args(self, summary_script, marker, tmp_path):
-        """The args the report search was built with, or None if it never ran.
-
-        Observed rather than executed: `-printf` and `-newermt` are GNU-only,
-        so on a BSD box the real command returns nothing whatever the flags
-        say and an execution test cannot tell a mutation apart. What the step
-        BUILDS is the property that matters, and it holds anywhere.
+        `reports` maps a job name to the report that job's run wrote. The
+        lookup is `report.find_local`, executed for real — the previous
+        version of this could only inspect the arguments a GNU-only `find`
+        had been given, because the command does not exist on a Mac.
         """
         state = tmp_path / "state"
         (state / "_runs").mkdir(parents=True, exist_ok=True)
-        (state / "actions-run.started").write_text(marker + "\n")
-        seen = tmp_path / "find-args.txt"
+        for name, (stamp, body) in reports.items():
+            (state / "_runs" / f"{stamp}-prod-run00001.json").write_text(
+                json.dumps({"actions_run": name, **body})
+            )
         # ssh hands its trailing words to a shell with the heredoc on stdin.
         self.fake(
             tmp_path,
@@ -1105,47 +1054,89 @@ class TestTheSummaryStepFeedsTheRenderer:
             'while [ $# -gt 0 ]; do case "$1" in *@*) shift; break ;; *) shift ;; esac; done\n'
             'exec /bin/sh -c "$*"\n',
         )
-        self.fake(tmp_path, "find", f'printf "%s\\n" "$*" > {seen}\n')
-        rc, _, err = self.run_step(
+        return state
+
+    def test_a_lost_verdict_is_recovered_from_the_report_on_the_host(
+        self, summary_script, tmp_path
+    ):
+        state = self.real_host(
+            tmp_path,
+            {
+                "1-1": (
+                    "2026-08-31T020000Z",
+                    {"status": "stopped", "stats": {"copied": 400000}},
+                )
+            },
+        )
+        rc, page, err = self.run_step(
             summary_script,
             self.NIGHTS["truncated"],
             tmp_path,
             OUTCOME="failure",
             DEPLOY_USER="deploy",
             DEPLOY_HOST="host",
+            DEPLOY_PATH=str(self.REPO),
+            STATE_DIR=str(state),
         )
-        assert rc == 0, err[:300]
-        return (seen.read_text() if seen.exists() else None), str(state)
+        assert rc == 0, err[:400]
+        assert "stopped, progress kept" in page
+        assert "It got through 400,000 images copied." in page
 
-    def test_the_search_is_scoped_to_reports_written_after_this_run_began(
+    def test_a_report_from_another_job_is_not_used_as_this_ones_verdict(
         self, summary_script, tmp_path
     ):
-        """The seed writes into the same `_runs/` directory.
+        """The seed writes into the same `_runs/` directory, and its reports
+        are newer than a nightly's for days at a time. Taking the newest would
+        put the seed's night under this job's tick."""
+        state = self.real_host(
+            tmp_path,
+            {
+                "seed-by-hand": (
+                    "2026-09-01T020000Z",
+                    {"status": "ok", "stats": {"copied": 900000}},
+                )
+            },
+        )
+        rc, page, err = self.run_step(
+            summary_script,
+            self.NIGHTS["truncated"],
+            tmp_path,
+            OUTCOME="failure",
+            DEPLOY_USER="deploy",
+            DEPLOY_HOST="host",
+            DEPLOY_PATH=str(self.REPO),
+            STATE_DIR=str(state),
+        )
+        assert rc == 0, err[:400]
+        assert "900,000" not in page, "it claimed another job's night as its own"
+        assert "Result: **FAILED**" in page
 
-        The marker names this job, so the tag check passes — but without
-        `-newermt` the newest report there is the seed's, and the seed's
-        verdict becomes this night's headline.
-        """
-        args, state = self.search_args(summary_script, "1-1 1700000000", tmp_path)
-        assert args is not None, "the fallback never searched for a report"
-        assert "-newermt @1700000000" in args, f"not scoped to this run: {args}"
-        assert f"{state}/_runs" in args
-
-    def test_the_search_does_not_run_when_the_marker_names_another_job(
-        self, summary_script, tmp_path
-    ):
-        args, _ = self.search_args(summary_script, "999-1 1700000000", tmp_path)
-        assert args is None, "it searched for a report belonging to another job"
-
-    @pytest.mark.parametrize("marker", ["1-1 garbage", "1-1", "1-1 17e9", "1-1 -5"])
-    def test_a_marker_without_a_usable_time_searches_for_nothing(
-        self, summary_script, marker, tmp_path
-    ):
-        # Without the numeric check the step builds `-newermt @<garbage>`;
-        # without the emptiness check, a bare `-newermt @`. Either loses the
-        # scoping, which is the whole point of the flag.
-        args, _ = self.search_args(summary_script, marker, tmp_path)
-        assert args is None, f"marker {marker!r} produced a search anyway: {args}"
+    def test_this_jobs_own_report_wins_over_a_newer_one(self, summary_script, tmp_path):
+        state = self.real_host(
+            tmp_path,
+            {
+                "1-1": (
+                    "2026-08-31T020000Z",
+                    {"status": "stopped", "stats": {"copied": 12}},
+                ),
+                "seed-by-hand": (
+                    "2026-09-05T020000Z",
+                    {"status": "ok", "stats": {"copied": 900000}},
+                ),
+            },
+        )
+        rc, page, err = self.run_step(
+            summary_script,
+            self.NIGHTS["truncated"],
+            tmp_path,
+            OUTCOME="failure",
+            DEPLOY_USER="deploy",
+            DEPLOY_HOST="host",
+            DEPLOY_PATH=str(self.REPO),
+            STATE_DIR=str(state),
+        )
+        assert rc == 0, err[:400]
+        assert "It got through 12 images copied." in page, page
 
     def test_the_renderer_it_calls_exists(self, summary_script):
         called = re.search(r"python3 (\S+summary\.py)", summary_script)

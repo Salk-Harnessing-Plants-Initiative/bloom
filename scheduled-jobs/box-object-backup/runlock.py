@@ -29,6 +29,10 @@ from types import TracebackType
 
 LOCK_FILENAME = "backup.lock"
 
+# Set by the workflow to the id of the job launching the run. Absent for a run
+# started by hand, which is how the seed runs.
+ACTIONS_RUN_ENV = "OBJECT_BACKUP_ACTIONS_RUN"
+
 # Printed verbatim when a run stands down. The workflow greps for it to label
 # the run summary "skipped" rather than "succeeded", so it must stay in sync
 # with .github/workflows/box-object-backup.yml.
@@ -42,6 +46,10 @@ class LockHolder:
     pid: int | None
     started_at: float | None
     argv: str | None
+    # The GitHub job that started this run, or None when a person did — the
+    # seed is launched by hand. That distinction is what lets the workflow
+    # cancel its own run without touching one it did not start.
+    actions_run: str | None = None
 
     def describe(self) -> str:
         if self.pid is None:
@@ -52,6 +60,11 @@ class LockHolder:
             parts.append(f"running for {_format_elapsed(elapsed)}")
         if self.argv:
             parts.append(f"as `{self.argv}`")
+        parts.append(
+            f"started by GitHub job {self.actions_run}"
+            if self.actions_run
+            else "started by hand, not by a GitHub job"
+        )
         return ", ".join(parts)
 
 
@@ -122,6 +135,7 @@ class RunLock:
                     "pid": os.getpid(),
                     "started_at": time.time(),
                     "argv": " ".join(os.sys.argv[:4]),
+                    "actions_run": os.environ.get(ACTIONS_RUN_ENV, ""),
                 }
             ).encode(),
         )
@@ -157,9 +171,14 @@ def _read_holder(fd: int) -> LockHolder:
             pid=_as_int(data.get("pid")),
             started_at=_as_float(data.get("started_at")),
             argv=data.get("argv") or None,
+            actions_run=_as_str(data.get("actions_run")),
         )
     except (OSError, ValueError, TypeError):
         return LockHolder(None, None, None)
+
+
+def _as_str(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
 
 
 def _as_int(value: object) -> int | None:

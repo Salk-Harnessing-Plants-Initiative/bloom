@@ -200,22 +200,12 @@ jobs:
             exit 2
           fi
 
-          # Stamped just before launching, so the cancel step can tell the run
-          # THIS job starts from one that was already going. During the seed
-          # that distinction matters: the seed holds the lock, a nightly finds
-          # it held and stands down, and cancelling that stood-down job would
-          # otherwise stop the seed by mistake — days of work, silently.
-          #
-          # Both halves are needed. The tag rules out a marker left by an
-          # earlier job; the time rules out this job's own stand-down, where
-          # the marker is this job's but the lock is still the seed's. Written
-          # with the host's clock, the same one the lock file records, so the
-          # two are comparable without the runner's clock coming into it.
-          #
-          # A failed write is not worth failing the backup for: the cancel step
-          # then finds no marker and declines to signal anything.
-          marker="$state_dir/actions-run.started"
-          echo "$run_tag $(date +%s)" > "$marker" || echo "could not write $marker" >&2
+          # The run records which GitHub job started it, in the lock it takes
+          # and in the report it writes. The cancel step and the summary both
+          # find this job's run by that name. A seed started by hand carries
+          # no name, so neither can ever act on it by mistake — which matters,
+          # because the seed holds the lock for days.
+          export OBJECT_BACKUP_ACTIONS_RUN="$run_tag"
 
           # --verify on every scheduled run: an unverified mirror cannot tell a
           # copied object from a lost one.
@@ -254,33 +244,25 @@ jobs:
           lock="$state_dir/backup.lock"
           [ -r "$lock" ] || { echo "no lock file — nothing was running"; exit 0; }
 
-          # runlock.py writes {"pid": ..., "started_at": ..., "argv": ...}
-          pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pid",""))' "$lock" 2>/dev/null || true)"
-          case "$pid" in
+          # The lock names its holder and the job that started it.
+          read_lock() {
+            python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' \
+              "$lock" "$1" 2>/dev/null || true
+          }
+          pid="$(read_lock pid)"
+          owner="$(read_lock actions_run)"
+          case "${pid:-}" in
             ''|*[!0-9]*) echo "no pid in the lock file — nothing to stop"; exit 0 ;;
           esac
 
-          # The lock names whoever holds it, which is not necessarily the run
-          # this job started. During the seed that distinction matters: the
-          # seed holds the lock for days, a nightly finds it held and stands
-          # down without touching the file, and cancelling THAT job would stop
-          # the seed by mistake. So the run step stamps a marker naming itself,
-          # and this only signals when the marker still names this job.
-          marker="$state_dir/actions-run.started"
-          [ -r "$marker" ] || { echo "no marker — this job started no run"; exit 0; }
-          read -r marked_tag stamped_at _ < "$marker" || true
-          if [ "${marked_tag:-}" != "$run_tag" ]; then
-            echo "the marker names another job — leaving pid $pid alone"
-            exit 0
-          fi
-          # Every run rewrites started_at as it takes the lock, so a lock older
-          # than the marker belongs to a run this job never started.
-          started_at="$(python3 -c 'import json,sys; print(int(float(json.load(open(sys.argv[1]))["started_at"])))' "$lock" 2>/dev/null || true)"
-          case "${started_at:-x}${stamped_at:-x}" in
-            *[!0-9]*) echo "cannot compare the start times — leaving pid $pid alone"; exit 0 ;;
-          esac
-          if [ "$started_at" -lt "$stamped_at" ]; then
-            echo "pid $pid was already running before this job — leaving it alone"
+          # Whoever holds the lock is not necessarily the run this job started.
+          # During the seed that distinction is days of work: the seed holds
+          # the lock, a nightly finds it held and stands down, and cancelling
+          # THAT job must not stop the seed. The seed is started by hand and
+          # so carries no job name, which no job name can equal.
+          if [ "${owner:-}" != "$run_tag" ]; then
+            echo "pid $pid was started by ${owner:-a person, not a GitHub job}" \
+                 "— leaving it alone"
             exit 0
           fi
 
@@ -313,6 +295,7 @@ jobs:
           STATE_DIR: ${{ env.STATE_DIR }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
           # A dry run writes no report and records no run, so the summary must
           # be told rather than deducing it from what the log happens to say.
           DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
@@ -328,25 +311,21 @@ jobs:
 
           # A cancel or a timeout kills the pipe mid-run, so the log stops
           # before the verdict. The report the run wrote on the host is then
-          # the only place that verdict exists — scoped to THIS job by the
-          # marker the run step stamped, or a nightly that stood down against
-          # the seed's lock would report the seed's night as its own.
+          # the only place that verdict exists. Asked for by this job's own
+          # name, so a nightly that stood down against the seed's lock cannot
+          # report the seed's night as its own.
           if ! grep -qE '^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_STATUS=' "$log" 2>/dev/null \
              && [ -n "${DEPLOY_USER:-}" ] && [ -n "${DEPLOY_HOST:-}" ]; then
             report="${RUNNER_TEMP}/run-report.json"
-            remote_args="$(printf '%q ' "$RUN_TAG" "$STATE_DIR")"
+            remote_args="$(printf '%q ' "$DEPLOY_PATH" "$STATE_DIR" "$RUN_TAG")"
             ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=15 \
               -o StrictHostKeyChecking=yes \
               "${DEPLOY_USER}@${DEPLOY_HOST}" "bash -s -- $remote_args" \
               > "$report" 2>/dev/null <<'REMOTE' || true
           set -uo pipefail
-          run_tag="$1"; state_dir="$2"
-          read -r marked_tag stamped_at _ < "$state_dir/actions-run.started" || exit 0
-          [ "$marked_tag" = "$run_tag" ] || exit 0
-          case "${stamped_at:-x}" in ''|*[!0-9]*) exit 0 ;; esac
-          newest="$(find "$state_dir/_runs" -name '*.json' -newermt "@$stamped_at" \
-            -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
-          [ -n "$newest" ] && cat -- "$newest"
+          cd "$1" || exit 0
+          python3 scheduled-jobs/box-object-backup/report.py \
+            --state-dir "$2" --actions-run "$3"
           REMOTE
           fi
 
