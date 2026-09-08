@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { PlateImage } from "./PlateImage";
-import { SCANNER_TIME_NOTE, formatCaptureTime } from "./plate-times";
+import { SCANNER_TIME_NOTE, formatScannerTime } from "./plate-times";
 
 export interface TimePoint {
   scan_id: number;
@@ -166,13 +166,19 @@ export function PlateTimeSeries({ points }: PlateTimeSeriesProps) {
   );
 }
 
-// Unlabelled: the section says the zone once, and up to a hundred of these
-// appear together.
+const STAMP: Intl.DateTimeFormatOptions = {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+};
+
+// The strip omits the zone; the note above it says it once.
 function formatStamp(iso: string): string {
-  return formatCaptureTime(iso, { year: false, named: false }) ?? iso;
+  return formatScannerTime(iso, STAMP) ?? iso;
 }
 
-// Read on its own, so it names its zone.
+// The selected capture is read on its own, so it names its zone.
 function formatSelectedStamp(iso: string): string {
-  return formatCaptureTime(iso, { year: false }) ?? iso;
+  return formatScannerTime(iso, { ...STAMP, timeZoneName: "short" }) ?? iso;
 }

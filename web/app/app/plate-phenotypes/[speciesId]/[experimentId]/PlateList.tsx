@@ -3,7 +3,7 @@ import { PlateImage } from "@/components/recent-phenotypes-by-plate-scanner/Plat
 import type { PlateGroup } from "./plateGrouping";
 import {
   SCANNER_TIME_NOTE,
-  formatCaptureTime,
+  formatScannerTime,
 } from "@/components/recent-phenotypes-by-plate-scanner/plate-times";
 
 export function PlateList({
@@ -111,5 +111,14 @@ export function PlateList({
 }
 
 export function formatDateTime(iso: string | null | undefined): string {
-  return formatCaptureTime(iso) ?? "—";
+  return (
+    formatScannerTime(iso, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short",
+    }) ?? "—"
+  );
 }
