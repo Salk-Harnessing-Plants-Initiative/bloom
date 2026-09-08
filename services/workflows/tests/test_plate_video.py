@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
+from postgrest.exceptions import APIError
 
 import plate_video as pv
 
@@ -309,6 +311,39 @@ def test_an_unsized_frame_is_estimated_from_the_plates_own_frames():
     recorded most of its sizes knows better than the constant does."""
     # Two frames at 5 GB, one unsized -> the unsized one is worth 5 GB too.
     assert "15.0 GB" in pv.too_large_to_render(_sized(*([5 * GB] * 2 + [None])))
+
+
+def test_a_zero_size_is_read_as_unsaid_not_as_a_real_zero():
+    """A recorded zero is not a measurement. Counted as one it drags the average
+    down, and every other unsized frame is then estimated at nearly nothing --
+    which is worse than recording no size at all."""
+    assert pv.source_bytes(_sized(0, 57 * MB)) == (57 * MB, 1)
+    assert pv.source_bytes(_sized(-1, 57 * MB)) == (57 * MB, 1)
+
+
+def test_one_tiny_recorded_size_cannot_defeat_the_guard():
+    """199 unsized frames beside a single 1 KB one. Without a floor the average
+    is 1 KB, the whole plate estimates at 200 KB, and a run of any size passes."""
+    frames = _sized(*([None] * 199 + [1024]))
+
+    assert pv.too_large_to_render(frames) is not None
+
+
+def test_the_estimate_is_never_below_the_nominal_frame():
+    """The plate's own average is the better answer when it is a real one. The
+    nominal is the floor under it, not a replacement for it."""
+    # Two real 5 GB frames: the average wins, and it is well above the nominal.
+    assert "15.0 GB" in pv.too_large_to_render(_sized(*([5 * GB] * 2 + [None])))
+
+
+def test_unsized_frames_are_named_in_the_log_so_they_can_be_corrected(caplog):
+    """Every upload records a size, so a gap is a row worth fixing rather than a
+    plate to refuse. Saying so is what makes it fixable."""
+    with caplog.at_level("WARNING"):
+        pv.too_large_to_render(_sized(*([57 * MB] * 3 + [None] * 2)))
+
+    assert "2 of 5 frames" in caplog.text
+    assert "file_size_bytes" in caplog.text
 
 
 def test_the_size_is_fetched_with_the_frames_not_in_a_second_query():
@@ -912,6 +947,146 @@ def _big(n):
     for r in rows:
         r["gravi_images"]["file_size_bytes"] = 1024**3
     return rows
+
+
+class _Down(_Query):
+    """A table the database cannot be reached for."""
+
+    def execute(self):
+        raise httpx.ConnectError("connection refused")
+
+
+class _Denied(_Query):
+    """A table the database answers about, with a refusal."""
+
+    def execute(self):
+        raise APIError(
+            {"code": "42501", "message": "permission denied for table gravi_scans"}
+        )
+
+
+def _outage(table, **kwargs):
+    client = _PlanClient(**kwargs)
+    client.queries[table] = _Down([])
+    return client
+
+
+def _denied(table, **kwargs):
+    client = _PlanClient(**kwargs)
+    client.queries[table] = _Denied([])
+    return client
+
+
+def test_an_unanswered_frame_query_refuses_rather_than_raising():
+    """A blip reading the frames is transient and has changed nothing, so it
+    gets the same answer a storage blip does — come back — not a raised error
+    the route can only report as "something went wrong"."""
+    plan = pv.plan_render(_outage("gravi_scans"), 12, "P7", 1)
+
+    assert plan["action"] == "refuse"
+    assert plan["code"] == "database_unavailable"
+    assert plan["frames"] == []
+
+
+def test_an_unanswered_stored_video_query_refuses_the_same_way():
+    plan = pv.plan_render(_outage("gravi_plate_videos", frames=_frames(3)), 12, "P7", 1)
+
+    assert plan["action"] == "refuse"
+    assert plan["code"] == "database_unavailable"
+
+
+def test_the_refusal_still_names_the_key_it_would_have_written():
+    plan = pv.plan_render(_outage("gravi_scans"), 12, "P7", 1)
+
+    assert plan["key"] == "12/wave-1/P7.mp4"
+
+
+def test_an_unanswered_coverage_query_still_renders():
+    """Coverage is a note about the video, not a condition on making one."""
+    client = _outage("gravi_scan_sessions", frames=_frames(3), row=None)
+    plan = pv.plan_render(client, 12, "P7", 1)
+
+    assert plan["action"] == "render"
+    assert plan["coverage"]["state"] == "unknown"
+
+
+def test_a_bug_in_planning_is_not_reported_as_an_outage(monkeypatch):
+    """The guard wraps the reads, not the reasoning around them. A TypeError
+    here answering "try again in a few minutes" would hide it forever."""
+
+    def broken(*args, **kwargs):
+        raise TypeError("render_decision got an unexpected argument")
+
+    monkeypatch.setattr(pv, "render_decision", broken)
+
+    with pytest.raises(TypeError) as caught:
+        pv.plan_render(_PlanClient(frames=_frames(3)), 12, "P7", 1)
+
+    # The bug's own message: swallowing it and tripping over the None it left
+    # behind raises a TypeError too, and would pass a bare `raises(TypeError)`.
+    assert "unexpected argument" in str(caught.value)
+
+
+def test_a_denied_grant_is_answered_the_way_an_outage_is(monkeypatch):
+    """One answer for both. Whether waiting helps depends on the cause, and the
+    wording holds either way, so nothing has to guess which it was."""
+    plan = pv.plan_render(_denied("gravi_scans"), 12, "P7", 1)
+
+    assert plan["action"] == "refuse"
+    assert plan["code"] == "database_unavailable"
+
+
+def test_the_denied_grant_reason_reaches_the_log_with_a_traceback(caplog):
+    """The caller gets one sentence; the cause is the log's, and a missing GRANT
+    is unreadable without the traceback."""
+    with caplog.at_level("WARNING"):
+        pv.plan_render(_denied("gravi_scans"), 12, "P7", 1)
+
+    assert "permission denied for table gravi_scans" in caplog.text
+    assert "Traceback" in caplog.text
+
+
+def test_a_row_that_will_not_parse_is_answered_the_same_way():
+    broken = _PlanClient(frames=[_row(0, "a.tif")])
+    broken.queries["gravi_scans"]._rows[0]["capture_date"] = "not a date"
+
+    plan = pv.plan_render(broken, 12, "P7", 1)
+
+    assert plan["action"] == "refuse"
+    assert plan["code"] == "database_unavailable"
+
+
+def test_a_coverage_read_that_fails_still_renders():
+    """Coverage is a note about the video, not a condition on making one. The
+    sessions table is a separate GRANT from the frames table, so it can be the
+    only one denied — and losing it must not cost the render."""
+    client = _denied("gravi_scan_sessions", frames=_frames(3), row=None)
+    plan = pv.plan_render(client, 12, "P7", 1)
+
+    assert plan["action"] == "render"
+    assert plan["coverage"]["state"] == "unknown"
+
+
+
+def test_an_unusable_plate_is_refused_without_asking_the_database():
+    """Knowable from the id alone. Asking first spends a query on an answer that
+    cannot change, and made a permanent refusal depend on the database being up."""
+    client = _PlanClient(frames=_frames(3))
+    plan = pv.plan_render(client, 12, "..", 1)
+
+    assert plan["action"] == "refuse"
+    assert plan["code"] == "unusable_plate"
+    assert client.queries["gravi_scans"].calls == 0, "the database was asked anyway"
+
+
+def test_a_keep_carries_what_the_stored_video_holds():
+    """The count the response reports on a keep. Asserted here, against the real
+    planner, because the consumer's own test types the number itself."""
+    client = _PlanClient(frames=_frames(5), row=_recorded(frames=86))
+    plan = pv.plan_render(client, 12, "P7", 1)
+
+    assert plan["action"] == "keep"
+    assert plan["stored_frames"] == 86, "the video's own count is not carried"
 
 
 def test_plan_renders_when_frames_have_arrived_since_the_stored_video():

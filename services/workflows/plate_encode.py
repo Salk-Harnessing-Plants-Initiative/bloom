@@ -16,6 +16,7 @@ import io
 import logging
 import math
 import os
+import tempfile
 import threading
 from contextlib import contextmanager
 
@@ -23,7 +24,7 @@ import numpy as np
 from PIL import Image
 
 from plate_timelapse import PLATE_FPS, annotate, label_for
-from plate_video import first_capture
+from plate_video import first_capture, plan_render
 from plate_video_path import (
     GRAVISCAN_IMAGES_BUCKET,
     GRAVISCAN_VIDEOS_BUCKET,
@@ -39,16 +40,23 @@ logger = logging.getLogger(__name__)
 # legibility do.
 PLATE_VIDEO_WIDTH = 1440
 
-# How many plates may encode at once. Chiefly so forty simultaneous clicks do
-# not saturate the link to storage and make every other request slower — but it
-# is also the multiplier on a render's memory, so it is where a container limit
-# has to be read from. tracemalloc around `prepare_frame` on a 4960x6850
-# source: 18 MB for an 8-bit frame, 170 MB for 16-bit. Four together is under
-# 700 MB, plus Pillow's own decode buffer, which is allocated outside the
-# Python allocator and so is not in those figures. Reducing in integer
-# arithmetic is what holds the 16-bit number down; a full-resolution float copy
-# of the source made the same measurement 578 MB.
-MAX_CONCURRENT_ENCODES = 4
+# How many plates may encode at once. One, so a single render may be sized
+# against the whole container rather than a share of it, which leaves the
+# ceilings below room to be wrong. A queue would serve a refused caller better
+# and is the intended successor; until then the second caller is asked back.
+MAX_CONCURRENT_ENCODES = 1
+
+# The largest frame the graviscan app can produce, plus headroom. Its scan
+# regions are fixed in millimetres and its resolutions are a fixed set, so the
+# largest is the 140x140mm 2-grid region at 1600 dpi: 8818x8818, 519 MB decoded
+# and 124 MB on the wire. tests/unit/test_workflows_single_worker.py checks both
+# against the container limit.
+MAX_FRAME_DECODED_BYTES = 560 * 1024**2
+MAX_FRAME_BYTES = 192 * 1024**2
+
+# Peak resident bytes per source pixel through prepare_frame.
+DEEP_BYTES_PER_PIXEL = 15
+SHALLOW_BYTES_PER_PIXEL = 7
 
 # The modes carrying more than 8 bits per channel, and the full scale they are
 # reduced from. `F` is absent deliberately — see `_to_8bit_rgb`.
@@ -68,7 +76,7 @@ DEEP_MIN_PEAK = DEEP_FULL_SCALE // 2
 
 # BoundedSemaphore rather than Semaphore: a release that was never acquired is
 # a capacity leak in the direction nothing else would notice, and this raises on
-# it instead of quietly granting a fifth slot.
+# it instead of quietly granting a slot past MAX_CONCURRENT_ENCODES.
 _encode_slots = threading.BoundedSemaphore(MAX_CONCURRENT_ENCODES)
 # Per process, so it serialises only within one worker. The object key is
 # derived from the plate and carries no version, so two workers would race to
@@ -120,13 +128,24 @@ def encode_slot(timeout: float | None = None):
     while achieving nothing the client can see.
     """
     if not _encode_slots.acquire(blocking=timeout is not None, timeout=timeout):
-        raise EncoderBusy(
-            f"{MAX_CONCURRENT_ENCODES} plate videos are already encoding; try again shortly"
-        )
+        raise EncoderBusy("another plate video is already encoding; try again shortly")
     try:
         yield
     finally:
         _encode_slots.release()
+
+
+def decoded_bytes(width: int, height: int, mode: str) -> int:
+    """Roughly what this frame will cost in memory, from its header alone."""
+    per_pixel = DEEP_BYTES_PER_PIXEL if mode in DEEP_MODES else SHALLOW_BYTES_PER_PIXEL
+    return width * height * per_pixel
+
+
+def depth_of(mode: str) -> str:
+    """A Pillow mode as bits per channel, for a message someone has to read."""
+    if mode in ("I", "F"):
+        return "32-bit"
+    return "16-bit" if mode in DEEP_MODES else "8-bit"
 
 
 def prepare_frame(image_bytes: bytes, label: str) -> np.ndarray:
@@ -135,6 +154,15 @@ def prepare_frame(image_bytes: bytes, label: str) -> np.ndarray:
     Returns 8-bit RGB, `PLATE_VIDEO_WIDTH` wide, with the label band beneath.
     """
     with Image.open(io.BytesIO(image_bytes)) as image:
+        # Before load(), which is what builds the picture in memory.
+        cost = decoded_bytes(image.width, image.height, image.mode)
+        if cost > MAX_FRAME_DECODED_BYTES:
+            raise FrameTooLarge(
+                f"this plate scanned at {image.width}x{image.height} in "
+                f"{depth_of(image.mode)}, which needs about {cost // 1024**2} MB "
+                f"to render — past the {MAX_FRAME_DECODED_BYTES // 1024**2} MB "
+                "limit. Let the Bloom team know if this plate needs a video"
+            )
         image.load()
         rgb = _to_8bit_rgb(image)
         scaled = _downscale(rgb)
@@ -227,7 +255,17 @@ def _even(image: Image.Image) -> Image.Image:
 
 
 class FrameUnreadable(RuntimeError):
-    """A frame could not be fetched or decoded, and the render must not go on."""
+    """A frame could not be fetched or decoded, and the render must not go on.
+
+    `path` is the object it happened to, carried separately from the message so
+    a caller can be told which frame without being told why. The why is the
+    storage client's own error, which names the internal gateway, the database
+    role and PostgREST's codes — an operator's information, not a caller's.
+    """
+
+    def __init__(self, message: str, path: str | None = None):
+        super().__init__(message)
+        self.path = path
 
 
 class FrameDepthUnsupported(FrameUnreadable):
@@ -239,6 +277,14 @@ class FrameDepthUnsupported(FrameUnreadable):
     Deliberately not a ValueError — the frame loop reads that as a size
     mismatch and would report it as "does not match the rest of the plate".
     """
+
+
+class FrameTooLarge(FrameUnreadable):
+    """The frame is intact; it is too big for one render to hold."""
+
+
+class FrameSizeMismatch(FrameUnreadable):
+    """The frames are intact; this plate holds more than one frame size."""
 
 
 class EncoderBusy(RuntimeError):
@@ -284,8 +330,8 @@ def encode_plate_video(client, frames: list[dict], out_path: str) -> int:
                 # or below the target width keeps its own evened width, so 1439
                 # and 1440 both arrive as themselves. That is this plate's data,
                 # not a fault in the encoder, so it reads as one.
-                raise FrameUnreadable(
-                    f"{path} does not match the rest of the plate: {exc}"
+                raise FrameSizeMismatch(
+                    f"{path} does not match the rest of the plate: {exc}", path
                 ) from exc
             written += 1
         writer.close()
@@ -309,7 +355,7 @@ def _tear_down(writer: VideoWriter, out_path: str) -> Exception | None:
 
     The partial file goes because it is a playable MP4 of however many frames
     got through, indistinguishable from a complete one to anything downstream —
-    and because this container's filesystem is a 512 MB tmpfs, so a run of
+    and because this container's filesystem is a small tmpfs, so a run of
     failures would fill it and then every encode fails.
     """
     closing = None
@@ -329,29 +375,70 @@ def _tear_down(writer: VideoWriter, out_path: str) -> Exception | None:
 
 
 def _fetch_frame(images, path: str, label: str) -> np.ndarray:
-    """One object, downloaded and prepared, or a failure naming it."""
+    """One object, downloaded and prepared, or a failure naming it.
+
+    `path` is `gravi_images.object_path`, which the desktop writes and any
+    signed-in role may also write. The storage client resolves `..` before the
+    request leaves, so an unconfined key reaches other paths on the internal
+    gateway as this service. Only the shape is refused, not the naming: the
+    filename embeds a user-typed experiment name.
+    """
+    if path.startswith("/") or ".." in path.split("/"):
+        raise FrameUnreadable(f"{path} is not a key in this bucket", path)
+
     try:
         data = images.download(path)
     except Exception as exc:
-        raise FrameUnreadable(f"could not download {path}: {exc}") from exc
+        raise FrameUnreadable(f"could not download {path}: {exc}", path) from exc
 
     if not data:
-        raise FrameUnreadable(f"{path} is empty")
+        raise FrameUnreadable(f"{path} is empty", path)
+
+    if len(data) > MAX_FRAME_BYTES:
+        raise FrameTooLarge(
+            f"{path} is {len(data) / 1024**2:.0f} MB, past the "
+            f"{MAX_FRAME_BYTES // 1024**2} MB a plate frame can be",
+            path,
+        )
 
     try:
         return prepare_frame(data, label)
     except FrameDepthUnsupported as exc:
         # Intact, just not reducible. Named, but not called a decode failure.
-        raise FrameDepthUnsupported(f"{path}: {exc}") from exc
+        raise FrameDepthUnsupported(f"{path}: {exc}", path) from exc
+    except FrameTooLarge as exc:
+        raise FrameTooLarge(f"{path}: {exc}", path) from exc
     except Exception as exc:
-        raise FrameUnreadable(f"could not decode {path}: {exc}") from exc
+        raise FrameUnreadable(f"could not decode {path}: {exc}", path) from exc
 
 
 # --- publishing --------------------------------------------------------------
 
 
+class VideoNotStored(RuntimeError):
+    """The encode succeeded; storage would not take the video.
+
+    Its own type because the answer differs from every other failure here: the
+    render is repeatable and nothing was changed, so this is worth retrying.
+    """
+
+    def __init__(self, message: str, key: str | None = None):
+        super().__init__(message)
+        self.key = key
+
+
 class NotRecorded(RuntimeError):
-    """The video is stored but its row was not written."""
+    """The video is stored but its row was not written.
+
+    `key` is the object it concerns, carried separately from the message for
+    the reason `FrameUnreadable.path` is: the message wraps the database
+    client's own error, which names the role and PostgREST's SQLSTATEs, and the
+    caller is not the audience for either.
+    """
+
+    def __init__(self, message: str, key: str | None = None):
+        super().__init__(message)
+        self.key = key
 
 
 class PlateMismatch(RuntimeError):
@@ -406,10 +493,13 @@ def publish_plate_video(
         video = handle.read()
 
     if not video:
-        raise NotRecorded(f"the encoder produced an empty file at {video_path}")
+        raise NotRecorded(f"the encoder produced an empty file at {video_path}", key)
 
     videos = client.storage.from_(GRAVISCAN_VIDEOS_BUCKET)
-    videos.upload(key, video, {"content-type": "video/mp4", "upsert": "true"})
+    try:
+        videos.upload(key, video, {"content-type": "video/mp4", "upsert": "true"})
+    except Exception as exc:
+        raise VideoNotStored(f"{key} could not be stored: {exc}", key) from exc
 
     recorded = {
         "p_experiment_id": experiment_id,
@@ -431,7 +521,48 @@ def publish_plate_video(
         # videos. Reporting success for a video the page cannot find is worse
         # than an error the caller can retry: the object is already stored, so
         # the next attempt overwrites it and records the row.
-        raise NotRecorded(f"{key} was stored but recording it failed: {exc}") from exc
+        raise NotRecorded(f"{key} was stored but recording it failed: {exc}", key) from exc
 
     logger.info("recorded %s: %s frames", key, frame_count)
     return {k.removeprefix("p_"): v for k, v in recorded.items()}
+
+
+# --- the whole render --------------------------------------------------------
+
+
+def render_plate_video(
+    client, experiment_id: int, plate_id: str, wave_number: int | None
+) -> dict:
+    """Decide, encode, store, record. The one call a route makes.
+
+    The plan is taken twice: once to decide, and again once the plate's lock is
+    held. Between those two a concurrent request for the same plate may have
+    rendered it, and re-encoding would overwrite a video identical to the one
+    about to be made — the second look turns that into a `keep`.
+    """
+    plan = plan_render(client, experiment_id, plate_id, wave_number)
+    if plan["action"] != "render":
+        return plan
+
+    # Plate first, so a duplicate request is told about its own plate.
+    with plate_lock(plan["key"]), encode_slot():
+        plan = plan_render(client, experiment_id, plate_id, wave_number)
+        if plan["action"] != "render":
+            return plan
+
+        with tempfile.TemporaryDirectory() as work:
+            # A constant name: the plate id is caller-supplied and would
+            # otherwise reach the filesystem and the ffmpeg command line.
+            video_path = os.path.join(work, "plate.mp4")
+            written = encode_plate_video(client, plan["frames"], video_path)
+            recorded = publish_plate_video(
+                client,
+                plan["key"],
+                video_path,
+                experiment_id=experiment_id,
+                plate_id=plate_id,
+                wave_number=wave_number,
+                frame_count=written,
+            )
+
+    return {**plan, "action": "rendered", "recorded": recorded}

@@ -378,6 +378,47 @@ def test_validator_accepts_real_defaults_plus_fake_secrets(
     )
 
 
+SCHEDULED_JOB_KEYS = (
+    "BACKUP_RCLONE_REMOTE",
+    "BACKUP_RCLONE_DEST_DIR",
+    "BACKUP_STATE_DIR",
+    "BACKUP_MIN_FREE_BYTES",
+)
+
+
+@pytest.mark.parametrize("blanked", SCHEDULED_JOB_KEYS)
+def test_validator_rejects_a_blank_scheduled_job_key(tmp_path, blanked):
+    """Keys read by a scheduled job, not by compose.
+
+    The required list is derived from `${VAR}` references in the compose file,
+    which never mentions these — so nothing checked them. A blank one reaches
+    the job as an empty string rather than as its default, and for
+    BACKUP_STATE_DIR an empty string is the process's working directory.
+    """
+    defaults_text = (REPO_ROOT / ".env.prod.defaults").read_text()
+    assert f"{blanked}=" in defaults_text, f"{blanked} is not in the prod defaults"
+
+    compose_text = COMPOSE_FILE.read_text()
+    referenced = set(re.findall(r"\$\{([A-Z_][A-Z0-9_]*)", compose_text))
+    required = referenced - {"COMPOSE_PROJECT_NAME", "NEXT_PUBLIC_SUPABASE_COOKIE_NAME"}
+    defaults_keys = {
+        line.split("=", 1)[0]
+        for line in defaults_text.splitlines()
+        if line and not line.startswith("#") and "=" in line
+    }
+    appended = "\n".join(f"{k}=fake-{k.lower()}" for k in sorted(required - defaults_keys))
+
+    blanked_text = "\n".join(
+        f"{blanked}=" if line.startswith(f"{blanked}=") else line
+        for line in defaults_text.splitlines()
+    )
+    content = blanked_text.rstrip("\n") + "\n" + appended + "\n"
+
+    result = _run_validator_real_compose(tmp_path, content)
+    assert result.returncode == 1, f"a blank {blanked} was accepted"
+    assert blanked in result.stderr
+
+
 def _run_validator_real_compose(tmp_path: Path, env_content: str) -> subprocess.CompletedProcess:
     """Variant of _run_validator that uses the REAL docker-compose.prod.yml
     instead of a mini fixture. Always appends the EOF marker."""
