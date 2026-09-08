@@ -2025,3 +2025,39 @@ class TestTheFallbackRecoversTheCountsToo:
         )
         assert "7 images copied" in body, body[:300]
         assert "999,999" not in body
+
+
+class TestGitHubCanActuallyLoadThisWorkflow:
+    """A workflow GitHub cannot parse fails silently and notifies nobody.
+
+    The summary step's script grew past GitHub's 21,000-character limit for a
+    single expression. Every push then produced a zero-job run reading
+    "Invalid workflow file … Exceeded max expression length 21000", the
+    Actions API listed the workflow's name as its own file path, and — the
+    part that matters — the 02:17 schedule would never have produced a run at
+    all. Nothing in the suite measured it, and YAML validity does not catch
+    it: the file parses perfectly, GitHub just refuses it.
+    """
+
+    # GitHub's hard cap. The assertion uses a margin rather than the cap
+    # itself, because landing at 20,999 means the next comment breaks
+    # production and this test says nothing until it is too late.
+    MAX_EXPRESSION = 21_000
+    MARGIN = 1_000
+
+    def test_no_step_script_approaches_the_expression_limit(self, parsed: dict):
+        oversized = []
+        for job_name, job_body in parsed["jobs"].items():
+            for step in job_body.get("steps", []):
+                script = step.get("run")
+                if script and len(script) > self.MAX_EXPRESSION - self.MARGIN:
+                    oversized.append(
+                        f"{job_name}/{step.get('name')}: {len(script)} chars"
+                    )
+        assert not oversized, (
+            "GitHub refuses a run: block over "
+            f"{self.MAX_EXPRESSION} characters and the whole workflow then "
+            "fails to load — no schedule, no dispatch, no notification. "
+            f"Over the {self.MAX_EXPRESSION - self.MARGIN} warning line: "
+            + "; ".join(oversized)
+        )

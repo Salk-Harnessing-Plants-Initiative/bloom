@@ -342,30 +342,12 @@ jobs:
         run: |
           set -uo pipefail
 
-          # GitHub runs this as `bash -e {0}`, and every grep below is allowed
-          # to match nothing: a stood-down night prints no `done —` line, a
-          # quiet one prints no `verify:` line. Without `|| true` on each,
-          # pipefail turns that into a non-zero status and errexit kills the
-          # step — a red tick and an EMPTY summary on every night except one
-          # that both copied and verified. That is every night of the seed.
+          # `|| true` on every grep: this runs as `bash -e {0}` with pipefail,
+          # and each of these is allowed to match nothing.
           #
-          # Pulled out of the line the run already prints, so nothing is
-          # recomputed and nothing extra happens on the deploy host:
-          #   done — copied 4211, failed 0, already current 0, skipped 0
-          #   verify: 50 checked, 3 mismatched
-          #
-          # It goes in the headline rather than only the block below because a
-          # bare "succeeded" cannot be told from a week that copied nothing
-          # because the mirror had vanished. "nothing new to copy, 8,013,796
-          # already on Box" says the mirror is intact; "0 copied, 0 already
-          # current" would not.
-          # Anchored for the same reason as the status line below: object
-          # names reach this log, and a name is free text. One image called
-          # `verify: 200 checked, 0 mismatched.png` — a colon guarantees it is
-          # refused, hence logged — made a quiet night, when verification does
-          # not run at all, report "200 verified". Anchoring to timestamp,
-          # level, then the phrase means a name can never match: it only ever
-          # appears once a message has already begun.
+          # Anchored to timestamp, level, then phrase, because object names
+          # reach this log and a name is free text — unanchored, a file called
+          # `verify: 200 checked, 0 mismatched.png` forges a count.
           dry_line="$(grep -oE '^[0-9-]+ [0-9:,]+ [A-Z]+ dry run — would copy [0-9]+, [0-9]+ already current, [0-9]+ skipped' \
             "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
           done_line="$(grep -oE '^[0-9-]+ [0-9:,]+ [A-Z]+ done — copied [0-9]+, failed [0-9]+, already current [0-9]+, skipped [0-9]+' \
@@ -381,19 +363,9 @@ jobs:
           checked="$(printf '%s' "$verify_line" | grep -oE '[0-9]+ checked' | grep -oE '[0-9]+' || true)"
           unverified="$(printf '%s' "$verify_line" | grep -oE '[0-9]+ unverified' | grep -oE '[0-9]+' || true)"
 
-          # The verdict, read from a line only the job can produce.
-          #
-          # This used to search the whole log for English phrases. Object names
-          # are in that log and are partly chosen by whoever uploads the file,
-          # so an image called "box-object-backup: SKIPPED.png" — the colon
-          # guarantees it is refused, hence logged — made a night with
-          # thousands of failed copies render as "skipped, this is expected".
-          # Every branch forged the same way, and a colon in a filename is
-          # ordinary enough to do it by accident.
-          #
-          # Anchored to the start of a line: timestamp, level, then the key. A
-          # name can only appear once a message has begun, so no name can
-          # produce a matching line. `tail -1` because a manual re-run appends.
+          # The verdict, from a line only the job can produce: timestamp,
+          # level, then the key. A name only ever appears once a message has
+          # begun, so none can forge one. `tail -1` — a re-run appends.
           status="$(grep -oE '^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_STATUS=[a-z_]+' \
             "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -1 || true)"
           status="${status##*=}"
@@ -402,27 +374,16 @@ jobs:
           flags=",${flags##*=},"
 
           # No verdict in the log means the ssh pipe died before the run
-          # printed it — which is what a cancel or the job timeout does, on
-          # exactly the runs worth explaining: a deliberate stop that had
-          # already copied and recorded thousands of objects, reported as
-          # FAILED. The run writes the same verdict into its report on the
-          # host BEFORE printing it, so fetch that instead.
+          # printed it — a cancel or the job timeout. The run writes the same
+          # verdict into its report on the host first, so fetch that.
           #
-          # Scoped to the run THIS job started, not to a time window. The run
-          # step stamps "$STATE_DIR/actions-run.started" with its own tag and
-          # the host's clock just before launching, so a report newer than
-          # that stamp, with the stamp still naming this job, is this job's
-          # report and nothing else can be. `-mmin -240` alone accepted any
-          # report from the last four hours — including the seed's, running
-          # in tmux beside a nightly that stood down against its lock, whose
-          # verdict then became this job's headline.
+          # Scoped to THIS job's run by the marker the run step stamps with
+          # its own tag and the host's clock, so the seed's report cannot
+          # become this night's verdict. Both halves evaluated host-side.
           #
-          # Both halves are evaluated on the host, so no clock comparison
-          # between the runner and the server comes into it.
-          #
-          # Guarded on both being set: the step runs under `set -u`, and an
-          # empty host would make ssh try to reach "user@". A missing secret
-          # must degrade to the step-outcome fallback, not kill the summary.
+          # Guarded on both secrets: under `set -u` an empty host would make
+          # ssh reach "user@", and a missing secret must degrade to the
+          # step-outcome fallback rather than kill the summary.
           if [ -z "$status" ] && [ -n "${DEPLOY_USER:-}" ] && [ -n "${DEPLOY_HOST:-}" ]; then
             # Read the marker, then look for a report newer than it. Two
             # plain commands rather than a script on stdin: the runner only
@@ -460,33 +421,24 @@ jobs:
               status="$(printf '%s' "$body" \
                 | grep -oE '\"status\"[[:space:]]*:[[:space:]]*\"[a-z_]+\"' \
                 | head -1 | grep -oE '[a-z_]+\"$' | tr -d '\"' || true)"
-              # The flags too, not only the headline. Recovering the verdict
-              # and losing every notice meant a cancelled night — which during
-              # the seed is every night — reported its result and dropped the
-              # refused-filename notice, the one whose whole justification is
-              # that you get exactly one.
+              # The flags too, or a cancelled night keeps its headline and
+              # drops every notice — including the refused-filename one, whose
+              # whole justification is that you get exactly one.
               #
               # The two ledger flags are never in the report: the upload that
-              # sets them runs after it is written. They reach a human by exit
-              # code 6 instead, which notifies whatever the summary renders.
+              # sets them runs after it is written.
               flags="$(printf '%s' "$body" \
                 | tr -d ' \n' \
                 | grep -oE '\"flags\":\[[^]]*\]' \
                 | grep -oE '[a-z_]+' | grep -v '^flags$' | paste -sd, - || true)"
               flags=",${flags},"
-              # The counts too. Recovering the verdict and leaving these empty
-              # made the night the report route EXISTS for — the seed stopped
-              # by the job's time limit — render "It stopped before copying
-              # anything", against a report recording four hundred thousand
-              # copies. On a clean run recovered after a pipe blip it rendered
-              # "(no counts in the log — check it)", the phrase reserved for a
-              # log that is malformed.
+              # The counts too, or the night this route exists for — a seed
+              # stopped by the time limit — renders "stopped before copying
+              # anything" against a report holding 400,000 copies.
               #
-              # `tr -d` first so the values are found whatever indentation
-              # json.dumps used, then a digits-only match: these are numbers
-              # from the job's own report, and anything else is left empty so
-              # the branches below fall back exactly as they would with no
-              # report at all.
+              # `tr -d` first so indentation cannot hide a value; digits only,
+              # so anything else stays empty and the branches below fall back
+              # as they would with no report.
               stats="$(printf '%s' "$body" | tr -d ' \n')"
               num() {
                 printf '%s' "$stats" | grep -oE "\"$1\":[0-9]+" \
@@ -738,18 +690,9 @@ jobs:
             echo
             echo '### This run'
             echo '```'
-            # The level is the THIRD field, not the second: asctime is
-            # "2026-08-31 12:08:16,440" and contains a space, so an anchor of
-            # ^\S+ stops at the date and never reaches INFO. That pattern
-            # matched nothing, on every run.
-            #
-            # `||` binds to the last command in a pipeline, and `tail` exits 0
-            # on empty input, so the fallback could never fire either — the
-            # block rendered as an empty fence. Capture first, then test.
-            #
-            # `|| true` for the same reason as the greps above: a run that
-            # died at preflight matches none of these prefixes, and under
-            # `bash -e` that killed the step before the fallback below.
+            # The level is the THIRD field: asctime contains a space, so an
+            # anchor of ^\S+ never reaches INFO. Capture first then test,
+            # because `tail` exits 0 on empty input.
             summary="$(grep -E '^[0-9-]+ [0-9:,]+ (INFO|WARNING|ERROR) (done —|verify:|listed|preflight|batch:)' \
               "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -20 || true)"
             if [ -n "$summary" ]; then
