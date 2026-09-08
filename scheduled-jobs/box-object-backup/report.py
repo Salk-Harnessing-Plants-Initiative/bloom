@@ -48,49 +48,31 @@ class RunReport:
     finished_at: datetime
     outcome: str
     box_root: str
-    # Where the bytes came FROM. The restore procedure needs both to rebuild a
-    # MinIO key, and said they were "recorded in every run report" — they were
-    # not. They live in .env.prod on the deploy host, which is the machine a
-    # restore assumes is gone.
+    # Where the bytes came from. A restore needs both to rebuild a MinIO key.
     minio_bucket: str = ""
     minio_prefix: str = ""
     stats: dict = field(default_factory=dict)
     failures: list[str] = field(default_factory=list)
-    # Objects that are NOT on Box by the two routes that are not a copy
-    # failure: refused before the attempt because Box cannot store the name,
-    # and found missing by verification after the copy reported success. A
-    # count alone left the identity of a missing object nowhere but a GitHub
-    # Actions log under retention — and this file exists precisely because
-    # /var/lib and a rotating log cannot answer "which one?" later.
+    # Not on Box for a reason that is not a copy failure: an unstorable name,
+    # or missing when verification looked.
     skips: list[str] = field(default_factory=list)
-    # Objects Box cannot store BY NAME, listed separately from `skips`.
-    # Sharing one capped list meant collisions — which are recoverable by a
-    # rename either side — crowded out the name-skips, which are not: the
-    # watermark advances past them, so this file is the only record that they
-    # exist. 300 collisions ahead of 50 bad names left 0 of the 50 named.
+    # Names Box cannot store. Their own capped list, so a flood of collisions
+    # cannot crowd out the ones nothing can fix.
     name_skips: list[str] = field(default_factory=list)
-    # Rows Postgres lists whose bytes are not in MinIO. Their own list: they
-    # are permanently unbackupable like a refused name, but the remedy is
-    # different — a rename cannot help, and someone has to decide whether the
-    # row should still exist.
+    # Rows Postgres lists whose bytes are not in MinIO. Nothing here can fix
+    # one; someone has to decide whether the row should exist.
     source_gone: list[str] = field(default_factory=list)
     verify_failures: list[str] = field(default_factory=list)
-    # The run's own verdict, in the same closed vocabulary the workflow
-    # branches on. It is here as well as in the log because the log travels
-    # back over an ssh pipe the workflow holds open, and a cancelled or
-    # timed-out job kills that pipe before the verdict is printed — on exactly
-    # the runs most worth explaining. This file is written on the host first,
-    # so it survives the connection dying.
+    # The run's verdict, in the vocabulary the workflow branches on. Written on
+    # the host, so it survives the ssh pipe dying.
     status: str = ""
-    # The flags known when the report was written. The two ledger flags are
-    # set by an upload that has not run yet, so they are never here; they
-    # reach a human through the exit code instead.
+    # Flags known at write time. The two ledger flags are set later, so they
+    # never appear here — the exit code carries them instead.
     flags: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         listed = self.failures[:MAX_REPORTED_FAILURES]
-        # The copier stops collecting paths past its own ceiling, so the list
-        # cannot be trusted for the total — `stats["failed"]` counts them all.
+        # The copier stops collecting paths at its ceiling; stats holds the total.
         total_failures = self.stats.get("failed", len(self.failures))
         skips = self.skips[:MAX_REPORTED_FAILURES]
         total_skips = self.stats.get("skipped", len(self.skips))
