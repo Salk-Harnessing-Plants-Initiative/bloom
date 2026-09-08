@@ -2,11 +2,13 @@ name: Nightly Box object mirror
 
 # Mirrors Supabase Storage objects (the image bytes in MinIO) to Box, nightly.
 #
-# Companion to weekly-backup.yml, which dumps Postgres. Neither is a restore on
-# its own: the dump carries the `storage.objects` rows, this carries the bytes.
+# This is the BYTES half of a backup. A full restore also needs the
+# `storage.objects` rows, and the job that dumps Postgres is separate work
+# that is NOT in this repository yet — so today this mirror is a hedge
+# against losing MinIO, not against losing the deployment.
+#
 # Nightly rather than weekly so that at most a day's scans exist only in
-# MinIO, rather than up to a week's. It also runs ahead of the Sunday dump on
-# the night before, so every row in that dump has bytes already on Box.
+# MinIO, rather than up to a week's.
 #
 # The work happens on the deploy host: this workflow SSHes in and runs
 # scheduled-jobs/box-object-backup/backup_objects.py there, the same way
@@ -16,8 +18,8 @@ name: Nightly Box object mirror
 #
 # The job UPLOADS ONLY. It never deletes anything on Box.
 #
-# Three things carried over from refresh-cyl-experiment-trait-counts.yml and
-# weekly-backup.yml, all of which were learned the hard way:
+# Three things carried over from refresh-cyl-experiment-trait-counts.yml, all
+# of which were learned the hard way:
 #
 #   0. The FIRST scheduled run with an empty ledger has no watermark to work
 #      from, so it enumerates everything — all 8M objects — inside a job with a
@@ -70,8 +72,8 @@ permissions:
   contents: read
 
 concurrency:
-  # Its own group, NOT deploy-bloom and NOT weekly-backup: a queued deploy must
-  # not cancel a mirror, and the mirror must not hold up either.
+  # Its own group, and specifically NOT deploy-bloom: a queued deploy must not
+  # cancel a mirror, and the mirror must not hold up a deploy either.
   group: box-object-backup-production
   cancel-in-progress: false
 

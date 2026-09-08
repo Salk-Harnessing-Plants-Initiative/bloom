@@ -63,13 +63,16 @@ neither is a complete restore on its own. See "Restoring" below.
 
 `.github/workflows/box-object-backup.yml` runs it: GitHub Actions triggers on
 a schedule, SSHes to the deploy host, and the work happens there — the same
-shape as `weekly-backup.yml` and `deploy.yml`. There is nothing to install on
-the server beyond the prerequisites above.
+shape as `deploy.yml`. There is nothing to install on the server beyond the
+prerequisites above.
 
 Every night at 02:17 UTC, so at most a day's scans exist only in MinIO rather
-than up to a week's. It still lands ahead of the Sunday Postgres dump, so every
-row in that
-dump has bytes already on Box behind it.
+than up to a week's.
+
+**This is the bytes half of a backup, and only that half.** A full restore also
+needs the `storage.objects` rows, and the job that dumps Postgres is separate
+work not in this repository yet. Until it lands, this mirror is a hedge against
+losing MinIO — not against losing the deployment.
 
 Actions was chosen over a systemd timer because a failed run then surfaces
 through notifications people already read, whereas `systemctl --failed` only
@@ -121,7 +124,7 @@ mistake the scheduled job was rewritten to stop making:
 
 ```bash
 sudo -i -u bloom-deploy
-DEPLOY=/path/to/deploy/tree
+export DEPLOY=/path/to/deploy/tree   # exported: the seed runs inside tmux
 while IFS='=' read -r key value; do
     [ -n "$key" ] && export "$key=$value"
 done < <(grep -E '^(BACKUP_[A-Z_]+|POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' \
@@ -135,7 +138,7 @@ not carry the `BACKUP_*` keys yet, so read the credentials from prod and supply
 the four backup settings by hand:
 
 ```bash
-PROD=/path/to/prod/deploy/tree   # $PROD_DEPLOY_PATH
+export PROD=/path/to/prod/deploy/tree   # $PROD_DEPLOY_PATH
 while IFS='=' read -r key value; do
     [ -n "$key" ] && export "$key=$value"
 done < <(grep -E '^(POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' "$PROD/.env.prod")
@@ -178,9 +181,18 @@ minutes, instead of on night three of a seed. If it fails to authenticate, run
 else is refused before it reads a row. That is deliberate: the ledger tracks
 which objects are copied, not where, so against a different folder it would
 report millions of objects as already backed up while that folder stayed
-empty. If the mirror genuinely has to move, move the folder on Box and keep
-the recorded value, or point `BACKUP_STATE_DIR` at a new directory and seed
-the new location from scratch.
+empty. Three ways out, cheapest first:
+
+- **The rclone remote was recreated under a different name.** The recorded
+  value is `<remote>:<root>`, so `box2:...` does not match `box:...` even
+  though it is the same Box account and the same folder. Name the remote `box`
+  again in `rclone config`, or set `BACKUP_BOX_REMOTE` to whatever it is now
+  and move the folder to match. This is the likeliest trip on a rebuilt host.
+- **The root was mistyped.** Correct `BACKUP_BOX_ROOT`.
+- **The mirror genuinely has to move.** Move the folder on Box and keep the
+  recorded value, or point `BACKUP_STATE_DIR` at a new directory and seed the
+  new location from scratch — that is a full re-seed, so only do this when the
+  destination really is new.
 
 **On a rebuilt host, restore the ledger before step 2.** Step 1 is a dry run
 and copies nothing, but step 2 copies twenty objects, and a run that copies
@@ -197,9 +209,20 @@ working hours:
 
 ```bash
 tmux new -s box-seed
+# Re-run the export block above INSIDE the session before this command.
+# When a tmux server is already running, a new session's shell inherits the
+# SERVER's environment, not the one you just set up — so BACKUP_*,
+# MINIO_ROOT_* and $DEPLOY may all be missing in here. Every one of them
+# fails loudly rather than silently, but you find out four hours in.
 python3 "$DEPLOY/scheduled-jobs/box-object-backup/backup_objects.py" \
     --env prod --full --limit 500000 --verify 50
 ```
+
+**Seed until a chunk records `ok`.** Every `--limit`-truncated run is recorded
+`partial` on purpose, and only an `ok` run sets the watermark. Promote to
+`main` after a truncated chunk and the first scheduled night still has no
+watermark, so it enumerates all eight million rows inside the 240-minute job.
+The *Confirming it stopped cleanly* query below is how you check.
 
 `--full` ignores the watermark; `--limit` caps one night's work. A run
 stopped by `--limit` is recorded `partial` on purpose, so it never becomes the
@@ -410,11 +433,13 @@ cancel. Normally the run prints it and the workflow reads it off the log — but
 the log travels back over an ssh pipe the workflow holds open, and cancelling
 or timing out the job kills that pipe before the last line is printed. So the
 run also writes the verdict into its report on the host, *before* printing it,
-and the summary falls back to fetching that over a fresh connection. It looks
-only at reports written in the last 240 minutes — the job's own timeout —
-evaluated on the host, so no clock difference between runner and server can
-confuse tonight's report with last night's. If neither route produces one, the
-step's own outcome decides, as before.
+and the summary falls back to fetching that over a fresh connection. It accepts only a report belonging to THIS run: the run step stamps a marker
+naming its own job id and the host's clock just before launching, and the
+summary reads that marker, checks it still names this job, and looks only for
+reports written after it. Both halves are evaluated on the host, so no clock
+difference between runner and server enters into it, and a seed running in
+tmux beside a nightly cannot hand over its verdict. If neither route produces
+one, the step's own outcome decides, as before.
 
 **The summary reads a status line, not the log's prose.** The job prints
 `BOX_BACKUP_STATUS=` and `BOX_BACKUP_FLAGS=` at the end of a run, and the
@@ -624,6 +649,11 @@ both halves, in this order:
 
 1. Restore the Postgres dump. That brings back `storage.objects`, including
    each object's `version`.
+
+   **There is no scheduled Postgres dump yet** — that job is separate work and
+   is not in this repository. Until it exists, step 1 depends on whatever
+   database backup you have, and this procedure cannot be completed from the
+   object mirror alone.
 2. For each row, upload the Box copy back to MinIO at
    `<BACKUP_MINIO_BUCKET>/<BACKUP_MINIO_PREFIX>/<bucket_id>/<name>/<version>`
    — with the deployed defaults, that is
@@ -733,7 +763,7 @@ environment mirrored, so `.env.staging.defaults` deliberately carries no
 | `BACKUP_BOX_ROOT` | `Bloom-Backups/BloomV2-Data-Backup/prod/storage` | Folder on Box to mirror into |
 | `BACKUP_WORKERS` | `8` | Concurrent copies; lower it if Box throttles hard |
 | `BACKUP_BWLIMIT` | *(unset)* | rclone bandwidth cap, e.g. `20M` |
-| `BACKUP_STATE_DIR` | `/var/lib/bloom-box-object-backup` | Ledger location. Not in the env file — a code default. The workflow's cancel step hardcodes this path, so setting it would stop that step finding the run. |
+| `BACKUP_STATE_DIR` | `/var/lib/bloom-box-object-backup` | Ledger location. Not in the env file — a code default. The workflow declares the same path once and passes it to all three of its ssh sessions; if `.env.prod` sets this to anything else the run **refuses to start** (exit 2) rather than let the cancel step and the summary watch an empty directory. The comparison is exact, so a trailing slash counts as different. |
 | `BACKUP_RC_PORT` | `5572` | Loopback port for the rclone daemon. Not in the env file — a code default. |
 
 `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` / `POSTGRES_USER` / `POSTGRES_DB`

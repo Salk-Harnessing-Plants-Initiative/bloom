@@ -571,7 +571,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             "This run changed NOTHING to compensate: the ledger still records "
             "them as mirrored, so later runs will skip them and this warning "
             "will not repeat. Putting them back needs a person — see "
-            "'What verification does, and does not, prove' in the wiki. The "
+            "'What verification does, and does not, prove' in the wiki. "
             "The run fails (exit 4) so this reaches you, but the watermark "
             "is NOT held: holding it bought exactly one night — the next run "
             "finds the object already current, never re-checks it, records "
