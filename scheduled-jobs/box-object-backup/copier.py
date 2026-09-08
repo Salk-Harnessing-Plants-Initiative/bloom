@@ -34,6 +34,11 @@ PROGRESS_EVERY = 500
 # above what a report lists, so the cap is never the reason a report is short.
 MAX_TRACKED_FAILURES = 5_000
 
+# Printed for an object Postgres lists that MinIO does not hold. Its own line
+# and its own count, because it is not a failure that retrying can clear —
+# nothing can copy bytes that are not there.
+SOURCE_GONE_MARKER = "source object is gone:"
+
 
 def copy_all(
     client: RcloneRC,
@@ -44,6 +49,7 @@ def copy_all(
     ledger: Ledger,
     workers: int,
     failures: list[str] | None = None,
+    gone: list[str] | None = None,
     succeeded: "VerifyReservoir | None" = None,
 ) -> tuple[int, int]:
     """Copy every planned object, N at a time, recording each success.
@@ -58,7 +64,7 @@ def copy_all(
     """
     src_fs = minio.fs()
     lock = threading.Lock()
-    state = {"copied": 0, "failed": 0, "bytes": 0}
+    state = {"copied": 0, "failed": 0, "bytes": 0, "gone": 0}
     started = time.monotonic()
 
     def worker(obj: lib.StorageObject) -> None:
@@ -72,6 +78,33 @@ def copy_all(
         try:
             copy_one(client, src_fs, lib.source_remote(obj, minio.prefix), box_fs, dst, obj)
         except RcloneError as exc:
+            # Ask MinIO whether the object is there at all before calling this
+            # a failure. Postgres can hold a row whose bytes left MinIO long
+            # ago — `preflight_source` names that case and tolerates it — and
+            # such an object can never be copied by anything. Counted as a
+            # failure it holds the watermark for ever: no run is ever recorded
+            # clean, so every later night re-reads all eight million rows
+            # inside a 240-minute job. That is the same cost this job already
+            # refuses to pay for a filename Box cannot store, and it is the
+            # same reason: nothing on this side can fix it.
+            #
+            # Established by asking, not by matching the error text. Guessing
+            # from a message would eventually classify a real failure as a
+            # missing object and advance the watermark past something that
+            # should have been retried. One extra call, only on failure.
+            if _source_is_gone(
+                client, src_fs, lib.source_remote(obj, minio.prefix), exc
+            ):
+                logger.error(
+                    "%s %s: it is in storage.objects but not in MinIO, so "
+                    "nothing can copy it. NOT backed up.",
+                    SOURCE_GONE_MARKER, lib.loggable(obj.storage_path),
+                )
+                with lock:
+                    state["gone"] += 1
+                    if gone is not None and len(gone) < MAX_TRACKED_FAILURES:
+                        gone.append(obj.storage_path)
+                return
             logger.error(
                 "failed %s: %s",
                 lib.loggable(obj.storage_path), lib.loggable(str(exc)),
@@ -103,7 +136,7 @@ def copy_all(
     with ThreadPoolExecutor(max_workers=max(1, min(workers, len(plan.copies)))) as pool:
         list(pool.map(worker, plan.copies))
     ledger.commit()
-    return state["copied"], state["failed"]
+    return state["copied"], state["failed"], state["gone"]
 
 
 class VerifyReservoir:
@@ -166,6 +199,35 @@ class VerifyReservoir:
 
     def __len__(self) -> int:
         return len(self._heap)
+
+
+# What rclone and MinIO say when the key does not exist. Only a pre-filter —
+# the stat below is what actually decides — so a phrase appearing in some
+# unrelated error costs one extra call and nothing else.
+MISSING_MARKERS = ("not found", "404", "no such", "nosuchkey")
+
+
+def _source_is_gone(client, src_fs: str, src_remote: str, exc: Exception) -> bool:
+    """Is the object genuinely absent from MinIO, or did the copy just fail?
+
+    BOTH signals are required, because being wrong here is expensive in each
+    direction. Call a real failure "gone" and the watermark advances past an
+    object that should have been retried — the run says clean and the object
+    is not on Box. Call a genuinely absent object a failure and the watermark
+    never moves again.
+
+    So the error has to say the key is missing AND a direct stat has to agree.
+    Only a definite `None` counts: a stat that itself errors proves nothing,
+    since the daemon may be the thing that is broken, and treating "I could
+    not ask" as "it is not there" is the first mistake in a different form.
+    """
+    lowered = str(exc).lower()
+    if not any(marker in lowered for marker in MISSING_MARKERS):
+        return False
+    try:
+        return client.stat(src_fs, src_remote) is None
+    except RcloneError:
+        return False
 
 
 def copy_one(

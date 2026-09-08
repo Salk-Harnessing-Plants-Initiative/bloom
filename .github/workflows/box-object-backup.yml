@@ -684,6 +684,23 @@ jobs:
               echo "> The report on Box is the durable record — they are"
               echo "> listed under \`name_skips\`, apart from the collisions."
             fi
+            # Additive, like the refused-filename notice and for the same
+            # reason: nothing on this side can ever copy these, so the run
+            # does not hold the watermark for them and this is the one night
+            # that says so.
+            if has_flag source_gone; then
+              echo
+              echo "> **Some rows in the database have no image behind them.**"
+              echo "> Postgres lists the object but MinIO does not hold the"
+              echo "> bytes, so there is nothing to copy and no run can ever"
+              echo "> back these up. That is usually a delete that removed the"
+              echo "> file and left the row, and it may mean the image is"
+              echo "> already lost rather than merely unmirrored."
+              echo ">"
+              echo "> They are listed under \`source_gone\` in the run report"
+              echo "> under \`_runs/\` on Box. Someone has to decide whether"
+              echo "> each row should still exist — nothing here will."
+            fi
             # The mirror image of the notice above, and it must never be
             # merged with it: there, the host has the good ledger and Box is
             # behind. Here Box has the good one. An operator told to "fix a

@@ -344,6 +344,29 @@ durable check — a journal rotates and an Actions log expires:
 rclone cat "box:$BACKUP_BOX_ROOT/_runs/<latest>.json" | jq '.stats.skipped, .skips'
 ```
 
+### Rows with no image behind them
+
+Postgres can list an object whose bytes are not in MinIO — usually a delete
+that removed the file and left the row behind. Nothing can copy bytes that are
+not there, so the job does not treat it as a failed copy: it logs
+`source object is gone:`, names it under `source_gone` in the run report, and
+lets the watermark move.
+
+That is the same treatment, for the same reason, as a filename Box cannot
+store. Counted as a failure it would hold the watermark for good — no run
+would ever be recorded clean, so every night would re-read all eight million
+rows inside a 240-minute job, and nothing in the job could ever clear it.
+
+Two things must agree before an object is classed this way: the copy error has
+to say the key is missing, **and** a direct lookup against MinIO has to confirm
+it is absent. A lookup that cannot answer counts as an ordinary failure — "I
+could not ask" is not "it is not there", and getting that wrong would move the
+watermark past an object that was never copied.
+
+**It is not recorded as backed up.** No ledger row is written, so nothing later
+claims it is on Box. Someone has to decide whether the database row should
+still exist; this job will not.
+
 ## Monitoring
 
 The run summary in the Actions tab is the first place to look — it says
@@ -506,8 +529,10 @@ was never asked for, non-zero means it was asked and Box did not answer.
 ### What verification does, and does not, prove
 
 After copying, `--verify N` asks Box directly whether N of the objects this run
-copied are present and the expected size. A non-zero mismatch count records the
-run `partial`, which holds the watermark.
+copied are present and the expected size. A non-zero mismatch count exits 4 and
+does **not** hold the watermark — see *A verification mismatch (exit 4) does
+NOT hold the watermark* above. The objects are named under `verify_failures`
+in that night's run report, and that night is the only notification.
 
 **Only two answers count against the backup:** Box does not have the object, or
 has it at a different size. A stat call that fails outright — a 429, a dropped

@@ -126,6 +126,7 @@ FLAG_VALUES = (
     "verify_incomplete",
     "ledger_stale",
     "ledger_ahead",
+    "source_gone",
 )
 
 
@@ -209,6 +210,8 @@ def _flags_for(totals: "Totals") -> tuple:
         flags.append("verify_incomplete")
     if totals.ledger_flag:
         flags.append(totals.ledger_flag)
+    if totals.source_gone:
+        flags.append("source_gone")
     return tuple(flags)
 
 
@@ -513,6 +516,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
                 run_id=run_id, started_at=started_at, outcome=outcome,
                 stats=stats, failures=totals.failures,
                 skips=totals.skips, name_skips=totals.name_skips,
+                source_gone=totals.gone,
                 verify_failures=totals.verify_failures,
                 status=verdict, flags=report_flags,
             )
@@ -637,11 +641,18 @@ class Totals:
     # changes no exit code — it only stops `verify_checked` claiming them.
     verify_unverified: int = 0
     verify_pool: object = None
+    # Rows Postgres lists whose bytes are not in MinIO. Counted apart from
+    # `failed` on purpose: nothing can ever copy them, so counting them as
+    # failures would hold the watermark for good and make every later night
+    # re-read the whole table. Same treatment, and the same reason, as a
+    # filename Box cannot store.
+    source_gone: int = 0
     # Which way the ledger upload went, if it did not go cleanly. Set by
     # publish_ledger, read by _flags_for — the two conditions are
     # opposites and the summary must tell them apart.
     ledger_flag: str | None = None
     failures: list = field(default_factory=list)
+    gone: list = field(default_factory=list)
     # Objects refused before any copy was attempted, and objects the check
     # found missing from Box. Both end up in the run report on Box, because
     # both name an object that is NOT backed up and the job log is a GitHub
@@ -830,6 +841,7 @@ def publish_report(
     failures: list,
     skips: list | None = None,
     name_skips: list | None = None,
+    source_gone: list | None = None,
     verify_failures: list | None = None,
     status: str = "",
     flags: tuple = (),
@@ -858,6 +870,7 @@ def publish_report(
         stats=stats,
         skips=list(skips or []),
         name_skips=list(name_skips or []),
+        source_gone=list(source_gone or []),
         verify_failures=list(verify_failures or []),
         status=status,
         flags=list(flags),
@@ -1057,13 +1070,15 @@ def copy_manifest(
         logger.info(
             "batch: %d object(s), %s", len(plan.copies), lib.format_bytes(plan.total_bytes)
         )
-        copied, failed = copy_all(
+        copied, failed, gone = copy_all(
             client, plan, minio, box_fs, args.box_root, ledger, args.workers,
             failures=totals.failures,
+            gone=totals.gone,
             succeeded=totals.verify_pool,
         )
         totals.copied += copied
         totals.failed += failed
+        totals.source_gone += gone
         # The reservoir is offered every successful copy inside copy_all.
 
 

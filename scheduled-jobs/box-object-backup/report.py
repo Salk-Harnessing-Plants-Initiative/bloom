@@ -69,6 +69,11 @@ class RunReport:
     # watermark advances past them, so this file is the only record that they
     # exist. 300 collisions ahead of 50 bad names left 0 of the 50 named.
     name_skips: list[str] = field(default_factory=list)
+    # Rows Postgres lists whose bytes are not in MinIO. Their own list: they
+    # are permanently unbackupable like a refused name, but the remedy is
+    # different — a rename cannot help, and someone has to decide whether the
+    # row should still exist.
+    source_gone: list[str] = field(default_factory=list)
     verify_failures: list[str] = field(default_factory=list)
     # The run's own verdict, in the same closed vocabulary the workflow
     # branches on. It is here as well as in the log because the log travels
@@ -113,6 +118,8 @@ class RunReport:
             "skips": skips,
             "name_skips": self.name_skips[:MAX_REPORTED_FAILURES],
             "name_skips_truncated": len(self.name_skips) > MAX_REPORTED_FAILURES,
+            "source_gone": self.source_gone[:MAX_REPORTED_FAILURES],
+            "source_gone_truncated": len(self.source_gone) > MAX_REPORTED_FAILURES,
             "skips_truncated": total_skips > len(skips),
             "verify_failures": self.verify_failures[:MAX_REPORTED_FAILURES],
         }

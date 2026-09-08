@@ -78,8 +78,20 @@ def ledger(tmp_path):
 
 
 def run_copy(client, objects, ledger, box_root="Bloom-Backups/prod", workers=2):
+    """(copied, failed) — the two most tests are about.
+
+    `copy_all` also returns the count of rows whose bytes are not in MinIO;
+    `run_copy_full` is for the tests that care about that third number.
+    """
+    copied, failed, _gone = run_copy_full(client, objects, ledger, box_root, workers)
+    return copied, failed
+
+
+def run_copy_full(client, objects, ledger, box_root="Bloom-Backups/prod", workers=2, **kw):
     plan = build_plan(objects, ledger.copied_versions())
-    return copier.copy_all(client, plan, MINIO, BOX_FS, box_root, ledger, workers)
+    return copier.copy_all(
+        client, plan, MINIO, BOX_FS, box_root, ledger, workers, **kw
+    )
 
 
 # ---------- what actually gets sent ----------
@@ -188,6 +200,10 @@ def test_retries_stop_at_the_attempt_cap(ledger):
 def test_a_permanent_error_is_not_retried(ledger):
     key = f"images/exp-42/frame.png/{VERSION}"
     client = FakeRclone({key: [RcloneError("404 not found", retryable=False)]})
+    # The source IS there. A 404 whose object exists is a real failure, and it
+    # must stay one: "the error said not found" alone would let a bad night
+    # walk the watermark past objects that were never copied.
+    client.stats_by_path[key] = {"Size": 100}
     copied, failed = run_copy(client, [obj()], ledger)
     assert (copied, failed, len(client.calls)) == (0, 1, 1)
 
@@ -2083,6 +2099,60 @@ class TestTheLedgerIsCopiedToBox:
         with pytest.raises(lib.BackupError, match="different place on Box"):
             job.run_locked(moved, tmp_path)
 
+    def test_a_row_with_no_image_behind_it_leaves_the_run_clean(
+        self, harness, monkeypatch, caplog
+    ):
+        """Driven end to end, because the damage is in what the run RECORDS.
+
+        Folding the count back into `totals.failed` leaves every unit test
+        green — and makes `run_outcome` return `partial`, so no run is ever
+        recorded `ok`, `last_successful_run()` stays None, and every night
+        re-reads all eight million rows for ever. Only a whole run shows it.
+        """
+        state, tmp_path = harness
+        caplog.set_level(logging.INFO)
+        dead = "storage-single-tenant/images/exp-42/a.png/v1"
+        # Absent from MinIO, so the confirming stat says so.
+        state["missing"].add(dead)
+        original = state["client"].copy_file
+
+        def copy(src_fs, src_remote, dst_fs, dst_remote):
+            if src_remote == dead:
+                raise RcloneError("404 not found", retryable=False)
+            return original(src_fs, src_remote, dst_fs, dst_remote)
+
+        monkeypatch.setattr(state["client"], "copy_file", copy)
+        # The copy loop takes the client `wait_for_daemon` returns, which the
+        # harness builds fresh — patching `state["client"]` alone reaches the
+        # report and ledger uploads and NOTHING in the copy path, so the dead
+        # row was never actually hit and every assertion below passed on a run
+        # where nothing went wrong.
+        monkeypatch.setattr(
+            job, "wait_for_daemon", lambda daemon, attempts=30: state["client"]
+        )
+        code = job.run_locked(
+            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
+        )
+        assert code == 0, f"one dead row failed the whole run (exit {code})"
+        led = Ledger.open(str(tmp_path / "ledger.db"))
+        assert [r[0] for r in led.conn.execute("SELECT outcome FROM runs")] == ["ok"]
+        assert led.last_successful_run() is not None, (
+            "the watermark never engages, so every night re-reads the table"
+        )
+        assert copier.SOURCE_GONE_MARKER in caplog.text, (
+            "the dead row was never reached, so this proves nothing"
+        )
+        assert f"{job.STATUS_KEY}=ok" in caplog.text
+        assert f"{job.FLAGS_KEY}=source_gone" in caplog.text
+        # It is NOT recorded as backed up — the run stopped chasing it, which
+        # is not the same as believing it is on Box.
+        assert led.copied_versions().get(("images", "exp-42/a.png")) is None
+        # And the object it COULD copy still got copied.
+        assert any(
+            "b.png" in dst
+            for _, _, dst in TestRunLockedWiresItsPartsTogether().object_copies(state)
+        ), "the healthy object beside the dead row was not copied"
+
     def test_a_stopped_night_whose_ledger_upload_failed_still_says_stopped(
         self, harness, monkeypatch, caplog
     ):
@@ -3143,3 +3213,126 @@ class TestConfigIsCheckedBeforeTheEightMillionRowRead:
         job.run_locked(args, tmp_path)
         assert calls == ["manifest"], "the dry run never read the table"
         assert Ledger.open(str(tmp_path / "ledger.db")).destination() is None
+
+
+class TestARowWithNoImageBehindIt:
+    """`storage.objects` can list an object MinIO does not hold.
+
+    `preflight_source`'s docstring names the case — "a row whose bytes left
+    MinIO years ago" — and tolerates it there. In the copy path it used to
+    count as an ordinary failure, and any failure records the run `partial`,
+    so no run was ever recorded clean. One such row, present before the seed's
+    first clean pass, means the watermark never engages at all: every night
+    re-reads all eight million rows inside a 240-minute job and exits 1, for
+    ever, and nothing in the job can clear it.
+
+    That is the identical cost this job already refuses to pay for a filename
+    Box cannot store, for the identical reason: nothing on this side can fix
+    it. So it gets the identical treatment — named, reported, watermark moves.
+    """
+
+    KEY = f"images/exp-42/frame.png/{VERSION}"
+
+    def gone_client(self):
+        """A copy that 404s, and a source stat that confirms it is absent."""
+        return FakeRclone({self.KEY: [RcloneError("404 not found", retryable=False)]})
+
+    def test_it_is_not_counted_as_a_failure(self, ledger):
+        copied, failed, gone = run_copy_full(self.gone_client(), [obj()], ledger)
+        assert (copied, failed, gone) == (0, 0, 1), (
+            "a row with no bytes behind it was counted as a failed copy"
+        )
+
+    def test_the_run_can_still_be_clean(self, ledger):
+        """The whole point: it must not hold the watermark.
+
+        `run_outcome` is what decides whether this run may become the
+        watermark, and it is driven by `failed`.
+        """
+        _copied, failed, gone = run_copy_full(self.gone_client(), [obj()], ledger)
+        assert gone == 1
+        assert job.run_outcome(
+            crashed=False, failed=failed, copied=0, limit=None,
+            bucket_scoped=False, stopped=False, collisions=0,
+        ) == "ok", "one dead row freezes the watermark for good"
+
+    def test_it_is_named_so_a_person_can_act(self, ledger, caplog):
+        caplog.set_level(logging.ERROR)
+        names = []
+        run_copy_full(self.gone_client(), [obj()], ledger, gone=names)
+        assert names == ["images/exp-42/frame.png"]
+        assert copier.SOURCE_GONE_MARKER in caplog.text
+        assert "not in MinIO" in caplog.text
+
+    def test_it_is_not_recorded_as_copied(self, ledger):
+        """It is NOT on Box, so the ledger must not claim it is.
+
+        This is the difference between "we stopped chasing it" and "we think
+        it is backed up" — the second would survive into a restore.
+        """
+        run_copy_full(self.gone_client(), [obj()], ledger)
+        assert ledger.copied_versions() == {}
+
+    def test_an_error_that_says_not_found_but_is_there_is_still_a_failure(
+        self, ledger
+    ):
+        """Both signals are required, and this is the dangerous direction.
+
+        Trusting the message alone would let a run advance the watermark past
+        an object that was never copied and is still in MinIO — a silent
+        hole in the mirror, which is worse than a stuck watermark.
+        """
+        client = self.gone_client()
+        client.stats_by_path[self.KEY] = {"Size": 100}
+        copied, failed, gone = run_copy_full(client, [obj()], ledger)
+        assert (copied, failed, gone) == (0, 1, 0)
+
+    def test_an_ordinary_failure_does_not_even_ask(self, ledger):
+        """The stat is a confirmation, not a classifier.
+
+        A night where Box throws 500s must not turn into eight million stat
+        calls against MinIO, and must not reclassify a single object.
+        """
+        client = FakeRclone({self.KEY: [RcloneError("500 backend error")]})
+        copied, failed, gone = run_copy_full(client, [obj()], ledger)
+        assert (copied, failed, gone) == (0, 1, 0)
+        assert client.stat_calls == [], (
+            "an unrelated failure triggered a source lookup"
+        )
+
+    def test_a_stat_that_cannot_answer_is_treated_as_a_failure(self, ledger):
+        """"I could not ask" is not "it is not there"."""
+
+        class StatRefuses(FakeRclone):
+            def stat(self, fs, remote):
+                raise RcloneError("429 too many requests", retryable=True)
+
+        client = StatRefuses({self.KEY: [RcloneError("404 not found", retryable=False)]})
+        copied, failed, gone = run_copy_full(client, [obj()], ledger)
+        assert (copied, failed, gone) == (0, 1, 0)
+
+    def test_the_flag_reaches_the_summary(self):
+        totals = job.Totals()
+        assert "source_gone" not in job._flags_for(totals)
+        totals.source_gone = 1
+        assert "source_gone" in job._flags_for(totals)
+
+    def test_the_report_names_them_apart_from_refused_names(self):
+        """Their own list. The remedies are different — a rename cannot help,
+        and this one may mean the image itself is already lost."""
+        import datetime
+
+        import report as report_mod
+
+        now = datetime.datetime(2026, 8, 31, tzinfo=datetime.timezone.utc)
+        entry = report_mod.RunReport(
+            run_id=1, env="prod", started_at=now, finished_at=now,
+            outcome="ok", stats={}, box_root="root",
+            source_gone=["images/exp-42/frame.png"],
+        )
+        data = entry.to_dict()
+        assert data["source_gone"] == ["images/exp-42/frame.png"]
+        assert data["name_skips"] == [], (
+            "a vanished source was filed as a filename problem, which tells "
+            "the operator to rename something that will not help"
+        )
