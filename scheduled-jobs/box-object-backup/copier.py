@@ -51,7 +51,7 @@ def copy_all(
     failures: list[str] | None = None,
     gone: list[str] | None = None,
     succeeded: "VerifyReservoir | None" = None,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Copy every planned object, N at a time, recording each success.
 
     `failures`, when given, collects the storage path of every object that

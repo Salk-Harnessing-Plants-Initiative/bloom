@@ -454,6 +454,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             "failed": totals.failed,
             "skipped": totals.skipped,
             "collisions": totals.collisions,
+            "source_gone": totals.source_gone,
             "already_current": totals.already_current,
             "verify_checked": totals.verify_checked,
             "verify_mismatched": totals.verify_mismatched,
@@ -467,6 +468,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             bucket_scoped=bool(args.buckets.strip()),
             stopped=stopping.stopping(),
             collisions=totals.collisions,
+            gone=totals.source_gone,
         )
         # The verdict is computed HERE, before the report is written, rather
         # than at the end of the function — so the report carries it.
@@ -759,6 +761,7 @@ def run_outcome(
     bucket_scoped: bool = False,
     stopped: bool = False,
     collisions: int = 0,
+    gone: int = 0,
 ) -> str:
     """Classify a finished run — and decide whether it can be a watermark.
 
@@ -816,10 +819,20 @@ def run_outcome(
     on the night it happens. That is one notification rather than a standing
     one, and it is a deliberate trade — the object stays unbacked-up until a
     person renames it at the source.
+
+    `gone` is here for one reason: those objects spend a `--limit` slot
+    without reaching `copied`, so truncation has to count them or a chunk
+    that stopped early reads as a chunk that finished.
     """
     if crashed:
         return "error"
-    truncated = limit is not None and copied >= limit
+    # `copied + gone`, not `copied`. --limit is spent on PLANNED copies, and
+    # since a row whose bytes are not in MinIO stops counting as a failure it
+    # spends a slot without landing in `copied`. Measured on `copied` alone, a
+    # chunk that used its whole limit but met one dead row looked unfinished
+    # — 499,999 of 500,000 — so it recorded `ok` and moved the watermark past
+    # the seven million rows it never reached, with every later night green.
+    truncated = limit is not None and copied + gone >= limit
     if (
         failed or truncated
         or bucket_scoped or stopped or collisions

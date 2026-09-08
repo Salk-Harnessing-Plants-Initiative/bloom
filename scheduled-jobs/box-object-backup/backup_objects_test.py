@@ -3423,3 +3423,124 @@ class TestTheGuaranteesTheReportCarries:
             "the report names something other than the path on Box, which is "
             f"what a restore asks for: {written['verify_failures']}"
         )
+
+
+class TestATruncatedChunkNeverRecordsClean:
+    """`--limit` is spent on PLANNED copies, not on successful ones.
+
+    The seed runs in `--full --limit 500000` chunks and only an `ok` run sets
+    the watermark, so "did this chunk finish the table?" is the single most
+    consequential question the job answers. Every planned object used to end
+    in `copied` or `failed`; a row whose bytes are not in MinIO is now a third
+    outcome that lands in neither, so measuring truncation on `copied` alone
+    stopped accounting for every slot the run spent.
+    """
+
+    def outcome(self, **kw):
+        base = dict(
+            crashed=False, failed=0, limit=None,
+            bucket_scoped=False, stopped=False, collisions=0,
+        )
+        base.update(kw)
+        return job.run_outcome(**base)
+
+    def test_a_chunk_that_spent_its_limit_is_partial(self):
+        assert self.outcome(copied=500_000, limit=500_000) == "partial"
+
+    def test_a_dead_row_still_spends_a_slot(self):
+        """The blocking case, at 1/100,000 scale.
+
+        499,999 copied and one row with no bytes behind it spends the whole
+        500,000-object limit — the chunk stopped reading the manifest with
+        seven million rows left. Counted on `copied` alone it read as
+        unfinished-but-clean, recorded `ok`, and moved the watermark past
+        every row it never enumerated, with every later night reporting
+        success over a mirror missing most of the table.
+        """
+        assert self.outcome(copied=4, gone=1, limit=5) == "partial", (
+            "a chunk that spent its whole limit recorded a clean run"
+        )
+
+    def test_several_dead_rows_in_one_chunk(self):
+        assert self.outcome(copied=0, gone=5, limit=5) == "partial"
+
+    def test_a_chunk_that_did_not_reach_its_limit_is_still_clean(self):
+        """The other direction: dead rows must not make a finished run partial.
+
+        The last chunk of the seed, and every ordinary night, plan fewer than
+        the limit. Those DID finish the table and must be allowed to set the
+        watermark, or the seed never completes.
+        """
+        assert self.outcome(copied=1200, gone=3, limit=500_000) == "ok"
+
+    def test_dead_rows_alone_do_not_hold_the_watermark(self):
+        """Unchanged by this fix, and the reason the class exists (D2)."""
+        assert self.outcome(copied=10, gone=2, limit=None) == "ok"
+
+    def test_a_whole_run_that_spent_its_limit_on_a_dead_row_is_partial(
+        self, harness, monkeypatch
+    ):
+        """The unit test above passes with `run_locked` not wiring it up.
+
+        This is the level the defect lived at: `run_outcome` was correct in
+        isolation and the caller did not hand it the third number. The
+        manifest has two objects; `--limit 2` plans both; one has no bytes
+        behind it, so `copied=1`, `gone=1`. The chunk spent its whole limit
+        and must not be allowed to set the watermark.
+        """
+        state, tmp_path = harness
+        dead = "storage-single-tenant/images/exp-42/a.png/v1"
+        state["missing"].add(dead)
+        original = state["client"].copy_file
+
+        def copy(src_fs, src_remote, dst_fs, dst_remote):
+            if src_remote == dead:
+                raise RcloneError("404 not found", retryable=False)
+            return original(src_fs, src_remote, dst_fs, dst_remote)
+
+        monkeypatch.setattr(state["client"], "copy_file", copy)
+        monkeypatch.setattr(
+            job, "wait_for_daemon", lambda daemon, attempts=30: state["client"]
+        )
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path, limit=2)
+        job.run_locked(args, tmp_path)
+        led = Ledger.open(str(tmp_path / "ledger.db"))
+        assert [r[0] for r in led.conn.execute("SELECT outcome FROM runs")] == [
+            "partial"
+        ], "a chunk that spent its whole limit recorded a clean run"
+        assert led.last_successful_run() is None, (
+            "the watermark moved past rows this chunk never enumerated"
+        )
+
+    def test_the_count_reaches_the_durable_record(self, harness, monkeypatch):
+        """The summary notice has no number in it, so the report must.
+
+        These objects deliberately do not hold the watermark, so the night it
+        happens is the only notification — and it could not say how much of
+        the mirror is permanently absent.
+        """
+        state, tmp_path = harness
+        dead = "storage-single-tenant/images/exp-42/a.png/v1"
+        state["missing"].add(dead)
+        original = state["client"].copy_file
+
+        def copy(src_fs, src_remote, dst_fs, dst_remote):
+            if src_remote == dead:
+                raise RcloneError("404 not found", retryable=False)
+            return original(src_fs, src_remote, dst_fs, dst_remote)
+
+        monkeypatch.setattr(state["client"], "copy_file", copy)
+        monkeypatch.setattr(
+            job, "wait_for_daemon", lambda daemon, attempts=30: state["client"]
+        )
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        written = json.loads(
+            next((tmp_path / report.REPORTS_DIRNAME).glob("*.json")).read_text()
+        )
+        assert written["stats"]["source_gone"] == 1, written["stats"]
+
+    @pytest.fixture
+    def harness(self, monkeypatch, tmp_path):
+        return TestRunLockedWiresItsPartsTogether().harness.__wrapped__(
+            TestRunLockedWiresItsPartsTogether(), monkeypatch, tmp_path
+        )
