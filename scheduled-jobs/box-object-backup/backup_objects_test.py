@@ -88,14 +88,15 @@ def run_copy(client, objects, ledger, box_root="Bloom-Backups/prod", workers=2):
     return copied, failed
 
 
-def run_copy_full(client, objects, ledger, box_root="Bloom-Backups/prod", workers=2, **kw):
+def run_copy_full(
+    client, objects, ledger, box_root="Bloom-Backups/prod", workers=2, **kw
+):
     plan = build_plan(objects, ledger.copied_versions())
-    return copier.copy_all(
-        client, plan, MINIO, BOX_FS, box_root, ledger, workers, **kw
-    )
+    return copier.copy_all(client, plan, MINIO, BOX_FS, box_root, ledger, workers, **kw)
 
 
 # ---------- what actually gets sent ----------
+
 
 def test_copy_sends_the_versioned_minio_key_as_the_source(ledger):
     client = FakeRclone()
@@ -135,6 +136,7 @@ def test_every_planned_object_is_copied_once(ledger):
 
 
 # ---------- ledger durability ----------
+
 
 def test_a_successful_copy_is_recorded(ledger):
     run_copy(FakeRclone(), [obj()], ledger)
@@ -182,6 +184,7 @@ def test_the_survivors_of_a_partial_run_are_still_recorded(ledger):
 
 # ---------- retry behaviour ----------
 
+
 def test_a_throttled_copy_is_retried_and_succeeds(ledger):
     key = f"images/exp-42/frame.png/{VERSION}"
     client = FakeRclone({key: [RcloneError("429 rate_limit", retryable=True)]})
@@ -192,7 +195,12 @@ def test_a_throttled_copy_is_retried_and_succeeds(ledger):
 def test_retries_stop_at_the_attempt_cap(ledger):
     key = f"images/exp-42/frame.png/{VERSION}"
     client = FakeRclone(
-        {key: [RcloneError("429", retryable=True) for _ in range(copier.MAX_ATTEMPTS + 2)]}
+        {
+            key: [
+                RcloneError("429", retryable=True)
+                for _ in range(copier.MAX_ATTEMPTS + 2)
+            ]
+        }
     )
     copied, failed = run_copy(client, [obj()], ledger)
     assert (copied, failed, len(client.calls)) == (0, 1, copier.MAX_ATTEMPTS)
@@ -226,6 +234,7 @@ def test_one_object_failing_does_not_abort_the_rest(ledger):
 
 
 # ---------- verification pass ----------
+
 
 def make_plan(objects):
     return build_plan(objects, {})
@@ -332,7 +341,9 @@ def test_verify_escapes_the_path_inside_the_error_too(caplog, ledger):
     copier.verify_sample(
         StatRefusesEchoingThePath(),
         make_plan([obj(name="exp-42/caf\u00e9\u202egnp.png")]),
-        BOX_FS, "root", 1,
+        BOX_FS,
+        "root",
+        1,
     )
     [line] = [ln for ln in caplog.text.splitlines() if "could not check" in ln]
     assert line.isascii() and line.isprintable(), line
@@ -352,8 +363,11 @@ def test_verify_escapes_a_non_ascii_path(caplog, ledger):
     `report_skips`' job, on the raw name.
     """
     copier.verify_sample(
-        FakeRclone(), make_plan([obj(name="exp-42/caf\u00e9\u202egnp.png")]),
-        BOX_FS, "root", 1,
+        FakeRclone(),
+        make_plan([obj(name="exp-42/caf\u00e9\u202egnp.png")]),
+        BOX_FS,
+        "root",
+        1,
     )
     [line] = [ln for ln in caplog.text.splitlines() if "missing on Box" in ln]
     assert line.isascii(), line
@@ -385,7 +399,10 @@ def test_verify_spreads_its_sample_across_the_plan(ledger):
     objects = [obj(name=f"a/{i:03d}.png") for i in range(100)]
     copier.verify_sample(client, make_plan(objects), BOX_FS, "", 4)
     assert client.stat_calls == [
-        "images/a/000.png", "images/a/025.png", "images/a/050.png", "images/a/075.png",
+        "images/a/000.png",
+        "images/a/025.png",
+        "images/a/050.png",
+        "images/a/075.png",
     ]
 
 
@@ -404,6 +421,7 @@ def test_verify_of_an_empty_plan_checks_nothing(caplog, ledger):
 
 
 # ---------- batched planning over a manifest file ----------
+
 
 def write_manifest(tmp_path, objects) -> Path:
     path = tmp_path / "manifest.tsv"
@@ -433,19 +451,25 @@ def test_plan_batches_splits_at_the_batch_size(tmp_path, ledger, small_batches):
     assert [len(p.copies) for p in plans] == [3, 3, 1]
 
 
-def test_plan_batches_respects_a_limit_spanning_batches(tmp_path, ledger, small_batches):
+def test_plan_batches_respects_a_limit_spanning_batches(
+    tmp_path, ledger, small_batches
+):
     objects = [obj(name=f"a/{i}.png") for i in range(10)]
     plans = list(job.plan_batches(write_manifest(tmp_path, objects), ledger, 5))
     assert sum(len(p.copies) for p in plans) == 5
 
 
-def test_plan_batches_stops_reading_once_the_limit_is_met(tmp_path, ledger, small_batches):
+def test_plan_batches_stops_reading_once_the_limit_is_met(
+    tmp_path, ledger, small_batches
+):
     objects = [obj(name=f"a/{i}.png") for i in range(30)]
     plans = list(job.plan_batches(write_manifest(tmp_path, objects), ledger, 3))
     assert len(plans) == 1
 
 
-def test_plan_batches_excludes_what_the_ledger_already_has(tmp_path, ledger, small_batches):
+def test_plan_batches_excludes_what_the_ledger_already_has(
+    tmp_path, ledger, small_batches
+):
     objects = [obj(name=f"a/{i}.png") for i in range(6)]
     for done in objects[:4]:
         ledger.mark_copied(done)
@@ -465,6 +489,7 @@ def test_plan_batches_of_an_empty_manifest_yields_nothing(tmp_path, ledger):
 
 
 # ---------- credential handling ----------
+
 
 def test_a_failure_is_logged_with_the_object_that_caused_it(caplog, ledger):
     # The copier logs whatever the error says. It does NOT redact — that
@@ -486,31 +511,45 @@ class TestOutcomeProtectsTheWatermark:
     left behind — silently, and forever.
     """
 
-
     def test_a_complete_unlimited_run_is_clean(self):
-        assert job.run_outcome(crashed=False, failed=0, copied=8_000_000, limit=None) == "ok"
+        assert (
+            job.run_outcome(crashed=False, failed=0, copied=8_000_000, limit=None)
+            == "ok"
+        )
 
     def test_a_run_that_hit_its_limit_is_partial(self):
-        assert job.run_outcome(crashed=False, failed=0, copied=500_000, limit=500_000) == "partial"
+        assert (
+            job.run_outcome(crashed=False, failed=0, copied=500_000, limit=500_000)
+            == "partial"
+        )
 
     def test_a_limited_run_that_finished_early_is_clean(self):
         # Fewer copies than the cap means the table ran out first, not the
         # limit — that run really did see everything.
-        assert job.run_outcome(crashed=False, failed=0, copied=1_200, limit=500_000) == "ok"
+        assert (
+            job.run_outcome(crashed=False, failed=0, copied=1_200, limit=500_000)
+            == "ok"
+        )
 
     def test_one_object_short_of_the_limit_still_saw_the_whole_table(self):
         # The boundary itself: `copied >= limit` means the run may have been
         # cut off, one below means it ran out of work first. Only far-from-the
         # -edge values were pinned, which hold either way.
-        assert job.run_outcome(
-            crashed=False, failed=0, copied=499_999, limit=500_000
-        ) == "ok"
+        assert (
+            job.run_outcome(crashed=False, failed=0, copied=499_999, limit=500_000)
+            == "ok"
+        )
 
     def test_failures_still_mark_a_run_partial(self):
-        assert job.run_outcome(crashed=False, failed=3, copied=10, limit=None) == "partial"
+        assert (
+            job.run_outcome(crashed=False, failed=3, copied=10, limit=None) == "partial"
+        )
 
     def test_a_crash_outranks_everything(self):
-        assert job.run_outcome(crashed=True, failed=0, copied=500_000, limit=500_000) == "error"
+        assert (
+            job.run_outcome(crashed=True, failed=0, copied=500_000, limit=500_000)
+            == "error"
+        )
 
 
 class TestVerificationCanFailARun:
@@ -533,15 +572,22 @@ class TestVerificationCanFailARun:
 
         It fails the run instead (exit 4) and is named in the report.
         """
-        assert job.run_outcome(
-            crashed=False, failed=0, copied=100, limit=None,
-        ) == "ok"
+        assert (
+            job.run_outcome(
+                crashed=False,
+                failed=0,
+                copied=100,
+                limit=None,
+            )
+            == "ok"
+        )
 
     def test_a_mismatch_still_fails_the_run(self):
         """Not holding the watermark must not mean going quiet about it."""
-        assert job.exit_code(
-            failed=0, verify_mismatched=1, stopped=False, collisions=0
-        ) == 4
+        assert (
+            job.exit_code(failed=0, verify_mismatched=1, stopped=False, collisions=0)
+            == 4
+        )
 
     def test_a_name_box_cannot_store_does_not_hold_the_watermark(self):
         """A deliberate trade, and the one place a skip differs from a
@@ -558,9 +604,15 @@ class TestVerificationCanFailARun:
         notification, not a standing one. The object stays unbacked-up until a
         person renames it at the source.
         """
-        assert job.run_outcome(
-            crashed=False, failed=0, copied=100, limit=None,
-        ) == "ok"
+        assert (
+            job.run_outcome(
+                crashed=False,
+                failed=0,
+                copied=100,
+                limit=None,
+            )
+            == "ok"
+        )
 
     def test_a_collision_still_holds_the_watermark(self):
         """The neighbouring case, which keeps the opposite treatment.
@@ -569,21 +621,32 @@ class TestVerificationCanFailARun:
         can be cleared by renaming either one — so keeping it in view costs a
         slow night, not a permanently frozen watermark.
         """
-        assert job.run_outcome(
-            crashed=False, failed=0, copied=100, limit=None, collisions=1,
-        ) == "partial"
+        assert (
+            job.run_outcome(
+                crashed=False,
+                failed=0,
+                copied=100,
+                limit=None,
+                collisions=1,
+            )
+            == "partial"
+        )
 
     def test_a_crash_is_still_an_error(self):
-        assert job.run_outcome(
-            crashed=True, failed=0, copied=100, limit=None,
-        ) == "error"
+        assert (
+            job.run_outcome(
+                crashed=True,
+                failed=0,
+                copied=100,
+                limit=None,
+            )
+            == "error"
+        )
 
     def test_not_verifying_is_not_the_same_as_verifying_clean(self):
         # A run with --verify 0 reports verify_checked=0; that must not read as
         # "checked and fine" in the report.
-        assert job.run_outcome(
-            crashed=False, failed=0, copied=100, limit=None
-        ) == "ok"
+        assert job.run_outcome(crashed=False, failed=0, copied=100, limit=None) == "ok"
 
 
 class TestVerifyReservoir:
@@ -592,7 +655,7 @@ class TestVerifyReservoir:
 
     def make(self, cap, n, order=None):
         r = copier.VerifyReservoir(cap)
-        for i in (order if order is not None else range(n)):
+        for i in order if order is not None else range(n):
             r.offer(f"obj-{i:06d}")
         return r
 
@@ -646,9 +709,7 @@ class TestVerifyReservoir:
         rather than as verification quietly checking somewhere else.
         """
         # Confirmed identical under PYTHONHASHSEED 0, 1 and 12345.
-        assert self.make(3, 1_000).items == [
-            "obj-000815", "obj-000894", "obj-000343"
-        ]
+        assert self.make(3, 1_000).items == ["obj-000815", "obj-000894", "obj-000343"]
 
     def test_counts_everything_it_was_offered(self):
         assert self.make(50, 10_000).seen == 10_000
@@ -695,10 +756,13 @@ class TestBoxRootIsChecked:
     @staticmethod
     def args(box_root, env="prod"):
         import argparse
+
         return argparse.Namespace(box_root=box_root, env=env)
 
     def test_an_empty_root_is_refused(self):
-        with pytest.raises(job.lib.BackupError, match="OBJECT_BACKUP_BOX_ROOT is empty"):
+        with pytest.raises(
+            job.lib.BackupError, match="OBJECT_BACKUP_BOX_ROOT is empty"
+        ):
             job.check_box_root(self.args(""))
 
     def test_whitespace_and_slashes_do_not_count_as_a_root(self):
@@ -761,16 +825,21 @@ class TestWatermarkOrdering:
         # The connection config is validated before the manifest read now, so
         # a dry run reaches both. Stubbed rather than supplied: this test is
         # about call order, and the checks have their own.
-        monkeypatch.setattr(
-            job, "minio_source_from_env", lambda a: object()
-        )
+        monkeypatch.setattr(job, "minio_source_from_env", lambda a: object())
         monkeypatch.setattr(job, "require_rclone_config", lambda p, r: None)
-        args = job.parse_args([
-            "--env", "prod", "--dry-run",
-            "--state-dir", str(tmp_path),
-            "--box-root", "Bloom-Backups/prod/storage",
-            "--minio-bucket", "bloom-storage",
-        ])
+        args = job.parse_args(
+            [
+                "--env",
+                "prod",
+                "--dry-run",
+                "--state-dir",
+                str(tmp_path),
+                "--box-root",
+                "Bloom-Backups/prod/storage",
+                "--minio-bucket",
+                "bloom-storage",
+            ]
+        )
         job.run_locked(args, tmp_path)
 
         assert calls == ["watermark", "snapshot"], (
@@ -874,19 +943,26 @@ class TestExitCodeReachesTheWorkflow:
         """Otherwise the watermark advances past an object that is not backed
         up, and the next run does not even enumerate it — the one log line
         naming it becomes the last anyone ever hears of it."""
-        assert job.run_outcome(
-            crashed=False, failed=0, copied=10, limit=None, collisions=1
-        ) == "partial"
+        assert (
+            job.run_outcome(
+                crashed=False, failed=0, copied=10, limit=None, collisions=1
+            )
+            == "partial"
+        )
 
     def test_no_collisions_is_still_clean(self):
-        assert job.run_outcome(
-            crashed=False, failed=0, copied=10, limit=None, collisions=0
-        ) == "ok"
+        assert (
+            job.run_outcome(
+                crashed=False, failed=0, copied=10, limit=None, collisions=0
+            )
+            == "ok"
+        )
 
     def test_a_crash_still_outranks_a_collision(self):
-        assert job.run_outcome(
-            crashed=True, failed=0, copied=10, limit=None, collisions=1
-        ) == "error"
+        assert (
+            job.run_outcome(crashed=True, failed=0, copied=10, limit=None, collisions=1)
+            == "error"
+        )
 
     def test_a_refused_collision_has_its_own_code(self):
         """Not 4. Exit 4's remedy is deleting the ledger row so the object is
@@ -907,9 +983,10 @@ class TestExitCodeReachesTheWorkflow:
 
     def test_a_collision_outranks_a_stop(self):
         # A stop is expected and resumable; a collision needs a person.
-        assert job.exit_code(
-            failed=0, verify_mismatched=0, stopped=True, collisions=1
-        ) == 5
+        assert (
+            job.exit_code(failed=0, verify_mismatched=0, stopped=True, collisions=1)
+            == 5
+        )
 
 
 class TestRunLockedWiresItsPartsTogether:
@@ -932,7 +1009,12 @@ class TestRunLockedWiresItsPartsTogether:
     @pytest.fixture
     def harness(self, monkeypatch, tmp_path):
         """Fakes for docker and rclone; everything between them is real."""
-        state = {"copied": [], "stat_calls": [], "missing": set(), "daemon_stopped": False}
+        state = {
+            "copied": [],
+            "stat_calls": [],
+            "missing": set(),
+            "daemon_stopped": False,
+        }
 
         class FakeDaemon:
             container = "c"
@@ -997,7 +1079,9 @@ class TestRunLockedWiresItsPartsTogether:
                 return "fake"
 
         monkeypatch.setattr(job, "dock", FakeDock)
-        monkeypatch.setattr(job, "wait_for_daemon", lambda daemon, attempts=30: FakeClient())
+        monkeypatch.setattr(
+            job, "wait_for_daemon", lambda daemon, attempts=30: FakeClient()
+        )
         monkeypatch.setattr(job, "require_rclone_config", lambda path, remote: None)
         monkeypatch.setenv("MINIO_ROOT_USER", "root")
         monkeypatch.setenv("MINIO_ROOT_PASSWORD", "secret")
@@ -1024,17 +1108,23 @@ class TestRunLockedWiresItsPartsTogether:
         unless it says otherwise.
         """
         return [
-            c for c in state["copied"]
+            c
+            for c in state["copied"]
             if c[1] != "ledger.db" and not c[2].endswith(".json")
         ]
 
     def args(self, tmp_path, **overrides):
         argv = [
-            "--env", "prod",
-            "--state-dir", str(tmp_path),
-            "--box-root", "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
-            "--minio-bucket", "bloom-storage",
-            "--minio-prefix", "storage-single-tenant",
+            "--env",
+            "prod",
+            "--state-dir",
+            str(tmp_path),
+            "--box-root",
+            "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
+            "--minio-bucket",
+            "bloom-storage",
+            "--minio-prefix",
+            "storage-single-tenant",
         ]
         for flag, value in overrides.items():
             argv += [f"--{flag.replace('_', '-')}", str(value)]
@@ -1108,10 +1198,12 @@ class TestRunLockedWiresItsPartsTogether:
         # preflight_source could be deleted from run_locked with the suite green.
         # EVERY sample must miss: that is what means the layout is wrong.
         state, tmp_path = harness
-        state["missing"].update({
-            "storage-single-tenant/images/exp-42/a.png/v1",
-            "storage-single-tenant/images/exp-42/b.png/v2",
-        })
+        state["missing"].update(
+            {
+                "storage-single-tenant/images/exp-42/a.png/v1",
+                "storage-single-tenant/images/exp-42/b.png/v2",
+            }
+        )
         with pytest.raises(job.lib.BackupError, match="preflight failed"):
             job.run_locked(self.args(tmp_path), tmp_path)
         assert self.object_copies(state) == [], (
@@ -1164,7 +1256,8 @@ class TestRunLockedWiresItsPartsTogether:
         """
         state, tmp_path = harness
         monkeypatch.setattr(
-            job, "verify_sample",
+            job,
+            "verify_sample",
             lambda *a: copier.VerifyResult(checked=3, mismatched=0, unverified=1),
         )
         code = job.run_locked(self.args(tmp_path, verify=4), tmp_path)
@@ -1184,7 +1277,8 @@ class TestRunLockedWiresItsPartsTogether:
         """
         state, tmp_path = harness
         monkeypatch.setattr(
-            job, "verify_sample",
+            job,
+            "verify_sample",
             lambda *a: copier.VerifyResult(checked=2, mismatched=0, unverified=48),
         )
         code = job.run_locked(self.args(tmp_path, verify=50), tmp_path)
@@ -1202,7 +1296,10 @@ class TestRunLockedWiresItsPartsTogether:
         the test would pass whatever the code did.
         """
         return StorageObject(
-            bucket_id="images", name=name, version="v1", size=100,
+            bucket_id="images",
+            name=name,
+            version="v1",
+            size=100,
             updated_at="2026-08-31T00:00:00+00",
         )
 
@@ -1226,7 +1323,8 @@ class TestRunLockedWiresItsPartsTogether:
         state, tmp_path = harness
         gone = self.missing(tmp_path)
         monkeypatch.setattr(
-            job, "verify_sample",
+            job,
+            "verify_sample",
             lambda *a: copier.VerifyResult(
                 checked=1, mismatched=1, unverified=0, failures=(gone,)
             ),
@@ -1267,7 +1365,8 @@ class TestRunLockedWiresItsPartsTogether:
         state, tmp_path = harness
         gone = self.missing(tmp_path)
         monkeypatch.setattr(
-            job, "verify_sample",
+            job,
+            "verify_sample",
             lambda *a: copier.VerifyResult(
                 checked=1, mismatched=1, unverified=0, failures=(gone,)
             ),
@@ -1295,7 +1394,8 @@ class TestRunLockedWiresItsPartsTogether:
         state, tmp_path = harness
         gone = self.missing(tmp_path)
         monkeypatch.setattr(
-            job, "verify_sample",
+            job,
+            "verify_sample",
             lambda *a: copier.VerifyResult(
                 checked=1, mismatched=1, unverified=0, failures=(gone,)
             ),
@@ -1328,7 +1428,8 @@ class TestRunLockedWiresItsPartsTogether:
         """
         state, tmp_path = harness
         monkeypatch.setattr(
-            job, "verify_sample",
+            job,
+            "verify_sample",
             lambda *a: copier.VerifyResult(checked=0, mismatched=0, unverified=4),
         )
         code = job.run_locked(self.args(tmp_path, verify=4), tmp_path)
@@ -1342,14 +1443,15 @@ class TestRunLockedWiresItsPartsTogether:
         state, tmp_path = harness
         caplog.set_level(logging.INFO)
         monkeypatch.setattr(
-            job, "verify_sample",
+            job,
+            "verify_sample",
             lambda *a: copier.VerifyResult(checked=4, mismatched=0, unverified=0),
         )
         assert job.run_locked(self.args(tmp_path, verify=4), tmp_path) == 0
         assert "all present and correct" in caplog.text
         assert job.VERIFY_INCOMPLETE_MARKER not in caplog.text
 
-    ILLEGAL = "exp-42/plate:7.png"   # a colon; Box cannot store it
+    ILLEGAL = "exp-42/plate:7.png"  # a colon; Box cannot store it
 
     def test_a_name_box_cannot_store_is_reported_but_does_not_freeze_the_run(
         self, harness, monkeypatch, caplog
@@ -1366,7 +1468,8 @@ class TestRunLockedWiresItsPartsTogether:
         import sqlite3 as _sqlite3
 
         monkeypatch.setattr(
-            TestRunLockedWiresItsPartsTogether, "MANIFEST",
+            TestRunLockedWiresItsPartsTogether,
+            "MANIFEST",
             f"images\t{self.ILLEGAL}\tv1\t100\t2026-08-31T00:00:00+00\n"
             "images\texp-42/fine.png\tv2\t200\t2026-08-31T00:00:01+00\n",
         )
@@ -1385,8 +1488,10 @@ class TestRunLockedWiresItsPartsTogether:
         )
         # Reported, or the trade becomes a silent drop.
         assert job.SKIPPED_NAME_MARKER in caplog.text, "the skip is not reported"
-        assert "only night that will say so" in caplog.text.lower() or \
-               "ONLY NIGHT" in caplog.text, "does not warn it will not repeat"
+        assert (
+            "only night that will say so" in caplog.text.lower()
+            or "ONLY NIGHT" in caplog.text
+        ), "does not warn it will not repeat"
         assert f"{job.FLAGS_KEY}=skipped_names" in caplog.text, (
             "the skip does not reach the summary"
         )
@@ -1428,7 +1533,8 @@ class TestRunLockedWiresItsPartsTogether:
         far more numerous kind.
         """
         monkeypatch.setattr(
-            TestRunLockedWiresItsPartsTogether, "MANIFEST",
+            TestRunLockedWiresItsPartsTogether,
+            "MANIFEST",
             "images\texp/café.png\tv1\t100\t2026-08-31T00:00:00+00\n"
             "images\texp/café.png\tv2\t100\t2026-08-31T00:00:01+00\n",
         )
@@ -1456,7 +1562,8 @@ class TestRunLockedWiresItsPartsTogether:
     ):
         """The report is now the only durable record, so it has to carry it."""
         monkeypatch.setattr(
-            TestRunLockedWiresItsPartsTogether, "MANIFEST",
+            TestRunLockedWiresItsPartsTogether,
+            "MANIFEST",
             f"images\t{self.ILLEGAL}\tv1\t100\t2026-08-31T00:00:00+00\n",
         )
         state, tmp_path = harness
@@ -1486,7 +1593,9 @@ class TestRunLockedWiresItsPartsTogether:
         assert body["status"] == "ok", body.get("status")
         assert body["status"] in job.STATUS_VALUES
 
-    def test_a_crashed_run_does_not_report_success(self, harness, monkeypatch, tmp_path):
+    def test_a_crashed_run_does_not_report_success(
+        self, harness, monkeypatch, tmp_path
+    ):
         """The verdict must know a crash happened.
 
         A crash unwinds through `except BaseException`, so every counter the
@@ -1509,7 +1618,7 @@ class TestRunLockedWiresItsPartsTogether:
         body = json.loads(written[-1].read_text())
         assert body["outcome"] == "error"
         assert body["status"] == "failed", (
-            f'a crashed run reports {body["status"]!r}; the report and the '
+            f"a crashed run reports {body['status']!r}; the report and the "
             "outcome contradict each other and the summary reads succeeded"
         )
 
@@ -1524,7 +1633,8 @@ class TestRunLockedWiresItsPartsTogether:
         whole justification is that you get exactly one.
         """
         monkeypatch.setattr(
-            TestRunLockedWiresItsPartsTogether, "MANIFEST",
+            TestRunLockedWiresItsPartsTogether,
+            "MANIFEST",
             f"images\t{self.ILLEGAL}\tv1\t100\t2026-08-31T00:00:00+00\n"
             "images\texp-42/fine.png\tv2\t200\t2026-08-31T00:00:01+00\n",
         )
@@ -1553,7 +1663,8 @@ class TestRunLockedWiresItsPartsTogether:
         from one that was never asked for."""
         state, tmp_path = harness
         monkeypatch.setattr(
-            job, "verify_sample",
+            job,
+            "verify_sample",
             lambda *a: copier.VerifyResult(checked=1, mismatched=0, unverified=3),
         )
         job.run_locked(self.args(tmp_path, verify=4), tmp_path)
@@ -1567,7 +1678,9 @@ class TestRunLockedWiresItsPartsTogether:
         state, tmp_path = harness
         assert job.run_locked(self.args(tmp_path, verify=2), tmp_path) == 0
 
-    def test_a_leftover_container_stops_the_run_before_anything_is_copied(self, harness):
+    def test_a_leftover_container_stops_the_run_before_anything_is_copied(
+        self, harness
+    ):
         # The check must be reachable from the run, not merely importable.
         state, tmp_path = harness
         state["stale"] = ["bloom-box-backup-rclone-dead (Up 3 days)"]
@@ -1584,9 +1697,12 @@ class TestRunLockedWiresItsPartsTogether:
         assert job.run_locked(args, tmp_path) == 0
 
         import sqlite3
-        rows = sqlite3.connect(tmp_path / "ledger.db").execute(
-            "SELECT outcome FROM runs ORDER BY id DESC LIMIT 1"
-        ).fetchall()
+
+        rows = (
+            sqlite3.connect(tmp_path / "ledger.db")
+            .execute("SELECT outcome FROM runs ORDER BY id DESC LIMIT 1")
+            .fetchall()
+        )
         assert rows and rows[0][0] == "partial", (
             "a bucket-scoped run recorded itself clean, so the watermark "
             "advances for every bucket it never enumerated"
@@ -1596,17 +1712,22 @@ class TestRunLockedWiresItsPartsTogether:
         state, tmp_path = harness
         assert job.run_locked(self.args(tmp_path), tmp_path) == 0
         import sqlite3
-        rows = sqlite3.connect(tmp_path / "ledger.db").execute(
-            "SELECT outcome FROM runs ORDER BY id DESC LIMIT 1"
-        ).fetchall()
+
+        rows = (
+            sqlite3.connect(tmp_path / "ledger.db")
+            .execute("SELECT outcome FROM runs ORDER BY id DESC LIMIT 1")
+            .fetchall()
+        )
         assert rows and rows[0][0] == "ok"
 
     def test_the_daemon_is_stopped_even_when_the_run_raises(self, harness):
         state, tmp_path = harness
-        state["missing"].update({
-            "storage-single-tenant/images/exp-42/a.png/v1",
-            "storage-single-tenant/images/exp-42/b.png/v2",
-        })
+        state["missing"].update(
+            {
+                "storage-single-tenant/images/exp-42/a.png/v1",
+                "storage-single-tenant/images/exp-42/b.png/v2",
+            }
+        )
         with pytest.raises(job.lib.BackupError):
             job.run_locked(self.args(tmp_path), tmp_path)
         assert state["daemon_stopped"], "the rclone container was left running"
@@ -1623,7 +1744,8 @@ class TestStaleDaemonStopsTheRun:
 
     def test_a_leftover_refuses_the_run(self, monkeypatch):
         monkeypatch.setattr(
-            job.dock, "find_stale_daemons",
+            job.dock,
+            "find_stale_daemons",
             lambda: ["bloom-box-backup-rclone-a1b2 (Up 3 days)"],
         )
         with pytest.raises(job.lib.BackupError) as caught:
@@ -1668,31 +1790,46 @@ class TestBucketScopedRunsCannotBecomeTheWatermark:
     """
 
     def test_a_bucket_scoped_run_is_partial(self):
-        assert job.run_outcome(
-            crashed=False, failed=0, copied=100, limit=None, bucket_scoped=True
-        ) == "partial"
+        assert (
+            job.run_outcome(
+                crashed=False, failed=0, copied=100, limit=None, bucket_scoped=True
+            )
+            == "partial"
+        )
 
     def test_a_whole_table_run_is_still_ok(self):
-        assert job.run_outcome(
-            crashed=False, failed=0, copied=100, limit=None, bucket_scoped=False
-        ) == "ok"
+        assert (
+            job.run_outcome(
+                crashed=False, failed=0, copied=100, limit=None, bucket_scoped=False
+            )
+            == "ok"
+        )
 
     def test_the_wiki_smoke_test_shape_is_partial(self):
         # --buckets images --limit 20: partial for two independent reasons.
-        assert job.run_outcome(
-            crashed=False, failed=0, copied=20, limit=20, bucket_scoped=True
-        ) == "partial"
+        assert (
+            job.run_outcome(
+                crashed=False, failed=0, copied=20, limit=20, bucket_scoped=True
+            )
+            == "partial"
+        )
 
     def test_scoping_alone_is_enough_without_a_limit(self):
         # The dangerous form: --buckets with no --limit, which used to be ok.
-        assert job.run_outcome(
-            crashed=False, failed=0, copied=999, limit=None, bucket_scoped=True
-        ) == "partial"
+        assert (
+            job.run_outcome(
+                crashed=False, failed=0, copied=999, limit=None, bucket_scoped=True
+            )
+            == "partial"
+        )
 
     def test_a_crash_still_outranks_it(self):
-        assert job.run_outcome(
-            crashed=True, failed=0, copied=1, limit=None, bucket_scoped=True
-        ) == "error"
+        assert (
+            job.run_outcome(
+                crashed=True, failed=0, copied=1, limit=None, bucket_scoped=True
+            )
+            == "error"
+        )
 
 
 class TestAStoppedRunIsResumable:
@@ -1707,14 +1844,20 @@ class TestAStoppedRunIsResumable:
         # Same reasoning as --limit and --buckets: it did not see the whole
         # table, so it cannot be what "everything up to here is backed up"
         # points at.
-        assert job.run_outcome(
-            crashed=False, failed=0, copied=500, limit=None, stopped=True
-        ) == "partial"
+        assert (
+            job.run_outcome(
+                crashed=False, failed=0, copied=500, limit=None, stopped=True
+            )
+            == "partial"
+        )
 
     def test_a_run_that_finished_is_still_ok(self):
-        assert job.run_outcome(
-            crashed=False, failed=0, copied=500, limit=None, stopped=False
-        ) == "ok"
+        assert (
+            job.run_outcome(
+                crashed=False, failed=0, copied=500, limit=None, stopped=False
+            )
+            == "ok"
+        )
 
     def test_a_stopped_run_exits_three(self):
         # 3 is already documented as "interrupted; progress is in the ledger
@@ -1759,21 +1902,28 @@ class TestTheContainerIsAlwaysTornDown:
         state, tmp_path = harness
         monkeypatch.setattr(job, "publish_report", self.boom)
         with pytest.raises(RuntimeError):
-            job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+            job.run_locked(
+                TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
+            )
         assert state["daemon_stopped"], "the rclone container was stranded"
 
     def test_it_is_stopped_when_the_ledger_upload_raises(self, harness, monkeypatch):
         state, tmp_path = harness
         monkeypatch.setattr(job, "publish_ledger", self.boom)
         with pytest.raises(RuntimeError):
-            job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+            job.run_locked(
+                TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
+            )
         assert state["daemon_stopped"], "the rclone container was stranded"
 
     def test_it_is_stopped_on_an_ordinary_clean_run(self, harness):
         state, tmp_path = harness
-        assert job.run_locked(
-            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
-        ) == 0
+        assert (
+            job.run_locked(
+                TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
+            )
+            == 0
+        )
         assert state["daemon_stopped"]
 
 
@@ -1793,11 +1943,16 @@ class TestRunBackupTakesTheHostLock:
     """
 
     def args(self, tmp_path):
-        return job.parse_args([
-            "--env", "prod",
-            "--state-dir", str(tmp_path),
-            "--box-root", "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
-        ])
+        return job.parse_args(
+            [
+                "--env",
+                "prod",
+                "--state-dir",
+                str(tmp_path),
+                "--box-root",
+                "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
+            ]
+        )
 
     def test_the_lock_is_actually_taken(self, tmp_path, monkeypatch):
         """While the run is going, nobody else can have it."""
@@ -1813,9 +1968,12 @@ class TestRunBackupTakesTheHostLock:
         assert job.run_backup(self.args(tmp_path)) == 0
         assert held.get("checked"), "run_locked was never reached"
 
-    def test_a_second_run_stands_down_without_failing(self, tmp_path, monkeypatch, caplog):
+    def test_a_second_run_stands_down_without_failing(
+        self, tmp_path, monkeypatch, caplog
+    ):
         monkeypatch.setattr(
-            job, "run_locked",
+            job,
+            "run_locked",
             lambda *a, **kw: pytest.fail("ran while another run held the lock"),
         )
         first = RunLock(tmp_path).acquire()
@@ -1839,7 +1997,9 @@ class TestRunBackupTakesTheHostLock:
             first.release()
         assert SKIP_MARKER in caplog.text, "a skipped night looks like a clean one"
 
-    def test_a_stood_down_run_names_who_is_holding_it(self, tmp_path, monkeypatch, caplog):
+    def test_a_stood_down_run_names_who_is_holding_it(
+        self, tmp_path, monkeypatch, caplog
+    ):
         monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 0)
         first = RunLock(tmp_path).acquire()
         try:
@@ -1867,10 +2027,18 @@ class TestRunBackupTakesTheHostLock:
     def test_the_state_directory_is_created_if_missing(self, tmp_path, monkeypatch):
         monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 0)
         fresh = tmp_path / "not" / "there" / "yet"
-        job.run_backup(job.parse_args([
-            "--env", "prod", "--state-dir", str(fresh),
-            "--box-root", "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
-        ]))
+        job.run_backup(
+            job.parse_args(
+                [
+                    "--env",
+                    "prod",
+                    "--state-dir",
+                    str(fresh),
+                    "--box-root",
+                    "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
+                ]
+            )
+        )
         assert fresh.is_dir()
 
     def test_the_exit_code_is_whatever_the_run_returned(self, tmp_path, monkeypatch):
@@ -2188,7 +2356,9 @@ class TestTheLedgerIsCopiedToBox:
 
         monkeypatch.setattr(state["client"], "copy_file", copy_then_stop)
         monkeypatch.setattr(job.stopping, "stopping", lambda: stopped[0])
-        code = job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        code = job.run_locked(
+            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
+        )
         assert state["copied"], "nothing was copied, so the ledger was never uploaded"
         assert code == 6, "the ledger condition lost its own exit code"
         assert f"{job.STATUS_KEY}=stopped" in caplog.text, (
@@ -2218,15 +2388,19 @@ class TestTheLedgerIsCopiedToBox:
             raise lib.Stopped("stopped while waiting for the rclone daemon")
 
         monkeypatch.setattr(job, "wait_for_daemon", stop_during_startup)
-        code = job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        code = job.run_locked(
+            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
+        )
         assert code == 3, f"a deliberate stop exited {code}"
         assert f"{job.STATUS_KEY}=stopped" in caplog.text
         assert f"{job.STATUS_KEY}=failed" not in caplog.text
         assert state["daemon_stopped"], "the rclone container was left running"
         # The run must still be recorded, or the next night cannot resume.
-        rows = Ledger.open(str(tmp_path / "ledger.db")).conn.execute(
-            "SELECT outcome FROM runs"
-        ).fetchall()
+        rows = (
+            Ledger.open(str(tmp_path / "ledger.db"))
+            .conn.execute("SELECT outcome FROM runs")
+            .fetchall()
+        )
         assert rows == [("partial",)], rows
 
     def test_a_night_that_copied_nothing_is_not_called_stale(self, harness, caplog):
@@ -2256,18 +2430,21 @@ class TestTheLedgerIsCopiedToBox:
         job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
         assert len(self.uploads(state)) == 1, "the first upload never happens"
 
-    def test_an_equal_sized_copy_is_still_replaced(self, harness, monkeypatch, tmp_path):
+    def test_an_equal_sized_copy_is_still_replaced(
+        self, harness, monkeypatch, tmp_path
+    ):
         """Only SMALLER is refused. Equal means the same ledger, and a run that
         copied something has almost certainly changed it."""
         state, tmp_path = harness
         args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
-        job.run_locked(args, tmp_path)          # first run creates the ledger
+        job.run_locked(args, tmp_path)  # first run creates the ledger
         size = (tmp_path / "ledger.db").stat().st_size
         state["copied"].clear()
         self.with_remote_size(state, monkeypatch, size)
         # Something new to copy, so the upload is reached at all.
         monkeypatch.setattr(
-            TestRunLockedWiresItsPartsTogether, "MANIFEST",
+            TestRunLockedWiresItsPartsTogether,
+            "MANIFEST",
             "images\texp-42/c.png\tv3\t100\t2026-08-31T00:00:02+00\n",
         )
         job.run_locked(args, tmp_path)
@@ -2279,7 +2456,7 @@ class TestTheLedgerIsCopiedToBox:
         args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
         job.run_locked(args, tmp_path)
         state["copied"].clear()
-        job.run_locked(args, tmp_path)   # everything already current
+        job.run_locked(args, tmp_path)  # everything already current
         assert self.uploads(state) == [], "re-sent an unchanged ledger"
 
     def test_a_crashed_run_does_not_replace_the_good_copy(self, harness, monkeypatch):
@@ -2311,7 +2488,9 @@ class TestTheLedgerIsCopiedToBox:
 
         monkeypatch.setattr(job, "preflight_source", boom)
         with pytest.raises(RuntimeError):
-            job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+            job.run_locked(
+                TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
+            )
         assert self.uploads(state) == []
 
     def test_a_failed_upload_neither_fails_the_run_nor_strands_the_container(
@@ -2326,7 +2505,9 @@ class TestTheLedgerIsCopiedToBox:
             return real_copy(src_fs, src_remote, dst_fs, dst_remote)
 
         monkeypatch.setattr(state["client"], "copy_file", refuse_the_ledger)
-        code = job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        code = job.run_locked(
+            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
+        )
         assert code == 6, "a failed ledger upload must fail the run"
         assert state["daemon_stopped"], "the rclone container was left behind"
         assert "upload failed" in caplog.text
@@ -2402,9 +2583,12 @@ class TestACrashedRunStillLeavesARecord:
 
     def test_an_ordinary_run_is_still_recorded_ok(self, harness):
         state, tmp_path = harness
-        assert job.run_locked(
-            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
-        ) == 0
+        assert (
+            job.run_locked(
+                TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
+            )
+            == 0
+        )
         finished_at, outcome, stats = self.last_run(tmp_path)
         assert finished_at is not None
         assert outcome == "ok"
@@ -2430,7 +2614,8 @@ class TestACollisionIsVisibleInAWholeRun:
 
     def run_it(self, harness, monkeypatch):
         monkeypatch.setattr(
-            TestRunLockedWiresItsPartsTogether, "MANIFEST",
+            TestRunLockedWiresItsPartsTogether,
+            "MANIFEST",
             f"images\t{self.COMPOSED}\tv1\t100\t2026-08-31T00:00:00+00\n"
             f"images\t{self.DECOMPOSED}\tv2\t100\t2026-08-31T00:00:01+00\n",
         )
@@ -2479,7 +2664,9 @@ class TestACollisionIsVisibleInAWholeRun:
         _, tmp_path, _ = self.run_it(harness, monkeypatch)
         conn = sqlite3.connect(str(tmp_path / "ledger.db"))
         stats = json.loads(
-            conn.execute("SELECT stats FROM runs ORDER BY id DESC LIMIT 1").fetchone()[0]
+            conn.execute("SELECT stats FROM runs ORDER BY id DESC LIMIT 1").fetchone()[
+                0
+            ]
         )
         conn.close()
         assert stats["collisions"] == 1, f"nothing recorded the collision: {stats}"
@@ -2504,13 +2691,14 @@ class TestACollisionIsVisibleInAWholeRun:
         import logging
 
         monkeypatch.setattr(
-            TestRunLockedWiresItsPartsTogether, "MANIFEST",
+            TestRunLockedWiresItsPartsTogether,
+            "MANIFEST",
             f"images\t{self.COMPOSED}\tv1\t100\t2026-08-31T00:00:00+00\n"
             f"images\t{self.DECOMPOSED}\tv2\t100\t2026-08-31T00:00:01+00\n",
         )
         state, tmp_path = harness
         args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
-        args.dry_run = True   # a store_true flag, not a --flag value pair
+        args.dry_run = True  # a store_true flag, not a --flag value pair
         # INFO, not ERROR: the verdict lines are INFO, and this test now
         # checks the verdict rather than the prose.
         with caplog.at_level(logging.INFO, logger="bloom_box_object_backup"):
@@ -2677,9 +2865,11 @@ class TestStoppingReachesTheOutcomeAndTheExitCode:
         stopping._request_stop(15, None)
         args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
         job.run_locked(args, tmp_path)
-        outcome = sqlite3.connect(tmp_path / "ledger.db").execute(
-            "SELECT outcome FROM runs ORDER BY id DESC LIMIT 1"
-        ).fetchone()
+        outcome = (
+            sqlite3.connect(tmp_path / "ledger.db")
+            .execute("SELECT outcome FROM runs ORDER BY id DESC LIMIT 1")
+            .fetchone()
+        )
         assert outcome and outcome[0] == "partial", (
             "a stopped run recorded itself clean — the watermark would advance "
             "past objects it never reached"
@@ -2714,7 +2904,8 @@ class TestTheEntryPointInstallsTheHandlers:
         # Fail immediately afterwards: we only care that it happened, and that
         # it happened before any work started.
         monkeypatch.setattr(
-            job, "run_backup",
+            job,
+            "run_backup",
             lambda args: (_ for _ in ()).throw(job.lib.BackupError("stop here")),
         )
         code = job.main(["--env", "prod", "--state-dir", str(tmp_path)])
@@ -2746,10 +2937,12 @@ class TestStoppingBetweenBatches:
         monkeypatch.setattr(job, "BATCH_SIZE", 2)
 
         manifest = tmp_path / "manifest.tsv"
-        manifest.write_text("".join(
-            f"images\texp/{n}.png\tv{n}\t100\t2026-08-31T00:00:0{n}+00\n"
-            for n in range(6)
-        ))
+        manifest.write_text(
+            "".join(
+                f"images\texp/{n}.png\tv{n}\t100\t2026-08-31T00:00:0{n}+00\n"
+                for n in range(6)
+            )
+        )
         led = Ledger.open(str(tmp_path / "ledger.db"))
 
         batches_run = []
@@ -2766,13 +2959,20 @@ class TestStoppingBetweenBatches:
                 super().copy_file(src_fs, src_remote, dst_fs, dst_remote)
                 stopping._request_stop(15, None)
 
-        args = job.parse_args([
-            "--env", "prod",
-            "--state-dir", str(tmp_path),
-            "--box-root", "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
-            "--minio-bucket", "bloom-storage",
-            "--workers", "1",
-        ])
+        args = job.parse_args(
+            [
+                "--env",
+                "prod",
+                "--state-dir",
+                str(tmp_path),
+                "--box-root",
+                "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
+                "--minio-bucket",
+                "bloom-storage",
+                "--workers",
+                "1",
+            ]
+        )
         totals = job.Totals()
         job.copy_manifest(StopOnFirstCopy(), manifest, led, MINIO, BOX_FS, args, totals)
         led.close()
@@ -2786,6 +2986,7 @@ class TestStoppingBetweenBatches:
 
 
 # ---------- the verdict the summary branches on ----------
+
 
 class TestTheVerdictTheSummaryReads:
     """`_status_for` and `_flags_for` decide what every night reports.
@@ -2907,8 +3108,11 @@ class TestTheVerdictTheSummaryReads:
 
     def test_every_flag_is_one_the_summary_knows(self):
         every = self.totals(
-            collisions=1, skipped=5, verify_mismatched=1,
-            verify_unverified=1, ledger_flag="ledger_stale",
+            collisions=1,
+            skipped=5,
+            verify_mismatched=1,
+            verify_unverified=1,
+            ledger_flag="ledger_stale",
         )
         flags = job._flags_for(every)
         assert set(flags) <= set(job.FLAG_VALUES)
@@ -2940,17 +3144,25 @@ class TestTheStandDownVerdictReachesTheSummary:
     other asserts SKIP_MARKER, a phrase the workflow no longer greps.
     """
 
-    def test_a_stood_down_run_emits_the_skipped_verdict(self, tmp_path, monkeypatch, caplog):
+    def test_a_stood_down_run_emits_the_skipped_verdict(
+        self, tmp_path, monkeypatch, caplog
+    ):
         import logging as _logging
 
         from runlock import RunLock
 
         caplog.set_level(_logging.INFO)
         monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 0)
-        args = job.parse_args([
-            "--env", "prod", "--state-dir", str(tmp_path),
-            "--box-root", "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
-        ])
+        args = job.parse_args(
+            [
+                "--env",
+                "prod",
+                "--state-dir",
+                str(tmp_path),
+                "--box-root",
+                "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
+            ]
+        )
         holder = RunLock(tmp_path).acquire()
         try:
             assert job.run_backup(args) == 0
@@ -2961,16 +3173,24 @@ class TestTheStandDownVerdictReachesTheSummary:
             "succeeded and a months-long gap looks like months of green ticks"
         )
 
-    def test_a_run_that_gets_the_lock_does_not_say_skipped(self, tmp_path, monkeypatch, caplog):
+    def test_a_run_that_gets_the_lock_does_not_say_skipped(
+        self, tmp_path, monkeypatch, caplog
+    ):
         """The other side — it must not cry stand-down on an ordinary night."""
         import logging as _logging
 
         caplog.set_level(_logging.INFO)
         monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 0)
-        args = job.parse_args([
-            "--env", "prod", "--state-dir", str(tmp_path),
-            "--box-root", "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
-        ])
+        args = job.parse_args(
+            [
+                "--env",
+                "prod",
+                "--state-dir",
+                str(tmp_path),
+                "--box-root",
+                "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
+            ]
+        )
         assert job.run_backup(args) == 0
         assert f"{job.STATUS_KEY}=skipped" not in caplog.text
 
@@ -3068,7 +3288,7 @@ class TestTheReadinessPollIsImpatient:
         class Recorder(job.RcloneRC):
             def __init__(self, url, user, password, timeout=None):
                 seen.append(timeout)
-                super().__init__(url, user, password, *( [timeout] if timeout else [] ))
+                super().__init__(url, user, password, *([timeout] if timeout else []))
 
             def noop(self):
                 return {}
@@ -3143,17 +3363,27 @@ class TestConfigIsCheckedBeforeTheEightMillionRowRead:
         monkeypatch.setattr(job, "dock", FakeDock)
         for name, value in stubs.items():
             monkeypatch.setattr(job, name, value)
-        args = job.parse_args([
-            "--env", "prod", "--dry-run", "--state-dir", str(tmp_path),
-            "--minio-bucket", "bloom-storage", *extra_argv,
-        ])
+        args = job.parse_args(
+            [
+                "--env",
+                "prod",
+                "--dry-run",
+                "--state-dir",
+                str(tmp_path),
+                "--minio-bucket",
+                "bloom-storage",
+                *extra_argv,
+            ]
+        )
         return calls, args
 
     def test_an_empty_box_root_is_refused_without_reading_the_table(
         self, monkeypatch, tmp_path
     ):
         calls, args = self.drive(
-            monkeypatch, tmp_path, extra_argv=["--box-root", ""],
+            monkeypatch,
+            tmp_path,
+            extra_argv=["--box-root", ""],
             minio_source_from_env=lambda a: object(),
             require_rclone_config=lambda p, r: None,
         )
@@ -3165,7 +3395,8 @@ class TestConfigIsCheckedBeforeTheEightMillionRowRead:
         self, monkeypatch, tmp_path
     ):
         calls, args = self.drive(
-            monkeypatch, tmp_path,
+            monkeypatch,
+            tmp_path,
             extra_argv=["--box-root", "Bloom-Backups/prod/storage"],
             minio_source_from_env=lambda a: object(),
         )
@@ -3186,7 +3417,8 @@ class TestConfigIsCheckedBeforeTheEightMillionRowRead:
         led.remember_destination("box:Bloom-Backups/prod/storage")
         led.close()
         calls, args = self.drive(
-            monkeypatch, tmp_path,
+            monkeypatch,
+            tmp_path,
             extra_argv=["--box-root", "Bloom-Backups/prod/elsewhere"],
             minio_source_from_env=lambda a: object(),
             require_rclone_config=lambda p, r: None,
@@ -3206,7 +3438,8 @@ class TestConfigIsCheckedBeforeTheEightMillionRowRead:
         measured against.
         """
         calls, args = self.drive(
-            monkeypatch, tmp_path,
+            monkeypatch,
+            tmp_path,
             extra_argv=["--box-root", "Bloom-Backups/prod/storage"],
             minio_source_from_env=lambda a: object(),
             require_rclone_config=lambda p, r: None,
@@ -3240,9 +3473,11 @@ class TestARowWithNoImageBehindIt:
 
     def test_it_is_not_counted_as_a_failure(self, ledger):
         copied, failed, gone = run_copy_full(self.gone_client(), [obj()], ledger)
-        assert (copied, failed, gone) == (0, 0, 1), (
-            "a row with no bytes behind it was counted as a failed copy"
-        )
+        assert (copied, failed, gone) == (
+            0,
+            0,
+            1,
+        ), "a row with no bytes behind it was counted as a failed copy"
 
     def test_the_run_can_still_be_clean(self, ledger):
         """The whole point: it must not hold the watermark.
@@ -3252,10 +3487,18 @@ class TestARowWithNoImageBehindIt:
         """
         _copied, failed, gone = run_copy_full(self.gone_client(), [obj()], ledger)
         assert gone == 1
-        assert job.run_outcome(
-            crashed=False, failed=failed, copied=0, limit=None,
-            bucket_scoped=False, stopped=False, collisions=0,
-        ) == "ok", "one dead row freezes the watermark for good"
+        assert (
+            job.run_outcome(
+                crashed=False,
+                failed=failed,
+                copied=0,
+                limit=None,
+                bucket_scoped=False,
+                stopped=False,
+                collisions=0,
+            )
+            == "ok"
+        ), "one dead row freezes the watermark for good"
 
     def test_it_is_named_so_a_person_can_act(self, ledger, caplog):
         caplog.set_level(logging.ERROR)
@@ -3274,9 +3517,7 @@ class TestARowWithNoImageBehindIt:
         run_copy_full(self.gone_client(), [obj()], ledger)
         assert ledger.copied_versions() == {}
 
-    def test_an_error_that_says_not_found_but_is_there_is_still_a_failure(
-        self, ledger
-    ):
+    def test_an_error_that_says_not_found_but_is_there_is_still_a_failure(self, ledger):
         """Both signals are required, and this is the dangerous direction.
 
         Trusting the message alone would let a run advance the watermark past
@@ -3310,18 +3551,18 @@ class TestARowWithNoImageBehindIt:
         client = FakeRclone({self.KEY: [RcloneError("500 backend error")]})
         copied, failed, gone = run_copy_full(client, [obj()], ledger)
         assert (copied, failed, gone) == (0, 1, 0)
-        assert client.stat_calls == [], (
-            "an unrelated failure triggered a source lookup"
-        )
+        assert client.stat_calls == [], "an unrelated failure triggered a source lookup"
 
     def test_a_stat_that_cannot_answer_is_treated_as_a_failure(self, ledger):
-        """"I could not ask" is not "it is not there"."""
+        """ "I could not ask" is not "it is not there"."""
 
         class StatRefuses(FakeRclone):
             def stat(self, fs, remote):
                 raise RcloneError("429 too many requests", retryable=True)
 
-        client = StatRefuses({self.KEY: [RcloneError("404 not found", retryable=False)]})
+        client = StatRefuses(
+            {self.KEY: [RcloneError("404 not found", retryable=False)]}
+        )
         copied, failed, gone = run_copy_full(client, [obj()], ledger)
         assert (copied, failed, gone) == (0, 1, 0)
 
@@ -3340,8 +3581,13 @@ class TestARowWithNoImageBehindIt:
 
         now = datetime.datetime(2026, 8, 31, tzinfo=datetime.timezone.utc)
         entry = report_mod.RunReport(
-            run_id=1, env="prod", started_at=now, finished_at=now,
-            outcome="ok", stats={}, box_root="root",
+            run_id=1,
+            env="prod",
+            started_at=now,
+            finished_at=now,
+            outcome="ok",
+            stats={},
+            box_root="root",
             source_gone=["images/exp-42/frame.png"],
         )
         data = entry.to_dict()
@@ -3379,7 +3625,8 @@ class TestTheGuaranteesTheReportCarries:
         state, tmp_path = harness
         job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
         reports = [
-            dst for _, _, dst in state["copied"]
+            dst
+            for _, _, dst in state["copied"]
             if dst.endswith(".json") and f"/{report.REPORTS_DIRNAME}/" in dst
         ]
         assert len(reports) == 1, (
@@ -3405,9 +3652,7 @@ class TestTheGuaranteesTheReportCarries:
         client = FakeRclone()
         gone = obj(name="exp-42/lost.png")
         client.stats_by_path["root/images/exp-42/frame.png"] = {"Size": 100}
-        result = copier.verify_sample(
-            client, make_plan([gone]), BOX_FS, "root", 1
-        )
+        result = copier.verify_sample(client, make_plan([gone]), BOX_FS, "root", 1)
         assert result.mismatched == 1
         assert [o.name for o in result.failures] == ["exp-42/lost.png"], (
             "the check counted a missing object but did not say which"
@@ -3426,13 +3671,13 @@ class TestTheGuaranteesTheReportCarries:
         monkeypatch.setattr(
             job, "wait_for_daemon", lambda daemon, attempts=30: state["client"]
         )
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path, verify=2), tmp_path)
+        job.run_locked(
+            TestRunLockedWiresItsPartsTogether().args(tmp_path, verify=2), tmp_path
+        )
         written = json.loads(
             next((tmp_path / report.REPORTS_DIRNAME).glob("*.json")).read_text()
         )
-        assert written["verify_failures"] == [
-            f"{args.box_root}/images/exp-42/a.png"
-        ], (
+        assert written["verify_failures"] == [f"{args.box_root}/images/exp-42/a.png"], (
             "the report names something other than the path on Box, which is "
             f"what a restore asks for: {written['verify_failures']}"
         )
@@ -3451,8 +3696,12 @@ class TestATruncatedChunkNeverRecordsClean:
 
     def outcome(self, **kw):
         base = dict(
-            crashed=False, failed=0, limit=None,
-            bucket_scoped=False, stopped=False, collisions=0,
+            crashed=False,
+            failed=0,
+            limit=None,
+            bucket_scoped=False,
+            stopped=False,
+            collisions=0,
         )
         base.update(kw)
         return job.run_outcome(**base)
@@ -3548,8 +3797,11 @@ class TestATruncatedChunkNeverRecordsClean:
             job, "wait_for_daemon", lambda daemon, attempts=30: state["client"]
         )
         job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        [line] = [ln for ln in caplog.text.splitlines() if "source gone:" in ln
-                  and "object(s)" in ln]
+        [line] = [
+            ln
+            for ln in caplog.text.splitlines()
+            if "source gone:" in ln and "object(s)" in ln
+        ]
         assert "source gone: 1 object(s)" in line, line
 
     def test_a_clean_run_prints_no_aggregate_count(self, harness, caplog):
@@ -3628,11 +3880,14 @@ class TestTheWorkflowGrepsMatchWhatTheJobReallyPrints:
 
         path = (
             Path(__file__).resolve().parents[2]
-            / ".github" / "workflows" / "box-object-backup.yml"
+            / ".github"
+            / "workflows"
+            / "box-object-backup.yml"
         )
         steps = yaml.safe_load(path.read_text())["jobs"]["mirror"]["steps"]
         script = next(
-            s["run"] for s in steps
+            s["run"]
+            for s in steps
             if s.get("name", "").startswith("Write the run summary")
         )
         return re.findall(r"last '([^']+)'", script)
@@ -3646,7 +3901,9 @@ class TestTheWorkflowGrepsMatchWhatTheJobReallyPrints:
         for pattern in self.workflow_patterns():
             r = subprocess.run(
                 ["grep", "-cE", stamp + pattern],
-                input=text, capture_output=True, text=True,
+                input=text,
+                capture_output=True,
+                text=True,
             )
             found[pattern] = r.returncode == 0
         for want in patterns_wanted:
@@ -3658,9 +3915,7 @@ class TestTheWorkflowGrepsMatchWhatTheJobReallyPrints:
             )
         return found
 
-    def test_a_copying_night_matches_the_count_and_verdict_greps(
-        self, harness, caplog
-    ):
+    def test_a_copying_night_matches_the_count_and_verdict_greps(self, harness, caplog):
         state, tmp_path = harness
         caplog.set_level(logging.INFO)
         job.run_locked(
@@ -3697,6 +3952,7 @@ class TestTheWorkflowGrepsMatchWhatTheJobReallyPrints:
         [line] = [ln for ln in text.splitlines() if "done — copied" in ln]
         copied = int(re.search(r"copied (\d+)", line).group(1))
         current = int(re.search(r"already current (\d+)", line).group(1))
-        assert (copied, current) == (2, 0), (
-            f"the job copied 2 objects and reported {copied}: {line}"
-        )
+        assert (copied, current) == (
+            2,
+            0,
+        ), f"the job copied 2 objects and reported {copied}: {line}"

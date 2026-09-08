@@ -111,7 +111,9 @@ class TestHolderDescription:
     def test_describes_a_known_holder(self):
         import time
 
-        text = LockHolder(pid=123, started_at=time.time() - 7200, argv="x.py").describe()
+        text = LockHolder(
+            pid=123, started_at=time.time() - 7200, argv="x.py"
+        ).describe()
         assert "pid 123" in text
         assert "2h" in text
 

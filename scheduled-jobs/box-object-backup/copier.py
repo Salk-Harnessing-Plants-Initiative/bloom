@@ -76,7 +76,9 @@ def copy_all(
             return
         dst = lib.box_path(obj, box_root)
         try:
-            copy_one(client, src_fs, lib.source_remote(obj, minio.prefix), box_fs, dst, obj)
+            copy_one(
+                client, src_fs, lib.source_remote(obj, minio.prefix), box_fs, dst, obj
+            )
         except RcloneError as exc:
             # Ask MinIO whether the object is there at all before calling this
             # a failure. Postgres can hold a row whose bytes left MinIO long
@@ -98,7 +100,8 @@ def copy_all(
                 logger.error(
                     "%s %s: it is in storage.objects but not in MinIO, so "
                     "nothing can copy it. NOT backed up.",
-                    SOURCE_GONE_MARKER, lib.loggable(obj.storage_path),
+                    SOURCE_GONE_MARKER,
+                    lib.loggable(obj.storage_path),
                 )
                 with lock:
                     state["gone"] += 1
@@ -107,7 +110,8 @@ def copy_all(
                 return
             logger.error(
                 "failed %s: %s",
-                lib.loggable(obj.storage_path), lib.loggable(str(exc)),
+                lib.loggable(obj.storage_path),
+                lib.loggable(str(exc)),
             )
             with lock:
                 state["failed"] += 1
@@ -249,7 +253,10 @@ def copy_one(
             delay = RETRY_BASE_SECONDS * (2 ** (attempt - 1))
             logger.warning(
                 "retry %d/%d for %s in %ds: %s",
-                attempt, MAX_ATTEMPTS - 1, lib.loggable(obj.storage_path), delay,
+                attempt,
+                MAX_ATTEMPTS - 1,
+                lib.loggable(obj.storage_path),
+                delay,
                 lib.loggable(str(exc)),
             )
             time.sleep(delay)
@@ -261,7 +268,11 @@ def log_progress(done: int, total: int, byte_count: int, started: float) -> None
     remaining = (total - done) / rate if rate else 0
     logger.info(
         "progress %d/%d (%s, %.1f obj/s, ~%.1fh left)",
-        done, total, lib.format_bytes(byte_count), rate, remaining / 3600,
+        done,
+        total,
+        lib.format_bytes(byte_count),
+        rate,
+        remaining / 3600,
     )
 
 
@@ -327,7 +338,8 @@ def verify_sample(
                 # remote it failed on. Escaping only the argument beside it
                 # printed the same name raw on the same line.
                 "verify: could not check %s: %s",
-                lib.loggable(dst), lib.loggable(str(exc)),
+                lib.loggable(dst),
+                lib.loggable(str(exc)),
             )
             unverified += 1
             continue
@@ -339,7 +351,9 @@ def verify_sample(
         elif obj.size is not None and item.get("Size") != obj.size:
             logger.error(
                 "verify: size mismatch %s — Box %s, Postgres %s",
-                lib.loggable(dst), item.get("Size"), obj.size,
+                lib.loggable(dst),
+                item.get("Size"),
+                obj.size,
             )
             mismatched += 1
             failures.append(obj)
@@ -348,6 +362,8 @@ def verify_sample(
     tail = f", {unverified} unverified" if unverified else ""
     logger.info("verify: %d checked, %d mismatched%s", checked, mismatched, tail)
     return VerifyResult(
-        checked=checked, mismatched=mismatched, unverified=unverified,
+        checked=checked,
+        mismatched=mismatched,
+        unverified=unverified,
         failures=tuple(failures),
     )

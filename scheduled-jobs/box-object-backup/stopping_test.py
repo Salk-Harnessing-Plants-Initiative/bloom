@@ -39,19 +39,19 @@ def run_child(body: str, send: int, timeout: int = 15) -> subprocess.CompletedPr
     # The body is dedented on its own rather than as part of the template:
     # callers indent it to suit their own nesting, and mixing those two levels
     # produces a script that will not parse.
-    preamble = textwrap.dedent(
-        f"""
+    preamble = textwrap.dedent(f"""
         import os, signal, sys, time
         sys.path.insert(0, {HERE!r})
         import stopping
         stopping.install_handlers()
         print("ready", flush=True)
-        """
-    )
+        """)
     script = preamble + textwrap.dedent(body)
     proc = subprocess.Popen(
         [sys.executable, "-c", script],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
     assert proc.stdout is not None
     assert proc.stdout.readline().strip() == "ready"
@@ -94,7 +94,8 @@ class TestRealSignals:
         """
 
     @pytest.mark.parametrize(
-        "signame", ["SIGTERM", "SIGINT", "SIGHUP"],
+        "signame",
+        ["SIGTERM", "SIGINT", "SIGHUP"],
     )
     def test_the_process_stops_and_exits_three(self, signame):
         result = run_child(self.BODY, getattr(signal, signame))

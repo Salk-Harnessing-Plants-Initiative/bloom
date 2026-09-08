@@ -92,7 +92,9 @@ def run(
     )
     if check and result.returncode != 0:
         stderr = result.stderr.strip() or "(no stderr)"
-        raise DockerError(f"command failed ({result.returncode}): {' '.join(cmd[:3])}…: {stderr}")
+        raise DockerError(
+            f"command failed ({result.returncode}): {' '.join(cmd[:3])}…: {stderr}"
+        )
     return result.stdout
 
 
@@ -104,9 +106,13 @@ def find_container(project: str, service: str) -> str:
     """Container ID for a Compose service, by label. Errors if not exactly one."""
     out = run(
         [
-            which("docker"), "ps", "--quiet",
-            "--filter", f"label={COMPOSE_PROJECT_LABEL}={project}",
-            "--filter", f"label={COMPOSE_SERVICE_LABEL}={service}",
+            which("docker"),
+            "ps",
+            "--quiet",
+            "--filter",
+            f"label={COMPOSE_PROJECT_LABEL}={project}",
+            "--filter",
+            f"label={COMPOSE_SERVICE_LABEL}={service}",
         ]
     )
     ids = [line for line in out.split() if line]
@@ -124,9 +130,15 @@ def find_network(project: str, network: str = "supanet") -> str:
     """Full network name for a Compose network, by label."""
     out = run(
         [
-            which("docker"), "network", "ls", "--format", "{{.Name}}",
-            "--filter", f"label={COMPOSE_PROJECT_LABEL}={project}",
-            "--filter", f"label={COMPOSE_NETWORK_LABEL}={network}",
+            which("docker"),
+            "network",
+            "ls",
+            "--format",
+            "{{.Name}}",
+            "--filter",
+            f"label={COMPOSE_PROJECT_LABEL}={project}",
+            "--filter",
+            f"label={COMPOSE_NETWORK_LABEL}={network}",
         ]
     )
     names = [line for line in out.split() if line]
@@ -149,17 +161,31 @@ def psql_query_to_file(
     cannot write.
     """
     cmd = [
-        which("docker"), "exec", "-i", container,
-        "psql", "-U", user, "-d", database,
-        "--no-align", "--tuples-only", "--field-separator", "\t",
-        "--quiet", "--no-psqlrc",
-        "-v", "ON_ERROR_STOP=1",
+        which("docker"),
+        "exec",
+        "-i",
+        container,
+        "psql",
+        "-U",
+        user,
+        "-d",
+        database,
+        "--no-align",
+        "--tuples-only",
+        "--field-separator",
+        "\t",
+        "--quiet",
+        "--no-psqlrc",
+        "-v",
+        "ON_ERROR_STOP=1",
         # Without this psql buffers the whole result set in the db container
         # before writing a byte — millions of rows of it, next to Postgres's
         # own memory on a host that runs the entire stack. FETCH_COUNT makes
         # psql read through a cursor and stream, at identical output format.
-        "-v", f"FETCH_COUNT={FETCH_COUNT}",
-        "-f", "-",
+        "-v",
+        f"FETCH_COUNT={FETCH_COUNT}",
+        "-f",
+        "-",
     ]
     preamble = READ_ONLY_PREAMBLE + "SET statement_timeout = '60min';\n"
     rows = 0
@@ -192,17 +218,26 @@ def database_now(container: str, user: str, database: str) -> str:
     `default_transaction_read_only` only governs transactions opened after it
     is set, so a pin sitting beside the SELECT would not cover it.
     """
-    sql = (
-        "SELECT to_char(now() AT TIME ZONE 'UTC', "
-        "'YYYY-MM-DD\"T\"HH24:MI:SSOF');\n"
-    )
+    sql = "SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SSOF');\n"
     out = run(
         [
-            which("docker"), "exec", "-i", container,
-            "psql", "-U", user, "-d", database,
-            "--no-align", "--tuples-only", "--quiet", "--no-psqlrc",
-            "-v", "ON_ERROR_STOP=1",
-            "-f", "-",
+            which("docker"),
+            "exec",
+            "-i",
+            container,
+            "psql",
+            "-U",
+            user,
+            "-d",
+            database,
+            "--no-align",
+            "--tuples-only",
+            "--quiet",
+            "--no-psqlrc",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            "-",
         ],
         # --quiet suppresses psql's `SET` command tags, so the preamble adds
         # no lines of its own and the first line is still the timestamp.
@@ -244,9 +279,13 @@ def find_stale_daemons() -> list[str]:
     """
     out = run(
         [
-            which("docker"), "ps", "--all",
-            "--filter", f"name={RC_CONTAINER_PREFIX}",
-            "--format", "{{.Names}} ({{.Status}})",
+            which("docker"),
+            "ps",
+            "--all",
+            "--filter",
+            f"name={RC_CONTAINER_PREFIX}",
+            "--format",
+            "{{.Names}} ({{.Status}})",
         ]
     )
     return [line for line in out.splitlines() if line.strip()]
@@ -294,20 +333,33 @@ def start_rc_daemon(
     user = "bloom"
     password = secrets.token_urlsafe(24)
     cmd = [
-        which("docker"), "run", "--detach", "--name", name,
-        "--network", network,
-        "--publish", f"127.0.0.1:{port}:{port}",
-        "--memory", RC_MEMORY_LIMIT,
+        which("docker"),
+        "run",
+        "--detach",
+        "--name",
+        name,
+        "--network",
+        network,
+        "--publish",
+        f"127.0.0.1:{port}:{port}",
+        "--memory",
+        RC_MEMORY_LIMIT,
         # Every service in docker-compose.prod.yml carries both. This container
         # holds the Box token and MinIO's root credentials and was the only one
         # in the deploy without them.
-        "--security-opt", "no-new-privileges",
-        "--cap-drop", "ALL",
-        "--volume", f"{rclone_config}:/config/rclone/rclone.conf:ro",
-        "--user", f"{_host_uid()}:{_host_gid()}",
-        "--env", "RCLONE_CONFIG=/config/rclone/rclone.conf",
+        "--security-opt",
+        "no-new-privileges",
+        "--cap-drop",
+        "ALL",
+        "--volume",
+        f"{rclone_config}:/config/rclone/rclone.conf:ro",
+        "--user",
+        f"{_host_uid()}:{_host_gid()}",
+        "--env",
+        "RCLONE_CONFIG=/config/rclone/rclone.conf",
         # Pass-through, deliberately valueless — see the docstring.
-        "--env", RC_PASS_ENV,
+        "--env",
+        RC_PASS_ENV,
     ]
     # Read-only so the daemon can upload the run report the host wrote there.
     # Nothing else in the state dir is read, and nothing is written back.

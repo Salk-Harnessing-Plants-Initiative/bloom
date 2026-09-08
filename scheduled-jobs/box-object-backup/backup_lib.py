@@ -162,6 +162,7 @@ class Stopped(Exception):
 # Manifest query + parsing
 # ---------------------------------------------------------------------------
 
+
 def objects_query(
     buckets: Sequence[str] | None = None,
     excluded: Sequence[str] = DEFAULT_EXCLUDED_BUCKETS,
@@ -241,7 +242,9 @@ def iter_manifest(lines: Iterable[str]) -> Iterator[StorageObject]:
         )
 
 
-def batches(objects: Iterable[StorageObject], size: int) -> Iterator[list[StorageObject]]:
+def batches(
+    objects: Iterable[StorageObject], size: int
+) -> Iterator[list[StorageObject]]:
     """Group a stream of objects into fixed-size lists."""
     batch: list[StorageObject] = []
     for obj in objects:
@@ -256,6 +259,7 @@ def batches(objects: Iterable[StorageObject], size: int) -> Iterator[list[Storag
 # ---------------------------------------------------------------------------
 # Path safety
 # ---------------------------------------------------------------------------
+
 
 def loggable(text: str) -> str:
     """Text safe to put in a log line, and in the job summary it feeds.
@@ -356,10 +360,10 @@ def box_path(obj: StorageObject, root: str = "") -> str:
     return f"{root}/{path}" if root else path
 
 
-
 # ---------------------------------------------------------------------------
 # Planning
 # ---------------------------------------------------------------------------
+
 
 def collision_reason(held_by: str) -> str:
     """Why an object is refused when its destination is already spoken for.

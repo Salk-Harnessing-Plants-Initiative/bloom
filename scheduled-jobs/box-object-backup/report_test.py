@@ -24,7 +24,13 @@ def make_report(**overrides) -> report.RunReport:
         finished_at=datetime(2026, 8, 31, 6, 45, 12, tzinfo=timezone.utc),
         outcome="ok",
         box_root="Bloom-Backups/BloomV2-Data-Backup/prod/storage",
-        stats={"listed": 10, "copied": 8, "failed": 0, "skipped": 2, "already_current": 0},
+        stats={
+            "listed": 10,
+            "copied": 8,
+            "failed": 0,
+            "skipped": 2,
+            "already_current": 0,
+        },
         failures=[],
     )
     defaults.update(overrides)
@@ -85,19 +91,21 @@ class TestBody:
         assert body["outcome"] == "error"
 
     def test_names_failures_so_they_can_be_acted_on(self):
-        body = json.loads(make_report(
-            failures=["images/a.png", "images/b.png"],
-            stats={"failed": 2},
-        ).to_json())
+        body = json.loads(
+            make_report(
+                failures=["images/a.png", "images/b.png"],
+                stats={"failed": 2},
+            ).to_json()
+        )
         assert body["failures"] == ["images/a.png", "images/b.png"]
         assert body["failures_truncated"] is False
         assert body["failure_count"] == 2
 
     def test_truncates_a_flood_of_failures_but_keeps_the_true_count(self):
         many = [f"images/{n}.png" for n in range(report.MAX_REPORTED_FAILURES + 50)]
-        body = json.loads(make_report(
-            failures=many, stats={"failed": len(many)}
-        ).to_json())
+        body = json.loads(
+            make_report(failures=many, stats={"failed": len(many)}).to_json()
+        )
         assert len(body["failures"]) == report.MAX_REPORTED_FAILURES
         assert body["failures_truncated"] is True
         assert body["failure_count"] == report.MAX_REPORTED_FAILURES + 50
@@ -105,10 +113,12 @@ class TestBody:
     def test_true_count_survives_the_copier_capping_the_path_list(self):
         # The copier stops collecting paths at MAX_TRACKED_FAILURES, so the
         # list is a sample; stats["failed"] is the only real total.
-        body = json.loads(make_report(
-            failures=[f"images/{n}.png" for n in range(5_000)],
-            stats={"failed": 1_200_000},
-        ).to_json())
+        body = json.loads(
+            make_report(
+                failures=[f"images/{n}.png" for n in range(5_000)],
+                stats={"failed": 1_200_000},
+            ).to_json()
+        )
         assert body["failure_count"] == 1_200_000
         assert body["failures_truncated"] is True
 

@@ -269,7 +269,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--rclone-config",
         default=os.environ.get(
-            "OBJECT_BACKUP_RCLONE_CONFIG", str(Path.home() / ".config/rclone/rclone.conf")
+            "OBJECT_BACKUP_RCLONE_CONFIG",
+            str(Path.home() / ".config/rclone/rclone.conf"),
         ),
     )
     parser.add_argument(
@@ -282,12 +283,28 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=os.environ.get("OBJECT_BACKUP_MINIO_PREFIX", ""),
         help="tenant prefix storage-api files objects under, e.g. storage-single-tenant",
     )
-    parser.add_argument("--state-dir", default=os.environ.get("OBJECT_BACKUP_STATE_DIR", DEFAULT_STATE_DIR))
-    parser.add_argument("--workers", type=int, default=int(os.environ.get("OBJECT_BACKUP_WORKERS", DEFAULT_WORKERS)))
-    parser.add_argument("--rc-port", type=int, default=int(os.environ.get("OBJECT_BACKUP_RC_PORT", 5572)))
-    parser.add_argument("--bwlimit", default=os.environ.get("OBJECT_BACKUP_BWLIMIT", ""))
     parser.add_argument(
-        "--limit", type=int, default=None, help="copy at most N objects, then stop (for smoke tests)"
+        "--state-dir",
+        default=os.environ.get("OBJECT_BACKUP_STATE_DIR", DEFAULT_STATE_DIR),
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=int(os.environ.get("OBJECT_BACKUP_WORKERS", DEFAULT_WORKERS)),
+    )
+    parser.add_argument(
+        "--rc-port",
+        type=int,
+        default=int(os.environ.get("OBJECT_BACKUP_RC_PORT", 5572)),
+    )
+    parser.add_argument(
+        "--bwlimit", default=os.environ.get("OBJECT_BACKUP_BWLIMIT", "")
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="copy at most N objects, then stop (for smoke tests)",
     )
     parser.add_argument(
         "--full",
@@ -388,9 +405,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         # `partial` when it found objects a real run would refuse: nothing was
         # copied either way, but "succeeded" on a dry run that turned things
         # away is the same false clean bill the whole verdict exists to stop.
-        emit_status(
-            "partial" if totals.skipped else "ok", _flags_for(totals)
-        )
+        emit_status("partial" if totals.skipped else "ok", _flags_for(totals))
         return 0
 
     # Left here rather than moved up with the config checks: it is the one
@@ -514,21 +529,29 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         # `try` can raise" true by construction rather than by inspection.
         try:
             publish_report(
-                daemon, state_dir, box_fs, args,
-                run_id=run_id, started_at=started_at, outcome=outcome,
-                stats=stats, failures=totals.failures,
-                skips=totals.skips, name_skips=totals.name_skips,
+                daemon,
+                state_dir,
+                box_fs,
+                args,
+                run_id=run_id,
+                started_at=started_at,
+                outcome=outcome,
+                stats=stats,
+                failures=totals.failures,
+                skips=totals.skips,
+                name_skips=totals.name_skips,
                 source_gone=totals.gone,
                 verify_failures=totals.verify_failures,
-                status=verdict, flags=report_flags,
+                status=verdict,
+                flags=report_flags,
             )
             ledger.commit()
-        # Inside the finally, not after it. A run that raised is the one whose
-        # record matters most, and outside it every crash left a row with no
-        # finished_at, no outcome and no stats — while the report published to
-        # Box three lines above named the outcome correctly. The local audit
-        # trail this job's own error messages tell operators to read was the
-        # only place the failure did not appear.
+            # Inside the finally, not after it. A run that raised is the one whose
+            # record matters most, and outside it every crash left a row with no
+            # finished_at, no outcome and no stats — while the report published to
+            # Box three lines above named the outcome correctly. The local audit
+            # trail this job's own error messages tell operators to read was the
+            # only place the failure did not appear.
             ledger.finish_run(run_id, outcome, stats)
             # Closed BEFORE it is uploaded. SQLite runs in WAL mode here, so
             # committed rows can still be sitting in ledger.db-wal; a copy of
@@ -536,8 +559,12 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             # the WAL into the file, which makes the uploaded copy complete.
             ledger.close()
             totals.ledger_flag = publish_ledger(
-                daemon, state_dir, box_fs, args,
-                copied=totals.copied, crashed=crashed,
+                daemon,
+                state_dir,
+                box_fs,
+                args,
+                copied=totals.copied,
+                crashed=crashed,
             )
         finally:
             # Last, so the daemon is still alive for both uploads above, and
@@ -545,7 +572,10 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             daemon.stop()
     logger.info(
         "done — copied %d, failed %d, already current %d, skipped %d",
-        totals.copied, totals.failed, totals.already_current, totals.skipped,
+        totals.copied,
+        totals.failed,
+        totals.already_current,
+        totals.skipped,
     )
     if totals.source_gone:
         # An aggregate beside the per-object lines. Without a count, a night
@@ -575,7 +605,8 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             "nothing can fix on its own would make every later night re-read "
             "the whole table. The report on Box is the durable record — read "
             "it, and rename them at the source.",
-            name_skips, SKIPPED_NAME_MARKER,
+            name_skips,
+            SKIPPED_NAME_MARKER,
         )
     if totals.verify_mismatched:
         logger.error(
@@ -590,11 +621,14 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             "is NOT held: holding it bought exactly one night — the next run "
             "finds the object already current, never re-checks it, records "
             "clean and advances anyway.",
-            totals.verify_mismatched, totals.verify_checked,
+            totals.verify_mismatched,
+            totals.verify_checked,
         )
     elif totals.verify_checked and not totals.verify_unverified:
-        logger.info("verified %d object(s) on Box, all present and correct",
-                    totals.verify_checked)
+        logger.info(
+            "verified %d object(s) on Box, all present and correct",
+            totals.verify_checked,
+        )
     if totals.verify_unverified:
         # One marker for any shortfall, not only for a total blackout. Gating
         # this on `checked == 0` made it a cliff at exactly zero: 2 answered
@@ -617,13 +651,16 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             "or moving the schedule off Box's busy hours, is the lever. "
             "These stat calls fire straight after a run that may have pushed "
             "hundreds of thousands of objects, which is when Box throttles.",
-            VERIFY_INCOMPLETE_MARKER, totals.verify_checked, sampled,
+            VERIFY_INCOMPLETE_MARKER,
+            totals.verify_checked,
+            sampled,
             totals.verify_unverified,
         )
     if totals.failed:
         logger.error(
             "%d object(s) failed after %d attempts each — re-run to retry them",
-            totals.failed, MAX_ATTEMPTS,
+            totals.failed,
+            MAX_ATTEMPTS,
         )
     code = exit_code(
         failed=totals.failed,
@@ -845,10 +882,7 @@ def run_outcome(
     # — 499,999 of 500,000 — so it recorded `ok` and moved the watermark past
     # the seven million rows it never reached, with every later night green.
     truncated = limit is not None and copied + gone >= limit
-    if (
-        failed or truncated
-        or bucket_scoped or stopped or collisions
-    ):
+    if failed or truncated or bucket_scoped or stopped or collisions:
         return "partial"
     return "ok"
 
@@ -916,9 +950,7 @@ def publish_report(
         )
         logger.info("run report on Box: %s", report.box_remote_path(entry))
     except RcloneError as exc:
-        logger.error(
-            "run report stayed local at %s — upload failed: %s", local, exc
-        )
+        logger.error("run report stayed local at %s — upload failed: %s", local, exc)
 
 
 def publish_ledger(
@@ -959,9 +991,7 @@ def publish_ledger(
     try:
         local_size = local.stat().st_size
     except OSError as exc:
-        logger.error(
-            "cannot read %s: %s — %s", local, exc, LEDGER_STALE_MARKER
-        )
+        logger.error("cannot read %s: %s — %s", local, exc, LEDGER_STALE_MARKER)
         return "ledger_stale"
     destination = report.box_ledger_path(args.box_root)
     try:
@@ -983,20 +1013,21 @@ def publish_ledger(
                 "host before running again, and do not upload over it. See "
                 "'If the deploy host itself is gone' in the wiki. Uploading "
                 "now would lose the record of what is already backed up.",
-                LEDGER_AHEAD_MARKER, destination,
-                lib.format_bytes(remote_size), lib.format_bytes(local_size),
+                LEDGER_AHEAD_MARKER,
+                destination,
+                lib.format_bytes(remote_size),
+                lib.format_bytes(local_size),
             )
             return "ledger_ahead"
-        client.copy_file(
-            dock.STATE_MOUNT, report.LEDGER_FILENAME, box_fs, destination
-        )
+        client.copy_file(dock.STATE_MOUNT, report.LEDGER_FILENAME, box_fs, destination)
         logger.info("ledger on Box: %s (%s)", destination, lib.format_bytes(local_size))
     except Exception as exc:
         # Deliberately broad: this runs in the cleanup path, and anything
         # raised here would skip the container teardown below it.
         logger.error(
             "ledger stayed on the host only — upload failed: %s — %s",
-            exc, LEDGER_STALE_MARKER,
+            exc,
+            LEDGER_STALE_MARKER,
         )
         return "ledger_stale"
 
@@ -1040,7 +1071,9 @@ def report_dry_run(manifest: Path, ledger: Ledger, limit: int | None) -> Totals:
         report_skips(plan)
     logger.info(
         "dry run — would copy %d, %d already current, %d skipped; nothing was copied",
-        totals.copied, totals.already_current, totals.skipped,
+        totals.copied,
+        totals.already_current,
+        totals.skipped,
     )
     if totals.collisions:
         report_collisions(totals.collisions)
@@ -1048,7 +1081,8 @@ def report_dry_run(manifest: Path, ledger: Ledger, limit: int | None) -> Totals:
     if name_skips > 0:
         logger.error(
             "%d %s Box cannot store. A real run would refuse them too.",
-            name_skips, SKIPPED_NAME_MARKER,
+            name_skips,
+            SKIPPED_NAME_MARKER,
         )
     return totals
 
@@ -1093,10 +1127,18 @@ def copy_manifest(
         if not plan.copies:
             continue
         logger.info(
-            "batch: %d object(s), %s", len(plan.copies), lib.format_bytes(plan.total_bytes)
+            "batch: %d object(s), %s",
+            len(plan.copies),
+            lib.format_bytes(plan.total_bytes),
         )
         copied, failed, gone = copy_all(
-            client, plan, minio, box_fs, args.box_root, ledger, args.workers,
+            client,
+            plan,
+            minio,
+            box_fs,
+            args.box_root,
+            ledger,
+            args.workers,
             failures=totals.failures,
             gone=totals.gone,
             succeeded=totals.verify_pool,
@@ -1123,7 +1165,9 @@ def minio_source_from_env(args: argparse.Namespace) -> MinioSource:
             "bucket name and every copy 404s."
         )
     return MinioSource(
-        endpoint=os.environ.get("OBJECT_BACKUP_MINIO_ENDPOINT", "http://supabase-minio:9000"),
+        endpoint=os.environ.get(
+            "OBJECT_BACKUP_MINIO_ENDPOINT", "http://supabase-minio:9000"
+        ),
         access_key=access,
         secret_key=secret,
         bucket=args.minio_bucket,
@@ -1240,7 +1284,9 @@ def preflight_source(client: RcloneRC, minio: MinioSource, samples: list) -> Non
             if client.stat(minio.fs(), remote) is not None:
                 logger.info(
                     "preflight ok — source root %s resolves (%d of %d sampled)",
-                    minio.root(), len(tried), len(samples),
+                    minio.root(),
+                    len(tried),
+                    len(samples),
                 )
                 return
         except RcloneError as exc:
@@ -1284,7 +1330,9 @@ DAEMON_READY_TIMEOUT_SECONDS = 10
 def wait_for_daemon(daemon: dock.RcDaemon, attempts: int = 30) -> RcloneRC:
     """Poll rc/noop until the daemon answers, so the first copy isn't a race."""
     poll = RcloneRC(
-        daemon.url, daemon.user, daemon.password,
+        daemon.url,
+        daemon.user,
+        daemon.password,
         timeout=DAEMON_READY_TIMEOUT_SECONDS,
     )
     for attempt in range(attempts):
@@ -1342,7 +1390,6 @@ def report_skips(plan: lib.CopyPlan) -> None:
             lib.loggable(path),
             skipped.reason,
         )
-
 
 
 if __name__ == "__main__":

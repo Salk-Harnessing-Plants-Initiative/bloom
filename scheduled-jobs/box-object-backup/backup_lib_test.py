@@ -18,13 +18,29 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import backup_lib as lib  # noqa: E402
 from backup_lib import (  # noqa: E402
-    BACKING_BUCKET, SQLITE_MAX_VARIABLES, BackupError, CopiedRecord, StorageObject,
-    batches, box_path, build_plan, chunked, format_bytes, iter_manifest,
-    loggable, objects_query, parse_manifest, unsafe_reason,
+    BACKING_BUCKET,
+    SQLITE_MAX_VARIABLES,
+    BackupError,
+    CopiedRecord,
+    StorageObject,
+    batches,
+    box_path,
+    build_plan,
+    chunked,
+    format_bytes,
+    iter_manifest,
+    loggable,
+    objects_query,
+    parse_manifest,
+    unsafe_reason,
 )
 from ledger import Ledger, utcnow  # noqa: E402
 from rclone_rc import (  # noqa: E402
-    MinioSource, RcloneError, RcloneRC, _is_retryable, redact,
+    MinioSource,
+    RcloneError,
+    RcloneRC,
+    _is_retryable,
+    redact,
 )
 
 VERSION = "0f8b1c2a-4d5e-4f60-9a1b-2c3d4e5f6a7b"
@@ -42,6 +58,7 @@ def obj(
 
 
 # ---------- the core mapping ----------
+
 
 def test_minio_key_is_relative_to_the_backing_bucket():
     # NOT a whole MinIO address — the bucket comes from MinioSource.fs() and
@@ -78,16 +95,21 @@ def test_ledger_key_is_bucket_and_name():
 
 # ---------- box_path ----------
 
+
 def test_box_path_without_root_is_the_storage_path():
     assert box_path(obj()) == "images/exp-42/plate-7/frame_0001.png"
 
 
 def test_box_path_prefixes_the_root():
-    assert box_path(obj(), "Bloom-Backups/prod").startswith("Bloom-Backups/prod/images/")
+    assert box_path(obj(), "Bloom-Backups/prod").startswith(
+        "Bloom-Backups/prod/images/"
+    )
 
 
 def test_box_path_tolerates_slashes_around_the_root():
-    assert box_path(obj(), "/Bloom-Backups/prod/") == box_path(obj(), "Bloom-Backups/prod")
+    assert box_path(obj(), "/Bloom-Backups/prod/") == box_path(
+        obj(), "Bloom-Backups/prod"
+    )
 
 
 def test_box_path_normalizes_unicode_to_nfc():
@@ -101,6 +123,7 @@ def test_box_path_preserves_nested_directories():
 
 
 # ---------- manifest parsing ----------
+
 
 def test_parse_manifest_reads_a_single_row():
     raw = f"images\texp-42/frame.png\t{VERSION}\t2048\t2026-08-01T12:00:00+00"
@@ -173,6 +196,7 @@ def test_iter_manifest_reads_a_file_handle(tmp_path):
 
 # ---------- batching ----------
 
+
 def test_batches_splits_a_stream():
     objects = [obj(name=f"a/{i}.png") for i in range(5)]
     assert [len(b) for b in batches(iter(objects), 2)] == [2, 2, 1]
@@ -188,6 +212,7 @@ def test_batches_larger_than_the_stream_yield_one_batch():
 
 
 # ---------- SQL construction ----------
+
 
 def test_objects_query_excludes_tus_files_by_default():
     assert "'tus-files'" in objects_query()
@@ -226,6 +251,7 @@ def test_objects_query_reads_size_from_metadata():
 
 
 # ---------- path safety ----------
+
 
 def test_safe_object_has_no_reason():
     assert unsafe_reason(obj()) is None
@@ -288,6 +314,7 @@ def test_unknown_size_is_not_treated_as_oversized():
 
 # ---------- planning ----------
 
+
 def test_plan_copies_an_object_absent_from_the_ledger():
     plan = build_plan([obj()], {})
     assert len(plan.copies) == 1 and plan.already_current == 0
@@ -336,6 +363,7 @@ def test_plan_of_nothing_is_empty():
 
 
 # ---------- ledger ----------
+
 
 @pytest.fixture
 def ledger(tmp_path):
@@ -451,6 +479,7 @@ def test_utcnow_is_an_iso_timestamp_with_offset():
 
 # ---------- resume semantics ----------
 
+
 def test_a_resumed_run_only_copies_what_the_ledger_lacks(ledger):
     objects = [obj(name=f"a/{i}.png") for i in range(5)]
     for done in objects[:3]:
@@ -461,8 +490,11 @@ def test_a_resumed_run_only_copies_what_the_ledger_lacks(ledger):
 
 # ---------- MinIO connection string ----------
 
+
 def test_minio_fs_declares_the_minio_provider():
-    assert "provider=Minio" in MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
+    assert (
+        "provider=Minio" in MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
+    )
 
 
 def test_minio_fs_carries_the_endpoint_quoted():
@@ -480,7 +512,12 @@ def test_minio_fs_keeps_every_parameter_after_the_endpoint():
     # was read as path, so the credentials never applied at all.
     fs = MinioSource("http://m:9000", "key", "sec", "bloom-storage").fs()
     tail = fs.split('endpoint="http://m:9000"', 1)[1]
-    for param in ("access_key_id=", "secret_access_key=", "region=", "force_path_style="):
+    for param in (
+        "access_key_id=",
+        "secret_access_key=",
+        "region=",
+        "force_path_style=",
+    ):
         assert param in tail, f"{param} lost after the endpoint"
 
 
@@ -490,7 +527,10 @@ def test_minio_fs_ends_at_the_bucket_not_inside_the_endpoint():
 
 
 def test_minio_fs_forces_path_style():
-    assert "force_path_style=true" in MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
+    assert (
+        "force_path_style=true"
+        in MinioSource("http://m:9000", "k", "s", "bloom-storage").fs()
+    )
 
 
 def test_minio_fs_is_a_connection_string_not_a_named_remote():
@@ -515,6 +555,7 @@ def test_minio_fs_doubles_an_embedded_quote():
 
 
 # ---------- retry classification ----------
+
 
 def test_box_throttling_is_retryable():
     assert _is_retryable(429, "rate limit")
@@ -543,6 +584,7 @@ def test_rclone_error_defaults_to_not_retryable():
 
 # ---------- credential redaction ----------
 
+
 def test_redact_hides_the_minio_secret():
     fs = MinioSource("http://m:9000", "rootuser", "s3cr3t-value", "bloom-storage").fs()
     assert "s3cr3t-value" not in redact(f"copy failed on {fs}")
@@ -566,7 +608,7 @@ def test_redact_hides_a_secret_that_needed_quoting():
     # The characters that force quoting are exactly the ones the old pattern
     # excluded, so a quoted secret passed through in full. Once the endpoint is
     # quoted too, a redactor that cannot read quotes redacts nothing at all.
-    for secret in ('pa,ss', 'pa"ss', 'pa:ss', 'pa,s"s:x'):
+    for secret in ("pa,ss", 'pa"ss', "pa:ss", 'pa,s"s:x'):
         out = redact(MinioSource("http://m:9000", "user", secret, "bloom-storage").fs())
         assert secret not in out, f"leaked {secret!r}"
         assert "user" not in out.replace("bloom-storage", "")
@@ -597,6 +639,7 @@ def test_redact_marks_where_it_scrubbed():
 
 
 # ---------- small helpers ----------
+
 
 def test_chunked_splits_evenly():
     assert list(chunked([1, 2, 3, 4], 2)) == [[1, 2], [3, 4]]
@@ -658,7 +701,10 @@ class TestSourceAddress:
         #   /data/bloom-storage/storage-single-tenant/<bucket_id>/<name>/<ver>
         # Also what services/video-worker/video_listener.py reads from.
         source = MinioSource(
-            "http://supabase-minio:9000", "k", "s", "bloom-storage",
+            "http://supabase-minio:9000",
+            "k",
+            "s",
+            "bloom-storage",
             prefix="storage-single-tenant",
         )
         assert source.fs().endswith(":bloom-storage")
@@ -786,7 +832,11 @@ class TestTheClientRedactsWhereTheErrorIsBuilt:
         from rclone_rc import RcloneError
 
         err = urllib.error.HTTPError(
-            "http://x", 404, "not found", {}, io.BytesIO(b'{"error": "object not found"}')
+            "http://x",
+            404,
+            "not found",
+            {},
+            io.BytesIO(b'{"error": "object not found"}'),
         )
         client = self.client(monkeypatch, err)
         with pytest.raises(RcloneError) as caught:
@@ -953,8 +1003,10 @@ class TestTwoNamesThatBecomeOneBoxPath:
 
     def test_the_same_name_in_another_bucket_is_not_a_collision(self):
         plan = build_plan(
-            [obj(bucket_id="images", name=self.COMPOSED),
-             obj(bucket_id="videos", name=self.DECOMPOSED)],
+            [
+                obj(bucket_id="images", name=self.COMPOSED),
+                obj(bucket_id="videos", name=self.DECOMPOSED),
+            ],
             {},
         )
         assert len(plan.copies) == 2 and plan.skipped == ()
@@ -996,16 +1048,14 @@ class TestTheLedgerRemembersWhichNameHoldsThePath:
 
         path = str(tmp_path / "old.db")
         conn = sqlite3.connect(path)
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE copied (
                 bucket_id TEXT NOT NULL, name TEXT NOT NULL, version TEXT,
                 size INTEGER, copied_at TEXT NOT NULL,
                 PRIMARY KEY (bucket_id, name)
             );
             INSERT INTO copied VALUES ('images', 'a.png', 'v1', 1, 'then');
-            """
-        )
+            """)
         conn.commit()
         conn.close()
 
@@ -1062,6 +1112,7 @@ class TestTheLedgerStoresWhatItLooksUp:
 
 # ---------- paths that reach a log, and the summary it feeds ----------
 
+
 def test_a_plain_path_is_left_readable():
     assert loggable("images/exp-42/frame_0001.png") == "images/exp-42/frame_0001.png"
 
@@ -1106,9 +1157,7 @@ def test_a_newline_in_a_name_cannot_start_a_line_of_its_own():
     rendered = loggable(forged)
     assert "\n" not in rendered, "the name still spans two lines"
     assert "\\n" in rendered
-    assert not any(
-        line.startswith("2026-") for line in rendered.splitlines()[1:]
-    )
+    assert not any(line.startswith("2026-") for line in rendered.splitlines()[1:])
 
 
 def test_a_carriage_return_cannot_overwrite_the_line_it_is_on():
@@ -1128,6 +1177,7 @@ def test_a_path_that_is_merely_non_ascii_is_still_escaped():
 
 
 # ---------- torn responses from the daemon ----------
+
 
 def test_a_daemon_that_closes_the_connection_is_a_retryable_rclone_error(monkeypatch):
     """Found by running the job for the first time.
@@ -1185,6 +1235,7 @@ def test_an_incomplete_read_is_a_retryable_rclone_error(monkeypatch):
 
 # ---------- the no-network ban must fail loudly, not plausibly ----------
 
+
 def test_the_network_ban_raises_something_the_client_does_not_catch():
     """The exception type in conftest is load-bearing and was never asserted.
 
@@ -1204,11 +1255,14 @@ def test_the_network_ban_raises_something_the_client_does_not_catch():
         "the ban raises an OSError, which RcloneRC.call converts into a "
         "retryable error — a test that opened a socket would pass"
     )
-    assert not isinstance(caught.value, __import__("http.client", fromlist=["x"]).HTTPException)
+    assert not isinstance(
+        caught.value, __import__("http.client", fromlist=["x"]).HTTPException
+    )
     assert "5572" in str(caught.value), "the message does not name the address"
 
 
 # ---------- two names, one path on Box ----------
+
 
 @pytest.mark.parametrize("name", ["a//b.png", "a/./b.png", "a/", "."])
 def test_a_name_that_collapses_to_another_path_is_refused(name):
@@ -1242,6 +1296,7 @@ def test_ordinary_paths_are_untouched():
 
 
 # ---------- the lock's errno filter ----------
+
 
 def test_only_a_held_lock_counts_as_held(monkeypatch, tmp_path):
     """Any other OSError must NOT be reported as "another run holds it".

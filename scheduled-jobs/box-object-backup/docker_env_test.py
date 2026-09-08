@@ -153,7 +153,9 @@ class TestManifestQueryIsBoundedAndReadOnly:
     def test_the_sql_arrives_on_stdin_not_in_argv(self, piped, tmp_path):
         # Keeps a long bucket list off the argv length limit, and keeps query
         # text out of `ps`.
-        dock.psql_query_to_file("c", "SELECT secret_thing", "u", "d", tmp_path / "m.tsv")
+        dock.psql_query_to_file(
+            "c", "SELECT secret_thing", "u", "d", tmp_path / "m.tsv"
+        )
         assert "secret_thing" in piped["stdin"]
         assert not any("secret_thing" in a for a in piped["argv"])
 
@@ -166,7 +168,9 @@ class TestRcloneDaemonArgv:
         calls, scripted = captured
         scripted["stdout"] = "containerid\n"
         options = dict(
-            network="supanet", rclone_config="/conf/rclone.conf", port=5572,
+            network="supanet",
+            rclone_config="/conf/rclone.conf",
+            port=5572,
             transfers=8,
         )
         options.update(kwargs)
@@ -177,7 +181,9 @@ class TestRcloneDaemonArgv:
         calls, scripted = captured
         scripted["stdout"] = "containerid\n"
         options = dict(
-            network="supanet", rclone_config="/conf/rclone.conf", port=5572,
+            network="supanet",
+            rclone_config="/conf/rclone.conf",
+            port=5572,
             transfers=8,
         )
         options.update(kwargs)
@@ -234,7 +240,9 @@ class TestTheDaemonPasswordIsNotDiscoverable:
         calls, scripted = captured
         scripted["stdout"] = "containerid\n"
         options = dict(
-            network="supanet", rclone_config="/conf/rclone.conf", port=5572,
+            network="supanet",
+            rclone_config="/conf/rclone.conf",
+            port=5572,
             transfers=8,
         )
         options.update(kwargs)
@@ -260,9 +268,9 @@ class TestTheDaemonPasswordIsNotDiscoverable:
         # which is just as readable. Valueless means "copy it from my env".
         argv, env, daemon = self.call(captured)
         assert dock.RC_PASS_ENV in argv, "docker was not told to forward it"
-        assert not any(
-            a.startswith(f"{dock.RC_PASS_ENV}=") for a in argv
-        ), "the value is in docker's argv"
+        assert not any(a.startswith(f"{dock.RC_PASS_ENV}=") for a in argv), (
+            "the value is in docker's argv"
+        )
 
     def test_the_rc_pass_flag_is_gone(self, captured):
         argv, env, daemon = self.call(captured)

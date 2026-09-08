@@ -50,8 +50,7 @@ class Ledger:
         return cls(conn)
 
     def _migrate(self) -> None:
-        self.conn.executescript(
-            """
+        self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS copied (
                 bucket_id  TEXT NOT NULL,
                 name       TEXT NOT NULL,
@@ -77,8 +76,7 @@ class Ledger:
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
-            """
-        )
+            """)
         # A ledger written before raw_name existed has the column added rather
         # than rebuilt: its rows are still correct, they simply cannot report a
         # collision until each is next copied. Rebuilding would re-copy all
@@ -146,10 +144,12 @@ class Ledger:
                     f"WHERE (bucket_id, name) IN ({placeholders})",
                     params,
                 ).fetchall()
-            found.update({
-                (bucket, name): CopiedRecord(version, raw)
-                for bucket, name, version, raw in rows
-            })
+            found.update(
+                {
+                    (bucket, name): CopiedRecord(version, raw)
+                    for bucket, name, version, raw in rows
+                }
+            )
         return found
 
     def mark_copied(self, obj: StorageObject, now: str | None = None) -> None:
@@ -212,4 +212,3 @@ class Ledger:
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00")
-

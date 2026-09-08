@@ -25,7 +25,10 @@ import backup_objects as job
 from runlock import SKIP_MARKER
 
 WORKFLOW = (
-    Path(__file__).resolve().parents[2] / ".github" / "workflows" / "box-object-backup.yml"
+    Path(__file__).resolve().parents[2]
+    / ".github"
+    / "workflows"
+    / "box-object-backup.yml"
 )
 
 
@@ -46,7 +49,9 @@ def parsed(workflow: str) -> dict:
 @pytest.fixture(scope="module")
 def summary_script(parsed: dict) -> str:
     steps = parsed["jobs"]["mirror"]["steps"]
-    return next(s["run"] for s in steps if s.get("name", "").startswith("Write the run summary"))
+    return next(
+        s["run"] for s in steps if s.get("name", "").startswith("Write the run summary")
+    )
 
 
 def _strip_comments(script: str) -> str:
@@ -105,6 +110,7 @@ class TestSkipMarkerContract:
         that is non-ASCII — so a plain-ASCII name reaches the log verbatim.
         """
         import re as _re
+
         pattern = _re.compile(
             r"^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_STATUS=[a-z_]+", _re.M
         )
@@ -117,7 +123,9 @@ class TestSkipMarkerContract:
         real = "2026-09-07 02:00:02,100 INFO BOX_BACKUP_STATUS=failed\n"
         assert pattern.search(real), "the real status line does not match"
 
-    def test_the_job_emits_a_status_the_summary_knows(self, tmp_path, monkeypatch, caplog):
+    def test_the_job_emits_a_status_the_summary_knows(
+        self, tmp_path, monkeypatch, caplog
+    ):
         """Both halves of the contract, in one place.
 
         The vocabulary is closed on the Python side and branched on in the
@@ -145,10 +153,16 @@ class TestSkipMarkerContract:
         from runlock import RunLock
 
         monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 0)
-        args = job.parse_args([
-            "--env", "prod", "--state-dir", str(tmp_path),
-            "--box-root", "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
-        ])
+        args = job.parse_args(
+            [
+                "--env",
+                "prod",
+                "--state-dir",
+                str(tmp_path),
+                "--box-root",
+                "Bloom-Backups/BloomV2-Data-Backup/prod/storage",
+            ]
+        )
         holder = RunLock(tmp_path).acquire()
         try:
             assert job.run_backup(args) == 0
@@ -181,18 +195,22 @@ class TestSkipMarkerContract:
         anything, including that the run succeeded."""
         script = _strip_comments(summary_script)
         start = script.index("elif has_flag collisions")
-        branch = script[start:start + 700]
+        branch = script[start : start + 700]
         assert "OBJECTS NOT BACKED UP" in branch
         assert "rename" in branch.lower(), "does not say what to do"
         assert "succeeded" not in branch, "a refused collision reports success"
 
-    def test_the_collision_branch_precedes_the_success_branch(self, summary_script: str):
+    def test_the_collision_branch_precedes_the_success_branch(
+        self, summary_script: str
+    ):
         script = _strip_comments(summary_script)
         assert script.index("elif has_flag collisions") < script.index(
             '[ "$status" = "ok" ]'
         ), "the success branch would win and the summary would read succeeded"
 
-    def test_a_name_box_cannot_store_is_reported_in_the_summary(self, summary_script: str):
+    def test_a_name_box_cannot_store_is_reported_in_the_summary(
+        self, summary_script: str
+    ):
         """The same permanent non-backup a refused collision is.
 
         The object is not on Box and only a rename in Supabase can change
@@ -208,9 +226,9 @@ class TestSkipMarkerContract:
         # It happens on nights that otherwise copied fine, so as an elif the
         # success branch would hide it.
         script = _strip_comments(summary_script)
-        assert re.search(
-            r"(?<!el)if has_flag skipped_names", script
-        ), "the skipped-names notice is a branch, so another result hides it"
+        assert re.search(r"(?<!el)if has_flag skipped_names", script), (
+            "the skipped-names notice is a branch, so another result hides it"
+        )
 
     def test_the_skipped_names_notice_says_only_a_rename_fixes_it(
         self, summary_script: str
@@ -220,7 +238,7 @@ class TestSkipMarkerContract:
         script = _strip_comments(summary_script)
         opener = "if has_flag skipped_names"
         assert opener in script, "there is no skipped-names notice to check"
-        branch = script[script.index(opener):][:1200]
+        branch = script[script.index(opener) :][:1200]
         assert "renaming them in Supabase" in branch, "does not say what to do"
         # It does NOT stay in view: the run stays clean so one unfixable
         # filename cannot freeze the watermark and make every later night
@@ -231,7 +249,9 @@ class TestSkipMarkerContract:
         )
         assert "report on Box" in branch, "does not point at the durable record"
 
-    def test_a_stale_ledger_on_box_is_reported_in_the_summary(self, summary_script: str):
+    def test_a_stale_ledger_on_box_is_reported_in_the_summary(
+        self, summary_script: str
+    ):
         """The ledger upload is best-effort, so a refused or failed one leaves
         the run at exit 0 and the summary reading "succeeded". What went stale
         is the record of which objects are already mirrored — the thing that
@@ -273,9 +293,9 @@ class TestSkipMarkerContract:
         collision.
         """
         script = _strip_comments(summary_script)
-        assert re.search(
-            r"(?<!el)if has_flag ledger_stale", script
-        ), "the stale-ledger notice is a branch, so another result hides it"
+        assert re.search(r"(?<!el)if has_flag ledger_stale", script), (
+            "the stale-ledger notice is a branch, so another result hides it"
+        )
 
     def test_the_stale_ledger_notice_says_what_is_and_is_not_wrong(
         self, summary_script: str
@@ -286,12 +306,14 @@ class TestSkipMarkerContract:
         opener = "if has_flag ledger_stale"
         assert opener in script, "there is no stale-ledger notice to check"
         start = script.index(opener)
-        branch = script[start:start + 900]
+        branch = script[start : start + 900]
         assert "NOT updated" in branch
         assert "copied fine" in branch, "does not say the objects are safe"
         assert "wiki" in branch, "does not say where to look"
 
-    def test_a_verification_that_answered_nothing_is_reported(self, summary_script: str):
+    def test_a_verification_that_answered_nothing_is_reported(
+        self, summary_script: str
+    ):
         """It cannot fail the run — Box not answering is not evidence against
         the backup — so the summary is the only place it can surface. A night
         reporting "succeeded" on a check that silently ran on nothing is the
@@ -300,7 +322,9 @@ class TestSkipMarkerContract:
             "the summary cannot report a verification that checked nothing"
         )
 
-    def test_a_ledger_on_box_that_is_ahead_gets_its_own_notice(self, summary_script: str):
+    def test_a_ledger_on_box_that_is_ahead_gets_its_own_notice(
+        self, summary_script: str
+    ):
         """It must never share the stale-ledger notice.
 
         Stale means the host has the good ledger and Box is behind. Ahead
@@ -313,9 +337,9 @@ class TestSkipMarkerContract:
         assert "has_flag ledger_ahead" in script, (
             "a refused ledger upload cannot be told from a failed one"
         )
-        assert re.search(
-            r"(?<!el)if has_flag ledger_ahead", script
-        ), "the ahead-ledger notice is a branch, so another result hides it"
+        assert re.search(r"(?<!el)if has_flag ledger_ahead", script), (
+            "the ahead-ledger notice is a branch, so another result hides it"
+        )
 
     def test_the_ahead_ledger_notice_says_restore_and_not_upload(
         self, summary_script: str
@@ -324,7 +348,7 @@ class TestSkipMarkerContract:
         script = _strip_comments(summary_script)
         opener = "if has_flag ledger_ahead"
         assert opener in script, "there is no ahead-ledger notice to check"
-        branch = script[script.index(opener):][:1000]
+        branch = script[script.index(opener) :][:1000]
         assert "Restore the Box copy" in branch, "does not say to restore"
         assert "Do NOT upload" in branch, "does not warn against uploading"
         assert "was refused on purpose" in branch, "reads as a fault, not a guard"
@@ -333,9 +357,9 @@ class TestSkipMarkerContract:
         # Same reason as the stale ledger: this happens on nights that copied
         # fine, so as an elif the success branch would hide it.
         script = _strip_comments(summary_script)
-        assert re.search(
-            r"(?<!el)if has_flag verify_incomplete", script
-        ), "the incomplete-verify notice is a branch, so another result hides it"
+        assert re.search(r"(?<!el)if has_flag verify_incomplete", script), (
+            "the incomplete-verify notice is a branch, so another result hides it"
+        )
 
     def test_the_incomplete_verify_notice_does_not_tell_anyone_to_re_copy(
         self, summary_script: str
@@ -345,7 +369,7 @@ class TestSkipMarkerContract:
         script = _strip_comments(summary_script)
         opener = "if has_flag verify_incomplete"
         assert opener in script, "there is no incomplete-verify notice to check"
-        branch = script[script.index(opener):][:900]
+        branch = script[script.index(opener) :][:900]
         assert "not a reason to re-copy" in branch
         assert "DELETE FROM" not in branch, "steers an operator into the ledger"
 
@@ -489,7 +513,7 @@ class TestTheRemoteRunGetsItsConfiguration:
 
     def test_the_env_file_is_read_on_the_remote(self, workflow: str):
         script = self.run_step(workflow)
-        assert ".env.$env_name" in script or '.env.$ENV_NAME' in script, (
+        assert ".env.$env_name" in script or ".env.$ENV_NAME" in script, (
             "nothing reads the deploy env file, so the job runs with no config"
         )
 
@@ -557,15 +581,25 @@ class TestDispatchInputCannotReachTheRemoteShell:
     def build_args(self, workflow: str, **values) -> subprocess.CompletedProcess:
         """Run the real runner-side lines and read back what ssh would send."""
         env = {
-            "DEPLOY_PATH": "/srv/bloom", "ENV_NAME": "prod", "VERIFY": "50",
-            "RUN_TAG": "1-1", "DRY_RUN": "", "RUNNER_TEMP": "/tmp",
+            "DEPLOY_PATH": "/srv/bloom",
+            "ENV_NAME": "prod",
+            "VERIFY": "50",
+            "RUN_TAG": "1-1",
+            "DRY_RUN": "",
+            "RUNNER_TEMP": "/tmp",
             "STATE_DIR": "/var/lib/bloom-box-object-backup",
             "PATH": os.environ["PATH"],
         }
         env.update(values)
         return subprocess.run(
-            ["bash", "-c", self.runner_prologue(workflow) + '\nprintf "%s" "$remote_args"'],
-            capture_output=True, text=True, env=env,
+            [
+                "bash",
+                "-c",
+                self.runner_prologue(workflow) + '\nprintf "%s" "$remote_args"',
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
         )
 
     def send(self, workflow: str, remote_args: str, cwd) -> subprocess.CompletedProcess:
@@ -573,7 +607,9 @@ class TestDispatchInputCannotReachTheRemoteShell:
         return subprocess.run(
             ["bash", "-c", f"bash -s -- {remote_args}"],
             input=self.remote_body(workflow),
-            capture_output=True, text=True, cwd=cwd,
+            capture_output=True,
+            text=True,
+            cwd=cwd,
         )
 
     def test_a_non_numeric_verify_is_refused_before_ssh_is_called(self, workflow: str):
@@ -639,7 +675,7 @@ class TestDispatchInputCannotReachTheRemoteShell:
     def test_the_deploy_path_is_checked_in_the_step_that_uses_it(self, workflow: str):
         # `cd ''` succeeds and lands in $HOME; the guard in an earlier step does
         # not protect this one.
-        assert 'DEPLOY_PATH:?' in self.run_step(workflow)
+        assert "DEPLOY_PATH:?" in self.run_step(workflow)
 
 
 class TestTheSummaryCanActuallyReport:
@@ -672,14 +708,18 @@ class TestTheSummaryCanActuallyReport:
 
         pattern = self.summary_pattern(workflow)
         result = subprocess.run(
-            ["grep", "-E", pattern], input=self.REAL_LOG,
-            capture_output=True, text=True,
+            ["grep", "-E", pattern],
+            input=self.REAL_LOG,
+            capture_output=True,
+            text=True,
         )
         assert result.stdout.strip(), (
             f"pattern {pattern!r} matches nothing in a real log — "
             "the run summary would be empty on every run"
         )
-        assert "verify:" in result.stdout, "verification counts missing from the summary"
+        assert "verify:" in result.stdout, (
+            "verification counts missing from the summary"
+        )
         assert "done —" in result.stdout, "the closing line missing from the summary"
 
     def test_the_pattern_expects_the_level_as_the_third_field(self, workflow: str):
@@ -718,7 +758,8 @@ class TestTheHeadlineCarriesTheCounts:
     def summary(self, parsed: dict) -> str:
         steps = parsed["jobs"]["mirror"]["steps"]
         return next(
-            s["run"] for s in steps
+            s["run"]
+            for s in steps
             if s.get("name", "").startswith("Write the run summary")
         )
 
@@ -745,10 +786,15 @@ class TestTheHeadlineCarriesTheCounts:
             result = subprocess.run(
                 ["bash", "-e", "-c", script],
                 env={
-                    "PATH": "/usr/bin:/bin", "RUNNER_TEMP": tmp, "ENV_NAME": "prod",
-                    "OUTCOME": outcome, "GITHUB_STEP_SUMMARY": str(out), "LC_ALL": "C",
+                    "PATH": "/usr/bin:/bin",
+                    "RUNNER_TEMP": tmp,
+                    "ENV_NAME": "prod",
+                    "OUTCOME": outcome,
+                    "GITHUB_STEP_SUMMARY": str(out),
+                    "LC_ALL": "C",
                 },
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             assert result.returncode == 0, (
                 "the summary step exited "
@@ -788,7 +834,7 @@ class TestTheHeadlineCarriesTheCounts:
         assert "4,211 images copied" in self.run_summary(parsed, log)
 
     def test_the_headline_says_how_much_of_the_sample_went_unanswered(self, parsed):
-        """"2 verified" is a true statement that reads as a checked night.
+        """ "2 verified" is a true statement that reads as a checked night.
 
         Box answered 2 of 50 and the other 48 were neither confirmed present
         nor found missing. Without the qualifier beside it, the headline
@@ -848,8 +894,7 @@ class TestTheHeadlineCarriesTheCounts:
         """
         script = _strip_comments(summary_script)
         reads = [
-            ln for ln in script.splitlines()
-            if '"$log"' in ln and "last()" not in ln
+            ln for ln in script.splitlines() if '"$log"' in ln and "last()" not in ln
         ]
         assert reads == [], f"the log is read without the anchor: {reads}"
         for phrase in ("done — copied", "verify: [0-9]+ checked"):
@@ -897,12 +942,12 @@ class TestTheHeadlineCarriesTheCounts:
         happen at all — which is the scoping under test in the pair below.
         """
         script = (
-            '#!/bin/sh\n'
+            "#!/bin/sh\n"
             'case "$*" in\n'
             '  *actions-run.started*) echo "%s" ;;\n'
-            '  *find*) echo /var/lib/x/_runs/r.json ;;\n'
+            "  *find*) echo /var/lib/x/_runs/r.json ;;\n"
             '  *cat*)  echo \'{ "outcome": "partial", "status": "stopped" }\' ;;\n'
-            'esac\n'
+            "esac\n"
         ) % marker
         (fake_bin / "ssh").write_text(script)
         (fake_bin / "ssh").chmod(0o755)
@@ -937,13 +982,19 @@ class TestTheHeadlineCarriesTheCounts:
             result = subprocess.run(
                 ["bash", "-e", "-c", script],
                 env={
-                    "PATH": f"{fake_bin}:/usr/bin:/bin", "RUNNER_TEMP": tmp,
-                    "ENV_NAME": "prod", "OUTCOME": "failure",
-                    "DEPLOY_USER": "deploy", "DEPLOY_HOST": "host",
-                    "RUN_TAG": "1-1", "STATE_DIR": "/var/lib/x",
-                    "GITHUB_STEP_SUMMARY": str(out), "LC_ALL": "C",
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                    "RUNNER_TEMP": tmp,
+                    "ENV_NAME": "prod",
+                    "OUTCOME": "failure",
+                    "DEPLOY_USER": "deploy",
+                    "DEPLOY_HOST": "host",
+                    "RUN_TAG": "1-1",
+                    "STATE_DIR": "/var/lib/x",
+                    "GITHUB_STEP_SUMMARY": str(out),
+                    "LC_ALL": "C",
                 },
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             assert result.returncode == 0, result.stderr[:300]
             body = out.read_text()
@@ -952,9 +1003,7 @@ class TestTheHeadlineCarriesTheCounts:
         )
         assert "FAILED" not in body
 
-    def test_a_report_from_another_job_is_not_used_as_this_one_s_verdict(
-        self, parsed
-    ):
+    def test_a_report_from_another_job_is_not_used_as_this_one_s_verdict(self, parsed):
         """The seed runs in tmux for days, and writes a report every chunk.
 
         A nightly that stands down against the seed's lock, then loses its
@@ -982,13 +1031,19 @@ class TestTheHeadlineCarriesTheCounts:
             result = subprocess.run(
                 ["bash", "-e", "-c", script],
                 env={
-                    "PATH": f"{fake_bin}:/usr/bin:/bin", "RUNNER_TEMP": tmp,
-                    "ENV_NAME": "prod", "OUTCOME": "failure",
-                    "DEPLOY_USER": "deploy", "DEPLOY_HOST": "host",
-                    "RUN_TAG": "1-1", "STATE_DIR": "/var/lib/x",
-                    "GITHUB_STEP_SUMMARY": str(out), "LC_ALL": "C",
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                    "RUNNER_TEMP": tmp,
+                    "ENV_NAME": "prod",
+                    "OUTCOME": "failure",
+                    "DEPLOY_USER": "deploy",
+                    "DEPLOY_HOST": "host",
+                    "RUN_TAG": "1-1",
+                    "STATE_DIR": "/var/lib/x",
+                    "GITHUB_STEP_SUMMARY": str(out),
+                    "LC_ALL": "C",
                 },
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             assert result.returncode == 0, result.stderr[:300]
             body = out.read_text()
@@ -1057,13 +1112,19 @@ class TestTheWorkflowAndTheJobWatchOneDirectory:
         )["run"]
         remote = outer.split("<<'REMOTE'", 1)[1].split("\n          REMOTE", 1)[0]
         guard_at = remote.index("OBJECT_BACKUP_STATE_DIR is")
-        block = remote[:guard_at + remote[guard_at:].index("fi") + 2]
-        block = block[block.index("if [ -n \"${OBJECT_BACKUP_STATE_DIR:-}\""):]
+        block = remote[: guard_at + remote[guard_at:].index("fi") + 2]
+        block = block[block.index('if [ -n "${OBJECT_BACKUP_STATE_DIR:-}"') :]
         result = subprocess.run(
-            ["bash", "-c", f'state_dir="$1"\n{block}\necho reached-the-run',
-             "bash", "/var/lib/bloom-box-object-backup"],
+            [
+                "bash",
+                "-c",
+                f'state_dir="$1"\n{block}\necho reached-the-run',
+                "bash",
+                "/var/lib/bloom-box-object-backup",
+            ],
             env={"OBJECT_BACKUP_STATE_DIR": str(tmp_path), "PATH": "/usr/bin:/bin"},
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert result.returncode == 2, result.stdout
         assert "reached-the-run" not in result.stdout
@@ -1079,14 +1140,23 @@ class TestTheWorkflowAndTheJobWatchOneDirectory:
         )["run"]
         remote = outer.split("<<'REMOTE'", 1)[1].split("\n          REMOTE", 1)[0]
         guard_at = remote.index("OBJECT_BACKUP_STATE_DIR is")
-        block = remote[:guard_at + remote[guard_at:].index("fi") + 2]
-        block = block[block.index("if [ -n \"${OBJECT_BACKUP_STATE_DIR:-}\""):]
-        for env in ({}, {"OBJECT_BACKUP_STATE_DIR": "/var/lib/bloom-box-object-backup"}):
+        block = remote[: guard_at + remote[guard_at:].index("fi") + 2]
+        block = block[block.index('if [ -n "${OBJECT_BACKUP_STATE_DIR:-}"') :]
+        for env in (
+            {},
+            {"OBJECT_BACKUP_STATE_DIR": "/var/lib/bloom-box-object-backup"},
+        ):
             result = subprocess.run(
-                ["bash", "-c", f'state_dir="$1"\n{block}\necho reached-the-run',
-                 "bash", "/var/lib/bloom-box-object-backup"],
+                [
+                    "bash",
+                    "-c",
+                    f'state_dir="$1"\n{block}\necho reached-the-run',
+                    "bash",
+                    "/var/lib/bloom-box-object-backup",
+                ],
                 env={"PATH": "/usr/bin:/bin", **env},
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             assert "reached-the-run" in result.stdout, (env, result.stderr)
 
@@ -1116,7 +1186,7 @@ class TestTheSummaryStepCannotHangTheRunner:
         )
         # Everything remote must go through that helper, or a new call gets
         # the default two-minute connect on a host that may be wedged.
-        assert 'remote() {' in body
+        assert "remote() {" in body
         assert '"${DEPLOY_USER}@${DEPLOY_HOST}" "$1"' in body
 
 
@@ -1142,8 +1212,12 @@ class TestCancellingTheJobStopsTheRun:
     def test_it_runs_before_the_summary(self, parsed: dict):
         # So the summary describes a run that has actually stopped.
         names = [s.get("name", "") for s in parsed["jobs"]["mirror"]["steps"]]
-        stop = next(i for i, n in enumerate(names) if n.startswith("Ask the host to stop"))
-        summary = next(i for i, n in enumerate(names) if n.startswith("Write the run summary"))
+        stop = next(
+            i for i, n in enumerate(names) if n.startswith("Ask the host to stop")
+        )
+        summary = next(
+            i for i, n in enumerate(names) if n.startswith("Write the run summary")
+        )
         assert stop < summary
 
     def test_it_finds_the_process_through_the_lock_file(self, parsed: dict):
@@ -1223,14 +1297,19 @@ class TestTheRunStepStampsItsMarker:
         lines = [ln.strip() for ln in script.splitlines()]
         start = next(i for i, ln in enumerate(lines) if ln.startswith("marker="))
         write = next(i for i, ln in enumerate(lines) if '> "$marker"' in ln)
-        block = "\n".join(lines[start:write + 1])
+        block = "\n".join(lines[start : write + 1])
         subprocess.run(
             [
-                "bash", "-c",
+                "bash",
+                "-c",
                 f'set -e\nrun_tag="$1"\nstate_dir="$2"\n{block}',
-                "bash", "42-7", str(tmp_path),
+                "bash",
+                "42-7",
+                str(tmp_path),
             ],
-            check=True, capture_output=True, text=True,
+            check=True,
+            capture_output=True,
+            text=True,
         )
         tag, stamped = marker.read_text().split()
         assert tag == "42-7", f"the marker does not name the job: {tag}"
@@ -1276,7 +1355,8 @@ class TestTheStopScriptBehaves:
             (lock_dir / "actions-run.started").write_text(f"{tag} {stamped}\n")
         return subprocess.run(
             ["bash", "-c", script, "bash", self.RUN_TAG, str(lock_dir)],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
 
     def test_no_lock_file_is_not_an_error(self, parsed: dict, tmp_path):
@@ -1285,14 +1365,18 @@ class TestTheStopScriptBehaves:
         assert "nothing was running" in result.stdout
 
     def test_a_lock_without_a_pid_is_not_an_error(self, parsed: dict, tmp_path):
-        result = self.run_remote(parsed, tmp_path, contents='{"started_at": 1700000000}')
+        result = self.run_remote(
+            parsed, tmp_path, contents='{"started_at": 1700000000}'
+        )
         assert result.returncode == 0
         assert "nothing to stop" in result.stdout
 
     def test_a_stale_pid_is_not_an_error(self, parsed: dict, tmp_path):
         # The kernel drops the flock when the holder dies, but the metadata can
         # outlive it.
-        result = self.run_remote(parsed, tmp_path, contents='{"pid": 999999, "started_at": 1700000000}')
+        result = self.run_remote(
+            parsed, tmp_path, contents='{"pid": 999999, "started_at": 1700000000}'
+        )
         assert result.returncode == 0
         assert "gone already" in result.stdout
 
@@ -1314,12 +1398,16 @@ class TestTheStopScriptBehaves:
         import threading
 
         child = subprocess.Popen(
-            [sys.executable, "-c",
-             "import signal,sys,time\n"
-             "signal.signal(signal.SIGTERM, lambda *a: sys.exit(3))\n"
-             "print('up', flush=True)\n"
-             "time.sleep(60)"],
-            stdout=subprocess.PIPE, text=True,
+            [
+                sys.executable,
+                "-c",
+                "import signal,sys,time\n"
+                "signal.signal(signal.SIGTERM, lambda *a: sys.exit(3))\n"
+                "print('up', flush=True)\n"
+                "time.sleep(60)",
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
         )
         assert child.stdout is not None
         assert child.stdout.readline().strip() == "up"
@@ -1342,7 +1430,8 @@ class TestTheStopScriptBehaves:
 
         with self.live_child() as child:
             result = self.run_remote(
-                parsed, tmp_path,
+                parsed,
+                tmp_path,
                 contents=json.dumps({"pid": child.pid, "started_at": 1_700_000_000}),
                 marker="other-job",
             )
@@ -1366,7 +1455,8 @@ class TestTheStopScriptBehaves:
 
         with self.live_child() as seed:
             result = self.run_remote(
-                parsed, tmp_path,
+                parsed,
+                tmp_path,
                 contents=json.dumps({"pid": seed.pid, "started_at": 1_700_000_000}),
                 marker="stood-down",
             )
@@ -1378,7 +1468,8 @@ class TestTheStopScriptBehaves:
 
         with self.live_child() as child:
             result = self.run_remote(
-                parsed, tmp_path,
+                parsed,
+                tmp_path,
                 contents=json.dumps({"pid": child.pid, "started_at": 1_700_000_000}),
                 marker=None,
             )
@@ -1391,7 +1482,9 @@ class TestTheStopScriptBehaves:
 
         with self.live_child() as child:
             result = self.run_remote(
-                parsed, tmp_path, contents=json.dumps({"pid": child.pid}),
+                parsed,
+                tmp_path,
+                contents=json.dumps({"pid": child.pid}),
             )
             assert "cannot compare" in result.stdout, result.stdout
             assert child.poll() is None
@@ -1411,12 +1504,16 @@ class TestTheStopScriptBehaves:
         import threading
 
         child = subprocess.Popen(
-            [sys.executable, "-c",
-             "import signal,sys,time\n"
-             "signal.signal(signal.SIGTERM, lambda *a: sys.exit(3))\n"
-             "print('up', flush=True)\n"
-             "time.sleep(60)"],
-            stdout=subprocess.PIPE, text=True,
+            [
+                sys.executable,
+                "-c",
+                "import signal,sys,time\n"
+                "signal.signal(signal.SIGTERM, lambda *a: sys.exit(3))\n"
+                "print('up', flush=True)\n"
+                "time.sleep(60)",
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
         )
         assert child.stdout is not None
         assert child.stdout.readline().strip() == "up"
@@ -1426,7 +1523,9 @@ class TestTheStopScriptBehaves:
         reaper.start()
         try:
             result = self.run_remote(
-                parsed, tmp_path, contents=json.dumps({"pid": child.pid, "started_at": 1_700_000_000})
+                parsed,
+                tmp_path,
+                contents=json.dumps({"pid": child.pid, "started_at": 1_700_000_000}),
             )
             assert "asking pid" in result.stdout, result.stdout
             reaper.join(timeout=15)
@@ -1477,11 +1576,15 @@ class TestTheSummaryStepSurvivesErrexit:
             result = subprocess.run(
                 argv + [script],
                 env={
-                    "PATH": "/usr/bin:/bin", "RUNNER_TEMP": tmp, "ENV_NAME": "prod",
-                    "OUTCOME": "success", "GITHUB_STEP_SUMMARY": str(out),
+                    "PATH": "/usr/bin:/bin",
+                    "RUNNER_TEMP": tmp,
+                    "ENV_NAME": "prod",
+                    "OUTCOME": "success",
+                    "GITHUB_STEP_SUMMARY": str(out),
                     "LC_ALL": "C",
                 },
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             body = out.read_text() if out.exists() else ""
         return result.returncode, body
@@ -1490,7 +1593,8 @@ class TestTheSummaryStepSurvivesErrexit:
     def summary_of(parsed):
         steps = parsed["jobs"]["mirror"]["steps"]
         return next(
-            s["run"] for s in steps
+            s["run"]
+            for s in steps
             if s.get("name", "").startswith("Write the run summary")
         )
 
@@ -1528,7 +1632,8 @@ class TestTheHeadlineMatchesTheWorstThingThatHappened:
 
         steps = parsed["jobs"]["mirror"]["steps"]
         script = next(
-            s["run"] for s in steps
+            s["run"]
+            for s in steps
             if s.get("name", "").startswith("Write the run summary")
         ).replace("${{ steps.run.outcome }}", "$OUTCOME")
         with tempfile.TemporaryDirectory() as tmp:
@@ -1537,11 +1642,15 @@ class TestTheHeadlineMatchesTheWorstThingThatHappened:
             result = subprocess.run(
                 ["bash", "-e", "-c", script],
                 env={
-                    "PATH": "/usr/bin:/bin", "RUNNER_TEMP": tmp, "ENV_NAME": "prod",
-                    "OUTCOME": "success", "GITHUB_STEP_SUMMARY": str(out),
+                    "PATH": "/usr/bin:/bin",
+                    "RUNNER_TEMP": tmp,
+                    "ENV_NAME": "prod",
+                    "OUTCOME": "success",
+                    "GITHUB_STEP_SUMMARY": str(out),
                     "LC_ALL": "C",
                 },
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             assert result.returncode == 0, (
                 f"the step exited {result.returncode}: {result.stderr.strip()[:200]}"
@@ -1577,7 +1686,8 @@ class TestTheHeadlineMatchesTheWorstThingThatHappened:
         managed to mirror anything.
         """
         log = self.night(
-            "failed", "verify_mismatch",
+            "failed",
+            "verify_mismatch",
             log=self.DONE.format(c=100, f=3000, a=0),
         )
         headline = self.headline(self.render(parsed, log))
@@ -1596,7 +1706,8 @@ class TestTheHeadlineMatchesTheWorstThingThatHappened:
         cannot be the only thing the night says when copies also failed.
         """
         body = self.render(
-            parsed, self.night("failed", "collisions", log=self.DONE.format(c=0, f=12, a=0))
+            parsed,
+            self.night("failed", "collisions", log=self.DONE.format(c=0, f=12, a=0)),
         )
         assert "OBJECTS NOT BACKED UP" in self.headline(body)
         assert "also failed to copy" in body, (
@@ -1643,8 +1754,12 @@ class TestTheHeadlineMatchesTheWorstThingThatHappened:
         """
         body = self.render(
             parsed,
-            self.night("partial", "verify_mismatch", "collisions",
-                       log=self.DONE.format(c=40, f=0, a=0)),
+            self.night(
+                "partial",
+                "verify_mismatch",
+                "collisions",
+                log=self.DONE.format(c=40, f=0, a=0),
+            ),
         )
         assert "VERIFICATION FAILED" in self.headline(body)
         assert "collision was also refused" in body
@@ -1677,7 +1792,8 @@ class TestTheHeadlineMatchesTheWorstThingThatHappened:
         "N verified" number that is not on the page.
         """
         log = self.night(
-            "ok", "verify_incomplete",
+            "ok",
+            "verify_incomplete",
             log=self.DONE.format(c=200000, f=0, a=0)
             + "2026-08-31 02:41:00,1 INFO verify: 0 checked, 0 mismatched, 50 unverified\n",
         )
@@ -1685,7 +1801,7 @@ class TestTheHeadlineMatchesTheWorstThingThatHappened:
         assert "0 verified (50 unanswered)" in headline, headline
 
     def test_the_only_night_wording_is_not_claimed_when_it_is_untrue(self, parsed):
-        """"This is the only night that will say so" holds on a clean run only.
+        """ "This is the only night that will say so" holds on a clean run only.
 
         It is true because a clean run moves the watermark past the object.
         A stopped run is recorded partial, so the watermark is held, tomorrow
@@ -1694,7 +1810,8 @@ class TestTheHeadlineMatchesTheWorstThingThatHappened:
         non-backup.
         """
         clean = self.render(
-            parsed, self.night("ok", "skipped_names", log=self.DONE.format(c=9, f=0, a=0))
+            parsed,
+            self.night("ok", "skipped_names", log=self.DONE.format(c=9, f=0, a=0)),
         )
         stopped = self.render(
             parsed,
@@ -1743,7 +1860,8 @@ class TestAConditionFoundIsNotAFailedNight:
 
         steps = parsed["jobs"]["mirror"]["steps"]
         script = next(
-            s["run"] for s in steps
+            s["run"]
+            for s in steps
             if s.get("name", "").startswith("Write the run summary")
         ).replace("${{ steps.run.outcome }}", "$OUTCOME")
         with tempfile.TemporaryDirectory() as tmp:
@@ -1752,11 +1870,15 @@ class TestAConditionFoundIsNotAFailedNight:
             result = subprocess.run(
                 ["bash", "-e", "-c", script],
                 env={
-                    "PATH": "/usr/bin:/bin", "RUNNER_TEMP": tmp, "ENV_NAME": "prod",
-                    "OUTCOME": "failure", "GITHUB_STEP_SUMMARY": str(out),
+                    "PATH": "/usr/bin:/bin",
+                    "RUNNER_TEMP": tmp,
+                    "ENV_NAME": "prod",
+                    "OUTCOME": "failure",
+                    "GITHUB_STEP_SUMMARY": str(out),
                     "LC_ALL": "C",
                 },
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             assert result.returncode == 0, result.stderr.strip()[:200]
             body = out.read_text() if out.exists() else ""
@@ -1841,9 +1963,7 @@ class TestAConditionFoundIsNotAFailedNight:
         )
         assert "ledger on Box was NOT updated" in body
 
-    def test_a_stopped_seed_night_with_a_stale_ledger_still_reads_stopped(
-        self, parsed
-    ):
+    def test_a_stopped_seed_night_with_a_stale_ledger_still_reads_stopped(self, parsed):
         """The commonest night of the seed, and it exits 6, not 3."""
         code = job.exit_code(
             failed=0, verify_mismatched=0, stopped=True, ledger_flag="ledger_stale"
@@ -1856,14 +1976,20 @@ class TestAConditionFoundIsNotAFailedNight:
 
     def test_copies_that_really_failed_still_headline_as_failed(self, parsed):
         """The other direction — this must not have gone soft."""
-        status = self.status_of(job.exit_code(failed=3000, verify_mismatched=0), "partial")
+        status = self.status_of(
+            job.exit_code(failed=3000, verify_mismatched=0), "partial"
+        )
         assert status == "failed"
         body = self.render(parsed, self.night(status, copied=100, failed=3000))
         assert "FAILED" in self.headline(body)
 
     def test_failed_copies_plus_a_mismatch_still_say_both(self, parsed):
-        status = self.status_of(job.exit_code(failed=3000, verify_mismatched=2), "partial")
-        body = self.render(parsed, self.night(status, "verify_mismatch", copied=100, failed=3000))
+        status = self.status_of(
+            job.exit_code(failed=3000, verify_mismatched=2), "partial"
+        )
+        body = self.render(
+            parsed, self.night(status, "verify_mismatch", copied=100, failed=3000)
+        )
         assert "FAILED, and verification found objects missing" in self.headline(body)
 
     def test_a_stop_does_not_hide_a_permanent_non_backup(self, parsed):
@@ -1874,7 +2000,10 @@ class TestAConditionFoundIsNotAFailedNight:
         collision would have been swallowed by "nothing needs doing".
         """
         code = job.exit_code(failed=0, verify_mismatched=0, stopped=True, collisions=1)
-        body = self.render(parsed, self.night(self.status_of(code, "partial", stopped=True), "collisions"))
+        body = self.render(
+            parsed,
+            self.night(self.status_of(code, "partial", stopped=True), "collisions"),
+        )
         assert "OBJECTS NOT BACKED UP" in self.headline(body)
         assert "asked to stop before it finished" in body, (
             "the stop vanished entirely instead of moving below the headline"
@@ -1893,7 +2022,8 @@ class TestTheFallbackRecoversTheCountsToo:
 
         steps = parsed["jobs"]["mirror"]["steps"]
         script = next(
-            s["run"] for s in steps
+            s["run"]
+            for s in steps
             if s.get("name", "").startswith("Write the run summary")
         ).replace("${{ steps.run.outcome }}", "$OUTCOME")
         with tempfile.TemporaryDirectory() as tmp:
@@ -1914,13 +2044,19 @@ class TestTheFallbackRecoversTheCountsToo:
             result = subprocess.run(
                 ["bash", "-e", "-c", script],
                 env={
-                    "PATH": f"{fake_bin}:/usr/bin:/bin", "RUNNER_TEMP": tmp,
-                    "ENV_NAME": "prod", "OUTCOME": "failure",
-                    "DEPLOY_USER": "deploy", "DEPLOY_HOST": "host",
-                    "RUN_TAG": "1-1", "STATE_DIR": "/var/lib/x",
-                    "GITHUB_STEP_SUMMARY": str(out), "LC_ALL": "C",
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                    "RUNNER_TEMP": tmp,
+                    "ENV_NAME": "prod",
+                    "OUTCOME": "failure",
+                    "DEPLOY_USER": "deploy",
+                    "DEPLOY_HOST": "host",
+                    "RUN_TAG": "1-1",
+                    "STATE_DIR": "/var/lib/x",
+                    "GITHUB_STEP_SUMMARY": str(out),
+                    "LC_ALL": "C",
                 },
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             assert result.returncode == 0, result.stderr.strip()[:300]
             return out.read_text() if out.exists() else ""
@@ -1938,10 +2074,14 @@ class TestTheFallbackRecoversTheCountsToo:
         body = self.render_with_report(
             parsed,
             {
-                "status": "stopped", "flags": [], "outcome": "partial",
+                "status": "stopped",
+                "flags": [],
+                "outcome": "partial",
                 "stats": {
-                    "copied": 412000, "already_current": 0,
-                    "verify_checked": 0, "verify_unverified": 0,
+                    "copied": 412000,
+                    "already_current": 0,
+                    "verify_checked": 0,
+                    "verify_unverified": 0,
                 },
             },
             self.TRUNCATED,
@@ -1955,14 +2095,18 @@ class TestTheFallbackRecoversTheCountsToo:
     def test_a_clean_night_recovered_from_the_report_is_not_called_malformed(
         self, parsed
     ):
-        """"(no counts in the log — check it)" means the log is broken."""
+        """ "(no counts in the log — check it)" means the log is broken."""
         body = self.render_with_report(
             parsed,
             {
-                "status": "ok", "flags": [], "outcome": "ok",
+                "status": "ok",
+                "flags": [],
+                "outcome": "ok",
                 "stats": {
-                    "copied": 4211, "already_current": 0,
-                    "verify_checked": 50, "verify_unverified": 0,
+                    "copied": 4211,
+                    "already_current": 0,
+                    "verify_checked": 50,
+                    "verify_unverified": 0,
                 },
             },
             self.TRUNCATED,
@@ -1985,7 +2129,8 @@ class TestTheFallbackRecoversTheCountsToo:
 
         steps = parsed["jobs"]["mirror"]["steps"]
         script = next(
-            s["run"] for s in steps
+            s["run"]
+            for s in steps
             if s.get("name", "").startswith("Write the run summary")
         ).replace("${{ steps.run.outcome }}", "$OUTCOME")
         with tempfile.TemporaryDirectory() as tmp:
@@ -1997,39 +2142,51 @@ class TestTheFallbackRecoversTheCountsToo:
             fake_bin = root / "bin"
             fake_bin.mkdir()
             seen = root / "find-args.txt"
-            (fake_bin / "ssh").write_text(chr(10).join([
-                "#!/bin/sh",
-                "while [ $# -gt 0 ]; do",
-                '  case "$1" in *@*) shift; break ;; *) shift ;; esac',
-                "done",
-                'exec /bin/sh -c "$*"',
-                "",
-            ]))
-            (fake_bin / "find").write_text(chr(10).join([
-                "#!/bin/sh",
-                f'printf "%s\\n" "$*" > {seen}',
-                "",
-            ]))
+            (fake_bin / "ssh").write_text(
+                chr(10).join(
+                    [
+                        "#!/bin/sh",
+                        "while [ $# -gt 0 ]; do",
+                        '  case "$1" in *@*) shift; break ;; *) shift ;; esac',
+                        "done",
+                        'exec /bin/sh -c "$*"',
+                        "",
+                    ]
+                )
+            )
+            (fake_bin / "find").write_text(
+                chr(10).join(
+                    [
+                        "#!/bin/sh",
+                        f'printf "%s\\n" "$*" > {seen}',
+                        "",
+                    ]
+                )
+            )
             for name in ("ssh", "find"):
                 (fake_bin / name).chmod(0o755)
             out = root / "summary.md"
             result = subprocess.run(
                 ["bash", "-e", "-c", script],
                 env={
-                    "PATH": f"{fake_bin}:/usr/bin:/bin", "RUNNER_TEMP": str(root),
-                    "ENV_NAME": "prod", "OUTCOME": "failure",
-                    "DEPLOY_USER": "deploy", "DEPLOY_HOST": "host",
-                    "RUN_TAG": "1-1", "STATE_DIR": str(state),
-                    "GITHUB_STEP_SUMMARY": str(out), "LC_ALL": "C",
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                    "RUNNER_TEMP": str(root),
+                    "ENV_NAME": "prod",
+                    "OUTCOME": "failure",
+                    "DEPLOY_USER": "deploy",
+                    "DEPLOY_HOST": "host",
+                    "RUN_TAG": "1-1",
+                    "STATE_DIR": str(state),
+                    "GITHUB_STEP_SUMMARY": str(out),
+                    "LC_ALL": "C",
                 },
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             assert result.returncode == 0, result.stderr.strip()[:300]
             return (seen.read_text() if seen.exists() else None), str(state)
 
-    def test_the_search_is_scoped_to_reports_written_after_this_run_began(
-        self, parsed
-    ):
+    def test_the_search_is_scoped_to_reports_written_after_this_run_began(self, parsed):
         """The seed writes into the same `_runs/` directory.
 
         The marker names this job, so the tag check passes — but without
@@ -2044,9 +2201,7 @@ class TestTheFallbackRecoversTheCountsToo:
         )
         assert f"{state}/_runs" in args
 
-    def test_the_search_does_not_run_when_the_marker_names_another_job(
-        self, parsed
-    ):
+    def test_the_search_does_not_run_when_the_marker_names_another_job(self, parsed):
         args, _ = self.search_args(parsed, "999-1 1700000000")
         assert args is None, "it searched for a report belonging to another job"
 
@@ -2060,9 +2215,7 @@ class TestTheFallbackRecoversTheCountsToo:
         """
         for marker in ("1-1 garbage", "1-1", "1-1 17e9", "1-1 -5"):
             args, _ = self.search_args(parsed, marker)
-            assert args is None, (
-                f"marker {marker!r} produced a search anyway: {args}"
-            )
+            assert args is None, f"marker {marker!r} produced a search anyway: {args}"
 
     def test_a_recovered_night_does_not_promise_nothing_needs_doing(self, parsed):
         """The report is written BEFORE the ledger upload runs.
@@ -2076,9 +2229,17 @@ class TestTheFallbackRecoversTheCountsToo:
         """
         body = self.render_with_report(
             parsed,
-            {"status": "stopped", "flags": [], "outcome": "partial",
-             "stats": {"copied": 412000, "already_current": 0,
-                       "verify_checked": 0, "verify_unverified": 0}},
+            {
+                "status": "stopped",
+                "flags": [],
+                "outcome": "partial",
+                "stats": {
+                    "copied": 412000,
+                    "already_current": 0,
+                    "verify_checked": 0,
+                    "verify_unverified": 0,
+                },
+            },
             self.TRUNCATED,
         )
         assert "stopped, progress kept" in body
@@ -2115,10 +2276,17 @@ class TestTheFallbackRecoversTheCountsToo:
         """
         body = self.render_with_report(
             parsed,
-            {"status": "stopped", "flags": ["skipped_names", "source_gone"],
-             "outcome": "partial",
-             "stats": {"copied": 400000, "already_current": 0,
-                       "verify_checked": 0, "verify_unverified": 0}},
+            {
+                "status": "stopped",
+                "flags": ["skipped_names", "source_gone"],
+                "outcome": "partial",
+                "stats": {
+                    "copied": 400000,
+                    "already_current": 0,
+                    "verify_checked": 0,
+                    "verify_unverified": 0,
+                },
+            },
             self.TRUNCATED,
         )
         assert "stopped, progress kept" in body
@@ -2128,9 +2296,17 @@ class TestTheFallbackRecoversTheCountsToo:
     def test_a_recovered_collision_still_names_itself(self, parsed):
         body = self.render_with_report(
             parsed,
-            {"status": "partial", "flags": ["collisions"], "outcome": "partial",
-             "stats": {"copied": 4, "already_current": 0,
-                       "verify_checked": 0, "verify_unverified": 0}},
+            {
+                "status": "partial",
+                "flags": ["collisions"],
+                "outcome": "partial",
+                "stats": {
+                    "copied": 4,
+                    "already_current": 0,
+                    "verify_checked": 0,
+                    "verify_unverified": 0,
+                },
+            },
             self.TRUNCATED,
         )
         assert "OBJECTS NOT BACKED UP" in body
@@ -2143,9 +2319,17 @@ class TestTheFallbackRecoversTheCountsToo:
         )
         body = self.render_with_report(
             parsed,
-            {"status": "ok", "flags": [], "outcome": "ok",
-             "stats": {"copied": 999999, "already_current": 0,
-                       "verify_checked": 0, "verify_unverified": 0}},
+            {
+                "status": "ok",
+                "flags": [],
+                "outcome": "ok",
+                "stats": {
+                    "copied": 999999,
+                    "already_current": 0,
+                    "verify_checked": 0,
+                    "verify_unverified": 0,
+                },
+            },
             log,
         )
         assert "7 images copied" in body, body[:300]
@@ -2218,7 +2402,8 @@ class TestACollisionIsNeverSwallowedByTheHeadline:
         )
         steps = parsed["jobs"]["mirror"]["steps"]
         script = next(
-            s["run"] for s in steps
+            s["run"]
+            for s in steps
             if s.get("name", "").startswith("Write the run summary")
         ).replace("${{ steps.run.outcome }}", "$OUTCOME")
         with tempfile.TemporaryDirectory() as tmp:
@@ -2227,11 +2412,15 @@ class TestACollisionIsNeverSwallowedByTheHeadline:
             r = subprocess.run(
                 ["bash", "-e", "-c", script],
                 env={
-                    "PATH": "/usr/bin:/bin", "RUNNER_TEMP": tmp, "ENV_NAME": "prod",
-                    "OUTCOME": "failure", "GITHUB_STEP_SUMMARY": str(out),
+                    "PATH": "/usr/bin:/bin",
+                    "RUNNER_TEMP": tmp,
+                    "ENV_NAME": "prod",
+                    "OUTCOME": "failure",
+                    "GITHUB_STEP_SUMMARY": str(out),
                     "LC_ALL": "C",
                 },
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             assert r.returncode == 0, r.stderr.strip()[:200]
             return out.read_text()
@@ -2289,7 +2478,8 @@ class TestADryRunIsNotDescribedAsARealOne:
         )
         steps = parsed["jobs"]["mirror"]["steps"]
         script = next(
-            s["run"] for s in steps
+            s["run"]
+            for s in steps
             if s.get("name", "").startswith("Write the run summary")
         ).replace("${{ steps.run.outcome }}", "$OUTCOME")
         with tempfile.TemporaryDirectory() as tmp:
@@ -2298,11 +2488,15 @@ class TestADryRunIsNotDescribedAsARealOne:
             r = subprocess.run(
                 ["bash", "-e", "-c", script],
                 env={
-                    "PATH": "/usr/bin:/bin", "RUNNER_TEMP": tmp, "ENV_NAME": "prod",
-                    "OUTCOME": "success", "GITHUB_STEP_SUMMARY": str(out),
+                    "PATH": "/usr/bin:/bin",
+                    "RUNNER_TEMP": tmp,
+                    "ENV_NAME": "prod",
+                    "OUTCOME": "success",
+                    "GITHUB_STEP_SUMMARY": str(out),
                     "LC_ALL": "C",
                 },
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             assert r.returncode == 0, r.stderr.strip()[:200]
             return out.read_text()
@@ -2351,7 +2545,8 @@ class TestASilentClassOfMissingObjectsCannotReadAsSuccess:
 
         steps = parsed["jobs"]["mirror"]["steps"]
         script = next(
-            s["run"] for s in steps
+            s["run"]
+            for s in steps
             if s.get("name", "").startswith("Write the run summary")
         ).replace("${{ steps.run.outcome }}", "$OUTCOME")
         with tempfile.TemporaryDirectory() as tmp:
@@ -2360,11 +2555,15 @@ class TestASilentClassOfMissingObjectsCannotReadAsSuccess:
             r = subprocess.run(
                 ["bash", "-e", "-c", script],
                 env={
-                    "PATH": "/usr/bin:/bin", "RUNNER_TEMP": tmp, "ENV_NAME": "prod",
-                    "OUTCOME": "failure", "GITHUB_STEP_SUMMARY": str(out),
+                    "PATH": "/usr/bin:/bin",
+                    "RUNNER_TEMP": tmp,
+                    "ENV_NAME": "prod",
+                    "OUTCOME": "failure",
+                    "GITHUB_STEP_SUMMARY": str(out),
                     "LC_ALL": "C",
                 },
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             assert r.returncode == 0, r.stderr.strip()[:200]
             return out.read_text()
@@ -2381,14 +2580,16 @@ class TestASilentClassOfMissingObjectsCannotReadAsSuccess:
 
     def test_a_whole_class_missing_does_not_read_as_nothing_to_do(self, parsed):
         headline = next(
-            ln for ln in self.render(parsed, self.night(0, 40000)).splitlines()
+            ln
+            for ln in self.render(parsed, self.night(0, 40000)).splitlines()
             if ln.startswith("Result:")
         )
         assert "40,000 with no image behind them" in headline, headline
 
     def test_the_count_sits_beside_a_real_copy_count(self, parsed):
         headline = next(
-            ln for ln in self.render(parsed, self.night(4211, 3)).splitlines()
+            ln
+            for ln in self.render(parsed, self.night(4211, 3)).splitlines()
             if ln.startswith("Result:")
         )
         assert "4,211 images copied" in headline
@@ -2414,13 +2615,16 @@ class TestASilentClassOfMissingObjectsCannotReadAsSuccess:
 
         steps = parsed["jobs"]["mirror"]["steps"]
         script = next(
-            s["run"] for s in steps
+            s["run"]
+            for s in steps
             if s.get("name", "").startswith("Write the run summary")
         )
         [pattern] = re.findall(r"last '(source gone: [^']+)'", script)
         emitted = subprocess.run(
             ["grep", "-oE", "^[0-9-]+ [0-9:,]+ [A-Z]+ " + pattern],
-            input=self.night(0, 40000), capture_output=True, text=True,
+            input=self.night(0, 40000),
+            capture_output=True,
+            text=True,
         )
         assert emitted.returncode == 0, (
             f"the workflow's pattern {pattern!r} matches nothing the job prints"
