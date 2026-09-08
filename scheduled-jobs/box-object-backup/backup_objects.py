@@ -103,18 +103,10 @@ VERIFY_INCOMPLETE_MARKER = "verification did NOT cover its sample"
 # progress for good.
 SKIPPED_NAME_MARKER = "object(s) were SKIPPED for their names"
 
-# The summary used to decide what to print by searching the whole job log for
-# English phrases. Object names are in that log — `report_skips` prints every
-# refused one — and names are partly chosen by whoever uploads the file. So an
-# image called `box-object-backup: SKIPPED.png` (the colon guarantees it is
-# refused, hence logged) made a night with thousands of failed copies render
-# as "skipped — this is expected until the seed ends". Every marker forged the
-# same way, and it happens by accident too: a colon in a filename is ordinary.
-#
-# These two lines carry the verdict instead. Both are emitted only by
-# `emit_status`, and the workflow matches them ANCHORED to the start of a log
-# line — timestamp, level, then the key. An object name can only ever appear
-# after a message has already begun, so no name can produce a matching line.
+# The run's verdict. Emitted only by `emit_status`, and read anchored to the
+# start of a log line — timestamp, level, then the key. Object names reach this
+# log and are partly chosen by whoever uploads the file, so a name can only
+# appear once a message has begun and can never forge one of these.
 # The only keys this job reads out of a deploy env file. An allow-list rather
 # than a prefix match: the file beside these holds the JWT signing keys and the
 # service-role secret, and rclone takes its whole option surface from `RCLONE_*`
@@ -264,30 +256,20 @@ def _stats_for(totals: "Totals", listed: int) -> dict:
 def _status_for(code: int, outcome: str, stopped: bool = False) -> str:
     """What to tell the operator happened — NOT the exit code in words.
 
-    The two answer different questions. The exit code ranks conditions worth
-    a person's attention so the most pointed number reaches the notification;
-    this ranks what actually happened to the copying, which is what the
-    summary headlines. Deriving the second from the first meant every
-    non-zero code read as `failed`, so three nights where every copy
-    succeeded — a verification mismatch, a refused collision, a ledger upload
-    that did not land — each announced that objects had not been mirrored,
-    and the summary's verification branch became unreachable because a
-    mismatch always forced the status to `failed` first.
+    The two answer different questions. The exit code ranks conditions worth a
+    person's attention, so the most pointed number reaches the notification;
+    this ranks what happened to the copying, which is what the summary
+    headlines. Derived from the code, every non-zero one reads as `failed` —
+    including three nights where every copy succeeded.
 
-    `stopped` is its own value rather than folding into failed. A run stopped
-    on purpose — the Actions job hitting its time limit, which is every night
-    of the seed — has copied and recorded thousands of objects and kept its
-    progress. Reported as FAILED, with "the mirror was not updated this run"
-    underneath, the one outcome meaning "this is fine, re-run" was
-    indistinguishable from a real failure.
+    `stopped` is its own value rather than folding into failed: a run stopped
+    on purpose, which is every night of the seed, has copied and recorded
+    thousands of objects and kept its progress. It is the one outcome meaning
+    "this is fine".
 
-    `error` is checked FIRST and separately from the code. A crash unwinds
-    through `except BaseException`, so the counters this exit code is built
-    from are all still zero and it returns 0 — which mapped to `ok`. The
-    report then carried `"outcome": "error", "status": "ok"`, contradicting
-    itself in one file, and because the report is the fallback route a
-    crashed night rendered "succeeded". The outcome is the only input that
-    knows a crash happened.
+    `error` is checked FIRST, and from the outcome rather than the code. A
+    crash unwinds through `except BaseException` with every counter still
+    zero, so the code is 0 — and the outcome is the only input that knows.
     """
     if outcome == "error":
         return "failed"
@@ -635,16 +617,10 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             collisions=totals.collisions,
             gone=totals.source_gone,
         )
-        # The verdict is computed HERE, before the report is written, rather
-        # than at the end of the function — so the report carries it.
-        #
-        # The status line the summary normally reads is the last thing this
-        # process prints, and it travels back over the ssh pipe the workflow
-        # holds open. GitHub cancelling or timing out the job kills that pipe,
-        # so on exactly the runs worth explaining — a deliberate stop that had
-        # already copied thousands of objects — the verdict never arrived and
-        # the summary fell back to FAILED. Putting it in the report gives it a
-        # second route home that does not depend on the connection surviving.
+        # Computed before the report is written, so the report carries it. The
+        # copy the summary normally reads is the last thing this process prints,
+        # over an ssh pipe a cancel or a timeout kills — the report is the route
+        # home that does not depend on the connection surviving.
         verdict = _status_for(
             exit_code(
                 failed=totals.failed,
@@ -655,28 +631,16 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             outcome,
             stopped=stopping.stopping(),
         )
-        # The four flags that are already final go in too. An earlier version
-        # sent only the verdict, on the reasoning that `publish_ledger` sets
-        # `ledger_flag` after the report is written — true of that one flag,
-        # false of the other four, which `copy_manifest` and the verify block
-        # both finished with long before this point. The cost of leaving them
-        # out was that a cancelled night recovered its headline and lost every
-        # notice, including the refused-filename one whose whole justification
-        # is that you get exactly one.
-        #
-        # The ledger flags genuinely cannot be here — the upload has not run.
-        # They reach a human by the exit code instead (6), which fires a
-        # notification whether or not the summary renders anything.
+        # The four flags already final go in too, or a cancelled night recovers
+        # its headline and loses every notice — including the refused-filename
+        # one, whose whole justification is that you get exactly one. The ledger
+        # flags cannot: the upload has not run. Those reach a human by exit code
+        # 6, which notifies whether or not the summary renders anything.
         report_flags = _flags_for(totals)
         # Nested so the teardown below cannot be skipped. Everything in this
-        # block can raise — publish_report catches only OSError and
-        # RcloneError, and the ledger writes can raise sqlite3.Error on a full
-        # disk — and a container left holding the RC port makes every later
-        # night fail at check_no_stale_daemon until someone removes it by hand.
-        #
-        # The stats dict and run_outcome are inside too. Neither can raise
-        # today, so this is not a fix; it keeps "nothing between `finally` and
-        # `try` can raise" true by construction rather than by inspection.
+        # block can raise — the ledger writes raise sqlite3.Error on a full disk
+        # — and a container left holding the RC port makes every later night
+        # fail at check_no_stale_daemon until someone clears it by hand.
         try:
             publish_report(
                 daemon,
@@ -696,12 +660,9 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
                 flags=report_flags,
             )
             ledger.commit()
-            # Inside the finally, not after it. A run that raised is the one whose
-            # record matters most, and outside it every crash left a row with no
-            # finished_at, no outcome and no stats — while the report published to
-            # Box three lines above named the outcome correctly. The local audit
-            # trail this job's own error messages tell operators to read was the
-            # only place the failure did not appear.
+            # Inside the finally, not after it: a run that raised is the one whose
+            # record matters most, and it is the local audit trail this job's own
+            # error messages tell operators to read.
             ledger.finish_run(run_id, outcome, stats)
             # Closed BEFORE it is uploaded. SQLite runs in WAL mode here, so
             # committed rows can still be sitting in ledger.db-wal; a copy of
@@ -780,16 +741,12 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             totals.verify_checked,
         )
     if totals.verify_unverified:
-        # One marker for any shortfall, not only for a total blackout. Gating
-        # this on `checked == 0` made it a cliff at exactly zero: 2 answered
-        # out of 50 printed "verified 2 object(s), all present and correct"
-        # and a headline of "succeeded — 200,000 copied, 2 verified", which
-        # states the night was checked when 96% of the sample went unanswered.
-        #
-        # Still not a failure. The copies were each confirmed as they were
-        # made, so an unanswered stat is evidence of nothing and must not fail
-        # the run or move the watermark. It has to be said out loud instead,
-        # because the count above otherwise reads as a clean bill of health.
+        # Any shortfall, not only a total blackout: 2 answers out of 50 is a
+        # night whose "2 verified" headline claims far more than was
+        # established. Still not a failure — each copy was confirmed as it was
+        # made, so an unanswered stat is evidence of nothing and must not move
+        # the watermark. Said out loud instead, because the count above
+        # otherwise reads as a clean bill of health.
         sampled = totals.verify_checked + totals.verify_unverified
         logger.error(
             "%s: Box answered for %d of the %d object(s) sampled, so the "
@@ -938,16 +895,13 @@ def exit_code(
     # watermark is unaffected — the exit code and the watermark are separate.
     if ledger_flag:
         return 6
-    # 3 is already the documented "interrupted; progress is in the ledger and
-    # the next run resumes". Installing a signal handler means SIGINT no longer
-    # raises KeyboardInterrupt, so without this a stopped run would report the
-    # clean 0 of a run that finished everything.
-    #
-    # Last, so a condition worth a person's attention keeps its own code. The
-    # headline does NOT come from here — `_status_for` takes `stopped`
-    # directly — because "which number do we exit with" and "what do we tell
-    # the operator happened" are different questions, and answering the second
-    # with the first is what made a stopped night read as a failure.
+    # 3 is the documented "interrupted; progress is in the ledger and the
+    # next run resumes". A signal handler means SIGINT no longer raises
+    # KeyboardInterrupt, so without this a stopped run reports the clean 0
+    # of one that finished everything. Ranked last, so a condition worth a
+    # person's attention keeps its own code. The headline does NOT come from
+    # here: `_status_for` takes `stopped` directly, because "which number do
+    # we exit with" and "what happened" are different questions.
     if stopped:
         return 3
     return 0
@@ -967,72 +921,44 @@ def run_outcome(
     """Classify a finished run — and decide whether it can be a watermark.
 
     `Ledger.last_successful_run()` only considers runs recorded `ok`, so this
-    is what stops a run from losing objects. A run may only be `ok` if it saw
-    the whole table and everything it did was sound. Three cases must not be:
+    is what stops a run from losing objects: a run may only be `ok` if it saw
+    the whole table and everything it did was sound. Recording one clean that
+    did not makes the next run filter on its start time and skip whatever was
+    left behind — permanently, and without saying so.
 
-    A run cut short by `--limit` has not seen the whole table; recording it
-    clean would make the next run filter on its start time and skip everything
-    the limit left behind, permanently and without saying so.
+    Never `ok`, because the run did not see the whole table:
 
-    A run that was asked to stop has not reached the end of the table either,
-    for the same reason and with the same consequence.
+    - cut short by `--limit`
+    - asked to stop
+    - scoped by `--buckets`, which would advance the watermark for the
+      buckets it never looked at (the wiki's smoke test is bucket-scoped,
+      one edit away from dropping the `--limit` that saves it)
+    - a refused collision: nothing mirrors that object until a person renames
+      one of the pair, and an object nobody knows is missing is worse than a
+      slow night
 
-    A run scoped by `--buckets` has not seen the other buckets. Recording it
-    clean advances the watermark for ALL of them, so every object in the
-    buckets it never looked at, older than this run, is never enumerated
-    again. The wiki's own smoke test is bucket-scoped, one edit away from
-    dropping the `--limit` that currently saves it.
+    Two conditions deliberately do NOT hold the watermark, and both fail
+    loudly instead — exit 4 or a summary notice, with the object named in the
+    run report on Box, which outlives the job log:
 
-    A run that refused a collision has not mirrored one of the two objects, and
-    nothing will until a person renames one of them — so it must not become the
-    watermark either, or the object stops being enumerated and the one log line
-    naming it is the last anyone hears of it. The cost is real: until that
-    rename, every night re-reads everything changed since the last clean run
-    rather than since last night — a window that grows until someone acts, and
-    the whole table if no run has ever been clean. That is the intended trade,
-    because an object nobody knows is missing is worse than a slow night.
+    - verification found objects missing. Holding it buys one night: the next
+      run finds the object `already_current`, never re-copies or re-checks it,
+      records itself clean, and the watermark advances anyway.
+    - a filename Box cannot store. Nothing on this side can ever clear it, so
+      holding it would freeze the watermark for good and make every night
+      re-read all eight million rows inside a 240-minute job.
 
-    A run whose verification found objects missing from Box does NOT hold the
-    watermark, and this is deliberate. Holding it bought exactly one night:
-    the next run finds the object `already_current`, never re-copies it and so
-    never re-checks it, records itself clean, and the watermark advances
-    anyway. The promise was never kept beyond a single unattended night.
-
-    Nothing here can put the object back either — this job does not touch the
-    ledger to compensate — so holding the watermark would freeze it until a
-    person acted, and every night in between would re-read the whole table.
-    The run fails loudly instead (exit 4) and the object is named in the run
-    report, which is the durable record.
-
-    A run that skipped an object because Box cannot store its name does NOT
-    hold the watermark, deliberately, and this is the one case that differs
-    from a collision.
-
-    Holding it would keep the object enumerated every night until someone
-    renamed it — but nothing would ever clear it on its own, so one filename
-    with a colon in it freezes the watermark for good. Every night then
-    re-reads all eight million rows inside a 240-minute job, which is the
-    scenario the workflow header describes as failing nightly. A single
-    ordinary filename should not cost that.
-
-    So it is reported instead of enforced: named with its reason in the run
-    report on Box, which outlives the job log, and called out in the summary
-    on the night it happens. That is one notification rather than a standing
-    one, and it is a deliberate trade — the object stays unbacked-up until a
-    person renames it at the source.
-
-    `gone` is here for one reason: those objects spend a `--limit` slot
-    without reaching `copied`, so truncation has to count them or a chunk
-    that stopped early reads as a chunk that finished.
+    `gone` is a parameter for one reason: those objects spend a `--limit` slot
+    without reaching `copied`, so truncation has to count them or a chunk that
+    stopped early reads as one that finished.
     """
     if crashed:
         return "error"
-    # `copied + gone`, not `copied`. --limit is spent on PLANNED copies, and
-    # since a row whose bytes are not in MinIO stops counting as a failure it
-    # spends a slot without landing in `copied`. Measured on `copied` alone, a
-    # chunk that used its whole limit but met one dead row looked unfinished
-    # — 499,999 of 500,000 — so it recorded `ok` and moved the watermark past
-    # the seven million rows it never reached, with every later night green.
+    # `copied + gone`, not `copied`: --limit is spent on PLANNED copies, and
+    # a row whose bytes are not in MinIO spends a slot without landing in
+    # `copied`. Counting only `copied`, a chunk that used its whole limit but
+    # met one dead row looks unfinished, records `ok`, and moves the
+    # watermark past every row it never reached.
     truncated = limit is not None and copied + gone >= limit
     if failed or truncated or bucket_scoped or stopped or collisions:
         return "partial"
@@ -1491,9 +1417,8 @@ def wait_for_daemon(daemon: dock.RcDaemon, attempts: int = 30) -> RcloneRC:
         timeout=DAEMON_READY_TIMEOUT_SECONDS,
     )
     for attempt in range(attempts):
-        # A stop arriving while the daemon is still starting used to be
-        # noticed only after the loop ended. It is checked between attempts
-        # like every other loop in the run.
+        # Checked between attempts, like every other loop in the run: a
+        # stop arriving while the daemon starts must not wait out the poll.
         if stopping.stopping():
             raise lib.Stopped("stopped while waiting for the rclone daemon")
         try:

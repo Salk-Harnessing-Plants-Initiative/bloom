@@ -46,10 +46,9 @@ class MinioSource:
 
     `bucket` is part of the fs, not of each object's remote. An fs left at
     the provider root makes rclone read the first path segment of every
-    remote as a bucket name, which is how an earlier version of this job
-    ended up asking MinIO for a bucket called `images` — a bucket that
-    exists, and does not hold these objects. Naming the bucket here means a
-    remote can never be silently reinterpreted as one.
+    remote as a bucket name — asking MinIO for a bucket called `images`,
+    which exists and does not hold these objects. Naming the bucket here
+    means a remote can never be silently reinterpreted as one.
 
     The two credentials are kept out of the generated repr. They are MinIO's
     ROOT keys, and `redact()` cannot save them here: it matches rclone's
@@ -205,11 +204,10 @@ def _error_detail(exc: urllib.error.HTTPError) -> str:
 SECRET_PARAMS = ("secret_access_key", "access_key_id", "rc-pass")
 
 # The value is either a quoted run (doubled quotes escape a literal one) or a
-# bare token. The bare alternative must NOT exclude `"` and `,` the way an
-# earlier version did: those are exactly the characters `_escape` wraps a value
-# in, so the pattern could not match a quoted secret and passed it through in
-# full. Now that `_escape` also quotes on `:`, every credential in a real fs
-# string is quoted — a redactor that cannot read quotes would redact nothing.
+# bare token. The bare alternative must NOT exclude `"` and `,`: those are the
+# characters `_escape` wraps a value in, and since it also quotes on `:`, every
+# credential in a real fs string is quoted — a redactor that cannot read quotes
+# would redact nothing.
 _SECRET_RE = re.compile(
     r"(" + "|".join(SECRET_PARAMS) + r")=(\"(?:[^\"]|\"\")*\"|[^,\s:]+)",
     re.IGNORECASE,

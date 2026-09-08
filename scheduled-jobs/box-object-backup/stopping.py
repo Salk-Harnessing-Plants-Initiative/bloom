@@ -1,17 +1,15 @@
 """Stop a run on request, after the object in flight, leaving it resumable.
 
 The seed moves eight million objects over several nights, and during those
-nights the backup and a deploy want the same machine. Stopping had exactly one
-safe route — Ctrl-C at an attached terminal — because `daemon.stop()` sits in a
-`finally` and `finally` does not run when a process is killed. Any other way of
-stopping left the rclone container behind, holding the RC port, and the next
-run refused to start until someone removed it by hand.
+nights the backup and a deploy want the same machine. `daemon.stop()` sits in a
+`finally`, and `finally` does not run when a process is killed — so killing a
+run strands the rclone container on the RC port and the next run refuses to
+start until someone removes it by hand.
 
-So a signal now asks the run to stop rather than killing it. The object already
-being copied finishes and is recorded, nothing new is started, and the run
-returns through its normal path — which removes the container, commits the
-ledger and writes the report. Restarting then carries on from where it stopped,
-because the ledger already knows what was copied.
+A signal asks the run to stop instead. The object in flight finishes and is
+recorded, nothing new starts, and the run returns through its normal path,
+which removes the container, commits the ledger and writes the report.
+Restarting carries on from there, because the ledger knows what was copied.
 
 This is the shape `services/workflows/dispatch_worker.py` and `status_poller.py`
 use: a flag the handler flips, read at a loop boundary, never an interrupt of
