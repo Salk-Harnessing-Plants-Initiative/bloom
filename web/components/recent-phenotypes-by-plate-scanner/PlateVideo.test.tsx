@@ -1,48 +1,63 @@
 // @vitest-environment jsdom
 /**
- * The three states a plate can be in, and the 504 recovery.
+ * The three states a plate can be in, the 504 recovery, and what a scientist
+ * is told when something goes wrong.
  *
  * A plate keeps gaining captures, so unlike a cylinder scan a stored video is
  * usually not wrong — just short. "Stale" is the state that exists for that,
  * and the count it shows has to be the encoder's count: the page joins images
  * loosely, the encoder joins them with `!inner`, so a scan without an image
  * must not be offered as a frame.
+ *
+ * Whether a video exists is asked of the route, never worked out here. Storage
+ * decides presence and the route signs the link, so a lookup that failed comes
+ * back as "could not check" rather than as "no video".
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
-const createSignedUrl = vi.fn();
-vi.mock("@/lib/supabase/client", () => ({
-  createClientSupabaseClient: () => ({
-    storage: { from: () => ({ createSignedUrl }) },
-  }),
-}));
-
 import { PlateVideo } from "./PlateVideo";
 
-const SIGNED = "https://signed.test/graviscan-videos/12/wave-1/P7.mp4?token=a";
-const POLLED = "https://signed.test/graviscan-videos/12/wave-1/P7.mp4?token=b";
+const URL_A = "https://signed.test/graviscan-videos/12/wave-1/P7.mp4?token=a";
+const URL_B = "https://signed.test/graviscan-videos/12/wave-1/P7.mp4?token=b";
 
-function json(body: unknown, status = 200) {
+const RENDERED = {
+  experiment_id: 12,
+  plate_id: "P7",
+  wave_number: 1,
+  action: "rendered",
+  reason: "no video stored; encoding 40 frames",
+  object_path: "12/wave-1/P7.mp4",
+  frames: 40,
+  coverage: null,
+};
+
+function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
   });
 }
 
-/** Routes fetch by method: HEAD is the stored-object probe, the rest is the API. */
-function routeFetch(api: (url: string, init?: RequestInit) => Response) {
-  const calls: { url: string; init?: RequestInit }[] = [];
+/** Serves the route: GET is the poll, POST is the render. */
+function serve(handler: (method: string, url: string) => Response) {
+  const calls: { method: string; url: string; init?: RequestInit }[] = [];
   const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
-    const url = String(input);
-    if (init?.method === "HEAD") return new Response(null, { status: 200 });
-    calls.push({ url, init });
-    return api(url, init);
+    const method = init?.method ?? "GET";
+    calls.push({ method, url: String(input), init });
+    return handler(method, String(input));
   });
   vi.stubGlobal("fetch", fetchMock);
   return calls;
 }
+
+/** The common case: the poll answers, nothing is stored. */
+const nothingStored = () => serve(() => json({ download_url: null, frames: null }));
+
+/** The common case: the poll answers with a video holding `frames`. */
+const storedWith = (frames: number | null, url = URL_A) =>
+  serve(() => json({ download_url: url, frames }));
 
 function renderPlate(props: Partial<Parameters<typeof PlateVideo>[0]> = {}) {
   return render(
@@ -54,16 +69,13 @@ function renderPlate(props: Partial<Parameters<typeof PlateVideo>[0]> = {}) {
       storedFrames={null}
       availableFrames={40}
       {...props}
-    />,
+    />
   );
 }
 
 const STORED = { objectPath: "12/wave-1/P7.mp4" };
 
-beforeEach(() => {
-  vi.clearAllMocks();
-  createSignedUrl.mockResolvedValue({ data: { signedUrl: SIGNED }, error: null });
-});
+beforeEach(() => vi.clearAllMocks());
 
 afterEach(() => {
   cleanup();
@@ -73,7 +85,7 @@ afterEach(() => {
 
 describe("which state the plate is in", () => {
   it("offers Generate when nothing is stored", async () => {
-    routeFetch(() => json({}));
+    nothingStored();
     await act(async () => {
       renderPlate();
     });
@@ -82,7 +94,7 @@ describe("which state the plate is in", () => {
   });
 
   it("offers nothing when no capture has an image", async () => {
-    routeFetch(() => json({}));
+    nothingStored();
     await act(async () => {
       renderPlate({ availableFrames: 0 });
     });
@@ -91,7 +103,7 @@ describe("which state the plate is in", () => {
   });
 
   it("offers nothing when the stored video covers every frame", async () => {
-    routeFetch(() => json({}));
+    storedWith(40);
     await act(async () => {
       renderPlate({ ...STORED, storedFrames: 40, availableFrames: 40 });
     });
@@ -99,7 +111,7 @@ describe("which state the plate is in", () => {
   });
 
   it("offers Update, with the count, when frames have arrived since", async () => {
-    routeFetch(() => json({}));
+    storedWith(16);
     await act(async () => {
       renderPlate({ ...STORED, storedFrames: 16, availableFrames: 40 });
     });
@@ -108,7 +120,7 @@ describe("which state the plate is in", () => {
   });
 
   it("says frame, not frames, for one", async () => {
-    routeFetch(() => json({}));
+    storedWith(39);
     await act(async () => {
       renderPlate({ ...STORED, storedFrames: 39, availableFrames: 40 });
     });
@@ -116,84 +128,167 @@ describe("which state the plate is in", () => {
   });
 
   it("offers Update, without a count, when the stored frame count is unknown", async () => {
-    routeFetch(() => json({}));
+    // A null count is why the service re-renders rather than keeps; the button
+    // has to offer that, but it cannot honestly say how many are new.
+    storedWith(null);
     await act(async () => {
       renderPlate({ ...STORED, storedFrames: null, availableFrames: 40 });
     });
-    // A null count is why the service re-renders rather than keeps; the button
-    // has to offer that, but it cannot honestly say how many are new.
     expect(screen.getByRole("button").textContent).toContain("Update");
     expect(screen.queryByText(/new frame/)).toBeNull();
   });
 
+  it("takes the frame count from the answer, not from the page's row", async () => {
+    // The row was read when the page rendered; the answer is current. A stale
+    // row would have the button promise new frames a fresh video already holds.
+    storedWith(40);
+    await act(async () => {
+      renderPlate({ ...STORED, storedFrames: 16, availableFrames: 40 });
+    });
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByText(/new frame/)).toBeNull();
+  });
+
   it("does not offer a video whose object is gone", async () => {
-    createSignedUrl.mockResolvedValue({ data: { signedUrl: SIGNED }, error: null });
-    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) =>
-      init?.method === "HEAD" ? new Response(null, { status: 404 }) : json({}),
-    );
-    vi.stubGlobal("fetch", fetchMock);
+    // The row can outlive the object. Storage decides, so the route answers no
+    // video even though the page rendered with a path.
+    nothingStored();
     await act(async () => {
       renderPlate({ ...STORED, storedFrames: 40, availableFrames: 40 });
     });
-    expect(screen.queryByRole("video")).toBeNull();
+    expect(document.querySelector("video")).toBeNull();
     expect(screen.getByText(/No time-lapse video/)).toBeTruthy();
+  });
+
+  it("plays the video the route signed", async () => {
+    storedWith(40);
+    await act(async () => {
+      renderPlate({ ...STORED, storedFrames: 40, availableFrames: 40 });
+    });
+    expect(document.querySelector("source")?.getAttribute("src")).toBe(URL_A);
+  });
+});
+
+describe("when the check itself fails", () => {
+  it("says so, rather than reporting no video", async () => {
+    // The failure this whole design exists to prevent: read as an absence, the
+    // page offers to re-render a plate that already has a video.
+    serve(() => json({ detail: "Could not check" }, 503));
+    await act(async () => {
+      renderPlate({ ...STORED, storedFrames: 40, availableFrames: 40 });
+    });
+    expect(screen.getByText(/Could not check whether this plate has a video/)).toBeTruthy();
+  });
+
+  it("does not offer Generate over a video it could not check for", async () => {
+    serve(() => json({ detail: "Could not check" }, 503));
+    await act(async () => {
+      renderPlate();
+    });
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("treats a network failure the same way", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+    await act(async () => {
+      renderPlate();
+    });
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByText(/Could not check/)).toBeTruthy();
   });
 });
 
 describe("generating", () => {
   it("sends the plate and wave the page is showing", async () => {
-    const calls = routeFetch(() => json({ object_path: "12/wave-1/P7.mp4" }));
+    const calls = serve((method) =>
+      method === "POST" ? json(RENDERED) : json({ download_url: null, frames: null })
+    );
     await act(async () => {
       renderPlate();
     });
     await act(async () => {
       fireEvent.click(screen.getByRole("button"));
     });
-    expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe("/api/gravi/experiments/12/plate-video");
-    expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+
+    const post = calls.find((c) => c.method === "POST");
+    expect(post?.url).toBe("/api/gravi/experiments/12/plate-video");
+    expect(JSON.parse(String(post?.init?.body))).toEqual({
       plate_id: "P7",
       wave_number: 1,
     });
   });
 
-  it("sends a null wave as null", async () => {
-    const calls = routeFetch(() => json({ object_path: "12/P7.mp4" }));
+  it("omits nothing for a plate with no wave — it sends null", async () => {
+    const calls = serve((method) =>
+      method === "POST" ? json(RENDERED) : json({ download_url: null, frames: null })
+    );
     await act(async () => {
       renderPlate({ waveNumber: null });
     });
     await act(async () => {
       fireEvent.click(screen.getByRole("button"));
     });
-    expect(JSON.parse(String(calls[0].init?.body)).wave_number).toBeNull();
+
+    const post = calls.find((c) => c.method === "POST");
+    expect(JSON.parse(String(post?.init?.body)).wave_number).toBeNull();
   });
 
-  it("shows the video and stops offering Update once it lands", async () => {
-    routeFetch(() => json({ object_path: "12/wave-1/P7.mp4" }));
-    await act(async () => {
-      renderPlate({ ...STORED, storedFrames: 16, availableFrames: 40 });
+  it("asks the route for the link once the render lands", async () => {
+    // A 200 carries no playable URL, only the object path, so the poll is the
+    // success path as well as the timeout path.
+    let stored = false;
+    const calls = serve((method) => {
+      if (method === "POST") {
+        stored = true;
+        return json(RENDERED);
+      }
+      return json({ download_url: stored ? URL_B : null, frames: stored ? 40 : null });
     });
-    expect(screen.getByRole("button").textContent).toContain("Update");
+    await act(async () => {
+      renderPlate();
+    });
     await act(async () => {
       fireEvent.click(screen.getByRole("button"));
     });
+
+    expect(document.querySelector("source")?.getAttribute("src")).toBe(URL_B);
     expect(screen.queryByRole("button")).toBeNull();
-    expect(screen.queryByText(/new frame/)).toBeNull();
+    expect(calls.filter((c) => c.method === "GET")).toHaveLength(2);
   });
 
   it("does not fire a second request while one is in flight", async () => {
     let release: (r: Response) => void = () => {};
-    const pending = new Promise<Response>((resolve) => {
-      release = resolve;
+    const calls = serve((method) => {
+      if (method === "GET") return json({ download_url: null, frames: null });
+      return new Promise<Response>((r) => (release = r)) as unknown as Response;
     });
-    const calls: string[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: unknown, init?: RequestInit) => {
-        if (init?.method === "HEAD") return new Response(null, { status: 200 });
-        calls.push(String(input));
-        return pending;
-      }),
+    await act(async () => {
+      renderPlate();
+    });
+    const button = screen.getByRole("button");
+    await act(async () => {
+      fireEvent.click(button);
+    });
+    await act(async () => {
+      fireEvent.click(button);
+    });
+
+    expect(calls.filter((c) => c.method === "POST")).toHaveLength(1);
+    expect(button.hasAttribute("disabled")).toBe(true);
+    await act(async () => {
+      release(json(RENDERED));
+    });
+  });
+});
+
+describe("what a refusal tells the scientist", () => {
+  it("shows the service's own sentence, not a generic one", async () => {
+    // The service knows things this component cannot: whether the captures are
+    // still uploading, whether another plate is encoding, whether to sign in.
+    serve((method) =>
+      method === "POST"
+        ? json({ detail: "none of this plate's images have finished uploading yet" }, 404)
+        : json({ download_url: null, frames: null })
     );
     await act(async () => {
       renderPlate();
@@ -201,45 +296,19 @@ describe("generating", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button"));
     });
-    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(true);
-    fireEvent.click(screen.getByRole("button"));
-    await act(async () => {
-      release(json({ object_path: "12/wave-1/P7.mp4" }));
-    });
-    expect(calls).toHaveLength(1);
+
+    expect(screen.getByText(/images have finished uploading/)).toBeTruthy();
   });
 
-  it("reports one sentence when the request is refused", async () => {
-    routeFetch(() => json({ detail: "this plate has no captures with an image" }, 404));
-    await act(async () => {
-      renderPlate();
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button"));
-    });
-    expect(screen.getByText(/Could not generate the video/)).toBeTruthy();
-  });
-
-  it("reports one sentence when the response carries no object path", async () => {
-    // A 200 whose body is not what we expect is a failure, not a success with
-    // nothing to show — treating it as success would blank the player.
-    routeFetch(() => json({ action: "render" }));
-    await act(async () => {
-      renderPlate({ ...STORED, storedFrames: 16 });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button"));
-    });
-    expect(screen.getByText(/Could not generate the video/)).toBeTruthy();
-  });
-
-  it("reports one sentence when the network fails outright", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (_i: unknown, init?: RequestInit) => {
-        if (init?.method === "HEAD") return new Response(null, { status: 200 });
-        throw new TypeError("network down");
-      }),
+  it("passes on the wait when the service says how long", async () => {
+    serve((method) =>
+      method === "POST"
+        ? json(
+            { detail: "another plate video is already encoding" },
+            429,
+            { "Retry-After": "30" }
+          )
+        : json({ download_url: null, frames: null })
     );
     await act(async () => {
       renderPlate();
@@ -247,6 +316,72 @@ describe("generating", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button"));
     });
+
+    expect(screen.getByText(/already encoding/)).toBeTruthy();
+    expect(screen.getByText(/Try again in 30 seconds/)).toBeTruthy();
+  });
+
+  it("shows the detail as text, never as markup", async () => {
+    serve((method) =>
+      method === "POST"
+        ? json({ detail: "<img src=x onerror=alert(1)> failed" }, 422)
+        : json({ download_url: null, frames: null })
+    );
+    await act(async () => {
+      renderPlate();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button"));
+    });
+
+    expect(document.querySelector("img")).toBeNull();
+    expect(screen.getByText(/onerror=alert\(1\)/)).toBeTruthy();
+  });
+
+  it("falls back to its own sentence when the service sends nothing readable", async () => {
+    serve((method) =>
+      method === "POST"
+        ? new Response("<html>502</html>", { status: 502 })
+        : json({ download_url: null, frames: null })
+    );
+    await act(async () => {
+      renderPlate();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button"));
+    });
+
+    expect(screen.getByText(/Could not generate the video/)).toBeTruthy();
+    expect(screen.queryByText(/html/)).toBeNull();
+  });
+
+  it("reports a response that carries no object path", async () => {
+    serve((method) =>
+      method === "POST" ? json({ ok: true }) : json({ download_url: null, frames: null })
+    );
+    await act(async () => {
+      renderPlate();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button"));
+    });
+
+    expect(screen.getByText(/Could not generate the video/)).toBeTruthy();
+  });
+
+  it("reports a network failure outright", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json({ download_url: null, frames: null }))
+      .mockRejectedValue(new TypeError("fetch failed"));
+    vi.stubGlobal("fetch", fetchMock);
+    await act(async () => {
+      renderPlate();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button"));
+    });
+
     expect(screen.getByText(/Could not generate the video/)).toBeTruthy();
   });
 });
@@ -255,10 +390,10 @@ describe("a 504, and the poll that follows", () => {
   it("polls until the video appears, then shows it", async () => {
     vi.useFakeTimers();
     let polls = 0;
-    const calls = routeFetch((url, init) => {
-      if (init?.method === "POST") return json({ detail: null }, 504);
+    const calls = serve((method) => {
+      if (method === "POST") return json({ detail: "Still encoding" }, 504);
       polls += 1;
-      return json({ download_url: polls >= 2 ? POLLED : null });
+      return json({ download_url: polls >= 3 ? URL_B : null, frames: polls >= 3 ? 40 : null });
     });
     await act(async () => {
       renderPlate();
@@ -271,25 +406,33 @@ describe("a 504, and the poll that follows", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });
-    expect(polls).toBe(1);
+    expect(screen.getByText(/Encoding/)).toBeTruthy();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });
-    expect(polls).toBe(2);
     expect(screen.queryByText(/Encoding/)).toBeNull();
+    expect(document.querySelector("source")?.getAttribute("src")).toBe(URL_B);
 
-    const poll = calls.find((c) => c.url.includes("?"));
+    const poll = calls.find((c) => c.method === "GET");
     expect(poll?.url).toBe(
-      "/api/gravi/experiments/12/plate-video?plate_id=P7&wave_number=1",
+      "/api/gravi/experiments/12/plate-video?plate_id=P7&wave_number=1"
     );
   });
 
   it("omits the wave from the poll when there is none", async () => {
     vi.useFakeTimers();
-    const calls = routeFetch((_url, init) =>
-      init?.method === "POST" ? json({}, 504) : json({ download_url: POLLED }),
-    );
+    let encoded = false;
+    const calls = serve((method) => {
+      if (method === "POST") {
+        encoded = true;
+        return json({}, 504);
+      }
+      return json({
+        download_url: encoded ? URL_B : null,
+        frames: encoded ? 40 : null,
+      });
+    });
     await act(async () => {
       renderPlate({ waveNumber: null });
     });
@@ -299,18 +442,19 @@ describe("a 504, and the poll that follows", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });
-    const poll = calls.find((c) => c.url.includes("?"));
+
+    const poll = calls.find((c) => c.method === "GET");
     expect(poll?.url).toBe("/api/gravi/experiments/12/plate-video?plate_id=P7");
   });
 
-  it("keeps polling through a failed poll rather than giving up", async () => {
+  it("keeps asking through a failed poll rather than giving up", async () => {
     vi.useFakeTimers();
     let polls = 0;
-    routeFetch((_url, init) => {
-      if (init?.method === "POST") return json({}, 504);
+    serve((method) => {
+      if (method === "POST") return json({}, 504);
       polls += 1;
-      if (polls === 1) return json({ detail: "unavailable" }, 503);
-      return json({ download_url: POLLED });
+      if (polls === 2) return json({ detail: "Could not check" }, 503);
+      return json({ download_url: polls >= 3 ? URL_B : null, frames: polls >= 3 ? 40 : null });
     });
     await act(async () => {
       renderPlate();
@@ -319,16 +463,18 @@ describe("a 504, and the poll that follows", () => {
       fireEvent.click(screen.getByRole("button"));
     });
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(20_000);
+      await vi.advanceTimersByTimeAsync(30_000);
     });
-    expect(polls).toBe(2);
-    expect(screen.queryByText(/Encoding/)).toBeNull();
+
+    expect(document.querySelector("source")?.getAttribute("src")).toBe(URL_B);
   });
 
   it("stops asking after the budget, without re-offering Generate", async () => {
+    // The encode it was waiting on is still running upstream; a second one
+    // would race it.
     vi.useFakeTimers();
-    routeFetch((_url, init) =>
-      init?.method === "POST" ? json({}, 504) : json({ download_url: null }),
+    serve((method) =>
+      method === "POST" ? json({}, 504) : json({ download_url: null, frames: null })
     );
     await act(async () => {
       renderPlate();
@@ -337,11 +483,10 @@ describe("a 504, and the poll that follows", () => {
       fireEvent.click(screen.getByRole("button"));
     });
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(600_000);
+      await vi.advanceTimersByTimeAsync(610_000);
     });
-    expect(screen.getByText(/Check back in a few minutes/)).toBeTruthy();
-    // Re-offering it here would start a second encode on a plate that is
-    // already being encoded.
+
+    expect(screen.getByText(/Still encoding/)).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
   });
 });
