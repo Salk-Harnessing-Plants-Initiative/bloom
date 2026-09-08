@@ -5,6 +5,7 @@ import {
   getUser,
 } from "@/lib/supabase/server";
 import Mixpanel from "mixpanel";
+import { formatScannerTime } from "@/components/recent-phenotypes-by-plate-scanner/plate-times";
 
 interface SessionRow {
   id: number;
@@ -217,10 +218,7 @@ function latestSession(sessions: SessionRow[] | null | undefined): SessionRow | 
 }
 
 function formatDate(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleDateString(undefined, {
+  return formatScannerTime(iso, {
     year: "numeric",
     month: "short",
     day: "numeric",
