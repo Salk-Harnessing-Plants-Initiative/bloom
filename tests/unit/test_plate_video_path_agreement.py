@@ -135,12 +135,18 @@ def test_components_do_not_rehardcode_the_buckets():
     components = REPO_ROOT / "web" / "components" / "recent-phenotypes-by-plate-scanner"
 
     plate_video = (components / "PlateVideo.tsx").read_text(encoding="utf-8")
-    assert "plate-video-path" in plate_video, (
-        "PlateVideo.tsx must import the shared bucket constant"
-    )
+
     # Matched without quotes: the repo's prettier config rewrites double to
     # single, so a quoted form would be the one shape this cannot see.
     for bucket in ("graviscan-videos", "graviscan-images"):
         assert bucket not in plate_video, (
             f"PlateVideo.tsx re-hardcodes {bucket!r} instead of importing it"
+        )
+
+    # Needing no bucket at all is the stronger position, and the one the
+    # component now takes: it asks the route for a signed URL rather than
+    # signing one here. The import is required only if it reaches storage.
+    if "createSignedUrl" in plate_video or "supabase.storage" in plate_video:
+        assert "plate-video-path" in plate_video, (
+            "PlateVideo.tsx signs storage URLs, so it must import the shared bucket constant"
         )
