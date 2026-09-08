@@ -330,6 +330,19 @@ describe("POST", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("treats a session carrying no token as signed out", async () => {
+    // What a failed refresh can leave behind. Accepted, the request would go
+    // upstream as `Bearer undefined` and be refused there instead.
+    mockedGetSession.mockResolvedValue({ access_token: "" } as never);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await post({ plate_id: "P7", wave_number: 1 });
+
+    expect(res.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("reports a timeout as still encoding, not as a failure", async () => {
     // The encode carries on upstream; telling the user it failed would have
     // them click Generate again and start a second one.
