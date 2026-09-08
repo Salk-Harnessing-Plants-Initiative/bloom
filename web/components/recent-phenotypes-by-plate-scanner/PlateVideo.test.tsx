@@ -160,6 +160,16 @@ describe("which state the plate is in", () => {
     expect(screen.getByText(/No time-lapse video/)).toBeTruthy();
   });
 
+  it("shows the whole frame, so the burnt-in timestamp is not cropped", async () => {
+    // A plate renders at 1440x2068 into a 5:7 box. Cropped to fill, the top and
+    // bottom go — including the label band this feature exists to burn in.
+    storedWith(40);
+    await act(async () => {
+      renderPlate({ ...STORED, storedFrames: 40, availableFrames: 40 });
+    });
+    expect(document.querySelector("video")?.className).toContain("object-contain");
+  });
+
   it("plays the video the route signed", async () => {
     storedWith(40);
     await act(async () => {
@@ -254,6 +264,31 @@ describe("generating", () => {
     expect(document.querySelector("source")?.getAttribute("src")).toBe(URL_B);
     expect(screen.queryByRole("button")).toBeNull();
     expect(calls.filter((c) => c.method === "GET")).toHaveLength(2);
+  });
+
+  it("keeps offering Update when the render covered fewer frames than exist", async () => {
+    // More captures can land while the encode runs. Assuming the new video
+    // covers everything available would hide the ones it missed.
+    let encoded = false;
+    serve((method) => {
+      if (method === "POST") {
+        encoded = true;
+        return json({ ...RENDERED, frames: 30 });
+      }
+      return json({
+        download_url: encoded ? URL_B : null,
+        frames: encoded ? 30 : null,
+      });
+    });
+    await act(async () => {
+      renderPlate({ availableFrames: 40 });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button"));
+    });
+
+    expect(screen.getByRole("button").textContent).toContain("Update");
+    expect(screen.getByText("10 new frames since this was made.")).toBeTruthy();
   });
 
   it("does not fire a second request while one is in flight", async () => {
