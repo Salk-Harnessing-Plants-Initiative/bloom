@@ -84,6 +84,15 @@ env:
   # none of the last two reads the env file, so they cannot look it up. The
   # run step refuses to start if the job's value differs from this one.
   STATE_DIR: /var/lib/bloom-box-object-backup
+  # `prod` is what the env file and the script call it; the GitHub Environment
+  # is called `production`. Production is the only thing this workflow mirrors,
+  # and staging is deliberately not offered: both environments live on this one
+  # host, so they would share the ledger, the watermark, the run lock, the
+  # rclone container name and the RC port, and two runs would read and advance
+  # each other's watermark — silently, and in both directions. Mirroring
+  # staging as well means scoping all of those per environment, which is a
+  # change worth making only if the need appears.
+  ENV_NAME: prod
 
 jobs:
   mirror:
@@ -105,41 +114,12 @@ jobs:
           echo "${{ secrets.DEPLOY_HOST_KEY }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-      # `prod` is what the env file and the script call it; the GitHub
-      # Environment is called `production`. Resolve both here so the rest of
-      # the job has one name for each.
-      - name: Resolve target
-        id: target
-        env:
-          PROD_DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
-        run: |
-          set -euo pipefail
-          # Production is the only thing this workflow mirrors, and staging is
-          # deliberately not offered. Both environments live on this one host,
-          # so they would share the ledger, the watermark, the run lock, the
-          # rclone container name and the RC port. Two runs would then read and
-          # advance each other's watermark, each skipping whatever the other's
-          # timestamp already covered — silently, and in both directions. The
-          # concurrency group above would not have stopped it either: it used
-          # to be keyed on the environment, so the two ran in different groups.
-          #
-          # Nothing needs staging objects on Box. Mirroring staging as well
-          # means scoping the ledger, the container name and the port per
-          # environment; that is a change worth making only if the need appears.
-          ENV_NAME=prod
-          DEPLOY_PATH="$PROD_DEPLOY_PATH"
-          # An empty deploy path would make the remote `cd` land in $HOME and
-          # the job run against whatever happens to be there.
-          : "${DEPLOY_PATH:?PROD_DEPLOY_PATH secret is empty}"
-          echo "env_name=$ENV_NAME" >> "$GITHUB_OUTPUT"
-          echo "deploy_path=$DEPLOY_PATH" >> "$GITHUB_OUTPUT"
-          echo "Mirroring production ($ENV_NAME) from $DEPLOY_PATH"
 
       - name: Run the mirror on the deploy host
         id: run
         env:
-          ENV_NAME: ${{ steps.target.outputs.env_name }}
-          DEPLOY_PATH: ${{ steps.target.outputs.deploy_path }}
+          ENV_NAME: ${{ env.ENV_NAME }}
+          DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
           DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
           VERIFY: ${{ github.event.inputs.verify || '50' }}
           RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}
@@ -149,9 +129,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Re-asserted here, not only in Resolve target: this is the step that
-          # uses it, and an empty value makes the remote `cd` succeed into
-          # $HOME and run against whatever is there.
+          # An empty value makes the remote `cd` succeed into $HOME and run
+          # the job against whatever happens to be there.
           : "${DEPLOY_PATH:?deploy path is empty}"
 
           # `verify` is free-text: GitHub validates a workflow_dispatch input no
@@ -326,7 +305,7 @@ jobs:
       - name: Write the run summary
         if: always()
         env:
-          ENV_NAME: ${{ steps.target.outputs.env_name }}
+          ENV_NAME: ${{ env.ENV_NAME }}
           # Needed only for the fallback below: when the ssh pipe carrying the
           # run's output died before it printed a verdict, the summary fetches
           # that verdict from the report the run wrote on the host.

@@ -1151,3 +1151,39 @@ class TestTheSummaryStepFeedsTheRenderer:
         called = re.search(r"python3 (\S+summary\.py)", summary_script)
         assert called, "the step no longer runs the renderer"
         assert (self.REPO / called.group(1)).is_file()
+
+
+class TestProductionIsTheOnlyTarget:
+    """Both environments share this host, so they share the ledger, the
+    watermark, the run lock, the rclone container name and the RC port. Two
+    runs would advance each other's watermark, silently and in both
+    directions. The job takes no environment input at all."""
+
+    def steps_with_env(self, parsed: dict) -> list[dict]:
+        return [s for s in parsed["jobs"]["mirror"]["steps"] if s.get("env")]
+
+    def test_the_environment_name_is_a_constant(self, parsed: dict):
+        assert parsed["env"]["ENV_NAME"] == "prod"
+
+    def test_nothing_can_ask_for_another_environment(self, parsed: dict):
+        # YAML reads a bare `on:` as the boolean true, so the key is not "on".
+        inputs = parsed[True]["workflow_dispatch"].get("inputs") or {}
+        assert not {"env", "environment", "env_name", "target"} & set(inputs), (
+            f"the workflow offers an environment input: {sorted(inputs)}"
+        )
+
+    def test_every_step_that_names_an_environment_names_that_one(self, parsed: dict):
+        for step in self.steps_with_env(parsed):
+            named = step["env"].get("ENV_NAME")
+            if named is not None:
+                assert named == "${{ env.ENV_NAME }}", (
+                    f"{step.get('name')!r} hardcodes an environment: {named}"
+                )
+
+    def test_the_deploy_path_comes_from_the_production_secret(self, parsed: dict):
+        paths = {
+            s["env"]["DEPLOY_PATH"]
+            for s in self.steps_with_env(parsed)
+            if "DEPLOY_PATH" in s["env"]
+        }
+        assert paths == {"${{ secrets.PROD_DEPLOY_PATH }}"}, paths
