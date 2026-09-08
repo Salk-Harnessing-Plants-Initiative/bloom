@@ -465,6 +465,13 @@ that. **Rename the object named at the start of the `skipping` line** — the
 refused one. Renaming its twin instead leaves a ledger row still claiming the
 path, nothing prunes that row, and the refused object is then refused for ever.
 
+**Case is not part of this check, and Box folds case.** `Plate_A.png` and
+`plate_a.png` are two different objects to Postgres and to the ledger, and one
+name to Box. Plate and barcode names make that plausible, and what Box does
+with the second copy — refuse it, or overwrite the first — has not been
+established. Nothing here detects it, so if two objects differ only in case,
+treat the pair as unmirrored until you have checked Box by hand.
+
 The two names look identical, which is why they collide, so the log escapes
 them: one reads `cafe\u0301.png` and the other `caf\xe9.png`. Match the escaped
 form against what Supabase shows.

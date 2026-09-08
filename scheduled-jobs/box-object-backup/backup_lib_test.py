@@ -1206,3 +1206,74 @@ def test_the_network_ban_raises_something_the_client_does_not_catch():
     )
     assert not isinstance(caught.value, __import__("http.client", fromlist=["x"]).HTTPException)
     assert "5572" in str(caught.value), "the message does not name the address"
+
+
+# ---------- two names, one path on Box ----------
+
+@pytest.mark.parametrize("name", ["a//b.png", "a/./b.png", "a/", "."])
+def test_a_name_that_collapses_to_another_path_is_refused(name):
+    """`PurePosixPath.parts` dropped these segments before they were checked.
+
+    `exp/b.png` and `exp/./b.png` are two `storage.objects` rows with two
+    ledger keys that resolve to ONE path on Box. Left unrefused, the second
+    copy silently overwrites the first while the ledger records both as
+    backed up — which survives into a restore as a missing image that nothing
+    ever reported.
+    """
+    obj = StorageObject("images", name, "v1", 10, "2026-08-31T00:00:00+00")
+    assert unsafe_reason(obj) is not None, f"{name!r} was accepted"
+
+
+def test_the_empty_segment_check_is_reachable():
+    """It was dead code: PurePosixPath can never yield an empty segment.
+
+    Splitting on "/" is what makes it live, so it is the branch that catches
+    a doubled slash rather than an unused guard.
+    """
+    obj = StorageObject("images", "a//b.png", "v1", 10, "2026-08-31T00:00:00+00")
+    assert unsafe_reason(obj) == "empty path segment in object name"
+
+
+def test_ordinary_paths_are_untouched():
+    """No name in production may start being refused by this."""
+    for name in ("exp-42/plate-7/frame_0001.png", "a.png", "a/b/c/d.png"):
+        obj = StorageObject("images", name, "v1", 10, "2026-08-31T00:00:00+00")
+        assert unsafe_reason(obj) is None, name
+
+
+# ---------- the lock's errno filter ----------
+
+def test_only_a_held_lock_counts_as_held(monkeypatch, tmp_path):
+    """Any other OSError must NOT be reported as "another run holds it".
+
+    `run_backup` turns LockHeld into exit 0 and `BOX_BACKUP_STATUS=skipped`,
+    which the summary renders as "another run holds the lock, almost
+    certainly the initial seed. This is expected until it ends." Widen this
+    filter and a filesystem that cannot lock at all produces that message
+    every night, for ever — a permanently green tick over a mirror that is
+    not running, which is the one outcome the whole verdict layer exists to
+    prevent.
+    """
+    import errno
+    import fcntl
+
+    import runlock
+
+    def refuse(fd, op):
+        raise OSError(errno.EROFS, "read-only file system")
+
+    monkeypatch.setattr(fcntl, "flock", refuse)
+    # RunLock takes the state DIRECTORY and appends the lock filename. Handed
+    # a file path it dies on a missing directory before reaching flock, and
+    # that FileNotFoundError is itself an OSError — which made the first
+    # version of this test pass whatever the filter did.
+    with pytest.raises(OSError) as caught:
+        with runlock.RunLock(str(tmp_path)):
+            pass
+    assert caught.value.errno == errno.EROFS, (
+        f"the lock did not reach flock: {caught.value!r}"
+    )
+    assert not isinstance(caught.value, runlock.LockHeld), (
+        "a filesystem that cannot lock was reported as a run already holding "
+        "the lock, which the summary calls expected"
+    )

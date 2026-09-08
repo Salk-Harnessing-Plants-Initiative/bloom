@@ -304,7 +304,13 @@ def unsafe_reason(obj: StorageObject) -> str | None:
     illegal = sorted(BOX_ILLEGAL_CHARS.intersection(set(name)) - {"/"})
     if illegal:
         return f"Box-illegal character(s) in object name: {''.join(illegal)}"
-    for segment in PurePosixPath(name).parts:
+    # `name.split("/")`, NOT PurePosixPath.parts, which collapses `//`, `/./`
+    # and a trailing slash before these checks ever see them. `a/b.png` and
+    # `a/./b.png` are two rows with two ledger keys resolving to one path on
+    # Box: the second copy overwrites the first and the ledger records both as
+    # backed up. Splitting is also what makes the empty-segment check below
+    # reachable at all.
+    for segment in name.split("/"):
         if segment != segment.rstrip(BOX_TRAILING_ILLEGAL):
             return f"path segment ends with space or period: {segment!r}"
         if not segment.strip():
