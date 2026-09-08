@@ -126,42 +126,37 @@ hand in a detached session**, then let the schedule handle the nightly delta:
 The deploy tree is whatever `PROD_DEPLOY_PATH` points at; `$DEPLOY` below
 stands in for it.
 
-Export only the variables the job reads. `set -a; source .env.prod` would hand
-the process every secret the stack owns, which it has no use for — and a `.env`
-file is not a shell script, so sourcing one dies on a password containing a
-quote, and runs part of one containing a backtick.
-
-Read line by line and assigned, never expanded. `export $(grep ...)` splits the
-values on whitespace and lets the shell see what is in them, which is the same
-mistake the scheduled job was rewritten to stop making:
+The job reads its own settings out of `.env.prod`, so there is nothing to
+export. It takes only the keys it needs — an allow-list, `ENV_KEYS` in
+`backup_objects.py` — and reads the file as data rather than as shell, so a
+password containing a quote, a backtick or a `$` arrives intact. Run it from
+the deploy tree and it finds the file beside it:
 
 ```bash
 sudo -i -u bloom-deploy
 export DEPLOY=/path/to/deploy/tree   # exported: the seed runs inside tmux
-while IFS='=' read -r key value; do
-    [ -n "$key" ] && export "$key=$value"
-done < <(grep -E '^(OBJECT_BACKUP_[A-Z_]+|POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' \
-             "$DEPLOY/.env.prod")
+cd "$DEPLOY"
 ```
+
+A real environment variable still wins over the file, so a single `export`
+overrides one setting for one run without editing anything.
 
 **Before the `main` promotion, `$DEPLOY` is the staging tree** — that is where
 the script lives until prod is redeployed, and the prod tree is reset to `main`
 on every deploy. `.env.prod` is not in the staging tree, and the prod one does
-not carry the `OBJECT_BACKUP_*` keys yet, so read the credentials from prod and supply
-the four backup settings by hand:
+not carry the `OBJECT_BACKUP_*` keys yet, so point the job at prod's file for
+the credentials and supply the missing settings by hand:
 
 ```bash
 export PROD=/path/to/prod/deploy/tree   # $PROD_DEPLOY_PATH
-while IFS='=' read -r key value; do
-    [ -n "$key" ] && export "$key=$value"
-done < <(grep -E '^(POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' "$PROD/.env.prod")
-
 export OBJECT_BACKUP_MINIO_BUCKET=bloom-storage
 export OBJECT_BACKUP_MINIO_PREFIX=storage-single-tenant
 export OBJECT_BACKUP_BOX_REMOTE=box
 export OBJECT_BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/prod/storage
 export OBJECT_BACKUP_WORKERS=8
 ```
+
+Then add `--env-file "$PROD/.env.prod"` to each command below.
 
 `--env prod` selects the production containers, not a path, so running the
 script out of the staging tree still mirrors production.
@@ -171,11 +166,11 @@ Prove the path end to end before committing to days of transfer:
 ```bash
 # 1. copies nothing. Checks every setting above, the rclone config and the
 #    Box root BEFORE reading the table, then lists what a real run would do.
-python3 "$DEPLOY/scheduled-jobs/box-object-backup/backup_objects.py" \
+python3 scheduled-jobs/box-object-backup/backup_objects.py \
     --env prod --dry-run
 
 # 2. first real bytes — preflight checks the MinIO layout, verify checks Box
-python3 "$DEPLOY/scheduled-jobs/box-object-backup/backup_objects.py" \
+python3 scheduled-jobs/box-object-backup/backup_objects.py \
     --env prod --buckets images --limit 20 --verify 20
 ```
 

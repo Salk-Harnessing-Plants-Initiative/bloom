@@ -2908,8 +2908,36 @@ class TestTheEntryPointInstallsTheHandlers:
             "run_backup",
             lambda args: (_ for _ in ()).throw(job.lib.BackupError("stop here")),
         )
-        code = job.main(["--env", "prod", "--state-dir", str(tmp_path)])
+        env_file = tmp_path / ".env.prod"
+        env_file.write_text("OBJECT_BACKUP_MINIO_BUCKET=b\n")
+        code = job.main(
+            [
+                "--env",
+                "prod",
+                "--env-file",
+                str(env_file),
+                "--state-dir",
+                str(tmp_path),
+            ]
+        )
         assert installed == ["yes"], "main did not install the stop handlers"
+        assert code == 2
+
+    def test_they_are_installed_even_when_the_config_is_unreadable(
+        self, monkeypatch, tmp_path
+    ):
+        """A stop must be honoured while the config is still being read.
+
+        The env file lives on a deploy host over ssh; a missing or unreadable
+        one exits 2, and until the handlers are on, the SIGTERM a cancel sends
+        during that window is a hard kill.
+        """
+        installed = []
+        monkeypatch.setattr(
+            job.stopping, "install_handlers", lambda: installed.append("yes")
+        )
+        code = job.main(["--env", "prod", "--env-file", str(tmp_path / "absent")])
+        assert installed == ["yes"], "the handlers wait on the config being read"
         assert code == 2
 
 
@@ -3919,3 +3947,120 @@ class TestTheRendererReadsWhatTheJobReallyPrints:
         verdict, page = self.read_back(caplog)
         assert verdict.count("verify_checked") == 2, verdict.stats
         assert "2 verified" in page
+
+
+class TestItReadsItsSettingsFromTheDeployEnvFile:
+    """An `ssh host cmd` shell reads no profile and no env file.
+
+    The systemd unit this job replaced carried `EnvironmentFile=`; without an
+    equivalent the run dies at its first config lookup, having already scanned
+    every row of storage.objects. Read here rather than exported by the
+    workflow so the file is parsed as data — the same way weekly-backup does
+    it — because a value holding a quote, a backtick or a `$` makes a shell
+    either fail to parse or execute part of it.
+    """
+
+    def write(self, tmp_path, body: str):
+        path = tmp_path / ".env.prod"
+        path.write_text(body)
+        return path
+
+    def test_the_keys_it_needs_become_defaults(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("OBJECT_BACKUP_MINIO_BUCKET", raising=False)
+        path = self.write(tmp_path, "OBJECT_BACKUP_MINIO_BUCKET=bloom-storage\n")
+        found = job.apply_env_file(path)
+        assert found["OBJECT_BACKUP_MINIO_BUCKET"] == "bloom-storage"
+        assert os.environ["OBJECT_BACKUP_MINIO_BUCKET"] == "bloom-storage"
+
+    def test_the_rest_of_the_file_is_left_alone(self, tmp_path, monkeypatch):
+        """The allow-list is the point.
+
+        The JWT signing keys and the service-role secret sit in this file, and
+        rclone takes its entire option surface from `RCLONE_*` — one
+        `RCLONE_CONFIG=` line would point the mirror at another remote.
+        """
+        path = self.write(
+            tmp_path,
+            "OBJECT_BACKUP_MINIO_BUCKET=b\n"
+            "SERVICE_ROLE_KEY=secret\n"
+            "RCLONE_CONFIG=/tmp/theirs.conf\n"
+            "LD_PRELOAD=/tmp/evil.so\n",
+        )
+        found = job.apply_env_file(path)
+        assert set(found) == {"OBJECT_BACKUP_MINIO_BUCKET"}
+        for leaked in ("SERVICE_ROLE_KEY", "RCLONE_CONFIG", "LD_PRELOAD"):
+            monkeypatch.delenv(leaked, raising=False)
+            assert leaked not in found
+
+    def test_the_minio_secret_is_returned_and_not_exported(self, tmp_path, monkeypatch):
+        """Every `docker` child inherits this process's environment.
+
+        A secret left in it travels to all of them; returned instead, it
+        reaches only the one function that builds the S3 source.
+        """
+        monkeypatch.delenv("MINIO_ROOT_PASSWORD", raising=False)
+        path = self.write(tmp_path, "MINIO_ROOT_PASSWORD=hunter2\n")
+        found = job.apply_env_file(path)
+        assert found["MINIO_ROOT_PASSWORD"] == "hunter2"
+        assert "MINIO_ROOT_PASSWORD" not in os.environ
+
+    @pytest.mark.parametrize(
+        "line,expected",
+        [
+            ("OBJECT_BACKUP_BOX_ROOT=a/b\n", "a/b"),
+            ('OBJECT_BACKUP_BOX_ROOT="a/b"\n', "a/b"),
+            ("OBJECT_BACKUP_BOX_ROOT='a/b'\n", "a/b"),
+            ("  OBJECT_BACKUP_BOX_ROOT = a/b \n", "a/b"),
+            ("export OBJECT_BACKUP_BOX_ROOT=a/b\n", None),
+        ],
+    )
+    def test_the_shapes_a_deploy_env_file_actually_uses(
+        self, tmp_path, monkeypatch, line, expected
+    ):
+        # `export ` is read literally, not stripped: the deploy files do not
+        # use it, and guessing is how a value holding a `#` gets corrupted.
+        monkeypatch.delenv("OBJECT_BACKUP_BOX_ROOT", raising=False)
+        found = job.apply_env_file(self.write(tmp_path, line))
+        assert found.get("OBJECT_BACKUP_BOX_ROOT") == expected
+
+    def test_a_value_a_shell_would_have_choked_on_survives(self, tmp_path, monkeypatch):
+        awkward = "p@ss$w0rd`with'quotes\"and spaces"
+        monkeypatch.delenv("MINIO_ROOT_PASSWORD", raising=False)
+        found = job.apply_env_file(
+            self.write(tmp_path, f"MINIO_ROOT_PASSWORD={awkward}\n")
+        )
+        assert found["MINIO_ROOT_PASSWORD"] == awkward
+
+    def test_a_blank_value_asks_for_the_default(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("OBJECT_BACKUP_BWLIMIT", raising=False)
+        found = job.apply_env_file(self.write(tmp_path, "OBJECT_BACKUP_BWLIMIT=\n"))
+        assert "OBJECT_BACKUP_BWLIMIT" not in found
+
+    def test_a_real_environment_variable_still_wins(self, tmp_path, monkeypatch):
+        # What makes a run by hand with one export work.
+        monkeypatch.setenv("OBJECT_BACKUP_MINIO_BUCKET", "mine")
+        job.apply_env_file(self.write(tmp_path, "OBJECT_BACKUP_MINIO_BUCKET=theirs\n"))
+        assert os.environ["OBJECT_BACKUP_MINIO_BUCKET"] == "mine"
+
+    def test_a_missing_file_is_a_config_failure_not_a_crash(self, tmp_path):
+        with pytest.raises(job.lib.BackupError, match="env file not found"):
+            job.apply_env_file(tmp_path / "absent")
+
+    def test_a_file_that_is_not_utf8_is_a_config_failure(self, tmp_path):
+        path = tmp_path / ".env.prod"
+        path.write_bytes(b"OBJECT_BACKUP_BOX_ROOT=\xff\xfe\n")
+        with pytest.raises(job.lib.BackupError, match="cannot read env file"):
+            job.apply_env_file(path)
+
+    def test_the_state_directory_must_match_what_the_workflow_watches(self, tmp_path):
+        """The cancel step and the summary read it over separate connections
+        that see no env file. Pointed elsewhere here, the job would work while
+        those two silently watched an empty directory."""
+        args = job.parse_args(["--env", "prod", "--state-dir", str(tmp_path)])
+        job.check_state_dir(args, str(tmp_path))
+        with pytest.raises(job.lib.BackupError, match="Point them at the same"):
+            job.check_state_dir(args, "/somewhere/else")
+
+    def test_the_file_it_reads_is_the_environment_it_was_given(self, tmp_path):
+        assert job.env_file_for(["--env", "prod"])[0] == Path(".env.prod")
+        assert job.env_file_for(["--env-file", "/x/y"])[0] == Path("/x/y")

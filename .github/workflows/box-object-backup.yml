@@ -167,38 +167,13 @@ jobs:
 
           cd "$deploy_path"
 
-          # The job takes ALL its configuration from the environment, and an
-          # `ssh host cmd` shell reads no profile and no .env file. The systemd
-          # unit this replaced carried EnvironmentFile=, which is what used to
-          # supply these; without an equivalent the run dies at the first
-          # config lookup having already scanned every row of storage.objects.
-          #
-          # Filtered rather than taking the whole file: the job needs the backup
-          # settings, the Postgres role and MinIO's credentials, and has no use
-          # for the JWT keys or service-role secrets sitting beside them.
-          #
-          # Assigned, NOT sourced. A .env file is not a shell script — a
-          # password containing a quote, a backtick or a $ makes `. file` either
-          # die parsing or execute part of the value. `export "$k=$v"` takes the
-          # value literally from the variable, so no character in it is special.
-          env_file="$deploy_path/.env.$env_name"
-          [ -r "$env_file" ] || { echo "cannot read $env_file" >&2; exit 2; }
-          while IFS='=' read -r key value; do
-            [ -n "$key" ] && export "$key=$value"
-          done < <(grep -E '^(OBJECT_BACKUP_[A-Z_]+|POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' \
-                     "$env_file")
-
-          # The cancel step finds the run through "$state_dir/backup.lock" and
-          # the summary falls back to "$state_dir/_runs"; both are separate ssh
-          # sessions that read no env file. Pointed elsewhere, the job would
-          # work while those two silently watched an empty directory — a cancel
-          # that stops nothing and a verdict that is never recovered. Loud
-          # here rather than silent there.
-          if [ -n "${OBJECT_BACKUP_STATE_DIR:-}" ] && [ "$OBJECT_BACKUP_STATE_DIR" != "$state_dir" ]; then
-            echo "OBJECT_BACKUP_STATE_DIR is $OBJECT_BACKUP_STATE_DIR but this workflow" >&2
-            echo "watches $state_dir. Point them at the same directory." >&2
-            exit 2
-          fi
+          # The job reads its own settings out of the deploy env file: an
+          # `ssh host cmd` shell reads no profile and no env file, and the
+          # systemd unit this replaced carried EnvironmentFile= to supply
+          # them. It takes only the keys it needs — the file beside them holds
+          # the JWT signing keys and the service-role secret — and reads them
+          # as data, so no character in a value is special. See ENV_KEYS in
+          # backup_objects.py.
 
           # The run records which GitHub job started it, in the lock it takes
           # and in the report it writes. The cancel step and the summary both
@@ -210,7 +185,8 @@ jobs:
           # --verify on every scheduled run: an unverified mirror cannot tell a
           # copied object from a lost one.
           python3 scheduled-jobs/box-object-backup/backup_objects.py \
-            --env "$env_name" --verify "$verify" $dry_run
+            --env "$env_name" --state-dir "$state_dir" \
+            --verify "$verify" $dry_run
           REMOTE
 
       # Cancelling this job kills the ssh client on the runner, not the python

@@ -291,54 +291,44 @@ class TestSupersededSchedulingIsGone:
 
 
 class TestTheRemoteRunGetsItsConfiguration:
-    """The job reads every setting from the environment, and `ssh host cmd`
-    supplies none — no profile, no .env file.
+    """The job reads every setting from a deploy env file, and only the run
+    step knows where the deploy directory is.
 
-    The systemd unit this replaced carried `EnvironmentFile=`. Deleting it
-    removed the only mechanism feeding OBJECT_BACKUP_*, POSTGRES_* and
-    MINIO_ROOT_* to
-    the process, and nothing replaced it: every scheduled run would have died
-    at the first config lookup, after a full scan of storage.objects.
+    The systemd unit this replaced carried `EnvironmentFile=`. With nothing in
+    its place every scheduled run dies at the first config lookup, after a full
+    scan of storage.objects. Which keys are taken is an allow-list in Python —
+    `ENV_KEYS` — and is tested against real files in backup_objects_test.py.
     """
 
-    def run_step(self, workflow: str) -> str:
-        import yaml
-
-        parsed = yaml.safe_load(workflow)
-        steps = parsed["jobs"]["mirror"]["steps"]
-        return next(s["run"] for s in steps if s.get("id") == "run")
-
-    def test_the_env_file_is_read_on_the_remote(self, workflow: str):
-        script = self.run_step(workflow)
-        assert ".env.$env_name" in script or ".env.$ENV_NAME" in script, (
-            "nothing reads the deploy env file, so the job runs with no config"
+    def run_step(self, parsed: dict) -> str:
+        return next(
+            s["run"] for s in parsed["jobs"]["mirror"]["steps"] if s.get("id") == "run"
         )
 
-    def test_every_variable_family_the_job_needs_is_exported(self, workflow: str):
-        script = self.run_step(workflow)
-        for family in ("OBJECT_BACKUP_", "POSTGRES_", "MINIO_ROOT_"):
-            assert family in script, f"{family}* never reaches the process"
+    def test_the_job_is_started_where_the_env_file_is(self, parsed: dict):
+        script = self.run_step(parsed)
+        assert 'cd "$deploy_path"' in script, (
+            "the job would look for .env.<env> wherever the shell landed"
+        )
+        assert script.index('cd "$deploy_path"') < script.index(
+            "python3 scheduled-jobs/box-object-backup/backup_objects.py"
+        )
 
-    def test_secrets_the_job_does_not_need_are_left_behind(self, workflow: str):
-        # Assert the FILTER, not the absence of a word from the file — the
-        # script's own comment names JWT as the thing being excluded, so a
-        # substring check on the whole script fails for the wrong reason.
-        import re
+    def test_the_workflow_no_longer_exports_the_file_itself(self, parsed: dict):
+        """It filtered with a `grep` pattern and exported the matches.
 
-        script = self.run_step(workflow)
+        Two problems: the pattern took any `OBJECT_BACKUP_*` key rather than a
+        named list, and every value passed through a shell on the way. The job
+        reads the file as data now, so neither applies.
+        """
+        script = _strip_comments(self.run_step(parsed))
         assert "set -a" not in script, "sourcing exports every secret in the file"
-        pattern = re.search(r"grep -E '(\^\([^']+)'", script)
-        assert pattern, "no filter found — the whole env file would be exported"
-        families = pattern.group(1)
-        assert "OBJECT_BACKUP_" in families and "MINIO_ROOT_" in families
-        for unwanted in ("JWT", "SERVICE_ROLE", "ANON_KEY", "ENC_KEY", "PASSWORD)"):
-            assert unwanted not in families, f"filter would export {unwanted}"
+        assert 'export "$key=$value"' not in script
+        assert "grep -E" not in script, "the workflow is filtering config again"
 
-    def test_the_env_file_is_assigned_rather_than_sourced(self, workflow: str):
-        # `. file` parses a .env as shell — a password containing a quote or a
-        # backtick then either aborts the run or executes part of itself.
-        script = self.run_step(workflow)
-        assert 'export "$key=$value"' in script
+    def test_the_environment_it_names_is_the_one_the_job_reads(self, parsed: dict):
+        script = self.run_step(parsed)
+        assert '--env "$env_name"' in script
 
 
 class TestDispatchInputCannotReachTheRemoteShell:
@@ -478,11 +468,10 @@ class TestDispatchInputCannotReachTheRemoteShell:
 class TestTheWorkflowAndTheJobWatchOneDirectory:
     """Three ssh sessions, and only one of them reads the env file.
 
-    The run stamps its marker in the state directory, the cancel step finds
-    the lock there, and the summary falls back to the reports there. Pointed
-    somewhere else, the job would work perfectly while those two watched an
-    empty directory: a cancel that stops nothing, and a verdict never
-    recovered — both silent.
+    The run takes the lock there, the cancel step finds it there, and the
+    summary falls back to the reports there. Pointed somewhere else, the job
+    would work perfectly while those two watched an empty directory: a cancel
+    that stops nothing and a verdict never recovered, both silent.
     """
 
     def test_the_directory_is_defined_once(self, parsed: dict, workflow: str):
@@ -495,63 +484,36 @@ class TestTheWorkflowAndTheJobWatchOneDirectory:
             "the path is still written out somewhere a change would miss"
         )
 
-    def test_a_job_pointed_elsewhere_refuses_to_start(self, parsed: dict, tmp_path):
-        """Loud on the run step rather than silent in the other two."""
-        import subprocess
-
-        steps = parsed["jobs"]["mirror"]["steps"]
-        outer = next(
-            s for s in steps if s.get("name", "").startswith("Run the mirror")
-        )["run"]
-        remote = outer.split("<<'REMOTE'", 1)[1].split("\n          REMOTE", 1)[0]
-        guard_at = remote.index("OBJECT_BACKUP_STATE_DIR is")
-        block = remote[: guard_at + remote[guard_at:].index("fi") + 2]
-        block = block[block.index('if [ -n "${OBJECT_BACKUP_STATE_DIR:-}"') :]
-        result = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'state_dir="$1"\n{block}\necho reached-the-run',
-                "bash",
-                "/var/lib/bloom-box-object-backup",
-            ],
-            env={"OBJECT_BACKUP_STATE_DIR": str(tmp_path), "PATH": "/usr/bin:/bin"},
-            capture_output=True,
-            text=True,
+    def test_the_workflow_tells_the_job_which_directory_it_watches(self, parsed: dict):
+        script = next(
+            s["run"] for s in parsed["jobs"]["mirror"]["steps"] if s.get("id") == "run"
         )
-        assert result.returncode == 2, result.stdout
-        assert "reached-the-run" not in result.stdout
-        assert "Point them at the same directory" in result.stderr
+        assert '--state-dir "$state_dir"' in script, (
+            "the job would take the directory from the env file alone, and the "
+            "two other ssh sessions would have no say in it"
+        )
 
-    def test_the_matching_case_is_allowed_through(self, parsed: dict):
+    def test_a_job_pointed_elsewhere_refuses_to_start(self, tmp_path):
+        """Loud on the run step rather than silent in the other two."""
+        env_file = tmp_path / ".env.prod"
+        env_file.write_text(f"OBJECT_BACKUP_STATE_DIR={tmp_path}/elsewhere\n")
+        code = job.main(
+            [
+                "--env",
+                "prod",
+                "--env-file",
+                str(env_file),
+                "--state-dir",
+                job.DEFAULT_STATE_DIR,
+            ]
+        )
+        assert code == 2
+
+    def test_the_matching_case_is_allowed_through(self, tmp_path):
         """The other half: the guard must not stop the ordinary night."""
-        import subprocess
-
-        steps = parsed["jobs"]["mirror"]["steps"]
-        outer = next(
-            s for s in steps if s.get("name", "").startswith("Run the mirror")
-        )["run"]
-        remote = outer.split("<<'REMOTE'", 1)[1].split("\n          REMOTE", 1)[0]
-        guard_at = remote.index("OBJECT_BACKUP_STATE_DIR is")
-        block = remote[: guard_at + remote[guard_at:].index("fi") + 2]
-        block = block[block.index('if [ -n "${OBJECT_BACKUP_STATE_DIR:-}"') :]
-        for env in (
-            {},
-            {"OBJECT_BACKUP_STATE_DIR": "/var/lib/bloom-box-object-backup"},
-        ):
-            result = subprocess.run(
-                [
-                    "bash",
-                    "-c",
-                    f'state_dir="$1"\n{block}\necho reached-the-run',
-                    "bash",
-                    "/var/lib/bloom-box-object-backup",
-                ],
-                env={"PATH": "/usr/bin:/bin", **env},
-                capture_output=True,
-                text=True,
-            )
-            assert "reached-the-run" in result.stdout, (env, result.stderr)
+        args = job.parse_args(["--env", "prod", "--state-dir", str(tmp_path)])
+        job.check_state_dir(args, str(tmp_path))
+        job.check_state_dir(args, "")
 
 
 class TestTheSummaryStepCannotHangTheRunner:
@@ -672,7 +634,10 @@ class TestTheRunNamesTheJobThatStartedIt:
         script = self.remote_script(parsed)
         export = f"export {runlock.ACTIONS_RUN_ENV}="
         assert export in script, "the run step never names the job to the run"
-        assert script.index(export) < script.index("backup_objects.py"), (
+        launch = script.index(
+            "python3 scheduled-jobs/box-object-backup/backup_objects.py"
+        )
+        assert script.index(export) < launch, (
             "exported after the job starts, so the run would not see it"
         )
 

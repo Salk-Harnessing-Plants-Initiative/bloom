@@ -115,6 +115,32 @@ SKIPPED_NAME_MARKER = "object(s) were SKIPPED for their names"
 # `emit_status`, and the workflow matches them ANCHORED to the start of a log
 # line — timestamp, level, then the key. An object name can only ever appear
 # after a message has already begun, so no name can produce a matching line.
+# The only keys this job reads out of a deploy env file. An allow-list rather
+# than a prefix match: the file beside these holds the JWT signing keys and the
+# service-role secret, and rclone takes its whole option surface from `RCLONE_*`
+# — one `RCLONE_CONFIG=` line would point the mirror at somebody else's remote.
+ENV_KEYS = (
+    "POSTGRES_USER",
+    "POSTGRES_DB",
+    "MINIO_ROOT_USER",
+    "MINIO_ROOT_PASSWORD",
+    "OBJECT_BACKUP_MINIO_BUCKET",
+    "OBJECT_BACKUP_MINIO_PREFIX",
+    "OBJECT_BACKUP_MINIO_ENDPOINT",
+    "OBJECT_BACKUP_BOX_REMOTE",
+    "OBJECT_BACKUP_BOX_ROOT",
+    "OBJECT_BACKUP_STATE_DIR",
+    "OBJECT_BACKUP_WORKERS",
+    "OBJECT_BACKUP_BWLIMIT",
+    "OBJECT_BACKUP_RC_PORT",
+    "OBJECT_BACKUP_RCLONE_CONFIG",
+)
+
+# Returned to the caller instead of exported. Every `docker` child this job
+# starts inherits our environment, so a secret left in it travels further than
+# the one function that needs it.
+SECRET_ENV_KEYS = ("MINIO_ROOT_PASSWORD",)
+
 # The renderer anchors on this shape — timestamp, level, then the key — so the
 # two are named in one place. `asctime` contains a space.
 LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
@@ -136,6 +162,66 @@ FLAG_VALUES = (
     "ledger_ahead",
     "source_gone",
 )
+
+
+def load_env_file(path: Path) -> dict[str, str]:
+    """Read a deploy .env file into a plain dict.
+
+    A systemd unit would have read this file for us; an `ssh host cmd` shell
+    reads no profile and no env file, and sourcing it would let a value
+    containing a quote, a backtick or a `$` either fail to parse or run.
+
+    Deliberately not a shell: `export ` prefixes, inline `#` comments and
+    values spanning several lines are all read literally. The deploy env files
+    use none of them, and guessing would corrupt a value containing a `#` far
+    more quietly than refusing to.
+    """
+    values: dict[str, str] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if not key or not key[0].isalpha():
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def apply_env_file(path: Path) -> dict[str, str]:
+    """Load this job's keys as defaults, and return the ones it found.
+
+    Only ENV_KEYS are taken; the rest of the file is left where it is, and a
+    real environment variable still wins over it — which is what makes a
+    manual run with a couple of exports work.
+
+    A blank value counts as absent so the defaults still apply: blanking a
+    line is how someone asks for the default, and an empty
+    OBJECT_BACKUP_MINIO_BUCKET would otherwise make rclone read each object's
+    own bucket_id as a bucket name and 404 every copy.
+    """
+    if not path.is_file():
+        raise lib.BackupError(f"env file not found: {path}")
+    try:
+        values = load_env_file(path)
+    except (OSError, ValueError) as exc:
+        # OSError: the runner writes .env.<env> at mode 600 and the deploy user
+        # reads it. ValueError: a byte in it that is not UTF-8.
+        raise lib.BackupError(f"cannot read env file {path}: {exc}") from exc
+    found: dict[str, str] = {}
+    for key in ENV_KEYS:
+        value = values.get(key, "")
+        if not value:
+            continue
+        found[key] = value
+        if key not in SECRET_ENV_KEYS:
+            os.environ.setdefault(key, value)
+    logger.info("loaded %d of %d values from %s", len(found), len(values), path.name)
+    return found
 
 
 def emit_status(status: str, flags=(), stats=None) -> None:
@@ -251,16 +337,49 @@ PREFLIGHT_SAMPLE = 5
 PREFLIGHT_SCAN = 10_000
 
 
+def env_file_for(argv: list[str] | None) -> Path:
+    """Which deploy env file this invocation reads, before anything is parsed."""
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--env", default="prod")
+    pre.add_argument("--env-file", default="")
+    pre.add_argument("-v", "--verbose", action="store_true")
+    known, _ = pre.parse_known_args(argv)
+    return (
+        Path(known.env_file) if known.env_file else Path(f".env.{known.env}")
+    ), known.verbose
+
+
+def check_state_dir(args: argparse.Namespace, configured: str) -> None:
+    """Refuse when the env file and the caller name different directories.
+
+    The workflow's cancel step and its summary both read this directory over
+    separate ssh connections that see no env file. Pointed elsewhere here, the
+    job would work while those two silently watched an empty one — a cancel
+    that stops nothing and a verdict that is never recovered.
+    """
+    if configured and str(args.state_dir) != configured:
+        raise lib.BackupError(
+            f"OBJECT_BACKUP_STATE_DIR is {configured} but this run was given "
+            f"{args.state_dir}. Point them at the same directory."
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+    env_file, verbose = env_file_for(argv)
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
+        level=logging.DEBUG if verbose else logging.INFO,
         format=LOG_FORMAT,
     )
-    # Before any work starts, so a stop arriving during the manifest read is
-    # honoured rather than killing the process partway through it.
+    # Before anything else, including reading the config, so a stop arriving
+    # at any point is honoured rather than killing the process partway.
     stopping.install_handlers()
     try:
+        # Before the parser is built: every default in it reads the
+        # environment, and this file is what fills it.
+        found = apply_env_file(env_file)
+        args = parse_args(argv)
+        args.minio_secret = found.get("MINIO_ROOT_PASSWORD") or args.minio_secret
+        check_state_dir(args, found.get("OBJECT_BACKUP_STATE_DIR", ""))
         return run_backup(args)
     except (dock.DockerError, lib.BackupError) as exc:
         logger.error("%s", exc)
@@ -272,6 +391,11 @@ def main(argv: list[str] | None = None) -> int:
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument(
+        "--env-file",
+        default="",
+        help="deploy env file to read settings from (default: .env.<env>)",
+    )
     # prod only. Both environments live on one host and this path has no
     # environment in it, so a staging run would open the same ledger.db and
     # write the same `runs` table — which is the watermark. The two would then
@@ -357,7 +481,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="after copying, stat N destination paths (evenly spread) and compare sizes",
     )
     parser.add_argument("--verbose", action="store_true")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    # Carried on the namespace rather than read from the environment where it
+    # is used, so the value need never be exported. `main` replaces it with
+    # what the env file held; a plain export still works for a run by hand.
+    args.minio_secret = os.environ.get("MINIO_ROOT_PASSWORD", "")
+    return args
 
 
 def run_backup(args: argparse.Namespace) -> int:
@@ -1177,7 +1306,7 @@ def copy_manifest(
 
 def minio_source_from_env(args: argparse.Namespace) -> MinioSource:
     access = os.environ.get("MINIO_ROOT_USER", "")
-    secret = os.environ.get("MINIO_ROOT_PASSWORD", "")
+    secret = args.minio_secret
     if not access or not secret:
         raise lib.BackupError(
             "MINIO_ROOT_USER / MINIO_ROOT_PASSWORD missing — the service reads "
