@@ -110,7 +110,7 @@ DB_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_$]{0,62}\Z")
 # An rclone remote name. The destination is built by concatenation, so anything
 # richer than a name — rclone accepts a full backend definition with inline
 # credentials in this position — would redirect the dump off Box entirely.
-RCLONE_REMOTE_PATTERN = re.compile(r"[A-Za-z0-9_.-]+\Z")
+RCLONE_REMOTE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 
 EXIT_OK = 0
 EXIT_SUBPROCESS = 1
@@ -343,19 +343,33 @@ def _terminate(signum: int, _frame: object) -> None:
     raise SystemExit(EXIT_SIGNAL)
 
 
-def _state_dir() -> Path:
-    """Where working copies live. BACKUP_STATE_DIR is read from the env file.
+def validated_state_dir(configured: str) -> Path:
+    """Check a working directory before anything is written, chmod-ed or deleted.
 
-    Absolute only: the workflow runs this from inside the deploy directory, so a
-    relative path resolves there — which is the one place a plaintext dump must
-    never land, and whose mode the caller then tightens to 0700.
+    Two properties, because this directory's mode is changed and its contents
+    are removed. Absolute, since the workflow runs this from inside the deploy
+    directory and a relative path would resolve there. And identical to its own
+    resolved form, which refuses a symlink at any depth and a `..` that walks
+    somewhere else — `/data/bloom/backup-work/prod/../../production` is
+    absolute, contains no symlink, and lands in the deploy tree.
     """
-    state_dir = Path(_env("BACKUP_STATE_DIR", DEFAULT_STATE_DIR)).expanduser()
+    state_dir = Path(configured).expanduser()
     if not state_dir.is_absolute():
         raise ConfigError(
             f"BACKUP_STATE_DIR must be an absolute path, not {str(state_dir)!r}"
         )
+    resolved = Path(os.path.realpath(state_dir))
+    if resolved != state_dir:
+        raise ConfigError(
+            f"BACKUP_STATE_DIR must name a directory directly, but "
+            f"{str(state_dir)!r} leads to {str(resolved)!r}"
+        )
     return state_dir
+
+
+def _state_dir() -> Path:
+    """Where working copies live. BACKUP_STATE_DIR is read from the env file."""
+    return validated_state_dir(_env("BACKUP_STATE_DIR", DEFAULT_STATE_DIR))
 
 
 def _min_free_bytes() -> int:
@@ -432,8 +446,14 @@ def sweep_best_effort(env_file: Path) -> int:
         )
         return 0
     try:
-        state_dir = Path(configured).expanduser()
+        # The same checks as the main path. This runs on exactly the failures
+        # they raise, so without them the chmod is refused while the delete
+        # still goes ahead somewhere nobody named.
+        state_dir = validated_state_dir(configured)
         return sweep_stale_work_dirs(state_dir) if state_dir.is_dir() else 0
+    except ConfigError as exc:
+        logger.warning("not sweeping: %s", exc)
+        return 0
     except OSError as exc:
         logger.warning("could not sweep stale working directories: %s", exc)
         return 0

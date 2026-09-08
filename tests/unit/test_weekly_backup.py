@@ -1138,6 +1138,81 @@ def test_a_blank_line_counts_as_absent_for_every_key(tmp_path, monkeypatch):
         assert key not in os.environ, f"{key} was imported as an empty string"
 
 
+@pytest.mark.parametrize("spelling", [
+    "/data/bloom/backup-work/prod/../../production",  # absolute, no symlink,
+    "/data/bloom/backup-work/../production",          # and lands in the deploy tree
+])
+def test_a_path_that_walks_somewhere_else_is_refused(spelling, tmp_path, monkeypatch):
+    # These pass every string assertion the pinning tests make — they start with
+    # a slash, are not under /home, contain /data/bloom/, and do not begin with
+    # a deploy directory — while resolving into one. The check has to be on the
+    # resolved path, not on the text.
+    monkeypatch.setenv("BACKUP_STATE_DIR", spelling)
+    with pytest.raises(backup.ConfigError, match="leads to"):
+        backup._state_dir()
+
+
+def test_a_relative_path_is_refused_by_name(monkeypatch):
+    # The resolved-path check would refuse this too, since a relative path never
+    # equals its own realpath — but this is the likeliest misconfiguration and
+    # it deserves the message that names the actual problem.
+    monkeypatch.setenv("BACKUP_STATE_DIR", "backup-work")
+    with pytest.raises(backup.ConfigError, match="absolute path"):
+        backup._state_dir()
+
+
+def test_a_symlink_anywhere_in_the_path_is_refused(tmp_path, monkeypatch):
+    # The leaf is a real directory; the symlink is one level up. Checking only
+    # the final component misses it, and both the chmod and the sweep then land
+    # in the target.
+    real = tmp_path / "somebody-elses-tree" / "prod"
+    real.mkdir(parents=True)
+    link = tmp_path / "backup-work"
+    link.symlink_to(tmp_path / "somebody-elses-tree", target_is_directory=True)
+    monkeypatch.setenv("BACKUP_STATE_DIR", str(link / "prod"))
+
+    with pytest.raises(backup.ConfigError, match="leads to"):
+        backup._state_dir()
+    assert real.stat().st_mode & 0o777 != 0o700
+
+
+def test_the_real_working_directory_is_still_accepted(tmp_path, monkeypatch):
+    # The guard must not reject the directory the host actually provides,
+    # including the spellings an operator might reasonably write.
+    state = (tmp_path / "backup-work" / "prod").resolve()
+    state.mkdir(parents=True)
+    spellings = [
+        str(state),
+        str(state) + "/",                                  # trailing slash
+        str(state) + "/.",                                 # trailing /.
+        str(state).replace("/backup-work", "//backup-work"),  # doubled mid-path
+        str(state.parent.parent) + "/./backup-work/prod",  # a ./ segment
+    ]
+    for spelling in spellings:
+        monkeypatch.setenv("BACKUP_STATE_DIR", spelling)
+        assert backup._state_dir() == state, f"refused a legitimate path: {spelling}"
+
+
+@pytest.mark.parametrize("bad", [
+    ".",
+    "../work",
+    "/data/bloom/backup-work/prod/../../production",
+])
+def test_the_sweep_applies_the_same_checks_as_the_run(bad, tmp_path, monkeypatch):
+    # The sweep runs on exactly the failures those checks raise. Without them
+    # the chmod is refused while the delete goes ahead somewhere nobody named.
+    victim = tmp_path / "bloom-backup-someoneelses"
+    victim.mkdir()
+    (victim / "dump.sql.gz").write_bytes(b"another run's plaintext dump")
+    env_file = tmp_path / ".env.prod"
+    env_file.write_text(f"BACKUP_STATE_DIR={bad}\n")
+    monkeypatch.delenv("BACKUP_STATE_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    assert backup.sweep_best_effort(env_file) == 0
+    assert victim.exists(), "the sweep deleted through a path the run had refused"
+
+
 @pytest.mark.parametrize("relative", [".", "backup-work", "./work", "../work"])
 def test_a_relative_working_directory_is_refused(relative, tmp_path, monkeypatch):
     # The workflow runs the script from inside the deploy directory, so a
@@ -1200,6 +1275,7 @@ def test_the_working_directory_mode_is_not_applied_through_a_symlink(
 
 @pytest.mark.parametrize("remote", [
     ":s3,provider=AWS,access_key_id=AK,secret_access_key=SK,endpoint=evil.example",
+    "-box",   # rclone reads a leading dash as flags, not as a remote
     "/data/bloom/backups",
     "box:extra",
     "box remote",
