@@ -1277,3 +1277,28 @@ def test_only_a_held_lock_counts_as_held(monkeypatch, tmp_path):
         "a filesystem that cannot lock was reported as a run already holding "
         "the lock, which the summary calls expected"
     )
+
+
+def test_a_present_but_empty_stat_item_is_not_absence(monkeypatch):
+    """`or None` turned a falsy item into "this object does not exist".
+
+    `verify_sample` takes absence loudly — it reports the object missing from
+    Box — but `_source_is_gone` takes it quietly, letting the watermark move
+    past an object nothing copied. The quiet direction is the one that loses
+    an image, so absence has to mean the key is absent.
+    """
+    from rclone_rc import RcloneRC
+
+    client = RcloneRC("http://127.0.0.1:5572")
+    monkeypatch.setattr(client, "call", lambda method, payload: {"item": {}})
+    assert client.stat("fs", "remote") == {}, (
+        "an item that is present but empty was reported as absent"
+    )
+
+
+def test_a_missing_item_is_still_absence(monkeypatch):
+    from rclone_rc import RcloneRC
+
+    client = RcloneRC("http://127.0.0.1:5572")
+    monkeypatch.setattr(client, "call", lambda method, payload: {"item": None})
+    assert client.stat("fs", "remote") is None

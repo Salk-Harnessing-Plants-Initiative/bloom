@@ -180,7 +180,11 @@ class RcloneRC:
     def stat(self, fs: str, remote: str) -> dict | None:
         """Metadata for one destination path, or None when it is absent."""
         result = self.call("operations/stat", {"fs": fs, "remote": remote})
-        return result.get("item") or None
+        # `is None`, not `or None`: a present-but-falsy item read as absent,
+        # and `_source_is_gone` takes absent as "nothing can ever copy this"
+        # and lets the watermark move past it.
+        item = result.get("item")
+        return None if item is None else item
 
     def stats(self) -> dict:
         return self.call("core/stats", {})

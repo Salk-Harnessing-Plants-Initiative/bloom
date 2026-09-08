@@ -3288,6 +3288,19 @@ class TestARowWithNoImageBehindIt:
         copied, failed, gone = run_copy_full(client, [obj()], ledger)
         assert (copied, failed, gone) == (0, 1, 0)
 
+    def test_the_marker_match_is_case_insensitive(self, ledger):
+        """Real rclone and S3 say `NoSuchKey` and `404 Not Found`.
+
+        The markers are lowercase and the comparison lowercases the message.
+        Every test used an already-lowercase string, so dropping `.lower()`
+        left the suite green while production stopped classifying anything —
+        fail-closed, but it would silently disable the whole path.
+        """
+        for text in ("NoSuchKey", "404 Not Found", "Object Not Found"):
+            client = FakeRclone({self.KEY: [RcloneError(text, retryable=False)]})
+            copied, failed, gone = run_copy_full(client, [obj()], ledger)
+            assert (copied, failed, gone) == (0, 0, 1), f"{text!r} -> {failed=}"
+
     def test_an_ordinary_failure_does_not_even_ask(self, ledger):
         """The stat is a confirmation, not a classifier.
 

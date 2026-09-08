@@ -1601,6 +1601,9 @@ class TestTheHeadlineMatchesTheWorstThingThatHappened:
         assert "also failed to copy" in body, (
             "a night with 12 failed copies reported only the collision"
         )
+        assert "collision was also refused" not in body, (
+            "the additive note double-prints under its own headline"
+        )
 
     def test_the_entangled_remedy_is_reached_when_both_happen(self, parsed):
         """A mismatch and a collision on one night, with copies otherwise fine.
@@ -1615,7 +1618,7 @@ class TestTheHeadlineMatchesTheWorstThingThatHappened:
                        log=self.DONE.format(c=40, f=0, a=0)),
         )
         assert "VERIFICATION FAILED" in self.headline(body)
-        assert "also** refused a name collision" in body
+        assert "collision was also refused" in body
         assert "entangled" in body
 
     def test_a_dry_run_reports_what_it_would_have_done(self, parsed):
@@ -2032,6 +2035,45 @@ class TestTheFallbackRecoversTheCountsToo:
                 f"marker {marker!r} produced a search anyway: {args}"
             )
 
+    def test_a_recovered_night_does_not_promise_nothing_needs_doing(self, parsed):
+        """The report is written BEFORE the ledger upload runs.
+
+        So the two ledger flags can never be in it — the workflow's own
+        comment says so. The compensation it claimed was the exit code, but
+        a cancelled job never receives one: the pipe is dead, which is the
+        whole premise of this route. Meanwhile the run does reach
+        `publish_ledger`, so the Box copy of the ledger really can be stale
+        while the summary says nothing is wrong.
+        """
+        body = self.render_with_report(
+            parsed,
+            {"status": "stopped", "flags": [], "outcome": "partial",
+             "stats": {"copied": 412000, "already_current": 0,
+                       "verify_checked": 0, "verify_unverified": 0}},
+            self.TRUNCATED,
+        )
+        assert "stopped, progress kept" in body
+        assert "Nothing needs doing" not in body, (
+            "a night whose ledger upload may have failed says nothing is wrong"
+        )
+        assert "Check the job log for the ledger upload" in body
+
+    def test_a_night_read_from_the_log_still_says_nothing_needs_doing(self, parsed):
+        """The other direction: the log route carries the ledger flags, so a
+        clean stop there really does need nothing."""
+        log = (
+            "2026-08-31 02:20:00,1 INFO done — copied 4211, failed 0, "
+            "already current 0, skipped 0\n"
+            f"2026-08-31 02:45:00,1 INFO {job.STATUS_KEY}=stopped\n"
+            f"2026-08-31 02:45:00,1 INFO {job.FLAGS_KEY}=\n"
+        )
+        body = self.render_with_report(
+            parsed,
+            {"status": "stopped", "flags": [], "outcome": "partial", "stats": {}},
+            log,
+        )
+        assert "Nothing needs doing" in body
+
     def test_the_log_still_wins_when_it_has_the_counts(self, parsed):
         """The fallback fills gaps; it must not overwrite a complete log."""
         log = (
@@ -2083,3 +2125,144 @@ class TestGitHubCanActuallyLoadThisWorkflow:
             f"Over the {self.MAX_EXPRESSION - self.MARGIN} warning line: "
             + "; ".join(oversized)
         )
+
+
+class TestACollisionIsNeverSwallowedByTheHeadline:
+    """It was the only flag whose notice lived inside a branch.
+
+    Six of the seven flags render through their own `if has_flag …` after the
+    chain; `collisions` had a headline branch plus a note nested inside the
+    verification branch. A night that failed copies AND found a mismatch took
+    an earlier branch than either, so the word "collision" appeared nowhere —
+    on a night where an object is permanently not backed up.
+    """
+
+    def render(self, parsed: dict, status: str, *flags: str) -> str:
+        import subprocess
+        import tempfile
+        from pathlib import Path as P
+
+        for flag in flags:
+            assert flag in job.FLAG_VALUES, flag
+        assert status in job.STATUS_VALUES, status
+        log = (
+            "2026-08-31 02:20:00,1 INFO done — copied 10, failed 3, "
+            "already current 0, skipped 0\n"
+            f"2026-08-31 02:45:00,1 INFO {job.STATUS_KEY}={status}\n"
+            f"2026-08-31 02:45:00,1 INFO {job.FLAGS_KEY}={','.join(flags)}\n"
+        )
+        steps = parsed["jobs"]["mirror"]["steps"]
+        script = next(
+            s["run"] for s in steps
+            if s.get("name", "").startswith("Write the run summary")
+        ).replace("${{ steps.run.outcome }}", "$OUTCOME")
+        with tempfile.TemporaryDirectory() as tmp:
+            (P(tmp) / "mirror-output.txt").write_text(log)
+            out = P(tmp) / "summary.md"
+            r = subprocess.run(
+                ["bash", "-e", "-c", script],
+                env={
+                    "PATH": "/usr/bin:/bin", "RUNNER_TEMP": tmp, "ENV_NAME": "prod",
+                    "OUTCOME": "failure", "GITHUB_STEP_SUMMARY": str(out),
+                    "LC_ALL": "C",
+                },
+                capture_output=True, text=True,
+            )
+            assert r.returncode == 0, r.stderr.strip()[:200]
+            return out.read_text()
+
+    def test_a_failed_night_that_also_mismatched_still_names_the_collision(
+        self, parsed
+    ):
+        """All three conditions in one pass, and all three are reachable."""
+        body = self.render(parsed, "failed", "collisions", "verify_mismatch")
+        assert "collision" in body, (
+            "an object permanently not backed up is mentioned nowhere"
+        )
+        assert "entangled" in body, "the ordering advice went with it"
+
+    def test_it_is_not_repeated_under_its_own_headline(self, parsed):
+        body = self.render(parsed, "partial", "collisions")
+        assert "OBJECTS NOT BACKED UP" in body
+        assert body.count("collision was also refused") == 0
+
+    def test_a_collision_alone_keeps_its_own_headline(self, parsed):
+        """The additive note is only for when something outranked it.
+
+        Every branch above the collision one is a stop, a skip, or a
+        verification mismatch, so a collision on its own always headlines.
+        """
+        body = self.render(parsed, "failed", "collisions")
+        assert "OBJECTS NOT BACKED UP" in body
+        assert "collision was also refused" not in body
+
+
+class TestADryRunIsNotDescribedAsARealOne:
+    """A dry run copies nothing, records no run and writes no run report.
+
+    Every condition branch and every additive notice points at `_runs/` on
+    Box. `report_dry_run` returns before `ledger.start_run` and before
+    `publish_report`, so that file never exists — and this is step one of the
+    pre-seed checklist and the first thing run on a rebuilt host.
+    """
+
+    DRY = (
+        "2026-08-31 02:20:00,1 INFO dry run — would copy 5, 400 already "
+        "current, 1 skipped; nothing was copied\n"
+    )
+
+    def render(self, parsed: dict, *flags: str, status: str = "partial") -> str:
+        import subprocess
+        import tempfile
+        from pathlib import Path as P
+
+        for flag in flags:
+            assert flag in job.FLAG_VALUES, flag
+        log = self.DRY + (
+            f"2026-08-31 02:45:00,1 INFO {job.STATUS_KEY}={status}\n"
+            f"2026-08-31 02:45:00,1 INFO {job.FLAGS_KEY}={','.join(flags)}\n"
+        )
+        steps = parsed["jobs"]["mirror"]["steps"]
+        script = next(
+            s["run"] for s in steps
+            if s.get("name", "").startswith("Write the run summary")
+        ).replace("${{ steps.run.outcome }}", "$OUTCOME")
+        with tempfile.TemporaryDirectory() as tmp:
+            (P(tmp) / "mirror-output.txt").write_text(log)
+            out = P(tmp) / "summary.md"
+            r = subprocess.run(
+                ["bash", "-e", "-c", script],
+                env={
+                    "PATH": "/usr/bin:/bin", "RUNNER_TEMP": tmp, "ENV_NAME": "prod",
+                    "OUTCOME": "success", "GITHUB_STEP_SUMMARY": str(out),
+                    "LC_ALL": "C",
+                },
+                capture_output=True, text=True,
+            )
+            assert r.returncode == 0, r.stderr.strip()[:200]
+            return out.read_text()
+
+    def test_it_says_it_was_a_dry_run(self, parsed):
+        body = self.render(parsed)
+        assert "dry run" in body
+        assert "would copy 5" in body
+
+    def test_a_refused_name_does_not_point_at_a_report_that_does_not_exist(
+        self, parsed
+    ):
+        body = self.render(parsed, "skipped_names")
+        assert "_runs/" not in body, (
+            "the operator is sent to a run report a dry run never writes"
+        )
+        assert "skipping" in body, "nothing tells them where the names are"
+
+    def test_a_collision_does_not_claim_the_run_was_recorded(self, parsed):
+        """It refused to overwrite nothing — it copied nothing at all."""
+        body = self.render(parsed, "collisions")
+        assert "recorded **partial**" not in body
+        assert "refused to overwrite" not in body
+        assert "would copy 5" in body, "its counts vanished"
+
+    def test_a_vanished_source_does_not_point_at_a_report_either(self, parsed):
+        body = self.render(parsed, "source_gone")
+        assert "_runs/" not in body

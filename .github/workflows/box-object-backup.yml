@@ -400,6 +400,7 @@ jobs:
               [ -z "${current:-}" ] && current="$(num already_current)"
               [ -z "${checked:-}" ] && checked="$(num verify_checked)"
               [ -z "${unverified:-}" ] && unverified="$(num verify_unverified)"
+              [ -n "$status" ] && from_report=1
               [ -n "$status" ] && echo "verdict taken from the run report on the host: $status ($flags)"
             fi
           fi
@@ -444,7 +445,18 @@ jobs:
           {
             echo "## Nightly Box object mirror — ${ENV_NAME}"
             echo
-            if [ "$status" = "skipped" ]; then
+            if [ -n "$dry_line" ]; then
+              # It writes no run report and records no run, so the branches
+              # below — which all point at `_runs/` — cannot describe it.
+              said_dry=1
+              echo "Result: **dry run** — ${counts}."
+              if has_flag collisions || has_flag skipped_names; then
+                echo
+                echo "It found objects a real run would refuse. They are named"
+                echo "in the \`skipping\` lines of the job log; a dry run"
+                echo "writes no report."
+              fi
+            elif [ "$status" = "skipped" ]; then
               echo "Result: **skipped** — another run holds the lock, almost"
               echo "certainly the initial seed. Nothing was mirrored tonight;"
               echo "the seed is doing that work. This is expected until it ends."
@@ -472,13 +484,8 @@ jobs:
               echo "the mirror's progress until someone acted and make every"
               echo "later night re-read all eight million rows. Tonight is"
               echo "the notice; the run report under \`_runs/\` is the record."
-              if has_flag collisions; then
-                echo
-                echo "This night **also** refused a name collision — see the"
-                echo "job log. Resolve that first: the two are entangled, and"
-                echo "acting on one while the other stands can lose a backup."
-              fi
             elif has_flag collisions; then
+              said_collisions=1
               echo "Result: **OBJECTS NOT BACKED UP** — two object names"
               echo "normalize onto one path on Box, so only one of each pair"
               echo "can be stored and the job refused to overwrite the other."
@@ -500,7 +507,13 @@ jobs:
               echo "stop before it finished the table, almost certainly the"
               echo "job's own time limit. Everything it copied is recorded and"
               echo "on Box; the next run carries on from there. Nothing is"
-              echo "lost and nothing needs doing."
+              echo "lost."
+              if [ -z "${from_report:-}" ]; then
+                echo "Nothing needs doing."
+              else
+                echo "Check the job log for the ledger upload: the verdict"
+                echo "came from the run report, which is written before it."
+              fi
               if [ -n "${copied:-}" ] && [ "$copied" -gt 0 ]; then
                 echo "It got through ${counts}."
               else
@@ -526,6 +539,18 @@ jobs:
               echo "> Everything it copied is recorded and on Box, and the"
               echo "> next run carries on from there."
             fi
+            # Additive, so whichever branch won the headline cannot swallow it.
+            # Only reachable above a verification mismatch — every other
+            # branch that outranks the collision one is a stop or a skip.
+            if has_flag collisions && [ -z "${said_collisions:-}" ]; then
+              echo
+              echo "> **A name collision was also refused.** Two object names"
+              echo "> normalize onto one path on Box. Rename the object named"
+              echo "> at the START of its \`skipping\` line in the job log."
+              echo "> Resolve this before the missing objects above: the two"
+              echo "> are entangled, and acting on one while the other stands"
+              echo "> can lose a backup."
+            fi
             # Its own `if`, not an elif: this happens on nights that otherwise succeeded.
             if has_flag ledger_stale; then
               echo
@@ -539,7 +564,7 @@ jobs:
               echo "> upload failed, and 'If the deploy host itself is gone'"
               echo "> in the wiki says what losing it costs."
             fi
-            if has_flag skipped_names; then
+            if has_flag skipped_names && [ -z "${said_dry:-}" ]; then
               echo
               echo "> **Some images were not backed up because of their"
               echo "> filenames.** Box cannot store a name containing certain"
@@ -559,7 +584,7 @@ jobs:
               echo "> The report on Box is the durable record — they are"
               echo "> listed under \`name_skips\`, apart from the collisions."
             fi
-            if has_flag source_gone; then
+            if has_flag source_gone && [ -z "${said_dry:-}" ]; then
               echo
               echo "> **Some rows in the database have no image behind them.**"
               echo "> Postgres lists the object but MinIO does not hold the"
@@ -613,6 +638,8 @@ jobs:
             echo '```'
             echo
             echo "_This job only uploads. Nothing on Box is ever deleted by it._"
-            echo "_Per-run reports, including verification counts, are written to"
-            echo "\`<BACKUP_BOX_ROOT>/_runs/\` on Box._"
+            if [ -z "${said_dry:-}" ]; then
+              echo "_Per-run reports, including verification counts, are written to"
+              echo "\`<BACKUP_BOX_ROOT>/_runs/\` on Box._"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
