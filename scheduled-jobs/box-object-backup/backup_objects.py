@@ -258,34 +258,34 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--box-root",
-        default=os.environ.get("BACKUP_BOX_ROOT", ""),
+        default=os.environ.get("OBJECT_BACKUP_BOX_ROOT", ""),
         help="path under the Box remote to mirror into, e.g. Bloom-Backups/prod",
     )
     parser.add_argument(
         "--box-remote",
-        default=os.environ.get("BACKUP_BOX_REMOTE", "box"),
+        default=os.environ.get("OBJECT_BACKUP_BOX_REMOTE", "box"),
         help="name of the configured rclone Box remote (default: box)",
     )
     parser.add_argument(
         "--rclone-config",
         default=os.environ.get(
-            "BACKUP_RCLONE_CONFIG", str(Path.home() / ".config/rclone/rclone.conf")
+            "OBJECT_BACKUP_RCLONE_CONFIG", str(Path.home() / ".config/rclone/rclone.conf")
         ),
     )
     parser.add_argument(
         "--minio-bucket",
-        default=os.environ.get("BACKUP_MINIO_BUCKET", ""),
+        default=os.environ.get("OBJECT_BACKUP_MINIO_BUCKET", ""),
         help="the single MinIO bucket storage-api writes into (STORAGE_S3_BUCKET)",
     )
     parser.add_argument(
         "--minio-prefix",
-        default=os.environ.get("BACKUP_MINIO_PREFIX", ""),
+        default=os.environ.get("OBJECT_BACKUP_MINIO_PREFIX", ""),
         help="tenant prefix storage-api files objects under, e.g. storage-single-tenant",
     )
-    parser.add_argument("--state-dir", default=os.environ.get("BACKUP_STATE_DIR", DEFAULT_STATE_DIR))
-    parser.add_argument("--workers", type=int, default=int(os.environ.get("BACKUP_WORKERS", DEFAULT_WORKERS)))
-    parser.add_argument("--rc-port", type=int, default=int(os.environ.get("BACKUP_RC_PORT", 5572)))
-    parser.add_argument("--bwlimit", default=os.environ.get("BACKUP_BWLIMIT", ""))
+    parser.add_argument("--state-dir", default=os.environ.get("OBJECT_BACKUP_STATE_DIR", DEFAULT_STATE_DIR))
+    parser.add_argument("--workers", type=int, default=int(os.environ.get("OBJECT_BACKUP_WORKERS", DEFAULT_WORKERS)))
+    parser.add_argument("--rc-port", type=int, default=int(os.environ.get("OBJECT_BACKUP_RC_PORT", 5572)))
+    parser.add_argument("--bwlimit", default=os.environ.get("OBJECT_BACKUP_BWLIMIT", ""))
     parser.add_argument(
         "--limit", type=int, default=None, help="copy at most N objects, then stop (for smoke tests)"
     )
@@ -354,7 +354,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     # Config first, before the manifest read. Every check below is a string
     # or a file on this host — none of them can pass at 02:00 and fail at
     # 05:00 — and reading eight million rows before finding out that
-    # BACKUP_BOX_ROOT is empty spends four hours to learn something known in
+    # OBJECT_BACKUP_BOX_ROOT is empty spends four hours to learn something known in
     # a millisecond. The dry run reaches them too now, which is the point:
     # it is step one of the pre-seed checklist.
     check_box_root(args)
@@ -1117,13 +1117,13 @@ def minio_source_from_env(args: argparse.Namespace) -> MinioSource:
         )
     if not args.minio_bucket.strip():
         raise lib.BackupError(
-            "BACKUP_MINIO_BUCKET is empty. It must name the single MinIO "
+            "OBJECT_BACKUP_MINIO_BUCKET is empty. It must name the single MinIO "
             "bucket storage-api writes into (STORAGE_S3_BUCKET in the compose "
             "file). Left empty, rclone reads each object's own bucket_id as a "
             "bucket name and every copy 404s."
         )
     return MinioSource(
-        endpoint=os.environ.get("BACKUP_MINIO_ENDPOINT", "http://supabase-minio:9000"),
+        endpoint=os.environ.get("OBJECT_BACKUP_MINIO_ENDPOINT", "http://supabase-minio:9000"),
         access_key=access,
         secret_key=secret,
         bucket=args.minio_bucket,
@@ -1182,9 +1182,9 @@ def check_destination(ledger: Ledger, destination: str) -> None:
         "It tracks WHICH objects are already copied, not where, so running it "
         "against another folder would report millions of objects as already "
         "backed up while that folder stays empty.\n"
-        "If BACKUP_BOX_ROOT or BACKUP_BOX_REMOTE was mistyped, correct it. If "
+        "If OBJECT_BACKUP_BOX_ROOT or OBJECT_BACKUP_BOX_REMOTE was mistyped, correct it. If "
         "the mirror is genuinely moving, move the folder on Box and keep the "
-        "recorded value, or point BACKUP_STATE_DIR at a new directory and "
+        "recorded value, or point OBJECT_BACKUP_STATE_DIR at a new directory and "
         "seed the new location from scratch."
     )
 
@@ -1194,7 +1194,7 @@ def check_box_root(args: argparse.Namespace) -> None:
 
     `--box-root` defaults to empty, and an empty root means `box_path` returns
     a bare `<bucket>/<name>` — so a manual seed launched without
-    BACKUP_BOX_ROOT exported writes eight million objects, plus `_runs/`,
+    OBJECT_BACKUP_BOX_ROOT exported writes eight million objects, plus `_runs/`,
     straight into the top level of the Box drive. Nothing about that looks
     wrong while it happens, and undoing it is a manual cleanup of the whole
     account.
@@ -1207,9 +1207,9 @@ def check_box_root(args: argparse.Namespace) -> None:
     root = args.box_root.strip().strip("/")
     if not root:
         raise lib.BackupError(
-            "BACKUP_BOX_ROOT is empty. Set it to the folder on Box this "
+            "OBJECT_BACKUP_BOX_ROOT is empty. Set it to the folder on Box this "
             "environment mirrors into, e.g.\n"
-            f"    export BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/{args.env}/storage\n"
+            f"    export OBJECT_BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/{args.env}/storage\n"
             "Left empty, the objects would be written to the top level of the "
             "Box drive."
         )
@@ -1253,7 +1253,7 @@ def preflight_source(client: RcloneRC, minio: MinioSource, samples: list) -> Non
         "where this job expects it:\n"
         f"{listed}\n"
         "Postgres lists them but MinIO does not hold them there. Check "
-        "BACKUP_MINIO_BUCKET and BACKUP_MINIO_PREFIX against one real key:\n"
+        "OBJECT_BACKUP_MINIO_BUCKET and OBJECT_BACKUP_MINIO_PREFIX against one real key:\n"
         f"    rclone lsf :s3:{minio.bucket.strip('/')} --max-depth 3"
         f"{detail}"
     )

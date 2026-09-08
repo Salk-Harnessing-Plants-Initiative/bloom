@@ -474,7 +474,8 @@ class TestTheRemoteRunGetsItsConfiguration:
     supplies none — no profile, no .env file.
 
     The systemd unit this replaced carried `EnvironmentFile=`. Deleting it
-    removed the only mechanism feeding BACKUP_*, POSTGRES_* and MINIO_ROOT_* to
+    removed the only mechanism feeding OBJECT_BACKUP_*, POSTGRES_* and
+    MINIO_ROOT_* to
     the process, and nothing replaced it: every scheduled run would have died
     at the first config lookup, after a full scan of storage.objects.
     """
@@ -494,7 +495,7 @@ class TestTheRemoteRunGetsItsConfiguration:
 
     def test_every_variable_family_the_job_needs_is_exported(self, workflow: str):
         script = self.run_step(workflow)
-        for family in ("BACKUP_", "POSTGRES_", "MINIO_ROOT_"):
+        for family in ("OBJECT_BACKUP_", "POSTGRES_", "MINIO_ROOT_"):
             assert family in script, f"{family}* never reaches the process"
 
     def test_secrets_the_job_does_not_need_are_left_behind(self, workflow: str):
@@ -508,7 +509,7 @@ class TestTheRemoteRunGetsItsConfiguration:
         pattern = re.search(r"grep -E '(\^\([^']+)'", script)
         assert pattern, "no filter found — the whole env file would be exported"
         families = pattern.group(1)
-        assert "BACKUP_" in families and "MINIO_ROOT_" in families
+        assert "OBJECT_BACKUP_" in families and "MINIO_ROOT_" in families
         for unwanted in ("JWT", "SERVICE_ROLE", "ANON_KEY", "ENC_KEY", "PASSWORD)"):
             assert unwanted not in families, f"filter would export {unwanted}"
 
@@ -1055,13 +1056,13 @@ class TestTheWorkflowAndTheJobWatchOneDirectory:
             s for s in steps if s.get("name", "").startswith("Run the mirror")
         )["run"]
         remote = outer.split("<<'REMOTE'", 1)[1].split("\n          REMOTE", 1)[0]
-        guard_at = remote.index("BACKUP_STATE_DIR is")
+        guard_at = remote.index("OBJECT_BACKUP_STATE_DIR is")
         block = remote[:guard_at + remote[guard_at:].index("fi") + 2]
-        block = block[block.index("if [ -n \"${BACKUP_STATE_DIR:-}\""):]
+        block = block[block.index("if [ -n \"${OBJECT_BACKUP_STATE_DIR:-}\""):]
         result = subprocess.run(
             ["bash", "-c", f'state_dir="$1"\n{block}\necho reached-the-run',
              "bash", "/var/lib/bloom-box-object-backup"],
-            env={"BACKUP_STATE_DIR": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            env={"OBJECT_BACKUP_STATE_DIR": str(tmp_path), "PATH": "/usr/bin:/bin"},
             capture_output=True, text=True,
         )
         assert result.returncode == 2, result.stdout
@@ -1077,10 +1078,10 @@ class TestTheWorkflowAndTheJobWatchOneDirectory:
             s for s in steps if s.get("name", "").startswith("Run the mirror")
         )["run"]
         remote = outer.split("<<'REMOTE'", 1)[1].split("\n          REMOTE", 1)[0]
-        guard_at = remote.index("BACKUP_STATE_DIR is")
+        guard_at = remote.index("OBJECT_BACKUP_STATE_DIR is")
         block = remote[:guard_at + remote[guard_at:].index("fi") + 2]
-        block = block[block.index("if [ -n \"${BACKUP_STATE_DIR:-}\""):]
-        for env in ({}, {"BACKUP_STATE_DIR": "/var/lib/bloom-box-object-backup"}):
+        block = block[block.index("if [ -n \"${OBJECT_BACKUP_STATE_DIR:-}\""):]
+        for env in ({}, {"OBJECT_BACKUP_STATE_DIR": "/var/lib/bloom-box-object-backup"}):
             result = subprocess.run(
                 ["bash", "-c", f'state_dir="$1"\n{block}\necho reached-the-run',
                  "bash", "/var/lib/bloom-box-object-backup"],

@@ -69,7 +69,7 @@ class MinioSource:
     def __post_init__(self) -> None:
         if not self.bucket.strip():
             raise ValueError(
-                "MinIO bucket is empty — set BACKUP_MINIO_BUCKET. Without it "
+                "MinIO bucket is empty — set OBJECT_BACKUP_MINIO_BUCKET. Without it "
                 "rclone treats each object's own bucket_id as the bucket name "
                 "and every copy fails with a 404."
             )

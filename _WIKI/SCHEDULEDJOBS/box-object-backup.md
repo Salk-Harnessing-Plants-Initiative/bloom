@@ -37,7 +37,7 @@ neither is a complete restore on its own. See "Restoring" below.
    token ever expires, refresh it by hand:
    `sudo -u bloom-deploy rclone config reconnect box:`.
 
-2. **Create the destination folder** in Box matching `BACKUP_BOX_ROOT`
+2. **Create the destination folder** in Box matching `OBJECT_BACKUP_BOX_ROOT`
    (`Bloom-Backups/BloomV2-Data-Backup/prod/storage` by default).
 
 3. **State directory**, once, as root. The ledger lives here and it is what
@@ -102,7 +102,7 @@ promote to `main` → **approve the production deploy** → first scheduled nigh
 the 02:17 schedule immediately, but the prod tree is only updated inside the
 deploy job, which waits for an approval. Leave that approval pending and the
 first scheduled night SSHes to a prod tree holding neither this script nor the
-`BACKUP_*` keys in `.env.prod`, and fails at the first config lookup.
+`OBJECT_BACKUP_*` keys in `.env.prod`, and fails at the first config lookup.
 
 **The workflow cannot fire until this file reaches `main`.** GitHub honours
 `schedule:` and `workflow_dispatch` only from the default branch, so merging
@@ -140,14 +140,14 @@ sudo -i -u bloom-deploy
 export DEPLOY=/path/to/deploy/tree   # exported: the seed runs inside tmux
 while IFS='=' read -r key value; do
     [ -n "$key" ] && export "$key=$value"
-done < <(grep -E '^(BACKUP_[A-Z_]+|POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' \
+done < <(grep -E '^(OBJECT_BACKUP_[A-Z_]+|POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' \
              "$DEPLOY/.env.prod")
 ```
 
 **Before the `main` promotion, `$DEPLOY` is the staging tree** — that is where
 the script lives until prod is redeployed, and the prod tree is reset to `main`
 on every deploy. `.env.prod` is not in the staging tree, and the prod one does
-not carry the `BACKUP_*` keys yet, so read the credentials from prod and supply
+not carry the `OBJECT_BACKUP_*` keys yet, so read the credentials from prod and supply
 the four backup settings by hand:
 
 ```bash
@@ -156,11 +156,11 @@ while IFS='=' read -r key value; do
     [ -n "$key" ] && export "$key=$value"
 done < <(grep -E '^(POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' "$PROD/.env.prod")
 
-export BACKUP_MINIO_BUCKET=bloom-storage
-export BACKUP_MINIO_PREFIX=storage-single-tenant
-export BACKUP_BOX_REMOTE=box
-export BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/prod/storage
-export BACKUP_WORKERS=8
+export OBJECT_BACKUP_MINIO_BUCKET=bloom-storage
+export OBJECT_BACKUP_MINIO_PREFIX=storage-single-tenant
+export OBJECT_BACKUP_BOX_REMOTE=box
+export OBJECT_BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/prod/storage
+export OBJECT_BACKUP_WORKERS=8
 ```
 
 `--env prod` selects the production containers, not a path, so running the
@@ -190,7 +190,7 @@ minutes, instead of on night three of a seed. If it fails to authenticate, run
 `rclone config reconnect box:` and start the pair again.
 
 **The ledger remembers where it mirrored to.** The first real run records
-`<BACKUP_BOX_REMOTE>:<BACKUP_BOX_ROOT>`, and any later run pointed somewhere
+`<OBJECT_BACKUP_BOX_REMOTE>:<OBJECT_BACKUP_BOX_ROOT>`, and any later run pointed somewhere
 else is refused before it reads a row. That is deliberate: the ledger tracks
 which objects are copied, not where, so against a different folder it would
 report millions of objects as already backed up while that folder stayed
@@ -199,11 +199,11 @@ empty. Three ways out, cheapest first:
 - **The rclone remote was recreated under a different name.** The recorded
   value is `<remote>:<root>`, so `box2:...` does not match `box:...` even
   though it is the same Box account and the same folder. Name the remote `box`
-  again in `rclone config`, or set `BACKUP_BOX_REMOTE` to whatever it is now
+  again in `rclone config`, or set `OBJECT_BACKUP_BOX_REMOTE` to whatever it is now
   and move the folder to match. This is the likeliest trip on a rebuilt host.
-- **The root was mistyped.** Correct `BACKUP_BOX_ROOT`.
+- **The root was mistyped.** Correct `OBJECT_BACKUP_BOX_ROOT`.
 - **The mirror genuinely has to move.** Move the folder on Box and keep the
-  recorded value, or point `BACKUP_STATE_DIR` at a new directory and seed the
+  recorded value, or point `OBJECT_BACKUP_STATE_DIR` at a new directory and seed the
   new location from scratch — that is a full re-seed, so only do this when the
   destination really is new.
 
@@ -224,7 +224,7 @@ working hours:
 tmux new -s box-seed
 # Re-run the export block above INSIDE the session before this command.
 # When a tmux server is already running, a new session's shell inherits the
-# SERVER's environment, not the one you just set up — so BACKUP_*,
+# SERVER's environment, not the one you just set up — so OBJECT_BACKUP_*,
 # MINIO_ROOT_* and $DEPLOY may all be missing in here. Every one of them
 # fails loudly rather than silently, but you find out four hours in.
 python3 "$DEPLOY/scheduled-jobs/box-object-backup/backup_objects.py" \
@@ -377,7 +377,7 @@ The report on Box names each one with its reason. Reading the report is the
 durable check — a journal rotates and an Actions log expires:
 
 ```bash
-rclone cat "box:$BACKUP_BOX_ROOT/_runs/<latest>.json" | jq '.stats.skipped, .skips'
+rclone cat "box:$OBJECT_BACKUP_BOX_ROOT/_runs/<latest>.json" | jq '.stats.skipped, .skips'
 ```
 
 ### Rows with no image behind them
@@ -541,7 +541,7 @@ Two things sit beside the mirror on Box rather than in it: dated run reports
 under `_runs/`, and a copy of the ledger under `_state/`. Neither is a
 backed-up object, and a restore that walks the mirror should skip both.
 
-Every run drops a dated JSON report in `<BACKUP_BOX_ROOT>/_runs/`, named
+Every run drops a dated JSON report in `<OBJECT_BACKUP_BOX_ROOT>/_runs/`, named
 `2026-08-31T021703Z-prod-run00042.json`. This is the only view of the
 backup's history that does not need server access: a missing week shows up as
 a gap in a Box folder listing.
@@ -675,7 +675,7 @@ both halves, in this order:
    database backup you have, and this procedure cannot be completed from the
    object mirror alone.
 2. For each row, upload the Box copy back to MinIO at
-   `<BACKUP_MINIO_BUCKET>/<BACKUP_MINIO_PREFIX>/<bucket_id>/<name>/<version>`
+   `<OBJECT_BACKUP_MINIO_BUCKET>/<OBJECT_BACKUP_MINIO_PREFIX>/<bucket_id>/<name>/<version>`
    — with the deployed defaults, that is
    `bloom-storage/storage-single-tenant/<bucket_id>/<name>/<version>`.
 
@@ -708,15 +708,15 @@ survives MinIO → Box → MinIO and is still served by storage-api.
 ### If the deploy host itself is gone
 
 The ledger is what makes the mirror resumable, and it lives on that host. A
-copy is kept on Box at `<BACKUP_BOX_ROOT>/_state/ledger.db`, uploaded after any
+copy is kept on Box at `<OBJECT_BACKUP_BOX_ROOT>/_state/ledger.db`, uploaded after any
 run that copied something — unless the copy already there is larger, which
 means the run's own ledger knows less than the copy does. Put it back before running the job on a rebuilt
 host:
 
 ```bash
 sudo -i -u bloom-deploy
-export BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/prod/storage
-rclone copyto "box:$BACKUP_BOX_ROOT/_state/ledger.db" \
+export OBJECT_BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/prod/storage
+rclone copyto "box:$OBJECT_BACKUP_BOX_ROOT/_state/ledger.db" \
     /var/lib/bloom-box-object-backup/ledger.db
 ```
 
@@ -773,24 +773,24 @@ Restoring is the section you are reading; do that first, then re-run.
 
 Set in `.env.prod` (defaults in `.env.prod.defaults`). Production is the only
 environment mirrored, so `.env.staging.defaults` deliberately carries no
-`BACKUP_*` keys and a test enforces that.
+`OBJECT_BACKUP_*` keys and a test enforces that.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `BACKUP_MINIO_BUCKET` | `bloom-storage` | The single MinIO bucket storage-api writes into (`STORAGE_S3_BUCKET` in the compose file). **Required** — an empty value makes rclone read each object's own `bucket_id` as a bucket name and every copy 404s. |
-| `BACKUP_MINIO_PREFIX` | `storage-single-tenant` | Tenant prefix storage-api files objects under. Config rather than a constant because nothing in the stack declares it — storage-api chooses it. To see the path on a host: `docker exec <minio-container> ls /data/bloom-storage/` |
-| `BACKUP_BOX_REMOTE` | `box` | Name of the rclone remote |
-| `BACKUP_BOX_ROOT` | `Bloom-Backups/BloomV2-Data-Backup/prod/storage` | Folder on Box to mirror into |
-| `BACKUP_WORKERS` | `8` | Concurrent copies; lower it if Box throttles hard |
-| `BACKUP_BWLIMIT` | *(unset)* | rclone bandwidth cap, e.g. `20M` |
-| `BACKUP_STATE_DIR` | `/var/lib/bloom-box-object-backup` | Ledger location. Not in the env file — a code default. The workflow declares the same path once and passes it to all three of its ssh sessions; if `.env.prod` sets this to anything else the run **refuses to start** (exit 2) rather than let the cancel step and the summary watch an empty directory. The comparison is exact, so a trailing slash counts as different. |
-| `BACKUP_RC_PORT` | `5572` | Loopback port for the rclone daemon. Not in the env file — a code default. |
+| `OBJECT_BACKUP_MINIO_BUCKET` | `bloom-storage` | The single MinIO bucket storage-api writes into (`STORAGE_S3_BUCKET` in the compose file). **Required** — an empty value makes rclone read each object's own `bucket_id` as a bucket name and every copy 404s. |
+| `OBJECT_BACKUP_MINIO_PREFIX` | `storage-single-tenant` | Tenant prefix storage-api files objects under. Config rather than a constant because nothing in the stack declares it — storage-api chooses it. To see the path on a host: `docker exec <minio-container> ls /data/bloom-storage/` |
+| `OBJECT_BACKUP_BOX_REMOTE` | `box` | Name of the rclone remote |
+| `OBJECT_BACKUP_BOX_ROOT` | `Bloom-Backups/BloomV2-Data-Backup/prod/storage` | Folder on Box to mirror into |
+| `OBJECT_BACKUP_WORKERS` | `8` | Concurrent copies; lower it if Box throttles hard |
+| `OBJECT_BACKUP_BWLIMIT` | *(unset)* | rclone bandwidth cap, e.g. `20M` |
+| `OBJECT_BACKUP_STATE_DIR` | `/var/lib/bloom-box-object-backup` | Ledger location. Not in the env file — a code default. The workflow declares the same path once and passes it to all three of its ssh sessions; if `.env.prod` sets this to anything else the run **refuses to start** (exit 2) rather than let the cancel step and the summary watch an empty directory. The comparison is exact, so a trailing slash counts as different. |
+| `OBJECT_BACKUP_RC_PORT` | `5572` | Loopback port for the rclone daemon. Not in the env file — a code default. |
 
 `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` / `POSTGRES_USER` / `POSTGRES_DB`
 come from the same `.env` file; the job passes MinIO's credentials to rclone
 inline so they never land in a config file on disk.
 
-`BACKUP_MINIO_BUCKET` and `BACKUP_MINIO_PREFIX` are checked against a real
+`OBJECT_BACKUP_MINIO_BUCKET` and `OBJECT_BACKUP_MINIO_PREFIX` are checked against a real
 object before any copying starts: the run stats one object the manifest names
 and aborts with the exact path it tried if MinIO does not hold it there. A
 wrong value in an env file is as fatal as a wrong constant in the code — what

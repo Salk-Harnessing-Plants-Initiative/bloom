@@ -650,7 +650,7 @@ class TestSourceAddress:
     def test_an_empty_bucket_is_refused_outright(self):
         # An empty bucket silently rebuilds the original defect, so it must
         # fail at construction rather than at object number one.
-        with pytest.raises(ValueError, match="BACKUP_MINIO_BUCKET"):
+        with pytest.raises(ValueError, match="OBJECT_BACKUP_MINIO_BUCKET"):
             MinioSource("http://m:9000", "k", "s", "")
 
     def test_the_composed_address_matches_the_deployed_layout(self):

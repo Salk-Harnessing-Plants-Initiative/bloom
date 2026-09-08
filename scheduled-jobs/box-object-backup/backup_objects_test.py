@@ -688,7 +688,7 @@ class TestBoxRootIsChecked:
     """An unset destination writes 8M objects to the top of the Box drive.
 
     --box-root defaults to "" and nothing validated it, so a manual seed over
-    SSH without BACKUP_BOX_ROOT exported — the exact workflow the wiki
+    SSH without OBJECT_BACKUP_BOX_ROOT exported — the exact workflow the wiki
     describes — would mirror the whole deploy into the root of the account.
     """
 
@@ -698,7 +698,7 @@ class TestBoxRootIsChecked:
         return argparse.Namespace(box_root=box_root, env=env)
 
     def test_an_empty_root_is_refused(self):
-        with pytest.raises(job.lib.BackupError, match="BACKUP_BOX_ROOT is empty"):
+        with pytest.raises(job.lib.BackupError, match="OBJECT_BACKUP_BOX_ROOT is empty"):
             job.check_box_root(self.args(""))
 
     def test_whitespace_and_slashes_do_not_count_as_a_root(self):
@@ -712,7 +712,7 @@ class TestBoxRootIsChecked:
     def test_the_error_names_the_variable_an_operator_must_set(self):
         with pytest.raises(job.lib.BackupError) as caught:
             job.check_box_root(self.args(""))
-        assert "BACKUP_BOX_ROOT" in str(caught.value)
+        assert "OBJECT_BACKUP_BOX_ROOT" in str(caught.value)
         assert "prod" in str(caught.value)
 
 
@@ -1100,7 +1100,7 @@ class TestRunLockedWiresItsPartsTogether:
         state, tmp_path = harness
         args = self.args(tmp_path)
         args.box_root = ""
-        with pytest.raises(job.lib.BackupError, match="BACKUP_BOX_ROOT"):
+        with pytest.raises(job.lib.BackupError, match="OBJECT_BACKUP_BOX_ROOT"):
             job.run_locked(args, tmp_path)
         assert state["copied"] == [], "copied despite an unset destination"
 
@@ -2978,7 +2978,7 @@ class TestTheStandDownVerdictReachesTheSummary:
 class TestTheLedgerRemembersWhereItMirroredTo:
     """The ledger says WHICH objects are copied. It never said where.
 
-    A one-character typo in BACKUP_BOX_ROOT during the hand-run seed points
+    A one-character typo in OBJECT_BACKUP_BOX_ROOT during the hand-run seed points
     the run at an empty folder that the ledger swears holds eight million
     objects. Every night after reports "nothing new to copy (8,013,796
     already on Box)" — a green tick, for ever, over nothing.
@@ -3110,7 +3110,7 @@ class TestTheReadinessPollIsImpatient:
 class TestConfigIsCheckedBeforeTheEightMillionRowRead:
     """Every one of these answers in a millisecond from a string or a file.
 
-    Asked after the manifest read, a run learns that BACKUP_BOX_ROOT is empty
+    Asked after the manifest read, a run learns that OBJECT_BACKUP_BOX_ROOT is empty
     having already spent four hours — the job's whole time limit — reading
     storage.objects. Nothing about them can pass at 02:00 and fail at 05:00.
     """
@@ -3157,7 +3157,7 @@ class TestConfigIsCheckedBeforeTheEightMillionRowRead:
             minio_source_from_env=lambda a: object(),
             require_rclone_config=lambda p, r: None,
         )
-        with pytest.raises(lib.BackupError, match="BACKUP_BOX_ROOT is empty"):
+        with pytest.raises(lib.BackupError, match="OBJECT_BACKUP_BOX_ROOT is empty"):
             job.run_locked(args, tmp_path)
         assert calls == [], "eight million rows were read before the check"
 

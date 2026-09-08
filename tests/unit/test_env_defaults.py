@@ -4,7 +4,7 @@ Enforces the Committed Defaults contract from the deploy-env-config spec:
   openspec/changes/refactor-env-config-committed-defaults/specs/deploy-env-config/spec.md
 
 These defaults files MUST NOT contain secrets, MUST share the same key set
-between prod and staging apart from the prod-only BACKUP_* block, MUST NOT
+between prod and staging apart from the prod-only OBJECT_BACKUP_* block, MUST NOT
 overlap with the sensitive inventory
 that lives in GitHub Secrets, and MUST cover every env var referenced by
 docker-compose.prod.yml.
@@ -138,13 +138,13 @@ def test_no_duplicate_keys_in_defaults():
 # The one deliberate asymmetry. Staging objects are never mirrored to Box, so
 # staging carries no backup settings at all — see test_staging_has_no_backup_
 # configuration below, which pins that rather than leaving it to drift.
-BACKUP_PREFIX = "BACKUP_"
+OBJECT_BACKUP_PREFIX = "OBJECT_BACKUP_"
 
 
 def test_prod_staging_key_sets_are_identical():
     prod = set(_parse(PROD_DEFAULTS).keys())
     staging = set(_parse(STAGING_DEFAULTS).keys())
-    only_prod = {k for k in prod - staging if not k.startswith(BACKUP_PREFIX)}
+    only_prod = {k for k in prod - staging if not k.startswith(OBJECT_BACKUP_PREFIX)}
     only_staging = staging - prod
     assert not only_prod, f"keys only in prod: {sorted(only_prod)}"
     assert not only_staging, f"keys only in staging: {sorted(only_staging)}"
@@ -155,10 +155,10 @@ def test_staging_has_no_backup_configuration():
 
     Both environments run on one host and the job's state directory has no
     environment in it, so a staging run would share prod's ledger — and the
-    ledger holds the watermark. Leaving a plausible-looking BACKUP_BOX_ROOT in
+    ledger holds the watermark. Leaving a plausible-looking OBJECT_BACKUP_BOX_ROOT in
     staging's defaults is an invitation to try.
     """
-    staging = {k for k in _parse(STAGING_DEFAULTS) if k.startswith(BACKUP_PREFIX)}
+    staging = {k for k in _parse(STAGING_DEFAULTS) if k.startswith(OBJECT_BACKUP_PREFIX)}
     assert not staging, f"staging still carries backup settings: {sorted(staging)}"
 
 
@@ -400,21 +400,21 @@ def _run_validator_real_compose(tmp_path: Path, env_content: str) -> subprocess.
 # and the run reports success while doing it. The job refuses to start on a bad
 # value at runtime, and these keep a bad value from reaching the deploy at all.
 
-BACKUP_REQUIRED_KEYS = (
-    "BACKUP_BOX_REMOTE",
-    "BACKUP_BOX_ROOT",
-    "BACKUP_MINIO_BUCKET",
-    "BACKUP_MINIO_PREFIX",
+OBJECT_BACKUP_REQUIRED_KEYS = (
+    "OBJECT_BACKUP_BOX_REMOTE",
+    "OBJECT_BACKUP_BOX_ROOT",
+    "OBJECT_BACKUP_MINIO_BUCKET",
+    "OBJECT_BACKUP_MINIO_PREFIX",
 )
 
 
-@pytest.mark.parametrize("key", BACKUP_REQUIRED_KEYS)
+@pytest.mark.parametrize("key", OBJECT_BACKUP_REQUIRED_KEYS)
 def test_backup_keys_are_present_and_non_empty(key):
     """An unset destination writes the mirror to the top of the Box drive.
 
-    BACKUP_BOX_ROOT defaults to "" in the job, and an empty root makes every
+    OBJECT_BACKUP_BOX_ROOT defaults to "" in the job, and an empty root makes every
     object land at `<bucket>/<name>` — the root of the Box account, alongside
-    everyone else's folders. BACKUP_MINIO_BUCKET empty is the mirror image:
+    everyone else's folders. OBJECT_BACKUP_MINIO_BUCKET empty is the mirror image:
     rclone then reads each object's own bucket_id as a MinIO bucket name and
     every copy 404s.
     """
@@ -425,10 +425,10 @@ def test_backup_keys_are_present_and_non_empty(key):
 
 def test_backup_box_root_names_prod():
     """The root must sit under a segment naming the environment it mirrors."""
-    root = _parse(PROD_DEFAULTS)["BACKUP_BOX_ROOT"].strip().strip("/")
+    root = _parse(PROD_DEFAULTS)["OBJECT_BACKUP_BOX_ROOT"].strip().strip("/")
     segments = [s.lower() for s in root.split("/")]
     assert "prod" in segments, (
-        f"BACKUP_BOX_ROOT ({root!r}) has no 'prod' path segment"
+        f"OBJECT_BACKUP_BOX_ROOT ({root!r}) has no 'prod' path segment"
     )
 
 
@@ -443,9 +443,9 @@ def test_backup_minio_bucket_matches_the_compose_backing_bucket():
     match = re.search(r"^\s*STORAGE_S3_BUCKET:\s*(\S+)\s*$", compose, re.M)
     assert match, "STORAGE_S3_BUCKET not found in docker-compose.prod.yml"
     expected = match.group(1).strip().strip("\"'")
-    actual = _parse(PROD_DEFAULTS)["BACKUP_MINIO_BUCKET"].strip()
+    actual = _parse(PROD_DEFAULTS)["OBJECT_BACKUP_MINIO_BUCKET"].strip()
     assert actual == expected, (
-        f"BACKUP_MINIO_BUCKET is {actual!r} but storage-api writes to "
+        f"OBJECT_BACKUP_MINIO_BUCKET is {actual!r} but storage-api writes to "
         f"{expected!r} (docker-compose.prod.yml STORAGE_S3_BUCKET)"
     )
 
@@ -464,9 +464,9 @@ EXPECTED_BOX_ROOT = "Bloom-Backups/BloomV2-Data-Backup/prod/storage"
 
 
 def test_backup_box_root_is_the_folder_this_job_was_given():
-    actual = _parse(PROD_DEFAULTS)["BACKUP_BOX_ROOT"].strip()
+    actual = _parse(PROD_DEFAULTS)["OBJECT_BACKUP_BOX_ROOT"].strip()
     assert actual == EXPECTED_BOX_ROOT, (
-        f"BACKUP_BOX_ROOT is {actual!r}, expected {EXPECTED_BOX_ROOT!r}.\n"
+        f"OBJECT_BACKUP_BOX_ROOT is {actual!r}, expected {EXPECTED_BOX_ROOT!r}.\n"
         "This job only uploads and never inspects the destination first, so a "
         "changed root silently mixes the mirror into whatever is already "
         "there. If the move is intended, update EXPECTED_BOX_ROOT in this "
@@ -478,12 +478,12 @@ def test_the_mirror_stays_under_one_dedicated_parent():
     # Everything this job writes stays inside a folder created for it, rather
     # than being scattered across the Box account.
     parent = "Bloom-Backups/BloomV2-Data-Backup"
-    root = _parse(PROD_DEFAULTS)["BACKUP_BOX_ROOT"].strip()
+    root = _parse(PROD_DEFAULTS)["OBJECT_BACKUP_BOX_ROOT"].strip()
     assert root.startswith(parent + "/"), f"{root!r} is outside {parent!r}"
 
 
 def test_the_destination_is_not_the_v1_archive():
     # A specific folder in the same account holding the one-time V1 S3 archive.
     # Nothing distinguishes it from an empty folder at runtime.
-    root = _parse(PROD_DEFAULTS)["BACKUP_BOX_ROOT"].strip().lower()
+    root = _parse(PROD_DEFAULTS)["OBJECT_BACKUP_BOX_ROOT"].strip().lower()
     assert "old_bloom_final_state" not in root, "points at the V1 archive"

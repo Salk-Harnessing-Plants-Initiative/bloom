@@ -78,7 +78,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # The job's own default for BACKUP_STATE_DIR, in one place. Three separate
+  # The job's own default for OBJECT_BACKUP_STATE_DIR, in one place. Three separate
   # ssh sessions need it — the run stamps its marker there, the cancel step
   # finds the lock there, the summary falls back to the reports there — and
   # none of the last two reads the env file, so they cannot look it up. The
@@ -206,7 +206,7 @@ jobs:
           [ -r "$env_file" ] || { echo "cannot read $env_file" >&2; exit 2; }
           while IFS='=' read -r key value; do
             [ -n "$key" ] && export "$key=$value"
-          done < <(grep -E '^(BACKUP_[A-Z_]+|POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' \
+          done < <(grep -E '^(OBJECT_BACKUP_[A-Z_]+|POSTGRES_(USER|DB)|MINIO_ROOT_[A-Z_]+)=' \
                      "$env_file")
 
           # The cancel step finds the run through "$state_dir/backup.lock" and
@@ -215,8 +215,8 @@ jobs:
           # work while those two silently watched an empty directory — a cancel
           # that stops nothing and a verdict that is never recovered. Loud
           # here rather than silent there.
-          if [ -n "${BACKUP_STATE_DIR:-}" ] && [ "$BACKUP_STATE_DIR" != "$state_dir" ]; then
-            echo "BACKUP_STATE_DIR is $BACKUP_STATE_DIR but this workflow" >&2
+          if [ -n "${OBJECT_BACKUP_STATE_DIR:-}" ] && [ "$OBJECT_BACKUP_STATE_DIR" != "$state_dir" ]; then
+            echo "OBJECT_BACKUP_STATE_DIR is $OBJECT_BACKUP_STATE_DIR but this workflow" >&2
             echo "watches $state_dir. Point them at the same directory." >&2
             exit 2
           fi
@@ -648,6 +648,6 @@ jobs:
             echo "_This job only uploads. Nothing on Box is ever deleted by it._"
             if [ -z "${said_dry:-}" ]; then
               echo "_Per-run reports, including verification counts, are written to"
-              echo "\`<BACKUP_BOX_ROOT>/_runs/\` on Box._"
+              echo "\`<OBJECT_BACKUP_BOX_ROOT>/_runs/\` on Box._"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
