@@ -78,6 +78,16 @@ Actions was chosen over a systemd timer because a failed run then surfaces
 through notifications people already read, whereas `systemctl --failed` only
 reports to whoever thinks to look.
 
+**Two limits of that, worth knowing before you rely on it.** GitHub sends the
+failure notification for a scheduled workflow only to the account that last
+edited the cron expression — one inbox, not the team. And **nothing reports a
+night that never ran**: every signal this job produces starts with a run that
+executed, so a dropped cron, a disabled workflow, or the file going missing
+from `main` produces no run, no summary and no mail, while every previous
+green tick still stands. The cheap detector is the `_runs/` folder on Box: one
+report lands there per night, so a gap in that listing is a gap in the mirror.
+Someone should look at it weekly.
+
 **Seed before promoting to `main`.** The first scheduled run with an empty
 ledger has no watermark to work from, so it enumerates everything — all 8M
 objects — inside a job that GitHub kills at 240 minutes. It would fail every
@@ -100,6 +110,9 @@ to `staging` is not enough — the normal staging → main promotion has to carr
 it across. Until then, nothing runs on a schedule.
 
 To run it by hand: Actions → *Nightly Box object mirror* → **Run workflow**.
+A hand-run goes through the `production` environment, which has required
+reviewers and a five-minute wait timer, so it sits in *Waiting* until someone
+approves it — the 02:17 schedule does not, and starts immediately.
 Production is the only target — there is no environment to choose. The two
 inputs are `dry_run` and `verify`.
 

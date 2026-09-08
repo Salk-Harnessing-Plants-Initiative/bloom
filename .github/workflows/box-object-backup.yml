@@ -352,6 +352,7 @@ jobs:
           done_line="$(last 'done — copied [0-9]+, failed [0-9]+, already current [0-9]+, skipped [0-9]+')"
           # The unverified count is optional — the job prints it only on a shortfall.
           verify_line="$(last 'verify: [0-9]+ checked, [0-9]+ mismatched(, [0-9]+ unverified)?')"
+          gone="$(num_in 'source gone: ' "$(last 'source gone: [0-9]+')")"
           copied="$(num_in 'copied ' "$done_line")"
           current="$(num_in 'already current ' "$done_line")"
           checked="$(printf '%s' "$verify_line" | grep -oE '[0-9]+ checked' | grep -oE '[0-9]+' || true)"
@@ -400,6 +401,7 @@ jobs:
               [ -z "${current:-}" ] && current="$(num already_current)"
               [ -z "${checked:-}" ] && checked="$(num verify_checked)"
               [ -z "${unverified:-}" ] && unverified="$(num verify_unverified)"
+              [ -z "${gone:-}" ] && gone="$(num source_gone)"
               [ -n "$status" ] && from_report=1
               [ -n "$status" ] && echo "verdict taken from the run report on the host: $status ($flags)"
             fi
@@ -438,6 +440,11 @@ jobs:
             # Nothing answered: without this the shortfall attaches to the copy count.
             counts="${counts}, 0 verified"
           fi
+          # Never let a headline read "nothing new to copy" while objects
+          # were passed over for having no image behind them.
+          if [ -n "${gone:-}" ] && [ "$gone" -gt 0 ]; then
+            counts="${counts:+${counts}, }$(group "$gone") with no image behind them"
+          fi
           if [ -n "${unverified:-}" ] && [ "$unverified" -gt 0 ]; then
             counts="${counts} ($(group "$unverified") unanswered)"
           fi
@@ -449,7 +456,7 @@ jobs:
               # It writes no run report and records no run, so the branches
               # below — which all point at `_runs/` — cannot describe it.
               said_dry=1
-              echo "Result: **dry run** — ${counts}."
+              echo "Result: **${counts}**."
               if has_flag collisions || has_flag skipped_names; then
                 echo
                 echo "It found objects a real run would refuse. They are named"
@@ -539,10 +546,11 @@ jobs:
               echo "> Everything it copied is recorded and on Box, and the"
               echo "> next run carries on from there."
             fi
-            # Additive, so whichever branch won the headline cannot swallow it.
-            # Only reachable above a verification mismatch — every other
-            # branch that outranks the collision one is a stop or a skip.
-            if has_flag collisions && [ -z "${said_collisions:-}" ]; then
+            # Additive, so whichever branch won the headline cannot swallow
+            # it. Reachable above a verification mismatch and above the dry
+            # run, which says its own version and writes no report.
+            if has_flag collisions && [ -z "${said_collisions:-}" ] \
+               && [ -z "${said_dry:-}" ]; then
               echo
               echo "> **A name collision was also refused.** Two object names"
               echo "> normalize onto one path on Box. Rename the object named"

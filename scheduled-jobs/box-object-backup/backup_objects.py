@@ -547,6 +547,18 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         "done — copied %d, failed %d, already current %d, skipped %d",
         totals.copied, totals.failed, totals.already_current, totals.skipped,
     )
+    if totals.source_gone:
+        # An aggregate beside the per-object lines. Without a count, a night
+        # where a whole class of rows is missing from MinIO — a layout fault
+        # the preflight's sample can miss — headlines as "nothing new to
+        # copy" while thousands were passed over.
+        logger.error(
+            "source gone: %d object(s) listed in Postgres have no bytes in "
+            "MinIO. They are NOT backed up and nothing here can copy them. "
+            "Each is named under `source_gone` in the run report under _runs/ "
+            "on Box.",
+            totals.source_gone,
+        )
     if totals.collisions:
         report_collisions(totals.collisions)
     # Collisions are counted in `skipped` too, so subtract them: a run that

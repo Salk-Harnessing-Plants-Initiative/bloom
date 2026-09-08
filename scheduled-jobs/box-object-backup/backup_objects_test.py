@@ -3525,6 +3525,39 @@ class TestATruncatedChunkNeverRecordsClean:
             "the watermark moved past rows this chunk never enumerated"
         )
 
+    def test_a_real_run_prints_the_aggregate_count(self, harness, monkeypatch, caplog):
+        """The summary greps this line; nothing else produces it.
+
+        Without an aggregate, a night where a whole class of rows is missing
+        from MinIO shows one ERROR per object and a headline reading
+        "nothing new to copy".
+        """
+        state, tmp_path = harness
+        caplog.set_level(logging.ERROR)
+        dead = "storage-single-tenant/images/exp-42/a.png/v1"
+        state["missing"].add(dead)
+        original = state["client"].copy_file
+
+        def copy(src_fs, src_remote, dst_fs, dst_remote):
+            if src_remote == dead:
+                raise RcloneError("404 not found", retryable=False)
+            return original(src_fs, src_remote, dst_fs, dst_remote)
+
+        monkeypatch.setattr(state["client"], "copy_file", copy)
+        monkeypatch.setattr(
+            job, "wait_for_daemon", lambda daemon, attempts=30: state["client"]
+        )
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        [line] = [ln for ln in caplog.text.splitlines() if "source gone:" in ln
+                  and "object(s)" in ln]
+        assert "source gone: 1 object(s)" in line, line
+
+    def test_a_clean_run_prints_no_aggregate_count(self, harness, caplog):
+        state, tmp_path = harness
+        caplog.set_level(logging.ERROR)
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        assert "source gone:" not in caplog.text
+
     def test_the_count_reaches_the_durable_record(self, harness, monkeypatch):
         """The summary notice has no number in it, so the report must.
 
@@ -3551,9 +3584,119 @@ class TestATruncatedChunkNeverRecordsClean:
             next((tmp_path / report.REPORTS_DIRNAME).glob("*.json")).read_text()
         )
         assert written["stats"]["source_gone"] == 1, written["stats"]
+        # The list, not only the count: the summary tells the operator to
+        # read it, and these objects are never re-reported.
+        assert written["source_gone"] == ["images/exp-42/a.png"], written["source_gone"]
 
     @pytest.fixture
     def harness(self, monkeypatch, tmp_path):
         return TestRunLockedWiresItsPartsTogether().harness.__wrapped__(
             TestRunLockedWiresItsPartsTogether(), monkeypatch, tmp_path
+        )
+
+
+class TestTheWorkflowGrepsMatchWhatTheJobReallyPrints:
+    """The contract spans two files; it was pinned to a copy of one side.
+
+    `workflow_test.py` greps the workflow's patterns against a hand-typed
+    `REAL_LOG`, so it proves the pattern matches the literal — never that the
+    literal matches the job. Nine changes to the job's own format strings
+    left the whole suite green, and two of them are severe: swapping the
+    `done —` arguments makes a 500,000-object seed chunk render "nothing new
+    to copy (500,000 already on Box)", and renaming `done —` to `done:`
+    renders a dangling ", 50 verified".
+
+    Here the log is produced by running the job and formatted with the job's
+    own formatter, so the only way to pass is for the emitted text to match.
+    """
+
+    @pytest.fixture
+    def harness(self, monkeypatch, tmp_path):
+        return TestRunLockedWiresItsPartsTogether().harness.__wrapped__(
+            TestRunLockedWiresItsPartsTogether(), monkeypatch, tmp_path
+        )
+
+    def emitted(self, caplog) -> str:
+        """The records as the deploy host would write them."""
+        fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+        return "\n".join(fmt.format(r) for r in caplog.records)
+
+    def workflow_patterns(self) -> list[str]:
+        import re
+
+        import yaml
+
+        path = (
+            Path(__file__).resolve().parents[2]
+            / ".github" / "workflows" / "box-object-backup.yml"
+        )
+        steps = yaml.safe_load(path.read_text())["jobs"]["mirror"]["steps"]
+        script = next(
+            s["run"] for s in steps
+            if s.get("name", "").startswith("Write the run summary")
+        )
+        return re.findall(r"last '([^']+)'", script)
+
+    def run_and_grep(self, caplog, patterns_wanted):
+        import subprocess
+
+        text = self.emitted(caplog)
+        stamp = r"^[0-9-]+ [0-9:,]+ [A-Z]+ "
+        found = {}
+        for pattern in self.workflow_patterns():
+            r = subprocess.run(
+                ["grep", "-cE", stamp + pattern],
+                input=text, capture_output=True, text=True,
+            )
+            found[pattern] = r.returncode == 0
+        for want in patterns_wanted:
+            matching = [p for p in found if want in p]
+            assert matching, f"the workflow has no pattern for {want!r}"
+            assert any(found[p] for p in matching), (
+                f"the workflow's {want!r} pattern matches nothing the job "
+                f"printed. Emitted:\n{text[:600]}"
+            )
+        return found
+
+    def test_a_copying_night_matches_the_count_and_verdict_greps(
+        self, harness, caplog
+    ):
+        state, tmp_path = harness
+        caplog.set_level(logging.INFO)
+        job.run_locked(
+            TestRunLockedWiresItsPartsTogether().args(tmp_path, verify=2), tmp_path
+        )
+        self.run_and_grep(
+            caplog,
+            ["done — copied", "verify:", "BOX_BACKUP_STATUS=", "BOX_BACKUP_FLAGS="],
+        )
+
+    def test_a_dry_run_matches_the_dry_grep(self, harness, caplog):
+        state, tmp_path = harness
+        caplog.set_level(logging.INFO)
+        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
+        args.dry_run = True
+        job.run_locked(args, tmp_path)
+        self.run_and_grep(caplog, ["dry run — would copy"])
+
+    def test_the_copied_count_is_read_from_the_position_the_job_writes_it(
+        self, harness, caplog
+    ):
+        """Swapping the done-line arguments left the suite green.
+
+        The pattern still matched — the shape is `copied N, failed N, already
+        current N` either way — so only the VALUE catches it. The harness
+        copies two objects and has none already current.
+        """
+        import re
+
+        state, tmp_path = harness
+        caplog.set_level(logging.INFO)
+        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
+        text = self.emitted(caplog)
+        [line] = [ln for ln in text.splitlines() if "done — copied" in ln]
+        copied = int(re.search(r"copied (\d+)", line).group(1))
+        current = int(re.search(r"already current (\d+)", line).group(1))
+        assert (copied, current) == (2, 0), (
+            f"the job copied 2 objects and reported {copied}: {line}"
         )

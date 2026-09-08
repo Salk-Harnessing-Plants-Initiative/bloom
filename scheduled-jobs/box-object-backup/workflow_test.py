@@ -1605,6 +1605,34 @@ class TestTheHeadlineMatchesTheWorstThingThatHappened:
             "the additive note double-prints under its own headline"
         )
 
+    def test_a_dry_run_says_the_collision_once(self, parsed):
+        """The additive note was guarded on the wrong flag.
+
+        `said_collisions` is set inside the collision HEADLINE branch, which
+        the dry-run branch sits above and never reaches — so a dry run got
+        its own wording and then the additive note as well, telling the
+        operator to "resolve this before the missing objects above" when
+        nothing is above it and nothing is entangled. Its two siblings,
+        `skipped_names` and `source_gone`, already carried the dry guard.
+
+        This is step one of the pre-seed checklist and the first command on
+        a rebuilt host.
+        """
+        log = (
+            "2026-08-31 02:20:00,1 INFO dry run — would copy 5, 400 already "
+            "current, 1 skipped; nothing was copied\n"
+            f"2026-08-31 02:45:00,1 INFO {job.STATUS_KEY}=partial\n"
+            f"2026-08-31 02:45:00,1 INFO {job.FLAGS_KEY}=collisions\n"
+        )
+        body = self.render(parsed, log)
+        assert body.count("also refused") == 0, (
+            "the dry run printed the collision notice a second time"
+        )
+        assert "entangled" not in body, (
+            "a dry run is told to resolve two conditions in order"
+        )
+        assert "would copy 5" in body
+
     def test_the_entangled_remedy_is_reached_when_both_happen(self, parsed):
         """A mismatch and a collision on one night, with copies otherwise fine.
 
@@ -2074,6 +2102,38 @@ class TestTheFallbackRecoversTheCountsToo:
         )
         assert "Nothing needs doing" in body
 
+    def test_a_recovered_night_keeps_its_notices(self, parsed):
+        """Every existing test on this route passes `flags: []`.
+
+        Five separate ways of breaking the flags recovery left the suite
+        green. The headline still renders, so a cancelled night — which
+        during the seed is every night — would report its result and drop
+        the refused-collision, refused-filename and vanished-source notices.
+        All three deliberately do not hold the watermark, so that night is
+        the only notification there will ever be.
+        """
+        body = self.render_with_report(
+            parsed,
+            {"status": "stopped", "flags": ["skipped_names", "source_gone"],
+             "outcome": "partial",
+             "stats": {"copied": 400000, "already_current": 0,
+                       "verify_checked": 0, "verify_unverified": 0}},
+            self.TRUNCATED,
+        )
+        assert "stopped, progress kept" in body
+        assert "because of their" in body, "the refused-filename notice was lost"
+        assert "no image behind them" in body, "the vanished-source notice was lost"
+
+    def test_a_recovered_collision_still_names_itself(self, parsed):
+        body = self.render_with_report(
+            parsed,
+            {"status": "partial", "flags": ["collisions"], "outcome": "partial",
+             "stats": {"copied": 4, "already_current": 0,
+                       "verify_checked": 0, "verify_unverified": 0}},
+            self.TRUNCATED,
+        )
+        assert "OBJECTS NOT BACKED UP" in body
+
     def test_the_log_still_wins_when_it_has_the_counts(self, parsed):
         """The fallback fills gaps; it must not overwrite a complete log."""
         log = (
@@ -2135,6 +2195,10 @@ class TestACollisionIsNeverSwallowedByTheHeadline:
     verification branch. A night that failed copies AND found a mismatch took
     an earlier branch than either, so the word "collision" appeared nowhere —
     on a night where an object is permanently not backed up.
+
+    Two branches sit above the collision headline and so reach the additive
+    note: a verification mismatch, and a dry run. The dry run must NOT get
+    it — it says its own version and writes no report.
     """
 
     def render(self, parsed: dict, status: str, *flags: str) -> str:
@@ -2266,3 +2330,97 @@ class TestADryRunIsNotDescribedAsARealOne:
     def test_a_vanished_source_does_not_point_at_a_report_either(self, parsed):
         body = self.render(parsed, "source_gone")
         assert "_runs/" not in body
+
+
+class TestASilentClassOfMissingObjectsCannotReadAsSuccess:
+    """The preflight samples; it does not prove every row's layout.
+
+    `preflight_source` returns on the first sample that resolves, from the
+    head of the manifest. A layout fault affecting one CLASS of rows — say
+    if `version IS NULL` objects are not where the job looks — passes it, and
+    that whole class lands in `source_gone`, which by design does not hold
+    the watermark. Without the count in the headline, that night reads
+    "succeeded — nothing new to copy" while thousands were passed over.
+    """
+
+    def render(self, parsed: dict, log: str) -> str:
+        import subprocess
+        import tempfile
+        from pathlib import Path as P
+
+        steps = parsed["jobs"]["mirror"]["steps"]
+        script = next(
+            s["run"] for s in steps
+            if s.get("name", "").startswith("Write the run summary")
+        ).replace("${{ steps.run.outcome }}", "$OUTCOME")
+        with tempfile.TemporaryDirectory() as tmp:
+            (P(tmp) / "mirror-output.txt").write_text(log)
+            out = P(tmp) / "summary.md"
+            r = subprocess.run(
+                ["bash", "-e", "-c", script],
+                env={
+                    "PATH": "/usr/bin:/bin", "RUNNER_TEMP": tmp, "ENV_NAME": "prod",
+                    "OUTCOME": "failure", "GITHUB_STEP_SUMMARY": str(out),
+                    "LC_ALL": "C",
+                },
+                capture_output=True, text=True,
+            )
+            assert r.returncode == 0, r.stderr.strip()[:200]
+            return out.read_text()
+
+    def night(self, copied: int, gone: int) -> str:
+        return (
+            f"2026-08-31 02:20:00,1 INFO done — copied {copied}, failed 0, "
+            "already current 0, skipped 0\n"
+            f"2026-08-31 02:21:00,1 ERROR source gone: {gone} object(s) listed "
+            "in Postgres have no bytes in MinIO.\n"
+            f"2026-08-31 02:45:00,1 INFO {job.STATUS_KEY}=ok\n"
+            f"2026-08-31 02:45:00,1 INFO {job.FLAGS_KEY}=source_gone\n"
+        )
+
+    def test_a_whole_class_missing_does_not_read_as_nothing_to_do(self, parsed):
+        headline = next(
+            ln for ln in self.render(parsed, self.night(0, 40000)).splitlines()
+            if ln.startswith("Result:")
+        )
+        assert "40,000 with no image behind them" in headline, headline
+
+    def test_the_count_sits_beside_a_real_copy_count(self, parsed):
+        headline = next(
+            ln for ln in self.render(parsed, self.night(4211, 3)).splitlines()
+            if ln.startswith("Result:")
+        )
+        assert "4,211 images copied" in headline
+        assert "3 with no image behind them" in headline
+
+    def test_an_ordinary_night_says_nothing_about_it(self, parsed):
+        log = (
+            "2026-08-31 02:20:00,1 INFO done — copied 12, failed 0, "
+            "already current 0, skipped 0\n"
+            f"2026-08-31 02:45:00,1 INFO {job.STATUS_KEY}=ok\n"
+            f"2026-08-31 02:45:00,1 INFO {job.FLAGS_KEY}=\n"
+        )
+        assert "no image behind them" not in self.render(parsed, log)
+
+    def test_the_grep_matches_the_shape_the_job_actually_prints(self, parsed):
+        """Both sides of a contract that spans two files and two languages.
+
+        The job-side half — that a real run emits this line at all — is
+        driven end to end in `backup_objects_test.py`.
+        """
+        import re
+        import subprocess
+
+        steps = parsed["jobs"]["mirror"]["steps"]
+        script = next(
+            s["run"] for s in steps
+            if s.get("name", "").startswith("Write the run summary")
+        )
+        [pattern] = re.findall(r"last '(source gone: [^']+)'", script)
+        emitted = subprocess.run(
+            ["grep", "-oE", "^[0-9-]+ [0-9:,]+ [A-Z]+ " + pattern],
+            input=self.night(0, 40000), capture_output=True, text=True,
+        )
+        assert emitted.returncode == 0, (
+            f"the workflow's pattern {pattern!r} matches nothing the job prints"
+        )
