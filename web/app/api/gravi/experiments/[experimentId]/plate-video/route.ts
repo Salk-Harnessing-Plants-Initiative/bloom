@@ -73,7 +73,7 @@ const badPlate = () =>
     {
       detail:
         "plateId must be 1-64 characters of letters, digits, dot, dash or " +
-        "underscore, and may not begin with a dot",
+        "underscore, and must begin with a letter or digit",
     },
     { status: 400 }
   );
@@ -103,7 +103,7 @@ function withFrameCount(parsed: unknown): unknown {
 
 /** A wave from the request: a whole number, null, or invalid. */
 function parseWave(raw: unknown): number | null | undefined {
-  if (raw === null || raw === undefined || raw === "") return null;
+  if (raw === null || raw === undefined || raw === "" || raw === "null") return null;
   const wave = typeof raw === "string" ? Number(raw) : raw;
   // `Number.isInteger` refuses booleans, NaN and non-numbers on its own, so it
   // is the whole check. Python needs an explicit bool guard here; JS does not.
@@ -195,6 +195,9 @@ export async function POST(
   try {
     parsed = JSON.parse(text);
   } catch {
+    console.error(
+      `plate video: the service answered ${upstream.status} with something that is not JSON`
+    );
     return NextResponse.json(
       {
         detail: upstream.ok
@@ -238,7 +241,14 @@ export async function GET(
   const wave = parseWave(query.get("wave_number"));
   if (wave === undefined) return noStore(badWave());
 
-  const stored = await getStoredPlateVideo(experiment, plateId, wave);
+  let stored: Awaited<ReturnType<typeof getStoredPlateVideo>>;
+  try {
+    stored = await getStoredPlateVideo(experiment, plateId, wave);
+  } catch (err) {
+    console.error("plate video poll could not reach storage", err);
+    stored = { status: "unknown", reason: "the lookup failed" };
+  }
+
   if (stored.status === "unknown") {
     // Not an absence. Saying "no video" here would have the button offer to
     // render a plate that already has one.

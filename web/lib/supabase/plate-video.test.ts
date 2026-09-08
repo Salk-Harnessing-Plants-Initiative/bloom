@@ -168,6 +168,18 @@ describe("getStoredPlateVideo", () => {
     expect(is).not.toHaveBeenCalled();
   });
 
+  it("treats wave zero as a wave, not as an absent one", async () => {
+    // The scanner sends 0 when no wave is set, so this arrives in practice. Read
+    // as no wave it looks for a null column and misses the row that exists.
+    const { eq, is } = clientReturning(SIGNED, { data: { frame_count: 12 } });
+
+    const stored = await getStoredPlateVideo(7, "P1", 0);
+
+    expect(eq).toHaveBeenCalledWith("wave_number", 0);
+    expect(is).not.toHaveBeenCalled();
+    expect(stored).toMatchObject({ frames: 12 });
+  });
+
   it("matches a plate with no wave on a null column, not on equality", async () => {
     // A plate with no wave is a real case, and `wave_number = NULL` matches
     // nothing in Postgres — the row would be missed and the count lost.

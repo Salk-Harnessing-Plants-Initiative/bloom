@@ -20,6 +20,10 @@ import { getSession } from "@/lib/supabase/server";
 import { getStoredPlateVideo } from "@/lib/supabase/plate-video";
 
 const mockedGetSession = vi.mocked(getSession);
+
+const GENERIC_SENTENCE =
+  "This video could not be made right now. Try again shortly — if it keeps " +
+  "happening, let the Bloom team know.";
 const mockedStored = vi.mocked(getStoredPlateVideo);
 
 const RESULT = {
@@ -162,6 +166,62 @@ describe("POST", () => {
     expect(res.status).toBe(400);
     expect((await res.json()).detail).toBe("expected a JSON body");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("treats an omitted wave as no wave", async () => {
+    // A client that simply leaves the field out, rather than sending null.
+    const fetchMock = upstreamReturns(200, RESULT);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await post({ plate_id: "P7" });
+
+    expect(res.status).toBe(200);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).wave_number).toBeNull();
+  });
+
+  it("names the rule the plate id is actually held to", async () => {
+    // The pattern requires an alphanumeric first character, so a leading dash or
+    // underscore is refused. A message about dots leaves that caller stuck.
+    const fetchMock = upstreamReturns(200, RESULT);
+    vi.stubGlobal("fetch", fetchMock);
+
+    for (const plateId of ["_A1", "-A1", ".A1"]) {
+      const res = await post({ plate_id: plateId });
+      expect(res.status).toBe(400);
+      expect((await res.json()).detail).toContain("begin with a letter or digit");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("says one sentence when a passthrough status carries no readable detail", async () => {
+    // The arm that decides an upstream body is unusable. A validation failure
+    // sends a list, not a sentence, and 422 is on the passthrough list.
+    const unreadable = [
+      { detail: [{ loc: ["body", "plate_id"], ctx: { db: "postgresql://bloom:pw@db:5432" } }] },
+      { detail: "   " },
+      { message: "something happened" },
+      {},
+    ];
+
+    for (const payload of unreadable) {
+      vi.stubGlobal("fetch", upstreamReturns(422, payload));
+      const { detail } = await (await post({ plate_id: "P7", wave_number: 1 })).json();
+
+      expect(detail).toBe(GENERIC_SENTENCE);
+      expect(detail).not.toContain("postgresql");
+    }
+  });
+
+  it("logs a reply it cannot read, which the service never saw either", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("<html>502</html>", { status: 502 }))
+    );
+
+    await post({ plate_id: "P7", wave_number: 1 });
+
+    expect(error).toHaveBeenCalled();
   });
 
   it("sends the token upstream rather than exposing it to the browser", async () => {
@@ -690,6 +750,51 @@ describe("GET", () => {
     await get("plate_id=P7&wave_number=1");
 
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("gateway timeout"));
+  });
+
+  it("reads an empty wave parameter as no wave, not as wave zero", async () => {
+    // `?wave_number=` is what a client writing `${wave ?? ""}` sends for a
+    // wave-less plate. Read as zero it looks under a key nothing was stored at.
+    mockedStored.mockResolvedValue({ status: "absent" });
+
+    await get("plate_id=P7&wave_number=");
+
+    expect(mockedStored).toHaveBeenCalledWith(12, "P7", null);
+  });
+
+  it("reads a serialised null as no wave, rather than refusing it", async () => {
+    // A client sending `${String(wave)}` sends the text "null". Refused, the
+    // poll never settles for a plate that has no wave.
+    mockedStored.mockResolvedValue({ status: "absent" });
+
+    const res = await get("plate_id=P7&wave_number=null");
+
+    expect(res.status).toBe(200);
+    expect(mockedStored).toHaveBeenCalledWith(12, "P7", null);
+  });
+
+  it("answers a lookup that throws the way it answers one that fails", async () => {
+    // Not an absence. Left to escape, the caller gets a bare 500 that no rule
+    // about the poll's answers applies to.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mockedStored.mockRejectedValue(new Error("supabase client not configured"));
+
+    const res = await get("plate_id=P7&wave_number=1");
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("answers with the download link and the count, and nothing else", async () => {
+    mockedStored.mockResolvedValue({
+      status: "present",
+      url: "https://x/y.mp4",
+      frames: 86,
+    });
+
+    const body = await (await get("plate_id=P7&wave_number=1")).json();
+
+    expect(Object.keys(body).sort()).toEqual(["download_url", "frames"]);
   });
 
   it("forbids storing the answer that carries the download link", async () => {
