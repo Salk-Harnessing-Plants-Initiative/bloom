@@ -334,6 +334,9 @@ jobs:
           STATE_DIR: ${{ env.STATE_DIR }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          # A dry run writes no report and records no run, so the summary must
+          # be told rather than deducing it from what the log happens to say.
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
         # This step fires exactly when the host may be wedged, and it is the
         # only thing standing between a cancelled night and a summary that
         # says FAILED. Bounded like the cancel step beside it, so a host that
@@ -341,313 +344,34 @@ jobs:
         timeout-minutes: 5
         run: |
           set -uo pipefail
-
-          # `|| true` everywhere: bash -e with pipefail, and each grep may match nothing.
           log="${RUNNER_TEMP}/mirror-output.txt"
-          stamp='^[0-9-]+ [0-9:,]+ [A-Z]+ '
-          last() { grep -oE "$stamp$1" "$log" 2>/dev/null | tail -1 || true; }
-          num_in() { printf '%s' "$2" | grep -oE "$1[0-9]+" | grep -oE '[0-9]+' || true; }
+          report=""
 
-          dry_line="$(last 'dry run — would copy [0-9]+, [0-9]+ already current, [0-9]+ skipped')"
-          done_line="$(last 'done — copied [0-9]+, failed [0-9]+, already current [0-9]+, skipped [0-9]+')"
-          # The unverified count is optional — the job prints it only on a shortfall.
-          verify_line="$(last 'verify: [0-9]+ checked, [0-9]+ mismatched(, [0-9]+ unverified)?')"
-          gone="$(num_in 'source gone: ' "$(last 'source gone: [0-9]+')")"
-          copied="$(num_in 'copied ' "$done_line")"
-          current="$(num_in 'already current ' "$done_line")"
-          checked="$(printf '%s' "$verify_line" | grep -oE '[0-9]+ checked' | grep -oE '[0-9]+' || true)"
-          unverified="$(printf '%s' "$verify_line" | grep -oE '[0-9]+ unverified' | grep -oE '[0-9]+' || true)"
-
-          status="$(last 'BOX_BACKUP_STATUS=[a-z_]+')"; status="${status##*=}"
-          flags="$(last 'BOX_BACKUP_FLAGS=[a-z_,]*')"; flags=",${flags##*=},"
-
-          # The pipe dies on a cancel or timeout, so fall back to the report on the host.
-          if [ -z "$status" ] && [ -n "${DEPLOY_USER:-}" ] && [ -n "${DEPLOY_HOST:-}" ]; then
-            # Scoped to THIS job by the marker the run step stamped; both halves host-side.
-            q_state="$(printf '%q' "$STATE_DIR")"
-            remote() {
-              ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=15 \
-                -o StrictHostKeyChecking=yes \
-                "${DEPLOY_USER}@${DEPLOY_HOST}" "$1" 2>/dev/null || true
-            }
-            marker="$(remote "cat -- $q_state/actions-run.started")"
-            marked_tag=""; stamped_at=""
-            read -r marked_tag stamped_at _ <<< "$marker" || true
-            case "${stamped_at:-x}" in ''|*[!0-9]*) stamped_at="" ;; esac
-            report=""
-            if [ "${marked_tag:-}" = "$RUN_TAG" ] && [ -n "$stamped_at" ]; then
-              report="$(remote "find $q_state/_runs -name '*.json' \
-                -newermt @$stamped_at -printf '%T@ %p\\n' 2>/dev/null \
-                | sort -rn | head -1 | cut -d' ' -f2-")"
-            fi
-            if [ -n "$report" ]; then
-              body="$(remote "cat -- $(printf '%q' "$report")")"
-              status="$(printf '%s' "$body" \
-                | grep -oE '\"status\"[[:space:]]*:[[:space:]]*\"[a-z_]+\"' \
-                | head -1 | grep -oE '[a-z_]+\"$' | tr -d '\"' || true)"
-              # Flags too, or a cancelled night keeps its headline and drops every notice.
-              flags="$(printf '%s' "$body" \
-                | tr -d ' \n' \
-                | grep -oE '\"flags\":\[[^]]*\]' \
-                | grep -oE '[a-z_]+' | grep -v '^flags$' | paste -sd, - || true)"
-              flags=",${flags},"
-              # Counts too, or a seed stopped by the time limit reads as having copied nothing.
-              stats="$(printf '%s' "$body" | tr -d ' \n')"
-              num() {
-                printf '%s' "$stats" | grep -oE "\"$1\":[0-9]+" \
-                  | head -1 | grep -oE '[0-9]+$' || true
-              }
-              [ -z "${copied:-}" ] && copied="$(num copied)"
-              [ -z "${current:-}" ] && current="$(num already_current)"
-              [ -z "${checked:-}" ] && checked="$(num verify_checked)"
-              [ -z "${unverified:-}" ] && unverified="$(num verify_unverified)"
-              [ -z "${gone:-}" ] && gone="$(num source_gone)"
-              [ -n "$status" ] && from_report=1
-              [ -n "$status" ] && echo "verdict taken from the run report on the host: $status ($flags)"
-            fi
+          # A cancel or a timeout kills the pipe mid-run, so the log stops
+          # before the verdict. The report the run wrote on the host is then
+          # the only place that verdict exists — scoped to THIS job by the
+          # marker the run step stamped, or a nightly that stood down against
+          # the seed's lock would report the seed's night as its own.
+          if ! grep -qE '^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_STATUS=' "$log" 2>/dev/null \
+             && [ -n "${DEPLOY_USER:-}" ] && [ -n "${DEPLOY_HOST:-}" ]; then
+            report="${RUNNER_TEMP}/run-report.json"
+            remote_args="$(printf '%q ' "$RUN_TAG" "$STATE_DIR")"
+            ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=15 \
+              -o StrictHostKeyChecking=yes \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" "bash -s -- $remote_args" \
+              > "$report" 2>/dev/null <<'REMOTE' || true
+          set -uo pipefail
+          run_tag="$1"; state_dir="$2"
+          read -r marked_tag stamped_at _ < "$state_dir/actions-run.started" || exit 0
+          [ "$marked_tag" = "$run_tag" ] || exit 0
+          case "${stamped_at:-x}" in ''|*[!0-9]*) exit 0 ;; esac
+          newest="$(find "$state_dir/_runs" -name '*.json' -newermt "@$stamped_at" \
+            -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
+          [ -n "$newest" ] && cat -- "$newest"
+          REMOTE
           fi
 
-          # Nothing anywhere: the step's own outcome is the verdict.
-          if [ -z "$status" ]; then
-            if [ "${{ steps.run.outcome }}" = "success" ]; then status=ok; else status=failed; fi
-          fi
-          has_flag() { case "$flags" in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
-
-          # Thousands separators. Not printf %'d (needs a locale), not sed (GNU vs BSD).
-          group() {
-            local n="$1" out=""
-            while [ "${#n}" -gt 3 ]; do
-              out=",${n: -3}${out}"
-              n="${n:0:${#n}-3}"
-            done
-            printf '%s%s' "$n" "$out"
-          }
-
-          if [ -n "$dry_line" ]; then
-            # A dry run copies nothing, so the copy counts never applied to it.
-            would="$(printf '%s' "$dry_line" | grep -oE 'would copy [0-9]+' | grep -oE '[0-9]+' || true)"
-            counts="dry run — would copy $(group "${would:-0}"), nothing was copied"
-          elif [ -n "${copied:-}" ] && [ "$copied" -gt 0 ]; then
-            counts="$(group "$copied") images copied"
-          elif [ -n "${copied:-}" ]; then
-            counts="nothing new to copy ($(group "${current:-0}") already on Box)"
-          else
-            counts=""
-          fi
-          if [ -n "${checked:-}" ] && [ "$checked" -gt 0 ]; then
-            counts="${counts}, $(group "$checked") verified"
-          elif [ -n "${unverified:-}" ] && [ "$unverified" -gt 0 ]; then
-            # Nothing answered: without this the shortfall attaches to the copy count.
-            counts="${counts}, 0 verified"
-          fi
-          # Never let a headline read "nothing new to copy" while objects
-          # were passed over for having no image behind them.
-          if [ -n "${gone:-}" ] && [ "$gone" -gt 0 ]; then
-            counts="${counts:+${counts}, }$(group "$gone") with no image behind them"
-          fi
-          if [ -n "${unverified:-}" ] && [ "$unverified" -gt 0 ]; then
-            counts="${counts} ($(group "$unverified") unanswered)"
-          fi
-
-          {
-            echo "## Nightly Box object mirror — ${ENV_NAME}"
-            echo
-            if [ -n "$dry_line" ]; then
-              # It writes no run report and records no run, so the branches
-              # below — which all point at `_runs/` — cannot describe it.
-              said_dry=1
-              echo "Result: **${counts}**."
-              if has_flag collisions || has_flag skipped_names; then
-                echo
-                echo "It found objects a real run would refuse. They are named"
-                echo "in the \`skipping\` lines of the job log; a dry run"
-                echo "writes no report."
-              fi
-            elif [ "$status" = "skipped" ]; then
-              echo "Result: **skipped** — another run holds the lock, almost"
-              echo "certainly the initial seed. Nothing was mirrored tonight;"
-              echo "the seed is doing that work. This is expected until it ends."
-            elif [ "$status" = "failed" ] && has_flag verify_mismatch; then
-              echo "Result: **FAILED, and verification found objects missing**"
-              echo "— objects failed to copy tonight AND the check found"
-              echo "others the copy had reported as successful are not on Box."
-              echo "Both are in the job log; the missing ones are named in the"
-              echo "run report under \`_runs/\`. Read the log first: a night"
-              echo "that failed copies outright is the larger problem."
-            elif has_flag verify_mismatch; then
-              # Reached only when the run did NOT fail — the branch above takes those first.
-              echo "Result: **VERIFICATION FAILED** — objects the copy reported"
-              echo "as successful are not on Box. Every one is named in the run"
-              echo "report under \`_runs/\`."
-              echo
-              echo "The run changed nothing to compensate: the ledger still"
-              echo "records them as mirrored, so later runs skip them and this"
-              echo "warning does **not** repeat. Putting them back needs a"
-              echo "person — see 'What verification does, and does not, prove'"
-              echo "in the wiki."
-              echo
-              echo "**The watermark is not held for this.** Nothing on this"
-              echo "side can restore the object, so holding it would freeze"
-              echo "the mirror's progress until someone acted and make every"
-              echo "later night re-read all eight million rows. Tonight is"
-              echo "the notice; the run report under \`_runs/\` is the record."
-            elif has_flag collisions; then
-              said_collisions=1
-              echo "Result: **OBJECTS NOT BACKED UP** — two object names"
-              echo "normalize onto one path on Box, so only one of each pair"
-              echo "can be stored and the job refused to overwrite the other."
-              echo "Rename the object named at the START of each"
-              echo "\`skipping\` line in the job log — renaming its twin"
-              echo "instead leaves this one refused for ever. The run is"
-              echo "recorded **partial**, so they stay in view until it is"
-              echo "done."
-              if [ "$status" = "failed" ]; then
-                echo
-                echo "**Objects also failed to copy tonight.** See the job log"
-                echo "— that is the larger problem and this line does not"
-                echo "mean nothing else went wrong."
-              fi
-            elif [ "$status" = "stopped" ]; then
-              # Its own branch: this is the one outcome that means 'this is fine'.
-              said_stopped=1
-              echo "Result: **stopped, progress kept** — the run was asked to"
-              echo "stop before it finished the table, almost certainly the"
-              echo "job's own time limit. Everything it copied is recorded and"
-              echo "on Box; the next run carries on from there. Nothing is"
-              echo "lost."
-              if [ -z "${from_report:-}" ]; then
-                echo "Nothing needs doing."
-              else
-                echo "Check the job log for the ledger upload: the verdict"
-                echo "came from the run report, which is written before it."
-              fi
-              if [ -n "${copied:-}" ] && [ "$copied" -gt 0 ]; then
-                echo "It got through ${counts}."
-              else
-                echo "It stopped before copying anything — most likely during"
-                echo "the manifest read, which a stop cannot interrupt."
-              fi
-            elif [ "$status" = "ok" ] || [ "$status" = "partial" ]; then
-              if [ -n "$counts" ]; then
-                echo "Result: **succeeded** — ${counts}"
-              else
-                echo "Result: **succeeded** (no counts in the log — check it)"
-              fi
-            else
-              echo "Result: **FAILED** — see the job log. Some or all of"
-              echo "tonight's objects were not mirrored; anything that did"
-              echo "copy is recorded and will not be copied again."
-            fi
-            # Additive: a stop must not hide a permanent non-backup.
-            if [ "$status" = "stopped" ] && [ -z "${said_stopped:-}" ]; then
-              echo
-              echo "> The run was also **asked to stop before it finished the"
-              echo "> table** — almost certainly the job's own time limit."
-              echo "> Everything it copied is recorded and on Box, and the"
-              echo "> next run carries on from there."
-            fi
-            # Additive, so whichever branch won the headline cannot swallow
-            # it. Reachable above a verification mismatch and above the dry
-            # run, which says its own version and writes no report.
-            if has_flag collisions && [ -z "${said_collisions:-}" ] \
-               && [ -z "${said_dry:-}" ]; then
-              echo
-              echo "> **A name collision was also refused.** Two object names"
-              echo "> normalize onto one path on Box. Rename the object named"
-              echo "> at the START of its \`skipping\` line in the job log."
-              echo "> Resolve this before the missing objects above: the two"
-              echo "> are entangled, and acting on one while the other stands"
-              echo "> can lose a backup."
-            fi
-            # Its own `if`, not an elif: this happens on nights that otherwise succeeded.
-            if has_flag ledger_stale; then
-              echo
-              echo "> **The ledger on Box was NOT updated.** Objects still"
-              echo "> copied fine — this is about the record of WHICH objects"
-              echo "> are already mirrored, which is what makes a re-seed"
-              echo "> unnecessary. It now exists only on the deploy host, the"
-              echo "> machine this job exists to survive losing. Every later"
-              echo "> night can still report success while that copy falls"
-              echo "> further behind, so fix it now: the job log says why the"
-              echo "> upload failed, and 'If the deploy host itself is gone'"
-              echo "> in the wiki says what losing it costs."
-            fi
-            if has_flag skipped_names && [ -z "${said_dry:-}" ]; then
-              echo
-              echo "> **Some images were not backed up because of their"
-              echo "> filenames.** Box cannot store a name containing certain"
-              echo "> characters, so those images were refused rather than"
-              echo "> copied wrong. Nothing on this side can fix it — only"
-              echo "> renaming them in Supabase can. Each is named with its"
-              echo "> reason in the run report under \`_runs/\` on Box."
-              echo ">"
-              if [ "$status" = "ok" ]; then
-                # True only on a clean night; a held watermark says it again tomorrow.
-                echo "> **This is the only night that will say so.** The run is"
-                echo "> still recorded clean on purpose: holding the mirror's"
-                echo "> progress timestamp for a filename nothing can fix on"
-                echo "> its own would make every later night re-read all eight"
-                echo "> million rows."
-              fi
-              echo "> The report on Box is the durable record — they are"
-              echo "> listed under \`name_skips\`, apart from the collisions."
-            fi
-            if has_flag source_gone && [ -z "${said_dry:-}" ]; then
-              echo
-              echo "> **Some rows in the database have no image behind them.**"
-              echo "> Postgres lists the object but MinIO does not hold the"
-              echo "> bytes, so there is nothing to copy and no run can ever"
-              echo "> back these up. That is usually a delete that removed the"
-              echo "> file and left the row, and it may mean the image is"
-              echo "> already lost rather than merely unmirrored."
-              echo ">"
-              echo "> They are listed under \`source_gone\` in the run report"
-              echo "> under \`_runs/\` on Box. Someone has to decide whether"
-              echo "> each row should still exist — nothing here will."
-            fi
-            # Never merge with the notice above: there Box is behind, here Box is ahead.
-            if has_flag ledger_ahead; then
-              echo
-              echo "> **The ledger on Box is newer than this host's — the"
-              echo "> upload was refused on purpose.** Box holds the record of"
-              echo "> what is already mirrored and this host holds a smaller"
-              echo "> one, which means this is not the machine that built the"
-              echo "> mirror: a rebuilt host, or a wiped state directory."
-              echo "> **Restore the Box copy onto this host. Do NOT upload"
-              echo "> over it** — that would replace the record of millions of"
-              echo "> objects with this run's, and cost a full re-seed. See"
-              echo "> 'If the deploy host itself is gone' in the wiki."
-            fi
-            if has_flag verify_incomplete; then
-              echo
-              echo "> **Verification did not cover its whole sample.** Box did"
-              echo "> not answer for some of the objects it was asked about,"
-              echo "> so those were neither confirmed present nor found"
-              echo "> missing — the \`N verified\` count above is what was"
-              echo "> actually established, not what was checked for. The"
-              echo "> copies were confirmed as they were made, so this is"
-              echo "> not a reason to re-copy anything. But a night reporting"
-              echo "> success on the strength of a check that mostly did not"
-              echo "> run is what the check exists to prevent, so if it"
-              echo "> repeats see 'What verification does, and does not,"
-              echo "> prove' in the wiki. The job log has the exact counts."
-            fi
-            echo
-            echo '### This run'
-            echo '```'
-            # The level is the THIRD field — asctime contains a space.
-            summary="$(grep -E '^[0-9-]+ [0-9:,]+ (INFO|WARNING|ERROR) (done —|verify:|listed|preflight|batch:)' \
-              "${RUNNER_TEMP}/mirror-output.txt" 2>/dev/null | tail -20 || true)"
-            if [ -n "$summary" ]; then
-              echo "$summary"
-            else
-              echo "(no summary produced — the run did not reach the copy phase)"
-            fi
-            echo '```'
-            echo
-            echo "_This job only uploads. Nothing on Box is ever deleted by it._"
-            if [ -z "${said_dry:-}" ]; then
-              echo "_Per-run reports, including verification counts, are written to"
-              echo "\`<OBJECT_BACKUP_BOX_ROOT>/_runs/\` on Box._"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          python3 scheduled-jobs/box-object-backup/summary.py \
+            --env "$ENV_NAME" --log "$log" --report "$report" \
+            --outcome '${{ steps.run.outcome }}' \
+            ${DRY_RUN:+--dry-run} >> "$GITHUB_STEP_SUMMARY"

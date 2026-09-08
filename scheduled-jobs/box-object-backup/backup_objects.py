@@ -31,6 +31,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -114,8 +115,15 @@ SKIPPED_NAME_MARKER = "object(s) were SKIPPED for their names"
 # `emit_status`, and the workflow matches them ANCHORED to the start of a log
 # line — timestamp, level, then the key. An object name can only ever appear
 # after a message has already begun, so no name can produce a matching line.
+# The renderer anchors on this shape — timestamp, level, then the key — so the
+# two are named in one place. `asctime` contains a space.
+LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
+
 STATUS_KEY = "BOX_BACKUP_STATUS"
 FLAGS_KEY = "BOX_BACKUP_FLAGS"
+# The counts, as JSON on one anchored line. The summary reads them from here
+# rather than from the prose lines above, which are for people.
+STATS_KEY = "BOX_BACKUP_STATS"
 
 # The whole vocabulary. Anything else is a bug, not a new condition.
 STATUS_VALUES = ("ok", "skipped", "stopped", "partial", "failed")
@@ -130,13 +138,14 @@ FLAG_VALUES = (
 )
 
 
-def emit_status(status: str, flags=()) -> None:
+def emit_status(status: str, flags=(), stats=None) -> None:
     """Print the run's verdict in a form no object name can imitate.
 
-    One line for the headline verdict and one for the independent conditions,
-    both from a closed vocabulary, both anchored by the workflow. Flags are
-    separate from the status because they are not alternatives: a night can
-    succeed AND have left the Box ledger stale AND have refused a name.
+    One line for the headline verdict, one for the independent conditions, and
+    one for the counts. The first two come from a closed vocabulary; all three
+    are anchored by the workflow. Flags are separate from the status because
+    they are not alternatives: a night can succeed AND have left the Box ledger
+    stale AND have refused a name.
     """
     if status not in STATUS_VALUES:
         raise ValueError(f"unknown run status: {status!r}")
@@ -145,6 +154,25 @@ def emit_status(status: str, flags=()) -> None:
         raise ValueError(f"unknown run flags: {unknown!r}")
     logger.info("%s=%s", STATUS_KEY, status)
     logger.info("%s=%s", FLAGS_KEY, ",".join(flags))
+    if stats is not None:
+        # One line, no newlines in it: the workflow anchors on the line start.
+        logger.info("%s=%s", STATS_KEY, json.dumps(stats, sort_keys=True))
+
+
+def _stats_for(totals: "Totals", listed: int) -> dict:
+    """The run's counters, in the shape the report and the summary both read."""
+    return {
+        "listed": listed,
+        "copied": totals.copied,
+        "failed": totals.failed,
+        "skipped": totals.skipped,
+        "collisions": totals.collisions,
+        "source_gone": totals.source_gone,
+        "already_current": totals.already_current,
+        "verify_checked": totals.verify_checked,
+        "verify_mismatched": totals.verify_mismatched,
+        "verify_unverified": totals.verify_unverified,
+    }
 
 
 def _status_for(code: int, outcome: str, stopped: bool = False) -> str:
@@ -227,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
+        format=LOG_FORMAT,
     )
     # Before any work starts, so a stop arriving during the manifest read is
     # honoured rather than killing the process partway through it.
@@ -405,7 +433,11 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         # `partial` when it found objects a real run would refuse: nothing was
         # copied either way, but "succeeded" on a dry run that turned things
         # away is the same false clean bill the whole verdict exists to stop.
-        emit_status("partial" if totals.skipped else "ok", _flags_for(totals))
+        emit_status(
+            "partial" if totals.skipped else "ok",
+            _flags_for(totals),
+            _stats_for(totals, listed),
+        )
         return 0
 
     # Left here rather than moved up with the config checks: it is the one
@@ -463,18 +495,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         crashed = True
         raise
     finally:
-        stats = {
-            "listed": listed,
-            "copied": totals.copied,
-            "failed": totals.failed,
-            "skipped": totals.skipped,
-            "collisions": totals.collisions,
-            "source_gone": totals.source_gone,
-            "already_current": totals.already_current,
-            "verify_checked": totals.verify_checked,
-            "verify_mismatched": totals.verify_mismatched,
-            "verify_unverified": totals.verify_unverified,
-        }
+        stats = _stats_for(totals, listed)
         outcome = run_outcome(
             crashed=crashed,
             failed=totals.failed,
@@ -672,7 +693,9 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     # Same verdict the report already carries; printed here because the log is
     # the faster route when the connection does survive.
     emit_status(
-        _status_for(code, outcome, stopped=stopping.stopping()), _flags_for(totals)
+        _status_for(code, outcome, stopped=stopping.stopping()),
+        _flags_for(totals),
+        stats,
     )
     return code
 

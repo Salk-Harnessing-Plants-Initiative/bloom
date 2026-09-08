@@ -3847,19 +3847,17 @@ class TestATruncatedChunkNeverRecordsClean:
         )
 
 
-class TestTheWorkflowGrepsMatchWhatTheJobReallyPrints:
-    """The contract spans two files; it was pinned to a copy of one side.
+class TestTheRendererReadsWhatTheJobReallyPrints:
+    """The contract spans two files; it used to be pinned to a copy of one.
 
-    `workflow_test.py` greps the workflow's patterns against a hand-typed
-    `REAL_LOG`, so it proves the pattern matches the literal — never that the
-    literal matches the job. Nine changes to the job's own format strings
-    left the whole suite green, and two of them are severe: swapping the
-    `done —` arguments makes a 500,000-object seed chunk render "nothing new
-    to copy (500,000 already on Box)", and renaming `done —` to `done:`
-    renders a dangling ", 50 verified".
+    `workflow_test.py` matched the workflow's patterns against a hand-typed
+    log, which proves a pattern matches a literal — never that the literal
+    matches the job. Nine changes to the job's own format strings left the
+    whole suite green.
 
-    Here the log is produced by running the job and formatted with the job's
-    own formatter, so the only way to pass is for the emitted text to match.
+    Here the log is produced by running the job, formatted with the job's own
+    formatter, and handed to the real renderer. The only way to pass is for
+    what the job emitted to say what the page claims.
     """
 
     @pytest.fixture
@@ -3870,89 +3868,54 @@ class TestTheWorkflowGrepsMatchWhatTheJobReallyPrints:
 
     def emitted(self, caplog) -> str:
         """The records as the deploy host would write them."""
-        fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+        fmt = logging.Formatter(job.LOG_FORMAT)
         return "\n".join(fmt.format(r) for r in caplog.records)
 
-    def workflow_patterns(self) -> list[str]:
-        import re
-
-        import yaml
-
-        path = (
-            Path(__file__).resolve().parents[2]
-            / ".github"
-            / "workflows"
-            / "box-object-backup.yml"
-        )
-        steps = yaml.safe_load(path.read_text())["jobs"]["mirror"]["steps"]
-        script = next(
-            s["run"]
-            for s in steps
-            if s.get("name", "").startswith("Write the run summary")
-        )
-        return re.findall(r"last '([^']+)'", script)
-
-    def run_and_grep(self, caplog, patterns_wanted):
-        import subprocess
+    def read_back(self, caplog, dry_run=False):
+        import summary
 
         text = self.emitted(caplog)
-        stamp = r"^[0-9-]+ [0-9:,]+ [A-Z]+ "
-        found = {}
-        for pattern in self.workflow_patterns():
-            r = subprocess.run(
-                ["grep", "-cE", stamp + pattern],
-                input=text,
-                capture_output=True,
-                text=True,
-            )
-            found[pattern] = r.returncode == 0
-        for want in patterns_wanted:
-            matching = [p for p in found if want in p]
-            assert matching, f"the workflow has no pattern for {want!r}"
-            assert any(found[p] for p in matching), (
-                f"the workflow's {want!r} pattern matches nothing the job "
-                f"printed. Emitted:\n{text[:600]}"
-            )
-        return found
+        verdict = summary.from_log(text)
+        assert verdict is not None, (
+            f"the renderer found no verdict in what the job printed:\n{text[:600]}"
+        )
+        return verdict, summary.render(verdict, "prod", text, dry_run)
 
-    def test_a_copying_night_matches_the_count_and_verdict_greps(self, harness, caplog):
+    def test_a_copying_night_is_read_back_with_its_counts(self, harness, caplog):
+        """The harness copies two objects and has none already current.
+
+        Asserted as values, not shapes: the counts travel as JSON now, so a
+        mis-assigned key is the remaining way to render "nothing new to copy"
+        over a night that copied everything.
+        """
         state, tmp_path = harness
         caplog.set_level(logging.INFO)
         job.run_locked(
             TestRunLockedWiresItsPartsTogether().args(tmp_path, verify=2), tmp_path
         )
-        self.run_and_grep(
-            caplog,
-            ["done — copied", "verify:", "BOX_BACKUP_STATUS=", "BOX_BACKUP_FLAGS="],
-        )
+        verdict, page = self.read_back(caplog)
+        assert verdict.status == "ok"
+        assert verdict.count("copied") == 2, verdict.stats
+        assert verdict.count("already_current") == 0, verdict.stats
+        assert "2 images copied" in page
+        assert "done — copied" in page, "the progress lines are not quoted"
 
-    def test_a_dry_run_matches_the_dry_grep(self, harness, caplog):
+    def test_a_dry_run_is_read_back_as_one(self, harness, caplog):
         state, tmp_path = harness
         caplog.set_level(logging.INFO)
         args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
         args.dry_run = True
         job.run_locked(args, tmp_path)
-        self.run_and_grep(caplog, ["dry run — would copy"])
+        verdict, page = self.read_back(caplog, dry_run=True)
+        assert verdict.count("copied") == 2, verdict.stats
+        assert "dry run — would copy 2, nothing was copied" in page
 
-    def test_the_copied_count_is_read_from_the_position_the_job_writes_it(
-        self, harness, caplog
-    ):
-        """Swapping the done-line arguments left the suite green.
-
-        The pattern still matched — the shape is `copied N, failed N, already
-        current N` either way — so only the VALUE catches it. The harness
-        copies two objects and has none already current.
-        """
-        import re
-
+    def test_a_verifying_night_reports_what_it_checked(self, harness, caplog):
         state, tmp_path = harness
         caplog.set_level(logging.INFO)
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        text = self.emitted(caplog)
-        [line] = [ln for ln in text.splitlines() if "done — copied" in ln]
-        copied = int(re.search(r"copied (\d+)", line).group(1))
-        current = int(re.search(r"already current (\d+)", line).group(1))
-        assert (copied, current) == (
-            2,
-            0,
-        ), f"the job copied 2 objects and reported {copied}: {line}"
+        job.run_locked(
+            TestRunLockedWiresItsPartsTogether().args(tmp_path, verify=2), tmp_path
+        )
+        verdict, page = self.read_back(caplog)
+        assert verdict.count("verify_checked") == 2, verdict.stats
+        assert "2 verified" in page

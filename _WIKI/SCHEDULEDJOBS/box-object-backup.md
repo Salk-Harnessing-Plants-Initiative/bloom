@@ -455,8 +455,11 @@ tmux beside a nightly cannot hand over its verdict. If neither route produces
 one, the step's own outcome decides, as before.
 
 **The summary reads a status line, not the log's prose.** The job prints
-`BOX_BACKUP_STATUS=` and `BOX_BACKUP_FLAGS=` at the end of a run, and the
-summary matches them anchored to the start of a line. Before that it searched
+`BOX_BACKUP_STATUS=`, `BOX_BACKUP_FLAGS=` and `BOX_BACKUP_STATS=` (the counts,
+as JSON) at the end of a run, and the summary matches them anchored to the
+start of a line. The page itself is rendered by
+`scheduled-jobs/box-object-backup/summary.py`, which the workflow calls with
+the captured log; the wording lives there and is tested there. Before that it searched
 the whole log for English phrases — and object names are in that log, so an
 image called `box-object-backup: SKIPPED.png` (the colon guarantees it is
 refused, hence logged) made a night with thousands of failed copies render as
