@@ -106,6 +106,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "differential expression was computed on, or the DE panel's cell "
              "types will not exist in the catalogue",
     )
+    p.add_argument(
+        "--genotype-column",
+        default="sample",
+        help="the obs column naming which genotype each cell came from. Each "
+             "distinct value becomes a genotype record the cells point at",
+    )
+    p.add_argument(
+        "--control",
+        metavar="GENOTYPE",
+        help="which genotype is the control, named rather than guessed: a "
+             "dataset whose wild type is not called Col-0 would be guessed wrong",
+    )
+    p.add_argument(
+        "--construct",
+        action="append",
+        default=[],
+        metavar="GENOTYPE=NAME",
+        help="the construct a transgenic line carries. A property of the line, "
+             "not of each cell; repeatable",
+    )
     p.add_argument("--sample-column", default="sample")
     p.add_argument(
         "--group-column",
