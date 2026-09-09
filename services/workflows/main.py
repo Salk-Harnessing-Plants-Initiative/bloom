@@ -14,6 +14,10 @@ Endpoints:
                                                        Storage, return a signed
                                                        download URL
                                                        (requires a Supabase user JWT)
+    GET  /gravi/experiments/{experiment_id}/plate-video/progress
+                                                    - how far a running render
+                                                       has got, for the page to
+                                                       show while it waits
     POST /gravi/experiments/{experiment_id}/plate-video
                                                      - on-demand: render one plate's
                                                        time-lapse for one wave, store
@@ -42,6 +46,7 @@ import logging
 import os
 
 import pipeline
+import plate_progress
 import plate_request
 from auth import enforce_rate_limit, require_supabase_user
 from fastapi import Depends, FastAPI, HTTPException
@@ -105,6 +110,21 @@ def cyl_experiment_scan_video(
             scan_id,
         )
     return {"experiment_id": experiment_id, **result}
+
+
+@app.get("/gravi/experiments/{experiment_id}/plate-video/progress")
+def gravi_plate_video_progress(
+    experiment_id: int,
+    plate_id: str,
+    wave_number: int | None = None,
+    user_id: str = Depends(require_supabase_user),
+):
+    """How far the running render for this plate has got, or nothing.
+
+    No rate limit: the page polls this every 10s while it waits, which the
+    5-per-60s limiter on the other routes would refuse.
+    """
+    return plate_progress.current(experiment_id, plate_id, wave_number)
 
 
 @app.post("/gravi/experiments/{experiment_id}/plate-video")
