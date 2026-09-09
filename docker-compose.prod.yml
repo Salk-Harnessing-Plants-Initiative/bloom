@@ -205,18 +205,11 @@ services:
       context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
-    # Contains a runaway render inside this container: the kill lands on the
-    # uvicorn worker, `restart: unless-stopped` brings it back, and the rest of
-    # the stack is untouched. Without a limit the kernel's OOM killer would pick
-    # by resident size instead, which is not this service.
-    #
-    # 8g, not a tight fit. The first real plate on production was killed at 2g
-    # (ffmpeg SIGKILLed after all 72 frames downloaded), so the arithmetic in
-    # tests/unit/test_workflows_single_worker.py — one render at the frame
-    # ceilings costing 1003 MB — is optimistic about what a real GraviScan TIFF
-    # costs. Until that is measured properly the limit is set well clear of it.
-    # The host has 754 GB, so 8g is about 1% of the machine and no other
-    # container here is capped at all.
+    # Bounds a runaway render to this container, so the OOM killer takes the
+    # uvicorn worker rather than choosing by resident size across the stack.
+    # Generous on purpose: a real plate does not fit the ~1 GB that
+    # tests/unit/test_workflows_single_worker.py derives from the frame
+    # ceilings, and 8g is about 1% of this host.
     mem_limit: 8g
     # Without this Docker allows twice mem_limit in swap, so a runaway render
     # would grind against disk indefinitely instead of being killed. Equal
@@ -224,8 +217,7 @@ services:
     memswap_limit: 8g
     tmpfs:
       # RAM-backed, so this counts against mem_limit and is budgeted with the
-      # frames. One plate video is 3-12 MB depending on how the run compresses;
-      # a long wave at a high cycle count is the case to watch.
+      # frames. One plate video is 3-12 MB depending on how the run compresses.
       - /tmp:mode=1777,size=512m
     security_opt:
       - no-new-privileges:true

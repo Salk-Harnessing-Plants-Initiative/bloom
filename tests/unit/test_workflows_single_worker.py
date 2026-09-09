@@ -124,12 +124,9 @@ def test_workflows_has_a_memory_limit():
     chooses by resident size, which is not this service. A limit turns that
     into a failed request in the container that caused it.
 
-    The floor is 4g because 2g was tried and was not enough: the first real
-    plate rendered on production was killed there, ffmpeg SIGKILLed after all
-    72 frames had downloaded. The arithmetic below — one render at the frame
-    ceilings costing about 1 GB — is therefore optimistic about what a real
-    GraviScan TIFF costs, and the limit stays well clear of it until that is
-    measured properly.
+    The floor is 4g because 2g is not enough: a real plate render is SIGKILLed
+    there. The arithmetic below — one render at the frame ceilings costing about
+    1 GB — is optimistic about what a full-resolution GraviScan TIFF costs.
     """
     service = _workflows_service()
 
@@ -138,9 +135,9 @@ def test_workflows_has_a_memory_limit():
         "limit; without one, a render spike can take the host down"
     )
     assert _bytes(service["mem_limit"]) >= 4 * (1 << 30), (
-        f"the limit is {service['mem_limit']!r}; a real plate render was killed "
-        "at 2g on production, so a limit at or below that fails healthy renders "
-        "rather than runaway ones"
+        f"the limit is {service['mem_limit']!r}; a real plate render is killed "
+        "at 2g, so a limit at or below that fails healthy renders rather than "
+        "runaway ones"
     )
 
 
