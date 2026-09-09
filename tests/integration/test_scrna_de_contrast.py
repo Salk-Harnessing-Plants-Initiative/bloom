@@ -26,6 +26,7 @@ Runs in CI's `compose-health-check` job after migrations are applied
 (`uv run --extra test pytest tests/integration/ -v`).
 """
 
+import csv
 import re
 import uuid
 from pathlib import Path
@@ -47,6 +48,21 @@ ADDED_COLUMNS = [
 ]
 
 ORIGINAL_COLUMNS = {"id", "dataset_id", "file_path", "cluster_id"}
+
+# A self-consistent summary. Rows that name a contrast must carry all five counts,
+# so a test aimed at some other rule spreads these in to stay on that rule.
+COUNTS = {
+    "n_genes_tested": 100,
+    "n_significant_fdr": 5,
+    "n_significant_fdr_lfc": 4,
+    "n_up": 3,
+    "n_down": 1,
+}
+
+# A verbatim copy of the pipeline's own summary for the first dataset, blanks and
+# all. Reading it unaltered is the point: a loader that coerces the blanks proves
+# nothing about whether these rules accept what the pipeline actually writes.
+SUMMARY_TSV = Path(__file__).parent / "fixtures" / "LEVEL1_DE_SUMMARY.tsv"
 
 # Read off the live schema. Absolute, so a regrant applied to both this table and
 # the sibling is still caught.
@@ -171,6 +187,93 @@ def test_never_run_row_is_accepted(pg_conn):
     pg_conn.rollback()
 
 
+def test_one_cluster_holds_several_contrasts(pg_conn):
+    """The feature. 23 cell types x 3 contrasts plus a marker list per cluster is
+    the shape PRs after this one write, and it is what the uniqueness rule has to
+    permit. Narrowing that rule's column list must turn this red."""
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        for contrast, g1, g2 in [
+            ("pFACT_vs_Col-0", "pFACT", "Col-0"),
+            ("pHORST_vs_Col-0", "pHORST", "Col-0"),
+            ("pFACT_vs_pHORST", "pFACT", "pHORST"),
+        ]:
+            _insert(
+                cur, ds, file_path=f"de/Phellem__{contrast}.json",
+                contrast=contrast, group1=g1, group2=g2,
+                n_group1=164, n_group2=21,
+                n_genes_tested=12085, n_significant_fdr=1,
+                n_significant_fdr_lfc=1, n_up=1, n_down=0,
+            )
+        _insert(cur, ds, file_path="de/markers_Phellem.json")
+
+        cur.execute(
+            f"SELECT count(*) FROM {TABLE} WHERE dataset_id = %s AND cluster_id = 'Phellem'",
+            (ds,),
+        )
+        assert cur.fetchone()[0] == 4
+    pg_conn.rollback()
+
+
+def test_the_same_contrast_may_appear_on_different_clusters(pg_conn):
+    """The other half of the key: one contrast spans every cell type."""
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        for cluster in ("Phellem", "Cortex", "Xylem"):
+            _insert(
+                cur, ds, cluster_id=cluster,
+                file_path=f"de/{cluster}__pFACT_vs_Col-0.json",
+                contrast="pFACT_vs_Col-0", group1="pFACT", group2="Col-0",
+                n_group1=164, n_group2=21,
+                n_genes_tested=12085, n_significant_fdr=0,
+                n_significant_fdr_lfc=0, n_up=0, n_down=0,
+            )
+        cur.execute(f"SELECT count(*) FROM {TABLE} WHERE dataset_id = %s", (ds,))
+        assert cur.fetchone()[0] == 3
+    pg_conn.rollback()
+
+
+def test_the_real_summary_file_loads(pg_conn):
+    """Every row of the pipeline's own summary, read off disk with its blanks
+    intact. The 23 skipped comparisons leave n_up and n_down empty, so this is
+    what decides whether the rules accept real output or only hand-typed rows."""
+    with SUMMARY_TSV.open() as fh:
+        rows = list(csv.DictReader(fh, delimiter="\t"))
+    assert len(rows) == 69, f"expected 69 summary rows, found {len(rows)}"
+
+    def count(value: str) -> int:
+        # A blank means the comparison never ran, which this schema stores as 0.
+        return int(float(value)) if value else 0
+
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        for row in rows:
+            ran = row["tested"] == "True"
+            _insert(
+                cur, ds,
+                cluster_id=row["celltype"],
+                file_path=(
+                    f"de/{row['celltype']}__{row['contrast']}.json" if ran else None
+                ),
+                contrast=row["contrast"],
+                group1=row["group1"], group2=row["group2"],
+                n_group1=int(row["n_group1"]), n_group2=int(row["n_group2"]),
+                n_genes_tested=count(row["n_genes_tested"]),
+                n_significant_fdr=count(row["n_FDR_0.05"]),
+                n_significant_fdr_lfc=count(row["n_FDR_0.05_abs_log2FC_0.5"]),
+                n_up=count(row["n_up"]), n_down=count(row["n_down"]),
+            )
+
+        cur.execute(
+            f"SELECT count(*) FILTER (WHERE file_path IS NOT NULL), "
+            f"count(*) FILTER (WHERE file_path IS NULL) FROM {TABLE} "
+            f"WHERE dataset_id = %s",
+            (ds,),
+        )
+        assert cur.fetchone() == (46, 23)
+    pg_conn.rollback()
+
+
 # --------------------------------------------------------------------------- #
 # One test per rule, each naming the rule it expects
 # --------------------------------------------------------------------------- #
@@ -190,7 +293,8 @@ def test_contrast_without_both_groups_is_rejected(pg_conn):
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
         _rejects(cur, ds, "scrna_de_contrast_names_both_groups",
-                 file_path="x.json", contrast="pFACT_vs_Col-0", group1="pFACT")
+                 file_path="x.json", contrast="pFACT_vs_Col-0", group1="pFACT",
+                 **COUNTS)
     pg_conn.rollback()
 
 
@@ -199,7 +303,7 @@ def test_group_compared_against_itself_is_rejected(pg_conn):
         ds = _seed_dataset(cur)
         _rejects(cur, ds, "scrna_de_groups_differ",
                  file_path="x.json", contrast="pFACT_vs_pFACT",
-                 group1="pFACT", group2="pFACT")
+                 group1="pFACT", group2="pFACT", **COUNTS)
     pg_conn.rollback()
 
 
@@ -214,6 +318,18 @@ def test_no_file_but_results_reported_is_rejected(pg_conn):
                  contrast="pHORST_vs_Col-0", group1="pHORST", group2="Col-0",
                  n_genes_tested=500, n_significant_fdr=5,
                  n_significant_fdr_lfc=5, n_up=5, n_down=0)
+    pg_conn.rollback()
+
+
+def test_contrast_row_without_counts_is_rejected(pg_conn):
+    """A named comparison carries all five counts, so a skipped one stores zeros
+    rather than blanks -- otherwise the documented test for "never ran" yields
+    NULL and the row cannot be found."""
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _rejects(cur, ds, "scrna_de_contrast_rows_carry_counts",
+                 file_path=None, contrast="a_vs_b", group1="a", group2="b",
+                 n_group1=0, n_group2=7)
     pg_conn.rollback()
 
 
@@ -278,6 +394,8 @@ def test_negative_count_is_rejected(pg_conn, column):
     counts = {"n_genes_tested": 10, "n_significant_fdr": 5,
               "n_significant_fdr_lfc": 4, "n_up": 4, "n_down": 0}
     counts[column] = -1
+    if column in ("n_group1", "n_group2"):
+        counts.setdefault("n_group1", 0)
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
         _rejects(cur, ds, "scrna_de_counts_non_negative",
@@ -285,12 +403,17 @@ def test_negative_count_is_rejected(pg_conn, column):
     pg_conn.rollback()
 
 
-@pytest.mark.parametrize("blank", ["", "   "], ids=["empty", "whitespace"])
+@pytest.mark.parametrize(
+    "blank",
+    ["", "   ", "\t", "\n", "\r", "\u00a0"],
+    ids=["empty", "spaces", "tab", "newline", "carriage-return", "nbsp"],
+)
 @pytest.mark.parametrize("column", ["file_path", "contrast", "group1", "group2", "cluster_id"])
 def test_blank_text_is_rejected(pg_conn, column, blank):
     """NULL is the only way to say nothing. An empty contrast reads as
     one-vs-rest; an empty file_path renders as a link that goes nowhere."""
-    row = {"file_path": "x.json", "contrast": "a_vs_b", "group1": "a", "group2": "b"}
+    row = {"file_path": "x.json", "contrast": "a_vs_b", "group1": "a", "group2": "b",
+           **COUNTS}
     row[column] = blank
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
@@ -304,16 +427,28 @@ def test_oversized_contrast_is_rejected(pg_conn):
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
         _rejects(cur, ds, "scrna_de_name_lengths",
-                 file_path="x.json", contrast="x" * 3000, group1="a", group2="b")
+                 file_path="x.json", contrast="x" * 3000, group1="a", group2="b",
+                 **COUNTS)
+    pg_conn.rollback()
+
+
+def test_oversized_cluster_id_is_rejected(pg_conn):
+    """cluster_id is in the uniqueness index too, so it needs the same bound."""
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _rejects(cur, ds, "scrna_de_name_lengths",
+                 cluster_id="c" * 3000, file_path="x.json")
     pg_conn.rollback()
 
 
 def test_same_comparison_twice_is_rejected(pg_conn):
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
-        _insert(cur, ds, file_path="a.json", contrast="a_vs_b", group1="a", group2="b")
+        _insert(cur, ds, file_path="a.json", contrast="a_vs_b",
+                group1="a", group2="b", **COUNTS)
         _rejects(cur, ds, "scrna_de_comparison_uniqueness",
-                 file_path="b.json", contrast="a_vs_b", group1="a", group2="b")
+                 file_path="b.json", contrast="a_vs_b", group1="a", group2="b",
+                 **COUNTS)
     pg_conn.rollback()
 
 
@@ -440,13 +575,21 @@ def _rollback_body() -> str:
     )
 
 
+def _table_is_empty(cur) -> bool:
+    """The rollback guard counts committed rows, which a test transaction cannot
+    hide. Once ingest has run these two cases are exercised by the real data."""
+    cur.execute(f"SELECT count(*) FROM {TABLE}")
+    return cur.fetchone()[0] == 0
+
+
 def test_rollback_refuses_when_contrast_data_exists(pg_conn):
     """Nothing automated runs these scripts, so the only time one runs is by hand
     against a table someone has already filled. Dropping the columns would
     discard every contrast."""
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
-        _insert(cur, ds, file_path="a.json", contrast="a_vs_b", group1="a", group2="b")
+        _insert(cur, ds, file_path="a.json", contrast="a_vs_b",
+                group1="a", group2="b", **COUNTS)
         with pytest.raises(psycopg.errors.RaiseException) as exc:
             cur.execute(_rollback_body())
         assert "Refusing to roll back" in str(exc.value)
@@ -468,6 +611,8 @@ def test_rollback_refuses_when_a_row_has_no_file(pg_conn):
 def test_rollback_restores_the_original_shape(pg_conn):
     """With only old-style rows there is nothing to lose, so it runs."""
     with pg_conn.cursor() as cur:
+        if not _table_is_empty(cur):
+            pytest.skip("table already holds rows; the guard would refuse")
         ds = _seed_dataset(cur)
         _insert(cur, ds, file_path="de/legacy.json")
         before = _table_privileges(cur, TABLE)
@@ -508,7 +653,7 @@ def test_rollback_restores_the_original_shape(pg_conn):
             (TABLE,),
         )
         indexes = {r[0] for r in cur.fetchall()}
-        assert "idx_scrna_de_dataset_cluster_contrast" not in indexes
+        assert "scrna_de_comparison_uniqueness" not in indexes
         assert "idx_scrna_de_dataset_cluster" in indexes, "the older index comes back"
 
         # A guard, not an observation: the rollback revokes nothing, and adding a

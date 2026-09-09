@@ -11,8 +11,8 @@
 --
 -- Convention for this repo: a rollback that drops a table, drops a column or
 -- deletes rows counts what it would destroy first and raises if that count is
--- not zero. 15 of the 31 rollback scripts destroy data; this is the first to
--- follow it.
+-- not zero. 20260722000200_create_cyl_intermediates_bucket_rollback.sql set the
+-- pattern; this follows it.
 --
 -- The bloom_admin / bloom_agent / bloom_user policies are also removed. They
 -- close a gap that predates this migration -- scrna_de was the one scrna_*
@@ -45,13 +45,14 @@ DROP POLICY IF EXISTS user_read_scrna_de  ON public.scrna_de;
 DROP POLICY IF EXISTS agent_read_scrna_de ON public.scrna_de;
 DROP POLICY IF EXISTS admin_all_scrna_de  ON public.scrna_de;
 
-DROP INDEX IF EXISTS public.idx_scrna_de_dataset_cluster_contrast;
-
+-- The uniqueness index goes with its constraint below; only the older index the
+-- migration dropped needs recreating here.
 CREATE INDEX IF NOT EXISTS idx_scrna_de_dataset_cluster
   ON public.scrna_de (dataset_id, cluster_id);
 
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_comparison_uniqueness,
+  DROP CONSTRAINT IF EXISTS scrna_de_contrast_rows_carry_counts,
   DROP CONSTRAINT IF EXISTS scrna_de_name_lengths,
   DROP CONSTRAINT IF EXISTS scrna_de_text_not_blank,
   DROP CONSTRAINT IF EXISTS scrna_de_counts_non_negative,

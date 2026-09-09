@@ -165,30 +165,48 @@ ALTER TABLE public.scrna_de
 
 -- NULL is the only way to say nothing. An empty contrast is read as one-vs-rest
 -- and rendered as a marker list; an empty file_path is rendered as a link that
--- goes nowhere. btrim so whitespace-only is caught with it.
+-- goes nowhere. The regex covers every whitespace character, not just the space:
+-- a stray tab or newline is what a mis-parsed TSV column produces, and btrim()
+-- with one argument strips spaces alone.
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_text_not_blank;
 ALTER TABLE public.scrna_de
   ADD CONSTRAINT scrna_de_text_not_blank
   CHECK (
-    (file_path  IS NULL OR length(btrim(file_path))  > 0) AND
-    (contrast   IS NULL OR length(btrim(contrast))   > 0) AND
-    (group1     IS NULL OR length(btrim(group1))     > 0) AND
-    (group2     IS NULL OR length(btrim(group2))     > 0) AND
-    (cluster_id IS NULL OR length(btrim(cluster_id)) > 0)
+    (file_path  IS NULL OR file_path  !~ '^\s*$') AND
+    (contrast   IS NULL OR contrast   !~ '^\s*$') AND
+    (group1     IS NULL OR group1     !~ '^\s*$') AND
+    (group2     IS NULL OR group2     !~ '^\s*$') AND
+    (cluster_id IS NULL OR cluster_id !~ '^\s*$')
   );
 
--- contrast is indexed, so an oversized value fails the insert with a btree
--- row-size error rather than anything a reader could act on.
+-- cluster_id and contrast are both columns of the uniqueness index below, so an
+-- oversized value there fails the insert with a btree row-size error rather than
+-- anything a reader could act on. group1 and group2 are bounded for consistency.
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_name_lengths;
 ALTER TABLE public.scrna_de
   ADD CONSTRAINT scrna_de_name_lengths
   CHECK (
-    length(contrast) <= 200 AND
-    length(group1)   <= 100 AND
-    length(group2)   <= 100
+    length(cluster_id) <= 200 AND
+    length(contrast)   <= 200 AND
+    length(group1)     <= 100 AND
+    length(group2)     <= 100
   );
+
+-- A row that names a comparison carries all five counts, so a skipped one stores
+-- five zeros rather than five blanks. Both spellings were legal before, and under
+-- the blank one the documented test for a skipped comparison --
+-- `n_genes_tested = 0 AND file_path IS NULL` -- yields NULL instead of true, so the
+-- row cannot be found. The source summary leaves n_up and n_down empty on all 23
+-- skipped rows, so this is the rule ingest has to read them through.
+ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_contrast_rows_carry_counts;
+ALTER TABLE public.scrna_de
+  ADD CONSTRAINT scrna_de_contrast_rows_carry_counts
+  CHECK (contrast IS NULL
+         OR num_nonnulls(n_genes_tested, n_significant_fdr,
+                         n_significant_fdr_lfc, n_up, n_down) = 5);
 
 -- One row per comparison. NULLS NOT DISTINCT (Postgres 15) or the one-vs-rest
 -- rows, whose contrast is NULL, stay unconstrained -- and those are the rows
