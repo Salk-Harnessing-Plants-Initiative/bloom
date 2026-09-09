@@ -1,7 +1,8 @@
 import * as React from 'react';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { DataGrid, GridColDef } from '@mui/x-data-grid';
 import Paper from '@mui/material/Paper';
+import Button from '@mui/material/Button';
 import { Database } from "@/lib/database.types";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import Box from '@mui/material/Box';
@@ -102,8 +103,49 @@ export function DataTable({ rows }: { rows: GeneData[] }) {
   );
 }
 
-/** A row of scrna_de. A null file_path means the comparison was never run. */
-type DeEntry = { cluster_id: string | null; file_path: string | null };
+/** A row of scrna_de.
+ *
+ * A null `file_path` means the comparison was considered and never run — the
+ * group sizes on the row are what explain why, so it is shown rather than
+ * hidden. A null `contrast` is an older one-vs-rest row, which has one
+ * selector and no groups to name.
+ */
+type DeEntry = {
+  cluster_id: string | null;
+  file_path: string | null;
+  contrast: string | null;
+  group1: string | null;
+  group2: string | null;
+  n_group1: number | null;
+  n_group2: number | null;
+  n_genes_tested: number | null;
+  n_significant_fdr_lfc: number | null;
+};
+
+/** What a comparison is called in the selectors. */
+function contrastLabel(entry: DeEntry): string {
+  return entry.contrast ?? "vs all other cells";
+}
+
+/** "142 of 15,430 significant", straight from the row — no file needed. */
+export function significanceLabel(entry: DeEntry): string {
+  if (entry.n_genes_tested === null || entry.n_significant_fdr_lfc === null) {
+    return "";
+  }
+  if (entry.n_genes_tested === 0) return "not tested";
+  const fmt = new Intl.NumberFormat("en-US");
+  return `${fmt.format(entry.n_significant_fdr_lfc)} of ` +
+    `${fmt.format(entry.n_genes_tested)} significant`;
+}
+
+/** Which way round the fold change reads, in the names of the two groups. */
+export function directionLabel(entry: DeEntry): string {
+  if (!entry.group1 || !entry.group2) {
+    return "A positive fold change is higher in this cell type than in the rest.";
+  }
+  return `A positive fold change is higher in ${entry.group1} than in ` +
+    `${entry.group2}; a negative one is higher in ${entry.group2}.`;
+}
 
 export default function DifferentialExpressionAnalysis({ file_id }: { file_id: number }) {
   const [clusterList, setClusterList] = useState<DeEntry[]>([]);
@@ -111,6 +153,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
   const [chartData, setChartData] = useState<GeneData[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const supabase = createClientSupabaseClient();
   const chartRef = useRef<SVGSVGElement | null>(null);
 
@@ -120,7 +163,9 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       setLoading(true);
       const { data: clusterlabels, error } = await supabase
         .from("scrna_de")
-        .select("cluster_id, file_path")
+        // One literal, because the typed client reads the column list from
+        // the string itself to work out the row shape.
+        .select("cluster_id, file_path, contrast, group1, group2, n_group1, n_group2, n_genes_tested, n_significant_fdr_lfc")
         .eq("dataset_id", file_id);
 
       if (error) {
@@ -140,35 +185,61 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
   useEffect(() => {
     if (!selectedCluster) return;
 
+    setChartData(null);
     const filePath = selectedCluster.file_path;
     if (!filePath) {
-      setChartData(null);
       setDataLoading(false);
+      setLoadError(null);
       return;
     }
 
+    let cancelled = false;
     const fetchData = async () => {
       setDataLoading(true);
+      setLoadError(null);
       const { data: storageData, error: storageError } = await supabase.storage
         .from("scrna")
         .download(filePath);
 
-      if (storageError) {
-        console.error("Storage download error:", storageError);
+      if (cancelled) return;
+      if (storageError || !storageData) {
+        setChartData(null);
+        setLoadError(storageError?.message ?? "the file could not be read");
         setDataLoading(false);
         return;
       }
       const textData = await storageData.text();
+      if (cancelled) return;
       try {
-        const jsonData = JSON.parse(textData);
-        setChartData(jsonData);
-      } catch (error) {
-        console.error("Failed to parse JSON:", error);
+        setChartData(JSON.parse(textData));
+      } catch {
+        setChartData(null);
+        setLoadError("the file could not be read");
       }
       setDataLoading(false);
     };
     fetchData();
+    // Switching comparison while one is in flight would otherwise let the
+    // slower answer land last and draw itself under the new comparison's name.
+    return () => {
+      cancelled = true;
+    };
   }, [selectedCluster]);
+
+  // The cell types, in the order the rows came back, each appearing once.
+  const cellTypes: string[] = useMemo(() => {
+    const seen: string[] = [];
+    for (const row of clusterList) {
+      const name = row.cluster_id ?? "";
+      if (name && !seen.includes(name)) seen.push(name);
+    }
+    return seen;
+  }, [clusterList]);
+
+  const contrastsForCellType = useMemo(
+    () => clusterList.filter((row) => row.cluster_id === selectedCluster?.cluster_id),
+    [clusterList, selectedCluster],
+  );
 
   // Draw volcano plot
   useEffect(() => {
@@ -413,6 +484,30 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
   }, [chartData, selectedCluster]);
 
   // Download CSV function
+  /** Download the stored file itself.
+   *
+   * Separate from the chart on purpose: the results a reader takes away should
+   * be the ones the analysis produced, not a re-serialisation of whatever the
+   * plot managed to parse. It needs no chart, so it works while one is loading.
+   */
+  const downloadFile = async () => {
+    const filePath = selectedCluster?.file_path;
+    if (!filePath) return;
+    const { data, error } = await supabase.storage.from("scrna").download(filePath);
+    if (error || !data) {
+      setLoadError(error?.message ?? "the file could not be read");
+      return;
+    }
+    const url = URL.createObjectURL(data);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filePath.split("/").pop() ?? "differential-expression.json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const downloadCSV = () => {
     if (!chartData) return;
 
@@ -483,27 +578,68 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
         the Wilcoxon rank-sum test with Benjamini-Hochberg FDR correction.
       </Typography>
 
-      {/* Cluster Selection */}
+      {/* Which comparison */}
       <Paper sx={{ p: 2, mb: 3 }}>
         <Box display="flex" alignItems="center" gap={2} flexWrap="wrap">
-          <FormControl sx={{ minWidth: 250 }}>
-            <InputLabel id="cluster-select-label">Select Cluster</InputLabel>
+          <FormControl sx={{ minWidth: 260 }}>
+            <InputLabel id="cluster-select-label">Cell type</InputLabel>
             <Select
               labelId="cluster-select-label"
-              value={selectedCluster?.cluster_id || ""}
-              label="Select Cluster"
+              value={selectedCluster?.cluster_id ?? ""}
+              label="Cell type"
               onChange={(e) => {
-                const selected = clusterList.find(cluster => cluster.cluster_id === e.target.value);
-                setSelectedCluster(selected || null);
+                const next = e.target.value;
+                // Keep the contrast if this cell type was also compared that
+                // way, so moving down the list does not reset the question.
+                const sameContrast = clusterList.find(
+                  (row) => row.cluster_id === next &&
+                    row.contrast === selectedCluster?.contrast,
+                );
+                setSelectedCluster(
+                  sameContrast ??
+                    clusterList.find((row) => row.cluster_id === next) ?? null,
+                );
               }}
             >
-              {clusterList.map((cluster, index) => (
-                <MenuItem key={index} value={cluster.cluster_id ?? ""}>
-                  {cluster.cluster_id ?? "Unknown"}
+              {cellTypes.map((cellType) => (
+                <MenuItem key={cellType} value={cellType}>
+                  {cellType}
                 </MenuItem>
               ))}
             </Select>
           </FormControl>
+
+          {/* Older one-vs-rest datasets have a single comparison per cell type
+              and nothing to choose between, so they keep one selector. */}
+          {contrastsForCellType.length > 1 && (
+            <FormControl sx={{ minWidth: 300 }}>
+              <InputLabel id="contrast-select-label">Comparison</InputLabel>
+              <Select
+                labelId="contrast-select-label"
+                value={selectedCluster?.contrast ?? ""}
+                label="Comparison"
+                onChange={(e) => {
+                  setSelectedCluster(
+                    contrastsForCellType.find(
+                      (row) => (row.contrast ?? "") === e.target.value,
+                    ) ?? null,
+                  );
+                }}
+              >
+                {contrastsForCellType.map((row) => (
+                  <MenuItem key={row.contrast ?? ""} value={row.contrast ?? ""}>
+                    {contrastLabel(row)}
+                    {significanceLabel(row) && (
+                      <Typography component="span" variant="caption"
+                                  color="text.secondary" sx={{ ml: 1 }}>
+                        {significanceLabel(row)}
+                      </Typography>
+                    )}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
 
           {chartData && (
             <>
@@ -524,15 +660,69 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
                 variant="outlined"
                 size="small"
               />
-              <Tooltip title="Download as CSV">
+              <Tooltip title="Download the table as CSV">
                 <IconButton onClick={downloadCSV} size="small">
                   <FileDownloadIcon />
                 </IconButton>
               </Tooltip>
             </>
           )}
+
+          {selectedCluster?.file_path && (
+            <Button size="small" onClick={downloadFile}>
+              Download results
+            </Button>
+          )}
         </Box>
+
+        {selectedCluster && (
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
+            {selectedCluster.group1 && selectedCluster.group2 ? (
+              <>
+                {selectedCluster.group1}
+                {selectedCluster.n_group1 !== null &&
+                  ` (${selectedCluster.n_group1.toLocaleString()} cells)`}
+                {" against "}
+                {selectedCluster.group2}
+                {selectedCluster.n_group2 !== null &&
+                  ` (${selectedCluster.n_group2.toLocaleString()} cells)`}
+                {", in "}
+                {selectedCluster.cluster_id}. {directionLabel(selectedCluster)}
+              </>
+            ) : (
+              directionLabel(selectedCluster)
+            )}
+          </Typography>
+        )}
       </Paper>
+
+      {loadError && (
+        <Alert severity="error" sx={{ mb: 3 }}>
+          This comparison could not be loaded: {loadError}
+        </Alert>
+      )}
+
+      {/* Considered, never run. The group sizes are what explain why. */}
+      {selectedCluster && !selectedCluster.file_path && !dataLoading && (
+        <Alert severity="info" sx={{ mb: 3 }}>
+          <Typography variant="subtitle2" fontWeight="bold">
+            This comparison was not run
+          </Typography>
+          <Typography variant="body2" sx={{ mt: 0.5 }}>
+            {selectedCluster.group1 && selectedCluster.group2 ? (
+              <>
+                {selectedCluster.cluster_id} has{" "}
+                {selectedCluster.n_group1?.toLocaleString() ?? "no"} cells in{" "}
+                {selectedCluster.group1} and{" "}
+                {selectedCluster.n_group2?.toLocaleString() ?? "no"} in{" "}
+                {selectedCluster.group2} — too few on one side to compare.
+              </>
+            ) : (
+              <>There are no results stored for {selectedCluster.cluster_id}.</>
+            )}
+          </Typography>
+        </Alert>
+      )}
 
       {/* Loading indicator for data */}
       {dataLoading && (

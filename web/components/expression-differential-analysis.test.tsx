@@ -1,0 +1,179 @@
+/**
+ * The differential expression panel shows a comparison between two groups. Two
+ * things about it are easy to get wrong and impossible to notice from a
+ * screenshot: which way round the fold change reads, and whether the numbers on
+ * screen belong to the comparison currently selected.
+ *
+ * These cover the labels that answer the first, and the counts that come from
+ * the row rather than from the file — so a reader sees how much was significant
+ * before waiting for two megabytes of it.
+ */
+
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+import Panel, {
+  directionLabel,
+  significanceLabel,
+} from "./expression-differential-analysis";
+
+afterEach(cleanup);
+
+const twoGroup = {
+  cluster_id: "Cortex",
+  file_path: "de/d/Cortex__pFACT_vs_Col-0.json",
+  contrast: "pFACT_vs_Col-0",
+  group1: "pFACT",
+  group2: "Col-0",
+  n_group1: 245,
+  n_group2: 172,
+  n_genes_tested: 15430,
+  n_significant_fdr_lfc: 7,
+};
+
+const neverRun = {
+  ...twoGroup,
+  file_path: null,
+  n_group1: 3,
+  n_group2: 172,
+  n_genes_tested: 0,
+  n_significant_fdr_lfc: 0,
+};
+
+/** An older row, from before comparisons named two groups. */
+const oneVsRest = {
+  cluster_id: "Cortex",
+  file_path: "de/d/Cortex.json",
+  contrast: null,
+  group1: null,
+  group2: null,
+  n_group1: null,
+  n_group2: null,
+  n_genes_tested: null,
+  n_significant_fdr_lfc: null,
+};
+
+describe("directionLabel", () => {
+  it("says which group a positive fold change is higher in", () => {
+    const label = directionLabel(twoGroup);
+    expect(label).toContain("higher in pFACT than in Col-0");
+    expect(label).toContain("negative one is higher in Col-0");
+  });
+
+  it("does not invent group names for a one-vs-rest comparison", () => {
+    const label = directionLabel(oneVsRest);
+    expect(label).toContain("this cell type");
+    expect(label).not.toContain("null");
+  });
+
+  it("reads the groups from the row, not from a fixed order", () => {
+    const flipped = { ...twoGroup, group1: "Col-0", group2: "pHORST" };
+    expect(directionLabel(flipped)).toContain("higher in Col-0 than in pHORST");
+  });
+});
+
+describe("significanceLabel", () => {
+  it("reports significant of tested from the row, before any file is read", () => {
+    expect(significanceLabel(twoGroup)).toBe("7 of 15,430 significant");
+  });
+
+  it("says a comparison was not tested rather than showing zero of zero", () => {
+    expect(significanceLabel(neverRun)).toBe("not tested");
+  });
+
+  it("says nothing at all when the row carries no counts", () => {
+    expect(significanceLabel(oneVsRest)).toBe("");
+  });
+
+  it("groups the thousands, because these run to five figures", () => {
+    expect(
+      significanceLabel({ ...twoGroup, n_significant_fdr_lfc: 1234,
+                          n_genes_tested: 18551 }),
+    ).toBe("1,234 of 18,551 significant");
+  });
+});
+
+// --------------------------------------------------------------------------- //
+// The panel itself, rendered
+// --------------------------------------------------------------------------- //
+
+const ROWS = [
+  twoGroup,
+  { ...twoGroup, contrast: "pHORST_vs_Col-0", group1: "pHORST",
+    file_path: "de/d/Cortex__pHORST_vs_Col-0.json", n_significant_fdr_lfc: 99 },
+  { ...neverRun, cluster_id: "Xylem" },
+];
+
+/** Resolves each download only when the test says so. */
+const gate: { release: Record<string, () => void>; order: string[] } = {
+  release: {}, order: [],
+};
+
+vi.mock("@/lib/supabase/client", () => ({
+  createClientSupabaseClient: () => ({
+    from: () => ({
+      select: () => ({ eq: async () => ({ data: ROWS, error: null }) }),
+    }),
+    storage: {
+      from: () => ({
+        download: (path: string) =>
+          new Promise((resolve) => {
+            gate.order.push(path);
+            gate.release[path] = () =>
+              resolve({
+                data: {
+                  text: async () =>
+                    JSON.stringify([
+                      { gene: path, p_val: 0.01, avg_log2FC: 2,
+                        "pct.1": 0.5, "pct.2": 0.1, p_val_adj: 0.01,
+                        _row: path },
+                    ]),
+                },
+                error: null,
+              });
+          }),
+      }),
+    },
+  }),
+}));
+
+describe("the panel", () => {
+  const first = "de/d/Cortex__pFACT_vs_Col-0.json";
+  const second = "de/d/Cortex__pHORST_vs_Col-0.json";
+
+  it("ignores an answer that lands after the comparison changed", async () => {
+    render(<Panel file_id={1} />);
+    await waitFor(() => expect(gate.order).toContain(first));
+
+    fireEvent.mouseDown(screen.getByLabelText("Comparison"));
+    fireEvent.click(await screen.findByRole("option", { name: /pHORST_vs_Col-0/ }));
+    await waitFor(() => expect(gate.order).toContain(second));
+
+    // The one now on screen answers first, then the abandoned one answers.
+    gate.release[second]();
+    await screen.findAllByText(second);
+
+    await act(async () => {
+      gate.release[first]();
+      // Let the abandoned answer run all the way through parsing, so this
+      // fails if nothing stops it writing itself onto the screen.
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+    });
+
+    expect(screen.queryByText(first)).toBeNull();
+    expect(screen.queryAllByText(second).length).toBeGreaterThan(0);
+  });
+
+  it("says a comparison was never run, with the sizes that explain why", async () => {
+    render(<Panel file_id={1} />);
+    await waitFor(() => expect(gate.order).toContain(first));
+
+    fireEvent.mouseDown(screen.getByLabelText("Cell type"));
+    fireEvent.click(await screen.findByRole("option", { name: "Xylem" }));
+
+    expect(await screen.findByText(/This comparison was not run/)).toBeTruthy();
+    expect(screen.getByText(/too few on one side to compare/)).toBeTruthy();
+    expect(screen.getByText(/3 cells in pFACT/)).toBeTruthy();
+  });
+});
