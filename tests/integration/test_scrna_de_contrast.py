@@ -59,9 +59,11 @@ COUNTS = {
     "n_down": 1,
 }
 
-# A verbatim copy of the pipeline's own summary for the first dataset, blanks and
-# all. Reading it unaltered is the point: a loader that coerces the blanks proves
-# nothing about whether these rules accept what the pipeline actually writes.
+# A verbatim copy of the pipeline's own summary for the first dataset. On the 23
+# skipped comparisons `n_up` and `n_down` are blank -- the other three counts are
+# a literal 0 -- and the test below turns those two blanks into zeros, which is
+# the encoding this schema settled on. Reading the file rather than a hand-typed
+# table is the point: it is the shape ingest has to accept.
 SUMMARY_TSV = Path(__file__).parent / "fixtures" / "LEVEL1_DE_SUMMARY.tsv"
 
 # Read off the live schema. Absolute, so a regrant applied to both this table and
@@ -234,9 +236,10 @@ def test_the_same_contrast_may_appear_on_different_clusters(pg_conn):
 
 
 def test_the_real_summary_file_loads(pg_conn):
-    """Every row of the pipeline's own summary, read off disk with its blanks
-    intact. The 23 skipped comparisons leave n_up and n_down empty, so this is
-    what decides whether the rules accept real output or only hand-typed rows."""
+    """Every row of the pipeline's own summary, read off disk. The 23 skipped
+    comparisons leave n_up and n_down blank; storing them as zeros is the encoding
+    the schema requires, and this is what proves the rules accept real output
+    rather than only hand-typed rows."""
     with SUMMARY_TSV.open() as fh:
         rows = list(csv.DictReader(fh, delimiter="\t"))
     assert len(rows) == 69, f"expected 69 summary rows, found {len(rows)}"
@@ -289,6 +292,15 @@ def test_groups_without_a_contrast_are_rejected(pg_conn):
     pg_conn.rollback()
 
 
+def test_only_one_group_named_is_rejected(pg_conn):
+    """One of the three present is as broken as two."""
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _rejects(cur, ds, "scrna_de_contrast_names_both_groups",
+                 file_path="x.json", group1="pFACT")
+    pg_conn.rollback()
+
+
 def test_contrast_without_both_groups_is_rejected(pg_conn):
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
@@ -304,20 +316,6 @@ def test_group_compared_against_itself_is_rejected(pg_conn):
         _rejects(cur, ds, "scrna_de_groups_differ",
                  file_path="x.json", contrast="pFACT_vs_pFACT",
                  group1="pFACT", group2="pFACT", **COUNTS)
-    pg_conn.rollback()
-
-
-def test_no_file_but_results_reported_is_rejected(pg_conn):
-    """The counts here are internally consistent, so only the no-file rule can
-    reject this row. A row that also breaks the arithmetic would be caught by a
-    different constraint and prove nothing about this one."""
-    with pg_conn.cursor() as cur:
-        ds = _seed_dataset(cur)
-        _rejects(cur, ds, "scrna_de_no_file_means_nothing_tested",
-                 file_path=None,
-                 contrast="pHORST_vs_Col-0", group1="pHORST", group2="Col-0",
-                 n_genes_tested=500, n_significant_fdr=5,
-                 n_significant_fdr_lfc=5, n_up=5, n_down=0)
     pg_conn.rollback()
 
 
@@ -353,6 +351,61 @@ def test_contrast_row_without_counts_is_rejected(pg_conn):
     pg_conn.rollback()
 
 
+def test_no_file_but_results_reported_is_rejected(pg_conn):
+    """The counts are internally consistent, so only the no-file rule can reject
+    this. A row that also broke the arithmetic would be caught by a different
+    constraint and prove nothing about this one."""
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _rejects(cur, ds, "scrna_de_no_file_means_nothing_tested",
+                 file_path=None, contrast="a_vs_b", group1="a", group2="b",
+                 n_group1=0, n_group2=7,
+                 n_genes_tested=500, n_significant_fdr=5,
+                 n_significant_fdr_lfc=4, n_up=3, n_down=1)
+    pg_conn.rollback()
+
+
+def test_a_row_with_no_file_must_name_a_comparison(pg_conn):
+    """Otherwise a bare row is storable and splits the two ways of counting
+    skipped comparisons."""
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _rejects(cur, ds, "scrna_de_no_file_means_nothing_tested", file_path=None)
+    pg_conn.rollback()
+
+
+def test_more_up_and_down_than_significant_is_rejected(pg_conn):
+    """The sum is an equality, so over-counting is as wrong as under-counting."""
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _rejects(cur, ds, "scrna_de_up_plus_down_is_lfc_significant",
+                 file_path="x.json",
+                 n_genes_tested=100, n_significant_fdr=9,
+                 n_significant_fdr_lfc=4, n_up=4, n_down=3)
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize("column", ["group1", "group2"])
+def test_oversized_group_name_is_rejected(pg_conn, column):
+    row = {"file_path": "x.json", "contrast": "a_vs_b",
+           "group1": "a", "group2": "b", **COUNTS}
+    row[column] = "g" * 300
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _rejects(cur, ds, "scrna_de_name_lengths", **row)
+    pg_conn.rollback()
+
+
+def test_the_same_comparison_may_appear_in_different_datasets(pg_conn):
+    """dataset_id is part of the key: two datasets are independent."""
+    with pg_conn.cursor() as cur:
+        for _ in range(2):
+            ds = _seed_dataset(cur)
+            _insert(cur, ds, file_path="de/x.json", contrast="a_vs_b",
+                    group1="a", group2="b", n_group1=1, n_group2=1, **COUNTS)
+    pg_conn.rollback()
+
+
 @pytest.mark.parametrize(
     "partial",
     [
@@ -360,8 +413,10 @@ def test_contrast_row_without_counts_is_rejected(pg_conn):
         {"n_significant_fdr": 999},
         {"n_up": 50},
         {"n_genes_tested": 10, "n_significant_fdr": 5},
+        {"n_genes_tested": 10, "n_significant_fdr": 5,
+         "n_significant_fdr_lfc": 4, "n_up": 4},
     ],
-    ids=["lfc-only", "fdr-only", "up-only", "two-of-five"],
+    ids=["lfc-only", "fdr-only", "up-only", "two-of-five", "four-of-five"],
 )
 def test_half_written_summary_is_rejected(pg_conn, partial):
     """Every arithmetic rule compares two counts, and a comparison with a NULL
@@ -558,6 +613,32 @@ def test_role_policy_exists(pg_conn, policy, role):
         row = cur.fetchone()
         assert row is not None, f"{policy} missing"
         assert role in row[0]
+
+
+def test_row_level_security_stays_enabled(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT relrowsecurity FROM pg_class WHERE oid = %s::regclass", (TABLE,)
+        )
+        assert cur.fetchone()[0] is True
+
+
+@pytest.mark.parametrize(
+    "policy,cmd",
+    [("admin_all_scrna_de", "ALL"),
+     ("agent_read_scrna_de", "SELECT"),
+     ("user_read_scrna_de", "SELECT")],
+)
+def test_role_policy_is_scoped_to_the_right_command(pg_conn, policy, cmd):
+    """bloom_user holds the INSERT privilege, so a read policy widened to ALL
+    would silently grant writes."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT cmd FROM pg_policies "
+            "WHERE schemaname = 'public' AND tablename = %s AND policyname = %s",
+            (TABLE, policy),
+        )
+        assert cur.fetchone()[0] == cmd
 
 
 def test_pre_existing_policies_are_left_alone(pg_conn):

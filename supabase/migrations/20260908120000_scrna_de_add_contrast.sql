@@ -101,15 +101,15 @@ ALTER TABLE public.scrna_de
 -- never ran and still report 500 significant genes.
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_no_file_means_nothing_tested;
+-- Only n_genes_tested is named, and that is enough: the arithmetic rules above
+-- force the other four to zero with it -- significant cannot exceed tested, the
+-- fold-change cut cannot exceed that, and up plus down equals it. Summing all
+-- five would read as five guarantees where there is one.
 ALTER TABLE public.scrna_de
   ADD CONSTRAINT scrna_de_no_file_means_nothing_tested
   CHECK (
-    file_path IS NOT NULL OR
-    COALESCE(n_genes_tested, 0)
-      + COALESCE(n_significant_fdr, 0)
-      + COALESCE(n_significant_fdr_lfc, 0)
-      + COALESCE(n_up, 0)
-      + COALESCE(n_down, 0) = 0
+    file_path IS NOT NULL
+    OR (contrast IS NOT NULL AND COALESCE(n_genes_tested, 0) = 0)
   );
 
 -- The five summary counts arrive together or not at all. Every check below
