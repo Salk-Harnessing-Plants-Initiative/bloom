@@ -33,6 +33,8 @@ export interface ExpressionUmapProps {
   geneName?: string | null;
   /** Clusters currently hidden (ordinal set). Empty = all visible. */
   hiddenClusters?: ReadonlySet<number>;
+  /** Samples currently hidden by name. Empty = all visible. */
+  hiddenSamples?: ReadonlySet<string>;
   /** Height of the canvas in pixels; width fills the parent */
   height?: number;
   /** Fires when data is loaded so parent can render colorbar / sidebar */
@@ -42,6 +44,9 @@ export interface ExpressionUmapProps {
     cellCount: number;
     /** Cells whose `cluster_id` had no row in `scrna_clusters` (sentinel ordinal 255). */
     orphanCount: number;
+    /** How many cells came from each sample, in the order they first appear.
+     *  Empty for a dataset whose cells record no sample. */
+    samples: { name: string; count: number }[];
   }) => void;
   /** Fires whenever the currently-overlaid gene's min/max changes */
   onExpressionRangeChanged?: (range: { min: number; max: number } | null) => void;
@@ -92,7 +97,31 @@ function packClusterColors(
   return out;
 }
 
-function packPositions(cells: CellArraysRow[]): {
+/** Which cells are drawn: 1 for shown, 0 for hidden.
+ *
+ * Hiding is done here rather than by filtering the cells, and that is the whole
+ * reason positions and axis ranges do not move when a sample is switched off:
+ * `packPositions` runs once over every cell and never sees the hidden set.
+ */
+export function packVisibility(
+  cells: Pick<CellArraysRow, "replicate">[],
+  clusterOrdinals: Uint8Array,
+  hiddenClusters: ReadonlySet<number>,
+  hiddenSamples: ReadonlySet<string>,
+): Float32Array {
+  const out = new Float32Array(cells.length);
+  for (let i = 0; i < cells.length; i++) {
+    const sample = cells[i].replicate;
+    out[i] =
+      hiddenClusters.has(clusterOrdinals[i]) ||
+      (sample !== null && hiddenSamples.has(sample))
+        ? 0
+        : 1.0;
+  }
+  return out;
+}
+
+export function packPositions(cells: CellArraysRow[]): {
   positions: Float32Array;
   normScale: number;
   normCenterX: number;
@@ -129,6 +158,7 @@ export function ExpressionUmap({
   datasetId,
   geneName,
   hiddenClusters,
+  hiddenSamples,
   height = 600,
   onDataLoaded,
   onExpressionRangeChanged,
@@ -202,9 +232,16 @@ export function ExpressionUmap({
         visibility.fill(1.0);
         const clusterOrdinals = new Uint8Array(cells.length);
         let orphanCount = 0;
+        // Counted from the cells themselves, so a dataset with different
+        // samples — or none — needs no change here.
+        const sampleCounts = new Map<string, number>();
         for (let i = 0; i < cells.length; i++) {
           clusterOrdinals[i] = cells[i].cluster_ordinal;
           if (cells[i].cluster_ordinal === ORPHAN_CLUSTER_ORDINAL) orphanCount++;
+          const sample = cells[i].replicate;
+          if (sample !== null && sample !== "") {
+            sampleCounts.set(sample, (sampleCounts.get(sample) ?? 0) + 1);
+          }
         }
         const loaded: LoadedData = {
           dataset,
@@ -224,6 +261,7 @@ export function ExpressionUmap({
           clusters,
           cellCount: cells.length,
           orphanCount,
+          samples: [...sampleCounts].map(([name, count]) => ({ name, count })),
         });
       } catch (err) {
         if (!cancelled) {
@@ -277,16 +315,18 @@ export function ExpressionUmap({
   }, [data, geneName, onExpressionRangeChanged]);
 
   // -------- visibility recompute from hidden set -----------------------------
-  const visibility = useMemo(() => {
-    if (!data) return null;
-    const out = new Float32Array(data.cells.length);
-    const hidden = hiddenClusters ?? new Set<number>();
-    for (let i = 0; i < data.cells.length; i++) {
-      const ord = data.clusterOrdinals[i];
-      out[i] = hidden.has(ord) ? 0 : 1.0;
-    }
-    return out;
-  }, [data, hiddenClusters]);
+  const visibility = useMemo(
+    () =>
+      data
+        ? packVisibility(
+            data.cells,
+            data.clusterOrdinals,
+            hiddenClusters ?? new Set<number>(),
+            hiddenSamples ?? new Set<string>(),
+          )
+        : null,
+    [data, hiddenClusters, hiddenSamples],
+  );
 
   // -------- regl init + render loop (runs ONCE per dataset) ------------------
   useEffect(() => {

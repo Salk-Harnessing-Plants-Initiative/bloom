@@ -20,6 +20,8 @@ export interface CellArraysRow {
   x: number;
   y: number;
   cluster_ordinal: number;
+  /** The sample this cell came from, or null for datasets that record none. */
+  replicate: string | null;
 }
 
 /** Cluster ordinal returned by the RPC for cells with no matching catalog row. */

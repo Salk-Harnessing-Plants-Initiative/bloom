@@ -3879,6 +3879,7 @@ export type Database = {
         Args: { ds_id: number }
         Returns: {
           cluster_ordinal: number
+          replicate: string
           x: number
           y: number
         }[]

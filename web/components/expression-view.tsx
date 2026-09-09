@@ -5,6 +5,7 @@ import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
 
 import { ExpressionUmap } from "@/components/expression-umap";
+import { ExpressionSampleToggles } from "./expression-sample-toggles";
 // Gene search disabled — see the JSX comment below.
 // import { ExpressionGeneSearch } from "@/components/expression-gene-search";
 import { ExpressionColorbar } from "@/components/expression-colorbar";
@@ -31,6 +32,9 @@ interface LoadedMeta {
   orphanCount: number;
   /** from scrna_cluster_stats.cell_count, keyed by ordinal */
   counts: Record<number, number>;
+  /** Cells per sample, taken from the cells themselves. Empty when the dataset
+   *  records no sample, which is when the toggles are not shown at all. */
+  samples: { name: string; count: number }[];
 }
 
 /** Composes the UMAP canvas + gene search + colorbar + cluster sidebar for a dataset. */
@@ -38,6 +42,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
   const [meta, setMeta] = useState<LoadedMeta | null>(null);
   const [geneName, setGeneName] = useState<string | null>(null);
   const [hidden, setHidden] = useState<Set<number>>(new Set());
+  const [hiddenSamples, setHiddenSamples] = useState<Set<string>>(new Set());
   const [exprRange, setExprRange] = useState<{ min: number; max: number } | null>(
     null,
   );
@@ -81,15 +86,30 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
       clusters: Cluster[];
       cellCount: number;
       orphanCount: number;
+      samples: { name: string; count: number }[];
     }) => {
       setMeta((prev) => ({
         dataset: ctx.dataset,
         clusters: ctx.clusters,
         cellCount: ctx.cellCount,
         orphanCount: ctx.orphanCount,
+        samples: ctx.samples,
         counts: prev?.counts ?? {},
       }));
     },
+    [],
+  );
+
+  const handleSampleToggle = useCallback((name: string) => {
+    setHiddenSamples((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(name)) next.add(name);
+      return next;
+    });
+  }, []);
+
+  const handleShowAllSamples = useCallback(
+    () => setHiddenSamples(new Set()),
     [],
   );
 
@@ -199,11 +219,23 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           </span>
         )}
 
+        {meta && meta.samples.length > 0 && (
+          <Box sx={{ pb: 1 }}>
+            <ExpressionSampleToggles
+              samples={meta.samples}
+              hidden={hiddenSamples}
+              onToggle={handleSampleToggle}
+              onShowAll={handleShowAllSamples}
+            />
+          </Box>
+        )}
+
         {/* canvas */}
         <ExpressionUmap
           datasetId={datasetId}
           geneName={geneName}
           hiddenClusters={hidden}
+          hiddenSamples={hiddenSamples}
           onDataLoaded={handleDataLoaded}
           onExpressionRangeChanged={setExprRange}
         />
