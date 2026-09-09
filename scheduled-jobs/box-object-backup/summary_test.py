@@ -477,10 +477,13 @@ class TestANoticeIsNeverSwallowedByAHeadline:
         out = render(status, [flag], copied=3, source_gone=2)
         assert self.SAID[flag] in out, f"{status} + {flag} hides the notice"
 
+    # Every status, not just `failed`: through the seed every night ends
+    # `stopped`, so that is the shape these notices have to survive.
     @pytest.mark.parametrize("flag", sorted(SAID))
-    def test_it_survives_alongside_every_other_condition(self, flag):
-        out = render("failed", list(self.SAID), copied=3, source_gone=2)
-        assert self.SAID[flag] in out, f"{flag} is lost when everything happens"
+    @pytest.mark.parametrize("status", WORKED)
+    def test_it_survives_alongside_every_other_condition(self, flag, status):
+        out = render(status, list(self.SAID), copied=3, source_gone=2)
+        assert self.SAID[flag] in out, f"{status}: {flag} is lost when everything happens"
 
 
 class TestAVerdictNobodyReportedIsNotOne:

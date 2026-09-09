@@ -4200,3 +4200,64 @@ class TestAMalformedNumberIsAConfigFailure:
     def test_a_good_value_is_used(self, monkeypatch):
         monkeypatch.setenv("OBJECT_BACKUP_WORKERS", "3")
         assert job._env_int("OBJECT_BACKUP_WORKERS", 8) == 3
+
+
+class TestTheAllowListCoversEverySettingTheJobReads:
+    """`ENV_KEYS` is what a deploy env file is allowed to supply.
+
+    A key the job reads but the list omits fails silently: `apply_env_file`
+    never copies it, so the argparse default quietly stands.
+    """
+
+    JOB_MODULES = ("backup_objects.py", "backup_lib.py", "copier.py", "docker_env.py",
+                   "ledger.py", "rclone_rc.py", "report.py", "runlock.py", "summary.py")
+    SETTING = ("POSTGRES_", "MINIO_", "OBJECT_BACKUP_")
+
+    def _reads(self):
+        """Every settings key read from the environment, and the function doing it."""
+        import ast
+
+        here = Path(__file__).parent
+        found = []
+        for name in self.JOB_MODULES:
+            tree = ast.parse((here / name).read_text())
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.FunctionDef):
+                    continue
+                for call in ast.walk(node):
+                    if not isinstance(call, ast.Call) or not call.args:
+                        continue
+                    reader = ast.unparse(call.func)
+                    if reader not in ("os.environ.get", "_env_int"):
+                        continue
+                    key = call.args[0]
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        if key.value.startswith(self.SETTING):
+                            found.append((key.value, node.name))
+        return found
+
+    def test_every_key_the_job_reads_can_come_from_the_env_file(self):
+        missing = sorted({k for k, _ in self._reads() if k not in job.ENV_KEYS})
+
+        assert not missing, (
+            f"read from the environment but absent from ENV_KEYS: {missing}. "
+            "The deploy env file cannot supply these, so the default stands "
+            "silently and nothing says so."
+        )
+
+    def test_a_credential_is_only_read_where_the_file_value_is_bridged_in(self):
+        """`SECRET_ENV_KEYS` are deliberately never copied into the environment.
+
+        `parse_args` may read them so a plain export still works for a run by
+        hand, because `main` overwrites what it finds with the file's value.
+        Anywhere else reads an environment the allow-list guarantees is empty.
+        """
+        elsewhere = sorted(
+            {(k, fn) for k, fn in self._reads()
+             if k in job.SECRET_ENV_KEYS and fn != "parse_args"}
+        )
+
+        assert not elsewhere, (
+            f"credential read outside parse_args: {elsewhere}. "
+            "apply_env_file never exports these, so this reads nothing."
+        )
