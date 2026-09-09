@@ -53,6 +53,7 @@ CREATE INDEX IF NOT EXISTS idx_scrna_de_dataset_cluster
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_comparison_uniqueness,
   DROP CONSTRAINT IF EXISTS scrna_de_contrast_rows_carry_counts,
+  DROP CONSTRAINT IF EXISTS scrna_de_group_sizes_all_or_none,
   DROP CONSTRAINT IF EXISTS scrna_de_name_lengths,
   DROP CONSTRAINT IF EXISTS scrna_de_text_not_blank,
   DROP CONSTRAINT IF EXISTS scrna_de_counts_non_negative,

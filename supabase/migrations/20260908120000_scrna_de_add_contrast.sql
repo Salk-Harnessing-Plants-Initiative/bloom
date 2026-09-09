@@ -194,6 +194,17 @@ ALTER TABLE public.scrna_de
     length(group2)     <= 100
   );
 
+-- The two group sizes travel together, and belong only to a real comparison.
+-- Same rule as the five counts above, applied to the pair it missed: a row
+-- saying 164 cells on one side and nothing on the other is a half-written row,
+-- and a one-vs-rest row has no groups to size.
+ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_group_sizes_all_or_none;
+ALTER TABLE public.scrna_de
+  ADD CONSTRAINT scrna_de_group_sizes_all_or_none
+  CHECK (num_nonnulls(n_group1, n_group2) IN (0, 2)
+         AND (contrast IS NOT NULL OR num_nonnulls(n_group1, n_group2) = 0));
+
 -- A row that names a comparison carries all five counts, so a skipped one stores
 -- five zeros rather than five blanks. Both spellings were legal before, and under
 -- the blank one the documented test for a skipped comparison --

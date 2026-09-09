@@ -80,7 +80,8 @@ export function ExpressionClusterDetailPanel({
           {name}
         </h2>
         <div className="mt-1 text-sm text-stone-500">
-          cluster_id {clusterId} · {cellsHuman} cells
+          cluster_id {clusterId}
+          {failed ? " · could not load" : ` · ${cellsHuman} cells`}
         </div>
       </div>
 

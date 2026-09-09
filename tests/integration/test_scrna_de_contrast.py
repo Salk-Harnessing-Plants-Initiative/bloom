@@ -321,6 +321,26 @@ def test_no_file_but_results_reported_is_rejected(pg_conn):
     pg_conn.rollback()
 
 
+def test_half_filled_group_sizes_are_rejected(pg_conn):
+    """One side sized and the other blank is a half-written row -- the same shape
+    the five summary counts are guarded against."""
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _rejects(cur, ds, "scrna_de_group_sizes_all_or_none",
+                 file_path="x.json", contrast="a_vs_b", group1="a", group2="b",
+                 n_group1=164, **COUNTS)
+    pg_conn.rollback()
+
+
+def test_group_sizes_without_a_comparison_are_rejected(pg_conn):
+    """A one-vs-rest row has no groups, so it cannot have their sizes."""
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _rejects(cur, ds, "scrna_de_group_sizes_all_or_none",
+                 file_path="x.json", n_group1=100, n_group2=200)
+    pg_conn.rollback()
+
+
 def test_contrast_row_without_counts_is_rejected(pg_conn):
     """A named comparison carries all five counts, so a skipped one stores zeros
     rather than blanks -- otherwise the documented test for "never ran" yields
