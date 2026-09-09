@@ -79,21 +79,3 @@ export async function fetchClusterStats(
     markers: parseMarkers(data.markers),
   };
 }
-
-/**
- * Fetch whether this cluster has a DE CSV file to export.
- * Returns null when no scrna_de row exists for this (dataset, cluster).
- */
-export async function fetchDeFilePath(
-  datasetId: number,
-  clusterId: string,
-): Promise<string | null> {
-  const supabase = createClientSupabaseClient();
-  const { data } = await supabase
-    .from("scrna_de")
-    .select("file_path")
-    .eq("dataset_id", datasetId)
-    .eq("cluster_id", clusterId)
-    .maybeSingle();
-  return data?.file_path ?? null;
-}
