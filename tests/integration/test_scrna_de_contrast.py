@@ -761,3 +761,155 @@ def test_rollback_restores_the_original_shape(pg_conn):
         # REVOKE would strip access the table had before the migration.
         assert _table_privileges(cur, TABLE) == before
     pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# Applying the migration to a table that already holds rows
+# --------------------------------------------------------------------------- #
+#
+# Every test above seeds its rows into an already-migrated table, which proves
+# the constraints reject bad writes but says nothing about the deploy. The new
+# rules are added with ALTER TABLE against a populated table, so Postgres
+# validates them over rows that predate them -- and one offending row aborts the
+# whole migration.
+#
+# CI migrates an empty database and cannot see this. These tests roll the schema
+# back to its pre-migration shape inside the fixture's transaction, seed the
+# legacy row they are named for, and re-apply the migration.
+
+
+def _migration_body() -> str:
+    """The forward migration without its BEGIN/COMMIT wrapper, so it runs inside
+    the fixture's uncommitted transaction."""
+    matches = sorted(
+        (REPO_ROOT / "supabase" / "migrations").glob("*_scrna_de_add_contrast.sql")
+    )
+    assert matches, "migration not found"
+    return "\n".join(
+        line
+        for line in matches[-1].read_text().splitlines()
+        if not re.match(r"^\s*(BEGIN|COMMIT)\s*;\s*$", line, re.IGNORECASE)
+    )
+
+
+def _legacy_table(cur):
+    """Return the table to its pre-migration shape so rows can be inserted as
+    they exist on a server that has not run this migration yet."""
+    if not _table_is_empty(cur):
+        pytest.skip("table already holds rows; the rollback guard would refuse")
+    cur.execute(_rollback_body())
+
+
+def test_ordinary_legacy_rows_survive_the_migration(pg_conn):
+    """The case every server is expected to be in: one-vs-rest rows, one per
+    cluster, each with a file."""
+    with pg_conn.cursor() as cur:
+        _legacy_table(cur)
+        ds = _seed_dataset(cur)
+        for cluster in ("Cortex", "Xylem", "Phloem"):
+            cur.execute(
+                f"INSERT INTO {TABLE} (dataset_id, file_path, cluster_id) "
+                "VALUES (%s, %s, %s)",
+                (ds, f"de/{cluster}.json", cluster),
+            )
+
+        cur.execute(_migration_body())
+
+        cur.execute(f"SELECT count(*) FROM {TABLE} WHERE dataset_id = %s", (ds,))
+        assert cur.fetchone()[0] == 3, "legacy rows must survive untouched"
+        cur.execute(
+            f"SELECT count(*) FROM {TABLE} "
+            "WHERE dataset_id = %s AND contrast IS NULL", (ds,)
+        )
+        assert cur.fetchone()[0] == 3, "they stay one-vs-rest"
+    pg_conn.rollback()
+
+
+def test_a_legacy_row_with_no_cluster_survives_the_migration(pg_conn):
+    """cluster_id has always been nullable, so a dataset-wide result is a shape
+    the old table allowed."""
+    with pg_conn.cursor() as cur:
+        _legacy_table(cur)
+        ds = _seed_dataset(cur)
+        cur.execute(
+            f"INSERT INTO {TABLE} (dataset_id, file_path, cluster_id) "
+            "VALUES (%s, %s, NULL)", (ds, "de/all.json"),
+        )
+
+        cur.execute(_migration_body())
+
+        cur.execute(f"SELECT count(*) FROM {TABLE} WHERE dataset_id = %s", (ds,))
+        assert cur.fetchone()[0] == 1
+    pg_conn.rollback()
+
+
+def test_two_legacy_files_for_one_cluster_abort_the_migration(pg_conn):
+    """The shape this PR's own reader was widened to handle: a cluster with more
+    than one DE file. After the migration those rows are told apart by contrast,
+    but legacy rows all carry a NULL contrast, so uniqueness collapses onto
+    (dataset_id, cluster_id) and the pair is a duplicate.
+
+    A server holding such rows cannot run this migration. Check for them before
+    deploying:
+
+        SELECT dataset_id, cluster_id, count(*) FROM scrna_de
+        WHERE contrast IS NULL GROUP BY 1, 2 HAVING count(*) > 1;
+    """
+    with pg_conn.cursor() as cur:
+        _legacy_table(cur)
+        ds = _seed_dataset(cur)
+        for name in ("a", "b"):
+            cur.execute(
+                f"INSERT INTO {TABLE} (dataset_id, file_path, cluster_id) "
+                "VALUES (%s, %s, %s)", (ds, f"de/Cortex_{name}.json", "Cortex"),
+            )
+
+        with pytest.raises(psycopg.errors.UniqueViolation) as exc:
+            cur.execute(_migration_body())
+        assert "scrna_de_comparison_uniqueness" in str(exc.value)
+    pg_conn.rollback()
+
+
+def test_two_legacy_rows_without_a_cluster_abort_the_migration(pg_conn):
+    """NULLS NOT DISTINCT means two dataset-wide legacy rows collide as well --
+    NULL cluster_id and NULL contrast make them the same key."""
+    with pg_conn.cursor() as cur:
+        _legacy_table(cur)
+        ds = _seed_dataset(cur)
+        for name in ("a", "b"):
+            cur.execute(
+                f"INSERT INTO {TABLE} (dataset_id, file_path, cluster_id) "
+                "VALUES (%s, %s, NULL)", (ds, f"de/{name}.json"),
+            )
+
+        with pytest.raises(psycopg.errors.UniqueViolation) as exc:
+            cur.execute(_migration_body())
+        assert "scrna_de_comparison_uniqueness" in str(exc.value)
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize(
+    "cluster_id, constraint",
+    [
+        ("   ", "scrna_de_text_not_blank"),
+        ("x" * 300, "scrna_de_name_lengths"),
+    ],
+    ids=["blank", "oversized"],
+)
+def test_an_unclean_legacy_cluster_name_aborts_the_migration(
+    pg_conn, cluster_id, constraint
+):
+    """The old table put no rules on cluster_id, so a blank or oversized name
+    could have been written. Each aborts the deploy, naming its own rule."""
+    with pg_conn.cursor() as cur:
+        _legacy_table(cur)
+        ds = _seed_dataset(cur)
+        cur.execute(
+            f"INSERT INTO {TABLE} (dataset_id, file_path, cluster_id) "
+            "VALUES (%s, %s, %s)", (ds, "de/x.json", cluster_id),
+        )
+
+        with pytest.raises(psycopg.errors.CheckViolation) as exc:
+            cur.execute(_migration_body())
+        assert constraint in str(exc.value)
+    pg_conn.rollback()
