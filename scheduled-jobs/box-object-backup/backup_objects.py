@@ -375,6 +375,7 @@ def main(argv: list[str] | None = None) -> int:
         # other key gets, and the same order the sibling job uses. Reversed,
         # an operator who exports a corrected password silently gets the
         # file's.
+        args.minio_access = args.minio_access or found.get("MINIO_ROOT_USER", "")
         args.minio_secret = args.minio_secret or found.get("MINIO_ROOT_PASSWORD", "")
         check_state_dir(args, found.get("OBJECT_BACKUP_STATE_DIR", ""))
         return run_backup(args)
@@ -495,9 +496,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
-    # Carried on the namespace rather than read from the environment where it
-    # is used, so the value need never be exported. `main` replaces it with
-    # what the env file held; a plain export still works for a run by hand.
+    # Carried on the namespace rather than read from the environment where they
+    # are used, so neither value need ever be exported. `main` replaces them
+    # with what the env file held; a plain export still works for a run by hand.
+    args.minio_access = os.environ.get("MINIO_ROOT_USER", "")
     args.minio_secret = os.environ.get("MINIO_ROOT_PASSWORD", "")
     return args
 
@@ -1262,7 +1264,7 @@ def copy_manifest(
 
 
 def minio_source_from_env(args: argparse.Namespace) -> MinioSource:
-    access = os.environ.get("MINIO_ROOT_USER", "")
+    access = args.minio_access
     secret = args.minio_secret
     if not access or not secret:
         raise lib.BackupError(

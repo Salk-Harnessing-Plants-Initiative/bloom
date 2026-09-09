@@ -3949,6 +3949,57 @@ class TestTheRendererReadsWhatTheJobReallyPrints:
         assert "2 verified" in page
 
 
+class TestBothMinioCredentialsSurviveTheEnvFile:
+    """The env file is the only source in production.
+
+    Neither credential is exported — `SECRET_ENV_KEYS` keeps both out of the
+    environment — so anything reading one from `os.environ` gets nothing and
+    the run dies at its first config lookup, before a byte moves.
+    """
+
+    def _env_file(self, tmp_path):
+        (tmp_path / ".env.prod").write_text(
+            "MINIO_ROOT_USER=bloomadmin\n"
+            "MINIO_ROOT_PASSWORD=s3cret-pass\n"
+            "OBJECT_BACKUP_MINIO_BUCKET=stub\n"
+        )
+        return tmp_path / ".env.prod"
+
+    def _source_from_a_real_main(self, monkeypatch, tmp_path):
+        """What `minio_source_from_env` gets after `main` has read the file.
+
+        Driven through `main` rather than by repeating its two assignments
+        here: restating the line under test is how this bug reached a green
+        suite in the first place.
+        """
+        self._env_file(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        seen = {}
+        monkeypatch.setattr(job, "run_backup", lambda args: seen.setdefault("args", args) and 0)
+        job.main(["--env", "prod", "--state-dir", str(tmp_path)])
+        return job.minio_source_from_env(seen["args"])
+
+    def test_the_file_builds_a_source_with_nothing_in_the_environment(
+        self, monkeypatch, tmp_path
+    ):
+        for key in ("MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD"):
+            monkeypatch.delenv(key, raising=False)
+
+        source = self._source_from_a_real_main(monkeypatch, tmp_path)
+
+        assert source.access_key == "bloomadmin"
+        assert source.secret_key == "s3cret-pass"
+
+    def test_an_export_still_wins_for_a_run_by_hand(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MINIO_ROOT_USER", "exported")
+        monkeypatch.setenv("MINIO_ROOT_PASSWORD", "exported-pass")
+
+        source = self._source_from_a_real_main(monkeypatch, tmp_path)
+
+        assert source.access_key == "exported"
+        assert source.secret_key == "exported-pass"
+
+
 class TestItReadsItsSettingsFromTheDeployEnvFile:
     """An `ssh host cmd` shell reads no profile and no env file.
 
@@ -4132,7 +4183,10 @@ class TestAMalformedNumberIsAConfigFailure:
     retries" — before the run has printed any verdict at all."""
 
     @pytest.mark.parametrize("key", ["OBJECT_BACKUP_WORKERS", "OBJECT_BACKUP_RC_PORT"])
-    @pytest.mark.parametrize("bad", ["lots", "5572x", "8.5", "", " "])
+    # Blank is not malformed — `apply_env_file` treats it as absent and the
+    # default stands, so these would run on into a real `docker ps`.
+    # `test_a_blank_value_still_falls_back_to_the_default` covers that.
+    @pytest.mark.parametrize("bad", ["lots", "5572x", "8.5"])
     def test_it_names_the_key_and_exits_two(self, key, bad, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".env.prod").write_text(f"{key}={bad}\n")
