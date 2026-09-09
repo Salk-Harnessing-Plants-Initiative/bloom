@@ -48,6 +48,7 @@ def write_h5ad(
     n_types: int = 2,
     samples: list[str] | None = None,
     coords: "np.ndarray | None" = None,
+    barcodes: list[str] | None = None,
 ) -> Path:
     """A miniature dataset shaped like the real one."""
     obs = pd.DataFrame(
@@ -57,7 +58,7 @@ def write_h5ad(
             ] if n_types != 2 else (labels or ["Phellem", "Cortex"] * (n_cells // 2)),
             sample_column: samples or ["Col-0", "pFACT", "pHORST"] * (n_cells // 3),
         },
-        index=[f"CELL{i}-Col-0" for i in range(n_cells)],
+        index=barcodes or [f"CELL{i}-Col-0" for i in range(n_cells)],
     )
     adata = anndata.AnnData(
         X=np.zeros((n_cells, 4), dtype="float32"),
@@ -641,9 +642,10 @@ def test_main_hands_load_the_annotation_and_the_group_columns(
 
     seen = {}
 
-    def recorder(conn, name, species_id, cells, checksum, units, annotation):
+    def recorder(conn, name, species_id, cells, checksum, units, annotation,
+                 create=False):
         seen.update(name=name, annotation=annotation, cells=cells)
-        return 1, cells["n_cells"]
+        return 1, cells["n_cells"], create
 
     monkeypatch.setattr(ingest, "load", recorder)
     monkeypatch.setattr(psycopg, "connect", lambda url: contextlib.nullcontext(None))
@@ -806,3 +808,180 @@ def test_coordinates_that_are_not_numbers_are_refused(ingest, tmp_path):
                       labels=["A", "B", "C", "D"] * 30, coords=coords)
     with pytest.raises(ingest.IngestError, match="does not read as numbers"):
         ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+# --------------------------------------------------------------------------- #
+# The score is measured against what the labels allow, not against a perfect 1.0
+# --------------------------------------------------------------------------- #
+
+
+def separated(n_types: int, per_type: int):
+    """Coordinates that are as right as coordinates can be: each cell type a
+    tight blob, blobs far apart. Any refusal of these is a false refusal."""
+    coords, labels = [], []
+    for t in range(n_types):
+        rng = np.random.default_rng(t)
+        coords.append(rng.normal(0, 0.01, (per_type, 2)) + np.array([t * 1000.0, 0.0]))
+        labels += [f"Type{t}"] * per_type
+    return np.vstack(coords).astype(float), labels
+
+
+def test_attainable_purity_is_capped_by_the_smallest_cell_type(ingest):
+    """A cell has 15 neighbours and only its own type can fill them, so a type
+    of three caps each of its cells at two of fifteen. Pinned by hand: 23 types
+    of three is 23*3 cells each scoring at best 2/15."""
+    labels = [f"Type{i}" for i in range(23) for _ in range(3)]
+    assert ingest.attainable_purity(labels) == pytest.approx(2 / 15)
+
+    # A type larger than the neighbourhood is not capped at all.
+    assert ingest.attainable_purity(["A"] * 100 + ["B"] * 100) == pytest.approx(1.0)
+
+    # Mixed: 100 cells of A reach 15/15, 3 of B reach 2/15.
+    mixed = ["A"] * 100 + ["B"] * 3
+    expected = (100 * 15 + 3 * 2) / (103 * 15)
+    assert ingest.attainable_purity(mixed) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("n_types, per_type", [(23, 3), (23, 4), (10, 5), (25, 2)])
+def test_perfect_coordinates_are_accepted_however_small_the_cell_types(
+    ingest, n_types, per_type
+):
+    """The regression this section exists for. Scored against a perfect 1.0,
+    23 types of three tops out at 0.133 against a bar of 0.139 -- so flawless
+    coordinates were refused, and no arrangement could have passed."""
+    coords, labels = separated(n_types, per_type)
+    scored = ingest.alignment(coords, labels)
+    assert scored is not None, "these shapes must be judgeable, not skipped"
+    purity, excess = scored
+    assert excess == pytest.approx(1.0), (
+        f"{n_types} types of {per_type} scored {excess:.3f}; perfect coordinates "
+        f"must reach the top of the range whatever the type sizes"
+    )
+    assert excess >= ingest.MIN_ALIGNMENT_EXCESS
+
+
+@pytest.mark.parametrize("n_types, per_type", [(23, 3), (10, 5)])
+def test_shuffled_coordinates_are_still_refused_at_those_sizes(
+    ingest, n_types, per_type
+):
+    """The other half: widening the range must not have made it unfalsifiable."""
+    coords, labels = separated(n_types, per_type)
+    rng = np.random.default_rng(0)
+    rng.shuffle(coords)
+    _, excess = ingest.alignment(coords, labels)
+    assert excess < ingest.MIN_ALIGNMENT_EXCESS
+
+
+def test_labels_leaving_no_room_above_chance_are_skipped_not_refused(ingest):
+    """One cell per type: nothing can share a neighbourhood, so the ceiling is 0
+    and the check has nothing to say. Skipped, as too-few-cells already is --
+    refusing would be refusing data the check cannot judge."""
+    labels = [f"Type{i}" for i in range(60)]
+    coords = np.array([[float(i), float(i)] for i in range(60)])
+    assert ingest.alignment(coords, labels) is None
+
+
+# --------------------------------------------------------------------------- #
+# Barcodes have to name one cell
+# --------------------------------------------------------------------------- #
+
+
+def test_duplicate_barcodes_are_refused(ingest, tmp_path):
+    """anndata.concat leaves 10x barcodes repeated across samples unless given
+    index_unique, and warns only at concat time. The barcode is the only
+    identifier a cell carries, and the documented recovery path when
+    coordinates and labels ever arrive separately is a join on it."""
+    path = write_h5ad(tmp_path / "dupes.h5ad", n_cells=6,
+                      barcodes=["A", "B", "C", "A", "B", "F"])
+    with pytest.raises(ingest.IngestError, match="duplicates"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_the_refusal_counts_the_duplicates(ingest, tmp_path):
+    """Naming how many, so an operator can tell one bad concat from a file that
+    is mostly fine."""
+    path = write_h5ad(tmp_path / "dupes2.h5ad", n_cells=6,
+                      barcodes=["A", "A", "A", "D", "E", "F"])
+    with pytest.raises(ingest.IngestError, match=r"2 of 6 barcodes are duplicates"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "nan", "NaN"])
+def test_a_cell_with_no_barcode_is_refused(ingest, tmp_path, bad):
+    """Blank or the string 'nan' -- what an upstream astype(str) leaves behind.
+    Same discipline the cell type and sample columns already hold to."""
+    path = write_h5ad(tmp_path / f"blank{abs(hash(bad))}.h5ad", n_cells=6,
+                      barcodes=["A", "B", "C", "D", "E", bad])
+    with pytest.raises(ingest.IngestError, match="no barcode"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_distinct_barcodes_load(ingest, tmp_path):
+    """The accept case, so the check cannot be satisfied by refusing everything."""
+    path = write_h5ad(tmp_path / "fine.h5ad", n_cells=6)
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+    assert len(set(cells["barcodes"])) == 6
+
+
+# --------------------------------------------------------------------------- #
+# The duplicate-point guard, at the severity that actually matters
+# --------------------------------------------------------------------------- #
+
+
+def piled_coords(n_cells: int, piled: int, n_types: int = 4):
+    """Properly clustered coordinates -- each cell type its own blob, so the
+    alignment check passes -- with exactly `piled` cells moved onto one shared
+    point. That is the partial collision coarse rounding produces, as opposed to
+    a wholly unfilled array, and it has to be caught by the duplicate guard
+    alone rather than by anything downstream.
+
+    Labels cycle A,B,C,D, so cell i belongs to blob i % n_types.
+    """
+    coords = np.empty((n_cells, 2), dtype=float)
+    for i in range(n_cells):
+        rng = np.random.default_rng(i)
+        coords[i] = rng.normal(0, 0.01, 2) + np.array([(i % n_types) * 1000.0, 0.0])
+    coords[:piled] = [7.0, 7.0]
+    return coords
+
+
+def test_the_smallest_possible_pile_is_refused(ingest, tmp_path):
+    """Two cells on one point among 120. Both existing tests pile up 120 cells,
+    so every threshold below 120 passed them -- the guard could be narrowed to
+    'refuse only at 120+' with the suite still green. This pins the floor."""
+    path = write_h5ad(tmp_path / "pair.h5ad", n_cells=120,
+                      labels=["A", "B", "C", "D"] * 30,
+                      coords=piled_coords(120, 2))
+    with pytest.raises(ingest.IngestError, match="2 of 120 cells on a single point"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_a_small_pile_in_a_large_file_is_refused(ingest, tmp_path):
+    """Five cells on one point among 2,000: under the share, over the floor.
+    Pins MAX_DUPLICATE_POINT_SHARE itself -- at 0.09 rather than 0.001 this
+    would load."""
+    path = write_h5ad(tmp_path / "small_pile.h5ad", n_cells=2004,
+                      labels=["A", "B", "C", "D"] * 501,
+                      samples=["Col-0"] * 2004,
+                      coords=piled_coords(2004, 5))
+    with pytest.raises(ingest.IngestError, match="5 of 2004 cells on a single point"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_the_share_is_what_decides_on_a_large_file(ingest, tmp_path):
+    """The boundary from the accepting side: 2,004 cells allow two on a point
+    (2004 * 0.001 = 2.004, and the test is strictly greater), so this must load.
+    Without it the two refusals above are satisfied by refusing everything."""
+    path = write_h5ad(tmp_path / "at_bound.h5ad", n_cells=2004,
+                      labels=["A", "B", "C", "D"] * 501,
+                      samples=["Col-0"] * 2004,
+                      coords=piled_coords(2004, 2))
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+    assert cells["n_cells"] == 2004
+
+
+def test_the_duplicate_share_is_where_it_was_measured(ingest):
+    """Pinned like the alignment bar, because it is the same kind of constant:
+    measured, and the only thing standing between an unfilled array and a load
+    that scores better than the real embedding."""
+    assert ingest.MAX_DUPLICATE_POINT_SHARE == 0.001

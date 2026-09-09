@@ -23,10 +23,13 @@ dataset exactly as it was:
         --species-id 1 \
         --annotation nn_label_plain \
         --group-column nn_source \
-        --expect-cells 8683
+        --expect-cells 8683 \
+        --create
 
-Re-running replaces that dataset's cells and catalogue. Because it is one
-transaction, an interrupted run rolls back and can simply be run again.
+Re-running replaces that dataset's cells and catalogue, and needs no --create:
+that flag guards registration only, so a mistyped name is refused rather than
+loaded as a second copy alongside the real one. Because it is one transaction,
+an interrupted run rolls back and can simply be run again.
 """
 
 from __future__ import annotations
@@ -71,9 +74,13 @@ MAX_DUPLICATE_POINT_SHARE = 0.001
 # this stores fine and then fails for every reader of the dataset.
 FLOAT32_MAX = 3.4028235e38
 
-# How far neighbour agreement must sit from chance towards perfect. A ratio does
-# not work: with one dominant cell type chance is already near 0.5, and twice
-# that is beyond what any real embedding reaches.
+# Neighbours each cell is scored against. Also sets the ceiling below, so the
+# two have to agree.
+NEIGHBOURS = 15
+
+# How far neighbour agreement must sit from chance towards the best these cell
+# types allow. A ratio does not work: with one dominant cell type chance is
+# already near 0.5, and twice that is beyond what any real embedding reaches.
 #
 # Set from measurement. On the first dataset, with the weakest legitimate
 # coordinates available (its PCA, since the real embedding has not shipped yet):
@@ -124,6 +131,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="log1p normalised counts",
         help="what the stored expression values are, for the colourbar label",
     )
+    p.add_argument(
+        "--create",
+        action="store_true",
+        help="register the dataset if no dataset of this name exists for this "
+             "species. Without it an unrecognised name is refused, so a typo "
+             "cannot load a second copy alongside the real one",
+    )
     p.add_argument("--dry-run", action="store_true",
                    help="read and check the file, write nothing")
     return p.parse_args(argv)
@@ -131,23 +145,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def alignment(coords, labels: list[str]) -> tuple[float, float] | None:
     """How often neighbours share a cell type, and how far that sits from chance
-    towards perfect.
+    towards the best these cell types allow.
 
-    The second number is scaled by the room above chance, so the bar means the
-    same thing whether cell types are balanced or not: one dominant type puts
-    chance near 0.5 on its own, and a fixed score or a multiple of chance would
-    then either pass everything or refuse real data.
+    The second number is scaled by the room between chance and that best, so the
+    bar means the same thing whether cell types are balanced or not, and whether
+    they are large or small: one dominant type puts chance near 0.5 on its own,
+    while a type smaller than the neighbourhood caps agreement well below 1.0.
+    A fixed score, a multiple of chance, or scaling against a perfect 1.0 each
+    either pass everything or refuse correct data. See attainable_purity.
 
     None when there are too few cells or too few cell types to tell a real
-    embedding from a shuffled one.
+    embedding from a shuffled one, or when the labels leave no room between
+    chance and the best they allow.
     """
     if len(labels) < MIN_CELLS_FOR_ALIGNMENT:
         return None
     if len(set(labels)) < MIN_LEVELS_FOR_ALIGNMENT:
         return None
     chance = sum(c * c for c in Counter(labels).values()) / (len(labels) ** 2)
+    ceiling = attainable_purity(labels)
+    if ceiling <= chance:
+        return None
     purity = neighbour_purity(coords, labels)
-    return purity, (purity - chance) / (1 - chance)
+    return purity, (purity - chance) / (ceiling - chance)
+
+
+def attainable_purity(labels: list[str], k: int = NEIGHBOURS) -> float:
+    """The highest neighbour agreement these cell types allow.
+
+    A cell has k neighbours, and only the other cells of its own type can be
+    among them -- so a type of three caps every one of its cells at two out of
+    fifteen. Scoring against a perfect 1.0 instead would ask for agreement the
+    labels cannot produce: 23 types of three tops out at 0.133 against a bar of
+    0.139, and no arrangement of coordinates whatsoever could pass.
+    """
+    n = len(labels)
+    k = min(k, n - 1)
+    if k < 1:
+        return 1.0
+    return sum(c * min(k, c - 1) for c in Counter(labels).values()) / (n * k)
 
 
 def _grouping_columns(adata, annotation: str, sample_column: str,
@@ -305,6 +341,7 @@ def read_cells(
 
     labels = _text_column(adata, annotation)
     samples = _text_column(adata, sample_column)
+    barcodes = _barcodes(adata)
     levels = sorted(set(labels))
     if len(levels) > len(PALETTE):
         # The palette binds long before the browser does -- it packs the ordinal
@@ -354,8 +391,36 @@ def read_cells(
         "labels": labels,
         "samples": samples,
         "levels": levels,
-        "barcodes": [str(v) for v in adata.obs_names],
+        "barcodes": barcodes,
     }
+
+
+def _barcodes(adata) -> list[str]:
+    """Read the cell barcodes, refusing anything that cannot identify a cell.
+
+    Coordinates and labels come out of one file here, so nothing downstream has
+    to join on the barcode -- but it is the only identifier a cell carries, and
+    the recovery path when they ever do arrive separately is a join on it, not
+    on position. Duplicates make that join ambiguous with nothing recording that
+    it ever was. anndata.concat leaves 10x barcodes repeated across samples
+    unless it is given index_unique, and warns only at concat time.
+    """
+    text = [str(v) for v in adata.obs_names]
+    blank = sum(1 for v in text if not v.strip() or v.strip().lower() == "nan")
+    if blank:
+        raise IngestError(
+            f"{blank} of {len(text)} cells have no barcode; every cell needs one"
+        )
+    repeated = [b for b, n in Counter(text).items() if n > 1]
+    if repeated:
+        shown = ", ".join(sorted(repeated)[:3])
+        raise IngestError(
+            f"{len(text) - len(set(text))} of {len(text)} barcodes are "
+            f"duplicates ({len(repeated)} repeated, e.g. {shown}). Cells "
+            f"concatenated without index_unique do this; a barcode has to name "
+            f"one cell"
+        )
+    return text
 
 
 def _text_column(adata, column: str) -> list[str]:
@@ -380,7 +445,7 @@ def _text_column(adata, column: str) -> list[str]:
     return text
 
 
-def neighbour_purity(coords, labels: list[str], k: int = 15) -> float:
+def neighbour_purity(coords, labels: list[str], k: int = NEIGHBOURS) -> float:
     """How often a cell's nearest neighbours share its label.
 
     Coordinates and cell types arrive from two places -- for a joint embedding,
@@ -440,7 +505,7 @@ def summarise(cells: dict) -> str:
 
 
 def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
-         units: str, annotation: str) -> tuple[int, int]:
+         units: str, annotation: str, create: bool = False) -> tuple[int, int, bool]:
     """Write the dataset, its catalogue and its cells in one transaction.
 
     Order matters twice over. `scrna_cells` references the catalogue with
@@ -452,8 +517,15 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
     A reload is refused outright when the dataset already has rows that name a
     cell type or a cell position, since nothing here can rebuild them.
 
-    Returns the dataset id and the number of cells actually stored.
+    Registering a dataset that does not exist yet takes `create`, so a mistyped
+    name is refused rather than quietly loaded as a second copy.
+
+    Returns the dataset id, the number of cells actually stored, and whether the
+    dataset was registered by this call rather than replaced.
     """
+    name = name.strip()
+    if not name:
+        raise IngestError("the dataset name is blank")
     if len(cells["levels"]) > len(PALETTE):
         raise IngestError(
             f"{len(cells['levels'])} cell types and {len(PALETTE)} colours to "
@@ -472,6 +544,7 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
                 f"{species_id}; cannot tell which to replace"
             )
 
+        created = not found
         if found:
             dataset_id = found[0][0]
             cur.execute(
@@ -505,6 +578,17 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
                     f"deliberately first, then re-run."
                 )
         else:
+            # Creating on a miss is how a mistyped name forks a dataset: the
+            # load succeeds, reports the same sentence a replace does, and the
+            # next run with the name spelled right finds two and refuses every
+            # time after. Count files are keyed by dataset name, so the copies
+            # would share a namespace too.
+            if not create:
+                raise IngestError(
+                    f"no dataset named {name!r} for species {species_id}. Pass "
+                    f"--create to register a new one; without it a mistyped "
+                    f"name would silently load a second copy"
+                )
             cur.execute(
                 "INSERT INTO public.scrna_datasets (name, species_id) "
                 "VALUES (%s, %s) RETURNING id",
@@ -571,7 +655,7 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
             (cells["n_cells"], cells["n_genes"], source_checksum,
              datetime.now(timezone.utc), units, annotation, dataset_id),
         )
-    return dataset_id, stored
+    return dataset_id, stored, created
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -609,9 +693,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         with psycopg.connect(database_url) as conn:
-            dataset_id, stored = load(
+            dataset_id, stored, created = load(
                 conn, args.dataset_name, args.species_id, cells,
                 checksum(args.h5ad), args.expression_units, args.annotation,
+                create=args.create,
             )
     except IngestError as exc:
         print(f"refusing to ingest: {exc}", file=sys.stderr)
@@ -622,7 +707,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"the database refused the load: {exc}", file=sys.stderr)
         return 1
 
-    print(f"loaded {stored} cells into dataset {dataset_id}")
+    # Which of the two happened, because they are the same sentence otherwise
+    # and a mistyped name is exactly the case worth seeing.
+    what = "registered" if created else "replaced the cells of"
+    print(f"{what} dataset {dataset_id} ({args.dataset_name.strip()!r}): "
+          f"{stored} cells")
     return 0
 
 

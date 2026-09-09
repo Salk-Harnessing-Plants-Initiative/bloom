@@ -68,9 +68,19 @@ def species(cur) -> int:
     return cur.fetchone()[0]
 
 
-def run(ingest, conn, name, species_id, table, checksum="sha", annotation="ann"):
-    return ingest.load(conn, name, species_id, table, checksum,
-                       "log1p normalised counts", annotation)
+def run(ingest, conn, name, species_id, table, checksum="sha", annotation="ann",
+        create=True):
+    """Load, returning just the id and the stored count.
+
+    `create` defaults to True here because almost every test starts from a
+    dataset that does not exist yet; the tests that care about the flag pass it
+    explicitly.
+    """
+    dataset_id, stored, _created = ingest.load(
+        conn, name, species_id, table, checksum,
+        "log1p normalised counts", annotation, create=create,
+    )
+    return dataset_id, stored
 
 
 def refuses(ingest, conn, match, *args, **kwargs):
@@ -489,4 +499,91 @@ def test_a_blank_curated_name_or_colour_falls_back(ingest, pg_conn):
         name, color = cur.fetchone()
         assert name == "A"
         assert color in ingest.PALETTE, color
+    pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# Registering a dataset is deliberate, so a typo cannot fork one
+# --------------------------------------------------------------------------- #
+#
+# Creating on a lookup miss is how a mistyped name forks a dataset: the load
+# succeeds, reports what a replace reports, and the next run with the name
+# spelled right finds two and refuses from then on. Count files are keyed by
+# dataset name, so the copies would share a storage namespace as well.
+
+
+def test_an_unknown_dataset_name_is_refused_without_create(ingest, pg_conn):
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        refuses(ingest, pg_conn, "Pass --create", "brand new", sid,
+                cells(["A", "B"]), create=False)
+
+        cur.execute(
+            "SELECT count(*) FROM scrna_datasets WHERE name = %s AND species_id = %s",
+            ("brand new", sid),
+        )
+        assert cur.fetchone()[0] == 0, "the refusal must not have registered it"
+    pg_conn.rollback()
+
+
+def test_create_registers_the_dataset_and_says_so(ingest, pg_conn):
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        dataset_id, stored, created = ingest.load(
+            pg_conn, "fresh", sid, cells(["A", "B"]), "sha",
+            "log1p normalised counts", "ann", create=True,
+        )
+        assert created is True
+        assert stored == 2
+    pg_conn.rollback()
+
+
+def test_a_reload_reports_that_it_replaced_rather_than_created(ingest, pg_conn):
+    """The two cases print the same sentence otherwise, and which one happened
+    is exactly what an operator needs to see after a mistyped name."""
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        first, _ = run(ingest, pg_conn, "twice", sid, cells(["A", "B"]))
+        again, _, created = ingest.load(
+            pg_conn, "twice", sid, cells(["A", "B"]), "sha-2",
+            "log1p normalised counts", "ann", create=False,
+        )
+        assert created is False
+        assert again == first, "a reload must stay on the same dataset"
+    pg_conn.rollback()
+
+
+def test_a_reload_needs_no_create_flag(ingest, pg_conn):
+    """--create guards registration only. Requiring it on every run would train
+    an operator to pass it always, which is the same as not having it."""
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        first, _ = run(ingest, pg_conn, "existing", sid, cells(["A", "B"]))
+        again, _ = run(ingest, pg_conn, "existing", sid, cells(["A", "C"]),
+                       "sha-2", create=False)
+        assert again == first
+    pg_conn.rollback()
+
+
+def test_a_padded_name_finds_the_dataset_it_meant(ingest, pg_conn):
+    """A trailing space from a paste or a shell is the commonest route into a
+    forked dataset, so the name is trimmed before the lookup."""
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        first, _ = run(ingest, pg_conn, "padded", sid, cells(["A", "B"]))
+        again, _ = run(ingest, pg_conn, "  padded  ", sid, cells(["A", "B"]),
+                       "sha-2", create=False)
+        assert again == first, "whitespace must not register a second copy"
+
+        cur.execute(
+            "SELECT count(*) FROM scrna_datasets WHERE species_id = %s", (sid,)
+        )
+        assert cur.fetchone()[0] == 1
+    pg_conn.rollback()
+
+
+def test_a_blank_dataset_name_is_refused(ingest, pg_conn):
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        refuses(ingest, pg_conn, "name is blank", "   ", sid, cells(["A", "B"]))
     pg_conn.rollback()
