@@ -165,19 +165,22 @@ ALTER TABLE public.scrna_de
 
 -- NULL is the only way to say nothing. An empty contrast is read as one-vs-rest
 -- and rendered as a marker list; an empty file_path is rendered as a link that
--- goes nowhere. The regex covers every whitespace character, not just the space:
--- a stray tab or newline is what a mis-parsed TSV column produces, and btrim()
--- with one argument strips spaces alone.
+-- goes nowhere. The character set is spelled out rather than using \s or
+-- btrim()'s default: btrim() with one argument strips spaces alone, and \s is
+-- locale-dependent -- it matches a non-breaking space under en_US.UTF-8 and not
+-- under C, so the same row would be accepted on one server and refused on
+-- another. A stray tab, newline or pasted non-breaking space is what a
+-- mis-parsed TSV column produces.
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_text_not_blank;
 ALTER TABLE public.scrna_de
   ADD CONSTRAINT scrna_de_text_not_blank
   CHECK (
-    (file_path  IS NULL OR file_path  !~ '^\s*$') AND
-    (contrast   IS NULL OR contrast   !~ '^\s*$') AND
-    (group1     IS NULL OR group1     !~ '^\s*$') AND
-    (group2     IS NULL OR group2     !~ '^\s*$') AND
-    (cluster_id IS NULL OR cluster_id !~ '^\s*$')
+    (file_path IS NULL OR btrim(file_path, E' \t\n\r\f\v\u00a0') <> '') AND
+    (contrast IS NULL OR btrim(contrast, E' \t\n\r\f\v\u00a0') <> '') AND
+    (group1 IS NULL OR btrim(group1, E' \t\n\r\f\v\u00a0') <> '') AND
+    (group2 IS NULL OR btrim(group2, E' \t\n\r\f\v\u00a0') <> '') AND
+    (cluster_id IS NULL OR btrim(cluster_id, E' \t\n\r\f\v\u00a0') <> '')
   );
 
 -- cluster_id and contrast are both columns of the uniqueness index below, so an
