@@ -138,3 +138,71 @@ def test_one_dataset_s_cells_are_not_returned_for_another(pg_conn):
         cur.execute("SELECT replicate FROM scrna_cell_arrays(%s)", (mine,))
         assert cur.fetchall() == [("Col-0",)]
     pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# Facets, which ride on the same row as the position
+# --------------------------------------------------------------------------- #
+
+
+def test_each_cell_comes_back_with_its_own_facets(pg_conn):
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        did = dataset(cur, sid)
+        cur.execute(
+            "INSERT INTO scrna_clusters (dataset_id, cluster_id, ordinal, name, "
+            "color) VALUES (%s, 'A', 0, 'A', '#4E79A7')", (did,),
+        )
+        for n, (sample, flag) in enumerate(
+            (("Col-0", "False"), ("pFACT", "True"), ("pHORST", "False"))
+        ):
+            cur.execute(
+                "INSERT INTO scrna_cells (dataset_id, cell_number, barcode, x, "
+                "y, cluster_id, replicate, facets) "
+                "VALUES (%s, %s, %s, %s, 0, 'A', %s, %s::jsonb)",
+                (did, n, f"BC{n}", float(n), sample,
+                 '{"transgene_pos": "' + flag + '"}'),
+            )
+        cur.execute("SELECT replicate, facets FROM scrna_cell_arrays(%s)", (did,))
+        assert cur.fetchall() == [
+            ("Col-0", {"transgene_pos": "False"}),
+            ("pFACT", {"transgene_pos": "True"}),
+            ("pHORST", {"transgene_pos": "False"}),
+        ]
+    pg_conn.rollback()
+
+
+def test_a_dataset_with_no_facets_returns_nulls(pg_conn):
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        did = dataset(cur, sid)
+        seed(cur, did, [("A", "Col-0")])
+        cur.execute("SELECT facets FROM scrna_cell_arrays(%s)", (did,))
+        assert cur.fetchall() == [(None,)]
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize("bad", ['{"a": 1}', '["a"]', '{"a": {"b": "c"}}',
+                                 '{"a": "  "}', '{"  ": "b"}', '"text"'])
+def test_facets_that_cannot_be_rendered_as_toggles_are_refused(pg_conn, bad):
+    """The explorer draws these as rows of buttons; anything but short strings
+    would reach it as something it cannot draw."""
+    import psycopg
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        did = dataset(cur, sid)
+        cur.execute(
+            "INSERT INTO scrna_clusters (dataset_id, cluster_id, ordinal, name, "
+            "color) VALUES (%s, 'A', 0, 'A', '#4E79A7')", (did,),
+        )
+        with pytest.raises(psycopg.errors.CheckViolation) as caught:
+            with pg_conn.transaction():
+                cur.execute(
+                    "INSERT INTO scrna_cells (dataset_id, cell_number, barcode, "
+                    "x, y, cluster_id, facets) "
+                    "VALUES (%s, 0, 'BC0', 1.0, 2.0, 'A', %s::jsonb)",
+                    (did, bad),
+                )
+        assert caught.value.diag.constraint_name == \
+            "scrna_cells_facets_are_flat_text"
+    pg_conn.rollback()

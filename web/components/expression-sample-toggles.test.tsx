@@ -89,7 +89,7 @@ describe("ExpressionSampleToggles", () => {
         onShowAll={onShowAll}
       />,
     );
-    expect(screen.getByText(/Every sample is hidden/)).toBeTruthy();
+    expect(screen.getByText(/Everything in this row is hidden/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Show all" }));
     expect(onShowAll).toHaveBeenCalledOnce();
   });
@@ -103,6 +103,6 @@ describe("ExpressionSampleToggles", () => {
         onShowAll={() => {}}
       />,
     );
-    expect(screen.queryByText(/Every sample is hidden/)).toBeNull();
+    expect(screen.queryByText(/Everything in this row is hidden/)).toBeNull();
   });
 });

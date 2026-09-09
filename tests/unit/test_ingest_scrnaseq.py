@@ -806,3 +806,107 @@ def test_coordinates_that_are_not_numbers_are_refused(ingest, tmp_path):
                       labels=["A", "B", "C", "D"] * 30, coords=coords)
     with pytest.raises(ingest.IngestError, match="does not read as numbers"):
         ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+# --------------------------------------------------------------------------- #
+# Facets: per-cell labels the explorer can filter on
+# --------------------------------------------------------------------------- #
+
+
+def test_a_facet_column_is_read_with_its_values_and_levels(ingest, tmp_path):
+    labels = ["A", "B", "C", "D"] * 30
+    path = write_h5ad(tmp_path / "facet.h5ad", n_cells=120, labels=labels)
+    import anndata
+    adata = anndata.read_h5ad(path)
+    adata.obs["transgene_pos"] = ["True" if i % 10 == 0 else "False"
+                                  for i in range(120)]
+    adata.write_h5ad(path)
+
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                              (), ("transgene_pos",))
+    facet = cells["facets"][0]
+    assert facet["column"] == "transgene_pos"
+    assert facet["levels"] == ["False", "True"]
+    assert facet["values"].count("True") == 12
+    assert len(facet["values"]) == 120
+
+
+def test_no_facet_columns_means_no_facets(ingest, tmp_path):
+    path = write_h5ad(tmp_path / "nofacet.h5ad", n_cells=120,
+                      labels=["A", "B", "C", "D"] * 30)
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+    assert cells["facets"] == []
+
+
+def test_an_unknown_facet_column_is_refused(ingest, tmp_path):
+    path = write_h5ad(tmp_path / "badfacet.h5ad", n_cells=120,
+                      labels=["A", "B", "C", "D"] * 30)
+    with pytest.raises(ingest.IngestError, match="to use as a facet"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                          (), ("nope",))
+
+
+def test_a_facet_with_too_many_values_is_refused(ingest, tmp_path):
+    """A row of toggles cannot show hundreds of them, and a column with that
+    many is a measurement rather than a label."""
+    path = write_h5ad(tmp_path / "wide.h5ad", n_cells=120,
+                      labels=["A", "B", "C", "D"] * 30)
+    import anndata
+    adata = anndata.read_h5ad(path)
+    adata.obs["reading"] = [str(i) for i in range(120)]
+    adata.write_h5ad(path)
+    with pytest.raises(ingest.IngestError, match="looks like a measurement"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                          (), ("reading",))
+
+
+def test_a_blank_facet_value_is_refused(ingest, tmp_path):
+    """The same rule as cell types: a missing label must not become one."""
+    path = write_h5ad(tmp_path / "blankfacet.h5ad", n_cells=120,
+                      labels=["A", "B", "C", "D"] * 30)
+    import anndata
+    adata = anndata.read_h5ad(path)
+    adata.obs["flag"] = ["  " if i == 3 else "yes" for i in range(120)]
+    adata.write_h5ad(path)
+    with pytest.raises(ingest.IngestError, match="blank"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                          (), ("flag",))
+
+
+def test_each_cell_gets_its_own_facet_labels(ingest):
+    """One JSON object per cell, in cell order — these are written alongside the
+    cell row, so a mismatch here would label every cell wrongly."""
+    import json
+    cells = {
+        "n_cells": 3,
+        "facets": [
+            {"column": "transgene_pos", "values": ["True", "False", "True"],
+             "levels": ["False", "True"]},
+            {"column": "zone", "values": ["a", "b", "c"], "levels": ["a","b","c"]},
+        ],
+    }
+    got = [json.loads(x) for x in ingest.facets_per_cell(cells)]
+    assert got == [
+        {"transgene_pos": "True", "zone": "a"},
+        {"transgene_pos": "False", "zone": "b"},
+        {"transgene_pos": "True", "zone": "c"},
+    ]
+
+
+def test_no_facets_stores_nothing_rather_than_an_empty_object(ingest):
+    assert ingest.facets_per_cell({"n_cells": 2, "facets": []}) == [None, None]
+
+
+def test_the_summary_says_what_can_be_filtered_on(ingest, tmp_path):
+    """So a --facet that named the wrong column is visible, rather than quietly
+    producing nothing to click."""
+    path = write_h5ad(tmp_path / "summaryfacet.h5ad", n_cells=120,
+                      labels=["A", "B", "C", "D"] * 30)
+    import anndata
+    adata = anndata.read_h5ad(path)
+    adata.obs["transgene_pos"] = ["True" if i % 10 == 0 else "False"
+                                  for i in range(120)]
+    adata.write_h5ad(path)
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                              (), ("transgene_pos",))
+    assert "facet transgene_pos: False 108, True 12" in ingest.summarise(cells)

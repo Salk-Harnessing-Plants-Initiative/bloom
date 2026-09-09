@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import sys
 from collections import Counter
@@ -83,6 +84,11 @@ FLOAT32_MAX = 3.4028235e38
 # Read what this does and does not catch in read_cells before relying on it.
 MIN_ALIGNMENT_EXCESS = 0.10
 
+# A facet becomes a row of toggles, so it has to be a handful of labels. Above
+# this it is a measurement rather than something to filter by, and it would
+# reach the browser as hundreds of buttons.
+MAX_FACET_VALUES = 12
+
 
 class IngestError(RuntimeError):
     """Something about the file or the database makes this load unsafe."""
@@ -112,6 +118,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "embedding here (repeatable). Name only columns that describe where "
              "the cells came from -- a biological column measures biology and "
              "will refuse a correct file",
+    )
+    p.add_argument(
+        "--facet",
+        action="append",
+        default=[],
+        metavar="COLUMN",
+        help="an obs column to store on each cell so the explorer can show or "
+             "hide those cells -- transgene status, for instance. A few short "
+             "labels only; repeatable",
     )
     p.add_argument("--umap-key", default="X_umap")
     p.add_argument(
@@ -148,6 +163,32 @@ def alignment(coords, labels: list[str]) -> tuple[float, float] | None:
     chance = sum(c * c for c in Counter(labels).values()) / (len(labels) ** 2)
     purity = neighbour_purity(coords, labels)
     return purity, (purity - chance) / (1 - chance)
+
+
+def read_facets(adata, columns: tuple[str, ...]) -> list[dict]:
+    """Per-cell labels the explorer can filter on, one entry per named column.
+
+    Refused rather than truncated when a column has too many values: a facet is
+    a row of toggles, and a column with hundreds of them is a measurement
+    someone has mistaken for a label.
+    """
+    out = []
+    for column in columns:
+        if column not in adata.obs:
+            raise IngestError(
+                f"no obs[{column!r}] to use as a facet. Found: "
+                f"{', '.join(sorted(adata.obs.columns))}"
+            )
+        values = _text_column(adata, column)
+        levels = sorted(set(values))
+        if len(levels) > MAX_FACET_VALUES:
+            raise IngestError(
+                f"obs[{column!r}] has {len(levels)} values, more than the "
+                f"{MAX_FACET_VALUES} a row of toggles can show; it looks like a "
+                f"measurement rather than a label"
+            )
+        out.append({"column": column, "values": values, "levels": levels})
+    return out
 
 
 def _grouping_columns(adata, annotation: str, sample_column: str,
@@ -193,6 +234,7 @@ def read_cells(
     umap_key: str,
     expect_cells: int | None,
     group_columns: tuple[str, ...] = (),
+    facet_columns: tuple[str, ...] = (),
 ) -> dict:
     """Pull everything the explorer needs out of the file, or refuse.
 
@@ -348,6 +390,7 @@ def read_cells(
         "n_cells": int(adata.n_obs),
         "purity": purity,
         "grouped": grouped,
+        "facets": read_facets(adata, facet_columns),
         "n_genes": int(adata.n_vars),
         "x": [float(v) for v in coords[:, 0]],
         "y": [float(v) for v in coords[:, 1]],
@@ -436,7 +479,30 @@ def summarise(cells: dict) -> str:
                else " — none had both enough cells and enough cell types to judge")
             for column, n_groups, judged in cells["grouped"]
         )
+        # Say what can be filtered on, so a --facet that named the wrong column
+        # is visible rather than quietly producing nothing to click.
+        + "".join(
+            f"\n  facet {f['column']}: " + ", ".join(
+                f"{v} {sum(1 for x in f['values'] if x == v)}" for v in f["levels"]
+            )
+            for f in cells.get("facets") or []
+        )
     )
+
+
+def facets_per_cell(cells: dict) -> list[str | None]:
+    """One JSON object per cell, or None where no facets were asked for.
+
+    Built here rather than in the reader so the cell row and its labels are
+    written by the same statement, in the same order, from the same list.
+    """
+    columns = cells.get("facets") or []
+    if not columns:
+        return [None] * cells["n_cells"]
+    return [
+        json.dumps({f["column"]: f["values"][i] for f in columns})
+        for i in range(cells["n_cells"])
+    ]
 
 
 def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
@@ -542,13 +608,15 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
         )
         cur.executemany(
             "INSERT INTO public.scrna_cells "
-            "(dataset_id, cell_number, barcode, x, y, cluster_id, replicate) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            "(dataset_id, cell_number, barcode, x, y, cluster_id, replicate, "
+            " facets) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
             [
-                (dataset_id, i, barcode, x, y, label, sample)
-                for i, (barcode, x, y, label, sample) in enumerate(
+                (dataset_id, i, barcode, x, y, label, sample, facets)
+                for i, (barcode, x, y, label, sample, facets) in enumerate(
                     zip(cells["barcodes"], cells["x"], cells["y"],
-                        cells["labels"], cells["samples"])
+                        cells["labels"], cells["samples"],
+                        facets_per_cell(cells))
                 )
             ],
         )
@@ -581,7 +649,7 @@ def main(argv: list[str] | None = None) -> int:
         cells = read_cells(
             args.h5ad, args.annotation, args.sample_column,
             args.umap_key, args.expect_cells,
-            tuple(args.group_column),
+            tuple(args.group_column), tuple(args.facet),
         )
     except IngestError as exc:
         print(f"refusing to ingest: {exc}", file=sys.stderr)

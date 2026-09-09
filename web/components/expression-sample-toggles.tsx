@@ -14,6 +14,8 @@ export interface SampleCount {
 }
 
 interface Props {
+  /** What this row is filtering — "Samples", or a facet's own name. */
+  label?: string;
   samples: SampleCount[];
   hidden: ReadonlySet<string>;
   onToggle: (name: string) => void;
@@ -21,6 +23,7 @@ interface Props {
 }
 
 export function ExpressionSampleToggles({
+  label = "Samples",
   samples,
   hidden,
   onToggle,
@@ -34,7 +37,7 @@ export function ExpressionSampleToggles({
   return (
     <div className="flex flex-wrap items-center gap-2">
       <span className="text-[10px] uppercase tracking-widest text-stone-500">
-        Samples
+        {label}
       </span>
       {samples.map((sample) => {
         const isHidden = hidden.has(sample.name);
@@ -64,7 +67,7 @@ export function ExpressionSampleToggles({
       })}
       {allHidden && (
         <span className="text-xs text-stone-500">
-          Every sample is hidden, so the map is empty.{" "}
+          Everything in this row is hidden, so the map is empty.{" "}
           <button
             type="button"
             onClick={onShowAll}

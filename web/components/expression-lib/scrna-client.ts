@@ -22,6 +22,8 @@ export interface CellArraysRow {
   cluster_ordinal: number;
   /** The sample this cell came from, or null for datasets that record none. */
   replicate: string | null;
+  /** Labels this cell can be filtered by, or null when none were loaded. */
+  facets: Record<string, string> | null;
 }
 
 /** Cluster ordinal returned by the RPC for cells with no matching catalog row. */

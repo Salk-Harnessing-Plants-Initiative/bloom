@@ -35,6 +35,8 @@ export interface ExpressionUmapProps {
   hiddenClusters?: ReadonlySet<number>;
   /** Samples currently hidden by name. Empty = all visible. */
   hiddenSamples?: ReadonlySet<string>;
+  /** Facet values currently hidden, keyed by facet name. */
+  hiddenFacets?: ReadonlyMap<string, ReadonlySet<string>>;
   /** Height of the canvas in pixels; width fills the parent */
   height?: number;
   /** Fires when data is loaded so parent can render colorbar / sidebar */
@@ -47,6 +49,8 @@ export interface ExpressionUmapProps {
     /** How many cells came from each sample, in the order they first appear.
      *  Empty for a dataset whose cells record no sample. */
     samples: { name: string; count: number }[];
+    /** The same, per facet the cells carry — transgene status and the like. */
+    facets: { name: string; values: { name: string; count: number }[] }[];
   }) => void;
   /** Fires whenever the currently-overlaid gene's min/max changes */
   onExpressionRangeChanged?: (range: { min: number; max: number } | null) => void;
@@ -104,19 +108,31 @@ function packClusterColors(
  * `packPositions` runs once over every cell and never sees the hidden set.
  */
 export function packVisibility(
-  cells: Pick<CellArraysRow, "replicate">[],
+  cells: Pick<CellArraysRow, "replicate" | "facets">[],
   clusterOrdinals: Uint8Array,
   hiddenClusters: ReadonlySet<number>,
   hiddenSamples: ReadonlySet<string>,
+  hiddenFacets: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
 ): Float32Array {
   const out = new Float32Array(cells.length);
   for (let i = 0; i < cells.length; i++) {
     const sample = cells[i].replicate;
-    out[i] =
-      hiddenClusters.has(clusterOrdinals[i]) ||
-      (sample !== null && hiddenSamples.has(sample))
-        ? 0
-        : 1.0;
+    let shown =
+      !hiddenClusters.has(clusterOrdinals[i]) &&
+      !(sample !== null && hiddenSamples.has(sample));
+    if (shown && hiddenFacets.size > 0) {
+      const facets = cells[i].facets;
+      for (const [name, hidden] of hiddenFacets) {
+        const value = facets?.[name];
+        // A cell with no value for a facet is never hidden by it: the facet
+        // says nothing about that cell, so it is not something to filter on.
+        if (value !== undefined && hidden.has(value)) {
+          shown = false;
+          break;
+        }
+      }
+    }
+    out[i] = shown ? 1.0 : 0;
   }
   return out;
 }
@@ -159,6 +175,7 @@ export function ExpressionUmap({
   geneName,
   hiddenClusters,
   hiddenSamples,
+  hiddenFacets,
   height = 600,
   onDataLoaded,
   onExpressionRangeChanged,
@@ -235,12 +252,18 @@ export function ExpressionUmap({
         // Counted from the cells themselves, so a dataset with different
         // samples — or none — needs no change here.
         const sampleCounts = new Map<string, number>();
+        const facetCounts = new Map<string, Map<string, number>>();
         for (let i = 0; i < cells.length; i++) {
           clusterOrdinals[i] = cells[i].cluster_ordinal;
           if (cells[i].cluster_ordinal === ORPHAN_CLUSTER_ORDINAL) orphanCount++;
           const sample = cells[i].replicate;
           if (sample !== null && sample !== "") {
             sampleCounts.set(sample, (sampleCounts.get(sample) ?? 0) + 1);
+          }
+          for (const [name, value] of Object.entries(cells[i].facets ?? {})) {
+            let seen = facetCounts.get(name);
+            if (!seen) facetCounts.set(name, (seen = new Map()));
+            seen.set(value, (seen.get(value) ?? 0) + 1);
           }
         }
         const loaded: LoadedData = {
@@ -262,6 +285,12 @@ export function ExpressionUmap({
           cellCount: cells.length,
           orphanCount,
           samples: [...sampleCounts].map(([name, count]) => ({ name, count })),
+          facets: [...facetCounts].map(([name, seen]) => ({
+            name,
+            values: [...seen]
+              .sort((a, b) => a[0].localeCompare(b[0]))
+              .map(([v, count]) => ({ name: v, count })),
+          })),
         });
       } catch (err) {
         if (!cancelled) {
@@ -323,9 +352,10 @@ export function ExpressionUmap({
             data.clusterOrdinals,
             hiddenClusters ?? new Set<number>(),
             hiddenSamples ?? new Set<string>(),
+            hiddenFacets ?? new Map(),
           )
         : null,
-    [data, hiddenClusters, hiddenSamples],
+    [data, hiddenClusters, hiddenSamples, hiddenFacets],
   );
 
   // -------- regl init + render loop (runs ONCE per dataset) ------------------

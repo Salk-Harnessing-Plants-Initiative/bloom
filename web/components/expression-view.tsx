@@ -35,6 +35,8 @@ interface LoadedMeta {
   /** Cells per sample, taken from the cells themselves. Empty when the dataset
    *  records no sample, which is when the toggles are not shown at all. */
   samples: { name: string; count: number }[];
+  /** The same per facet the cells carry, each rendered as its own row. */
+  facets: { name: string; values: { name: string; count: number }[] }[];
 }
 
 /** Composes the UMAP canvas + gene search + colorbar + cluster sidebar for a dataset. */
@@ -43,6 +45,9 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
   const [geneName, setGeneName] = useState<string | null>(null);
   const [hidden, setHidden] = useState<Set<number>>(new Set());
   const [hiddenSamples, setHiddenSamples] = useState<Set<string>>(new Set());
+  const [hiddenFacets, setHiddenFacets] = useState<Map<string, Set<string>>>(
+    new Map(),
+  );
   const [exprRange, setExprRange] = useState<{ min: number; max: number } | null>(
     null,
   );
@@ -87,6 +92,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
       cellCount: number;
       orphanCount: number;
       samples: { name: string; count: number }[];
+      facets: { name: string; values: { name: string; count: number }[] }[];
     }) => {
       setMeta((prev) => ({
         dataset: ctx.dataset,
@@ -94,6 +100,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
         cellCount: ctx.cellCount,
         orphanCount: ctx.orphanCount,
         samples: ctx.samples,
+        facets: ctx.facets,
         counts: prev?.counts ?? {},
       }));
     },
@@ -112,6 +119,24 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
     () => setHiddenSamples(new Set()),
     [],
   );
+
+  const handleFacetToggle = useCallback((facet: string, value: string) => {
+    setHiddenFacets((prev) => {
+      const next = new Map(prev);
+      const hidden = new Set(next.get(facet) ?? []);
+      if (!hidden.delete(value)) hidden.add(value);
+      next.set(facet, hidden);
+      return next;
+    });
+  }, []);
+
+  const handleShowAllOfFacet = useCallback((facet: string) => {
+    setHiddenFacets((prev) => {
+      const next = new Map(prev);
+      next.set(facet, new Set());
+      return next;
+    });
+  }, []);
 
   const handleVisibilityChange = useCallback(
     (ordinal: number, visible: boolean) => {
@@ -230,12 +255,25 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           </Box>
         )}
 
+        {meta?.facets.map((facet) => (
+          <Box key={facet.name} sx={{ pb: 1 }}>
+            <ExpressionSampleToggles
+              label={facet.name}
+              samples={facet.values}
+              hidden={hiddenFacets.get(facet.name) ?? new Set()}
+              onToggle={(value) => handleFacetToggle(facet.name, value)}
+              onShowAll={() => handleShowAllOfFacet(facet.name)}
+            />
+          </Box>
+        ))}
+
         {/* canvas */}
         <ExpressionUmap
           datasetId={datasetId}
           geneName={geneName}
           hiddenClusters={hidden}
           hiddenSamples={hiddenSamples}
+          hiddenFacets={hiddenFacets}
           onDataLoaded={handleDataLoaded}
           onExpressionRangeChanged={setExprRange}
         />

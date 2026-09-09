@@ -11,9 +11,9 @@ import { describe, expect, it } from "vitest";
 import { packPositions, packVisibility } from "./expression-umap";
 import type { CellArraysRow } from "./expression-lib/scrna-client";
 
-function cell(x: number, y: number, ordinal: number, replicate: string | null):
-  CellArraysRow {
-  return { x, y, cluster_ordinal: ordinal, replicate };
+function cell(x: number, y: number, ordinal: number, replicate: string | null,
+              facets: Record<string, string> | null = null): CellArraysRow {
+  return { x, y, cluster_ordinal: ordinal, replicate, facets };
 }
 
 const CELLS = [
@@ -91,5 +91,63 @@ describe("packPositions", () => {
     const before = packPositions(CELLS);
     const after = packPositions([...CELLS]);
     expect(Array.from(after.positions)).toEqual(Array.from(before.positions));
+  });
+});
+
+
+describe("packVisibility with facets", () => {
+  // Transgene status is the first facet: 232 of 8,683 cells on the real
+  // dataset, and none of them in the control genotype.
+  const FACETED = [
+    cell(0, 0, 0, "Col-0", { transgene_pos: "False" }),
+    cell(1, 1, 0, "pFACT", { transgene_pos: "True" }),
+    cell(2, 2, 1, "pFACT", { transgene_pos: "False" }),
+    cell(3, 3, 1, "pHORST", { transgene_pos: "True" }),
+  ];
+  const ORD = new Uint8Array([0, 0, 1, 1]);
+  const nothing = new Set<never>();
+
+  it("hides the cells carrying a hidden facet value", () => {
+    const hidden = new Map([["transgene_pos", new Set(["False"])]]);
+    expect(
+      Array.from(packVisibility(FACETED, ORD, nothing, nothing, hidden)),
+    ).toEqual([0, 1, 0, 1]);
+  });
+
+  it("combines with the sample toggles, so one genotype's positives can be shown alone", () => {
+    const hidden = new Map([["transgene_pos", new Set(["False"])]]);
+    const notPFACT = new Set(["Col-0", "pHORST"]);
+    expect(
+      Array.from(packVisibility(FACETED, ORD, nothing, notPFACT, hidden)),
+    ).toEqual([0, 1, 0, 0]);
+  });
+
+  it("keeps one entry per cell, so nothing is removed from the data", () => {
+    const hidden = new Map([["transgene_pos", new Set(["True", "False"])]]);
+    expect(packVisibility(FACETED, ORD, nothing, nothing, hidden).length)
+      .toBe(FACETED.length);
+  });
+
+  it("never hides a cell on a facet it has no value for", () => {
+    const mixed = [cell(0, 0, 0, "a", { other: "x" }), cell(1, 1, 0, "a", null)];
+    const hidden = new Map([["transgene_pos", new Set(["False", "True"])]]);
+    expect(
+      Array.from(
+        packVisibility(mixed, new Uint8Array([0, 0]), nothing, nothing, hidden),
+      ),
+    ).toEqual([1, 1]);
+  });
+
+  it("applies every facet, not just the first", () => {
+    const two = [
+      cell(0, 0, 0, "a", { one: "keep", two: "keep" }),
+      cell(1, 1, 0, "a", { one: "keep", two: "drop" }),
+    ];
+    const hidden = new Map([["two", new Set(["drop"])]]);
+    expect(
+      Array.from(
+        packVisibility(two, new Uint8Array([0, 0]), nothing, nothing, hidden),
+      ),
+    ).toEqual([1, 0]);
   });
 });
