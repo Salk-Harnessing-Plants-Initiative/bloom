@@ -53,8 +53,6 @@ def cells(labels: list[str], samples: list[str] | None = None) -> dict:
         "samples": samples or ["Col-0"] * n,
         "levels": sorted(set(labels)),
         "barcodes": [f"BC{i}" for i in range(n)],
-        "purity": 0.9,
-        "grouped": [],
     }
 
 

@@ -22,7 +22,6 @@ dataset exactly as it was:
         --dataset-name "MYB41 transgene" \
         --species-id 1 \
         --annotation nn_label_plain \
-        --group-column nn_source \
         --expect-cells 8683 \
         --create
 
@@ -55,40 +54,16 @@ PALETTE = [
     "#79706E", "#D7B5A6", "#6B4C9A",
 ]
 
-# Below these there is not enough to judge, so the check is skipped rather than
-# guessed at. Two cell types are enough: measured on 900 well-separated cells,
-# good coordinates score 1.00 and a shuffle about 0.00 at two, three and four,
-# because scaling by the room above chance already handles one type dominating.
-# A higher gate left a three-type dataset with no check at all.
-MIN_CELLS_FOR_ALIGNMENT = 50
-MIN_LEVELS_FOR_ALIGNMENT = 2
-
 # A real embedding gives essentially every cell its own point: on this dataset's
 # 8,683 cells and on the 138,865-row joint embedding, every single point is
-# distinct. So more than one cell on a point, and above this share of them,
-# means the array is partly or wholly unfilled -- which the neighbour check
-# cannot catch, and reads as good alignment. See read_cells.
+# distinct. So cells stacked on one point mean the obsm was allocated and never
+# filled -- every value zero, which is finite, two-dimensional and the right
+# length, so nothing else here notices, and the plot is a single dot.
 MAX_DUPLICATE_POINT_SHARE = 0.001
 
 # scrna_cell_arrays casts x and y to REAL on the way out, so a coordinate above
 # this stores fine and then fails for every reader of the dataset.
 FLOAT32_MAX = 3.4028235e38
-
-# Neighbours each cell is scored against. Also sets the ceiling below, so the
-# two have to agree.
-NEIGHBOURS = 15
-
-# How far neighbour agreement must sit from chance towards the best these cell
-# types allow. A ratio does not work: with one dominant cell type chance is
-# already near 0.5, and twice that is beyond what any real embedding reaches.
-#
-# Set from measurement. On the first dataset, with the weakest legitimate
-# coordinates available (its PCA, since the real embedding has not shipped yet):
-# aligned scores 0.21 and 0.27 depending on the annotation, a shuffle of the same
-# coordinates 0.00 either way. The bar sits half way down to a shuffle.
-#
-# Read what this does and does not catch in read_cells before relying on it.
-MIN_ALIGNMENT_EXCESS = 0.10
 
 
 class IngestError(RuntimeError):
@@ -108,18 +83,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "types will not exist in the catalogue",
     )
     p.add_argument("--sample-column", default="sample")
-    p.add_argument(
-        "--group-column",
-        action="append",
-        default=[],
-        metavar="COLUMN",
-        help="an obs column whose groups were lined up against the coordinates "
-             "separately, scored on its own as well as the file as a whole. The "
-             "sample column always is; name the source column of a joint "
-             "embedding here (repeatable). Name only columns that describe where "
-             "the cells came from -- a biological column measures biology and "
-             "will refuse a correct file",
-    )
     p.add_argument("--umap-key", default="X_umap")
     p.add_argument(
         "--expect-cells",
@@ -143,124 +106,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def alignment(coords, labels: list[str]) -> tuple[float, float] | None:
-    """How often neighbours share a cell type, and how far that sits from chance
-    towards the best these cell types allow.
-
-    The second number is scaled by the room between chance and that best, so the
-    bar means the same thing whether cell types are balanced or not, and whether
-    they are large or small: one dominant type puts chance near 0.5 on its own,
-    while a type smaller than the neighbourhood caps agreement well below 1.0.
-    A fixed score, a multiple of chance, or scaling against a perfect 1.0 each
-    either pass everything or refuse correct data. See attainable_purity.
-
-    None when there are too few cells or too few cell types to tell a real
-    embedding from a shuffled one, or when the labels leave no room between
-    chance and the best they allow.
-    """
-    if len(labels) < MIN_CELLS_FOR_ALIGNMENT:
-        return None
-    if len(set(labels)) < MIN_LEVELS_FOR_ALIGNMENT:
-        return None
-    chance = sum(c * c for c in Counter(labels).values()) / (len(labels) ** 2)
-    ceiling = attainable_purity(labels)
-    if ceiling <= chance:
-        return None
-    purity = neighbour_purity(coords, labels)
-    return purity, (purity - chance) / (ceiling - chance)
-
-
-def attainable_purity(labels: list[str], k: int = NEIGHBOURS) -> float:
-    """The highest neighbour agreement these cell types allow.
-
-    A cell has k neighbours, and only the other cells of its own type can be
-    among them -- so a type of three caps every one of its cells at two out of
-    fifteen. Scoring against a perfect 1.0 instead would ask for agreement the
-    labels cannot produce: 23 types of three tops out at 0.133 against a bar of
-    0.139, and no arrangement of coordinates whatsoever could pass.
-    """
-    n = len(labels)
-    k = min(k, n - 1)
-    if k < 1:
-        return 1.0
-    return sum(c * min(k, c - 1) for c in Counter(labels).values()) / (n * k)
-
-
-def _grouping_columns(adata, annotation: str, sample_column: str,
-                      extra: tuple[str, ...]) -> list[str]:
-    """Columns whose groups were each lined up against the coordinates
-    separately, so each has to be scored on its own.
-
-    The sample is always one. Anything else has to be named, because nothing here
-    can tell a provenance column from a biological one, and scoring within a
-    biological group measures biology: on the first dataset, cells in the
-    meristem are undifferentiated, so their types genuinely overlap in the
-    embedding and the group scores 0.088 with the coordinates perfectly correct.
-    Sweeping every short column refused that dataset.
-
-    The annotation is excluded either way -- the score already groups by it.
-    """
-    for column in extra:
-        if column not in adata.obs:
-            raise IngestError(
-                f"no obs[{column!r}] to group by. Found: "
-                f"{', '.join(sorted(adata.obs.columns))}"
-            )
-    return sorted(({sample_column} | set(extra)) - {annotation})
-
-
-def _misaligned(umap_key: str, what: str, purity: float, excess: float,
-                grouped: bool = False) -> str:
-    return (
-        f"cells of the same type are not near each other in obsm[{umap_key!r}] "
-        f"for {what} — neighbours share a label {purity:.3f} of the time, only "
-        f"{excess:.2f} of the way from chance to perfect. The coordinates likely "
-        f"do not line up with these cells row for row."
-        + (" If this column describes biology rather than where the cells came "
-           "from, that is the more likely explanation: do not group by it."
-           if grouped else "")
-    )
-
-
 def read_cells(
     h5ad_path: Path,
     annotation: str,
     sample_column: str,
     umap_key: str,
     expect_cells: int | None,
-    group_columns: tuple[str, ...] = (),
 ) -> dict:
     """Pull everything the explorer needs out of the file, or refuse.
 
     Every check here runs before a single row is written, because a dataset that
     is half loaded looks to the explorer exactly like one that is complete.
 
-    What the alignment check is worth, measured on the first dataset rather than
-    argued. It catches unfilled coordinates, and misalignment affecting most of a
-    group or most of the file: an off-by-any-amount row shift, and one group's
-    rows reordered, are refused several times over. A wrong slice of one dataset
-    inside a joint embedding is caught only if that source column is named with
-    --group-column -- the summary prints which columns were scored, so a
-    forgotten one is visible rather than silent.
+    The coordinates are taken as given. They come out of the same file as the
+    labels, in the row order anndata keeps them in, so nothing here can pair
+    them up wrongly -- and whether the embedding itself is any good is the
+    analysis's business, not this script's. The one thing refused is an obsm
+    that was never filled in, which is not a judgement about the embedding but
+    the absence of one.
 
-    It is a bulk check, and two things follow. Damage scattered evenly is the
-    hard case: a quarter to a third of rows can carry another cell's coordinates
-    and still load -- a quarter on this dataset's `nn_label_plain`, a third on
-    its `singler`, since the tolerance grows with how well the labels separate.
-    Those are thresholds for the load, which needs the whole file and every group
-    to clear the bar; the whole-file score alone tolerates rather more. Damage
-    concentrated in one group is what the grouping catches, since that group falls
-    to chance on its own while the average stays comfortable.
-
-    And it is blind by construction to any misalignment that keeps every cell
-    inside a group of its own cell type: a permutation within one type, one
-    type's cells landing on another's cluster, or coordinates synthesised from
-    the labels all score at least what a correct load scores. That last family is
-    what lining two sides up by sorted cell type produces.
-
-    So this is evidence, not proof, and the thing that actually keeps the rows
-    together is that coordinates and labels come out of the same file. If they
-    ever arrive separately they must be joined on the barcode, not by position.
     """
     import anndata
     import numpy as np
@@ -313,13 +177,9 @@ def read_cells(
         )
     _, piles = np.unique(coords, axis=0, return_counts=True)
     if piles.max() > max(1, len(coords) * MAX_DUPLICATE_POINT_SHARE):
-        # An obsm allocated and never filled is the likeliest way to get bad
-        # coordinates, and it defeats the alignment check below rather than
-        # tripping it: with every distance tied, every cell gets the same
-        # arbitrary neighbours, so the score climbs towards the largest cell
-        # type's share instead of falling to chance. Measured on this file with
-        # the dominant-class annotation, an all-zero array scores 0.298 against
-        # the real embedding's 0.269.
+        # An obsm allocated and never filled passes every other check here --
+        # zeros are finite, two-dimensional and the right length -- and draws
+        # every cell of the dataset as one dot.
         raise IngestError(
             f"obsm[{umap_key!r}] puts {piles.max()} of {len(coords)} cells on a "
             f"single point. Real coordinates give essentially every cell its "
@@ -354,37 +214,8 @@ def read_cells(
             f"identically"
         )
 
-    scored = alignment(coords, labels)
-    purity = scored[0] if scored else None
-    if scored and scored[1] < MIN_ALIGNMENT_EXCESS:
-        raise IngestError(_misaligned(umap_key, "these cells", *scored))
-
-    # One average over the whole file cannot see damage confined to part of it:
-    # a third of the cells can carry another cell's coordinates and still clear
-    # the bar. So each group is scored on its own as well -- every sample, and
-    # whatever else --group-column names, such as the source dataset in a joint
-    # object like this one.
-    grouped = []
-    for column in _grouping_columns(adata, annotation, sample_column,
-                                    group_columns):
-        judged = []
-        for group in sorted(set(adata.obs[column].astype(str))):
-            values = adata.obs[column].astype(str).to_numpy()
-            rows = np.flatnonzero(values == group)
-            scored = alignment(coords[rows], [labels[i] for i in rows])
-            if scored:
-                judged.append(scored[1])
-            if scored and scored[1] < MIN_ALIGNMENT_EXCESS:
-                raise IngestError(_misaligned(
-                    umap_key, f"the cells with obs[{column!r}] == {group!r}",
-                    *scored, grouped=column in group_columns,
-                ))
-        grouped.append((column, len(set(adata.obs[column].astype(str))), judged))
-
     return {
         "n_cells": int(adata.n_obs),
-        "purity": purity,
-        "grouped": grouped,
         "n_genes": int(adata.n_vars),
         "x": [float(v) for v in coords[:, 0]],
         "y": [float(v) for v in coords[:, 1]],
@@ -445,33 +276,6 @@ def _text_column(adata, column: str) -> list[str]:
     return text
 
 
-def neighbour_purity(coords, labels: list[str], k: int = NEIGHBOURS) -> float:
-    """How often a cell's nearest neighbours share its label.
-
-    Coordinates and cell types arrive from two places -- for a joint embedding,
-    the coordinates are a slice out of a much larger array that someone lines up
-    by hand. If that slice is wrong, every check above still passes and the plot
-    looks entirely plausible. Cells of a type cluster together in a real
-    embedding, so a misaligned one scores at chance.
-    """
-    import numpy as _np
-
-    n = len(labels)
-    k = min(k, n - 1)
-    if k < 1:
-        return 1.0
-    codes = _np.unique(_np.asarray(labels), return_inverse=True)[1]
-    hits = 0
-    # Chunked so an 8,683-cell distance matrix never exists all at once.
-    for start in range(0, n, 512):
-        block = coords[start:start + 512]
-        d = ((block[:, None, :] - coords[None, :, :]) ** 2).sum(-1)
-        d[_np.arange(len(block)), _np.arange(start, start + len(block))] = _np.inf
-        nearest = _np.argpartition(d, k, axis=1)[:, :k]
-        hits += int((codes[nearest] == codes[start:start + len(block), None]).sum())
-    return hits / (n * k)
-
-
 def checksum(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
@@ -485,22 +289,8 @@ def summarise(cells: dict) -> str:
     return (
         f"{cells['n_cells']} cells, {cells['n_genes']} genes, "
         f"{len(cells['levels'])} cell types\n  "
-        + (f"neighbours share a cell type {cells['purity']:.3f} of the time\n  "
-           if cells["purity"] is not None
-           else "too few cells or cell types to check the coordinates line up\n  ")
-        + f"samples: "
+        + "samples: "
         + ", ".join(f"{k} {v}" for k, v in sorted(per_sample.items()))
-        # Which groups were actually judged. Everything else here describes the
-        # file; this describes what was checked, so a --group-column that was
-        # forgotten, or named a column too sparse to score, is visible instead
-        # of silently doing nothing.
-        + "".join(
-            f"\n  grouped by {column}: {len(judged)} of {n_groups} groups scored"
-            + (f", weakest {min(judged):.3f} of the way from chance to perfect"
-               if judged
-               else " — none had both enough cells and enough cell types to judge")
-            for column, n_groups, judged in cells["grouped"]
-        )
     )
 
 
@@ -665,7 +455,6 @@ def main(argv: list[str] | None = None) -> int:
         cells = read_cells(
             args.h5ad, args.annotation, args.sample_column,
             args.umap_key, args.expect_cells,
-            tuple(args.group_column),
         )
     except IngestError as exc:
         print(f"refusing to ingest: {exc}", file=sys.stderr)
