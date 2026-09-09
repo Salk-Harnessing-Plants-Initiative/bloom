@@ -96,13 +96,40 @@ ALTER TABLE public.scrna_de
   ADD CONSTRAINT scrna_de_groups_differ
   CHECK (group1 IS NULL OR group1 <> group2);
 
--- The pair that replaces a `tested` flag. Without this they could drift and
--- the UI would have to guess which one to believe.
+-- What replaces a `tested` flag: no file means no result, so every count is
+-- zero, not just the gene count. Without covering all of them a row can say it
+-- never ran and still report 500 significant genes.
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_no_file_means_nothing_tested;
 ALTER TABLE public.scrna_de
   ADD CONSTRAINT scrna_de_no_file_means_nothing_tested
-  CHECK (file_path IS NOT NULL OR COALESCE(n_genes_tested, 0) = 0);
+  CHECK (
+    file_path IS NOT NULL OR
+    COALESCE(n_genes_tested, 0)
+      + COALESCE(n_significant_fdr, 0)
+      + COALESCE(n_significant_fdr_lfc, 0)
+      + COALESCE(n_up, 0)
+      + COALESCE(n_down, 0) = 0
+  );
+
+-- Arithmetic that is true by definition of the counts. These cannot check the
+-- summary against the result file -- Postgres cannot read storage, and the
+-- ingest that holds both is where that comparison belongs. What they reject is
+-- a summary that contradicts itself, which is the shape a mis-parsed column or
+-- an off-by-one takes. NULL comparisons yield NULL and pass, so rows that
+-- store no summary are unaffected.
+ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_counts_consistent;
+ALTER TABLE public.scrna_de
+  ADD CONSTRAINT scrna_de_counts_consistent
+  CHECK (
+    -- more genes cannot pass a cut than were tested
+    n_significant_fdr <= n_genes_tested AND
+    -- the second cut is applied on top of the first, so it can only narrow
+    n_significant_fdr_lfc <= n_significant_fdr AND
+    -- a gene clearing a fold-change cut moved up or down; there is no third bucket
+    n_up + n_down = n_significant_fdr_lfc
+  );
 
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_counts_non_negative;

@@ -28,6 +28,7 @@ DROP POLICY IF EXISTS admin_all_scrna_de  ON public.scrna_de;
 DROP INDEX IF EXISTS public.idx_scrna_de_dataset_cluster_contrast;
 
 ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_counts_consistent,
   DROP CONSTRAINT IF EXISTS scrna_de_counts_non_negative,
   DROP CONSTRAINT IF EXISTS scrna_de_no_file_means_nothing_tested,
   DROP CONSTRAINT IF EXISTS scrna_de_groups_differ,
