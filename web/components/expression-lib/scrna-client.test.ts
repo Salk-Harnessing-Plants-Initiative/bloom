@@ -9,6 +9,8 @@
 
 import { describe, expect, it, vi } from "vitest";
 
+import { fetchGeneBin } from "./scrna-client";
+
 const downloaded: string[] = [];
 let response: { data: Blob | null; error: { message: string } | null };
 
@@ -25,7 +27,7 @@ vi.mock("@/lib/supabase/client", () => ({
   }),
 }));
 
-const { fetchGeneBin } = await import("./scrna-client");
+
 
 describe("fetchGeneBin", () => {
   it("reads the gene's object from the private bucket and decodes it as float32", async () => {
