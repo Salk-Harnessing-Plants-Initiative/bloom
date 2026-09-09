@@ -85,10 +85,16 @@ export async function fetchClusterStats(
  * `contrast` is null for the cluster-vs-rest marker list, and names the
  * comparison otherwise (e.g. "pFACT_vs_Col-0"). A dataset may hold either
  * kind, or both, for the same cluster.
+ *
+ * `group1` and `group2` are the two sides of that comparison. Labels are built
+ * from them rather than by splitting `contrast`, so no naming convention is
+ * assumed of the pipeline that produced it.
  */
 export type DeExport = {
   filePath: string;
   contrast: string | null;
+  group1: string | null;
+  group2: string | null;
 };
 
 /**
@@ -105,7 +111,7 @@ export async function fetchDeExports(
   const supabase = createClientSupabaseClient();
   const { data, error } = await supabase
     .from("scrna_de")
-    .select("file_path, contrast")
+    .select("file_path, contrast, group1, group2")
     .eq("dataset_id", datasetId)
     .eq("cluster_id", clusterId)
     .not("file_path", "is", null)
@@ -114,5 +120,7 @@ export async function fetchDeExports(
   return (data ?? []).map((row) => ({
     filePath: row.file_path as string,
     contrast: row.contrast,
+    group1: row.group1,
+    group2: row.group2,
   }));
 }

@@ -20,9 +20,11 @@ export interface ExpressionClusterDetailPanelProps {
  * Mounted by the cockpit only when exactly one cluster is visible so the
  * UMAP canvas keeps its full width when nothing is soloed.
  */
-/** "pFACT_vs_Col-0" -> "pFACT vs Col-0", for a link label. */
-function humanContrast(contrast: string): string {
-  return contrast.replace(/_vs_/g, " vs ");
+/** Label for one export link, built from the stored group names. */
+function exportLabel(de: DeExport): string {
+  if (!de.contrast) return "markers";
+  if (de.group1 && de.group2) return `${de.group1} vs ${de.group2}`;
+  return de.contrast;
 }
 
 export function ExpressionClusterDetailPanel({
@@ -158,24 +160,34 @@ export function ExpressionClusterDetailPanel({
             Export CSV
           </span>
         ) : (
-          deExports.map((de, i) => (
-            <span key={de.filePath}>
-              {i > 0 && <span className="text-stone-300"> · </span>}
-              <a
-                href={de.filePath}
-                target="_blank"
-                rel="noopener"
-                className="text-lime-700 hover:underline"
-                title={
-                  de.contrast
-                    ? `${name} cells, ${humanContrast(de.contrast)}`
-                    : `${name} against all other cells`
-                }
-              >
-                {de.contrast ? humanContrast(de.contrast) : "Export CSV"}
-              </a>
-            </span>
-          ))
+          <>
+            {/* One link per available result. The label only appears once there
+                is more than one, so a dataset with just marker genes reads the
+                same as it always has. */}
+            {deExports.length > 1 && (
+              <span className="text-stone-500">Export CSV: </span>
+            )}
+            {deExports.map((de, i) => (
+              <span key={de.filePath}>
+                {i > 0 && <span className="text-stone-300"> · </span>}
+                <a
+                  href={de.filePath}
+                  target="_blank"
+                  rel="noopener"
+                  className="text-lime-700 hover:underline"
+                  title={
+                    de.contrast
+                      ? `${name} cells, ${exportLabel(de)}`
+                      : `${name} against all other cells`
+                  }
+                >
+                  {deExports.length === 1 && !de.contrast
+                    ? "Export CSV"
+                    : exportLabel(de)}
+                </a>
+              </span>
+            ))}
+          </>
         )}
         <span className="text-stone-300">·</span>
         <button
