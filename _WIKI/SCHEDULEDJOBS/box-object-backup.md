@@ -220,9 +220,14 @@ tmux new -s box-seed
 # Re-run the export block above INSIDE the session before this command.
 # When a tmux server is already running, a new session's shell inherits the
 # SERVER's environment, not the one you just set up — so OBJECT_BACKUP_*,
-# MINIO_ROOT_* and $DEPLOY may all be missing in here. Every one of them
-# fails loudly rather than silently, but you find out four hours in.
-python3 "$DEPLOY/scheduled-jobs/box-object-backup/backup_objects.py" \
+# and $DEPLOY may all be missing in here. Every one of them fails loudly, and
+# before the eight-million-row read, so a wrong value costs seconds.
+#
+# `cd` first: the job looks for `.env.<env>` in the working directory, so an
+# absolute path to the script is not enough. Add --env-file before the main
+# promotion, when the settings are not in prod's file yet.
+cd "$DEPLOY"
+python3 scheduled-jobs/box-object-backup/backup_objects.py \
     --env prod --full --limit 500000 --verify 50
 ```
 
@@ -556,10 +561,12 @@ difference, but it lives in `/var/lib` behind SSH and SQLite.
 Each report carries the run's outcome (`ok`, `partial`, `error`), its
 duration, the counts (`listed`, `copied`, `failed`, `skipped`,
 `already_current`, `verify_checked`, `verify_mismatched`, `verify_unverified`),
-and the paths of every object that is **not** on Box, by all three routes:
+and the paths of every object that is **not** on Box, by every route:
 `failures` (the copy failed), `skips` (refused for its name, with the reason),
 and `verify_failures` (the copy reported success and the check found it
-absent). All three are capped, with `failure_count` and `skips_truncated`
+absent), plus `name_skips` and `source_gone`. Each is capped, with
+`failure_count`, `failures_truncated`, `skips_truncated`,
+`name_skips_truncated` and `source_gone_truncated`
 saying so; the counts in `stats` remain exact. Reports are written for failed
 runs too.
 
@@ -672,10 +679,9 @@ both halves, in this order:
 1. Restore the Postgres dump. That brings back `storage.objects`, including
    each object's `version`.
 
-   **There is no scheduled Postgres dump yet** — that job is separate work and
-   is not in this repository. Until it exists, step 1 depends on whatever
-   database backup you have, and this procedure cannot be completed from the
-   object mirror alone.
+   The weekly Postgres dump on Box carries those rows — see
+   `_WIKI/SCHEDULEDJOBS/weekly-backup.md` for restoring it. Both halves of a
+   restore now exist: that dump has the rows, this mirror has the bytes.
 2. For each row, upload the Box copy back to MinIO at
    `<OBJECT_BACKUP_MINIO_BUCKET>/<OBJECT_BACKUP_MINIO_PREFIX>/<bucket_id>/<name>/<version>`
    — with the deployed defaults, that is

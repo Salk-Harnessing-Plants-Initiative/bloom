@@ -39,6 +39,9 @@ class Verdict:
     stats: dict = field(default_factory=dict)
     # True when the log pipe died and this came off the host instead.
     from_report: bool = False
+    # True when the run reported nothing at all and the step's own outcome had
+    # to stand in. Nothing here was measured, so no count may be quoted.
+    assumed: bool = False
 
     def has(self, flag: str) -> bool:
         return flag in self.flags
@@ -59,10 +62,19 @@ def from_log(text: str) -> Verdict | None:
         return None
     flags = _FLAGS.findall(text)
     stats = _STATS.findall(text)
+    counts = {}
+    if stats:
+        try:
+            parsed = json.loads(stats[-1])
+        except ValueError:
+            # Degrade like `from_report` does. A page with no counts beats a
+            # step that raises and leaves the summary empty.
+            parsed = None
+        counts = parsed if isinstance(parsed, dict) else {}
     return Verdict(
         status=status[-1],
         flags=_flags(flags[-1]) if flags else (),
-        stats=json.loads(stats[-1]) if stats else {},
+        stats=counts,
     )
 
 
@@ -119,12 +131,14 @@ def counts_phrase(verdict: Verdict, dry_run: bool) -> str:
     elif unverified:
         # Nothing answered: without this the shortfall reads as a copy count.
         phrase += ", 0 verified"
+    # Immediately after the count it qualifies, not at the end — trailing the
+    # whole phrase, it reads as qualifying whatever clause came last.
+    if unverified:
+        phrase += f" ({unverified:,} unanswered)"
     # Never let a headline read "nothing new to copy" while objects were
     # passed over for having no image behind them.
     if gone:
         phrase += f"{', ' if phrase else ''}{gone:,} with no image behind them"
-    if unverified:
-        phrase += f" ({unverified:,} unanswered)"
     return phrase
 
 
@@ -185,9 +199,13 @@ def _headline(
     said: set[str] = set()
     out: list[str] = []
 
-    if dry_run:
+    if dry_run and not verdict.assumed:
         # It writes no run report and records no run, so the branches below —
         # which all point at `_runs/` — cannot describe it.
+        #
+        # `assumed` excludes a dry run that died before reporting: its counts
+        # were never measured, and "would copy 0, nothing was copied" reads as
+        # a clean pre-seed check on the run that is meant to catch problems.
         said.add("dry")
         out.append(f"Result: **{counts}**.")
         if verdict.has("collisions") or verdict.has("skipped_names"):
@@ -204,6 +222,7 @@ def _headline(
             "seed is doing that work. This is expected until it ends."
         )
     elif verdict.status == "failed" and verdict.has("verify_mismatch"):
+        said.add("mismatch")
         out.append(
             "Result: **FAILED, and verification found objects missing** — "
             "objects failed to copy tonight AND the check found others the "
@@ -214,10 +233,11 @@ def _headline(
         )
     elif verdict.has("verify_mismatch"):
         # Reached only when the run did NOT fail — the branch above takes those.
+        said.add("mismatch")
         out += [
             "Result: **VERIFICATION FAILED** — objects the copy reported as "
             "successful are not on Box. Every one is named in the run report "
-            "under `_runs/`.",
+            f"under `_runs/`.{f' The night otherwise: {counts}.' if counts else ''}",
             "",
             "The run changed nothing to compensate: the ledger still records "
             "them as mirrored, so later runs skip them and this warning does "
@@ -261,7 +281,10 @@ def _headline(
                 "Check the job log for the ledger upload: the verdict came "
                 "from the run report, which is written before it."
             )
-        else:
+        elif not verdict.flags:
+            # Only when the night raised nothing. Every flag below prints a
+            # notice telling someone to act, and during the seed every night
+            # is stopped — so this line would contradict them nightly.
             out.append("Nothing needs doing.")
         if verdict.count("copied"):
             out.append(f"It got through {counts}.")
@@ -306,6 +329,14 @@ def _notices(verdict: Verdict, said: set[str]) -> list[str]:
             "START of its `skipping` line in the job log. Resolve this before "
             "the missing objects above: the two are entangled, and acting on "
             "one while the other stands can lose a backup."
+        )
+    if verdict.has("verify_mismatch") and "mismatch" not in said:
+        note(
+            "**Verification found objects missing from Box.** The copy "
+            "reported them as successful and the check disagreed; every one "
+            "is named in the run report under `_runs/`. Putting them back "
+            "needs a person — see 'What verification does, and does not, "
+            "prove' in the wiki."
         )
     if verdict.has("ledger_stale"):
         note(_NOTICES["ledger_stale"])
@@ -380,7 +411,7 @@ def verdict_for(log: str, report: str, outcome: str) -> Verdict:
     found = from_log(log) or (from_report(report) if report else None)
     if found is None:
         # Nothing anywhere: the step's own outcome is the verdict.
-        return Verdict(status="ok" if outcome == "success" else "failed")
+        return Verdict(status="ok" if outcome == "success" else "failed", assumed=True)
     if found.from_report:
         print(
             f"verdict taken from the run report on the host: {found.status} "

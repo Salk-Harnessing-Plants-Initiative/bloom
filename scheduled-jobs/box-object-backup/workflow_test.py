@@ -133,12 +133,18 @@ class TestTheJobAndTheRendererAgree:
     def test_the_step_only_looks_for_a_verdict_it_cannot_be_fooled_by(
         self, summary_script: str
     ):
-        # The step's own pre-check decides whether to fall back to the host.
-        # Unanchored, a refused object name containing the key would make a
-        # lost night look like one that reported for itself.
-        assert "'^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_STATUS='" in summary_script, (
-            "the step's verdict check is not anchored to the start of a line"
-        )
+        """The step's own pre-check decides whether to fall back to the host.
+
+        Two ways it can be wrong. Unanchored, a refused object name carrying
+        the key makes a lost night look like one that reported for itself.
+        Laxer than the renderer's own pattern, a half-written status line —
+        the pipe dying mid-write is exactly when the fallback is needed —
+        satisfies the step, suppresses the fetch, and the verdict silently
+        degrades to the step's own outcome.
+        """
+        assert (
+            "'^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_STATUS=[a-z_]+$'" in summary_script
+        ), "the step's verdict check does not match the renderer's own pattern"
 
     def test_the_job_emits_a_status_the_summary_knows(
         self, tmp_path, monkeypatch, caplog
@@ -579,8 +585,12 @@ class TestCancellingTheJobStopsTheRun:
         # knows what is running or who started it.
         script = self.step(parsed)["run"]
         assert "backup.lock" in script
-        assert "read_lock pid" in script
-        assert "read_lock actions_run" in script
+        # One read, not two: the file must not change between them.
+        assert script.count("json.load(open(") == 1, (
+            "the lock is opened more than once, so the pid and the owner can "
+            "come from different states of the file"
+        )
+        assert 'd.get("pid"' in script and 'd.get("actions_run"' in script
 
     def test_it_asks_rather_than_kills(self, parsed: dict):
         # SIGKILL is the hard kill this whole change exists to avoid: it would
@@ -1198,3 +1208,50 @@ class TestNoStepGrowsIntoAProgram:
         assert shell_lines(program) > MAX_SHELL_LINES
         commented = "\n".join(f"# comment {n}" for n in range(500))
         assert shell_lines(commented) == 0, "comments must not count against a step"
+
+
+class TestTheCancelStepCannotSignalTheWrongThing:
+    """The seed runs by hand for days. Everything here protects that."""
+
+    def step(self, parsed: dict) -> str:
+        return next(
+            s["run"]
+            for s in parsed["jobs"]["mirror"]["steps"]
+            if s.get("name", "").startswith("Ask the host to stop")
+        )
+
+    def test_it_never_signals_a_process_group(self, parsed: dict):
+        # `kill -TERM 0` signals the caller's entire process group. os.getpid()
+        # is never 0, so this is unreachable — and much too expensive to leave
+        # resting on that.
+        assert '[ "$pid" -gt 0 ]' in self.step(parsed)
+
+    def test_it_reads_the_lock_once(self, parsed: dict):
+        assert self.step(parsed).count("json.load(open(") == 1
+
+    def test_its_ssh_carries_the_same_options_as_the_summary_step(self, parsed: dict):
+        # Without BatchMode a rejected key becomes a password prompt reading
+        # from the heredoc.
+        for option in (
+            "-o BatchMode=yes",
+            "-o ConnectTimeout=",
+            "-o StrictHostKeyChecking=yes",
+        ):
+            assert option in self.step(parsed), option
+
+    def test_the_run_step_records_the_tag_both_consumers_compare(self, parsed: dict):
+        """All three steps must mean the same thing by "this job".
+
+        If the run step's tag diverged, it would record a name neither guard
+        matches: the cancel step would stop signalling its own run and the
+        summary would stop finding its own report. Both fail safe, so nothing
+        would notice.
+        """
+        tag = "${{ github.run_id }}-${{ github.run_attempt }}"
+        for name in ("Run the mirror", "Ask the host to stop", "Write the run summary"):
+            step = next(
+                s
+                for s in parsed["jobs"]["mirror"]["steps"]
+                if s.get("name", "").startswith(name)
+            )
+            assert step["env"]["RUN_TAG"] == tag, name

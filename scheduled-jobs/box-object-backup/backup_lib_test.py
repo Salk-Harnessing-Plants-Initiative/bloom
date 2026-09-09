@@ -1357,3 +1357,51 @@ def test_a_missing_item_is_still_absence(monkeypatch):
     client = RcloneRC("http://127.0.0.1:5572")
     monkeypatch.setattr(client, "call", lambda method, payload: {"item": None})
     assert client.stat("fs", "remote") is None
+
+
+class TestACredentialWithWhitespaceIsStillRedacted:
+    """This string reaches the job log and `$GITHUB_STEP_SUMMARY`, on a public
+    repository — rclone echoes the failing remote back in its errors.
+
+    A bare value in a connection string ends at the first space as far as the
+    redactor is concerned, so a passphrase came through as
+    `secret_access_key=*** horse battery`. Quoting every value that holds
+    whitespace keeps the redactor's quoted alternative in play.
+    """
+
+    def fs_for(self, secret: str) -> str:
+        return MinioSource(
+            endpoint="http://supabase-minio:9000",
+            access_key="access-key-id",
+            secret_key=secret,
+            bucket="bloom-storage",
+            prefix="storage-single-tenant",
+        ).fs()
+
+    @pytest.mark.parametrize(
+        "secret",
+        [
+            "correct horse battery staple",
+            " leading-space",
+            "trailing-space ",
+            "tab\tseparated",
+            "two  spaces",
+            "plain",
+            'has"quote and space',
+            "has,comma and space",
+        ],
+    )
+    def test_no_word_of_the_secret_survives(self, secret):
+        redacted = redact(self.fs_for(secret))
+        for word in secret.split():
+            assert word not in redacted, f"{word!r} leaked from {secret!r}"
+
+    def test_the_access_key_goes_too(self):
+        assert "access-key-id" not in redact(self.fs_for("s"))
+
+    def test_the_parts_that_are_not_secret_survive(self):
+        # A redactor that scrubbed the whole string would hide the remote the
+        # error is about, which is the only reason the error is useful.
+        redacted = redact(self.fs_for("correct horse battery"))
+        assert "bloom-storage" in redacted
+        assert "supabase-minio:9000" in redacted

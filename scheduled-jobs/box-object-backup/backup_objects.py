@@ -54,7 +54,7 @@ from copier import (  # noqa: E402
     verify_sample,
 )
 from ledger import Ledger  # noqa: E402
-from rclone_rc import MinioSource, RcloneError, RcloneRC  # noqa: E402
+from rclone_rc import DEFAULT_RC_PORT, MinioSource, RcloneError, RcloneRC  # noqa: E402
 import stopping  # noqa: E402
 from runlock import ACTIONS_RUN_ENV, SKIP_MARKER, LockHeld, RunLock  # noqa: E402
 
@@ -131,7 +131,9 @@ ENV_KEYS = (
 # Returned to the caller instead of exported. Every `docker` child this job
 # starts inherits our environment, so a secret left in it travels further than
 # the one function that needs it.
-SECRET_ENV_KEYS = ("MINIO_ROOT_PASSWORD",)
+# `.env.prod.defaults` classifies both of these as credentials rather than
+# config: they pair with an admin password.
+SECRET_ENV_KEYS = ("MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD")
 
 # The renderer anchors on this shape — timestamp, level, then the key — so the
 # two are named in one place. `asctime` contains a space.
@@ -319,8 +321,13 @@ PREFLIGHT_SAMPLE = 5
 PREFLIGHT_SCAN = 10_000
 
 
-def env_file_for(argv: list[str] | None) -> Path:
-    """Which deploy env file this invocation reads, before anything is parsed."""
+def env_file_for(argv: list[str] | None) -> tuple[Path, bool]:
+    """The env file this invocation reads, and whether it asked for debug logs.
+
+    Both are needed before `parse_args`: the file fills the environment its
+    defaults read, and the log level has to be set to report a failure to read
+    it.
+    """
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--env", default="prod")
     pre.add_argument("--env-file", default="")
@@ -347,6 +354,10 @@ def check_state_dir(args: argparse.Namespace, configured: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Before anything reads a file: --help is how an operator finds the
+    # argument surface, and it must work from any directory.
+    if {"-h", "--help"} & set(argv if argv is not None else sys.argv[1:]):
+        parse_args(argv)
     env_file, verbose = env_file_for(argv)
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -360,7 +371,11 @@ def main(argv: list[str] | None = None) -> int:
         # environment, and this file is what fills it.
         found = apply_env_file(env_file)
         args = parse_args(argv)
-        args.minio_secret = found.get("MINIO_ROOT_PASSWORD") or args.minio_secret
+        # The environment first, then the file — the same precedence every
+        # other key gets, and the same order the sibling job uses. Reversed,
+        # an operator who exports a corrected password silently gets the
+        # file's.
+        args.minio_secret = args.minio_secret or found.get("MINIO_ROOT_PASSWORD", "")
         check_state_dir(args, found.get("OBJECT_BACKUP_STATE_DIR", ""))
         return run_backup(args)
     except (dock.DockerError, lib.BackupError) as exc:
@@ -369,6 +384,22 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         logger.warning("interrupted — ledger holds progress; re-run to resume")
         return 3
+
+
+def _env_int(key: str, default: int) -> int:
+    """A whole number from the environment, or a config failure naming the key.
+
+    Read while the parser's defaults are being built, so an unhandled
+    ValueError here is a traceback and exit 1 — the code documented as "objects
+    failed after retries" — before the run has printed a verdict.
+    """
+    raw = os.environ.get(key, "")
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise lib.BackupError(f"{key} must be a whole number, not {raw!r}") from None
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -424,12 +455,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--workers",
         type=int,
-        default=int(os.environ.get("OBJECT_BACKUP_WORKERS", DEFAULT_WORKERS)),
+        default=_env_int("OBJECT_BACKUP_WORKERS", DEFAULT_WORKERS),
     )
     parser.add_argument(
         "--rc-port",
         type=int,
-        default=int(os.environ.get("OBJECT_BACKUP_RC_PORT", 5572)),
+        default=_env_int("OBJECT_BACKUP_RC_PORT", DEFAULT_RC_PORT),
     )
     parser.add_argument(
         "--bwlimit", default=os.environ.get("OBJECT_BACKUP_BWLIMIT", "")

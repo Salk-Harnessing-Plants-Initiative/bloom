@@ -481,3 +481,106 @@ class TestANoticeIsNeverSwallowedByAHeadline:
     def test_it_survives_alongside_every_other_condition(self, flag):
         out = render("failed", list(self.SAID), copied=3, source_gone=2)
         assert self.SAID[flag] in out, f"{flag} is lost when everything happens"
+
+
+class TestAVerdictNobodyReportedIsNotOne:
+    """When neither the log nor the host's report has a verdict, the step's own
+    outcome stands in — and nothing about that night was measured."""
+
+    def test_a_dry_run_that_died_is_not_described_as_a_clean_dry_run(self):
+        """The worst place for a silent pass.
+
+        `--dry-run` is step one of the pre-seed checklist and the first thing
+        run on a rebuilt host. A dry run that crashed before reporting must
+        not render "would copy 0, nothing was copied" — that is a fabricated
+        count presented as a measurement, on the run whose whole job is to
+        catch problems before a multi-day seed.
+        """
+        page = summary.render(
+            summary.verdict_for("", "", "failure"),
+            "prod",
+            "2026-08-31 02:20:03,1 ERROR preflight: nothing resolved",
+            dry_run=True,
+        )
+        assert "Result: **FAILED**" in page
+        assert "would copy" not in page
+
+    @pytest.mark.parametrize("outcome", ["failure", "cancelled", ""])
+    def test_no_outcome_but_success_reads_as_a_dry_run(self, outcome):
+        page = summary.render(
+            summary.verdict_for("", "", outcome), "prod", "", dry_run=True
+        )
+        assert "would copy" not in page, outcome
+
+    def test_a_dry_run_that_did_report_still_reads_as_one(self):
+        page = render(copied=1234, dry_run=True)
+        assert "dry run — would copy 1,234, nothing was copied" in page
+
+    def test_the_stand_in_verdict_is_marked_as_one(self):
+        assert summary.verdict_for("", "", "success").assumed
+        assert not summary.from_log(job_log("ok", "", copied=1)).assumed
+
+
+class TestTheHeadlineNeverContradictsANotice:
+    """A page that says "nothing needs doing" above "fix it now" teaches an
+    operator to stop reading it."""
+
+    @pytest.mark.parametrize("flag", sorted(FLAG_VALUES))
+    def test_a_stopped_night_that_raised_something_does_not_say_it_is_fine(self, flag):
+        # During the seed EVERY night is stopped — the job's own time limit —
+        # so this is the nightly case, not an edge one.
+        page = render("stopped", [flag], copied=214338, source_gone=1)
+        assert "Nothing needs doing." not in page, flag
+
+    def test_a_stopped_night_that_raised_nothing_still_says_so(self):
+        assert "Nothing needs doing." in render("stopped", copied=5)
+
+    def test_a_recovered_night_says_where_to_look_instead(self):
+        page = render("stopped", copied=5, from_report=True)
+        assert "Nothing needs doing." not in page
+        assert "Check the job log for the ledger upload" in page
+
+
+class TestTheCountsQualifyTheRightThing:
+    def test_the_unanswered_count_follows_the_verified_count(self):
+        # Trailing the whole phrase it reads as qualifying whatever came last
+        # — "5 with no image behind them (7 unanswered)".
+        phrase = summary.counts_phrase(
+            verdict(
+                copied=120000, verify_checked=43, source_gone=5, verify_unverified=7
+            ),
+            False,
+        )
+        assert "43 verified (7 unanswered)" in phrase
+        assert phrase.endswith("5 with no image behind them")
+
+    def test_a_failed_verification_still_reports_what_was_copied(self):
+        # The one night the numbers matter most: a bare headline cannot be
+        # told from a vanished mirror.
+        page = render("ok", ["verify_mismatch"], copied=214338, verify_checked=50)
+        assert "214,338" in page
+
+
+class TestAMalformedCountsLineDoesNotEmptyThePage:
+    def test_it_degrades_like_the_report_does(self):
+        # The step's last command is this renderer; if it raises, GitHub shows
+        # a red tick over a blank page.
+        text = (
+            log_line("BOX_BACKUP_STATUS", "ok")
+            + "\n"
+            + log_line("BOX_BACKUP_FLAGS", "")
+            + "\n"
+            + log_line("BOX_BACKUP_STATS", "{not json at all}")
+        )
+        found = summary.from_log(text)
+        assert found is not None and found.status == "ok" and found.stats == {}
+
+    @pytest.mark.parametrize("body", ["{}", "[1,2]", '"a string"', "null"])
+    def test_a_counts_line_that_is_not_an_object_is_ignored(self, body):
+        text = (
+            log_line("BOX_BACKUP_STATUS", "ok")
+            + "\n"
+            + log_line("BOX_BACKUP_STATS", body)
+        )
+        found = summary.from_log(text)
+        assert found is not None and found.stats == {}

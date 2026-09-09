@@ -4064,3 +4064,85 @@ class TestItReadsItsSettingsFromTheDeployEnvFile:
     def test_the_file_it_reads_is_the_environment_it_was_given(self, tmp_path):
         assert job.env_file_for(["--env", "prod"])[0] == Path(".env.prod")
         assert job.env_file_for(["--env-file", "/x/y"])[0] == Path("/x/y")
+
+
+class TestTheEnvironmentWinsOverTheFile:
+    """Documented in three places, and the secret is not an exception.
+
+    The pre-promotion runbook has an operator point the job at production's
+    env file for the credentials and supply the rest by export. If the file
+    won for the password, someone exporting a corrected one would silently get
+    the file's — the failure being an authentication error they just fixed.
+    The sibling job resolves it the same way round.
+    """
+
+    def env_file(self, tmp_path):
+        path = tmp_path / ".env.prod"
+        path.write_text("MINIO_ROOT_PASSWORD=from-the-file\nOBJECT_BACKUP_WORKERS=8\n")
+        return path
+
+    def test_an_exported_secret_beats_the_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MINIO_ROOT_PASSWORD", "exported")
+        found = job.apply_env_file(self.env_file(tmp_path))
+        args = job.parse_args(["--env", "prod"])
+        args.minio_secret = args.minio_secret or found.get("MINIO_ROOT_PASSWORD", "")
+        assert args.minio_secret == "exported"
+
+    def test_the_file_is_used_when_nothing_is_exported(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MINIO_ROOT_PASSWORD", raising=False)
+        found = job.apply_env_file(self.env_file(tmp_path))
+        args = job.parse_args(["--env", "prod"])
+        args.minio_secret = args.minio_secret or found.get("MINIO_ROOT_PASSWORD", "")
+        assert args.minio_secret == "from-the-file"
+
+    def test_it_matches_the_sibling_job(self):
+        # weekly-backup resolves its own password the same way round; the two
+        # jobs must not disagree about what an export means.
+        sibling = Path(__file__).resolve().parents[1] / "weekly-backup" / "backup.py"
+        assert '_env("POSTGRES_PASSWORD") or values.get(' in sibling.read_text()
+
+
+class TestHelpWorksWithoutADeployEnvFile:
+    """`--help` is how an operator finds the argument surface, and they reach
+    for it exactly when they are unsure which directory to run from.
+
+    Every default in the parser reads the environment, so `main` loads the env
+    file before building it — which made `--help` exit 2 on a missing file.
+    """
+
+    @pytest.mark.parametrize("flag", ["-h", "--help"])
+    def test_it_prints_usage_rather_than_a_config_error(
+        self, flag, capsys, monkeypatch, tmp_path
+    ):
+        monkeypatch.chdir(tmp_path)  # no .env.prod here
+        with pytest.raises(SystemExit) as exit_info:
+            job.main([flag])
+        assert exit_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "--env-file" in out and "--state-dir" in out
+
+    def test_a_real_run_still_needs_the_file(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        assert job.main(["--env", "prod"]) == 2
+
+
+class TestAMalformedNumberIsAConfigFailure:
+    """Read while argparse builds its defaults, so an unhandled ValueError is a
+    traceback and exit 1 — the code documented as "objects failed after
+    retries" — before the run has printed any verdict at all."""
+
+    @pytest.mark.parametrize("key", ["OBJECT_BACKUP_WORKERS", "OBJECT_BACKUP_RC_PORT"])
+    @pytest.mark.parametrize("bad", ["lots", "5572x", "8.5", "", " "])
+    def test_it_names_the_key_and_exits_two(self, key, bad, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env.prod").write_text(f"{key}={bad}\n")
+        monkeypatch.delenv(key, raising=False)
+        assert job.main(["--env", "prod", "--state-dir", str(tmp_path)]) == 2
+
+    def test_a_blank_value_still_falls_back_to_the_default(self, monkeypatch):
+        monkeypatch.delenv("OBJECT_BACKUP_WORKERS", raising=False)
+        assert job._env_int("OBJECT_BACKUP_WORKERS", 8) == 8
+
+    def test_a_good_value_is_used(self, monkeypatch):
+        monkeypatch.setenv("OBJECT_BACKUP_WORKERS", "3")
+        assert job._env_int("OBJECT_BACKUP_WORKERS", 8) == 3

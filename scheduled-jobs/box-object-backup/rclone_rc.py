@@ -101,8 +101,14 @@ def _escape(value: str) -> str:
     endpoint as `http`, drop every parameter after it, and fail every copy:
 
         ERROR : Custom endpoint `http` was not a valid URI
+
+    Whitespace is in the set for a different reason: it is not a separator to
+    rclone, but `redact` reads a bare value as ending at the first space, so a
+    passphrase with a space in it came through as `secret_access_key=*** horse
+    battery`. Quoting every value that holds one keeps the redactor's quoted
+    alternative in play.
     """
-    if any(ch in value for ch in ',":'):
+    if any(ch in value for ch in ',":') or any(ch.isspace() for ch in value):
         return '"' + value.replace('"', '""') + '"'
     return value
 
@@ -205,9 +211,10 @@ SECRET_PARAMS = ("secret_access_key", "access_key_id", "rc-pass")
 
 # The value is either a quoted run (doubled quotes escape a literal one) or a
 # bare token. The bare alternative must NOT exclude `"` and `,`: those are the
-# characters `_escape` wraps a value in, and since it also quotes on `:`, every
-# credential in a real fs string is quoted — a redactor that cannot read quotes
-# would redact nothing.
+# characters `_escape` wraps a value in, and since it also quotes on `:` and on
+# whitespace, every credential in a real fs string is quoted — a redactor that
+# cannot read quotes would redact nothing. It runs to the end of the parameter
+# so an unquoted value cannot leak its tail.
 _SECRET_RE = re.compile(
     r"(" + "|".join(SECRET_PARAMS) + r")=(\"(?:[^\"]|\"\")*\"|[^,\s:]+)",
     re.IGNORECASE,

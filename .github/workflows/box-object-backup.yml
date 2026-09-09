@@ -79,7 +79,7 @@ concurrency:
 
 env:
   # The job's own default for OBJECT_BACKUP_STATE_DIR, in one place. Three separate
-  # ssh sessions need it — the run stamps its marker there, the cancel step
+  # ssh sessions need it — the run takes its lock there, the cancel step
   # finds the lock there, the summary falls back to the reports there — and
   # none of the last two reads the env file, so they cannot look it up. The
   # run step refuses to start if the job's value differs from this one.
@@ -102,7 +102,7 @@ jobs:
     # hours means something is wrong, or a seed is still in progress, and in the
     # latter case this job stands down in seconds.
     timeout-minutes: 240
-    # Deliberately a DIFFERENT literal than the target resolution below: this
+    # Deliberately a DIFFERENT literal than the `ENV_NAME` above: this
     # is the approval-gate name, and the scheduled path must not be gated.
     environment: ${{ github.event_name == 'schedule' && 'production-scheduled-backup' || 'production' }}
     steps:
@@ -213,23 +213,27 @@ jobs:
           # words into one string for the remote shell to parse. This tag is a
           # run id and cannot carry a payload, but the pattern gets copied.
           remote_args="$(printf '%q ' "$RUN_TAG" "$STATE_DIR")"
-          ssh -i ~/.ssh/deploy_key -o ConnectTimeout=15 \
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes \
             "${DEPLOY_USER}@${DEPLOY_HOST}" "bash -s -- $remote_args" <<'REMOTE' || true
           set -uo pipefail
           run_tag="$1"; state_dir="$2"
           lock="$state_dir/backup.lock"
           [ -r "$lock" ] || { echo "no lock file — nothing was running"; exit 0; }
 
-          # The lock names its holder and the job that started it.
-          read_lock() {
-            python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' \
-              "$lock" "$1" 2>/dev/null || true
-          }
-          pid="$(read_lock pid)"
-          owner="$(read_lock actions_run)"
+          # Both fields out of ONE read. Two opens leave a window in which the
+          # file changes between them, and the pid of one run could then be
+          # signalled under the name of another.
+          read -r pid owner <<EOF
+          $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("pid",""), d.get("actions_run",""))' "$lock" 2>/dev/null || true)
+          EOF
           case "${pid:-}" in
             ''|*[!0-9]*) echo "no pid in the lock file — nothing to stop"; exit 0 ;;
           esac
+          # `kill -TERM 0` signals the caller's whole process group. os.getpid()
+          # is never 0, so this is unreachable — and far too expensive to leave
+          # resting on that.
+          [ "$pid" -gt 0 ] || { echo "refusing to signal pid $pid"; exit 0; }
 
           # Whoever holds the lock is not necessarily the run this job started.
           # During the seed that distinction is days of work: the seed holds
@@ -257,8 +261,8 @@ jobs:
           REMOTE
 
       # A run that stood down against the seed's lock exits 0, exactly as a
-      # successful run does. Reading the marker is the only way to tell them
-      # apart, and calling a stood-down night "succeeded" is how a months-long
+      # successful run does. The run's own status line is the only way to tell
+      # them apart, and calling a stood-down night "succeeded" is how a months-long
       # gap in the mirror goes unnoticed.
       - name: Write the run summary
         if: always()
@@ -290,7 +294,7 @@ jobs:
           # the only place that verdict exists. Asked for by this job's own
           # name, so a nightly that stood down against the seed's lock cannot
           # report the seed's night as its own.
-          if ! grep -qE '^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_STATUS=' "$log" 2>/dev/null \
+          if ! grep -qE '^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_STATUS=[a-z_]+$' "$log" 2>/dev/null \
              && [ -n "${DEPLOY_USER:-}" ] && [ -n "${DEPLOY_HOST:-}" ]; then
             report="${RUNNER_TEMP}/run-report.json"
             remote_args="$(printf '%q ' "$DEPLOY_PATH" "$STATE_DIR" "$RUN_TAG")"

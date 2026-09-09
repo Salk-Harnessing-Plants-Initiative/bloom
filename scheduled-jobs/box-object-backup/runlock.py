@@ -33,9 +33,9 @@ LOCK_FILENAME = "backup.lock"
 # started by hand, which is how the seed runs.
 ACTIONS_RUN_ENV = "OBJECT_BACKUP_ACTIONS_RUN"
 
-# Printed verbatim when a run stands down. The workflow greps for it to label
-# the run summary "skipped" rather than "succeeded", so it must stay in sync
-# with .github/workflows/box-object-backup.yml.
+# Printed verbatim when a run stands down, for a person reading the job log.
+# The machine-readable verdict is the `BOX_BACKUP_STATUS=skipped` line that
+# `emit_status` prints beside it; nothing parses this one.
 SKIP_MARKER = "box-object-backup: SKIPPED — another run holds the lock"
 
 
@@ -167,6 +167,12 @@ def _read_holder(fd: int) -> LockHolder:
         if not raw:
             return LockHolder(None, None, None)
         data = json.loads(raw)
+        if not isinstance(data, dict):
+            # Valid JSON that is not an object — `123`, `null`, `["a"]`. The
+            # `.get` below would raise AttributeError, which `acquire`'s
+            # `except OSError` does not catch, so a run that should stand down
+            # cleanly would traceback instead.
+            return LockHolder(None, None, None)
         return LockHolder(
             pid=_as_int(data.get("pid")),
             started_at=_as_float(data.get("started_at")),

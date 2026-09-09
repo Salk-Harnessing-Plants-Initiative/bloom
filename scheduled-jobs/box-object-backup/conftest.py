@@ -27,6 +27,7 @@ Anything that genuinely needs the network says so with
 
 from __future__ import annotations
 
+import os
 import socket
 
 import pytest
@@ -54,3 +55,17 @@ def no_network(request, monkeypatch):
         return
     monkeypatch.setattr(socket.socket, "connect", _refuse)
     monkeypatch.setattr(socket.socket, "connect_ex", _refuse)
+
+
+@pytest.fixture(autouse=True)
+def no_env_leak():
+    """The job copies its env file into `os.environ`; put it back afterwards.
+
+    One process per run in production, one process for the whole suite here, so
+    a value a test causes the job to load would otherwise reach every test that
+    follows it.
+    """
+    before = os.environ.copy()
+    yield
+    os.environ.clear()
+    os.environ.update(before)
