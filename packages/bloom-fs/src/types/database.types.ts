@@ -3096,21 +3096,51 @@ export type Database = {
       scrna_de: {
         Row: {
           cluster_id: string | null
+          contrast: string | null
           dataset_id: number
-          file_path: string
+          file_path: string | null
+          group1: string | null
+          group2: string | null
           id: number
+          n_down: number | null
+          n_genes_tested: number | null
+          n_group1: number | null
+          n_group2: number | null
+          n_significant_fdr: number | null
+          n_significant_fdr_lfc: number | null
+          n_up: number | null
         }
         Insert: {
           cluster_id?: string | null
+          contrast?: string | null
           dataset_id: number
-          file_path: string
+          file_path?: string | null
+          group1?: string | null
+          group2?: string | null
           id?: number
+          n_down?: number | null
+          n_genes_tested?: number | null
+          n_group1?: number | null
+          n_group2?: number | null
+          n_significant_fdr?: number | null
+          n_significant_fdr_lfc?: number | null
+          n_up?: number | null
         }
         Update: {
           cluster_id?: string | null
+          contrast?: string | null
           dataset_id?: number
-          file_path?: string
+          file_path?: string | null
+          group1?: string | null
+          group2?: string | null
           id?: number
+          n_down?: number | null
+          n_genes_tested?: number | null
+          n_group1?: number | null
+          n_group2?: number | null
+          n_significant_fdr?: number | null
+          n_significant_fdr_lfc?: number | null
+          n_up?: number | null
         }
         Relationships: [
           {
