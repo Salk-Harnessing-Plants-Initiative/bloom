@@ -6,7 +6,6 @@ import type { Database } from "@/lib/database.types";
 type Dataset = Database["public"]["Tables"]["scrna_datasets"]["Row"];
 type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
 
-const DEFAULT_STORAGE_URL = "http://localhost:9100";
 const STORAGE_BUCKET = "scrna";
 const GENE_SEARCH_DEFAULT_LIMIT = 20;
 
@@ -24,21 +23,6 @@ export interface CellArraysRow {
 
 /** Cluster ordinal returned by the RPC for cells with no matching catalog row. */
 export const ORPHAN_CLUSTER_ORDINAL = 255;
-
-/** Storage base URL for `.bin` fetches, from NEXT_PUBLIC_STORAGE_URL. */
-function getStorageBaseUrl(): string {
-  const fromEnv =
-    typeof process !== "undefined" ? process.env?.NEXT_PUBLIC_STORAGE_URL : undefined;
-  if (fromEnv && fromEnv.length > 0) {
-    return fromEnv.replace(/\/$/, "");
-  }
-  if (typeof console !== "undefined") {
-    console.warn(
-      `[scrna-client] NEXT_PUBLIC_STORAGE_URL unset; defaulting to ${DEFAULT_STORAGE_URL}`,
-    );
-  }
-  return DEFAULT_STORAGE_URL;
-}
 
 /** Fetch a single dataset row, or null if not found. */
 export async function fetchDataset(datasetId: number): Promise<Dataset | null> {
@@ -91,17 +75,28 @@ export async function searchGenes(
   return (data ?? []).map((row) => row.gene_name);
 }
 
-/** Download a per-gene expression vector as a Float32Array. */
+/** Download a per-gene expression vector as a Float32Array.
+ *
+ * Through the storage client, not a bare URL: the bucket is private, and every
+ * other private asset in the app is read the same way, so the reader is
+ * authenticated as the signed-in user under the bucket's own policies.
+ *
+ * The array carries no cell identifiers. It is paired with the cells purely by
+ * position, against the same order `fetchCells` returns, which is why the
+ * ingest refuses to write it unless the cells came from the same file.
+ */
 export async function fetchGeneBin(
   datasetName: string,
   geneName: string,
 ): Promise<Float32Array> {
-  const base = getStorageBaseUrl();
-  const url = `${base}/${STORAGE_BUCKET}/counts/${encodeURIComponent(datasetName)}/${encodeURIComponent(geneName)}.bin`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`fetchGeneBin failed for ${geneName}: HTTP ${res.status}`);
+  const supabase = createClientSupabaseClient();
+  const { data, error } = await supabase.storage
+    .from(STORAGE_BUCKET)
+    .download(`counts/${datasetName}/${geneName}.bin`);
+  if (error || !data) {
+    throw new Error(
+      `fetchGeneBin failed for ${geneName}: ${error?.message ?? "no data"}`,
+    );
   }
-  const buf = await res.arrayBuffer();
-  return new Float32Array(buf);
+  return new Float32Array(await data.arrayBuffer());
 }
