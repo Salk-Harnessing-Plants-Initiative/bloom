@@ -10,18 +10,16 @@
 --     they exist only as a NULL file_path and NOT NULL cannot be restored
 --     while they are present
 --
--- The bloom_admin / bloom_agent / bloom_user policies and grants are also
--- removed. They close a gap that predates this migration -- scrna_de was the
--- one scrna_* table 20260506000001 missed -- so dropping them returns
--- bloom_user DE reads to returning no rows, as before.
+-- The bloom_admin / bloom_agent / bloom_user policies are also removed. They
+-- close a gap that predates this migration -- scrna_de was the one scrna_*
+-- table 20260506000001 missed -- so dropping them returns bloom_user DE reads
+-- to returning no rows, as before.
+--
+-- No grants are revoked. The migration adds none: those predate it, from the
+-- ALL TABLES grant in 20260414002000. Revoking them here would strip access
+-- the table has had since April and nothing would put it back.
 
 BEGIN;
-
-REVOKE USAGE, SELECT ON SEQUENCE public.scrna_de_id_seq FROM bloom_user, bloom_admin, bloom_agent;
-
-REVOKE SELECT, INSERT, UPDATE ON public.scrna_de FROM bloom_user;
-REVOKE ALL                    ON public.scrna_de FROM bloom_admin;
-REVOKE SELECT                 ON public.scrna_de FROM bloom_agent;
 
 DROP POLICY IF EXISTS user_read_scrna_de  ON public.scrna_de;
 DROP POLICY IF EXISTS agent_read_scrna_de ON public.scrna_de;

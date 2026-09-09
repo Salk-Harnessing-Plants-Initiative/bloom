@@ -113,11 +113,18 @@ ALTER TABLE public.scrna_de
 CREATE INDEX IF NOT EXISTS idx_scrna_de_dataset_cluster_contrast
   ON public.scrna_de (dataset_id, cluster_id, contrast);
 
--- 6. Role policies and grants -----------------------------------------------
+-- 6. Role policies ----------------------------------------------------------
 -- 20260506000001 gave every scrna_* table bloom_admin / bloom_agent /
 -- bloom_user policies except this one, so bloom_user reads of DE return no
--- rows today. Closing that here, matching the pattern used for
--- scrna_clusters, leaves the existing authenticated and anon policies alone.
+-- rows today. Closing that here leaves the existing authenticated and anon
+-- policies alone.
+--
+-- Policies only. The table grants already exist: 20260414002000 granted these
+-- roles on ALL TABLES IN SCHEMA public, and scrna_de predates it. Re-stating
+-- them here would only risk contradicting a later narrowing -- 20260504000002
+-- strips TRUNCATE / REFERENCES / TRIGGER from bloom_admin, and 20260710000000
+-- strips UPDATE from bloom_user -- which is what copying the pre-hardening
+-- scrna_clusters block did.
 
 DROP POLICY IF EXISTS admin_all_scrna_de ON public.scrna_de;
 CREATE POLICY admin_all_scrna_de
@@ -130,14 +137,5 @@ CREATE POLICY agent_read_scrna_de
 DROP POLICY IF EXISTS user_read_scrna_de ON public.scrna_de;
 CREATE POLICY user_read_scrna_de
   ON public.scrna_de FOR SELECT TO bloom_user USING (true);
-
--- Explicit grants: ALTER DEFAULT PRIVILEGES in 20260414002000 only covers
--- objects created by the role that ran it, so it cannot be relied on here.
-GRANT SELECT, INSERT, UPDATE ON public.scrna_de TO bloom_user;
-GRANT ALL                    ON public.scrna_de TO bloom_admin;
-GRANT SELECT                 ON public.scrna_de TO bloom_agent;
-
-GRANT USAGE, SELECT ON SEQUENCE public.scrna_de_id_seq TO bloom_user, bloom_admin;
-GRANT USAGE         ON SEQUENCE public.scrna_de_id_seq TO bloom_agent;
 
 COMMIT;
