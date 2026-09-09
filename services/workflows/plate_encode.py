@@ -23,6 +23,7 @@ from contextlib import contextmanager
 import numpy as np
 from PIL import Image
 
+import plate_progress
 from plate_timelapse import PLATE_FPS, annotate, label_for
 from plate_video import first_capture, plan_render
 from plate_video_path import (
@@ -320,6 +321,7 @@ def encode_plate_video(client, frames: list[dict], out_path: str) -> int:
 
     try:
         for frame in frames:
+            plate_progress.advance("downloading", written + 1, len(frames))
             path = frame["object_path"]
             label = label_for(frame["capture_date"], started)
             try:
@@ -334,6 +336,7 @@ def encode_plate_video(client, frames: list[dict], out_path: str) -> int:
                     f"{path} does not match the rest of the plate: {exc}", path
                 ) from exc
             written += 1
+        plate_progress.advance("encoding", written, len(frames))
         writer.close()
     except Exception as failure:
         cleanup = _tear_down(writer, out_path)
@@ -554,15 +557,19 @@ def render_plate_video(
             # A constant name: the plate id is caller-supplied and would
             # otherwise reach the filesystem and the ffmpeg command line.
             video_path = os.path.join(work, "plate.mp4")
-            written = encode_plate_video(client, plan["frames"], video_path)
-            recorded = publish_plate_video(
-                client,
-                plan["key"],
-                video_path,
-                experiment_id=experiment_id,
-                plate_id=plate_id,
-                wave_number=wave_number,
-                frame_count=written,
-            )
+            plate_progress.start(experiment_id, plate_id, wave_number)
+            try:
+                written = encode_plate_video(client, plan["frames"], video_path)
+                recorded = publish_plate_video(
+                    client,
+                    plan["key"],
+                    video_path,
+                    experiment_id=experiment_id,
+                    plate_id=plate_id,
+                    wave_number=wave_number,
+                    frame_count=written,
+                )
+            finally:
+                plate_progress.finish()
 
     return {**plan, "action": "rendered", "recorded": recorded}

@@ -238,6 +238,67 @@ def test_plate_video_route_401_without_auth(monkeypatch):
         main.app.dependency_overrides.clear()
 
 
+def test_progress_route_401_without_auth(monkeypatch):
+    import main
+    import plate_progress
+    from auth import require_supabase_user
+
+    def _raise_401():
+        raise HTTPException(status_code=401, detail="missing token")
+
+    plate_progress.start(12, "P7", 1)
+    main.app.dependency_overrides[require_supabase_user] = _raise_401
+    try:
+        resp = TestClient(main.app).get(
+            "/gravi/experiments/12/plate-video/progress",
+            params={"plate_id": "P7", "wave_number": 1},
+        )
+        assert resp.status_code == 401
+    finally:
+        main.app.dependency_overrides.clear()
+        plate_progress.finish()
+
+
+def test_progress_route_answers_the_running_render(monkeypatch):
+    import main
+    import plate_progress
+    from auth import require_supabase_user
+
+    plate_progress.start(12, "P7", 1)
+    plate_progress.advance("downloading", 47, 86)
+    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
+    try:
+        resp = TestClient(main.app).get(
+            "/gravi/experiments/12/plate-video/progress",
+            params={"plate_id": "P7", "wave_number": 1},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"stage": "downloading", "done": 47, "total": 86}
+    finally:
+        main.app.dependency_overrides.clear()
+        plate_progress.finish()
+
+
+def test_progress_route_says_nothing_about_another_plate(monkeypatch):
+    import main
+    import plate_progress
+    from auth import require_supabase_user
+
+    plate_progress.start(12, "P7", 1)
+    plate_progress.advance("downloading", 47, 86)
+    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
+    try:
+        resp = TestClient(main.app).get(
+            "/gravi/experiments/12/plate-video/progress",
+            params={"plate_id": "P8", "wave_number": 1},
+        )
+        assert resp.status_code == 200
+        assert resp.json() is None
+    finally:
+        main.app.dependency_overrides.clear()
+        plate_progress.finish()
+
+
 def test_plate_video_route_429_before_any_work(monkeypatch):
     """The button can be clicked repeatedly. The limit has to bite before a
     render starts, or clicking five times starts five encodes."""

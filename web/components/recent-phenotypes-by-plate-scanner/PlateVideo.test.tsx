@@ -421,6 +421,303 @@ describe("what a refusal tells the scientist", () => {
   });
 });
 
+describe("what a scientist is told while it renders", () => {
+  const rendering = (progress: unknown) =>
+    serve((method) =>
+      method === "POST"
+        ? json({}, 504)
+        : json({ download_url: null, frames: null, progress })
+    );
+
+  async function clickAndPoll(ticks = 1) {
+    await act(async () => {
+      renderPlate();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button"));
+    });
+    for (let i = 0; i < ticks; i++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+    }
+  }
+
+  /** The bar with nothing to measure: no value, a segment crossing the track. */
+  function expectSweeping() {
+    const bar = screen.getByRole("progressbar");
+    expect(bar.getAttribute("aria-valuenow")).toBeNull();
+    expect((bar.firstElementChild as HTMLElement).className).toContain(
+      "animate-sweep"
+    );
+  }
+
+  it("counts the frames as they download", async () => {
+    // Downloading is ~96% of a render, so this is the number they watch.
+    vi.useFakeTimers();
+    rendering({ stage: "downloading", done: 47, total: 86 });
+
+    await clickAndPoll();
+
+    expect(screen.getByText("Downloading frame 47 of 86")).toBeTruthy();
+  });
+
+  it("fills the bar to the fraction downloaded", async () => {
+    vi.useFakeTimers();
+    rendering({ stage: "downloading", done: 21, total: 86 });
+
+    await clickAndPoll();
+
+    const bar = screen.getByRole("progressbar");
+    expect(bar.getAttribute("aria-valuenow")).toBe("21");
+    expect(bar.getAttribute("aria-valuemax")).toBe("86");
+    const fill = bar.firstElementChild as HTMLElement;
+    expect(fill!.style.width).toBe(`${(21 / 86) * 100}%`);
+  });
+
+  it("sweeps while encoding rather than inventing a fraction", async () => {
+    // Encoding reports nothing inside itself, and a still bar reads as stuck.
+    vi.useFakeTimers();
+    rendering({ stage: "encoding", done: 86, total: 86 });
+
+    await clickAndPoll();
+
+    expectSweeping();
+  });
+
+  it("says the video is being made once the frames are in", async () => {
+    vi.useFakeTimers();
+    rendering({ stage: "encoding", done: 86, total: 86 });
+
+    await clickAndPoll();
+
+    expect(screen.getByText(/please stay on this page/)).toBeTruthy();
+  });
+
+  it("falls back to the plain wait when the service reports nothing", async () => {
+    // An older service, a restarted one, or the seconds before the first frame.
+    vi.useFakeTimers();
+    rendering(undefined);
+
+    await clickAndPoll();
+
+    expect(
+      screen.getByText(/Encoding — this can take a few minutes/)
+    ).toBeTruthy();
+  });
+
+  it("stops counting when the render stops reporting", async () => {
+    // An OOM kill, a restart, or a raised frame. The count would otherwise sit
+    // there for the whole ten-minute poll window describing a dead render.
+    vi.useFakeTimers();
+    let polls = 0;
+    serve((method) =>
+      method === "POST"
+        ? json({}, 504)
+        : json({
+            download_url: null,
+            frames: null,
+            progress:
+              polls++ === 1
+                ? { stage: "downloading", done: 61, total: 86 }
+                : undefined,
+          })
+    );
+
+    await clickAndPoll(2);
+
+    expect(
+      screen.getByText(/Encoding — this can take a few minutes/)
+    ).toBeTruthy();
+    expectSweeping();
+  });
+
+  it("does not open a new render on the last one's count", async () => {
+    // The plate keeps gaining captures, so Update after a render is the
+    // designed path — and the old count would be pinned there by the
+    // backwards guard until the new render passed it.
+    vi.useFakeTimers();
+    let landed = false;
+    serve((method) => {
+      if (method === "POST") return json({}, 504);
+      return landed
+        ? json({ download_url: "https://x/y.mp4", frames: 86 })
+        : json({
+            download_url: null,
+            frames: null,
+            progress: { stage: "downloading", done: 61, total: 86 },
+          });
+    });
+    await act(async () => {
+      renderPlate({ availableFrames: 120 });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button"));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(screen.getByText("Downloading frame 61 of 86")).toBeTruthy();
+
+    landed = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button"));
+    });
+
+    expect(screen.queryByText(/Downloading frame/)).toBeNull();
+    expectSweeping();
+  });
+
+  it("takes the bar away once it gives up waiting", async () => {
+    vi.useFakeTimers();
+    rendering({ stage: "downloading", done: 61, total: 86 });
+
+    await clickAndPoll();
+    expect(screen.queryByRole("progressbar")).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(610_000);
+    });
+
+    expect(screen.getByText(/Still encoding/)).toBeTruthy();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
+  it("sweeps before the first frame is counted", async () => {
+    // The service seeds {0, 0} the moment a render starts; a poll can land there.
+    vi.useFakeTimers();
+    rendering({ stage: "downloading", done: 0, total: 0 });
+
+    await clickAndPoll();
+
+    expectSweeping();
+    expect(screen.queryByText(/Downloading frame/)).toBeNull();
+  });
+
+  it("lets the stage change through on an unchanged count", async () => {
+    // The last frame reports downloading 86/86, then encoding 86/86 — the same
+    // count. A guard that rejected it would leave the download text up for the
+    // whole encode.
+    vi.useFakeTimers();
+    let asked = false;
+    let polls = 0;
+    serve((method) => {
+      if (method === "POST") {
+        asked = true;
+        return json({}, 504);
+      }
+      if (!asked) return json({ download_url: null, frames: null });
+      return json({
+        download_url: null,
+        frames: null,
+        progress: {
+          stage: polls++ === 0 ? "downloading" : "encoding",
+          done: 86,
+          total: 86,
+        },
+      });
+    });
+
+    await clickAndPoll(2);
+
+    expect(screen.getByText(/please stay on this page/)).toBeTruthy();
+  });
+
+  it("keeps the count when a poll fails, rather than blanking it", async () => {
+    // A dropped request says nothing about the render. Blanking would flicker
+    // on the exact failure the count exists to describe.
+    vi.useFakeTimers();
+    let asked = false;
+    let polls = 0;
+    serve((method) => {
+      if (method === "POST") {
+        asked = true;
+        return json({}, 504);
+      }
+      if (!asked) return json({ download_url: null, frames: null });
+      return polls++ === 0
+        ? json({
+            download_url: null,
+            frames: null,
+            progress: { stage: "downloading", done: 47, total: 86 },
+          })
+        : json({ detail: "Could not check" }, 503);
+    });
+
+    await clickAndPoll(2);
+
+    expect(screen.getByText("Downloading frame 47 of 86")).toBeTruthy();
+  });
+
+  it("asks the poll for progress, and only the poll", async () => {
+    // The mount does not read progress and the call costs a round trip, so the
+    // flag is what separates them. Without this, dropping it ships the feature
+    // dead with every test green.
+    vi.useFakeTimers();
+    const calls = serve((method) =>
+      method === "POST" ? json({}, 504) : json({ download_url: null, frames: null })
+    );
+
+    await clickAndPoll();
+
+    const gets = calls.filter((c) => c.method === "GET").map((c) => c.url);
+    expect(gets[0]).not.toContain("progress=1");
+    expect(gets[gets.length - 1]).toContain("progress=1");
+  });
+
+  it("ignores a progress answer that is not shaped like one", async () => {
+    vi.useFakeTimers();
+    rendering({ stage: 7, done: 47, total: 86 });
+
+    await clickAndPoll();
+
+    expectSweeping();
+    expect(
+      screen.getByText(/Encoding — this can take a few minutes/)
+    ).toBeTruthy();
+  });
+
+  it("cannot be pushed past the end of the plate", async () => {
+    // Only reachable if the service breaks its own contract, but the count and
+    // the bar are two places to get it wrong and both are on screen.
+    vi.useFakeTimers();
+    rendering({ stage: "downloading", done: 9999, total: 86 });
+
+    await clickAndPoll();
+
+    expect(screen.getByText("Downloading frame 86 of 86")).toBeTruthy();
+    const fill = screen.getByRole("progressbar").firstElementChild as HTMLElement;
+    expect(fill.style.width).toBe("100%");
+  });
+
+  it("never lets the count go backwards", async () => {
+    // Two polls can land out of order; a count that jumps back reads as broken.
+    vi.useFakeTimers();
+    let asked = false;
+    let n = 0;
+    const counts = [61, 21];
+    serve((method) => {
+      if (method === "POST") {
+        asked = true;
+        return json({}, 504);
+      }
+      if (!asked) return json({ download_url: null, frames: null });
+      return json({
+        download_url: null,
+        frames: null,
+        progress: { stage: "downloading", done: counts[n++] ?? 21, total: 86 },
+      });
+    });
+
+    await clickAndPoll(2);
+
+    expect(screen.getByText("Downloading frame 61 of 86")).toBeTruthy();
+  });
+});
+
 describe("a 504, and the poll that follows", () => {
   it("polls until the video appears, then shows it", async () => {
     vi.useFakeTimers();

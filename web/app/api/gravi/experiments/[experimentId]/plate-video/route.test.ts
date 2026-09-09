@@ -810,6 +810,120 @@ describe("GET", () => {
     expect(Object.keys(body).sort()).toEqual(["download_url", "frames"]);
   });
 
+  it("asks the service for this plate's progress, and passes it on", async () => {
+    // Nothing else pins the upstream request: without this, renaming the query
+    // parameter or dropping the token ships the feature dead with CI green.
+    mockedStored.mockResolvedValue({ status: "absent" });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ stage: "downloading", done: 47, total: 86 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const body = await (await get("plate_id=P7&wave_number=1&progress=1")).json();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("/gravi/experiments/12/plate-video/progress");
+    expect(String(url)).toContain("plate_id=P7");
+    expect(String(url)).toContain("wave_number=1");
+    expect(init.headers.Authorization).toBe("Bearer token");
+    expect(body.progress).toEqual({ stage: "downloading", done: 47, total: 86 });
+  });
+
+  it("omits the wave for a wave-less plate rather than sending null", async () => {
+    mockedStored.mockResolvedValue({ status: "absent" });
+    const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await get("plate_id=P7&progress=1");
+
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain("wave_number");
+  });
+
+  it("keeps a refused progress answer out of the poll's reply", async () => {
+    // The status decides, not the shape: a refusal whose body happens to be
+    // well-formed progress must not reach the page.
+    for (const bad of [
+      new Response("upstream exploded", { status: 500 }),
+      new Response(JSON.stringify({ stage: "downloading", done: 3, total: 9 }), {
+        status: 503,
+      }),
+      new Response(JSON.stringify({ stage: "downloading", done: 3 }), { status: 200 }),
+    ]) {
+      mockedStored.mockResolvedValue({ status: "absent" });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(bad));
+
+      const res = await get("plate_id=P7&wave_number=1&progress=1");
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.download_url).toBeNull();
+      expect(body.progress).toBeNull();
+    }
+  });
+
+  it("passes on only the three fields the page reads", async () => {
+    mockedStored.mockResolvedValue({ status: "absent" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({ stage: "downloading", done: 3, total: 9, secret: "x" }),
+          { status: 200 }
+        )
+      )
+    );
+
+    const body = await (await get("plate_id=P7&wave_number=1&progress=1")).json();
+
+    expect(Object.keys(body.progress).sort()).toEqual(["done", "stage", "total"]);
+  });
+
+  it("still answers the poll when the session cannot be read", async () => {
+    // The poll's job is to say whether the video is there. A session read that
+    // throws must not take the whole answer down with it.
+    mockedStored.mockResolvedValue({ status: "absent" });
+    mockedGetSession.mockRejectedValue(new Error("cookie jar exploded"));
+
+    const res = await get("plate_id=P7&wave_number=1&progress=1");
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).progress).toBeNull();
+  });
+
+  it("does not ask the service for progress unless the caller wants it", async () => {
+    // The page's first look does not read progress, and the call costs an
+    // authenticated round trip to the service.
+    mockedStored.mockResolvedValue({ status: "absent" });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const body = await (await get("plate_id=P7&wave_number=1")).json();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty("progress");
+  });
+
+  it("does not fail the poll when progress cannot be read", async () => {
+    // Progress is decoration. A poll that fails because of it would stop the
+    // button ever learning the video is ready.
+    mockedStored.mockResolvedValue({ status: "absent" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new TypeError("fetch failed"))
+    );
+
+    const res = await get("plate_id=P7&wave_number=1&progress=1");
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.progress).toBeNull();
+  });
+
   it("forbids storing the answer that carries the download link", async () => {
     // The link is signed for one reader and expires. A stored copy is either
     // served to someone it was not made for, or served after it stopped working.

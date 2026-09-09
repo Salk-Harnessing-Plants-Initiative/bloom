@@ -15,6 +15,7 @@ import pytest
 from PIL import Image
 
 import plate_encode as pe
+import plate_progress
 from plate_timelapse import LABEL_BAND_HEIGHT, PLATE_FPS
 
 LABEL = "2026-03-06 21:36 PST\n+01h 10m"
@@ -457,6 +458,38 @@ def test_every_frame_reaches_the_encoder(ffmpeg, tmp_path):
 
     assert pe.encode_plate_video(client, frames, out) == 4
     assert len(ffmpeg[0].stdin.chunks) == 4
+
+
+def test_the_count_tracks_the_frames_as_they_download(monkeypatch, ffmpeg, tmp_path):
+    """What the page reads while it waits. Downloading is ~96% of a render, so
+    this is the number a scientist actually watches."""
+    frames = _frames(4)
+    seen = []
+    monkeypatch.setattr(
+        plate_progress, "advance", lambda stage, done, total: seen.append((stage, done, total))
+    )
+
+    pe.encode_plate_video(_EncodeClient(_payloads(frames)), frames, str(tmp_path / "o.mp4"))
+
+    assert seen == [
+        ("downloading", 1, 4),
+        ("downloading", 2, 4),
+        ("downloading", 3, 4),
+        ("downloading", 4, 4),
+        ("encoding", 4, 4),
+    ]
+
+
+def test_progress_is_reported_from_the_moment_a_render_starts(monkeypatch, tmp_path):
+    """A poll landing before the first frame still finds the render."""
+    during = []
+    _wire(monkeypatch, [_plan()], on_encode=lambda: during.append(
+        plate_progress.current(12, "P7", 1)
+    ))
+
+    pe.render_plate_video(object(), 12, "P7", 1)
+
+    assert during == [{"stage": "downloading", "done": 0, "total": 0}]
 
 
 def test_the_frames_are_downloaded_in_the_order_given(ffmpeg, tmp_path):
@@ -1908,6 +1941,27 @@ def test_the_slot_and_the_lock_are_handed_back_on_every_path(monkeypatch, plans,
 
     assert pe._encode_slots._value == before, "an encode slot was not released"
     assert not pe._plate_locks["12/wave-1/P7.mp4"].locked(), "the plate stayed locked"
+
+
+@pytest.mark.parametrize(
+    "plans,on_encode",
+    [
+        ([_plan()], None),
+        ([_plan()], lambda: (_ for _ in ()).throw(pe.FrameUnreadable("bad frame"))),
+    ],
+    ids=["success", "the-encode-raises"],
+)
+def test_progress_is_cleared_whichever_way_the_render_ends(monkeypatch, plans, on_encode):
+    """A record left behind reports frames for a render that is over, and the
+    page shows a count that never moves."""
+    _wire(monkeypatch, plans, on_encode=on_encode)
+
+    try:
+        pe.render_plate_video(object(), 12, "P7", 1)
+    except pe.FrameUnreadable:
+        pass
+
+    assert plate_progress.current(12, "P7", 1) is None
 
 
 def test_a_frame_far_larger_than_a_scan_is_refused_before_it_is_decoded():
