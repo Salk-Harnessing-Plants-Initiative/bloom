@@ -14,6 +14,10 @@ Endpoints:
                                                        Storage, return a signed
                                                        download URL
                                                        (requires a Supabase user JWT)
+    GET  /gravi/experiments/{experiment_id}/plate-video/progress
+                                                    - how far a running render
+                                                       has got, for the page to
+                                                       show while it waits
     POST /gravi/experiments/{experiment_id}/plate-video
                                                      - on-demand: render one plate's
                                                        time-lapse for one wave, store
@@ -117,8 +121,8 @@ def gravi_plate_video_progress(
 ):
     """How far the running render for this plate has got, or nothing.
 
-    Advisory: the page shows a plain wait when this says nothing, so a restart
-    or an older service costs a count, not a working poll.
+    No rate limit: the page polls this every 10s while it waits, which the
+    5-per-60s limiter on the other routes would refuse.
     """
     return plate_progress.current(experiment_id, plate_id, wave_number)
 

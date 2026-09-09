@@ -34,6 +34,9 @@ export const runtime = "nodejs";
 // Under undici's 300s header timeout, so a slow encode surfaces as our own 504
 // rather than an opaque UND_ERR — the encode itself carries on upstream.
 const UPSTREAM_TIMEOUT_MS = 240_000;
+const PROGRESS_TIMEOUT_MS = 3_000;
+const workflowsUrl = () =>
+  process.env.WORKFLOWS_URL ?? "http://workflows:5100";
 
 // Which upstream details reach the caller. The test is whether nothing carrying
 // that status can name internal infrastructure — a host, an account, an
@@ -148,12 +151,11 @@ export async function POST(
     );
   }
 
-  const workflowsUrl = process.env.WORKFLOWS_URL ?? "http://workflows:5100";
 
   let upstream: Response;
   try {
     upstream = await fetch(
-      `${workflowsUrl}/gravi/experiments/${experiment}/plate-video`,
+      `${workflowsUrl()}/gravi/experiments/${experiment}/plate-video`,
       {
         method: "POST",
         headers: {
@@ -229,14 +231,13 @@ async function renderProgress(
 
   const query = new URLSearchParams({ plate_id: plateId });
   if (wave !== null) query.set("wave_number", String(wave));
-  const workflowsUrl = process.env.WORKFLOWS_URL ?? "http://workflows:5100";
 
   try {
     const res = await fetch(
-      `${workflowsUrl}/gravi/experiments/${experiment}/plate-video/progress?${query}`,
+      `${workflowsUrl()}/gravi/experiments/${experiment}/plate-video/progress?${query}`,
       {
         headers: { Authorization: `Bearer ${session.access_token}` },
-        signal: AbortSignal.timeout(3000),
+        signal: AbortSignal.timeout(PROGRESS_TIMEOUT_MS),
       }
     );
     if (!res.ok) return null;
@@ -300,7 +301,7 @@ export async function GET(
   // is missing. The caller has `download_url` to tell those apart.
   return noStore(
     NextResponse.json({
-      ...(stored.status === "present"
+      ...(stored.status === "present" || query.get("progress") !== "1"
         ? {}
         : { progress: await renderProgress(experiment, plateId, wave) }),
       download_url: stored.status === "present" ? stored.url : null,

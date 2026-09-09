@@ -125,8 +125,9 @@ def test_workflows_has_a_memory_limit():
     into a failed request in the container that caused it.
 
     The floor is 4g because 2g is not enough: a real plate render is SIGKILLed
-    there. The arithmetic below — one render at the frame ceilings costing about
-    1 GB — is optimistic about what a full-resolution GraviScan TIFF costs.
+    there. The arithmetic below — one render at the frame ceilings and the
+    tmpfs, about 1.4 GB — is optimistic about what a full-resolution GraviScan
+    TIFF costs.
     """
     service = _workflows_service()
 

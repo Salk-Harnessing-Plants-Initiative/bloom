@@ -810,6 +810,19 @@ describe("GET", () => {
     expect(Object.keys(body).sort()).toEqual(["download_url", "frames"]);
   });
 
+  it("does not ask the service for progress unless the caller wants it", async () => {
+    // The page's first look does not read progress, and the call costs an
+    // authenticated round trip to the service.
+    mockedStored.mockResolvedValue({ status: "absent" });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const body = await (await get("plate_id=P7&wave_number=1")).json();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty("progress");
+  });
+
   it("does not fail the poll when progress cannot be read", async () => {
     // Progress is decoration. A poll that fails because of it would stop the
     // button ever learning the video is ready.
@@ -819,7 +832,7 @@ describe("GET", () => {
       vi.fn().mockRejectedValue(new TypeError("fetch failed"))
     );
 
-    const res = await get("plate_id=P7&wave_number=1");
+    const res = await get("plate_id=P7&wave_number=1&progress=1");
     const body = await res.json();
 
     expect(res.status).toBe(200);

@@ -49,10 +49,12 @@ const UNCHECKED = "Could not check whether this plate has a video.";
 async function fetchStored(
   endpoint: string,
   plateId: string,
-  waveNumber: number | null
+  waveNumber: number | null,
+  withProgress = false
 ): Promise<Stored> {
   const query = new URLSearchParams({ plate_id: plateId });
   if (waveNumber !== null) query.set("wave_number", String(waveNumber));
+  if (withProgress) query.set("progress", "1");
 
   try {
     const res = await fetch(`${endpoint}?${query}`);
@@ -91,7 +93,7 @@ async function detailOf(res: Response): Promise<string> {
  *  ffmpeg call. Falls back when the service reports nothing. */
 function progressNote(progress: Progress | null): string {
   if (progress?.stage === "downloading" && progress.total > 0)
-    return `Downloading frame ${progress.done + 1} of ${progress.total}`;
+    return `Downloading frame ${progress.done} of ${progress.total}`;
   if (progress?.stage) return WORKING;
   return "Encoding — this can take a few minutes.";
 }
@@ -117,7 +119,8 @@ export function PlateVideo({
   const busy = action === "generating" || action === "pending";
 
   const ask = useCallback(
-    () => fetchStored(endpoint, plateId, waveNumber),
+    (withProgress = false) =>
+      fetchStored(endpoint, plateId, waveNumber, withProgress),
     [endpoint, plateId, waveNumber]
   );
 
@@ -144,18 +147,19 @@ export function PlateVideo({
     const startedAt = Date.now();
 
     const timer = setInterval(async () => {
-      const next = await ask();
+      const next = await ask(true);
       if (next.player.status === "ready") {
         setPlayer(next.player);
         setFrames(next.frames);
         setAction("idle");
         return;
       }
-      // Never backwards: two polls can land out of order.
+      // Nothing reported means the render is over; a lower count means two
+      // polls landed out of order.
       setProgress((seen) =>
-        next.progress && (!seen || next.progress.done >= seen.done)
-          ? next.progress
-          : seen
+        next.progress && seen && next.progress.done < seen.done
+          ? seen
+          : next.progress
       );
       if (Date.now() - startedAt >= POLL_LIMIT_MS) setAction("stalled");
     }, POLL_INTERVAL_MS);
@@ -170,6 +174,7 @@ export function PlateVideo({
   async function generate() {
     setAction("generating");
     setRetryAfter(null);
+    setProgress(null);
     try {
       const res = await fetch(endpoint, {
         method: "POST",
@@ -199,7 +204,6 @@ export function PlateVideo({
       // A 200 carries no playable link, so the answer to "can it be watched"
       // comes from the same place it always does.
       setFrames(typeof body.frames === "number" ? body.frames : null);
-      setProgress(null);
       const next = await ask();
       setPlayer(next.player);
       if (next.player.status === "ready") setFrames(next.frames);
@@ -278,10 +282,17 @@ export function PlateVideo({
       )}
 
       {busy && progress?.stage === "downloading" && progress.total > 0 && (
-        <div className="mx-auto mt-3 h-1.5 w-64 rounded-full bg-stone-200">
+        <div
+          role="progressbar"
+          aria-label="Generating video"
+          aria-valuenow={progress.done}
+          aria-valuemin={0}
+          aria-valuemax={progress.total}
+          className="mx-auto mt-3 h-1.5 w-64 overflow-hidden rounded-full bg-stone-200"
+        >
           <div
             className="h-1.5 rounded-full bg-lime-700 transition-[width] duration-500"
-            style={{ width: `${((progress.done + 1) / progress.total) * 100}%` }}
+            style={{ width: `${Math.min(100, (progress.done / progress.total) * 100)}%` }}
           />
         </div>
       )}

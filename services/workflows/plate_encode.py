@@ -321,7 +321,7 @@ def encode_plate_video(client, frames: list[dict], out_path: str) -> int:
 
     try:
         for frame in frames:
-            plate_progress.advance("downloading", written, len(frames))
+            plate_progress.advance("downloading", written + 1, len(frames))
             path = frame["object_path"]
             label = label_for(frame["capture_date"], started)
             try:

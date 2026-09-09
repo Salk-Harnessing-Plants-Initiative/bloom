@@ -446,7 +446,7 @@ describe("what a scientist is told while it renders", () => {
   it("counts the frames as they download", async () => {
     // Downloading is ~96% of a render, so this is the number they watch.
     vi.useFakeTimers();
-    rendering({ stage: "downloading", done: 46, total: 86 });
+    rendering({ stage: "downloading", done: 47, total: 86 });
 
     await clickAndPoll();
 
@@ -455,7 +455,7 @@ describe("what a scientist is told while it renders", () => {
 
   it("fills the bar to the fraction downloaded", async () => {
     vi.useFakeTimers();
-    rendering({ stage: "downloading", done: 20, total: 86 });
+    rendering({ stage: "downloading", done: 21, total: 86 });
 
     await clickAndPoll();
 
@@ -495,12 +495,92 @@ describe("what a scientist is told while it renders", () => {
     ).toBeTruthy();
   });
 
+  it("stops counting when the render stops reporting", async () => {
+    // An OOM kill, a restart, or a raised frame. The count would otherwise sit
+    // there for the whole ten-minute poll window describing a dead render.
+    vi.useFakeTimers();
+    let polls = 0;
+    serve((method) =>
+      method === "POST"
+        ? json({}, 504)
+        : json({
+            download_url: null,
+            frames: null,
+            progress:
+              polls++ === 1
+                ? { stage: "downloading", done: 61, total: 86 }
+                : undefined,
+          })
+    );
+
+    await clickAndPoll(2);
+
+    expect(
+      screen.getByText(/Encoding — this can take a few minutes/)
+    ).toBeTruthy();
+    expect(document.querySelector(".bg-lime-700")).toBeNull();
+  });
+
+  it("does not open a new render on the last one's count", async () => {
+    // The plate keeps gaining captures, so Update after a render is the
+    // designed path — and the old count would be pinned there by the
+    // backwards guard until the new render passed it.
+    vi.useFakeTimers();
+    let landed = false;
+    serve((method) => {
+      if (method === "POST") return json({}, 504);
+      return landed
+        ? json({ download_url: "https://x/y.mp4", frames: 86 })
+        : json({
+            download_url: null,
+            frames: null,
+            progress: { stage: "downloading", done: 61, total: 86 },
+          });
+    });
+    await act(async () => {
+      renderPlate({ availableFrames: 120 });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button"));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(screen.getByText("Downloading frame 61 of 86")).toBeTruthy();
+
+    landed = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button"));
+    });
+
+    expect(screen.queryByText(/Downloading frame/)).toBeNull();
+    expect(document.querySelector(".bg-lime-700")).toBeNull();
+  });
+
+  it("takes the bar away once it gives up waiting", async () => {
+    vi.useFakeTimers();
+    rendering({ stage: "downloading", done: 61, total: 86 });
+
+    await clickAndPoll();
+    expect(document.querySelector(".bg-lime-700")).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(610_000);
+    });
+
+    expect(screen.getByText(/Still encoding/)).toBeTruthy();
+    expect(document.querySelector(".bg-lime-700")).toBeNull();
+  });
+
   it("never lets the count go backwards", async () => {
     // Two polls can land out of order; a count that jumps back reads as broken.
     vi.useFakeTimers();
     let asked = false;
     let n = 0;
-    const counts = [60, 20];
+    const counts = [61, 21];
     serve((method) => {
       if (method === "POST") {
         asked = true;
@@ -510,7 +590,7 @@ describe("what a scientist is told while it renders", () => {
       return json({
         download_url: null,
         frames: null,
-        progress: { stage: "downloading", done: counts[n++] ?? 20, total: 86 },
+        progress: { stage: "downloading", done: counts[n++] ?? 21, total: 86 },
       });
     });
 

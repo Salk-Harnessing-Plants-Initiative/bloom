@@ -15,6 +15,7 @@ import pytest
 from PIL import Image
 
 import plate_encode as pe
+import plate_progress
 from plate_timelapse import LABEL_BAND_HEIGHT, PLATE_FPS
 
 LABEL = "2026-03-06 21:36 PST\n+01h 10m"
@@ -471,17 +472,16 @@ def test_the_count_tracks_the_frames_as_they_download(monkeypatch, ffmpeg, tmp_p
     pe.encode_plate_video(_EncodeClient(_payloads(frames)), frames, str(tmp_path / "o.mp4"))
 
     assert seen == [
-        ("downloading", 0, 4),
         ("downloading", 1, 4),
         ("downloading", 2, 4),
         ("downloading", 3, 4),
+        ("downloading", 4, 4),
         ("encoding", 4, 4),
     ]
 
 
 def test_progress_is_reported_from_the_moment_a_render_starts(monkeypatch, tmp_path):
-    """The record has to exist before the first frame, or the first poll of a
-    render answers nothing and the page shows a blank wait."""
+    """A poll landing before the first frame still finds the render."""
     during = []
     _wire(monkeypatch, [_plan()], on_encode=lambda: during.append(
         plate_progress.current(12, "P7", 1)
@@ -916,7 +916,6 @@ def test_a_caller_may_wait_for_a_slot_if_it_chooses():
 # player, a file without its row reads as no video yet.
 
 import hashlib  # noqa: E402
-import plate_progress
 
 
 class _Videos:

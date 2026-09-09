@@ -9,9 +9,10 @@
 # The Bloom server it actually runs on (bloom-dev, measured 2026-09-08):
 #   RAM:     754 GB, of which ~620 GB free
 #   Swap:    8 GB
-#   Note:    the production and staging stacks both run here, so any per-
-#            container limit below is set against this machine, not against the
-#            16 GB minimum above. Do not size a limit from that number.
+#   Note:    the production and staging stacks both run here, so the per-
+#            container limits below are set against this machine, not against
+#            the minimum above — and they exceed it. Do not size a limit from
+#            that number, and do not read the minimum as covering them.
 #
 # Services: ~15 containers (caddy, bloom-web, langchain-agent, bloommcp,
 #   kong, auth, rest, realtime, minio, minio-init, storage, imgproxy,
@@ -207,9 +208,9 @@ services:
     read_only: true
     # Bounds a runaway render to this container, so the OOM killer takes the
     # uvicorn worker rather than choosing by resident size across the stack.
-    # Generous on purpose: a real plate does not fit the ~1 GB that
+    # Generous on purpose: a real plate does not fit the ~1.4 GB that
     # tests/unit/test_workflows_single_worker.py derives from the frame
-    # ceilings, and 8g is about 1% of this host.
+    # ceilings and the tmpfs, and 8g is about 1% of this host.
     mem_limit: 8g
     # Without this Docker allows twice mem_limit in swap, so a runaway render
     # would grind against disk indefinitely instead of being killed. Equal
