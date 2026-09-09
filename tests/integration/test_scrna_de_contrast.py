@@ -2,22 +2,23 @@
 Integration tests for the contrast dimension on `scrna_de`
 (migration 20260908120000_scrna_de_add_contrast.sql).
 
-`scrna_de` used to record one kind of result: a cluster against every other cell,
-as a pointer to a file. It now also records a comparison between two named groups
-— one genotype against another within a cell type — and a comparison that was
-never run, which has group sizes but no file.
+`scrna_de` used to record one kind of result: a cluster against every other
+cell, as a pointer to a file. It now also records a comparison between two named
+groups -- one genotype against another within a cell type -- and a comparison
+that was never run, which has group sizes but no file.
 
-These tests assert: the added columns; that `file_path` is nullable; the four
-CHECK constraints, each by the case it is there to reject; that legacy one-vs-rest
-rows are unaffected; the bloom_* policies the migration adds; and — the reason
-this file exists — that the migration grants no table privileges. It originally
-copied a grant block from a pre-hardening migration and silently re-granted
-`bloom_user` UPDATE (removed by 20260710000000) and `bloom_admin`
-TRUNCATE/REFERENCES/TRIGGER (removed by 20260504000002). A privilege matrix
-against an untouched sibling table catches that class of regression.
+Each rejection test names the constraint it expects, because a row usually
+breaks more than one rule and the first to fire wins. Without that, a test can
+pass while the rule it is named for does nothing -- which is how
+`scrna_de_no_file_means_nothing_tested` shipped with no coverage at all.
+
+The privilege matrix is here for a different reason: the first cut of this
+migration copied a grant block from a pre-hardening migration and silently
+re-granted `bloom_user` UPDATE and `bloom_admin` TRUNCATE/TRIGGER/REFERENCES.
+Comparing against an untouched sibling catches that whole class.
 
 LOCAL ONLY: the `pg_conn` fixture connects to 127.0.0.1 on POSTGRES_HOST_PORT and
-mutates nothing — every test rolls back, leaving the database untouched. The
+mutates nothing -- every test rolls back, leaving the database untouched. The
 fixture connects as `supabase_admin`, which is BYPASSRLS, so policy checks read
 the catalog rather than claiming to prove enforcement.
 
@@ -26,6 +27,7 @@ Runs in CI's `compose-health-check` job after migrations are applied
 """
 
 import re
+import uuid
 from pathlib import Path
 
 import pytest
@@ -35,39 +37,49 @@ psycopg = pytest.importorskip("psycopg")
 REPO_ROOT = Path(__file__).parent.parent.parent
 TABLE = "scrna_de"
 # Created in the same era, carries no explicit grants of its own, and is
-# untouched by this migration — so its privileges are what correct looks like.
+# untouched by this migration -- so its privileges are what correct looks like.
 SIBLING = "scrna_cells"
 
 ADDED_COLUMNS = [
-    "contrast",
-    "group1",
-    "group2",
-    "n_group1",
-    "n_group2",
-    "n_genes_tested",
-    "n_significant_fdr",
-    "n_significant_fdr_lfc",
-    "n_up",
-    "n_down",
+    "contrast", "group1", "group2", "n_group1", "n_group2",
+    "n_genes_tested", "n_significant_fdr", "n_significant_fdr_lfc",
+    "n_up", "n_down",
 ]
+
+ORIGINAL_COLUMNS = {"id", "dataset_id", "file_path", "cluster_id"}
+
+# Read off the live schema. Absolute, so a regrant applied to both this table and
+# the sibling is still caught.
+EXPECTED_PRIVILEGES = {
+    "bloom_user": {"SELECT", "INSERT"},
+    "bloom_agent": {"SELECT"},
+    "bloom_admin": {"SELECT", "INSERT", "UPDATE", "DELETE"},
+    "bloom_writer": {"SELECT", "INSERT", "UPDATE"},
+}
 
 
 def _seed_dataset(cur) -> int:
-    """A species and dataset to hang DE rows off. Rolled back by the caller."""
+    """A species and dataset to hang DE rows off. Rolled back by the caller.
+
+    `species.common_name`, `genus` and `species` are each UNIQUE, so the names
+    have to be per-call unique or the file only works on an empty database.
+    """
+    tag = uuid.uuid4().hex[:10]
     cur.execute(
         "INSERT INTO species (common_name, genus, species) "
-        "VALUES ('test', 'Testus', 'integrationis') RETURNING id"
+        "VALUES (%s, %s, %s) RETURNING id",
+        (f"de-contrast-{tag}", f"Testus-{tag}", f"integrationis-{tag}"),
     )
     species_id = cur.fetchone()[0]
     cur.execute(
         "INSERT INTO scrna_datasets (name, species_id) VALUES (%s, %s) RETURNING id",
-        (f"de-contrast-test-{species_id}", species_id),
+        (f"de-contrast-{tag}", species_id),
     )
     return cur.fetchone()[0]
 
 
 def _insert(cur, dataset_id, **cols):
-    """Insert one scrna_de row. Unspecified columns are left to their defaults."""
+    """Insert one scrna_de row. Unspecified columns keep their defaults."""
     cols.setdefault("cluster_id", "Phellem")
     names = ["dataset_id", *cols]
     values = [dataset_id, *cols.values()]
@@ -79,20 +91,29 @@ def _insert(cur, dataset_id, **cols):
     return cur.fetchone()[0]
 
 
+def _rejects(cur, dataset_id, constraint, **cols):
+    """Assert the insert is refused, and by which rule."""
+    with pytest.raises(psycopg.errors.IntegrityError) as exc:
+        _insert(cur, dataset_id, **cols)
+    assert exc.value.diag.constraint_name == constraint, (
+        f"expected {constraint}, got {exc.value.diag.constraint_name}"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Shape
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("column", ADDED_COLUMNS)
-def test_added_column_exists(pg_conn, column):
+def test_added_columns_exist(pg_conn):
     with pg_conn.cursor() as cur:
         cur.execute(
-            "SELECT 1 FROM information_schema.columns "
-            "WHERE table_schema = 'public' AND table_name = %s AND column_name = %s",
-            (TABLE, column),
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = %s",
+            (TABLE,),
         )
-        assert cur.fetchone() is not None, f"{column} missing from {TABLE}"
+        present = {r[0] for r in cur.fetchall()}
+        assert set(ADDED_COLUMNS) <= present
 
 
 def test_file_path_is_nullable(pg_conn):
@@ -100,14 +121,15 @@ def test_file_path_is_nullable(pg_conn):
     with pg_conn.cursor() as cur:
         cur.execute(
             "SELECT is_nullable FROM information_schema.columns "
-            "WHERE table_schema = 'public' AND table_name = %s AND column_name = 'file_path'",
+            "WHERE table_schema = 'public' AND table_name = %s "
+            "AND column_name = 'file_path'",
             (TABLE,),
         )
         assert cur.fetchone()[0] == "YES"
 
 
 # --------------------------------------------------------------------------- #
-# A contrast and its two group names travel together
+# Rows that must be accepted
 # --------------------------------------------------------------------------- #
 
 
@@ -135,78 +157,94 @@ def test_legacy_one_vs_rest_row_is_accepted(pg_conn):
     pg_conn.rollback()
 
 
-def test_groups_without_a_contrast_are_rejected(pg_conn):
-    """The one that matters: a NULL contrast marks a row as one-vs-rest, and
-    readers filter on it. A two-group result with the label left off would be
-    served as cluster markers."""
+def test_never_run_row_is_accepted(pg_conn):
+    """No file, no results, but the group sizes say why."""
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
-        with pytest.raises(psycopg.errors.CheckViolation):
-            _insert(cur, ds, file_path="x.json", group1="pFACT", group2="Col-0")
+        _insert(
+            cur, ds, file_path=None,
+            contrast="pHORST_vs_Col-0", group1="pHORST", group2="Col-0",
+            n_group1=0, n_group2=7,
+            n_genes_tested=0, n_significant_fdr=0,
+            n_significant_fdr_lfc=0, n_up=0, n_down=0,
+        )
+    pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# One test per rule, each naming the rule it expects
+# --------------------------------------------------------------------------- #
+
+
+def test_groups_without_a_contrast_are_rejected(pg_conn):
+    """A NULL contrast marks a row as one-vs-rest and readers filter on it, so a
+    two-group result with the label left off would be served as cluster markers."""
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _rejects(cur, ds, "scrna_de_contrast_names_both_groups",
+                 file_path="x.json", group1="pFACT", group2="Col-0")
     pg_conn.rollback()
 
 
 def test_contrast_without_both_groups_is_rejected(pg_conn):
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
-        with pytest.raises(psycopg.errors.CheckViolation):
-            _insert(cur, ds, file_path="x.json", contrast="pFACT_vs_Col-0", group1="pFACT")
+        _rejects(cur, ds, "scrna_de_contrast_names_both_groups",
+                 file_path="x.json", contrast="pFACT_vs_Col-0", group1="pFACT")
     pg_conn.rollback()
 
 
 def test_group_compared_against_itself_is_rejected(pg_conn):
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
-        with pytest.raises(psycopg.errors.CheckViolation):
-            _insert(
-                cur, ds, file_path="x.json",
-                contrast="pFACT_vs_pFACT", group1="pFACT", group2="pFACT",
-            )
+        _rejects(cur, ds, "scrna_de_groups_differ",
+                 file_path="x.json", contrast="pFACT_vs_pFACT",
+                 group1="pFACT", group2="pFACT")
     pg_conn.rollback()
 
 
-# --------------------------------------------------------------------------- #
-# A comparison that never ran reports nothing
-# --------------------------------------------------------------------------- #
-
-
-def test_never_run_row_is_accepted(pg_conn):
+def test_no_file_but_results_reported_is_rejected(pg_conn):
+    """The counts here are internally consistent, so only the no-file rule can
+    reject this row. A row that also breaks the arithmetic would be caught by a
+    different constraint and prove nothing about this one."""
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
-        _insert(
-            cur, ds, file_path=None,
-            contrast="pHORST_vs_Col-0", group1="pHORST", group2="Col-0",
-            n_group1=0, n_group2=7, n_genes_tested=0,
-        )
+        _rejects(cur, ds, "scrna_de_no_file_means_nothing_tested",
+                 file_path=None,
+                 contrast="pHORST_vs_Col-0", group1="pHORST", group2="Col-0",
+                 n_genes_tested=500, n_significant_fdr=5,
+                 n_significant_fdr_lfc=5, n_up=5, n_down=0)
     pg_conn.rollback()
 
 
-def test_never_run_row_claiming_results_is_rejected(pg_conn):
-    """No file means no result, so every count is zero — not just the gene count."""
+@pytest.mark.parametrize(
+    "partial",
+    [
+        {"n_significant_fdr_lfc": 900},
+        {"n_significant_fdr": 999},
+        {"n_up": 50},
+        {"n_genes_tested": 10, "n_significant_fdr": 5},
+    ],
+    ids=["lfc-only", "fdr-only", "up-only", "two-of-five"],
+)
+def test_half_written_summary_is_rejected(pg_conn, partial):
+    """Every arithmetic rule compares two counts, and a comparison with a NULL
+    operand yields NULL, which a CHECK accepts. Without this rule one absent
+    count switches off all of them."""
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
-        with pytest.raises(psycopg.errors.CheckViolation):
-            _insert(
-                cur, ds, file_path=None,
-                contrast="pHORST_vs_Col-0", group1="pHORST", group2="Col-0",
-                n_genes_tested=0, n_significant_fdr=500, n_up=300, n_down=200,
-            )
+        _rejects(cur, ds, "scrna_de_counts_all_or_none",
+                 file_path="x.json", **partial)
     pg_conn.rollback()
-
-
-# --------------------------------------------------------------------------- #
-# The summary counts cannot contradict each other
-# --------------------------------------------------------------------------- #
 
 
 def test_more_significant_than_tested_is_rejected(pg_conn):
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
-        with pytest.raises(psycopg.errors.CheckViolation):
-            _insert(
-                cur, ds, file_path="x.json",
-                n_genes_tested=10, n_significant_fdr=1000,
-            )
+        _rejects(cur, ds, "scrna_de_significant_within_tested",
+                 file_path="x.json",
+                 n_genes_tested=10, n_significant_fdr=1000,
+                 n_significant_fdr_lfc=1000, n_up=1000, n_down=0)
     pg_conn.rollback()
 
 
@@ -214,12 +252,10 @@ def test_second_cut_wider_than_the_first_is_rejected(pg_conn):
     """The fold-change cut applies on top of the FDR cut, so it can only narrow."""
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
-        with pytest.raises(psycopg.errors.CheckViolation):
-            _insert(
-                cur, ds, file_path="x.json",
-                n_genes_tested=12085, n_significant_fdr=5,
-                n_significant_fdr_lfc=9, n_up=9, n_down=0,
-            )
+        _rejects(cur, ds, "scrna_de_lfc_cut_narrows_fdr_cut",
+                 file_path="x.json",
+                 n_genes_tested=12085, n_significant_fdr=5,
+                 n_significant_fdr_lfc=9, n_up=9, n_down=0)
     pg_conn.rollback()
 
 
@@ -227,32 +263,79 @@ def test_up_and_down_not_summing_is_rejected(pg_conn):
     """A gene clearing a fold-change cut moved up or down; there is no third bucket."""
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
-        with pytest.raises(psycopg.errors.CheckViolation):
-            _insert(
-                cur, ds, file_path="x.json",
-                n_genes_tested=12085, n_significant_fdr=7,
-                n_significant_fdr_lfc=6, n_up=1, n_down=1,
-            )
+        _rejects(cur, ds, "scrna_de_up_plus_down_is_lfc_significant",
+                 file_path="x.json",
+                 n_genes_tested=12085, n_significant_fdr=7,
+                 n_significant_fdr_lfc=6, n_up=1, n_down=1)
     pg_conn.rollback()
 
 
-def test_negative_count_is_rejected(pg_conn):
+@pytest.mark.parametrize(
+    "column", ["n_group1", "n_group2", "n_genes_tested", "n_significant_fdr",
+               "n_significant_fdr_lfc", "n_up", "n_down"]
+)
+def test_negative_count_is_rejected(pg_conn, column):
+    counts = {"n_genes_tested": 10, "n_significant_fdr": 5,
+              "n_significant_fdr_lfc": 4, "n_up": 4, "n_down": 0}
+    counts[column] = -1
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
-        with pytest.raises(psycopg.errors.CheckViolation):
-            _insert(cur, ds, file_path="x.json", n_group1=-1)
+        _rejects(cur, ds, "scrna_de_counts_non_negative",
+                 file_path="x.json", **counts)
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize("blank", ["", "   "], ids=["empty", "whitespace"])
+@pytest.mark.parametrize("column", ["file_path", "contrast", "group1", "group2", "cluster_id"])
+def test_blank_text_is_rejected(pg_conn, column, blank):
+    """NULL is the only way to say nothing. An empty contrast reads as
+    one-vs-rest; an empty file_path renders as a link that goes nowhere."""
+    row = {"file_path": "x.json", "contrast": "a_vs_b", "group1": "a", "group2": "b"}
+    row[column] = blank
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _rejects(cur, ds, "scrna_de_text_not_blank", **row)
+    pg_conn.rollback()
+
+
+def test_oversized_contrast_is_rejected(pg_conn):
+    """contrast is indexed, so an oversized value would otherwise fail at insert
+    with a btree row-size error rather than anything a reader could act on."""
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _rejects(cur, ds, "scrna_de_name_lengths",
+                 file_path="x.json", contrast="x" * 3000, group1="a", group2="b")
+    pg_conn.rollback()
+
+
+def test_same_comparison_twice_is_rejected(pg_conn):
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _insert(cur, ds, file_path="a.json", contrast="a_vs_b", group1="a", group2="b")
+        _rejects(cur, ds, "scrna_de_comparison_uniqueness",
+                 file_path="b.json", contrast="a_vs_b", group1="a", group2="b")
+    pg_conn.rollback()
+
+
+def test_two_one_vs_rest_rows_for_one_cluster_are_rejected(pg_conn):
+    """NULLS NOT DISTINCT. Without it Postgres treats every NULL contrast as
+    unique and the rows every existing reader fetches stay unconstrained."""
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _insert(cur, ds, file_path="markers.json")
+        _rejects(cur, ds, "scrna_de_comparison_uniqueness", file_path="other.json")
     pg_conn.rollback()
 
 
 # --------------------------------------------------------------------------- #
-# Privileges — the regression this file was written for
+# Privileges -- the regression this file was written for
 # --------------------------------------------------------------------------- #
 
 
 def _table_privileges(cur, table: str) -> dict[str, set[str]]:
     cur.execute(
         "SELECT grantee, privilege_type FROM information_schema.role_table_grants "
-        "WHERE table_schema = 'public' AND table_name = %s AND grantee LIKE 'bloom%%'",
+        "WHERE table_schema = 'public' AND table_name = %s",
         (table,),
     )
     out: dict[str, set[str]] = {}
@@ -262,24 +345,34 @@ def _table_privileges(cur, table: str) -> dict[str, set[str]]:
 
 
 def test_privileges_match_an_untouched_sibling(pg_conn):
-    """The migration must grant nothing. Every bloom_* role already holds what it
-    needs from the ALL TABLES grant in 20260414002000, so any difference from a
-    sibling table means this migration re-granted something — which is how it
-    first re-opened two deliberately closed doors."""
+    """The migration grants nothing. Every role already holds what it needs from
+    the ALL TABLES grant in 20260414002000, so any difference from a sibling
+    means this migration re-granted something."""
     with pg_conn.cursor() as cur:
         assert _table_privileges(cur, TABLE) == _table_privileges(cur, SIBLING)
 
 
+def test_bloom_role_privileges_are_exactly_as_expected(pg_conn):
+    """Absolute, not relative: a regrant applied to both tables would pass the
+    sibling comparison above."""
+    with pg_conn.cursor() as cur:
+        actual = {
+            role: privs
+            for role, privs in _table_privileges(cur, TABLE).items()
+            if role.startswith("bloom_")
+        }
+        assert actual == EXPECTED_PRIVILEGES
+
+
 def test_bloom_user_cannot_update(pg_conn):
-    """20260710000000 removed bloom_user UPDATE across public. Re-granting it here
-    also fails test_bloom_user_read_only.py, which asserts the updatable set."""
+    """20260710000000 removed bloom_user UPDATE across public."""
     with pg_conn.cursor() as cur:
         assert "UPDATE" not in _table_privileges(cur, TABLE).get("bloom_user", set())
 
 
 def test_bloom_admin_has_no_truncate_trigger_or_references(pg_conn):
-    """20260504000002 stripped these because TRUNCATE bypasses RLS and TRIGGER is
-    a privilege-escalation vector. `GRANT ALL` puts them back."""
+    """20260504000002 stripped these: TRUNCATE bypasses RLS and TRIGGER is a
+    privilege-escalation vector."""
     with pg_conn.cursor() as cur:
         held = _table_privileges(cur, TABLE).get("bloom_admin", set())
         assert not held & {"TRUNCATE", "TRIGGER", "REFERENCES"}
@@ -299,11 +392,12 @@ def test_bloom_admin_has_no_truncate_trigger_or_references(pg_conn):
     ],
 )
 def test_role_policy_exists(pg_conn, policy, role):
-    """20260506000001 gave every scrna_* table these except scrna_de, so bloom_user
-    reads returned no rows. The migration closes that gap."""
+    """20260506000001 gave every scrna_* table these except scrna_de, so
+    bloom_user reads returned no rows. The migration closes that gap."""
     with pg_conn.cursor() as cur:
         cur.execute(
-            "SELECT roles FROM pg_policies WHERE tablename = %s AND policyname = %s",
+            "SELECT roles FROM pg_policies "
+            "WHERE schemaname = 'public' AND tablename = %s AND policyname = %s",
             (TABLE, policy),
         )
         row = cur.fetchone()
@@ -313,7 +407,11 @@ def test_role_policy_exists(pg_conn, policy, role):
 
 def test_pre_existing_policies_are_left_alone(pg_conn):
     with pg_conn.cursor() as cur:
-        cur.execute("SELECT policyname FROM pg_policies WHERE tablename = %s", (TABLE,))
+        cur.execute(
+            "SELECT policyname FROM pg_policies "
+            "WHERE schemaname = 'public' AND tablename = %s",
+            (TABLE,),
+        )
         names = {r[0] for r in cur.fetchall()}
         assert {
             "Authenticated users can insert scrna_de",
@@ -328,44 +426,92 @@ def test_pre_existing_policies_are_left_alone(pg_conn):
 # --------------------------------------------------------------------------- #
 
 
-def _rollback_sql() -> Path | None:
+def _rollback_body() -> str:
+    """The rollback script without its BEGIN/COMMIT wrapper, so it runs inside
+    the fixture's uncommitted transaction and leaves the schema untouched."""
     matches = sorted(
         (REPO_ROOT / "supabase" / "rollbacks").glob("*_scrna_de_add_contrast_rollback.sql")
     )
-    return matches[-1] if matches else None
+    assert matches, "rollback script not found"
+    return "\n".join(
+        line
+        for line in matches[-1].read_text().splitlines()
+        if not re.match(r"^\s*(BEGIN|COMMIT)\s*;\s*$", line, re.IGNORECASE)
+    )
+
+
+def test_rollback_refuses_when_contrast_data_exists(pg_conn):
+    """Nothing automated runs these scripts, so the only time one runs is by hand
+    against a table someone has already filled. Dropping the columns would
+    discard every contrast."""
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _insert(cur, ds, file_path="a.json", contrast="a_vs_b", group1="a", group2="b")
+        with pytest.raises(psycopg.errors.RaiseException) as exc:
+            cur.execute(_rollback_body())
+        assert "Refusing to roll back" in str(exc.value)
+    pg_conn.rollback()
+
+
+def test_rollback_refuses_when_a_row_has_no_file(pg_conn):
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _insert(cur, ds, file_path=None,
+                contrast="a_vs_b", group1="a", group2="b",
+                n_genes_tested=0, n_significant_fdr=0,
+                n_significant_fdr_lfc=0, n_up=0, n_down=0)
+        with pytest.raises(psycopg.errors.RaiseException):
+            cur.execute(_rollback_body())
+    pg_conn.rollback()
 
 
 def test_rollback_restores_the_original_shape(pg_conn):
-    """CI only rolls forward, so apply the rollback body inside the fixture's
-    uncommitted transaction, assert, then ROLLBACK so nothing else is affected."""
-    path = _rollback_sql()
-    if path is None:
-        pytest.skip("rollback script not written yet")
-
-    body = "\n".join(
-        line
-        for line in path.read_text().splitlines()
-        if not re.match(r"^\s*(BEGIN|COMMIT)\s*;\s*$", line, re.IGNORECASE)
-    )
+    """With only old-style rows there is nothing to lose, so it runs."""
     with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _insert(cur, ds, file_path="de/legacy.json")
         before = _table_privileges(cur, TABLE)
-        cur.execute(body)
+
+        cur.execute(_rollback_body())
 
         cur.execute(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_schema = 'public' AND table_name = %s",
             (TABLE,),
         )
-        remaining = {r[0] for r in cur.fetchall()}
-        assert remaining == {"id", "dataset_id", "file_path", "cluster_id"}
+        assert {r[0] for r in cur.fetchall()} == ORIGINAL_COLUMNS
 
         cur.execute(
             "SELECT is_nullable FROM information_schema.columns "
-            "WHERE table_schema = 'public' AND table_name = %s AND column_name = 'file_path'",
+            "WHERE table_schema = 'public' AND table_name = %s "
+            "AND column_name = 'file_path'",
             (TABLE,),
         )
-        assert cur.fetchone()[0] == "NO", "file_path should be NOT NULL again"
+        assert cur.fetchone()[0] == "NO"
 
-        # The rollback revokes nothing: those privileges predate the migration.
+        cur.execute(f"SELECT count(*) FROM {TABLE} WHERE dataset_id = %s", (ds,))
+        assert cur.fetchone()[0] == 1, "the legacy row must survive"
+
+        cur.execute(
+            "SELECT policyname FROM pg_policies "
+            "WHERE schemaname = 'public' AND tablename = %s",
+            (TABLE,),
+        )
+        remaining = {r[0] for r in cur.fetchall()}
+        assert not remaining & {
+            "admin_all_scrna_de", "agent_read_scrna_de", "user_read_scrna_de"
+        }
+
+        cur.execute(
+            "SELECT indexname FROM pg_indexes "
+            "WHERE schemaname = 'public' AND tablename = %s",
+            (TABLE,),
+        )
+        indexes = {r[0] for r in cur.fetchall()}
+        assert "idx_scrna_de_dataset_cluster_contrast" not in indexes
+        assert "idx_scrna_de_dataset_cluster" in indexes, "the older index comes back"
+
+        # A guard, not an observation: the rollback revokes nothing, and adding a
+        # REVOKE would strip access the table had before the migration.
         assert _table_privileges(cur, TABLE) == before
     pg_conn.rollback()
