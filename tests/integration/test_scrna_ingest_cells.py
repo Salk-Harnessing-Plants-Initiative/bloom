@@ -424,3 +424,47 @@ def test_a_refusal_commits_nothing(ingest, pg_conn):
         cur.execute("SELECT count(*) FROM scrna_cells WHERE dataset_id = %s",
                     (dataset_id,))
         assert cur.fetchone()[0] == 0
+
+
+def test_a_curated_colour_in_lower_case_still_reserves_its_slot(ingest, pg_conn):
+    """Hex case is not meaning. A surviving type holding '#e15759' must stop a
+    new type being handed '#E15759'. This repo's own colour backfill writes
+    lower case and 17 of the 23 palette entries differ from it only in case, so
+    comparing raw strings hands out a duplicate -- the exact defect a 24-type
+    load is refused to avoid.
+
+    Two new cell types, so the spare list has to reach the curated colour."""
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        dataset_id, _ = run(ingest, pg_conn, "case", sid, cells(["A", "C"]))
+        cur.execute(
+            "UPDATE scrna_clusters SET color = %s "
+            "WHERE dataset_id = %s AND cluster_id = 'C'",
+            (ingest.PALETTE[2].lower(), dataset_id),
+        )
+        run(ingest, pg_conn, "case", sid, cells(["A", "B", "C", "D"]))
+
+        cur.execute("SELECT cluster_id, color FROM scrna_clusters "
+                    "WHERE dataset_id = %s ORDER BY cluster_id", (dataset_id,))
+        rows = cur.fetchall()
+        assert dict(rows)["C"] == ingest.PALETTE[2].lower(), "curation must survive"
+        colours = [c.lower() for _, c in rows]
+        assert len(set(colours)) == 4, f"two cell types share a colour: {rows}"
+    pg_conn.rollback()
+
+
+def test_a_vanished_cell_type_does_not_hold_on_to_its_colour(ingest, pg_conn):
+    """Only surviving types keep theirs. Counting departed ones would shrink the
+    spare list until a full-width catalogue could not be coloured at all."""
+    n = len(ingest.PALETTE)
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        first = [f"old{i}" for i in range(n)]
+        dataset_id, _ = run(ingest, pg_conn, "swap", sid, cells(first))
+        run(ingest, pg_conn, "swap", sid, cells([f"new{i}" for i in range(n)]))
+        cur.execute("SELECT color FROM scrna_clusters WHERE dataset_id = %s",
+                    (dataset_id,))
+        colours = [c for (c,) in cur.fetchall()]
+        assert len(colours) == n
+        assert len(set(colours)) == n, "a colour was reused"
+    pg_conn.rollback()

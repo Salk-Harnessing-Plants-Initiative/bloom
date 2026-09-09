@@ -385,9 +385,9 @@ def test_the_bar_is_where_it_was_measured(ingest):
 
 
 def test_too_few_cells_or_cell_types_to_judge(ingest):
-    coords, labels = _groups(4, 5)
+    coords, labels = _groups(4, 5)               # 20 cells
     assert ingest.alignment(coords, labels) is None
-    coords, labels = _groups(3, 30)
+    coords, labels = _groups(1, 90)              # one cell type
     assert ingest.alignment(coords, labels) is None
 
 
@@ -396,9 +396,9 @@ def test_the_gate_boundaries_are_exact(ingest):
     coords, labels = _groups(5, 10)          # 50 cells, 5 types
     assert ingest.alignment(coords, labels) is not None
     assert ingest.alignment(coords[:49], labels[:49]) is None
-    coords, labels = _groups(4, 20)          # 4 types
+    coords, labels = _groups(2, 30)          # 2 cell types is enough to judge
     assert ingest.alignment(coords, labels) is not None
-    coords, labels = _groups(3, 20)          # 3 types
+    coords, labels = _groups(1, 60)          # 1 is not
     assert ingest.alignment(coords, labels) is None
 
 
@@ -536,4 +536,96 @@ def test_a_misaligned_group_that_is_not_a_sample_is_refused(ingest, tmp_path):
     adata.write_h5ad(path)
 
     with pytest.raises(ingest.IngestError, match=r"obs\['nn_source'\] == 'shahan'"):
-        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                          ("nn_source",))
+
+    # and unnamed, it is not scored -- the operator says which columns are
+    # provenance, because the script cannot tell them from biology
+    ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_an_unknown_group_column_is_refused(ingest, tmp_path):
+    path = write_h5ad(tmp_path / "nogroup.h5ad", n_cells=120,
+                      labels=["A", "B", "C", "D"] * 30)
+    with pytest.raises(ingest.IngestError, match="no obs\\['nope'\\] to group by"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                          ("nope",))
+
+
+def test_the_sample_column_is_grouped_without_being_named(ingest, tmp_path):
+    """It is provenance by definition, so it is never left to be remembered."""
+    import anndata
+    adata = anndata.read_h5ad(
+        write_h5ad(tmp_path / "s.h5ad", n_cells=120, labels=["A", "B", "C", "D"] * 30)
+    )
+    assert ingest._grouping_columns(adata, "nn_label_plain", "sample", ()) == ["sample"]
+    assert ingest._grouping_columns(adata, "nn_label_plain", "batch", ("sample",)) == [
+        "batch", "sample"
+    ]
+
+
+def test_the_annotation_is_never_grouped_by(ingest, tmp_path):
+    """Grouping by it would score cells against their own label, which measures
+    nothing -- even if the operator names it."""
+    import anndata
+    adata = anndata.read_h5ad(
+        write_h5ad(tmp_path / "a.h5ad", n_cells=120, labels=["A", "B", "C", "D"] * 30)
+    )
+    assert ingest._grouping_columns(
+        adata, "nn_label_plain", "sample", ("nn_label_plain",)
+    ) == ["sample"]
+
+
+def test_every_named_group_column_is_scored_not_just_the_first(ingest, tmp_path):
+    """The damage is in the column that sorts last, so stopping early passes."""
+    types = ["A", "B", "C", "D"]
+    labels, samples, first, second, coords = [], [], [], [], []
+    for i in range(360):
+        labels.append(types[i % 4])
+        samples.append(["Col-0", "pFACT", "pHORST"][i % 3])
+        first.append("aaa_fine")
+        second.append("zzz_bad" if (i // 4) % 2 else "zzz_ok")
+        coords.append([(i % 4) * 1000.0 + i * 0.01, 0.0])
+    coords = np.array(coords)
+    bad = np.flatnonzero(np.asarray(second) == "zzz_bad")
+    coords[bad] = coords[np.random.default_rng(0).permutation(bad)]
+
+    path = write_h5ad(tmp_path / "twocols.h5ad", n_cells=len(labels),
+                      labels=labels, samples=samples, coords=coords)
+    import anndata
+    adata = anndata.read_h5ad(path)
+    adata.obs["aaa_col"] = first
+    adata.obs["zzz_col"] = second
+    adata.write_h5ad(path)
+
+    with pytest.raises(ingest.IngestError, match=r"obs\['zzz_col'\] == 'zzz_bad'"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                          ("aaa_col", "zzz_col"))
+
+
+def test_a_group_is_scored_against_its_own_labels(ingest, tmp_path):
+    """Labels within a group must be paired with that group's own rows. The
+    earlier fixtures were periodic, so any mispairing was a no-op."""
+    rng = np.random.default_rng(7)
+    labels, samples, coords = [], [], []
+    order = list(rng.permutation([t for t in ["A", "B", "C", "D"] for _ in range(45)]))
+    for i, t in enumerate(order):
+        labels.append(t)
+        samples.append(["Col-0", "pFACT", "pHORST"][i % 3])
+        coords.append([ord(t) * 1000.0 + i * 0.01, 0.0])
+    path = write_h5ad(tmp_path / "nonperiodic.h5ad", n_cells=len(labels),
+                      labels=labels, samples=samples, coords=np.array(coords))
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+    assert cells["n_cells"] == 180
+
+
+def test_main_passes_the_annotation_the_operator_named(ingest, tmp_path, capsys):
+    """`main()`'s wiring into the reader was untested: handing `load()` the
+    sample column instead of the annotation passed every other test."""
+    path = write_h5ad(tmp_path / "wiring.h5ad", n_cells=6)
+    code = ingest.main([
+        "--h5ad", str(path), "--dataset-name", "d", "--species-id", "1",
+        "--annotation", "nn_label_plain", "--dry-run",
+    ])
+    assert code == 0
+    assert "2 cell types" in capsys.readouterr().out

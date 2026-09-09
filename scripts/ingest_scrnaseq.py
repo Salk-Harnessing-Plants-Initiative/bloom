@@ -51,13 +51,13 @@ PALETTE = [
     "#79706E", "#D7B5A6", "#6B4C9A",
 ]
 
-# Below these the neighbour check cannot separate a real embedding from a
-# shuffled one, so it is skipped rather than guessed at. Judgement calls, not
-# measurements. The gate is the number of cell types rather than their balance:
-# one type holding most of the cells pushes chance high enough to disable a
-# balance-based gate entirely.
+# Below these there is not enough to judge, so the check is skipped rather than
+# guessed at. Two cell types are enough: measured on 900 well-separated cells,
+# good coordinates score 1.00 and a shuffle -0.01 at two, three and four types,
+# because scaling by the room above chance already handles one type dominating.
+# A higher gate left a three-type dataset with no check at all.
 MIN_CELLS_FOR_ALIGNMENT = 50
-MIN_LEVELS_FOR_ALIGNMENT = 4
+MIN_LEVELS_FOR_ALIGNMENT = 2
 
 # A real embedding gives essentially every cell its own point: on this dataset's
 # 8,683 cells and on the 138,865-row joint embedding, every single point is
@@ -66,7 +66,8 @@ MIN_LEVELS_FOR_ALIGNMENT = 4
 # cannot catch, and reads as good alignment. See read_cells.
 MAX_DUPLICATE_POINT_SHARE = 0.001
 
-# scrna_cells.x and .y are REAL; anything larger cannot be stored.
+# scrna_cell_arrays casts x and y to REAL on the way out, so a coordinate above
+# this stores fine and then fails for every reader of the dataset.
 FLOAT32_MAX = 3.4028235e38
 
 # How far neighbour agreement must sit from chance towards perfect. A ratio does
@@ -81,9 +82,6 @@ FLOAT32_MAX = 3.4028235e38
 # Read what this does and does not catch in read_cells before relying on it.
 MIN_ALIGNMENT_EXCESS = 0.10
 
-# How many levels a column may have and still be treated as a grouping to score
-# separately. Above this it is a measurement, not a provenance label.
-MAX_GROUPING_LEVELS = 8
 
 class IngestError(RuntimeError):
     """Something about the file or the database makes this load unsafe."""
@@ -102,6 +100,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "types will not exist in the catalogue",
     )
     p.add_argument("--sample-column", default="sample")
+    p.add_argument(
+        "--group-column",
+        action="append",
+        default=[],
+        metavar="COLUMN",
+        help="an obs column whose groups were lined up against the coordinates "
+             "separately, scored on its own as well as the file as a whole. The "
+             "sample column always is. Name the source column of a joint "
+             "embedding here; repeatable",
+    )
     p.add_argument("--umap-key", default="X_umap")
     p.add_argument(
         "--expect-cells",
@@ -139,22 +147,27 @@ def alignment(coords, labels: list[str]) -> tuple[float, float] | None:
     return purity, (purity - chance) / (1 - chance)
 
 
-def _grouping_columns(adata, annotation: str, sample_column: str) -> list[str]:
-    """Columns that split the cells into a few groups, each of which may have
-    been lined up against the coordinates separately.
+def _grouping_columns(adata, annotation: str, sample_column: str,
+                      extra: tuple[str, ...]) -> list[str]:
+    """Columns whose groups were each lined up against the coordinates
+    separately, so each has to be scored on its own.
 
-    The annotation itself is excluded: the score already groups by it, so
-    scoring within it measures nothing. Groups too small or too uniform to judge
-    are skipped by `alignment`, so a column with many sparse groups costs time
-    rather than raising false alarms.
+    The sample is always one. Anything else has to be named, because nothing here
+    can tell a provenance column from a biological one, and scoring within a
+    biological group measures biology: on the first dataset, cells in the
+    meristem are undifferentiated, so their types genuinely overlap in the
+    embedding and the group scores 0.088 with the coordinates perfectly correct.
+    Sweeping every short column refused that dataset.
+
+    The annotation is excluded either way -- the score already groups by it.
     """
-    columns = {sample_column}
-    for column in adata.obs.columns:
-        if column != annotation and 2 <= adata.obs[column].astype(str).nunique() \
-                <= MAX_GROUPING_LEVELS:
-            columns.add(column)
-    columns.discard(annotation)
-    return sorted(columns)
+    for column in extra:
+        if column not in adata.obs:
+            raise IngestError(
+                f"no obs[{column!r}] to group by. Found: "
+                f"{', '.join(sorted(adata.obs.columns))}"
+            )
+    return sorted(({sample_column} | set(extra)) - {annotation})
 
 
 def _misaligned(umap_key: str, what: str, purity: float, excess: float) -> str:
@@ -172,25 +185,31 @@ def read_cells(
     sample_column: str,
     umap_key: str,
     expect_cells: int | None,
+    group_columns: tuple[str, ...] = (),
 ) -> dict:
     """Pull everything the explorer needs out of the file, or refuse.
 
     Every check here runs before a single row is written, because a dataset that
     is half loaded looks to the explorer exactly like one that is complete.
 
-    What the alignment check is worth. It catches coordinates that are unfilled,
-    and any misalignment spread across a whole sample or the whole file -- an
-    off-by-one row shift, a wrong slice of a joint embedding, sample blocks in
-    the wrong order. All of those were measured on the first dataset and refused
-    by a wide margin.
+    What the alignment check is worth, measured on the first dataset rather than
+    argued. It catches unfilled coordinates, and misalignment affecting most of a
+    group or most of the file: an off-by-any-amount row shift, a wrong slice of a
+    joint embedding, and one group's rows reordered are all refused several times
+    over.
 
-    It cannot catch a misalignment that keeps every cell inside a group of its
-    own cell type, because neighbour agreement is then unchanged: a permutation
-    within one cell type, or all of one type's cells landing on another type's
-    cluster, scores exactly what a correct load scores. That is what lining two
-    sides up by sorted cell type produces, so coordinates and labels have to come
-    from the same file, as they do here, or be joined on the barcode. Scoring
-    them is not a substitute for keying them.
+    It is a bulk check, and two things follow. A minority can be wrong and pass
+    -- about a fifth of rows scrambled, or one contiguous tenth reordered, still
+    clear the bar, and that tolerance grows as the embedding improves. And it is
+    blind by construction to any misalignment that keeps every cell inside a
+    group of its own cell type: a permutation within one type, one type's cells
+    landing on another's cluster, or coordinates synthesised from the labels all
+    score at least what a correct load scores. That last family is what lining
+    two sides up by sorted cell type produces.
+
+    So this is evidence, not proof, and the thing that actually keeps the rows
+    together is that coordinates and labels come out of the same file. If they
+    ever arrive separately they must be joined on the barcode, not by position.
     """
     import anndata
     import numpy as np
@@ -211,7 +230,12 @@ def read_cells(
         )
     # anndata guarantees obsm rows match n_obs, so a row-count check here would
     # be unreachable; nothing else about the array is guaranteed.
-    coords = np.asarray(adata.obsm[umap_key], dtype=float)
+    try:
+        coords = np.asarray(adata.obsm[umap_key], dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise IngestError(
+            f"obsm[{umap_key!r}] does not read as numbers: {exc}"
+        ) from exc
     if coords.ndim != 2:
         raise IngestError(
             f"obsm[{umap_key!r}] is {coords.ndim}-dimensional, need a 2-D array"
@@ -230,8 +254,8 @@ def read_cells(
             f"infinity collapses the whole plot to one point"
         )
     if np.abs(coords).max() > FLOAT32_MAX:
-        # scrna_cells.x and .y are REAL, so a finite double this large fails the
-        # insert and takes the whole dataset with it.
+        # The column is double precision, so this stores; the explorer's own
+        # query casts it to REAL, so it breaks at read time for everyone.
         raise IngestError(
             f"obsm[{umap_key!r}] holds coordinates too large to store; the "
             f"largest is {np.abs(coords).max():.3g}"
@@ -247,7 +271,9 @@ def read_cells(
         # the real embedding's 0.269.
         raise IngestError(
             f"obsm[{umap_key!r}] puts {piles.max()} of {len(coords)} cells on a "
-            f"single point; these coordinates are partly or wholly unfilled"
+            f"single point. Real coordinates give essentially every cell its "
+            f"own; this array is unfilled, partly unfilled, or rounded so "
+            f"coarsely that cells collide"
         )
 
     for column in (annotation, sample_column):
@@ -283,10 +309,11 @@ def read_cells(
 
     # One average over the whole file cannot see damage confined to part of it:
     # a third of the cells can carry another cell's coordinates and still clear
-    # the bar. So every grouping the file offers is scored as well, because the
-    # group that matters is whichever one was lined up separately -- the sample
-    # here, and the source dataset in a joint object like this one.
-    for column in _grouping_columns(adata, annotation, sample_column):
+    # the bar. So each group is scored on its own as well -- every sample, and
+    # whatever else --group-column names, such as the source dataset in a joint
+    # object like this one.
+    for column in _grouping_columns(adata, annotation, sample_column,
+                                    group_columns):
         values = adata.obs[column].astype(str).to_numpy()
         for group in sorted(set(values)):
             rows = np.flatnonzero(values == group)
@@ -387,9 +414,8 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
     Order matters twice over. `scrna_cells` references the catalogue with
     ON DELETE RESTRICT, so the cells go first or the catalogue delete is refused
     on every run after the first. And the dataset's counts and checksum are
-    written last, after reading back what actually landed, so an interrupted run
-    leaves stale provenance rather than a row attesting to a file it does not
-    hold.
+    written last, after reading back what actually landed, so the row can never
+    attest to a file it does not hold.
 
     A reload is refused outright when the dataset already has rows that name a
     cell type or a cell position, since nothing here can rebuild them.
@@ -466,8 +492,8 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
             cid: (name, color) for cid, name, color in cur.fetchall()
             if cid in set(cells["levels"])
         }
-        spare = iter([c for c in PALETTE
-                      if c not in {color for _, color in kept.values() if color}])
+        taken = {color.lower() for _, color in kept.values() if color}
+        spare = iter([c for c in PALETTE if c.lower() not in taken])
 
         cur.execute("DELETE FROM public.scrna_cells WHERE dataset_id = %s", (dataset_id,))
         cur.execute("DELETE FROM public.scrna_clusters WHERE dataset_id = %s", (dataset_id,))
@@ -477,7 +503,7 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
             "(dataset_id, cluster_id, ordinal, name, color) VALUES (%s, %s, %s, %s, %s)",
             [
                 (dataset_id, level, ordinal,
-                 kept.get(level, (None, None))[0] or level,
+                 (kept.get(level, (None, None))[0] or "").strip() or level,
                  kept.get(level, (None, None))[1] or next(spare))
                 for ordinal, level in enumerate(cells["levels"])
             ],
@@ -523,6 +549,7 @@ def main(argv: list[str] | None = None) -> int:
         cells = read_cells(
             args.h5ad, args.annotation, args.sample_column,
             args.umap_key, args.expect_cells,
+            tuple(args.group_column),
         )
     except IngestError as exc:
         print(f"refusing to ingest: {exc}", file=sys.stderr)
@@ -539,7 +566,9 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "DATABASE_URL is required — a direct connection, so the whole load "
             "is one transaction. The role needs INSERT and DELETE on "
-            "scrna_datasets, scrna_clusters and scrna_cells.",
+            "scrna_clusters and scrna_cells, INSERT and UPDATE on "
+            "scrna_datasets, and SELECT on scrna_cluster_stats, "
+            "scrna_cluster_neighbors, scrna_counts and scrna_de.",
             file=sys.stderr,
         )
         return 1
