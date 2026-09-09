@@ -27,8 +27,6 @@ from pathlib import Path
 
 import pytest
 
-psycopg = pytest.importorskip("psycopg")
-
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "ingest_scrnaseq.py"
 
@@ -99,14 +97,19 @@ def test_a_first_load_writes_the_three_tables(ingest, pg_conn):
         assert stored == 4
 
         cur.execute(
-            "SELECT cluster_id, ordinal, name FROM scrna_clusters "
+            "SELECT cluster_id, ordinal, name, color FROM scrna_clusters "
             "WHERE dataset_id = %s ORDER BY ordinal",
             (dataset_id,),
         )
         catalogue = cur.fetchall()
-        # Ordinals contiguous from zero, in sorted label order, name mirroring id.
-        assert catalogue == [("Cortex", 0, "Cortex"), ("Phellem", 1, "Phellem"),
-                             ("Xylem", 2, "Xylem")]
+        # Ordinals contiguous from zero, in sorted label order, name mirroring
+        # id, and a distinct colour each -- a repeat draws two cell types
+        # identically in both the plot and the legend.
+        assert catalogue == [
+            ("Cortex", 0, "Cortex", ingest.PALETTE[0]),
+            ("Phellem", 1, "Phellem", ingest.PALETTE[1]),
+            ("Xylem", 2, "Xylem", ingest.PALETTE[2]),
+        ]
 
         cur.execute(
             "SELECT cell_number, barcode, x, y, cluster_id, replicate "
@@ -254,8 +257,8 @@ def test_the_neighbour_graph_blocks_a_reload(ingest, pg_conn):
         dataset_id, _ = run(ingest, pg_conn, "neigh", sid, cells(["A", "B"]))
         cur.execute(
             "INSERT INTO scrna_cluster_neighbors "
-            "(dataset_id, cluster_id, neighbor_cluster_id, rank) "
-            "VALUES (%s, 'A', 'B', 1)", (dataset_id,),
+            "(dataset_id, cluster_id, neighbor_cluster_id, rank, similarity) "
+            "VALUES (%s, 'A', 'B', 1, 0.5)", (dataset_id,),
         )
         refuses(ingest, pg_conn, "neighbour row", "neigh", sid, cells(["A", "B"]))
         cur.execute(
@@ -317,13 +320,107 @@ def test_a_soft_deleted_dataset_is_not_resurrected(ingest, pg_conn):
     pg_conn.rollback()
 
 
-def test_the_annotation_column_is_recorded(ingest, pg_conn):
-    """The same file loaded on a different annotation gives a different
-    catalogue, so the checksum alone cannot tell two loads apart."""
+def test_the_cell_type_column_is_recorded_without_touching_the_genome_annotation(
+    ingest, pg_conn
+):
+    """Which obs column the cell types came from has to be recorded, because the
+    differential expression results name cell types and must match. It goes in
+    `metadata`: `annotation` means the genome annotation, is written by the
+    uploader and is on screen beside `assembly`."""
     with pg_conn.cursor() as cur:
         sid = species(cur)
+        cur.execute(
+            "INSERT INTO scrna_datasets (name, species_id, annotation, metadata) "
+            "VALUES ('ann', %s, 'Araport11', '{\"strain\": \"Col-0\"}'::jsonb) "
+            "RETURNING id", (sid,),
+        )
+        existing = cur.fetchone()[0]
         dataset_id, _ = run(ingest, pg_conn, "ann", sid, cells(["A", "B"]),
                             annotation="nn_label_plain")
-        cur.execute("SELECT annotation FROM scrna_datasets WHERE id = %s", (dataset_id,))
-        assert cur.fetchone()[0] == "nn_label_plain"
+        assert dataset_id == existing
+        cur.execute(
+            "SELECT annotation, metadata FROM scrna_datasets WHERE id = %s",
+            (dataset_id,),
+        )
+        annotation, metadata = cur.fetchone()
+        assert annotation == "Araport11", "the genome annotation must survive"
+        assert metadata["cell_type_column"] == "nn_label_plain"
+        assert metadata["strain"] == "Col-0", "other metadata must survive"
     pg_conn.rollback()
+
+
+def test_differential_expression_blocks_a_reload(ingest, pg_conn):
+    """DE rows name cell types and have no foreign key to the catalogue, so a
+    reload on a different annotation leaves them naming types that do not
+    exist -- nothing errors and nothing cascades."""
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        dataset_id, _ = run(ingest, pg_conn, "de", sid, cells(["A", "B"]))
+        cur.execute(
+            "INSERT INTO scrna_de (dataset_id, cluster_id, file_path) "
+            "VALUES (%s, 'A', 'de/A.tsv')", (dataset_id,),
+        )
+        refuses(ingest, pg_conn, "differential expression", "de", sid,
+                cells(["A", "B"]))
+        cur.execute("SELECT count(*) FROM scrna_de WHERE dataset_id = %s",
+                    (dataset_id,))
+        assert cur.fetchone()[0] == 1
+    pg_conn.rollback()
+
+
+def test_a_reload_keeps_hand_edited_names_and_colours(ingest, pg_conn):
+    """Cluster names and colours are edited after a load -- the backfill seeds
+    them and says to fix the biology in Studio -- and cannot be rebuilt from the
+    file. A surviving cell type keeps both; a new one takes a colour no
+    surviving type is using."""
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        dataset_id, _ = run(ingest, pg_conn, "curated", sid, cells(["A", "C"]))
+        cur.execute(
+            "UPDATE scrna_clusters SET name = 'Phellem (periderm layer 2)', "
+            "color = '#112233' WHERE dataset_id = %s AND cluster_id = 'C'",
+            (dataset_id,),
+        )
+        # 'B' is new and sorts before 'C', so without carry-forward C's colour
+        # would shift to whatever its new ordinal points at.
+        run(ingest, pg_conn, "curated", sid, cells(["A", "B", "C"]))
+
+        cur.execute(
+            "SELECT cluster_id, name, color FROM scrna_clusters "
+            "WHERE dataset_id = %s ORDER BY cluster_id", (dataset_id,),
+        )
+        rows = cur.fetchall()
+        assert rows[2] == ("C", "Phellem (periderm layer 2)", "#112233")
+        assert rows[0] == ("A", "A", ingest.PALETTE[0]), "unedited types keep theirs"
+        colours = [c for _, _, c in rows]
+        assert len(set(colours)) == 3, f"a colour was reused: {colours}"
+    pg_conn.rollback()
+
+
+def test_a_refusal_commits_nothing(ingest, pg_conn):
+    """`load()` must never commit: the caller's context manager is what makes
+    the whole load one transaction. Nothing asserted this, so a stray commit
+    inside `load()` would make a refusal destructive and stay invisible."""
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        dataset_id, _ = run(ingest, pg_conn, "nocommit", sid, cells(["A", "B"]))
+        cur.execute(
+            "INSERT INTO scrna_genes (dataset_id, gene_number, gene_name) "
+            "VALUES (%s, 0, 'AT1G01010') RETURNING id", (dataset_id,),
+        )
+        cur.execute(
+            "INSERT INTO scrna_counts (dataset_id, gene_id, counts_object_path) "
+            "VALUES (%s, %s, 'scrna/counts/x/AT1G01010.json')",
+            (dataset_id, cur.fetchone()[0]),
+        )
+        refuses(ingest, pg_conn, "per-gene expression", "nocommit", sid,
+                cells(["A", "B"]))
+
+    pg_conn.rollback()
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM scrna_datasets WHERE id = %s",
+                    (dataset_id,))
+        assert cur.fetchone()[0] == 0, "the load committed something"
+        cur.execute("SELECT count(*) FROM scrna_cells WHERE dataset_id = %s",
+                    (dataset_id,))
+        assert cur.fetchone()[0] == 0

@@ -46,6 +46,8 @@ def write_h5ad(
     sample_column: str = "sample",
     labels: list[str] | None = None,
     n_types: int = 2,
+    samples: list[str] | None = None,
+    coords: "np.ndarray | None" = None,
 ) -> Path:
     """A miniature dataset shaped like the real one."""
     obs = pd.DataFrame(
@@ -53,7 +55,7 @@ def write_h5ad(
             annotation: labels or [
                 f"Type{i % n_types}" for i in range(n_cells)
             ] if n_types != 2 else (labels or ["Phellem", "Cortex"] * (n_cells // 2)),
-            sample_column: ["Col-0", "pFACT", "pHORST"] * (n_cells // 3),
+            sample_column: samples or ["Col-0", "pFACT", "pHORST"] * (n_cells // 3),
         },
         index=[f"CELL{i}-Col-0" for i in range(n_cells)],
     )
@@ -62,7 +64,9 @@ def write_h5ad(
         obs=obs,
         var=pd.DataFrame(index=[f"AT1G0{i}" for i in range(4)]),
     )
-    if umap_key:
+    if umap_key and coords is not None:
+        adata.obsm[umap_key] = np.asarray(coords)
+    elif umap_key:
         # Cells of a type sit together, as they do in a real embedding, so the
         # alignment check passes; distinct x and y so a swap is detectable.
         codes = pd.Categorical(obs[annotation]).codes.astype("float32")
@@ -87,9 +91,19 @@ def test_reads_a_well_formed_file(ingest, tmp_path):
     )
     assert cells["n_cells"] == 6
     assert cells["n_genes"] == 4
-    assert len(cells["x"]) == 6 and len(cells["y"]) == 6
     assert cells["levels"] == ["Cortex", "Phellem"]
-    assert set(cells["samples"]) == {"Col-0", "pFACT", "pHORST"}
+    assert cells["samples"] == ["Col-0", "pFACT", "pHORST"] * 2
+
+    # Values, not lengths. This is where a row-order mistake enters -- the
+    # integration tests are handed a dict and cannot see it -- so x, y and the
+    # barcodes are pinned against the fixture's own arithmetic. Checking only
+    # the lengths let x and y swap, and the barcodes reverse, unnoticed.
+    codes = [1, 0, 1, 0, 1, 0]                     # Phellem, Cortex, ...
+    jitter = [i / 5 for i in range(6)]
+    assert cells["x"] == pytest.approx([c * 100.0 + j for c, j in zip(codes, jitter)])
+    assert cells["y"] == pytest.approx([c * 100.0 + 50.0 + j
+                                        for c, j in zip(codes, jitter)])
+    assert cells["barcodes"] == [f"CELL{i}-Col-0" for i in range(6)]
 
 
 def test_levels_are_sorted_so_ordinals_are_stable(ingest, tmp_path):
@@ -228,11 +242,21 @@ def test_unexpected_cell_count_is_refused(ingest, tmp_path):
         ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", 8683)
 
 
-def test_too_many_levels_for_the_ordinal_is_refused(ingest, tmp_path):
-    """The browser packs the ordinal into a byte and reserves 255 for orphans."""
-    labels = [f"type{i}" for i in range(300)]
-    path = write_h5ad(tmp_path / "manylevels.h5ad", n_cells=300, labels=labels)
-    with pytest.raises(ingest.IngestError, match="orphans"):
+def test_as_many_cell_types_as_there_are_colours_is_accepted(ingest, tmp_path):
+    n = len(ingest.PALETTE)
+    labels = [f"type{i}" for i in range(n)] * 21
+    path = write_h5ad(tmp_path / "exactly.h5ad", n_cells=n * 21, labels=labels)
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+    assert len(cells["levels"]) == n
+
+
+def test_one_more_cell_type_than_colours_is_refused(ingest, tmp_path):
+    """Wrapping the palette would draw two cell types identically. One column of
+    the real file has exactly 24 levels, so this is one flag away."""
+    n = len(ingest.PALETTE) + 1
+    labels = [f"type{i}" for i in range(n)] * 21
+    path = write_h5ad(tmp_path / "onemore.h5ad", n_cells=n * 21, labels=labels)
+    with pytest.raises(ingest.IngestError, match="drawn identically"):
         ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
 
 
@@ -250,7 +274,7 @@ def test_a_missing_file_is_refused(ingest, tmp_path):
 def test_the_palette_has_a_distinct_colour_for_every_cell_type(ingest):
     """23 cell types in the target dataset, so 23 distinct colours -- a repeat
     renders two different cell types identically in the plot and the legend."""
-    assert len(ingest.PALETTE) >= 23
+    assert len(ingest.PALETTE) == 23
     assert len(set(ingest.PALETTE)) == len(ingest.PALETTE)
     assert all(c.startswith("#") and len(c) == 7 for c in ingest.PALETTE)
 
@@ -291,3 +315,225 @@ def test_a_bad_file_exits_non_zero_without_touching_the_database(ingest, tmp_pat
     ])
     assert code == 1
     assert "refusing to ingest" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- #
+# The alignment statistic itself
+#
+# `neighbour_purity` is the only real algorithm here, and it had no direct test:
+# breaking its self-exclusion or its chunk boundary left every other test green
+# while inflating a shuffled embedding to two thirds of the safety margin. These
+# assert exact values, so a weakened version cannot pass.
+# --------------------------------------------------------------------------- #
+
+
+def _groups(n_groups: int, per_group: int):
+    """Cells in tight, far-apart groups: one label per group, so every cell's
+    nearest neighbours are its own group and the answer is arithmetic."""
+    coords, labels = [], []
+    for g in range(n_groups):
+        for i in range(per_group):
+            coords.append([g * 1000.0 + i * 0.001, 0.0])
+            labels.append(f"type{g}")
+    return np.array(coords), labels
+
+
+def test_a_cell_is_not_its_own_neighbour(ingest):
+    """Groups of 15 with k=15: each cell has 14 same-label neighbours and must
+    reach outside its group for the 15th. Counting itself would give 1.0."""
+    coords, labels = _groups(4, 15)
+    assert ingest.neighbour_purity(coords, labels) == pytest.approx(14 / 15)
+
+
+def test_groups_larger_than_k_are_perfectly_pure(ingest):
+    coords, labels = _groups(4, 16)
+    assert ingest.neighbour_purity(coords, labels) == pytest.approx(1.0)
+
+
+def test_purity_is_the_same_across_the_chunk_boundary(ingest):
+    """600 cells in groups of 10 spans the 512-row block, so a per-chunk index
+    mistake or a loop that stops after one block shows up here and nowhere else.
+    Every cell has 9 same-label neighbours out of 15."""
+    coords, labels = _groups(60, 10)
+    assert ingest.neighbour_purity(coords, labels) == pytest.approx(9 / 15)
+
+
+def test_a_shuffle_scores_at_chance(ingest):
+    coords, labels = _groups(20, 30)
+    rng = np.random.default_rng(0)
+    shuffled = coords[rng.permutation(len(coords))]
+    scored = ingest.alignment(shuffled, labels)
+    assert scored is not None
+    assert scored[1] < 0.02, scored
+
+
+def test_the_excess_is_scaled_by_the_room_above_chance(ingest):
+    """Four groups of 16 put chance at 0.25 and purity at 1.0. Scaled, that is
+    1.0. Unscaled it would be 0.75 and as a ratio 3.0 -- so this pins the
+    formula, not just its sign."""
+    coords, labels = _groups(4, 16)
+    purity, excess = ingest.alignment(coords, labels)
+    assert purity == pytest.approx(1.0)
+    assert excess == pytest.approx(1.0)
+
+
+def test_the_bar_is_where_it_was_measured(ingest):
+    """Calibrated on the first dataset: the weakest legitimate coordinates score
+    0.21 and a shuffle of them 0.00, so the bar sits half way down. Loosening it
+    is the one change here that no behavioural test would notice."""
+    assert ingest.MIN_ALIGNMENT_EXCESS == 0.10
+
+
+def test_too_few_cells_or_cell_types_to_judge(ingest):
+    coords, labels = _groups(4, 5)
+    assert ingest.alignment(coords, labels) is None
+    coords, labels = _groups(3, 30)
+    assert ingest.alignment(coords, labels) is None
+
+
+def test_the_gate_boundaries_are_exact(ingest):
+    """One cell or one cell type either side of the gate."""
+    coords, labels = _groups(5, 10)          # 50 cells, 5 types
+    assert ingest.alignment(coords, labels) is not None
+    assert ingest.alignment(coords[:49], labels[:49]) is None
+    coords, labels = _groups(4, 20)          # 4 types
+    assert ingest.alignment(coords, labels) is not None
+    coords, labels = _groups(3, 20)          # 3 types
+    assert ingest.alignment(coords, labels) is None
+
+
+# --------------------------------------------------------------------------- #
+# Coordinates that are present but not real
+# --------------------------------------------------------------------------- #
+
+
+def test_unfilled_coordinates_are_refused(ingest, tmp_path):
+    """An obsm allocated and never filled is finite, 2-D and the right length.
+    The neighbour check does not merely miss it -- with every distance tied it
+    scores it as well aligned -- so it has to be refused on its own."""
+    labels = ["A", "B", "C", "D"] * 30
+    path = write_h5ad(tmp_path / "zeros.h5ad", n_cells=120, labels=labels,
+                      coords=np.zeros((120, 2)))
+    with pytest.raises(ingest.IngestError, match="unfilled"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_partly_unfilled_coordinates_are_refused(ingest, tmp_path):
+    """The realistic version: most of the slice lined up, the tail left as
+    zeros. This passes the neighbour check on both of the real file's
+    annotations."""
+    coords = np.vstack([np.array([[float(i), float(i)] for i in range(1080)]),
+                        np.zeros((120, 2))])
+    path = write_h5ad(tmp_path / "tail.h5ad", n_cells=1200,
+                      labels=["A", "B", "C", "D"] * 300, coords=coords)
+    with pytest.raises(ingest.IngestError, match="unfilled"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_coordinates_too_large_to_store_are_refused(ingest, tmp_path):
+    """Finite, but larger than the REAL column the explorer reads."""
+    labels = ["A", "B", "C", "D"] * 30
+    coords = np.array([[float(i), 0.0] for i in range(120)], dtype=float)
+    coords[7, 0] = 1e300
+    path = write_h5ad(tmp_path / "huge.h5ad", n_cells=120, labels=labels,
+                      coords=coords)
+    with pytest.raises(ingest.IngestError, match="too large to store"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_one_sample_misaligned_is_refused(ingest, tmp_path):
+    """The failure a single average over the whole file cannot see: two samples
+    right, one shuffled within itself. The global score stays above the bar."""
+    n_per, types = 60, ["A", "B", "C", "D"]
+    labels, samples, coords = [], [], []
+    for si, s in enumerate(("Col-0", "pFACT", "pHORST")):
+        for i in range(n_per):
+            labels.append(types[i % 4])
+            samples.append(s)
+            # every cell its own point, but far closer to its own cell type
+            # than to any other, as in a real embedding
+            coords.append([(i % 4) * 1000.0 + (si * n_per + i) * 0.01, 0.0])
+    coords = np.array(coords)
+    bad = np.arange(n_per, 2 * n_per)
+    rng = np.random.default_rng(0)
+    coords[bad] = coords[rng.permutation(bad)]
+
+    whole = ingest.alignment(coords, labels)
+    assert whole[1] >= ingest.MIN_ALIGNMENT_EXCESS, (
+        "the point of this test is that the whole-file score still passes"
+    )
+    path = write_h5ad(tmp_path / "onesample.h5ad", n_cells=len(labels),
+                      labels=labels, samples=samples, coords=coords)
+    with pytest.raises(ingest.IngestError, match=r"obs\['sample'\] == 'pFACT'"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_more_cells_than_expected_is_refused(ingest, tmp_path):
+    """Both directions, so narrowing the check to one of them fails here."""
+    path = write_h5ad(tmp_path / "more.h5ad", n_cells=6)
+    with pytest.raises(ingest.IngestError, match="expected 3 cells"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", 3)
+
+
+def test_a_non_finite_value_in_either_column_is_refused(ingest, tmp_path):
+    """The y column too, so the check cannot narrow to x and still pass."""
+    for column in (0, 1):
+        coords = np.array([[float(i), float(i) + 0.5] for i in range(120)])
+        coords[5, column] = np.nan
+        path = write_h5ad(tmp_path / f"nan{column}.h5ad", n_cells=120,
+                          labels=["A", "B", "C", "D"] * 30, coords=coords)
+        with pytest.raises(ingest.IngestError, match="not finite"):
+            ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_three_dimensional_coordinates_are_refused(ingest, tmp_path):
+    """A (n, 2, k) array has shape[1] == 2, so only the dimension count sees it."""
+    coords = np.zeros((120, 2, 3))
+    path = write_h5ad(tmp_path / "cube.h5ad", n_cells=120,
+                      labels=["A", "B", "C", "D"] * 30, coords=coords)
+    with pytest.raises(ingest.IngestError, match="3-dimensional"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_integer_coordinates_are_read_not_crashed_on(ingest, tmp_path):
+    """An integer obsm used to raise OverflowError out of numpy rather than
+    being read or refused."""
+    coords = np.array([[(i % 4) * 1000 + i, 0] for i in range(120)], dtype="int64")
+    path = write_h5ad(tmp_path / "ints.h5ad", n_cells=120,
+                      labels=["A", "B", "C", "D"] * 30, coords=coords)
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+    assert cells["x"][:2] == pytest.approx([0.0, 1001.0])
+
+
+def test_a_misaligned_group_that_is_not_a_sample_is_refused(ingest, tmp_path):
+    """The real file is two source datasets joined, and that split cuts across
+    the samples: misorder one source and every sample still looks fine. Scoring
+    only the sample column misses it, which is why every grouping is scored."""
+    types = ["A", "B", "C", "D"]
+    labels, samples, source, coords = [], [], [], []
+    for i in range(360):
+        labels.append(types[i % 4])
+        samples.append(["Col-0", "pFACT", "pHORST"][i % 3])
+        source.append("nuclei" if (i // 4) % 2 else "shahan")
+        coords.append([(i % 4) * 1000.0 + i * 0.01, 0.0])
+    coords = np.array(coords)
+    bad = np.flatnonzero(np.asarray(source) == "shahan")
+    rng = np.random.default_rng(0)
+    coords[bad] = coords[rng.permutation(bad)]
+
+    for sample in ("Col-0", "pFACT", "pHORST"):
+        rows = np.flatnonzero(np.asarray(samples) == sample)
+        scored = ingest.alignment(coords[rows], [labels[i] for i in rows])
+        assert scored is None or scored[1] >= ingest.MIN_ALIGNMENT_EXCESS, (
+            f"{sample} must still look fine, or this tests nothing"
+        )
+
+    path = write_h5ad(tmp_path / "twosource.h5ad", n_cells=len(labels),
+                      labels=labels, samples=samples, coords=coords)
+    import anndata
+    adata = anndata.read_h5ad(path)
+    adata.obs["nn_source"] = source
+    adata.write_h5ad(path)
+
+    with pytest.raises(ingest.IngestError, match=r"obs\['nn_source'\] == 'shahan'"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)

@@ -39,9 +39,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # Cluster colours. Assigning them here rather than in the browser is what keeps
-# a cell type the same colour across reloads and between users. This supersedes
-# the 20-colour list in scripts/backfill_scrna_cluster_colors.sql, which cannot
-# cover the 23 cell types this dataset carries.
+# a cell type the same colour between users, and a reload keeps the colour and
+# the name each surviving cell type already had. This supersedes the 20-colour
+# list in scripts/backfill_scrna_cluster_colors.sql, which cannot cover the 23
+# cell types this dataset carries.
 PALETTE = [
     "#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F",
     "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC",
@@ -51,27 +52,38 @@ PALETTE = [
 ]
 
 # Below these the neighbour check cannot separate a real embedding from a
-# shuffled one, so it is skipped rather than guessed at. The gate is the number
-# of cell types rather than their balance: one type holding most of the cells
-# pushes chance high enough to disable a balance-based gate entirely.
+# shuffled one, so it is skipped rather than guessed at. Judgement calls, not
+# measurements. The gate is the number of cell types rather than their balance:
+# one type holding most of the cells pushes chance high enough to disable a
+# balance-based gate entirely.
 MIN_CELLS_FOR_ALIGNMENT = 50
 MIN_LEVELS_FOR_ALIGNMENT = 4
 
-# How far purity must sit from chance towards perfect. A ratio does not work:
-# with one dominant cell type chance is already near 0.5, and twice that is
-# beyond what any real embedding reaches.
+# A real embedding gives essentially every cell its own point: on this dataset's
+# 8,683 cells and on the 138,865-row joint embedding, every single point is
+# distinct. So more than one cell on a point, and above this share of them,
+# means the array is partly or wholly unfilled -- which the neighbour check
+# cannot catch, and reads as good alignment. See read_cells.
+MAX_DUPLICATE_POINT_SHARE = 0.001
+
+# scrna_cells.x and .y are REAL; anything larger cannot be stored.
+FLOAT32_MAX = 3.4028235e38
+
+# How far neighbour agreement must sit from chance towards perfect. A ratio does
+# not work: with one dominant cell type chance is already near 0.5, and twice
+# that is beyond what any real embedding reaches.
 #
-# Set from measurement, not taste. On the first dataset, with the weakest
-# legitimate coordinates available (its PCA, since the real embedding has not
-# shipped yet): aligned scores 0.21 and 0.27 depending on the annotation, while
-# a shuffle of the same coordinates scores 0.00 either way. A real UMAP
-# separates cell types far better than PCA does, so this is the floor of the
-# legitimate range, and the bar sits half way down to a shuffle.
+# Set from measurement. On the first dataset, with the weakest legitimate
+# coordinates available (its PCA, since the real embedding has not shipped yet):
+# aligned scores 0.21 and 0.27 depending on the annotation, a shuffle of the same
+# coordinates 0.00 either way. The bar sits half way down to a shuffle.
+#
+# Read what this does and does not catch in read_cells before relying on it.
 MIN_ALIGNMENT_EXCESS = 0.10
 
-# scrna_clusters.ordinal is a SMALLINT the browser packs into a Uint8Array, and
-# 255 is the explorer's orphan sentinel, so a catalogue may hold 0..254.
-MAX_ORDINAL = 255
+# How many levels a column may have and still be treated as a grouping to score
+# separately. Above this it is a measurement, not a provenance label.
+MAX_GROUPING_LEVELS = 8
 
 class IngestError(RuntimeError):
     """Something about the file or the database makes this load unsafe."""
@@ -106,6 +118,54 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def alignment(coords, labels: list[str]) -> tuple[float, float] | None:
+    """How often neighbours share a cell type, and how far that sits from chance
+    towards perfect.
+
+    The second number is scaled by the room above chance, so the bar means the
+    same thing whether cell types are balanced or not: one dominant type puts
+    chance near 0.5 on its own, and a fixed score or a multiple of chance would
+    then either pass everything or refuse real data.
+
+    None when there are too few cells or too few cell types to tell a real
+    embedding from a shuffled one.
+    """
+    if len(labels) < MIN_CELLS_FOR_ALIGNMENT:
+        return None
+    if len(set(labels)) < MIN_LEVELS_FOR_ALIGNMENT:
+        return None
+    chance = sum(c * c for c in Counter(labels).values()) / (len(labels) ** 2)
+    purity = neighbour_purity(coords, labels)
+    return purity, (purity - chance) / (1 - chance)
+
+
+def _grouping_columns(adata, annotation: str, sample_column: str) -> list[str]:
+    """Columns that split the cells into a few groups, each of which may have
+    been lined up against the coordinates separately.
+
+    The annotation itself is excluded: the score already groups by it, so
+    scoring within it measures nothing. Groups too small or too uniform to judge
+    are skipped by `alignment`, so a column with many sparse groups costs time
+    rather than raising false alarms.
+    """
+    columns = {sample_column}
+    for column in adata.obs.columns:
+        if column != annotation and 2 <= adata.obs[column].astype(str).nunique() \
+                <= MAX_GROUPING_LEVELS:
+            columns.add(column)
+    columns.discard(annotation)
+    return sorted(columns)
+
+
+def _misaligned(umap_key: str, what: str, purity: float, excess: float) -> str:
+    return (
+        f"cells of the same type are not near each other in obsm[{umap_key!r}] "
+        f"for {what} — neighbours share a label {purity:.3f} of the time, only "
+        f"{excess:.2f} of the way from chance to perfect. The coordinates likely "
+        f"do not line up with these cells row for row."
+    )
+
+
 def read_cells(
     h5ad_path: Path,
     annotation: str,
@@ -117,6 +177,20 @@ def read_cells(
 
     Every check here runs before a single row is written, because a dataset that
     is half loaded looks to the explorer exactly like one that is complete.
+
+    What the alignment check is worth. It catches coordinates that are unfilled,
+    and any misalignment spread across a whole sample or the whole file -- an
+    off-by-one row shift, a wrong slice of a joint embedding, sample blocks in
+    the wrong order. All of those were measured on the first dataset and refused
+    by a wide margin.
+
+    It cannot catch a misalignment that keeps every cell inside a group of its
+    own cell type, because neighbour agreement is then unchanged: a permutation
+    within one cell type, or all of one type's cells landing on another type's
+    cluster, scores exactly what a correct load scores. That is what lining two
+    sides up by sorted cell type produces, so coordinates and labels have to come
+    from the same file, as they do here, or be joined on the barcode. Scoring
+    them is not a substitute for keying them.
     """
     import anndata
     import numpy as np
@@ -137,7 +211,7 @@ def read_cells(
         )
     # anndata guarantees obsm rows match n_obs, so a row-count check here would
     # be unreachable; nothing else about the array is guaranteed.
-    coords = np.asarray(adata.obsm[umap_key])
+    coords = np.asarray(adata.obsm[umap_key], dtype=float)
     if coords.ndim != 2:
         raise IngestError(
             f"obsm[{umap_key!r}] is {coords.ndim}-dimensional, need a 2-D array"
@@ -155,6 +229,26 @@ def read_cells(
             f"obsm[{umap_key!r}] holds values that are not finite; a single "
             f"infinity collapses the whole plot to one point"
         )
+    if np.abs(coords).max() > FLOAT32_MAX:
+        # scrna_cells.x and .y are REAL, so a finite double this large fails the
+        # insert and takes the whole dataset with it.
+        raise IngestError(
+            f"obsm[{umap_key!r}] holds coordinates too large to store; the "
+            f"largest is {np.abs(coords).max():.3g}"
+        )
+    _, piles = np.unique(coords, axis=0, return_counts=True)
+    if piles.max() > max(1, len(coords) * MAX_DUPLICATE_POINT_SHARE):
+        # An obsm allocated and never filled is the likeliest way to get bad
+        # coordinates, and it defeats the alignment check below rather than
+        # tripping it: with every distance tied, every cell gets the same
+        # arbitrary neighbours, so the score climbs towards the largest cell
+        # type's share instead of falling to chance. Measured on this file with
+        # the dominant-class annotation, an all-zero array scores 0.298 against
+        # the real embedding's 0.269.
+        raise IngestError(
+            f"obsm[{umap_key!r}] puts {piles.max()} of {len(coords)} cells on a "
+            f"single point; these coordinates are partly or wholly unfilled"
+        )
 
     for column in (annotation, sample_column):
         if column not in adata.obs:
@@ -171,27 +265,37 @@ def read_cells(
     labels = _text_column(adata, annotation)
     samples = _text_column(adata, sample_column)
     levels = sorted(set(labels))
-    if len(levels) > MAX_ORDINAL:
+    if len(levels) > len(PALETTE):
+        # The palette binds long before the browser does -- it packs the ordinal
+        # into a byte and reserves 255 for orphans, so 254 would fit. Wrapping
+        # the palette instead would render two cell types identically in both
+        # the plot and the legend, which is the defect this list replaced.
         raise IngestError(
-            f"obs[{annotation!r}] has {len(levels)} levels; the explorer packs "
-            f"the ordinal into a byte and reserves {MAX_ORDINAL} for orphans"
+            f"obs[{annotation!r}] has {len(levels)} cell types and there are "
+            f"{len(PALETTE)} colours to tell them apart; two would be drawn "
+            f"identically"
         )
 
-    chance = sum(c * c for c in Counter(labels).values()) / (len(labels) ** 2)
-    purity = None
-    if adata.n_obs >= MIN_CELLS_FOR_ALIGNMENT and len(levels) >= MIN_LEVELS_FOR_ALIGNMENT:
-        purity = neighbour_purity(coords, labels)
-        # Excess over chance, scaled by how much room there is above chance, so
-        # the bar means the same thing whether cell types are balanced or not.
-        excess = (purity - chance) / (1 - chance) if chance < 1 else 1.0
-        if excess < MIN_ALIGNMENT_EXCESS:
-            raise IngestError(
-                f"cells of the same type are not near each other in "
-                f"obsm[{umap_key!r}] — neighbours share a label {purity:.3f} of "
-                f"the time against {chance:.3f} expected by chance, only "
-                f"{excess:.2f} of the way to perfect. The coordinates likely do "
-                f"not line up with these cells row for row."
-            )
+    scored = alignment(coords, labels)
+    purity = scored[0] if scored else None
+    if scored and scored[1] < MIN_ALIGNMENT_EXCESS:
+        raise IngestError(_misaligned(umap_key, "these cells", *scored))
+
+    # One average over the whole file cannot see damage confined to part of it:
+    # a third of the cells can carry another cell's coordinates and still clear
+    # the bar. So every grouping the file offers is scored as well, because the
+    # group that matters is whichever one was lined up separately -- the sample
+    # here, and the source dataset in a joint object like this one.
+    for column in _grouping_columns(adata, annotation, sample_column):
+        values = adata.obs[column].astype(str).to_numpy()
+        for group in sorted(set(values)):
+            rows = np.flatnonzero(values == group)
+            scored = alignment(coords[rows], [labels[i] for i in rows])
+            if scored and scored[1] < MIN_ALIGNMENT_EXCESS:
+                raise IngestError(_misaligned(
+                    umap_key, f"the cells with obs[{column!r}] == {group!r}",
+                    *scored,
+                ))
 
     return {
         "n_cells": int(adata.n_obs),
@@ -287,8 +391,16 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
     leaves stale provenance rather than a row attesting to a file it does not
     hold.
 
+    A reload is refused outright when the dataset already has rows that name a
+    cell type or a cell position, since nothing here can rebuild them.
+
     Returns the dataset id and the number of cells actually stored.
     """
+    if len(cells["levels"]) > len(PALETTE):
+        raise IngestError(
+            f"{len(cells['levels'])} cell types and {len(PALETTE)} colours to "
+            f"tell them apart; two would be drawn identically"
+        )
     with conn.cursor() as cur:
         cur.execute(
             "SELECT id FROM public.scrna_datasets "
@@ -308,16 +420,22 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
                 "SELECT"
                 " (SELECT count(*) FROM public.scrna_cluster_stats WHERE dataset_id = %(d)s),"
                 " (SELECT count(*) FROM public.scrna_cluster_neighbors WHERE dataset_id = %(d)s),"
-                " (SELECT count(*) FROM public.scrna_counts WHERE dataset_id = %(d)s)",
+                " (SELECT count(*) FROM public.scrna_counts WHERE dataset_id = %(d)s),"
+                " (SELECT count(*) FROM public.scrna_de WHERE dataset_id = %(d)s)",
                 {"d": dataset_id},
             )
-            # The first two cascade off the catalogue this run replaces; the third
-            # names count files read by cell position, which renumbering shifts.
+            # Anything keyed by cell-type name or by cell position blocks a
+            # reload. The first two cascade off the catalogue; the counts name
+            # files read by cell position, which renumbering shifts; the
+            # differential expression rows name cell types and have no foreign
+            # key to the catalogue, so a changed cell-type set leaves them
+            # naming types that no longer exist.
             blocked = [
                 what
                 for what, n in zip(
                     ("per-cluster statistics", "neighbour rows",
-                     "per-gene expression rows"),
+                     "per-gene expression rows",
+                     "differential expression rows"),
                     cur.fetchone(),
                 )
                 if n
@@ -336,6 +454,21 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
             )
             dataset_id = cur.fetchone()[0]
 
+        # Cluster names and colours are edited by hand after a load -- the
+        # backfill script seeds them and says to fix the biology in Studio -- and
+        # they cannot be rebuilt from the file, so a surviving cell type keeps
+        # both. New cell types take a colour no surviving one is already using.
+        cur.execute(
+            "SELECT cluster_id, name, color FROM public.scrna_clusters "
+            "WHERE dataset_id = %s", (dataset_id,),
+        )
+        kept = {
+            cid: (name, color) for cid, name, color in cur.fetchall()
+            if cid in set(cells["levels"])
+        }
+        spare = iter([c for c in PALETTE
+                      if c not in {color for _, color in kept.values() if color}])
+
         cur.execute("DELETE FROM public.scrna_cells WHERE dataset_id = %s", (dataset_id,))
         cur.execute("DELETE FROM public.scrna_clusters WHERE dataset_id = %s", (dataset_id,))
 
@@ -343,7 +476,9 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
             "INSERT INTO public.scrna_clusters "
             "(dataset_id, cluster_id, ordinal, name, color) VALUES (%s, %s, %s, %s, %s)",
             [
-                (dataset_id, level, ordinal, level, PALETTE[ordinal % len(PALETTE)])
+                (dataset_id, level, ordinal,
+                 kept.get(level, (None, None))[0] or level,
+                 kept.get(level, (None, None))[1] or next(spare))
                 for ordinal, level in enumerate(cells["levels"])
             ],
         )
@@ -372,7 +507,9 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
         cur.execute(
             "UPDATE public.scrna_datasets SET n_cells = %s, n_genes = %s, "
             "source_checksum = %s, ingested_at = %s, expression_units = %s, "
-            "annotation = %s WHERE id = %s",
+            "metadata = COALESCE(metadata, '{}'::jsonb) "
+            "  || jsonb_build_object('cell_type_column', %s::text) "
+            "WHERE id = %s",
             (cells["n_cells"], cells["n_genes"], source_checksum,
              datetime.now(timezone.utc), units, annotation, dataset_id),
         )
@@ -417,6 +554,11 @@ def main(argv: list[str] | None = None) -> int:
             )
     except IngestError as exc:
         print(f"refusing to ingest: {exc}", file=sys.stderr)
+        return 1
+    except psycopg.Error as exc:
+        # A species id that is right on one database and wrong on another is the
+        # likeliest operator mistake, and it arrives as a foreign key violation.
+        print(f"the database refused the load: {exc}", file=sys.stderr)
         return 1
 
     print(f"loaded {stored} cells into dataset {dataset_id}")
