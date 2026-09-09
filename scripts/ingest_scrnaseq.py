@@ -38,9 +38,10 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-# The palette the explorer already uses for cluster colours. Assigning here
-# rather than in the browser is what keeps a cell type the same colour across
-# reloads and between users.
+# Cluster colours. Assigning them here rather than in the browser is what keeps
+# a cell type the same colour across reloads and between users. This supersedes
+# the 20-colour list in scripts/backfill_scrna_cluster_colors.sql, which cannot
+# cover the 23 cell types this dataset carries.
 PALETTE = [
     "#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F",
     "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC",
