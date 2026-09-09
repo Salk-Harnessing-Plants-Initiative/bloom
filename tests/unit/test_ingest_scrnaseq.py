@@ -667,23 +667,107 @@ def test_main_hands_load_the_annotation_and_the_group_columns(
     )
 
 
-def test_the_summary_says_which_groups_were_scored(ingest, tmp_path):
-    """The design rests on the operator naming provenance columns, so both ways
-    of getting it wrong have to be visible: a column left unnamed, and one whose
-    groups are all too small to judge."""
-    path = write_h5ad(tmp_path / "summary.h5ad", n_cells=240,
-                      labels=["A", "B", "C", "D"] * 60)
-    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
-    assert "grouped by sample: 3 of 3 groups scored" in ingest.summarise(cells)
+def _uneven(n_per=80):
+    """Three samples whose alignment differs, so a report that prints the wrong
+    one of them is visible. The second is scrambled a little -- enough to score
+    lower, not enough to be refused."""
+    types = ["A", "B", "C", "D"]
+    labels, samples, coords = [], [], []
+    for si, sample in enumerate(("Col-0", "pFACT", "pHORST")):
+        for i in range(n_per):
+            labels.append(types[i % 4])
+            samples.append(sample)
+            coords.append([(i % 4) * 1000.0 + (si * n_per + i) * 0.01, 0.0])
+    coords = np.array(coords)
+    rows = np.arange(n_per, n_per + 12)
+    coords[rows] = coords[np.random.default_rng(1).permutation(rows)]
+    return labels, samples, coords
 
+
+def test_the_summary_reports_the_weakest_group_it_actually_scored(ingest, tmp_path):
+    """The report is what tells the operator whether their --group-column did
+    anything, so its numbers are pinned: the count, the minimum rather than the
+    maximum, and the excess rather than the raw agreement."""
+    labels, samples, coords = _uneven()
+    path = write_h5ad(tmp_path / "report.h5ad", n_cells=len(labels),
+                      labels=labels, samples=samples, coords=coords)
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+    scored = {}
+    for sample in sorted(set(samples)):
+        rows = np.flatnonzero(np.asarray(samples) == sample)
+        scored[sample] = ingest.alignment(coords[rows], [labels[i] for i in rows])
+    excesses = [e for _, e in scored.values()]
+    purities = [p for p, _ in scored.values()]
+    assert min(excesses) < max(excesses), "the fixture must not be symmetric"
+    assert min(excesses) != pytest.approx(min(purities), abs=1e-3)
+
+    out = ingest.summarise(cells)
+    assert "grouped by sample: 3 of 3 groups scored" in out
+    assert f"weakest {min(excesses):.3f} of the way" in out
+
+
+def test_the_summary_says_when_a_grouping_column_judged_nothing(ingest, tmp_path):
+    """Both ways a column buys nothing: groups too small, and groups plenty big
+    but holding one cell type each -- which is what a column correlated with the
+    annotation gives."""
+    path = write_h5ad(tmp_path / "nothing.h5ad", n_cells=240,
+                      labels=["A", "B", "C", "D"] * 60)
     import anndata
     adata = anndata.read_h5ad(path)
-    adata.obs["reading"] = [str(i) for i in range(240)]
+    adata.obs["reading"] = [str(i) for i in range(240)]          # 240 tiny groups
+    adata.obs["mirrors"] = list(adata.obs["nn_label_plain"])     # big, one type each
     adata.write_h5ad(path)
-    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
-                              ("reading",))
-    assert "grouped by reading: 0 of 240 groups big enough to score" in \
-        ingest.summarise(cells)
+
+    for column, n_groups in (("reading", 240), ("mirrors", 4)):
+        cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap",
+                                  None, (column,))
+        out = ingest.summarise(cells)
+        assert f"grouped by {column}: 0 of {n_groups} groups scored" in out
+        assert "none had both enough cells and enough cell types" in out
+
+
+def test_only_a_named_group_column_is_blamed_on_biology(ingest, tmp_path):
+    """The hint to stop grouping by a column would be wrong for the sample
+    column, which is always scored and cannot be opted out of."""
+    labels, samples, coords = _uneven()
+    rows = np.arange(80, 160)
+    coords[rows] = coords[np.random.default_rng(2).permutation(rows)]
+    path = write_h5ad(tmp_path / "blame.h5ad", n_cells=len(labels),
+                      labels=labels, samples=samples, coords=coords)
+    with pytest.raises(ingest.IngestError) as caught:
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+    assert "obs['sample'] == 'pFACT'" in str(caught.value)
+    assert "do not group by it" not in str(caught.value)
+
+
+def test_a_named_group_column_gets_the_biology_hint(ingest, tmp_path):
+    """Naming a biological column refuses a correct file, so the refusal has to
+    offer that explanation -- the damage here is in a column that cuts across
+    the samples, so the samples themselves pass."""
+    types = ["A", "B", "C", "D"]
+    labels, samples, zone, coords = [], [], [], []
+    for i in range(360):
+        labels.append(types[i % 4])
+        samples.append(["Col-0", "pFACT", "pHORST"][i % 3])
+        zone.append("meristem" if (i // 4) % 2 else "mature")
+        coords.append([(i % 4) * 1000.0 + i * 0.01, 0.0])
+    coords = np.array(coords)
+    bad = np.flatnonzero(np.asarray(zone) == "meristem")
+    coords[bad] = coords[np.random.default_rng(0).permutation(bad)]
+
+    path = write_h5ad(tmp_path / "hint.h5ad", n_cells=len(labels),
+                      labels=labels, samples=samples, coords=coords)
+    import anndata
+    adata = anndata.read_h5ad(path)
+    adata.obs["zone"] = zone
+    adata.write_h5ad(path)
+
+    with pytest.raises(ingest.IngestError) as caught:
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                          ("zone",))
+    assert "obs['zone'] == 'meristem'" in str(caught.value)
+    assert "do not group by it" in str(caught.value)
 
 
 def test_the_group_column_flag_collects_every_name(ingest):

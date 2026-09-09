@@ -54,6 +54,7 @@ def cells(labels: list[str], samples: list[str] | None = None) -> dict:
         "levels": sorted(set(labels)),
         "barcodes": [f"BC{i}" for i in range(n)],
         "purity": 0.9,
+        "grouped": [],
     }
 
 
@@ -470,19 +471,22 @@ def test_a_vanished_cell_type_does_not_hold_on_to_its_colour(ingest, pg_conn):
     pg_conn.rollback()
 
 
-def test_a_blank_curated_name_falls_back_to_the_cell_type(ingest, pg_conn):
-    """A name of spaces is not a name. The file's own labels are refused when
-    blank, so a blank one arriving from the database gets the same treatment
-    rather than appearing as an empty legend entry."""
+def test_a_blank_curated_name_or_colour_falls_back(ingest, pg_conn):
+    """Spaces are not a name and not a colour. The file's own labels are refused
+    when blank, so blank values arriving from the database get the same
+    treatment rather than becoming an empty legend entry or an unpaintable
+    swatch."""
     with pg_conn.cursor() as cur:
         sid = species(cur)
         dataset_id, _ = run(ingest, pg_conn, "blank", sid, cells(["A", "B"]))
         cur.execute(
-            "UPDATE scrna_clusters SET name = '   ' WHERE dataset_id = %s "
-            "AND cluster_id = 'A'", (dataset_id,),
+            "UPDATE scrna_clusters SET name = '   ', color = '  ' "
+            "WHERE dataset_id = %s AND cluster_id = 'A'", (dataset_id,),
         )
         run(ingest, pg_conn, "blank", sid, cells(["A", "B"]))
-        cur.execute("SELECT name FROM scrna_clusters WHERE dataset_id = %s "
+        cur.execute("SELECT name, color FROM scrna_clusters WHERE dataset_id = %s "
                     "AND cluster_id = 'A'", (dataset_id,))
-        assert cur.fetchone()[0] == "A"
+        name, color = cur.fetchone()
+        assert name == "A"
+        assert color in ingest.PALETTE, color
     pg_conn.rollback()

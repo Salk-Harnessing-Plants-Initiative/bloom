@@ -208,12 +208,13 @@ def read_cells(
     forgotten one is visible rather than silent.
 
     It is a bulk check, and two things follow. Damage scattered evenly is the
-    hard case: between a fifth and a third of rows can carry another cell's
-    coordinates and still clear the bar -- a fifth on this dataset's
-    `nn_label_plain`, a third on its `singler`, because the tolerance grows with
-    how well the labels separate. Damage concentrated in one group is what the
-    grouping catches, since that group falls to chance on its own while the
-    average stays comfortable.
+    hard case: a quarter to a third of rows can carry another cell's coordinates
+    and still load -- a quarter on this dataset's `nn_label_plain`, a third on
+    its `singler`, since the tolerance grows with how well the labels separate.
+    Those are thresholds for the load, which needs the whole file and every group
+    to clear the bar; the whole-file score alone tolerates rather more. Damage
+    concentrated in one group is what the grouping catches, since that group falls
+    to chance on its own while the average stays comfortable.
 
     And it is blind by construction to any misalignment that keeps every cell
     inside a group of its own cell type: a permutation within one type, one
@@ -339,7 +340,7 @@ def read_cells(
             if scored and scored[1] < MIN_ALIGNMENT_EXCESS:
                 raise IngestError(_misaligned(
                     umap_key, f"the cells with obs[{column!r}] == {group!r}",
-                    *scored, grouped=True,
+                    *scored, grouped=column in group_columns,
                 ))
         grouped.append((column, len(set(adata.obs[column].astype(str))), judged))
 
@@ -429,10 +430,10 @@ def summarise(cells: dict) -> str:
         # forgotten, or named a column too sparse to score, is visible instead
         # of silently doing nothing.
         + "".join(
-            f"\n  grouped by {column}: "
-            + (f"{len(judged)} of {n_groups} groups scored, weakest "
-               f"{min(judged):.3f} of the way from chance to perfect"
-               if judged else f"0 of {n_groups} groups big enough to score")
+            f"\n  grouped by {column}: {len(judged)} of {n_groups} groups scored"
+            + (f", weakest {min(judged):.3f} of the way from chance to perfect"
+               if judged
+               else " — none had both enough cells and enough cell types to judge")
             for column, n_groups, judged in cells["grouped"]
         )
     )
@@ -535,7 +536,7 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
             [
                 (dataset_id, level, ordinal,
                  (kept.get(level, (None, None))[0] or "").strip() or level,
-                 kept.get(level, (None, None))[1] or next(spare))
+                 (kept.get(level, (None, None))[1] or "").strip() or next(spare))
                 for ordinal, level in enumerate(cells["levels"])
             ],
         )
