@@ -3,8 +3,6 @@
 import { useEffect, useState } from "react";
 import {
   fetchClusterStats,
-  fetchDeExports,
-  type DeExport,
   type ClusterStatsRow,
 } from "@/components/expression-lib/cluster-markers";
 
@@ -20,13 +18,6 @@ export interface ExpressionClusterDetailPanelProps {
  * Mounted by the cockpit only when exactly one cluster is visible so the
  * UMAP canvas keeps its full width when nothing is soloed.
  */
-/** Label for one export link, built from the stored group names. */
-function exportLabel(de: DeExport): string {
-  if (!de.contrast) return "markers";
-  if (de.group1 && de.group2) return `${de.group1} vs ${de.group2}`;
-  return de.contrast;
-}
-
 export function ExpressionClusterDetailPanel({
   datasetId,
   clusterId,
@@ -34,21 +25,26 @@ export function ExpressionClusterDetailPanel({
   clusterColor,
 }: ExpressionClusterDetailPanelProps) {
   const [stats, setStats] = useState<ClusterStatsRow | null>(null);
-  const [deExports, setDeExports] = useState<DeExport[]>([]);
+  const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
+    setStats(null);
+    setFailed(false);
     setLoading(true);
-    Promise.all([
-      fetchClusterStats(datasetId, clusterId),
-      fetchDeExports(datasetId, clusterId),
-    ]).then(([s, exports]) => {
-      if (cancelled) return;
-      setStats(s);
-      setDeExports(exports);
-      setLoading(false);
-    });
+
+    (async () => {
+      try {
+        const row = await fetchClusterStats(datasetId, clusterId);
+        if (!cancelled) setStats(row);
+      } catch {
+        if (!cancelled) setFailed(true);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
     return () => {
       cancelled = true;
     };
@@ -102,11 +98,15 @@ export function ExpressionClusterDetailPanel({
           <span className="text-xs uppercase tracking-widest text-stone-500">
             Top markers
           </span>
-          <span className="text-[10px] text-stone-400">(scrna_de)</span>
+          <span className="text-[10px] text-stone-400">(scrna_cluster_stats)</span>
         </div>
 
         {loading ? (
           <div className="text-xs italic text-stone-400">Loading…</div>
+        ) : failed ? (
+          <div className="text-xs italic text-red-700">
+            Could not load this cluster.
+          </div>
         ) : !markers || markers.top.length === 0 ? (
           <div className="text-xs italic text-stone-400">
             No markers yet — waiting on DE ingest.
@@ -154,41 +154,6 @@ export function ExpressionClusterDetailPanel({
         >
           Rename
         </button>
-        <span className="text-stone-300">·</span>
-        {deExports.length === 0 ? (
-          <span className="text-stone-400 cursor-not-allowed" title="No DE CSV yet">
-            Export CSV
-          </span>
-        ) : (
-          <>
-            {/* One link per available result. The label only appears once there
-                is more than one, so a dataset with just marker genes reads the
-                same as it always has. */}
-            {deExports.length > 1 && (
-              <span className="text-stone-500">Export CSV: </span>
-            )}
-            {deExports.map((de, i) => (
-              <span key={de.filePath}>
-                {i > 0 && <span className="text-stone-300"> · </span>}
-                <a
-                  href={de.filePath}
-                  target="_blank"
-                  rel="noopener"
-                  className="text-lime-700 hover:underline"
-                  title={
-                    de.contrast
-                      ? `${name} cells, ${exportLabel(de)}`
-                      : `${name} against all other cells`
-                  }
-                >
-                  {deExports.length === 1 && !de.contrast
-                    ? "Export CSV"
-                    : exportLabel(de)}
-                </a>
-              </span>
-            ))}
-          </>
-        )}
         <span className="text-stone-300">·</span>
         <button
           type="button"
