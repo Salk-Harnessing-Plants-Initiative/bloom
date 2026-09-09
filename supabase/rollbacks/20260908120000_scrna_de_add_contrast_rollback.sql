@@ -30,6 +30,7 @@ DROP INDEX IF EXISTS public.idx_scrna_de_dataset_cluster_contrast;
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_counts_non_negative,
   DROP CONSTRAINT IF EXISTS scrna_de_no_file_means_nothing_tested,
+  DROP CONSTRAINT IF EXISTS scrna_de_groups_differ,
   DROP CONSTRAINT IF EXISTS scrna_de_contrast_names_both_groups;
 
 -- Comparisons that never ran have no file to point at.

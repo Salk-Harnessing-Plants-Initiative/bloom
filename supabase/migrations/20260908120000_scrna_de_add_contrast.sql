@@ -75,14 +75,26 @@ ALTER TABLE public.scrna_de
   ALTER COLUMN file_path DROP NOT NULL;
 
 -- 4. Invariants -------------------------------------------------------------
--- Every existing row satisfies all three: their new columns are NULL and their
--- file_path is set.
+-- Every existing row satisfies all of these: their new columns are NULL and
+-- their file_path is set.
 
+-- All three together, or none. A NULL contrast is what marks a row as
+-- one-vs-rest, and every reader that wants only those rows tests it -- so a
+-- two-group result with the label left off would be served as cluster markers.
+-- The three columns describe one comparison; none of them may go missing on
+-- its own.
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_contrast_names_both_groups;
 ALTER TABLE public.scrna_de
   ADD CONSTRAINT scrna_de_contrast_names_both_groups
-  CHECK (contrast IS NULL OR (group1 IS NOT NULL AND group2 IS NOT NULL));
+  CHECK (num_nonnulls(contrast, group1, group2) IN (0, 3));
+
+-- A group compared against itself is not a comparison.
+ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_groups_differ;
+ALTER TABLE public.scrna_de
+  ADD CONSTRAINT scrna_de_groups_differ
+  CHECK (group1 IS NULL OR group1 <> group2);
 
 -- The pair that replaces a `tested` flag. Without this they could drift and
 -- the UI would have to guess which one to believe.
