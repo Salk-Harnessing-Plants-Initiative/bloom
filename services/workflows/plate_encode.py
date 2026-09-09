@@ -23,6 +23,7 @@ from contextlib import contextmanager
 import numpy as np
 from PIL import Image
 
+import plate_progress
 from plate_timelapse import PLATE_FPS, annotate, label_for
 from plate_video import first_capture, plan_render
 from plate_video_path import (
@@ -31,7 +32,6 @@ from plate_video_path import (
     plate_video_path,
 )
 from video_writer import ENCODE_TIMEOUT_SECONDS, VideoWriter
-import plate_progress
 
 logger = logging.getLogger(__name__)
 
@@ -560,7 +560,6 @@ def render_plate_video(
             plate_progress.start(experiment_id, plate_id, wave_number)
             try:
                 written = encode_plate_video(client, plan["frames"], video_path)
-                plate_progress.advance("storing", written, written)
                 recorded = publish_plate_video(
                     client,
                     plan["key"],

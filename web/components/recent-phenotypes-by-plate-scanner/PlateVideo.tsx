@@ -277,6 +277,15 @@ export function PlateVideo({
         </div>
       )}
 
+      {busy && progress?.stage === "downloading" && progress.total > 0 && (
+        <div className="mx-auto mt-3 h-1.5 w-64 rounded-full bg-stone-200">
+          <div
+            className="h-1.5 rounded-full bg-lime-700 transition-[width] duration-500"
+            style={{ width: `${((progress.done + 1) / progress.total) * 100}%` }}
+          />
+        </div>
+      )}
+
       {note && (
         <p className="mt-2 text-center text-xs text-stone-500">{note}</p>
       )}

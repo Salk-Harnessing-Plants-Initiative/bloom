@@ -453,6 +453,27 @@ describe("what a scientist is told while it renders", () => {
     expect(screen.getByText("Downloading frame 47 of 86")).toBeTruthy();
   });
 
+  it("fills the bar to the fraction downloaded", async () => {
+    vi.useFakeTimers();
+    rendering({ stage: "downloading", done: 20, total: 86 });
+
+    await clickAndPoll();
+
+    const fill = document.querySelector<HTMLElement>(".bg-lime-700");
+    expect(fill).toBeTruthy();
+    expect(fill!.style.width).toBe(`${(21 / 86) * 100}%`);
+  });
+
+  it("shows no bar while encoding, when there is no fraction to show", async () => {
+    // A bar that cannot move would either sit still or invent a number.
+    vi.useFakeTimers();
+    rendering({ stage: "encoding", done: 86, total: 86 });
+
+    await clickAndPoll();
+
+    expect(document.querySelector(".bg-lime-700")).toBeNull();
+  });
+
   it("says the video is being made once the frames are in", async () => {
     vi.useFakeTimers();
     rendering({ stage: "encoding", done: 86, total: 86 });

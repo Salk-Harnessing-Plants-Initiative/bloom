@@ -42,12 +42,12 @@ import logging
 import os
 
 import pipeline
+import plate_progress
 import plate_request
 from auth import enforce_rate_limit, require_supabase_user
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from video import generate_experiment_scan_video
-import plate_progress
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -120,7 +120,7 @@ def gravi_plate_video_progress(
     Advisory: the page shows a plain wait when this says nothing, so a restart
     or an older service costs a count, not a working poll.
     """
-    return plate_progress.current(experiment_id, plate_id, wave_number) or {}
+    return plate_progress.current(experiment_id, plate_id, wave_number)
 
 
 @app.post("/gravi/experiments/{experiment_id}/plate-video")

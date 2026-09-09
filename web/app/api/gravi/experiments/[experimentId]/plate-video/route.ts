@@ -241,7 +241,9 @@ async function renderProgress(
     );
     if (!res.ok) return null;
     const body = await res.json();
-    return typeof body?.stage === "string" && typeof body?.total === "number"
+    return typeof body?.stage === "string" &&
+      typeof body?.done === "number" &&
+      typeof body?.total === "number"
       ? { stage: body.stage, done: body.done, total: body.total }
       : null;
   } catch {
