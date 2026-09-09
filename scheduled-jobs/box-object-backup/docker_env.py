@@ -13,7 +13,7 @@ import os
 import secrets
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from rclone_rc import redact
@@ -255,7 +255,8 @@ class RcDaemon:
     container: str
     url: str
     user: str
-    password: str
+    # Kept out of the repr: the run's whole stdout is tee'd into the job log.
+    password: str = field(repr=False)
 
     def stop(self) -> None:
         try:

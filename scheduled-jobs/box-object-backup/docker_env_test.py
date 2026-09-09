@@ -397,3 +397,11 @@ class TestTheRcloneImageIsReal:
         except OSError as exc:
             pytest.skip(f"registry unreachable ({exc}); inconclusive")
         assert status == 200
+
+def test_the_daemon_password_stays_out_of_its_repr():
+    """The run's stdout is tee'd into the job log; one %s would publish it."""
+    daemon = dock.RcDaemon(
+        container="rclone-x", url="http://127.0.0.1:5572", user="rc", password="hunter2"
+    )
+
+    assert "hunter2" not in repr(daemon)
