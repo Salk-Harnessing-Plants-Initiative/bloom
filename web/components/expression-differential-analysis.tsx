@@ -3,6 +3,9 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { DataGrid, GridColDef } from '@mui/x-data-grid';
 import Paper from '@mui/material/Paper';
 import Button from '@mui/material/Button';
+import FormControlLabel from '@mui/material/FormControlLabel';
+import Checkbox from '@mui/material/Checkbox';
+import TextField from '@mui/material/TextField';
 import { Database } from "@/lib/database.types";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import Box from '@mui/material/Box';
@@ -103,6 +106,15 @@ export function DataTable({ rows }: { rows: GeneData[] }) {
   );
 }
 
+/** The cuts the analysis itself applied, so the panel agrees with the counts
+ *  stored on the row rather than quietly using a stricter rule of its own. */
+const DEFAULT_FDR_CUT = 0.05;
+const DEFAULT_LOG2FC_CUT = 0.5;
+
+/** Beyond this a fold change means "absent from one group" rather than a
+ *  measured ratio, so it is not allowed to set the width of the plot. */
+const OFF_SCALE_LOG2FC = 20;
+
 /** A row of scrna_de.
  *
  * A null `file_path` means the comparison was considered and never run — the
@@ -138,6 +150,28 @@ export function significanceLabel(entry: DeEntry): string {
     `${fmt.format(entry.n_genes_tested)} significant`;
 }
 
+/** Genes passing both cuts, split by direction.
+ *
+ * The defaults are the analysis's own, so what the panel counts matches the
+ * counts stored against the comparison. A stricter fold-change cut than the
+ * analysis used would put a smaller number on screen than the one in the
+ * selector, with nothing to say why.
+ */
+export function countSignificant(
+  rows: { p_val_adj: number; avg_log2FC: number }[],
+  fdrCut: number,
+  lfcCut: number,
+): { up: number; down: number; total: number } {
+  let up = 0;
+  let down = 0;
+  for (const r of rows) {
+    if (r.p_val_adj >= fdrCut || Math.abs(r.avg_log2FC) <= lfcCut) continue;
+    if (r.avg_log2FC > 0) up++;
+    else down++;
+  }
+  return { up, down, total: up + down };
+}
+
 /** Which way round the fold change reads, in the names of the two groups. */
 export function directionLabel(entry: DeEntry): string {
   if (!entry.group1 || !entry.group2) {
@@ -154,6 +188,9 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
   const [loading, setLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [fdrCut, setFdrCut] = useState(DEFAULT_FDR_CUT);
+  const [lfcCut, setLfcCut] = useState(DEFAULT_LOG2FC_CUT);
+  const [onlySignificant, setOnlySignificant] = useState(false);
   const supabase = createClientSupabaseClient();
   const chartRef = useRef<SVGSVGElement | null>(null);
 
@@ -254,27 +291,44 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
     const innerWidth = width - margin.left - margin.right;
     const innerHeight = height - margin.top - margin.bottom;
 
+    // Height is the raw p-value, not the adjusted one. With this many genes
+    // tested and few of them significant, almost every adjusted value is 1, so
+    // -log10 of it is a flat line with a handful of spikes -- not a volcano.
+    // Significance is still judged on the adjusted value, which is what colours
+    // the points and where the line sits.
     const transformedData = chartData
-      .filter((d: GeneData) => d.p_val_adj > 0 && !isNaN(d.avg_log2FC))
+      .filter((d: GeneData) => d.p_val > 0 && !isNaN(d.avg_log2FC))
       .map((d: GeneData) => ({
         ...d,
         x: +d.avg_log2FC,
-        y: -Math.log10(+d.p_val_adj),
+        y: -Math.log10(+d.p_val),
       }));
 
     if (transformedData.length === 0) return;
 
-    // Find significant genes for labeling
     const significantGenes = transformedData
-      .filter(d => d.p_val_adj < 0.05 && Math.abs(d.x) > 1)
+      .filter(d => d.p_val_adj < fdrCut && Math.abs(d.x) > lfcCut)
       .sort((a, b) => a.p_val_adj - b.p_val_adj)
       .slice(0, 10);
 
-    const xExtent = d3.extent(transformedData, d => d.x) as [number, number];
+    // A gene absent from one group divides by nothing, and comes out at a fold
+    // change of twenty or more. On this dataset that is a fifth of the genes,
+    // none of them significant, scattered far enough to squash the real cloud
+    // into a stripe. The axis covers what can be read; the rest is drawn at the
+    // edge and counted underneath.
+    const readable = transformedData
+      .filter(d => Math.abs(d.x) <= OFF_SCALE_LOG2FC)
+      .map(d => Math.abs(d.x));
+    const xLimit = Math.max(
+      lfcCut * 1.5,
+      (d3.quantile(readable.sort(d3.ascending), 0.995) ?? 2) * 1.1,
+    );
+    const offScale = transformedData.filter(d => Math.abs(d.x) > xLimit).length;
+    const xExtent: [number, number] = [-xLimit, xLimit];
     const yMax = d3.max(transformedData, d => d.y) || 10;
 
     // Symmetric x-axis
-    const xMax = Math.max(Math.abs(xExtent[0]), Math.abs(xExtent[1])) * 1.1;
+    const xMax = Math.max(Math.abs(xExtent[0]), Math.abs(xExtent[1]));
 
     const xScale = d3.scaleLinear()
       .domain([-xMax, xMax])
@@ -324,22 +378,27 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       .selectAll("line")
       .attr("stroke", "#e0e0e0");
 
-    // Significance threshold lines
-    // Horizontal line at -log10(0.05) ≈ 1.3
-    const sigY = -Math.log10(0.05);
-    plot.append("line")
-      .attr("x1", 0)
-      .attr("x2", innerWidth)
-      .attr("y1", yScale(sigY))
-      .attr("y2", yScale(sigY))
-      .attr("stroke", "#999")
-      .attr("stroke-dasharray", "5,5")
-      .attr("stroke-width", 1);
+    // The height is a raw p-value but significance is judged on the adjusted
+    // one, and the two do not line up at a fixed height: the line goes where
+    // the weakest gene still passing the cut actually sits. No line when
+    // nothing passes, rather than one drawn somewhere arbitrary.
+    const passing = transformedData.filter(d => d.p_val_adj < fdrCut);
+    if (passing.length > 0) {
+      const sigY = d3.min(passing, d => d.y) as number;
+      plot.append("line")
+        .attr("x1", 0)
+        .attr("x2", innerWidth)
+        .attr("y1", yScale(sigY))
+        .attr("y2", yScale(sigY))
+        .attr("stroke", "#999")
+        .attr("stroke-dasharray", "5,5")
+        .attr("stroke-width", 1);
+    }
 
     // Vertical lines at log2FC = ±1
     plot.append("line")
-      .attr("x1", xScale(-1))
-      .attr("x2", xScale(-1))
+      .attr("x1", xScale(-lfcCut))
+      .attr("x2", xScale(-lfcCut))
       .attr("y1", 0)
       .attr("y2", innerHeight)
       .attr("stroke", "#999")
@@ -347,8 +406,8 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       .attr("stroke-width", 1);
 
     plot.append("line")
-      .attr("x1", xScale(1))
-      .attr("x2", xScale(1))
+      .attr("x1", xScale(lfcCut))
+      .attr("x2", xScale(lfcCut))
       .attr("y1", 0)
       .attr("y2", innerHeight)
       .attr("stroke", "#999")
@@ -400,12 +459,12 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       .data(transformedData)
       .enter()
       .append("circle")
-      .attr("cx", d => xScale(d.x))
+      .attr("cx", d => xScale(Math.max(-xMax, Math.min(xMax, d.x))))
       .attr("cy", d => yScale(d.y))
       .attr("r", d => significantGenes.some(g => g.gene === d.gene) ? 5 : 3)
       .attr("fill", d => {
-        if (d.p_val_adj < 0.05 && d.x > 1) return "#c62828";  // Upregulated
-        if (d.p_val_adj < 0.05 && d.x < -1) return "#1565c0"; // Downregulated
+        if (d.p_val_adj < fdrCut && d.x > lfcCut) return "#c62828";
+        if (d.p_val_adj < fdrCut && d.x < -lfcCut) return "#1565c0";
         return "#9e9e9e"; // Not significant
       })
       .attr("opacity", 0.7)
@@ -440,7 +499,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
     // Labels for top significant genes
     significantGenes.forEach(d => {
       plot.append("text")
-        .attr("x", xScale(d.x) + 8)
+        .attr("x", xScale(Math.max(-xMax, Math.min(xMax, d.x))) + 8)
         .attr("y", yScale(d.y) + 4)
         .attr("font-size", "10px")
         .attr("fill", "#333")
@@ -481,7 +540,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
     return () => {
       tooltip.remove();
     };
-  }, [chartData, selectedCluster]);
+  }, [chartData, selectedCluster, fdrCut, lfcCut]);
 
   // Download CSV function
   /** Download the stored file itself.
@@ -557,8 +616,13 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
   }
 
   // Compute summary stats
-  const upregulated = chartData?.filter(d => d.p_val_adj < 0.05 && d.avg_log2FC > 1).length || 0;
-  const downregulated = chartData?.filter(d => d.p_val_adj < 0.05 && d.avg_log2FC < -1).length || 0;
+  const { up: upregulated, down: downregulated } =
+    countSignificant(chartData ?? [], fdrCut, lfcCut);
+  const tableRows = onlySignificant
+    ? (chartData ?? []).filter(
+        d => d.p_val_adj < fdrCut && Math.abs(d.avg_log2FC) > lfcCut,
+      )
+    : chartData ?? [];
 
   return (
     <Box sx={{ p: 2 }}>
@@ -696,6 +760,61 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
         )}
       </Paper>
 
+      {chartData && (
+        <Paper sx={{ p: 2, mb: 3 }}>
+          <Box display="flex" alignItems="center" gap={2} flexWrap="wrap">
+            <Typography variant="subtitle2" fontWeight="bold">
+              Significance
+            </Typography>
+            <TextField
+              label="FDR below"
+              type="number"
+              size="small"
+              value={fdrCut}
+              onChange={(e) => setFdrCut(Math.max(0, Number(e.target.value)))}
+              inputProps={{ step: 0.01, min: 0, max: 1 }}
+              sx={{ width: 130 }}
+            />
+            <TextField
+              label="|log2FC| above"
+              type="number"
+              size="small"
+              value={lfcCut}
+              onChange={(e) => setLfcCut(Math.max(0, Number(e.target.value)))}
+              inputProps={{ step: 0.1, min: 0 }}
+              sx={{ width: 150 }}
+            />
+            <FormControlLabel
+              control={
+                <Checkbox
+                  size="small"
+                  checked={onlySignificant}
+                  onChange={(e) => setOnlySignificant(e.target.checked)}
+                />
+              }
+              label="Table: significant only"
+            />
+            {(fdrCut !== DEFAULT_FDR_CUT || lfcCut !== DEFAULT_LOG2FC_CUT) && (
+              <Button
+                size="small"
+                onClick={() => {
+                  setFdrCut(DEFAULT_FDR_CUT);
+                  setLfcCut(DEFAULT_LOG2FC_CUT);
+                }}
+              >
+                Back to the analysis cuts
+              </Button>
+            )}
+          </Box>
+          <Typography variant="caption" color="text.secondary"
+                      display="block" sx={{ mt: 1 }}>
+            These start at the cuts the analysis itself used, so the counts here
+            match the ones on the comparison you picked. Change them and
+            everything below follows — the plot, the counts and the table.
+          </Typography>
+        </Paper>
+      )}
+
       {loadError && (
         <Alert severity="error" sx={{ mb: 3 }}>
           This comparison could not be loaded: {loadError}
@@ -751,9 +870,11 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
           {/* Data Table */}
           <Paper sx={{ p: 2 }}>
             <Typography variant="subtitle2" fontWeight="bold" mb={2}>
-              Gene Table (sorted by adjusted p-value)
+              Gene table{onlySignificant
+                ? ` — ${tableRows.length.toLocaleString()} passing the cuts`
+                : ` — all ${tableRows.length.toLocaleString()} genes tested`}
             </Typography>
-            <DataTable rows={chartData} />
+            <DataTable rows={tableRows} />
           </Paper>
         </>
       )}

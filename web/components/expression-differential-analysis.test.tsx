@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import Panel, {
+  countSignificant,
   directionLabel,
   significanceLabel,
 } from "./expression-differential-analysis";
@@ -175,5 +176,40 @@ describe("the panel", () => {
     expect(await screen.findByText(/This comparison was not run/)).toBeTruthy();
     expect(screen.getByText(/too few on one side to compare/)).toBeTruthy();
     expect(screen.getByText(/3 cells in pFACT/)).toBeTruthy();
+  });
+});
+
+describe("countSignificant", () => {
+  const rows = [
+    { p_val_adj: 0.01, avg_log2FC: 2.0 },   // clearly up
+    { p_val_adj: 0.01, avg_log2FC: 0.7 },   // up at 0.5, not at 1.0
+    { p_val_adj: 0.01, avg_log2FC: -0.7 },  // down at 0.5, not at 1.0
+    { p_val_adj: 0.01, avg_log2FC: -3.0 },  // clearly down
+    { p_val_adj: 0.20, avg_log2FC: 5.0 },   // large but not significant
+  ];
+
+  it("counts at the cuts the analysis used, which is what the stored counts mean", () => {
+    expect(countSignificant(rows, 0.05, 0.5)).toEqual({ up: 2, down: 2, total: 4 });
+  });
+
+  it("a stricter fold-change cut drops the genes between the two", () => {
+    // The panel used to hardcode 1.0 while the analysis used 0.5, so the plot
+    // and the selector disagreed on 7 of this dataset's 13 comparisons.
+    expect(countSignificant(rows, 0.05, 1.0)).toEqual({ up: 1, down: 1, total: 2 });
+  });
+
+  it("ignores fold change when the adjusted p-value does not pass", () => {
+    expect(countSignificant(rows, 0.001, 0.5)).toEqual({ up: 0, down: 0, total: 0 });
+  });
+
+  it("treats the cuts as strict, so a gene exactly on one does not pass", () => {
+    expect(countSignificant([{ p_val_adj: 0.05, avg_log2FC: 2 }], 0.05, 0.5).total)
+      .toBe(0);
+    expect(countSignificant([{ p_val_adj: 0.01, avg_log2FC: 0.5 }], 0.05, 0.5).total)
+      .toBe(0);
+  });
+
+  it("counts nothing for an empty comparison", () => {
+    expect(countSignificant([], 0.05, 0.5)).toEqual({ up: 0, down: 0, total: 0 });
   });
 });
