@@ -80,20 +80,39 @@ export async function fetchClusterStats(
   };
 }
 
-/**
- * Fetch whether this cluster has a DE CSV file to export.
- * Returns null when no scrna_de row exists for this (dataset, cluster).
+/** One exportable DE result for a cluster.
+ *
+ * `contrast` is null for the cluster-vs-rest marker list, and names the
+ * comparison otherwise (e.g. "pFACT_vs_Col-0"). A dataset may hold either
+ * kind, or both, for the same cluster.
  */
-export async function fetchDeFilePath(
+export type DeExport = {
+  filePath: string;
+  contrast: string | null;
+};
+
+/**
+ * Fetch every DE result this cluster has a file for.
+ *
+ * Returns the cluster-vs-rest marker list first, then any two-group contrasts
+ * by name. Rows recording a comparison that was never run carry no file and
+ * are omitted — there is nothing to export.
+ */
+export async function fetchDeExports(
   datasetId: number,
   clusterId: string,
-): Promise<string | null> {
+): Promise<DeExport[]> {
   const supabase = createClientSupabaseClient();
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("scrna_de")
-    .select("file_path")
+    .select("file_path, contrast")
     .eq("dataset_id", datasetId)
     .eq("cluster_id", clusterId)
-    .maybeSingle();
-  return data?.file_path ?? null;
+    .not("file_path", "is", null)
+    .order("contrast", { ascending: true, nullsFirst: true });
+  if (error) throw new Error(`fetchDeExports failed: ${error.message}`);
+  return (data ?? []).map((row) => ({
+    filePath: row.file_path as string,
+    contrast: row.contrast,
+  }));
 }

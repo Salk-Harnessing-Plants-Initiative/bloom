@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import {
   fetchClusterStats,
-  fetchDeFilePath,
+  fetchDeExports,
+  type DeExport,
   type ClusterStatsRow,
 } from "@/components/expression-lib/cluster-markers";
 
@@ -19,6 +20,11 @@ export interface ExpressionClusterDetailPanelProps {
  * Mounted by the cockpit only when exactly one cluster is visible so the
  * UMAP canvas keeps its full width when nothing is soloed.
  */
+/** "pFACT_vs_Col-0" -> "pFACT vs Col-0", for a link label. */
+function humanContrast(contrast: string): string {
+  return contrast.replace(/_vs_/g, " vs ");
+}
+
 export function ExpressionClusterDetailPanel({
   datasetId,
   clusterId,
@@ -26,7 +32,7 @@ export function ExpressionClusterDetailPanel({
   clusterColor,
 }: ExpressionClusterDetailPanelProps) {
   const [stats, setStats] = useState<ClusterStatsRow | null>(null);
-  const [deFilePath, setDeFilePath] = useState<string | null>(null);
+  const [deExports, setDeExports] = useState<DeExport[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -34,11 +40,11 @@ export function ExpressionClusterDetailPanel({
     setLoading(true);
     Promise.all([
       fetchClusterStats(datasetId, clusterId),
-      fetchDeFilePath(datasetId, clusterId),
-    ]).then(([s, fp]) => {
+      fetchDeExports(datasetId, clusterId),
+    ]).then(([s, exports]) => {
       if (cancelled) return;
       setStats(s);
-      setDeFilePath(fp);
+      setDeExports(exports);
       setLoading(false);
     });
     return () => {
@@ -147,19 +153,29 @@ export function ExpressionClusterDetailPanel({
           Rename
         </button>
         <span className="text-stone-300">·</span>
-        {deFilePath ? (
-          <a
-            href={deFilePath}
-            target="_blank"
-            rel="noopener"
-            className="text-lime-700 hover:underline"
-          >
-            Export CSV
-          </a>
-        ) : (
+        {deExports.length === 0 ? (
           <span className="text-stone-400 cursor-not-allowed" title="No DE CSV yet">
             Export CSV
           </span>
+        ) : (
+          deExports.map((de, i) => (
+            <span key={de.filePath}>
+              {i > 0 && <span className="text-stone-300"> · </span>}
+              <a
+                href={de.filePath}
+                target="_blank"
+                rel="noopener"
+                className="text-lime-700 hover:underline"
+                title={
+                  de.contrast
+                    ? `${name} cells, ${humanContrast(de.contrast)}`
+                    : `${name} against all other cells`
+                }
+              >
+                {de.contrast ? humanContrast(de.contrast) : "Export CSV"}
+              </a>
+            </span>
+          ))
         )}
         <span className="text-stone-300">·</span>
         <button
