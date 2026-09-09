@@ -22,9 +22,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "ingest_scrnaseq.py"
 
-anndata = pytest.importorskip("anndata")
-np = pytest.importorskip("numpy")
-pd = pytest.importorskip("pandas")
+import anndata
+import numpy as np
+import pandas as pd
 
 
 @pytest.fixture(scope="module")
@@ -44,11 +44,14 @@ def write_h5ad(
     annotation: str = "nn_label_plain",
     sample_column: str = "sample",
     labels: list[str] | None = None,
+    n_types: int = 2,
 ) -> Path:
     """A miniature dataset shaped like the real one."""
     obs = pd.DataFrame(
         {
-            annotation: labels or ["Phellem", "Cortex"] * (n_cells // 2),
+            annotation: labels or [
+                f"Type{i % n_types}" for i in range(n_cells)
+            ] if n_types != 2 else (labels or ["Phellem", "Cortex"] * (n_cells // 2)),
             sample_column: ["Col-0", "pFACT", "pHORST"] * (n_cells // 3),
         },
         index=[f"CELL{i}-Col-0" for i in range(n_cells)],
@@ -59,7 +62,15 @@ def write_h5ad(
         var=pd.DataFrame(index=[f"AT1G0{i}" for i in range(4)]),
     )
     if umap_key:
-        adata.obsm[umap_key] = np.random.rand(n_cells, umap_dims).astype("float32")
+        # Cells of a type sit together, as they do in a real embedding, so the
+        # alignment check passes; distinct x and y so a swap is detectable.
+        codes = pd.Categorical(obs[annotation]).codes.astype("float32")
+        base = np.stack([codes * 100.0, codes * 100.0 + 50.0], axis=1)
+        jitter = np.linspace(0, 1, n_cells, dtype="float32")[:, None]
+        coords = (base + jitter)[:, :umap_dims] if umap_dims <= 2 else np.hstack(
+            [base, np.zeros((n_cells, umap_dims - 2), dtype="float32")]
+        )
+        adata.obsm[umap_key] = coords.astype("float32")
     adata.write_h5ad(path)
     return path
 
@@ -113,8 +124,88 @@ def test_missing_coordinates_are_refused(ingest, tmp_path):
 
 def test_one_dimensional_coordinates_are_refused(ingest, tmp_path):
     path = write_h5ad(tmp_path / "onedim.h5ad", umap_dims=1)
-    with pytest.raises(ingest.IngestError, match="dimension"):
+    with pytest.raises(ingest.IngestError, match="need exactly"):
         ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_a_high_dimensional_embedding_is_refused(ingest, tmp_path):
+    """A 50-column X_pca must not load as a UMAP -- it is the obvious
+    workaround when the real coordinates are missing, and the resulting plot is
+    indistinguishable from a real one."""
+    path = write_h5ad(tmp_path / "pca.h5ad", umap_key="X_pca", umap_dims=50)
+    with pytest.raises(ingest.IngestError, match="need exactly 2"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_pca", None)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")],
+                         ids=["nan", "inf", "-inf"])
+def test_non_finite_coordinates_are_refused(ingest, tmp_path, bad):
+    path = tmp_path / f"nonfinite{bad}.h5ad"
+    write_h5ad(path)
+    a = anndata.read_h5ad(path)
+    coords = np.asarray(a.obsm["X_umap"]).copy()
+    coords[1, 0] = bad
+    a.obsm["X_umap"] = coords
+    a.write_h5ad(path)
+    with pytest.raises(ingest.IngestError, match="finite"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_a_missing_label_is_refused_not_stored_as_nan(ingest, tmp_path):
+    """str(NaN) is "nan", which would become a real cell type in the legend and
+    merge with any genuine level of that spelling."""
+    path = tmp_path / "nanlabel.h5ad"
+    write_h5ad(path)
+    a = anndata.read_h5ad(path)
+    a.obs["nn_label_plain"] = pd.Categorical(
+        ["Phellem", None, "Phellem", "Cortex", "Cortex", "Cortex"]
+    )
+    a.write_h5ad(path)
+    with pytest.raises(ingest.IngestError, match="missing value"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_a_blank_label_is_refused(ingest, tmp_path):
+    path = tmp_path / "blank.h5ad"
+    write_h5ad(path)
+    a = anndata.read_h5ad(path)
+    a.obs["nn_label_plain"] = ["Phellem", "   ", "Phellem", "Cortex", "Cortex", "Cortex"]
+    a.write_h5ad(path)
+    with pytest.raises(ingest.IngestError, match="blank"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_a_file_with_no_cells_is_refused(ingest, tmp_path):
+    """Otherwise it would wipe a loaded dataset and replace it with nothing."""
+    path = tmp_path / "empty.h5ad"
+    anndata.AnnData(
+        X=np.zeros((0, 4), dtype="float32"),
+        obs=pd.DataFrame({"nn_label_plain": [], "sample": []}),
+        var=pd.DataFrame(index=[f"AT1G0{i}" for i in range(4)]),
+    ).write_h5ad(path)
+    with pytest.raises(ingest.IngestError, match="no cells"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_coordinates_that_do_not_match_the_cells_are_refused(ingest, tmp_path):
+    """The load requires someone to slice this dataset's rows out of a much
+    larger joint embedding. A wrong slice passes every other check."""
+    path = tmp_path / "shuffled.h5ad"
+    write_h5ad(path, n_cells=120, n_types=8)
+    a = anndata.read_h5ad(path)
+    coords = np.asarray(a.obsm["X_umap"]).copy()
+    a.obsm["X_umap"] = coords[np.random.default_rng(0).permutation(len(coords))]
+    a.write_h5ad(path)
+    with pytest.raises(ingest.IngestError, match="do not line up"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_well_clustered_coordinates_are_accepted(ingest, tmp_path):
+    cells = ingest.read_cells(
+        write_h5ad(tmp_path / "clustered.h5ad", n_cells=120, n_types=8),
+        "nn_label_plain", "sample", "X_umap", None,
+    )
+    assert cells["purity"] > 0.5
 
 
 def test_missing_annotation_column_is_refused(ingest, tmp_path):
@@ -155,10 +246,11 @@ def test_a_missing_file_is_refused(ingest, tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_every_level_gets_a_colour_even_past_the_palette(ingest):
-    """A catalogue larger than the palette repeats a colour rather than failing
-    the load, since the legend is searchable and colour is not the only cue."""
+def test_the_palette_has_a_distinct_colour_for_every_cell_type(ingest):
+    """23 cell types in the target dataset, so 23 distinct colours -- a repeat
+    renders two different cell types identically in the plot and the legend."""
     assert len(ingest.PALETTE) >= 23
+    assert len(set(ingest.PALETTE)) == len(ingest.PALETTE)
     assert all(c.startswith("#") and len(c) == 7 for c in ingest.PALETTE)
 
 
