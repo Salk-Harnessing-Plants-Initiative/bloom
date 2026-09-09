@@ -443,6 +443,15 @@ describe("what a scientist is told while it renders", () => {
     }
   }
 
+  /** The bar with nothing to measure: no value, a segment crossing the track. */
+  function expectSweeping() {
+    const bar = screen.getByRole("progressbar");
+    expect(bar.getAttribute("aria-valuenow")).toBeNull();
+    expect((bar.firstElementChild as HTMLElement).className).toContain(
+      "animate-sweep"
+    );
+  }
+
   it("counts the frames as they download", async () => {
     // Downloading is ~96% of a render, so this is the number they watch.
     vi.useFakeTimers();
@@ -466,14 +475,14 @@ describe("what a scientist is told while it renders", () => {
     expect(fill!.style.width).toBe(`${(21 / 86) * 100}%`);
   });
 
-  it("shows no bar while encoding, when there is no fraction to show", async () => {
-    // A bar that cannot move would either sit still or invent a number.
+  it("sweeps while encoding rather than inventing a fraction", async () => {
+    // Encoding reports nothing inside itself, and a still bar reads as stuck.
     vi.useFakeTimers();
     rendering({ stage: "encoding", done: 86, total: 86 });
 
     await clickAndPoll();
 
-    expect(screen.queryByRole("progressbar")).toBeNull();
+    expectSweeping();
   });
 
   it("says the video is being made once the frames are in", async () => {
@@ -520,7 +529,7 @@ describe("what a scientist is told while it renders", () => {
     expect(
       screen.getByText(/Encoding — this can take a few minutes/)
     ).toBeTruthy();
-    expect(screen.queryByRole("progressbar")).toBeNull();
+    expectSweeping();
   });
 
   it("does not open a new render on the last one's count", async () => {
@@ -559,7 +568,7 @@ describe("what a scientist is told while it renders", () => {
     });
 
     expect(screen.queryByText(/Downloading frame/)).toBeNull();
-    expect(screen.queryByRole("progressbar")).toBeNull();
+    expectSweeping();
   });
 
   it("takes the bar away once it gives up waiting", async () => {
@@ -577,14 +586,14 @@ describe("what a scientist is told while it renders", () => {
     expect(screen.queryByRole("progressbar")).toBeNull();
   });
 
-  it("shows no bar before the first frame is counted", async () => {
+  it("sweeps before the first frame is counted", async () => {
     // The service seeds {0, 0} the moment a render starts; a poll can land there.
     vi.useFakeTimers();
     rendering({ stage: "downloading", done: 0, total: 0 });
 
     await clickAndPoll();
 
-    expect(screen.queryByRole("progressbar")).toBeNull();
+    expectSweeping();
     expect(screen.queryByText(/Downloading frame/)).toBeNull();
   });
 
@@ -665,7 +674,7 @@ describe("what a scientist is told while it renders", () => {
 
     await clickAndPoll();
 
-    expect(screen.queryByRole("progressbar")).toBeNull();
+    expectSweeping();
     expect(
       screen.getByText(/Encoding — this can take a few minutes/)
     ).toBeTruthy();

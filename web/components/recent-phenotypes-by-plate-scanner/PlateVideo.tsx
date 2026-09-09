@@ -89,11 +89,20 @@ async function detailOf(res: Response): Promise<string> {
   }
 }
 
+/** The frames so far, while the service is counting them. Encoding is one
+ *  opaque ffmpeg call, and a plate of none is not a fraction. */
+function countedFrames(progress: Progress | null): Progress | null {
+  return progress?.stage === "downloading" && progress.total > 0
+    ? progress
+    : null;
+}
+
 /** Downloading is ~96% of a render and is countable; encoding is one opaque
  *  ffmpeg call. Falls back when the service reports nothing. */
 function progressNote(progress: Progress | null): string {
-  if (progress?.stage === "downloading" && progress.total > 0)
-    return `Downloading frame ${Math.min(progress.done, progress.total)} of ${progress.total}`;
+  const counted = countedFrames(progress);
+  if (counted)
+    return `Downloading frame ${Math.min(counted.done, counted.total)} of ${counted.total}`;
   if (progress?.stage) return WORKING;
   return "Encoding — this can take a few minutes.";
 }
@@ -223,6 +232,7 @@ export function PlateVideo({
   const label = held ? "Update" : "Generate";
   const waitHint =
     retryAfter === null ? "" : ` Try again in ${retryAfter} seconds.`;
+  const counted = countedFrames(progress);
   const note =
     action === "error"
       ? `${failure}${waitHint}`
@@ -283,19 +293,27 @@ export function PlateVideo({
         </div>
       )}
 
-      {busy && progress?.stage === "downloading" && progress.total > 0 && (
+      {/* Up for the whole wait, so it never looks stuck: it fills while the
+          frames are countable and sweeps while they are not. */}
+      {busy && (
         <div
           role="progressbar"
           aria-label="Generating video"
-          aria-valuenow={progress.done}
-          aria-valuemin={0}
-          aria-valuemax={progress.total}
+          aria-valuenow={counted?.done}
+          aria-valuemin={counted ? 0 : undefined}
+          aria-valuemax={counted?.total}
           className="mx-auto mt-3 h-1.5 w-64 overflow-hidden rounded-full bg-stone-200"
         >
-          <div
-            className="h-1.5 rounded-full bg-lime-700 transition-[width] duration-500"
-            style={{ width: `${Math.min(100, (progress.done / progress.total) * 100)}%` }}
-          />
+          {counted ? (
+            <div
+              className="h-1.5 rounded-full bg-lime-700 transition-[width] duration-500"
+              style={{
+                width: `${Math.min(100, (counted.done / counted.total) * 100)}%`,
+              }}
+            />
+          ) : (
+            <div className="h-1.5 w-1/4 animate-sweep rounded-full bg-lime-700" />
+          )}
         </div>
       )}
 
