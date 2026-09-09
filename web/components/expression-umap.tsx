@@ -33,10 +33,9 @@ export interface ExpressionUmapProps {
   geneName?: string | null;
   /** Clusters currently hidden (ordinal set). Empty = all visible. */
   hiddenClusters?: ReadonlySet<number>;
-  /** Samples currently hidden by name. Empty = all visible. */
-  hiddenSamples?: ReadonlySet<string>;
-  /** Facet values currently hidden, keyed by facet name. */
-  hiddenFacets?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Values currently hidden, keyed by filter name — the sample column and any
+   *  facet the cells carry. Empty = everything visible. */
+  hidden?: ReadonlyMap<string, ReadonlySet<string>>;
   /** Height of the canvas in pixels; width fills the parent */
   height?: number;
   /** Fires when data is loaded so parent can render colorbar / sidebar */
@@ -46,11 +45,13 @@ export interface ExpressionUmapProps {
     cellCount: number;
     /** Cells whose `cluster_id` had no row in `scrna_clusters` (sentinel ordinal 255). */
     orphanCount: number;
-    /** How many cells came from each sample, in the order they first appear.
-     *  Empty for a dataset whose cells record no sample. */
-    samples: { name: string; count: number }[];
-    /** The same, per facet the cells carry — transgene status and the like. */
-    facets: { name: string; values: { name: string; count: number }[] }[];
+    /** The filters this dataset offers, in the order they should be shown: the
+     *  sample column first, then any facet the cells carry. Empty for a dataset
+     *  that records neither. */
+    filters: string[];
+    /** The cells, so counts can be recomputed as filters change. Counting once
+     *  here would leave every number describing the whole dataset. */
+    cells: Pick<CellArraysRow, "replicate" | "facets">[];
   }) => void;
   /** Fires whenever the currently-overlaid gene's min/max changes */
   onExpressionRangeChanged?: (range: { min: number; max: number } | null) => void;
@@ -107,26 +108,33 @@ function packClusterColors(
  * reason positions and axis ranges do not move when a sample is switched off:
  * `packPositions` runs once over every cell and never sees the hidden set.
  */
+/** The name the sample column goes by among the filters. */
+export const SAMPLE_FILTER = "sample";
+
+/** What a cell's value is for one filter, or null when it has none. */
+export function filterValue(
+  cell: Pick<CellArraysRow, "replicate" | "facets">,
+  filter: string,
+): string | null {
+  if (filter === SAMPLE_FILTER) return cell.replicate;
+  return cell.facets?.[filter] ?? null;
+}
+
 export function packVisibility(
   cells: Pick<CellArraysRow, "replicate" | "facets">[],
   clusterOrdinals: Uint8Array,
   hiddenClusters: ReadonlySet<number>,
-  hiddenSamples: ReadonlySet<string>,
-  hiddenFacets: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
+  hidden: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
 ): Float32Array {
   const out = new Float32Array(cells.length);
   for (let i = 0; i < cells.length; i++) {
-    const sample = cells[i].replicate;
-    let shown =
-      !hiddenClusters.has(clusterOrdinals[i]) &&
-      !(sample !== null && hiddenSamples.has(sample));
-    if (shown && hiddenFacets.size > 0) {
-      const facets = cells[i].facets;
-      for (const [name, hidden] of hiddenFacets) {
-        const value = facets?.[name];
-        // A cell with no value for a facet is never hidden by it: the facet
+    let shown = !hiddenClusters.has(clusterOrdinals[i]);
+    if (shown) {
+      for (const [filter, values] of hidden) {
+        const value = filterValue(cells[i], filter);
+        // A cell with no value for a filter is never hidden by it: the filter
         // says nothing about that cell, so it is not something to filter on.
-        if (value !== undefined && hidden.has(value)) {
+        if (value !== null && values.has(value)) {
           shown = false;
           break;
         }
@@ -135,6 +143,35 @@ export function packVisibility(
     out[i] = shown ? 1.0 : 0;
   }
   return out;
+}
+
+/** How many cells each value of one filter has, counting only cells the *other*
+ *  filters leave visible.
+ *
+ *  Counting the whole dataset instead would put a number beside a value that
+ *  cannot be reached: with only the control genotype showing, the transgene row
+ *  would still offer "232 positive" when there are none to see, which reads as
+ *  a finding rather than a filter.
+ */
+export function countsFor(
+  cells: Pick<CellArraysRow, "replicate" | "facets">[],
+  hidden: ReadonlyMap<string, ReadonlySet<string>>,
+  filter: string,
+): { name: string; count: number }[] {
+  const others = [...hidden].filter(([name]) => name !== filter);
+  const counts = new Map<string, number>();
+  for (const cell of cells) {
+    const value = filterValue(cell, filter);
+    if (value === null || value === "") continue;
+    const ruledOut = others.some(([name, values]) => {
+      const v = filterValue(cell, name);
+      return v !== null && values.has(v);
+    });
+    counts.set(value, (counts.get(value) ?? 0) + (ruledOut ? 0 : 1));
+  }
+  return [...counts]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([name, count]) => ({ name, count }));
 }
 
 export function packPositions(cells: CellArraysRow[]): {
@@ -174,8 +211,7 @@ export function ExpressionUmap({
   datasetId,
   geneName,
   hiddenClusters,
-  hiddenSamples,
-  hiddenFacets,
+  hidden,
   height = 600,
   onDataLoaded,
   onExpressionRangeChanged,
@@ -251,19 +287,15 @@ export function ExpressionUmap({
         let orphanCount = 0;
         // Counted from the cells themselves, so a dataset with different
         // samples — or none — needs no change here.
-        const sampleCounts = new Map<string, number>();
-        const facetCounts = new Map<string, Map<string, number>>();
+        let hasSample = false;
+        const facetNames = new Set<string>();
         for (let i = 0; i < cells.length; i++) {
           clusterOrdinals[i] = cells[i].cluster_ordinal;
           if (cells[i].cluster_ordinal === ORPHAN_CLUSTER_ORDINAL) orphanCount++;
           const sample = cells[i].replicate;
-          if (sample !== null && sample !== "") {
-            sampleCounts.set(sample, (sampleCounts.get(sample) ?? 0) + 1);
-          }
-          for (const [name, value] of Object.entries(cells[i].facets ?? {})) {
-            let seen = facetCounts.get(name);
-            if (!seen) facetCounts.set(name, (seen = new Map()));
-            seen.set(value, (seen.get(value) ?? 0) + 1);
+          if (sample !== null && sample !== "") hasSample = true;
+          for (const name of Object.keys(cells[i].facets ?? {})) {
+            facetNames.add(name);
           }
         }
         const loaded: LoadedData = {
@@ -284,13 +316,8 @@ export function ExpressionUmap({
           clusters,
           cellCount: cells.length,
           orphanCount,
-          samples: [...sampleCounts].map(([name, count]) => ({ name, count })),
-          facets: [...facetCounts].map(([name, seen]) => ({
-            name,
-            values: [...seen]
-              .sort((a, b) => a[0].localeCompare(b[0]))
-              .map(([v, count]) => ({ name: v, count })),
-          })),
+          filters: [...(hasSample ? [SAMPLE_FILTER] : []), ...facetNames],
+          cells,
         });
       } catch (err) {
         if (!cancelled) {
@@ -351,11 +378,10 @@ export function ExpressionUmap({
             data.cells,
             data.clusterOrdinals,
             hiddenClusters ?? new Set<number>(),
-            hiddenSamples ?? new Set<string>(),
-            hiddenFacets ?? new Map(),
+            hidden ?? new Map(),
           )
         : null,
-    [data, hiddenClusters, hiddenSamples, hiddenFacets],
+    [data, hiddenClusters, hidden],
   );
 
   // -------- regl init + render loop (runs ONCE per dataset) ------------------

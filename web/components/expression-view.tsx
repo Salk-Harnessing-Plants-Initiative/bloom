@@ -4,7 +4,12 @@ import { useCallback, useEffect, useState } from "react";
 import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
 
-import { ExpressionUmap } from "@/components/expression-umap";
+import {
+  countsFor,
+  ExpressionUmap,
+  SAMPLE_FILTER,
+} from "./expression-umap";
+import type { CellArraysRow } from "./expression-lib/scrna-client";
 import { ExpressionSampleToggles } from "./expression-sample-toggles";
 // Gene search disabled — see the JSX comment below.
 // import { ExpressionGeneSearch } from "@/components/expression-gene-search";
@@ -32,11 +37,10 @@ interface LoadedMeta {
   orphanCount: number;
   /** from scrna_cluster_stats.cell_count, keyed by ordinal */
   counts: Record<number, number>;
-  /** Cells per sample, taken from the cells themselves. Empty when the dataset
-   *  records no sample, which is when the toggles are not shown at all. */
-  samples: { name: string; count: number }[];
-  /** The same per facet the cells carry, each rendered as its own row. */
-  facets: { name: string; values: { name: string; count: number }[] }[];
+  /** Filter rows this dataset offers. Empty means no toggles are shown. */
+  filters: string[];
+  /** The cells, so each row's counts follow the other rows' selections. */
+  cells: Pick<CellArraysRow, "replicate" | "facets">[];
 }
 
 /** Composes the UMAP canvas + gene search + colorbar + cluster sidebar for a dataset. */
@@ -44,8 +48,8 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
   const [meta, setMeta] = useState<LoadedMeta | null>(null);
   const [geneName, setGeneName] = useState<string | null>(null);
   const [hidden, setHidden] = useState<Set<number>>(new Set());
-  const [hiddenSamples, setHiddenSamples] = useState<Set<string>>(new Set());
-  const [hiddenFacets, setHiddenFacets] = useState<Map<string, Set<string>>>(
+  // One map for every filter row — the sample column and each facet.
+  const [hiddenValues, setHiddenValues] = useState<Map<string, Set<string>>>(
     new Map(),
   );
   const [exprRange, setExprRange] = useState<{ min: number; max: number } | null>(
@@ -91,49 +95,36 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
       clusters: Cluster[];
       cellCount: number;
       orphanCount: number;
-      samples: { name: string; count: number }[];
-      facets: { name: string; values: { name: string; count: number }[] }[];
+      filters: string[];
+      cells: Pick<CellArraysRow, "replicate" | "facets">[];
     }) => {
       setMeta((prev) => ({
         dataset: ctx.dataset,
         clusters: ctx.clusters,
         cellCount: ctx.cellCount,
         orphanCount: ctx.orphanCount,
-        samples: ctx.samples,
-        facets: ctx.facets,
+        filters: ctx.filters,
+        cells: ctx.cells,
         counts: prev?.counts ?? {},
       }));
     },
     [],
   );
 
-  const handleSampleToggle = useCallback((name: string) => {
-    setHiddenSamples((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(name)) next.add(name);
-      return next;
-    });
-  }, []);
-
-  const handleShowAllSamples = useCallback(
-    () => setHiddenSamples(new Set()),
-    [],
-  );
-
-  const handleFacetToggle = useCallback((facet: string, value: string) => {
-    setHiddenFacets((prev) => {
+  const handleFilterToggle = useCallback((filter: string, value: string) => {
+    setHiddenValues((prev) => {
       const next = new Map(prev);
-      const hidden = new Set(next.get(facet) ?? []);
+      const hidden = new Set(next.get(filter) ?? []);
       if (!hidden.delete(value)) hidden.add(value);
-      next.set(facet, hidden);
+      next.set(filter, hidden);
       return next;
     });
   }, []);
 
-  const handleShowAllOfFacet = useCallback((facet: string) => {
-    setHiddenFacets((prev) => {
+  const handleShowAllOf = useCallback((filter: string) => {
+    setHiddenValues((prev) => {
       const next = new Map(prev);
-      next.set(facet, new Set());
+      next.set(filter, new Set());
       return next;
     });
   }, []);
@@ -244,25 +235,14 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           </span>
         )}
 
-        {meta && meta.samples.length > 0 && (
-          <Box sx={{ pb: 1 }}>
+        {meta?.filters.map((filter) => (
+          <Box key={filter} sx={{ pb: 1 }}>
             <ExpressionSampleToggles
-              samples={meta.samples}
-              hidden={hiddenSamples}
-              onToggle={handleSampleToggle}
-              onShowAll={handleShowAllSamples}
-            />
-          </Box>
-        )}
-
-        {meta?.facets.map((facet) => (
-          <Box key={facet.name} sx={{ pb: 1 }}>
-            <ExpressionSampleToggles
-              label={facet.name}
-              samples={facet.values}
-              hidden={hiddenFacets.get(facet.name) ?? new Set()}
-              onToggle={(value) => handleFacetToggle(facet.name, value)}
-              onShowAll={() => handleShowAllOfFacet(facet.name)}
+              label={filter === SAMPLE_FILTER ? "Samples" : filter}
+              samples={countsFor(meta.cells, hiddenValues, filter)}
+              hidden={hiddenValues.get(filter) ?? new Set()}
+              onToggle={(value) => handleFilterToggle(filter, value)}
+              onShowAll={() => handleShowAllOf(filter)}
             />
           </Box>
         ))}
@@ -272,8 +252,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           datasetId={datasetId}
           geneName={geneName}
           hiddenClusters={hidden}
-          hiddenSamples={hiddenSamples}
-          hiddenFacets={hiddenFacets}
+          hidden={hiddenValues}
           onDataLoaded={handleDataLoaded}
           onExpressionRangeChanged={setExprRange}
         />
