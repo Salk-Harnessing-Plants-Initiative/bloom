@@ -429,7 +429,7 @@ def test_a_refusal_commits_nothing(ingest, pg_conn):
 def test_a_curated_colour_in_lower_case_still_reserves_its_slot(ingest, pg_conn):
     """Hex case is not meaning. A surviving type holding '#e15759' must stop a
     new type being handed '#E15759'. This repo's own colour backfill writes
-    lower case and 17 of the 23 palette entries differ from it only in case, so
+    lower case and 16 of the 23 palette entries differ from it only in case, so
     comparing raw strings hands out a duplicate -- the exact defect a 24-type
     load is refused to avoid.
 
@@ -467,4 +467,22 @@ def test_a_vanished_cell_type_does_not_hold_on_to_its_colour(ingest, pg_conn):
         colours = [c for (c,) in cur.fetchall()]
         assert len(colours) == n
         assert len(set(colours)) == n, "a colour was reused"
+    pg_conn.rollback()
+
+
+def test_a_blank_curated_name_falls_back_to_the_cell_type(ingest, pg_conn):
+    """A name of spaces is not a name. The file's own labels are refused when
+    blank, so a blank one arriving from the database gets the same treatment
+    rather than appearing as an empty legend entry."""
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        dataset_id, _ = run(ingest, pg_conn, "blank", sid, cells(["A", "B"]))
+        cur.execute(
+            "UPDATE scrna_clusters SET name = '   ' WHERE dataset_id = %s "
+            "AND cluster_id = 'A'", (dataset_id,),
+        )
+        run(ingest, pg_conn, "blank", sid, cells(["A", "B"]))
+        cur.execute("SELECT name FROM scrna_clusters WHERE dataset_id = %s "
+                    "AND cluster_id = 'A'", (dataset_id,))
+        assert cur.fetchone()[0] == "A"
     pg_conn.rollback()

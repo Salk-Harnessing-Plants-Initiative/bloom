@@ -619,9 +619,8 @@ def test_a_group_is_scored_against_its_own_labels(ingest, tmp_path):
     assert cells["n_cells"] == 180
 
 
-def test_main_passes_the_annotation_the_operator_named(ingest, tmp_path, capsys):
-    """`main()`'s wiring into the reader was untested: handing `load()` the
-    sample column instead of the annotation passed every other test."""
+def test_main_reads_the_annotation_the_operator_named(ingest, tmp_path, capsys):
+    """Pins the reader wiring only -- a dry run stops before the database."""
     path = write_h5ad(tmp_path / "wiring.h5ad", n_cells=6)
     code = ingest.main([
         "--h5ad", str(path), "--dataset-name", "d", "--species-id", "1",
@@ -629,3 +628,97 @@ def test_main_passes_the_annotation_the_operator_named(ingest, tmp_path, capsys)
     ])
     assert code == 0
     assert "2 cell types" in capsys.readouterr().out
+
+
+def test_main_hands_load_the_annotation_and_the_group_columns(
+    ingest, tmp_path, monkeypatch
+):
+    """The other half of the wiring, which a dry run cannot reach. Handing
+    `load()` the sample column instead of the annotation would record the wrong
+    provenance for the differential expression results, silently."""
+    import contextlib
+    import psycopg
+
+    seen = {}
+
+    def recorder(conn, name, species_id, cells, checksum, units, annotation):
+        seen.update(name=name, annotation=annotation, cells=cells)
+        return 1, cells["n_cells"]
+
+    monkeypatch.setattr(ingest, "load", recorder)
+    monkeypatch.setattr(psycopg, "connect", lambda url: contextlib.nullcontext(None))
+    monkeypatch.setenv("DATABASE_URL", "postgresql://nobody@nowhere/none")
+
+    path = write_h5ad(tmp_path / "wiring2.h5ad", n_cells=240,
+                      labels=["A", "B", "C", "D"] * 60)
+    import anndata
+    adata = anndata.read_h5ad(path)
+    adata.obs["origin"] = ["one" if i % 2 else "two" for i in range(240)]
+    adata.write_h5ad(path)
+
+    assert ingest.main([
+        "--h5ad", str(path), "--dataset-name", "d", "--species-id", "1",
+        "--annotation", "nn_label_plain", "--group-column", "origin",
+    ]) == 0
+    assert seen["annotation"] == "nn_label_plain"
+    assert seen["name"] == "d"
+    assert "origin" in [c for c, _, _ in seen["cells"]["grouped"]], (
+        "the named grouping column must reach the reader"
+    )
+
+
+def test_the_summary_says_which_groups_were_scored(ingest, tmp_path):
+    """The design rests on the operator naming provenance columns, so both ways
+    of getting it wrong have to be visible: a column left unnamed, and one whose
+    groups are all too small to judge."""
+    path = write_h5ad(tmp_path / "summary.h5ad", n_cells=240,
+                      labels=["A", "B", "C", "D"] * 60)
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+    assert "grouped by sample: 3 of 3 groups scored" in ingest.summarise(cells)
+
+    import anndata
+    adata = anndata.read_h5ad(path)
+    adata.obs["reading"] = [str(i) for i in range(240)]
+    adata.write_h5ad(path)
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                              ("reading",))
+    assert "grouped by reading: 0 of 240 groups big enough to score" in \
+        ingest.summarise(cells)
+
+
+def test_the_group_column_flag_collects_every_name(ingest):
+    base = ["--h5ad", "x", "--dataset-name", "d", "--species-id", "1",
+            "--annotation", "a"]
+    assert ingest.parse_args(base).group_column == []
+    assert ingest.parse_args(
+        base + ["--group-column", "one", "--group-column", "two"]
+    ).group_column == ["one", "two"]
+
+
+def test_a_coordinate_at_the_storable_limit_is_accepted_and_past_it_is_not(
+    ingest, tmp_path
+):
+    """The bar is the largest value the explorer's own query can return, so it
+    is the limit itself that matters, not an order of magnitude either side."""
+    largest_real = 3.4028235e38          # the literal limit, not the constant
+    for value, refused in ((largest_real, False),
+                           (largest_real * 1.000001, True)):
+        coords = np.array([[float(i), 0.0] for i in range(42)])
+        coords[3, 1] = value
+        path = write_h5ad(tmp_path / f"lim{refused}.h5ad", n_cells=42,
+                          labels=["A", "B", "C"] * 14, coords=coords)
+        if refused:
+            with pytest.raises(ingest.IngestError, match="too large to store"):
+                ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+        else:
+            ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_coordinates_that_are_not_numbers_are_refused(ingest, tmp_path):
+    """A text obsm survives a round-trip through the file and used to reach
+    numpy as an uncaught ValueError."""
+    coords = np.array([["a", "b"]] * 120, dtype=object)
+    path = write_h5ad(tmp_path / "text.h5ad", n_cells=120,
+                      labels=["A", "B", "C", "D"] * 30, coords=coords)
+    with pytest.raises(ingest.IngestError, match="does not read as numbers"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)

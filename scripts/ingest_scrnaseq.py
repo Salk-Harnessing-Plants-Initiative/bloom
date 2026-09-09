@@ -22,6 +22,7 @@ dataset exactly as it was:
         --dataset-name "MYB41 transgene" \
         --species-id 1 \
         --annotation nn_label_plain \
+        --group-column nn_source \
         --expect-cells 8683
 
 Re-running replaces that dataset's cells and catalogue. Because it is one
@@ -53,7 +54,7 @@ PALETTE = [
 
 # Below these there is not enough to judge, so the check is skipped rather than
 # guessed at. Two cell types are enough: measured on 900 well-separated cells,
-# good coordinates score 1.00 and a shuffle -0.01 at two, three and four types,
+# good coordinates score 1.00 and a shuffle about 0.00 at two, three and four,
 # because scaling by the room above chance already handles one type dominating.
 # A higher gate left a three-type dataset with no check at all.
 MIN_CELLS_FOR_ALIGNMENT = 50
@@ -107,8 +108,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="COLUMN",
         help="an obs column whose groups were lined up against the coordinates "
              "separately, scored on its own as well as the file as a whole. The "
-             "sample column always is. Name the source column of a joint "
-             "embedding here; repeatable",
+             "sample column always is; name the source column of a joint "
+             "embedding here (repeatable). Name only columns that describe where "
+             "the cells came from -- a biological column measures biology and "
+             "will refuse a correct file",
     )
     p.add_argument("--umap-key", default="X_umap")
     p.add_argument(
@@ -170,12 +173,16 @@ def _grouping_columns(adata, annotation: str, sample_column: str,
     return sorted(({sample_column} | set(extra)) - {annotation})
 
 
-def _misaligned(umap_key: str, what: str, purity: float, excess: float) -> str:
+def _misaligned(umap_key: str, what: str, purity: float, excess: float,
+                grouped: bool = False) -> str:
     return (
         f"cells of the same type are not near each other in obsm[{umap_key!r}] "
         f"for {what} — neighbours share a label {purity:.3f} of the time, only "
         f"{excess:.2f} of the way from chance to perfect. The coordinates likely "
         f"do not line up with these cells row for row."
+        + (" If this column describes biology rather than where the cells came "
+           "from, that is the more likely explanation: do not group by it."
+           if grouped else "")
     )
 
 
@@ -194,18 +201,25 @@ def read_cells(
 
     What the alignment check is worth, measured on the first dataset rather than
     argued. It catches unfilled coordinates, and misalignment affecting most of a
-    group or most of the file: an off-by-any-amount row shift, a wrong slice of a
-    joint embedding, and one group's rows reordered are all refused several times
-    over.
+    group or most of the file: an off-by-any-amount row shift, and one group's
+    rows reordered, are refused several times over. A wrong slice of one dataset
+    inside a joint embedding is caught only if that source column is named with
+    --group-column -- the summary prints which columns were scored, so a
+    forgotten one is visible rather than silent.
 
-    It is a bulk check, and two things follow. A minority can be wrong and pass
-    -- about a fifth of rows scrambled, or one contiguous tenth reordered, still
-    clear the bar, and that tolerance grows as the embedding improves. And it is
-    blind by construction to any misalignment that keeps every cell inside a
-    group of its own cell type: a permutation within one type, one type's cells
-    landing on another's cluster, or coordinates synthesised from the labels all
-    score at least what a correct load scores. That last family is what lining
-    two sides up by sorted cell type produces.
+    It is a bulk check, and two things follow. Damage scattered evenly is the
+    hard case: between a fifth and a third of rows can carry another cell's
+    coordinates and still clear the bar -- a fifth on this dataset's
+    `nn_label_plain`, a third on its `singler`, because the tolerance grows with
+    how well the labels separate. Damage concentrated in one group is what the
+    grouping catches, since that group falls to chance on its own while the
+    average stays comfortable.
+
+    And it is blind by construction to any misalignment that keeps every cell
+    inside a group of its own cell type: a permutation within one type, one
+    type's cells landing on another's cluster, or coordinates synthesised from
+    the labels all score at least what a correct load scores. That last family is
+    what lining two sides up by sorted cell type produces.
 
     So this is evidence, not proof, and the thing that actually keeps the rows
     together is that coordinates and labels come out of the same file. If they
@@ -312,21 +326,27 @@ def read_cells(
     # the bar. So each group is scored on its own as well -- every sample, and
     # whatever else --group-column names, such as the source dataset in a joint
     # object like this one.
+    grouped = []
     for column in _grouping_columns(adata, annotation, sample_column,
                                     group_columns):
-        values = adata.obs[column].astype(str).to_numpy()
-        for group in sorted(set(values)):
+        judged = []
+        for group in sorted(set(adata.obs[column].astype(str))):
+            values = adata.obs[column].astype(str).to_numpy()
             rows = np.flatnonzero(values == group)
             scored = alignment(coords[rows], [labels[i] for i in rows])
+            if scored:
+                judged.append(scored[1])
             if scored and scored[1] < MIN_ALIGNMENT_EXCESS:
                 raise IngestError(_misaligned(
                     umap_key, f"the cells with obs[{column!r}] == {group!r}",
-                    *scored,
+                    *scored, grouped=True,
                 ))
+        grouped.append((column, len(set(adata.obs[column].astype(str))), judged))
 
     return {
         "n_cells": int(adata.n_obs),
         "purity": purity,
+        "grouped": grouped,
         "n_genes": int(adata.n_vars),
         "x": [float(v) for v in coords[:, 0]],
         "y": [float(v) for v in coords[:, 1]],
@@ -404,6 +424,17 @@ def summarise(cells: dict) -> str:
            else "too few cells or cell types to check the coordinates line up\n  ")
         + f"samples: "
         + ", ".join(f"{k} {v}" for k, v in sorted(per_sample.items()))
+        # Which groups were actually judged. Everything else here describes the
+        # file; this describes what was checked, so a --group-column that was
+        # forgotten, or named a column too sparse to score, is visible instead
+        # of silently doing nothing.
+        + "".join(
+            f"\n  grouped by {column}: "
+            + (f"{len(judged)} of {n_groups} groups scored, weakest "
+               f"{min(judged):.3f} of the way from chance to perfect"
+               if judged else f"0 of {n_groups} groups big enough to score")
+            for column, n_groups, judged in cells["grouped"]
+        )
     )
 
 
@@ -565,8 +596,8 @@ def main(argv: list[str] | None = None) -> int:
     if not database_url:
         print(
             "DATABASE_URL is required — a direct connection, so the whole load "
-            "is one transaction. The role needs INSERT and DELETE on "
-            "scrna_clusters and scrna_cells, INSERT and UPDATE on "
+            "is one transaction. The role needs SELECT, INSERT and DELETE on "
+            "scrna_clusters and scrna_cells, SELECT, INSERT and UPDATE on "
             "scrna_datasets, and SELECT on scrna_cluster_stats, "
             "scrna_cluster_neighbors, scrna_counts and scrna_de.",
             file=sys.stderr,
