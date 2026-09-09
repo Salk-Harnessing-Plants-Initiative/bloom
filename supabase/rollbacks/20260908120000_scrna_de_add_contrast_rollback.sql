@@ -4,11 +4,15 @@
 -- NULL. One-vs-rest rows -- everything that predates the migration -- come
 -- through unchanged, because their values in these columns are all NULL.
 --
--- Data loss, in two ways:
---   * the contrast, group labels, cell counts and summary counts are dropped
---   * rows recording a comparison that never ran are deleted outright, since
---     they exist only as a NULL file_path and NOT NULL cannot be restored
---     while they are present
+-- Refuses to run if any row holds data this would destroy. Dropping the ten
+-- columns discards every contrast, group name and count as surely as a DELETE
+-- would, and nothing automated runs these scripts: the only time one runs is
+-- by hand, against a table someone has already filled.
+--
+-- Convention for this repo: a rollback that drops a table, drops a column or
+-- deletes rows counts what it would destroy first and raises if that count is
+-- not zero. 15 of the 31 rollback scripts destroy data; this is the first to
+-- follow it.
 --
 -- The bloom_admin / bloom_agent / bloom_user policies are also removed. They
 -- close a gap that predates this migration -- scrna_de was the one scrna_*
@@ -21,21 +25,43 @@
 
 BEGIN;
 
+DO $$
+DECLARE at_risk bigint;
+BEGIN
+  SELECT count(*) INTO at_risk
+    FROM public.scrna_de
+   WHERE file_path IS NULL
+      OR num_nonnulls(contrast, group1, group2, n_group1, n_group2,
+                      n_genes_tested, n_significant_fdr,
+                      n_significant_fdr_lfc, n_up, n_down) > 0;
+  IF at_risk > 0 THEN
+    RAISE EXCEPTION
+      'Refusing to roll back: % row(s) in scrna_de hold contrast data this '
+      'would destroy. Export or remove them deliberately, then re-run.', at_risk;
+  END IF;
+END $$;
+
 DROP POLICY IF EXISTS user_read_scrna_de  ON public.scrna_de;
 DROP POLICY IF EXISTS agent_read_scrna_de ON public.scrna_de;
 DROP POLICY IF EXISTS admin_all_scrna_de  ON public.scrna_de;
 
 DROP INDEX IF EXISTS public.idx_scrna_de_dataset_cluster_contrast;
 
+CREATE INDEX IF NOT EXISTS idx_scrna_de_dataset_cluster
+  ON public.scrna_de (dataset_id, cluster_id);
+
 ALTER TABLE public.scrna_de
-  DROP CONSTRAINT IF EXISTS scrna_de_counts_consistent,
+  DROP CONSTRAINT IF EXISTS scrna_de_comparison_uniqueness,
+  DROP CONSTRAINT IF EXISTS scrna_de_name_lengths,
+  DROP CONSTRAINT IF EXISTS scrna_de_text_not_blank,
   DROP CONSTRAINT IF EXISTS scrna_de_counts_non_negative,
+  DROP CONSTRAINT IF EXISTS scrna_de_up_plus_down_is_lfc_significant,
+  DROP CONSTRAINT IF EXISTS scrna_de_lfc_cut_narrows_fdr_cut,
+  DROP CONSTRAINT IF EXISTS scrna_de_significant_within_tested,
+  DROP CONSTRAINT IF EXISTS scrna_de_counts_all_or_none,
   DROP CONSTRAINT IF EXISTS scrna_de_no_file_means_nothing_tested,
   DROP CONSTRAINT IF EXISTS scrna_de_groups_differ,
   DROP CONSTRAINT IF EXISTS scrna_de_contrast_names_both_groups;
-
--- Comparisons that never ran have no file to point at.
-DELETE FROM public.scrna_de WHERE file_path IS NULL;
 
 ALTER TABLE public.scrna_de
   ALTER COLUMN file_path SET NOT NULL;

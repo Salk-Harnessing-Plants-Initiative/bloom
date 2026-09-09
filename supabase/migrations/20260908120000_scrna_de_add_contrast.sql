@@ -112,45 +112,100 @@ ALTER TABLE public.scrna_de
       + COALESCE(n_down, 0) = 0
   );
 
--- Arithmetic that is true by definition of the counts. These cannot check the
--- summary against the result file -- Postgres cannot read storage, and the
--- ingest that holds both is where that comparison belongs. What they reject is
--- a summary that contradicts itself, which is the shape a mis-parsed column or
--- an off-by-one takes. NULL comparisons yield NULL and pass, so rows that
--- store no summary are unaffected.
+-- The five summary counts arrive together or not at all. Every check below
+-- compares two of them, and a comparison with a NULL operand yields NULL, which
+-- a CHECK accepts -- so without this rule one absent count switches off all of
+-- them, and a half-written row is exactly what a mis-parsed column produces.
+ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_counts_all_or_none;
+ALTER TABLE public.scrna_de
+  ADD CONSTRAINT scrna_de_counts_all_or_none
+  CHECK (num_nonnulls(n_genes_tested, n_significant_fdr,
+                      n_significant_fdr_lfc, n_up, n_down) IN (0, 5));
+
+-- Arithmetic true by definition of the counts. These cannot check the summary
+-- against the result file -- Postgres cannot read storage, and the ingest that
+-- holds both is where that belongs. They reject a summary that contradicts
+-- itself. One rule per constraint, because Postgres reports only the name.
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_counts_consistent;
+
 ALTER TABLE public.scrna_de
-  ADD CONSTRAINT scrna_de_counts_consistent
-  CHECK (
-    -- more genes cannot pass a cut than were tested
-    n_significant_fdr <= n_genes_tested AND
-    -- the second cut is applied on top of the first, so it can only narrow
-    n_significant_fdr_lfc <= n_significant_fdr AND
-    -- a gene clearing a fold-change cut moved up or down; there is no third bucket
-    n_up + n_down = n_significant_fdr_lfc
-  );
+  DROP CONSTRAINT IF EXISTS scrna_de_significant_within_tested;
+ALTER TABLE public.scrna_de
+  ADD CONSTRAINT scrna_de_significant_within_tested
+  CHECK (n_significant_fdr <= n_genes_tested);
+
+ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_lfc_cut_narrows_fdr_cut;
+ALTER TABLE public.scrna_de
+  ADD CONSTRAINT scrna_de_lfc_cut_narrows_fdr_cut
+  CHECK (n_significant_fdr_lfc <= n_significant_fdr);
+
+-- A gene clearing a fold-change cut moved up or down; there is no third bucket.
+ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_up_plus_down_is_lfc_significant;
+ALTER TABLE public.scrna_de
+  ADD CONSTRAINT scrna_de_up_plus_down_is_lfc_significant
+  CHECK (n_up + n_down = n_significant_fdr_lfc);
 
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_counts_non_negative;
 ALTER TABLE public.scrna_de
   ADD CONSTRAINT scrna_de_counts_non_negative
   CHECK (
-    COALESCE(n_group1, 0)              >= 0 AND
-    COALESCE(n_group2, 0)              >= 0 AND
-    COALESCE(n_genes_tested, 0)        >= 0 AND
-    COALESCE(n_significant_fdr, 0)     >= 0 AND
-    COALESCE(n_significant_fdr_lfc, 0) >= 0 AND
-    COALESCE(n_up, 0)                  >= 0 AND
-    COALESCE(n_down, 0)                >= 0
+    n_group1              >= 0 AND
+    n_group2              >= 0 AND
+    n_genes_tested        >= 0 AND
+    n_significant_fdr     >= 0 AND
+    n_significant_fdr_lfc >= 0 AND
+    n_up                  >= 0 AND
+    n_down                >= 0
   );
 
--- 5. Lookup -----------------------------------------------------------------
--- 20260417000001 indexes (dataset_id, cluster_id). Selecting one combination
--- now also names the contrast.
+-- NULL is the only way to say nothing. An empty contrast is read as one-vs-rest
+-- and rendered as a marker list; an empty file_path is rendered as a link that
+-- goes nowhere. btrim so whitespace-only is caught with it.
+ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_text_not_blank;
+ALTER TABLE public.scrna_de
+  ADD CONSTRAINT scrna_de_text_not_blank
+  CHECK (
+    (file_path  IS NULL OR length(btrim(file_path))  > 0) AND
+    (contrast   IS NULL OR length(btrim(contrast))   > 0) AND
+    (group1     IS NULL OR length(btrim(group1))     > 0) AND
+    (group2     IS NULL OR length(btrim(group2))     > 0) AND
+    (cluster_id IS NULL OR length(btrim(cluster_id)) > 0)
+  );
 
-CREATE INDEX IF NOT EXISTS idx_scrna_de_dataset_cluster_contrast
-  ON public.scrna_de (dataset_id, cluster_id, contrast);
+-- contrast is indexed, so an oversized value fails the insert with a btree
+-- row-size error rather than anything a reader could act on.
+ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_name_lengths;
+ALTER TABLE public.scrna_de
+  ADD CONSTRAINT scrna_de_name_lengths
+  CHECK (
+    length(contrast) <= 200 AND
+    length(group1)   <= 100 AND
+    length(group2)   <= 100
+  );
+
+-- One row per comparison. NULLS NOT DISTINCT (Postgres 15) or the one-vs-rest
+-- rows, whose contrast is NULL, stay unconstrained -- and those are the rows
+-- every existing reader fetches.
+ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_comparison_uniqueness;
+ALTER TABLE public.scrna_de
+  ADD CONSTRAINT scrna_de_comparison_uniqueness
+  UNIQUE NULLS NOT DISTINCT (dataset_id, cluster_id, contrast);
+
+-- 5. Lookup -----------------------------------------------------------------
+-- scrna_de_comparison_uniqueness above indexes (dataset_id, cluster_id,
+-- contrast), which serves every lookup the older (dataset_id, cluster_id) index
+-- from 20260417000001 did. Keeping both would cost a second write per insert
+-- for nothing.
+
+DROP INDEX IF EXISTS public.idx_scrna_de_dataset_cluster;
 
 -- 6. Role policies ----------------------------------------------------------
 -- 20260506000001 gave every scrna_* table bloom_admin / bloom_agent /
