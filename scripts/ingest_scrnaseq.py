@@ -51,9 +51,23 @@ PALETTE = [
 ]
 
 # Below these the neighbour check cannot separate a real embedding from a
-# shuffled one, so it is skipped rather than guessed at.
+# shuffled one, so it is skipped rather than guessed at. The gate is the number
+# of cell types rather than their balance: one type holding most of the cells
+# pushes chance high enough to disable a balance-based gate entirely.
 MIN_CELLS_FOR_ALIGNMENT = 50
-MAX_CHANCE_FOR_ALIGNMENT = 0.25
+MIN_LEVELS_FOR_ALIGNMENT = 4
+
+# How far purity must sit from chance towards perfect. A ratio does not work:
+# with one dominant cell type chance is already near 0.5, and twice that is
+# beyond what any real embedding reaches.
+#
+# Set from measurement, not taste. On the first dataset, with the weakest
+# legitimate coordinates available (its PCA, since the real embedding has not
+# shipped yet): aligned scores 0.21 and 0.27 depending on the annotation, while
+# a shuffle of the same coordinates scores 0.00 either way. A real UMAP
+# separates cell types far better than PCA does, so this is the floor of the
+# legitimate range, and the bar sits half way down to a shuffle.
+MIN_ALIGNMENT_EXCESS = 0.10
 
 # scrna_clusters.ordinal is a SMALLINT the browser packs into a Uint8Array, and
 # 255 is the explorer's orphan sentinel, so a catalogue may hold 0..254.
@@ -164,17 +178,19 @@ def read_cells(
         )
 
     chance = sum(c * c for c in Counter(labels).values()) / (len(labels) ** 2)
-    # Below these it cannot tell a real embedding from a shuffled one: with two
-    # cell types a coin flip already scores 0.5.
     purity = None
-    if adata.n_obs >= MIN_CELLS_FOR_ALIGNMENT and chance <= MAX_CHANCE_FOR_ALIGNMENT:
+    if adata.n_obs >= MIN_CELLS_FOR_ALIGNMENT and len(levels) >= MIN_LEVELS_FOR_ALIGNMENT:
         purity = neighbour_purity(coords, labels)
-        if purity < chance * 2:
+        # Excess over chance, scaled by how much room there is above chance, so
+        # the bar means the same thing whether cell types are balanced or not.
+        excess = (purity - chance) / (1 - chance) if chance < 1 else 1.0
+        if excess < MIN_ALIGNMENT_EXCESS:
             raise IngestError(
                 f"cells of the same type are not near each other in "
                 f"obsm[{umap_key!r}] — neighbours share a label {purity:.3f} of "
-                f"the time against {chance:.3f} expected by chance. The "
-                f"coordinates likely do not line up with these cells row for row."
+                f"the time against {chance:.3f} expected by chance, only "
+                f"{excess:.2f} of the way to perfect. The coordinates likely do "
+                f"not line up with these cells row for row."
             )
 
     return {
@@ -253,14 +269,15 @@ def summarise(cells: dict) -> str:
         f"{cells['n_cells']} cells, {cells['n_genes']} genes, "
         f"{len(cells['levels'])} cell types\n  "
         + (f"neighbours share a cell type {cells['purity']:.3f} of the time\n  "
-           if cells["purity"] is not None else "")
+           if cells["purity"] is not None
+           else "too few cells or cell types to check the coordinates line up\n  ")
         + f"samples: "
         + ", ".join(f"{k} {v}" for k, v in sorted(per_sample.items()))
     )
 
 
 def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
-         units: str) -> tuple[int, int]:
+         units: str, annotation: str) -> tuple[int, int]:
     """Write the dataset, its catalogue and its cells in one transaction.
 
     Order matters twice over. `scrna_cells` references the catalogue with
@@ -288,16 +305,27 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
         if found:
             dataset_id = found[0][0]
             cur.execute(
-                "SELECT count(*) FROM public.scrna_cluster_stats WHERE dataset_id = %s",
-                (dataset_id,),
+                "SELECT"
+                " (SELECT count(*) FROM public.scrna_cluster_stats WHERE dataset_id = %(d)s),"
+                " (SELECT count(*) FROM public.scrna_cluster_neighbors WHERE dataset_id = %(d)s),"
+                " (SELECT count(*) FROM public.scrna_counts WHERE dataset_id = %(d)s)",
+                {"d": dataset_id},
             )
-            if cur.fetchone()[0]:
-                # scrna_cluster_stats and scrna_cluster_neighbors cascade off the
-                # catalogue, so replacing it would discard the sidebar's counts,
-                # centroids and marker lists with nothing here to rebuild them.
+            # The first two cascade off the catalogue this run replaces; the third
+            # names count files read by cell position, which renumbering shifts.
+            blocked = [
+                what
+                for what, n in zip(
+                    ("per-cluster statistics", "neighbour rows",
+                     "per-gene expression rows"),
+                    cur.fetchone(),
+                )
+                if n
+            ]
+            if blocked:
                 raise IngestError(
-                    f"dataset {dataset_id} has per-cluster statistics that "
-                    f"replacing its catalogue would delete. Remove them "
+                    f"dataset {dataset_id} has {' and '.join(blocked)} that "
+                    f"reloading its cells would invalidate. Remove them "
                     f"deliberately first, then re-run."
                 )
         else:
@@ -343,10 +371,10 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
 
         cur.execute(
             "UPDATE public.scrna_datasets SET n_cells = %s, n_genes = %s, "
-            "source_checksum = %s, ingested_at = %s, expression_units = %s "
-            "WHERE id = %s",
+            "source_checksum = %s, ingested_at = %s, expression_units = %s, "
+            "annotation = %s WHERE id = %s",
             (cells["n_cells"], cells["n_genes"], source_checksum,
-             datetime.now(timezone.utc), units, dataset_id),
+             datetime.now(timezone.utc), units, annotation, dataset_id),
         )
     return dataset_id, stored
 
@@ -385,7 +413,7 @@ def main(argv: list[str] | None = None) -> int:
         with psycopg.connect(database_url) as conn:
             dataset_id, stored = load(
                 conn, args.dataset_name, args.species_id, cells,
-                checksum(args.h5ad), args.expression_units,
+                checksum(args.h5ad), args.expression_units, args.annotation,
             )
     except IngestError as exc:
         print(f"refusing to ingest: {exc}", file=sys.stderr)

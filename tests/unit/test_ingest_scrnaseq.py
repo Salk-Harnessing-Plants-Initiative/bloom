@@ -8,7 +8,8 @@ against a real `.h5ad` written to a temporary file, so a change to the reader
 that stops rejecting is caught here rather than by a bad dataset appearing in
 the UI.
 
-The database writes are covered by the integration suite, which has a database.
+The write path is covered by tests/integration/test_scrna_ingest_cells.py, which
+drives `load()` against a real database.
 """
 
 from __future__ import annotations
