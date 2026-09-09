@@ -23,6 +23,38 @@ type Dataset = Database["public"]["Tables"]["scrna_datasets"]["Row"];
 type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
 
 const DEFAULT_POINT_SIZE = 4.0;
+/** How far the map can be zoomed, in each direction. */
+export const MIN_ZOOM = 0.2;
+export const MAX_ZOOM = 50;
+
+/** Zoom the map on scroll, and stop the page moving with it.
+ *
+ * Bound natively rather than through React's `onWheel`, because React attaches
+ * its wheel listener to the root passively — and `preventDefault()` inside a
+ * passive listener does nothing at all. So the map zoomed and the page scrolled
+ * underneath it at the same time.
+ *
+ * A trackpad pinch arrives here too, as a wheel event with `ctrlKey` set, which
+ * the browser would otherwise turn into a zoom of the whole page.
+ *
+ * Returns the function that removes the listener again.
+ */
+export function attachWheelZoom(
+  canvas: HTMLCanvasElement,
+  setZoom: (update: (z: number) => number) => void,
+): () => void {
+  const onWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    // A pinch reports far larger deltas than a scroll, so it takes a gentler
+    // factor to travel the same distance per gesture.
+    const perDelta = e.ctrlKey ? 0.0002 : 0.001;
+    const factor = Math.exp(-e.deltaY * perDelta);
+    setZoom((z) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * factor)));
+  };
+  canvas.addEventListener("wheel", onWheel, { passive: false });
+  return () => canvas.removeEventListener("wheel", onWheel);
+}
+
 const NORMALIZE_PADDING = 1.05; // give a small border around the UMAP bbox
 
 const ORPHAN_GRAY: [number, number, number] = [0.6, 0.6, 0.6];
@@ -492,10 +524,19 @@ export function ExpressionUmap({
   }, [expressionArr]);
 
   // -------- zoom / pan handlers ----------------------------------------------
-  const handleWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    const factor = Math.exp(-e.deltaY * 0.001);
-    setZoom((z) => Math.min(50, Math.max(0.2, z * factor)));
+
+  // Wheel is bound natively rather than through onWheel, because React attaches
+  // its wheel listener to the root passively -- and preventDefault() inside a
+  // passive listener does nothing. The canvas zoomed and the page scrolled
+  // underneath it at the same time.
+  //
+  // A trackpad pinch arrives here too, as a wheel event with ctrlKey set, which
+  // the browser would otherwise turn into a zoom of the whole page. Same
+  // listener, same preventDefault, so pinching scales the map instead.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    return attachWheelZoom(canvas, setZoom);
   }, []);
 
   const dragState = useRef<{ x: number; y: number; origTx: number; origTy: number } | null>(
@@ -599,7 +640,6 @@ export function ExpressionUmap({
     <canvas
       ref={canvasRef}
       data-testid="expression-umap-canvas"
-      onWheel={handleWheel}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
