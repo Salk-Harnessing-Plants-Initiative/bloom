@@ -110,7 +110,12 @@ def counts_phrase(verdict: Verdict, dry_run: bool) -> str:
 
     A week that copies nothing has to read differently from a week where the
     Box folder was deleted, and both are a green tick.
+
+    Nothing at all for a run that measured nothing: `assumed` means the counts
+    came from the step's outcome, and a quoted zero reads as a measurement.
     """
+    if verdict.assumed:
+        return ""
     copied = verdict.count("copied")
     checked = verdict.count("verify_checked")
     unverified = verdict.count("verify_unverified")

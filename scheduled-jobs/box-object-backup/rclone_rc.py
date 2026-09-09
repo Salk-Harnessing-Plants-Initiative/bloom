@@ -213,8 +213,8 @@ SECRET_PARAMS = ("secret_access_key", "access_key_id", "rc-pass")
 # bare token. The bare alternative must NOT exclude `"` and `,`: those are the
 # characters `_escape` wraps a value in, and since it also quotes on `:` and on
 # whitespace, every credential in a real fs string is quoted — a redactor that
-# cannot read quotes would redact nothing. It runs to the end of the parameter
-# so an unquoted value cannot leak its tail.
+# cannot read quotes would redact nothing. A bare value stops at the first
+# space or colon; what keeps a credential whole is `_escape` quoting it.
 _SECRET_RE = re.compile(
     r"(" + "|".join(SECRET_PARAMS) + r")=(\"(?:[^\"]|\"\")*\"|[^,\s:]+)",
     re.IGNORECASE,

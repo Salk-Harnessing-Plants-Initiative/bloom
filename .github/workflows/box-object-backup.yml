@@ -3,9 +3,9 @@ name: Nightly Box object mirror
 # Mirrors Supabase Storage objects (the image bytes in MinIO) to Box, nightly.
 #
 # This is the BYTES half of a backup. A full restore also needs the
-# `storage.objects` rows, and the job that dumps Postgres is separate work
-# that is NOT in this repository yet — so today this mirror is a hedge
-# against losing MinIO, not against losing the deployment.
+# `storage.objects` rows, which the weekly Postgres dump carries — see
+# scheduled-jobs/weekly-backup/. Both halves exist; neither is a restore
+# until one has been rehearsed.
 #
 # Nightly rather than weekly so that at most a day's scans exist only in
 # MinIO, rather than up to a week's.

@@ -584,3 +584,17 @@ class TestAMalformedCountsLineDoesNotEmptyThePage:
         )
         found = summary.from_log(text)
         assert found is not None and found.stats == {}
+
+
+def test_a_run_that_measured_nothing_quotes_no_count():
+    """`assumed` means the step's outcome stood in for a verdict.
+
+    A dry run rendered "would copy 0, nothing was copied", which reads as a
+    clean pre-seed check on the run whose job is to catch problems.
+    """
+    page = summary.render(
+        summary.verdict_for("", "", "success"), env="prod", dry_run=True
+    )
+
+    assert "would copy" not in page
+    assert "no counts in the log" in page
