@@ -35,9 +35,7 @@ def finish() -> None:
         _current = None
 
 
-def current(
-    experiment_id: int, plate_id: str, wave_number: int | None
-) -> dict | None:
+def current(experiment_id: int, plate_id: str, wave_number: int | None) -> dict | None:
     with _lock:
         if _current is None:
             return None

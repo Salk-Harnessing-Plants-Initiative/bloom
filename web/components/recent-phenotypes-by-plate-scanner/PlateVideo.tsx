@@ -93,7 +93,7 @@ async function detailOf(res: Response): Promise<string> {
  *  ffmpeg call. Falls back when the service reports nothing. */
 function progressNote(progress: Progress | null): string {
   if (progress?.stage === "downloading" && progress.total > 0)
-    return `Downloading frame ${progress.done} of ${progress.total}`;
+    return `Downloading frame ${Math.min(progress.done, progress.total)} of ${progress.total}`;
   if (progress?.stage) return WORKING;
   return "Encoding — this can take a few minutes.";
 }
@@ -154,10 +154,12 @@ export function PlateVideo({
         setAction("idle");
         return;
       }
-      // Nothing reported means the render is over; a lower count means two
-      // polls landed out of order.
+      // A failed poll says nothing about the render, so it keeps what is on
+      // screen. An answered one carrying nothing means the render is over, and
+      // a lower count means two polls landed out of order.
       setProgress((seen) =>
-        next.progress && seen && next.progress.done < seen.done
+        next.player.status === "unknown" ||
+        (next.progress && seen && next.progress.done < seen.done)
           ? seen
           : next.progress
       );

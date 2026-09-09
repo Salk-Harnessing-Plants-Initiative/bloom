@@ -226,13 +226,13 @@ async function renderProgress(
   plateId: string,
   wave: number | null
 ): Promise<{ stage: string; done: number; total: number } | null> {
-  const session = await getSession();
-  if (!session?.access_token) return null;
-
-  const query = new URLSearchParams({ plate_id: plateId });
-  if (wave !== null) query.set("wave_number", String(wave));
-
   try {
+    const session = await getSession();
+    if (!session?.access_token) return null;
+
+    const query = new URLSearchParams({ plate_id: plateId });
+    if (wave !== null) query.set("wave_number", String(wave));
+
     const res = await fetch(
       `${workflowsUrl()}/gravi/experiments/${experiment}/plate-video/progress?${query}`,
       {
