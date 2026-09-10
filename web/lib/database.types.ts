@@ -3909,6 +3909,8 @@ export type Database = {
         Args: { ds_id: number }
         Returns: {
           cluster_ordinal: number
+          facets: Json
+          genotype: string
           replicate: string
           x: number
           y: number
