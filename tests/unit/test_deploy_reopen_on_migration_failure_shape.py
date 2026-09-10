@@ -307,6 +307,103 @@ def test_comment_names_the_run_and_the_failed_step(job_name: str, step_id: str) 
         f"{job_name}: the reopen comment must explain that auto-close outran "
         "deploy verification, not just say 'reopened'"
     )
+    assert "Apply database migrations" in script, (
+        f"{job_name}: the reopen comment must name the actual failed step "
+        "('Apply database migrations'), not just claim to in prose — a prior "
+        "version of this test checked only for a run-URL token and the word "
+        "'outran', which a regression dropping the step name would still pass"
+    )
+
+
+@pytest.mark.parametrize("job_name, step_id", JOBS)
+def test_comment_names_the_failing_environment(job_name: str, step_id: str) -> None:
+    """PR #807 review finding: the comment was deliberately environment-agnostic
+    (byte-identical between jobs), so a reader couldn't tell a staging failure
+    from a production one without clicking through. Fixed by deriving the
+    environment name from `context.job` (the real job id, e.g. 'deploy-staging')
+    at runtime, rather than hardcoding it per job copy -- keeps the two jobs'
+    script content identical (see test_scripts_are_byte_identical_across_jobs)
+    while still naming the environment in the posted comment."""
+    script = _script_of(job_name)
+    assert "context.job" in script, (
+        f"{job_name}: expected the script to derive an environment label from "
+        "context.job so the comment can name which environment failed"
+    )
+
+
+@pytest.mark.parametrize("job_name, step_id", JOBS)
+def test_state_is_reopened_before_the_comment_is_posted(job_name: str, step_id: str) -> None:
+    """PR #807 review finding: if `issues.update` fails after `createComment`
+    succeeds, the issue stays closed but now carries a stray 'reopening'
+    comment, and a later run re-fires the same comment again. Reordering so
+    `issues.update` runs first makes a partial failure strictly milder."""
+    script = _script_of(job_name)
+    loop_body = _extract_braced_block(script, r"for\s*\(const \w+ of \w+\)\s*")
+    update_pos = loop_body.find("issues.update(")
+    comment_pos = loop_body.find("issues.createComment(")
+    assert update_pos != -1, f"{job_name}: issues.update(...) call not found in the per-issue loop"
+    assert comment_pos != -1, f"{job_name}: issues.createComment(...) call not found in the per-issue loop"
+    assert update_pos < comment_pos, (
+        f"{job_name}: issues.update (reopen) must run BEFORE issues.createComment, "
+        "so a failure partway through never leaves a 'reopening' comment on a "
+        "still-closed issue"
+    )
+
+
+@pytest.mark.parametrize("job_name, step_id", JOBS)
+def test_script_guards_against_misattributed_reopen(job_name: str, step_id: str) -> None:
+    """PR #807 review finding: the guard originally checked only the issue's
+    current state/state_reason/closed_by -- it had no memory of WHICH PR
+    closed it. If PR A closes #900 and deploys fine, and an unrelated later
+    PR B also says 'Fixes #900' but fails for a different reason, the old
+    guard would reopen #900 and falsely claim PR B's failure affects #900's
+    (already-successful) fix. Fixed by reading the auto-close workflow's own
+    "Closed by #<N>" comment and only reopening if N matches the CURRENT
+    run's PR number."""
+    script = _script_of(job_name)
+    assert re.search(r"Closed by #", script), (
+        f"{job_name}: expected the script to look for auto-close-issues-on-staging.yml's "
+        "own 'Closed by #<N>' comment text to identify which PR actually closed the issue"
+    )
+    assert re.search(r"!==\s*pr\.number", script), (
+        f"{job_name}: expected a check that the identified closing PR number equals "
+        "THIS run's own pr.number before reopening -- otherwise an unrelated PR "
+        "referencing the same issue number can wrongly reopen it"
+    )
+
+
+@pytest.mark.parametrize("job_name, step_id", JOBS)
+def test_script_wraps_api_calls_with_a_timeout(job_name: str, step_id: str) -> None:
+    """PR #807 review finding: this repo's own history (bloom#616) shows this
+    runner class can silently drop outbound traffic rather than refusing it,
+    which means an un-timed-out HTTP call can hang for the full 30-minute job
+    timeout, holding the shared deploy-bloom concurrency lock. Every API call
+    must be wrapped so a stalled connection fails fast instead."""
+    script = _script_of(job_name)
+    assert "Promise.race" in script, (
+        f"{job_name}: expected a Promise.race-based timeout wrapper around the "
+        "GitHub API calls"
+    )
+    assert re.search(r"timed out after", script), (
+        f"{job_name}: expected a clear 'timed out after' error message from the "
+        "timeout wrapper, distinguishing a hang from a real API error"
+    )
+
+
+def test_scripts_are_byte_identical_across_jobs() -> None:
+    """The two jobs' embedded scripts should never drift from each other --
+    same mechanism, deliberately not a variant (see design.md). Now that the
+    environment name comes from context.job at runtime (see
+    test_comment_names_the_failing_environment) rather than being hardcoded
+    per copy, the script bodies can and must be exactly identical, so this can
+    be a real automated check instead of the manual pre-merge diff PR #807's
+    review flagged as the only thing that previously caught drift."""
+    staging_script = _script_of("deploy-staging")
+    prod_script = _script_of("deploy-production")
+    assert staging_script == prod_script, (
+        "the deploy-staging and deploy-production reopen-step scripts have "
+        "drifted from each other -- they must be byte-identical"
+    )
 
 
 # ---------------------------------------------------------------------------
