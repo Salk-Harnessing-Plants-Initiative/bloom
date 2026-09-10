@@ -181,10 +181,56 @@ implementation change.
 - [x] 5.7 `openspec validate harden-cutover-guard-deploy-gaps --strict` and the full
       `tests/unit/` suite — both green after all of the above.
 
-## 6. Post-merge (not part of this PR)
+## 6. Address round-3 review findings (second /review-pr pass, post-fix)
 
-- [ ] 6.1 After merge and a real deploy run: `openspec:archive harden-cutover-guard-deploy-gaps`.
-- [ ] 6.2 Confirm bloom#780 itself is closed once the fix is live. If closing manually rather than
+A second `/review-pr` pass specifically re-verified the round-5 (§5) fixes and hunted for anything
+they introduced. 3 of 5 reviewers independently found the same real regression; one reviewer
+additionally demonstrated, by actually mutating the code and rerunning the suite, that two of the
+round-5 shape tests were too loose to catch a broken implementation.
+
+- [x] 6.1 (RED) Strengthened `test_script_guards_against_misattributed_reopen` to assert the
+      exact live conditional string (not a loose substring/regex) — confirmed it now fails
+      against a deliberately dead-coded guard (`if (false && closedByPrNumber !== pr.number)`),
+      which the prior version of this test did not catch.
+- [x] 6.2 (RED) Strengthened `test_script_wraps_api_calls_with_a_timeout` to assert a 1:1 count
+      between outbound call sites and `withTimeout(` wraps, not just that the wrapper exists
+      somewhere — confirmed it now fails against a script with one of five calls left unwrapped,
+      which the prior version did not catch.
+- [x] 6.3 (RED) Added `test_script_paginates_comments_to_find_the_closing_comment`, asserting the
+      comment lookup uses `github.paginate(...)` — confirmed RED against the then-current
+      single-page `listComments({ per_page: 100 })` fetch.
+- [x] 6.4 Hardened `test_state_is_reopened_before_the_comment_is_posted` to assert each call
+      appears exactly once in the loop body before checking their order (caught and fixed a
+      self-inflicted decoy: the `withTimeout` label strings, e.g.
+      `` `issues.update(#${issue_number})` ``, contained the same substring the test was
+      searching for — fixed by matching the fully-qualified `github.rest.issues.update(` call
+      instead).
+- [x] 6.5 (GREEN) Implemented in `.github/workflows/deploy.yml`, identically in both jobs:
+      replaced the single-page `github.rest.issues.listComments({ per_page: 100 })` fetch with
+      `github.paginate(github.rest.issues.listComments, { per_page: 100 })`, so the misattribution
+      guard's comment search covers an issue's full history regardless of length. Confirmed all
+      93 cases GREEN.
+- [x] 6.6 Verified beyond the shape tests: re-ran the mutation tests that motivated 6.1/6.2 against
+      the actual file (confirmed each fails exactly as expected, then restored the file), and ran
+      a new mock-execution scenario with 251 simulated comments spanning 3 pages — confirmed the
+      real script correctly finds the closing comment on the third page and reopens the issue.
+- [x] 6.7 Corrected `design.md`: removed two more leftover `pulls.get` mentions (the permissions
+      and try/catch sections) that survived the §5 fix round unnoticed; documented the pagination
+      fix and the underlying "why oldest-first-by-default silently breaks this" reasoning;
+      disclosed that the timeout wrapper stops the *script's* wait but doesn't cancel the
+      underlying HTTP request (Octokit gets no `AbortSignal`); noted the `withTimeout` helper
+      never `clearTimeout`s its losing timer; added the misattribution guard's silent-skip UX gap
+      to the Risks section as an accepted, undone follow-up candidate.
+- [x] 6.8 Updated `specs/deploy-migrations/spec.md`: extended the reopen-guard requirement to
+      require pagination (+ a new scenario: closing comment found despite a long comment
+      history); fixed the same stale `pulls.get` reference in the permissions requirement.
+- [x] 6.9 `openspec validate harden-cutover-guard-deploy-gaps --strict` and the full `tests/unit/`
+      suite — both green after all of the above.
+
+## 7. Post-merge (not part of this PR)
+
+- [ ] 7.1 After merge and a real deploy run: `openspec:archive harden-cutover-guard-deploy-gaps`.
+- [ ] 7.2 Confirm bloom#780 itself is closed once the fix is live. If closing manually rather than
       via the PR's own `Closes #780` auto-close, get the user's explicit go-ahead for that specific
       GitHub write before posting anything — same convention as every other GitHub write this
       session. Applying this change's own lesson to itself: since this particular PR's merge

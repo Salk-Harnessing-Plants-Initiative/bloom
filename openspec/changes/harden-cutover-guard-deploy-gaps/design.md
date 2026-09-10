@@ -86,10 +86,22 @@ failure mode this design otherwise tries to avoid.
 Fixed by reading back `auto-close-issues-on-staging.yml`'s own comment on the issue — it always
 reads `Closed by #<N> (merged into `staging`)...` — and comparing that `<N>` to the *current* run's
 own `pr.number` (the PR `commits/{sha}/pulls` resolved earlier in this same step). Only reopen if
-they match. This adds one `issues.listComments` call per candidate issue (already covered by the
+they match. This adds one comment-listing call per candidate issue (already covered by the
 existing `issues: write` permission grant — comment-listing needs no additional scope) and finds
 the most recent matching bot comment by searching from the end of the list backward, so a
 since-reopened-and-reclosed issue is judged by its latest close, not a stale earlier one.
+
+**Caught in a later review round**: an earlier version of this fix called
+`github.rest.issues.listComments` directly with `per_page: 100` and no further paging. GitHub's
+default sort for that endpoint is oldest-first, and the bot's closing comment is posted at
+merge time — i.e. among the *newest* comments — so for any issue with more than 100 total
+comments, that first (and only-fetched) page would systematically miss it, `closedByPrNumber`
+would resolve to `null`, and the guard would skip a perfectly legitimate same-PR reopen. This
+fails safe (no wrongful action), but it's a real functional regression, not a theoretical one —
+exactly the kind of issue this feature exists to protect (a postmortem-style issue like #780
+itself) is exactly the kind that accumulates a long comment thread. Fixed by paging through
+`github.paginate` instead of a single bounded fetch, so the search covers the issue's full
+comment history regardless of length.
 
 ### Every outbound API call is wrapped with an explicit timeout
 
@@ -103,6 +115,20 @@ every future push, precisely when a human is already dealing with a failed deplo
 helper (15s per call) that rejects with a clear "`<label> timed out after <ms>ms`" error, caught by
 the existing try/catch layers and logged via `core.warning` rather than left to the job's own
 30-minute ceiling to eventually notice.
+
+**Caught in a later review round, worth stating plainly rather than leaving implicit**:
+`Promise.race` only decides which settlement the script's `await` sees first — it does not cancel
+the losing promise. Octokit is never given an `AbortSignal` here, so a genuinely stalled request
+keeps running in the background after the timeout wins the race; the *script's own control flow*
+recovers in 15s, but the underlying socket's actual teardown is still bounded by whatever the
+OS/network layer eventually does with it (e.g. a TCP connect-phase drop typically resolves on its
+own within a couple of minutes, not indefinitely, but also not exactly 15s either). This is the
+correct fix for the failure mode that motivated it — the *step* stops waiting and logs a clear
+diagnosis instead of silently holding the concurrency lock for the full job timeout — but it is a
+bound on this script's own progress, not a hard wall-clock guarantee on the underlying HTTP call.
+The helper also does not `clearTimeout` its losing timer once the real call wins (the
+overwhelmingly common case) — harmless in this short-lived Action process, but noted here rather
+than silently left as an unexamined loose end.
 
 ### The comment names which environment failed, without the two jobs' scripts diverging
 
@@ -147,21 +173,20 @@ describes.
 `default_workflow_permissions: write` setting — broad enough for this already, but implicitly and
 fragilely (a repo-level setting change would silently break or over-grant this). The job(s) that
 gain the new step get an explicit block. `pull-requests: read` is required because the step calls
-`commits/{sha}/pulls` and `pulls.get` — `auto-close-issues-on-staging.yml` itself already declares
-this permission even though it never calls a pulls API (it only reads the trigger's own payload),
-so a step that *does* call one must declare it too, or the call 403s silently on the one path
-nobody is watching synchronously.
+`commits/{sha}/pulls` — `auto-close-issues-on-staging.yml` itself already declares this permission
+even though it never calls a pulls API (it only reads the trigger's own payload), so a step that
+*does* call one must declare it too, or the call 403s silently on the one path nobody is watching
+synchronously.
 
 ### The whole script body is wrapped in a top-level try/catch, not just the per-issue loop
 
 `auto-close-issues-on-staging.yml` wraps its per-issue close action in try/catch
 (`:108-112`, "don't fail the whole run if one number is bogus"). This change's script adopts the
-same per-issue resilience, and additionally wraps the top-level `commits/{sha}/pulls` /
-`pulls.get` calls in their own try/catch — an unhandled exception there (rate limit, transient
-network blip, a missing-permission 403) would otherwise fail this already-on-the-failure-path
-step with a bare, unexplained stack trace, exactly when a human is trying to understand why an
-issue silently stayed closed. Both layers log via `core.warning`/`core.info` and exit cleanly
-rather than throwing.
+same per-issue resilience, and additionally wraps the top-level `commits/{sha}/pulls` call in its
+own try/catch — an unhandled exception there (rate limit, transient network blip, a
+missing-permission 403) would otherwise fail this already-on-the-failure-path step with a bare,
+unexplained stack trace, exactly when a human is trying to understand why an issue silently stayed
+closed. Both layers log via `core.warning`/`core.info` and exit cleanly rather than throwing.
 
 ### Documented pre-merge checklist lives in `contracts/README.md`, not `openspec/AGENTS.md`
 
@@ -228,6 +253,19 @@ hardcoded per job copy (see "The comment names which environment failed" above),
 `test_scripts_are_byte_identical_across_jobs`, replacing what was previously only a manual
 pre-merge diff instruction.
 
+**Caught by mutation-testing in a later review round**: two of the shape assertions were
+demonstrably too loose to catch a real regression, not merely theoretically weak. Deliberately
+breaking the misattribution guard (`if (closedByPrNumber !== pr.number)` → an always-false
+condition, making the guard dead code) still passed `test_script_guards_against_misattributed_reopen`,
+because it only checked that the strings `"Closed by #"` and `!==\s*pr\.number` appeared
+*somewhere* in the script, not that the check was live. Likewise, unwrapping just one of the five
+`github.rest.*` calls from `withTimeout` still passed `test_script_wraps_api_calls_with_a_timeout`,
+because it only checked `Promise.race` appeared at least once, not that every call site used it.
+Both were tightened: the misattribution test now asserts the exact live conditional string, and
+the timeout test now asserts a 1:1 count between `github.rest.` call sites and `withTimeout(`
+wraps — closing the specific gaps the mutation testing demonstrated, not just the ones that were
+merely hypothesized.
+
 ### Step placement, and this runner's outbound-HTTPS track record
 
 The new step is inserted immediately after "Show migration status on failure" and before
@@ -276,6 +314,16 @@ new investigation.
   correctly reflects whatever ref was selected at dispatch time, so this is not a bug in the
   resolution logic, just a sharp edge of manually re-running old state. Not mitigated here;
   worth knowing about before dispatching against anything but the current tip.
+- **The misattribution guard's skip is silent** — when a referenced issue was auto-closed by a
+  *different* PR than the one whose deploy just failed, the only trace is a `core.info` log line
+  in the Actions run, not any comment on the issue itself. Unlike the false-alarm risk above (where
+  staying silent is deliberate, since a wrong *action* would be the worse mistake), a purely
+  informational "this PR referenced #N, but #N was closed by a different PR, so I'm leaving it
+  alone" comment would carry no such risk — it only restates data the script already fetched. Not
+  implemented in this change (would add another `createComment` call and its own test coverage for
+  a narrow, infrequent case — two different PRs' closing keywords colliding on the same issue
+  number, with the second's deploy separately failing); accepted as a real, if minor, follow-up
+  candidate rather than solved now.
 - **The reopened issue's comment could itself look like a false alarm on a transient failure**
   (e.g. a network blip during the SSH step, unrelated to the migration's own correctness). The
   comment names the failed run and step so a human reading it can tell a transient infra hiccup
