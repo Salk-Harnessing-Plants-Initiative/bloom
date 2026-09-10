@@ -21,13 +21,21 @@ BEGIN
   SELECT count(*) INTO labelled  FROM public.scrna_cells WHERE facets IS NOT NULL;
   SELECT count(*) INTO sourced   FROM public.scrna_clusters WHERE source IS NOT NULL;
   IF genotypes > 0 OR labelled > 0 OR sourced > 0 THEN
+    -- Three counts, three separate things to clear, and whoever reads this is
+    -- reading it because a rollback just refused. Name every statement, in the
+    -- order they have to run, rather than the one that happens to come first.
     RAISE EXCEPTION
-      'Refusing to roll back: % genotype row(s), % cell(s) carrying labels and '
-      '% cell type(s) recording a label source would be destroyed, along with '
-      'every cell''s link to its genotype. Re-running the cell ingest rebuilds '
-      'them from the source file. To clear them by hand, NULL '
-      'scrna_cells.genotype_id first -- the foreign key refuses to drop a '
-      'genotype while a cell points at it.', genotypes, labelled, sourced;
+      'Refusing to roll back: it would destroy % genotype row(s), the labels on '
+      '% cell(s), and the label source on % cell type(s). Re-running the cell '
+      'ingest rebuilds the genotypes and labels from the source file; a label '
+      'source is entered by hand and is not rebuilt. To clear them yourself, in '
+      'this order: '
+      'UPDATE public.scrna_cells SET facets = NULL, genotype_id = NULL; '
+      'UPDATE public.scrna_clusters SET source = NULL; '
+      'DELETE FROM public.scrna_genotypes; '
+      '-- the genotype_id must be cleared before the DELETE, because the '
+      'foreign key refuses to drop a genotype while a cell points at it.',
+      genotypes, labelled, sourced;
   END IF;
 END $$;
 

@@ -71,12 +71,18 @@ def cluster(cur, dataset_id: int, cluster_id: str = "Cortex", ordinal: int = 0,
 
 
 def cell(cur, dataset_id: int, number: int, cluster_id: str = "Cortex",
-         genotype_id: int | None = None, facets=None) -> None:
+         genotype_id: int | None = None, facets=None,
+         x: float | None = None) -> None:
+    """`x` defaults to the cell number, which reads well in most assertions.
+    Pass it explicitly where a test needs the two to disagree -- otherwise
+    ordering by x and ordering by cell_number are the same thing, and a test of
+    one cannot tell it from the other."""
+    at = float(number) if x is None else x
     cur.execute(
         "INSERT INTO scrna_cells "
         "(dataset_id, cell_number, barcode, x, y, cluster_id, genotype_id, facets) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-        (dataset_id, number, f"BC{number}", float(number), float(number) + 0.5,
+        (dataset_id, number, f"BC{number}", at, at + 0.5,
          cluster_id, genotype_id, facets),
     )
 
@@ -318,14 +324,22 @@ def test_the_cell_query_returns_the_new_columns(pg_conn):
 
 def test_the_cell_query_still_returns_cells_in_file_order(pg_conn):
     """Everything the explorer fetches is paired to cells by position, so this
-    order is what keeps a genotype attached to the cell it belongs to."""
+    order is what keeps a genotype attached to the cell it belongs to.
+
+    The coordinates run opposite to the cell numbers here on purpose. With x
+    ascending alongside cell_number -- the obvious fixture -- ordering by either
+    gives the same answer, and this test cannot tell `ORDER BY cell_number` from
+    `ORDER BY x`."""
     with pg_conn.cursor() as cur:
         ds = dataset(cur, species(cur))
         cluster(cur, ds)
-        for n in (2, 0, 3, 1):          # inserted out of order on purpose
-            cell(cur, ds, n)
+        for n in (2, 0, 3, 1):                     # inserted out of order
+            cell(cur, ds, n, x=float(100 - n))     # and x runs the other way
         cur.execute("SELECT x FROM scrna_cell_arrays(%s)", (ds,))
-        assert [r[0] for r in cur.fetchall()] == [0.0, 1.0, 2.0, 3.0]
+        assert [r[0] for r in cur.fetchall()] == [100.0, 99.0, 98.0, 97.0], (
+            "cells must come back numbered 0,1,2,3 -- which here means x "
+            "descending, so ordering by x would give the reverse"
+        )
     pg_conn.rollback()
 
 
@@ -634,23 +648,45 @@ def test_the_cell_query_is_executable_by_everyone_who_needs_it(pg_conn):
 
 
 def test_the_policy_set_is_exactly_what_the_migration_declares(pg_conn):
-    """Naming each expected policy does not notice an extra one. An anon policy
-    granting ALL would pass every other test in this file."""
+    """Every rule, what it permits, and who it permits it to.
+
+    The roles matter as much as the verb: anon already holds the table
+    privileges from Supabase's defaults, so these rules are the only thing
+    standing between an anonymous visitor and a write. Adding anon to the
+    writer's insert rule is a one-word edit that changes exactly that, and a
+    policyname-to-command assertion cannot see it."""
     with pg_conn.cursor() as cur:
         cur.execute(
-            "SELECT policyname, cmd FROM pg_policies "
+            "SELECT policyname, cmd, roles FROM pg_policies "
             "WHERE schemaname = 'public' AND tablename = 'scrna_genotypes'"
         )
-        assert dict(cur.fetchall()) == {
-            "Anon users can select scrna_genotypes": "SELECT",
-            "Authenticated users can select scrna_genotypes": "SELECT",
-            "admin_all_scrna_genotypes": "ALL",
-            "user_read_scrna_genotypes": "SELECT",
-            "agent_read_scrna_genotypes": "SELECT",
-            "writer_select_scrna_genotypes": "SELECT",
-            "writer_insert_scrna_genotypes": "INSERT",
-            "writer_update_scrna_genotypes": "UPDATE",
+        got = {name: (cmd, sorted(roles)) for name, cmd, roles in cur.fetchall()}
+        assert got == {
+            "Anon users can select scrna_genotypes": ("SELECT", ["anon"]),
+            "Authenticated users can select scrna_genotypes":
+                ("SELECT", ["authenticated"]),
+            "admin_all_scrna_genotypes": ("ALL", ["bloom_admin"]),
+            "user_read_scrna_genotypes": ("SELECT", ["bloom_user"]),
+            "agent_read_scrna_genotypes": ("SELECT", ["bloom_agent"]),
+            "writer_select_scrna_genotypes": ("SELECT", ["bloom_writer"]),
+            "writer_insert_scrna_genotypes": ("INSERT", ["bloom_writer"]),
+            "writer_update_scrna_genotypes": ("UPDATE", ["bloom_writer"]),
         }
+
+
+def test_no_policy_lets_a_reader_write(pg_conn):
+    """The predicate as well as the roles. A read rule flipped to USING (false)
+    makes every dataset invisible to anonymous visitors -- the point of the
+    table -- and nothing else here would notice."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT policyname, qual, with_check FROM pg_policies "
+            "WHERE schemaname = 'public' AND tablename = 'scrna_genotypes' "
+            "AND cmd = 'SELECT'"
+        )
+        for name, qual, with_check in cur.fetchall():
+            assert qual == "true", f"{name} reads with {qual!r}, not true"
+            assert with_check is None, f"{name} is a read rule with a write check"
 
 
 @pytest.mark.parametrize("blank", ["\u00a0", "\t", "\u000b"],
@@ -759,5 +795,80 @@ def test_the_rollback_refuses_rather_than_destroying(pg_conn, what):
 
         with pytest.raises(psycopg.errors.RaiseException) as exc:
             cur.execute(_rollback_body())
-        assert "Refusing to roll back" in str(exc.value)
+        message = str(exc.value)
+        assert "Refusing to roll back" in message
+        # Whichever of the three stopped it, the operator needs all three
+        # statements: clearing only the one named leaves the next run refusing
+        # for a different reason, with the same message.
+        for statement in ("SET facets = NULL, genotype_id = NULL",
+                          "SET source = NULL",
+                          "DELETE FROM public.scrna_genotypes"):
+            assert statement in message, f"{what}: no mention of {statement!r}"
+    pg_conn.rollback()
+
+
+def test_facets_is_capped_in_bytes_not_just_characters(pg_conn):
+    """The parts are limited in characters, which is what a label limit means.
+    The whole object is limited in bytes, because that is what a page load is:
+    32 labels of 64 characters with 200-character values is 8.7 kB of ASCII and
+    four times that in multibyte, and no per-field limit can see it."""
+    with pg_conn.cursor() as cur:
+        ds = dataset(cur, species(cur))
+        cluster(cur, ds)
+
+        # every part within its own limit, the whole far past a page's worth
+        big = json.dumps({f"k{i:02d}" * 8: "v" * 200 for i in range(32)})
+        assert all(len(k) <= 64 for k in json.loads(big)), "keys within limit"
+        assert all(len(v) <= 200 for v in json.loads(big).values()), "values too"
+        assert len(big.encode()) > 1024, "but the whole is past the cap"
+        with pytest.raises(psycopg.errors.CheckViolation):
+            with pg_conn.transaction():
+                cell(cur, ds, 0, facets=big)
+
+        # the same shape in a multibyte script, which characters cannot catch
+        emoji = json.dumps({f"k{i}": "\U0001f600" * 200 for i in range(32)})
+        with pytest.raises(psycopg.errors.CheckViolation):
+            with pg_conn.transaction():
+                cell(cur, ds, 1, facets=emoji)
+    pg_conn.rollback()
+
+
+def test_the_labels_a_dataset_would_really_carry_are_accepted(pg_conn):
+    """The cap has to clear the real cases or it is just an outage. A cell
+    carries about 48 bytes today; all ten of the first dataset's annotation
+    columns together would be 401."""
+    with pg_conn.cursor() as cur:
+        ds = dataset(cur, species(cur))
+        cluster(cur, ds)
+        cell(cur, ds, 0, facets=json.dumps(
+            {"transgene_pos": "true", "nn_source": "shahan"}))
+        cell(cur, ds, 1, facets=json.dumps(
+            {f"annotation_{i}": "some_cell_type_label" for i in range(10)}))
+    pg_conn.rollback()
+
+
+def test_a_cell_whose_cell_type_is_missing_still_comes_back(pg_conn):
+    """LEFT JOIN, not JOIN. A cell with no matching cluster row must still be
+    returned -- as the orphan ordinal 255, which the map draws grey.
+
+    Dropping it instead would shift every cell after it by one, and everything
+    the explorer fetches is paired to cells by position, so each would show its
+    neighbour's expression, genotype and colour. Nothing would error.
+    `cluster_id` is nullable and its foreign key is NOT VALID, so an unmatched
+    cell is reachable."""
+    with pg_conn.cursor() as cur:
+        ds = dataset(cur, species(cur))
+        cluster(cur, ds, "Cortex", 0)
+        cell(cur, ds, 0, cluster_id="Cortex")
+        cur.execute(
+            "INSERT INTO scrna_cells "
+            "(dataset_id, cell_number, barcode, x, y, cluster_id) "
+            "VALUES (%s, 1, 'BC1', 1.0, 1.5, NULL)", (ds,),
+        )
+        cell(cur, ds, 2, cluster_id="Cortex")
+
+        cur.execute("SELECT cluster_ordinal FROM scrna_cell_arrays(%s)", (ds,))
+        assert [r[0] for r in cur.fetchall()] == [0, 255, 0], (
+            "the unmatched cell must hold its place, not vanish"
+        )
     pg_conn.rollback()

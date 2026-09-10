@@ -113,8 +113,13 @@ AS $fn$
      OR (
        jsonb_typeof(facets) = 'object'
        -- A sidebar of toggles, not a payload. Every cell of the dataset
-       -- carries this to every viewer, so an unbounded object here is an
-       -- unbounded page load.
+       -- carries this to every viewer, so the whole object is capped in bytes
+       -- as well as its parts in characters -- 32 labels of 64 characters with
+       -- 200-character values is 8.7 kB of ASCII and four times that in
+       -- multibyte, which per-field limits cannot see. A cell carries about 48
+       -- bytes today; all ten of the first dataset's annotation columns would
+       -- be 401.
+       AND octet_length(facets::text) <= 1024
        AND (SELECT count(*) FROM jsonb_object_keys(facets)) <= 32
        AND NOT EXISTS (
          SELECT 1 FROM jsonb_each(facets) AS f(key, value)
