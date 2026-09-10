@@ -589,3 +589,46 @@ def test_a_cell_type_with_results_still_cannot_be_deleted(pg_conn):
         with pytest.raises(psycopg.errors.ForeignKeyViolation):
             cur.execute("DELETE FROM scrna_clusters WHERE dataset_id = %s", (ds,))
     pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# Nothing points across a dataset
+# --------------------------------------------------------------------------- #
+
+
+def test_a_result_cannot_be_tagged_with_another_dataset_s_run(pg_conn):
+    """Provenance is the one link where a mix-up is unrecoverable: the row would
+    report a method and parameters from an entirely different experiment, and
+    every value in it would look ordinary."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        other = _dataset(cur)
+        _rejects(cur, "scrna_de_run_in_same_dataset",
+                 _result, cur, ds, _run(cur, other))
+    pg_conn.rollback()
+
+
+def test_a_gene_row_cannot_hang_off_another_dataset_s_result(pg_conn):
+    """The half the single-column reference left open: keep dataset_id and
+    gene_id consistent with each other, point de_id at another dataset's result,
+    and both old constraints were satisfied."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        other = _dataset(cur)
+        de_in_other = _result(cur, other, _run(cur, other))
+        with pytest.raises(psycopg.errors.ForeignKeyViolation) as exc:
+            _gene_row(cur, ds, de_in_other, _gene(cur, ds))
+        assert exc.value.diag.constraint_name == "scrna_de_genes_result_in_same_dataset"
+    pg_conn.rollback()
+
+
+def test_deleting_a_result_still_takes_its_genes(pg_conn):
+    """The cascade has to survive moving onto the composite reference."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        de_id = _result(cur, ds, _run(cur, ds))
+        _gene_row(cur, ds, de_id, _gene(cur, ds))
+        cur.execute("DELETE FROM scrna_de WHERE id = %s", (de_id,))
+        cur.execute("SELECT count(*) FROM scrna_de_genes WHERE de_id = %s", (de_id,))
+        assert cur.fetchone()[0] == 0
+    pg_conn.rollback()

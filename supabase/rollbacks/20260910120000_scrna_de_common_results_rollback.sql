@@ -60,6 +60,7 @@ DROP INDEX IF EXISTS public.scrna_de_run_idx;
 
 -- The rules that only made sense with runs.
 ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_run_in_same_dataset,
   DROP CONSTRAINT IF EXISTS scrna_de_cluster_ref_in_catalogue,
   DROP CONSTRAINT IF EXISTS scrna_de_run_rows_name_the_catalogue,
   DROP CONSTRAINT IF EXISTS scrna_de_run_rows_are_complete,
@@ -89,6 +90,11 @@ ALTER TABLE public.scrna_de
 
 DROP TABLE IF EXISTS public.scrna_de_genes;
 DROP TABLE IF EXISTS public.scrna_de_runs;
+
+-- These two are dropped only now: both are keys a foreign key pointed at, and
+-- the tables holding those references had to go first.
+ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_id_per_dataset;
 
 -- Added by the migration purely so scrna_de_genes could reference
 -- (dataset_id, id). Nothing else depends on it.
