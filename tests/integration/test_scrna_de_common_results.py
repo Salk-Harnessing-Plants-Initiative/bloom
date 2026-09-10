@@ -459,3 +459,62 @@ def test_rollback_runs_when_only_pre_run_rows_exist(pg_conn):
         assert cur.fetchone()[0] == 0, "run_id should be gone"
         cur.execute("ROLLBACK TO SAVEPOINT before_rollback")
     pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# A submitted result is not edited
+# --------------------------------------------------------------------------- #
+
+
+def test_a_writer_cannot_rewrite_a_submitted_result(pg_conn):
+    """The arithmetic rules refuse an incoherent edit, not an untrue one: the
+    contrast label and the file a row points at can both be changed with every
+    count left consistent. Correcting a result is loading it again."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        de_id = _result(cur, ds, _run(cur, ds))
+        cur.execute("SET LOCAL ROLE bloom_writer")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            cur.execute(
+                "UPDATE scrna_de SET contrast = 'something_else' WHERE id = %s",
+                (de_id,),
+            )
+    # Refused outright rather than silently matching no rows, because the grant
+    # is gone as well as the policy.
+    pg_conn.rollback()
+
+
+def test_a_writer_may_still_read_and_insert(pg_conn):
+    """Only the editing goes; loading results is what a writer is for."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        de_id = _result(cur, ds, _run(cur, ds))
+        cur.execute("SET LOCAL ROLE bloom_writer")
+        cur.execute("SELECT count(*) FROM scrna_de WHERE id = %s", (de_id,))
+        assert cur.fetchone()[0] == 1
+        cur.execute("RESET ROLE")
+    pg_conn.rollback()
+
+
+def test_the_update_grant_is_gone_as_well_as_the_policy(pg_conn):
+    """The policy gates this while RLS is on; the grant is what would gate it if
+    RLS were ever lifted."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT grantee FROM information_schema.role_table_grants "
+            "WHERE table_name = 'scrna_de' AND privilege_type = 'UPDATE' "
+            "AND grantee IN ('bloom_writer', 'authenticated', 'anon')"
+        )
+        assert cur.fetchall() == [], "UPDATE is still granted on scrna_de"
+
+
+def test_bloom_admin_keeps_update_for_maintenance(pg_conn):
+    """Something has to be able to repair a genuine mistake -- deliberately, by a
+    developer, rather than as a side effect of a request."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM information_schema.role_table_grants "
+            "WHERE table_name = 'scrna_de' AND privilege_type = 'UPDATE' "
+            "AND grantee = 'bloom_admin'"
+        )
+        assert cur.fetchone()[0] == 1

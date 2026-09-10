@@ -91,4 +91,19 @@ DROP TABLE IF EXISTS public.scrna_de_runs;
 ALTER TABLE public.scrna_genes
   DROP CONSTRAINT IF EXISTS scrna_genes_dataset_gene_key;
 
+-- Put back the ability to edit a submitted result, which the migration took
+-- away. These two policies and the grant behind them predate it, so leaving
+-- them off would narrow the table permanently rather than return it.
+GRANT UPDATE ON public.scrna_de TO bloom_writer, authenticated, anon;
+
+DROP POLICY IF EXISTS writer_update_scrna_de ON public.scrna_de;
+CREATE POLICY writer_update_scrna_de
+  ON public.scrna_de FOR UPDATE TO bloom_writer USING (true);
+
+DROP POLICY IF EXISTS "Authenticated users can update scrna_de" ON public.scrna_de;
+CREATE POLICY "Authenticated users can update scrna_de"
+  ON public.scrna_de AS permissive
+  FOR UPDATE TO authenticated
+  USING (true);
+
 COMMIT;

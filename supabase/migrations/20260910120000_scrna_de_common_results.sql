@@ -300,4 +300,25 @@ DROP POLICY IF EXISTS user_read_scrna_de_genes ON public.scrna_de_genes;
 CREATE POLICY user_read_scrna_de_genes
   ON public.scrna_de_genes FOR SELECT TO bloom_user USING (true);
 
+-- 9. A submitted result is not edited -------------------------------------------
+-- A row here records an analysis that ran. Changing it afterwards does not
+-- correct the record, it falsifies it -- and the arithmetic rules do not stand in
+-- the way, because they refuse an incoherent edit rather than an untrue one: the
+-- contrast label and the file a row points at can both be rewritten with every
+-- count left consistent.
+--
+-- Correcting a result is loading it again, which is what runs are for. So UPDATE
+-- comes away from the roles a person arrives as, and stays with bloom_admin, for
+-- a developer repairing the database deliberately.
+--
+-- The two new tables need no equivalent: neither was given an UPDATE policy, so
+-- they are insert-and-read for every role but bloom_admin already.
+
+DROP POLICY IF EXISTS writer_update_scrna_de ON public.scrna_de;
+DROP POLICY IF EXISTS "Authenticated users can update scrna_de" ON public.scrna_de;
+
+-- The policy is what gates this while RLS is on; the grant is what would gate it
+-- if RLS were ever lifted. Table-scoped, so no other table's privileges move.
+REVOKE UPDATE ON public.scrna_de FROM bloom_writer, authenticated, anon;
+
 COMMIT;
