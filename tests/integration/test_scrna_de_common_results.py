@@ -39,14 +39,6 @@ COUNTS = {
 }
 
 
-def _cluster_ref(cur, dataset_id, cluster_id="Cortex") -> int:
-    cur.execute(
-        "SELECT id FROM scrna_clusters WHERE dataset_id = %s AND cluster_id = %s",
-        (dataset_id, cluster_id),
-    )
-    return cur.fetchone()[0]
-
-
 def _dataset(cur, cell_types=("Cortex",)) -> int:
     tag = uuid.uuid4().hex[:10]
     cur.execute(
@@ -90,8 +82,7 @@ def _gene(cur, dataset_id, name=None) -> int:
 def _result(cur, dataset_id, run_id, **cols):
     """One scrna_de row belonging to a run. Unspecified columns take defaults."""
     row = {
-        "cluster_id": None, "contrast": "pFACT_vs_Col-0",
-        "cluster_ref": _cluster_ref(cur, dataset_id),
+        "cluster_id": "Cortex", "contrast": "pFACT_vs_Col-0",
         "group1": "pFACT", "group2": "Col-0", "n_group1": 10, "n_group2": 20,
         "group_kind": "genotype", "method": "external", "params_hash": "h",
         "tested": True, **COUNTS, **cols,
@@ -176,7 +167,7 @@ def test_a_cell_type_the_catalogue_does_not_have_is_rejected(pg_conn):
     what every other table naming a cell type already does."""
     with pg_conn.cursor() as cur:
         ds = _dataset(cur)
-        _rejects(cur, "scrna_de_run_rows_name_the_catalogue",
+        _rejects(cur, "scrna_de_cluster_in_catalogue",
                  _result, cur, ds, _run(cur, ds), cluster_id="Phellem")
     pg_conn.rollback()
 
@@ -503,47 +494,45 @@ def test_bloom_admin_keeps_update_for_maintenance(pg_conn):
 
 
 # --------------------------------------------------------------------------- #
-# A result names the catalogue by key, not by label
+# A result names its cell type by the catalogue's identifier
 # --------------------------------------------------------------------------- #
 
 
-def test_renaming_a_cell_type_leaves_a_run_result_alone(pg_conn):
-    """The point of naming the key: the label lives in one place, so curating it
-    does not rewrite every result that mentions it."""
+def test_changing_a_cell_type_s_identifier_carries_its_results_with_it(pg_conn):
+    """cluster_id is the stable identifier, and relabelling is a change to
+    scrna_clusters.name, which no result references. If the identifier itself is
+    ever changed, the results follow it rather than being left naming a cell type
+    that no longer exists."""
     with pg_conn.cursor() as cur:
         ds = _dataset(cur)
         de_id = _result(cur, ds, _run(cur, ds))
-        cur.execute("SELECT cluster_ref FROM scrna_de WHERE id = %s", (de_id,))
-        ref_before = cur.fetchone()[0]
-
         cur.execute(
             "UPDATE scrna_clusters SET cluster_id = 'Cortex (mature)' "
             "WHERE dataset_id = %s AND cluster_id = 'Cortex'", (ds,)
         )
-        cur.execute("SELECT cluster_ref FROM scrna_de WHERE id = %s", (de_id,))
-        assert cur.fetchone()[0] == ref_before, "the key should not move"
+        cur.execute("SELECT cluster_id FROM scrna_de WHERE id = %s", (de_id,))
+        assert cur.fetchone()[0] == "Cortex (mature)"
     pg_conn.rollback()
 
 
 def test_a_whole_dataset_comparison_names_no_cell_type_at_all(pg_conn):
-    """Scoped to no cell type, so it carries neither the label nor the key."""
+    """Scoped to no cell type, so it names none."""
     with pg_conn.cursor() as cur:
         ds = _dataset(cur, ("Cortex", "Xylem"))
         _result(cur, ds, _run(cur, ds, source="ondemand"),
-                cluster_id=None, cluster_ref=None, contrast="Cortex_vs_Xylem",
+                cluster_id=None, contrast="Cortex_vs_Xylem",
                 group1="Cortex", group2="Xylem", group_kind="cluster")
     pg_conn.rollback()
 
 
 def test_a_result_cannot_name_another_dataset_s_cell_type(pg_conn):
-    """The composite key: without dataset_id in the reference, a result could
-    point at a catalogue row belonging to a different experiment."""
+    """The composite key: without dataset_id in the reference, a result could name
+    a cell type that exists only in a different experiment."""
     with pg_conn.cursor() as cur:
         ds = _dataset(cur)
-        other = _dataset(cur)
-        _rejects(cur, "scrna_de_cluster_ref_in_catalogue",
-                 _result, cur, ds, _run(cur, ds),
-                 cluster_ref=_cluster_ref(cur, other))
+        _dataset(cur, ("Phloem",))
+        _rejects(cur, "scrna_de_cluster_in_catalogue",
+                 _result, cur, ds, _run(cur, ds), cluster_id="Phloem")
     pg_conn.rollback()
 
 
@@ -551,8 +540,9 @@ def test_a_cell_type_with_results_still_cannot_be_deleted(pg_conn):
     with pg_conn.cursor() as cur:
         ds = _dataset(cur)
         _result(cur, ds, _run(cur, ds))
-        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with pytest.raises(psycopg.errors.ForeignKeyViolation) as exc:
             cur.execute("DELETE FROM scrna_clusters WHERE dataset_id = %s", (ds,))
+        assert exc.value.diag.constraint_name == "scrna_de_cluster_in_catalogue"
     pg_conn.rollback()
 
 
@@ -721,17 +711,6 @@ def test_the_reachability_rule_is_validated_not_merely_declared(pg_conn):
         assert cur.fetchone()[0] is True
 
 
-def test_a_run_row_cannot_carry_both_a_label_and_a_key(pg_conn):
-    """They resolve against different catalogue rows and nothing relates them, so
-    a row carrying both can name two different cell types at once -- and two such
-    rows for one comparison slip past the uniqueness rule."""
-    with pg_conn.cursor() as cur:
-        ds = _dataset(cur, ("Cortex", "Xylem"))
-        _rejects(cur, "scrna_de_run_rows_name_the_catalogue",
-                 _result, cur, ds, _run(cur, ds), cluster_id="Xylem")
-    pg_conn.rollback()
-
-
 # --------------------------------------------------------------------------- #
 # The access rules themselves, not just the grants beneath them
 # --------------------------------------------------------------------------- #
@@ -798,7 +777,6 @@ def test_a_writer_can_submit_an_analysis_and_its_genes(pg_conn):
     with pg_conn.cursor() as cur:
         ds = _dataset(cur)
         gene = _gene(cur, ds)
-        cluster = _cluster_ref(cur, ds)
         cur.execute("SET LOCAL ROLE bloom_writer")
         cur.execute(
             "INSERT INTO scrna_de_runs (dataset_id, source, status, method, "
@@ -807,7 +785,7 @@ def test_a_writer_can_submit_an_analysis_and_its_genes(pg_conn):
             (ds,),
         )
         run = cur.fetchone()[0]
-        de_id = _result(cur, ds, run, cluster_ref=cluster)
+        de_id = _result(cur, ds, run)
         _gene_row(cur, ds, de_id, gene)
         cur.execute("SELECT count(*) FROM scrna_de_genes WHERE de_id = %s", (de_id,))
         assert cur.fetchone()[0] == 1
