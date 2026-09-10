@@ -709,11 +709,28 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const sha = context.sha;
+            // context.job is the real running job's id ("deploy-staging" /
+            // "deploy-production") -- deriving the environment label from it
+            // at runtime keeps this script byte-identical between both jobs
+            // while still letting the posted comment name which one failed.
+            const env = context.job.replace(/^deploy-/, '');
+
+            // A stalled connection (this runner's class has a documented history
+            // of silently dropping outbound traffic rather than refusing it --
+            // see bloom#616) must fail fast, not hang for the job's full
+            // 30-minute timeout while holding the shared deploy-bloom lock.
+            const withTimeout = (promise, ms, label) => Promise.race([
+              promise,
+              new Promise((_, reject) => setTimeout(
+                () => reject(new Error(`${label} timed out after ${ms}ms`)), ms,
+              )),
+            ]);
 
             try {
-              const { data: associatedPrs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                owner, repo, commit_sha: sha,
-              });
+              const { data: associatedPrs } = await withTimeout(
+                github.rest.repos.listPullRequestsAssociatedWithCommit({ owner, repo, commit_sha: sha }),
+                15000, 'commits/pulls lookup',
+              );
 
               if (associatedPrs.length !== 1) {
                 core.info(`Found ${associatedPrs.length} PR(s) associated with ${sha} — expected exactly 1, skipping.`);
@@ -741,9 +758,20 @@ jobs:
 
               const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
 
+              // auto-close-issues-on-staging.yml's own comment reads
+              // "Closed by #<N> (merged into `staging`)..." -- reading it back
+              // tells us WHICH PR actually closed a given issue, so an
+              // unrelated later PR that happens to reference the same issue
+              // number (and whose own, unrelated deploy then fails) can't
+              // wrongly reopen an issue whose real fix already deployed fine.
+              const closedByRe = /Closed by #(\d+)/;
+
               for (const issue_number of numbers) {
                 try {
-                  const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number });
+                  const { data: issue } = await withTimeout(
+                    github.rest.issues.get({ owner, repo, issue_number }),
+                    15000, `issues.get(#${issue_number})`,
+                  );
 
                   if (issue.pull_request) {
                     core.info(`#${issue_number} is a PR, skipping.`);
@@ -758,16 +786,35 @@ jobs:
                     continue;
                   }
 
-                  await github.rest.issues.createComment({
-                    owner, repo, issue_number,
-                    body: `Reopening -- this issue was auto-closed when its PR merged, but the `
-                      + `deploy that was supposed to make the fix real then failed at the `
-                      + `"Apply database migrations" step: ${runUrl}\n\n`
-                      + `Automatic close-on-merge outran deploy verification (see bloom#780). `
-                      + `This does not necessarily mean the fix itself is wrong -- check the `
-                      + `linked run before re-closing.`,
-                  });
-                  await github.rest.issues.update({ owner, repo, issue_number, state: 'open' });
+                  const { data: comments } = await withTimeout(
+                    github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 }),
+                    15000, `issues.listComments(#${issue_number})`,
+                  );
+                  const closingComment = [...comments].reverse().find(
+                    (c) => c.user?.login === 'github-actions[bot]' && closedByRe.test(c.body || ''),
+                  );
+                  const closedByPrNumber = closingComment ? Number(closingComment.body.match(closedByRe)[1]) : null;
+                  if (closedByPrNumber !== pr.number) {
+                    core.info(`#${issue_number} was auto-closed by #${closedByPrNumber ?? '<unknown>'}, not this run's PR #${pr.number} -- skipping to avoid misattributing an unrelated failure.`);
+                    continue;
+                  }
+
+                  await withTimeout(
+                    github.rest.issues.update({ owner, repo, issue_number, state: 'open' }),
+                    15000, `issues.update(#${issue_number})`,
+                  );
+                  await withTimeout(
+                    github.rest.issues.createComment({
+                      owner, repo, issue_number,
+                      body: `Reopening -- this issue was auto-closed when this PR merged, but the `
+                        + `deploy that was supposed to make the fix real then failed in **${env}** `
+                        + `at the "Apply database migrations" step: ${runUrl}\n\n`
+                        + `Automatic close-on-merge outran deploy verification (see bloom#780). `
+                        + `This does not necessarily mean the fix itself is wrong -- check the `
+                        + `linked run before re-closing.`,
+                    }),
+                    15000, `issues.createComment(#${issue_number})`,
+                  );
                   core.info(`Reopened #${issue_number}.`);
                 } catch (err) {
                   core.warning(`Could not process #${issue_number}: ${err.message}`);
@@ -1472,11 +1519,28 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const sha = context.sha;
+            // context.job is the real running job's id ("deploy-staging" /
+            // "deploy-production") -- deriving the environment label from it
+            // at runtime keeps this script byte-identical between both jobs
+            // while still letting the posted comment name which one failed.
+            const env = context.job.replace(/^deploy-/, '');
+
+            // A stalled connection (this runner's class has a documented history
+            // of silently dropping outbound traffic rather than refusing it --
+            // see bloom#616) must fail fast, not hang for the job's full
+            // 30-minute timeout while holding the shared deploy-bloom lock.
+            const withTimeout = (promise, ms, label) => Promise.race([
+              promise,
+              new Promise((_, reject) => setTimeout(
+                () => reject(new Error(`${label} timed out after ${ms}ms`)), ms,
+              )),
+            ]);
 
             try {
-              const { data: associatedPrs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                owner, repo, commit_sha: sha,
-              });
+              const { data: associatedPrs } = await withTimeout(
+                github.rest.repos.listPullRequestsAssociatedWithCommit({ owner, repo, commit_sha: sha }),
+                15000, 'commits/pulls lookup',
+              );
 
               if (associatedPrs.length !== 1) {
                 core.info(`Found ${associatedPrs.length} PR(s) associated with ${sha} — expected exactly 1, skipping.`);
@@ -1504,9 +1568,20 @@ jobs:
 
               const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
 
+              // auto-close-issues-on-staging.yml's own comment reads
+              // "Closed by #<N> (merged into `staging`)..." -- reading it back
+              // tells us WHICH PR actually closed a given issue, so an
+              // unrelated later PR that happens to reference the same issue
+              // number (and whose own, unrelated deploy then fails) can't
+              // wrongly reopen an issue whose real fix already deployed fine.
+              const closedByRe = /Closed by #(\d+)/;
+
               for (const issue_number of numbers) {
                 try {
-                  const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number });
+                  const { data: issue } = await withTimeout(
+                    github.rest.issues.get({ owner, repo, issue_number }),
+                    15000, `issues.get(#${issue_number})`,
+                  );
 
                   if (issue.pull_request) {
                     core.info(`#${issue_number} is a PR, skipping.`);
@@ -1521,16 +1596,35 @@ jobs:
                     continue;
                   }
 
-                  await github.rest.issues.createComment({
-                    owner, repo, issue_number,
-                    body: `Reopening -- this issue was auto-closed when its PR merged, but the `
-                      + `deploy that was supposed to make the fix real then failed at the `
-                      + `"Apply database migrations" step: ${runUrl}\n\n`
-                      + `Automatic close-on-merge outran deploy verification (see bloom#780). `
-                      + `This does not necessarily mean the fix itself is wrong -- check the `
-                      + `linked run before re-closing.`,
-                  });
-                  await github.rest.issues.update({ owner, repo, issue_number, state: 'open' });
+                  const { data: comments } = await withTimeout(
+                    github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 }),
+                    15000, `issues.listComments(#${issue_number})`,
+                  );
+                  const closingComment = [...comments].reverse().find(
+                    (c) => c.user?.login === 'github-actions[bot]' && closedByRe.test(c.body || ''),
+                  );
+                  const closedByPrNumber = closingComment ? Number(closingComment.body.match(closedByRe)[1]) : null;
+                  if (closedByPrNumber !== pr.number) {
+                    core.info(`#${issue_number} was auto-closed by #${closedByPrNumber ?? '<unknown>'}, not this run's PR #${pr.number} -- skipping to avoid misattributing an unrelated failure.`);
+                    continue;
+                  }
+
+                  await withTimeout(
+                    github.rest.issues.update({ owner, repo, issue_number, state: 'open' }),
+                    15000, `issues.update(#${issue_number})`,
+                  );
+                  await withTimeout(
+                    github.rest.issues.createComment({
+                      owner, repo, issue_number,
+                      body: `Reopening -- this issue was auto-closed when this PR merged, but the `
+                        + `deploy that was supposed to make the fix real then failed in **${env}** `
+                        + `at the "Apply database migrations" step: ${runUrl}\n\n`
+                        + `Automatic close-on-merge outran deploy verification (see bloom#780). `
+                        + `This does not necessarily mean the fix itself is wrong -- check the `
+                        + `linked run before re-closing.`,
+                    }),
+                    15000, `issues.createComment(#${issue_number})`,
+                  );
                   core.info(`Reopened #${issue_number}.`);
                 } catch (err) {
                   core.warning(`Could not process #${issue_number}: ${err.message}`);
