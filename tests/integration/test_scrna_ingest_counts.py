@@ -19,6 +19,7 @@ the rollback. One test asserts the commits really are attempted.
 
 from __future__ import annotations
 
+import json
 import importlib.util
 import sys
 import uuid
@@ -83,14 +84,26 @@ def species(cur) -> int:
     return cur.fetchone()[0]
 
 
-def dataset(cur, species_id: int, name: str, checksum: str = "sha-1",
-            n_cells: int = 3) -> int:
+def dataset(cur, species_id: int, name: str, n_cells: int = 3) -> int:
     cur.execute(
-        "INSERT INTO scrna_datasets (name, species_id, source_checksum, n_cells) "
-        "VALUES (%s, %s, %s, %s) RETURNING id",
-        (name, species_id, checksum, n_cells),
+        "INSERT INTO scrna_datasets (name, species_id, n_cells) "
+        "VALUES (%s, %s, %s) RETURNING id",
+        (name, species_id, n_cells),
     )
     return cur.fetchone()[0]
+
+
+def cells(cur, dataset_id: int, barcodes: list[str]) -> None:
+    """The cells `open_dataset` compares against, in the order it reads them."""
+    for number, barcode in enumerate(barcodes):
+        cur.execute(
+            "INSERT INTO scrna_cells (dataset_id, cell_number, barcode) "
+            "VALUES (%s, %s, %s)",
+            (dataset_id, number, barcode),
+        )
+
+
+BARCODES = ["AAA-1", "CCC-1", "GGG-1"]
 
 
 def genes(names: list[str], n_cells: int = 3) -> dict:
@@ -116,40 +129,59 @@ def genes(names: list[str], n_cells: int = 3) -> dict:
 def test_the_dataset_must_already_hold_cells_from_this_file(counts, pg_conn):
     with pg_conn.cursor() as cur:
         sid = species(cur)
-        dataset(cur, sid, "match", checksum="sha-good")
-    assert counts.open_dataset(pg_conn, "match", sid, "sha-good", 3)
+        did = dataset(cur, sid, "match")
+        cells(cur, did, BARCODES)
+    assert counts.open_dataset(pg_conn, "match", sid, BARCODES) == did
     pg_conn.rollback()
 
 
 def test_a_dataset_loaded_from_another_file_is_refused(counts, pg_conn):
-    """The counts are paired to the cells by position, so a catalogue built from
-    a different export would pair every gene with the wrong cells."""
+    """The counts are paired to the cells by position, so a file holding
+    different cells would pair every gene with the wrong cell."""
     with pg_conn.cursor() as cur:
         sid = species(cur)
-        dataset(cur, sid, "drift", checksum="sha-old")
-    with pytest.raises(counts.IngestError, match="loaded from a different file"):
-        counts.open_dataset(pg_conn, "drift", sid, "sha-new", 3)
+        did = dataset(cur, sid, "drift")
+        cells(cur, did, BARCODES)
+    with pytest.raises(counts.IngestError,
+                       match="does not hold these cells in this order"):
+        counts.open_dataset(pg_conn, "drift", sid, ["AAA-1", "TTT-9", "GGG-1"])
     pg_conn.rollback()
 
 
-def test_a_dataset_with_no_recorded_checksum_is_refused(counts, pg_conn):
+def test_the_same_cells_in_a_different_order_are_refused(counts, pg_conn):
+    """Position is the only thing pairing a gene to a cell, so a re-export that
+    reordered the same cells would silently mispaint every one of them."""
     with pg_conn.cursor() as cur:
         sid = species(cur)
-        cur.execute(
-            "INSERT INTO scrna_datasets (name, species_id, n_cells) "
-            "VALUES ('nosum', %s, 3)", (sid,),
-        )
-    with pytest.raises(counts.IngestError, match="no recorded checksum"):
-        counts.open_dataset(pg_conn, "nosum", sid, "sha-any", 3)
+        did = dataset(cur, sid, "shuffled")
+        cells(cur, did, BARCODES)
+    with pytest.raises(counts.IngestError,
+                       match="does not hold these cells in this order"):
+        counts.open_dataset(pg_conn, "shuffled", sid, list(reversed(BARCODES)))
     pg_conn.rollback()
 
 
 def test_a_cell_count_that_disagrees_is_refused(counts, pg_conn):
     with pg_conn.cursor() as cur:
         sid = species(cur)
-        dataset(cur, sid, "shortcells", checksum="sha-1", n_cells=99)
-    with pytest.raises(counts.IngestError, match="holds 99 cells"):
-        counts.open_dataset(pg_conn, "shortcells", sid, "sha-1", 3)
+        did = dataset(cur, sid, "shortcells", n_cells=2)
+        cells(cur, did, BARCODES[:2])
+    with pytest.raises(counts.IngestError, match="holds 2 cells and this file"):
+        counts.open_dataset(pg_conn, "shortcells", sid, BARCODES)
+    pg_conn.rollback()
+
+
+def test_a_dataset_whose_recorded_count_disagrees_with_its_cells_is_refused(
+    counts, pg_conn
+):
+    """`n_cells` and the rows can drift apart. The rows are what the counts are
+    paired against, so a disagreement means one of the two is not what it says."""
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        did = dataset(cur, sid, "miscounted", n_cells=99)
+        cells(cur, did, BARCODES)
+    with pytest.raises(counts.IngestError, match="records 99 cells but holds 3"):
+        counts.open_dataset(pg_conn, "miscounted", sid, BARCODES)
     pg_conn.rollback()
 
 
@@ -157,18 +189,18 @@ def test_an_unloaded_dataset_says_to_load_the_cells_first(counts, pg_conn):
     with pg_conn.cursor() as cur:
         sid = species(cur)
     with pytest.raises(counts.IngestError, match="Load its cells first"):
-        counts.open_dataset(pg_conn, "absent", sid, "sha-1", 3)
+        counts.open_dataset(pg_conn, "absent", sid, BARCODES)
     pg_conn.rollback()
 
 
 def test_a_soft_deleted_dataset_is_not_written_to(counts, pg_conn):
     with pg_conn.cursor() as cur:
         sid = species(cur)
-        did = dataset(cur, sid, "gone", checksum="sha-1")
+        did = dataset(cur, sid, "gone")
         cur.execute("UPDATE scrna_datasets SET deleted_at = now() WHERE id = %s",
                     (did,))
     with pytest.raises(counts.IngestError, match="Load its cells first"):
-        counts.open_dataset(pg_conn, "gone", sid, "sha-1", 3)
+        counts.open_dataset(pg_conn, "gone", sid, BARCODES)
     pg_conn.rollback()
 
 
@@ -180,7 +212,7 @@ def test_a_soft_deleted_dataset_is_not_written_to(counts, pg_conn):
 def test_genes_are_numbered_by_their_position_in_the_file(counts, pg_conn):
     with pg_conn.cursor() as cur:
         sid = species(cur)
-        did = dataset(cur, sid, "numbered", checksum="sha-1")
+        did = dataset(cur, sid, "numbered")
         counts.register_genes(pg_conn, did, ["AT1G001", "AT1G002", "AT1G003"])
         cur.execute(
             "SELECT gene_name, gene_number FROM scrna_genes WHERE dataset_id = %s "
@@ -196,7 +228,7 @@ def test_registering_twice_adds_nothing_and_keeps_the_ids(counts, pg_conn):
     names = ["AT1G001", "AT1G002"]
     with pg_conn.cursor() as cur:
         sid = species(cur)
-        did = dataset(cur, sid, "again", checksum="sha-1")
+        did = dataset(cur, sid, "again")
         first = counts.register_genes(pg_conn, did, names)
         second = counts.register_genes(pg_conn, did, names)
         assert first == second
@@ -209,7 +241,7 @@ def test_a_file_that_disagrees_with_the_registered_genes_is_refused(counts,
                                                                     pg_conn):
     with pg_conn.cursor() as cur:
         sid = species(cur)
-        did = dataset(cur, sid, "mismatch", checksum="sha-1")
+        did = dataset(cur, sid, "mismatch")
         counts.register_genes(pg_conn, did, ["AT1G001", "AT1G002"])
         with pytest.raises(counts.IngestError, match="do not describe the same"):
             counts.register_genes(pg_conn, did, ["AT1G001"])
@@ -225,7 +257,7 @@ def test_a_first_run_writes_every_gene_and_records_each_one(counts, pg_conn):
     names = ["AT1G001", "AT1G002", "AT1G003"]
     with pg_conn.cursor() as cur:
         sid = species(cur)
-        did = dataset(cur, sid, "first", checksum="sha-1")
+        did = dataset(cur, sid, "first")
     ids = counts.register_genes(pg_conn, did, names)
     store, conn = FakeStorage(), CountingConn(pg_conn)
 
@@ -234,7 +266,7 @@ def test_a_first_run_writes_every_gene_and_records_each_one(counts, pg_conn):
     )
     assert conn.commits >= 1, "an interrupted run must keep the genes it finished"
     assert (written, skipped) == (3, 0)
-    assert store.written == [f"counts/first/{g}.bin" for g in names]
+    assert store.written == [f"counts/first/{g}.json" for g in names]
 
     with pg_conn.cursor() as cur:
         cur.execute(
@@ -242,7 +274,7 @@ def test_a_first_run_writes_every_gene_and_records_each_one(counts, pg_conn):
             "JOIN scrna_genes g ON g.id = c.gene_id WHERE c.dataset_id = %s "
             "ORDER BY g.gene_number", (did,),
         )
-        assert cur.fetchall() == [(g, f"counts/first/{g}.bin") for g in names]
+        assert cur.fetchall() == [(g, f"counts/first/{g}.json") for g in names]
     pg_conn.rollback()
 
 
@@ -253,7 +285,7 @@ def test_each_object_holds_that_gene_s_values_for_every_cell(counts, pg_conn):
     names = ["AT1G001", "AT1G002"]
     with pg_conn.cursor() as cur:
         sid = species(cur)
-        did = dataset(cur, sid, "values", checksum="sha-1")
+        did = dataset(cur, sid, "values")
     ids = counts.register_genes(pg_conn, did, names)
     store, table = FakeStorage(), genes(names, n_cells=3)
 
@@ -261,10 +293,15 @@ def test_each_object_holds_that_gene_s_values_for_every_cell(counts, pg_conn):
                         ids, set())
 
     for column, gene in enumerate(names):
-        got = np.frombuffer(store.payloads[f"counts/values/{gene}.bin"],
-                            dtype="<f4")
-        assert list(got) == list(table["by_gene"][:, column])
-        assert len(got) == 3
+        # Sparse: cell index -> value, zeros omitted. The reader fills the rest
+        # with zero, so an absent index and a stored 0.0 mean the same thing.
+        got = json.loads(store.payloads[f"counts/values/{gene}.json"])
+        expected = {
+            str(cell): float(value)
+            for cell, value in enumerate(table["by_gene"][:, column])
+            if value != 0
+        }
+        assert got == expected
     pg_conn.rollback()
 
 
@@ -272,7 +309,7 @@ def test_a_second_run_skips_what_is_already_recorded(counts, pg_conn):
     names = ["AT1G001", "AT1G002", "AT1G003"]
     with pg_conn.cursor() as cur:
         sid = species(cur)
-        did = dataset(cur, sid, "resume", checksum="sha-1")
+        did = dataset(cur, sid, "resume")
     ids = counts.register_genes(pg_conn, did, names)
     counts.write_counts(CountingConn(pg_conn), FakeStorage(), did, "resume",
                         genes(names), ids, set())
@@ -296,7 +333,7 @@ def test_an_interrupted_run_resumes_where_it_stopped(counts, pg_conn):
     names = [f"AT1G{i:03d}" for i in range(6)]
     with pg_conn.cursor() as cur:
         sid = species(cur)
-        did = dataset(cur, sid, "broken", checksum="sha-1")
+        did = dataset(cur, sid, "broken")
     ids = counts.register_genes(pg_conn, did, names)
 
     with pytest.raises(RuntimeError, match="storage went away"):
@@ -327,7 +364,7 @@ def test_no_gene_is_recorded_before_its_object_exists(counts, pg_conn,
     names = [f"AT1G{i:03d}" for i in range(4)]
     with pg_conn.cursor() as cur:
         sid = species(cur)
-        did = dataset(cur, sid, "ahead", checksum="sha-1")
+        did = dataset(cur, sid, "ahead")
     ids = counts.register_genes(pg_conn, did, names)
     store = FakeStorage(fail_after=2)
 
@@ -355,7 +392,7 @@ def test_nothing_is_recorded_for_an_object_that_was_never_written(counts,
     names = [f"AT1G{i:03d}" for i in range(3)]
     with pg_conn.cursor() as cur:
         sid = species(cur)
-        did = dataset(cur, sid, "orderly", checksum="sha-1")
+        did = dataset(cur, sid, "orderly")
     ids = counts.register_genes(pg_conn, did, names)
 
     with pytest.raises(RuntimeError):

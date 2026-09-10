@@ -39,8 +39,10 @@ from pathlib import Path
 
 BUCKET = "scrna"
 
-# The explorer builds this path itself from the dataset and gene names, so it is
-# a contract, not a choice: scrna-client.ts fetches counts/{dataset}/{gene}.bin.
+# Recorded on scrna_counts.counts_object_path and read back from there, so the
+# shape of this path is ours to choose -- scrna-client.ts follows the row rather
+# than rebuilding the path. The object itself is the sparse JSON gene_counts()
+# writes, which is what fetchGeneCounts parses.
 COUNTS_PATH = "counts/{dataset}/{gene}.json"
 
 # Both names become part of an object path. A gene name is an accession, so it
