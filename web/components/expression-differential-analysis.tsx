@@ -102,9 +102,12 @@ export function DataTable({ rows }: { rows: GeneData[] }) {
   );
 }
 
+/** A row of scrna_de. A null file_path means the comparison was never run. */
+type DeEntry = { cluster_id: string | null; file_path: string | null };
+
 export default function DifferentialExpressionAnalysis({ file_id }: { file_id: number }) {
-  const [clusterList, setClusterList] = useState<{ cluster_id: string | null, file_path: string }[]>([]);
-  const [selectedCluster, setSelectedCluster] = useState<{ cluster_id: string | null, file_path: string } | null>(null);
+  const [clusterList, setClusterList] = useState<DeEntry[]>([]);
+  const [selectedCluster, setSelectedCluster] = useState<DeEntry | null>(null);
   const [chartData, setChartData] = useState<GeneData[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState(false);
@@ -137,11 +140,18 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
   useEffect(() => {
     if (!selectedCluster) return;
 
+    const filePath = selectedCluster.file_path;
+    if (!filePath) {
+      setChartData(null);
+      setDataLoading(false);
+      return;
+    }
+
     const fetchData = async () => {
       setDataLoading(true);
       const { data: storageData, error: storageError } = await supabase.storage
         .from("scrna")
-        .download(selectedCluster.file_path);
+        .download(filePath);
 
       if (storageError) {
         console.error("Storage download error:", storageError);
