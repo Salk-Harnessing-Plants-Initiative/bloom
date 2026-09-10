@@ -241,13 +241,52 @@ addendum 5" for the full narrative.
   addendum 5, not fixed (no reviewer round has proposed a concrete mitigation yet; left for a
   follow-up decision).
 - [x] 11.5 Re-run: `bloomcli` (`not integration`) — 884 passed (up from 873), same 13
-  pre-existing/unrelated failures. `services/workflows` — 55 passed (up from 53).
-  `download_for_predict`'s own test files (the other consumer of `_batch.py`) — 144 passed, 3
-  skipped, confirming the additive `retriable` field changed nothing there. `openspec validate
-  --strict` passes. `ruff@0.9.9 check`/`format` clean on every touched file.
+  pre-existing/unrelated failures. `services/workflows/tests/test_status_poller.py` alone — 55
+  passed (up from 53). **Correction (caught by round 6): this entry originally said "services/
+  workflows — 55 passed," which conflated `test_status_poller.py`'s own count with the full
+  `services/workflows` suite — Task 10's own immediately-preceding entry already recorded the full
+  suite at 641; the real full-suite count at this point was 643 (641 + this task's 2 new tests),
+  not 55.** `download_for_predict`'s own test files (the other consumer of `_batch.py`) — 144
+  passed, 3 skipped, confirming the additive `retriable` field changed nothing there. `openspec
+  validate --strict` passes. `ruff@0.9.9 check`/`format` clean on every touched file.
 
-## 12. Post-merge follow-through
+## 12. Review round 6 fixes
 
-- [ ] 12.1 Update `docs/bloom-integration/roadmap.md` (in `sleap-roots-pipeline`) marking bloom #716 and #696 resolved, and note whether bloom #15's UI progress panel is now actually unblocked.
-- [ ] 12.2 Close bloom #716 and #696 referencing the merged PR, once merged and verified per Task 8.
-- [ ] 12.3 Fill in the `Purpose` sections of `openspec/specs/cyl-pipeline-runs/spec.md` and `openspec/specs/cyl-pipeline-status-polling/spec.md` — both currently read the literal placeholder text `TBD - created by archiving change ... Update Purpose after archive.` (their own inline comment, not an `openspec/AGENTS.md` rule) — as part of this change's own archival.
+A sixth `/review-pr` round questioned whether `retriable` should generalize beyond the
+`status_update_matched` case (decided not to — see `design.md`'s Decision 6 addendum 6 for the
+full reasoning) and found two more real, cheap items worth closing immediately rather than
+deferring again.
+
+- [x] 12.1 Fixed a latent consistency gap Code Quality found: `batch_ingest_result`'s
+  empty-batch early-return branch still hardcoded `ctx.exit(1)` on a reconciliation failure
+  instead of checking `batch_result.needs_retry` like the main path already does (Task 11.1).
+  Behaviorally a no-op today (a reconciliation failure is always `retriable=True` by default),
+  but closes the "one call site got the fix, a sibling didn't" pattern this whole review process
+  keeps catching.
+- [x] 12.2 Added the CLI-level composition test Behavioral Correctness suggested: a
+  `status_update_matched` mismatch (`retriable=False`) alongside a genuinely failing
+  reconciliation call (`retriable=True`) in the same batch — confirms the command still exits
+  non-zero (the retriable failure alone warrants it) rather than relying on that composition
+  being correct only by inspection of two separately-tested units.
+  (`test_batch_ingest_cli_exits_nonzero_when_mismatch_and_reconcile_failure_coexist`.)
+- [x] 12.3 Un-deferred the cheapest remaining test-coverage gap Testing Strategy flagged: added
+  `test_sweep_once_computes_a_genuine_full_success_from_real_scan_rows` and
+  `test_sweep_once_computes_a_genuine_total_failure_from_real_scan_rows` to
+  `services/workflows/tests/test_status_poller.py` — the sibling mixed-case test
+  (`test_sweep_once_computes_counts_from_real_scan_rows_and_passes_them_through`, from the
+  original implementation) was, after 5 rounds, still the only end-to-end proof of this whole
+  change's core deliverable against real per-scan rows, and it never covered the two most common
+  real-world outcomes (everything succeeds, everything fails) — only the mixed case.
+- [x] 12.4 Documented (not fixed, per an explicit decision — see Decision 6 addendum 6) the
+  `'complete'`-with-`failed_count > 0` scenario a transient reconciliation-race can produce.
+- [x] 12.5 Corrected Task 11.5's test-count error (see above).
+- [x] 12.6 Re-run: `bloomcli` (`not integration`) — 885 passed (up from 884), same 13
+  pre-existing/unrelated failures. `services/workflows` full suite — 645 passed, 1 skipped (up
+  from the corrected 643). `openspec validate --strict` passes. `ruff@0.9.9 check`/`format` clean
+  on every touched file.
+
+## 13. Post-merge follow-through
+
+- [ ] 13.1 Update `docs/bloom-integration/roadmap.md` (in `sleap-roots-pipeline`) marking bloom #716 and #696 resolved, and note whether bloom #15's UI progress panel is now actually unblocked.
+- [ ] 13.2 Close bloom #716 and #696 referencing the merged PR, once merged and verified per Task 8.
+- [ ] 13.3 Fill in the `Purpose` sections of `openspec/specs/cyl-pipeline-runs/spec.md` and `openspec/specs/cyl-pipeline-status-polling/spec.md` — both currently read the literal placeholder text `TBD - created by archiving change ... Update Purpose after archive.` (their own inline comment, not an `openspec/AGENTS.md` rule) — as part of this change's own archival.

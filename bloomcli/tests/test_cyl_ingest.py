@@ -1909,6 +1909,38 @@ def test_batch_ingest_cli_exits_nonzero_when_a_genuine_failure_also_present(
     assert payload["scan_timeout"]["retriable"] is True
 
 
+def test_batch_ingest_cli_exits_nonzero_when_mismatch_and_reconcile_failure_coexist(
+    monkeypatch, tmp_path
+):
+    """Round 6 /review-pr finding: the two non-.ok-driven exit-code mechanisms (a
+    status_update_matched mismatch's retriable=False, and the end-of-batch
+    reconciliation call's own isolation) hadn't been exercised together at the CLI
+    level — only verified correct by composing two separately-tested units. A
+    reconciliation-call failure is a generic/transient RPC error, not provably
+    permanent, so it stays retriable=True by default and must still trigger a retry
+    even alongside an unrelated, genuinely non-retriable mismatch."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-mismatch-and-reconcile-boom")
+    monkeypatch.setattr(
+        ing, "call_insert_envelope", lambda client, env, **_kw: {**RESULT_OK, "status_update_matched": False}
+    )
+
+    def boom(client, name):
+        raise _api_error("simulated transient reconciliation failure")
+
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
+    _write_envelope(tmp_path, "scan_mismatch")
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code != 0, result.output
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_mismatch"]["retriable"] is False
+    reconciliation_entries = [e for e in payload.values() if e["scan_key"] == "<reconciliation>"]
+    assert len(reconciliation_entries) == 1
+    assert reconciliation_entries[0]["retriable"] is True
+
+
 def test_batch_ingest_cli_isolates_one_bad_envelope(monkeypatch, tmp_path):
     """Always runs (mocked, no importorskip) — the core isolation guarantee."""
     _patch_batch_authed(monkeypatch)

@@ -294,6 +294,58 @@ def test_sweep_once_computes_counts_from_real_scan_rows_and_passes_them_through(
     assert calls == [(1, "partial", 2, 1)]
 
 
+def test_sweep_once_computes_a_genuine_full_success_from_real_scan_rows(monkeypatch):
+    """Round 6 /review-pr finding: the sibling mixed-case test above (and the
+    all-failed test below) are the only real-row, end-to-end proofs of the core
+    counting logic this whole change exists to deliver — but neither exercises the
+    single most common real-world outcome: every scan in the run actually
+    succeeds. All rows 'written', no dispatch failures, one distinct workflow."""
+    calls = []
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
+    client = _FakeClient(
+        cyl_pipeline_run_scans=[
+            {"run_id": 1, "argo_workflow_name": "wf-a", "status": "written"},
+            {"run_id": 1, "argo_workflow_name": "wf-a", "status": "written"},
+            {"run_id": 1, "argo_workflow_name": "wf-a", "status": "written"},
+        ]
+    )
+    monkeypatch.setattr(worker, "get_workflow_status", lambda name: "Succeeded")
+    monkeypatch.setattr(
+        worker,
+        "update_run_status",
+        lambda c, r, s, d=None, f=None: calls.append((r, s, d, f)),
+    )
+    worker.sweep_once(client)
+    # effective phases: ["Succeeded"] -> rollup "complete"; done_count = 3, failed_count = 0
+    assert calls == [(1, "complete", 3, 0)]
+
+
+def test_sweep_once_computes_a_genuine_total_failure_from_real_scan_rows(monkeypatch):
+    """Round 6 /review-pr finding: the other most common real-world outcome the
+    mixed-case test above doesn't cover — every scan in the run fails, with no
+    successes at all. All rows 'failed', one distinct workflow whose own Argo
+    phase also resolves non-Succeeded."""
+    calls = []
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
+    client = _FakeClient(
+        cyl_pipeline_run_scans=[
+            {"run_id": 1, "argo_workflow_name": "wf-a", "status": "failed"},
+            {"run_id": 1, "argo_workflow_name": "wf-a", "status": "failed"},
+            {"run_id": 1, "argo_workflow_name": None, "status": "failed"},
+        ]
+    )
+    monkeypatch.setattr(worker, "get_workflow_status", lambda name: "Failed")
+    monkeypatch.setattr(
+        worker,
+        "update_run_status",
+        lambda c, r, s, d=None, f=None: calls.append((r, s, d, f)),
+    )
+    worker.sweep_once(client)
+    # effective phases: ["Failed" (dispatch-failed scan), "Failed" (wf-a)]
+    # -> rollup "failed"; done_count = 0, failed_count = 3
+    assert calls == [(1, "failed", 0, 3)]
+
+
 def test_sweep_with_no_candidate_runs_does_not_error(monkeypatch):
     monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [])
 

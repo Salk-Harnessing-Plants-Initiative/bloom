@@ -913,7 +913,14 @@ def batch_ingest_result(
                             destination=str(envelopes_dir),
                         )
                     )
-                ctx.exit(1)
+                # needs_retry, not batch_result.ok — same reasoning as the main path's
+                # exit check below (round 5 finding): today this is always True here
+                # (a reconciliation-call failure is always constructed with the
+                # retriable=True default), but checking needs_retry keeps this branch
+                # from silently reintroducing round 5's cascade if a future change
+                # ever marks a reconciliation failure non-retriable.
+                if batch_result.needs_retry:
+                    ctx.exit(1)
         click.echo("No envelope files found; nothing to ingest.")
         return
 
