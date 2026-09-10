@@ -119,7 +119,7 @@ ALTER TABLE public.scrna_clusters
 -- Put back the ability to edit a submitted result, which the migration took
 -- away. These two policies and the grant behind them predate it, so leaving
 -- them off would narrow the table permanently rather than return it.
-GRANT UPDATE ON public.scrna_de TO bloom_writer, authenticated, anon;
+GRANT UPDATE, DELETE ON public.scrna_de TO bloom_writer, authenticated, anon, service_role;
 
 DROP POLICY IF EXISTS writer_update_scrna_de ON public.scrna_de;
 CREATE POLICY writer_update_scrna_de

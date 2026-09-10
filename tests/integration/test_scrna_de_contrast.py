@@ -149,7 +149,7 @@ def _run_row(run_id, cluster_ref=None, **cols) -> dict:
     Since 20260912090000 a run row scoped to a cell type names the catalogue row
     by key rather than only by label, so callers pass the key they seeded.
     """
-    return {"run_id": run_id, "cluster_ref": cluster_ref,
+    return {"run_id": run_id, "cluster_ref": cluster_ref, "cluster_id": None,
             "group_kind": "genotype", "method": "external",
             "params_hash": "h", "tested": True, **cols}
 
@@ -320,7 +320,6 @@ def test_the_real_summary_file_loads(pg_conn):
             ran = row["tested"] == "True"
             _insert(
                 cur, ds,
-                cluster_id=row["celltype"],
                 **_run_row(run, _cluster_refs[row['celltype']], tested=ran),
                 file_path=(
                     f"de/{row['celltype']}__{row['contrast']}.json" if ran else None
@@ -645,8 +644,9 @@ def test_privileges_match_an_untouched_sibling_apart_from_the_one_revoke(pg_conn
     test is for."""
     with pg_conn.cursor() as cur:
         expected = {
-            role: privs - {"UPDATE"}
-            if role in ("bloom_writer", "authenticated", "anon") else privs
+            role: privs - {"UPDATE", "DELETE"}
+            if role in ("bloom_writer", "authenticated", "anon", "service_role")
+            else privs
             for role, privs in _table_privileges(cur, SIBLING).items()
         }
         assert _table_privileges(cur, TABLE) == expected

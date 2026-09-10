@@ -90,7 +90,7 @@ def _gene(cur, dataset_id, name=None) -> int:
 def _result(cur, dataset_id, run_id, **cols):
     """One scrna_de row belonging to a run. Unspecified columns take defaults."""
     row = {
-        "cluster_id": "Cortex", "contrast": "pFACT_vs_Col-0",
+        "cluster_id": None, "contrast": "pFACT_vs_Col-0",
         "cluster_ref": _cluster_ref(cur, dataset_id),
         "group1": "pFACT", "group2": "Col-0", "n_group1": 10, "n_group2": 20,
         "group_kind": "genotype", "method": "external", "params_hash": "h",
@@ -176,7 +176,7 @@ def test_a_cell_type_the_catalogue_does_not_have_is_rejected(pg_conn):
     what every other table naming a cell type already does."""
     with pg_conn.cursor() as cur:
         ds = _dataset(cur)
-        _rejects(cur, "scrna_de_cluster_in_catalogue",
+        _rejects(cur, "scrna_de_run_rows_name_the_catalogue",
                  _result, cur, ds, _run(cur, ds), cluster_id="Phellem")
     pg_conn.rollback()
 
@@ -466,12 +466,28 @@ def test_the_update_grant_is_gone_as_well_as_the_policy(pg_conn):
     """The policy gates this while RLS is on; the grant is what would gate it if
     RLS were ever lifted."""
     with pg_conn.cursor() as cur:
-        cur.execute(
-            "SELECT grantee FROM information_schema.role_table_grants "
-            "WHERE table_name = 'scrna_de' AND privilege_type = 'UPDATE' "
-            "AND grantee IN ('bloom_writer', 'authenticated', 'anon')"
-        )
-        assert cur.fetchall() == [], "UPDATE is still granted on scrna_de"
+        # Asserted as the whole set, not as the absence of the roles the REVOKE
+        # happens to name: written the other way it passes for as long as the
+        # revoke and the test agree with each other, and says nothing about a
+        # role granted UPDATE later.
+        # has_table_privilege, not role_table_grants: that view lists direct ACL
+        # entries only and does not follow role membership, while an inherited
+        # grant is exactly what this guards against.
+        for table in ("scrna_de", "scrna_de_runs", "scrna_de_genes"):
+            for role in ("bloom_writer", "bloom_user", "bloom_agent",
+                         "authenticated", "anon", "service_role"):
+                for priv in ("UPDATE", "DELETE"):
+                    cur.execute(
+                        "SELECT has_table_privilege(%s, %s, %s)",
+                        (role, f"public.{table}", priv),
+                    )
+                    assert cur.fetchone()[0] is False, \
+                        f"{role} can {priv} {table}"
+            cur.execute(
+                "SELECT has_table_privilege('bloom_admin', %s, 'UPDATE')",
+                (f"public.{table}",),
+            )
+            assert cur.fetchone()[0] is True, "bloom_admin lost its maintenance path"
 
 
 def test_bloom_admin_keeps_update_for_maintenance(pg_conn):
@@ -506,14 +522,6 @@ def test_renaming_a_cell_type_leaves_a_run_result_alone(pg_conn):
         )
         cur.execute("SELECT cluster_ref FROM scrna_de WHERE id = %s", (de_id,))
         assert cur.fetchone()[0] == ref_before, "the key should not move"
-    pg_conn.rollback()
-
-
-def test_a_run_row_scoped_to_a_cell_type_must_name_the_catalogue(pg_conn):
-    with pg_conn.cursor() as cur:
-        ds = _dataset(cur)
-        _rejects(cur, "scrna_de_run_rows_name_the_catalogue",
-                 _result, cur, ds, _run(cur, ds), cluster_ref=None)
     pg_conn.rollback()
 
 
@@ -665,4 +673,60 @@ def test_rollback_refuses_while_a_run_exists_even_with_no_results(pg_conn):
         with pytest.raises(psycopg.errors.RaiseException) as exc:
             cur.execute(_rollback_body())
         assert "runs would be destroyed" in str(exc.value)
+    pg_conn.rollback()
+
+
+def test_a_role_that_bypasses_rls_still_cannot_rewrite_a_result(pg_conn):
+    """service_role carries rolbypassrls, so no policy applies to it and the
+    grant is the only thing that ever gated it. Anything holding the service key
+    arrives as this role."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        de_id = _result(cur, ds, _run(cur, ds))
+        cur.execute("SET LOCAL ROLE service_role")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            cur.execute(
+                "UPDATE scrna_de SET contrast = 'rewritten' WHERE id = %s", (de_id,)
+            )
+    pg_conn.rollback()
+
+
+def test_the_measurements_themselves_cannot_be_rewritten(pg_conn):
+    """The gene rows are the actual data. Refusing edits to the summary while
+    leaving these open would protect the label and not the measurement."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        de_id = _result(cur, ds, _run(cur, ds))
+        _gene_row(cur, ds, de_id, _gene(cur, ds), log2fc=2.0)
+        for role in ("bloom_writer", "service_role"):
+            # A refused statement aborts the transaction, so each attempt needs
+            # its own savepoint to get back to a usable one.
+            cur.execute("SAVEPOINT attempt")
+            cur.execute(f"SET LOCAL ROLE {role}")
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                cur.execute("UPDATE scrna_de_genes SET log2fc = -99 WHERE de_id = %s",
+                            (de_id,))
+            cur.execute("ROLLBACK TO SAVEPOINT attempt")
+    pg_conn.rollback()
+
+
+def test_the_reachability_rule_is_validated_not_merely_declared(pg_conn):
+    """NOT VALID would leave convalidated false forever, surviving dumps and
+    restores, so nobody could ask whether the rule actually holds."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT convalidated FROM pg_constraint "
+            "WHERE conname = 'scrna_de_result_is_somewhere'"
+        )
+        assert cur.fetchone()[0] is True
+
+
+def test_a_run_row_cannot_carry_both_a_label_and_a_key(pg_conn):
+    """They resolve against different catalogue rows and nothing relates them, so
+    a row carrying both can name two different cell types at once -- and two such
+    rows for one comparison slip past the uniqueness rule."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur, ("Cortex", "Xylem"))
+        _rejects(cur, "scrna_de_run_rows_name_the_catalogue",
+                 _result, cur, ds, _run(cur, ds), cluster_id="Xylem")
     pg_conn.rollback()

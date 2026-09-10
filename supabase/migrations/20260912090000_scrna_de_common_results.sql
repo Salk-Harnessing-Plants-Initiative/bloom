@@ -115,16 +115,20 @@ COMMENT ON COLUMN public.scrna_de.cluster_ref IS
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_no_file_means_nothing_tested;
 
--- NOT VALID on purpose. A table that already holds contrast rows written before
--- runs existed has some with neither a file nor a run -- a comparison that was
--- considered and never tested had nothing to point at and nothing to belong to.
--- Those are left as found; every row written from here on has a run.
+-- Validated, not NOT VALID. file_path was NOT NULL from 20250407232644 until
+-- 20260908120000 relaxed it, and that migration is on staging but not on main --
+-- so on production every row still names a file and this holds for all of them.
+-- Marking it NOT VALID would leave convalidated false forever, surviving dumps
+-- and restores, so nobody could ever ask whether the rule actually holds.
+--
+-- A database that does hold such a row -- one where the loader was run from an
+-- unmerged branch -- fails here rather than carrying a rule nothing checked:
+--   SELECT * FROM public.scrna_de WHERE run_id IS NULL AND file_path IS NULL;
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_result_is_somewhere;
 ALTER TABLE public.scrna_de
   ADD CONSTRAINT scrna_de_result_is_somewhere
-  CHECK (run_id IS NOT NULL OR file_path IS NOT NULL)
-  NOT VALID;
+  CHECK (run_id IS NOT NULL OR file_path IS NOT NULL);
 
 COMMENT ON CONSTRAINT scrna_de_result_is_somewhere ON public.scrna_de IS
   'Every row is reachable: a pre-run row through the object it names, a run row '
@@ -213,14 +217,18 @@ ALTER TABLE public.scrna_de
   REFERENCES public.scrna_clusters (dataset_id, id)
   ON DELETE RESTRICT;
 
--- A run row scoped to a cell type names it by key. The pre-run rows keep the
--- label and are not asked for one; a whole-dataset comparison is scoped to no
--- cell type and carries neither.
+-- A run row names the catalogue by key and not by label at all. Carrying both
+-- would let them disagree -- each resolves against a different catalogue row and
+-- nothing relates the two -- and would defeat the uniqueness rule below, because
+-- one row could carry the label and another the key for the same comparison and
+-- NULLS NOT DISTINCT would hold them apart.
+--
+-- The pre-run rows keep their label; they have no key and are not asked for one.
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_run_rows_name_the_catalogue;
 ALTER TABLE public.scrna_de
   ADD CONSTRAINT scrna_de_run_rows_name_the_catalogue
-  CHECK (run_id IS NULL OR cluster_id IS NULL OR cluster_ref IS NOT NULL);
+  CHECK (run_id IS NULL OR cluster_id IS NULL);
 
 -- Every reference into this schema carries the dataset, so nothing can point
 -- across one. Without it a result could name a run belonging to a different
@@ -429,8 +437,28 @@ CREATE POLICY user_read_scrna_de_genes
 DROP POLICY IF EXISTS writer_update_scrna_de ON public.scrna_de;
 DROP POLICY IF EXISTS "Authenticated users can update scrna_de" ON public.scrna_de;
 
--- The policy is what gates this while RLS is on; the grant is what would gate it
--- if RLS were ever lifted. Table-scoped, so no other table's privileges move.
-REVOKE UPDATE ON public.scrna_de FROM bloom_writer, authenticated, anon;
+-- The policy is what gates this while RLS is on; the grant is what gates it
+-- regardless. service_role is in the list because it carries rolbypassrls: no
+-- policy applies to it, so the grant is the only thing that ever did. Leaving it
+-- out would have made the whole rule decorative for anything holding the service
+-- key.
+--
+-- The two new tables need the same treatment for the same reason. They were
+-- given no UPDATE policy, which stops every role RLS applies to -- and stops
+-- service_role not at all. It also fails quietly: a role with the grant and no
+-- policy gets "UPDATE 0" rather than an error.
+--
+-- What is left holding UPDATE on all three: bloom_admin, for a developer
+-- repairing the database deliberately, and the superusers that run migrations.
+-- DELETE goes with UPDATE. Destroying a submitted result is worse than
+-- falsifying one, and deleting a result takes its gene rows with it through the
+-- cascade -- which runs as an internal referential action, exempt from the child
+-- table's own policies. Nothing in the codebase deletes from any of these.
+REVOKE UPDATE, DELETE ON public.scrna_de
+    FROM bloom_writer, authenticated, anon, service_role;
+REVOKE UPDATE, DELETE ON public.scrna_de_runs
+    FROM bloom_writer, authenticated, anon, service_role, bloom_user;
+REVOKE UPDATE, DELETE ON public.scrna_de_genes
+    FROM bloom_writer, authenticated, anon, service_role, bloom_user;
 
 COMMIT;
