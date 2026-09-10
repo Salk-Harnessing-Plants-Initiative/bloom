@@ -38,11 +38,12 @@ CREATE TABLE IF NOT EXISTS public.scrna_genotypes (
   -- One row per genotype per dataset, so a re-ingest lands on the same row.
   CONSTRAINT scrna_genotypes_one_per_dataset UNIQUE (dataset_id, name),
   -- A name has to be a name. The characters are spelled out because btrim()
-  -- with one argument strips spaces alone.
+  -- with one argument strips ordinary spaces alone -- not a non-breaking space,
+  -- which a name pasted from a document can be made entirely of.
   CONSTRAINT scrna_genotypes_name_not_blank
-    CHECK (btrim(name, E' \t\n\r\f\v ') <> ''),
+    CHECK (btrim(name, E' \t\n\r\f\v\u00a0') <> ''),
   CONSTRAINT scrna_genotypes_construct_not_blank
-    CHECK (construct IS NULL OR btrim(construct, E' \t\n\r\f\v ') <> '')
+    CHECK (construct IS NULL OR btrim(construct, E' \t\n\r\f\v\u00a0') <> '')
 );
 
 CREATE INDEX IF NOT EXISTS idx_scrna_genotypes_dataset
@@ -96,8 +97,8 @@ AS $fn$
        AND NOT EXISTS (
          SELECT 1 FROM jsonb_each(facets) AS f(key, value)
          WHERE jsonb_typeof(f.value) <> 'string'
-            OR btrim(f.key, E' \t\n\r\f\v ') = ''
-            OR btrim(f.value #>> '{}', E' \t\n\r\f\v ') = ''
+            OR btrim(f.key, E' \t\n\r\f\v\u00a0') = ''
+            OR btrim(f.value #>> '{}', E' \t\n\r\f\v\u00a0') = ''
        )
      );
 $fn$;
