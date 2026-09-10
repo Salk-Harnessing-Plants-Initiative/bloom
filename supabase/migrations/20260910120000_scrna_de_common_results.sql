@@ -319,13 +319,14 @@ CREATE TABLE IF NOT EXISTS public.scrna_de_genes (
     -- and every value in it would look ordinary.
     dataset_id BIGINT NOT NULL,
     gene_id BIGINT NOT NULL,
-    log2fc REAL NOT NULL,
+    -- Nullable: a gene expressed in neither group has no computable fold change,
+    -- and NULL is how that is said here. The loader turns the analysis's NaN
+    -- into one, so nothing downstream has to know that spelling.
+    log2fc REAL,
     pvalue DOUBLE PRECISION NOT NULL,
     fdr DOUBLE PRECISION NOT NULL,
     pct_1 REAL,
     pct_2 REAL,
-    direction TEXT NOT NULL
-        CHECK (direction IN ('up', 'down')),
     CONSTRAINT scrna_de_genes_one_row_per_gene UNIQUE (de_id, gene_id),
     CONSTRAINT scrna_de_genes_result_in_same_dataset
         FOREIGN KEY (dataset_id, de_id)
@@ -343,9 +344,18 @@ CREATE TABLE IF NOT EXISTS public.scrna_de_genes (
     -- Correction only ever raises a p-value.
     CONSTRAINT scrna_de_genes_fdr_is_not_below_pvalue
         CHECK (fdr >= pvalue),
-    -- direction is derived from the fold change and must not contradict it.
-    CONSTRAINT scrna_de_genes_direction_matches_fold_change
-        CHECK ((direction = 'up' AND log2fc > 0) OR (direction = 'down' AND log2fc <= 0))
+    -- NaN is refused rather than stored. It compares false against every
+    -- threshold and sorts above every real value, so a row carrying one is
+    -- invisible to a filter and first in a ranking -- and no reader can be
+    -- expected to remember both. NULL says the same thing and behaves.
+    -- Infinity is left alone: a gene absent from one side really does have an
+    -- unbounded ratio, and that is a measurement rather than a missing one.
+    --
+    -- Written as <> rather than the usual self-comparison, because Postgres
+    -- departs from IEEE 754 here and holds NaN equal to itself -- so
+    -- "log2fc = log2fc" would pass every row and check nothing.
+    CONSTRAINT scrna_de_genes_fold_change_is_a_number_or_nothing
+        CHECK (log2fc <> 'NaN'::real)
 );
 
 ALTER TABLE public.scrna_de_genes ENABLE ROW LEVEL SECURITY;
@@ -355,9 +365,11 @@ COMMENT ON TABLE public.scrna_de_genes IS
   'can be ranked, cut at a threshold chosen when the question is asked, and '
   'followed across comparisons -- and so the counts on scrna_de describe '
   'something the database can check.';
-COMMENT ON COLUMN public.scrna_de_genes.direction IS
-  'Which side of the comparison the gene is higher in. A fold change of exactly '
-  'zero counts as down, so up and down together account for every row.';
+COMMENT ON COLUMN public.scrna_de_genes.log2fc IS
+  'The fold change as the analysis produced it. Which genes count as up or down '
+  'is not stored, because it is not a fact about a gene: it depends on the cuts '
+  'the question is asked with, and a reader choosing its own cuts derives both '
+  'from this column.';
 
 -- Ranking within one comparison: the panel's first query.
 CREATE INDEX IF NOT EXISTS scrna_de_genes_ranking_idx

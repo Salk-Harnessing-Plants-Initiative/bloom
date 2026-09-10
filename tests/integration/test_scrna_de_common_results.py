@@ -242,7 +242,7 @@ def test_a_failed_run_says_why(pg_conn):
 
 def _gene_row(cur, dataset_id, de_id, gene_id, **cols):
     row = {"log2fc": 1.5, "pvalue": 0.001, "fdr": 0.01,
-           "pct_1": 0.5, "pct_2": 0.25, "direction": "up", **cols}
+           "pct_1": 0.5, "pct_2": 0.25, **cols}
     names = ["de_id", "dataset_id", "gene_id", *row]
     values = [de_id, dataset_id, gene_id, *row.values()]
     cur.execute(
@@ -275,28 +275,6 @@ def test_one_gene_appears_once_in_a_comparison(pg_conn):
     pg_conn.rollback()
 
 
-def test_direction_cannot_contradict_the_fold_change(pg_conn):
-    """`direction` is derived from `log2fc`. Storing both means they can
-    disagree, so the database is told they may not."""
-    with pg_conn.cursor() as cur:
-        ds = _dataset(cur)
-        de_id = _result(cur, ds, _run(cur, ds))
-        _rejects(cur, "scrna_de_genes_direction_matches_fold_change",
-                 _gene_row, cur, ds, de_id, _gene(cur, ds),
-                 log2fc=-2.0, direction="up")
-    pg_conn.rollback()
-
-
-def test_a_fold_change_of_zero_is_down(pg_conn):
-    """Up is above zero and everything else is down, so up and down together
-    account for every row -- which is what makes the counts add up."""
-    with pg_conn.cursor() as cur:
-        ds = _dataset(cur)
-        de_id = _result(cur, ds, _run(cur, ds))
-        _gene_row(cur, ds, de_id, _gene(cur, ds), log2fc=0.0, direction="down")
-    pg_conn.rollback()
-
-
 def test_a_p_value_outside_zero_to_one_is_rejected(pg_conn):
     """fdr is raised to match, so the ordering rule cannot be what rejects this
     and the range rule is left as the only candidate."""
@@ -315,27 +293,6 @@ def test_correction_cannot_lower_a_p_value(pg_conn):
         _rejects(cur, "scrna_de_genes_fdr_is_not_below_pvalue",
                  _gene_row, cur, ds, de_id, _gene(cur, ds),
                  pvalue=0.5, fdr=0.01)
-    pg_conn.rollback()
-
-
-def test_the_counts_can_be_checked_against_the_rows(pg_conn):
-    """The reason the genes are here: n_up stops being a number a loader asserts
-    and becomes one the database can count."""
-    with pg_conn.cursor() as cur:
-        ds = _dataset(cur)
-        de_id = _result(cur, ds, _run(cur, ds))
-        _gene_row(cur, ds, de_id, _gene(cur, ds), log2fc=2.0, direction="up")
-        _gene_row(cur, ds, de_id, _gene(cur, ds), log2fc=-2.0, direction="down")
-        cur.execute(
-            "SELECT n_up, n_down, "
-            "  (SELECT count(*) FROM scrna_de_genes g "
-            "    WHERE g.de_id = d.id AND g.direction = 'up'), "
-            "  (SELECT count(*) FROM scrna_de_genes g "
-            "    WHERE g.de_id = d.id AND g.direction = 'down') "
-            "FROM scrna_de d WHERE d.id = %s", (de_id,),
-        )
-        n_up, n_down, actual_up, actual_down = cur.fetchone()
-        assert (n_up, n_down) == (actual_up, actual_down)
     pg_conn.rollback()
 
 
@@ -631,4 +588,63 @@ def test_deleting_a_result_still_takes_its_genes(pg_conn):
         cur.execute("DELETE FROM scrna_de WHERE id = %s", (de_id,))
         cur.execute("SELECT count(*) FROM scrna_de_genes WHERE de_id = %s", (de_id,))
         assert cur.fetchone()[0] == 0
+    pg_conn.rollback()
+
+
+def test_up_and_down_are_a_query_not_a_column(pg_conn):
+    """Which genes count as up depends on the cuts the question is asked with, so
+    the schema stores the fold change and the reader derives the rest."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM information_schema.columns "
+            "WHERE table_name = 'scrna_de_genes' AND column_name = 'direction'"
+        )
+        assert cur.fetchone()[0] == 0
+
+        ds = _dataset(cur)
+        de_id = _result(cur, ds, _run(cur, ds))
+        for lfc in (2.0, 0.6, -2.0):
+            _gene_row(cur, ds, de_id, _gene(cur, ds), log2fc=lfc, fdr=0.01)
+        # the same rows answer two different questions
+        for cut, expected in ((1.0, 1), (0.5, 2)):
+            cur.execute(
+                "SELECT count(*) FROM scrna_de_genes "
+                "WHERE de_id = %s AND fdr <= 0.05 AND log2fc >= %s", (de_id, cut)
+            )
+            assert cur.fetchone()[0] == expected
+    pg_conn.rollback()
+
+
+def test_a_fold_change_that_could_not_be_computed_is_null_not_nan(pg_conn):
+    """NaN compares false against every threshold and sorts above every real
+    value, so it is invisible to a filter and first in a ranking. NULL says the
+    same thing and behaves; the loader converts one to the other."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        de_id = _result(cur, ds, _run(cur, ds))
+        _rejects(cur, "scrna_de_genes_fold_change_is_a_number_or_nothing",
+                 _gene_row, cur, ds, de_id, _gene(cur, ds), log2fc=float("nan"))
+    pg_conn.rollback()
+
+
+def test_a_gene_with_no_computable_fold_change_is_still_a_row(pg_conn):
+    """It was tested; the fold change is what could not be computed."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        de_id = _result(cur, ds, _run(cur, ds))
+        _gene_row(cur, ds, de_id, _gene(cur, ds), log2fc=None)
+        cur.execute(
+            "SELECT log2fc IS NULL FROM scrna_de_genes WHERE de_id = %s", (de_id,)
+        )
+        assert cur.fetchone()[0] is True
+    pg_conn.rollback()
+
+
+def test_an_unbounded_fold_change_is_kept(pg_conn):
+    """A gene absent from one side really does have an unbounded ratio. That is a
+    measurement, not a missing one."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        de_id = _result(cur, ds, _run(cur, ds))
+        _gene_row(cur, ds, de_id, _gene(cur, ds), log2fc=float("inf"))
     pg_conn.rollback()
