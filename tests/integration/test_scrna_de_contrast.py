@@ -49,6 +49,10 @@ ADDED_COLUMNS = [
 
 ORIGINAL_COLUMNS = {"id", "dataset_id", "file_path", "cluster_id"}
 
+# The cell type these rows hang off. Seeded into scrna_clusters per dataset,
+# because scrna_de now references the catalogue rather than naming it in text.
+DEFAULT_CLUSTER = "Phellem"
+
 # A self-consistent summary. Rows that name a contrast must carry all five counts,
 # so a test aimed at some other rule spreads these in to stay on that rule.
 COUNTS = {
@@ -93,12 +97,50 @@ def _seed_dataset(cur) -> int:
         "INSERT INTO scrna_datasets (name, species_id) VALUES (%s, %s) RETURNING id",
         (f"de-contrast-{tag}", species_id),
     )
+    dataset_id = cur.fetchone()[0]
+    # scrna_de names a cell type by a composite foreign key into the catalogue,
+    # so the cell type these rows use has to exist before any of them do.
+    cur.execute(
+        "INSERT INTO scrna_clusters (dataset_id, cluster_id, ordinal, name, color) "
+        "VALUES (%s, %s, 0, %s, '#000000')",
+        (dataset_id, DEFAULT_CLUSTER, DEFAULT_CLUSTER),
+    )
+    return dataset_id
+
+
+def _seed_run(cur, dataset_id) -> int:
+    """A completed analysis to hang results off.
+
+    Since 20260910120000 a result belongs to a run: it is what considered the
+    comparison, whether or not it went on to test it.
+    """
+    cur.execute(
+        "INSERT INTO scrna_de_runs (dataset_id, source, status, method, "
+        "params_hash, completed_at) "
+        "VALUES (%s, 'batch', 'complete', 'external', %s, now()) RETURNING id",
+        (dataset_id, uuid.uuid4().hex[:12]),
+    )
     return cur.fetchone()[0]
+
+
+def _seed_clusters(cur, dataset_id, cell_types) -> None:
+    """Catalogue entries for cell types beyond the default one."""
+    cur.executemany(
+        "INSERT INTO scrna_clusters (dataset_id, cluster_id, ordinal, name, color) "
+        "VALUES (%s, %s, %s, %s, '#000000') ON CONFLICT DO NOTHING",
+        [(dataset_id, c, i + 1, c) for i, c in enumerate(sorted(set(cell_types)))],
+    )
+
+
+def _run_row(run_id, **cols) -> dict:
+    """The columns a run-tagged row must carry, with `cols` overriding."""
+    return {"run_id": run_id, "group_kind": "genotype", "method": "external",
+            "params_hash": "h", "tested": True, **cols}
 
 
 def _insert(cur, dataset_id, **cols):
     """Insert one scrna_de row. Unspecified columns keep their defaults."""
-    cols.setdefault("cluster_id", "Phellem")
+    cols.setdefault("cluster_id", DEFAULT_CLUSTER)
     names = ["dataset_id", *cols]
     values = [dataset_id, *cols.values()]
     placeholders = ", ".join(["%s"] * len(names))
@@ -181,6 +223,7 @@ def test_never_run_row_is_accepted(pg_conn):
         ds = _seed_dataset(cur)
         _insert(
             cur, ds, file_path=None,
+            **_run_row(_seed_run(cur, ds), tested=False),
             contrast="pHORST_vs_Col-0", group1="pHORST", group2="Col-0",
             n_group1=0, n_group2=7,
             n_genes_tested=0, n_significant_fdr=0,
@@ -221,6 +264,7 @@ def test_the_same_contrast_may_appear_on_different_clusters(pg_conn):
     """The other half of the key: one contrast spans every cell type."""
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
+        _seed_clusters(cur, ds, ("Cortex", "Xylem"))
         for cluster in ("Phellem", "Cortex", "Xylem"):
             _insert(
                 cur, ds, cluster_id=cluster,
@@ -250,11 +294,14 @@ def test_the_real_summary_file_loads(pg_conn):
 
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
+        _seed_clusters(cur, ds, [r["celltype"] for r in rows])
+        run = _seed_run(cur, ds)
         for row in rows:
             ran = row["tested"] == "True"
             _insert(
                 cur, ds,
                 cluster_id=row["celltype"],
+                **_run_row(run, tested=ran),
                 file_path=(
                     f"de/{row['celltype']}__{row['contrast']}.json" if ran else None
                 ),
@@ -351,13 +398,14 @@ def test_contrast_row_without_counts_is_rejected(pg_conn):
     pg_conn.rollback()
 
 
-def test_no_file_but_results_reported_is_rejected(pg_conn):
-    """The counts are internally consistent, so only the no-file rule can reject
-    this. A row that also broke the arithmetic would be caught by a different
-    constraint and prove nothing about this one."""
+def test_a_row_belonging_to_no_analysis_and_naming_no_file_is_rejected(pg_conn):
+    """Since 20260910120000 a result is reachable either through the object it
+    names or through the analysis it belongs to. A row with neither describes
+    nothing, and the counts here are internally consistent so no other rule can
+    be what rejects it."""
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
-        _rejects(cur, ds, "scrna_de_no_file_means_nothing_tested",
+        _rejects(cur, ds, "scrna_de_result_is_somewhere",
                  file_path=None, contrast="a_vs_b", group1="a", group2="b",
                  n_group1=0, n_group2=7,
                  n_genes_tested=500, n_significant_fdr=5,
@@ -365,12 +413,25 @@ def test_no_file_but_results_reported_is_rejected(pg_conn):
     pg_conn.rollback()
 
 
-def test_a_row_with_no_file_must_name_a_comparison(pg_conn):
-    """Otherwise a bare row is storable and splits the two ways of counting
-    skipped comparisons."""
+def test_results_without_a_file_are_accepted_once_they_belong_to_a_run(pg_conn):
+    """The counterpart: the per-gene results live in rows now, so reporting 500
+    tested genes with no object is exactly what a current row looks like."""
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
-        _rejects(cur, ds, "scrna_de_no_file_means_nothing_tested", file_path=None)
+        _insert(cur, ds, file_path=None,
+                **_run_row(_seed_run(cur, ds)),
+                contrast="a_vs_b", group1="a", group2="b",
+                n_group1=6, n_group2=7,
+                n_genes_tested=500, n_significant_fdr=5,
+                n_significant_fdr_lfc=4, n_up=3, n_down=1)
+    pg_conn.rollback()
+
+
+def test_a_bare_row_is_rejected(pg_conn):
+    """No file, no analysis, nothing to point at."""
+    with pg_conn.cursor() as cur:
+        ds = _seed_dataset(cur)
+        _rejects(cur, ds, "scrna_de_result_is_somewhere", file_path=None)
     pg_conn.rollback()
 
 
@@ -701,6 +762,7 @@ def test_rollback_refuses_when_a_row_has_no_file(pg_conn):
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
         _insert(cur, ds, file_path=None,
+                **_run_row(_seed_run(cur, ds), tested=False),
                 contrast="a_vs_b", group1="a", group2="b",
                 n_genes_tested=0, n_significant_fdr=0,
                 n_significant_fdr_lfc=0, n_up=0, n_down=0)
