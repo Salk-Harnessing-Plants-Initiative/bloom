@@ -1210,12 +1210,21 @@ def test_a7_migration_body_is_idempotent(pg_conn):
     # Re-applying the a7 migration on top of the applied state is a clean no-op
     # (CREATE OR REPLACE FUNCTION / ALTER OWNER / REVOKE / GRANT), and the RPC still
     # accepts the pinned a7 contract_version afterward.
+    #
+    # First roll back fix-cyl-pipeline-run-scan-status's later 2-arg signature — see
+    # test_a3_migration_body_is_idempotent's comment for why: `_call`'s 2-positional-
+    # argument shape always resolves to that overload, never to the 1-arg overload
+    # MIGRATION_A3/MIGRATION_A7's own CREATE OR REPLACE recreates here, so without this,
+    # this test would silently exercise the unrelated, already-live 2-arg function
+    # instead of what it just applied (found during /review-pr round 3 — the a3 tests
+    # already knew this, the a7 tests added alongside them did not).
     with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(ROLLBACK_SCAN_STATUS))
         cur.execute(_sql_body(MIGRATION_A3))    # a3 body first (forward chain)
         cur.execute(_sql_body(MIGRATION_A7))
         cur.execute(_sql_body(MIGRATION_A7))     # second apply: must be a no-op, not an error
         _, imgs = _seed_scan(cur)
-        res = _call(cur, _envelope(imgs, contract_version="0.1.0a7", idempotency_key="a7idem"))
+        res = _call_1arg(cur, _envelope(imgs, contract_version="0.1.0a7", idempotency_key="a7idem"))
         assert res["was_noop"] is False
     pg_conn.rollback()
 
@@ -1223,8 +1232,12 @@ def test_a7_migration_body_is_idempotent(pg_conn):
 def test_a7_rollback_restores_strict_a3(pg_conn):
     """Apply a3 then a7 then a7's rollback in an uncommitted txn; assert the function is
     restored to the strict 0.1.0a3 posture -- the a7 version it just accepted is now
-    rejected -- and the function still exists (the a7 change only replaced its body)."""
+    rejected -- and the function still exists (the a7 change only replaced its body).
+
+    Rolls back fix-cyl-pipeline-run-scan-status's later signature first, and calls via
+    `_call_1arg` throughout — see test_a7_migration_body_is_idempotent's comment for why."""
     with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(ROLLBACK_SCAN_STATUS))
         cur.execute(_sql_body(MIGRATION_A3))
         cur.execute(_sql_body(MIGRATION_A7))    # a7 body present
         cur.execute(_sql_body(ROLLBACK_A7))     # roll back to strict 0.1.0a3
@@ -1232,19 +1245,19 @@ def test_a7_rollback_restores_strict_a3(pg_conn):
         assert cur.fetchone() is not None, "a7 rollback must keep the function (body-only change)"
         _, imgs = _seed_scan(cur)
         # A RAISE EXCEPTION aborts the whole transaction, not just this statement -- a plain
-        # ROLLBACK (as in test_all_or_nothing_rolls_back_registry) would also undo the three
+        # ROLLBACK (as in test_all_or_nothing_rolls_back_registry) would also undo the four
         # migration/rollback applications above, falling back to whatever the ambient DB's
         # actually-committed function body is (which, once this PR itself is merged, IS the
-        # a7-pinned body -- the opposite of what this test needs to keep exercising). Use a
-        # SAVEPOINT so only the expected-failure statement rolls back, preserving the
+        # a7-pinned 2-arg body -- the opposite of what this test needs to keep exercising).
+        # Use a SAVEPOINT so only the expected-failure statement rolls back, preserving the
         # in-transaction rollback-to-a3 body for the assertion below.
         cur.execute("SAVEPOINT expect_a7_rejected")
         with pytest.raises(psycopg.errors.RaiseException):
-            _call(cur, _envelope(imgs, contract_version="0.1.0a7", idempotency_key="a7rb"))
+            _call_1arg(cur, _envelope(imgs, contract_version="0.1.0a7", idempotency_key="a7rb"))
         cur.execute("ROLLBACK TO SAVEPOINT expect_a7_rejected")
         # the restored strict-a3 body accepts a3 again
         _, imgs2 = _seed_scan(cur)
-        res = _call(cur, _envelope(imgs2, contract_version="0.1.0a3", idempotency_key="a7rb-a3"))
+        res = _call_1arg(cur, _envelope(imgs2, contract_version="0.1.0a3", idempotency_key="a7rb-a3"))
         assert res["was_noop"] is False
     pg_conn.rollback()
 
@@ -1273,11 +1286,18 @@ def test_a7_cutover_guard_raises_on_a3_row(pg_conn):
     # you add a concurrency/back-compat test that seeds an old-version-stamped row via a raw
     # INSERT (bypassing the RPC) and commits it, you will silently reintroduce this exact
     # class of cross-file-pollution bug on the FORWARD guard, the same way it already broke
-    # the (since-reverted) rollback guard above.)
+    # the (since-reverted) rollback guard above.
+    #
+    # Rolls back fix-cyl-pipeline-run-scan-status's later signature first, and calls via
+    # `_call_1arg`, for the same reason as the two tests above — otherwise the seed call
+    # below hits the live 2-arg (a7-pinned) overload instead of the 1-arg a3 body this test
+    # just created, and is unexpectedly REJECTED (contract_version mismatch), erroring this
+    # test instead of exercising the cutover guard at all.)
     with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(ROLLBACK_SCAN_STATUS))
         cur.execute(_sql_body(MIGRATION_A3))  # bring the RPC to a3 first so a3 rows are legal
         _, imgs = _seed_scan(cur)
-        _call(cur, _envelope(imgs, contract_version="0.1.0a3", idempotency_key="guard-seed"))
+        _call_1arg(cur, _envelope(imgs, contract_version="0.1.0a3", idempotency_key="guard-seed"))
         with pytest.raises(psycopg.errors.RaiseException, match="a7 cutover blocked"):
             cur.execute(_sql_body(MIGRATION_A7))
     pg_conn.rollback()
