@@ -327,6 +327,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       # Required from studio 2026.03.30 onward; without it the container exits on boot.
       EDGE_FUNCTIONS_MANAGEMENT_FOLDER: /tmp/edge-functions
+      # SQL editor saved queries; unset, the editor errors on every load.
+      SNIPPETS_MANAGEMENT_FOLDER: /app/snippets
       DEFAULT_ORGANIZATION_NAME: ${STUDIO_DEFAULT_ORGANIZATION}
       DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
@@ -338,6 +340,8 @@ services:
       AUTH_JWT_SECRET: ${JWT_SECRET}
       NEXT_PUBLIC_ENABLE_LOGS: true
       NEXT_ANALYTICS_BACKEND_PROVIDER: postgres
+    volumes:
+      - ./volumes/snippets:/app/snippets:z
 
   kong:
     image: kong:2.8.1
