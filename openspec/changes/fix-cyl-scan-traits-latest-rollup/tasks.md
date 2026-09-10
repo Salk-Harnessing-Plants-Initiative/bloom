@@ -1377,6 +1377,62 @@ equally affected but not yet confirmed (tracked in 16.8).
       `21000` error body — the check 15.7 could never actually complete, since every prior opportunity
       that reached the host failed inside Postgres before this fix existed. Then confirm the next
       scheduled production run (once this fix promotes to `main` and deploys) also succeeds end-to-end.
-      Mark 15.7/15.8 (and this change's archive gate) satisfied only once this task confirms an actual
-      successful RPC delivery through to a committed refresh — not before.
+      **(`/review-pr` round 2 finding, design.md Risks/Trade-offs)** Also explicitly confirm the call
+      completes rather than timing out — an API-level `statement_timeout` rejecting the reinsert
+      query's ~6.6s cost as an opaque error is a documented failure mode elsewhere in this repo
+      (`20260710000200_search_accession_genes_force_custom_plan.sql`) and has never been ruled out for
+      this function over the real RPC path. Mark 15.7/15.8 (and this change's archive gate) satisfied
+      only once this task confirms an actual successful RPC delivery through to a committed refresh,
+      completing within whatever timeout budget actually applies — not before.
 - [x] 16.9 `openspec validate fix-cyl-scan-traits-latest-rollup --strict` passes. **Confirmed.**
+
+**`/review-pr` round 2 pass against PR #809: 5 subagents, zero BLOCKING findings, eight IMPORTANT findings
+converged on across code quality, testing, scientific rigor, and behavioural correctness (security found
+none). All addressed in this same commit rather than as separate follow-ups, since every fix was small and
+none needed further discussion.**
+
+- [x] 16.10 **(Code-quality finding: the `authenticator`-connect/`SET ROLE`/refresh sequence was
+      duplicated once inline and once as a test-local closure, instead of following this file's own
+      top-level-helper convention.)** Hoisted to two shared module-level helpers:
+      `_set_role_service_role_and_refresh(cur)` (the role-switch + call, callers own the
+      connection/transaction) and `_refresh_over_authenticator_service_role(conninfo)` (opens its own
+      connection, always rolls back and closes). Both `test_refresh_succeeds_over_authenticator_service_role_path`
+      and `test_safeupdate_fix_rollback_restores_prior_unqualified_delete_behavior` now call these
+      instead of duplicating the sequence. **Done — 25/25 tests still pass.**
+- [x] 16.11 **(Testing + behavioural-correctness findings, converged on independently: a test that
+      intentionally rolls the live function back to its pre-fix body has exactly one inline `finally`
+      re-applying the fix — if that re-apply itself raises, the shared dev/CI database is left with
+      bloom#806 live for every other test/developer, with no obvious link back to the interrupted test.
+      Also flagged: no assertion pins that this test is safe to run standalone, given it mutates the
+      live function body directly.)** Added `_ensure_safeupdate_fix_reapplied`, a fixture whose teardown
+      is a second, independent re-apply attempt (pytest fixture teardown fires even when the test body
+      raises) — explicitly documented as NOT protecting against a hard process kill, only an in-process
+      exception during or after the test's own inline re-apply. Added a docstring clarification that the
+      rollback test is self-contained/order-independent (it replaces the live function body itself
+      rather than assuming any prior test's state). **Done — confirmed by running the rollback test in
+      complete isolation (`pytest ...::test_safeupdate_fix_rollback_restores_prior_unqualified_delete_behavior`):
+      passes standalone.**
+- [x] 16.12 **(Testing finding: the authenticator-success test's cleanup wasn't itself exception-safe —
+      if `conn.rollback()` raised, `conn.close()` and the seeded-row cleanup would be skipped.)** Nested
+      the `finally` block so each cleanup step is attempted independently of whether the prior one
+      raised: `conn.rollback()`/`conn.close()` in their own nested try/finally, then the seeded-row
+      cleanup and `pg_conn.commit()` in a second nested try/finally. **Done.**
+- [x] 16.13 **(Scientific-rigor + behavioural-correctness findings: two real-world risks specific to
+      this being the function's first-ever successful run over the live RPC path were reasoned about
+      informally in review but never written down.)** Added a new Risks/Trade-offs bullet to `design.md`
+      documenting: the unverified API-level `statement_timeout` risk against the reinsert query's ~6.6s
+      cost (with this repo's own precedent for that exact failure mode); the advisory lock's scope
+      (serializes calls to this function only, not writers to the underlying tables, so a multi-commit
+      write-back racing the reinsert's single-snapshot SELECT can produce a stale-but-consistent
+      undercount — D5's original design, now exercised for the first time under real traffic); and an
+      explicit correction that this PR's "no breaking changes" claim covers API/schema surface only, not
+      concurrent-write safety. Extended 16.8 (above) to explicitly check for the timeout risk during live
+      staging verification. **Done.**
+- [x] 16.14 **(Scientific-rigor finding: the rollback SQL restores a function body that will
+      immediately reproduce bloom#806 the next time it's called over the RPC path, with no warning for
+      a future operator rolling back for an unrelated reason.)** Added a `*** WARNING ***` header comment
+      to `supabase/rollbacks/20260910120000_..._rollback.sql` stating this explicitly and instructing an
+      operator to re-apply the fix immediately if the rollback wasn't itself the intent. **Done.**
+- [x] 16.15 Re-ran the full `tests/integration/test_cyl_experiment_trait_counts.py` suite after 16.10-16.12's
+      refactor; `openspec validate fix-cyl-scan-traits-latest-rollup --strict` re-confirmed. **Done — 25/25
+      passed; validation passes.**

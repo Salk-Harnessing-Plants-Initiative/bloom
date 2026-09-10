@@ -242,6 +242,31 @@ def test_refresh_function_search_path_is_pinned(pg_conn):
     pg_conn.rollback()
 
 
+def _set_role_service_role_and_refresh(cur):
+    """`SET ROLE service_role` then call `refresh_cyl_experiment_trait_counts()` -- the exact
+    role-switch sequence PostgREST/Supavisor perform for a live RPC call. Callers must be
+    connected as `authenticator` (the only role carrying `session_preload_libraries=safeupdate`)
+    and must never commit the connection afterward -- this call rewrites the ENTIRE table in one
+    shot, unlike any fixture-scoped seed data. Shared by every test that needs to exercise the
+    bloom#806 safeupdate guard over the real RPC-shaped role path (`/review-pr` round 2 finding:
+    this logic was previously duplicated once inline and once as a test-local closure)."""
+    cur.execute("SET ROLE service_role")
+    cur.execute("SELECT public.refresh_cyl_experiment_trait_counts()")
+
+
+def _refresh_over_authenticator_service_role(conninfo):
+    """Opens its own `authenticator` connection, runs `_set_role_service_role_and_refresh`, then
+    always rolls back and closes -- for callers that only need to confirm the call succeeds
+    (or raises), not to read back a value from within the same transaction."""
+    conn = psycopg.connect(conninfo)
+    try:
+        with conn.cursor() as cur:
+            _set_role_service_role_and_refresh(cur)
+    finally:
+        conn.rollback()
+        conn.close()
+
+
 def test_refresh_succeeds_over_authenticator_service_role_path(pg_conn, authenticator_conninfo):
     """bloom#806: PostgREST/Supavisor connect as `authenticator`, then `SET ROLE service_role` per
     the caller's JWT. `session_preload_libraries=safeupdate` is set on `authenticator` alone
@@ -255,7 +280,10 @@ def test_refresh_succeeds_over_authenticator_service_role_path(pg_conn, authenti
     write back within the SAME transaction (a connection sees its own uncommitted writes), then
     rolls back rather than committing: this connection's role can rewrite the ENTIRE table in one
     call, unlike every other test's fixture-scoped seed rows, so the destructive whole-table
-    rewrite must never actually persist."""
+    rewrite must never actually persist.
+
+    Does not depend on any other test's execution order: it reads back its own seeded row within
+    its own transaction rather than assuming anything about the table's ambient state."""
     with pg_conn.cursor() as cur:
         experiment_id, _scan_id, imgs = _seed_experiment_scan(cur)
         _deliver(
@@ -271,8 +299,7 @@ def test_refresh_succeeds_over_authenticator_service_role_path(pg_conn, authenti
     conn = psycopg.connect(authenticator_conninfo)
     try:
         with conn.cursor() as cur:
-            cur.execute("SET ROLE service_role")
-            cur.execute("SELECT public.refresh_cyl_experiment_trait_counts()")
+            _set_role_service_role_and_refresh(cur)
             cur.execute(
                 "SELECT n_traits FROM cyl_experiment_trait_counts WHERE experiment_id=%s",
                 (experiment_id,),
@@ -280,11 +307,18 @@ def test_refresh_succeeds_over_authenticator_service_role_path(pg_conn, authenti
             row = cur.fetchone()
         assert row is not None and row[0] == expected == 2
     finally:
-        conn.rollback()
-        conn.close()
-        with pg_conn.cursor() as cur:
-            _cleanup_seeded_experiment(cur, experiment_id)
-        pg_conn.commit()
+        # `/review-pr` round 2 finding: nested so a failure in one cleanup step (e.g. `rollback()`
+        # on an already-broken connection) doesn't skip the steps after it -- `conn.close()` and
+        # the seeded-row cleanup must both still be attempted regardless.
+        try:
+            conn.rollback()
+        finally:
+            conn.close()
+        try:
+            with pg_conn.cursor() as cur:
+                _cleanup_seeded_experiment(cur, experiment_id)
+        finally:
+            pg_conn.commit()
 
 
 def test_concurrent_refreshes_do_not_raise_duplicate_key(pg_conninfo, pg_conn):
@@ -573,6 +607,26 @@ def test_rollback_restores_prior_state(pg_conn):
     pg_conn.rollback()
 
 
+@pytest.fixture
+def _ensure_safeupdate_fix_reapplied(pg_conn):
+    """`/review-pr` round 2 finding: a test that intentionally rolls the live function back to its
+    pre-fix (guard-triggering) body has exactly one inline `finally` re-applying the fix -- if that
+    re-apply itself raises (e.g. a dropped connection), the shared dev/CI database is left with the
+    bug live for every other test/developer, with no obvious link back to this test. This fixture
+    is a second, independent attempt at the same re-apply, run as normal pytest fixture teardown
+    (which fires even when the test body raises) rather than the test's own single code path.
+
+    This does NOT protect against the test process being killed outright (e.g. a CI timeout) --
+    nothing can, once the interpreter itself stops running -- only against an in-process exception
+    during or after the test's own inline re-apply."""
+    try:
+        yield
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute(_sql_body(SAFEUPDATE_FIX_MIGRATION))
+        pg_conn.commit()
+
+
 def test_safeupdate_fix_migration_body_is_idempotent(pg_conn):
     """bloom#806: mirrors test_migration_body_is_idempotent above for the new fix migration --
     re-applying a CREATE OR REPLACE FUNCTION body a second time must not error."""
@@ -587,23 +641,20 @@ def test_safeupdate_fix_migration_body_is_idempotent(pg_conn):
 
 
 def test_safeupdate_fix_rollback_restores_prior_unqualified_delete_behavior(
-    pg_conn, authenticator_conninfo
+    pg_conn, authenticator_conninfo, _ensure_safeupdate_fix_reapplied
 ):
     """bloom#806: proves the rollback genuinely restores the pre-fix, guard-triggering behavior --
     not just that it runs without error -- then re-applies the fix and confirms the guard-passing
     behavior returns too. Mirrors test_rollback_restores_prior_state's "restore, then re-apply and
-    confirm real behavior" discipline for this migration pair."""
+    confirm real behavior" discipline for this migration pair.
 
-    def _refresh_over_authenticator_service_role():
-        conn = psycopg.connect(authenticator_conninfo)
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SET ROLE service_role")
-                cur.execute("SELECT public.refresh_cyl_experiment_trait_counts()")
-        finally:
-            conn.rollback()
-            conn.close()
-
+    Self-contained and order-independent: this test replaces the live function's body itself
+    (via the rollback SQL) rather than relying on any assumption about what a prior test left
+    behind, so it produces the same result whether run alone or after any other test in this file.
+    The `_ensure_safeupdate_fix_reapplied` fixture is a second, independent line of defense (not a
+    load-bearing dependency for THIS test's own correctness) against the shared dev/CI database
+    being left in the pre-fix state for every other test/developer if this test's own inline
+    re-apply below is itself interrupted by an unexpected exception (`/review-pr` round 2 finding)."""
     with pg_conn.cursor() as cur:
         cur.execute(_sql_body(SAFEUPDATE_FIX_ROLLBACK))
     pg_conn.commit()  # authenticator's own connection must see the rolled-back function body
@@ -612,7 +663,7 @@ def test_safeupdate_fix_rollback_restores_prior_unqualified_delete_behavior(
         with pytest.raises(
             psycopg.errors.CardinalityViolation, match="DELETE requires a WHERE clause"
         ):
-            _refresh_over_authenticator_service_role()
+            _refresh_over_authenticator_service_role(authenticator_conninfo)
     finally:
         # Re-apply the fix regardless of the assertion's outcome, so the rest of the suite (which
         # assumes this change is fully live) still works.
@@ -620,4 +671,5 @@ def test_safeupdate_fix_rollback_restores_prior_unqualified_delete_behavior(
             cur.execute(_sql_body(SAFEUPDATE_FIX_MIGRATION))
         pg_conn.commit()
 
-    _refresh_over_authenticator_service_role()  # confirm the guard-passing behavior is restored
+    # Confirm the guard-passing behavior is restored.
+    _refresh_over_authenticator_service_role(authenticator_conninfo)

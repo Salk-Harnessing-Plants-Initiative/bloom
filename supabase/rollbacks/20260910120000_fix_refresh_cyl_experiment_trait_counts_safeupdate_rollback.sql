@@ -1,5 +1,13 @@
 -- Manual rollback for 20260910120000_fix_refresh_cyl_experiment_trait_counts_safeupdate.sql
 --
+-- *** WARNING: running this REINTRODUCES bloom#806. *** The restored body's unqualified DELETE
+-- (line 21 below) is rejected by Postgres's safeupdate guard (session_preload_libraries on the
+-- `authenticator` role) the moment anything calls this function over the real service_role/
+-- PostgREST RPC path -- SQLSTATE 21000, "DELETE requires a WHERE clause". Only run this rollback
+-- if you are deliberately reverting the bloom#806 fix itself (e.g. investigating a regression it
+-- introduced); if you're rolling back for an unrelated reason, re-apply
+-- 20260910120000_fix_refresh_cyl_experiment_trait_counts_safeupdate.sql immediately afterward.
+--
 -- Restores the exact pre-fix function body (the unqualified DELETE from
 -- 20260817140000_create_cyl_experiment_trait_counts.sql) via CREATE OR REPLACE FUNCTION, not DROP
 -- -- dropping would lose the function's service_role-only grant state, which a rollback should

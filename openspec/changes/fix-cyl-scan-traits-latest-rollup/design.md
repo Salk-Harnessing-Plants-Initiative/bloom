@@ -790,6 +790,33 @@ D5b/D5c/D9 already established for this table, applied here rather than left as 
 
 ## Risks / Trade-offs
 
+- **(D10, found in `/review-pr` round 2's scientific-rigor and behavioural-correctness passes)
+  This fix makes the refresh actually succeed via the live RPC path for the first time ever
+  (per bloom#740, it has never once completed automatically in production) — two real-world
+  exposures this class of "first real run" carries that D10 itself doesn't fully resolve, only
+  gates behind live verification (tasks.md 16.8):**
+  - **Unverified: whether an API-level `statement_timeout` could reject the reinsert query's ~6.6s
+    cost (Benfica's own prod measurement, Context section) when it finally runs over PostgREST
+    rather than a raw `psql`/`supabase_admin` connection.** This repo has a documented precedent of
+    exactly this failure mode elsewhere (`supabase/migrations/20260710000200_search_accession_genes_force_custom_plan.sql`'s
+    header comment: a multi-second query hitting an API-level `statement_timeout` as an opaque HTTP
+    500). Not investigated here — tasks.md 16.8's live staging dispatch must explicitly confirm the
+    call completes rather than timing out, not just that it returns *a* response.
+  - **The advisory lock only serializes concurrent calls to this function — it takes no lock on the
+    underlying `cyl_waves`/`cyl_plants`/`cyl_scans`/`cyl_scan_traits` tables it reads.** Under
+    default READ COMMITTED, a write-back RPC call that spans multiple separate commits (e.g. one
+    commit per scan in a batch) racing the reinsert's own single-snapshot `SELECT` can produce an
+    internally-consistent but stale undercount for that experiment, silently corrected only by the
+    *next* refresh. This is D5's original design, unchanged by this fix, and unrelated to
+    `safeupdate` — but since the function has never successfully run against real concurrent
+    write-back traffic before, this exposure is now live in practice for the first time, not merely
+    theoretical. Not mitigated here; worth a future issue if `n_traits`'s occasional one-refresh-cycle
+    staleness under concurrent writes ever needs a tighter bound than D5's accepted staleness window
+    already covers.
+  - **This PR's own "no breaking changes" framing is accurate for API/schema surface only** (same
+    function signature, same callers) — it should not be read as "safe under arbitrary concurrent
+    write load," which was never verified and isn't enforced by any lock, schedule, or config; it's
+    an inherited assumption from D5, not a new guarantee this fix adds.
 - **The single-transaction backfill's write-blocking window (D3) is new operational surface with no
   precedent in this repo's migrations** — every prior migration either doesn't touch table data at scale
   or (PR #654's design) explicitly avoided holding one transaction open across a large data change. A
