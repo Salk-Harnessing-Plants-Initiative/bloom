@@ -52,7 +52,10 @@ export default function GeneDrillDown({ geneData }: { geneData: GeneData }) {
 
     useEffect(()=>{
 
-        // counts is now an object {cellId: expressionValue, ...} not an array
+        // counts is an object {cellId: expressionValue, ...}, keyed by
+        // cell_number. Both loaders number cells from zero -- the legacy one
+        // from a scipy sparse matrix's column indices, the current one from
+        // enumerate() -- so the key is the cell_number, with no offset.
         const counts_obj: {[key:number]:number} = {};
         for (const [cellId, value] of Object.entries(geneData.counts)) {
             counts_obj[Number(cellId)] = value as unknown as number;
@@ -65,8 +68,8 @@ export default function GeneDrillDown({ geneData }: { geneData: GeneData }) {
         
             if (item.cluster_id !== null) {
             acc[item.cluster_id]?.barcodes.push(item.barcode ? item.barcode :  "N/A");
-            acc[item.cluster_id]?.expression.push(counts_obj[item.cell_number + 1]);
-            acc[item.cluster_id]?.points.push({expression: counts_obj[item.cell_number + 1], barcode: item.barcode ? item.barcode : "N/A" })
+            acc[item.cluster_id]?.expression.push(counts_obj[item.cell_number]);
+            acc[item.cluster_id]?.points.push({expression: counts_obj[item.cell_number], barcode: item.barcode ? item.barcode : "N/A" })
             }
         
             return acc;
@@ -77,7 +80,7 @@ export default function GeneDrillDown({ geneData }: { geneData: GeneData }) {
             barcode: item.barcode,
             x: item.x,
             y: item.y,
-            expression: counts_obj[item.cell_number + 1]
+            expression: counts_obj[item.cell_number]
         })) || []
 
 
