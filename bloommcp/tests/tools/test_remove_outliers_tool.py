@@ -1170,6 +1170,31 @@ def test_persistence_failure_closes_all_figures(injected_ports, monkeypatch):
     assert plt.get_fignums() == []
 
 
+def test_figure_allocated_then_abandoned_mid_render_is_still_closed(
+    injected_ports, monkeypatch
+):
+    """#721 PR review round 4: unlike a delegate that raises with zero figure
+    allocation, `plot_outlier_analysis` allocating a figure and *then* raising later
+    in the same call previously leaked forever — `_make_figures`' call site had no
+    cleanup at all. `call_with_figure_cleanup` closes it now."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    def _allocate_then_boom(*a, **k):
+        plt.figure()
+        raise RuntimeError("plot_outlier_analysis blew up after allocating a figure")
+
+    monkeypatch.setattr(
+        remove_outliers_tool, "plot_outlier_analysis", _allocate_then_boom
+    )
+    plt.close("all")
+    with pytest.raises(BloomMCPError):
+        _run(method="isolation_forest", include_plots=True)
+    assert plt.get_fignums() == []
+
+
 # ── _rows_subset multiset containment (repeated-barcode caveat) ─────────────
 
 
