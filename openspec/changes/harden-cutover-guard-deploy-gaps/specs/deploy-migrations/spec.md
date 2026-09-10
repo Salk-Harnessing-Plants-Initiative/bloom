@@ -2,7 +2,7 @@
 
 ### Requirement: A migration failure MUST resolve the triggering PR and re-extract its referenced issues
 
-When the "Apply database migrations" step's own outcome is `failure` (not `skipped` or `success`) in `deploy.yml`'s `deploy-staging` or `deploy-production` job, a subsequent step's `if:` SHALL be `failure() && steps.<migration-step-id>.outcome == 'failure'` — never a bare outcome comparison, since a step `if:` without an explicit `failure()`/`success()`/`always()`/`cancelled()` term is implicitly ANDed with `success()`, which is already false by the time this step would run. That step SHALL resolve the pull request associated with the triggering commit via `GET /repos/{owner}/{repo}/commits/{sha}/pulls` for `github.sha`, and SHALL log the condition and take no further action if zero or more than one PR is associated with that commit. For exactly one associated PR, the step SHALL re-extract same-repo issue numbers from that PR's live `title`/`body` (fetched via the API inside the script, never interpolated via `${{ }}` into the script source or a shell command) using the same closing-keyword regex `auto-close-issues-on-staging.yml` uses (`\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+#(\d+)`, case-insensitive), and SHALL skip any matched number whose referent is itself a pull request rather than an issue, mirroring `auto-close-issues-on-staging.yml`'s own guard.
+When the "Apply database migrations" step's own outcome is `failure` (not `skipped` or `success`) in `deploy.yml`'s `deploy-staging` or `deploy-production` job, a subsequent step's `if:` SHALL be `failure() && steps.<migration-step-id>.outcome == 'failure'` — never a bare outcome comparison, since a step `if:` without an explicit `failure()`/`success()`/`always()`/`cancelled()` term is implicitly ANDed with `success()`, which is already false by the time this step would run. That step SHALL resolve the pull request associated with the triggering commit via `GET /repos/{owner}/{repo}/commits/{sha}/pulls` for `github.sha` (reading `title`/`body` from that same response, without a separate PR-get call), and SHALL log the condition and take no further action if zero or more than one PR is associated with that commit. For exactly one associated PR, the step SHALL re-extract same-repo issue numbers from that PR's live `title`/`body` (never interpolated via `${{ }}` into the script source or a shell command) using the same closing-keyword regex `auto-close-issues-on-staging.yml` uses (`\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+#(\d+)`, case-insensitive), and SHALL skip any matched number whose referent is itself a pull request rather than an issue, mirroring `auto-close-issues-on-staging.yml`'s own guard. Every outbound GitHub API call the step makes SHALL be wrapped with an explicit timeout (bounded, rather than left to the enclosing job's own multi-minute ceiling), so a connection this runner's network silently drops fails loud and fast instead of holding the shared deploy concurrency lock for the remainder of the job's timeout.
 
 #### Scenario: A failed staging migration resolves its triggering PR
 
@@ -47,16 +47,24 @@ When the "Apply database migrations" step's own outcome is `failure` (not `skipp
 - **WHEN** the step runs
 - **THEN** it logs that no same-repo closing references were found and takes no further action, without error
 
-### Requirement: Reopen and comment actions MUST be limited to issues closed by the auto-close automation
+#### Scenario: A hung API call times out rather than blocking the job
 
-For each issue number re-extracted from the failing PR (per the PR-resolution requirement above), the step SHALL fetch that issue via `GET /repos/{owner}/{repo}/issues/{issue_number}` and SHALL reopen it and post an explanatory comment naming the failed run and step only if all of the following hold: `state` is `closed`, `state_reason` is `completed`, and `closed_by.login` is `github-actions[bot]`. If any of these does not hold, the step SHALL leave that issue untouched and SHALL log which condition failed and why the issue was skipped. Each referenced issue number SHALL be evaluated independently, so that a failing PR referencing multiple issues reopens exactly those that pass the guard and leaves the rest untouched, unaffected by each other's outcome. The step SHALL wrap its top-level PR-resolution calls and its per-issue processing each in their own error handling, so that a single API failure (a bogus/deleted/transferred issue number, a transient error) logs a warning and continues rather than raising an unhandled exception.
+- **GIVEN** an outbound call the step makes (PR resolution, or a per-issue call) never receives a response, because the runner's network silently drops the connection rather than refusing it
+- **WHEN** the wrapped call exceeds its bounded timeout
+- **THEN** it rejects with an error naming the call and the timeout duration
+- **AND** the enclosing error handling logs a warning and the step completes well within the job's own multi-minute timeout, rather than holding the shared deploy concurrency lock until that ceiling is reached
 
-#### Scenario: An issue auto-closed by the automation is reopened with an explanatory comment
+### Requirement: Reopen and comment actions MUST be limited to issues closed by the auto-close automation, for THIS PR specifically
+
+For each issue number re-extracted from the failing PR (per the PR-resolution requirement above), the step SHALL fetch that issue via `GET /repos/{owner}/{repo}/issues/{issue_number}` and SHALL consider it a reopen candidate only if all of the following hold: `state` is `closed`, `state_reason` is `completed`, and `closed_by.login` is `github-actions[bot]`. A reopen candidate SHALL be reopened and commented on only if an additional check passes: the step SHALL read the issue's comments, locate the most recent comment authored by `github-actions[bot]` whose body matches auto-close-issues-on-staging.yml's own closing-comment text (`Closed by #<N> (merged into \`staging\`)...`), and compare that `<N>` to the number of the PR this run itself resolved. If they do not match — the issue was closed by a *different* PR than the one whose deploy just failed — the step SHALL leave the issue untouched, exactly as if the three-part state guard had failed. This prevents an unrelated later PR that happens to reference the same issue number from wrongly reopening an issue whose own, real fix already deployed successfully. If any check fails, the step SHALL leave that issue untouched and SHALL log which condition failed and why the issue was skipped. Each referenced issue number SHALL be evaluated independently, so that a failing PR referencing multiple issues reopens exactly those that pass every guard and leaves the rest untouched, unaffected by each other's outcome. When all guards pass, the step SHALL first update the issue's state to `open`, and only then post the explanatory comment — never the reverse — so that a failure partway through (the comment posting but the state update failing, or vice versa) never leaves a "reopening" comment on a still-closed issue. The posted comment SHALL name the failed run, the failed step ("Apply database migrations"), and the specific environment that failed (derived at runtime, e.g. from the running job's own id, rather than hardcoded per job so the two jobs' implementations can stay identical). The step SHALL wrap its top-level PR-resolution calls and its per-issue processing (including the comment-lookup call) each in their own error handling, so that a single API failure (a bogus/deleted/transferred issue number, a transient error) logs a warning and continues rather than raising an unhandled exception.
+
+#### Scenario: An issue auto-closed by the automation, by THIS run's own PR, is reopened with an explanatory comment
 
 - **GIVEN** issue #900 is currently `state: closed`, `state_reason: completed`, `closed_by.login: github-actions[bot]`
-- **AND** #900 was referenced by the failing PR's title/body via a closing keyword
+- **AND** #900 was referenced by the failing PR (PR #900) via a closing keyword
+- **AND** #900's most recent `github-actions[bot]` comment reads `Closed by #900 (merged into \`staging\`).`
 - **WHEN** the step evaluates #900
-- **THEN** it reopens #900 and posts a comment naming the failed run URL and the failed step, stating that automatic close-on-merge outran deploy verification
+- **THEN** it first updates #900's state to `open`, then posts a comment naming the failed run URL, the failed step, and the failing environment, stating that automatic close-on-merge outran deploy verification
 
 #### Scenario: An issue closed by a human for an unrelated reason is left untouched
 
@@ -73,9 +81,18 @@ For each issue number re-extracted from the failing PR (per the PR-resolution re
 - **WHEN** the step evaluates #902
 - **THEN** it does not attempt to reopen it or post a duplicate comment, because `state === 'closed'` is false
 
+#### Scenario: An issue auto-closed by a DIFFERENT PR than the one whose deploy just failed is left untouched
+
+- **GIVEN** issue #900 was auto-closed by PR #900, whose own deploy already succeeded
+- **AND** a later, unrelated PR #950 also references "#900" via a closing keyword in its own title/body
+- **AND** PR #950's deploy fails for a reason unrelated to #900's original fix
+- **WHEN** the step (running for PR #950's failed deploy) evaluates #900
+- **THEN** it reads #900's most recent `github-actions[bot]` closing comment, sees it reads `Closed by #900`, not `Closed by #950`
+- **AND** it leaves #900 untouched and logs that the issue was closed by a different PR than this run's own
+
 #### Scenario: A single failing PR with mixed referenced issues reopens only the ones that qualify
 
-- **GIVEN** the failing PR's title/body references both #900 (auto-closed, per the first scenario above) and #901 (human-closed, per the second scenario above)
+- **GIVEN** the failing PR's title/body references both #900 (auto-closed by this same PR, per the first scenario above) and #901 (human-closed, per the second scenario above)
 - **WHEN** the step evaluates both
 - **THEN** #900 is reopened with a comment and #901 is left untouched, and neither issue's outcome is affected by the other's
 

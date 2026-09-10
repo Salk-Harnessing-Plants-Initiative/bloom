@@ -37,13 +37,15 @@ squash commit text entirely. So `github.event.head_commit.message` is not a reli
 
 Instead, the new step calls `GET /repos/{owner}/{repo}/commits/{sha}/pulls`
 (`listPullRequestsAssociatedWithCommit`) for the deploy job's `github.sha` to resolve the PR that
-produced this commit, then re-reads **that PR's** live `title`/`body` via `github.rest.pulls.get`
-and re-runs the exact same regex
+produced this commit, and reads that same response's own `title`/`body` fields — this endpoint
+already returns them in full, so no separate `github.rest.pulls.get` call is needed or made (an
+earlier draft of this doc claimed one; corrected during review, since the fields are already
+present on the first response). It then re-runs the exact same regex
 (`auto-close-issues-on-staging.yml`'s `/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+#(\d+)/gi`)
-against it — fetched via the API inside the script, never interpolated into the script source or
-a shell `run:` block via `${{ }}`, matching `auto-close-issues-on-staging.yml`'s own safe pattern
-and avoiding any script-injection surface. A referenced number that turns out to be a PR, not an
-issue (`issue.pull_request` is present), is skipped, mirroring
+against that text — fetched via the API inside the script, never interpolated into the script
+source or a shell `run:` block via `${{ }}`, matching `auto-close-issues-on-staging.yml`'s own
+safe pattern and avoiding any script-injection surface. A referenced number that turns out to be a
+PR, not an issue (`issue.pull_request` is present), is skipped, mirroring
 `auto-close-issues-on-staging.yml:87-90`'s own guard.
 
 If `commits/{sha}/pulls` returns zero or more than one PR (e.g. a direct push to `staging`, or an
@@ -70,6 +72,62 @@ this is evaluated independently per issue number, so one PR referencing both an 
 affecting the other. This mirrors the existing workflow's own conservative bias (a missed reopen
 just leaves an issue closed and someone eventually notices, as happened twice already; a wrongful
 reopen would be a more confusing, harder-to-diagnose mistake for someone to hit later).
+
+### Misattribution guard: confirm the closing comment names THIS run's own PR
+
+The three-part guard above (`state`/`state_reason`/`closed_by`) confirms an issue was closed *by
+the automation*, but not *by which PR*. Caught in review: if PR A closes #900 via a real closing
+keyword and PR A's own deploy succeeds, and a later, unrelated PR B also happens to say
+"Fixes #900" in its title/body but PR B's *own* deploy then fails for an unrelated reason, the
+three-part guard alone would incorrectly reopen #900 and post a comment implying #900's real fix
+(PR A's) failed to deploy — false, and exactly the "wrongful reopen is a more confusing mistake"
+failure mode this design otherwise tries to avoid.
+
+Fixed by reading back `auto-close-issues-on-staging.yml`'s own comment on the issue — it always
+reads `Closed by #<N> (merged into `staging`)...` — and comparing that `<N>` to the *current* run's
+own `pr.number` (the PR `commits/{sha}/pulls` resolved earlier in this same step). Only reopen if
+they match. This adds one `issues.listComments` call per candidate issue (already covered by the
+existing `issues: write` permission grant — comment-listing needs no additional scope) and finds
+the most recent matching bot comment by searching from the end of the list backward, so a
+since-reopened-and-reclosed issue is judged by its latest close, not a stale earlier one.
+
+### Every outbound API call is wrapped with an explicit timeout
+
+Caught in review: this runner class has a documented history (bloom#616) of *silently dropping*
+outbound traffic rather than refusing it — a `ufw` default-deny-outbound rule typically blackholes
+packets instead of returning a fast, loud connection-refused error. Without an explicit timeout, a
+blocked call here would hang for the job's full `timeout-minutes: 30` ceiling, holding the shared
+`concurrency: group: deploy-bloom` lock — the single Salk-server deploy slot — for half an hour on
+every future push, precisely when a human is already dealing with a failed deploy. Every
+`github.rest.*` call in the new step is wrapped in a small `Promise.race`-based `withTimeout`
+helper (15s per call) that rejects with a clear "`<label> timed out after <ms>ms`" error, caught by
+the existing try/catch layers and logged via `core.warning` rather than left to the job's own
+30-minute ceiling to eventually notice.
+
+### The comment names which environment failed, without the two jobs' scripts diverging
+
+Caught in review: the original comment text was deliberately environment-agnostic (to keep the
+two jobs' scripts byte-identical), which meant a reader couldn't tell a staging failure from a
+production one without clicking through to the linked run — a real ergonomic gap given the two
+carry very different urgency. Fixed without reintroducing per-job script variants: `context.job`
+(a real `@actions/github` context field, populated from `GITHUB_JOB`) is literally the running
+job's id — `"deploy-staging"` or `"deploy-production"` — so `context.job.replace(/^deploy-/, '')`
+derives the environment label at runtime from data the script already has, rather than from a
+hardcoded per-copy string. The two jobs' `with: script:` bodies are therefore now genuinely
+byte-identical (asserted directly by a test — see the "Test strategy" section below), not merely
+identical-by-inspection as they were before this fix.
+
+### The issue is reopened before the comment is posted, not after
+
+Caught in review: the original order posted the "reopening" comment first, then called
+`issues.update({state: 'open'})`. If the `update` call failed partway through (a transient error,
+a rate limit) after the comment had already posted, the issue would be left closed but bearing a
+comment claiming it had been reopened — and a later run hitting the same issue would repeat the
+mistake, since the guard's preconditions (`state === 'closed'`, etc.) would still hold. Swapping
+the order makes a partial failure strictly milder: if `update` fails, nothing externally visible
+happens yet (safely retried on a future run); if `update` succeeds but `createComment` fails, the
+issue is at least genuinely open, and the guard's own `state === 'closed'` check then prevents any
+future duplicate comment on it.
 
 ### Scope the failure condition to the migration step specifically — and distinguish skipped from failed
 
@@ -153,34 +211,71 @@ an equivalent `deploy.yml` edit. This change relies on the same mitigation it di
 own `yaml.safe_load` parse (which fails loudly on malformed YAML) plus a manual diff read-through
 before merge — not a new linter.
 
-The safety-critical guard logic (state_reason + closed_by) can only ever be shape-tested
-(substring/pattern presence in the embedded script), not behaviorally exercised against a mocked
-GitHub API response, for the same reason nothing else here can run in PR CI. This is the weakest
-test coverage in the change and is accepted for the same reason `auto-close-issues-on-staging.yml`
-accepts it for its own, symmetric guard — not because it doesn't matter, but because there is no
-feasible way to run it short of a live GitHub App test harness this repo doesn't have.
+The safety-critical guard logic (state_reason + closed_by + the misattribution check) is
+shape-tested in `tests/unit/` (substring/pattern presence in the embedded script) for the same
+reason nothing else here can run in PR CI. That test suite is not, on its own, proof the JS
+actually behaves correctly — it can only prove the right tokens are present. During review, the
+extracted script was additionally syntax-checked (`node --check`) and executed directly against a
+small hand-built mock of the GitHub API (happy-path reopen, the misattribution guard correctly
+blocking a cross-PR reopen, and the timeout wrapper firing at ~15s instead of hanging) — this
+one-time verification is not itself part of the committed test suite (there is no Node test
+runner in this repo's CI), but gives real confidence beyond static shape-matching that the
+Section-2 tests alone couldn't provide.
 
-### Step placement and this being the first GitHub-API call from this self-hosted runner
+Because the environment label is now derived from `context.job` at runtime rather than
+hardcoded per job copy (see "The comment names which environment failed" above), the two jobs'
+`with: script:` bodies are genuinely byte-identical — asserted directly by
+`test_scripts_are_byte_identical_across_jobs`, replacing what was previously only a manual
+pre-merge diff instruction.
+
+### Step placement, and this runner's outbound-HTTPS track record
 
 The new step is inserted immediately after "Show migration status on failure" and before
 "Migration summary" in each job — a deterministic slot next to the other failure-diagnostic
-steps, rather than an unspecified "wherever ordering is cleanest." Every existing step in
-`deploy.yml` is SSH-only; this change is the first to require the self-hosted `salk-network`
-runner to reach `api.github.com` over HTTPS directly (via `actions/github-script`). This is very
-likely already fine — the same runner already needs outbound HTTPS to `github.com` to receive
-jobs at all and to run `actions/checkout@v4` — but is called out explicitly here rather than left
-an unstated assumption, given this repo's own recent history of exactly this class of surprise on
-a Salk-network host (the bloom#616 ufw default-deny-outbound finding). If this ever needs
+steps, rather than an unspecified "wherever ordering is cleanest." An earlier draft of this doc
+claimed this change is "the first to require the self-hosted `salk-network` runner to reach
+`api.github.com` over HTTPS" — checked directly against the file during review and found false:
+the pre-existing "Cloudflare API token preflight" step already `curl`s
+`https://api.cloudflare.com/...` directly from this same runner, no SSH involved. That's actually
+better evidence than the false claim it replaces — a real, already-working precedent for direct
+outbound HTTPS from this exact runner class, not just an inference from "it needs HTTPS to receive
+jobs at all." Combined with the explicit per-call timeout (above), a stalled connection here now
+fails loud and fast rather than silently consuming the job's full ceiling; if it ever does need
 debugging, the fix is the same one bloom#616 already applied (an explicit ufw allow rule), not a
 new investigation.
 
 ## Risks / Trade-offs
 
+- **The `deploy-production` copy of this step is, in this repo's actual release flow, usually a
+  no-op — caught in review, and worth stating plainly rather than leaving implied.** `main` only
+  ever receives pushes via periodic `staging`→`main` promotion PRs, and this repo's convention
+  for those promotions is a real merge commit, not a squash (confirmed against real history: a
+  squash would drop the parent link the promotion is specifically meant to preserve). For a merge
+  commit, `commits/{sha}/pulls` resolves to the *promotion* PR, not the original feature PR — and
+  promotion PR bodies reference issues in a parenthetical `(#N)` style that the shared
+  closing-keyword regex deliberately does not match (the same `(#N)` case is already in
+  `KEYWORD_CASES` as a documented non-match). Even in the rare case a promotion PR did contain a
+  real closing keyword, the referenced issue was typically never auto-closed at merge-into-`main`
+  time in the first place, since `auto-close-issues-on-staging.yml` only fires on merge into
+  `staging`. Net effect: `deploy-production`'s step will almost always find one associated PR
+  with zero keyword matches and log a clean no-op. This is accepted, not fixed, for this change:
+  walking a merge commit's constituent commits to find the *original* feature PRs would be a
+  meaningfully larger, more error-prone change than the problem calls for, and a no-op is this
+  design's own safe-side default everywhere else. The step is kept on `deploy-production` anyway
+  as a genuine (if currently rare-case) safety net — a squash-merged promotion, a direct push to
+  `main`, or a future change to the promotion convention would all make it actually fire — rather
+  than removed and having to be re-added later.
 - **PR merged via `gh pr merge --squash` from outside the normal flow, or a direct push to
   `staging`** — `commits/{sha}/pulls` would return no associated PR, or more than one. The step
   logs this and takes no action rather than guessing; this is the same "log and continue on one
   bogus number" bias `auto-close-issues-on-staging.yml` already uses for a deleted/transferred
   issue.
+- **A `workflow_dispatch` run manually dispatched against an old commit** could in principle
+  reopen a long-resolved issue if that old commit's migration now fails for reasons unrelated to
+  its original fix (e.g. environment drift since the commit was current) — `context.sha` still
+  correctly reflects whatever ref was selected at dispatch time, so this is not a bug in the
+  resolution logic, just a sharp edge of manually re-running old state. Not mitigated here;
+  worth knowing about before dispatching against anything but the current tip.
 - **The reopened issue's comment could itself look like a false alarm on a transient failure**
   (e.g. a network blip during the SSH step, unrelated to the migration's own correctness). The
   comment names the failed run and step so a human reading it can tell a transient infra hiccup

@@ -125,7 +125,7 @@ parametrized §2 suite red between two separate commits for no benefit.
 
 ## 4. Validate and land
 
-- [ ] 4.1 `openspec validate harden-cutover-guard-deploy-gaps --strict` — resolve every issue it
+- [x] 4.1 `openspec validate harden-cutover-guard-deploy-gaps --strict` — resolve every issue it
       raises.
 - [x] 4.2 Run the full `tests/unit/` suite locally (`uv run --extra test pytest tests/unit/`) —
       confirm no regression in `test_auto_close_workflow_shape.py` or elsewhere.
@@ -137,10 +137,54 @@ parametrized §2 suite red between two separate commits for no benefit.
 - [x] 4.4 `/pre-merge`, then `/pr-description` and open the bundled PR (proposal + implementation)
       against `staging`, linking bloom#780. Do not merge — leave that to the user. (PR #807)
 
-## 5. Post-merge (not part of this PR)
+## 5. Address PR #807 review findings (5-agent adversarial self-review)
 
-- [ ] 5.1 After merge and a real deploy run: `openspec:archive harden-cutover-guard-deploy-gaps`.
-- [ ] 5.2 Confirm bloom#780 itself is closed once the fix is live. If closing manually rather than
+The author (this session) ran `/review-pr` against the open PR and applied its findings, following
+the same TDD discipline as the original build: RED tests added and confirmed failing before each
+implementation change.
+
+- [x] 5.1 (RED) Extend `tests/unit/test_deploy_reopen_on_migration_failure_shape.py` with new
+      assertions: `context.job`-derived environment label present; `issues.update` precedes
+      `issues.createComment` in the per-issue loop; a `Closed by #<N>` misattribution guard
+      compares against `pr.number`; every API call is wrapped in a `Promise.race`-based timeout;
+      the two jobs' scripts are byte-identical (no longer just a manual diff); the existing
+      run/step-name comment assertion also checks for the literal "Apply database migrations"
+      string. Confirmed 8 of the new/strengthened cases RED (the byte-identical and
+      step-name-in-comment cases were already true and stayed green — no implementation change
+      needed for those two).
+- [x] 5.2 (GREEN) Implemented in `.github/workflows/deploy.yml`, identically in both jobs (script
+      bodies are now genuinely byte-identical, not just similar): derive the environment label
+      from `context.job`; reorder `issues.update` before `issues.createComment`; add the
+      `issues.listComments` + `Closed by #<N>` misattribution guard; wrap every `github.rest.*`
+      call in a `withTimeout` helper (15s, `Promise.race`-based). Confirmed all 91 cases GREEN.
+- [x] 5.3 Verified the extracted script directly, beyond shape-testing: `node --check` on both
+      jobs' extracted scripts (syntax-valid), and executed against a hand-built mock of the
+      GitHub API for three scenarios — happy-path reopen (comment correctly names the
+      environment), the misattribution guard correctly blocking a cross-PR reopen, and the
+      timeout wrapper firing at ~15s instead of hanging.
+- [x] 5.4 Corrected `design.md`: removed the false claim that the step calls
+      `github.rest.pulls.get` (it doesn't — `listPullRequestsAssociatedWithCommit`'s own response
+      already carries `title`/`body`); removed the false claim that this change is "the first" to
+      need direct HTTPS from this runner (the pre-existing "Cloudflare API token preflight" step
+      already does, and is now cited as the real precedent); documented the new misattribution
+      guard, timeout wrapper, and env-aware-comment-via-`context.job` decisions; added the
+      `deploy-production` no-op limitation and the `workflow_dispatch`-against-a-stale-commit
+      risk to the Risks section.
+- [x] 5.5 Tightened `contracts/README.md`'s re-pin-procedure step 5 (and the matching
+      `contract-pinning` spec requirement text) so skipping the production check requires an
+      affirmative, checkable reason ("I confirmed from schema/migration history the guarded
+      condition cannot exist there"), not an unverified "probably fine."
+- [x] 5.6 Updated `specs/deploy-migrations/spec.md`: extended the PR-resolution requirement to
+      cover the timeout wrapper (+ a new scenario); renamed and extended the reopen-guard
+      requirement to cover the misattribution check and the update-before-comment ordering (+ new
+      scenarios: misattributed-reopen-is-blocked, hung-call-times-out).
+- [x] 5.7 `openspec validate harden-cutover-guard-deploy-gaps --strict` and the full
+      `tests/unit/` suite — both green after all of the above.
+
+## 6. Post-merge (not part of this PR)
+
+- [ ] 6.1 After merge and a real deploy run: `openspec:archive harden-cutover-guard-deploy-gaps`.
+- [ ] 6.2 Confirm bloom#780 itself is closed once the fix is live. If closing manually rather than
       via the PR's own `Closes #780` auto-close, get the user's explicit go-ahead for that specific
       GitHub write before posting anything — same convention as every other GitHub write this
       session. Applying this change's own lesson to itself: since this particular PR's merge
