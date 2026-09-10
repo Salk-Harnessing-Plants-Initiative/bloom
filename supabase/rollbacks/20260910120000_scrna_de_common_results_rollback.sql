@@ -29,6 +29,7 @@ BEGIN
     SELECT count(*) INTO at_risk
       FROM public.scrna_de
      WHERE run_id IS NOT NULL
+        OR cluster_ref IS NOT NULL
         OR group_kind IS NOT NULL
         OR method IS NOT NULL
         OR params_hash IS NOT NULL
@@ -59,6 +60,8 @@ DROP INDEX IF EXISTS public.scrna_de_run_idx;
 
 -- The rules that only made sense with runs.
 ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_cluster_ref_in_catalogue,
+  DROP CONSTRAINT IF EXISTS scrna_de_run_rows_name_the_catalogue,
   DROP CONSTRAINT IF EXISTS scrna_de_run_rows_are_complete,
   DROP CONSTRAINT IF EXISTS scrna_de_group_kind_known,
   DROP CONSTRAINT IF EXISTS scrna_de_untested_counted_nothing,
@@ -77,6 +80,7 @@ ALTER TABLE public.scrna_de
   );
 
 ALTER TABLE public.scrna_de
+  DROP COLUMN IF EXISTS cluster_ref,
   DROP COLUMN IF EXISTS run_id,
   DROP COLUMN IF EXISTS group_kind,
   DROP COLUMN IF EXISTS method,
@@ -90,6 +94,11 @@ DROP TABLE IF EXISTS public.scrna_de_runs;
 -- (dataset_id, id). Nothing else depends on it.
 ALTER TABLE public.scrna_genes
   DROP CONSTRAINT IF EXISTS scrna_genes_dataset_gene_key;
+
+-- Added by the migration so scrna_de could reference (dataset_id, id). The
+-- primary key already covers uniqueness, so removing it takes nothing away.
+ALTER TABLE public.scrna_clusters
+  DROP CONSTRAINT IF EXISTS scrna_clusters_id_per_dataset;
 
 -- Put back the ability to edit a submitted result, which the migration took
 -- away. These two policies and the grant behind them predate it, so leaving

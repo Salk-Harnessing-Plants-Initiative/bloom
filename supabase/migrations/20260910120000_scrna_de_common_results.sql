@@ -86,7 +86,8 @@ ALTER TABLE public.scrna_de
   ADD COLUMN IF NOT EXISTS group_kind  TEXT    DEFAULT NULL,
   ADD COLUMN IF NOT EXISTS method      TEXT    DEFAULT NULL,
   ADD COLUMN IF NOT EXISTS params_hash TEXT    DEFAULT NULL,
-  ADD COLUMN IF NOT EXISTS tested      BOOLEAN DEFAULT NULL;
+  ADD COLUMN IF NOT EXISTS tested      BOOLEAN DEFAULT NULL,
+  ADD COLUMN IF NOT EXISTS cluster_ref BIGINT  DEFAULT NULL;
 
 COMMENT ON COLUMN public.scrna_de.run_id IS
   'The analysis that produced this row. NULL means it predates runs: the '
@@ -98,6 +99,12 @@ COMMENT ON COLUMN public.scrna_de.tested IS
   'False for a comparison that was considered and never run -- too few cells on '
   'one side, usually. Such a row carries its group sizes, which is what explains '
   'why, and no gene rows.';
+COMMENT ON COLUMN public.scrna_de.cluster_ref IS
+  'The catalogue row this result is about, by key. cluster_id beside it holds the '
+  'label, which is what the pre-run rows have and all a reader had before. Naming '
+  'the key means relabelling a cell type leaves the result alone instead of '
+  'rewriting it. NULL on a pre-run row, and on a comparison across the whole '
+  'dataset, which is scoped to no cell type at all.';
 
 -- 3. The rule that assumed a file ----------------------------------------------
 -- The old rule read: a row either names a file, or it names a contrast and
@@ -176,16 +183,61 @@ ALTER TABLE public.scrna_de
   ON UPDATE CASCADE ON DELETE RESTRICT
   NOT VALID;
 
+-- The same rule for run rows, by key instead of by label. A cell type's label is
+-- curated -- scrna_clusters.source records where it came from -- so copying it
+-- into every result means a rename has to rewrite them all. Naming the catalogue
+-- row instead leaves them alone: the label changes in the one place it lives.
+--
+-- No ON UPDATE clause, because scrna_clusters.id does not change. ON DELETE
+-- RESTRICT for the same reason as above: the result is about that cell type.
+--
+-- Guarded rather than dropped and re-added, like scrna_genes_dataset_gene_key:
+-- the foreign key below points at this index, so a second run cannot drop it.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'scrna_clusters_id_per_dataset'
+       AND conrelid = 'public.scrna_clusters'::regclass
+  ) THEN
+    ALTER TABLE public.scrna_clusters
+      ADD CONSTRAINT scrna_clusters_id_per_dataset UNIQUE (dataset_id, id);
+  END IF;
+END $$;
+
+ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_cluster_ref_in_catalogue;
+ALTER TABLE public.scrna_de
+  ADD CONSTRAINT scrna_de_cluster_ref_in_catalogue
+  FOREIGN KEY (dataset_id, cluster_ref)
+  REFERENCES public.scrna_clusters (dataset_id, id)
+  ON DELETE RESTRICT;
+
+-- A run row scoped to a cell type names it by key. The pre-run rows keep the
+-- label and are not asked for one; a whole-dataset comparison is scoped to no
+-- cell type and carries neither.
+ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_run_rows_name_the_catalogue;
+ALTER TABLE public.scrna_de
+  ADD CONSTRAINT scrna_de_run_rows_name_the_catalogue
+  CHECK (run_id IS NULL OR cluster_id IS NULL OR cluster_ref IS NOT NULL);
+
 -- 6. One row per comparison, per analysis --------------------------------------
 -- Was (dataset_id, cluster_id, contrast), which allowed a dataset exactly one
 -- answer per question. Adding the run is what lets a second analysis stand
 -- beside the first instead of replacing it.
+--
+-- Both cell-type columns are in the key because the two row shapes scope
+-- themselves differently: a pre-run row by the label it carries, a run row by
+-- the catalogue key. NULLS NOT DISTINCT means each shape keys on the column it
+-- has without the other's NULL letting a duplicate through.
 
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_comparison_uniqueness;
 ALTER TABLE public.scrna_de
   ADD CONSTRAINT scrna_de_comparison_uniqueness
-  UNIQUE NULLS NOT DISTINCT (dataset_id, run_id, cluster_id, contrast);
+  UNIQUE NULLS NOT DISTINCT
+    (dataset_id, run_id, cluster_id, cluster_ref, contrast);
 
 -- Reading one analysis, and finding the analyses that answer a question.
 CREATE INDEX IF NOT EXISTS scrna_de_run_idx

@@ -39,6 +39,14 @@ COUNTS = {
 }
 
 
+def _cluster_ref(cur, dataset_id, cluster_id="Cortex") -> int:
+    cur.execute(
+        "SELECT id FROM scrna_clusters WHERE dataset_id = %s AND cluster_id = %s",
+        (dataset_id, cluster_id),
+    )
+    return cur.fetchone()[0]
+
+
 def _dataset(cur, cell_types=("Cortex",)) -> int:
     tag = uuid.uuid4().hex[:10]
     cur.execute(
@@ -83,6 +91,7 @@ def _result(cur, dataset_id, run_id, **cols):
     """One scrna_de row belonging to a run. Unspecified columns take defaults."""
     row = {
         "cluster_id": "Cortex", "contrast": "pFACT_vs_Col-0",
+        "cluster_ref": _cluster_ref(cur, dataset_id),
         "group1": "pFACT", "group2": "Col-0", "n_group1": 10, "n_group2": 20,
         "group_kind": "genotype", "method": "external", "params_hash": "h",
         "tested": True, **COUNTS, **cols,
@@ -518,3 +527,65 @@ def test_bloom_admin_keeps_update_for_maintenance(pg_conn):
             "AND grantee = 'bloom_admin'"
         )
         assert cur.fetchone()[0] == 1
+
+
+# --------------------------------------------------------------------------- #
+# A result names the catalogue by key, not by label
+# --------------------------------------------------------------------------- #
+
+
+def test_renaming_a_cell_type_leaves_a_run_result_alone(pg_conn):
+    """The point of naming the key: the label lives in one place, so curating it
+    does not rewrite every result that mentions it."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        de_id = _result(cur, ds, _run(cur, ds))
+        cur.execute("SELECT cluster_ref FROM scrna_de WHERE id = %s", (de_id,))
+        ref_before = cur.fetchone()[0]
+
+        cur.execute(
+            "UPDATE scrna_clusters SET cluster_id = 'Cortex (mature)' "
+            "WHERE dataset_id = %s AND cluster_id = 'Cortex'", (ds,)
+        )
+        cur.execute("SELECT cluster_ref FROM scrna_de WHERE id = %s", (de_id,))
+        assert cur.fetchone()[0] == ref_before, "the key should not move"
+    pg_conn.rollback()
+
+
+def test_a_run_row_scoped_to_a_cell_type_must_name_the_catalogue(pg_conn):
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        _rejects(cur, "scrna_de_run_rows_name_the_catalogue",
+                 _result, cur, ds, _run(cur, ds), cluster_ref=None)
+    pg_conn.rollback()
+
+
+def test_a_whole_dataset_comparison_names_no_cell_type_at_all(pg_conn):
+    """Scoped to no cell type, so it carries neither the label nor the key."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur, ("Cortex", "Xylem"))
+        _result(cur, ds, _run(cur, ds, source="ondemand"),
+                cluster_id=None, cluster_ref=None, contrast="Cortex_vs_Xylem",
+                group1="Cortex", group2="Xylem", group_kind="cluster")
+    pg_conn.rollback()
+
+
+def test_a_result_cannot_name_another_dataset_s_cell_type(pg_conn):
+    """The composite key: without dataset_id in the reference, a result could
+    point at a catalogue row belonging to a different experiment."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        other = _dataset(cur)
+        _rejects(cur, "scrna_de_cluster_ref_in_catalogue",
+                 _result, cur, ds, _run(cur, ds),
+                 cluster_ref=_cluster_ref(cur, other))
+    pg_conn.rollback()
+
+
+def test_a_cell_type_with_results_still_cannot_be_deleted(pg_conn):
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        _result(cur, ds, _run(cur, ds))
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            cur.execute("DELETE FROM scrna_clusters WHERE dataset_id = %s", (ds,))
+    pg_conn.rollback()
