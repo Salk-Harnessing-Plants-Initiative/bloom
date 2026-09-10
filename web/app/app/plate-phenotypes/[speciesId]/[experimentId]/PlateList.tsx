@@ -1,6 +1,10 @@
 import Link from "next/link";
 import { PlateImage } from "@/components/recent-phenotypes-by-plate-scanner/PlateImage";
 import type { PlateGroup } from "./plateGrouping";
+import {
+  SCANNER_TIME_NOTE,
+  formatScannerTime,
+} from "@/components/recent-phenotypes-by-plate-scanner/plate-times";
 
 export function PlateList({
   plates,
@@ -18,7 +22,9 @@ export function PlateList({
     `/app/plate-phenotypes/${speciesId}/${experimentId}/wave/${waveParam}/${encodeURIComponent(plateId)}`;
 
   return (
-    <ul className="space-y-4">
+    <>
+      <p className="mb-3 text-xs text-stone-500">{SCANNER_TIME_NOTE}</p>
+      <ul className="space-y-4">
       {plates.map((plate) => (
         <li
           key={plate.plate_id}
@@ -99,19 +105,20 @@ export function PlateList({
           </div>
         </li>
       ))}
-    </ul>
+      </ul>
+    </>
   );
 }
 
 export function formatDateTime(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return (
+    formatScannerTime(iso, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short",
+    }) ?? "—"
+  );
 }

@@ -1,0 +1,315 @@
+name: Nightly Box object mirror
+
+# Mirrors Supabase Storage objects (the image bytes in MinIO) to Box, nightly.
+#
+# This is the BYTES half of a backup. A full restore also needs the
+# `storage.objects` rows, which the weekly Postgres dump carries — see
+# scheduled-jobs/weekly-backup/. Both halves exist; neither is a restore
+# until one has been rehearsed.
+#
+# Nightly rather than weekly so that at most a day's scans exist only in
+# MinIO, rather than up to a week's.
+#
+# The work happens on the deploy host: this workflow SSHes in and runs
+# scheduled-jobs/box-object-backup/backup_objects.py there, the same way
+# deploy.yml reaches the server. The job talks to Postgres and MinIO over the
+# deploy's own Docker network — neither port is published — so nothing is
+# copied onto the runner.
+#
+# The job UPLOADS ONLY. It never deletes anything on Box.
+#
+# Three things carried over from refresh-cyl-experiment-trait-counts.yml, all
+# of which were learned the hard way:
+#
+#   0. The FIRST scheduled run with an empty ledger has no watermark to work
+#      from, so it enumerates everything — all 8M objects — inside a job with a
+#      240 minute timeout. Seed by hand BEFORE promoting this to `main`; once a
+#      seed is under way the lock makes this job stand down, but it cannot help
+#      if no seed has started.
+#   1. BOTH `schedule:` and `workflow_dispatch` require this file to be present
+#      on the repo's DEFAULT branch (`main`) before either can fire -- dispatch
+#      is gated on it exactly as schedule is. Nothing runs until the normal
+#      staging -> main promotion carries this file there.
+#   2. A `schedule` event carries no `github.event.inputs`, so the target is
+#      resolved off `github.event_name` below rather than the dispatch input.
+#   3. The scheduled run uses a SEPARATE, ungated GitHub Environment
+#      (`production-scheduled-backup`) rather than `production` itself. Routing
+#      an unattended 02:00 run through production's required-reviewer gate
+#      would leave it stuck "Waiting" for an approval nobody is awake to give.
+#
+# THE SEED DOES NOT RUN HERE. The first full pass moves millions of objects
+# over days; the self-hosted runner is shared with deploys and must not be held
+# that long. The seed is started by hand, detached, on the host (see the wiki
+# page). While it runs it holds a lock, and this workflow stands down against
+# that lock -- reporting "skipped", not "succeeded", so a stood-down night is
+# never mistaken for a completed one.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Plan and report, but copy nothing"
+        required: false
+        type: boolean
+        default: false
+      verify:
+        description: "Objects to stat on Box afterwards and size-check"
+        required: false
+        type: string
+        default: "50"
+  schedule:
+    # Every night at 02:17 UTC. Off the hour deliberately — GitHub's own docs
+    # flag the top of the hour as a period of elevated scheduler load and delay.
+    #
+    # The delta query is `updated_at > <last clean run>` and storage.objects has
+    # no index on updated_at, so each run is a sequential scan of ~8M rows.
+    # Seven of those a week instead of one is a few minutes of extra scanning on
+    # an otherwise idle database at 02:00; an index would remove even that and is
+    # worth doing separately.
+    - cron: "17 2 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  # Its own group, and specifically NOT deploy-bloom: a queued deploy must not
+  # cancel a mirror, and the mirror must not hold up a deploy either.
+  group: box-object-backup-production
+  cancel-in-progress: false
+
+env:
+  # The job's own default for OBJECT_BACKUP_STATE_DIR, in one place. Three separate
+  # ssh sessions need it — the run takes its lock there, the cancel step
+  # finds the lock there, the summary falls back to the reports there — and
+  # none of the last two reads the env file, so they cannot look it up. The
+  # run step refuses to start if the job's value differs from this one.
+  STATE_DIR: /var/lib/bloom-box-object-backup
+  # `prod` is what the env file and the script call it; the GitHub Environment
+  # is called `production`. Production is the only thing this workflow mirrors,
+  # and staging is deliberately not offered: both environments live on this one
+  # host, so they would share the ledger, the watermark, the run lock, the
+  # rclone container name and the RC port, and two runs would read and advance
+  # each other's watermark — silently, and in both directions. Mirroring
+  # staging as well means scoping all of those per environment, which is a
+  # change worth making only if the need appears.
+  ENV_NAME: prod
+
+jobs:
+  mirror:
+    name: Mirror production objects to Box
+    runs-on: [self-hosted, linux, salk-network]
+    # A night's delta is small — new and changed images only. A run that takes
+    # hours means something is wrong, or a seed is still in progress, and in the
+    # latter case this job stands down in seconds.
+    timeout-minutes: 240
+    # Deliberately a DIFFERENT literal than the `ENV_NAME` above: this
+    # is the approval-gate name, and the scheduled path must not be gated.
+    environment: ${{ github.event_name == 'schedule' && 'production-scheduled-backup' || 'production' }}
+    steps:
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "${{ secrets.DEPLOY_HOST_KEY }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+
+      - name: Run the mirror on the deploy host
+        id: run
+        env:
+          ENV_NAME: ${{ env.ENV_NAME }}
+          DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+          VERIFY: ${{ github.event.inputs.verify || '50' }}
+          RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}
+          STATE_DIR: ${{ env.STATE_DIR }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+
+          # An empty value makes the remote `cd` succeed into $HOME and run
+          # the job against whatever happens to be there.
+          : "${DEPLOY_PATH:?deploy path is empty}"
+
+          # `verify` is free-text: GitHub validates a workflow_dispatch input no
+          # further than "is a string". Checked HERE, on the runner, so a value
+          # that is not a plain number never reaches a shell at all.
+          case "$VERIFY" in
+            ''|*[!0-9]*) echo "verify must be a whole number, got: $VERIFY" >&2; exit 1 ;;
+          esac
+
+          # ssh cannot carry argv boundaries. Whatever words follow the host are
+          # joined with spaces into ONE string and handed to the remote login
+          # shell, which parses it as shell syntax. So `ssh host bash -s -- "$V"`
+          # is no safer than interpolating $V into the command: it only moves
+          # which shell does the parsing, and the heredoc's own guard runs
+          # inside `bash -s`, which is merely the first statement of that string.
+          #
+          # `printf %q` quotes each value so the remote shell reparses the
+          # joined string back into the arguments meant, rather than finding
+          # new commands inside them. The heredoc stays quoted for the separate
+          # reason that the runner must substitute nothing into the script.
+          remote_args="$(printf '%q ' \
+            "$DEPLOY_PATH" "$ENV_NAME" "$VERIFY" "$RUN_TAG" "$STATE_DIR" "$DRY_RUN")"
+
+          ssh -i ~/.ssh/deploy_key "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "bash -s -- $remote_args" \
+            <<'REMOTE' 2>&1 | tee "${RUNNER_TEMP}/mirror-output.txt"
+          set -euo pipefail
+          deploy_path="$1"; env_name="$2"; verify="$3"; run_tag="$4"
+          state_dir="$5"; dry_run="${6:-}"
+
+          case "$verify" in
+            ''|*[!0-9]*) echo "verify must be a whole number, got: $verify" >&2; exit 2 ;;
+          esac
+
+          cd "$deploy_path"
+
+          # The job reads its own settings out of the deploy env file: an
+          # `ssh host cmd` shell reads no profile and no env file, and the
+          # systemd unit this replaced carried EnvironmentFile= to supply
+          # them. It takes only the keys it needs — the file beside them holds
+          # the JWT signing keys and the service-role secret — and reads them
+          # as data, so no character in a value is special. See ENV_KEYS in
+          # backup_objects.py.
+
+          # The run records which GitHub job started it, in the lock it takes
+          # and in the report it writes. The cancel step and the summary both
+          # find this job's run by that name. A seed started by hand carries
+          # no name, so neither can ever act on it by mistake — which matters,
+          # because the seed holds the lock for days.
+          export OBJECT_BACKUP_ACTIONS_RUN="$run_tag"
+
+          # --verify on every scheduled run: an unverified mirror cannot tell a
+          # copied object from a lost one.
+          python3 scheduled-jobs/box-object-backup/backup_objects.py \
+            --env "$env_name" --state-dir "$state_dir" \
+            --verify "$verify" $dry_run
+          REMOTE
+
+      # Cancelling this job kills the ssh client on the runner, not the python
+      # process on the host — the remote gets SIGHUP when the connection drops.
+      # That used to be a hard kill: the cleanup in `finally` never ran and the
+      # rclone container was left holding the RC port, so the NEXT run refused
+      # to start until someone removed it by hand.
+      #
+      # The job now handles SIGHUP, so the drop alone is survivable. This step
+      # is belt and braces for the case where the connection outlives the
+      # cancellation: it asks the run to stop by name, using the pid the lock
+      # file records, and gives it a moment to put itself away.
+      - name: Ask the host to stop the run, if this job was cancelled
+        if: cancelled()
+        env:
+          RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}
+          STATE_DIR: ${{ env.STATE_DIR }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        timeout-minutes: 3
+        run: |
+          set -uo pipefail
+          # Quoted for the same reason as the run step: ssh joins its trailing
+          # words into one string for the remote shell to parse. This tag is a
+          # run id and cannot carry a payload, but the pattern gets copied.
+          remote_args="$(printf '%q ' "$RUN_TAG" "$STATE_DIR")"
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" "bash -s -- $remote_args" <<'REMOTE' || true
+          set -uo pipefail
+          run_tag="$1"; state_dir="$2"
+          lock="$state_dir/backup.lock"
+          [ -r "$lock" ] || { echo "no lock file — nothing was running"; exit 0; }
+
+          # Both fields out of ONE read. Two opens leave a window in which the
+          # file changes between them, and the pid of one run could then be
+          # signalled under the name of another.
+          read -r pid owner <<EOF
+          $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("pid",""), d.get("actions_run",""))' "$lock" 2>/dev/null || true)
+          EOF
+          case "${pid:-}" in
+            ''|*[!0-9]*) echo "no pid in the lock file — nothing to stop"; exit 0 ;;
+          esac
+          # `kill -TERM 0` signals the caller's whole process group. os.getpid()
+          # is never 0, so this is unreachable — and far too expensive to leave
+          # resting on that.
+          [ "$pid" -gt 0 ] || { echo "refusing to signal pid $pid"; exit 0; }
+
+          # Whoever holds the lock is not necessarily the run this job started.
+          # During the seed that distinction is days of work: the seed holds
+          # the lock, a nightly finds it held and stands down, and cancelling
+          # THAT job must not stop the seed. The seed is started by hand and
+          # so carries no job name, which no job name can equal.
+          if [ "${owner:-}" != "$run_tag" ]; then
+            echo "pid $pid was started by ${owner:-a person, not a GitHub job}" \
+                 "— leaving it alone"
+            exit 0
+          fi
+
+          kill -0 "$pid" 2>/dev/null || { echo "pid $pid is gone already"; exit 0; }
+
+          echo "asking pid $pid to stop"
+          kill -TERM "$pid"
+          for _ in $(seq 1 30); do
+            kill -0 "$pid" 2>/dev/null || { echo "stopped cleanly"; exit 0; }
+            sleep 2
+          done
+          # Deliberately not escalating to SIGKILL: that is the hard kill this
+          # exists to avoid, and it would leave the container behind again. A
+          # run still going after a minute is worth a human looking.
+          echo "::warning::pid $pid has not stopped yet; leaving it alone"
+          REMOTE
+
+      # A run that stood down against the seed's lock exits 0, exactly as a
+      # successful run does. The run's own status line is the only way to tell
+      # them apart, and calling a stood-down night "succeeded" is how a months-long
+      # gap in the mirror goes unnoticed.
+      - name: Write the run summary
+        if: always()
+        env:
+          ENV_NAME: ${{ env.ENV_NAME }}
+          # Needed only for the fallback below: when the ssh pipe carrying the
+          # run's output died before it printed a verdict, the summary fetches
+          # that verdict from the report the run wrote on the host.
+          RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}
+          STATE_DIR: ${{ env.STATE_DIR }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
+          # A dry run writes no report and records no run, so the summary must
+          # be told rather than deducing it from what the log happens to say.
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
+        # This step fires exactly when the host may be wedged, and it is the
+        # only thing standing between a cancelled night and a summary that
+        # says FAILED. Bounded like the cancel step beside it, so a host that
+        # never answers costs five minutes rather than the runner.
+        timeout-minutes: 5
+        run: |
+          set -uo pipefail
+          log="${RUNNER_TEMP}/mirror-output.txt"
+          report=""
+
+          # A cancel or a timeout kills the pipe mid-run, so the log stops
+          # before the verdict. The report the run wrote on the host is then
+          # the only place that verdict exists. Asked for by this job's own
+          # name, so a nightly that stood down against the seed's lock cannot
+          # report the seed's night as its own.
+          if ! grep -qE '^[0-9-]+ [0-9:,]+ [A-Z]+ BOX_BACKUP_STATUS=[a-z_]+$' "$log" 2>/dev/null \
+             && [ -n "${DEPLOY_USER:-}" ] && [ -n "${DEPLOY_HOST:-}" ]; then
+            report="${RUNNER_TEMP}/run-report.json"
+            remote_args="$(printf '%q ' "$DEPLOY_PATH" "$STATE_DIR" "$RUN_TAG")"
+            ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=15 \
+              -o StrictHostKeyChecking=yes \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" "bash -s -- $remote_args" \
+              > "$report" 2>/dev/null <<'REMOTE' || true
+          set -uo pipefail
+          cd "$1" || exit 0
+          python3 scheduled-jobs/box-object-backup/report.py \
+            --state-dir "$2" --actions-run "$3"
+          REMOTE
+          fi
+
+          python3 scheduled-jobs/box-object-backup/summary.py \
+            --env "$ENV_NAME" --log "$log" --report "$report" \
+            --outcome '${{ steps.run.outcome }}' \
+            ${DRY_RUN:+--dry-run} >> "$GITHUB_STEP_SUMMARY"

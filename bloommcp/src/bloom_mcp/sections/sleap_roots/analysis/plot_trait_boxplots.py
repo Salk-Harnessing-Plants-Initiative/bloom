@@ -54,6 +54,8 @@ from sleap_roots_analyze.visualization import (
     create_trait_boxplots_by_genotype,
     create_trait_boxplots_by_genotype_batched,
 )
+from bloom_mcp.experiment_utils import load_experiment_data as _load_data
+from bloom_mcp.tools._plots import call_with_figure_cleanup
 
 from bloom_mcp.contract import BloomMCPError, Provenance, RunLinks, as_mcp_tool
 from bloom_mcp.data_access import ExperimentReadError
@@ -99,104 +101,22 @@ class PlotTraitBoxplotsParams(BaseModel):
 class PlotTraitBoxplotsResult(RunLinks):
     """A small summary + links to the persisted boxplot run."""
 
-    experiment: str
-    source: str
-    genotype_column: str
-    n_traits_plotted: int
-    batched: bool = Field(
-        description="True once the selection exceeds TRAIT_BATCH_THRESHOLD traits, in which "
-        "case the render is paginated (see n_pages)."
-    )
-    n_pages: int = Field(
-        description="Number of committed output pages (1 when not batched)."
-    )
-    resolved_trait_columns: list[str] = Field(
-        description="The exact trait columns used to render/persist this run, in selection "
-        "order — recorded even when trait_columns was omitted (auto-detected).",
-    )
-    page_traits: dict[str, list[str]] = Field(
-        description="Maps each committed output filename to the trait columns rendered on "
-        "that page (a single entry, covering every resolved_trait_columns, when not batched) "
-        "— otherwise only discoverable by opening the image and reading its axis labels.",
-    )
-
-
-@as_mcp_tool(
-    input_model=PlotTraitBoxplotsParams,
-    output_model=PlotTraitBoxplotsResult,
-    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
-)
-def plot_trait_boxplots(
-    params: PlotTraitBoxplotsParams, *, provenance: Provenance
-) -> PlotTraitBoxplotsResult:
-    """Render boxplots-by-genotype for ``experiment``'s **raw, uncleaned** traits and persist
-    them. No QC cleaning has been applied — this is a pre-clean EDA view, the same category as
-    ``qc_inspect``."""
-    reader = _ports.reader()
-    store = _ports.store()
-
-    _validate_experiment_name(params.experiment)
-
-    frame = reader.load_experiment(params.experiment, version="raw")
-
-    if frame.genotype_col is None:
-        raise BloomMCPError(
-            code="assumption_violated",
-            message=f"No genotype column detected in {params.experiment!r}. Cannot group by "
-            f"genotype.",
-            remedy="Ensure the experiment has a detectable genotype column, or use a "
-            "different experiment.",
+    def _make_boxplots():
+        if len(selected) > TRAIT_BATCH_THRESHOLD:
+            return create_trait_boxplots_by_genotype_batched(
+                df, selected, genotype_col=genotype_col
+            )
+        return create_trait_boxplots_by_genotype(
+            df, selected, genotype_col=genotype_col
         )
 
-    trait_cols = resolve_trait_columns(frame, params.trait_columns, params.experiment)
-    batched = len(trait_cols) > TRAIT_BATCH_THRESHOLD
-
-    prov = provenance.model_copy(
-        update={
-            "based_on_version": frame.source,
-            "params": {**provenance.params, "resolved_trait_columns": trait_cols},
-        }
-    )
-    run = store.create_run(
-        experiment=params.experiment,
-        tool_class=_TOOL_CLASS,
-        provenance=prov,
-        user_label=params.user_label,
-        source_csv=_ports.raw_source_for(params.experiment),
-        source=frame.resolved_source,
-    )
-    figures: list = []
     try:
-        # FIGURE_REGISTRY_LOCK: allocates figures against the shared global matplotlib
-        # registry, which a concurrent figure-creating call elsewhere in the process could
-        # otherwise interleave with (see that lock's own comment in bloom_mcp.tools._plots).
-        with FIGURE_REGISTRY_LOCK:
-            if batched:
-                figures = list(
-                    create_trait_boxplots_by_genotype_batched(
-                        frame.df, trait_cols, genotype_col=frame.genotype_col
-                    )
-                )
-            else:
-                figures = [
-                    create_trait_boxplots_by_genotype(
-                        frame.df, trait_cols, genotype_col=frame.genotype_col
-                    )
-                ]
-
-        outputs: dict[str, str] = {}
-        page_traits: dict[str, list[str]] = {}
-        for i, fig in enumerate(figures, start=1):
-            name = f"{_PNG_STEM}.png" if not batched else f"{_PNG_STEM}_page{i}.png"
-            fig.savefig(run.staging_dir / name, dpi=150, bbox_inches="tight")
-            outputs[name] = name
-            start = (i - 1) * _DELEGATE_BATCH_SIZE
-            page_traits[name] = (
-                trait_cols[start : start + _DELEGATE_BATCH_SIZE]
-                if batched
-                else list(trait_cols)
-            )
-        stored = store.commit(run, outputs)
+        # call_with_figure_cleanup: acquires the shared FIGURE_REGISTRY_LOCK around
+        # this delegate call (#721 PR review) and closes any figure(s) it allocates
+        # before raising, instead of leaking them — this file's own
+        # `except Exception: return ...` below would otherwise swallow such an
+        # exception without closing whatever was already rendered.
+        fig_or_figs = call_with_figure_cleanup(_make_boxplots)
     except Exception:
         rmtree(run.staging_dir, ignore_errors=True)
         raise

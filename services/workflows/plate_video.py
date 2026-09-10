@@ -266,10 +266,15 @@ def completeness(
 def source_bytes(frames: list[dict]) -> tuple[int, int]:
     """Bytes to download, and how many frames did not say.
 
-    `file_size_bytes` is nullable, so the total is a floor: safe to refuse on,
-    never safe to read as "small enough".
+    A size at or below zero is not a measurement, so it counts as unsaid rather
+    than as a real zero — counted, it drags the estimate for every other unsized
+    frame down with it and the guard loses its floor.
     """
-    known = [f["file_size_bytes"] for f in frames if f["file_size_bytes"] is not None]
+    known = [
+        f["file_size_bytes"]
+        for f in frames
+        if isinstance(f["file_size_bytes"], int) and f["file_size_bytes"] > 0
+    ]
     return sum(known), len(frames) - len(known)
 
 
@@ -283,14 +288,21 @@ def too_large_to_render(
     would stop it eventually — this stops it in a millisecond, with a reason.
 
     A frame that recorded no size is estimated rather than counted as zero,
-    from this plate's own frames where it can be. Reading a missing size as
-    nothing lets a plate of any size past the guard.
+    from this plate's own frames where it can be, and never below the nominal.
+    Reading a missing size as nothing lets a plate of any size past the guard.
     """
     total, unknown = source_bytes(frames)
     counted = len(frames) - unknown
 
     if unknown:
-        per_frame = total // counted if counted else NOMINAL_FRAME_BYTES
+        logger.warning(
+            "%d of %d frames have no usable file_size_bytes; estimating them. "
+            "Every upload records one, so these rows are worth correcting.",
+            unknown,
+            len(frames),
+        )
+        measured = total // counted if counted else 0
+        per_frame = max(measured, NOMINAL_FRAME_BYTES)
         total += unknown * per_frame
 
     if total <= limit:
@@ -417,17 +429,24 @@ def render_decision(frames: list[dict], stored: dict) -> dict:
             "this video cannot be made right now — storage did not answer. "
             "Nothing has been changed; try again in a few minutes",
             key,
+            code="storage_unavailable",
         )
 
     if key is None:
         return _outcome(
-            "refuse", "this plate's id or wave number cannot be used in a video", key
+            "refuse",
+            "this plate's id or wave number cannot be used in a video",
+            key,
+            code="unusable_plate",
         )
 
     if state == "absent":
         if not available:
             return _outcome(
-                "refuse", "none of this plate's images have finished uploading yet", key
+                "refuse",
+                "none of this plate's images have finished uploading yet",
+                key,
+                code="no_frames",
             )
         return _outcome("render", f"no video stored; encoding {available} frames", key)
 
@@ -473,8 +492,41 @@ def render_decision(frames: list[dict], stored: dict) -> dict:
     )
 
 
-def _outcome(action: str, reason: str, key: str | None) -> dict:
-    return {"action": action, "reason": reason, "key": key}
+def _outcome(action: str, reason: str, key: str | None, code: str = "") -> dict:
+    """`code` names why, for a caller that has to choose a status. The reason is
+    prose for a human; matching on it would break the first time it is reworded."""
+    return {"action": action, "reason": reason, "key": key, "code": code}
+
+
+# The one answer for anything that goes wrong out of the caller's reach. True
+# whether waiting helps or not, so nothing has to work out which it is.
+UNAVAILABLE = (
+    "this video cannot be made right now. Try again shortly — if it keeps "
+    "happening, let the Bloom team know"
+)
+
+
+def _answered(what: str, read):
+    """A planning read's result, or None when it failed.
+
+    Broad on purpose. Whether a retry helps depends on the cause, and the caller
+    is given one answer that holds either way, so nothing here has to decide.
+    The traceback is what tells the two apart, and it goes to the log.
+    """
+    try:
+        return read()
+    except Exception:
+        logger.warning("a planning read failed for %s", what, exc_info=True)
+        return None
+
+
+def _unavailable(key: str | None) -> dict:
+    """A refusal that is true whether or not waiting will fix it."""
+    return {
+        **_outcome("refuse", UNAVAILABLE, key, code="database_unavailable"),
+        "frames": [],
+        "coverage": None,
+    }
 
 
 # --- the whole question, in one call -----------------------------------------
@@ -499,12 +551,43 @@ def plan_render(
     path nothing reads it, and it costs a second query. #756 covers the case
     that makes visible.
     """
-    frames = get_plate_frames(client, experiment_id, plate_id, wave_number)
-    stored = stored_video(client, experiment_id, plate_id, wave_number)
+    key = plate_video_path(experiment_id, wave_number, plate_id)
+    if key is None:
+        # Permanent, and knowable without asking the database anything.
+        return {
+            **_outcome(
+                "refuse",
+                "this plate's id or wave number cannot be used in a video",
+                key,
+                code="unusable_plate",
+            ),
+            "frames": [],
+            "coverage": None,
+        }
+
+    frames = _answered(
+        "this plate's frames",
+        lambda: get_plate_frames(client, experiment_id, plate_id, wave_number),
+    )
+    if frames is None:
+        return _unavailable(key)
+
+    stored = _answered(
+        "this plate's stored video",
+        lambda: stored_video(client, experiment_id, plate_id, wave_number),
+    )
+    if stored is None:
+        return _unavailable(key)
+
     decision = render_decision(frames, stored)
 
     if decision["action"] != "render":
-        return {**decision, "frames": frames, "coverage": None}
+        return {
+            **decision,
+            "frames": frames,
+            "coverage": None,
+            "stored_frames": stored.get("frame_count"),
+        }
 
     oversized = too_large_to_render(frames)
     if oversized:
@@ -512,13 +595,20 @@ def plan_render(
             "action": "refuse",
             "reason": oversized,
             "key": stored["key"],
+            "code": "too_large",
             "frames": frames,
             "coverage": None,
         }
 
+    # Unknown either way here: both already return None when the run recorded
+    # no plan, and an unanswered read is the same absence of an answer. Coverage
+    # is a note about the video, so losing it is not a reason to refuse one.
     coverage = completeness(
         frames,
-        planned_cycles(client, frames),
-        session_cycle_range(client, frames, experiment_id, wave_number),
+        _answered("the run's planned cycles", lambda: planned_cycles(client, frames)),
+        _answered(
+            "the run's cycle range",
+            lambda: session_cycle_range(client, frames, experiment_id, wave_number),
+        ),
     )
     return {**decision, "frames": frames, "coverage": coverage}
