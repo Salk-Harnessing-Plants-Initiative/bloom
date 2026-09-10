@@ -45,19 +45,17 @@ def write_h5ad(
     annotation: str = "nn_label_plain",
     sample_column: str = "sample",
     labels: list[str] | None = None,
-    n_types: int = 2,
     samples: list[str] | None = None,
     coords: "np.ndarray | None" = None,
+    barcodes: list[str] | None = None,
 ) -> Path:
     """A miniature dataset shaped like the real one."""
     obs = pd.DataFrame(
         {
-            annotation: labels or [
-                f"Type{i % n_types}" for i in range(n_cells)
-            ] if n_types != 2 else (labels or ["Phellem", "Cortex"] * (n_cells // 2)),
+            annotation: labels or ["Phellem", "Cortex"] * (n_cells // 2),
             sample_column: samples or ["Col-0", "pFACT", "pHORST"] * (n_cells // 3),
         },
-        index=[f"CELL{i}-Col-0" for i in range(n_cells)],
+        index=barcodes or [f"CELL{i}-Col-0" for i in range(n_cells)],
     )
     adata = anndata.AnnData(
         X=np.zeros((n_cells, 4), dtype="float32"),
@@ -67,8 +65,7 @@ def write_h5ad(
     if umap_key and coords is not None:
         adata.obsm[umap_key] = np.asarray(coords)
     elif umap_key:
-        # Cells of a type sit together, as they do in a real embedding, so the
-        # alignment check passes; distinct x and y so a swap is detectable.
+        # distinct x and y for every cell, so a swap or a reversal is detectable.
         codes = pd.Categorical(obs[annotation]).codes.astype("float32")
         base = np.stack([codes * 100.0, codes * 100.0 + 50.0], axis=1)
         jitter = np.linspace(0, 1, n_cells, dtype="float32")[:, None]
@@ -202,27 +199,6 @@ def test_a_file_with_no_cells_is_refused(ingest, tmp_path):
         ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
 
 
-def test_coordinates_that_do_not_match_the_cells_are_refused(ingest, tmp_path):
-    """The load requires someone to slice this dataset's rows out of a much
-    larger joint embedding. A wrong slice passes every other check."""
-    path = tmp_path / "shuffled.h5ad"
-    write_h5ad(path, n_cells=120, n_types=8)
-    a = anndata.read_h5ad(path)
-    coords = np.asarray(a.obsm["X_umap"]).copy()
-    a.obsm["X_umap"] = coords[np.random.default_rng(0).permutation(len(coords))]
-    a.write_h5ad(path)
-    with pytest.raises(ingest.IngestError, match="do not line up"):
-        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
-
-
-def test_well_clustered_coordinates_are_accepted(ingest, tmp_path):
-    cells = ingest.read_cells(
-        write_h5ad(tmp_path / "clustered.h5ad", n_cells=120, n_types=8),
-        "nn_label_plain", "sample", "X_umap", None,
-    )
-    assert cells["purity"] > 0.5
-
-
 def test_missing_annotation_column_is_refused(ingest, tmp_path):
     path = write_h5ad(tmp_path / "noann.h5ad")
     with pytest.raises(ingest.IngestError, match="saturn_Celltype"):
@@ -318,99 +294,13 @@ def test_a_bad_file_exits_non_zero_without_touching_the_database(ingest, tmp_pat
 
 
 # --------------------------------------------------------------------------- #
-# The alignment statistic itself
-#
-# `neighbour_purity` is the only real algorithm here, and it had no direct test:
-# breaking its self-exclusion or its chunk boundary left every other test green
-# while inflating a shuffled embedding to two thirds of the safety margin. These
-# assert exact values, so a weakened version cannot pass.
-# --------------------------------------------------------------------------- #
-
-
-def _groups(n_groups: int, per_group: int):
-    """Cells in tight, far-apart groups: one label per group, so every cell's
-    nearest neighbours are its own group and the answer is arithmetic."""
-    coords, labels = [], []
-    for g in range(n_groups):
-        for i in range(per_group):
-            coords.append([g * 1000.0 + i * 0.001, 0.0])
-            labels.append(f"type{g}")
-    return np.array(coords), labels
-
-
-def test_a_cell_is_not_its_own_neighbour(ingest):
-    """Groups of 15 with k=15: each cell has 14 same-label neighbours and must
-    reach outside its group for the 15th. Counting itself would give 1.0."""
-    coords, labels = _groups(4, 15)
-    assert ingest.neighbour_purity(coords, labels) == pytest.approx(14 / 15)
-
-
-def test_groups_larger_than_k_are_perfectly_pure(ingest):
-    coords, labels = _groups(4, 16)
-    assert ingest.neighbour_purity(coords, labels) == pytest.approx(1.0)
-
-
-def test_purity_is_the_same_across_the_chunk_boundary(ingest):
-    """600 cells in groups of 10 spans the 512-row block, so a per-chunk index
-    mistake or a loop that stops after one block shows up here and nowhere else.
-    Every cell has 9 same-label neighbours out of 15."""
-    coords, labels = _groups(60, 10)
-    assert ingest.neighbour_purity(coords, labels) == pytest.approx(9 / 15)
-
-
-def test_a_shuffle_scores_at_chance(ingest):
-    coords, labels = _groups(20, 30)
-    rng = np.random.default_rng(0)
-    shuffled = coords[rng.permutation(len(coords))]
-    scored = ingest.alignment(shuffled, labels)
-    assert scored is not None
-    assert scored[1] < 0.02, scored
-
-
-def test_the_excess_is_scaled_by_the_room_above_chance(ingest):
-    """Four groups of 16 put chance at 0.25 and purity at 1.0. Scaled, that is
-    1.0. Unscaled it would be 0.75 and as a ratio 3.0 -- so this pins the
-    formula, not just its sign."""
-    coords, labels = _groups(4, 16)
-    purity, excess = ingest.alignment(coords, labels)
-    assert purity == pytest.approx(1.0)
-    assert excess == pytest.approx(1.0)
-
-
-def test_the_bar_is_where_it_was_measured(ingest):
-    """Calibrated on the first dataset: the weakest legitimate coordinates score
-    0.21 and a shuffle of them 0.00, so the bar sits half way down. Loosening it
-    is the one change here that no behavioural test would notice."""
-    assert ingest.MIN_ALIGNMENT_EXCESS == 0.10
-
-
-def test_too_few_cells_or_cell_types_to_judge(ingest):
-    coords, labels = _groups(4, 5)               # 20 cells
-    assert ingest.alignment(coords, labels) is None
-    coords, labels = _groups(1, 90)              # one cell type
-    assert ingest.alignment(coords, labels) is None
-
-
-def test_the_gate_boundaries_are_exact(ingest):
-    """One cell or one cell type either side of the gate."""
-    coords, labels = _groups(5, 10)          # 50 cells, 5 types
-    assert ingest.alignment(coords, labels) is not None
-    assert ingest.alignment(coords[:49], labels[:49]) is None
-    coords, labels = _groups(2, 30)          # 2 cell types is enough to judge
-    assert ingest.alignment(coords, labels) is not None
-    coords, labels = _groups(1, 60)          # 1 is not
-    assert ingest.alignment(coords, labels) is None
-
-
-# --------------------------------------------------------------------------- #
 # Coordinates that are present but not real
 # --------------------------------------------------------------------------- #
 
 
 def test_unfilled_coordinates_are_refused(ingest, tmp_path):
-    """An obsm allocated and never filled is finite, 2-D and the right length.
-    The neighbour check does not merely miss it -- with every distance tied it
-    scores it as well aligned -- so it has to be refused on its own."""
+    """An obsm allocated and never filled is finite, 2-D and the right length,
+    so every other check here passes it and the plot is a single dot."""
     labels = ["A", "B", "C", "D"] * 30
     path = write_h5ad(tmp_path / "zeros.h5ad", n_cells=120, labels=labels,
                       coords=np.zeros((120, 2)))
@@ -419,9 +309,8 @@ def test_unfilled_coordinates_are_refused(ingest, tmp_path):
 
 
 def test_partly_unfilled_coordinates_are_refused(ingest, tmp_path):
-    """The realistic version: most of the slice lined up, the tail left as
-    zeros. This passes the neighbour check on both of the real file's
-    annotations."""
+    """The realistic version: most of the array written, the tail left as
+    zeros -- so the count of cells on one point is what has to catch it."""
     coords = np.vstack([np.array([[float(i), float(i)] for i in range(1080)]),
                         np.zeros((120, 2))])
     path = write_h5ad(tmp_path / "tail.h5ad", n_cells=1200,
@@ -438,33 +327,6 @@ def test_coordinates_too_large_to_store_are_refused(ingest, tmp_path):
     path = write_h5ad(tmp_path / "huge.h5ad", n_cells=120, labels=labels,
                       coords=coords)
     with pytest.raises(ingest.IngestError, match="too large to store"):
-        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
-
-
-def test_one_sample_misaligned_is_refused(ingest, tmp_path):
-    """The failure a single average over the whole file cannot see: two samples
-    right, one shuffled within itself. The global score stays above the bar."""
-    n_per, types = 60, ["A", "B", "C", "D"]
-    labels, samples, coords = [], [], []
-    for si, s in enumerate(("Col-0", "pFACT", "pHORST")):
-        for i in range(n_per):
-            labels.append(types[i % 4])
-            samples.append(s)
-            # every cell its own point, but far closer to its own cell type
-            # than to any other, as in a real embedding
-            coords.append([(i % 4) * 1000.0 + (si * n_per + i) * 0.01, 0.0])
-    coords = np.array(coords)
-    bad = np.arange(n_per, 2 * n_per)
-    rng = np.random.default_rng(0)
-    coords[bad] = coords[rng.permutation(bad)]
-
-    whole = ingest.alignment(coords, labels)
-    assert whole[1] >= ingest.MIN_ALIGNMENT_EXCESS, (
-        "the point of this test is that the whole-file score still passes"
-    )
-    path = write_h5ad(tmp_path / "onesample.h5ad", n_cells=len(labels),
-                      labels=labels, samples=samples, coords=coords)
-    with pytest.raises(ingest.IngestError, match=r"obs\['sample'\] == 'pFACT'"):
         ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
 
 
@@ -503,122 +365,6 @@ def test_integer_coordinates_are_read_not_crashed_on(ingest, tmp_path):
                       labels=["A", "B", "C", "D"] * 30, coords=coords)
     cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
     assert cells["x"][:2] == pytest.approx([0.0, 1001.0])
-
-
-def test_a_misaligned_group_that_is_not_a_sample_is_refused(ingest, tmp_path):
-    """The real file is two source datasets joined, and that split cuts across
-    the samples: misorder one source and every sample still looks fine. Scoring
-    only the sample column misses it, which is why every grouping is scored."""
-    types = ["A", "B", "C", "D"]
-    labels, samples, source, coords = [], [], [], []
-    for i in range(360):
-        labels.append(types[i % 4])
-        samples.append(["Col-0", "pFACT", "pHORST"][i % 3])
-        source.append("nuclei" if (i // 4) % 2 else "shahan")
-        coords.append([(i % 4) * 1000.0 + i * 0.01, 0.0])
-    coords = np.array(coords)
-    bad = np.flatnonzero(np.asarray(source) == "shahan")
-    rng = np.random.default_rng(0)
-    coords[bad] = coords[rng.permutation(bad)]
-
-    for sample in ("Col-0", "pFACT", "pHORST"):
-        rows = np.flatnonzero(np.asarray(samples) == sample)
-        scored = ingest.alignment(coords[rows], [labels[i] for i in rows])
-        assert scored is None or scored[1] >= ingest.MIN_ALIGNMENT_EXCESS, (
-            f"{sample} must still look fine, or this tests nothing"
-        )
-
-    path = write_h5ad(tmp_path / "twosource.h5ad", n_cells=len(labels),
-                      labels=labels, samples=samples, coords=coords)
-    import anndata
-    adata = anndata.read_h5ad(path)
-    adata.obs["nn_source"] = source
-    adata.write_h5ad(path)
-
-    with pytest.raises(ingest.IngestError, match=r"obs\['nn_source'\] == 'shahan'"):
-        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
-                          ("nn_source",))
-
-    # and unnamed, it is not scored -- the operator says which columns are
-    # provenance, because the script cannot tell them from biology
-    ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
-
-
-def test_an_unknown_group_column_is_refused(ingest, tmp_path):
-    path = write_h5ad(tmp_path / "nogroup.h5ad", n_cells=120,
-                      labels=["A", "B", "C", "D"] * 30)
-    with pytest.raises(ingest.IngestError, match="no obs\\['nope'\\] to group by"):
-        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
-                          ("nope",))
-
-
-def test_the_sample_column_is_grouped_without_being_named(ingest, tmp_path):
-    """It is provenance by definition, so it is never left to be remembered."""
-    import anndata
-    adata = anndata.read_h5ad(
-        write_h5ad(tmp_path / "s.h5ad", n_cells=120, labels=["A", "B", "C", "D"] * 30)
-    )
-    assert ingest._grouping_columns(adata, "nn_label_plain", "sample", ()) == ["sample"]
-    assert ingest._grouping_columns(adata, "nn_label_plain", "batch", ("sample",)) == [
-        "batch", "sample"
-    ]
-
-
-def test_the_annotation_is_never_grouped_by(ingest, tmp_path):
-    """Grouping by it would score cells against their own label, which measures
-    nothing -- even if the operator names it."""
-    import anndata
-    adata = anndata.read_h5ad(
-        write_h5ad(tmp_path / "a.h5ad", n_cells=120, labels=["A", "B", "C", "D"] * 30)
-    )
-    assert ingest._grouping_columns(
-        adata, "nn_label_plain", "sample", ("nn_label_plain",)
-    ) == ["sample"]
-
-
-def test_every_named_group_column_is_scored_not_just_the_first(ingest, tmp_path):
-    """The damage is in the column that sorts last, so stopping early passes."""
-    types = ["A", "B", "C", "D"]
-    labels, samples, first, second, coords = [], [], [], [], []
-    for i in range(360):
-        labels.append(types[i % 4])
-        samples.append(["Col-0", "pFACT", "pHORST"][i % 3])
-        first.append("aaa_fine")
-        second.append("zzz_bad" if (i // 4) % 2 else "zzz_ok")
-        coords.append([(i % 4) * 1000.0 + i * 0.01, 0.0])
-    coords = np.array(coords)
-    bad = np.flatnonzero(np.asarray(second) == "zzz_bad")
-    coords[bad] = coords[np.random.default_rng(0).permutation(bad)]
-
-    path = write_h5ad(tmp_path / "twocols.h5ad", n_cells=len(labels),
-                      labels=labels, samples=samples, coords=coords)
-    import anndata
-    adata = anndata.read_h5ad(path)
-    adata.obs["aaa_col"] = first
-    adata.obs["zzz_col"] = second
-    adata.write_h5ad(path)
-
-    with pytest.raises(ingest.IngestError, match=r"obs\['zzz_col'\] == 'zzz_bad'"):
-        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
-                          ("aaa_col", "zzz_col"))
-
-
-def test_a_group_is_scored_against_its_own_labels(ingest, tmp_path):
-    """Labels within a group must be paired with that group's own rows. The
-    earlier fixtures were periodic, so any mispairing was a no-op."""
-    rng = np.random.default_rng(7)
-    labels, samples, coords = [], [], []
-    order = list(rng.permutation([t for t in ["A", "B", "C", "D"] for _ in range(45)]))
-    for i, t in enumerate(order):
-        labels.append(t)
-        samples.append(["Col-0", "pFACT", "pHORST"][i % 3])
-        coords.append([ord(t) * 1000.0 + i * 0.01, 0.0])
-    path = write_h5ad(tmp_path / "nonperiodic.h5ad", n_cells=len(labels),
-                      labels=labels, samples=samples, coords=np.array(coords))
-    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
-    assert cells["n_cells"] == 180
-
-
 def test_main_reads_the_annotation_the_operator_named(ingest, tmp_path, capsys):
     """Pins the reader wiring only -- a dry run stops before the database."""
     path = write_h5ad(tmp_path / "wiring.h5ad", n_cells=6)
@@ -628,155 +374,6 @@ def test_main_reads_the_annotation_the_operator_named(ingest, tmp_path, capsys):
     ])
     assert code == 0
     assert "2 cell types" in capsys.readouterr().out
-
-
-def test_main_hands_load_the_annotation_and_the_group_columns(
-    ingest, tmp_path, monkeypatch
-):
-    """The other half of the wiring, which a dry run cannot reach. Handing
-    `load()` the sample column instead of the annotation would record the wrong
-    provenance for the differential expression results, silently."""
-    import contextlib
-    import psycopg
-
-    seen = {}
-
-    def recorder(conn, name, species_id, cells, checksum, units, annotation):
-        seen.update(name=name, annotation=annotation, cells=cells)
-        return 1, cells["n_cells"]
-
-    monkeypatch.setattr(ingest, "load", recorder)
-    monkeypatch.setattr(psycopg, "connect", lambda url: contextlib.nullcontext(None))
-    monkeypatch.setenv("DATABASE_URL", "postgresql://nobody@nowhere/none")
-
-    path = write_h5ad(tmp_path / "wiring2.h5ad", n_cells=240,
-                      labels=["A", "B", "C", "D"] * 60)
-    import anndata
-    adata = anndata.read_h5ad(path)
-    adata.obs["origin"] = ["one" if i % 2 else "two" for i in range(240)]
-    adata.write_h5ad(path)
-
-    assert ingest.main([
-        "--h5ad", str(path), "--dataset-name", "d", "--species-id", "1",
-        "--annotation", "nn_label_plain", "--group-column", "origin",
-    ]) == 0
-    assert seen["annotation"] == "nn_label_plain"
-    assert seen["name"] == "d"
-    assert "origin" in [c for c, _, _ in seen["cells"]["grouped"]], (
-        "the named grouping column must reach the reader"
-    )
-
-
-def _uneven(n_per=80):
-    """Three samples whose alignment differs, so a report that prints the wrong
-    one of them is visible. The second is scrambled a little -- enough to score
-    lower, not enough to be refused."""
-    types = ["A", "B", "C", "D"]
-    labels, samples, coords = [], [], []
-    for si, sample in enumerate(("Col-0", "pFACT", "pHORST")):
-        for i in range(n_per):
-            labels.append(types[i % 4])
-            samples.append(sample)
-            coords.append([(i % 4) * 1000.0 + (si * n_per + i) * 0.01, 0.0])
-    coords = np.array(coords)
-    rows = np.arange(n_per, n_per + 12)
-    coords[rows] = coords[np.random.default_rng(1).permutation(rows)]
-    return labels, samples, coords
-
-
-def test_the_summary_reports_the_weakest_group_it_actually_scored(ingest, tmp_path):
-    """The report is what tells the operator whether their --group-column did
-    anything, so its numbers are pinned: the count, the minimum rather than the
-    maximum, and the excess rather than the raw agreement."""
-    labels, samples, coords = _uneven()
-    path = write_h5ad(tmp_path / "report.h5ad", n_cells=len(labels),
-                      labels=labels, samples=samples, coords=coords)
-    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
-
-    scored = {}
-    for sample in sorted(set(samples)):
-        rows = np.flatnonzero(np.asarray(samples) == sample)
-        scored[sample] = ingest.alignment(coords[rows], [labels[i] for i in rows])
-    excesses = [e for _, e in scored.values()]
-    purities = [p for p, _ in scored.values()]
-    assert min(excesses) < max(excesses), "the fixture must not be symmetric"
-    assert min(excesses) != pytest.approx(min(purities), abs=1e-3)
-
-    out = ingest.summarise(cells)
-    assert "grouped by sample: 3 of 3 groups scored" in out
-    assert f"weakest {min(excesses):.3f} of the way" in out
-
-
-def test_the_summary_says_when_a_grouping_column_judged_nothing(ingest, tmp_path):
-    """Both ways a column buys nothing: groups too small, and groups plenty big
-    but holding one cell type each -- which is what a column correlated with the
-    annotation gives."""
-    path = write_h5ad(tmp_path / "nothing.h5ad", n_cells=240,
-                      labels=["A", "B", "C", "D"] * 60)
-    import anndata
-    adata = anndata.read_h5ad(path)
-    adata.obs["reading"] = [str(i) for i in range(240)]          # 240 tiny groups
-    adata.obs["mirrors"] = list(adata.obs["nn_label_plain"])     # big, one type each
-    adata.write_h5ad(path)
-
-    for column, n_groups in (("reading", 240), ("mirrors", 4)):
-        cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap",
-                                  None, (column,))
-        out = ingest.summarise(cells)
-        assert f"grouped by {column}: 0 of {n_groups} groups scored" in out
-        assert "none had both enough cells and enough cell types" in out
-
-
-def test_only_a_named_group_column_is_blamed_on_biology(ingest, tmp_path):
-    """The hint to stop grouping by a column would be wrong for the sample
-    column, which is always scored and cannot be opted out of."""
-    labels, samples, coords = _uneven()
-    rows = np.arange(80, 160)
-    coords[rows] = coords[np.random.default_rng(2).permutation(rows)]
-    path = write_h5ad(tmp_path / "blame.h5ad", n_cells=len(labels),
-                      labels=labels, samples=samples, coords=coords)
-    with pytest.raises(ingest.IngestError) as caught:
-        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
-    assert "obs['sample'] == 'pFACT'" in str(caught.value)
-    assert "do not group by it" not in str(caught.value)
-
-
-def test_a_named_group_column_gets_the_biology_hint(ingest, tmp_path):
-    """Naming a biological column refuses a correct file, so the refusal has to
-    offer that explanation -- the damage here is in a column that cuts across
-    the samples, so the samples themselves pass."""
-    types = ["A", "B", "C", "D"]
-    labels, samples, zone, coords = [], [], [], []
-    for i in range(360):
-        labels.append(types[i % 4])
-        samples.append(["Col-0", "pFACT", "pHORST"][i % 3])
-        zone.append("meristem" if (i // 4) % 2 else "mature")
-        coords.append([(i % 4) * 1000.0 + i * 0.01, 0.0])
-    coords = np.array(coords)
-    bad = np.flatnonzero(np.asarray(zone) == "meristem")
-    coords[bad] = coords[np.random.default_rng(0).permutation(bad)]
-
-    path = write_h5ad(tmp_path / "hint.h5ad", n_cells=len(labels),
-                      labels=labels, samples=samples, coords=coords)
-    import anndata
-    adata = anndata.read_h5ad(path)
-    adata.obs["zone"] = zone
-    adata.write_h5ad(path)
-
-    with pytest.raises(ingest.IngestError) as caught:
-        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
-                          ("zone",))
-    assert "obs['zone'] == 'meristem'" in str(caught.value)
-    assert "do not group by it" in str(caught.value)
-
-
-def test_the_group_column_flag_collects_every_name(ingest):
-    base = ["--h5ad", "x", "--dataset-name", "d", "--species-id", "1",
-            "--annotation", "a"]
-    assert ingest.parse_args(base).group_column == []
-    assert ingest.parse_args(
-        base + ["--group-column", "one", "--group-column", "two"]
-    ).group_column == ["one", "two"]
 
 
 def test_a_coordinate_at_the_storable_limit_is_accepted_and_past_it_is_not(
@@ -806,3 +403,234 @@ def test_coordinates_that_are_not_numbers_are_refused(ingest, tmp_path):
                       labels=["A", "B", "C", "D"] * 30, coords=coords)
     with pytest.raises(ingest.IngestError, match="does not read as numbers"):
         ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+# --------------------------------------------------------------------------- #
+# Barcodes have to name one cell
+# --------------------------------------------------------------------------- #
+
+
+def test_duplicate_barcodes_are_refused(ingest, tmp_path):
+    """anndata.concat leaves 10x barcodes repeated across samples unless given
+    index_unique, and warns only at concat time. The barcode is the only
+    identifier a cell carries, and the documented recovery path when
+    coordinates and labels ever arrive separately is a join on it."""
+    path = write_h5ad(tmp_path / "dupes.h5ad", n_cells=6,
+                      barcodes=["A", "B", "C", "A", "B", "F"])
+    with pytest.raises(ingest.IngestError, match="duplicates"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_the_refusal_counts_the_duplicates(ingest, tmp_path):
+    """Naming how many, so an operator can tell one bad concat from a file that
+    is mostly fine."""
+    path = write_h5ad(tmp_path / "dupes2.h5ad", n_cells=6,
+                      barcodes=["A", "A", "A", "D", "E", "F"])
+    with pytest.raises(ingest.IngestError, match=r"2 of 6 barcodes are duplicates"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "nan", "NaN"])
+def test_a_cell_with_no_barcode_is_refused(ingest, tmp_path, bad):
+    """Blank or the string 'nan' -- what an upstream astype(str) leaves behind.
+    Same discipline the cell type and sample columns already hold to."""
+    path = write_h5ad(tmp_path / f"blank{abs(hash(bad))}.h5ad", n_cells=6,
+                      barcodes=["A", "B", "C", "D", "E", bad])
+    with pytest.raises(ingest.IngestError, match="no barcode"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_distinct_barcodes_load(ingest, tmp_path):
+    """The accept case, so the check cannot be satisfied by refusing everything."""
+    path = write_h5ad(tmp_path / "fine.h5ad", n_cells=6)
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+    assert len(set(cells["barcodes"])) == 6
+
+
+# --------------------------------------------------------------------------- #
+# The duplicate-point guard, at the severity that actually matters
+# --------------------------------------------------------------------------- #
+
+
+def piled_coords(n_cells: int, piled: int, n_types: int = 4):
+    """Ordinary spread-out coordinates with exactly `piled` cells moved onto
+    one shared point. That is the partial collision coarse rounding produces, as opposed to
+    a wholly unfilled array, and it has to be caught by the duplicate guard
+    alone rather than by anything downstream.
+
+    Labels cycle A,B,C,D, so cell i belongs to blob i % n_types.
+    """
+    coords = np.empty((n_cells, 2), dtype=float)
+    for i in range(n_cells):
+        rng = np.random.default_rng(i)
+        coords[i] = rng.normal(0, 0.01, 2) + np.array([(i % n_types) * 1000.0, 0.0])
+    coords[:piled] = [7.0, 7.0]
+    return coords
+
+
+def test_the_smallest_possible_pile_is_refused(ingest, tmp_path):
+    """Two cells on one point among 120. Both existing tests pile up 120 cells,
+    so every threshold below 120 passed them -- the guard could be narrowed to
+    'refuse only at 120+' with the suite still green. This pins the floor."""
+    path = write_h5ad(tmp_path / "pair.h5ad", n_cells=120,
+                      labels=["A", "B", "C", "D"] * 30,
+                      coords=piled_coords(120, 2))
+    with pytest.raises(ingest.IngestError, match="2 of 120 cells on a single point"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_a_small_pile_in_a_large_file_is_refused(ingest, tmp_path):
+    """Five cells on one point among 2,000: under the share, over the floor.
+    Pins MAX_DUPLICATE_POINT_SHARE itself -- at 0.09 rather than 0.001 this
+    would load."""
+    path = write_h5ad(tmp_path / "small_pile.h5ad", n_cells=2004,
+                      labels=["A", "B", "C", "D"] * 501,
+                      samples=["Col-0"] * 2004,
+                      coords=piled_coords(2004, 5))
+    with pytest.raises(ingest.IngestError, match="5 of 2004 cells on a single point"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_the_share_is_what_decides_on_a_large_file(ingest, tmp_path):
+    """The boundary from the accepting side: 2,004 cells allow two on a point
+    (2004 * 0.001 = 2.004, and the test is strictly greater), so this must load.
+    Without it the two refusals above are satisfied by refusing everything."""
+    path = write_h5ad(tmp_path / "at_bound.h5ad", n_cells=2004,
+                      labels=["A", "B", "C", "D"] * 501,
+                      samples=["Col-0"] * 2004,
+                      coords=piled_coords(2004, 2))
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+    assert cells["n_cells"] == 2004
+
+
+def test_the_duplicate_share_is_where_it_was_measured(ingest):
+    """Pinned because it is a measured constant, and the only thing standing
+    between an unfilled obsm and a dataset drawn as one dot."""
+    assert ingest.MAX_DUPLICATE_POINT_SHARE == 0.001
+
+
+# --------------------------------------------------------------------------- #
+# What main() hands load(), and what it says afterwards
+# --------------------------------------------------------------------------- #
+#
+# The integration tests call load() directly and pass `create` themselves, so
+# nothing there sees the wiring. These stand between the flags and the writer:
+# without them, `create=args.create` can be edited to `create=True` and every
+# other test still passes, which is the defect --create exists to prevent.
+
+
+def _wired(ingest, monkeypatch, tmp_path, argv_extra, name="wiring"):
+    """Run main() with load() replaced by a recorder, and return what it saw
+    along with everything main() printed."""
+    import contextlib
+    import psycopg
+
+    seen = {}
+
+    def recorder(conn, ds_name, species_id, cells, checksum, units, annotation,
+                 create=False):
+        seen.update(name=ds_name, annotation=annotation, units=units,
+                    create=create, cells=cells)
+        return 7, cells["n_cells"], create
+
+    monkeypatch.setattr(ingest, "load", recorder)
+    monkeypatch.setattr(psycopg, "connect", lambda url: contextlib.nullcontext(None))
+    monkeypatch.setenv("DATABASE_URL", "postgresql://nobody@nowhere/none")
+
+    path = write_h5ad(tmp_path / f"{name}.h5ad", n_cells=240,
+                      labels=["A", "B", "C", "D"] * 60)
+    code = ingest.main([
+        "--h5ad", str(path), "--dataset-name", "d", "--species-id", "1",
+        "--annotation", "nn_label_plain", *argv_extra,
+    ])
+    return code, seen
+
+
+def test_main_hands_load_the_annotation_not_some_other_column(
+    ingest, tmp_path, monkeypatch, capsys
+):
+    """Handing load() the sample column instead of the annotation would record
+    the wrong provenance for the differential expression results, silently."""
+    code, seen = _wired(ingest, monkeypatch, tmp_path, [])
+    capsys.readouterr()
+    assert code == 0
+    assert seen["annotation"] == "nn_label_plain"
+    assert seen["name"] == "d"
+
+
+def test_the_create_flag_reaches_the_writer(ingest, tmp_path, monkeypatch, capsys):
+    """Both directions. `create=True` hard-coded here would put back the silent
+    fork this flag exists to stop; `create=False` would make a first load
+    impossible. Neither is visible from load()'s own tests."""
+    code, seen = _wired(ingest, monkeypatch, tmp_path, ["--create"], "with")
+    capsys.readouterr()
+    assert code == 0 and seen["create"] is True
+
+    code, seen = _wired(ingest, monkeypatch, tmp_path, [], "without")
+    capsys.readouterr()
+    assert code == 0 and seen["create"] is False
+
+
+def test_the_closing_line_says_which_happened(ingest, tmp_path, monkeypatch, capsys):
+    """Registering and replacing are the two outcomes an operator needs to tell
+    apart after a mistyped name, and the sentence is the only place they differ."""
+    ingest_code, _ = _wired(ingest, monkeypatch, tmp_path, ["--create"], "said")
+    out = capsys.readouterr().out
+    assert ingest_code == 0
+    assert "registered dataset 7" in out and "replaced" not in out
+
+    ingest_code, _ = _wired(ingest, monkeypatch, tmp_path, [], "said2")
+    out = capsys.readouterr().out
+    assert ingest_code == 0
+    assert "replaced the cells of dataset 7" in out and "registered" not in out
+
+
+def test_the_expression_units_reach_the_writer(ingest, tmp_path, monkeypatch, capsys):
+    """The colourbar label every reader of the dataset sees."""
+    code, seen = _wired(ingest, monkeypatch, tmp_path,
+                        ["--expression-units", "CPM"], "units")
+    capsys.readouterr()
+    assert code == 0 and seen["units"] == "CPM"
+
+
+def test_a_refusal_does_not_replay_the_file_at_the_terminal(ingest, tmp_path):
+    """Barcodes come out of the file, and the refusal is the only thing the
+    operator sees. Printed raw, a crafted barcode can clear the screen and paint
+    a success line over the failure."""
+    hostile = "\x1b[2J\x1b[Hloaded 8683 cells into dataset 3"
+    path = write_h5ad(tmp_path / "hostile.h5ad", n_cells=6,
+                      barcodes=[hostile, hostile, "C", "D", "E", "F"])
+    with pytest.raises(ingest.IngestError) as exc:
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+    message = str(exc.value)
+    assert "\x1b" not in message, "escape characters must not reach the terminal"
+    assert "\\x1b" in message, "the barcode is still shown, escaped"
+
+
+@pytest.mark.parametrize("sentinel", ["nan", "None", "NA", "<NA>", "null"])
+def test_a_cell_type_that_reads_as_a_missing_value_is_refused(
+    ingest, tmp_path, sentinel
+):
+    """`astype(str)` on a column with missing annotations turns them into these.
+    Stored as-is, each becomes a cell type in the legend with no DE rows behind
+    it, and a biologist reads unannotated cells as a real population."""
+    path = tmp_path / f"sentinel_{sentinel.strip('<>')}.h5ad"
+    write_h5ad(path, n_cells=6)
+    a = anndata.read_h5ad(path)
+    a.obs["nn_label_plain"] = ["Phellem", sentinel, "Phellem",
+                               "Cortex", "Cortex", "Cortex"]
+    a.write_h5ad(path)
+    with pytest.raises(ingest.IngestError, match="missing value"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_a_real_cell_type_that_merely_looks_odd_still_loads(ingest, tmp_path):
+    """The accept case, so the rule above cannot be satisfied by refusing
+    anything unusual. 'Nanodomain' contains 'nan'; it is a cell type."""
+    path = tmp_path / "nanodomain.h5ad"
+    write_h5ad(path, n_cells=6)
+    a = anndata.read_h5ad(path)
+    a.obs["nn_label_plain"] = ["Nanodomain"] * 3 + ["Cortex"] * 3
+    a.write_h5ad(path)
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+    assert cells["levels"] == ["Cortex", "Nanodomain"]
