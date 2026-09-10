@@ -3910,8 +3910,8 @@ export type Database = {
         Returns: {
           cluster_ordinal: number
           facets: Json
-          genotype: string
-          replicate: string
+          genotype: string | null
+          replicate: string | null
           x: number
           y: number
         }[]

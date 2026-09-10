@@ -35,6 +35,8 @@ interface LoadedMeta {
   /** Cells per sample, taken from the cells themselves. Empty when the dataset
    *  records no sample, which is when the toggles are not shown at all. */
   samples: { name: string; count: number }[];
+  /** Cells recording no sample. Drawn, and no toggle can hide them. */
+  unlabelledCount: number;
 }
 
 /** Composes the UMAP canvas + gene search + colorbar + cluster sidebar for a dataset. */
@@ -43,6 +45,9 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
   const [geneName, setGeneName] = useState<string | null>(null);
   const [hidden, setHidden] = useState<Set<number>>(new Set());
   const [hiddenSamples, setHiddenSamples] = useState<Set<string>>(new Set());
+  // Sample names repeat across datasets -- Col-0 is in most of them -- so a
+  // hidden set carried over would open the next dataset with one already off.
+  useEffect(() => setHiddenSamples(new Set()), [datasetId]);
   const [exprRange, setExprRange] = useState<{ min: number; max: number } | null>(
     null,
   );
@@ -87,6 +92,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
       cellCount: number;
       orphanCount: number;
       samples: { name: string; count: number }[];
+      unlabelledCount: number;
     }) => {
       setMeta((prev) => ({
         dataset: ctx.dataset,
@@ -94,6 +100,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
         cellCount: ctx.cellCount,
         orphanCount: ctx.orphanCount,
         samples: ctx.samples,
+        unlabelledCount: ctx.unlabelledCount,
         counts: prev?.counts ?? {},
       }));
     },
@@ -224,9 +231,19 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
             <ExpressionSampleToggles
               samples={meta.samples}
               hidden={hiddenSamples}
+              unlabelledCount={meta.unlabelledCount}
               onToggle={handleSampleToggle}
               onShowAll={handleShowAllSamples}
             />
+            {hiddenSamples.size > 0 && (
+              <span
+                className="mt-1.5 block text-xs text-stone-500"
+                role="status"
+              >
+                Cluster sizes, marker genes and the no-cluster figure are for
+                the whole dataset, not only the samples shown.
+              </span>
+            )}
           </Box>
         )}
 

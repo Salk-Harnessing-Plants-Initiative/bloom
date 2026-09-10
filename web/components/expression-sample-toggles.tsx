@@ -16,6 +16,9 @@ export interface SampleCount {
 interface Props {
   samples: SampleCount[];
   hidden: ReadonlySet<string>;
+  /** Cells recording no sample. They stay on the map whatever is hidden, so
+   *  hiding every sample does not empty it. */
+  unlabelledCount?: number;
   onToggle: (name: string) => void;
   onShowAll: () => void;
 }
@@ -23,6 +26,7 @@ interface Props {
 export function ExpressionSampleToggles({
   samples,
   hidden,
+  unlabelledCount = 0,
   onToggle,
   onShowAll,
 }: Props) {
@@ -51,11 +55,13 @@ export function ExpressionSampleToggles({
             }
             className={`inline-flex items-baseline gap-1.5 rounded-md border px-2.5 py-1 text-xs transition-colors ${
               isHidden
-                ? "border-stone-200 bg-stone-50 text-stone-400"
+                ? "border-stone-200 bg-stone-50 text-stone-500 line-through decoration-stone-400"
                 : "border-lime-300 bg-lime-50 text-stone-700 hover:border-lime-400"
             }`}
           >
-            <span className="font-medium">{sample.name}</span>
+            <span className="max-w-[18ch] truncate font-medium">
+              {sample.name}
+            </span>
             <span className="tabular-nums text-[10px] text-stone-500">
               {fmt.format(sample.count)}
             </span>
@@ -64,13 +70,17 @@ export function ExpressionSampleToggles({
       })}
       {allHidden && (
         <span className="text-xs text-stone-500">
-          Every sample is hidden, so the map is empty.{" "}
+          {unlabelledCount > 0
+            ? `Every sample is hidden. ${fmt.format(unlabelledCount)} cell${
+                unlabelledCount === 1 ? "" : "s"
+              } record no sample and stay on the map.`
+            : "Every sample is hidden, so the map is empty."}{" "}
           <button
             type="button"
             onClick={onShowAll}
             className="underline hover:text-stone-700"
           >
-            Show all
+            Show all samples
           </button>
         </span>
       )}

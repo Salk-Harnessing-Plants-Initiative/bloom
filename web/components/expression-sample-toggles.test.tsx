@@ -2,8 +2,13 @@
 /**
  * The samples come from the cells, so nothing here may assume which they are or
  * how many. A dataset that records none gets no control at all, rather than an
- * empty box; and hiding every one says so, because an empty map with no
- * explanation reads as a dataset that failed to load.
+ * empty box; and hiding every one says what is left on the map, because a wrong
+ * or missing explanation reads as a dataset that failed to load.
+ *
+ * Buttons are looked up by their whole accessible name -- "Col-0 2,442" -- so
+ * every assertion also pins that a count sits inside its own sample's button.
+ * A free-floating getByText("2,442") passes just as well when the counts are
+ * rendered against the wrong names.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,8 +24,11 @@ const SAMPLES = [
   { name: "pHORST", count: 2937 },
 ];
 
+/** Every sample's button, named as a reader sees it. */
+const NAMED = ["Col-0 2,442", "pFACT 3,304", "pHORST 2,937"];
+
 describe("ExpressionSampleToggles", () => {
-  it("shows one toggle per sample with its cell count", () => {
+  it("shows one toggle per sample carrying that sample's own count", () => {
     render(
       <ExpressionSampleToggles
         samples={SAMPLES}
@@ -29,11 +37,10 @@ describe("ExpressionSampleToggles", () => {
         onShowAll={() => {}}
       />,
     );
-    for (const { name } of SAMPLES) {
-      expect(screen.getByRole("button", { name: new RegExp(name) })).toBeTruthy();
+    for (const name of NAMED) {
+      expect(screen.getByRole("button", { name })).toBeTruthy();
     }
-    expect(screen.getByText("2,442")).toBeTruthy();
-    expect(screen.getByText("3,304")).toBeTruthy();
+    expect(screen.getAllByRole("button")).toHaveLength(SAMPLES.length);
   });
 
   it("renders nothing for a dataset whose cells carry no sample", () => {
@@ -58,10 +65,10 @@ describe("ExpressionSampleToggles", () => {
       />,
     );
     expect(
-      screen.getByRole("button", { name: /Col-0/ }).getAttribute("aria-pressed"),
+      screen.getByRole("button", { name: "Col-0 2,442" }).getAttribute("aria-pressed"),
     ).toBe("true");
     expect(
-      screen.getByRole("button", { name: /pFACT/ }).getAttribute("aria-pressed"),
+      screen.getByRole("button", { name: "pFACT 3,304" }).getAttribute("aria-pressed"),
     ).toBe("false");
   });
 
@@ -75,7 +82,7 @@ describe("ExpressionSampleToggles", () => {
         onShowAll={() => {}}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /pHORST/ }));
+    fireEvent.click(screen.getByRole("button", { name: "pHORST 2,937" }));
     expect(onToggle.mock.calls).toEqual([["pHORST"]]);
   });
 
@@ -89,9 +96,39 @@ describe("ExpressionSampleToggles", () => {
         onShowAll={onShowAll}
       />,
     );
-    expect(screen.getByText(/Every sample is hidden/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Show all" }));
+    expect(screen.getByText(/Every sample is hidden, so the map is empty/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Show all samples" }));
     expect(onShowAll).toHaveBeenCalledOnce();
+  });
+
+  it("does not claim an empty map when cells no toggle can hide are still drawn", () => {
+    render(
+      <ExpressionSampleToggles
+        samples={SAMPLES}
+        hidden={new Set(SAMPLES.map((s) => s.name))}
+        unlabelledCount={412}
+        onToggle={() => {}}
+        onShowAll={() => {}}
+      />,
+    );
+    expect(screen.queryByText(/so the map is empty/)).toBeNull();
+    expect(
+      screen.getByText(/412 cells record no sample and stay on the map/),
+    ).toBeTruthy();
+  });
+
+  it("names the button for its own control, not just 'Show all'", () => {
+    // The cluster sidebar has a "Show all" of its own on the same screen, and
+    // the two do different things.
+    render(
+      <ExpressionSampleToggles
+        samples={SAMPLES}
+        hidden={new Set(SAMPLES.map((s) => s.name))}
+        onToggle={() => {}}
+        onShowAll={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Show all" })).toBeNull();
   });
 
   it("says nothing about an empty map while any sample is showing", () => {
