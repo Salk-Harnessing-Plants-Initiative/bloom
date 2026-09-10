@@ -555,6 +555,23 @@ jobs:
       - name: Run migration lint
         run: ./scripts/lint_migrations.sh origin/${{ github.base_ref }}
 
+  lint-migration-isolation:
+    name: Lint migration changes are isolated
+    # Both bases: the script counts only migrations not already on staging, so a
+    # promotion has nothing to check and a hotfix straight to main still does.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Diffs against the base SHA and compares with origin/staging
+          fetch-depth: 0
+
+      # Warning mode until the rollout makes it blocking.
+      - name: Enforce migration PR isolation
+        continue-on-error: true
+        run: python3 scripts/lint_migration_isolation.py ${{ github.event.pull_request.base.sha }}
+
   lint-cve-isolation:
     name: Lint CVE changes are isolated
     # Only staging-bound PRs — that's where a suppression is authored and where
