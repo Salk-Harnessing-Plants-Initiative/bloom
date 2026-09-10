@@ -134,8 +134,8 @@ parametrized §2 suite red between two separate commits for no benefit.
       `.pre-commit-config.yaml` — the same gap the already-archived `fix-kong-reload-on-deploy`
       change flagged for an equivalent edit); rely on §2's `yaml.safe_load`-based test passing
       plus a manual read-through of the diff, not a new linter.
-- [ ] 4.4 `/pre-merge`, then `/pr-description` and open the bundled PR (proposal + implementation)
-      against `staging`, linking bloom#780. Do not merge — leave that to the user.
+- [x] 4.4 `/pre-merge`, then `/pr-description` and open the bundled PR (proposal + implementation)
+      against `staging`, linking bloom#780. Do not merge — leave that to the user. (PR #807)
 
 ## 5. Post-merge (not part of this PR)
 
