@@ -25,6 +25,7 @@ DO $$
 DECLARE
     at_risk bigint;
     gene_rows bigint;
+    run_rows bigint;
 BEGIN
     SELECT count(*) INTO at_risk
       FROM public.scrna_de
@@ -37,12 +38,21 @@ BEGIN
 
     SELECT count(*) INTO gene_rows FROM public.scrna_de_genes;
 
-    IF at_risk > 0 OR gene_rows > 0 THEN
+    -- Counted separately because a run can be the only thing at risk. One that
+    -- failed produced no results and no gene rows by design -- its error_message
+    -- is the whole record of what went wrong, and a submitted one names a
+    -- workflow that may still be live on the cluster.
+    SELECT count(*) INTO run_rows FROM public.scrna_de_runs;
+
+    IF at_risk > 0 OR gene_rows > 0 OR run_rows > 0 THEN
         RAISE EXCEPTION
-            'refusing to roll back: % scrna_de rows belong to an analysis and % '
-            'per-gene rows would be destroyed. Export them, or remove the runs '
-            'deliberately, before running this.',
-            at_risk, gene_rows;
+            'refusing to roll back: % scrna_de rows belong to an analysis, % '
+            'per-gene rows and % runs would be destroyed. To inspect them: '
+            'SELECT * FROM public.scrna_de_runs ORDER BY created_at DESC. To '
+            'remove one deliberately, delete its results first and then the run '
+            'itself: DELETE FROM public.scrna_de WHERE run_id = $1; DELETE FROM '
+            'public.scrna_de_runs WHERE id = $1.',
+            at_risk, gene_rows, run_rows;
     END IF;
 END $$;
 

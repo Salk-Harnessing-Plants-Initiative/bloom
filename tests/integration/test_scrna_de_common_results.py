@@ -648,3 +648,21 @@ def test_an_unbounded_fold_change_is_kept(pg_conn):
         de_id = _result(cur, ds, _run(cur, ds))
         _gene_row(cur, ds, de_id, _gene(cur, ds), log2fc=float("inf"))
     pg_conn.rollback()
+
+
+def test_rollback_refuses_while_a_run_exists_even_with_no_results(pg_conn):
+    """A failed run produces no results and no gene rows by design, so counting
+    only those two waves it through -- and its error_message is the whole record
+    of what went wrong."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        cur.execute(
+            "INSERT INTO scrna_de_runs (dataset_id, source, status, method, "
+            "params_hash, error_message, completed_at) VALUES "
+            "(%s,'ondemand','failed','wilcoxon','h','argo pod OOMKilled',now())",
+            (ds,),
+        )
+        with pytest.raises(psycopg.errors.RaiseException) as exc:
+            cur.execute(_rollback_body())
+        assert "runs would be destroyed" in str(exc.value)
+    pg_conn.rollback()
