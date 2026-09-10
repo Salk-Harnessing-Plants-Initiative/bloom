@@ -780,6 +780,9 @@ def test_rollback_restores_the_original_shape(pg_conn):
         _insert(cur, ds, file_path="de/legacy.json")
         before = _table_privileges(cur, TABLE)
 
+        # Unwind the layer above before this one, or its columns survive and the
+        # original shape is never reached.
+        cur.execute(_later_rollback_body())
         cur.execute(_rollback_body())
 
         cur.execute(
@@ -854,11 +857,33 @@ def _migration_body() -> str:
     )
 
 
+def _later_rollback_body() -> str:
+    """The rollback for the migration layered on top of this one.
+
+    20260910120000 adds columns and a foreign key to `scrna_de` above the
+    contrast dimension. Rollbacks unwind in reverse, so reaching the shape that
+    predates contrasts means peeling that layer off first -- otherwise the
+    foreign key is still in force and a legacy row naming a cell type the
+    catalogue never had cannot be inserted at all.
+    """
+    matches = sorted(
+        (REPO_ROOT / "supabase" / "rollbacks")
+        .glob("*_scrna_de_common_results_rollback.sql")
+    )
+    assert matches, "later rollback script not found"
+    return "\n".join(
+        line
+        for line in matches[-1].read_text().splitlines()
+        if not re.match(r"^\s*(BEGIN|COMMIT)\s*;\s*$", line, re.IGNORECASE)
+    )
+
+
 def _legacy_table(cur):
     """Return the table to its pre-migration shape so rows can be inserted as
     they exist on a server that has not run this migration yet."""
     if not _table_is_empty(cur):
         pytest.skip("table already holds rows; the rollback guard would refuse")
+    cur.execute(_later_rollback_body())
     cur.execute(_rollback_body())
 
 
