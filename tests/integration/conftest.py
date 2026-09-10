@@ -233,6 +233,21 @@ def pg_conn(pg_conninfo):
 
 
 @pytest.fixture
+def authenticator_conninfo() -> str:
+    """Connect as `authenticator` -- the login role PostgREST/Supavisor use for every live RPC
+    call before `SET ROLE`-ing to `service_role`/`anon`/`authenticated` per the caller's JWT.
+    Uses the same `POSTGRES_PASSWORD` `authenticator` is already provisioned with (its own
+    `ALTER USER ... WITH PASSWORD` is fed from the same value PostgREST's `PGRST_DB_URI` uses) --
+    no separate secret needed. `authenticator` alone carries
+    `session_preload_libraries=safeupdate` (bloom#806); `pg_conninfo`'s `supabase_admin` never
+    loads it, which is why tests using only that connection can't exercise that guard."""
+    return (
+        f"host=127.0.0.1 port={POSTGRES_HOST_PORT} "
+        f"dbname={POSTGRES_DB} user=authenticator password={POSTGRES_PASSWORD}"
+    )
+
+
+@pytest.fixture
 def supabase_db_url():
     """Postgres connection URL formatted for `supabase db push --db-url`."""
     return (
