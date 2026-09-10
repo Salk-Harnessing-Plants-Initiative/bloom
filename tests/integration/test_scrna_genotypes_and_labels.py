@@ -445,3 +445,61 @@ def test_running_it_again_changes_nothing(pg_conn):
         cur.execute("SELECT source FROM scrna_clusters WHERE dataset_id = %s", (ds,))
         assert cur.fetchone()[0] == "nuclei"
     pg_conn.rollback()
+
+
+def test_a_cell_cannot_take_a_genotype_from_another_dataset(pg_conn):
+    """Col-0 exists in most Arabidopsis experiments, so an ingest resolving a
+    genotype name against the wrong dataset is a live mistake. The reference
+    carries dataset_id for the same reason the cluster reference on this table
+    does."""
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        mine, other = dataset(cur, sid), dataset(cur, sid)
+        cluster(cur, mine)
+        elsewhere = genotype(cur, other, "Col-0")
+
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            cell(cur, mine, 0, genotype_id=elsewhere)
+    pg_conn.rollback()
+
+
+def test_a_cell_takes_a_genotype_from_its_own_dataset(pg_conn):
+    """The accept case, so the rule above is not satisfied by refusing every
+    genotype."""
+    with pg_conn.cursor() as cur:
+        ds = dataset(cur, species(cur))
+        cluster(cur, ds)
+        gid = genotype(cur, ds, "Col-0")
+        cell(cur, ds, 0, genotype_id=gid)
+
+        cur.execute("SELECT genotype FROM scrna_cell_arrays(%s)", (ds,))
+        assert cur.fetchone()[0] == "Col-0"
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize("cmd", ["SELECT", "INSERT", "UPDATE"])
+def test_the_ingest_role_can_write_genotypes(pg_conn, cmd):
+    """bloom_writer is the ingest role. Without these the loader could point
+    cells at genotypes it is not allowed to create, which is no loader at all.
+    Every other scrna_* table grants it the same three."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM pg_policies WHERE schemaname = 'public' "
+            "AND tablename = 'scrna_genotypes' AND cmd = %s "
+            "AND 'bloom_writer' = ANY(roles)",
+            (cmd,),
+        )
+        assert cur.fetchone()[0] == 1, f"bloom_writer has no {cmd} policy"
+
+
+def test_the_ingest_role_gets_no_more_than_its_siblings(pg_conn):
+    """A copied policy block is how a table quietly gains a delete."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT tablename, array_agg(DISTINCT cmd ORDER BY cmd) "
+            "FROM pg_policies WHERE schemaname = 'public' "
+            "AND tablename IN ('scrna_genotypes', 'scrna_clusters') "
+            "AND 'bloom_writer' = ANY(roles) GROUP BY tablename"
+        )
+        by_table = dict(cur.fetchall())
+        assert by_table["scrna_genotypes"] == by_table["scrna_clusters"]

@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS public.scrna_genotypes (
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   -- One row per genotype per dataset, so a re-ingest lands on the same row.
   CONSTRAINT scrna_genotypes_one_per_dataset UNIQUE (dataset_id, name),
+  -- Lets a cell reference (dataset_id, id) rather than id alone, so it cannot
+  -- point at a genotype belonging to another experiment.
+  CONSTRAINT scrna_genotypes_id_per_dataset UNIQUE (dataset_id, id),
   -- A name has to be a name. The characters are spelled out because btrim()
   -- with one argument strips ordinary spaces alone -- not a non-breaking space,
   -- which a name pasted from a document can be made entirely of.
@@ -49,15 +52,19 @@ CREATE TABLE IF NOT EXISTS public.scrna_genotypes (
 CREATE INDEX IF NOT EXISTS idx_scrna_genotypes_dataset
   ON public.scrna_genotypes (dataset_id);
 
--- Which genotype each cell belongs to. RESTRICT, so deleting a genotype that
--- still has cells is refused rather than taking the cells with it.
+-- Which genotype each cell belongs to. Keyed on the dataset as well as the
+-- genotype, like the cluster reference on this table, so a cell cannot be given
+-- a genotype from another experiment -- Col-0 exists in most of them. RESTRICT,
+-- so deleting a genotype that still has cells is refused rather than taking the
+-- cells with it.
 ALTER TABLE public.scrna_cells
   ADD COLUMN IF NOT EXISTS genotype_id BIGINT;
 ALTER TABLE public.scrna_cells
   DROP CONSTRAINT IF EXISTS scrna_cells_genotype_fkey;
 ALTER TABLE public.scrna_cells
   ADD CONSTRAINT scrna_cells_genotype_fkey
-  FOREIGN KEY (genotype_id) REFERENCES public.scrna_genotypes (id)
+  FOREIGN KEY (dataset_id, genotype_id)
+  REFERENCES public.scrna_genotypes (dataset_id, id)
   ON DELETE RESTRICT;
 
 CREATE INDEX IF NOT EXISTS idx_scrna_cells_genotype
@@ -164,6 +171,21 @@ CREATE POLICY "Authenticated users can select scrna_genotypes"
 DROP POLICY IF EXISTS "admin_all_scrna_genotypes" ON public.scrna_genotypes;
 CREATE POLICY "admin_all_scrna_genotypes"
   ON public.scrna_genotypes AS permissive FOR ALL TO bloom_admin
+  USING (true) WITH CHECK (true);
+
+-- bloom_writer is the ingest role, and every other scrna_* table lets it write.
+-- Without these the loader could point cells at genotypes it cannot create.
+DROP POLICY IF EXISTS writer_select_scrna_genotypes ON public.scrna_genotypes;
+CREATE POLICY writer_select_scrna_genotypes
+  ON public.scrna_genotypes FOR SELECT TO bloom_writer USING (true);
+
+DROP POLICY IF EXISTS writer_insert_scrna_genotypes ON public.scrna_genotypes;
+CREATE POLICY writer_insert_scrna_genotypes
+  ON public.scrna_genotypes FOR INSERT TO bloom_writer WITH CHECK (true);
+
+DROP POLICY IF EXISTS writer_update_scrna_genotypes ON public.scrna_genotypes;
+CREATE POLICY writer_update_scrna_genotypes
+  ON public.scrna_genotypes FOR UPDATE TO bloom_writer
   USING (true) WITH CHECK (true);
 
 DROP POLICY IF EXISTS "user_read_scrna_genotypes" ON public.scrna_genotypes;
