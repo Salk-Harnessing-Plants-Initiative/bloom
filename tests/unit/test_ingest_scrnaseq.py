@@ -253,16 +253,6 @@ def test_the_palette_has_a_distinct_colour_for_every_cell_type(ingest):
     assert len(ingest.PALETTE) == 23
     assert len(set(ingest.PALETTE)) == len(ingest.PALETTE)
     assert all(c.startswith("#") and len(c) == 7 for c in ingest.PALETTE)
-
-
-def test_checksum_is_stable_and_content_dependent(ingest, tmp_path):
-    a, b = tmp_path / "a.bin", tmp_path / "b.bin"
-    a.write_bytes(b"same"); b.write_bytes(b"same")
-    assert ingest.checksum(a) == ingest.checksum(b)
-    b.write_bytes(b"different")
-    assert ingest.checksum(a) != ingest.checksum(b)
-
-
 def test_summary_names_the_samples_and_their_counts(ingest, tmp_path):
     cells = ingest.read_cells(
         write_h5ad(tmp_path / "sum.h5ad"), "nn_label_plain", "sample", "X_umap", None
@@ -527,7 +517,7 @@ def _wired(ingest, monkeypatch, tmp_path, argv_extra, name="wiring"):
 
     seen = {}
 
-    def recorder(conn, ds_name, species_id, cells, checksum, units, annotation,
+    def recorder(conn, ds_name, species_id, cells, units, annotation,
                  create=False):
         seen.update(name=ds_name, annotation=annotation, units=units,
                     create=create, cells=cells)

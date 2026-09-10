@@ -66,8 +66,7 @@ def species(cur) -> int:
     return cur.fetchone()[0]
 
 
-def run(ingest, conn, name, species_id, table, checksum="sha", annotation="ann",
-        create=False):
+def run(ingest, conn, name, species_id, table, annotation="ann", create=False):
     """Replace an existing dataset's cells, returning its id and stored count.
 
     Registering is `first(...)` below. The two are separate because `--create`
@@ -75,16 +74,15 @@ def run(ingest, conn, name, species_id, table, checksum="sha", annotation="ann",
     does not when the flag is absent.
     """
     dataset_id, stored, _created = ingest.load(
-        conn, name, species_id, table, checksum,
+        conn, name, species_id, table,
         "log1p normalised counts", annotation, create=create,
     )
     return dataset_id, stored
 
 
-def register(ingest, conn, name, species_id, table, checksum="sha", annotation="ann"):
+def register(ingest, conn, name, species_id, table, annotation="ann"):
     """Register a dataset and load its cells -- a first load, with --create."""
-    return run(ingest, conn, name, species_id, table, checksum, annotation,
-               create=True)
+    return run(ingest, conn, name, species_id, table, annotation, create=True)
 
 
 def refuses(ingest, conn, match, *args, **kwargs):
@@ -180,11 +178,11 @@ def test_a_second_load_replaces_rather_than_accumulates(ingest, pg_conn):
     to happen in the right order or a re-run cannot start."""
     with pg_conn.cursor() as cur:
         sid = species(cur)
-        first, _ = register(ingest, pg_conn, "again", sid, cells(["A", "B"]), "sha-1")
+        first, _ = register(ingest, pg_conn, "again", sid, cells(["A", "B"]))
 
         table = cells(["A", "B"])
         table["x"] = [90.0, 91.0]
-        second, stored = run(ingest, pg_conn, "again", sid, table, "sha-2")
+        second, stored = run(ingest, pg_conn, "again", sid, table)
 
         assert second == first and stored == 2
         cur.execute("SELECT count(*) FROM scrna_cells WHERE dataset_id = %s", (first,))
@@ -192,8 +190,6 @@ def test_a_second_load_replaces_rather_than_accumulates(ingest, pg_conn):
         cur.execute("SELECT x FROM scrna_cells WHERE dataset_id = %s "
                     "ORDER BY cell_number", (first,))
         assert [r[0] for r in cur.fetchall()] == [90.0, 91.0]
-        cur.execute("SELECT source_checksum FROM scrna_datasets WHERE id = %s", (first,))
-        assert cur.fetchone()[0] == "sha-2"
     pg_conn.rollback()
 
 
@@ -224,15 +220,15 @@ def test_a_changed_cell_type_set_leaves_nothing_behind(ingest, pg_conn):
 def test_a_count_mismatch_refuses_and_keeps_the_previous_load(ingest, pg_conn):
     with pg_conn.cursor() as cur:
         sid = species(cur)
-        dataset_id, _ = register(ingest, pg_conn, "count", sid, cells(["A", "B"]), "sha-1")
+        dataset_id, _ = register(ingest, pg_conn, "count", sid, cells(["A", "B"]))
 
         broken = cells(["A", "B"])
         broken["n_cells"] = 3          # what the file claimed
-        refuses(ingest, pg_conn, "wrote 2 cells", "count", sid, broken, "sha-2")
+        refuses(ingest, pg_conn, "wrote 2 cells", "count", sid, broken)
 
-        cur.execute("SELECT source_checksum, n_cells FROM scrna_datasets "
+        cur.execute("SELECT n_cells FROM scrna_datasets "
                     "WHERE id = %s", (dataset_id,))
-        assert cur.fetchone() == ("sha-1", 2)
+        assert cur.fetchone() == (2,)
     pg_conn.rollback()
 
 
@@ -535,7 +531,7 @@ def test_create_registers_the_dataset_and_says_so(ingest, pg_conn):
     with pg_conn.cursor() as cur:
         sid = species(cur)
         dataset_id, stored, created = ingest.load(
-            pg_conn, "fresh", sid, cells(["A", "B"]), "sha",
+            pg_conn, "fresh", sid, cells(["A", "B"]),
             "log1p normalised counts", "ann", create=True,
         )
         assert created is True
@@ -550,7 +546,7 @@ def test_a_reload_reports_that_it_replaced_rather_than_created(ingest, pg_conn):
         sid = species(cur)
         first, _ = register(ingest, pg_conn, "twice", sid, cells(["A", "B"]))
         again, _, created = ingest.load(
-            pg_conn, "twice", sid, cells(["A", "B"]), "sha-2",
+            pg_conn, "twice", sid, cells(["A", "B"]),
             "log1p normalised counts", "ann", create=False,
         )
         assert created is False
@@ -565,7 +561,7 @@ def test_a_reload_needs_no_create_flag(ingest, pg_conn):
         sid = species(cur)
         first, _ = register(ingest, pg_conn, "existing", sid, cells(["A", "B"]))
         again, _ = run(ingest, pg_conn, "existing", sid, cells(["A", "C"]),
-                       "sha-2", create=False)
+                       create=False)
         assert again == first
     pg_conn.rollback()
 
@@ -576,8 +572,7 @@ def test_a_padded_name_finds_the_dataset_it_meant(ingest, pg_conn):
     with pg_conn.cursor() as cur:
         sid = species(cur)
         first, _ = register(ingest, pg_conn, "padded", sid, cells(["A", "B"]))
-        again, _ = run(ingest, pg_conn, "  padded  ", sid, cells(["A", "B"]),
-                       "sha-2")
+        again, _ = run(ingest, pg_conn, "  padded  ", sid, cells(["A", "B"]))
         assert again == first, "whitespace must not register a second copy"
 
         cur.execute(

@@ -280,16 +280,6 @@ def _text_column(adata, column: str) -> list[str]:
             f"missing value; every cell needs a name"
         )
     return text
-
-
-def checksum(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def summarise(cells: dict) -> str:
     per_sample = Counter(cells["samples"])
     return (
@@ -300,15 +290,15 @@ def summarise(cells: dict) -> str:
     )
 
 
-def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
+def load(conn, name: str, species_id: int, cells: dict,
          units: str, annotation: str, create: bool = False) -> tuple[int, int, bool]:
     """Write the dataset, its catalogue and its cells in one transaction.
 
     Order matters twice over. `scrna_cells` references the catalogue with
     ON DELETE RESTRICT, so the cells go first or the catalogue delete is refused
-    on every run after the first. And the dataset's counts and checksum are
-    written last, after reading back what actually landed, so the row can never
-    attest to a file it does not hold.
+    on every run after the first. And the dataset's counts are written last,
+    after reading back what actually landed, so the row can never claim more
+    cells than it holds.
 
     A reload is refused outright when the dataset already has rows that name a
     cell type or a cell position, since nothing here can rebuild them.
@@ -453,11 +443,11 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
 
         cur.execute(
             "UPDATE public.scrna_datasets SET n_cells = %s, n_genes = %s, "
-            "source_checksum = %s, ingested_at = %s, expression_units = %s, "
+            "ingested_at = %s, expression_units = %s, "
             "metadata = COALESCE(metadata, '{}'::jsonb) "
             "  || jsonb_build_object('cell_type_column', %s::text) "
             "WHERE id = %s",
-            (cells["n_cells"], cells["n_genes"], source_checksum,
+            (cells["n_cells"], cells["n_genes"],
              datetime.now(timezone.utc), units, annotation, dataset_id),
         )
     return dataset_id, stored, created
@@ -499,7 +489,7 @@ def main(argv: list[str] | None = None) -> int:
         with psycopg.connect(database_url) as conn:
             dataset_id, stored, created = load(
                 conn, args.dataset_name, args.species_id, cells,
-                checksum(args.h5ad), args.expression_units, args.annotation,
+                args.expression_units, args.annotation,
                 create=args.create,
             )
     except IngestError as exc:
