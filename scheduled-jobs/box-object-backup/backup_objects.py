@@ -574,15 +574,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     if args.dry_run:
         totals = report_dry_run(manifest, ledger, args.limit)
         ledger.close()
-        # `partial` when it found objects a real run would refuse: nothing was
-        # copied either way, but "succeeded" on a dry run that turned things
-        # away is the same false clean bill the whole verdict exists to stop.
-        emit_status(
-            "partial" if totals.skipped else "ok",
-            _flags_for(totals),
-            _stats_for(totals, listed),
-        )
-        return 0
+        return dry_run_verdict(totals, listed)
 
     # Left here rather than moved up with the config checks: it is the one
     # that reads live state, and it is answered right before the daemon it
@@ -1166,6 +1158,25 @@ def plan_batches(
             yield plan
 
 
+def dry_run_verdict(totals: Totals, listed: int) -> int:
+    """What a dry run reports, and the code it exits with.
+
+    `partial` when it found objects a real run would refuse: nothing was
+    copied either way, but "succeeded" on a dry run that turned things away is
+    the same false clean bill the whole verdict exists to stop. `stopped` for
+    the same reason — it was asked to abandon the walk, not told it finished.
+    """
+    if stopping.stopping():
+        emit_status("stopped", _flags_for(totals), _stats_for(totals, listed))
+        return 3
+    emit_status(
+        "partial" if totals.skipped else "ok",
+        _flags_for(totals),
+        _stats_for(totals, listed),
+    )
+    return 0
+
+
 def report_dry_run(manifest: Path, ledger: Ledger, limit: int | None) -> Totals:
     """Plan everything, copy nothing, and report what a real run would refuse.
 
@@ -1178,6 +1189,11 @@ def report_dry_run(manifest: Path, ledger: Ledger, limit: int | None) -> Totals:
     """
     totals = Totals()
     for plan in plan_batches(manifest, ledger, limit):
+        # The only long loop a dry run has, and step one of the pre-seed
+        # checklist walks eight million rows through it.
+        if stopping.stopping():
+            logger.warning("stopping — nothing was copied, and nothing was recorded")
+            break
         totals.copied += len(plan.copies)
         totals.skipped += len(plan.skipped)
         totals.collisions += plan.collisions
@@ -1308,8 +1324,9 @@ def check_no_stale_daemon() -> None:
         "an rclone container from an earlier run is still present:\n"
         f"{listed}\n"
         "It holds the RC port and a live Box session, so this run cannot start "
-        "its own. A run stopped with SIGTERM — a reboot, a `kill`, a cancelled "
-        "workflow — skips the cleanup that would normally remove it.\n"
+        "its own. `kill -9`, the OOM killer, a hard reboot or a crash skip the "
+        "cleanup that would normally remove it; a plain `kill`, a cancelled "
+        "workflow and Ctrl-C do not, and leave nothing behind.\n"
         "Nothing else is using it: this run already holds the lock, so there is "
         "no other backup in progress. Remove it and re-run:\n"
         f"    docker rm --force $(docker ps -aq --filter name={dock.RC_CONTAINER_PREFIX})"
@@ -1363,6 +1380,10 @@ def check_box_root(args: argparse.Namespace) -> None:
     before it reaches a deploy.
     """
     root = args.box_root.strip().strip("/")
+    # Back onto the namespace: `box_path` builds every object's path from this
+    # value and only strips slashes, so a padded root would fill a
+    # whitespace-named folder while the ledger recorded the clean one.
+    args.box_root = root
     if not root:
         raise lib.BackupError(
             "OBJECT_BACKUP_BOX_ROOT is empty. Set it to the folder on Box this "

@@ -213,7 +213,6 @@ def _headline(
         # `assumed` excludes a dry run that died before reporting: its counts
         # were never measured, and "would copy 0, nothing was copied" reads as
         # a clean pre-seed check on the run that is meant to catch problems.
-        said.add("dry")
         out.append(f"Result: **{counts}**.")
         if verdict.has("collisions") or verdict.has("skipped_names"):
             out += [

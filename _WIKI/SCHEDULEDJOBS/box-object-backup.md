@@ -69,10 +69,10 @@ prerequisites above.
 Every night at 02:17 UTC, so at most a day's scans exist only in MinIO rather
 than up to a week's.
 
-**This is the bytes half of a backup, and only that half.** A full restore also
-needs the `storage.objects` rows, and the job that dumps Postgres is separate
-work not in this repository yet. Until it lands, this mirror is a hedge against
-losing MinIO — not against losing the deployment.
+**This is the bytes half of a backup.** A full restore also needs the
+`storage.objects` rows, which the weekly Postgres dump carries — see
+`_WIKI/SCHEDULEDJOBS/weekly-backup.md`. Both halves exist; neither is a proven
+restore until one has been rehearsed.
 
 Actions was chosen over a systemd timer because a failed run then surfaces
 through notifications people already read, whereas `systemctl --failed` only
@@ -322,10 +322,13 @@ row is what a stopped run looks like.
 
 ### Resuming
 
-Run the same command again. There is no separate resume step:
+Run the same command again — the same one, in the same shape. There is no
+separate resume step, but there is also no shortcut: the `cd` and, before the
+main promotion, the `--env-file` are needed on every night of the seed.
 
 ```bash
-python3 "$DEPLOY/scheduled-jobs/box-object-backup/backup_objects.py" \
+cd "$DEPLOY"
+python3 scheduled-jobs/box-object-backup/backup_objects.py \
     --env prod --full --limit 500000 --verify 50
 ```
 

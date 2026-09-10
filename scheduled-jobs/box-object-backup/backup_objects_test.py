@@ -4187,11 +4187,17 @@ class TestAMalformedNumberIsAConfigFailure:
     # default stands, so these would run on into a real `docker ps`.
     # `test_a_blank_value_still_falls_back_to_the_default` covers that.
     @pytest.mark.parametrize("bad", ["lots", "5572x", "8.5"])
-    def test_it_names_the_key_and_exits_two(self, key, bad, monkeypatch, tmp_path):
+    def test_it_names_the_key_and_exits_two(
+        self, key, bad, monkeypatch, tmp_path, caplog
+    ):
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".env.prod").write_text(f"{key}={bad}\n")
         monkeypatch.delenv(key, raising=False)
+
         assert job.main(["--env", "prod", "--state-dir", str(tmp_path)]) == 2
+        # The reason, not just the code: exit 2 is also what a run that reaches
+        # a real `docker ps` returns, so the code alone proves nothing.
+        assert key in caplog.text and "must be a whole number" in caplog.text
 
     def test_a_blank_value_still_falls_back_to_the_default(self, monkeypatch):
         monkeypatch.delenv("OBJECT_BACKUP_WORKERS", raising=False)
@@ -4355,3 +4361,62 @@ class TestTheAllowListCoversEverySettingTheJobReads:
 
         with pytest.raises(lib.BackupError, match="MINIO_ROOT_USER"):
             job.minio_source_from_env(seen["args"])
+
+
+class TestADryRunCanBeStopped:
+    """Step one of the pre-seed checklist walks eight million rows.
+
+    Every documented way to stop a run routes to the same flag, so a dry run
+    that ignored it left an operator with no way to abandon that walk but the
+    one the runbook forbids.
+    """
+
+    def _manifest(self, tmp_path, rows=4):
+        path = tmp_path / "manifest.tsv"
+        path.write_text(
+            "".join(
+                f"images\tplant/{i}.png\tv{i}\t10\t2026-01-01T00:00:00+00\n"
+                for i in range(rows)
+            )
+        )
+        return path
+
+    def test_it_stops_planning_when_asked(self, monkeypatch, tmp_path):
+        ledger = Ledger.open(tmp_path / "ledger.db")
+        monkeypatch.setattr(job.stopping, "stopping", lambda: True)
+
+        totals = job.report_dry_run(self._manifest(tmp_path), ledger, None)
+
+        assert totals.copied == 0, "it planned on after being asked to stop"
+
+    def test_it_does_not_report_a_clean_run_it_abandoned(self, monkeypatch, tmp_path):
+        """`ok` here would move nothing, but it reads as a completed check."""
+        monkeypatch.setattr(job.stopping, "stopping", lambda: True)
+        seen = []
+        monkeypatch.setattr(job, "emit_status", lambda s, *a, **k: seen.append(s))
+
+        assert job.dry_run_verdict(job.Totals(), 0) == 3
+        assert seen == ["stopped"]
+
+
+def test_a_padded_box_root_cannot_split_the_mirror_from_its_ledger():
+    """The ledger's destination and the object paths must agree.
+
+    `check_box_root` normalized the value it checked and left the raw one on
+    the namespace, so a padded root filled a whitespace-named folder while the
+    ledger recorded the clean name — and a later, correctly configured run
+    would then report everything already on Box against an empty folder.
+    """
+    args = types.SimpleNamespace(box_root=" Bloom/prod/storage ", env="prod")
+    obj = StorageObject(
+        bucket_id="images",
+        name="a/b.png",
+        version="v1",
+        size=10,
+        updated_at="2026-01-01T00:00:00+00",
+    )
+
+    job.check_box_root(args)
+
+    assert args.box_root == "Bloom/prod/storage"
+    assert lib.box_path(obj, args.box_root) == "Bloom/prod/storage/images/a/b.png"
