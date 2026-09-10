@@ -39,6 +39,13 @@ _REWRITE_TS = "20260817150000_rewrite_get_experiment_summary_counts"
 REWRITE_MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_REWRITE_TS}.sql"
 REWRITE_ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_REWRITE_TS}_rollback.sql"
 
+# bloom#806: qualifies this function's DELETE against the safeupdate guard. No out-of-order
+# dependency on/from the rewrite migration above -- it replaces the function body only, never
+# touches the table.
+_SAFEUPDATE_FIX_TS = "20260910120000_fix_refresh_cyl_experiment_trait_counts_safeupdate"
+SAFEUPDATE_FIX_MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_SAFEUPDATE_FIX_TS}.sql"
+SAFEUPDATE_FIX_ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_SAFEUPDATE_FIX_TS}_rollback.sql"
+
 
 def _sql_body(path: Path) -> str:
     return "\n".join(
@@ -233,6 +240,51 @@ def test_refresh_function_search_path_is_pinned(pg_conn):
         assert prosecdef is True
         assert any(c.startswith("search_path=") for c in (proconfig or []))
     pg_conn.rollback()
+
+
+def test_refresh_succeeds_over_authenticator_service_role_path(pg_conn, authenticator_conninfo):
+    """bloom#806: PostgREST/Supavisor connect as `authenticator`, then `SET ROLE service_role` per
+    the caller's JWT. `session_preload_libraries=safeupdate` is set on `authenticator` alone
+    (confirmed via `pg_db_role_setting`) and survives that `SET ROLE`, so a `supabase_admin`-only
+    connection -- every other test in this file -- can never exercise the guard this function's
+    unqualified `DELETE` used to trip: `SQLSTATE 21000`, "DELETE requires a WHERE clause". This
+    first surfaced in production once bloom#736 (Section 15) made the real RPC path reachable for
+    the first time (design.md D10).
+
+    Asserts functional correctness, not just the absence of an exception -- reads the refresh's own
+    write back within the SAME transaction (a connection sees its own uncommitted writes), then
+    rolls back rather than committing: this connection's role can rewrite the ENTIRE table in one
+    call, unlike every other test's fixture-scoped seed rows, so the destructive whole-table
+    rewrite must never actually persist."""
+    with pg_conn.cursor() as cur:
+        experiment_id, _scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(
+            cur,
+            imgs,
+            "orig",
+            traits=[_trait("length", 1.0), _trait("width", 2.0)],
+        )
+        expected = _live_n_traits(cur, experiment_id)
+    # `authenticator`'s own connection only sees committed data.
+    pg_conn.commit()
+
+    conn = psycopg.connect(authenticator_conninfo)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET ROLE service_role")
+            cur.execute("SELECT public.refresh_cyl_experiment_trait_counts()")
+            cur.execute(
+                "SELECT n_traits FROM cyl_experiment_trait_counts WHERE experiment_id=%s",
+                (experiment_id,),
+            )
+            row = cur.fetchone()
+        assert row is not None and row[0] == expected == 2
+    finally:
+        conn.rollback()
+        conn.close()
+        with pg_conn.cursor() as cur:
+            _cleanup_seeded_experiment(cur, experiment_id)
+        pg_conn.commit()
 
 
 def test_concurrent_refreshes_do_not_raise_duplicate_key(pg_conninfo, pg_conn):
@@ -519,3 +571,53 @@ def test_rollback_restores_prior_state(pg_conn):
         _refresh(cur)
         assert _n_traits(cur, exp) == 1
     pg_conn.rollback()
+
+
+def test_safeupdate_fix_migration_body_is_idempotent(pg_conn):
+    """bloom#806: mirrors test_migration_body_is_idempotent above for the new fix migration --
+    re-applying a CREATE OR REPLACE FUNCTION body a second time must not error."""
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(SAFEUPDATE_FIX_MIGRATION))
+        cur.execute(_sql_body(SAFEUPDATE_FIX_MIGRATION))
+        cur.execute(
+            "SELECT count(*) FROM pg_proc WHERE proname = 'refresh_cyl_experiment_trait_counts'"
+        )
+        assert cur.fetchone()[0] == 1
+    pg_conn.rollback()
+
+
+def test_safeupdate_fix_rollback_restores_prior_unqualified_delete_behavior(
+    pg_conn, authenticator_conninfo
+):
+    """bloom#806: proves the rollback genuinely restores the pre-fix, guard-triggering behavior --
+    not just that it runs without error -- then re-applies the fix and confirms the guard-passing
+    behavior returns too. Mirrors test_rollback_restores_prior_state's "restore, then re-apply and
+    confirm real behavior" discipline for this migration pair."""
+
+    def _refresh_over_authenticator_service_role():
+        conn = psycopg.connect(authenticator_conninfo)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET ROLE service_role")
+                cur.execute("SELECT public.refresh_cyl_experiment_trait_counts()")
+        finally:
+            conn.rollback()
+            conn.close()
+
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(SAFEUPDATE_FIX_ROLLBACK))
+    pg_conn.commit()  # authenticator's own connection must see the rolled-back function body
+
+    try:
+        with pytest.raises(
+            psycopg.errors.CardinalityViolation, match="DELETE requires a WHERE clause"
+        ):
+            _refresh_over_authenticator_service_role()
+    finally:
+        # Re-apply the fix regardless of the assertion's outcome, so the rest of the suite (which
+        # assumes this change is fully live) still works.
+        with pg_conn.cursor() as cur:
+            cur.execute(_sql_body(SAFEUPDATE_FIX_MIGRATION))
+        pg_conn.commit()
+
+    _refresh_over_authenticator_service_role()  # confirm the guard-passing behavior is restored
