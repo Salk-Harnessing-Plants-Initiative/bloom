@@ -47,6 +47,14 @@ vi.mock("@/lib/supabase/client", () => ({
 const stored = (o: Record<string, number>) =>
   ({ data: new Blob([JSON.stringify(o)]), error: null });
 
+/** The older shape: one single-key object per expressed cell, in a list. */
+const storedAsList = (o: Record<string, number>) => ({
+  data: new Blob([
+    JSON.stringify(Object.entries(o).map(([k, v]) => ({ [k]: v }))),
+  ]),
+  error: null,
+});
+
 describe("fetchGeneCounts", () => {
   it("fetches the path stored in scrna_counts, not one built from the names", async () => {
     // Production paths are not derivable: the dataset named
@@ -107,6 +115,38 @@ describe("fetchGeneCounts", () => {
   it("refuses a negative index", async () => {
     response = stored({ "-1": 1 });
     await expect(fetchGeneCounts(1, "g", 10)).rejects.toThrow(/names cell -1/);
+  });
+
+  it("reads the older list shape the same as the object shape", async () => {
+    // Most objects in the bucket are lists: the loader was changed to write a
+    // single object and what was already stored was never converted.
+    response = storedAsList({ "0": 1.5, "3": -2.25 });
+    expect(Array.from(await fetchGeneCounts(1, "g", 5))).toEqual(
+      [1.5, 0, 0, -2.25, 0],
+    );
+  });
+
+  it("gives the same answer for both shapes of the same gene", async () => {
+    const values = { "2011": 1.58, "3459": 2.38, "3805": 1.55 };
+    response = stored(values);
+    const asObject = Array.from(await fetchGeneCounts(1, "g", 4000));
+    response = storedAsList(values);
+    const asList = Array.from(await fetchGeneCounts(1, "g", 4000));
+    expect(asList).toEqual(asObject);
+  });
+
+  it("refuses an out-of-range index in the list shape too", async () => {
+    response = storedAsList({ "9000": 1 });
+    await expect(fetchGeneCounts(1, "g", 8683)).rejects.toThrow(
+      /names cell 9000/,
+    );
+  });
+
+  it("reads an empty list as all zeros", async () => {
+    response = { data: new Blob(["[]"]), error: null };
+    const got = await fetchGeneCounts(1, "g", 100);
+    expect(got.length).toBe(100);
+    expect(got.every((v) => v === 0)).toBe(true);
   });
 
   it("says which gene failed rather than surfacing a bare storage error", async () => {
