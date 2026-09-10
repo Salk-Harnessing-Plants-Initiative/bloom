@@ -263,16 +263,16 @@ def test_a_gene_with_no_fold_change_counts_as_down(de, tmp_path):
 def test_only_tested_comparisons_get_a_file(de, tmp_path):
     s, _ = files(tmp_path, [summary_row(), summary_row(celltype="Xylem",
                                                        tested=False)], [])
-    paths = de.check_paths(de.read_summary(s), "MYB41 transgene")
+    paths = de.check_paths(de.read_summary(s))
     assert set(paths) == {("Cortex", "pFACT_vs_Col-0")}
 
 
 def test_a_cell_type_with_punctuation_still_makes_one_path(de, tmp_path):
     s, _ = files(tmp_path, [summary_row(celltype="Cortex (elongation/maturation)")],
                  [])
-    paths = de.check_paths(de.read_summary(s), "MYB41 transgene")
+    paths = de.check_paths(de.read_summary(s))
     assert paths[("Cortex (elongation/maturation)", "pFACT_vs_Col-0")] == \
-        "de/MYB41_transgene/Cortex_elongation_maturation___pFACT_vs_Col-0.json"
+        "Cortex_elongation_maturation___pFACT_vs_Col-0.json"
 
 
 def test_two_cell_types_that_would_share_a_file_are_refused(de, tmp_path):
@@ -281,7 +281,7 @@ def test_two_cell_types_that_would_share_a_file_are_refused(de, tmp_path):
     s, _ = files(tmp_path, [summary_row(celltype="Cortex maturation"),
                             summary_row(celltype="Cortex/maturation")], [])
     with pytest.raises(de.IngestError, match="would share one object"):
-        de.check_paths(de.read_summary(s), "d")
+        de.check_paths(de.read_summary(s))
 
 
 def test_the_real_cell_types_do_not_collide(de, tmp_path):
@@ -290,7 +290,7 @@ def test_the_real_cell_types_do_not_collide(de, tmp_path):
             ("Cortex", "Cortex (maturation)", "Cortex maturation",
              "Cortex (elongation/maturation)", "Cortex/Atrichoblast (maturation)")]
     s, _ = files(tmp_path, rows, [])
-    assert len(de.check_paths(de.read_summary(s), "d")) == 5
+    assert len(de.check_paths(de.read_summary(s))) == 5
 
 
 # --------------------------------------------------------------------------- #
@@ -330,3 +330,63 @@ def test_writing_needs_all_three_credentials(de, tmp_path, monkeypatch, capsys):
                     "--dataset-name", "d", "--species-id", "1"])
     assert code == 1
     assert "are all" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- #
+# Numbers that cannot be written as JSON
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("column,value", [
+    ("log2FC", "NaN"), ("log2FC", "Inf"), ("log2FC", "-Inf"),
+    ("pvalue", "NaN"), ("FDR", "Inf"),
+])
+def test_a_value_json_cannot_hold_is_refused(de, tmp_path, column, value):
+    """json.dumps spells these NaN and Infinity, which JSON.parse rejects. The
+    object would upload, the row would carry counts that look right, and the
+    panel would fail to read the comparison at all."""
+    fields = {"log2FC": "log2fc", "pvalue": "pvalue", "FDR": "fdr"}
+    s, r = files(tmp_path, [summary_row()],
+                 [result_row("AT1G00001", **{fields[column]: value})])
+    with pytest.raises(de.IngestError, match="cannot be written as JSON"):
+        de.read_results(r)
+
+
+def test_a_refused_value_names_the_gene_and_the_column(de, tmp_path):
+    """One bad cell in a file of hundreds of thousands of rows is only
+    actionable if the refusal says which one."""
+    s, r = files(tmp_path, [summary_row()],
+                 [result_row("AT1G00001"),
+                  result_row("AT1G00002", celltype="Xylem", log2fc="NaN")])
+    with pytest.raises(de.IngestError,
+                       match=r"Xylem / pFACT_vs_Col-0, gene AT1G00002: log2FC"):
+        de.read_results(r)
+
+
+def test_a_statistic_r_could_not_compute_is_refused_as_not_a_number(de, tmp_path):
+    """R writes NA, which float() cannot read. Before this it escaped as a bare
+    ValueError with no file, no row and no gene."""
+    s, r = files(tmp_path, [summary_row()],
+                 [result_row("AT1G00001", pvalue="NA")])
+    with pytest.raises(de.IngestError, match="pvalue is 'NA', which is not a number"):
+        de.read_results(r)
+
+
+def test_a_truncated_last_row_is_refused(de, tmp_path):
+    """A partial transfer leaves a short row, and DictReader fills the missing
+    columns with None rather than complaining."""
+    r = tmp_path / "results.tsv"
+    r.write_text(RESULT_HEADER + "\n" + result_row("AT1G00001") + "\n"
+                 + "Cortex\tpFACT_vs_Col-0\tpFACT\tCol-0\t10\t20\tAT1G00002\n")
+    with pytest.raises(de.IngestError, match="is not a number"):
+        de.read_results(r)
+
+
+def test_as_json_refuses_rather_than_writing_an_unparseable_file(de):
+    """A backstop for _number: if a non-finite value ever reaches here, this
+    should fail rather than write a file the panel cannot read."""
+    row = {c: 0.0 for c in de.RESULT_COLUMNS}
+    row["gene"] = row["_row"] = "AT1G00001"
+    row["avg_log2FC"] = float("nan")
+    with pytest.raises(ValueError, match="not JSON compliant"):
+        de.as_json([row])

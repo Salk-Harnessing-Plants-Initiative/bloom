@@ -35,11 +35,21 @@ def de():
 
 
 class FakeStorage:
-    def __init__(self):
+    """Records what was uploaded, and can stop partway on demand."""
+
+    def __init__(self, fail_on: int | None = None):
         self.written: dict[str, bytes] = {}
+        self.options: dict[str, dict] = {}
+        self.calls = 0
+        self._fail_on = fail_on
 
     def upload(self, path: str, file: bytes, file_options: dict) -> None:
+        self.calls += 1
+        if self.calls == self._fail_on:
+            raise RuntimeError("storage refused the object")
         self.written[path] = file
+        self.options[path] = file_options
+
 
 
 def species(cur) -> int:
@@ -318,4 +328,66 @@ def test_every_comparison_of_the_real_shape_is_legal(de, pg_conn):
             "FROM scrna_de WHERE dataset_id = %s", (did,),
         )
         assert cur.fetchone() == (46, 23)
+    pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# A run that stops partway
+# --------------------------------------------------------------------------- #
+
+
+def test_a_row_the_database_refuses_costs_no_uploads(de, pg_conn):
+    """The rows go first precisely so this case is free.
+
+    A comparison whose fold-change cut is wider than its FDR cut breaks
+    scrna_de_lfc_cut_narrows_fdr_cut. Written the other way round, the objects
+    would already be in the bucket by the time the database said no.
+    """
+    import psycopg
+
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        did = dataset(cur, sid)
+        catalogue(cur, did, ["Cortex"])
+    key = ("Cortex", "pFACT_vs_Col-0")
+    contradiction = {"n_genes_tested": 3, "n_significant_fdr": 0,
+                     "n_significant_fdr_lfc": 1, "n_up": 1, "n_down": 0}
+    store = FakeStorage()
+    with pytest.raises(psycopg.errors.CheckViolation):
+        de.write_de(pg_conn, store, did, [entry(counts=contradiction)],
+                    {key: rows()}, {key: "de/1/r/Cortex.json"})
+    assert store.written == {}
+    pg_conn.rollback()
+
+
+def test_a_failed_upload_says_how_far_it_got(de, pg_conn):
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        did = dataset(cur, sid)
+        catalogue(cur, did, ["Cortex", "Xylem", "Phellem"])
+    summary, groups, paths = [], {}, {}
+    for cell_type in ("Cortex", "Xylem", "Phellem"):
+        key = (cell_type, "pFACT_vs_Col-0")
+        summary.append(entry(celltype=cell_type))
+        groups[key] = rows()
+        summary[-1]["counts"] = de.recount(groups[key])
+        paths[key] = f"de/{did}/r/{cell_type}.json"
+
+    with pytest.raises(de.UploadFailed, match="object 2 of 3"):
+        de.write_de(pg_conn, FakeStorage(fail_on=2), did, summary, groups, paths)
+    pg_conn.rollback()
+
+
+def test_the_upsert_flag_reaches_storage_as_the_string_the_sdk_wants(de, pg_conn):
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        did = dataset(cur, sid)
+        catalogue(cur, did, ["Cortex"])
+    key = ("Cortex", "pFACT_vs_Col-0")
+    store = FakeStorage()
+    de.write_de(pg_conn, store, did, [entry()], {key: rows()},
+                {key: "de/1/r/Cortex.json"})
+    assert store.options["de/1/r/Cortex.json"] == {
+        "content-type": "application/json", "upsert": "true",
+    }
     pg_conn.rollback()

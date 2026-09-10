@@ -25,7 +25,16 @@ Run deliberately against a chosen database and storage:
         --dataset-name "MYB41 transgene" \
         --species-id 1
 
-Re-running replaces this dataset's differential expression entirely.
+Re-running replaces this dataset's differential expression entirely. A
+comparison keeps the same object path every run, so a re-run rewrites its
+object in place rather than adding another -- nothing accumulates in the bucket.
+
+The rows are transactional and go first, so a row the database refuses costs no
+uploads at all. The objects are not transactional: if an upload fails partway,
+the rows roll back and the objects already rewritten hold the new results while
+the rows still describe the previous ones. Re-running the same command is what
+resolves that, and with the same inputs the rewrite is byte-for-byte what was
+there already.
 """
 
 from __future__ import annotations
@@ -33,6 +42,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import re
 import sys
@@ -42,8 +52,13 @@ from pathlib import Path
 BUCKET = "scrna"
 
 # The panel downloads whatever path the row carries, so this is ours to choose.
-# It has to survive being a path segment and stay one-to-one with the cell type.
-DE_PATH = "de/{dataset}/{celltype}__{contrast}.json"
+# Keyed on dataset_id rather than the name: names are not unique, and two
+# datasets sharing one would write over each other's objects.
+DE_PREFIX = "de/{dataset_id}"
+
+# The name within a dataset. It has to survive being a path segment and stay
+# one-to-one with the cell type.
+DE_NAME = "{celltype}__{contrast}.json"
 UNSAFE_IN_PATH = re.compile(r"[^A-Za-z0-9._-]+")
 
 # The results name genes with the annotation release appended; the expression
@@ -68,6 +83,14 @@ RESULT_FIELDS = ("celltype", "contrast", "gene", "log2FC", "pvalue", "FDR",
 
 class IngestError(RuntimeError):
     """Something about the files or the dataset makes this unsafe to write."""
+
+
+class UploadFailed(RuntimeError):
+    """An upload stopped partway, so the rows it belongs with are rolled back.
+
+    Says how far it got, because the objects written before it stopped are not
+    rolled back with them. Re-running is what finishes it.
+    """
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -108,6 +131,36 @@ def _flag(value: str) -> bool:
     if value not in ("True", "False"):
         raise IngestError(f"expected True or False, got {value!r}")
     return value == "True"
+
+
+def _where(row: dict) -> str:
+    """Enough of a results row to find it in a file of hundreds of thousands."""
+    return f"{row['celltype']} / {row['contrast']}, gene {row['gene']}"
+
+
+def _number(row: dict, column: str) -> float:
+    """A finite number from one results column, or a refusal naming the gene.
+
+    R writes NA for a statistic it could not compute, and NaN for a fold change
+    between two groups that both express nothing. Neither can be written as
+    JSON: json.dumps spells them NaN and Infinity, which JSON.parse rejects. The
+    panel would then fail to read the whole comparison while its row went on
+    carrying counts that look right, so they are refused here -- before anything
+    is uploaded -- rather than at the point of writing the file.
+    """
+    value = row[column]
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise IngestError(
+            f"{_where(row)}: {column} is {value!r}, which is not a number"
+        ) from None
+    if not math.isfinite(number):
+        raise IngestError(
+            f"{_where(row)}: {column} is {value!r}, which cannot be written as "
+            f"JSON; the panel would fail to read this whole comparison"
+        )
+    return number
 
 
 def safe_segment(name: str) -> str:
@@ -162,11 +215,11 @@ def read_results(path: Path) -> dict:
             suffixed += 1
         grouped[(row["celltype"], row["contrast"])].append({
             "gene": gene,
-            "p_val": float(row["pvalue"]),
-            "avg_log2FC": float(row["log2FC"]),
-            "pct.1": float(row["pct_expr_group1"]),
-            "pct.2": float(row["pct_expr_group2"]),
-            "p_val_adj": float(row["FDR"]),
+            "p_val": _number(row, "pvalue"),
+            "avg_log2FC": _number(row, "log2FC"),
+            "pct.1": _number(row, "pct_expr_group1"),
+            "pct.2": _number(row, "pct_expr_group2"),
+            "p_val_adj": _number(row, "FDR"),
             "_row": gene,
             # Kept out of the written row; the counts are recomputed from them.
             "_fdr": _flag(row["sig_FDR_0.05"]),
@@ -234,33 +287,44 @@ def reconcile(summary: list[dict], groups: dict[tuple[str, str], list[dict]]) ->
         )
 
 
-def check_paths(summary: list[dict], dataset_name: str) -> dict[tuple[str, str], str]:
-    """One object path per tested comparison, and no two the same.
+def check_paths(summary: list[dict]) -> dict[tuple[str, str], str]:
+    """One object name per tested comparison, and no two the same.
 
     Two cell types whose names differ only in punctuation would otherwise share
-    a path, and the second written would replace the first for both.
+    a name, and the second written would replace the first for both.
     """
-    paths: dict[tuple[str, str], str] = {}
+    names: dict[tuple[str, str], str] = {}
     for entry in summary:
         if not entry["tested"]:
             continue
         key = (entry["celltype"], entry["contrast"])
-        paths[key] = DE_PATH.format(
-            dataset=safe_segment(dataset_name),
+        names[key] = DE_NAME.format(
             celltype=safe_segment(entry["celltype"]),
             contrast=safe_segment(entry["contrast"]),
         )
     collisions = defaultdict(list)
-    for key, path in paths.items():
-        collisions[path].append(key)
-    clashing = {p: k for p, k in collisions.items() if len(k) > 1}
+    for key, name in names.items():
+        collisions[name].append(key)
+    clashing = {n: k for n, k in collisions.items() if len(k) > 1}
     if clashing:
-        path, keys = next(iter(clashing.items()))
+        name, keys = next(iter(clashing.items()))
         raise IngestError(
-            f"{len(clashing)} comparisons would share one object: "
-            f"{' and '.join(c for c, _ in keys)} both become {path}"
+            f"{len(keys)} comparisons would share one object: "
+            f"{' and '.join(f'{c} / {k}' for c, k in keys)} all become {name}"
         )
-    return paths
+    return names
+
+
+def object_paths(names: dict[tuple[str, str], str],
+                 dataset_id: int) -> dict[tuple[str, str], str]:
+    """Where this dataset's comparisons live. One path each, stable across runs.
+
+    A comparison keeps the same path every run, so re-running replaces its
+    object rather than adding another. Nothing accumulates and nothing has to be
+    swept.
+    """
+    prefix = DE_PREFIX.format(dataset_id=dataset_id)
+    return {key: f"{prefix}/{name}" for key, name in names.items()}
 
 
 def check_cell_types(conn, dataset_id: int, summary: list[dict]) -> None:
@@ -339,29 +403,30 @@ def open_dataset(conn, name: str, species_id: int) -> int:
 
 
 def as_json(rows: list[dict]) -> bytes:
-    """Only the columns the panel reads, in the order it declares them."""
+    """Only the columns the panel reads, in the order it declares them.
+
+    allow_nan=False is a backstop: _number has already refused anything that
+    could trip it, and if that ever stops being true this should fail rather
+    than write a file the panel cannot parse.
+    """
     return json.dumps(
-        [{c: r[c] for c in RESULT_COLUMNS} for r in rows]
+        [{c: r[c] for c in RESULT_COLUMNS} for r in rows], allow_nan=False
     ).encode("utf-8")
 
 
 def write_de(conn, storage, dataset_id: int, summary: list[dict],
              groups: dict[tuple[str, str], list[dict]],
              paths: dict[tuple[str, str], str]) -> tuple[int, int]:
-    """Replace this dataset's differential expression, in one transaction.
+    """Replace this dataset's differential expression.
 
-    Unlike the gene counts there are 69 rows and 46 objects, so this is small
-    enough to be all-or-nothing -- and it should be, because the rows and the
-    objects only make sense together.
+    The rows go first, so a row the database refuses -- a count contradicting
+    another, a blank contrast, a column the migration has not added yet -- costs
+    nothing. It is rejected before a single object is uploaded.
+
+    The objects follow, rewriting each comparison in place. An upload that stops
+    partway raises, which rolls the rows back with it -- but not the objects
+    already rewritten, which is why the error says how far it got.
     """
-    for key, path in paths.items():
-        storage.upload(
-            path=path,
-            file=as_json(groups[key]),
-            file_options={"content-type": "application/json",
-                          "upsert": "true"},
-        )
-
     with conn.cursor() as cur:
         cur.execute("DELETE FROM public.scrna_de WHERE dataset_id = %s",
                     (dataset_id,))
@@ -389,7 +454,26 @@ def write_de(conn, storage, dataset_id: int, summary: list[dict],
                 for e in summary
             ],
         )
+
+    for n, (key, path) in enumerate(paths.items(), start=1):
+        try:
+            storage.upload(
+                path=path,
+                file=as_json(groups[key]),
+                file_options={"content-type": "application/json",
+                              "upsert": "true"},
+            )
+        except Exception as exc:
+            # Any failure of the call means the object did not land, and the
+            # operator needs to be told how far it got rather than shown a
+            # traceback. Raising here takes the rows back with it.
+            raise UploadFailed(
+                f"stopped at object {n} of {len(paths)}, {path}: {exc}"
+            ) from exc
+
     return len(paths), len(summary)
+
+
 
 
 def summarise(summary: list[dict], read: dict, checked: tuple[int, int]) -> str:
@@ -414,7 +498,7 @@ def main(argv: list[str] | None = None) -> int:
         summary = read_summary(args.summary)
         read = read_results(args.results)
         reconcile(summary, read["groups"])
-        paths = check_paths(summary, args.dataset_name)
+        names = check_paths(summary)
     except IngestError as exc:
         print(f"refusing to ingest: {exc}", file=sys.stderr)
         return 1
@@ -425,7 +509,7 @@ def main(argv: list[str] | None = None) -> int:
               f"tested, {len(summary) - tested} skipped")
         print("  every count in the summary agrees with the results")
         print(f"  annotation release stripped from {read['suffixed']} gene names")
-        print(f"  {len(paths)} objects would be written, one per tested "
+        print(f"  {len(names)} objects would be written, one per tested "
               f"comparison")
         print("dry run — nothing written")
         return 0
@@ -454,9 +538,16 @@ def main(argv: list[str] | None = None) -> int:
             check_cell_types(conn, dataset_id, summary)
             checked = check_genes(conn, dataset_id, read["groups"])
             objects, rows = write_de(conn, storage, dataset_id, summary,
-                                     read["groups"], paths)
+                                     read["groups"],
+                                     object_paths(names, dataset_id))
     except IngestError as exc:
         print(f"refusing to ingest: {exc}", file=sys.stderr)
+        return 1
+    except UploadFailed as exc:
+        print(f"the upload {exc}\nNo rows were changed. The objects already "
+              f"replaced hold this run's results while the rows still describe "
+              f"the previous one, so re-run the same command to finish.",
+              file=sys.stderr)
         return 1
     except psycopg.Error as exc:
         print(f"the database refused the load: {exc}", file=sys.stderr)
