@@ -75,28 +75,51 @@ export async function searchGenes(
   return (data ?? []).map((row) => row.gene_name);
 }
 
-/** Download a per-gene expression vector as a Float32Array.
+/** Download one gene's expression, as a value per cell in `cell_number` order.
+ *
+ * The stored object is sparse: an object keyed by cell index, holding only the
+ * cells where the gene is expressed. Single-cell data is mostly zeros, so that
+ * is a fraction of the size of a dense array, and it is the shape every dataset
+ * in the platform is stored in.
+ *
+ * Expanded here into the dense array the plot needs, zero-filled, so callers
+ * see one value per cell whether it was stored or not.
  *
  * Through the storage client, not a bare URL: the bucket is private, and every
  * other private asset in the app is read the same way, so the reader is
  * authenticated as the signed-in user under the bucket's own policies.
  *
- * The array carries no cell identifiers. It is paired with the cells purely by
- * position, against the same order `fetchCells` returns, which is why the
- * ingest refuses to write it unless the cells came from the same file.
+ * The object carries no cell identifiers -- the index is the identity -- which
+ * is why the ingest refuses to write unless the database already holds these
+ * cells in this order.
  */
-export async function fetchGeneBin(
+export async function fetchGeneCounts(
   datasetName: string,
   geneName: string,
+  cellCount: number,
 ): Promise<Float32Array> {
   const supabase = createClientSupabaseClient();
   const { data, error } = await supabase.storage
     .from(STORAGE_BUCKET)
-    .download(`counts/${datasetName}/${geneName}.bin`);
+    .download(`counts/${datasetName}/${geneName}.json`);
   if (error || !data) {
     throw new Error(
-      `fetchGeneBin failed for ${geneName}: ${error?.message ?? "no data"}`,
+      `fetchGeneCounts failed for ${geneName}: ${error?.message ?? "no data"}`,
     );
   }
-  return new Float32Array(await data.arrayBuffer());
+  const sparse = JSON.parse(await data.text()) as Record<string, number>;
+  const out = new Float32Array(cellCount);
+  for (const [index, value] of Object.entries(sparse)) {
+    const i = Number(index);
+    // A key outside the dataset is a pairing error, not a value to drop
+    // quietly: the object was written against a different set of cells.
+    if (!Number.isInteger(i) || i < 0 || i >= cellCount) {
+      throw new Error(
+        `fetchGeneCounts: ${geneName} names cell ${index}, but the dataset ` +
+          `holds ${cellCount} cells`,
+      );
+    }
+    out[i] = value;
+  }
+  return out;
 }

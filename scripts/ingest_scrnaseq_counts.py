@@ -31,7 +31,7 @@ interrupted run costs only the genes it had not reached.
 from __future__ import annotations
 
 import argparse
-import hashlib
+import json
 import os
 import re
 import sys
@@ -41,7 +41,7 @@ BUCKET = "scrna"
 
 # The explorer builds this path itself from the dataset and gene names, so it is
 # a contract, not a choice: scrna-client.ts fetches counts/{dataset}/{gene}.bin.
-COUNTS_PATH = "counts/{dataset}/{gene}.bin"
+COUNTS_PATH = "counts/{dataset}/{gene}.json"
 
 # Both names become part of an object path. A gene name is an accession, so it
 # is held to accession characters. A dataset name is written by a person and the
@@ -140,7 +140,7 @@ def read_genes(h5ad_path: Path, expectations: dict[str, int]) -> dict:
             raise IngestError(
                 f"--expect-nonzero names {gene!r}, which is not in this file"
             )
-        actual = int(np.count_nonzero(gene_vector(by_gene, names.index(gene))))
+        actual = len(gene_counts(by_gene, names.index(gene)))
         if actual != expected:
             raise IngestError(
                 f"{gene} is non-zero in {actual} cells, expected {expected}"
@@ -162,18 +162,23 @@ def _counts(names: list[str]) -> dict[str, int]:
     return out
 
 
-def gene_vector(by_gene, column: int):
-    """One gene's value for every cell, in cell order, as float32.
+def gene_counts(by_gene, column: int) -> dict[str, float]:
+    """One gene's value for every cell that has one, keyed by cell index.
 
-    float32 because that is what the browser reads it back as; anything wider
-    would be silently truncated on the way in.
+    Single-cell expression is mostly zeros, so only the non-zero cells are
+    stored and an absent index reads as zero. The index is
+    `scrna_cells.cell_number` -- 0-based, in source-file order -- which is the
+    order `scrna_cell_arrays` returns cells in.
+
+    This is the shape every dataset already in the platform is stored in.
     """
     import numpy as np
 
     taken = by_gene[:, column]
     dense = (taken.toarray() if hasattr(taken, "toarray") else np.asarray(taken))
     dense = dense.ravel()
-    return np.ascontiguousarray(dense, dtype="<f4")
+    nonzero = np.flatnonzero(dense)
+    return {str(int(i)): float(dense[i]) for i in nonzero}
 
 
 def open_dataset(conn, name: str, species_id: int, barcodes: list[str]) -> int:
@@ -319,8 +324,7 @@ def upload(storage, path: str, payload: bytes) -> None:
     storage.upload(
         path=path,
         file=payload,
-        file_options={"content-type": "application/octet-stream",
-                      "upsert": "true"},
+        file_options={"content-type": "application/json", "upsert": "true"},
     )
 
 
@@ -336,7 +340,8 @@ def write_counts(conn, storage, dataset_id: int, dataset_name: str,
         if gene in skip:
             continue
         path = object_path(dataset_name, gene)
-        upload(storage, path, gene_vector(genes["by_gene"], number).tobytes())
+        payload = json.dumps(gene_counts(genes["by_gene"], number)).encode()
+        upload(storage, path, payload)
         pending.append((dataset_id, gene_ids[gene], path))
         written += 1
         if len(pending) >= RECORD_BATCH:

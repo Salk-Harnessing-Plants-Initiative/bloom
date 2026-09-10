@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 
 import anndata
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -60,55 +62,36 @@ def write_h5ad(path: Path, matrix, genes: list[str] | None = None,
     )
     adata.write_h5ad(path)
     return path
-
-
-# --------------------------------------------------------------------------- #
-# The checksum has to mean the same thing in both scripts
-# --------------------------------------------------------------------------- #
-
-
-def test_both_scripts_compute_the_same_checksum(counts, cells, tmp_path):
-    """The whole safety of this step is that the cells and the counts came from
-    one file. One script records the checksum and the other refuses unless it
-    matches, so the two have to agree byte for byte."""
-    path = write_h5ad(tmp_path / "sum.h5ad", np.eye(4, dtype="float32"))
-    assert counts.checksum(path) == cells.checksum(path)
-
-    path.write_bytes(path.read_bytes() + b"x")
-    assert counts.checksum(path) == cells.checksum(path)
-
-
-def test_the_checksum_changes_with_the_content(counts, tmp_path):
-    a = write_h5ad(tmp_path / "a.h5ad", np.eye(4, dtype="float32"))
-    before = counts.checksum(a)
-    write_h5ad(tmp_path / "a.h5ad", np.ones((4, 4), dtype="float32"))
-    assert counts.checksum(a) != before
-
-
-# --------------------------------------------------------------------------- #
-# What it reads
-# --------------------------------------------------------------------------- #
-
-
-def test_a_gene_vector_is_the_gene_column_in_cell_order(counts, tmp_path):
-    """The array is paired with the cells by position and nothing else, so the
-    order is the whole contract."""
+def test_a_gene_is_keyed_by_cell_index_in_cell_order(counts, tmp_path):
+    """The index is the identity -- nothing else in the object says which cell a
+    value belongs to -- so the numbering is the whole contract."""
     matrix = np.array([[1, 10], [2, 20], [3, 30], [4, 40]], dtype="float32")
     path = write_h5ad(tmp_path / "order.h5ad", matrix, ["GENE_A", "GENE_B"])
     read = counts.read_genes(path, {})
-    assert list(counts.gene_vector(read["by_gene"], 0)) == [1, 2, 3, 4]
-    assert list(counts.gene_vector(read["by_gene"], 1)) == [10, 20, 30, 40]
+    assert counts.gene_counts(read["by_gene"], 0) == \
+        {"0": 1.0, "1": 2.0, "2": 3.0, "3": 4.0}
+    assert counts.gene_counts(read["by_gene"], 1) == \
+        {"0": 10.0, "1": 20.0, "2": 30.0, "3": 40.0}
 
 
-def test_a_gene_vector_is_float32_whatever_the_file_holds(counts, tmp_path):
-    """The browser reads the bytes back as float32; storing anything wider would
-    shift every value it reads after the first."""
-    matrix = np.array([[1.5, 2.5]], dtype="float32")
-    path = write_h5ad(tmp_path / "width.h5ad", matrix)
+def test_only_the_cells_with_expression_are_stored(counts, tmp_path):
+    """Single-cell data is mostly zeros. Storing them would multiply the size of
+    every object for no information -- an absent index reads as zero."""
+    matrix = np.array([[0, 1], [2, 0], [0, 4]], dtype="float32")
+    path = write_h5ad(tmp_path / "sparse.h5ad", matrix)
     read = counts.read_genes(path, {})
-    vector = counts.gene_vector(read["by_gene"], 0)
-    assert vector.dtype == np.dtype("<f4")
-    assert len(vector.tobytes()) == 4 * matrix.shape[0]
+    assert counts.gene_counts(read["by_gene"], 0) == {"1": 2.0}
+    assert counts.gene_counts(read["by_gene"], 1) == {"0": 1.0, "2": 4.0}
+
+
+def test_the_keys_are_text_as_json_requires(counts, tmp_path):
+    """The stored object is JSON, whose keys are strings. A reader doing
+    Number(key) gets the index back; an integer key would not survive the trip."""
+    matrix = np.array([[5.0]], dtype="float32")
+    read = counts.read_genes(write_h5ad(tmp_path / "keys.h5ad", matrix), {})
+    got = counts.gene_counts(read["by_gene"], 0)
+    assert all(isinstance(k, str) for k in got)
+    assert json.loads(json.dumps(got)) == got
 
 
 def test_a_dense_matrix_reads_the_same_as_a_sparse_one(counts, tmp_path):
@@ -118,17 +101,18 @@ def test_a_dense_matrix_reads_the_same_as_a_sparse_one(counts, tmp_path):
         write_h5ad(tmp_path / "d.h5ad", matrix, sparse_matrix=False), {}
     )
     for column in (0, 1):
-        assert list(counts.gene_vector(a["by_gene"], column)) == \
-            list(counts.gene_vector(b["by_gene"], column))
+        assert counts.gene_counts(a["by_gene"], column) == \
+            counts.gene_counts(b["by_gene"], column)
 
 
-def test_a_gene_with_no_expression_is_still_a_vector(counts, tmp_path):
+def test_a_gene_with_no_expression_stores_an_empty_object(counts, tmp_path):
     """Nearly a fifth of the real file's genes are zero everywhere. They are
-    written, so colouring by one shows every cell at zero rather than failing."""
+    still written, so colouring by one shows every cell at zero rather than
+    failing to find the object at all."""
     matrix = np.array([[0, 1], [0, 2]], dtype="float32")
     path = write_h5ad(tmp_path / "zero.h5ad", matrix)
     read = counts.read_genes(path, {})
-    assert list(counts.gene_vector(read["by_gene"], 0)) == [0, 0]
+    assert counts.gene_counts(read["by_gene"], 0) == {}
 
 
 # --------------------------------------------------------------------------- #
@@ -223,7 +207,7 @@ def test_the_object_path_is_the_one_the_explorer_fetches(counts):
     """web/components/expression-lib/scrna-client.ts builds this path from the
     dataset and gene names, so it is a contract rather than a choice."""
     assert counts.object_path("MYB41 transgene", "AT4G28110.Fusion") == \
-        "counts/MYB41 transgene/AT4G28110.Fusion.bin"
+        "counts/MYB41 transgene/AT4G28110.Fusion.json"
 
 
 def test_every_gene_gets_its_own_path(counts, tmp_path):
