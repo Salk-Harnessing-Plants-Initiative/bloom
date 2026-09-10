@@ -249,7 +249,7 @@ export function ExpressionUmap({
     (async () => {
       try {
         const arr = await fetchGeneCounts(
-          data.dataset.name, geneName, data.cells.length,
+          data.dataset.id, geneName, data.cells.length,
         );
         if (cancelled) return;
         let min = Infinity;

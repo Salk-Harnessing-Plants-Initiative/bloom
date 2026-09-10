@@ -77,31 +77,52 @@ export async function searchGenes(
 
 /** Download one gene's expression, as a value per cell in `cell_number` order.
  *
- * The stored object is sparse: an object keyed by cell index, holding only the
- * cells where the gene is expressed. Single-cell data is mostly zeros, so that
- * is a fraction of the size of a dense array, and it is the shape every dataset
- * in the platform is stored in.
+ * The object path comes from `scrna_counts`, never from the dataset and gene
+ * names: the loader that wrote production stored paths its own way, so
+ * `pennycress_data2.json` lives under `counts/pennycress_data2_1_/`. Building
+ * the path here would miss every object already in the platform.
  *
- * Expanded here into the dense array the plot needs, zero-filled, so callers
+ * The object itself is sparse -- keyed by cell index, holding only the cells
+ * where the gene is expressed, since single-cell data is mostly zeros. It is
+ * expanded here into the dense array the plot needs, zero-filled, so callers
  * see one value per cell whether it was stored or not.
  *
- * Through the storage client, not a bare URL: the bucket is private, and every
- * other private asset in the app is read the same way, so the reader is
- * authenticated as the signed-in user under the bucket's own policies.
+ * Read through the storage client rather than a bare URL, because the bucket is
+ * private and every other private asset is read the same way.
  *
  * The object carries no cell identifiers -- the index is the identity -- which
  * is why the ingest refuses to write unless the database already holds these
  * cells in this order.
  */
 export async function fetchGeneCounts(
-  datasetName: string,
+  datasetId: number,
   geneName: string,
   cellCount: number,
 ): Promise<Float32Array> {
   const supabase = createClientSupabaseClient();
+
+  const { data: row, error: rowError } = await supabase
+    .from("scrna_counts")
+    .select("counts_object_path, scrna_genes!inner(gene_name)")
+    .eq("dataset_id", datasetId)
+    .eq("scrna_genes.gene_name", geneName)
+    .maybeSingle();
+  if (rowError) {
+    throw new Error(`fetchGeneCounts failed for ${geneName}: ${rowError.message}`);
+  }
+  const path = (row as { counts_object_path: string | null } | null)
+    ?.counts_object_path;
+  // Not an error to report as a failure: most datasets in the platform have
+  // genes registered whose object was never written.
+  if (!path) {
+    throw new Error(
+      `fetchGeneCounts: ${geneName} has no stored expression in this dataset`,
+    );
+  }
+
   const { data, error } = await supabase.storage
     .from(STORAGE_BUCKET)
-    .download(`counts/${datasetName}/${geneName}.json`);
+    .download(path);
   if (error || !data) {
     throw new Error(
       `fetchGeneCounts failed for ${geneName}: ${error?.message ?? "no data"}`,
