@@ -113,6 +113,22 @@ field change produces a TS diff and fails the drift guard — that is the signal
 4. Run `npm run contracts:check` — it passes when `pin.json`, the schema `$id`, and the regenerated
    types all agree. For a `$id`-only bump the types diff is empty; any other diff is a real contract
    change to review.
+5. **If the migration for this re-pin adds a cutover guard** (a `DO` block that raises if real
+   historical data would be silently orphaned by the re-pin — the pattern in
+   `supabase/migrations/20260706170000_cyl_writeback_contract_a3.sql` and
+   `supabase/migrations/20260831130000_cyl_writeback_contract_a7.sql`): before merging, check the
+   real state of every target environment the guard could plausibly trip in — staging always;
+   production too if the guarded condition could exist there — via SSH to the deploy host, using
+   the same `scripts/deploy_run_supabase.sh` / in-container `psql` pattern `deploy.yml` already
+   uses for schema grants. If the check finds rows that would trip the guard, fold the
+   reconciliation into the same PR rather than discovering it at deploy time (bloom#685 hit this:
+   the guard correctly blocked the staging deploy on real pre-existing rows nobody had checked
+   for before merging).
+
+   This step is **manual, not a CI gate**: regular pull request CI has no route to
+   staging/production secrets (they are scoped behind `environment: staging`/
+   `environment: production`, reachable only from a `push` to `staging`/`main` or an explicit
+   `workflow_dispatch`, never a `pull_request` event) — nothing today blocks a PR that skips it.
 
 ## Gotchas
 
