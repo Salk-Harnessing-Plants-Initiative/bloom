@@ -41,11 +41,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Cluster colours. Assigning them here rather than in the browser is what keeps
-# a cell type the same colour between users, and a reload keeps the colour and
-# the name each surviving cell type already had. This supersedes the 20-colour
-# list in scripts/backfill_scrna_cluster_colors.sql, which cannot cover the 23
-# cell types this dataset carries.
+# One colour per cell type, so no two are drawn the same. Optional -- a cell
+# type stored without one renders grey.
 PALETTE = [
     "#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F",
     "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC",
@@ -54,20 +51,16 @@ PALETTE = [
     "#79706E", "#D7B5A6", "#6B4C9A",
 ]
 
-# A real embedding gives essentially every cell its own point: on this dataset's
-# 8,683 cells and on the 138,865-row joint embedding, every single point is
-# distinct. So cells stacked on one point mean the obsm was allocated and never
-# filled -- every value zero, which is finite, two-dimensional and the right
-# length, so nothing else here notices, and the plot is a single dot.
+# Cells stacked on one point mean the coordinates were never written; refuse
+# above this share of them.
 MAX_DUPLICATE_POINT_SHARE = 0.001
 
-# What a missing value looks like once something upstream has called astype(str)
-# on it. Stored as-is, each of these becomes a real cell type in the legend, or a
-# barcode that names no cell.
+# A missing value that something upstream turned into text. Stored as-is, each
+# becomes a cell type in the legend, or a barcode naming no cell.
 NOT_A_VALUE = {"", "nan", "none", "na", "<na>", "null"}
 
-# scrna_cell_arrays casts x and y to REAL on the way out, so a coordinate above
-# this stores fine and then fails for every reader of the dataset.
+# The browser reads x and y as 32-bit, so a coordinate above this stores fine
+# and then fails for every reader of the dataset.
 FLOAT32_MAX = 3.4028235e38
 
 
@@ -118,18 +111,18 @@ def read_cells(
     umap_key: str,
     expect_cells: int | None,
 ) -> dict:
-    """Pull everything the explorer needs out of the file, or refuse.
+    """Read the file, or refuse. What is read, and where load() then puts it:
 
-    Every check here runs before a single row is written, because a dataset that
-    is half loaded looks to the explorer exactly like one that is complete.
+        obsm[umap_key]      -> scrna_cells.x, .y
+        obs_names           -> scrna_cells.barcode
+        obs[annotation]     -> scrna_cells.cluster_id, and one scrna_clusters
+                               row per distinct cell type
+        obs[sample_column]  -> scrna_cells.replicate
+        n_obs, n_vars       -> scrna_datasets.n_cells, .n_genes
 
-    The coordinates are taken as given. They come out of the same file as the
-    labels, in the row order anndata keeps them in, so nothing here can pair
-    them up wrongly -- and whether the embedding itself is any good is the
-    analysis's business, not this script's. The only thing refused about the
-    embedding itself is an obsm that was never filled in, which is not a
-    judgement about it but the absence of one. The rest of the coordinate
-    checks are about shape and storability.
+    One scrna_cells row per cell, numbered by file order. Every check runs
+    before anything is written -- a half-loaded dataset looks exactly like a
+    complete one. The coordinates themselves are taken as given.
     """
     import anndata
     import numpy as np
@@ -232,14 +225,10 @@ def read_cells(
 
 
 def _barcodes(adata) -> list[str]:
-    """Read the cell barcodes, refusing anything that cannot identify a cell.
+    """Clean up and validate the barcode labels.
 
-    Coordinates and labels come out of one file here, so nothing downstream has
-    to join on the barcode -- but it is the only identifier a cell carries, and
-    the recovery path when they ever do arrive separately is a join on it, not
-    on position. Duplicates make that join ambiguous with nothing recording that
-    it ever was. anndata.concat leaves 10x barcodes repeated across samples
-    unless it is given index_unique, and warns only at concat time.
+    Reads adata.obs_names, trims each, and checks they are usable: every cell
+    needs a barcode, and no two may share one. 
     """
     text = [str(v).strip() for v in adata.obs_names]
     blank = sum(1 for v in text if v.lower() in NOT_A_VALUE)
@@ -260,11 +249,12 @@ def _barcodes(adata) -> list[str]:
 
 
 def _text_column(adata, column: str) -> list[str]:
-    """Read a column as text, refusing anything that is not a usable label.
+    """Check the cell type and sample columns, rejecting null values.
 
-    A missing value would otherwise become the string "nan" and be stored as a
-    real cell type -- one that merges with any genuine level of that spelling and
-    appears in the legend as biology.
+    Reads one obs column as text and refuses it if any cell has no value --
+    whether that is a real NaN, or the word "nan" left behind by an upstream
+    astype(str). Stored as-is, the second kind becomes a cell type sitting in
+    the legend as though it were biology.
     """
     values = adata.obs[column]
     missing = int(values.isna().sum())
