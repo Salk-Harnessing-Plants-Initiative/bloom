@@ -47,7 +47,13 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
   const [hiddenSamples, setHiddenSamples] = useState<Set<string>>(new Set());
   // Sample names repeat across datasets -- Col-0 is in most of them -- so a
   // hidden set carried over would open the next dataset with one already off.
-  useEffect(() => setHiddenSamples(new Set()), [datasetId]);
+  useEffect(() => {
+    setHiddenSamples(new Set());
+    // The chips come from `meta`. Left alone it still describes the previous
+    // dataset for the whole of this one's fetch, and a click in that window
+    // writes a name the new dataset may not have into the hidden set.
+    setMeta(null);
+  }, [datasetId]);
   const [exprRange, setExprRange] = useState<{ min: number; max: number } | null>(
     null,
   );

@@ -11,6 +11,7 @@
  * rendered against the wrong names.
  */
 
+import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
@@ -27,16 +28,27 @@ const SAMPLES = [
 /** Every sample's button, named as a reader sees it. */
 const NAMED = ["Col-0 2,442", "pFACT 3,304", "pHORST 2,937"];
 
+const ALL_HIDDEN = new Set(SAMPLES.map((s) => s.name));
+
+type Props = ComponentProps<typeof ExpressionSampleToggles>;
+
+/** One place for the defaults, so a new required prop lands once. */
+function renderToggles(overrides: Partial<Props> = {}) {
+  return render(
+    <ExpressionSampleToggles
+      samples={SAMPLES}
+      hidden={new Set()}
+      unlabelledCount={0}
+      onToggle={() => {}}
+      onShowAll={() => {}}
+      {...overrides}
+    />,
+  );
+}
+
 describe("ExpressionSampleToggles", () => {
   it("shows one toggle per sample carrying that sample's own count", () => {
-    render(
-      <ExpressionSampleToggles
-        samples={SAMPLES}
-        hidden={new Set()}
-        onToggle={() => {}}
-        onShowAll={() => {}}
-      />,
-    );
+    renderToggles();
     for (const name of NAMED) {
       expect(screen.getByRole("button", { name })).toBeTruthy();
     }
@@ -44,26 +56,12 @@ describe("ExpressionSampleToggles", () => {
   });
 
   it("renders nothing for a dataset whose cells carry no sample", () => {
-    const { container } = render(
-      <ExpressionSampleToggles
-        samples={[]}
-        hidden={new Set()}
-        onToggle={() => {}}
-        onShowAll={() => {}}
-      />,
-    );
+    const { container } = renderToggles({ samples: [] });
     expect(container.textContent).toBe("");
   });
 
   it("says which samples are showing, for a screen reader too", () => {
-    render(
-      <ExpressionSampleToggles
-        samples={SAMPLES}
-        hidden={new Set(["pFACT"])}
-        onToggle={() => {}}
-        onShowAll={() => {}}
-      />,
-    );
+    renderToggles({ hidden: new Set(["pFACT"]) });
     expect(
       screen.getByRole("button", { name: "Col-0 2,442" }).getAttribute("aria-pressed"),
     ).toBe("true");
@@ -74,72 +72,43 @@ describe("ExpressionSampleToggles", () => {
 
   it("toggles the sample that was clicked and no other", () => {
     const onToggle = vi.fn();
-    render(
-      <ExpressionSampleToggles
-        samples={SAMPLES}
-        hidden={new Set()}
-        onToggle={onToggle}
-        onShowAll={() => {}}
-      />,
-    );
+    renderToggles({ onToggle });
     fireEvent.click(screen.getByRole("button", { name: "pHORST 2,937" }));
     expect(onToggle.mock.calls).toEqual([["pHORST"]]);
   });
 
   it("explains the empty map when every sample is hidden, and offers a way back", () => {
     const onShowAll = vi.fn();
-    render(
-      <ExpressionSampleToggles
-        samples={SAMPLES}
-        hidden={new Set(SAMPLES.map((s) => s.name))}
-        onToggle={() => {}}
-        onShowAll={onShowAll}
-      />,
-    );
+    renderToggles({ hidden: ALL_HIDDEN, onShowAll });
     expect(screen.getByText(/Every sample is hidden, so the map is empty/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Show all samples" }));
     expect(onShowAll).toHaveBeenCalledOnce();
   });
 
   it("does not claim an empty map when cells no toggle can hide are still drawn", () => {
-    render(
-      <ExpressionSampleToggles
-        samples={SAMPLES}
-        hidden={new Set(SAMPLES.map((s) => s.name))}
-        unlabelledCount={412}
-        onToggle={() => {}}
-        onShowAll={() => {}}
-      />,
-    );
+    renderToggles({ hidden: ALL_HIDDEN, unlabelledCount: 412 });
     expect(screen.queryByText(/so the map is empty/)).toBeNull();
     expect(
       screen.getByText(/412 cells record no sample and stay on the map/),
     ).toBeTruthy();
   });
 
+  it("says it in the singular for a single unlabelled cell", () => {
+    renderToggles({ hidden: ALL_HIDDEN, unlabelledCount: 1 });
+    expect(
+      screen.getByText(/1 cell records no sample and stays on the map/),
+    ).toBeTruthy();
+  });
+
   it("names the button for its own control, not just 'Show all'", () => {
     // The cluster sidebar has a "Show all" of its own on the same screen, and
     // the two do different things.
-    render(
-      <ExpressionSampleToggles
-        samples={SAMPLES}
-        hidden={new Set(SAMPLES.map((s) => s.name))}
-        onToggle={() => {}}
-        onShowAll={() => {}}
-      />,
-    );
+    renderToggles({ hidden: ALL_HIDDEN });
     expect(screen.queryByRole("button", { name: "Show all" })).toBeNull();
   });
 
   it("says nothing about an empty map while any sample is showing", () => {
-    render(
-      <ExpressionSampleToggles
-        samples={SAMPLES}
-        hidden={new Set(["Col-0", "pFACT"])}
-        onToggle={() => {}}
-        onShowAll={() => {}}
-      />,
-    );
+    renderToggles({ hidden: new Set(["Col-0", "pFACT"]) });
     expect(screen.queryByText(/Every sample is hidden/)).toBeNull();
   });
 });

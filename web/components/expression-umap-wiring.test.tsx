@@ -46,11 +46,13 @@ vi.mock("regl", () => {
   return { default: vi.fn(() => makeRegl()) };
 });
 
+// pFACT is seen first but sorts second, so first-seen order is distinguishable
+// from alphabetical. One cell records no sample.
 const CELLS: CellArraysRow[] = [
-  { x: 0, y: 0, cluster_ordinal: 0, replicate: "Col-0" },
-  { x: 10, y: 10, cluster_ordinal: 0, replicate: "pFACT" },
-  { x: 20, y: 20, cluster_ordinal: 1, replicate: "pFACT" },
-  { x: 30, y: 30, cluster_ordinal: 1, replicate: null },
+  { x: 0, y: 5, cluster_ordinal: 0, replicate: "pFACT" },
+  { x: 10, y: 15, cluster_ordinal: 0, replicate: "Col-0" },
+  { x: 20, y: 35, cluster_ordinal: 1, replicate: "pFACT" },
+  { x: 30, y: 55, cluster_ordinal: 1, replicate: null },
 ];
 
 vi.mock("./expression-lib/scrna-client", async (importOriginal) => {
@@ -147,7 +149,27 @@ describe("ExpressionUmap — what reaches the packing", () => {
     await waitFor(() => expect(visibilityBuffer().subdata).toHaveBeenCalled());
 
     const written = visibilityBuffer().subdata.mock.calls.at(-1)?.[0];
-    // cells 1 and 2 are pFACT; cell 3 records no sample and stays drawn
-    expect(Array.from(written as Float32Array)).toEqual([1, 0, 0, 1]);
+    // cells 0 and 2 are pFACT; cell 3 records no sample and stays drawn
+    expect(Array.from(written as Float32Array)).toEqual([0, 1, 0, 1]);
+  });
+
+  it("reports the samples it counted, so the toggles can be built from them", async () => {
+    // The view renders the toggles only when this payload carries samples, and
+    // it mocks this component away to test itself. Without an assertion here,
+    // `samples: []` in the report removes the whole feature from the page with
+    // every test still passing -- and a page with no toggles is exactly what a
+    // dataset recording no sample is meant to look like, so nothing would show.
+    const { ExpressionUmap } = await import("./expression-umap");
+    const onDataLoaded = vi.fn();
+    render(<ExpressionUmap datasetId={1} onDataLoaded={onDataLoaded} />);
+
+    await waitFor(() => expect(onDataLoaded).toHaveBeenCalled());
+    const reported = onDataLoaded.mock.calls[0][0];
+    expect(reported.samples).toEqual([
+      { name: "pFACT", count: 2 },
+      { name: "Col-0", count: 1 },
+    ]);
+    expect(reported.unlabelledCount).toBe(1);
+    expect(reported.cellCount).toBe(CELLS.length);
   });
 });

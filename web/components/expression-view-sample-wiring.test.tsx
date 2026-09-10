@@ -15,6 +15,11 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 
 import type { ExpressionUmapProps } from "./expression-umap";
 
+/** Exactly what the map reports, so a change to that contract breaks here. */
+type LoadedPayload = Parameters<
+  NonNullable<ExpressionUmapProps["onDataLoaded"]>
+>[0];
+
 /** Every set of props the map has been rendered with, newest last. */
 const umapProps: ExpressionUmapProps[] = [];
 
@@ -33,12 +38,13 @@ vi.mock("@/lib/supabase/client", () => ({
   }),
 }));
 
-const DATASET = { id: 1, name: "ds", expression_units: null } as never;
+const DATASET = { id: 1, name: "ds", expression_units: null } as unknown as
+  LoadedPayload["dataset"];
 const CLUSTERS = [
   { ordinal: 0, cluster_id: "Cortex", name: "Cortex", color: "#112233" },
-] as never;
+] as unknown as LoadedPayload["clusters"];
 
-const LOADED = {
+const LOADED: LoadedPayload = {
   dataset: DATASET,
   clusters: CLUSTERS,
   cellCount: 9,
@@ -50,9 +56,15 @@ const LOADED = {
   unlabelledCount: 0,
 };
 
+const DATASET_2: LoadedPayload = {
+  ...LOADED,
+  cellCount: 7,
+  samples: [{ name: "WT", count: 7 }],
+};
+
 /** The map reports its data once it has loaded; drive that from the stub. */
-function loadData() {
-  umapProps[umapProps.length - 1].onDataLoaded?.(LOADED as never);
+function loadData(payload: LoadedPayload = LOADED) {
+  umapProps[umapProps.length - 1].onDataLoaded?.(payload);
 }
 
 const latest = () => umapProps[umapProps.length - 1];
@@ -140,7 +152,7 @@ describe("ExpressionView — sample filtering reaches the map", () => {
     );
   });
 
-  it("does not carry a hidden sample over to another dataset", async () => {
+  it("opens another dataset with nothing hidden", async () => {
     const { ExpressionView } = await import("./expression-view");
     const { rerender } = render(<ExpressionView datasetId={1} />);
     loadData();
@@ -154,8 +166,38 @@ describe("ExpressionView — sample filtering reaches the map", () => {
     );
 
     // Col-0 is in most Arabidopsis datasets, so a carried-over hidden set would
-    // open the next one with the wild type already switched off.
+    // open the next one with the wild type already switched off. Load the new
+    // dataset rather than only switching the id: the reset firing is not the
+    // same as the hidden set being clean once its cells arrive.
     rerender(<ExpressionView datasetId={2} />);
-    await waitFor(() => expect([...(latest().hiddenSamples ?? [])]).toEqual([]));
+    loadData(DATASET_2);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "WT 7" })).toBeTruthy(),
+    );
+    expect([...(latest().hiddenSamples ?? [])]).toEqual([]);
+    expect(
+      screen.getByRole("button", { name: "WT 7" }).getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(screen.queryByText(/for the whole dataset/)).toBeNull();
+  });
+
+  it("takes the previous dataset's chips down while the next one loads", async () => {
+    // Left up, they stay clickable, and a click writes a name the new dataset
+    // may not have into the hidden set -- which then cannot be cleared from the
+    // UI, because no chip shows as hidden and the way-back button needs every
+    // sample hidden to appear.
+    const { ExpressionView } = await import("./expression-view");
+    const { rerender } = render(<ExpressionView datasetId={1} />);
+    loadData();
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Col-0 4" })).toBeTruthy(),
+    );
+
+    rerender(<ExpressionView datasetId={2} />);
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Col-0 4" })).toBeNull(),
+    );
   });
 });

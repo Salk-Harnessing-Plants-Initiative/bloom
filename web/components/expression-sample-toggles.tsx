@@ -17,8 +17,9 @@ interface Props {
   samples: SampleCount[];
   hidden: ReadonlySet<string>;
   /** Cells recording no sample. They stay on the map whatever is hidden, so
-   *  hiding every sample does not empty it. */
-  unlabelledCount?: number;
+   *  hiding every sample does not empty it. Required, so dropping the wire is
+   *  a compile error rather than a quietly wrong message. */
+  unlabelledCount: number;
   onToggle: (name: string) => void;
   onShowAll: () => void;
 }
@@ -26,7 +27,7 @@ interface Props {
 export function ExpressionSampleToggles({
   samples,
   hidden,
-  unlabelledCount = 0,
+  unlabelledCount,
   onToggle,
   onShowAll,
 }: Props) {
@@ -73,7 +74,9 @@ export function ExpressionSampleToggles({
           {unlabelledCount > 0
             ? `Every sample is hidden. ${fmt.format(unlabelledCount)} cell${
                 unlabelledCount === 1 ? "" : "s"
-              } record no sample and stay on the map.`
+              } record${unlabelledCount === 1 ? "s" : ""} no sample and stay${
+                unlabelledCount === 1 ? "s" : ""
+              } on the map.`
             : "Every sample is hidden, so the map is empty."}{" "}
           <button
             type="button"

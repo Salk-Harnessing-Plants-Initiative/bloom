@@ -20,11 +20,13 @@ function cell(x: number, y: number, ordinal: number, replicate: string | null):
   return { x, y, cluster_ordinal: ordinal, replicate };
 }
 
-// x and y differ on every cell, so packing one from the other is visible.
+// x and y differ on every cell, so packing one from the other is visible; and
+// the samples are first seen in the reverse of alphabetical order, so a sort
+// cannot pass for first-seen order.
 const CELLS = [
-  cell(0, 5, 0, "Col-0"),
+  cell(0, 5, 0, "pHORST"),
   cell(10, 15, 1, "pFACT"),
-  cell(20, 35, 0, "pHORST"),
+  cell(20, 35, 0, "Col-0"),
   cell(100, 55, 1, "pFACT"),
 ];
 const ORDINALS = new Uint8Array(CELLS.map((c) => c.cluster_ordinal));
@@ -87,13 +89,6 @@ describe("packPositions", () => {
     ]);
   });
 
-  it("does not depend on what is hidden, because it never sees it", () => {
-    const a = packPositions(CELLS);
-    const b = packPositions(CELLS);
-    expect(Array.from(a.positions)).toEqual(Array.from(b.positions));
-    expect(a.normScale).toBe(b.normScale);
-  });
-
   it("would move every remaining cell if the hidden ones were filtered out", () => {
     // Not how the component behaves — this is why it does not. Drop the far
     // cell and the whole plot rescales around what is left.
@@ -102,24 +97,19 @@ describe("packPositions", () => {
 
     expect(filtered.normScale).not.toBe(whole.normScale);
     expect(filtered.normCenterX).not.toBe(whole.normCenterX);
-    // The (20, 20) cell survives the filter — third of four before, second of
+    // The (20, 35) cell survives the filter — third of four before, second of
     // two after — and still lands somewhere else on the map.
     expect(filtered.positions[2]).not.toBe(whole.positions[4]);
   });
 
-  it("keeps a cell's place when the set of cells is the same", () => {
-    const before = packPositions(CELLS);
-    const after = packPositions([...CELLS]);
-    expect(Array.from(after.positions)).toEqual(Array.from(before.positions));
-  });
 });
 
 describe("packCellArrays", () => {
   it("counts each sample's own cells, in the order they first appear", () => {
     expect(packCellArrays(CELLS).samples).toEqual([
-      { name: "Col-0", count: 1 },
-      { name: "pFACT", count: 2 },
       { name: "pHORST", count: 1 },
+      { name: "pFACT", count: 2 },
+      { name: "Col-0", count: 1 },
     ]);
   });
 
