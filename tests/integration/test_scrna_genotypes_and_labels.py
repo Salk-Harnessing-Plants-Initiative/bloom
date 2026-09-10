@@ -503,3 +503,99 @@ def test_the_ingest_role_gets_no_more_than_its_siblings(pg_conn):
         )
         by_table = dict(cur.fetchall())
         assert by_table["scrna_genotypes"] == by_table["scrna_clusters"]
+
+
+# --------------------------------------------------------------------------- #
+# Bounds
+# --------------------------------------------------------------------------- #
+
+
+def test_a_vertical_tab_is_not_a_name(pg_conn):
+    """Postgres reads \\v in an E-string as the letter v, not a vertical tab, so
+    a set written that way refuses a genotype called "v" and accepts one made
+    of an invisible character. Spelled \\u000b here."""
+    with pg_conn.cursor() as cur:
+        ds = dataset(cur, species(cur))
+        with pytest.raises(psycopg.errors.CheckViolation):
+            genotype(cur, ds, "\v")
+    pg_conn.rollback()
+
+
+def test_a_genotype_may_be_called_v(pg_conn):
+    """The other half of the same mistake: a one-letter name is a name."""
+    with pg_conn.cursor() as cur:
+        ds = dataset(cur, species(cur))
+        genotype(cur, ds, "v")
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize("field, size", [("name", 101), ("construct", 201),
+                                         ("notes", 2001)])
+def test_an_oversized_genotype_field_is_refused(pg_conn, field, size):
+    """`name` is in the unique index, where an oversized value fails with a
+    btree row-size error a reader cannot act on. `notes` is served to every
+    viewer of the dataset."""
+    with pg_conn.cursor() as cur:
+        ds = dataset(cur, species(cur))
+        kwargs = {field: "x" * size} if field != "name" else {}
+        with pytest.raises(psycopg.errors.CheckViolation) as exc:
+            genotype(cur, ds, "x" * size if field == "name" else "Col-0", **kwargs)
+        assert "lengths" in str(exc.value)
+    pg_conn.rollback()
+
+
+def test_facets_refuses_a_label_or_value_too_long_to_draw(pg_conn):
+    """Every cell carries this to every viewer, so an unbounded object here is
+    an unbounded page load, and a 200-character toggle is not a toggle."""
+    with pg_conn.cursor() as cur:
+        ds = dataset(cur, species(cur))
+        cluster(cur, ds)
+        for facets in ('{"%s": "true"}' % ("k" * 65),
+                       '{"k": "%s"}' % ("v" * 201)):
+            # A refusal aborts its transaction, so each attempt gets its own
+            # savepoint or the second cannot run.
+            with pytest.raises(psycopg.errors.CheckViolation):
+                with pg_conn.transaction():
+                    cell(cur, ds, 0, facets=facets)
+    pg_conn.rollback()
+
+
+def test_facets_refuses_more_labels_than_a_sidebar_can_hold(pg_conn):
+    with pg_conn.cursor() as cur:
+        ds = dataset(cur, species(cur))
+        cluster(cur, ds)
+        too_many = "{" + ", ".join(f'"k{i}": "v"' for i in range(33)) + "}"
+        with pytest.raises(psycopg.errors.CheckViolation):
+            with pg_conn.transaction():
+                cell(cur, ds, 0, facets=too_many)
+
+        enough = "{" + ", ".join(f'"k{i}": "v"' for i in range(32)) + "}"
+        cell(cur, ds, 1, facets=enough)
+    pg_conn.rollback()
+
+
+def test_the_facets_check_is_not_left_to_the_public_default(pg_conn):
+    """A CHECK runs with the writer's privileges. On the PUBLIC default, a later
+    blanket REVOKE would turn every write to scrna_cells into a permission error
+    naming a function."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT has_function_privilege('public', "
+            "'public.scrna_facets_are_flat_text(jsonb)', 'EXECUTE')"
+        )
+        assert cur.fetchone()[0] is False, "still relying on the PUBLIC default"
+        for role in ("authenticated", "bloom_writer", "bloom_admin"):
+            cur.execute(
+                "SELECT has_function_privilege(%s, "
+                "'public.scrna_facets_are_flat_text(jsonb)', 'EXECUTE')", (role,)
+            )
+            assert cur.fetchone()[0] is True, f"{role} cannot write to scrna_cells"
+
+
+def test_the_unique_constraint_covers_lookups_by_dataset(pg_conn):
+    """So a separate index on dataset_id would only cost a write per insert.
+    The sibling migration removed exactly that shape of index."""
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' "
+                    "AND indexname = 'idx_scrna_genotypes_dataset'")
+        assert cur.fetchone()[0] == 0

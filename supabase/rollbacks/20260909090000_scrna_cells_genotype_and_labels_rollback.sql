@@ -15,16 +15,19 @@
 BEGIN;
 
 DO $$
-DECLARE genotypes bigint; labelled bigint;
+DECLARE genotypes bigint; labelled bigint; sourced bigint;
 BEGIN
   SELECT count(*) INTO genotypes FROM public.scrna_genotypes;
   SELECT count(*) INTO labelled  FROM public.scrna_cells WHERE facets IS NOT NULL;
-  IF genotypes > 0 OR labelled > 0 THEN
+  SELECT count(*) INTO sourced   FROM public.scrna_clusters WHERE source IS NOT NULL;
+  IF genotypes > 0 OR labelled > 0 OR sourced > 0 THEN
     RAISE EXCEPTION
-      'Refusing to roll back: % genotype row(s) and % cell(s) carrying labels '
-      'would be destroyed, along with every cell''s link to its genotype. '
-      'Re-running the cell ingest rebuilds both from the source file; remove '
-      'them deliberately first, then this will run.', genotypes, labelled;
+      'Refusing to roll back: % genotype row(s), % cell(s) carrying labels and '
+      '% cell type(s) recording a label source would be destroyed, along with '
+      'every cell''s link to its genotype. Re-running the cell ingest rebuilds '
+      'them from the source file. To clear them by hand, NULL '
+      'scrna_cells.genotype_id first -- the foreign key refuses to drop a '
+      'genotype while a cell points at it.', genotypes, labelled, sourced;
   END IF;
 END $$;
 
@@ -68,5 +71,8 @@ DROP INDEX IF EXISTS public.idx_scrna_cells_genotype;
 ALTER TABLE public.scrna_cells DROP COLUMN IF EXISTS genotype_id;
 
 DROP TABLE IF EXISTS public.scrna_genotypes;
+
+-- The third column this added.
+ALTER TABLE public.scrna_clusters DROP COLUMN IF EXISTS source;
 
 COMMIT;

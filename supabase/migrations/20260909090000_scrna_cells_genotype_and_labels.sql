@@ -42,15 +42,21 @@ CREATE TABLE IF NOT EXISTS public.scrna_genotypes (
   CONSTRAINT scrna_genotypes_id_per_dataset UNIQUE (dataset_id, id),
   -- A name has to be a name. The characters are spelled out because btrim()
   -- with one argument strips ordinary spaces alone -- not a non-breaking space,
-  -- which a name pasted from a document can be made entirely of.
+  -- which a name pasted from a document can be made entirely of. Vertical tab
+  -- is \u000b and not \v, which Postgres reads as the letter v.
   CONSTRAINT scrna_genotypes_name_not_blank
-    CHECK (btrim(name, E' \t\n\r\f\v\u00a0') <> ''),
+    CHECK (btrim(name, E' \t\n\r\f\u000b\u00a0') <> ''),
   CONSTRAINT scrna_genotypes_construct_not_blank
-    CHECK (construct IS NULL OR btrim(construct, E' \t\n\r\f\v\u00a0') <> '')
+    CHECK (construct IS NULL OR btrim(construct, E' \t\n\r\f\u000b\u00a0') <> ''),
+  -- name is in the index below, where an oversized value fails with a btree
+  -- row-size error rather than anything a reader could act on. notes is capped
+  -- because it is served to every viewer of the dataset.
+  CONSTRAINT scrna_genotypes_lengths CHECK (
+    length(name)      <= 100 AND
+    length(construct) <= 200 AND
+    length(notes)     <= 2000
+  )
 );
-
-CREATE INDEX IF NOT EXISTS idx_scrna_genotypes_dataset
-  ON public.scrna_genotypes (dataset_id);
 
 -- Which genotype each cell belongs to. Keyed on the dataset as well as the
 -- genotype, like the cluster reference on this table, so a cell cannot be given
@@ -78,6 +84,11 @@ CREATE INDEX IF NOT EXISTS idx_scrna_cells_genotype
 ALTER TABLE public.scrna_clusters
   ADD COLUMN IF NOT EXISTS source TEXT;
 
+COMMENT ON TABLE public.scrna_genotypes IS
+  'The genotypes a dataset compares. Readable by anyone who can see the '
+  'dataset, including anonymous visitors -- do not put anything unpublished '
+  'in notes.';
+
 COMMENT ON COLUMN public.scrna_clusters.source IS
   'Where this cell type''s label came from -- a reference atlas, a paper, or a '
   'method. NULL when the ingest was not told. Shown in the cluster sidebar.';
@@ -101,14 +112,27 @@ AS $fn$
   SELECT facets IS NULL
      OR (
        jsonb_typeof(facets) = 'object'
+       -- A sidebar of toggles, not a payload. Every cell of the dataset
+       -- carries this to every viewer, so an unbounded object here is an
+       -- unbounded page load.
+       AND (SELECT count(*) FROM jsonb_object_keys(facets)) <= 32
        AND NOT EXISTS (
          SELECT 1 FROM jsonb_each(facets) AS f(key, value)
          WHERE jsonb_typeof(f.value) <> 'string'
-            OR btrim(f.key, E' \t\n\r\f\v\u00a0') = ''
-            OR btrim(f.value #>> '{}', E' \t\n\r\f\v\u00a0') = ''
+            OR btrim(f.key, E' \t\n\r\f\u000b\u00a0') = ''
+            OR btrim(f.value #>> '{}', E' \t\n\r\f\u000b\u00a0') = ''
+            OR length(f.key) > 64
+            OR length(f.value #>> '{}') > 200
        )
      );
 $fn$;
+
+-- Granted explicitly rather than left to the PUBLIC default: a CHECK runs with
+-- the writer's privileges, so a later blanket REVOKE ... FROM PUBLIC would turn
+-- every write to scrna_cells into a permission error naming a function.
+REVOKE EXECUTE ON FUNCTION public.scrna_facets_are_flat_text(JSONB) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.scrna_facets_are_flat_text(JSONB)
+  TO authenticated, bloom_writer, bloom_admin, service_role, postgres;
 
 ALTER TABLE public.scrna_cells
   DROP CONSTRAINT IF EXISTS scrna_cells_facets_are_flat_text;
@@ -149,6 +173,7 @@ AS $$
    AND cl.cluster_id = c.cluster_id
   LEFT JOIN public.scrna_genotypes g
     ON g.id = c.genotype_id
+   AND g.dataset_id = c.dataset_id
   WHERE c.dataset_id = ds_id
   ORDER BY c.cell_number ASC;
 $$;
