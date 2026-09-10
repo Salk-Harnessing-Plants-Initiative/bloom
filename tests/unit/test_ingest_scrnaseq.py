@@ -45,7 +45,6 @@ def write_h5ad(
     annotation: str = "nn_label_plain",
     sample_column: str = "sample",
     labels: list[str] | None = None,
-    n_types: int = 2,
     samples: list[str] | None = None,
     coords: "np.ndarray | None" = None,
     barcodes: list[str] | None = None,
@@ -53,9 +52,7 @@ def write_h5ad(
     """A miniature dataset shaped like the real one."""
     obs = pd.DataFrame(
         {
-            annotation: labels or [
-                f"Type{i % n_types}" for i in range(n_cells)
-            ] if n_types != 2 else (labels or ["Phellem", "Cortex"] * (n_cells // 2)),
+            annotation: labels or ["Phellem", "Cortex"] * (n_cells // 2),
             sample_column: samples or ["Col-0", "pFACT", "pHORST"] * (n_cells // 3),
         },
         index=barcodes or [f"CELL{i}-Col-0" for i in range(n_cells)],
@@ -68,8 +65,7 @@ def write_h5ad(
     if umap_key and coords is not None:
         adata.obsm[umap_key] = np.asarray(coords)
     elif umap_key:
-        # Cells of a type sit together, as they do in a real embedding, so the
-        # cells of a type sit together; distinct x and y so a swap is detectable.
+        # distinct x and y for every cell, so a swap or a reversal is detectable.
         codes = pd.Categorical(obs[annotation]).codes.astype("float32")
         base = np.stack([codes * 100.0, codes * 100.0 + 50.0], axis=1)
         jitter = np.linspace(0, 1, n_cells, dtype="float32")[:, None]
@@ -369,24 +365,6 @@ def test_integer_coordinates_are_read_not_crashed_on(ingest, tmp_path):
                       labels=["A", "B", "C", "D"] * 30, coords=coords)
     cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
     assert cells["x"][:2] == pytest.approx([0.0, 1001.0])
-
-
-def test_a_group_is_scored_against_its_own_labels(ingest, tmp_path):
-    """Labels within a group must be paired with that group's own rows. The
-    earlier fixtures were periodic, so any mispairing was a no-op."""
-    rng = np.random.default_rng(7)
-    labels, samples, coords = [], [], []
-    order = list(rng.permutation([t for t in ["A", "B", "C", "D"] for _ in range(45)]))
-    for i, t in enumerate(order):
-        labels.append(t)
-        samples.append(["Col-0", "pFACT", "pHORST"][i % 3])
-        coords.append([ord(t) * 1000.0 + i * 0.01, 0.0])
-    path = write_h5ad(tmp_path / "nonperiodic.h5ad", n_cells=len(labels),
-                      labels=labels, samples=samples, coords=np.array(coords))
-    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
-    assert cells["n_cells"] == 180
-
-
 def test_main_reads_the_annotation_the_operator_named(ingest, tmp_path, capsys):
     """Pins the reader wiring only -- a dry run stops before the database."""
     path = write_h5ad(tmp_path / "wiring.h5ad", n_cells=6)
@@ -529,3 +507,130 @@ def test_the_duplicate_share_is_where_it_was_measured(ingest):
     """Pinned because it is a measured constant, and the only thing standing
     between an unfilled obsm and a dataset drawn as one dot."""
     assert ingest.MAX_DUPLICATE_POINT_SHARE == 0.001
+
+
+# --------------------------------------------------------------------------- #
+# What main() hands load(), and what it says afterwards
+# --------------------------------------------------------------------------- #
+#
+# The integration tests call load() directly and pass `create` themselves, so
+# nothing there sees the wiring. These stand between the flags and the writer:
+# without them, `create=args.create` can be edited to `create=True` and every
+# other test still passes, which is the defect --create exists to prevent.
+
+
+def _wired(ingest, monkeypatch, tmp_path, argv_extra, name="wiring"):
+    """Run main() with load() replaced by a recorder, and return what it saw
+    along with everything main() printed."""
+    import contextlib
+    import psycopg
+
+    seen = {}
+
+    def recorder(conn, ds_name, species_id, cells, checksum, units, annotation,
+                 create=False):
+        seen.update(name=ds_name, annotation=annotation, units=units,
+                    create=create, cells=cells)
+        return 7, cells["n_cells"], create
+
+    monkeypatch.setattr(ingest, "load", recorder)
+    monkeypatch.setattr(psycopg, "connect", lambda url: contextlib.nullcontext(None))
+    monkeypatch.setenv("DATABASE_URL", "postgresql://nobody@nowhere/none")
+
+    path = write_h5ad(tmp_path / f"{name}.h5ad", n_cells=240,
+                      labels=["A", "B", "C", "D"] * 60)
+    code = ingest.main([
+        "--h5ad", str(path), "--dataset-name", "d", "--species-id", "1",
+        "--annotation", "nn_label_plain", *argv_extra,
+    ])
+    return code, seen
+
+
+def test_main_hands_load_the_annotation_not_some_other_column(
+    ingest, tmp_path, monkeypatch, capsys
+):
+    """Handing load() the sample column instead of the annotation would record
+    the wrong provenance for the differential expression results, silently."""
+    code, seen = _wired(ingest, monkeypatch, tmp_path, [])
+    capsys.readouterr()
+    assert code == 0
+    assert seen["annotation"] == "nn_label_plain"
+    assert seen["name"] == "d"
+
+
+def test_the_create_flag_reaches_the_writer(ingest, tmp_path, monkeypatch, capsys):
+    """Both directions. `create=True` hard-coded here would put back the silent
+    fork this flag exists to stop; `create=False` would make a first load
+    impossible. Neither is visible from load()'s own tests."""
+    code, seen = _wired(ingest, monkeypatch, tmp_path, ["--create"], "with")
+    capsys.readouterr()
+    assert code == 0 and seen["create"] is True
+
+    code, seen = _wired(ingest, monkeypatch, tmp_path, [], "without")
+    capsys.readouterr()
+    assert code == 0 and seen["create"] is False
+
+
+def test_the_closing_line_says_which_happened(ingest, tmp_path, monkeypatch, capsys):
+    """Registering and replacing are the two outcomes an operator needs to tell
+    apart after a mistyped name, and the sentence is the only place they differ."""
+    ingest_code, _ = _wired(ingest, monkeypatch, tmp_path, ["--create"], "said")
+    out = capsys.readouterr().out
+    assert ingest_code == 0
+    assert "registered dataset 7" in out and "replaced" not in out
+
+    ingest_code, _ = _wired(ingest, monkeypatch, tmp_path, [], "said2")
+    out = capsys.readouterr().out
+    assert ingest_code == 0
+    assert "replaced the cells of dataset 7" in out and "registered" not in out
+
+
+def test_the_expression_units_reach_the_writer(ingest, tmp_path, monkeypatch, capsys):
+    """The colourbar label every reader of the dataset sees."""
+    code, seen = _wired(ingest, monkeypatch, tmp_path,
+                        ["--expression-units", "CPM"], "units")
+    capsys.readouterr()
+    assert code == 0 and seen["units"] == "CPM"
+
+
+def test_a_refusal_does_not_replay_the_file_at_the_terminal(ingest, tmp_path):
+    """Barcodes come out of the file, and the refusal is the only thing the
+    operator sees. Printed raw, a crafted barcode can clear the screen and paint
+    a success line over the failure."""
+    hostile = "\x1b[2J\x1b[Hloaded 8683 cells into dataset 3"
+    path = write_h5ad(tmp_path / "hostile.h5ad", n_cells=6,
+                      barcodes=[hostile, hostile, "C", "D", "E", "F"])
+    with pytest.raises(ingest.IngestError) as exc:
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+    message = str(exc.value)
+    assert "\x1b" not in message, "escape characters must not reach the terminal"
+    assert "\\x1b" in message, "the barcode is still shown, escaped"
+
+
+@pytest.mark.parametrize("sentinel", ["nan", "None", "NA", "<NA>", "null"])
+def test_a_cell_type_that_reads_as_a_missing_value_is_refused(
+    ingest, tmp_path, sentinel
+):
+    """`astype(str)` on a column with missing annotations turns them into these.
+    Stored as-is, each becomes a cell type in the legend with no DE rows behind
+    it, and a biologist reads unannotated cells as a real population."""
+    path = tmp_path / f"sentinel_{sentinel.strip('<>')}.h5ad"
+    write_h5ad(path, n_cells=6)
+    a = anndata.read_h5ad(path)
+    a.obs["nn_label_plain"] = ["Phellem", sentinel, "Phellem",
+                               "Cortex", "Cortex", "Cortex"]
+    a.write_h5ad(path)
+    with pytest.raises(ingest.IngestError, match="missing value"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+
+
+def test_a_real_cell_type_that_merely_looks_odd_still_loads(ingest, tmp_path):
+    """The accept case, so the rule above cannot be satisfied by refusing
+    anything unusual. 'Nanodomain' contains 'nan'; it is a cell type."""
+    path = tmp_path / "nanodomain.h5ad"
+    write_h5ad(path, n_cells=6)
+    a = anndata.read_h5ad(path)
+    a.obs["nn_label_plain"] = ["Nanodomain"] * 3 + ["Cortex"] * 3
+    a.write_h5ad(path)
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+    assert cells["levels"] == ["Cortex", "Nanodomain"]

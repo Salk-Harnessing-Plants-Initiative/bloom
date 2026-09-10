@@ -61,6 +61,11 @@ PALETTE = [
 # length, so nothing else here notices, and the plot is a single dot.
 MAX_DUPLICATE_POINT_SHARE = 0.001
 
+# What a missing value looks like once something upstream has called astype(str)
+# on it. Stored as-is, each of these becomes a real cell type in the legend, or a
+# barcode that names no cell.
+NOT_A_VALUE = {"", "nan", "none", "na", "<na>", "null"}
+
 # scrna_cell_arrays casts x and y to REAL on the way out, so a coordinate above
 # this stores fine and then fails for every reader of the dataset.
 FLOAT32_MAX = 3.4028235e38
@@ -121,10 +126,10 @@ def read_cells(
     The coordinates are taken as given. They come out of the same file as the
     labels, in the row order anndata keeps them in, so nothing here can pair
     them up wrongly -- and whether the embedding itself is any good is the
-    analysis's business, not this script's. The one thing refused is an obsm
-    that was never filled in, which is not a judgement about the embedding but
-    the absence of one.
-
+    analysis's business, not this script's. The only thing refused about the
+    embedding itself is an obsm that was never filled in, which is not a
+    judgement about it but the absence of one. The rest of the coordinate
+    checks are about shape and storability.
     """
     import anndata
     import numpy as np
@@ -236,15 +241,15 @@ def _barcodes(adata) -> list[str]:
     it ever was. anndata.concat leaves 10x barcodes repeated across samples
     unless it is given index_unique, and warns only at concat time.
     """
-    text = [str(v) for v in adata.obs_names]
-    blank = sum(1 for v in text if not v.strip() or v.strip().lower() == "nan")
+    text = [str(v).strip() for v in adata.obs_names]
+    blank = sum(1 for v in text if v.lower() in NOT_A_VALUE)
     if blank:
         raise IngestError(
             f"{blank} of {len(text)} cells have no barcode; every cell needs one"
         )
     repeated = [b for b, n in Counter(text).items() if n > 1]
     if repeated:
-        shown = ", ".join(sorted(repeated)[:3])
+        shown = ", ".join(repr(b) for b in sorted(repeated)[:3])
         raise IngestError(
             f"{len(text) - len(set(text))} of {len(text)} barcodes are "
             f"duplicates ({len(repeated)} repeated, e.g. {shown}). Cells "
@@ -268,10 +273,11 @@ def _text_column(adata, column: str) -> list[str]:
             f"obs[{column!r}] has {missing} missing value(s); every cell needs one"
         )
     text = [str(v) for v in values]
-    blank = sum(1 for v in text if not v.strip())
+    blank = sum(1 for v in text if v.strip().lower() in NOT_A_VALUE)
     if blank:
         raise IngestError(
-            f"obs[{column!r}] has {blank} blank value(s); every cell needs a name"
+            f"obs[{column!r}] has {blank} value(s) that are blank or read as a "
+            f"missing value; every cell needs a name"
         )
     return text
 
@@ -323,8 +329,11 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
         )
     with conn.cursor() as cur:
         cur.execute(
+            # btrim on the column too: rows registered before the name was
+            # trimmed here can carry padding, and an exact match would miss
+            # them and offer to register a second copy.
             "SELECT id FROM public.scrna_datasets "
-            "WHERE name = %s AND species_id = %s AND deleted_at IS NULL",
+            "WHERE btrim(name) = %s AND species_id = %s AND deleted_at IS NULL",
             (name, species_id),
         )
         found = cur.fetchall()
@@ -335,6 +344,12 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
             )
 
         created = not found
+        if found and create:
+            raise IngestError(
+                f"dataset {found[0][0]} is already named {name!r} for species "
+                f"{species_id}. Re-run without --create to replace its cells; "
+                f"--create is for registering a dataset that does not exist yet"
+            )
         if found:
             dataset_id = found[0][0]
             cur.execute(
