@@ -10,10 +10,11 @@
  */
 
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import Panel, {
+  columnsFor,
   countSignificant,
   directionLabel,
   significanceLabel,
@@ -56,6 +57,13 @@ const oneVsRest = {
 };
 
 describe("directionLabel", () => {
+  it("states the direction as a whole sentence, leading word included", () => {
+    expect(directionLabel(twoGroup)).toBe(
+      "A positive fold change is higher in pFACT than in Col-0; " +
+      "a negative one is higher in Col-0.",
+    );
+  });
+
   it("says which group a positive fold change is higher in", () => {
     const label = directionLabel(twoGroup);
     expect(label).toContain("higher in pFACT than in Col-0");
@@ -140,6 +148,13 @@ vi.mock("@/lib/supabase/client", () => ({
 }));
 
 describe("the panel", () => {
+  // Shared across tests, so a later one could otherwise satisfy its own wait
+  // against the previous test's residue and race its own render.
+  beforeEach(() => {
+    gate.order.length = 0;
+    gate.release = {};
+  });
+
   const first = "de/d/Cortex__pFACT_vs_Col-0.json";
   const second = "de/d/Cortex__pHORST_vs_Col-0.json";
 
@@ -166,6 +181,23 @@ describe("the panel", () => {
     expect(screen.queryAllByText(second).length).toBeGreaterThan(0);
   });
 
+  it("names both groups and their sizes where the reader can see them", async () => {
+    // The panel's central claim. Every string function below was tested; none
+    // of it was ever asserted as rendered, so deleting this sentence, swapping
+    // the two names or swapping the two counts all left the suite green.
+    render(<Panel file_id={1} />);
+    gate.release[first]?.();
+
+    expect(
+      await screen.findByText(
+        /pFACT \(245 cells\) against Col-0 \(172 cells\), in Cortex/,
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/A positive fold change is higher in pFACT than in Col-0/),
+    ).toBeTruthy();
+  });
+
   it("says a comparison was never run, with the sizes that explain why", async () => {
     render(<Panel file_id={1} />);
     await waitFor(() => expect(gate.order).toContain(first));
@@ -179,6 +211,23 @@ describe("the panel", () => {
   });
 });
 
+describe("the gene table's columns", () => {
+  const headerOf = (entry: Parameters<typeof columnsFor>[0], field: string) =>
+    columnsFor(entry).find(c => c.field === field)?.headerName;
+
+  it("heads each per-group column with the group it belongs to", () => {
+    // pct.1 is group1's cells and pct.2 is group2's. Heading them "% in
+    // Cluster" and "% in Others" attributes each number to the wrong set.
+    expect(headerOf(twoGroup, "pct.1")).toBe("% in pFACT");
+    expect(headerOf(twoGroup, "pct.2")).toBe("% in Col-0");
+  });
+
+  it("falls back to cell type and rest when the row names no groups", () => {
+    expect(headerOf(oneVsRest, "pct.1")).toBe("% in Cortex");
+    expect(headerOf(oneVsRest, "pct.2")).toBe("% in the rest");
+  });
+});
+
 describe("countSignificant", () => {
   const rows = [
     { p_val_adj: 0.01, avg_log2FC: 2.0 },   // clearly up
@@ -187,6 +236,22 @@ describe("countSignificant", () => {
     { p_val_adj: 0.01, avg_log2FC: -3.0 },  // clearly down
     { p_val_adj: 0.20, avg_log2FC: 5.0 },   // large but not significant
   ];
+
+  it("tells the two directions apart", () => {
+    // Every other fixture here is symmetric, so swapping `up` and `down`
+    // inside the counter left all of them green.
+    expect(
+      countSignificant(
+        [
+          { p_val_adj: 0.001, avg_log2FC: 2 },
+          { p_val_adj: 0.001, avg_log2FC: 1.5 },
+          { p_val_adj: 0.001, avg_log2FC: -2 },
+        ] as never,
+        0.05,
+        0.5,
+      ),
+    ).toEqual({ up: 2, down: 1, total: 3 });
+  });
 
   it("counts at the cuts the analysis used, which is what the stored counts mean", () => {
     expect(countSignificant(rows, 0.05, 0.5)).toEqual({ up: 2, down: 2, total: 4 });

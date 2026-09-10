@@ -33,7 +33,15 @@ type GeneData = {
   _row: string;
 };
 
-const columns: GridColDef[] = [
+/** The two sides of this comparison, named. One answer, so the chart, the
+ *  table and the tooltip cannot disagree about which group is which. */
+export function groupNames(entry: DeEntry | null): { a: string; b: string } {
+  return entry?.group1 && entry.group2
+    ? { a: entry.group1, b: entry.group2 }
+    : { a: entry?.cluster_id ?? "this cell type", b: "the rest" };
+}
+
+export const columnsFor = (entry: DeEntry | null): GridColDef[] => [
   { field: '_row', headerName: 'Gene Name', width: 180 },
   {
     field: 'avg_log2FC',
@@ -56,7 +64,7 @@ const columns: GridColDef[] = [
   },
   {
     field: 'pct.1',
-    headerName: '% in Cluster',
+    headerName: `% in ${groupNames(entry).a}`,
     width: 120,
     renderCell: (params) => {
       const value = params.value as number;
@@ -65,7 +73,7 @@ const columns: GridColDef[] = [
   },
   {
     field: 'pct.2',
-    headerName: '% in Others',
+    headerName: `% in ${groupNames(entry).b}`,
     width: 120,
     renderCell: (params) => {
       const value = params.value as number;
@@ -83,12 +91,12 @@ const columns: GridColDef[] = [
   }
 ];
 
-export function DataTable({ rows }: { rows: GeneData[] }) {
+export function DataTable({ rows, entry }: { rows: GeneData[]; entry: DeEntry | null }) {
   return (
     <Paper sx={{ height: 500, width: '100%' }}>
       <DataGrid
         rows={rows ?? []}
-        columns={columns}
+        columns={columnsFor(entry)}
         getRowId={(row) => row._row}
         initialState={{
           pagination: {
@@ -191,6 +199,8 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
   const [fdrCut, setFdrCut] = useState(DEFAULT_FDR_CUT);
   const [lfcCut, setLfcCut] = useState(DEFAULT_LOG2FC_CUT);
   const [onlySignificant, setOnlySignificant] = useState(false);
+  // How many genes fall outside the default x-range, so the chart can say so.
+  const [offScaleCount, setOffScaleCount] = useState(0);
   const supabase = createClientSupabaseClient();
   const chartRef = useRef<SVGSVGElement | null>(null);
 
@@ -323,7 +333,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       lfcCut * 1.5,
       (d3.quantile(readable.sort(d3.ascending), 0.995) ?? 2) * 1.1,
     );
-    const offScale = transformedData.filter(d => Math.abs(d.x) > xLimit).length;
+    setOffScaleCount(transformedData.filter(d => Math.abs(d.x) > xLimit).length);
     const xExtent: [number, number] = [-xLimit, xLimit];
     const yMax = d3.max(transformedData, d => d.y) || 10;
 
@@ -364,6 +374,14 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       .attr("height", innerHeight)
       .attr("fill", "#fafafa");
 
+    // Everything that moves when the reader pans or zooms lives in here, and
+    // is clipped rather than clamped: a gene keeps its real position and goes
+    // out of view, instead of being drawn at a fold change it does not have.
+    const clipId = `volcano-clip-${Math.random().toString(36).slice(2)}`;
+    plot.append("defs").append("clipPath").attr("id", clipId)
+      .append("rect").attr("width", innerWidth).attr("height", innerHeight);
+    const content = plot.append("g").attr("clip-path", `url(#${clipId})`);
+
     // Grid lines
     plot.append("g")
       .attr("class", "grid")
@@ -385,7 +403,8 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
     const passing = transformedData.filter(d => d.p_val_adj < fdrCut);
     if (passing.length > 0) {
       const sigY = d3.min(passing, d => d.y) as number;
-      plot.append("line")
+      content.append("line")
+        .attr("class", "fdr-line")
         .attr("x1", 0)
         .attr("x2", innerWidth)
         .attr("y1", yScale(sigY))
@@ -395,8 +414,9 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
         .attr("stroke-width", 1);
     }
 
-    // Vertical lines at log2FC = ±1
-    plot.append("line")
+    // Vertical lines at the reader's fold-change cut.
+    content.append("line")
+      .attr("class", "lfc-line-neg")
       .attr("x1", xScale(-lfcCut))
       .attr("x2", xScale(-lfcCut))
       .attr("y1", 0)
@@ -405,7 +425,8 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       .attr("stroke-dasharray", "5,5")
       .attr("stroke-width", 1);
 
-    plot.append("line")
+    content.append("line")
+      .attr("class", "lfc-line-pos")
       .attr("x1", xScale(lfcCut))
       .attr("x2", xScale(lfcCut))
       .attr("y1", 0)
@@ -415,9 +436,10 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       .attr("stroke-width", 1);
 
     // X-axis
-    plot.append("g")
-      .attr("transform", `translate(0,${innerHeight})`)
-      .call(d3.axisBottom(xScale))
+    const xAxisG = plot.append("g")
+      .attr("class", "x-axis")
+      .attr("transform", `translate(0,${innerHeight})`);
+    xAxisG.call(d3.axisBottom(xScale))
       .selectAll("text")
       .style("font-size", "12px");
 
@@ -443,7 +465,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       .attr("text-anchor", "middle")
       .attr("font-size", "14px")
       .attr("font-weight", "bold")
-      .text("-Log10(Adjusted p-value)");
+      .text("-Log10(p-value)");
 
     // Title
     plot.append("text")
@@ -452,14 +474,17 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       .attr("text-anchor", "middle")
       .attr("font-size", "16px")
       .attr("font-weight", "bold")
-      .text(`Volcano Plot: ${selectedCluster?.cluster_id || ''} vs Other Clusters`);
+      .text(
+        `Volcano Plot: ${groupNames(selectedCluster).a} vs ${groupNames(selectedCluster).b}` +
+        (selectedCluster?.cluster_id ? `, in ${selectedCluster.cluster_id}` : ""),
+      );
 
     // Points
-    plot.selectAll("circle")
+    content.selectAll("circle")
       .data(transformedData)
       .enter()
       .append("circle")
-      .attr("cx", d => xScale(Math.max(-xMax, Math.min(xMax, d.x))))
+      .attr("cx", d => xScale(d.x))
       .attr("cy", d => yScale(d.y))
       .attr("r", d => significantGenes.some(g => g.gene === d.gene) ? 5 : 3)
       .attr("fill", d => {
@@ -480,8 +505,8 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
             <strong>${d.gene}</strong><br/>
             Log2 FC: <span style="color:${d.x > 0 ? '#c62828' : '#1565c0'}">${d.x.toFixed(3)}</span><br/>
             Adj. p-value: ${d.p_val_adj.toExponential(2)}<br/>
-            % in cluster: ${(d['pct.1'] * 100).toFixed(1)}%<br/>
-            % in others: ${(d['pct.2'] * 100).toFixed(1)}%
+            % in ${groupNames(selectedCluster).a}: ${(d['pct.1'] * 100).toFixed(1)}%<br/>
+            % in ${groupNames(selectedCluster).b}: ${(d['pct.2'] * 100).toFixed(1)}%
           `);
       })
       .on("mousemove", (event) => {
@@ -498,8 +523,9 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
 
     // Labels for top significant genes
     significantGenes.forEach(d => {
-      plot.append("text")
-        .attr("x", xScale(Math.max(-xMax, Math.min(xMax, d.x))) + 8)
+      content.append("text")
+        .attr("class", "gene-label")
+        .attr("x", xScale(d.x) + 8)
         .attr("y", yScale(d.y) + 4)
         .attr("font-size", "10px")
         .attr("fill", "#333")
@@ -537,7 +563,26 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
         .text(item.label);
     });
 
+    // The default view is the readable range, so the cloud is not squashed by
+    // the far outliers. Zooming out brings them back at their real positions.
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.05, 20])
+      .on("zoom", (event) => {
+        const zx = event.transform.rescaleX(xScale);
+        xAxisG.call(d3.axisBottom(zx));
+        content.selectAll<SVGCircleElement, typeof transformedData[number]>("circle")
+          .attr("cx", d => zx(d.x));
+        content.selectAll<SVGTextElement, unknown>("text.gene-label")
+          .attr("x", (_, i) => zx(significantGenes[i].x) + 8);
+        content.select(".lfc-line-neg").attr("x1", zx(-lfcCut)).attr("x2", zx(-lfcCut));
+        content.select(".lfc-line-pos").attr("x1", zx(lfcCut)).attr("x2", zx(lfcCut));
+      });
+    svg.call(zoom).on("dblclick.zoom", null);
+    // Double-click is the way back, rather than a second zoom-in.
+    svg.on("dblclick", () => svg.transition().duration(250).call(zoom.transform, d3.zoomIdentity));
+
     return () => {
+      svg.on(".zoom", null).on("dblclick", null);
       tooltip.remove();
     };
   }, [chartData, selectedCluster, fdrCut, lfcCut]);
@@ -573,7 +618,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
     const headers = ['gene', 'avg_log2FC', 'p_val', 'p_val_adj', 'pct.1', 'pct.2'];
     const csvContent = [
       headers.join(','),
-      ...chartData.map(row =>
+      ...tableRows.map(row =>
         headers.map(h => row[h as keyof GeneData]).join(',')
       )
     ].join('\n');
@@ -631,14 +676,14 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
         <Typography variant="h5" fontWeight="bold">
           Differential Expression Analysis
         </Typography>
-        <Tooltip title="Compare gene expression between a cluster and all other cells">
+        <Tooltip title="Compare gene expression between the two groups a comparison names">
           <InfoOutlinedIcon color="action" />
         </Tooltip>
       </Box>
 
       <Typography variant="body2" color="text.secondary" mb={3}>
         Differential expression analysis identifies genes that are significantly up- or down-regulated
-        in a specific cluster compared to all other cells. Statistical significance is determined using
+        in one group compared to the other. Statistical significance is determined using
         the Wilcoxon rank-sum test with Benjamini-Hochberg FDR correction.
       </Typography>
 
@@ -859,9 +904,17 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
               Volcano Plot
             </Typography>
             <Typography variant="caption" color="text.secondary" display="block" mb={2}>
-              Points above the horizontal line (p &lt; 0.05) and beyond vertical lines (|log2FC| &gt; 1)
-              are considered significantly differentially expressed. Red = upregulated, Blue = downregulated.
+              Points beyond the vertical lines (|log2FC| &gt; {lfcCut}) and above the dashed line
+              pass FDR &lt; {fdrCut}. Red = higher in {groupNames(selectedCluster).a}, blue = higher
+              in {groupNames(selectedCluster).b}. Drag to pan, scroll to zoom.
             </Typography>
+            {offScaleCount > 0 && (
+              <Typography variant="caption" color="text.secondary" display="block" mb={1}>
+                {offScaleCount.toLocaleString()} gene
+                {offScaleCount === 1 ? " is" : "s are"} outside this view — zoom out to see
+                {offScaleCount === 1 ? " it" : " them"}.
+              </Typography>
+            )}
             <Box sx={{ display: "flex", justifyContent: "center" }}>
               <svg style={{ width: "100%", maxWidth: "800px", height: "500px" }} ref={chartRef}></svg>
             </Box>
@@ -874,7 +927,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
                 ? ` — ${tableRows.length.toLocaleString()} passing the cuts`
                 : ` — all ${tableRows.length.toLocaleString()} genes tested`}
             </Typography>
-            <DataTable rows={tableRows} />
+            <DataTable rows={tableRows} entry={selectedCluster} />
           </Paper>
         </>
       )}
