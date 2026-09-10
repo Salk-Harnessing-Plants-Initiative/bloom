@@ -21,6 +21,7 @@ Runs in CI's `compose-health-check` job after migrations are applied.
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from pathlib import Path
@@ -599,3 +600,164 @@ def test_the_unique_constraint_covers_lookups_by_dataset(pg_conn):
         cur.execute("SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' "
                     "AND indexname = 'idx_scrna_genotypes_dataset'")
         assert cur.fetchone()[0] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Who can actually read and write, as opposed to which policies exist
+# --------------------------------------------------------------------------- #
+#
+# A policy row proves a rule was written, not that the role can reach the table.
+# The migration issues no GRANT of its own and relies on Supabase's default
+# privileges, so the grants are worth asserting rather than assuming.
+
+
+@pytest.mark.parametrize("role", ["anon", "authenticated", "bloom_user",
+                                  "bloom_agent", "bloom_admin"])
+def test_each_role_can_actually_read_the_table(pg_conn, role):
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT has_table_privilege(%s, 'public.scrna_genotypes', "
+                    "'SELECT')", (role,))
+        assert cur.fetchone()[0] is True, f"{role} cannot read scrna_genotypes"
+
+
+def test_the_cell_query_is_executable_by_everyone_who_needs_it(pg_conn):
+    """The migration DROPs and recreates this function, which discards its
+    grants. The explorer's only cell fetch goes through it as anon."""
+    with pg_conn.cursor() as cur:
+        for role in ("anon", "authenticated", "bloom_user", "bloom_agent",
+                     "bloom_admin"):
+            cur.execute(
+                "SELECT has_function_privilege(%s, "
+                "'public.scrna_cell_arrays(bigint)', 'EXECUTE')", (role,)
+            )
+            assert cur.fetchone()[0] is True, f"{role} lost EXECUTE on the RPC"
+
+
+def test_the_policy_set_is_exactly_what_the_migration_declares(pg_conn):
+    """Naming each expected policy does not notice an extra one. An anon policy
+    granting ALL would pass every other test in this file."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT policyname, cmd FROM pg_policies "
+            "WHERE schemaname = 'public' AND tablename = 'scrna_genotypes'"
+        )
+        assert dict(cur.fetchall()) == {
+            "Anon users can select scrna_genotypes": "SELECT",
+            "Authenticated users can select scrna_genotypes": "SELECT",
+            "admin_all_scrna_genotypes": "ALL",
+            "user_read_scrna_genotypes": "SELECT",
+            "agent_read_scrna_genotypes": "SELECT",
+            "writer_select_scrna_genotypes": "SELECT",
+            "writer_insert_scrna_genotypes": "INSERT",
+            "writer_update_scrna_genotypes": "UPDATE",
+        }
+
+
+@pytest.mark.parametrize("blank", ["\u00a0", "\t", "\u000b"],
+                         ids=["nbsp", "tab", "vtab"])
+@pytest.mark.parametrize("where", ["key", "value"])
+def test_facets_refuses_an_invisible_label_or_value(pg_conn, blank, where):
+    """The genotype name is covered for these characters; the facets check has
+    the same set and was covered only for ordinary spaces."""
+    facets = (json.dumps({blank: "true"}) if where == "key"
+              else json.dumps({"a": blank}))
+    with pg_conn.cursor() as cur:
+        ds = dataset(cur, species(cur))
+        cluster(cur, ds)
+        with pytest.raises(psycopg.errors.CheckViolation):
+            cell(cur, ds, 0, facets=facets)
+    pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# The rollback
+# --------------------------------------------------------------------------- #
+#
+# Nothing runs this file automatically, so the only time it runs is by hand
+# against a database someone has filled -- which is the worst moment to find a
+# syntax error in it.
+
+
+def _rollback_body() -> str:
+    """The rollback without its BEGIN/COMMIT, so it runs inside the fixture's
+    uncommitted transaction and leaves the schema untouched."""
+    matches = sorted((REPO_ROOT / "supabase" / "rollbacks")
+                     .glob("*_scrna_cells_genotype_and_labels_rollback.sql"))
+    assert matches, "rollback script not found"
+    return "\n".join(
+        line for line in matches[-1].read_text().splitlines()
+        if not re.match(r"^\s*(BEGIN|COMMIT)\s*;\s*$", line, re.IGNORECASE)
+    )
+
+
+def _clear(cur) -> None:
+    """The state the rollback's guard demands: nothing it would destroy."""
+    cur.execute("UPDATE public.scrna_cells SET facets = NULL, genotype_id = NULL")
+    cur.execute("UPDATE public.scrna_clusters SET source = NULL")
+    cur.execute("DELETE FROM public.scrna_genotypes")
+
+
+def test_the_rollback_undoes_all_three_columns(pg_conn):
+    """It added a table and three columns. The header says it drops what it
+    added, and one column was being left behind."""
+    with pg_conn.cursor() as cur:
+        _clear(cur)
+        cur.execute(_rollback_body())
+
+        cur.execute(
+            "SELECT count(*) FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND ("
+            "  (table_name = 'scrna_cells' AND column_name IN ('genotype_id','facets'))"
+            "  OR (table_name = 'scrna_clusters' AND column_name = 'source'))"
+        )
+        assert cur.fetchone()[0] == 0, "a column the migration added survives"
+
+        cur.execute("SELECT to_regclass('public.scrna_genotypes') IS NULL")
+        assert cur.fetchone()[0] is True
+    pg_conn.rollback()
+
+
+def test_the_rollback_puts_the_cell_query_back(pg_conn):
+    """Leaving the function missing would take the map down, not just the new
+    columns."""
+    with pg_conn.cursor() as cur:
+        _clear(cur)
+        cur.execute(_rollback_body())
+        cur.execute("SELECT count(*) FROM scrna_cell_arrays(%s)", (1,))
+        cur.execute(
+            "SELECT p.proargnames FROM pg_proc p "
+            "WHERE p.oid = 'public.scrna_cell_arrays(bigint)'::regprocedure"
+        )
+        assert cur.fetchone()[0] == ["ds_id", "x", "y", "cluster_ordinal"]
+    pg_conn.rollback()
+
+
+def test_the_rollback_keeps_the_cells(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM public.scrna_cells")
+        before = cur.fetchone()[0]
+        _clear(cur)
+        cur.execute(_rollback_body())
+        cur.execute("SELECT count(*) FROM public.scrna_cells")
+        assert cur.fetchone()[0] == before
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize("what", ["genotype", "facets", "source"])
+def test_the_rollback_refuses_rather_than_destroying(pg_conn, what):
+    """Each of the three things it would drop has to stop it, not just the two
+    the guard originally counted."""
+    with pg_conn.cursor() as cur:
+        _clear(cur)
+        ds = dataset(cur, species(cur))
+        cluster(cur, ds, "Cortex", 0,
+                source="nuclei" if what == "source" else None)
+        if what == "genotype":
+            genotype(cur, ds, "Col-0")
+        elif what == "facets":
+            cell(cur, ds, 0, facets='{"transgene_pos": "true"}')
+
+        with pytest.raises(psycopg.errors.RaiseException) as exc:
+            cur.execute(_rollback_body())
+        assert "Refusing to roll back" in str(exc.value)
+    pg_conn.rollback()
