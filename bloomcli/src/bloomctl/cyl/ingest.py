@@ -632,9 +632,10 @@ def ingest_one_envelope(
 
         from postgrest import APIError
 
+        argo_workflow_name = resolve_argo_workflow_name()
         try:
             result = call_insert_envelope(
-                client, data, argo_workflow_name=resolve_argo_workflow_name()
+                client, data, argo_workflow_name=argo_workflow_name
             )
         except APIError as exc:
             return ScanResult(
@@ -645,6 +646,26 @@ def ingest_one_envelope(
 
         if not isinstance(result, dict):
             return ScanResult(scan_key, "failed", f"unexpected RPC response shape: {result!r}")
+
+        # Found during /review-pr round 4: a delivery that genuinely writes trait/blob
+        # data (was_noop=false) can still have its per-scan status UPDATE silently
+        # skipped by the RPC's own late-delivery-resurrection guard (the scan was
+        # already 'failed' — reachable via an ordinary Argo retry racing this batch's
+        # own end-of-batch reconciliation, not an exotic case). Previously this reported
+        # "ok" with zero signal that done_count/failed_count would now permanently
+        # disagree with the real data just written. status_update_matched is None when
+        # argo_workflow_name wasn't supplied (not applicable — the existing manual/
+        # ad-hoc shape, unaffected).
+        if argo_workflow_name is not None and result.get("status_update_matched") is False:
+            return ScanResult(
+                scan_key,
+                "failed",
+                f"write-back succeeded (source_id={result.get('source_id')}) but this "
+                "scan's cyl_pipeline_run_scans status was not updated — it was likely "
+                "already closed out as 'failed' by an earlier reconciliation attempt. "
+                "The written trait/blob data is correct, but done_count/failed_count "
+                "will not reflect it; verify manually.",
+            )
 
         if result.get("was_noop"):
             return ScanResult(scan_key, "skipped")
@@ -755,9 +776,10 @@ def ingest_result(
 
     from postgrest import APIError
 
+    argo_workflow_name = resolve_argo_workflow_name()
     try:
         result = call_insert_envelope(
-            client, data, argo_workflow_name=resolve_argo_workflow_name()
+            client, data, argo_workflow_name=argo_workflow_name
         )
     except APIError as exc:
         raise click.ClickException(
@@ -773,6 +795,20 @@ def ingest_result(
         click.echo(json.dumps(result))
     else:
         click.echo(summarize_result(result))
+
+    # See ingest_one_envelope's identical check for why this matters (review
+    # round 4): a genuinely successful write whose status linkage was silently
+    # skipped by the resurrection guard. Checked after printing the result (the
+    # write itself did succeed) so the operator sees both the real outcome and
+    # the warning, then the command still exits non-zero.
+    if argo_workflow_name is not None and result.get("status_update_matched") is False:
+        raise click.ClickException(
+            f"write-back succeeded (source_id={result.get('source_id')}) but this "
+            "scan's cyl_pipeline_run_scans status was not updated — it was likely "
+            "already closed out as 'failed' by an earlier reconciliation attempt. "
+            "The written trait/blob data is correct, but done_count/failed_count "
+            "will not reflect it; verify manually."
+        )
 
 
 # --- batch: command -----------------------------------------------------------

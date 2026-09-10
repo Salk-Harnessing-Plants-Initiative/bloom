@@ -27,7 +27,12 @@
 --   fail_cyl_pipeline_run_scans_without_result RPC marks every scan for a given
 --   workflow name still 'queued' as 'failed' — covers a scan whose prediction
 --   failed before write-back was ever attempted, or whose envelope was
---   otherwise never produced.
+--   otherwise never produced. (3) insert_cyl_result_envelope's return object
+--   gains status_update_matched: true/false when p_argo_workflow_name was
+--   supplied (whether the per-scan status UPDATE actually affected a row),
+--   NULL when it was omitted (not applicable) — added in a later round of
+--   review so a caller can detect the resurrection guard below silently
+--   no-opping on a delivery whose trait/blob write otherwise succeeded.
 --
 -- Both writes guard against resurrecting an already-'failed' scan
 -- (AND status != 'failed' on the UPDATE in step 7 below, mirroring
@@ -88,6 +93,7 @@ DECLARE
     v_trait_count  int := 0;
     v_blob_count   int := 0;
     v_was_noop     boolean;
+    v_status_rows  int;
 BEGIN
     -- 1. Structural validation -------------------------------------------------
     IF envelope IS NULL OR jsonb_typeof(envelope) <> 'object' THEN
@@ -177,10 +183,13 @@ BEGIN
             WHERE argo_workflow_name = p_argo_workflow_name
               AND source_id = v_source_id
               AND status != 'failed';
+            GET DIAGNOSTICS v_status_rows = ROW_COUNT;
         END IF;
         RETURN jsonb_build_object(
             'source_id', v_source_id, 'scan_id', NULL,
-            'trait_count', 0, 'blob_count', 0, 'was_noop', true
+            'trait_count', 0, 'blob_count', 0, 'was_noop', true,
+            'status_update_matched',
+            CASE WHEN p_argo_workflow_name IS NULL THEN NULL ELSE v_status_rows > 0 END
         );
     END IF;
 
@@ -269,6 +278,14 @@ BEGIN
     -- complete_cyl_pipeline_batch's own identical guard for the identical
     -- reason. Rolls back with everything else on any earlier validation
     -- failure in this same transaction.
+    --
+    -- Found during /review-pr round 4: without status_update_matched below, a
+    -- delivery that genuinely writes trait/blob data (was_noop=false) but whose
+    -- status UPDATE is silently skipped by the guard above (the scan was already
+    -- 'failed' — a real, reachable outcome of an ordinary Argo retry racing this
+    -- RPC's own reconciliation call, not an exotic one) had zero caller-visible
+    -- signal: the write "succeeded" and nothing said the run-level counts would
+    -- now permanently disagree with the real data just written.
     IF p_argo_workflow_name IS NOT NULL THEN
         UPDATE public.cyl_pipeline_run_scans
         SET status = 'written',
@@ -277,11 +294,14 @@ BEGIN
         WHERE argo_workflow_name = p_argo_workflow_name
           AND scan_id = v_scan_id
           AND status != 'failed';
+        GET DIAGNOSTICS v_status_rows = ROW_COUNT;
     END IF;
 
     RETURN jsonb_build_object(
         'source_id', v_source_id, 'scan_id', v_scan_id,
-        'trait_count', v_trait_count, 'blob_count', v_blob_count, 'was_noop', false
+        'trait_count', v_trait_count, 'blob_count', v_blob_count, 'was_noop', false,
+        'status_update_matched',
+        CASE WHEN p_argo_workflow_name IS NULL THEN NULL ELSE v_status_rows > 0 END
     );
 END;
 $fn$;

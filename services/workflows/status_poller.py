@@ -142,7 +142,7 @@ def _fetch_candidate_runs(client) -> list[dict]:
     anything already 'complete'/'failed' is fully terminal."""
     return (
         client.table("cyl_pipeline_runs")
-        .select("id, status")
+        .select("id")
         .in_("status", ["submitted", "running", "partial"])
         .execute()
         .data

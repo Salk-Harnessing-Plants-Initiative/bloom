@@ -209,7 +209,10 @@ def test_return_value_reports_noop_flag(pg_conn):
         env = _envelope(imgs, idempotency_key="ret", traits=[_trait("x", 1.0)])
         first = _call(cur, env)
         second = _call(cur, env)
-        assert set(first) == {"source_id", "scan_id", "trait_count", "blob_count", "was_noop"}
+        assert set(first) == {
+            "source_id", "scan_id", "trait_count", "blob_count", "was_noop",
+            "status_update_matched",
+        }
         assert first["was_noop"] is False and second["was_noop"] is True
         assert second["source_id"] == first["source_id"]
     pg_conn.rollback()
@@ -726,6 +729,89 @@ def test_late_delivery_after_already_failed_does_not_resurrect(pg_conn):
         status, source_id = _run_scan_status(cur, "wf-6", scan_id)
         assert status == "failed"  # not resurrected to 'written'
         assert source_id is None  # never touched by the guarded UPDATE
+        # Round-4 /review-pr finding: this exact scenario — real trait/blob data
+        # written, but the guard silently skips the status UPDATE — previously had
+        # zero operator-visible signal (bloomctl reported "ok"). status_update_matched
+        # now reports False here, so a caller can detect and surface the mismatch.
+        assert res["status_update_matched"] is False
+    pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# fix-cyl-pipeline-run-scan-status round 4 — status_update_matched (surfacing
+# the late-delivery-resurrection guard's silent no-op, per /review-pr round 4)
+# --------------------------------------------------------------------------- #
+
+
+def test_status_update_matched_true_on_success(pg_conn):
+    with pg_conn.cursor() as cur:
+        scan_id, imgs = _seed_scan(cur)
+        _seed_run_scan_for_writeback(cur, scan_id, "wf-sum-1")
+        res = _call(
+            cur, _envelope(imgs, idempotency_key="sum1"), argo_workflow_name="wf-sum-1"
+        )
+        assert res["status_update_matched"] is True
+    pg_conn.rollback()
+
+
+def test_status_update_matched_none_when_argo_workflow_name_omitted(pg_conn):
+    with pg_conn.cursor() as cur:
+        scan_id, imgs = _seed_scan(cur)
+        _seed_run_scan_for_writeback(cur, scan_id, "wf-sum-2")
+        res = _call(cur, _envelope(imgs, idempotency_key="sum2"))  # no argo_workflow_name
+        assert res["status_update_matched"] is None, (
+            "not applicable for a manual/ad-hoc invocation with no pipeline-run "
+            "context — must not read as a false mismatch"
+        )
+    pg_conn.rollback()
+
+
+def test_status_update_matched_false_when_no_matching_row_at_all(pg_conn):
+    """Distinct from the late-delivery-after-failed case: here there is no
+    cyl_pipeline_run_scans row for this (argo_workflow_name, scan_id) pair at
+    all (e.g. a workflow name that doesn't match any dispatched scan) — the
+    UPDATE still matches zero rows, and status_update_matched must say so."""
+    with pg_conn.cursor() as cur:
+        _, imgs = _seed_scan(cur)
+        res = _call(
+            cur, _envelope(imgs, idempotency_key="sum3"), argo_workflow_name="wf-does-not-exist"
+        )
+        assert res["status_update_matched"] is False
+    pg_conn.rollback()
+
+
+def test_status_update_matched_on_noop_redelivery_success(pg_conn):
+    with pg_conn.cursor() as cur:
+        scan_id, imgs = _seed_scan(cur)
+        _seed_run_scan_for_writeback(cur, scan_id, "wf-sum-4")
+        env = _envelope(imgs, idempotency_key="sum4")
+        first = _call(cur, env, argo_workflow_name="wf-sum-4")
+        second = _call(cur, env, argo_workflow_name="wf-sum-4")
+        assert first["was_noop"] is False and first["status_update_matched"] is True
+        assert second["was_noop"] is True and second["status_update_matched"] is True, (
+            "the no-op path's own UPDATE (joined on source_id) also matches on a "
+            "normal idempotent re-delivery"
+        )
+    pg_conn.rollback()
+
+
+def test_status_update_matched_false_on_noop_redelivery_after_already_failed(pg_conn):
+    """The no-op path's UPDATE has the identical 'status != failed' guard as step
+    9's — a re-delivery of an already-ingested envelope, arriving after
+    reconciliation already closed the scan out, must report the same mismatch."""
+    with pg_conn.cursor() as cur:
+        scan_id, imgs = _seed_scan(cur)
+        _seed_run_scan_for_writeback(cur, scan_id, "wf-sum-5")
+        env = _envelope(imgs, idempotency_key="sum5")
+        first = _call(cur, env, argo_workflow_name="wf-sum-5")
+        assert first["status_update_matched"] is True
+        cur.execute(
+            "UPDATE cyl_pipeline_run_scans SET status = 'failed' "
+            "WHERE argo_workflow_name = 'wf-sum-5'"
+        )
+        second = _call(cur, env, argo_workflow_name="wf-sum-5")
+        assert second["was_noop"] is True
+        assert second["status_update_matched"] is False
     pg_conn.rollback()
 
 

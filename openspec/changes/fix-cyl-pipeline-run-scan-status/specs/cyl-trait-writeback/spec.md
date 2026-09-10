@@ -32,8 +32,15 @@ doesn't match any row, or the matching row was already `'failed'`), step (7) aff
 is not an error. Any validation or constraint failure SHALL abort the entire call, including step
 (7), so that no partial source, trait, registry, blob, or run-scan-status rows persist
 (all-or-nothing). The RPC SHALL return a `jsonb` summary reporting the source id, the resolved scan
-id (null on a no-op re-delivery), the trait and blob counts (equal to rows written), and whether the
-call was a no-op re-delivery.
+id (null on a no-op re-delivery), the trait and blob counts (equal to rows written), whether the
+call was a no-op re-delivery, and — as `status_update_matched` — whether step (7)'s `UPDATE`
+actually affected a row: `true`/`false` when `p_argo_workflow_name` was supplied, `null` when it was
+omitted (not applicable, since step (7) never runs). This lets a caller detect the one case where
+write-back itself fully succeeds (trait/source/blob rows written, `was_noop: false`) yet the guard
+above silently left the scan's status at whatever it already was — a genuinely late/out-of-order
+delivery arriving after the scan was already closed out `'failed'` — rather than reporting a plain
+success with no signal that the run-level counts will now permanently disagree with the data just
+written.
 
 #### Scenario: A valid envelope writes source, trait, and blob rows in one transaction
 
@@ -82,7 +89,8 @@ call was a no-op re-delivery.
   value already stored on a `'queued'` `cyl_pipeline_run_scans` row for the envelope's resolved scan
 - **THEN** the envelope's trait/source/blob rows are written as usual, **and** that
   `cyl_pipeline_run_scans` row's `status` becomes `'written'` and its `source_id` is set to the new
-  source's id, in the same transaction
+  source's id, in the same transaction, **and** the returned summary's `status_update_matched` is
+  `true`
 
 #### Scenario: A no-op re-delivery with argo_workflow_name still marks the scan written
 
@@ -97,15 +105,16 @@ call was a no-op re-delivery.
 
 - **WHEN** the RPC is called without `p_argo_workflow_name` (the existing manual/ad-hoc `cyl
   ingest-result` invocation shape, unchanged by this parameter's addition)
-- **THEN** the envelope is ingested exactly as before, and no `cyl_pipeline_run_scans` row is read or
-  written
+- **THEN** the envelope is ingested exactly as before, no `cyl_pipeline_run_scans` row is read or
+  written, and the returned summary's `status_update_matched` is `null`
 
 #### Scenario: A non-matching argo_workflow_name affects zero rows, not an error
 
 - **WHEN** the RPC is called with a `p_argo_workflow_name` that matches no `cyl_pipeline_run_scans`
   row for the resolved scan
-- **THEN** the envelope's trait/source/blob rows are still written as usual, and the call succeeds
-  without error, having updated zero `cyl_pipeline_run_scans` rows
+- **THEN** the envelope's trait/source/blob rows are still written as usual, the call succeeds
+  without error, having updated zero `cyl_pipeline_run_scans` rows, and the returned summary's
+  `status_update_matched` is `false`
 
 #### Scenario: A rolled-back call does not leave a partial status update
 
@@ -122,7 +131,18 @@ call was a no-op re-delivery.
   this delivery is a genuinely late/out-of-order retry)
 - **THEN** the envelope's trait/source/blob rows are still written as usual (write-back itself is
   unaffected), but the `cyl_pipeline_run_scans` row's `status` remains `'failed'` — it is not
-  overwritten to `'written'`
+  overwritten to `'written'` — and the returned summary's `status_update_matched` is `false`, so a
+  caller can detect that this delivery's real, successful write is not reflected in the run-level
+  counts, despite `was_noop` being `false`
+
+#### Scenario: The same no-op guard applies to a re-delivery arriving after the scan was failed
+
+- **WHEN** the RPC is called a second time with the same envelope (a no-op re-delivery) and the same
+  `p_argo_workflow_name`, but the matching `cyl_pipeline_run_scans` row was marked `'failed'` between
+  the first and second calls
+- **THEN** the second call still reports `was_noop: true` (write-back's own idempotency is
+  unaffected), but its `status_update_matched` is `false` — the no-op path's own status `UPDATE`
+  carries the identical `AND status != 'failed'` guard as step (7)'s
 
 ## ADDED Requirements
 

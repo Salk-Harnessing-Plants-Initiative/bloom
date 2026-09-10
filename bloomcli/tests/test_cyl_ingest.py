@@ -279,6 +279,19 @@ def test_cli_happy_path(monkeypatch):
     assert "55" in res.output
 
 
+def test_cli_reports_status_update_mismatch_as_a_failure(monkeypatch):
+    """Same round-4 finding as ingest_one_envelope's — the single-envelope command
+    must also surface a genuinely-successful write whose status linkage was
+    silently skipped, rather than a clean exit 0."""
+    _patch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-cli-mismatch")
+    mismatched = {**RESULT_OK, "status_update_matched": False}
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: mismatched)
+    res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
+    assert res.exit_code != 0
+    assert "not updated" in res.output
+
+
 def test_cli_sends_original_envelope_unchanged(monkeypatch):
     captured = {}
 
@@ -1244,6 +1257,47 @@ def test_ingest_one_envelope_noop_is_skipped(monkeypatch, tmp_path):
     monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_NOOP)
     result = ing.ingest_one_envelope(object(), path)
     assert result.status == "skipped"
+
+
+def test_ingest_one_envelope_reports_status_update_mismatch_as_failed(monkeypatch, tmp_path):
+    """Review round 4 finding: a delivery that genuinely writes trait/blob data
+    (was_noop=False) but whose status UPDATE was silently skipped by the RPC's
+    late-delivery-resurrection guard previously reported "ok" with zero signal
+    that done_count/failed_count would now permanently disagree with the data
+    just written. status_update_matched=False must surface this as a failure."""
+    _skip_contract_validation(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-mismatch")
+    path = _write_envelope(tmp_path, "scan_mismatch")
+    mismatched = {**RESULT_OK, "status_update_matched": False}
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: mismatched)
+    result = ing.ingest_one_envelope(object(), path)
+    assert result.status == "failed"
+    assert str(RESULT_OK["source_id"]) in result.error
+    assert "not updated" in result.error
+
+
+def test_ingest_one_envelope_status_update_matched_true_is_unaffected(monkeypatch, tmp_path):
+    _skip_contract_validation(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-ok")
+    path = _write_envelope(tmp_path, "scan_ok2")
+    matched = {**RESULT_OK, "status_update_matched": True}
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: matched)
+    result = ing.ingest_one_envelope(object(), path)
+    assert result.status == "ok"
+
+
+def test_ingest_one_envelope_status_update_matched_false_ignored_without_workflow_name(
+    monkeypatch, tmp_path
+):
+    """A False (or missing) status_update_matched only matters when a workflow name
+    was actually supplied — without one, no status UPDATE was ever attempted, so
+    there's nothing to warn about (matches the RPC's own None-when-omitted semantics)."""
+    _skip_contract_validation(monkeypatch)
+    monkeypatch.delenv("ARGO_WORKFLOW_NAME", raising=False)
+    path = _write_envelope(tmp_path, "scan_manual")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+    result = ing.ingest_one_envelope(object(), path)
+    assert result.status == "ok"
 
 
 def test_ingest_one_envelope_rpc_error_is_mapped(monkeypatch, tmp_path):

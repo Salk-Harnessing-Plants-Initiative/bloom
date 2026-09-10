@@ -203,8 +203,12 @@ only mean write-back never ran for it at all (its workflow failed before
 reaching write-back, or the write-back container never started), and this is
 the last chance to close it out. It does so via
 `fail_cyl_pipeline_run_scans_without_result` (one call per distinct
-`argo_workflow_name` with a leftover `'queued'` row), folding the reconciled
-count into `failed_count` before the status write. If the reconciliation
+`argo_workflow_name` with a leftover `'queued'` row), then re-deriving
+`done_count`/`failed_count` from a fresh read of that run's scan rows before
+the status write — not by incrementing the counts `_fetch_effective_phases`
+already returned, since that snapshot was taken before this cycle's K8s
+lookups and the reconciliation call itself even ran, and can go stale if a
+scan's write-back genuinely resolved in that window. If the reconciliation
 call itself fails, the status write is skipped entirely for that run this
 cycle — it remains a candidate and is retried next cycle, the same isolation
 already given to every other per-run failure — rather than writing a

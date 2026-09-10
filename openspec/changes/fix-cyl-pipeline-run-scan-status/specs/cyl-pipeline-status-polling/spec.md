@@ -25,11 +25,14 @@ still resolve to a failure that changes both). Before writing a run's status whe
 status is anything other than `'running'` (and is not withheld by the rule above), the poller SHALL
 close out, as `'failed'`, any of that run's `cyl_pipeline_run_scans` rows still `status = 'queued'`
 with a non-null `argo_workflow_name` — one `fail_cyl_pipeline_run_scans_without_result` call per
-distinct such workflow name, folding the closed-out rows into this cycle's `failed_count` — since a
-run whose rollup has already concluded will never be polled again once its terminal status is
-written, and this is the only remaining chance to resolve a scan whose write-back step never ran at
-all (its own workflow failed before reaching write-back, or the write-back container never started).
-If that reconciliation call itself fails, the run's status update SHALL be skipped entirely this
+distinct such workflow name — and then re-derive `done_count`/`failed_count` from a fresh read of
+that run's scan rows rather than the earlier snapshot (which was taken before this cycle's K8s
+lookups and the reconciliation call itself, and can go stale if a scan's write-back genuinely
+resolved in that window), since a run whose rollup has already concluded will never be polled again
+once its terminal status is written, and this is the only remaining chance to resolve a scan whose
+write-back step never ran at all (its own workflow failed before reaching write-back, or the
+write-back container never started). If that reconciliation call itself fails, the run's status
+update SHALL be skipped entirely this
 cycle (the run's `cyl_pipeline_runs.status` left untouched, so it remains a candidate and is retried
 next cycle), matching the isolation the rule below already gives every other per-run failure. It SHALL isolate a failure fetching or updating any one
 run (a K8s error, a DB-read error, or a failed write) to that run alone, never aborting the rest of the

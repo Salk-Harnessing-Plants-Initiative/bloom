@@ -152,8 +152,67 @@ if either `bloomctl`'s own failure-isolation has a hole, or if `bloomctl` never 
   on both sides (every test on both sides monkeypatches them away wholesale) — is folded into
   design.md's existing "Deferred from this round" note.**
 
-## 10. Post-merge follow-through
+## 10. Rebase onto staging + review round 3/4 fixes
 
-- [ ] 10.1 Update `docs/bloom-integration/roadmap.md` (in `sleap-roots-pipeline`) marking bloom #716 and #696 resolved, and note whether bloom #15's UI progress panel is now actually unblocked.
+This branch sat open ~8 days; staging moved 234 commits ahead. Rebasing surfaced and required
+fixing a real, separately-shipped-PR conflict (not just staleness), followed by two more
+`/review-pr` rounds (3 and 4) against the rebased branch. See `design.md`'s "Decision 6 addendum
+2/3/4" for full narrative detail; this section tracks the mechanical record.
+
+- [x] 10.1 Merge `origin/staging` into this branch (`git merge origin/staging --no-edit`) — completed
+  with no textual conflicts.
+- [x] 10.2 Fix the real semantic conflict the merge surfaced: `repin-cyl-contract-a7` (bloom #685)
+  had already merged to staging, re-pinning `insert_cyl_result_envelope`'s `contract_version` check
+  from `'0.1.0a3'` to `'0.1.0a7'` — this change's own migration recreated that function from a
+  pre-re-pin body, which would have silently regressed the shipped pin. Updated the pin literal to
+  `'0.1.0a7'` in both `20260910000000_add_cyl_writeback_run_scan_status.sql` and its rollback.
+- [x] 10.3 Rename both migration/rollback pairs from `20260901000000`/`20260901010000` to
+  `20260910000000`/`20260910010000` (and every reference to those filenames — the test file's
+  `_TS_SCAN_STATUS` constant, this file's own earlier task entries) to satisfy
+  `scripts/lint_migrations.sh`, which requires new migrations to postdate the latest one already on
+  `staging` (`20260909090000` by the time of this rebase).
+- [x] 10.4 A third `/review-pr` round, run specifically against 10.2/10.3's fix, found that three
+  `test_a7_*` tests (merged in with the 234 commits) were silently calling the wrong RPC overload —
+  confirmed as a real, live CI failure (`test_a7_cutover_guard_raises_on_a3_row`,
+  `test_a7_rollback_restores_strict_a3`). Fixed by giving all three the same
+  `ROLLBACK_SCAN_STATUS` + `_call_1arg` treatment `test_a3_*`'s sibling tests already use.
+- [x] 10.5 A fourth `/review-pr` round, run after CI went fully green, found two documentation
+  staleness issues (fixed: `services/workflows/README.md` and the `cyl-pipeline-status-polling`
+  spec requirement both still described the rejected "fold into `failed_count`" approach from
+  Decision 6 addendum 1, not the shipped `_count_done_and_failed` fresh recount) and upgraded the
+  already-documented late-delivery-resurrection risk from "deferred, low-probability" to "fix now"
+  — a scan whose write-back genuinely succeeds after the resurrection guard already closed it out
+  had zero caller-visible signal. Fixed via TDD:
+  - Added `status_update_matched` (`true`/`false` when `p_argo_workflow_name` was supplied, `null`
+    when omitted) to `insert_cyl_result_envelope`'s return object, on both the no-op and
+    normal-delivery paths (`GET DIAGNOSTICS ... = ROW_COUNT` after each guarded `UPDATE`) —
+    `supabase/migrations/20260910000000_add_cyl_writeback_run_scan_status.sql`. 5 new integration
+    tests in `tests/integration/test_cyl_writeback_rpc.py`, plus `test_return_value_reports_noop_flag`
+    updated for the new return-shape key.
+  - `bloomcli/src/bloomctl/cyl/ingest.py`: both `ingest_one_envelope` and the single-envelope
+    `ingest_result` command now treat `status_update_matched is False` (with a workflow name
+    supplied) as a reportable failure instead of a silent `"ok"`. 4 new tests in
+    `bloomcli/tests/test_cyl_ingest.py`.
+  - Updated both spec deltas (`cyl-trait-writeback`, `cyl-pipeline-status-polling`) and
+    `services/workflows/README.md` to match.
+  - Also applied the cheap `SUGGESTION`-level fix from the same round: trimmed
+    `_fetch_candidate_runs`'s dead `status` column from its `.select(...)` (unused since Task 4
+    removed the same-value skip that once needed it).
+  - Two further round-4 findings were re-examined and documented (not fixed, no concrete trigger
+    yet) in `design.md`'s "Decision 6 addendum 4": a `'partial'` run's status regressing purely from
+    Argo TTL/GC, and the `argo_workflow_name` collision risk's probability characterization.
+  - **Done: `bloomcli` — 873 passed (up from 869), same 13 pre-existing/unrelated failures.
+    `services/workflows` — 641 passed, 1 skipped (unchanged). Integration —
+    `tests/integration/test_cyl_writeback_rpc.py` 99 passed excluding 2 tests broken by pre-existing
+    environmental data pollution on the shared local dev DB (41 real `0.1.0a3`-stamped
+    `cyl_trait_sources` rows from other sessions/rounds, unrelated to this change — confirmed via
+    `docker exec`, not fixed here, out of this change's scope); `openspec validate --strict` passes;
+    `ruff@0.9.9 check` clean on every touched file. CI (GitHub Actions, a fresh isolated environment
+    unaffected by the local dev DB's environmental issues) is the authoritative check for the full
+    suite — see the PR's own CI run.**
+
+## 11. Post-merge follow-through
+
+- [ ] 11.1 Update `docs/bloom-integration/roadmap.md` (in `sleap-roots-pipeline`) marking bloom #716 and #696 resolved, and note whether bloom #15's UI progress panel is now actually unblocked.
 - [ ] 10.2 Close bloom #716 and #696 referencing the merged PR, once merged and verified per Task 8.
 - [ ] 10.3 Fill in the `Purpose` sections of `openspec/specs/cyl-pipeline-runs/spec.md` and `openspec/specs/cyl-pipeline-status-polling/spec.md` — both currently read the literal placeholder text `TBD - created by archiving change ... Update Purpose after archive.` (their own inline comment, not an `openspec/AGENTS.md` rule) — as part of this change's own archival.
