@@ -7,10 +7,10 @@ row per gene so the search can find it.
 
 Every value is served to the browser as a bare array with no cell identifiers in
 it, paired against the cells purely by position. So this refuses to run unless
-the dataset's recorded checksum still matches the file being read: same file,
-same row order, same cells. That is an exact guarantee rather than a
-plausibility check, and it is the reason the cells and the counts are two steps
-rather than one.
+the dataset already holds these cells in this order -- compared barcode by
+barcode against what the cell loader stored. That is the property the pairing
+depends on, and checking it is the reason cells and counts are two steps rather
+than one.
 
 Run deliberately against a chosen database and storage:
 
@@ -79,19 +79,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--dry-run", action="store_true",
                    help="read and check everything, write nothing")
     return p.parse_args(argv)
-
-
-def checksum(path: Path) -> str:
-    """Must agree with what the cell loader recorded -- see the module docstring.
-    Pinned against it by a test rather than shared, so neither script has to
-    import the other."""
-    digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def parse_expectations(pairs: list[str]) -> dict[str, int]:
     """`GENE=COUNT` arguments, refused rather than ignored when malformed."""
     out: dict[str, int] = {}
@@ -161,6 +148,7 @@ def read_genes(h5ad_path: Path, expectations: dict[str, int]) -> dict:
 
     return {
         "n_cells": int(adata.n_obs),
+        "barcodes": [str(v).strip() for v in adata.obs_names],
         "names": names,
         "by_gene": by_gene,
         "expectations": expectations,
@@ -188,51 +176,63 @@ def gene_vector(by_gene, column: int):
     return np.ascontiguousarray(dense, dtype="<f4")
 
 
-def open_dataset(conn, name: str, species_id: int, source_checksum: str,
-                 n_cells: int) -> int:
-    """Find the loaded dataset, and refuse unless its cells came from this file.
+def open_dataset(conn, name: str, species_id: int, barcodes: list[str]) -> int:
+    """Find the loaded dataset, and refuse unless it holds these cells in this
+    order.
 
     Everything written here is indexed by position against those cells, so a
-    dataset loaded from a different file -- or from a different export of the
-    same one -- would pair every gene with the wrong cells and look entirely
-    normal doing it.
+    dataset whose cells are a different set -- or the same set in a different
+    order -- would pair every gene with the wrong cell and look entirely normal
+    doing it.
+
+    The comparison is against the barcodes already stored, which is the property
+    that actually has to hold. Hashing the file instead would refuse a
+    re-export that carries the same cells in the same order, and would have
+    nothing to say about a dataset loaded before the hash was recorded.
     """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT id, source_checksum, n_cells FROM public.scrna_datasets "
+            "SELECT id, n_cells FROM public.scrna_datasets "
             "WHERE name = %s AND species_id = %s AND deleted_at IS NULL",
             (name, species_id),
         )
         found = cur.fetchall()
 
-    if not found:
-        raise IngestError(
-            f"no dataset named {name!r} for species {species_id}. Load its "
-            f"cells first with scripts/ingest_scrnaseq.py"
-        )
-    if len(found) > 1:
-        raise IngestError(
-            f"{len(found)} datasets are named {name!r} for species "
-            f"{species_id}; cannot tell which to write to"
-        )
+        if not found:
+            raise IngestError(
+                f"no dataset named {name!r} for species {species_id}. Load its "
+                f"cells first with scripts/ingest_scrnaseq.py"
+            )
+        if len(found) > 1:
+            raise IngestError(
+                f"{len(found)} datasets are named {name!r} for species "
+                f"{species_id}; cannot tell which to write to"
+            )
 
-    dataset_id, recorded, recorded_cells = found[0]
-    if recorded is None:
-        raise IngestError(
-            f"dataset {dataset_id} has no recorded checksum, so there is no way "
-            f"to tell whether its cells came from this file"
+        dataset_id, recorded_cells = found[0]
+        cur.execute(
+            "SELECT barcode FROM public.scrna_cells WHERE dataset_id = %s "
+            "ORDER BY cell_number",
+            (dataset_id,),
         )
-    if recorded != source_checksum:
+        stored = [row[0] for row in cur.fetchall()]
+
+    if len(stored) != len(barcodes):
         raise IngestError(
-            f"dataset {dataset_id} was loaded from a different file: it records "
-            f"{recorded[:12]}… and this file is {source_checksum[:12]}…. The "
-            f"counts are paired to the cells by position, so reload the cells "
-            f"from this file first"
+            f"dataset {dataset_id} holds {len(stored)} cells and this file has "
+            f"{len(barcodes)}; the counts are paired to the cells by position"
         )
-    if recorded_cells != n_cells:
+    for position, (was, now) in enumerate(zip(stored, barcodes)):
+        if was != now:
+            raise IngestError(
+                f"dataset {dataset_id} does not hold these cells in this order: "
+                f"cell {position} is {was!r} in the database and {now!r} in this "
+                f"file. Reload the cells from this file first"
+            )
+    if recorded_cells is not None and recorded_cells != len(barcodes):
         raise IngestError(
-            f"dataset {dataset_id} holds {recorded_cells} cells and this file "
-            f"has {n_cells}"
+            f"dataset {dataset_id} records {recorded_cells} cells but holds "
+            f"{len(stored)}"
         )
     return dataset_id
 
@@ -418,8 +418,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with psycopg.connect(database_url) as conn:
             dataset_id = open_dataset(
-                conn, args.dataset_name, args.species_id,
-                checksum(args.h5ad), genes["n_cells"],
+                conn, args.dataset_name, args.species_id, genes["barcodes"],
             )
             gene_ids = register_genes(conn, dataset_id, genes["names"])
             conn.commit()
