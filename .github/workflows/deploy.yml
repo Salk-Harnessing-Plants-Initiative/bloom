@@ -786,8 +786,13 @@ jobs:
                     continue;
                   }
 
-                  const { data: comments } = await withTimeout(
-                    github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 }),
+                  // github.paginate walks every page rather than stopping at the
+                  // first -- listComments defaults to oldest-first, and the bot's
+                  // own closing comment is posted at merge time (i.e. among the
+                  // NEWEST), so a single per_page:100 fetch would systematically
+                  // miss it on any issue with a long enough comment history.
+                  const comments = await withTimeout(
+                    github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 }),
                     15000, `issues.listComments(#${issue_number})`,
                   );
                   const closingComment = [...comments].reverse().find(
@@ -1596,8 +1601,13 @@ jobs:
                     continue;
                   }
 
-                  const { data: comments } = await withTimeout(
-                    github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 }),
+                  // github.paginate walks every page rather than stopping at the
+                  // first -- listComments defaults to oldest-first, and the bot's
+                  // own closing comment is posted at merge time (i.e. among the
+                  // NEWEST), so a single per_page:100 fetch would systematically
+                  // miss it on any issue with a long enough comment history.
+                  const comments = await withTimeout(
+                    github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 }),
                     15000, `issues.listComments(#${issue_number})`,
                   );
                   const closingComment = [...comments].reverse().find(
