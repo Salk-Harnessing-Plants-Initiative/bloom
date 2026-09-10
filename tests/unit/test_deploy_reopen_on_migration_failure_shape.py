@@ -139,8 +139,8 @@ def test_permissions_block_is_least_privilege(job_name: str, step_id: str) -> No
         f"{job_name}: expected issues: write, got {perms.get('issues')!r}"
     )
     assert perms.get("pull-requests") == "read", (
-        f"{job_name}: expected pull-requests: read (needed for commits/{{sha}}/pulls "
-        f"and pulls.get), got {perms.get('pull-requests')!r}"
+        f"{job_name}: expected pull-requests: read (needed for the "
+        f"commits/{{sha}}/pulls lookup), got {perms.get('pull-requests')!r}"
     )
 
 
@@ -339,10 +339,23 @@ def test_state_is_reopened_before_the_comment_is_posted(job_name: str, step_id: 
     `issues.update` runs first makes a partial failure strictly milder."""
     script = _script_of(job_name)
     loop_body = _extract_braced_block(script, r"for\s*\(const \w+ of \w+\)\s*")
-    update_pos = loop_body.find("issues.update(")
-    comment_pos = loop_body.find("issues.createComment(")
-    assert update_pos != -1, f"{job_name}: issues.update(...) call not found in the per-issue loop"
-    assert comment_pos != -1, f"{job_name}: issues.createComment(...) call not found in the per-issue loop"
+    # Match the fully-qualified call, not a bare "issues.update(" -- the
+    # withTimeout() labels below also contain that shorter substring as
+    # descriptive text (e.g. `issues.update(#${issue_number})`), which would
+    # otherwise be counted as a second, decoy call site.
+    assert loop_body.count("github.rest.issues.update(") == 1, (
+        f"{job_name}: expected exactly one github.rest.issues.update(...) call in "
+        f"the per-issue loop, found {loop_body.count('github.rest.issues.update(')} "
+        "-- a decoy occurrence would defeat the ordering check below"
+    )
+    assert loop_body.count("github.rest.issues.createComment(") == 1, (
+        f"{job_name}: expected exactly one github.rest.issues.createComment(...) "
+        f"call in the per-issue loop, found "
+        f"{loop_body.count('github.rest.issues.createComment(')} -- a decoy "
+        "occurrence would defeat the ordering check below"
+    )
+    update_pos = loop_body.find("github.rest.issues.update(")
+    comment_pos = loop_body.find("github.rest.issues.createComment(")
     assert update_pos < comment_pos, (
         f"{job_name}: issues.update (reopen) must run BEFORE issues.createComment, "
         "so a failure partway through never leaves a 'reopening' comment on a "
@@ -359,16 +372,46 @@ def test_script_guards_against_misattributed_reopen(job_name: str, step_id: str)
     guard would reopen #900 and falsely claim PR B's failure affects #900's
     (already-successful) fix. Fixed by reading the auto-close workflow's own
     "Closed by #<N>" comment and only reopening if N matches the CURRENT
-    run's PR number."""
+    run's PR number.
+
+    Mutation-tested in review: a loose substring/regex check here (just
+    confirming "Closed by #" and "!== pr.number" appear SOMEWHERE) still
+    passed against a deliberately broken guard
+    (`if (false && closedByPrNumber !== pr.number)`, i.e. dead code that
+    would never actually block a misattributed reopen). Asserting the exact
+    live conditional string closes that gap."""
     script = _script_of(job_name)
     assert re.search(r"Closed by #", script), (
         f"{job_name}: expected the script to look for auto-close-issues-on-staging.yml's "
         "own 'Closed by #<N>' comment text to identify which PR actually closed the issue"
     )
-    assert re.search(r"!==\s*pr\.number", script), (
-        f"{job_name}: expected a check that the identified closing PR number equals "
-        "THIS run's own pr.number before reopening -- otherwise an unrelated PR "
-        "referencing the same issue number can wrongly reopen it"
+    assert "if (closedByPrNumber !== pr.number) {" in script, (
+        f"{job_name}: expected the exact, live guard condition "
+        "'if (closedByPrNumber !== pr.number) {' -- a looser substring/regex check "
+        "here would also pass against a disabled/dead-code version of this guard "
+        "(demonstrated in review: wrapping it in an always-false condition still "
+        "passed a substring-only assertion)"
+    )
+
+
+@pytest.mark.parametrize("job_name, step_id", JOBS)
+def test_script_paginates_comments_to_find_the_closing_comment(job_name: str, step_id: str) -> None:
+    """PR #807 review finding (independently found by 3 of 5 reviewers in one
+    round): the misattribution guard's comment lookup originally called
+    `listComments` with a single bounded `per_page: 100` and no further
+    paging. GitHub's default sort for that endpoint is oldest-first, and the
+    auto-close bot's "Closed by #<N>" comment is posted at merge time -- i.e.
+    among the NEWEST comments -- so any issue with more than 100 total
+    comments would systematically miss it on page 1, silently skipping a
+    perfectly legitimate same-PR reopen. Fixed by paging through the full
+    comment history instead of a single fetch."""
+    script = _script_of(job_name)
+    assert re.search(r"github\.paginate\(", script), (
+        f"{job_name}: expected the comment lookup to use github.paginate(...) so "
+        "it walks the issue's full comment history, not just a single page -- a "
+        "bounded per_page:100 fetch would miss the closing comment on any "
+        "sufficiently-discussed issue, since GitHub's default sort is oldest-first "
+        "and the closing comment is one of the newest"
     )
 
 
@@ -378,7 +421,13 @@ def test_script_wraps_api_calls_with_a_timeout(job_name: str, step_id: str) -> N
     runner class can silently drop outbound traffic rather than refusing it,
     which means an un-timed-out HTTP call can hang for the full 30-minute job
     timeout, holding the shared deploy-bloom concurrency lock. Every API call
-    must be wrapped so a stalled connection fails fast instead."""
+    must be wrapped so a stalled connection fails fast instead.
+
+    Mutation-tested in review: checking only that 'Promise.race' appears at
+    least once still passed against a script where one of the five API call
+    sites had been deliberately unwrapped (the other four wraps kept the
+    marker text present). Asserting a 1:1 count between call sites and
+    wraps closes that gap."""
     script = _script_of(job_name)
     assert "Promise.race" in script, (
         f"{job_name}: expected a Promise.race-based timeout wrapper around the "
@@ -387,6 +436,21 @@ def test_script_wraps_api_calls_with_a_timeout(job_name: str, step_id: str) -> N
     assert re.search(r"timed out after", script), (
         f"{job_name}: expected a clear 'timed out after' error message from the "
         "timeout wrapper, distinguishing a hang from a real API error"
+    )
+    # Count actual invocations: "github.rest.x.y(" (a direct call) or
+    # "github.paginate(" (which takes a bare "github.rest.x.y" reference as
+    # an argument, not a call, so it must be counted separately rather than
+    # double-counted alongside the substring above).
+    direct_calls = len(re.findall(r"github\.rest\.\w+\.\w+\(", script))
+    paginate_calls = script.count("github.paginate(")
+    call_sites = direct_calls + paginate_calls
+    wraps = script.count("withTimeout(")
+    assert call_sites == wraps, (
+        f"{job_name}: expected every outbound call ({call_sites} found: "
+        f"{direct_calls} direct github.rest.* call(s) + {paginate_calls} "
+        "github.paginate call(s)) to be wrapped in withTimeout(...) "
+        f"({wraps} found) -- a 1:1 pairing, not just 'the wrapper exists somewhere', "
+        "so a future call added without a wrapper is actually caught"
     )
 
 
