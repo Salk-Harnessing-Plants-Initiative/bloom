@@ -717,6 +717,77 @@ close beyond its own two new tables** — confirmed `anon` can still `TRUNCATE p
 today, unrelated to anything this proposal changes, and out of scope for it; worth a separate, repo-wide
 follow-up.
 
+### D10 — bloom#806: the unqualified `DELETE` (D5) is rejected by `safeupdate` once the RPC path is
+actually reachable (found once Section 15/bloom#736's network fix let the function run for the first time)
+
+**Root cause, verified empirically against a real Postgres rather than assumed.** D5's
+delete-then-reinsert design (`DELETE FROM public.cyl_experiment_trait_counts;`, no `WHERE` clause) is
+exactly what Postgres's `safeupdate` extension exists to reject: `SQLSTATE 21000`, `"DELETE requires a
+WHERE clause"`. `SELECT rolname, setconfig FROM pg_db_role_setting drs JOIN pg_roles r ON r.oid =
+drs.setrole WHERE array_to_string(setconfig,',') ILIKE '%safe%';` against a local dev Postgres shows
+exactly one row: `authenticator | {session_preload_libraries=safeupdate,...}`. `authenticator` is the
+login role PostgREST/Supavisor use for every RPC before `SET ROLE`-ing to `service_role` per the caller's
+JWT (`docker-compose.dev.yml:448`); `session_preload_libraries` loads once per backend connection at
+login and survives a later `SET ROLE`, so the guard stays active for `service_role` calls too. Traced to
+`supabase-postgres`'s own vendor-shipped init migrations
+(`/docker-entrypoint-initdb.d/migrations/20220118070449_enable-safeupdate-postgrest.sql`:
+`ALTER ROLE authenticator SET session_preload_libraries = 'safeupdate';`) — dated 2022, present in every
+self-hosted Supabase Postgres image this repo has used, confirmed present even in the locally-running
+`15.8.1.060` dev container (itself older than `docker-compose.prod.yml`'s pinned `15.14.1.104`). **This
+disproves the original bug report's own leading theory** (a `15.8.1.060` → `15.14.1.104` version-bump
+correlation) — the guard is role-scoped and vendor-ancient, not new or version-dependent. The real reason
+this surfaced now: Section 15/bloom#736 fixed the network hop that had, until its own fix, prevented the
+function from ever being called over the real `authenticator`/`service_role` RPC path at all — this was
+always going to fail the first time that path actually worked, on any Postgres version.
+
+**Why 20+ passing integration tests never caught this**: `tests/integration/test_cyl_experiment_trait_counts.py`
+connects via psycopg directly as `supabase_admin` (its own module docstring, "BYPASSRLS"), never via
+`authenticator`. `session_preload_libraries` is per-login-role, so a `supabase_admin` connection never
+loads `safeupdate` regardless of `SET ROLE`, RLS, or the function's own `SECURITY DEFINER`. Reproduced the
+actual failure directly — connect as `authenticator`, `SET ROLE service_role;`,
+`SELECT public.refresh_cyl_experiment_trait_counts();` — and got the identical
+`ERROR:  DELETE requires a WHERE clause` the production HTTP 400 body reported, the first time this exact
+call shape has been exercised anywhere in this repo's test history.
+
+**Fix chosen after testing both real candidates against the guard, not assuming either works:** both
+`DELETE FROM public.cyl_experiment_trait_counts WHERE true;` and
+`TRUNCATE public.cyl_experiment_trait_counts;` succeed as `service_role` under `authenticator`'s loaded
+`safeupdate` (`safeupdate` only guards `DELETE`/`UPDATE`, not `TRUNCATE`; D9's `TRUNCATE` revoke was
+`FROM anon, authenticated` only, so `service_role` was never affected by it). **Chose `DELETE ... WHERE
+true`, not `TRUNCATE`**: `TRUNCATE` takes an `AccessExclusiveLock`, a materially different lock than the
+row-level locks `DELETE`+`INSERT` take under D5b's advisory-lock serialization — re-verifying D5/D5b/D5c's
+concurrent-reader/transactional-visibility guarantees (the whole table appears atomically old-or-new only
+at commit, never TRUNCATE's exclusive-lock-driven blocking) under a different locking primitive is
+unjustified risk for a bug a one-token diff (`WHERE true`) already fixes without touching any of those
+guarantees. Ships as a new `CREATE OR REPLACE FUNCTION` migration (this repo's migrations are
+forward-only — the deployed `20260817140000` migration is not edited), with a rollback restoring the
+exact pre-fix (unqualified-`DELETE`) function body.
+
+**`WHERE true` is RLS-neutral — confirmed by checking ownership, not assumed from the tautology alone.**
+A constant-`TRUE` qualifier is a syntactic no-op under RLS's own filtering (`USING`-clause ANDed onto any
+explicit `WHERE`, and `true AND x ≡ x`) — but that reasoning only matters if RLS is actually in play here
+at all, which depends on who owns the table and function. Checked directly:
+`SELECT p.prosecdef, p.proowner::regrole, c.relowner::regrole, c.relforcerowsecurity FROM pg_proc p,
+pg_class c WHERE p.proname='refresh_cyl_experiment_trait_counts' AND
+c.relname='cyl_experiment_trait_counts';` returns `t | supabase_admin | supabase_admin | f` — the function
+is `SECURITY DEFINER` (runs as its owner, not the caller), its owner is `supabase_admin`, that same role
+owns the table, and `FORCE ROW LEVEL SECURITY` is not set. Postgres exempts a table's owner from RLS by
+default absent `FORCE ROW LEVEL SECURITY` (which this migration never sets — only plain
+`ENABLE ROW LEVEL SECURITY`, D5a). So RLS does not apply to this function's `DELETE`/`INSERT` at all,
+regardless of which role calls it (`service_role`'s own D5a policies were never relevant to this function
+in the first place) — `WHERE true`'s RLS-neutrality is true for a stronger reason than the tautology
+itself (RLS is bypassed entirely here), confirmed against the live catalog rather than inferred.
+
+**The concurrency-preservation claim's actual empirical check is re-running D5b/D5c's existing race test
+against the new function body (tasks.md 16.5), not planner-behavior inference alone.** Postgres
+constant-folds a literal `WHERE true`, so the statement's lock mode, tuple-level locking, and MVCC
+snapshot behavior are identical to the unqualified form — no engine mechanism (parallel query, RLS,
+partitioning) makes a tautological filter change locking or visibility semantics. That reasoning
+justifies not re-deriving D5c's `pg_locks` keyspace-collision check from scratch, but the actual
+verification this change relies on is D5b's `test_concurrent_refreshes_do_not_raise_duplicate_key`
+re-running, unmodified, against the fixed function body — the same "verify the real thing" discipline
+D5b/D5c/D9 already established for this table, applied here rather than left as an unverified assumption.
+
 ## Risks / Trade-offs
 
 - **The single-transaction backfill's write-blocking window (D3) is new operational surface with no
