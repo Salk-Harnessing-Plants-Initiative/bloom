@@ -646,6 +646,14 @@ def test_the_cell_query_is_executable_by_everyone_who_needs_it(pg_conn):
             )
             assert cur.fetchone()[0] is True, f"{role} lost EXECUTE on the RPC"
 
+        # Without this the test cannot fail: CREATE FUNCTION grants EXECUTE to
+        # PUBLIC, so deleting the GRANT above leaves every role still holding it.
+        cur.execute(
+            "SELECT has_function_privilege('public', "
+            "'public.scrna_cell_arrays(bigint)', 'EXECUTE')"
+        )
+        assert cur.fetchone()[0] is False, "the RPC is executable by PUBLIC"
+
 
 def test_the_policy_set_is_exactly_what_the_migration_declares(pg_conn):
     """Every rule, what it permits, and who it permits it to.
@@ -654,23 +662,36 @@ def test_the_policy_set_is_exactly_what_the_migration_declares(pg_conn):
     privileges from Supabase's defaults, so these rules are the only thing
     standing between an anonymous visitor and a write. Adding anon to the
     writer's insert rule is a one-word edit that changes exactly that, and a
-    policyname-to-command assertion cannot see it."""
+    policyname-to-command assertion cannot see it.
+
+    Permissive against restrictive belongs here for the same reason. A
+    restrictive rule grants nothing on its own -- it only narrows what the
+    permissive ones already allow -- so flipping the admin rule to RESTRICTIVE
+    leaves bloom_admin with no rule that permits anything, locked out of the
+    table, with every other assertion in this file still passing."""
     with pg_conn.cursor() as cur:
         cur.execute(
-            "SELECT policyname, cmd, roles FROM pg_policies "
+            "SELECT policyname, cmd, permissive, roles FROM pg_policies "
             "WHERE schemaname = 'public' AND tablename = 'scrna_genotypes'"
         )
-        got = {name: (cmd, sorted(roles)) for name, cmd, roles in cur.fetchall()}
+        got = {name: (cmd, permissive, sorted(roles))
+               for name, cmd, permissive, roles in cur.fetchall()}
         assert got == {
-            "Anon users can select scrna_genotypes": ("SELECT", ["anon"]),
+            "Anon users can select scrna_genotypes":
+                ("SELECT", "PERMISSIVE", ["anon"]),
             "Authenticated users can select scrna_genotypes":
-                ("SELECT", ["authenticated"]),
-            "admin_all_scrna_genotypes": ("ALL", ["bloom_admin"]),
-            "user_read_scrna_genotypes": ("SELECT", ["bloom_user"]),
-            "agent_read_scrna_genotypes": ("SELECT", ["bloom_agent"]),
-            "writer_select_scrna_genotypes": ("SELECT", ["bloom_writer"]),
-            "writer_insert_scrna_genotypes": ("INSERT", ["bloom_writer"]),
-            "writer_update_scrna_genotypes": ("UPDATE", ["bloom_writer"]),
+                ("SELECT", "PERMISSIVE", ["authenticated"]),
+            "admin_all_scrna_genotypes": ("ALL", "PERMISSIVE", ["bloom_admin"]),
+            "user_read_scrna_genotypes":
+                ("SELECT", "PERMISSIVE", ["bloom_user"]),
+            "agent_read_scrna_genotypes":
+                ("SELECT", "PERMISSIVE", ["bloom_agent"]),
+            "writer_select_scrna_genotypes":
+                ("SELECT", "PERMISSIVE", ["bloom_writer"]),
+            "writer_insert_scrna_genotypes":
+                ("INSERT", "PERMISSIVE", ["bloom_writer"]),
+            "writer_update_scrna_genotypes":
+                ("UPDATE", "PERMISSIVE", ["bloom_writer"]),
         }
 
 
@@ -807,29 +828,70 @@ def test_the_rollback_refuses_rather_than_destroying(pg_conn, what):
     pg_conn.rollback()
 
 
-def test_facets_is_capped_in_bytes_not_just_characters(pg_conn):
-    """The parts are limited in characters, which is what a label limit means.
-    The whole object is limited in bytes, because that is what a page load is:
-    32 labels of 64 characters with 200-character values is 8.7 kB of ASCII and
-    four times that in multibyte, and no per-field limit can see it."""
+def test_facets_is_capped_as_a_whole_and_not_only_per_field(pg_conn):
+    """Every part can sit inside its own limit while the object is far past a
+    page's worth: 32 labels of 64 characters with 200-character values is 8.7k
+    characters, and no per-field limit can see the total."""
     with pg_conn.cursor() as cur:
         ds = dataset(cur, species(cur))
         cluster(cur, ds)
 
-        # every part within its own limit, the whole far past a page's worth
         big = json.dumps({f"k{i:02d}" * 8: "v" * 200 for i in range(32)})
         assert all(len(k) <= 64 for k in json.loads(big)), "keys within limit"
         assert all(len(v) <= 200 for v in json.loads(big).values()), "values too"
-        assert len(big.encode()) > 1024, "but the whole is past the cap"
+        assert len(big) > 1024, "but the whole is past the cap"
         with pytest.raises(psycopg.errors.CheckViolation):
             with pg_conn.transaction():
                 cell(cur, ds, 0, facets=big)
+    pg_conn.rollback()
 
-        # the same shape in a multibyte script, which characters cannot catch
-        emoji = json.dumps({f"k{i}": "\U0001f600" * 200 for i in range(32)})
+
+def _facets_of(cur, characters: int) -> str:
+    """A facets object whose stored rendering is exactly `characters` long,
+    every part inside its own limit, so only the total can refuse it."""
+    built = {f"k{i:02d}": "v" * 200 for i in range(4)}
+    for pad in range(1, 201):
+        built["k04"] = "v" * pad
+        cur.execute("SELECT length(%s::jsonb::text)", (json.dumps(built),))
+        if cur.fetchone()[0] == characters:
+            return json.dumps(built)
+    raise AssertionError(f"no flat object renders to {characters} characters")
+
+
+def test_the_cap_is_where_the_migration_says_it_is(pg_conn):
+    """Without both sides of the boundary the suite only pins the cap to
+    somewhere above 400 and below 7424 -- a four-fold regression, or <= turning
+    into <, would ship green."""
+    with pg_conn.cursor() as cur:
+        ds = dataset(cur, species(cur))
+        cluster(cur, ds)
+
+        cell(cur, ds, 0, facets=_facets_of(cur, 1024))
         with pytest.raises(psycopg.errors.CheckViolation):
             with pg_conn.transaction():
-                cell(cur, ds, 1, facets=emoji)
+                cell(cur, ds, 1, facets=_facets_of(cur, 1025))
+    pg_conn.rollback()
+
+
+def test_a_replicate_too_long_for_a_page_is_refused(pg_conn):
+    """The cell query returns this to anonymous visitors and nothing else
+    bounds it, so one write would decide the size of every load of the dataset.
+    Real values are sample names: Col-0, pFACT, pHORST."""
+    with pg_conn.cursor() as cur:
+        ds = dataset(cur, species(cur))
+        cluster(cur, ds)
+        cell(cur, ds, 0)
+
+        with pytest.raises(psycopg.errors.CheckViolation):
+            with pg_conn.transaction():
+                cur.execute(
+                    "UPDATE scrna_cells SET replicate = %s WHERE dataset_id = %s",
+                    ("x" * 101, ds),
+                )
+        cur.execute(
+            "UPDATE scrna_cells SET replicate = %s WHERE dataset_id = %s",
+            ("x" * 100, ds),
+        )
     pg_conn.rollback()
 
 

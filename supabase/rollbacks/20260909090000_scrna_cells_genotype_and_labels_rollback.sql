@@ -69,6 +69,8 @@ GRANT EXECUTE ON FUNCTION public.scrna_cell_arrays(BIGINT)
   TO anon, authenticated, bloom_user, bloom_admin, bloom_agent;
 
 ALTER TABLE public.scrna_cells
+  DROP CONSTRAINT IF EXISTS scrna_cells_replicate_length;
+ALTER TABLE public.scrna_cells
   DROP CONSTRAINT IF EXISTS scrna_cells_facets_are_flat_text;
 ALTER TABLE public.scrna_cells DROP COLUMN IF EXISTS facets;
 DROP FUNCTION IF EXISTS public.scrna_facets_are_flat_text(JSONB);
