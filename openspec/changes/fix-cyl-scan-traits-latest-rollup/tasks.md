@@ -1436,3 +1436,67 @@ none needed further discussion.**
 - [x] 16.15 Re-ran the full `tests/integration/test_cyl_experiment_trait_counts.py` suite after 16.10-16.12's
       refactor; `openspec validate fix-cyl-scan-traits-latest-rollup --strict` re-confirmed. **Done — 25/25
       passed; validation passes.**
+
+**`/review-pr` round 3 pass against PR #809: 5 subagents, explicitly instructed to verify round 2's OWN
+fixes rather than only re-confirm settled findings. Zero BLOCKING, one round-2-fix genuinely didn't work as
+claimed (found independently by two reviewers), plus real gaps in round 2's other fixes and documentation.**
+
+- [x] 16.16 **(Code-quality + behavioural-correctness findings, converged on independently: round 2's
+      "nested try/finally" in `test_refresh_succeeds_over_authenticator_service_role_path` was actually
+      two SIBLING try/finally blocks, not one nested inside the other — a raising `conn.rollback()`
+      would propagate out of the first block entirely, skipping the seeded-row cleanup and
+      `pg_conn.commit()` in the second block altogether, the exact leak 16.12 claimed to have closed.
+      Separately, the `_refresh_over_authenticator_service_role` helper 16.10 extracted in the SAME
+      commit still had the original, non-nested `conn.rollback(); conn.close()` form.)** Fixed both:
+      genuinely chained all four cleanup steps in `test_refresh_succeeds_over_authenticator_service_role_path`
+      into one nested `finally` sequence (rollback → close → cleanup → commit, each guaranteed to run
+      regardless of an earlier step raising), and nested `_refresh_over_authenticator_service_role`'s
+      own rollback/close the same way. **Done — 26/26 pass (see 16.19).**
+- [x] 16.17 **(Testing finding, verified empirically with a standalone fixture-graph reproduction rather
+      than just reasoned about: `_ensure_safeupdate_fix_reapplied`'s "second, independent attempt" reused
+      the exact SAME `pg_conn` connection object the test's own inline re-apply already used — no
+      protection at all against the connection-level failure, e.g. a dropped/broken connection, that the
+      fixture's own docstring named as the motivating example. Both attempts would fail identically on
+      the same broken connection. It also never called `rollback()` before retrying, so a connection left
+      in an aborted-transaction state would raise `InFailedSqlTransaction` instead of succeeding.)** Fixed
+      by changing the fixture's dependency from `pg_conn` to `pg_conninfo` and opening a genuinely fresh
+      connection in its teardown, with a defensive `rollback()` before the retry. **Note: pytest's fixture
+      teardown ORDERING claim from round 2 (this fixture's teardown fires before `pg_conn`'s own teardown
+      closes its connection) was independently verified correct in this round — only the "independence" of
+      the retry connection itself was the actual gap.**
+- [x] 16.18 **(Scientific-rigor finding: the round-2 rollback WARNING was comment-only — decorative,
+      unenforced, and inconsistent with this repo's own established pattern. `20260817140000`'s own
+      rollback enforces its ordering precondition with a real `DO $$ ... RAISE EXCEPTION ... END $$;`
+      guard, not just a header comment; the new rollback broke that discipline for a hazard — silently
+      regressing an already-fixed production bug — at least as dangerous as the one the pattern was built
+      for. Also: the WARNING's own line-number citation had already drifted stale after a subsequent
+      edit, which a hardcoded line reference will always be prone to.)** Added a real `DO $$ ... RAISE
+      EXCEPTION ... END $$;` guard to `supabase/rollbacks/20260910120000_..._rollback.sql`, requiring
+      `SET bloom.confirm_806_regression = 'yes';` first in the same session before the rollback proceeds
+      at all. Removed the fragile line-number citation from the WARNING prose. **RED first**: added
+      `test_safeupdate_fix_rollback_guard_blocks_unconfirmed_run` (asserts the rollback SQL raises
+      `RaiseException` matching "Refusing to run.*bloom#806" when run unconfirmed), confirmed it fails
+      against the pre-guard rollback SQL, then passes after the guard was added. Updated
+      `test_safeupdate_fix_rollback_restores_prior_unqualified_delete_behavior` to `SET
+      bloom.confirm_806_regression = 'yes'` before running the rollback body, matching the new
+      precondition. **Done.**
+- [x] 16.19 **(Scientific-rigor findings on the round-2 Risks/Trade-offs bullet itself: (a) "undercount"
+      was an incomplete characterization — the exposure is directionally symmetric, a partially-visible
+      correction/deletion could equally produce a transient overcount; (b) the bullet led with "this
+      exposure is now live... not merely theoretical" before clarifying it's D5's pre-existing design,
+      risking a skimming reader concluding this fix INTRODUCES the risk rather than merely lets an
+      always-present property finally manifest; (c) unlike every other open risk in this same
+      Risks/Trade-offs section, the bullet never used this doc's own established "Accepted, not fixed —
+      &lt;why that's acceptable&gt;" pattern, leaving it read as an unresolved gap rather than a reasoned
+      acceptance; (d) the RLS/ownership catalog check underpinning `WHERE true`'s safety was run only
+      against the local `15.8.1.060` dev container, never independently re-verified against production's
+      `15.14.1.104`.)** Rewrote the bullet: reordered to state the pre-existing-ness before the
+      novelty-of-manifestation, broadened "undercount" to cover both directions, added explicit "Accepted,
+      not mitigated" language with the actual reasoning (self-heals within D5's own already-accepted
+      staleness window), and added a fourth sub-bullet naming the unverified-across-Postgres-versions gap
+      explicitly rather than leaving it implicit. **Done.**
+- [x] 16.20 Re-ran the full `tests/integration/test_cyl_experiment_trait_counts.py` suite (26 tests now,
+      including 16.18's new guard test) after 16.16-16.18's changes, including both mutating tests run in
+      isolation to re-confirm no hidden order dependency; `openspec validate
+      fix-cyl-scan-traits-latest-rollup --strict` re-confirmed. **Done — 26/26 passed; both mutating tests
+      pass standalone; validation passes.**

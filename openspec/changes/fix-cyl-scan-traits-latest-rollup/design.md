@@ -790,29 +790,43 @@ D5b/D5c/D9 already established for this table, applied here rather than left as 
 
 ## Risks / Trade-offs
 
-- **(D10, found in `/review-pr` round 2's scientific-rigor and behavioural-correctness passes)
-  This fix makes the refresh actually succeed via the live RPC path for the first time ever
-  (per bloom#740, it has never once completed automatically in production) — two real-world
-  exposures this class of "first real run" carries that D10 itself doesn't fully resolve, only
-  gates behind live verification (tasks.md 16.8):**
+- **(D10, found in `/review-pr` round 2's scientific-rigor and behavioural-correctness passes,
+  refined in round 3) This fix makes the refresh actually succeed via the live RPC path for the
+  first time ever (per bloom#740, it has never once completed automatically in production) — two
+  real-world exposures this class of "first real run" carries that D10 itself doesn't fully
+  resolve, only gates behind live verification (tasks.md 16.8):**
   - **Unverified: whether an API-level `statement_timeout` could reject the reinsert query's ~6.6s
     cost (Benfica's own prod measurement, Context section) when it finally runs over PostgREST
     rather than a raw `psql`/`supabase_admin` connection.** This repo has a documented precedent of
     exactly this failure mode elsewhere (`supabase/migrations/20260710000200_search_accession_genes_force_custom_plan.sql`'s
     header comment: a multi-second query hitting an API-level `statement_timeout` as an opaque HTTP
-    500). Not investigated here — tasks.md 16.8's live staging dispatch must explicitly confirm the
-    call completes rather than timing out, not just that it returns *a* response.
-  - **The advisory lock only serializes concurrent calls to this function — it takes no lock on the
-    underlying `cyl_waves`/`cyl_plants`/`cyl_scans`/`cyl_scan_traits` tables it reads.** Under
-    default READ COMMITTED, a write-back RPC call that spans multiple separate commits (e.g. one
-    commit per scan in a batch) racing the reinsert's own single-snapshot `SELECT` can produce an
-    internally-consistent but stale undercount for that experiment, silently corrected only by the
-    *next* refresh. This is D5's original design, unchanged by this fix, and unrelated to
-    `safeupdate` — but since the function has never successfully run against real concurrent
-    write-back traffic before, this exposure is now live in practice for the first time, not merely
-    theoretical. Not mitigated here; worth a future issue if `n_traits`'s occasional one-refresh-cycle
-    staleness under concurrent writes ever needs a tighter bound than D5's accepted staleness window
-    already covers.
+    500). **Not accepted, not fixed — genuinely open**: tasks.md 16.8's live staging dispatch must
+    explicitly confirm the call completes rather than timing out, not just that it returns *a*
+    response; this bullet exists so that check isn't skipped.
+  - **This is a pre-existing D5 design property, always present since `20260817140000` first
+    shipped — not something this fix (D10) introduces — that is only now able to manifest against
+    real traffic, because the function has never once successfully completed via the live RPC path
+    before this fix.** The advisory lock only serializes concurrent calls to *this function* — it
+    takes no lock on the underlying `cyl_waves`/`cyl_plants`/`cyl_scans`/`cyl_scan_traits` tables it
+    reads. Under default READ COMMITTED, a write-back RPC call that spans multiple separate commits
+    (e.g. one commit per scan in a batch upload, or a `bloom_admin` break-glass correction per D2b)
+    racing the reinsert's own single-snapshot `SELECT` can produce an internally-consistent but
+    stale count for that experiment in *either* direction — an undercount if new trait rows commit
+    mid-scan, or a transient overcount if a correction/deletion is only partially visible — silently
+    corrected only by the *next* refresh. **Accepted, not mitigated**: this self-heals within the
+    same one-refresh-cycle staleness window D5 already accepts as this cache's basic contract, so it
+    is not a new staleness bound beyond what D5 already signs up for — only a new *direction* the
+    existing bound's error can point in, which D5's original acceptance did not need to distinguish
+    since nothing had ever exercised it. Worth a future issue only if that staleness window itself
+    is ever judged too wide, not blocking this fix.
+  - **The RLS/ownership catalog check underpinning `WHERE true`'s safety (D10's own reasoning above)
+    was run once, against the locally-running `15.8.1.060` dev container — never independently
+    re-run against production's pinned `15.14.1.104`.** Reasoned, not verified, that this doesn't
+    matter: Postgres's own minor-release policy restricts point releases to bug/security fixes, not
+    changes to documented semantics like owner-exemption from RLS absent `FORCE ROW LEVEL SECURITY`.
+    Treated as low-risk given that policy, but tasks.md 16.8's staging dispatch is also the first
+    opportunity to confirm this assumption against a `15.14.1.104`-class instance, not just reason
+    about it.
   - **This PR's own "no breaking changes" framing is accurate for API/schema surface only** (same
     function signature, same callers) — it should not be read as "safe under arbitrary concurrent
     write load," which was never verified and isn't enforced by any lock, schedule, or config; it's

@@ -1,12 +1,19 @@
 -- Manual rollback for 20260910120000_fix_refresh_cyl_experiment_trait_counts_safeupdate.sql
 --
 -- *** WARNING: running this REINTRODUCES bloom#806. *** The restored body's unqualified DELETE
--- (line 21 below) is rejected by Postgres's safeupdate guard (session_preload_libraries on the
--- `authenticator` role) the moment anything calls this function over the real service_role/
--- PostgREST RPC path -- SQLSTATE 21000, "DELETE requires a WHERE clause". Only run this rollback
--- if you are deliberately reverting the bloom#806 fix itself (e.g. investigating a regression it
--- introduced); if you're rolling back for an unrelated reason, re-apply
--- 20260910120000_fix_refresh_cyl_experiment_trait_counts_safeupdate.sql immediately afterward.
+-- (below, inside the function body) is rejected by Postgres's safeupdate guard
+-- (session_preload_libraries on the `authenticator` role) the moment anything calls this function
+-- over the real service_role/PostgREST RPC path -- SQLSTATE 21000, "DELETE requires a WHERE
+-- clause". Only run this rollback if you are deliberately reverting the bloom#806 fix itself (e.g.
+-- investigating a regression it introduced); if you're rolling back for an unrelated reason,
+-- re-apply 20260910120000_fix_refresh_cyl_experiment_trait_counts_safeupdate.sql immediately
+-- afterward.
+--
+-- `/review-pr` round 3 finding: a comment-only warning is exactly the discipline this repo's own
+-- migrations otherwise avoid for a runtime hazard -- 20260817140000's own rollback enforces its
+-- ordering precondition with a real `DO $$ ... RAISE EXCEPTION ... END $$;` guard, not just a
+-- header comment. This rollback now does the same: it refuses to run at all unless the operator
+-- explicitly confirms via a session-level setting first.
 --
 -- Restores the exact pre-fix function body (the unqualified DELETE from
 -- 20260817140000_create_cyl_experiment_trait_counts.sql) via CREATE OR REPLACE FUNCTION, not DROP
@@ -16,6 +23,14 @@
 -- 20260817150000, which has its own independent rollback ordering).
 
 BEGIN;
+
+DO $$
+BEGIN
+    IF current_setting('bloom.confirm_806_regression', true) IS DISTINCT FROM 'yes' THEN
+        RAISE EXCEPTION 'Refusing to run: this rollback reintroduces bloom#806 (refresh_cyl_experiment_trait_counts()''s DELETE becomes unqualified again, which Postgres''s safeupdate guard on the authenticator role rejects over the real service_role RPC path). If you are deliberately reverting the bloom#806 fix itself, run `SET bloom.confirm_806_regression = ''yes'';` first in this same session, then re-run this rollback.';
+    END IF;
+END;
+$$;
 
 CREATE OR REPLACE FUNCTION public.refresh_cyl_experiment_trait_counts()
 RETURNS void

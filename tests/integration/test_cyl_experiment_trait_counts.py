@@ -257,14 +257,20 @@ def _set_role_service_role_and_refresh(cur):
 def _refresh_over_authenticator_service_role(conninfo):
     """Opens its own `authenticator` connection, runs `_set_role_service_role_and_refresh`, then
     always rolls back and closes -- for callers that only need to confirm the call succeeds
-    (or raises), not to read back a value from within the same transaction."""
+    (or raises), not to read back a value from within the same transaction.
+
+    `rollback()` and `close()` are genuinely nested (`/review-pr` round 3 finding: a prior version
+    of this helper had them as two statements in one `finally`, so a raising `rollback()` on an
+    already-broken connection would skip `close()` entirely, leaking the connection)."""
     conn = psycopg.connect(conninfo)
     try:
         with conn.cursor() as cur:
             _set_role_service_role_and_refresh(cur)
     finally:
-        conn.rollback()
-        conn.close()
+        try:
+            conn.rollback()
+        finally:
+            conn.close()
 
 
 def test_refresh_succeeds_over_authenticator_service_role_path(pg_conn, authenticator_conninfo):
@@ -307,18 +313,23 @@ def test_refresh_succeeds_over_authenticator_service_role_path(pg_conn, authenti
             row = cur.fetchone()
         assert row is not None and row[0] == expected == 2
     finally:
-        # `/review-pr` round 2 finding: nested so a failure in one cleanup step (e.g. `rollback()`
-        # on an already-broken connection) doesn't skip the steps after it -- `conn.close()` and
-        # the seeded-row cleanup must both still be attempted regardless.
+        # `/review-pr` round 2 attempted to nest this cleanup so one failing step doesn't skip the
+        # ones after it, but round 3 found it was actually two SIBLING try/finally blocks -- a
+        # raising `conn.rollback()` would propagate out of the first block entirely, skipping the
+        # second block (the seeded-row cleanup and `pg_conn.commit()`) altogether. Fixed by
+        # genuinely nesting all four steps in a single chain, so every step is attempted regardless
+        # of whether an earlier one raised.
         try:
             conn.rollback()
         finally:
-            conn.close()
-        try:
-            with pg_conn.cursor() as cur:
-                _cleanup_seeded_experiment(cur, experiment_id)
-        finally:
-            pg_conn.commit()
+            try:
+                conn.close()
+            finally:
+                try:
+                    with pg_conn.cursor() as cur:
+                        _cleanup_seeded_experiment(cur, experiment_id)
+                finally:
+                    pg_conn.commit()
 
 
 def test_concurrent_refreshes_do_not_raise_duplicate_key(pg_conninfo, pg_conn):
@@ -608,7 +619,7 @@ def test_rollback_restores_prior_state(pg_conn):
 
 
 @pytest.fixture
-def _ensure_safeupdate_fix_reapplied(pg_conn):
+def _ensure_safeupdate_fix_reapplied(pg_conninfo):
     """`/review-pr` round 2 finding: a test that intentionally rolls the live function back to its
     pre-fix (guard-triggering) body has exactly one inline `finally` re-applying the fix -- if that
     re-apply itself raises (e.g. a dropped connection), the shared dev/CI database is left with the
@@ -616,15 +627,28 @@ def _ensure_safeupdate_fix_reapplied(pg_conn):
     is a second, independent attempt at the same re-apply, run as normal pytest fixture teardown
     (which fires even when the test body raises) rather than the test's own single code path.
 
+    Round 3 finding: the first version of this fixture depended on `pg_conn` and reused that SAME
+    connection object for its "independent" retry -- no protection at all against the exact
+    connection-level failure (a dropped/broken connection) the docstring named as the motivating
+    example, since both attempts would fail identically on the same broken connection. Fixed by
+    depending on `pg_conninfo` (a plain string) instead and opening a genuinely fresh connection
+    here, plus a defensive `rollback()` first in case the fresh connection ever inherits server-side
+    session state left aborted by a prior statement on the same backend.
+
     This does NOT protect against the test process being killed outright (e.g. a CI timeout) --
     nothing can, once the interpreter itself stops running -- only against an in-process exception
     during or after the test's own inline re-apply."""
     try:
         yield
     finally:
-        with pg_conn.cursor() as cur:
-            cur.execute(_sql_body(SAFEUPDATE_FIX_MIGRATION))
-        pg_conn.commit()
+        conn = psycopg.connect(pg_conninfo)
+        try:
+            conn.rollback()
+            with conn.cursor() as cur:
+                cur.execute(_sql_body(SAFEUPDATE_FIX_MIGRATION))
+            conn.commit()
+        finally:
+            conn.close()
 
 
 def test_safeupdate_fix_migration_body_is_idempotent(pg_conn):
@@ -640,6 +664,20 @@ def test_safeupdate_fix_migration_body_is_idempotent(pg_conn):
     pg_conn.rollback()
 
 
+def test_safeupdate_fix_rollback_guard_blocks_unconfirmed_run(pg_conn):
+    """bloom#806, `/review-pr` round 3 finding: the rollback's WARNING comment alone was decorative
+    -- nothing enforced it, unlike 20260817140000's own rollback, which guards its ordering
+    precondition with a real `DO $$ ... RAISE EXCEPTION ... END $$;` block. Proves the new guard is
+    real, not just a comment: running the rollback SQL without first setting the confirmation GUC
+    must fail loudly, before the function body is ever touched."""
+    with pg_conn.cursor() as cur:
+        with pytest.raises(
+            psycopg.errors.RaiseException, match="Refusing to run.*bloom#806"
+        ):
+            cur.execute(_sql_body(SAFEUPDATE_FIX_ROLLBACK))
+    pg_conn.rollback()
+
+
 def test_safeupdate_fix_rollback_restores_prior_unqualified_delete_behavior(
     pg_conn, authenticator_conninfo, _ensure_safeupdate_fix_reapplied
 ):
@@ -652,10 +690,18 @@ def test_safeupdate_fix_rollback_restores_prior_unqualified_delete_behavior(
     (via the rollback SQL) rather than relying on any assumption about what a prior test left
     behind, so it produces the same result whether run alone or after any other test in this file.
     The `_ensure_safeupdate_fix_reapplied` fixture is a second, independent line of defense (not a
-    load-bearing dependency for THIS test's own correctness) against the shared dev/CI database
-    being left in the pre-fix state for every other test/developer if this test's own inline
-    re-apply below is itself interrupted by an unexpected exception (`/review-pr` round 2 finding)."""
+    load-bearing dependency for THIS test's own correctness, and using its own fresh connection --
+    not this test's `pg_conn` -- per a round 3 finding) against the shared dev/CI database being
+    left in the pre-fix state for every other test/developer if this test's own inline re-apply
+    below is itself interrupted by an unexpected exception (`/review-pr` round 2 finding).
+
+    Not safe under a hypothetical future `pytest-xdist` parallel run (none configured in this repo
+    today, confirmed via `/review-pr` round 3): this test makes the live function body globally
+    visible in its pre-fix state for a real, committed window, unlike every other DDL-touching test
+    in this file, which only mutate within a transaction rolled back before any other connection
+    could observe it."""
     with pg_conn.cursor() as cur:
+        cur.execute("SET bloom.confirm_806_regression = 'yes'")
         cur.execute(_sql_body(SAFEUPDATE_FIX_ROLLBACK))
     pg_conn.commit()  # authenticator's own connection must see the rolled-back function body
 
