@@ -749,8 +749,9 @@ def test_row_level_security_is_on(pg_conn, table):
 
 @pytest.mark.parametrize("table", ["scrna_de_runs", "scrna_de_genes"])
 def test_the_policies_are_the_ones_scrna_de_has(pg_conn, table):
-    """Deliberately without anon, and deliberately with no write path but the
-    admin one -- so the set is asserted whole rather than by absence."""
+    """Deliberately without anon, and with writing limited to submitting: a
+    writer may insert, and only the admin role may change what is there. The
+    set is asserted whole rather than by absence."""
     with pg_conn.cursor() as cur:
         cur.execute(
             "SELECT policyname, roles::text, cmd FROM pg_policies "
@@ -761,6 +762,7 @@ def test_the_policies_are_the_ones_scrna_de_has(pg_conn, table):
             (f"admin_all_scrna_de_{suffix}", "{bloom_admin}", "ALL"),
             (f"agent_read_scrna_de_{suffix}", "{bloom_agent}", "SELECT"),
             (f"user_read_scrna_de_{suffix}", "{bloom_user}", "SELECT"),
+            (f"writer_insert_scrna_de_{suffix}", "{bloom_writer}", "INSERT"),
         }
 
 
@@ -787,3 +789,45 @@ def test_the_dropped_update_policies_are_gone(pg_conn):
             "WHERE schemaname = 'public' AND tablename = 'scrna_de' AND cmd = 'UPDATE'"
         )
         assert [r[0] for r in cur.fetchall()] == []
+
+
+def test_a_writer_can_submit_an_analysis_and_its_genes(pg_conn):
+    """Submitting is what a writer is for. Without an INSERT policy on the two
+    new tables, a loader could write a summary claiming thousands of tested
+    genes and have no way to write one of them."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        gene = _gene(cur, ds)
+        cluster = _cluster_ref(cur, ds)
+        cur.execute("SET LOCAL ROLE bloom_writer")
+        cur.execute(
+            "INSERT INTO scrna_de_runs (dataset_id, source, status, method, "
+            "params_hash, completed_at) "
+            "VALUES (%s, 'batch', 'complete', 'external', 'h', now()) RETURNING id",
+            (ds,),
+        )
+        run = cur.fetchone()[0]
+        de_id = _result(cur, ds, run, cluster_ref=cluster)
+        _gene_row(cur, ds, de_id, gene)
+        cur.execute("SELECT count(*) FROM scrna_de_genes WHERE de_id = %s", (de_id,))
+        assert cur.fetchone()[0] == 1
+    pg_conn.rollback()
+
+
+def test_a_writer_still_cannot_change_what_it_submitted(pg_conn):
+    """Insert is submitting; editing or removing a submitted result stays with
+    the admin role."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        de_id = _result(cur, ds, _run(cur, ds))
+        _gene_row(cur, ds, de_id, _gene(cur, ds))
+        for sql in ("UPDATE scrna_de_genes SET fdr = 0.5 WHERE de_id = %s",
+                    "DELETE FROM scrna_de_genes WHERE de_id = %s",
+                    "UPDATE scrna_de_runs SET status = 'failed' "
+                    "WHERE id = (SELECT run_id FROM scrna_de WHERE id = %s)"):
+            cur.execute("SAVEPOINT w")
+            cur.execute("SET LOCAL ROLE bloom_writer")
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                cur.execute(sql, (de_id,))
+            cur.execute("ROLLBACK TO SAVEPOINT w")
+    pg_conn.rollback()

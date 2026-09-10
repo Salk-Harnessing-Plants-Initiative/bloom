@@ -420,6 +420,20 @@ DROP POLICY IF EXISTS user_read_scrna_de_genes ON public.scrna_de_genes;
 CREATE POLICY user_read_scrna_de_genes
   ON public.scrna_de_genes FOR SELECT TO bloom_user USING (true);
 
+-- A writer submits a result, so it may insert the analysis and every gene row
+-- beneath it -- the same shape as writer_insert_scrna_de on the summary table.
+-- Without these, a loader could record a comparison claiming thousands of
+-- tested genes and have no way to write a single one. It still cannot edit or
+-- remove what it wrote: there is no UPDATE or DELETE policy for it, and those
+-- grants come away in the next section.
+DROP POLICY IF EXISTS writer_insert_scrna_de_runs ON public.scrna_de_runs;
+CREATE POLICY writer_insert_scrna_de_runs
+  ON public.scrna_de_runs FOR INSERT TO bloom_writer WITH CHECK (true);
+
+DROP POLICY IF EXISTS writer_insert_scrna_de_genes ON public.scrna_de_genes;
+CREATE POLICY writer_insert_scrna_de_genes
+  ON public.scrna_de_genes FOR INSERT TO bloom_writer WITH CHECK (true);
+
 -- 9. A submitted result is not edited -------------------------------------------
 -- A row here records an analysis that ran. Changing it afterwards does not
 -- correct the record, it falsifies it -- and the arithmetic rules do not stand in
