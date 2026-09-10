@@ -105,6 +105,10 @@ def cells(cur, dataset_id: int, barcodes: list[str]) -> None:
 
 BARCODES = ["AAA-1", "CCC-1", "GGG-1"]
 
+# Deliberately not in alphabetical order: sorting these by barcode gives a
+# different sequence than sorting by cell_number.
+SCRAMBLED = ["TTT-9", "AAA-1", "GGG-4"]
+
 
 def genes(names: list[str], n_cells: int = 3) -> dict:
     """What `read_genes` returns, without needing a file."""
@@ -113,7 +117,10 @@ def genes(names: list[str], n_cells: int = 3) -> dict:
         "n_cells": n_cells,
         "names": names,
         "by_gene": np.array(
-            [[float(g + 1) * (c + 1) for g in range(len(names))]
+            # A zero on the diagonal: without it every entry is non-zero and a
+            # dense object would compare equal to a sparse one.
+            [[0.0 if c == g else float(g + 1) * (c + 1)
+              for g in range(len(names))]
              for c in range(n_cells)],
             dtype="float32",
         ),
@@ -132,6 +139,27 @@ def test_the_dataset_must_already_hold_cells_from_this_file(counts, pg_conn):
         did = dataset(cur, sid, "match")
         cells(cur, did, BARCODES)
     assert counts.open_dataset(pg_conn, "match", sid, BARCODES) == did
+    pg_conn.rollback()
+
+
+def test_the_guard_reads_cells_in_cell_number_order_not_insertion_order(
+    counts, pg_conn
+):
+    """Rows arrive in whatever order they were written. `cell_number` is the
+    only thing that orders them, so a dataset whose rows were inserted out of
+    order must still verify -- and would not if the query stopped sorting."""
+    with pg_conn.cursor() as cur:
+        sid = species(cur)
+        did = dataset(cur, sid, "unsorted")
+        # inserted back-to-front, and the barcodes are not alphabetical either,
+        # so physical order and barcode order both disagree with cell_number
+        for number, barcode in reversed(list(enumerate(SCRAMBLED))):
+            cur.execute(
+                "INSERT INTO scrna_cells (dataset_id, cell_number, barcode) "
+                "VALUES (%s, %s, %s)",
+                (did, number, barcode),
+            )
+    assert counts.open_dataset(pg_conn, "unsorted", sid, SCRAMBLED) == did
     pg_conn.rollback()
 
 
