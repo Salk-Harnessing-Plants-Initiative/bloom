@@ -652,6 +652,47 @@ def test_sweep_partial_run_with_a_still_running_workflow_resolves_to_running(
 # --- backstop (design.md's Decision 6) --------------------------------------
 
 
+def test_reconcile_unresolved_scans_sends_the_real_rpc_shape():
+    """Round 5 /review-pr finding: every test of this function elsewhere in this file
+    monkeypatches it away wholesale, so a typo in the RPC name or either parameter's key
+    would go undetected until a live/E2E run. Pins the actual call shape directly."""
+    captured = {}
+
+    class _RPC:
+        def execute(self):
+            return type("R", (), {"data": 2})()
+
+    class _Client:
+        def rpc(self, name, params):
+            captured["name"] = name
+            captured["params"] = params
+            return _RPC()
+
+    count = worker._reconcile_unresolved_scans(_Client(), "wf-abc")
+
+    assert captured["name"] == "fail_cyl_pipeline_run_scans_without_result"
+    assert captured["params"] == {
+        "p_argo_workflow_name": "wf-abc",
+        "p_error_message": (
+            "workflow reached a terminal status before write-back "
+            "produced a result for this scan"
+        ),
+    }
+    assert count == 2
+
+
+def test_reconcile_unresolved_scans_returns_zero_when_rpc_returns_none():
+    class _RPC:
+        def execute(self):
+            return type("R", (), {"data": None})()
+
+    class _Client:
+        def rpc(self, name, params):
+            return _RPC()
+
+    assert worker._reconcile_unresolved_scans(_Client(), "wf-abc") == 0
+
+
 def test_sweep_reconciles_a_queued_scan_before_writing_a_terminal_status(monkeypatch):
     """A run whose rollup concludes a non-'running' status may still have a scan
     row stuck 'queued' — write-back never ran for it at all (its workflow failed

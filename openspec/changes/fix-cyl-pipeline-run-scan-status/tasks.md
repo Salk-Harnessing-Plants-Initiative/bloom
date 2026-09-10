@@ -211,8 +211,43 @@ fixing a real, separately-shipped-PR conflict (not just staleness), followed by 
     unaffected by the local dev DB's environmental issues) is the authoritative check for the full
     suite — see the PR's own CI run.**
 
-## 11. Post-merge follow-through
+## 11. Review round 5 fixes
 
-- [ ] 11.1 Update `docs/bloom-integration/roadmap.md` (in `sleap-roots-pipeline`) marking bloom #716 and #696 resolved, and note whether bloom #15's UI progress panel is now actually unblocked.
-- [ ] 10.2 Close bloom #716 and #696 referencing the merged PR, once merged and verified per Task 8.
-- [ ] 10.3 Fill in the `Purpose` sections of `openspec/specs/cyl-pipeline-runs/spec.md` and `openspec/specs/cyl-pipeline-status-polling/spec.md` — both currently read the literal placeholder text `TBD - created by archiving change ... Update Purpose after archive.` (their own inline comment, not an `openspec/AGENTS.md` rule) — as part of this change's own archival.
+A fifth `/review-pr` round, run after CI went fully green post-round-4, found that round 4's own
+fix (`status_update_matched`) could cascade one scan's permanent, unfixable mismatch into the
+*entire run* reading `status = 'failed'` via a futile Argo retry — see `design.md`'s "Decision 6
+addendum 5" for the full narrative.
+
+- [x] 11.1 Fixed via TDD: added `ScanResult.retriable` (default `true`) and
+  `BatchResult.needs_retry` to `bloomcli/src/bloomctl/cyl/_batch.py` (shared with
+  `download_for_predict.py` — purely additive, `.ok`/`format_summary`/`format_json` unchanged).
+  `batch_ingest_result` now exits non-zero on `needs_retry`, not `.ok`; the `status_update_matched`
+  mismatch `ScanResult` is now constructed with `retriable=False`. 9 new tests across
+  `bloomcli/tests/test_cyl_batch.py` and `bloomcli/tests/test_cyl_ingest.py`, all confirmed against
+  the actual exit codes (not just the printed/JSON content, which is deliberately unchanged).
+- [x] 11.2 Reworded the `status_update_matched` mismatch message (both call sites) to state the
+  failure is already reflected in the run's `failed_count`, not a new one (round 5's smaller UX
+  finding). Updated `cyl-ingest-cli` and `cyl-batch-ingest-result` spec deltas with the new
+  `retriable`/exit-code semantics and a normative scenario each.
+- [x] 11.3 Closed the "reconciliation helpers' real RPC-call shape is never exercised" gap Testing
+  Strategy recommended stop-deferring (every existing test on both sides monkeypatched the RPC call
+  away wholesale) — added one direct-call-shape test per side:
+  `test_reconcile_unresolved_scans_sends_the_real_rpc_shape` in both
+  `bloomcli/tests/test_cyl_ingest.py` and `services/workflows/tests/test_status_poller.py`, plus a
+  `returns_zero_when_rpc_returns_none` sibling each.
+- [x] 11.4 Two further round-5 findings — a `'partial'`→`'failed'` regression window now sized by
+  the real `WORKFLOWS_K8S_TTL_SECONDS` default, and `argo_workflow_name` collision math using the
+  real `generateName` entropy — were documented with concrete numbers in `design.md`'s Decision 6
+  addendum 5, not fixed (no reviewer round has proposed a concrete mitigation yet; left for a
+  follow-up decision).
+- [x] 11.5 Re-run: `bloomcli` (`not integration`) — 884 passed (up from 873), same 13
+  pre-existing/unrelated failures. `services/workflows` — 55 passed (up from 53).
+  `download_for_predict`'s own test files (the other consumer of `_batch.py`) — 144 passed, 3
+  skipped, confirming the additive `retriable` field changed nothing there. `openspec validate
+  --strict` passes. `ruff@0.9.9 check`/`format` clean on every touched file.
+
+## 12. Post-merge follow-through
+
+- [ ] 12.1 Update `docs/bloom-integration/roadmap.md` (in `sleap-roots-pipeline`) marking bloom #716 and #696 resolved, and note whether bloom #15's UI progress panel is now actually unblocked.
+- [ ] 12.2 Close bloom #716 and #696 referencing the merged PR, once merged and verified per Task 8.
+- [ ] 12.3 Fill in the `Purpose` sections of `openspec/specs/cyl-pipeline-runs/spec.md` and `openspec/specs/cyl-pipeline-status-polling/spec.md` — both currently read the literal placeholder text `TBD - created by archiving change ... Update Purpose after archive.` (their own inline comment, not an `openspec/AGENTS.md` rule) — as part of this change's own archival.

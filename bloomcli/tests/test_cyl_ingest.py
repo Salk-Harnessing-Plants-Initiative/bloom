@@ -223,6 +223,46 @@ def test_call_insert_envelope_omits_the_key_when_argo_workflow_name_is_none():
     assert "p_argo_workflow_name" not in captured["params"]
 
 
+def test_reconcile_unresolved_scans_sends_the_real_rpc_shape():
+    """Review round 5 finding: every existing test of reconcile_unresolved_scans monkeypatches
+    the function away wholesale, so a typo in the RPC name or either parameter's key would go
+    undetected until a live/E2E run — the same class of bug that already broke this exact area
+    twice (the wrong-RPC map_rpc_error mismapping, the round-3 overload bug). Pins the actual
+    call shape the way test_call_insert_envelope_*_when_given already does for the sibling RPC."""
+    captured = {}
+
+    class _RPC:
+        def execute(self):
+            return type("R", (), {"data": 3})()
+
+    class _Client:
+        def rpc(self, name, params):
+            captured["name"] = name
+            captured["params"] = params
+            return _RPC()
+
+    count = ing.reconcile_unresolved_scans(_Client(), "wf-abc")
+
+    assert captured["name"] == "fail_cyl_pipeline_run_scans_without_result"
+    assert captured["params"] == {
+        "p_argo_workflow_name": "wf-abc",
+        "p_error_message": "no result produced for this scan by write-back",
+    }
+    assert count == 3
+
+
+def test_reconcile_unresolved_scans_returns_zero_when_rpc_returns_none():
+    class _RPC:
+        def execute(self):
+            return type("R", (), {"data": None})()
+
+    class _Client:
+        def rpc(self, name, params):
+            return _RPC()
+
+    assert ing.reconcile_unresolved_scans(_Client(), "wf-abc") == 0
+
+
 def test_resolve_argo_workflow_name_reads_the_env_var(monkeypatch):
     monkeypatch.setenv("ARGO_WORKFLOW_NAME", "sleap-roots-pipeline-abc123")
     assert ing.resolve_argo_workflow_name() == "sleap-roots-pipeline-abc123"
@@ -1804,6 +1844,69 @@ def test_batch_ingest_cli_mixed_statuses_default_output(monkeypatch, tmp_path):
     assert "1 skipped" in result.output.lower()
     assert "1 failed" in result.output.lower()
     assert "scan_3" in result.output
+
+
+def test_batch_ingest_cli_exits_zero_when_only_failure_is_a_status_update_mismatch(
+    monkeypatch, tmp_path
+):
+    """Review round 5 finding: before this, a batch whose ONLY 'failure' was a
+    non-retriable status_update_matched mismatch still exited non-zero — telling
+    Argo's retryStrategy to retry a whole write-back pod for something no retry
+    could ever fix, eventually failing the entire Workflow (and, via the poller's
+    per-workflow-phase rollup, the whole run) over one already-fully-reported scan.
+    The batch summary/JSON must still show the real failure — only the exit code
+    changes."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-mismatch-only")
+
+    def _selective_call(client, env, **_kw):
+        scan_key = env["provenance"]["scan_key"]
+        if scan_key == "scan_mismatch":
+            return {**RESULT_OK, "status_update_matched": False}
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _selective_call)
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", lambda client, name: 0)
+    for key in ("scan_1", "scan_mismatch"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_mismatch"]["status"] == "failed"
+    assert payload["scan_mismatch"]["retriable"] is False
+    assert payload["scan_1"]["status"] == "ok"
+
+
+def test_batch_ingest_cli_exits_nonzero_when_a_genuine_failure_also_present(
+    monkeypatch, tmp_path
+):
+    """A status_update_matched mismatch alongside a GENUINE retriable failure must still
+    exit non-zero — the retry might fix the retriable one, even if it can never fix the
+    other."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-mixed-mismatch")
+
+    def _selective_call(client, env, **_kw):
+        scan_key = env["provenance"]["scan_key"]
+        if scan_key == "scan_mismatch":
+            return {**RESULT_OK, "status_update_matched": False}
+        if scan_key == "scan_timeout":
+            raise TimeoutError("simulated network timeout")
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _selective_call)
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", lambda client, name: 0)
+    for key in ("scan_mismatch", "scan_timeout"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code != 0, result.output
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_mismatch"]["retriable"] is False
+    assert payload["scan_timeout"]["retriable"] is True
 
 
 def test_batch_ingest_cli_isolates_one_bad_envelope(monkeypatch, tmp_path):

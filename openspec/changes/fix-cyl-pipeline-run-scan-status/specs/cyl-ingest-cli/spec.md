@@ -11,7 +11,21 @@ included, set to `os.environ["ARGO_WORKFLOW_NAME"]`, only when that environment 
 non-empty; when unset, the command SHALL omit the key entirely (relying on the RPC's `DEFAULT NULL`)
 rather than sending an empty string, preserving the existing manual/ad-hoc invocation shape exactly.
 The command SHALL accept a `--profile` option (defaulting like the other commands) and authenticate
-through the existing credentials profile.
+through the existing credentials profile. When `p_argo_workflow_name` was supplied and the RPC's
+returned `status_update_matched` is `false` — a delivery that wrote its trait/blob data correctly
+but whose per-scan status linkage was silently skipped by an already-permanent guard, because the
+matching `cyl_pipeline_run_scans` row was already `'failed'` — both this command and the shared
+per-envelope batch helper (`ingest_one_envelope`, used by `cyl batch-ingest-result`) SHALL report it
+as a failure rather than a plain success, explaining that the failure is already reflected in the
+run's `failed_count` and is not a new one.
+
+#### Scenario: A status linkage mismatch is reported as a failure, not a silent success
+
+- **WHEN** the command runs with `ARGO_WORKFLOW_NAME` set, the envelope's trait/source/blob rows
+  are written successfully (`was_noop: false`), but the RPC's returned `status_update_matched` is
+  `false`
+- **THEN** the command still prints/emits the real, successful write outcome, but then reports a
+  failure explaining the status-linkage mismatch, and exits non-zero
 
 #### Scenario: Ingest from a file path
 

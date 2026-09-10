@@ -656,15 +656,25 @@ def ingest_one_envelope(
         # disagree with the real data just written. status_update_matched is None when
         # argo_workflow_name wasn't supplied (not applicable — the existing manual/
         # ad-hoc shape, unaffected).
+        #
+        # retriable=False (found during /review-pr round 5): this scan's row was already
+        # 'failed' BEFORE this call ran, and step 9's guard makes that permanent — nothing
+        # about re-running this same delivery can ever change the outcome. Without this,
+        # batch_ingest_result's exit code alone was indistinguishable from a genuinely
+        # retriable failure, so an Argo-retried write-back pod would burn its whole retry
+        # budget on something no retry could fix, ultimately failing the entire Workflow —
+        # and with it, every other scan in the same batch that actually succeeded.
         if argo_workflow_name is not None and result.get("status_update_matched") is False:
             return ScanResult(
                 scan_key,
                 "failed",
                 f"write-back succeeded (source_id={result.get('source_id')}) but this "
                 "scan's cyl_pipeline_run_scans status was not updated — it was likely "
-                "already closed out as 'failed' by an earlier reconciliation attempt. "
-                "The written trait/blob data is correct, but done_count/failed_count "
-                "will not reflect it; verify manually.",
+                "already closed out as 'failed' by an earlier reconciliation attempt, and "
+                "that outcome is already reflected in the run's failed_count (this is not "
+                "a new failure). The written trait/blob data is correct; verify manually "
+                "if the mismatch is unexpected.",
+                retriable=False,
             )
 
         if result.get("was_noop"):
@@ -800,14 +810,19 @@ def ingest_result(
     # round 4): a genuinely successful write whose status linkage was silently
     # skipped by the resurrection guard. Checked after printing the result (the
     # write itself did succeed) so the operator sees both the real outcome and
-    # the warning, then the command still exits non-zero.
+    # the warning, then the command still exits non-zero — unlike
+    # batch_ingest_result's own retriable=False handling (review round 5), a
+    # non-zero exit here has no automated-retry consequence to worry about:
+    # this command is the manual/ad-hoc invocation shape, run by a human who
+    # sees the failure directly, not a write-back pod Argo will retry.
     if argo_workflow_name is not None and result.get("status_update_matched") is False:
         raise click.ClickException(
             f"write-back succeeded (source_id={result.get('source_id')}) but this "
             "scan's cyl_pipeline_run_scans status was not updated — it was likely "
-            "already closed out as 'failed' by an earlier reconciliation attempt. "
-            "The written trait/blob data is correct, but done_count/failed_count "
-            "will not reflect it; verify manually."
+            "already closed out as 'failed' by an earlier reconciliation attempt, and "
+            "that outcome is already reflected in the run's failed_count (this is not "
+            "a new failure). The written trait/blob data is correct; verify manually "
+            "if the mismatch is unexpected."
         )
 
 
@@ -955,5 +970,14 @@ def batch_ingest_result(
             )
         )
 
-    if not batch_result.ok:
+    # needs_retry, not .ok: a batch whose only failures are non-retriable
+    # status_update_matched mismatches (real data written, status linkage
+    # already permanently settled) still shows up as failed in the summary/JSON
+    # above — .ok correctly stays False, and any human/script reading that output
+    # sees it — but exiting non-zero here would tell Argo's retryStrategy to
+    # retry the whole write-back pod, which can never change this outcome and
+    # would burn the retry budget until the run's own Argo Workflow phase itself
+    # fails, cascading one already-fully-reported, unfixable scan into the
+    # entire run reading terminal 'failed' (found during /review-pr round 5).
+    if batch_result.needs_retry:
         ctx.exit(1)

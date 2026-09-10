@@ -23,7 +23,15 @@ construction/upload, or the RPC call itself) SHALL be isolated into that envelop
 `ScanResult`, never aborting the rest of the batch or preventing the end-of-batch reconciliation call
 from running. A failure of the reconciliation call itself SHALL likewise be isolated — reported as a
 synthetic failed `ScanResult` (rather than raised) so the batch's own summary/`--json` output and exit
-code still reflect it — and, on success, the number of scans it closed out SHALL be logged.
+code still reflect it — and, on success, the number of scans it closed out SHALL be logged. The
+command's exit code SHALL be non-zero only when the batch has at least one failed `ScanResult` whose
+`retriable` field is `true` (per the `cyl-ingest-cli` capability's `status_update_matched` handling,
+a delivery that genuinely wrote its data but whose per-scan status linkage was silently skipped by
+an already-permanent guard is reported as failed but marked `retriable: false`) — a batch whose only
+failures are all non-retriable SHALL still print/emit them as failed in the summary/`--json` output
+(the real outcome is never hidden), but SHALL exit zero, since no retry of the batch could change
+that outcome, and a non-zero exit would otherwise cause an automated retry (e.g. Argo's
+`retryStrategy`) to exhaust its retry budget for nothing.
 
 #### Scenario: Every envelope file in the directory is ingested
 
@@ -83,3 +91,18 @@ code still reflect it — and, on success, the number of scans it closed out SHA
 - **WHEN** the end-of-batch reconciliation call succeeds and closes out one or more scans as
   `'failed'`
 - **THEN** the number of scans closed out is logged, rather than discarded silently
+
+#### Scenario: A batch whose only failure is non-retriable exits zero
+
+- **WHEN** every failed `ScanResult` in the batch has `retriable: false` (e.g. a delivery whose
+  data was written correctly but whose `status_update_matched` came back `false`), and none has
+  `retriable: true`
+- **THEN** the batch summary/`--json` output still reports those entries as `"failed"` with their
+  real error messages, but the command exits zero
+
+#### Scenario: A batch mixing a retriable and a non-retriable failure exits non-zero
+
+- **WHEN** the batch has at least one failed `ScanResult` with `retriable: true` (e.g. a genuine
+  RPC or network error) alongside one or more with `retriable: false`
+- **THEN** the command exits non-zero — the retriable failure alone is enough to warrant a retry,
+  even though the retry cannot change the non-retriable one's outcome
