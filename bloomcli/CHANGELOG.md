@@ -8,6 +8,13 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Fixed
+
+- `bloomctl cyl batch-download-for-predict` now exits `3` (not `1`) when at least one scan in
+  the batch failed, distinguishing partial success from a full crash — mirrors
+  `sleap_roots_predict`/`trait_extractor`'s existing `0`/`3` convention. Full success, an
+  all-skipped batch, or empty input still exit `0` (#772).
+
 ## [0.1.0a6] - 2026-08-25 — plate download on the PyPI page
 
 ### Fixed

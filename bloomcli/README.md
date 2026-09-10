@@ -457,8 +457,11 @@ bloomctl cyl batch-download-for-predict <out_dir>
   rather than treated as still held.
 - `--json` prints one entry per scan_id (`scan_key`, `status`, `error`) as a
   JSON array; without it, a human-readable summary plus one line per failure.
-- **Exit code:** non-zero if any scan in the batch failed; zero if every scan
-  succeeded, was skipped, or the input was empty.
+- **Exit code:** `0` if every scan succeeded, was skipped, or the input was
+  empty; `3` if any scan in the batch failed (a real partial-success code,
+  distinct from a crash — mirrors `sleap_roots_predict`/`trait_extractor`'s
+  own `0`/`3` convention, bloom #772). A usage error or manifest-lock/write
+  failure still exits `2`/`1` respectively, independent of any scan's outcome.
 
 Auth: same saved login profile as other `cyl` commands.
 
@@ -564,7 +567,9 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
 - **Exit code:** non-zero if any envelope in the batch failed; zero if every
   envelope succeeded, was a no-op re-delivery, or the directory was empty
   (a directory containing only a manifest with no matching files is not the
-  empty case — it exits non-zero).
+  empty case — it exits non-zero). Still a single undifferentiated non-zero
+  value today, pending bloom PR #774 — see `batch-download-for-predict` above
+  for the `0`/`3` partial-success convention that command now uses.
 
 Auth: same saved login profile as `ingest-result` (must have write access).
 
