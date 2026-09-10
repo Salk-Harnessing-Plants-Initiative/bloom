@@ -401,33 +401,40 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
             )
             dataset_id = cur.fetchone()[0]
 
-        # Cluster names and colours are edited by hand after a load -- the
-        # backfill script seeds them and says to fix the biology in Studio -- and
-        # they cannot be rebuilt from the file, so a surviving cell type keeps
-        # both. New cell types take a colour no surviving one is already using.
+        # A cluster's name, colour and label source are edited by hand after a
+        # load -- the backfill script seeds them and says to fix the biology in
+        # Studio -- and none can be rebuilt from the file, so a surviving cell
+        # type keeps all three. A new one takes a colour no surviving type is
+        # already using, and no source.
         cur.execute(
-            "SELECT cluster_id, name, color FROM public.scrna_clusters "
+            "SELECT cluster_id, name, color, source FROM public.scrna_clusters "
             "WHERE dataset_id = %s", (dataset_id,),
         )
         kept = {
-            cid: (name, color) for cid, name, color in cur.fetchall()
+            cid: (name, color, source)
+            for cid, name, color, source in cur.fetchall()
             if cid in set(cells["levels"])
         }
-        taken = {color.lower() for _, color in kept.values() if color}
+        taken = {color.lower() for _, color, _ in kept.values() if color}
         spare = iter([c for c in PALETTE if c.lower() not in taken])
 
         cur.execute("DELETE FROM public.scrna_cells WHERE dataset_id = %s", (dataset_id,))
         cur.execute("DELETE FROM public.scrna_clusters WHERE dataset_id = %s", (dataset_id,))
 
+        catalogue = []
+        for ordinal, level in enumerate(cells["levels"]):
+            name, color, source = kept.get(level, (None, None, None))
+            catalogue.append((
+                dataset_id, level, ordinal,
+                (name or "").strip() or level,
+                (color or "").strip() or next(spare),
+                (source or "").strip() or None,
+            ))
         cur.executemany(
             "INSERT INTO public.scrna_clusters "
-            "(dataset_id, cluster_id, ordinal, name, color) VALUES (%s, %s, %s, %s, %s)",
-            [
-                (dataset_id, level, ordinal,
-                 (kept.get(level, (None, None))[0] or "").strip() or level,
-                 (kept.get(level, (None, None))[1] or "").strip() or next(spare))
-                for ordinal, level in enumerate(cells["levels"])
-            ],
+            "(dataset_id, cluster_id, ordinal, name, color, source) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            catalogue,
         )
         cur.executemany(
             "INSERT INTO public.scrna_cells "
