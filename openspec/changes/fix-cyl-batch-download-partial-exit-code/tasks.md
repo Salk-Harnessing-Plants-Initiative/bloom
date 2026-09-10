@@ -104,14 +104,14 @@ benefit.
 
 ## 6. Commit plan
 
-- [ ] 6.1 One commit: `fix(#772): exit 3, not 1, when a download batch has a partial failure` —
+- [x] 6.1 One commit: `fix(#772): exit 3, not 1, when a download batch has a partial failure` —
       `bloomcli/src/bloomctl/cyl/download_for_predict.py` +
       `bloomcli/tests/test_cyl_download_for_predict.py` (Sections 1+2 together; matches this
       repo's convention of bundling a behavior change with its tests in one commit rather than a
       separate red-only commit).
-- [ ] 6.2 One commit: `docs(#772): describe batch-download-for-predict's 0/3 exit contract` —
+- [x] 6.2 One commit: `docs(#772): describe batch-download-for-predict's 0/3 exit contract` —
       `bloomcli/README.md`, `bloomcli/CHANGELOG.md` (Section 3).
-- [ ] 6.3 One commit: `docs(openspec): scope fix-cyl-batch-download-partial-exit-code` — the
+- [x] 6.3 One commit: `docs(openspec): scope fix-cyl-batch-download-partial-exit-code` — the
       `openspec/changes/fix-cyl-batch-download-partial-exit-code/` scaffold itself (proposal.md,
       design.md, tasks.md, specs/), landing in the same PR per this repo's bundled-PR convention.
 - [ ] 6.4 Single PR targeting `staging`, branch `eberrigan/fix-bloomctl-batch-download-partial-exit-772`.
