@@ -1,6 +1,6 @@
 """
 Integration tests for the common differential expression tables
-(migration 20260910120000_scrna_de_common_results.sql).
+(migration 20260912090000_scrna_de_common_results.sql).
 
 `scrna_de` used to hold one answer per question, with the genes behind it in a
 storage object. It now records which analysis produced a row, so a dataset can
@@ -382,7 +382,7 @@ def _rollback_body() -> str:
     from pathlib import Path
 
     path = (Path(__file__).parent.parent.parent / "supabase" / "rollbacks"
-            / "20260910120000_scrna_de_common_results_rollback.sql")
+            / "20260912090000_scrna_de_common_results_rollback.sql")
     assert path.exists(), "rollback script not found"
     return "\n".join(
         line for line in path.read_text().splitlines()
