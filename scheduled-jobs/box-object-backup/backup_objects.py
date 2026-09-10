@@ -114,6 +114,7 @@ SKIPPED_NAME_MARKER = "object(s) were SKIPPED for their names"
 ENV_KEYS = (
     "POSTGRES_USER",
     "POSTGRES_DB",
+    "POSTGRES_PASSWORD",
     "MINIO_ROOT_USER",
     "MINIO_ROOT_PASSWORD",
     "OBJECT_BACKUP_MINIO_BUCKET",
@@ -133,7 +134,7 @@ ENV_KEYS = (
 # the one function that needs it.
 # `.env.prod.defaults` classifies both of these as credentials rather than
 # config: they pair with an admin password.
-SECRET_ENV_KEYS = ("MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD")
+SECRET_ENV_KEYS = ("MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD", "POSTGRES_PASSWORD")
 
 # The renderer anchors on this shape — timestamp, level, then the key — so the
 # two are named in one place. `asctime` contains a space.
@@ -376,6 +377,7 @@ def main(argv: list[str] | None = None) -> int:
         # an operator who exports a corrected password silently gets the
         # file's.
         args.minio_access = args.minio_access or found.get("MINIO_ROOT_USER", "")
+        args.pg_password = args.pg_password or found.get("POSTGRES_PASSWORD", "")
         args.minio_secret = args.minio_secret or found.get("MINIO_ROOT_PASSWORD", "")
         check_state_dir(args, found.get("OBJECT_BACKUP_STATE_DIR", ""))
         return run_backup(args)
@@ -500,6 +502,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     # are used, so neither value need ever be exported. `main` replaces them
     # with what the env file held; a plain export still works for a run by hand.
     args.minio_access = os.environ.get("MINIO_ROOT_USER", "")
+    args.pg_password = os.environ.get("POSTGRES_PASSWORD", "")
     args.minio_secret = os.environ.get("MINIO_ROOT_PASSWORD", "")
     return args
 
@@ -531,15 +534,6 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
 
     db_container = dock.find_container(project, dock.DB_SERVICE)
 
-    # Taken from the database, BEFORE the manifest snapshot — not from the
-    # host afterwards. Anchoring on a moment the snapshot cannot precede means
-    # an object written while enumeration runs is re-checked next week rather
-    # than falling into a gap nothing ever revisits.
-    watermark = dock.database_now(
-        db_container,
-        user=os.environ.get("POSTGRES_USER", "supabase_admin"),
-        database=os.environ.get("POSTGRES_DB", "postgres"),
-    )
     # Config first, before the manifest read. Every check below is a string
     # or a file on this host — none of them can pass at 02:00 and fail at
     # 05:00 — and reading eight million rows before finding out that
@@ -551,6 +545,22 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     check_destination(ledger, destination)
     minio = minio_source_from_env(args)
     require_rclone_config(args.rclone_config, args.box_remote)
+    if not args.pg_password:
+        raise lib.BackupError(
+            "POSTGRES_PASSWORD is not set — the deploy env file must define it "
+            f"for psql to authenticate against {dock.DB_SERVICE}"
+        )
+
+    # Taken from the database, BEFORE the manifest snapshot — not from the
+    # host afterwards. Anchoring on a moment the snapshot cannot precede means
+    # an object written while enumeration runs is re-checked next week rather
+    # than falling into a gap nothing ever revisits.
+    watermark = dock.database_now(
+        db_container,
+        user=os.environ.get("POSTGRES_USER", "supabase_admin"),
+        database=os.environ.get("POSTGRES_DB", "postgres"),
+        password=args.pg_password,
+    )
 
     since = None if args.full else ledger.last_successful_run()
     logger.info(
@@ -568,6 +578,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         user=os.environ.get("POSTGRES_USER", "supabase_admin"),
         database=os.environ.get("POSTGRES_DB", "postgres"),
         destination=manifest,
+        password=args.pg_password,
     )
     logger.info("listed %d object(s)", listed)
 

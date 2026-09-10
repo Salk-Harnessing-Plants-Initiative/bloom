@@ -150,7 +150,8 @@ def find_network(project: str, network: str = "supanet") -> str:
 
 
 def psql_query_to_file(
-    container: str, sql: str, user: str, database: str, destination: Path
+    container: str, sql: str, user: str, database: str, destination: Path,
+    password: str = "",
 ) -> int:
     """Run a read-only query in the db container, streaming rows to a file.
 
@@ -164,6 +165,11 @@ def psql_query_to_file(
         which("docker"),
         "exec",
         "-i",
+        # Pass-through, deliberately valueless: db-prod authenticates every
+        # connection, including one opened inside the container, and an argv
+        # is world-readable through /proc/<pid>/cmdline.
+        "-e",
+        "PGPASSWORD",
         container,
         "psql",
         "-U",
@@ -191,7 +197,12 @@ def psql_query_to_file(
     rows = 0
     with destination.open("w", encoding="utf-8") as out:
         process = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE, stdout=out, stderr=subprocess.PIPE, text=True
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=out,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**os.environ, "PGPASSWORD": password},
         )
         _, stderr = process.communicate(input=preamble + sql + ";\n")
         if process.returncode != 0:
@@ -203,7 +214,7 @@ def psql_query_to_file(
     return rows
 
 
-def database_now(container: str, user: str, database: str) -> str:
+def database_now(container: str, user: str, database: str, password: str = "") -> str:
     """The DATABASE's clock, in the format the manifest reports updated_at in.
 
     The watermark is compared against `storage.objects.updated_at`, which
@@ -224,6 +235,8 @@ def database_now(container: str, user: str, database: str) -> str:
             which("docker"),
             "exec",
             "-i",
+            "-e",
+            "PGPASSWORD",
             container,
             "psql",
             "-U",
@@ -242,6 +255,7 @@ def database_now(container: str, user: str, database: str) -> str:
         # --quiet suppresses psql's `SET` command tags, so the preamble adds
         # no lines of its own and the first line is still the timestamp.
         input_text=READ_ONLY_PREAMBLE + sql,
+        env={**os.environ, "PGPASSWORD": password},
     ).strip()
     if not out:
         raise DockerError("could not read the database clock for the watermark")
