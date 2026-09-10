@@ -384,17 +384,22 @@ def test_differential_expression_blocks_a_reload(ingest, pg_conn):
     pg_conn.rollback()
 
 
-def test_a_reload_keeps_hand_edited_names_and_colours(ingest, pg_conn):
-    """Cluster names and colours are edited after a load -- the backfill seeds
-    them and says to fix the biology in Studio -- and cannot be rebuilt from the
-    file. A surviving cell type keeps both; a new one takes a colour no
-    surviving type is using."""
+def test_a_reload_keeps_hand_edited_names_colours_and_sources(ingest, pg_conn):
+    """A cluster's name, colour and label source are edited after a load -- the
+    backfill seeds them and says to fix the biology in Studio -- and none can be
+    rebuilt from the file. A surviving cell type keeps all three; a new one
+    takes a colour no surviving type is using, and no source.
+
+    `source` has no flag and no value in the file, so the reload is the only
+    thing that can destroy it, and a load that drops it looks exactly like one
+    that never had it."""
     with pg_conn.cursor() as cur:
         sid = species(cur)
         dataset_id, _ = register(ingest, pg_conn, "curated", sid, cells(["A", "C"]))
         cur.execute(
             "UPDATE scrna_clusters SET name = 'Phellem (periderm layer 2)', "
-            "color = '#112233' WHERE dataset_id = %s AND cluster_id = 'C'",
+            "color = '#112233', source = 'Shahan 2022 root atlas' "
+            "WHERE dataset_id = %s AND cluster_id = 'C'",
             (dataset_id,),
         )
         # 'B' is new and sorts before 'C', so without carry-forward C's colour
@@ -402,13 +407,16 @@ def test_a_reload_keeps_hand_edited_names_and_colours(ingest, pg_conn):
         run(ingest, pg_conn, "curated", sid, cells(["A", "B", "C"]))
 
         cur.execute(
-            "SELECT cluster_id, name, color FROM scrna_clusters "
+            "SELECT cluster_id, name, color, source FROM scrna_clusters "
             "WHERE dataset_id = %s ORDER BY cluster_id", (dataset_id,),
         )
         rows = cur.fetchall()
-        assert rows[2] == ("C", "Phellem (periderm layer 2)", "#112233")
-        assert rows[0] == ("A", "A", ingest.PALETTE[0]), "unedited types keep theirs"
-        colours = [c for _, _, c in rows]
+        assert rows[2] == ("C", "Phellem (periderm layer 2)", "#112233",
+                           "Shahan 2022 root atlas")
+        assert rows[0] == ("A", "A", ingest.PALETTE[0], None), \
+            "unedited types keep theirs"
+        assert rows[1][3] is None, "a new cell type has no source to carry"
+        colours = [c for _, _, c, _ in rows]
         assert len(set(colours)) == 3, f"a colour was reused: {colours}"
     pg_conn.rollback()
 
