@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import {
   fetchClusterStats,
-  fetchDeFilePath,
   type ClusterStatsRow,
 } from "@/components/expression-lib/cluster-markers";
 
@@ -26,21 +25,26 @@ export function ExpressionClusterDetailPanel({
   clusterColor,
 }: ExpressionClusterDetailPanelProps) {
   const [stats, setStats] = useState<ClusterStatsRow | null>(null);
-  const [deFilePath, setDeFilePath] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
+    setStats(null);
+    setFailed(false);
     setLoading(true);
-    Promise.all([
-      fetchClusterStats(datasetId, clusterId),
-      fetchDeFilePath(datasetId, clusterId),
-    ]).then(([s, fp]) => {
-      if (cancelled) return;
-      setStats(s);
-      setDeFilePath(fp);
-      setLoading(false);
-    });
+
+    (async () => {
+      try {
+        const row = await fetchClusterStats(datasetId, clusterId);
+        if (!cancelled) setStats(row);
+      } catch {
+        if (!cancelled) setFailed(true);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
     return () => {
       cancelled = true;
     };
@@ -76,7 +80,8 @@ export function ExpressionClusterDetailPanel({
           {name}
         </h2>
         <div className="mt-1 text-sm text-stone-500">
-          cluster_id {clusterId} · {cellsHuman} cells
+          cluster_id {clusterId}
+          {failed ? " · could not load" : ` · ${cellsHuman} cells`}
         </div>
       </div>
 
@@ -94,11 +99,15 @@ export function ExpressionClusterDetailPanel({
           <span className="text-xs uppercase tracking-widest text-stone-500">
             Top markers
           </span>
-          <span className="text-[10px] text-stone-400">(scrna_de)</span>
+          <span className="text-[10px] text-stone-400">(scrna_cluster_stats)</span>
         </div>
 
         {loading ? (
           <div className="text-xs italic text-stone-400">Loading…</div>
+        ) : failed ? (
+          <div className="text-xs italic text-red-700">
+            Could not load this cluster.
+          </div>
         ) : !markers || markers.top.length === 0 ? (
           <div className="text-xs italic text-stone-400">
             No markers yet — waiting on DE ingest.
@@ -146,21 +155,6 @@ export function ExpressionClusterDetailPanel({
         >
           Rename
         </button>
-        <span className="text-stone-300">·</span>
-        {deFilePath ? (
-          <a
-            href={deFilePath}
-            target="_blank"
-            rel="noopener"
-            className="text-lime-700 hover:underline"
-          >
-            Export CSV
-          </a>
-        ) : (
-          <span className="text-stone-400 cursor-not-allowed" title="No DE CSV yet">
-            Export CSV
-          </span>
-        )}
         <span className="text-stone-300">·</span>
         <button
           type="button"

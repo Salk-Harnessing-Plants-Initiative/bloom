@@ -19,6 +19,9 @@ It locks the safety-critical properties the design signed off on:
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -28,6 +31,24 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 RELEASE = WORKFLOWS / "release-bloomcli.yml"
 VERSION = WORKFLOWS / "version-bloomcli.yml"
+
+# See test_deploy_kong_reload_on_config_change.py's identical helper for why this is
+# needed: `bash` can resolve to the WSL launcher shim rather than a real POSIX shell on
+# some Windows dev machines, depending on which process's PATH is being searched.
+_GIT_BASH_CANDIDATES = [
+    r"C:\Program Files\Git\bin\bash.exe",
+    r"C:\Program Files\Git\usr\bin\bash.exe",
+]
+
+
+def _bash_executable() -> str:
+    for candidate in _GIT_BASH_CANDIDATES:
+        if Path(candidate).exists():
+            return candidate
+    return shutil.which("bash") or "bash"
+
+
+BASH = _bash_executable()
 
 
 def _load(path: Path) -> dict:
@@ -52,6 +73,27 @@ def _raw(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _guard_permits(condition: str, prefix: str, *, event_name: str, tag: str | None) -> bool:
+    """Evaluate a job-level `if:` guard of the exact `A || B` shape these
+    workflows use, rather than checking each clause's substring in isolation.
+
+    A future edit that silently breaks the join (e.g. `||` flipped to `&&`,
+    or the clauses reordered/duplicated) would still contain both substrings
+    but permanently disable every real release — this fails loudly on that
+    instead of passing. Deliberately not a general GitHub Actions expression
+    parser: a condition that isn't exactly this two-clause `||` shape raises.
+    """
+    clauses = [c.strip() for c in condition.split("||")]
+    assert len(clauses) == 2, f"expected exactly one top-level `||`, got: {condition!r}"
+    not_release, tag_prefix = clauses
+    assert not_release == "github.event_name != 'release'", not_release
+    assert tag_prefix == f"startsWith(github.event.release.tag_name, '{prefix}')", tag_prefix
+
+    if event_name != "release":
+        return True
+    return bool(tag and tag.startswith(prefix))
+
+
 # --- publish workflow: triggers --------------------------------------------
 
 def test_release_triggers_only_on_release_and_dispatch():
@@ -60,6 +102,31 @@ def test_release_triggers_only_on_release_and_dispatch():
     assert on["release"]["types"] == ["published"]
     # Never publish on a push or a raw tag.
     assert "push" not in on
+
+
+# --- publish workflow: skips cleanly for a different package's release -----
+
+def test_validate_release_skips_tags_that_are_not_bloomctls():
+    """A bloommcp release must not produce a failing run here (#663)."""
+    job = _load(RELEASE)["jobs"]["validate-release"]
+    condition = job.get("if", "")
+    assert "startsWith(github.event.release.tag_name, 'bloomctl-')" in condition
+    # workflow_dispatch (no release tag) must always pass the guard.
+    assert "github.event_name != 'release'" in condition
+
+
+def test_validate_release_guard_truth_table():
+    """Exercises the joined `||` expression's actual behavior, not just each
+    clause's substring — see `_guard_permits`'s docstring for why."""
+    condition = _load(RELEASE)["jobs"]["validate-release"].get("if", "")
+
+    def guard(event_name: str, tag: str | None = None) -> bool:
+        return _guard_permits(condition, "bloomctl-", event_name=event_name, tag=tag)
+
+    assert guard("workflow_dispatch") is True
+    assert guard("release", tag="bloomctl-v1.0.0") is True
+    assert guard("release", tag="bloommcp-v1.0.0") is False
+    assert guard("release", tag="bloomcp-v1.0.0") is False  # typo'd prefix
 
 
 # --- publish workflow: validate gates publish ------------------------------
@@ -80,6 +147,34 @@ def test_validate_checks_tag_changelog_lint_tests():
     assert "CHANGELOG.md" in text                    # changelog entry check
     assert "ruff" in text                            # lint
     assert "pytest" in text                          # tests
+
+
+def _run_validate_tag_script(tag: str, version: str) -> subprocess.CompletedProcess:
+    """Execute the REAL `run:` script from validate-release's "Validate tag
+    matches version" step (not a Python reimplementation) — this exercises
+    the actual exit-1-on-mismatch branch, not just a string-containment
+    check on the workflow YAML. TAG/VERSION are passed the same way the real
+    step receives them: via `env:`, not `uv version`/inline interpolation.
+    """
+    job = _load(RELEASE)["jobs"]["validate-release"]
+    step = next(s for s in job["steps"] if s.get("name") == "Validate tag matches version")
+    env = {**os.environ, "TAG": tag, "VERSION": version}
+    return subprocess.run(
+        [BASH, "-c", step["run"]], env=env, capture_output=True, text=True, timeout=10
+    )
+
+
+def test_validate_tag_script_passes_on_matching_tag():
+    result = _run_validate_tag_script("bloomctl-v0.1.0a6", "0.1.0a6")
+    assert result.returncode == 0, result.stderr
+    assert "matches version" in result.stdout
+
+
+def test_validate_tag_script_fails_on_mismatched_tag():
+    result = _run_validate_tag_script("bloomctl-v0.1.0a7", "0.1.0a6")
+    assert result.returncode == 1
+    assert "::error::" in result.stdout
+    assert "does not match" in result.stdout
 
 
 # --- publish workflow: trusted publishing + immutability guard -------------
@@ -151,12 +246,13 @@ def test_version_workflow_is_dispatch_only_with_bump_input():
     assert {"patch", "minor", "major"}.issubset(set(inputs["bump_type"]["options"]))
 
 
-def test_version_workflow_bumps_and_opens_pr():
+def test_version_workflow_bumps_syncs_lock_and_opens_pr():
     wf = _load(VERSION)
     assert wf["permissions"]["contents"] == "write"
     assert wf["permissions"]["pull-requests"] == "write"
     text = _steps_text(wf["jobs"]["bump-version"])
     assert "uv version" in text
+    assert "uv lock" in text  # bloomcli/uv.lock must stay in sync with the bump
     assert "peter-evans/create-pull-request" in text
 
 

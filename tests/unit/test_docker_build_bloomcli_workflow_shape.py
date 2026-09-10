@@ -17,6 +17,11 @@ design.md signed off on:
     shell logic release-bloomcli.yml already uses;
   - a validate-tag job gates the release-triggered push on that derived
     version actually matching bloomcli/pyproject.toml's version;
+  - validate-tag also skips cleanly (not failed) for a Release tagged for a
+    different monorepo package (e.g. bloommcp-vX.Y.Z) — added in the #663
+    review after this workflow produced a permanent, misleading red X on
+    every bloommcp release (it was untouched by that PR, so it never got
+    the tag-prefix guard release-bloomcli.yml/release-bloommcp.yml did);
   - the staging tag is pushed only on the push trigger (never on release —
     a release could be tagged from a commit other than staging's current
     tip, and moving the mutable staging pointer from a release build would
@@ -151,7 +156,44 @@ def test_prefix_stripping_logic_resolves_expected_version(tag: str, expected: st
 def test_validate_tag_job_exists_gated_on_release():
     jobs = _load()["jobs"]
     assert "validate-tag" in jobs
-    assert jobs["validate-tag"]["if"] == "github.event_name == 'release'"
+    assert jobs["validate-tag"]["if"] == (
+        "github.event_name == 'release' && "
+        "startsWith(github.event.release.tag_name, 'bloomctl-')"
+    )
+
+
+def _validate_tag_job_runs(*, event_name: str, tag: str | None) -> bool:
+    """Evaluate validate-tag's job-level `if:` behaviorally rather than just
+    checking its string contents. This is an `A && B` guard, not the `A || B`
+    shape release-bloomcli.yml/release-bloommcp.yml use — validate-tag is
+    release-only auxiliary validation (push/workflow_dispatch never need it),
+    not the main gate every trigger type must pass through, so `&&` (not
+    `||`) is the correct join here. A parametrized truth table (rather than
+    only a substring check) would catch a future edit that silently flips
+    the join and reintroduces the false-alarm-on-bloommcp-release bug (#663
+    review) or, in the other direction, starts silently skipping real
+    bloomctl releases too.
+    """
+    condition = _load()["jobs"]["validate-tag"]["if"]
+    clauses = [c.strip() for c in condition.split("&&")]
+    assert len(clauses) == 2, f"expected exactly one top-level `&&`, got: {condition!r}"
+    is_release, tag_prefix = clauses
+    assert is_release == "github.event_name == 'release'", is_release
+    assert tag_prefix == "startsWith(github.event.release.tag_name, 'bloomctl-')", tag_prefix
+
+    if event_name != "release":
+        return False
+    return bool(tag and tag.startswith("bloomctl-"))
+
+
+def test_validate_tag_guard_truth_table():
+    assert _validate_tag_job_runs(event_name="push", tag=None) is False
+    assert _validate_tag_job_runs(event_name="workflow_dispatch", tag=None) is False
+    assert _validate_tag_job_runs(event_name="release", tag="bloomctl-v0.1.0a2") is True
+    assert _validate_tag_job_runs(event_name="release", tag="v0.1.0a2") is False
+    # The exact gap this guard closes: a bloommcp release must not produce a
+    # failing (or even running) validate-tag job on bloomcli's workflow.
+    assert _validate_tag_job_runs(event_name="release", tag="bloommcp-v0.1.0a2") is False
 
 
 def test_build_and_push_needs_validate_tag_but_not_blocked_off_release():

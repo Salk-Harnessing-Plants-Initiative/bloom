@@ -14,6 +14,9 @@ trusted publishing (OIDC) — there is no TestPyPI lane and no stored token.
 - **Pre-releases** — publish to real PyPI as PEP 440 `aN`/`bN`/`rcN`, marked
   "pre-release" on the GitHub Release. `uvx bloomctl` ignores them unless the
   caller passes `--prerelease=allow`.
+- **Package-scoped** — the workflow only acts on a Release tagged `bloomctl-vX.Y.Z`; a
+  Release for a different monorepo package (e.g. `bloommcp-vX.Y.Z`) is skipped cleanly,
+  not failed (see "Tag scoping" below).
 
 ## Version management
 
@@ -21,7 +24,11 @@ The version lives in `bloomcli/pyproject.toml` (single source of truth;
 `bloomcli/src/bloomctl/__init__.py` reads it from installed metadata).
 
 - **In CI:** run the **version-bloomcli** workflow (Actions tab → Run workflow),
-  pick a bump type, and it opens a PR with the bump.
+  pick a bump type, and it opens a PR with the bump. It has no `concurrency:`
+  guard at all, so two dispatches — same `bump_type` or different — can each
+  compute a new version off the same not-yet-merged base and open
+  independent, conflicting bump PRs. Don't dispatch a second bump before the
+  first one's PR has merged.
 - **Locally:**
 
   ```bash
@@ -40,9 +47,13 @@ and are marked as a pre-release on GitHub.
 ## Cutting a release
 
 1. Bump the version (workflow or `uv version`), merge the bump PR.
-2. Add a `## [X.Y.Z] - YYYY-MM-DD` entry to `bloomcli/CHANGELOG.md`.
-3. Create a **GitHub Release** whose tag matches the version (`bloomctl-vX.Y.Z`,
-   `vX.Y.Z`, or `X.Y.Z`). Tick **"Set as a pre-release"** for `aN`/`bN`/`rcN`.
+2. Move `[Unreleased]`'s entries in `bloomcli/CHANGELOG.md` under a new
+   `## [X.Y.Z] - YYYY-MM-DD` heading, dated the day you're actually cutting the release
+   (not whenever the entries were originally written — a stale date here is easy to miss
+   since nothing checks it).
+3. Create a **GitHub Release** whose tag is `bloomctl-vX.Y.Z` (this is now the only
+   accepted tag form — see "Tag scoping" below; a bare `vX.Y.Z` or `X.Y.Z` tag is skipped,
+   not validated). Tick **"Set as a pre-release"** for `aN`/`bN`/`rcN`.
 4. Publishing the Release runs two workflows:
    - `release-bloomcli.yml`, in three jobs:
      - `validate-release`: tag ↔ version match, changelog entry exists, lint + tests.
@@ -74,6 +85,16 @@ and are marked as a pre-release on GitHub.
    transitive dependency install an unfinished version too, and that is what
    broke `0.1.0a4`.
 
+### Tag scoping
+
+`release-bloomcli.yml`'s `validate-release` job carries a job-level guard —
+`github.event_name != 'release' || startsWith(github.event.release.tag_name, 'bloomctl-')` —
+so a Release cut for a different monorepo package (`bloommcp-vX.Y.Z`) is skipped, not failed.
+The reciprocal guard on `release-bloommcp.yml` (`bloommcp-` prefix) means a `bloomctl` release
+likewise never fails that workflow. `workflow_dispatch` always passes the guard (it has no
+release tag). This narrows the tag-parsing step's previous support for a bare `vX.Y.Z` or
+`X.Y.Z` tag — never actually used for a real release — to `bloomctl-vX.Y.Z` only.
+
 ### Project URLs
 
 The committed repo links point at `main` (the source of truth): the
@@ -91,13 +112,13 @@ per-release edit — and the change is never committed back.
 Register a **pending trusted publisher** on PyPI (the package need not exist yet)
 bound to exactly these values — they must match the workflow or publishing fails:
 
-| Field | Value |
-|---|---|
-| PyPI Project Name | `bloomctl` |
-| Owner | `Salk-Harnessing-Plants-Initiative` |
-| Repository name | `bloom` |
-| Workflow name | `release-bloomcli.yml` |
-| Environment name | `pypi` |
+| Field             | Value                               |
+| ----------------- | ----------------------------------- |
+| PyPI Project Name | `bloomctl`                          |
+| Owner             | `Salk-Harnessing-Plants-Initiative` |
+| Repository name   | `bloom`                             |
+| Workflow name     | `release-bloomcli.yml`              |
+| Environment name  | `pypi`                              |
 
 Salk-HPI has no PyPI organization, so the project is registered under **Talmo's
 PyPI org**. The GitHub owner (Salk-HPI) and the PyPI org (Talmo) are independent;
@@ -107,7 +128,9 @@ trusted publishing binds the GitHub repo to the PyPI project.
 
 Create a repo Environment named **`pypi`** (Settings → Environments). Add
 protections (required reviewers, wait timer) here if a human gate on publishing
-is wanted.
+is wanted. This environment is now shared with `bloommcp`'s release pipeline too
+(`bloommcp/RELEASE_PROCESS.md`) — two packages' publish credentials gate on it having
+no protection rules today.
 
 ## Troubleshooting
 
@@ -118,6 +141,15 @@ is wanted.
   `pyproject.toml` version. Retag the Release or bump the version.
 - **`validate-release` fails on changelog** — add the `## [X.Y.Z]` entry to
   `bloomcli/CHANGELOG.md`.
+- **The workflow run is skipped entirely** — the Release tag doesn't start with `bloomctl-`
+  (it was probably meant for `bloommcp`'s release instead). If it doesn't start with either
+  package's prefix, `release-tag-guard.yml` fails loudly on the same Release so this doesn't
+  go unnoticed.
+- **`uv publish` partially succeeds** (e.g. the wheel uploads, then the sdist fails) — PyPI
+  rejects re-uploading a filename that already exists, so re-running the job does not resume
+  where it left off: the file that already uploaded is now rejected as a duplicate too.
+  Recovery is a new version (bump, changelog entry, re-tag, new Release), not a rerun of the
+  same one.
 
 ## References
 

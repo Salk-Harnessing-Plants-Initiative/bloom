@@ -10,12 +10,12 @@ Fixture recipe (tasks.md C3.1): monkeypatch `experiment_utils.TRAITS_DIR` with a
 dropped-in copy of the turface_19 CSV; monkeypatch `PLOTS_DIR` in `_viz_shared`
 (the one place all 5 tools re-import it from, so a single patch covers all of
 them); use `fake_supabase_storage` so the versioned-manifest lookup misses and
-`load_experiment_data` falls through to the raw CSV read.
+`load_experiment_data` falls through to the raw CSV read. The `viz_env` fixture
+itself now lives in `conftest.py` (#713), shared with `test_viz_snapshot.py`.
 """
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -39,20 +39,6 @@ _EXPERIMENT = "turface_19.csv"
 # Same discipline as tests/test_oracle.py's _H2_TOL: tight enough to catch a real
 # numeric regression, loose enough to absorb cross-platform MLE-optimizer noise.
 _H2_TOL = 1e-5
-
-
-@pytest.fixture
-def viz_env(monkeypatch, tmp_path, fake_supabase_storage):
-    """Real TRAITS_DIR read + PLOTS_DIR write, versioned-manifest lookup misses."""
-    traits = tmp_path / "traits"
-    traits.mkdir()
-    shutil.copy(_RAW, traits / _EXPERIMENT)
-    monkeypatch.setattr(eu, "TRAITS_DIR", traits)
-
-    plots = tmp_path / "plots"
-    monkeypatch.setattr(eu, "PLOTS_DIR", plots)
-    monkeypatch.setattr(_viz_shared, "PLOTS_DIR", plots)
-    return plots
 
 
 def _spy(monkeypatch, module, name: str):

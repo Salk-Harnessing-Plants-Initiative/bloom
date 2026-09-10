@@ -4,6 +4,14 @@ Delegates rendering to
 ``sleap_roots_analyze.visualization.create_correlation_heatmap``; this file owns
 no plotting logic of its own (the reported high-correlation counts are a plain
 ``pandas`` summary of the same selection, not a re-implementation of the plot).
+
+Known test-coverage gap (#768): ``tests/tools/test_viz_snapshot.py``'s pixel-diff
+regression check cannot reliably catch a single-cell rendering defect in this heatmap --
+one real cell is a tiny fraction of the whole image, small enough that even the
+most-detectable-possible miscoloring scores an RMS in the same range as ordinary
+cross-platform rendering noise. See that test file's module docstring and
+``openspec/changes/add-bloommcp-plot-snapshot-tests/design.md`` (Decisions 2 & 7) for the
+full measurement and why this is a structural limit, not a TODO.
 """
 
 from pathlib import Path
