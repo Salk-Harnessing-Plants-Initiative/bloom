@@ -601,3 +601,7 @@ def test_a_run_that_measured_nothing_quotes_no_count():
 
     assert "would copy" not in page
     assert "no counts in the log" in page
+    # It writes no run report, so the page must not send anyone looking for one,
+    # and must still say which kind of run this was.
+    assert "_runs/" not in page
+    assert "dry run" in page

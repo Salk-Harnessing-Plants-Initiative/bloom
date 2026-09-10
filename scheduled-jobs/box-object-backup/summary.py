@@ -204,6 +204,8 @@ def _headline(
     said: set[str] = set()
     out: list[str] = []
 
+    if dry_run:
+        said.add("dry")
     if dry_run and not verdict.assumed:
         # It writes no run report and records no run, so the branches below —
         # which all point at `_runs/` — cannot describe it.
@@ -302,7 +304,9 @@ def _headline(
         out.append(
             f"Result: **succeeded** — {counts}"
             if counts
-            else "Result: **succeeded** (no counts in the log — check it)"
+            else "Result: **succeeded**"
+            + (" — dry run" if dry_run else "")
+            + " (no counts in the log — check it)"
         )
     else:
         out.append(
