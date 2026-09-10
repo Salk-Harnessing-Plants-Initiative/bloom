@@ -4206,43 +4206,95 @@ class TestTheAllowListCoversEverySettingTheJobReads:
     """`ENV_KEYS` is what a deploy env file is allowed to supply.
 
     A key the job reads but the list omits fails silently: `apply_env_file`
-    never copies it, so the argparse default quietly stands.
+    never copies it, so the argparse default quietly stands. The net is the
+    three prefixes below — a setting named outside them is out of scope by
+    construction.
     """
 
-    JOB_MODULES = ("backup_objects.py", "backup_lib.py", "copier.py", "docker_env.py",
-                   "ledger.py", "rclone_rc.py", "report.py", "runlock.py", "summary.py")
     SETTING = ("POSTGRES_", "MINIO_", "OBJECT_BACKUP_")
+    # Read from the environment, but exported onto the workflow step rather
+    # than supplied by the deploy env file.
+    NOT_FROM_THE_FILE = ("OBJECT_BACKUP_ACTIONS_RUN",)
 
     def _reads(self):
-        """Every settings key read from the environment, and the function doing it."""
+        """Every settings key read from the environment, and where.
+
+        Whole modules rather than function bodies, and a key held in a module
+        constant resolves to its value — both shapes exist here today.
+        """
         import ast
 
         here = Path(__file__).parent
         found = []
-        for name in self.JOB_MODULES:
-            tree = ast.parse((here / name).read_text())
+        for path in sorted(here.glob("*.py")):
+            if path.name.endswith("_test.py") or path.name == "conftest.py":
+                continue
+            tree = ast.parse(path.read_text())
+            consts = {
+                t.id: n.value.value
+                for n in tree.body
+                if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
+                for t in n.targets
+                if isinstance(t, ast.Name) and isinstance(n.value.value, str)
+            }
             for node in ast.walk(tree):
-                if not isinstance(node, ast.FunctionDef):
-                    continue
-                for call in ast.walk(node):
-                    if not isinstance(call, ast.Call) or not call.args:
-                        continue
-                    reader = ast.unparse(call.func)
-                    if reader not in ("os.environ.get", "_env_int"):
-                        continue
-                    key = call.args[0]
-                    if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                        if key.value.startswith(self.SETTING):
-                            found.append((key.value, node.name))
+                key = self._key_read_by(node, consts)
+                if key and key.startswith(self.SETTING):
+                    found.append((path.name, self._enclosing(tree, node), key))
         return found
 
-    def test_every_key_the_job_reads_can_come_from_the_env_file(self):
-        missing = sorted({k for k, _ in self._reads() if k not in job.ENV_KEYS})
+    @staticmethod
+    def _key_read_by(node, consts):
+        """The settings key this node reads from the environment, if it is one."""
+        import ast
 
-        assert not missing, (
-            f"read from the environment but absent from ENV_KEYS: {missing}. "
-            "The deploy env file cannot supply these, so the default stands "
-            "silently and nothing says so."
+        if isinstance(node, ast.Subscript):
+            if ast.unparse(node.value) in ("os.environ", "environ"):
+                inner = node.slice
+                if isinstance(inner, ast.Constant) and isinstance(inner.value, str):
+                    return inner.value
+                if isinstance(inner, ast.Name):
+                    return consts.get(inner.id)
+            return None
+        if not isinstance(node, ast.Call) or not node.args:
+            return None
+        if ast.unparse(node.func) not in (
+            "os.environ.get",
+            "environ.get",
+            "os.getenv",
+            "getenv",
+            "_env_int",
+        ):
+            return None
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return first.value
+        if isinstance(first, ast.Name):
+            return consts.get(first.id)
+        return None
+
+    @staticmethod
+    def _enclosing(tree, target):
+        """The function holding this node, or "" for a read at module level."""
+        import ast
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if any(child is target for child in ast.walk(node)):
+                    return node.name
+        return ""
+
+    def test_the_allow_list_is_exactly_what_the_job_reads(self):
+        """Both directions, so a scan that finds nothing cannot pass.
+
+        One-directional, this holds whenever the matcher itself is broken:
+        nothing found means nothing missing.
+        """
+        read = {k for _, _, k in self._reads()} - set(self.NOT_FROM_THE_FILE)
+
+        assert read == set(job.ENV_KEYS), (
+            f"only the job reads: {sorted(read - set(job.ENV_KEYS))}; "
+            f"only in ENV_KEYS: {sorted(set(job.ENV_KEYS) - read)}"
         )
 
     def test_a_credential_is_only_read_where_the_file_value_is_bridged_in(self):
@@ -4253,11 +4305,53 @@ class TestTheAllowListCoversEverySettingTheJobReads:
         Anywhere else reads an environment the allow-list guarantees is empty.
         """
         elsewhere = sorted(
-            {(k, fn) for k, fn in self._reads()
-             if k in job.SECRET_ENV_KEYS and fn != "parse_args"}
+            (mod, fn, k)
+            for mod, fn, k in self._reads()
+            if k in job.SECRET_ENV_KEYS
+            and (mod, fn) != ("backup_objects.py", "parse_args")
         )
 
         assert not elsewhere, (
             f"credential read outside parse_args: {elsewhere}. "
             "apply_env_file never exports these, so this reads nothing."
         )
+
+    # Named, not read off `SECRET_ENV_KEYS`: a test drawing its cases from the
+    # tuple it guards shrinks silently when someone shortens the tuple.
+    CREDENTIALS = ("MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD")
+
+    def test_both_credentials_are_on_the_never_exported_list(self):
+        assert set(job.SECRET_ENV_KEYS) == set(self.CREDENTIALS)
+
+    @pytest.mark.parametrize("key", CREDENTIALS)
+    def test_neither_credential_reaches_the_environment(
+        self, key, monkeypatch, tmp_path
+    ):
+        """Every docker child inherits this process's environment."""
+        monkeypatch.delenv(key, raising=False)
+        (tmp_path / ".env.prod").write_text(f"{key}=from-the-file\n")
+
+        found = job.apply_env_file(tmp_path / ".env.prod")
+
+        assert found[key] == "from-the-file"
+        assert key not in os.environ
+
+    def test_a_half_filled_file_is_refused(self, monkeypatch, tmp_path):
+        """The guard that refused every night until it was fixed must still refuse.
+
+        Driven to the guard rather than through `main`, whose container lookup
+        comes first and would answer with an unrelated failure.
+        """
+        for key in self.CREDENTIALS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env.prod").write_text(
+            "MINIO_ROOT_PASSWORD=only-the-password\n"
+            "OBJECT_BACKUP_MINIO_BUCKET=stub\n"
+        )
+        seen = {}
+        monkeypatch.setattr(job, "run_backup", lambda args: seen.setdefault("args", args))
+        job.main(["--env", "prod", "--state-dir", str(tmp_path)])
+
+        with pytest.raises(lib.BackupError, match="MINIO_ROOT_USER"):
+            job.minio_source_from_env(seen["args"])
