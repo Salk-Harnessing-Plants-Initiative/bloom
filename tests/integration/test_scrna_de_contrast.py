@@ -76,7 +76,10 @@ EXPECTED_PRIVILEGES = {
     "bloom_user": {"SELECT", "INSERT"},
     "bloom_agent": {"SELECT"},
     "bloom_admin": {"SELECT", "INSERT", "UPDATE", "DELETE"},
-    "bloom_writer": {"SELECT", "INSERT", "UPDATE"},
+    # UPDATE was taken away by 20260910120000: a submitted result is not edited,
+    # and correcting one is loading it again. bloom_admin keeps it for a
+    # developer repairing the database deliberately.
+    "bloom_writer": {"SELECT", "INSERT"},
 }
 
 
@@ -108,6 +111,14 @@ def _seed_dataset(cur) -> int:
     return dataset_id
 
 
+def _default_cluster_ref(cur, dataset_id):
+    cur.execute(
+        "SELECT id FROM scrna_clusters WHERE dataset_id = %s AND cluster_id = %s",
+        (dataset_id, DEFAULT_CLUSTER),
+    )
+    return cur.fetchone()[0]
+
+
 def _seed_run(cur, dataset_id) -> int:
     """A completed analysis to hang results off.
 
@@ -132,9 +143,14 @@ def _seed_clusters(cur, dataset_id, cell_types) -> None:
     )
 
 
-def _run_row(run_id, **cols) -> dict:
-    """The columns a run-tagged row must carry, with `cols` overriding."""
-    return {"run_id": run_id, "group_kind": "genotype", "method": "external",
+def _run_row(run_id, cluster_ref=None, **cols) -> dict:
+    """The columns a run-tagged row must carry, with `cols` overriding.
+
+    Since 20260910120000 a run row scoped to a cell type names the catalogue row
+    by key rather than only by label, so callers pass the key they seeded.
+    """
+    return {"run_id": run_id, "cluster_ref": cluster_ref,
+            "group_kind": "genotype", "method": "external",
             "params_hash": "h", "tested": True, **cols}
 
 
@@ -223,7 +239,7 @@ def test_never_run_row_is_accepted(pg_conn):
         ds = _seed_dataset(cur)
         _insert(
             cur, ds, file_path=None,
-            **_run_row(_seed_run(cur, ds), tested=False),
+            **_run_row(_seed_run(cur, ds), _default_cluster_ref(cur, ds), tested=False),
             contrast="pHORST_vs_Col-0", group1="pHORST", group2="Col-0",
             n_group1=0, n_group2=7,
             n_genes_tested=0, n_significant_fdr=0,
@@ -295,13 +311,17 @@ def test_the_real_summary_file_loads(pg_conn):
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
         _seed_clusters(cur, ds, [r["celltype"] for r in rows])
+        cur.execute(
+            "SELECT cluster_id, id FROM scrna_clusters WHERE dataset_id = %s", (ds,)
+        )
+        _cluster_refs = dict(cur.fetchall())
         run = _seed_run(cur, ds)
         for row in rows:
             ran = row["tested"] == "True"
             _insert(
                 cur, ds,
                 cluster_id=row["celltype"],
-                **_run_row(run, tested=ran),
+                **_run_row(run, _cluster_refs[row['celltype']], tested=ran),
                 file_path=(
                     f"de/{row['celltype']}__{row['contrast']}.json" if ran else None
                 ),
@@ -419,7 +439,7 @@ def test_results_without_a_file_are_accepted_once_they_belong_to_a_run(pg_conn):
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
         _insert(cur, ds, file_path=None,
-                **_run_row(_seed_run(cur, ds)),
+                **_run_row(_seed_run(cur, ds), _default_cluster_ref(cur, ds)),
                 contrast="a_vs_b", group1="a", group2="b",
                 n_group1=6, n_group2=7,
                 n_genes_tested=500, n_significant_fdr=5,
@@ -615,12 +635,21 @@ def _table_privileges(cur, table: str) -> dict[str, set[str]]:
     return out
 
 
-def test_privileges_match_an_untouched_sibling(pg_conn):
-    """The migration grants nothing. Every role already holds what it needs from
-    the ALL TABLES grant in 20260414002000, so any difference from a sibling
-    means this migration re-granted something."""
+def test_privileges_match_an_untouched_sibling_apart_from_the_one_revoke(pg_conn):
+    """This migration grants nothing, so any difference from a sibling would mean
+    it re-granted something -- except the one difference put there on purpose.
+
+    20260910120000 revoked UPDATE from the roles a person arrives as, because a
+    submitted result is not edited. Subtracting exactly that from the sibling and
+    requiring the rest to match still catches a stray regrant, which is what this
+    test is for."""
     with pg_conn.cursor() as cur:
-        assert _table_privileges(cur, TABLE) == _table_privileges(cur, SIBLING)
+        expected = {
+            role: privs - {"UPDATE"}
+            if role in ("bloom_writer", "authenticated", "anon") else privs
+            for role, privs in _table_privileges(cur, SIBLING).items()
+        }
+        assert _table_privileges(cur, TABLE) == expected
 
 
 def test_bloom_role_privileges_are_exactly_as_expected(pg_conn):
@@ -712,7 +741,8 @@ def test_pre_existing_policies_are_left_alone(pg_conn):
         names = {r[0] for r in cur.fetchall()}
         assert {
             "Authenticated users can insert scrna_de",
-            "Authenticated users can update scrna_de",
+            # "Authenticated users can update scrna_de" was removed by
+            # 20260910120000 -- see EXPECTED_PRIVILEGES above.
             "Authenticated users can read scrna_de",
             "Anon users can select scrna_de",
         } <= names
@@ -762,7 +792,7 @@ def test_rollback_refuses_when_a_row_has_no_file(pg_conn):
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
         _insert(cur, ds, file_path=None,
-                **_run_row(_seed_run(cur, ds), tested=False),
+                **_run_row(_seed_run(cur, ds), _default_cluster_ref(cur, ds), tested=False),
                 contrast="a_vs_b", group1="a", group2="b",
                 n_genes_tested=0, n_significant_fdr=0,
                 n_significant_fdr_lfc=0, n_up=0, n_down=0)
