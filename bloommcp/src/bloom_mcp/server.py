@@ -35,6 +35,7 @@ which also moved every surviving tool into the sections/ layout above.)
 """
 
 import logging
+import sys
 
 from fastmcp import FastMCP
 from fastmcp.utilities.lifespan import combine_lifespans
@@ -44,6 +45,8 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from starlette.routing import Mount
 from starlette.staticfiles import StaticFiles
+
+from bloom_mcp import __version__
 
 # Env validation is lazy (see supabase_client / experiment_utils validate_env):
 # importing this module no longer requires Supabase or the BLOOM_*_DIR env, so
@@ -181,7 +184,13 @@ def main() -> None:
     credentials are not required and the local input root is validated instead;
     otherwise the Supabase gate runs exactly as before. prod/staging never set
     ``local``, so their fail-fast is unchanged.
+
+    ``--version``/``-V`` returns before any of the above — a release gate needs
+    something to assert against without standing up the full runtime env.
     """
+    if {"--version", "-V"} & set(sys.argv[1:]):
+        print(f"bloom-mcp {__version__}")
+        return
     from bloom_mcp.experiment_utils import validate_experiment_local_root
     from bloom_mcp.storage_backend import is_local_backend
 

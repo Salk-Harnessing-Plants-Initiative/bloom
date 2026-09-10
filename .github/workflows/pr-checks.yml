@@ -167,6 +167,21 @@ jobs:
           SUPABASE_URL: ""
           BLOOM_AGENT_KEY: ""
 
+      # A real test_viz_snapshot.py (#713) failure names a *-failed-diff.png
+      # (matplotlib.testing.compare.compare_images's own diagnostic) under pytest's
+      # tmp_path, which never survives past this job — nothing let a reviewer actually
+      # see what changed. Upload it as a downloadable artifact instead (flagged by a
+      # PR review as a real gap; see openspec/changes/add-bloommcp-plot-snapshot-tests/
+      # design.md Decision 9).
+      - name: Upload plot-snapshot diff images (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plot-snapshot-diffs
+          path: /tmp/pytest-of-*/**/*-failed-diff.png
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Run bloomctl package tests
         # Exclude the env-gated integration test (needs live staging creds); it
         # also self-skips at collection time, so this is defense-in-depth.
@@ -174,6 +189,19 @@ jobs:
 
       - name: Run workflows service tests
         run: cd services/workflows && uv run --frozen --extra test pytest tests/ -v --tb=short
+
+      - name: Lint scheduled-jobs (ruff)
+        # The pre-commit hook covers this too, but pre-commit runs in CI only
+        # for the bloomcli release workflow — anyone without it installed
+        # locally would otherwise go unchecked. Version pinned to the same rev
+        # as .pre-commit-config.yaml so the two cannot disagree.
+        run: uvx ruff@0.9.9 check scheduled-jobs/
+
+      - name: Run scheduled-jobs tests
+        # These sit next to the job they cover and are named `*_test.py`, so
+        # the root pytest config (testpaths=tests, python_files=test_*.py)
+        # never collects them — point pytest at the directory explicitly.
+        run: uv run --extra test pytest scheduled-jobs/ -o python_files='*_test.py' -v --tb=short
 
       - name: Build bloom_mcp wheel and import in a clean env
         run: |
@@ -209,6 +237,53 @@ jobs:
       # Checks bloomcli (bloomctl CLI) Python packages for vulnerabilities
       - name: Audit bloomcli dependencies
         run: cd bloomcli && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+
+  # bloom #737: the vendored copy of sleap-roots-pipeline's canonical
+  # sleap-roots-pipeline.yaml (services/workflows/vendored/) must stay in sync
+  # with the pinned upstream commit, or k8s_client.py's build_workflow_body
+  # silently submits a Workflow shape that no longer matches what
+  # sleap-roots-pipeline actually defines. This job's own path-scoping lives
+  # here, via `needs`/`if:` — never as a `paths:` filter on the shared
+  # top-level `on.pull_request` trigger above, which would scope every other
+  # job in this file, not just this one.
+  detect-vendored-workflow-changes:
+    name: Detect Vendored Workflow Source Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for relevant path changes
+        id: filter
+        run: |
+          if git diff --quiet "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" -- \
+            services/workflows/vendored services/workflows/k8s_client.py services/workflows/pyproject.toml; then
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  vendored-workflow-drift-check:
+    name: Vendored Argo Workflow Drift Check
+    needs: detect-vendored-workflow-changes
+    if: needs.detect-vendored-workflow-changes.outputs.relevant == 'true'
+    runs-on: ubuntu-latest
+    # One external network fetch is this job's entire purpose — an explicit,
+    # short timeout matters more here than almost anywhere else in this file
+    # (#454: a network call with no timeout wedges a job to the 360-minute
+    # default cap with zero output).
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check vendored Argo Workflow drift
+        run: python3 scripts/check_vendored_workflow_drift.py
 
   docker-build:
     name: Build Docker Images & Scan for CVEs
@@ -482,6 +557,11 @@ jobs:
 
   lint-cve-isolation:
     name: Lint CVE changes are isolated
+    # Only staging-bound PRs — that's where a suppression is authored and where
+    # isolating it keeps the diff reviewable. A main-bound PR is a promotion,
+    # which re-carries .trivyignore alongside every other staged change and so
+    # fails this lint by construction.
+    if: github.event.pull_request.base.ref == 'staging'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

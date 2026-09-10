@@ -240,6 +240,7 @@ describe("when there is nothing to show", () => {
     );
   });
 
+
   it("distinguishes frames that exist but could not be signed", async () => {
     unsignable.add("s1.png");
     unsignable.add("s2.png");
@@ -258,5 +259,216 @@ describe("when there is nothing to show", () => {
     } finally {
       unsignable.clear();
     }
+  });
+});
+
+
+// Paging keeps the previous frame painted rather than blanking, so at any moment
+// the box may hold a frame the caption no longer names. These pin what makes
+// that safe: the held frame is visibly stale, and it goes away when the real one
+// arrives.
+describe("holding the previous frame", () => {
+  // Loads the first frame and returns the img element for it.
+  async function settleFirstFrame() {
+    const first = await screen.findByAltText("Frame 1");
+    fireEvent.load(first);
+    return first;
+  }
+
+  it("holds the previous frame, dimmed, while the next one loads", async () => {
+    const { container } = render(<ScanFrameViewer scan={THREE_FRAMES} />);
+    await settleFirstFrame();
+
+    fireEvent.click(screen.getByLabelText("Next frame"));
+
+    // The frame the caption now names is not painted yet...
+    const incoming = await screen.findByAltText("Frame 2");
+    expect(incoming.getAttribute("src")).toBe("https://signed.test/f2.png");
+    expect(incoming.className).toContain("opacity-0");
+
+    // ...so frame 1 is still on screen, dimmed, and hidden from the a11y tree
+    // because it is no longer what the label describes.
+    const held = container.querySelector('img[aria-hidden="true"]');
+    expect(held?.getAttribute("src")).toBe("https://signed.test/f1.png");
+    expect(held?.className).toContain("opacity-40");
+  });
+
+  it("drops the held frame once the real one loads", async () => {
+    const { container } = render(<ScanFrameViewer scan={THREE_FRAMES} />);
+    await settleFirstFrame();
+    fireEvent.click(screen.getByLabelText("Next frame"));
+
+    const incoming = await screen.findByAltText("Frame 2");
+    fireEvent.load(incoming);
+
+    await waitFor(() =>
+      expect(container.querySelector('img[aria-hidden="true"]')).toBeNull()
+    );
+    expect(incoming.className).not.toContain("opacity-0");
+  });
+
+  it("does not hold anything back for a frame the preload already warmed", async () => {
+    // The whole point of warming neighbours is that paging to one is instant.
+    // Dimming it anyway would put a stale-looking frame on screen for no reason.
+    const RealImage = window.Image;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).Image = class {
+      onload: (() => void) | null = null;
+      fetchPriority = "";
+      set src(_value: string) {
+        this.onload?.();
+      }
+    };
+    try {
+      const { container } = render(<ScanFrameViewer scan={THREE_FRAMES} />);
+      await settleFirstFrame();
+
+      fireEvent.click(screen.getByLabelText("Next frame"));
+
+      const incoming = await screen.findByAltText("Frame 2");
+      expect(incoming.className).not.toContain("opacity-0");
+      expect(container.querySelector('img[aria-hidden="true"]')).toBeNull();
+    } finally {
+      window.Image = RealImage;
+    }
+  });
+
+  it("blames the frame that failed, not the one that replaced it", async () => {
+    render(<ScanFrameViewer scan={THREE_FRAMES} />);
+    await settleFirstFrame();
+    fireEvent.click(screen.getByLabelText("Next frame"));
+
+    fireEvent.error(await screen.findByAltText("Frame 2"));
+
+    expect(screen.getByText("Frame 2 could not be loaded.")).toBeTruthy();
+    // Frame 1 was fine; paging back must not find it marked broken.
+    fireEvent.click(screen.getByLabelText("Previous frame"));
+    expect(await screen.findByAltText("Frame 1")).toBeTruthy();
+  });
+
+  it("ignores a failure from a request the user has already paged past", async () => {
+    // A frame's request is not cancelled when you page away, so its error can
+    // arrive after the caption has moved on. If both frames shared one element,
+    // that error would land on the handler for the frame now on screen and mark
+    // a perfectly good frame broken. Keying the img per URL is what prevents it.
+    render(<ScanFrameViewer scan={THREE_FRAMES} />);
+    const abandoned = await settleFirstFrame();
+
+    fireEvent.click(screen.getByLabelText("Next frame"));
+    await screen.findByAltText("Frame 2");
+
+    // Frame 1's request reports failure late, after frame 2 is displayed.
+    fireEvent.error(abandoned);
+
+    expect(screen.queryByText("Frame 2 could not be loaded.")).toBeNull();
+    expect(await screen.findByAltText("Frame 2")).toBeTruthy();
+  });
+
+  it("warms both neighbours of the frame on screen", async () => {
+    const requested: string[] = [];
+    const RealImage = window.Image;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).Image = class {
+      onload: (() => void) | null = null;
+      fetchPriority = "";
+      set src(value: string) {
+        requested.push(value);
+      }
+    };
+    try {
+      render(<ScanFrameViewer scan={THREE_FRAMES} />);
+      // Deliberately not settled: a frame already loaded is skipped, so
+      // settling frame 1 would hide a preload that never looks backward.
+      await screen.findByAltText("Frame 1");
+      // From the middle frame both sides exist.
+      fireEvent.click(screen.getByLabelText("Next frame"));
+
+      await waitFor(() => {
+        expect(requested).toContain("https://signed.test/f1.png");
+        expect(requested).toContain("https://signed.test/f3.png");
+      });
+    } finally {
+      window.Image = RealImage;
+    }
+  });
+
+  it("aborts a warm for a frame the reader has already paged past", async () => {
+    // Without this, twenty clicks leave forty downloads running, all competing
+    // with the frame actually being waited on.
+    const events: string[] = [];
+    const RealImage = window.Image;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).Image = class {
+      onload: (() => void) | null = null;
+      fetchPriority = "";
+      current = "";
+      set src(value: string) {
+        // Blanking src is what aborts an image fetch already in flight.
+        if (value === "") {
+          if (this.current) events.push("abort " + this.current);
+          return;
+        }
+        this.current = value;
+        events.push("start " + value);
+      }
+    };
+    try {
+      render(<ScanFrameViewer scan={THREE_FRAMES} />);
+      await screen.findByAltText("Frame 1");
+      // Frame 1 warms frame 2. Paging on must call that warm off.
+      await waitFor(() =>
+        expect(events).toContain("start https://signed.test/f2.png")
+      );
+
+      fireEvent.click(screen.getByLabelText("Next frame"));
+
+      await waitFor(() =>
+        expect(events).toContain("abort https://signed.test/f2.png")
+      );
+    } finally {
+      window.Image = RealImage;
+    }
+  });
+
+  it("holds the spinner back so a fast frame never flashes one", async () => {
+    render(<ScanFrameViewer scan={THREE_FRAMES} />);
+    await screen.findByAltText("Frame 1");
+
+    expect(screen.queryByRole("status")).toBeNull();
+    await waitFor(() => expect(screen.getByRole("status")).toBeTruthy(), {
+      timeout: 1000,
+    });
+  });
+
+  it("clears the spinner once the frame loads", async () => {
+    render(<ScanFrameViewer scan={THREE_FRAMES} />);
+    const img = await screen.findByAltText("Frame 1");
+    await waitFor(() => expect(screen.getByRole("status")).toBeTruthy(), {
+      timeout: 1000,
+    });
+
+    fireEvent.load(img);
+
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  });
+
+  it("holds the frame box at a fixed height so paging cannot reflow the page", async () => {
+    // The flicker was the box collapsing to each image in turn, which moved the
+    // pager out from under the reader's cursor.
+    render(<ScanFrameViewer scan={THREE_FRAMES} />);
+    const img = await screen.findByAltText("Frame 1");
+    const box = img.parentElement as HTMLElement;
+    const before = box.style.height;
+
+    expect(before).not.toBe("");
+    expect(img.className).toContain("object-contain");
+    expect(img.className).toContain("max-h-full");
+
+    fireEvent.load(img);
+    fireEvent.click(screen.getByLabelText("Next frame"));
+    await screen.findByAltText("Frame 2");
+
+    // Same box, same height, across a page.
+    expect(box.style.height).toBe(before);
   });
 });

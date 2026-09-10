@@ -105,7 +105,7 @@ export default function Pipelines() {
             className="rounded-md py-2 px-4 border border-neutral-700 bg-violet-900 text-white mb-4"
             onClick={initiateGitlabFlow}
           >
-            <img src="/gitlab-logo-500.svg" width={40} className="inline -my-2 -ml-2" />
+            <img src="/gitlab-logo-500.svg" alt="" width={40} className="inline -my-2 -ml-2" />
             <span>Connect to Gitlab</span>
           </button>
         )

@@ -78,6 +78,7 @@ export default async function Species({
             Each experiment below has a Slack channel (
             <img
               src="/slack.svg"
+              alt="Slack"
               className="w-8 h-8 inline pb-1 opacity-70 -my-2 -mx-2"
             />
             ) and the lead scientist's email address (
@@ -119,6 +120,7 @@ export default async function Species({
                   <a href={experiment.slack_channel_url} target="_blank">
                     <img
                       src="/slack.svg"
+                      alt="Slack channel"
                       className="w-8 h-8 inline pb-1 opacity-70 hover:opacity-100 -my-2"
                     />
                   </a>

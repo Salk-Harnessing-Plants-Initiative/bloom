@@ -38,6 +38,11 @@ jobs:
     # CI when the self-hosted runner is offline/hung. The deploy will still
     # fail (GitHub-hosted runners have no route to the Salk server), but
     # it fails fast instead of queuing for 24h.
+    #
+    # bloom#736: refresh-cyl-experiment-trait-counts.yml also depends on this same
+    # self-hosted salk-network runner (unconditionally, no escape hatch). It uses a
+    # different concurrency.group than this job, so a deploy occupying this single
+    # runner for up to timeout-minutes below can make that refresh job queue behind it.
     runs-on: ${{ github.event.inputs.runner == 'ubuntu-latest' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "salk-network"]') }}
     timeout-minutes: 30
     environment: production

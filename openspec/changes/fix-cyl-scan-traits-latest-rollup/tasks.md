@@ -157,7 +157,9 @@ EXECUTE ... TO service_role` only (not the four read roles — this is a mainten
       no `on: schedule` trigger at all — `workflow_dispatch`-only, with an `environment` choice input
       (`staging`/`production`, mirroring `deploy.yml`'s own convention). Staging doesn't need frequent
       automatic refreshes right now, and a schedule would have sat inert pre-promotion anyway (5.4's
-      original finding); manual dispatch works against any branch immediately, no promotion needed.
+      original finding). **Corrected (bloom#708 investigation, post-merge): manual `workflow_dispatch`
+      does NOT work against any branch without promotion either — it needs this file on `main` exactly
+      like `schedule:` does; see 5.3/5.4/5.6's corrections and design.md's D8 addendum.**
       (Hardened post-`/review-pr`: explicit `permissions: {}`, `timeout-minutes: 2` on the job,
       `--connect-timeout 5 --max-time 30` on the `curl` call so a hung endpoint can't occupy the runner
       indefinitely.)**
@@ -172,30 +174,42 @@ EXECUTE ... TO service_role` only (not the four read roles — this is a mainten
       all. Guarded by `tests/unit/test_refresh_workflow_shape.py`, which fails if either literal drifts
       from its `.env.*.defaults` or if a `secrets.STAGING_API_URL`/`secrets.PROD_API_URL` reference
       reappears.
-- [ ] 5.3 Verify the workflow's authenticated call succeeds against staging via `workflow_dispatch`
-      (`environment: staging`) — no longer blocked on any secret provisioning or branch promotion, but
-      per the user's own direction, do this **after this PR merges**, not before — no reason to dispatch
-      against a not-yet-merged branch's copy of the workflow when merging first costs nothing.
-- [x] 5.4 **Found in round 7 — resolved by redesign, not by promotion.** GitHub Actions `schedule:`
+- [ ] 5.3 **CORRECTED (bloom#708 investigation): genuinely blocked on promotion to `main`, not just
+      deferred to "after this PR merges."** `workflow_dispatch` is gated on default-branch presence
+      exactly like `schedule:` (GitHub's own docs: "To trigger the workflow_dispatch event, your
+      workflow must be in the default branch") — confirmed against the live repo while this file
+      existed only on `staging`: `gh api .../actions/workflows/refresh-cyl-experiment-trait-counts.yml`
+      returned 404, `gh workflow list --all` didn't list it. So verifying the workflow's authenticated
+      call against staging via `workflow_dispatch` (`environment: staging`) cannot happen at all — not
+      via the UI, `gh workflow run`, or the REST API — until this repo's next `chore: promote staging to
+      main` PR carries this file to `main`. Do this once that promotion has happened, not merely "after
+      this PR merges."
+- [ ] 5.4 **CORRECTED (bloom#708 investigation): the original round-7 finding was resolved by redesign
+      in name only — the promotion dependency was never actually closed.** GitHub Actions `schedule:`
       triggers only fire from the workflow file's copy on the repo's default branch, so a cron here would
-      have sat inert on `staging` until a separate promotion PR landed it on `main`. Rather than chase
-      that promotion for a cadence staging doesn't currently need, `on: schedule` was dropped entirely —
-      `workflow_dispatch` fires against any branch/ref holding the file, no promotion required. Nothing
-      left to confirm here; this gate is closed by construction, not by an operational step.
+      have sat inert on `staging` until a separate promotion PR landed it on `main`. Dropping
+      `on: schedule` for `workflow_dispatch`-only was reasoned (at the time) to close this gap by
+      construction — but `workflow_dispatch` is gated on the exact same default-branch requirement as
+      `schedule:` (see 5.3's correction); it was never actually dispatchable pre-promotion, contrary to
+      what this task originally claimed. Nothing about the redesign closed 5.4; it is still gated on this
+      repo's normal `staging -> main` promotion practice, same as 5.6 below.
 - [x] 5.5 **Found in round 8 — resolved by an `environment` input, not a second workflow.** The original
       staging-only version would never have refreshed production's cache even once promoted (a genuinely
       separate host per `.env.prod.defaults`'s `API_EXTERNAL_URL`, and `deploy.yml` only ever populates it
       once, at deploy time, via the migration's inline call). Closed by adding a `choice` input,
       `environment` (`staging`/`production`), that resolves to the right hardcoded URL/secret pair inside
       the run script — no new secrets needed (`PROD_SERVICE_ROLE_KEY` already existed).
-- [ ] 5.6 Verify the workflow's authenticated call also succeeds against production via
-      `workflow_dispatch` (`environment: production`) once this PR is live there — separate from 5.3's
-      staging verification.
-- [ ] 5.7 **Follow-up filed, not this PR's job:** [bloom#708](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/708)
-      tracks adding an automatic (scheduled) trigger for production once its write volume grows enough
-      that on-demand dispatch stops being sufficient. Deliberately not spec'd here — the right interval
-      depends on production write cadence at the time, not staging's (which no longer has an automatic
-      cadence at all, per 5.4).
+- [ ] 5.6 **CORRECTED (bloom#708 investigation):** verify the workflow's authenticated call also succeeds
+      against production via `workflow_dispatch` (`environment: production`) once this workflow file has
+      been **promoted to `main`** — not merely "live" on any branch. Same blocker as 5.3: genuinely
+      undispatchable pre-promotion, confirmed against the live repo (see 5.3's correction).
+- [ ] 5.7 **Follow-up tracked, now scoped by Section 14 below, not deferred as originally written:**
+      [bloom#708](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/708) tracks adding an
+      automatic (scheduled) trigger for production once its write volume grows enough that on-demand
+      dispatch stops being sufficient. Implemented on this same change (Section 14) rather than in a
+      separate change-id, since `cyl-experiment-summary-rollup`'s refresh-mechanism requirement was still
+      unarchived (this change hadn't been archived yet) and this is a direct continuation of D8's own
+      still-open refresh-scheduling decision, not an unrelated new capability.
 - [x] 5.8 **Found in round 9 — two real gaps in the redesign itself, both fixed.** (1)
       `concurrency.group` was a single string shared by both environments, so a `staging` dispatch and a
       `production` dispatch could cancel each other despite touching independent databases — fixed by
@@ -636,3 +650,559 @@ metadata)`), already correctly granted. Pre-existing, out-of-scope, not a regres
       stashed out) and that all `data_access`/`supabase_reader` tests, including the 3 new/updated
       ones, pass.
 - [ ] 13.7 Post round 6's synthesized review to PR #684.
+
+## 14. bloom#708 — scheduled (cron) refresh for production, plus the promotion-claim correction
+
+PR #684 (this section's own predecessor sections 1-13) merged to `staging` (`cbd28c02`). This section
+lands as a **new PR** against `staging` (PR #684 is already closed) but continues this same change-id,
+since it directly extends D8's own still-open refresh-scheduling decision rather than introducing an
+unrelated capability, and `cyl-experiment-summary-rollup` was never archived into `openspec/specs/` in
+the interim (see the note at 5.7).
+
+Triggered by re-investigating tasks.md 5.4's "resolved by redesign" claim before treating bloom#708 as
+pure net-new work: `gh api`/`gh workflow list` confirmed this workflow file is still entirely
+undispatchable (never promoted to `main`), meaning rounds 7-9's belief that `workflow_dispatch` alone
+sidesteps the promotion dependency was never true. That correction lands alongside bloom#708's actual
+feature (already applied above at 5.3/5.4/5.6, plus design.md and the workflow file's own header comment
+below), since both touch the same file and the same section of design.md.
+
+**`/review-openspec` pass (pre-implementation) found a real design gap in the first draft of this
+section, since fixed in design.md's D8 addendum before any code was written:** naively resolving the
+job's `environment:` key to `production` for a scheduled run would route every nightly run through
+`production`'s `required_reviewers` approval gate — a scheduled run has no human present to click
+"Approve," so it would sit "Waiting" indefinitely, and could even get cancelled by the *next* night's run
+sharing the same concurrency group before anyone approved it. Resolved by introducing a second, ungated
+GitHub Environment (`production-scheduled-refresh`) used only for the job's `environment:` key on a
+`schedule`-triggered run — see design.md's D8 addendum for the full reasoning (why a scheduled trigger's
+risk shape doesn't need the same per-run human gate a manual dispatch does) and the exact expressions.
+This means there are **two distinct resolution expressions**, not one shared by three call sites as the
+first draft assumed: a *target-host* expression (`ENVIRONMENT` env var + `concurrency.group`'s host
+suffix, both resolving `schedule` → `'production'`) and a separate *job-environment-name* expression
+(the job's `environment:` key, resolving `schedule` → `'production-scheduled-refresh'`).
+
+**Landing plan**: one PR against `staging`, two commits — (1) the OpenSpec scaffold edits (this file,
+design.md, proposal.md, the spec delta), (2) tests (14.1-14.2) and implementation (14.3-14.4) together,
+not split into separate RED/GREEN commits — splitting them would commit an interim state with 5 failing
+tests and 2 broken previously-passing ones, a confusing history entry for no real isolation benefit on
+this small a diff.
+
+**Do not archive this change until this entire section is complete.** The `cyl-experiment-summary-rollup`
+spec delta (14.5, already applied as part of this proposal's own drafting) already asserts production
+has an automatic cron cadence — that claim is only true once 14.1-14.4's implementation actually ships.
+Running `openspec:archive` before then would copy a false statement into `openspec/specs/`.
+
+**Superseded by Section 15's own, broader archive-gate note below (bloom#736): this section's own
+"do not archive" condition is necessary but not sufficient.** 14.1-14.4 shipping makes the cron *exist*
+and resolve its approval gate correctly — it does not make the RPC call it makes actually reach either
+host. See 14.9's correction and Section 15.
+
+- [x] 14.1 Add failing unit tests to `tests/unit/test_refresh_workflow_shape.py` (RED first — the workflow
+      file has none of this yet). **Done — confirmed all 6 new test functions (8 collected items,
+      one parametrized ×3) failed against the pre-implementation workflow file (10 failures total
+      including 14.2's 2 updated tests), before any YAML change.**
+      - `test_schedule_trigger_exists_for_production_only` — the workflow's `on` block has exactly one
+        `schedule` entry with `cron: '17 0 * * *'` (once daily, per the user's own direction; the minute
+        is deliberately non-zero — GitHub's own docs flag top-of-hour schedules, including midnight UTC,
+        as exposed to elevated scheduler load/delay — not a benchmarked figure, explicitly flagged in
+        design.md as revisitable once real production write-cadence telemetry exists).
+      - `test_workflow_dispatch_still_present_alongside_schedule` — both trigger keys coexist in `on`.
+      - `test_target_host_expression_matches_between_env_var_and_concurrency_group` — the step's
+        `ENVIRONMENT` env var equals the expression `${{ github.event_name == 'schedule' && 'production'
+        || github.event.inputs.environment }}` exactly, and `concurrency.group` contains that identical
+        expression as a substring after stripping its literal `refresh-cyl-experiment-trait-counts-`
+        prefix (not an exact-equality check like `ENVIRONMENT`'s, since `concurrency.group`'s value is
+        prefixed).
+      - `test_resolution_truth_table_for_schedule_vs_dispatch` — **must extract the two expressions'
+        literal branch values directly from the live YAML (e.g. via a regex over the raw expression
+        strings pulled from `ENVIRONMENT` and the job's `environment:` key), not hardcode an
+        independently-asserted expected truth table** — a test that just restates the intended logic in
+        parallel Python, decoupled from the actual file content, would pass unchanged even if the real
+        expression were wrong (the exact "false confidence" failure mode this same tasks.md already
+        killed once at section 12.3's deleted `EXPLAIN`-based test). Parametrize over the 3 real cases:
+        (`event_name='schedule'` → target-host `'production'`, job-environment-name
+        `'production-scheduled-refresh'`), (`event_name='workflow_dispatch'`, `inputs.environment=
+        'staging'` → target-host `'staging'`, job-environment-name `'staging'`), (`event_name=
+        'workflow_dispatch'`, `inputs.environment='production'` → target-host `'production'`,
+        job-environment-name `'production'` — the case that specifically proves a manual dispatch to
+        production is NOT silently routed to the ungated `production-scheduled-refresh` Environment).
+        This is the right layer for this specific property since GitHub Actions expressions are
+        evaluated server-side before the job's shell ever starts — no local bash subprocess can exercise
+        the `&&`/`||` ternary the way the existing `test_environment_input_resolves_to_the_right_url_and_key`
+        exercises the bash-level `case`/`esac` logic.
+      - `test_scheduled_environment_name_appears_only_in_the_schedule_branch` — a structural check
+        (independent of the truth-table test above) that the literal `production-scheduled-refresh`
+        appears exactly once in the job's `environment:` expression, and only inside the
+        `github.event_name == 'schedule'` branch — guards against a copy-paste that duplicates it into
+        the `workflow_dispatch` fallback branch, which would silently strip production's approval gate
+        for a manual dispatch (the more dangerous direction, opposite of the bug this section fixes).
+      - `test_cron_expression_is_structurally_valid` — the cron string has exactly 5 whitespace-separated
+        fields, each either `*` or a numeric value within that field's valid range (a copy-paste typo —
+        wrong field count or an out-of-range value — would otherwise only surface after promotion to
+        `main`, possibly not until a missed run).
+      Confirm all six fail against the current (dispatch-only, single-expression) workflow file.
+- [x] 14.2 Two explicit test-file edits (still RED, no workflow YAML touched yet). **Done.**
+      - **Delete** `test_no_schedule_trigger_only_workflow_dispatch` outright — its premise (no schedule
+        trigger exists) is now false, and its dispatch-still-present half is redundant with 14.1's new
+        `test_workflow_dispatch_still_present_alongside_schedule`.
+      - **Update** `test_job_has_environment_protection_gate`'s assertion from the bare
+        `${{ github.event.inputs.environment }}` to the job-environment-name expression (`schedule` →
+        `'production-scheduled-refresh'`, else the dispatch input), and
+        `test_concurrency_group_is_scoped_by_environment`'s assertion to check for the *target-host*
+        expression's substring instead (not the job-environment-name one — `concurrency.group` stays
+        keyed by which database is actually hit, not by which Environment gates the job, so a scheduled
+        production run and a manual `workflow_dispatch` production run still serialize against each
+        other; see design.md's D8 addendum for why that's the correct choice). Confirm both now fail
+        (they currently pass against the old bare expression, which is about to change).
+- [x] 14.3 Implement in `.github/workflows/refresh-cyl-experiment-trait-counts.yml`. **Done —
+      confirmed all of 14.1/14.2's tests pass (23/23).**
+      - Add `on: schedule` with `cron: '17 0 * * *'`, alongside the existing `workflow_dispatch`.
+      - `ENVIRONMENT` (the step's env var) and `concurrency.group`'s host suffix resolve off
+        `${{ github.event_name == 'schedule' && 'production' || github.event.inputs.environment }}`.
+      - The job's `environment:` key resolves off the **separate**
+        `${{ github.event_name == 'schedule' && 'production-scheduled-refresh' ||
+        github.event.inputs.environment }}` expression — a `schedule` event has no `github.event.inputs`
+        context at all, so a bare `github.event.inputs.environment` read would resolve to an empty string
+        for a scheduled run either way, breaking both the approval gate and the bash `case`/`esac`
+        dispatch.
+      - `production-scheduled-refresh` needs no new secret provisioning (`PROD_SERVICE_ROLE_KEY` is a
+        repository-level secret, visible regardless of which Environment name is referenced) and no
+        manual repository-settings step (GitHub auto-creates a referenced Environment with no protection
+        rules on first use, once this file is on the default branch).
+      - `workflow_dispatch` against either host is otherwise unchanged — still requires the explicit
+        `environment` choice, still gated by that Environment's existing protection rules.
+      Confirm all of 14.1/14.2's tests now pass.
+- [x] 14.4 Correct the wrong "workflow_dispatch avoids promotion" claim everywhere it still appears:
+      the workflow file's own header comment, AND `tests/unit/test_refresh_workflow_shape.py`'s module
+      docstring (found by `/review-openspec` round 1's spec-quality pass — the first task draft of this
+      section only named the workflow file's comment, missing the test file's own equally-wrong
+      docstring claim). State plainly in both: both trigger types require this file on `main` before
+      either can fire at all, and that neither this PR nor its predecessor made staging/production
+      dispatch actually work — both remain gated on this repo's normal `staging -> main` promotion
+      practice. (tasks.md 5.3/5.4/5.6, proposal.md's Impact bullet, and design.md's Goals/Non-Goals
+      bullet, D5's cross-reference, and the Open Questions D8 section already carry this correction as
+      of this change.) **Also fold in the two Python source comments `/review-openspec` round 2's
+      documentation pass found describing the same now-superseded "no automatic cadence for either
+      environment" design** (not a "workflow_dispatch avoids promotion" claim specifically, but the same
+      class of now-false "as of this change, production stays on-demand only, bloom#708 not yet built"
+      framing): `bloommcp/src/bloom_mcp/data_access/ports.py`'s docstring (~lines 142-147) and
+      `bloommcp/src/bloom_mcp/sections/core/list_available_experiments.py`'s module comment (~lines
+      13-19). Update both to reflect production's new automatic cadence. **Done — and `/review-pr`'s
+      code-level pass on the implemented diff found a real bug this comment-only framing missed: the
+      actual user-facing string `_traits_note()` returns (not just the module comment above it) still
+      unconditionally asserted "trait counts refresh on demand only, not automatically" — false for a
+      production row once this section ships. Fixed the string to environment-neutral wording ("may be
+      older than the environment's own refresh cadence"), and updated
+      `bloommcp/tests/sections/core/test_list_available_experiments.py`'s three assertions (and its
+      module docstring) that pinned the old string verbatim — confirmed all 6 tests in that file fail
+      against the old string and pass against the fix.**
+- [x] 14.5 Update the `cyl-experiment-summary-rollup` capability's spec delta
+      (`openspec/changes/fix-cyl-scan-traits-latest-rollup/specs/cyl-experiment-summary-rollup/spec.md`):
+      since this capability is still `ADDED` (never archived), edit the existing requirement text and its
+      "The cache is invoked on a schedule, not on every write" scenario in place — production now has an
+      automatic cron cadence, staging remains dispatch-only — rather than layering a `MODIFIED` delta on
+      top of an unarchived `ADDED` one (`/review-openspec`'s spec-quality pass confirmed this is the
+      correct convention here, precisely because no archived base text exists yet to modify against).
+      Added a scenario asserting `refresh_cyl_experiment_trait_counts()` is never invoked directly from a
+      raw `cyl_scan_traits` write regardless of which trigger fired, and a second scenario asserting
+      production's automatic-schedule / staging's dispatch-only split. **Done, ahead of 14.1-14.4's
+      implementation** — see the standing archive-gate warning above.
+- [x] 14.6 Update the two docs `/review-openspec`'s documentation pass found would otherwise go stale
+      once production gets an automatic schedule (both currently describe the workflow as
+      dispatch-only-for-both-environments, which becomes wrong). **Round 2's re-verification found round
+      1's task named only one stale sentence per file when each file's whole surrounding paragraph is
+      stale** — broadened accordingly:
+      - `bloommcp/docs/data-access-roadmap.md` (~lines 79-88, the "Questions for Benfica" #5 entry): not
+        just the trigger-design sentence but also "Production is expected to eventually need its own
+        automatic (scheduled) cadence... tracked as bloom#708" — that future-tense framing is wrong once
+        #708 ships. Cross-reference design.md's D8 addendum rather than restate it, matching this
+        change's own established doc convention.
+      - `_WIKI/BLOOMMCP/README.md` (~lines 186-196): not just the "unbounded staleness... until someone
+        dispatches a refresh" sentence, but the whole paragraph — "refreshed on demand only via a
+        manually-dispatched GitHub Action... rather than an automatic schedule" is flatly false for
+        production once implemented, and the paragraph's own "production is expected to get its own
+        automatic cadence eventually" framing needs the same past-tense correction as the roadmap doc.
+        Qualify the "unbounded staleness" language to staging-only.
+      Run `prettier --check`/`--write` on both after editing.
+- [x] 14.7 Run the full `tests/unit/test_refresh_workflow_shape.py` file; confirm all tests pass (23
+      expected: 16 existing, minus 1 removed (`test_no_schedule_trigger_only_workflow_dispatch`), plus 8
+      net new collected items from 14.1's 6 new test functions (one parametrized ×3) —
+      `test_cron_expression_is_structurally_valid`,
+      `test_workflow_dispatch_still_present_alongside_schedule`,
+      `test_schedule_trigger_exists_for_production_only`,
+      `test_target_host_expression_matches_between_env_var_and_concurrency_group`, and
+      `test_scheduled_environment_name_appears_only_in_the_schedule_branch` each contribute 1, and the
+      parametrized `test_resolution_truth_table_for_schedule_vs_dispatch` contributes 3 — the two tests
+      updated in 14.2 keep their existing collected-item count).
+- [x] 14.8 `openspec validate fix-cyl-scan-traits-latest-rollup --strict` passes. **Confirmed.**
+- [ ] 14.9 Verify the promoted-to-`main` dispatch, the live cron, the approval-gate resolution, and actual
+      RPC delivery. **Promotion has since happened (2026-08-24/25) and the workflow's first live scheduled
+      run occurred — see the CORRECTED note below for exactly what it confirmed and what it didn't.** The
+      bullets immediately below were the original pre-promotion verification checklist (still relevant for
+      the Environment-config checks); the RPC-delivery half is superseded by the CORRECTED note and by
+      Section 15. While verifying:
+      - Confirm via `gh api repos/.../environments/production-scheduled-refresh` that it still carries
+        zero protection rules (`/review-openspec` round 2's CI/CD pass flagged that nothing prevents a
+        repo admin from later adding `required_reviewers` to this Environment, silently reintroducing the
+        exact bug this section fixes — an accepted, not eliminated, risk per design.md's D8 addendum).
+      - **(Added after `/review-pr` round 2, against the pushed PR)** Also check for an **org-level**
+        default environment-protection policy, not just this one Environment's own settings — a
+        repo-scoped check alone wouldn't catch an org-wide default that auto-attaches
+        `required_reviewers` to any newly-created Environment.
+      - **(Added after `/review-pr` round 2)** Checking the Environment's static configuration isn't the
+        same as confirming the actual first scheduled firing succeeded — check the Actions tab the
+        morning after the first post-promotion midnight run specifically, not only the Environment's
+        protection-rule config beforehand.
+      - **CORRECTED (Section 15, bloom#736): split into what this task actually verified vs. what it
+        never could have.** The promoted-to-`main` dispatch and the approval-gate/environment-name
+        resolution ARE confirmed working — the workflow's first live scheduled run (2026-08-25T01:51:22Z,
+        run 32799136668) started executing immediately under `production-scheduled-refresh` with no
+        pending-approval wait, and `ENVIRONMENT` resolved to `production` correctly. **The actual RPC
+        delivery has never once succeeded via GitHub Actions**: that same run failed in 12s with
+        `curl: (28) Failed to connect to bloom.salk.edu port 443 after 5001 ms: Timeout was reached` —
+        `runs-on: ubuntu-latest` (a GitHub-hosted runner) has no network route to either host, the same
+        limitation `deploy.yml` already documents for its own jobs. This task is left unchecked; do not
+        check it off until Section 15's own 15.7 confirms an actual successful RPC call post-fix. Section
+        15 owns closing this gap.
+- [x] 14.10 Run the 5-subagent `/review-pr` pass against the implemented diff (not yet a GitHub PR — run
+      locally against the working tree). All 5 returned; **no BLOCKING findings.** One real, already-fixed
+      bug found: see 14.4's note above (the `_traits_note()` user-facing string, not just its module
+      comment, still unconditionally asserted the old "not automatically" claim). IMPORTANT findings, all
+      fixed: a test docstring's meta-reference to "`/review-openspec` round 1 finding" replaced with the
+      actual reason (future readers won't have this conversation's context); `type: choice`'s lack of
+      server-side enforcement (a crafted `workflow_dispatch` could execute the job under the ungated
+      Environment, though traced and confirmed the bash `case` guard still blocks the actual RPC call —
+      documented as an accepted risk in design.md's D8 addendum, not code-fixed, since the real call path
+      is already closed); two more residual risks (a scheduled run can be silently dropped entirely under
+      GitHub platform load with zero visibility; no coordination with `deploy.yml`'s production migrations)
+      — both documented as accepted, self-healing risks. SUGGESTIONS applied: trimmed the workflow header's
+      debug-journal-style investigation notes to a durable one-line summary pointing at design.md; added a
+      comment explaining why the target-host expression is repeated rather than centralized in a
+      workflow-level `env:` (the `concurrency:` context can't read it).
+- [x] 14.11 **Round 2 of `/review-pr`, run against the actual pushed PR #728** (not the local working
+      tree this time) — real CI status, real diff, checked for existing Copilot comments (none). All 5
+      subagents independently re-verified round 1's fixes hold up on the committed/pushed code (traced
+      character-by-character, confirmed zero drift from the comment-only polish commits) and confirmed CI
+      is genuinely green (the relevant test job is misleadingly named "Python Security Audit for CVEs" —
+      pulled its raw log directly rather than trusting the label). **No BLOCKING findings.** Three real,
+      non-blocking findings, all documented in design.md's D8 addendum rather than code-fixed (no actual
+      bug reachable, just follow-up verification gaps): the `_STALE_AFTER` 2-day threshold's tension with
+      the new 24h production cadence; an org-level environment-protection-policy check folded into 14.9;
+      and an explicit first-live-firing check (not just static config) folded into 14.9. One transient,
+      false-alarm finding investigated and resolved: a system notification mid-review showed the
+      workflow file's on-disk content reverted to its pre-#708 state — traced to a review subagent's own
+      scratch `.bak_current` copy (visible as an untracked file), not an actual revert; confirmed via
+      `git diff HEAD` (empty) and a byte-for-byte comparison against the committed blob that the real file
+      was never altered, then removed the stray untracked file. Posted the synthesized review to PR #728
+      as a comment (GitHub disallows self-approval/self-request-changes).
+- [x] 14.10 Run the 5-subagent `/review-pr` pass against the implemented diff (not yet a GitHub PR — run
+      locally against the working tree). All 5 returned; **no BLOCKING findings.** One real, already-fixed
+      bug found: see 14.4's note above (the `_traits_note()` user-facing string, not just its module
+      comment, still unconditionally asserted the old "not automatically" claim). IMPORTANT findings, all
+      fixed: a test docstring's meta-reference to "`/review-openspec` round 1 finding" replaced with the
+      actual reason (future readers won't have this conversation's context); `type: choice`'s lack of
+      server-side enforcement (a crafted `workflow_dispatch` could execute the job under the ungated
+      Environment, though traced and confirmed the bash `case` guard still blocks the actual RPC call —
+      documented as an accepted risk in design.md's D8 addendum, not code-fixed, since the real call path
+      is already closed); two more residual risks (a scheduled run can be silently dropped entirely under
+      GitHub platform load with zero visibility; no coordination with `deploy.yml`'s production migrations)
+      — both documented as accepted, self-healing risks. SUGGESTIONS applied: trimmed the workflow header's
+      debug-journal-style investigation notes to a durable one-line summary pointing at design.md; added a
+      comment explaining why the target-host expression is repeated rather than centralized in a
+      workflow-level `env:` (the `concurrency:` context can't read it). Still outstanding, matching this
+      change's own established discipline: this section still needs to be **posted as an actual PR** (not
+      yet opened) and go through the normal GitHub review flow before merging — this local pass replaces
+      neither.
+
+## 15. bloom#736 — `runs-on: ubuntu-latest` has no network route to either host; every RPC delivery has failed
+
+Section 14 shipped a working *approval-gate and target-host resolution* design — confirmed by the
+workflow's first live scheduled run actually starting immediately under `production-scheduled-refresh`,
+with no pending-approval wait, once this file was finally promoted to `main` (2026-08-24/25). But that
+same run (`2026-08-25T01:51:22Z`, run
+[32799136668](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/actions/runs/32799136668))
+failed in 12 seconds:
+
+```
+curl: (28) Failed to connect to bloom.salk.edu port 443 after 5001 ms: Timeout was reached
+```
+
+`runs-on: ubuntu-latest` (line 91) is a GitHub-hosted runner. `.github/workflows/deploy.yml` already
+documents, in its own comment (lines 38-40), that GitHub-hosted runners "have no route to the Salk
+server" — `deploy.yml`'s real deploy jobs run on a self-hosted runner labeled
+`["self-hosted", "linux", "salk-network"]` instead, falling back to `ubuntu-latest` only as a deliberate
+fail-fast escape hatch for unwedging a stuck required check (`workflow_dispatch`-only, not this
+workflow's `schedule`/always-on-`workflow_dispatch` shape). `refresh-cyl-experiment-trait-counts.yml`
+never adopted that pattern, from its introduction in PR #684 through Section 14/bloom#708's cron
+addition in PR #728 — so every run of this workflow, manual or scheduled, against either host, has been
+unreachable on the network hop, on every invocation, since the workflow first existed. Filed as
+[bloom#736](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/736).
+
+**Why this lands as a section on this change-id rather than a direct, un-proposed fix, despite
+qualifying under `openspec/AGENTS.md`'s "Skip proposal for: Bug fixes (restore intended behavior)" /
+"Configuration changes" guidance (`/review-openspec` round 1's spec-quality pass flagged the absence of
+this justification):** the behavior this bug prevents is exactly what this same change's own, still
+unarchived `cyl-experiment-summary-rollup` scenario ("Production refreshes on an automatic schedule")
+asserts. Fixing the workflow outside this change-id would let that scenario's claim — true only once the
+schedule actually *delivers* a refresh, not merely fires — get archived into `openspec/specs/` without
+ever having been made true, the same false-statement-at-archive risk Section 14's own archive-gate note
+already exists to prevent. Continuing here, under the same gate, is what keeps that risk closed.
+
+**Precisely what 14.9 did and did not verify, so this section doesn't re-litigate the settled half:**
+confirmed working — `ENVIRONMENT` resolving to `production`, and the job starting immediately under the
+ungated `production-scheduled-refresh` Environment (Section 14's whole point). Never verified, because
+nothing before this section's own investigation surfaced the gap — the RPC call itself reaching either
+host over GitHub Actions. See 14.9's own correction, added above, for the split.
+
+**Do not treat a manual `curl https://bloom.salk.edu/api` succeeding from a local/dev machine as
+evidence this was ever transient, or is already fixed without this section's change** — that traffic
+rides a trusted Salk network path GitHub-hosted runners lack by design; this exact check was already run
+and gave a false-reassuring result before the real cause (documented in `deploy.yml` itself) was found.
+
+**Decided scope (confirmed with the user; not re-opened during implementation):**
+- Change `runs-on: ubuntu-latest` to `runs-on: ["self-hosted", "linux", "salk-network"]` — the same
+  label `deploy.yml` uses — applied **unconditionally**, to the single `refresh` job. This workflow has
+  exactly one job serving all three trigger paths (staging dispatch, production dispatch, production
+  schedule) via the `ENVIRONMENT` bash `case`; there is no per-host job boundary that would let staging
+  and production carry different runners without a larger restructuring this bug doesn't call for. The
+  user chose applying the label to both hosts over deliberately leaving staging on `ubuntu-latest` as a
+  negative control.
+- No `ubuntu-latest` escape-hatch `workflow_dispatch` input, unlike `deploy.yml`'s own `runner` input:
+  this job is not a required/blocking check the way `deploy.yml`'s jobs are, and an escape hatch would
+  not help this workflow's unattended `schedule` trigger's failure mode anyway.
+- New failure mode accepted as-is, not mitigated: if the self-hosted `salk-network` runner is offline, a
+  run now queues instead of failing fast in ~12s the way it does today. Same trade-off `deploy.yml`
+  already accepts for its own real deploys, and this job is lower-stakes than those (not a required
+  check). **Correction from `/review-openspec`'s CI/CD pass — the bound on this is NOT
+  `concurrency.group`'s `cancel-in-progress: true`** (that flag only cancels an already-**running** job;
+  GitHub's own docs state a **queued/pending** job in the same group is already superseded by a newer
+  trigger under the group's *default* behavior, independent of `cancel-in-progress`). The actual bound
+  differs by host: for `production`, the next day's cron supersedes a stuck queued run (default
+  pending-job supersession, not `cancel-in-progress`) on top of GitHub's own independent ~24h
+  hard-cancel-queued-job limit; for `staging`, nothing re-triggers automatically, so a queued manual
+  dispatch relies solely on that same ~24h hard limit.
+- **New risk, found by `/review-openspec`'s CI/CD pass, not previously documented: this job now shares a
+  runner pool with `deploy.yml`'s deploy jobs, which is a single physical machine, not an autoscaling
+  fleet** (`deploy.yml`'s own `concurrency.group: deploy-bloom` comment states this explicitly — "single
+  Salk server, single docker daemon"). The two workflows use different concurrency groups, so nothing
+  prevents a `deploy.yml` run (`timeout-minutes: 30`) from occupying the only matching runner while this
+  job queues behind it for up to ~30 minutes — a distinct failure mode from "runner offline," not
+  previously called out anywhere in this design. Accepted, not mitigated: this job has no fixed deadline
+  a human is waiting on, and `timeout-minutes: 2` only bounds *execution* time once a runner picks the job
+  up, not queued time — call out both facts explicitly in the workflow's own comment (15.3) rather than
+  leaving `timeout-minutes: 2` to misleadingly imply the queuing exposure is bounded by it.
+  **Caveat, found by `/review-openspec` round 2's CI/CD pass: "single physical machine" is
+  `deploy.yml`'s own comment's characterization, not something 15.2's runner-registration check actually
+  counts.** If more than one runner process/host is ever registered under this exact label set (self-hosted
+  runner setups commonly support this), the two workflows could run concurrently and this ~30-minute
+  contention risk wouldn't apply — not re-verified here, since 15.2 only confirms a runner online, not
+  how many.
+- This job needs no checkout (`permissions: {}`, no `actions/checkout` step) and only runs `curl`/`bash`
+  against two hardcoded `API_URL` literals — low blast radius; the self-hosted runner gains no new
+  capability this job could misuse.
+
+- [x] 15.1 Add failing unit tests to `tests/unit/test_refresh_workflow_shape.py` (RED first — the
+      current file has no assertion on `runs-on` at all):
+      - `test_job_runs_on_self_hosted_salk_network` — asserts
+        `workflow["jobs"][JOB]["runs-on"] == ["self-hosted", "linux", "salk-network"]`.
+      - **(Added per `/review-openspec`'s testing pass, guarding the "no escape hatch" scoping decision
+        above against a future copy-paste of `deploy.yml`'s ternary pattern)**
+        `test_job_runs_on_is_unconditional_not_a_ternary` — asserts `runs-on` is a plain `list` (not a
+        `${{ ... }}` expression string) and that `"ubuntu-latest"` does not appear in it.
+      Confirm both fail against the current `runs-on: ubuntu-latest`. **Done — both failed as expected
+      (`AssertionError`s against `'ubuntu-latest'`) before 15.3's implementation.**
+- [x] 15.2 **Independently doable now — does not require this PR to merge or promote, since `deploy.yml`
+      already depends on this same label today.** `/review-openspec` round 2's testing pass found the
+      original wording of this task ambiguous between two real possibilities, neither confirmed anywhere
+      in this repo: the runner could be registered at the **repo** level or the **org** level, and if
+      org-level, could be scoped to a runner group that may or may not include `bloom` as an authorized
+      repository. Resolve, in order, rather than guessing:
+      - `gh api repos/Salk-Harnessing-Plants-Initiative/bloom/actions/runners` first — a non-empty result
+        listing a runner with exactly the labels `self-hosted`, `linux`, `salk-network` settles this
+        directly (repo-level registration, visible to this repo by construction).
+      - If that returns empty, the runner is org-level: `gh api orgs/Salk-Harnessing-Plants-Initiative/actions/runners`
+        to find it, THEN `gh api orgs/Salk-Harnessing-Plants-Initiative/actions/runner-groups` to confirm
+        its runner group's repository access actually includes `bloom` — an org-level runner that's
+        online but scoped to a different runner group would look "available" while still being
+        unreachable by this workflow, the same false-confidence gap 15.1's YAML-shape test already has
+        for a typo'd label.
+      Either way, confirm the runner's status is `online`, not just that it's registered. **Done —
+      `gh api repos/Salk-Harnessing-Plants-Initiative/bloom/actions/runners` returned one runner
+      (`bloom-prod-runner`, `status: online`, `busy: false`) registered at the repo level with exactly
+      the labels `self-hosted`/`Linux`/`X64`/`salk-network` — settled directly, no org-level fallback
+      needed.**
+- [x] 15.3 Implement, in one commit:
+      - `.github/workflows/refresh-cyl-experiment-trait-counts.yml`: change line 91's
+        `runs-on: ubuntu-latest` to `runs-on: ["self-hosted", "linux", "salk-network"]`. Update the
+        file's header comment with **one short paragraph** stating plainly that GitHub-hosted runners
+        have no network route to either host, cross-referencing `deploy.yml`'s own comment and bloom#736
+        — **do not restate the run ID, timestamp, or curl output in this comment; those already live in
+        design.md/tasks.md** (`/review-openspec`'s documentation pass: this file's own header already
+        favors pointing at design.md over re-narrating it, and this fix's evidence is detailed enough
+        elsewhere that copying it a third time would drift out of sync eventually). Also add a one-line
+        comment on `timeout-minutes: 2` noting it bounds only execution time once a runner is assigned,
+        not queued-for-a-runner time.
+      - `deploy.yml`: add a one-line cross-reference near its `runs-on` ternary (lines ~37-41) noting
+        that `refresh-cyl-experiment-trait-counts.yml` now also depends on the
+        `["self-hosted", "linux", "salk-network"]` runner, **and that the two workflows use different
+        `concurrency.group`s, so a deploy job occupying the (single-machine) runner can make this refresh
+        job queue behind it for up to `deploy.yml`'s own `timeout-minutes: 30`** — the contention risk
+        found by `/review-openspec`'s CI/CD pass, not just an availability note. Confirm via `git diff`
+        that no `runs-on:` value in `deploy.yml` itself is touched, only the comment.
+      Confirm 15.1's tests now pass. **Done — both new tests pass; `git diff deploy.yml` confirmed
+      only the comment changed, no `runs-on:` value touched.**
+- [x] 15.4 Run the full `tests/unit/test_refresh_workflow_shape.py` file; confirm zero regressions from
+      15.1/15.3's change (no other test in that file asserts anything about `runs-on`, so none should be
+      affected). **Done — 25 passed, 0 failed (23 pre-existing + 2 new).**
+- [x] 15.5 `openspec validate fix-cyl-scan-traits-latest-rollup --strict` passes. **Confirmed.**
+- [x] 15.6 **Part of the same combined commit as 15.1/15.3** (`/review-openspec` round 2's git-workflow
+      pass: this task was added during the review-fix pass without saying which commit it belongs to —
+      it's a tiny, thematically identical doc caveat with no conflict risk, so it lands with the rest
+      rather than as a separate commit). Two doc sites assert the same now-falsified claim as settled
+      fact — production's `n_traits` staleness "bounded to roughly one refresh interval" — when the RPC
+      has never once actually reached production (bloom#736):
+      - `_WIKI/BLOOMMCP/README.md`'s "Supabase data access" section (lines ~187-194): "Staleness is
+        therefore bounded to roughly one refresh interval on production, but still unbounded on staging
+        until someone dispatches a refresh there." Caveat pending this section's own 15.7, e.g.
+        "...bounded to roughly one refresh interval on production, once bloom#736 (Section 15) confirms
+        an actual successful refresh — unbounded until then, identically to staging today."
+      - **(Found by `/review-openspec` round 2's documentation pass, missed in round 1)**
+        `bloommcp/src/bloom_mcp/sections/core/list_available_experiments.py`'s module-level comment
+        (lines ~13-21, directly above `_STALE_AFTER`): "a PRODUCTION row's lag is bounded to roughly one
+        refresh interval, but a missed or delayed scheduled run would otherwise look identical to
+        ordinary lag too" — the same claim, in code-comment form, that 14.4 already fixed once for the
+        user-facing `_traits_note()` string but never touched here. Caveat identically. (The
+        `_traits_note()` string itself, "may be older than the environment's own refresh cadence," stays
+        as-is — already appropriately hedged, no change needed.)
+      Run `prettier --check`/`--write` on the markdown file after editing, matching this change's own
+      established convention (7.3, 14.6); run `black`/`ruff` on the Python file per this repo's normal
+      pre-commit scope. **Done — both files caveated; `prettier --check` clean on the markdown file;
+      `black --check` clean on the Python file (comment-only edit); `ruff check` on the Python file
+      shows 2 pre-existing `UP045` findings on an untouched function signature (line 27, not part of
+      this edit's diff) — confirmed via `git diff` unrelated to this change, left as-is.**
+- [ ] 15.7 **Genuinely blocked on this section's own PR merging, promoting to `main`, AND a self-hosted
+      runner actually being available — same "verify the real thing, not just static config" discipline
+      as 14.9, not something this PR can complete on its own. Not part of this PR's own commit(s) —
+      tracked here as a required follow-up, landed in a separate commit/PR once it actually happens.**
+      Once promoted:
+      - Manually dispatch (`workflow_dispatch`, `environment: staging`) and confirm, via
+        `gh run view <id> --json jobs -q '.jobs[].runner_name'` or the Actions UI's "Runner" field (not
+        just timing), that the job was picked up by a self-hosted runner rather than left queued, and
+        that the `curl` call succeeds (HTTP 200/204) against `staging.bloom.salk.edu`.
+      - Do the same against `environment: production`.
+      - Check the Actions tab the morning after the next scheduled (`17 0 * * *`, i.e. 00:17 UTC) run and
+        confirm it succeeded end-to-end — the check 14.9 could never actually complete, since every prior
+        opportunity failed on the network hop before this fix existed.
+      - Mark 14.9 checked off only once this task confirms an actual successful RPC delivery — not before.
+- [ ] 15.8 Once 15.7 confirms a real successful run against both hosts (in its own separate follow-up
+      commit/PR, not this section's implementation PR): update 14.9's own checkbox to `[x]` with a
+      one-line pointer to 15.7's evidence, remove 15.6's "once bloom#736 confirms..." caveat now that
+      it's resolved, and update this change's standing archive-gate note (Section 14's, and this
+      section's own below) to reflect that both are now closed.
+
+**`/review-pr` pass against PR #738 (the implementation PR for 15.1-15.6): 5 subagents, zero BLOCKING
+findings, several IMPORTANT ones — two closed here with new regression tests (TDD), two closed with
+design.md documentation, one filed as a separate follow-up (out of this PR's own scope).**
+
+- [x] 15.9 **(Testing finding: doc-caveat wording had no regression test, despite in-repo precedent —
+      `tests/unit/test_bloommcp_local_mode_docs.py` already pins required/banned phrases in
+      `_WIKI/BLOOMMCP/README.md`, and 14.4 already treated this exact module's staleness wording as
+      test-worthy.)** Add `tests/unit/test_refresh_workflow_staleness_docs.py` (RED first), mirroring
+      `test_bloommcp_local_mode_docs.py`'s banned/required-phrase pattern (whitespace-normalized) across
+      both `_WIKI/BLOOMMCP/README.md` and `bloommcp/src/bloom_mcp/sections/core/list_available_experiments.py`:
+      - Banned: the pre-15.6 unconditional claim that production staleness "is [therefore] bounded to
+        roughly one refresh interval" (without the bloom#736/15.7 caveat).
+      - Required: the corrected, conditional wording — staleness is bounded only once bloom#736/Section
+        15 confirms an actual successful refresh, unbounded until then.
+      Confirm both new test functions FAIL against each file's pre-15.6 wording (temporarily revert each
+      file to confirm), then PASS against the current (post-15.6) text; restore. **Done — both files
+      independently confirmed to fail when reverted (checked one file at a time so each failure is
+      attributable), pass when restored.** (**Checkbox corrected to `[x]` in round 2's `/review-pr`
+      pass — the work was done in the same commit as 15.10-15.14, but the box was left unchecked; found
+      by the code-quality reviewer.**)
+- [x] 15.10 **(Testing finding: the two new `runs-on` tests in 15.1 assert against a hardcoded expected
+      value — neither catches this workflow's label list silently drifting out of sync with
+      `deploy.yml`'s own copy of the same three labels, the one drift this repo CAN detect without a
+      live network call to GitHub's runner-registration API.)** Add
+      `test_runner_label_matches_deploy_ymls_self_hosted_label` to
+      `tests/unit/test_refresh_workflow_shape.py` (RED first): extract the label list from
+      `deploy.yml`'s `fromJSON('[...]')` literal via regex (matching
+      `test_resolution_truth_table_for_schedule_vs_dispatch`'s own "extract from the live YAML, don't
+      hardcode an independently-asserted value" discipline) and assert it equals this workflow's
+      `runs-on` list exactly. Confirm it passes today (both currently
+      `["self-hosted", "linux", "salk-network"]`); then verify it actually catches drift by temporarily
+      changing one file's label list and confirming the test fails, then restoring. **Explicitly out of
+      scope, and not fixable by a unit test**: live verification that `salk-network` still matches an
+      actually-registered, `online` GitHub Actions runner — that requires the network call 15.2 already
+      made once, manually; periodic re-verification of the live registration remains a 15.7-adjacent
+      manual/operational check, not something `tests/unit/` (deliberately offline, per this repo's own
+      convention) can own. **Done — passes today; confirmed it catches drift by temporarily changing
+      one label to `salk-network-TYPO`, confirming the test failed with the exact mismatch, then
+      restoring.**
+- [x] 15.11 **(Security finding: the shared, long-lived `salk-network` runner is a materially different
+      trust boundary for `SERVICE_ROLE_KEY` than the previous ephemeral `ubuntu-latest` VM was, and
+      design.md never named this.)** Add a paragraph to design.md's Section 15 addendum: the `curl`
+      call's `Authorization: Bearer ${SERVICE_ROLE_KEY}` argument is visible via `ps`/`/proc/<pid>/cmdline`
+      to any other process on the same host for the few seconds the command runs; on the previous
+      single-tenant, throwaway `ubuntu-latest` VM that was a non-issue, but the shared `salk-network`
+      runner also runs `deploy.yml`'s own deploy jobs, and a host-level compromise now yields a path to a
+      live, full-RLS-bypass credential across every future run, not just one. Accepted, not mitigated
+      (GitHub already masks the value in *logs*; the process-list exposure is a materially smaller,
+      already-existing risk `deploy.yml`'s own jobs accept for their own secrets on this same host) —
+      documented so a future reader isn't the first to notice it. **Done.**
+- [x] 15.12 **(Behavioral-correctness finding: design.md documents `deploy.yml`-vs-refresh runner
+      contention but not refresh-vs-refresh contention.)** Add a one-line addendum to the same design.md
+      section: with exactly one registered `salk-network` runner (confirmed via 15.2's `gh api` check), a
+      `staging` dispatch and a `production` dispatch/schedule now also serialize against each other
+      purely by runner scarcity — new behavior, since elastically-scaled `ubuntu-latest` runners never
+      contended with each other. Not a correctness bug (each host's own `concurrency.group` is untouched
+      and still independent, so nothing races or corrupts) — noted for a future capacity-planning reader.
+      **Done.**
+- [x] 15.13 Run the full `tests/unit/` suite (or at minimum `test_refresh_workflow_shape.py` and the new
+      `test_refresh_workflow_staleness_docs.py`); confirm zero regressions. `openspec validate
+      fix-cyl-scan-traits-latest-rollup --strict` passes. Push as an additional commit to PR #738 (same
+      branch, same PR — these are review fixes to already-open work, not a new proposal). **Done — 28/28
+      passed across both files; `openspec validate --strict` passes.**
+- [x] 15.14 **(Scientific-rigor finding, explicitly out of this PR's own scope — not fixed here.)** File
+      a separate GitHub issue: spot-check whether `cyl_experiment_trait_counts` currently holds any row
+      with a deceptively recent `updated_at` (e.g. from the migration's one-time initial population, per
+      design.md's Migration Plan M2) that would let `_traits_note()`'s 2-day threshold show a plain
+      `(as of TIMESTAMP)` with no staleness caveat, despite the automated refresh pipeline never having
+      actually succeeded. A live-database check, not a code fix — tracked separately rather than
+      expanded into this CI-runner PR's scope. **Done — filed as
+      [bloom#740](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/740).**
+
+**Round 2 `/review-pr` pass against the 15.9-15.14 commit: 5 subagents, zero BLOCKING, one IMPORTANT
+finding converged on independently by 3 reviewers (code quality, testing, behavioral correctness), one
+IMPORTANT checkbox slip (code quality), one follow-up filed (security).**
+
+- [x] 15.15 **(Converged finding: `test_runner_label_matches_deploy_ymls_self_hosted_label`'s
+      `_deploy_yml_self_hosted_labels()` used `re.search` — only the FIRST of `deploy.yml`'s two
+      identical `fromJSON('[...]')` occurrences (`deploy-production` line 46, `deploy-staging` line
+      818) — so it never actually verified the two `deploy.yml` jobs' label lists agree with each
+      other, only that the refresh workflow matched whichever one happened to appear first.)** Fixed:
+      switched to `re.findall`, added an assertion that all extracted occurrences are identical before
+      using any of them as the comparison baseline. Verified via the same discipline as every other
+      guard test in this file: temporarily changed only `deploy-staging`'s copy (line 818) to a
+      different label, confirmed the test failed with a clear message naming both diverged lists, then
+      restored.
+- [x] 15.16 Task 15.9's checkbox was left `[ ]` despite its own "Done" note — corrected to `[x]`
+      (code-quality finding).
+- [x] 15.17 **(Security suggestion, not fixed here — filed as a separate follow-up rather than
+      expanding this PR's scope further.)** The `curl` calls in both this workflow and `deploy.yml`'s
+      Cloudflare-token preflight step pass their secret as a literal argv argument, visible via
+      `ps`/`/proc/<pid>/cmdline` on the shared runner — a near-zero-cost fix (`curl -K -`) exists but
+      touches two workflows and wasn't in this PR's own scope. Filed as
+      [bloom#743](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/743).
+- [x] 15.18 Simplified `test_refresh_workflow_staleness_docs.py`'s `REQUIRED_PHRASES` dict (both
+      values identically `"bloom#736"`) to a single `REQUIRED_PHRASE` constant, matching
+      `test_bloommcp_local_mode_docs.py`'s own precedent (code-quality suggestion).
+- [x] 15.19 Re-ran `tests/unit/test_refresh_workflow_shape.py` + `tests/unit/test_refresh_workflow_staleness_docs.py`
+      (28 passed) and `openspec validate fix-cyl-scan-traits-latest-rollup --strict`; pushed as a third
+      commit to PR #738.
+
+**Do not archive this change until Section 14 AND this section are both complete.** Section 14 makes the
+scheduled cron *exist* and resolve its approval gate correctly; this section makes the RPC call it
+issues actually reach a host. The `cyl-experiment-summary-rollup` spec delta's "production refreshes on
+an automatic schedule" scenario is only true in the sense that matters — the schedule actually delivering
+its refresh — once both sections ship. Running `openspec:archive` before 15.7 confirms a real successful
+run would leave that scenario asserting behavior that has, to date, never once actually happened.

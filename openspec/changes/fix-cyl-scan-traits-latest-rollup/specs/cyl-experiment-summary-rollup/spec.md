@@ -14,7 +14,9 @@ trait rows in a loop, and a per-row trigger recomputing a whole experiment's agg
 those rows would fire that many full-experiment recomputes for one call. Instead, a
 `refresh_cyl_experiment_trait_counts()` function SHALL recompute every experiment's count in one pass
 (delete-then-reinsert, so an experiment that drops to zero matching traits is removed from the table) and
-SHALL be invoked on a fixed schedule, independent of write volume. Concurrent invocations SHALL be
+SHALL be invoked by an external trigger independent of write volume — an automatic fixed schedule for
+production, and on-demand dispatch (no automatic schedule) for staging, since staging's write volume
+does not currently warrant one. Concurrent invocations SHALL be
 serialized (e.g. via a fixed-key advisory lock, since the refresh always rebuilds the whole table rather
 than one identifiable row) so that two overlapping calls cannot race the delete-then-reinsert into a
 primary-key conflict. Row-level security SHALL be enabled on
@@ -63,11 +65,19 @@ default to new tables. `refresh_cyl_experiment_trait_counts()` itself SHALL NOT 
 - **THEN** a refresh excludes that plant's scans and traits from `n_traits` for the experiment, matching
   `get_experiment_traits`'s own exclusion of the same plant
 
-#### Scenario: The cache is invoked on a schedule, not on every write
+#### Scenario: The cache is never invoked directly from a raw trait write, regardless of trigger type
 
 - **WHEN** trait data is written to `cyl_scan_traits`
 - **THEN** no trigger on `cyl_scan_traits` invokes `refresh_cyl_experiment_trait_counts()` as a direct
-  consequence of that write; the function is invoked only by an external schedule
+  consequence of that write; the function is invoked only by an external schedule or an on-demand
+  dispatch, never by the write path itself
+
+#### Scenario: Production refreshes on an automatic schedule; staging remains dispatch-only
+
+- **WHEN** the refresh mechanism's trigger source is a production schedule event
+- **THEN** `refresh_cyl_experiment_trait_counts()` is invoked automatically against production on that
+  schedule, with no equivalent automatic trigger configured for staging — staging's cache is refreshed
+  only when explicitly dispatched
 
 #### Scenario: Concurrent refresh calls do not raise a duplicate-key error
 

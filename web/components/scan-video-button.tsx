@@ -217,7 +217,7 @@ export default function ScanVideoButton({
             type="button"
             onClick={requestGenerate}
             disabled={busy}
-            className="rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-700 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white"
+            className="inline-flex items-center gap-2 rounded-md bg-lime-700 px-4 py-2.5 text-sm font-medium text-stone-50 transition-colors hover:bg-lime-800 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-lime-700"
           >
             {status === "generating"
               ? "Generating video…"

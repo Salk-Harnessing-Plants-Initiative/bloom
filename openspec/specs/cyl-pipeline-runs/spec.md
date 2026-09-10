@@ -9,13 +9,21 @@ The database SHALL provide a `cyl_pipeline_runs` table with `id BIGINT GENERATED
 IDENTITY PRIMARY KEY`, one row per pipeline-trigger request. It SHALL provide columns
 `target_level` (`text`, one of `'scan'|'wave'|'experiment'|'scan_ids'`), `target_id` (`bigint`,
 nullable — `NULL` when `target_level = 'scan_ids'`), `params` (`jsonb`, stored exactly as supplied
-in the trigger request body — this phase's route does not call `resolve_params()` or otherwise
-derive `params` from a scan's Bloom metadata; resolving `{species, mode, age}` from metadata plus
-user overrides, if needed, is the caller's responsibility), `requested_by` (`uuid`, attribution
-only — not a visibility filter), `status` (`text`, one of
+in the trigger request body — no phase through Phase 3 calls `resolve_params()` or otherwise derives
+`params` from a scan's Bloom metadata; resolving `{species, mode, age}` from metadata plus user
+overrides, if needed, is the caller's responsibility), `requested_by` (`uuid`, attribution only — not
+a visibility filter), `status` (`text`, one of
 `'queued'|'submitted'|'running'|'complete'|'partial'|'failed'`, defaulting to `'queued'`),
 `scan_count`/`done_count`/`reused_count`/`failed_count` (`integer`, defaulting to `0`), and
-`created_at`/`submitted_at`/`completed_at` (`timestamptz`) plus `error_message` (`text`, nullable).
+`created_at`/`submitted_at`/`completed_at` (`timestamptz`) plus `error_message` (`text`,
+nullable). `'queued'` means enumerated but not yet dispatched; `'submitted'`/dispatch-level `'failed'`/
+`'partial'` describe whether every batch reached the K8s API successfully (set by the
+`claim`/`complete`/`fail_cyl_pipeline_batch` functions); `'running'` and pipeline-outcome
+`'complete'`/`'failed'`/`'partial'` describe the real Argo Workflow outcome once dispatched, set by
+`update_cyl_pipeline_run_status` (the `cyl-pipeline-status-polling` capability) — `'partial'` and
+`'failed'` are each reused across both dispatch-level and pipeline-level meaning rather than given
+separate values, since both describe "some or all scans got no useful pipeline result" regardless of
+which stage produced that outcome.
 
 #### Scenario: A run row is created with defaults
 

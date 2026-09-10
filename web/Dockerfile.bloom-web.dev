@@ -21,6 +21,11 @@ ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
 
 RUN npm install --workspaces
 
+# Supabase CLI is a host tool (Makefile gen-types / migrate-local); its bundled
+# per-platform Go binaries never run in this container.
+RUN rm -rf /app/node_modules/supabase /app/node_modules/@supabase/cli-* \
+           /app/node_modules/.bin/supabase
+
 COPY web/ ./
 COPY packages ./packages
 

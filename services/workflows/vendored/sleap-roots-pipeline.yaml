@@ -1,0 +1,116 @@
+# https://argo-workflows.readthedocs.io/en/latest/fields/#workflowspec
+# https://argo-workflows.readthedocs.io/en/latest/workflow-concepts/
+# https://argo-workflows.readthedocs.io/en/latest/walk-through/dag/
+# https://kubernetes.io/docs/concepts/storage/volumes/#hostpath
+#
+# CROSS-REPO VENDORING NOTICE: this file is the only canonical, correctly-complete definition
+# of this Workflow's shape (volumes, entrypoint, serviceAccountName, DAG structure). `salk-bloom`
+# vendors a pinned copy of it at `services/workflows/vendored/sleap-roots-pipeline.yaml` (pin
+# recorded in a sibling `SLEAP_ROOTS_PIPELINE_REF` file) for its dispatch worker
+# (`k8s_client.py::build_workflow_body`), which loads that copy and layers a few dispatch-specific
+# overrides on top (batch labels, real scan-ids, ttlStrategy) rather than reimplementing this
+# shape by hand — a prior hand-reconstruction silently dropped `spec.volumes` entirely and broke
+# every real batch dispatch (found 2026-08-24/25, see
+# docs/superpowers/specs/2026-08-25-shared-argo-workflow-source-design.md and
+# https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/737). `salk-bloom`'s CI diffs
+# its vendored copy against this file at the pinned commit whenever a PR there touches the
+# vendored files — it catches "the vendored copy and the pin disagree with each other," not
+# "upstream changed and nobody's noticed yet" (it never looks at this file's current `main`, only
+# at the pinned commit). If you change this file's `volumes`, `entrypoint`, `serviceAccountName`,
+# or DAG structure, update the vendored copy and bump the pinned commit SHA in `salk-bloom` too —
+# otherwise the two silently drift until some unrelated `salk-bloom` PR happens to touch those
+# files and trips the check.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: sleap-roots-pipeline-
+  namespace: runai-busch-lab
+  labels:
+    project: busch-lab
+spec:
+  entrypoint: pipeline
+  # Step pods need workflowtaskresults create/patch to report results back to Argo, or every DAG
+  # step fails with "workflowtaskresults.argoproj.io is forbidden". bloom-workflow is the
+  # dedicated ServiceAccount for this (separate from bloom-pipeline, which Bloom's backend
+  # authenticates as to submit Workflows) — confirmed present in both runai-talmo-lab and
+  # runai-busch-lab, 2026-08-06. None of the four stage templates override serviceAccountName, so
+  # this single value applies to every step.
+  serviceAccountName: bloom-workflow
+
+  arguments:
+    parameters:
+      # Comma-separated scan_ids, passed straight through to images-downloader's --scan-ids.
+      # Submit with e.g. `argo submit sleap-roots-pipeline.yaml --parameter scan-ids=1,2,3`.
+      - name: scan-ids
+        value: ""
+
+  volumes:
+    # A4: models-downloader dropped — the warm predictor loads models in-process from the
+    # wandb registry, so no models-input/models-output volumes.
+    # NOTE: hostPath onto the /hpi/hpi_dev NFS — cross-node reschedule/resume only works because
+    # that mount exists at the SAME path on every GPU node.
+    # type: Directory (not DirectoryOrCreate), per cluster-admin guidance 2026-08-06: if the NFS
+    # mount is down on whichever node a step lands on, DirectoryOrCreate silently creates a local
+    # directory on that node's root disk instead — output vanishes, with a successful-looking
+    # pipeline result on top. Directory fails loudly instead. All three paths have existed
+    # continuously since this program's PoC and aren't going away, so there's no cold-start case
+    # left that DirectoryOrCreate was protecting (the permission-on-a-truly-fresh-path risk this
+    # comment used to flag was separately live-tested for the predictor's own output path in
+    # PR #41 — write succeeded — but that test is now moot here since these paths are pre-existing).
+    # These a4_poc paths are the PoC reference scan, shared across every run — deliberately, not a
+    # gap to "fix" by parameterizing them per-run/per-pipeline_run_id. Cluster-side skip-if-done
+    # dedup (sleap-roots-predict's batch.py) only works because this path IS shared: it's how a
+    # scan already processed in one run gets skipped in the next. Bloom's own trigger-route dedup
+    # design explicitly defers the real GPU-avoidance decision to this mechanism (bloom PR #570's
+    # pipeline.py docstring), and the A4 "batch oracle" validation target requires re-running an
+    # already-done batch to schedule 0 GPU pods — both assume this path stays shared. The real fix
+    # for cross-run contamination is manifest-scoped processing in the producers (only touch the
+    # scan_ids a run was actually given), not isolated paths — see
+    # docs/superpowers/specs/2026-08-03-manifest-scoped-processing-redesign.md and issue #37.
+    - name: images-input-dir
+      hostPath:
+        path: /hpi/hpi_dev/users/eberrigan/pipeline_orchestration_tests/a4_poc/input
+        type: Directory
+    - name: predictions-output-dir
+      hostPath:
+        path: /hpi/hpi_dev/users/eberrigan/pipeline_orchestration_tests/a4_poc/predictions
+        type: Directory
+    - name: traits-output-dir
+      hostPath:
+        path: /hpi/hpi_dev/users/eberrigan/pipeline_orchestration_tests/a4_poc/traits
+        type: Directory
+    - name: bloom-credentials
+      # Provisioned via the RunAI console (Credentials → Generic secret, Project scope
+      # talmo-lab), same as WANDB_API_KEY — RunAI prefixes the asset name with `genericsecret-`
+      # in the resulting k8s Secret. Named with an explicit -staging suffix (not just
+      # bloom-pipeline-credentials) so a later production credential gets its own distinct name
+      # instead of colliding with/overwriting this one in the same namespace.
+      secret:
+        secretName: genericsecret-bloom-staging-pipeline-credentials
+  templates:
+    - name: pipeline
+      dag:
+        tasks:
+          - name: images-downloader
+            templateRef:
+              name: sleap-roots-images-downloader-template
+              template: images-downloader
+          - name: predictor
+            templateRef:
+              name: sleap-roots-predictor-template
+              template: predictor
+            dependencies:
+              - images-downloader
+          - name: trait-extractor
+            templateRef:
+              name: sleap-roots-trait-extractor-template
+              template: trait-extractor
+            dependencies:
+              - predictor
+          - name: write-back
+            templateRef:
+              name: sleap-roots-write-back-template
+              template: write-back
+            dependencies:
+              - trait-extractor

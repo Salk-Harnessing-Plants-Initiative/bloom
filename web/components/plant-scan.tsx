@@ -45,17 +45,24 @@ export default function PlantScan({
   target,
   height,
   label,
+  altText,
 }: {
   scan: CylScanWithImages;
   href?: string;
   target?: string;
   height?: number;
   label?: string;
+  // Names the image for screen readers. Separate from `label`, which also
+  // draws a visible badge, so a caller can identify the scan without one.
+  altText?: string;
 }) {
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [imageIsLoaded, setImageIsLoaded] = useState<boolean>(false);
+
+  const imageAlt =
+    altText ?? (label ? `Scan thumbnail, ${label}` : "Scan thumbnail");
 
   // Keyed on the scan id, not the object, so a caller re-rendering with an
   // equivalent scan doesn't re-sign everything.
@@ -121,19 +128,35 @@ export default function PlantScan({
   return (
     <div className="group">
       <div
+        // Height is inline, not `h-[${...}px]`: an interpolated arbitrary value
+        // never appears literally in the source for Tailwind's scanner to emit,
+        // so the class was silently dropped and the box had no height at all.
+        style={{ height: height || defaultHeight }}
         className={
           "relative bg-stone-300 box-content rounded-lg border-4 border-neutral-300" +
-          ` h-[${height || defaultHeight}px]` +
+          // Only hint at a click when there is somewhere to go. focus-within so
+          // the hint reaches keyboard users, not just the mouse.
+          (href
+            ? " transition-colors group-hover:border-lime-700 group-focus-within:border-lime-700"
+            : "") +
           (objectUrl === null || loading ? " animate-pulse" : "")
         }
       >
         {imageIsLoaded && videoUrl !== null && (
-          <div className="p-1 rounded-md bg-stone-50 border absolute hidden left-1 top-1 group-hover:block text-lime-700 opacity-70 hover:opacity-90">
+          // Always shown, never `hidden`: it only renders when the scan has a
+          // video, and a badge that appears on hover is a badge nobody finds.
+          // display:none would also drop it out of the tab order entirely.
+          <div className="absolute left-1 top-1">
             <a
               href={videoUrl}
               target="_blank"
               rel="noreferrer"
-              aria-label="Open scan video"
+              // Named per scan: a grid of these all called "Open scan video"
+              // is a link list with no way to tell one day from another.
+              aria-label={`Open ${imageAlt} video in a new tab`}
+              // The chip is on the anchor, not a wrapper, so the padded area
+              // is the click target rather than a band that only looks live.
+              className="block p-1 rounded-md bg-stone-50 border border-stone-500 text-lime-800 opacity-90 transition-opacity hover:opacity-100 focus-visible:opacity-100"
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -162,6 +185,7 @@ export default function PlantScan({
             <Link href={href} target={target}>
               <img
                 src={objectUrl}
+                alt={imageAlt}
                 className="rounded-md"
                 onLoad={() => setImageIsLoaded(true)}
                 onError={() => setImageIsLoaded(false)}
@@ -170,6 +194,7 @@ export default function PlantScan({
           ) : (
             <img
               src={objectUrl}
+              alt={imageAlt}
               className="rounded-md"
               onLoad={() => setImageIsLoaded(true)}
               onError={() => setImageIsLoaded(false)}
