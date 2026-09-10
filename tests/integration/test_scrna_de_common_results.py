@@ -730,3 +730,60 @@ def test_a_run_row_cannot_carry_both_a_label_and_a_key(pg_conn):
         _rejects(cur, "scrna_de_run_rows_name_the_catalogue",
                  _result, cur, ds, _run(cur, ds), cluster_id="Xylem")
     pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# The access rules themselves, not just the grants beneath them
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("table", ["scrna_de_runs", "scrna_de_genes"])
+def test_row_level_security_is_on(pg_conn, table):
+    """Both tables rely on it entirely: every role but bloom_admin holds grants
+    from the schema's default privileges and is stopped by policy alone."""
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT relrowsecurity FROM pg_class WHERE oid = %s::regclass",
+                    (f"public.{table}",))
+        assert cur.fetchone()[0] is True
+
+
+@pytest.mark.parametrize("table", ["scrna_de_runs", "scrna_de_genes"])
+def test_the_policies_are_the_ones_scrna_de_has(pg_conn, table):
+    """Deliberately without anon, and deliberately with no write path but the
+    admin one -- so the set is asserted whole rather than by absence."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT policyname, roles::text, cmd FROM pg_policies "
+            "WHERE schemaname = 'public' AND tablename = %s", (table,)
+        )
+        suffix = table.replace("scrna_de_", "")
+        assert {(n, r, c) for n, r, c in cur.fetchall()} == {
+            (f"admin_all_scrna_de_{suffix}", "{bloom_admin}", "ALL"),
+            (f"agent_read_scrna_de_{suffix}", "{bloom_agent}", "SELECT"),
+            (f"user_read_scrna_de_{suffix}", "{bloom_user}", "SELECT"),
+        }
+
+
+def test_a_reader_role_actually_reads_through_its_policy(pg_conn):
+    """The catalog checks above say the policy exists; this says it works."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        _result(cur, ds, _run(cur, ds))
+        for role, expected in (("bloom_user", 1), ("bloom_agent", 1), ("anon", 0)):
+            cur.execute("SAVEPOINT r")
+            cur.execute(f"SET LOCAL ROLE {role}")
+            cur.execute("SELECT count(*) FROM scrna_de_runs")
+            assert cur.fetchone()[0] == expected, f"{role} read the wrong number"
+            cur.execute("ROLLBACK TO SAVEPOINT r")
+    pg_conn.rollback()
+
+
+def test_the_dropped_update_policies_are_gone(pg_conn):
+    """Asserted as an absence, because the subset check in the contrast suite
+    only relaxes when an entry is removed from it."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT policyname FROM pg_policies "
+            "WHERE schemaname = 'public' AND tablename = 'scrna_de' AND cmd = 'UPDATE'"
+        )
+        assert [r[0] for r in cur.fetchall()] == []

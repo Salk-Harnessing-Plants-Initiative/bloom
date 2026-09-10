@@ -808,11 +808,16 @@ def test_rollback_restores_the_original_shape(pg_conn):
             pytest.skip("table already holds rows; the guard would refuse")
         ds = _seed_dataset(cur)
         _insert(cur, ds, file_path="de/legacy.json")
-        before = _table_privileges(cur, TABLE)
 
         # Unwind the layer above before this one, or its columns survive and the
         # original shape is never reached.
         cur.execute(_later_rollback_body())
+
+        # Captured after that, not before: 20260912090000 revoked UPDATE and
+        # DELETE and its rollback grants them back, so a snapshot taken first
+        # could never match. What this test is about is that *this* migration's
+        # rollback revokes nothing, which is what comparing across it shows.
+        before = _table_privileges(cur, TABLE)
         cur.execute(_rollback_body())
 
         cur.execute(
