@@ -292,22 +292,27 @@ def summarise(cells: dict) -> str:
 
 def load(conn, name: str, species_id: int, cells: dict,
          units: str, annotation: str, create: bool = False) -> tuple[int, int, bool]:
-    """Write the dataset, its catalogue and its cells in one transaction.
+    """Write the cells to the database, in one transaction. Three tables:
 
-    Order matters twice over. `scrna_cells` references the catalogue with
-    ON DELETE RESTRICT, so the cells go first or the catalogue delete is refused
-    on every run after the first. And the dataset's counts are written last,
-    after reading back what actually landed, so the row can never claim more
+        scrna_datasets   1 row   the registration, and n_cells written last
+        scrna_clusters   1 row per cell type   ordinal, name, colour
+        scrna_cells      1 row per cell        cell_number, barcode, x, y,
+                                               cluster_id, replicate
+
+    A reload replaces the last two. Deletes go cells first, because a foreign
+    key refuses the catalogue while cells still point at it. The dataset row is
+    updated last, after reading back what landed, so it can never claim more
     cells than it holds.
 
-    A reload is refused outright when the dataset already has rows that name a
-    cell type or a cell position, since nothing here can rebuild them.
+    Refused when the dataset already has per-cluster stats, neighbour rows,
+    expression or differential expression: those are keyed to cell types or cell
+    positions that this reload renumbers.
 
-    Registering a dataset that does not exist yet takes `create`, so a mistyped
-    name is refused rather than quietly loaded as a second copy.
+    `create` registers a dataset that does not exist yet, so a mistyped name is
+    refused rather than loaded as a second copy.
 
-    Returns the dataset id, the number of cells actually stored, and whether the
-    dataset was registered by this call rather than replaced.
+    Returns the dataset id, the cells stored, and whether it was registered
+    rather than replaced.
     """
     name = name.strip()
     if not name:
