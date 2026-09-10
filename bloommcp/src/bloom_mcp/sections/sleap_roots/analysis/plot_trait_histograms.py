@@ -49,14 +49,12 @@ from sleap_roots_analyze.visualization import (
     create_trait_histograms,
     create_trait_histograms_batched,
 )
-from bloom_mcp.experiment_utils import load_experiment_data as _load_data
-from bloom_mcp.tools._plots import call_with_figure_cleanup
 
 from bloom_mcp.contract import Provenance, RunLinks, as_mcp_tool
 from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools._plots import FIGURE_REGISTRY_LOCK
+from bloom_mcp.tools._plots import FIGURE_REGISTRY_LOCK, call_with_figure_cleanup
 from bloom_mcp.tools._qc_shared import _validate_experiment_name
 
 from ._viz_shared import TRAIT_BATCH_THRESHOLD, resolve_trait_columns
@@ -96,18 +94,93 @@ class PlotTraitHistogramsParams(BaseModel):
 class PlotTraitHistogramsResult(RunLinks):
     """A small summary + links to the persisted histogram run."""
 
-    def _make_histograms():
-        if len(selected) > TRAIT_BATCH_THRESHOLD:
-            return create_trait_histograms_batched(df, selected)
-        return create_trait_histograms(df, selected)
+    experiment: str
+    source: str
+    n_traits_plotted: int
+    batched: bool = Field(
+        description="True once the selection exceeds TRAIT_BATCH_THRESHOLD traits, in which "
+        "case the render is paginated (see n_pages)."
+    )
+    n_pages: int = Field(
+        description="Number of committed output pages (1 when not batched)."
+    )
+    resolved_trait_columns: list[str] = Field(
+        description="The exact trait columns used to render/persist this run, in selection "
+        "order — recorded even when trait_columns was omitted (auto-detected).",
+    )
+    page_traits: dict[str, list[str]] = Field(
+        description="Maps each committed output filename to the trait columns rendered on "
+        "that page (a single entry, covering every resolved_trait_columns, when not batched) "
+        "— otherwise only discoverable by opening the image and reading its axis labels.",
+    )
 
+
+@as_mcp_tool(
+    input_model=PlotTraitHistogramsParams,
+    output_model=PlotTraitHistogramsResult,
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
+)
+def plot_trait_histograms(
+    params: PlotTraitHistogramsParams, *, provenance: Provenance
+) -> PlotTraitHistogramsResult:
+    """Render histograms for ``experiment``'s **raw, uncleaned** trait distributions and
+    persist them. No QC cleaning has been applied — this is a pre-clean EDA view, the same
+    category as ``qc_inspect``."""
+    reader = _ports.reader()
+    store = _ports.store()
+
+    _validate_experiment_name(params.experiment)
+
+    frame = reader.load_experiment(params.experiment, version="raw")
+    trait_cols = resolve_trait_columns(frame, params.trait_columns, params.experiment)
+    batched = len(trait_cols) > TRAIT_BATCH_THRESHOLD
+
+    prov = provenance.model_copy(
+        update={
+            "based_on_version": frame.source,
+            "params": {**provenance.params, "resolved_trait_columns": trait_cols},
+        }
+    )
+    run = store.create_run(
+        experiment=params.experiment,
+        tool_class=_TOOL_CLASS,
+        provenance=prov,
+        user_label=params.user_label,
+        source_csv=_ports.raw_source_for(params.experiment),
+        source=frame.resolved_source,
+    )
+    figures: list = []
     try:
-        # call_with_figure_cleanup: acquires the shared FIGURE_REGISTRY_LOCK around
-        # this delegate call (#721 PR review) and closes any figure(s) it allocates
-        # before raising, instead of leaking them — this file's own
-        # `except Exception: return ...` below would otherwise swallow such an
-        # exception without closing whatever was already rendered.
-        fig_or_figs = call_with_figure_cleanup(_make_histograms)
+        # call_with_figure_cleanup (#721, landed via PR #726) holds FIGURE_REGISTRY_LOCK for
+        # the delegate call — allocating figures mutates the shared global matplotlib
+        # registry, which a concurrent figure-creating call elsewhere in the process could
+        # otherwise interleave with (see the lock's own comment in bloom_mcp.tools._plots)
+        # — and, if the delegate raises after allocating, closes what it allocated before
+        # re-raising, still under the lock. That second half is what closes #725 for
+        # this tool: a *_batched delegate failing on page N has already registered pages
+        # 1..N-1, which `figures` (still []) could never reach in `finally` below. The
+        # list() stays inside the callable so the batched generator is consumed under the
+        # lock, not lazily afterwards.
+        def _render() -> list:
+            if batched:
+                return list(create_trait_histograms_batched(frame.df, trait_cols))
+            return [create_trait_histograms(frame.df, trait_cols)]
+
+        figures = call_with_figure_cleanup(_render)
+
+        outputs: dict[str, str] = {}
+        page_traits: dict[str, list[str]] = {}
+        for i, fig in enumerate(figures, start=1):
+            name = f"{_PNG_STEM}.png" if not batched else f"{_PNG_STEM}_page{i}.png"
+            fig.savefig(run.staging_dir / name, dpi=150, bbox_inches="tight")
+            outputs[name] = name
+            start = (i - 1) * _DELEGATE_BATCH_SIZE
+            page_traits[name] = (
+                trait_cols[start : start + _DELEGATE_BATCH_SIZE]
+                if batched
+                else list(trait_cols)
+            )
+        stored = store.commit(run, outputs)
     except Exception:
         rmtree(run.staging_dir, ignore_errors=True)
         raise

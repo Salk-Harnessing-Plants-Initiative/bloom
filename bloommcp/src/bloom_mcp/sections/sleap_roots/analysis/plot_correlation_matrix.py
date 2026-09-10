@@ -125,14 +125,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 from sleap_roots_analyze.visualization import create_correlation_heatmap
-from bloom_mcp.experiment_utils import load_experiment_data as _load_data
-from bloom_mcp.tools._plots import call_with_figure_cleanup
 
 from bloom_mcp.contract import BloomMCPError, Provenance, RunLinks, as_mcp_tool
 from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools._plots import FIGURE_REGISTRY_LOCK
+from bloom_mcp.tools._plots import FIGURE_REGISTRY_LOCK, call_with_figure_cleanup
 from bloom_mcp.tools._qc_shared import (
     _CANONICAL_MIN_SAMPLES_PER_TRAIT,
     _validate_experiment_name,
@@ -176,15 +174,77 @@ class PlotCorrelationMatrixParams(BaseModel):
 class PlotCorrelationMatrixResult(RunLinks):
     """A small summary + links to the persisted correlation-heatmap run."""
 
-    try:
-        # call_with_figure_cleanup: acquires the shared FIGURE_REGISTRY_LOCK around
-        # this delegate call (#721 PR review) and closes any figure it allocates before
-        # raising, instead of leaking it — this file's own `except Exception: return
-        # ...` below would otherwise swallow such an exception without closing whatever
-        # was already rendered.
-        fig = call_with_figure_cleanup(lambda: create_correlation_heatmap(df, selected))
-    except Exception:
-        return "Correlation heatmap failed: the plot could not be generated for the selected traits."
+    experiment: str
+    source: str
+    n_traits_plotted: int = Field(
+        description="Number of trait columns correlated and drawn on the heatmap — "
+        "always len(resolved_trait_columns). Named to match plot_trait_histograms/"
+        "plot_trait_boxplots rather than qc_inspect's n_traits, so the 3 tools #466 "
+        "converges onto one contract report the same concept under one name "
+        "(#466 review round 7)."
+    )
+    strong_positive_correlations: int = Field(
+        description="Off-diagonal trait pairs with Pearson correlation > 0.7."
+    )
+    strong_negative_correlations: int = Field(
+        description="Off-diagonal trait pairs with Pearson correlation < -0.7."
+    )
+    zero_variance_traits: list[str] = Field(
+        default_factory=list,
+        description="Selected traits whose correlation against anything is unconditionally "
+        "NaN because the trait itself carries no usable variance. Three cases land here, "
+        "via `not (std(skipna=True) > 0)`: constant (std 0), entirely NaN (std NaN), and — "
+        "less obviously — exactly one non-null value, whose sample std is NaN rather than 0 "
+        "because ddof=1 needs two observations (#466 review round 7: the field previously "
+        "described only the first two). All three are genuinely uncorrelatable, so the "
+        "grouping is intentional, not an accident of the NaN check. Pearson correlation "
+        "against such a trait is NaN, counting toward neither strong_positive_correlations "
+        "nor strong_negative_correlations — empty when none were affected.",
+    )
+    low_overlap_trait_pairs: list[list[str]] = Field(
+        default_factory=list,
+        description="Trait pairs whose overlapping non-null observations fell below the "
+        "minimum this tool requires to report a correlation coefficient — raw data can have "
+        "disjoint missingness, and a near-empty overlap (as few as 2 points) can otherwise "
+        "produce a spurious exact +/-1.0 'strong correlation'. Excludes any pair already "
+        "explained by zero_variance_traits. Empty when every pair had enough overlap.",
+    )
+    heatmap_caveat: Optional[str] = Field(
+        default=None,
+        description="Populated only when zero_variance_traits or low_overlap_trait_pairs is "
+        "non-empty: some cell(s) in the rendered heatmap are not backed by enough real data to "
+        "trust, but the image still colors them as if they were a genuine strong correlation. "
+        "Names the affected trait(s)/pair(s) directly (capped at 10, '+N more' beyond that) so "
+        "a PNG-only viewer can match them against the image's own axis labels — not just a "
+        "count. The same text is also drawn as a footnote directly on the saved PNG and stamped "
+        "into the persisted run's params, as are the full uncapped zero_variance_traits/"
+        "low_overlap_trait_pairs lists, so the cap is never the only record of what was "
+        "flagged. Cross-check those two lists for the complete, uncapped set before trusting "
+        "a highlighted cell in the image.",
+    )
+    resolved_trait_columns: list[str] = Field(
+        description="The exact trait columns used to render/persist this run, in selection "
+        "order — recorded even when trait_columns was omitted (auto-detected), so a later "
+        "reader of this run's manifest can tell exactly which traits produced it without "
+        "re-deriving auto-detection against data that may have drifted since.",
+    )
+
+
+@as_mcp_tool(
+    input_model=PlotCorrelationMatrixParams,
+    output_model=PlotCorrelationMatrixResult,
+    errors=(ExperimentReadError, CommitFailedError, ManifestReadError),
+)
+def plot_correlation_matrix(
+    params: PlotCorrelationMatrixParams, *, provenance: Provenance
+) -> PlotCorrelationMatrixResult:
+    """Render a correlation heatmap for ``experiment``'s **raw, uncleaned** data via
+    ``create_correlation_heatmap`` and persist it. No QC cleaning has been applied — this is
+    a pre-clean EDA view, the same category as ``qc_inspect``."""
+    reader = _ports.reader()
+    store = _ports.store()
+
+    _validate_experiment_name(params.experiment)
 
     frame = reader.load_experiment(params.experiment, version="raw")
     trait_cols = resolve_trait_columns(frame, params.trait_columns, params.experiment)
@@ -285,11 +345,16 @@ class PlotCorrelationMatrixResult(RunLinks):
     )
     fig = None
     try:
-        # FIGURE_REGISTRY_LOCK: allocates a figure against the shared global matplotlib
+        # call_with_figure_cleanup (#721, landed via PR #726) holds FIGURE_REGISTRY_LOCK for
+        # the delegate call — allocating a figure mutates the shared global matplotlib
         # registry, which a concurrent figure-creating call elsewhere in the process could
-        # otherwise interleave with (see that lock's own comment in bloom_mcp.tools._plots).
-        with FIGURE_REGISTRY_LOCK:
-            fig = create_correlation_heatmap(frame.df, trait_cols)
+        # otherwise interleave with (see the lock's own comment in bloom_mcp.tools._plots)
+        # — and, if the delegate raises after allocating, closes what it allocated before
+        # re-raising, still under the lock. Single-figure delegate, so the cleanup half
+        # only matters if create_correlation_heatmap allocates and then raises mid-render.
+        fig = call_with_figure_cleanup(
+            lambda: create_correlation_heatmap(frame.df, trait_cols)
+        )
         if heatmap_caveat is not None:
             # Cheap, in-scope: a footnote drawn directly onto the already-rendered Figure,
             # not a per-cell hatch/marker — the latter would require reverse-engineering the

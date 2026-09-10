@@ -68,6 +68,21 @@ rather than to disk I/O.
 - **THEN** the cleanup path acquires `FIGURE_REGISTRY_LOCK` not at all, adding no lock traffic
   to the error path
 
+Figure creation SHALL go through `bloom_mcp.tools._plots.call_with_figure_cleanup` — the single
+shared implementation of "create a figure under the lock" every other figure-creating call site
+in bloommcp uses since #721/#726 — rather than an ad hoc `with FIGURE_REGISTRY_LOCK:`. Beyond
+holding the lock, that helper closes any figure registered during a delegate call that then
+raises, while still holding the lock; for the two batched tools this is what makes a mid-batch
+delegate failure leak nothing (#725).
+
+#### Scenario: A delegate that allocates and then raises leaks no figure
+
+- **WHEN** a tool's figure-creating delegate registers one or more figures and then raises
+  before returning them (for the batched tools: pages 1..N−1 rendered, page N fails)
+- **THEN** the tool raises a structured `BloomMCPError` and matplotlib's global figure
+  registry holds exactly the figures it held before the call — none of the abandoned figures
+  remain open
+
 ### Requirement: Raw (Pre-Clean) Experiment Read
 
 Each of the 3 tools SHALL read the experiment frame through the `ExperimentReader` port with no

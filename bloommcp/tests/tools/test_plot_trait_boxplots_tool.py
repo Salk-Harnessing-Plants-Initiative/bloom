@@ -502,26 +502,83 @@ def test_shares_the_same_figure_registry_lock_object():
     assert plot_trait_boxplots_tool.FIGURE_REGISTRY_LOCK is _plots.FIGURE_REGISTRY_LOCK
 
 
-def test_acquires_figure_registry_lock_around_creation_and_close(
+def test_delegate_runs_while_holding_the_figure_registry_lock(
     injected_ports, monkeypatch
 ):
-    calls = {"enter": 0, "exit": 0}
-    real_lock = plot_trait_boxplots_tool.FIGURE_REGISTRY_LOCK
+    """The creating delegate call executes with the REAL process-wide lock held.
 
-    class _SpyLock:
-        def __enter__(self):
-            calls["enter"] += 1
-            return real_lock.__enter__()
+    Replaces a count-based spy on this module's `FIGURE_REGISTRY_LOCK` attribute: since
+    #726 landed, creation goes through `call_with_figure_cleanup`, which acquires
+    `_plots.FIGURE_REGISTRY_LOCK` directly, so a module-attribute spy could no longer
+    see it. Asserting `.locked()` at the moment the delegate runs is the property that
+    actually matters, and it survives either implementation (#466 review round 7).
+    """
+    from bloom_mcp.tools import _plots
 
-        def __exit__(self, *exc):
-            calls["exit"] += 1
-            return real_lock.__exit__(*exc)
+    real_delegate = plot_trait_boxplots_tool.create_trait_boxplots_by_genotype
+    held: list[bool] = []
 
-    monkeypatch.setattr(plot_trait_boxplots_tool, "FIGURE_REGISTRY_LOCK", _SpyLock())
+    def _spy(*a, **k):
+        held.append(_plots.FIGURE_REGISTRY_LOCK.locked())
+        return real_delegate(*a, **k)
+
+    monkeypatch.setattr(
+        plot_trait_boxplots_tool, "create_trait_boxplots_by_genotype", _spy
+    )
     _run()
-    # one acquisition for the creating delegate call, one for the close batch
-    assert calls["enter"] == 2
-    assert calls["exit"] == 2
+    assert held == [True]
+
+
+def test_routes_figure_creation_through_call_with_figure_cleanup(
+    injected_ports, monkeypatch
+):
+    """Creation goes through the shared `call_with_figure_cleanup` (#721/#726), not an
+    ad hoc `with FIGURE_REGISTRY_LOCK:` — `_plots.py`'s lock comment promises every
+    figure-creating call site in bloommcp does, and a refactor back to a bare `with`
+    would silently drop the mid-render leak cleanup that closes #725 for this tool."""
+    from bloom_mcp.tools import _plots
+
+    real_helper = _plots.call_with_figure_cleanup
+    calls = {"n": 0}
+
+    def _spy(fn):
+        calls["n"] += 1
+        return real_helper(fn)
+
+    monkeypatch.setattr(plot_trait_boxplots_tool, "call_with_figure_cleanup", _spy)
+    _run()
+    assert calls["n"] == 1
+
+
+def test_mid_batch_delegate_raise_leaks_no_figures(monkeypatch):
+    """#725: a *_batched delegate that has already rendered pages 1..N-1 and then fails
+    on page N returned nothing, so `figures` is still [] in `finally` and those pages were
+    unreachable — a real leak until creation moved under `call_with_figure_cleanup`, whose
+    fignum diff closes exactly the figures registered during the failed call."""
+    import matplotlib.pyplot as plt
+
+    wide_experiment = "wide.csv"
+    reader = FakeReader()
+    reader.add_experiment(wide_experiment, _wide_df(60))  # > TRAIT_BATCH_THRESHOLD
+    _ports.configure(reader=reader, store=FakeResultStore())
+    try:
+
+        def _two_pages_then_boom(*a, **k):
+            plt.figure()
+            plt.figure()
+            raise RuntimeError("page 3 failed")
+
+        monkeypatch.setattr(
+            plot_trait_boxplots_tool,
+            "create_trait_boxplots_by_genotype_batched",
+            _two_pages_then_boom,
+        )
+        before = plt.get_fignums()
+        with pytest.raises(BloomMCPError):
+            plot_trait_boxplots(PlotTraitBoxplotsParams(experiment=wide_experiment))
+        assert plt.get_fignums() == before
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
 
 def test_closes_figures_while_holding_the_figure_registry_lock(

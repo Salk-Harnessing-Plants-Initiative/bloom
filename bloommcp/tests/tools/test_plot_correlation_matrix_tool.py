@@ -767,28 +767,72 @@ def test_shares_the_same_figure_registry_lock_object():
     )
 
 
-def test_acquires_figure_registry_lock_around_creation_and_close(
+def test_delegate_runs_while_holding_the_figure_registry_lock(
     injected_ports, monkeypatch
 ):
-    calls = {"enter": 0, "exit": 0}
-    real_lock = plot_correlation_matrix_tool.FIGURE_REGISTRY_LOCK
+    """The creating delegate call executes with the REAL process-wide lock held.
 
-    class _SpyLock:
-        def __enter__(self):
-            calls["enter"] += 1
-            return real_lock.__enter__()
+    Replaces a count-based spy on this module's `FIGURE_REGISTRY_LOCK` attribute: since
+    #726 landed, creation goes through `call_with_figure_cleanup`, which acquires
+    `_plots.FIGURE_REGISTRY_LOCK` directly, so a module-attribute spy could no longer
+    see it. Asserting `.locked()` at the moment the delegate runs is the property that
+    actually matters, and it survives either implementation (#466 review round 7).
+    """
+    from bloom_mcp.tools import _plots
 
-        def __exit__(self, *exc):
-            calls["exit"] += 1
-            return real_lock.__exit__(*exc)
+    real_delegate = plot_correlation_matrix_tool.create_correlation_heatmap
+    held: list[bool] = []
+
+    def _spy(*a, **k):
+        held.append(_plots.FIGURE_REGISTRY_LOCK.locked())
+        return real_delegate(*a, **k)
 
     monkeypatch.setattr(
-        plot_correlation_matrix_tool, "FIGURE_REGISTRY_LOCK", _SpyLock()
+        plot_correlation_matrix_tool, "create_correlation_heatmap", _spy
     )
     _run()
-    # one acquisition for the creating delegate call, one for the close batch
-    assert calls["enter"] == 2
-    assert calls["exit"] == 2
+    assert held == [True]
+
+
+def test_routes_figure_creation_through_call_with_figure_cleanup(
+    injected_ports, monkeypatch
+):
+    """Creation goes through the shared `call_with_figure_cleanup` (#721/#726), not an
+    ad hoc `with FIGURE_REGISTRY_LOCK:` — `_plots.py`'s lock comment promises every
+    figure-creating call site in bloommcp does, and a refactor back to a bare `with`
+    would silently drop the mid-render leak cleanup that closes #725 for this tool."""
+    from bloom_mcp.tools import _plots
+
+    real_helper = _plots.call_with_figure_cleanup
+    calls = {"n": 0}
+
+    def _spy(fn):
+        calls["n"] += 1
+        return real_helper(fn)
+
+    monkeypatch.setattr(plot_correlation_matrix_tool, "call_with_figure_cleanup", _spy)
+    _run()
+    assert calls["n"] == 1
+
+
+def test_delegate_raise_after_allocating_leaks_no_figure(injected_ports, monkeypatch):
+    """A delegate that allocates a figure and then raises mid-render must not leak it:
+    `figures`/`fig` is never assigned, so this tool's own `finally` cannot reach it — only
+    `call_with_figure_cleanup`'s fignum-diff cleanup can (#721/#726, pinned here for #466).
+    """
+    import matplotlib.pyplot as plt
+
+    def _allocate_then_boom(*a, **k):
+        plt.figure()
+        raise RuntimeError("renderer died after allocating")
+
+    monkeypatch.setattr(
+        plot_correlation_matrix_tool, "create_correlation_heatmap", _allocate_then_boom
+    )
+    before = plt.get_fignums()
+    with pytest.raises(BloomMCPError):
+        _run()
+    assert plt.get_fignums() == before
 
 
 def test_closes_figures_while_holding_the_figure_registry_lock(

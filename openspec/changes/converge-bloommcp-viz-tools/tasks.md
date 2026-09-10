@@ -526,4 +526,22 @@ live code and held up.
 - [x] 14.14 Re-ran post-merge: full suite **1551 passed / 33 deselected** via the exact CI
       invocation (1555 passed / 29 skipped unfiltered), canonical isolated suite **199 passed**,
       dedup-backport set **333 passed**, all 0 failed. `ruff check` clean on every touched file.
+- [x] 14.15 **Blocking (post-#726)**: GitHub *Update branch* (`72a9c6ba`) auto-merged `staging`
+      with #726 in it; git spliced #726's legacy-file hunks into this branch's rewrites with no
+      textual conflict, leaving module-level `return`s → `SyntaxError` in all 3 tools → 11
+      collection errors, test step exit code 2. Restored the 3 files from `e81f463f` per the
+      documented resolution instructions; confirmed #726's hunks carried nothing to keep.
+- [x] 14.16 Adopted #726's `call_with_figure_cleanup` for the create side in all 3 tools (kept the
+      separate locked `finally` close). **Closes #725** for histograms/boxplots — verified red→green
+      against the pre-helper tool.
+- [x] 14.17 Replaced the count-based lock spy (blind to the helper's acquisition) with property
+      tests per tool: delegate runs under the real lock; routes through the helper exactly once;
+      allocate-then-raise leaks no figure. Net +2 tests per tool file.
+- [x] 14.18 Merged this branch's create-AND-close contract into #726's `_plots.py` lock comment
+      (kept #726's text verbatim); corrected round 7's claim that #726 left its call sites
+      unlocked — the create side is locked via the helper; the success-path `plt.close` at
+      `qc_inspect`/`remove_outliers`/`save_plot` is the remaining gap → filed **#808**.
+- [x] 14.19 Re-measured: canonical isolated suite **223**, dedup-backport set **367**, full suite
+      via exact CI invocation **1620 passed / 33 deselected**, 0 failed. `ruff`/`black` clean on
+      every touched file; `openspec validate --strict` passes.
 

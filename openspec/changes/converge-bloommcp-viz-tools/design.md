@@ -699,12 +699,14 @@ The lock's own contract comment was the root cause and is rewritten: it said to 
 lock "around the delegate call that actually allocates a figure," which is what round 6
 faithfully implemented. It now states that the contract covers **both** registry-mutating
 phases, and — importantly — **drops the implication that this lock alone closes the race
-process-wide**. `qc_inspect`, `remove_outliers`, `_viz_shared.save_plot` and `generate_figures`
-are still unlocked; they belong to sibling PR #726/#721's diff and are deliberately not touched
-here (touching them would widen exactly the merge conflict that PR already faces). Until
-#726/#721 lands, an unlocked close in one of *those* can still race a locked create here. This
-lock is a **precondition** for closing the race, not by itself sufficient — and the PR
-description now says so instead of overstating it.
+process-wide**. At the time this was written, `qc_inspect`, `remove_outliers`,
+`_viz_shared.save_plot` and `generate_figures` were unlocked on this branch; they belonged to
+sibling PR #726/#721's diff and were deliberately not touched here (touching them would have
+widened exactly the merge conflict that PR already faced). This lock is a **precondition** for
+closing the race, not by itself sufficient — and the PR description says so instead of
+overstating it. *(Superseded in part once #726 landed — see "Round 7, continued" below: #726
+locked the **create** side at all of those sites via `call_with_figure_cleanup`; what remains
+unlocked is their **success-path close**, now tracked as #808.)*
 
 **One part of that review item is not correct, and is worth recording rather than silently
 accepting.** The review also called this lock "inert future-proofing" that "protects against a
@@ -795,3 +797,89 @@ earns its place next to the `sorted()` comparison.
 on `staging`, untouched by this diff, and **not gated by CI** (`pr-checks.yml` runs neither
 `black` nor `ruff`). Left alone rather than swept into this PR's diff; noted here so the next
 reader does not re-discover it as a mystery.
+
+### Round 7, continued: repairing the `staging` auto-merge after #726 landed
+
+**What happened.** On 2026-09-10, GitHub's *Update branch* button merged `staging` into this
+branch (`72a9c6ba`). `staging` by then contained sibling PR #726. For the 3 tool files, git's
+merge base was the **legacy** version (the last `staging` this branch had merged predates
+#726), so #726's small hunks against the legacy files (+33/−11) were applied onto this branch's
+wholesale rewrites. Enough context lines matched (`try:`, `finally:`, `plt.close(fig)`, blank
+lines) that git found **no textual conflict** and committed the result — which contained the
+legacy functions' tails spliced in at module level:
+
+    plot_correlation_matrix.py:187  return "Correlation heatmap failed: ..."   # legacy body
+    plot_trait_boxplots.py:137      return PlotTraitBoxplotsResult(
+    plot_trait_histograms.py:128    return PlotTraitHistogramsResult(
+    SyntaxError: 'return' outside function
+
+Every test module importing those tools failed to collect (11 collection errors), and the
+`Run bloom_mcp package tests` step exited **2** (collection error — not test failures). This is
+the exact structural hazard the merge-sequencing note predicted. It failed **loudly**, which is
+the good outcome; the feared outcome was a clean-looking merge that silently reverted the
+`@as_mcp_tool` convergence for one tool.
+
+**Resolution — per the documented instructions.** Restored the 3 files from this branch's last
+push (`e81f463f`) and discarded #726's hunks to them. Confirmed first that those hunks carried
+nothing worth keeping: they wrapped the *legacy* delegate calls in `call_with_figure_cleanup`,
+which the rewritten tools now adopt directly (below). `_plots.py` had merged cleanly — exactly
+one `FIGURE_REGISTRY_LOCK` definition, this branch's `close_figures` lock intact, and
+`generate_figures` now routing through the helper. `test_viz_tools.py`'s `_TOOLS` still lists
+only the 2 legacy tools, so #726's new parametrized test there does not hit the converged 3.
+
+**Correcting round 7's own text.** Round 7 said #726 would leave `qc_inspect`/`remove_outliers`/
+`save_plot`/`generate_figures` unlocked. That was wrong in a way a `grep` for a bare
+`with FIGURE_REGISTRY_LOCK:` could not see: #726 introduced `call_with_figure_cleanup`, which
+acquires the lock around a delegate call and — on exception — closes any figure registered
+during the call, *while still holding the lock*, then re-raises. It wired that helper into
+`qc_inspect`, `remove_outliers`, `generate_figures`, and all 5 legacy `plot_*` tools. So the
+**create** side is locked everywhere. What #726 did not do is lock the ordinary
+**success-path** `plt.close(fig)` at `qc_inspect._render_report` (2 sites),
+`remove_outliers._make_figures`, and `_viz_shared.save_plot` (used by the 2 legacy plot tools).
+Those can still race a locked create via the `destroy_fig` scan. With #726 merged there is no
+owner PR for them, so this is now **#808**, and `_plots.py`'s lock comment names them as the
+remaining gap.
+
+**Adopting the helper in the 3 converged tools.** Rather than restore the bare
+`with FIGURE_REGISTRY_LOCK:` around creation, the 3 tools now call
+`call_with_figure_cleanup(...)` for the create side and keep their separate, locked `finally`
+close. Same lock, same acquisition count; two consequences:
+
+- It makes `_plots.py`'s comment ("every figure-creating call site goes through the helper")
+  true for these tools too, instead of leaving them as the one ad hoc exception.
+- It **closes #725** for `plot_trait_histograms`/`plot_trait_boxplots` — the mid-batch leak this
+  PR filed in round 2. A `*_batched` delegate failing on page N has already registered pages
+  1..N−1, which `figures` (still `[]`) could never reach in `finally`; the helper's fignum diff
+  closes exactly those. Verified **red → green**, not asserted: with `e81f463f`'s pre-helper
+  tool swapped in, `test_mid_batch_delegate_raise_leaks_no_figures` fails at
+  `assert plt.get_fignums() == before` (2 pages leaked); with the helper it passes.
+  `list(...)` over the batched generator stays *inside* the callable, so pages are allocated
+  under the lock rather than lazily after it returns.
+
+**Tests.** The round-7 count-based spy (monkeypatching each tool module's
+`FIGURE_REGISTRY_LOCK` attribute and asserting 2 enters / 2 exits) could no longer observe the
+create-side acquisition — the helper acquires `_plots.FIGURE_REGISTRY_LOCK` directly. It is
+replaced, per tool, by three property tests: the delegate runs while the *real* lock reports
+`.locked()`; creation routes through `call_with_figure_cleanup` exactly once (so a refactor back
+to a bare `with` fails loudly); and an allocate-then-raise delegate leaks no figure (the
+batched variant is the #725 pin). The existing close-side property test is unchanged. Net +2
+tests per tool file.
+
+**`_plots.py` lock comment, merged not replaced.** #726's rationale (the fignum-diff confusion
+hazard; the helper convention) is kept verbatim; this branch's contribution is added after it:
+the `destroy_fig`-scan hazard, the create-**and**-close contract, and a per-site status list
+ending in #808.
+
+**Counts, re-measured after the merge.** Canonical isolated suite (the PR description's 8):
+**223** — 199 + 6 from this round (3 files × (−1 count test + 3 property tests)) + 18 that
+#726's tests contributed to `test_plots_helpers.py`/`test_viz_tools.py` via the `staging` merge.
+Dedup-backport set: **367**. Full suite via the exact CI invocation: **1620 passed,
+33 deselected, 1653 total** (`1620 + 33 = 1653` — checked), 0 failed. `ruff` and `black` clean
+on every file this round touched.
+
+**Process note.** *Update branch* is the wrong tool while a sibling PR that patches the
+pre-rewrite versions of this branch's files is in flight: git's 3-way merge can splice cleanly
+and wrongly. Merge locally, `py_compile` the contested files and run `pytest --collect-only`
+before pushing. The CI tell for this failure mode is the test step exiting **2** (collection)
+rather than **1** (failures). Moot for this PR now that #726 has landed; recorded for the next
+pair of overlapping PRs.
