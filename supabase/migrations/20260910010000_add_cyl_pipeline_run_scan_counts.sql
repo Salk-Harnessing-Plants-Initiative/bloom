@@ -1,6 +1,6 @@
 -- update_cyl_pipeline_run_status gains done_count/failed_count (bloom #716).
 -- Change: fix-cyl-pipeline-run-scan-status. Companion to
--- 20260901000000_add_cyl_writeback_run_scan_status.sql (a separate migration
+-- 20260910000000_add_cyl_writeback_run_scan_status.sql (a separate migration
 -- by design — this touches cyl_pipeline_runs and is consumed only by
 -- status_poller.py, whereas the other touches cyl_pipeline_run_scans and is
 -- consumed by bloomctl/Argo write-back pods; the two share no
@@ -30,7 +30,7 @@
 -- drop, OR REPLACE on the create).
 --
 -- No table/column changes. Forward-only.
--- Manual rollback: supabase/rollbacks/20260901010000_add_cyl_pipeline_run_scan_counts_rollback.sql
+-- Manual rollback: supabase/rollbacks/20260910010000_add_cyl_pipeline_run_scan_counts_rollback.sql
 
 BEGIN;
 

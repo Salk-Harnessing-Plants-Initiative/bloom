@@ -1,4 +1,4 @@
--- Rollback for 20260901000000_add_cyl_writeback_run_scan_status.sql
+-- Rollback for 20260910000000_add_cyl_writeback_run_scan_status.sql
 -- Manual break-glass only.
 --
 -- WARNING (see design.md's "Rollback coupling with the bloomctl container
@@ -17,6 +17,12 @@
 -- 1-arg signature and grants. Leaves cyl_pipeline_run_scans/cyl_pipeline_runs
 -- and every other function untouched — this migration made no table/column
 -- changes.
+--
+-- Rebased onto 20260831130000_cyl_writeback_contract_a7.sql (bloom #685, merged to staging
+-- while this branch was open): "restore the prior 1-arg signature" means the CURRENT prior
+-- state — the a7-pinned 1-arg function that migration left in place — not the a3-pinned body
+-- this rollback originally restored before that re-pin existed. Restoring a3 here would
+-- silently regress the a7 re-pin on rollback.
 
 BEGIN;
 
@@ -31,7 +37,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
 AS $fn$
 DECLARE
-    pinned_version constant text := '0.1.0a3';
+    pinned_version constant text := '0.1.0a7';
     prov           jsonb;
     v_idem         text;
     v_scan_key     text;

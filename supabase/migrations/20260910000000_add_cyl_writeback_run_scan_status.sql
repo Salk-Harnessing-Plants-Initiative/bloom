@@ -1,6 +1,6 @@
 -- Per-scan write-back status tracking (bloom #696) + a reconciliation RPC for
 -- scans that never produce a result (feeds bloom #716's done_count/failed_count
--- rollup, done in a separate migration — see 20260901010000). Change:
+-- rollup, done in a separate migration — see 20260910010000). Change:
 -- fix-cyl-pipeline-run-scan-status.
 --
 -- WHY: cyl_pipeline_run_scans.status never moves past 'queued' on a real
@@ -47,7 +47,14 @@
 -- Owner + EXECUTE grants are re-asserted explicitly since a DROP discards them.
 --
 -- No table/column changes. Forward-only.
--- Manual rollback: supabase/rollbacks/20260901000000_add_cyl_writeback_run_scan_status_rollback.sql
+-- Manual rollback: supabase/rollbacks/20260910000000_add_cyl_writeback_run_scan_status_rollback.sql
+--
+-- Rebased onto 20260831130000_cyl_writeback_contract_a7.sql (bloom #685, merged to staging
+-- while this branch was open): this migration's DROP FUNCTION/CREATE OR REPLACE pair below
+-- targets and supersedes the 1-arg function that migration leaves in place, so the version
+-- pin below must be the CURRENT '0.1.0a7' it re-pinned to, not the '0.1.0a3' this body was
+-- originally forked from — carrying the stale literal forward would silently regress the
+-- a7 re-pin the moment this migration applies.
 
 BEGIN;
 
@@ -63,7 +70,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
 AS $fn$
 DECLARE
-    pinned_version constant text := '0.1.0a3';
+    pinned_version constant text := '0.1.0a7';
     prov           jsonb;
     v_idem         text;
     v_scan_key     text;

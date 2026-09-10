@@ -1,4 +1,4 @@
--- Rollback for 20260901010000_add_cyl_pipeline_run_scan_counts.sql
+-- Rollback for 20260910010000_add_cyl_pipeline_run_scan_counts.sql
 -- Manual break-glass only. Restores update_cyl_pipeline_run_status to its
 -- prior 2-arg signature and grant.
 --
