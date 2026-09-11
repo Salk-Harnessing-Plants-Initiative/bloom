@@ -87,6 +87,8 @@ def _summary(facts: MigrationFacts) -> str:
         ("rename", {old for old, _ in facts.tables_renamed}),
         ("add", facts.constraints_added | facts.indexes_added),
         ("drop constraint or index", facts.constraints_dropped | facts.indexes_dropped),
+        ("create view", facts.views_created),
+        ("drop view", facts.views_dropped),
     ):
         if names:
             parts.append(f"{verb} {', '.join(sorted(names))}")

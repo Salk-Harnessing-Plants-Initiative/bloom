@@ -164,11 +164,20 @@ def test_opt_out_passes_for_a_function_only_migration():
         ("DROP TABLE IF EXISTS public.x;", "x"),
         ("ALTER TABLE public.t ADD CONSTRAINT c CHECK (true);", "c"),
         ("CREATE INDEX IF NOT EXISTS i ON public.t (a);", "i"),
+        ("CREATE OR REPLACE VIEW public.cyl_plants_extended AS SELECT 1 AS id;", "cyl_plants_extended"),
+        ("DROP VIEW IF EXISTS public.old_view;", "old_view"),
     ],
 )
 def test_opt_out_fails_when_the_schema_changes(sql, named):
     problems = _problems("No schema changes.\n", scan(sql))
     assert problems and any(named in p for p in problems)
+
+
+def test_diagram_must_show_a_created_view():
+    facts = scan("CREATE OR REPLACE VIEW public.cyl_plants_extended AS SELECT 1 AS id;")
+    missing = _problems("## Schema changes\n\n" + _diagram("cyl_plants") + "\n", facts)
+    assert any("cyl_plants_extended" in p for p in missing)
+    assert _problems("## Schema changes\n\n" + _diagram("cyl_plants_extended") + "\n", facts) == []
 
 
 def test_opt_out_inside_an_html_comment_is_ignored():

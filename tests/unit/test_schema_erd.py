@@ -127,6 +127,24 @@ def test_guard_passes_a_matching_database(tmp_path):
     assert _guard(tmp_path, rows).returncode == 0
 
 
+def test_wrap_refuses_output_without_an_er_diagram():
+    for bad in ("", "\n\n", "Error: could not connect to the database\n"):
+        try:
+            erd.wrap(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"wrap accepted {bad!r}")
+
+
+def test_wrap_cli_fails_on_empty_input_and_prints_nothing():
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "wrap"], input="", capture_output=True, text=True
+    )
+    assert result.returncode == 1
+    assert "erDiagram" in result.stderr
+    assert result.stdout == ""
+
+
 def test_qualify_adds_public_only_where_missing():
     assert erd.qualify(["scrna_de", "public.cyl_scans", "storage.objects"]) == (
         "public.scrna_de,public.cyl_scans,storage.objects"

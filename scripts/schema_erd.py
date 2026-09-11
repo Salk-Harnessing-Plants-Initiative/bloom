@@ -27,6 +27,9 @@ HEADER = (
 
 
 def wrap(mermaid: str) -> str:
+    """erd.md for tbls output. Raises ValueError when the output holds no erDiagram."""
+    if "erDiagram" not in mermaid:
+        raise ValueError("tbls printed no erDiagram, so there is nothing to wrap")
     lines = [line.rstrip() for line in mermaid.splitlines()]
     while lines and not lines[0]:
         lines.pop(0)
@@ -132,7 +135,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "wrap":
-        sys.stdout.write(wrap(sys.stdin.read()))
+        try:
+            sys.stdout.write(wrap(sys.stdin.read()))
+        except ValueError as exc:
+            print(f"{exc}; is the database reachable?", file=sys.stderr)
+            return 1
         return 0
     if args.command == "tables":
         return _tables(args)

@@ -25,7 +25,8 @@ BASE_REF="${1:-origin/main}"
 # "silent fallback to 0" would make every new migration pass the lint trivially.
 if [[ "$BASE_REF" == origin/* ]]; then
   remote_branch="${BASE_REF#origin/}"
-  if ! git fetch origin "$remote_branch" --depth=1 2>/dev/null; then
+  # No --depth: on a full clone it would make the repository shallow.
+  if ! git fetch origin "$remote_branch" 2>/dev/null; then
     echo "::error title=lint_migrations: cannot fetch base ref::git fetch origin ${remote_branch} failed. Cannot compare timestamps."
     exit 2
   fi
