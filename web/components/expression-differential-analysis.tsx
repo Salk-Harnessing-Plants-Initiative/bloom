@@ -554,7 +554,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       .attr("text-anchor", "middle")
       .attr("font-size", "14px")
       .attr("font-weight", "bold")
-      .text("-Log10(p-value)");
+      .text("-Log10(raw p-value)");
 
     // Title
     plot.append("text")
@@ -593,7 +593,8 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
           .html(`
             <strong>${d.gene}</strong><br/>
             Log2 FC: <span style="color:${d.x > 0 ? '#c62828' : '#1565c0'}">${d.x.toFixed(3)}</span><br/>
-            Adj. p-value: ${d.p_val_adj.toExponential(2)}<br/>
+            p-value: ${d.p_val.toExponential(2)}<br/>
+            Adj. p-value (FDR): ${d.p_val_adj.toExponential(2)}<br/>
             % in ${groupNames(selectedCluster).a}: ${(d['pct.1'] * 100).toFixed(1)}%<br/>
             % in ${groupNames(selectedCluster).b}: ${(d['pct.2'] * 100).toFixed(1)}%
           `);
@@ -990,6 +991,8 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
               Volcano Plot
             </Typography>
             <Typography variant="caption" color="text.secondary" display="block" mb={2}>
+              Height is the raw p-value; colour is the adjusted p-value (FDR), so a high grey
+              point is one that does not survive the correction for testing every gene.
               Points beyond the vertical lines (|log2FC| &gt; {lfcCut}) and above the dashed line
               pass FDR &lt; {fdrCut}. Red = higher in {groupNames(selectedCluster).a}, blue = higher
               in {groupNames(selectedCluster).b}. Drag to pan, scroll to zoom.
