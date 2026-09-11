@@ -6,7 +6,6 @@ import Button from '@mui/material/Button';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Checkbox from '@mui/material/Checkbox';
 import TextField from '@mui/material/TextField';
-import { Database } from "@/lib/database.types";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import Box from '@mui/material/Box';
 import InputLabel from '@mui/material/InputLabel';
@@ -23,6 +22,20 @@ import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import * as d3 from "d3";
 
+import DeSummary from "./expression-de-summary";
+import {
+  DEFAULT_FDR_CUT,
+  DEFAULT_LOG2FC_CUT,
+  FIRST_GROUP_COLOUR,
+  SECOND_GROUP_COLOUR,
+  formatFoldChange,
+  groupNames,
+  passes,
+  type AnalysisRun,
+  type Client,
+  type DeEntry,
+} from "./expression-lib/de-types";
+
 type GeneData = {
   gene: string;
   p_val: number;
@@ -33,14 +46,6 @@ type GeneData = {
   _row: string;
 };
 
-/** The two sides of this comparison, named. One answer, so the chart, the
- *  table and the tooltip cannot disagree about which group is which. */
-export function groupNames(entry: DeEntry | null): { a: string; b: string } {
-  return entry?.group1 && entry.group2
-    ? { a: entry.group1, b: entry.group2 }
-    : { a: entry?.cluster_id ?? "this cell type", b: "the rest" };
-}
-
 export const columnsFor = (entry: DeEntry | null): GridColDef[] => [
   { field: '_row', headerName: 'Gene Name', width: 180 },
   {
@@ -49,13 +54,13 @@ export const columnsFor = (entry: DeEntry | null): GridColDef[] => [
     width: 140,
     renderCell: (params) => {
       const value = params.value as number;
-      const color = value > 0 ? '#2e7d32' : value < 0 ? '#c62828' : '#666';
-      return <span style={{ color, fontWeight: 'bold' }}>{value?.toFixed(3)}</span>;
+      const color = value > 0 ? FIRST_GROUP_COLOUR : value < 0 ? SECOND_GROUP_COLOUR : '#666';
+      return <span style={{ color, fontWeight: 'bold' }}>{formatFoldChange(value, 3)}</span>;
     }
   },
   {
     field: 'p_val_adj',
-    headerName: 'Adj. p-value',
+    headerName: 'FDR (adj. p-value)',
     width: 120,
     renderCell: (params) => {
       const value = params.value as number;
@@ -114,40 +119,9 @@ export function DataTable({ rows, entry }: { rows: GeneData[]; entry: DeEntry | 
   );
 }
 
-/** The cuts the analysis itself applied, so the panel agrees with the counts
- *  stored on the row rather than quietly using a stricter rule of its own. */
-const DEFAULT_FDR_CUT = 0.05;
-const DEFAULT_LOG2FC_CUT = 0.5;
-
 /** Beyond this a fold change means "absent from one group" rather than a
  *  measured ratio, so it is not allowed to set the width of the plot. */
 const OFF_SCALE_LOG2FC = 20;
-
-/** A comparison in the dataset's analysis: a row of scrna_de.
- *
- * `tested` false means it was considered and skipped; the group sizes on the row
- * are what explain why, so it is shown rather than hidden. A null `contrast` is
- * an older one-vs-rest row, which has one selector and no groups to name.
- */
-type DeEntry = {
-  id: number;
-  cluster_id: string | null;
-  contrast: string | null;
-  group1: string | null;
-  group2: string | null;
-  n_group1: number | null;
-  n_group2: number | null;
-  n_genes_tested: number | null;
-  tested: boolean | null;
-};
-
-/** The analysis the comparisons belong to: a row of scrna_de_runs. */
-type AnalysisRun = {
-  id: number;
-  method: string;
-  completed_at: string | null;
-  params: Database["public"]["Tables"]["scrna_de_runs"]["Row"]["params"];
-};
 
 /** A stored gene result, with its name from the dataset's gene catalogue. An
  *  infinite fold change arrives as text, since JSON has no number for it. */
@@ -159,8 +133,6 @@ type GeneRow = {
   pct_2: number | null;
   scrna_genes: { gene_name: string } | null;
 };
-
-type Client = ReturnType<typeof createClientSupabaseClient>;
 
 /** Rows per request when reading a comparison's genes. Reading stops at the
  *  first empty page, so a server-side row cap cannot cut the list short. */
@@ -254,13 +226,7 @@ export function testedLabel(entry: DeEntry): string {
   return `${new Intl.NumberFormat("en-US").format(entry.n_genes_tested)} genes tested`;
 }
 
-/** Genes passing both cuts, split by direction.
- *
- * The defaults are the analysis's own, so what the panel counts matches the
- * counts stored against the comparison. A stricter fold-change cut than the
- * analysis used would put a smaller number on screen than the one in the
- * selector, with nothing to say why.
- */
+/** Genes passing both cuts, split by direction. */
 export function countSignificant(
   rows: { p_val_adj: number; avg_log2FC: number }[],
   fdrCut: number,
@@ -269,9 +235,7 @@ export function countSignificant(
   let up = 0;
   let down = 0;
   for (const r of rows) {
-    // No fold change means no direction, so it is neither up nor down.
-    if (Number.isNaN(r.avg_log2FC)) continue;
-    if (r.p_val_adj >= fdrCut || Math.abs(r.avg_log2FC) <= lfcCut) continue;
+    if (!passes(r.p_val_adj, r.avg_log2FC, { fdr: fdrCut, log2fc: lfcCut })) continue;
     if (r.avg_log2FC > 0) up++;
     else down++;
   }
@@ -302,6 +266,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
   const [offScaleCount, setOffScaleCount] = useState(0);
   const supabase = createClientSupabaseClient();
   const chartRef = useRef<SVGSVGElement | null>(null);
+  const comparisonRef = useRef<HTMLDivElement | null>(null);
 
   // The dataset's latest complete analysis, and its comparisons.
   useEffect(() => {
@@ -377,6 +342,12 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
     [clusterList, selectedCluster],
   );
 
+  // A result chosen in the summary opens its comparison here.
+  const openComparison = (entry: DeEntry) => {
+    setSelectedCluster(entry);
+    comparisonRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   // Draw volcano plot
   useEffect(() => {
     if (!chartData || !chartRef.current) return;
@@ -406,7 +377,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
     if (transformedData.length === 0) return;
 
     const significantGenes = transformedData
-      .filter(d => d.p_val_adj < fdrCut && Math.abs(d.x) > lfcCut)
+      .filter(d => passes(d.p_val_adj, d.x, { fdr: fdrCut, log2fc: lfcCut }))
       .sort((a, b) => a.p_val_adj - b.p_val_adj)
       .slice(0, 10);
 
@@ -577,9 +548,8 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       .attr("cy", d => yScale(d.y))
       .attr("r", d => significantGenes.some(g => g.gene === d.gene) ? 5 : 3)
       .attr("fill", d => {
-        if (d.p_val_adj < fdrCut && d.x > lfcCut) return "#c62828";
-        if (d.p_val_adj < fdrCut && d.x < -lfcCut) return "#1565c0";
-        return "#9e9e9e"; // Not significant
+        if (!passes(d.p_val_adj, d.x, { fdr: fdrCut, log2fc: lfcCut })) return "#9e9e9e";
+        return d.x > 0 ? FIRST_GROUP_COLOUR : SECOND_GROUP_COLOUR;
       })
       .attr("opacity", 0.7)
       .attr("stroke", d => significantGenes.some(g => g.gene === d.gene) ? "#000" : "none")
@@ -592,7 +562,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
           .style("display", "block")
           .html(`
             <strong>${d.gene}</strong><br/>
-            Log2 FC: <span style="color:${d.x > 0 ? '#c62828' : '#1565c0'}">${d.x.toFixed(3)}</span><br/>
+            Log2 FC: <span style="color:${d.x > 0 ? FIRST_GROUP_COLOUR : SECOND_GROUP_COLOUR}">${formatFoldChange(d.x, 3)}</span><br/>
             p-value: ${d.p_val.toExponential(2)}<br/>
             Adj. p-value (FDR): ${d.p_val_adj.toExponential(2)}<br/>
             % in ${groupNames(selectedCluster).a}: ${(d['pct.1'] * 100).toFixed(1)}%<br/>
@@ -624,18 +594,18 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
 
     // Legend
     const legend = plot.append("g")
-      .attr("transform", `translate(${innerWidth - 150}, 10)`);
+      .attr("transform", `translate(${innerWidth - 210}, 10)`);
 
     legend.append("rect")
-      .attr("width", 140)
+      .attr("width", 200)
       .attr("height", 80)
       .attr("fill", "white")
       .attr("stroke", "#ddd")
       .attr("rx", 4);
 
     const legendData = [
-      { color: "#c62828", label: "Upregulated" },
-      { color: "#1565c0", label: "Downregulated" },
+      { color: FIRST_GROUP_COLOUR, label: `Higher in ${groupNames(selectedCluster).a}` },
+      { color: SECOND_GROUP_COLOUR, label: `Higher in ${groupNames(selectedCluster).b}` },
       { color: "#9e9e9e", label: "Not significant" }
     ];
 
@@ -741,7 +711,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
     countSignificant(chartData ?? [], fdrCut, lfcCut);
   const tableRows = onlySignificant
     ? (chartData ?? []).filter(
-        d => d.p_val_adj < fdrCut && Math.abs(d.avg_log2FC) > lfcCut,
+        d => passes(d.p_val_adj, d.avg_log2FC, { fdr: fdrCut, log2fc: lfcCut }),
       )
     : chartData ?? [];
 
@@ -764,8 +734,58 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
         {run && ` Showing analysis ${run.id} (${run.method}).`}
       </Typography>
 
-      {/* Which comparison */}
+      {/* One set of cuts for the whole tab. */}
       <Paper sx={{ p: 2, mb: 3 }}>
+        <Box display="flex" alignItems="center" gap={2} flexWrap="wrap">
+          <Typography variant="subtitle2" fontWeight="bold">
+            Significance
+          </Typography>
+          <TextField
+            label="FDR below"
+            type="number"
+            size="small"
+            value={fdrCut}
+            onChange={(e) => setFdrCut(Math.max(0, Number(e.target.value)))}
+            inputProps={{ step: 0.01, min: 0, max: 1 }}
+            sx={{ width: 130 }}
+          />
+          <TextField
+            label="|log2FC| above"
+            type="number"
+            size="small"
+            value={lfcCut}
+            onChange={(e) => setLfcCut(Math.max(0, Number(e.target.value)))}
+            inputProps={{ step: 0.1, min: 0 }}
+            sx={{ width: 150 }}
+          />
+          {(fdrCut !== DEFAULT_FDR_CUT || lfcCut !== DEFAULT_LOG2FC_CUT) && (
+            <Button
+              size="small"
+              onClick={() => {
+                setFdrCut(DEFAULT_FDR_CUT);
+                setLfcCut(DEFAULT_LOG2FC_CUT);
+              }}
+            >
+              Reset cuts
+            </Button>
+          )}
+        </Box>
+        <Typography variant="caption" color="text.secondary"
+                    display="block" sx={{ mt: 1 }}>
+          These start at FDR &lt; {DEFAULT_FDR_CUT} and |log2FC| &gt; {DEFAULT_LOG2FC_CUT}.
+          Change them and the whole tab follows: the summary, the plot, its counts and
+          the table.
+        </Typography>
+      </Paper>
+
+      <DeSummary
+        comparisons={clusterList}
+        cuts={{ fdr: fdrCut, log2fc: lfcCut }}
+        onSelect={openComparison}
+      />
+
+      {/* Which comparison */}
+      <Paper ref={comparisonRef} sx={{ p: 2, mb: 3 }}>
         <Box display="flex" alignItems="center" gap={2} flexWrap="wrap">
           <FormControl sx={{ minWidth: 260 }}>
             <InputLabel id="cluster-select-label">Cell type</InputLabel>
@@ -830,13 +850,13 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
           {chartData && (
             <>
               <Chip
-                label={`${upregulated} Upregulated`}
+                label={`${upregulated} higher in ${groupNames(selectedCluster).a}`}
                 color="error"
                 variant="outlined"
                 size="small"
               />
               <Chip
-                label={`${downregulated} Downregulated`}
+                label={`${downregulated} higher in ${groupNames(selectedCluster).b}`}
                 color="primary"
                 variant="outlined"
                 size="small"
@@ -882,61 +902,6 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
           </Typography>
         )}
       </Paper>
-
-      {chartData && (
-        <Paper sx={{ p: 2, mb: 3 }}>
-          <Box display="flex" alignItems="center" gap={2} flexWrap="wrap">
-            <Typography variant="subtitle2" fontWeight="bold">
-              Significance
-            </Typography>
-            <TextField
-              label="FDR below"
-              type="number"
-              size="small"
-              value={fdrCut}
-              onChange={(e) => setFdrCut(Math.max(0, Number(e.target.value)))}
-              inputProps={{ step: 0.01, min: 0, max: 1 }}
-              sx={{ width: 130 }}
-            />
-            <TextField
-              label="|log2FC| above"
-              type="number"
-              size="small"
-              value={lfcCut}
-              onChange={(e) => setLfcCut(Math.max(0, Number(e.target.value)))}
-              inputProps={{ step: 0.1, min: 0 }}
-              sx={{ width: 150 }}
-            />
-            <FormControlLabel
-              control={
-                <Checkbox
-                  size="small"
-                  checked={onlySignificant}
-                  onChange={(e) => setOnlySignificant(e.target.checked)}
-                />
-              }
-              label="Table: significant only"
-            />
-            {(fdrCut !== DEFAULT_FDR_CUT || lfcCut !== DEFAULT_LOG2FC_CUT) && (
-              <Button
-                size="small"
-                onClick={() => {
-                  setFdrCut(DEFAULT_FDR_CUT);
-                  setLfcCut(DEFAULT_LOG2FC_CUT);
-                }}
-              >
-                Back to the analysis cuts
-              </Button>
-            )}
-          </Box>
-          <Typography variant="caption" color="text.secondary"
-                      display="block" sx={{ mt: 1 }}>
-            These start at the cuts the analysis itself used, so the counts here
-            match the ones on the comparison you picked. Change them and
-            everything below follows — the plot, the counts and the table.
-          </Typography>
-        </Paper>
-      )}
 
       {loadError && (
         <Alert severity="error" sx={{ mb: 3 }}>
@@ -1011,11 +976,24 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
 
           {/* Data Table */}
           <Paper sx={{ p: 2 }}>
-            <Typography variant="subtitle2" fontWeight="bold" mb={2}>
-              Gene table{onlySignificant
-                ? ` — ${tableRows.length.toLocaleString()} passing the cuts`
-                : ` — all ${tableRows.length.toLocaleString()} genes tested`}
-            </Typography>
+            <Box display="flex" alignItems="center" justifyContent="space-between"
+                 flexWrap="wrap" mb={2}>
+              <Typography variant="subtitle2" fontWeight="bold">
+                Gene table{onlySignificant
+                  ? ` — ${tableRows.length.toLocaleString()} passing the cuts`
+                  : ` — all ${tableRows.length.toLocaleString()} genes tested`}
+              </Typography>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={onlySignificant}
+                    onChange={(e) => setOnlySignificant(e.target.checked)}
+                  />
+                }
+                label="Significant only"
+              />
+            </Box>
             <DataTable rows={tableRows} entry={selectedCluster} />
           </Paper>
         </>

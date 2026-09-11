@@ -157,11 +157,11 @@ def check_plot_style_ceiling(
 # This is why every matplotlib-figure-creating call site in bloommcp goes through
 # `call_with_figure_cleanup` (directly, or via `generate_figures`) rather than acquiring
 # this lock ad hoc: `qc_inspect.py`'s `_render_report`, `remove_outliers.py`'s
-# `_make_figures`, `clustering.py`, and each of the 5 `plot_*` tools — the 3 #466-converged
-# ones and the 2 legacy ones —
-# (`plot_trait_boxplots.py`, `plot_correlation_matrix.py`, `plot_heritability_bar.py`,
-# `plot_variance_decomposition.py`, `plot_trait_histograms.py`) all call it around their
-# own figure-creating delegate call. Scoped to just that one call (not the caller's full
+# `_make_figures`, `clustering.py`, and each of the 3 `plot_*` tools #466 converged onto
+# `@as_mcp_tool` (`plot_trait_histograms.py`, `plot_trait_boxplots.py`,
+# `plot_correlation_matrix.py`) all call it around their own figure-creating delegate
+# call; `heritability_analysis.py` (#462, which retired the last 2 bare-`mcp.tool()`
+# plot tools) reaches it via `generate_figures`. Scoped to just that one call (not the caller's full
 # save/commit/persist span) is sufficient: the diff can only ever be confused by a figure
 # that is *created* while the lock is held, and the lock is a mutex — no other call's
 # creation step can execute concurrently, regardless of how long the holder then takes to
@@ -183,8 +183,9 @@ def check_plot_style_ceiling(
 #     on a process-wide lock.
 #   - `close_figures` below: one acquisition around the batch (done, #466).
 #   - STILL OUTSTANDING — the success-path `plt.close` in `qc_inspect.py`'s
-#     `_render_report`, `remove_outliers.py`'s `_make_figures`, and `_viz_shared.py`'s
-#     `save_plot` (hence the 2 legacy `plot_*` tools). Tracked at
+#     `_render_report` and `remove_outliers.py`'s `_make_figures`. (`_viz_shared.py`'s
+#     `save_plot` was the third item here; #462 deleted it along with its only two
+#     callers rather than wiring it.) Tracked at
 #     https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/808. Until those
 #     are wired, this lock is a precondition for closing the race process-wide, not by
 #     itself sufficient.
@@ -233,7 +234,7 @@ def call_with_figure_cleanup(fn: "Callable[[], _T]") -> "_T":
 
 
 def generate_figures(
-    resolved_calls: dict[str, "Callable[[], Figure]"],
+    resolved_calls: dict[str, "Callable[[], Figure | list[Figure]]"],
     figures: "dict[str, Figure]",
     *,
     font_family: str | None = None,
@@ -246,25 +247,65 @@ def generate_figures(
     already-successful figure in the caller's dict for ``close_figures`` to
     reach in ``finally``. The caller passes the same dict it later closes.
 
-    ``font_family``/``font_size`` (both default ``None``) are applied via
-    ``apply_font_style`` to each figure immediately after it is recorded into
-    ``figures`` — a no-op when both are ``None``. Recording happens *before* styling
-    (not after) so that if ``apply_font_style`` itself ever raised, the figure would
-    already be in ``figures`` for ``close_figures`` to reach in ``finally``, rather than
-    leaking from matplotlib's registry unrecorded and unreachable.
+    **A plotter may return a single ``Figure`` or a ``list[Figure]``.** A list is
+    expanded into one ``<key>_page<N>`` entry per figure (1-indexed); a single figure
+    keeps its bare ``<key>``, byte-identical to this function's pre-pagination
+    behavior, so ``pca_analysis``/``umap_analysis``/``clustering`` output keys are
+    unaffected. Expanding here (rather than storing the list under one key) is what
+    lets ``apply_font_style`` and ``close_figures`` keep operating on a flat
+    ``dict[str, Figure]`` with no special case of their own.
 
-    Each call is made via ``call_with_figure_cleanup`` (#721), which closes any figure a
-    callable allocates internally (e.g. via ``plt.subplots()``) and then abandons by
-    raising *before returning it* — e.g. an invalid colormap name reaching matplotlib
-    deep inside the call — and acquires ``FIGURE_REGISTRY_LOCK`` for the duration of that
-    one call (not the whole loop): safe because the lock is a mutex, so narrowing to
-    per-key doesn't reopen the race it exists to close, and it minimizes how long any one
-    ``generate_figures`` invocation blocks every other concurrent figure-creating call in
-    the process.
+    The motivating case is ``sleap_roots_analyze.create_heritability_plot``, which
+    returns a single figure at or below its ``traits_per_page`` default (50 traits) and
+    a paginated list above it — cylinder's ~846 traits reach it. This mirrors the
+    shape the legacy plotting tools' ``_viz_shared.save_plot_or_plots`` used for
+    multi-page output before #462/#466 retired the last callers of that helper.
+
+    Detection is a strict ``isinstance(..., list)`` check, deliberately not a
+    duck-typed ``__iter__`` probe: this module's own tests pass string sentinels
+    (``lambda: "fig_a"``), which an iterable check would silently shred into
+    one page per character.
+
+    **Cleanup guarantee.** Everything this function *records* is reachable by the
+    caller's ``close_figures`` in ``finally``; everything a plotter allocates and then
+    abandons by raising before returning is closed by ``call_with_figure_cleanup`` (see
+    below). Between the two, no figure a call creates is left open on any exit path — the
+    gap an earlier draft of this docstring documented (and ``test_plots_helpers.py`` pinned
+    as a known leak, pending #721) is closed now that #726 landed.
+
+    ``font_family``/``font_size`` (both default ``None``) are applied via
+    ``apply_font_style`` to each recorded figure — a no-op when both are ``None``.
+    **Every page of a call is recorded into ``figures`` before any page of that call is
+    styled.** Recording before styling is what makes a raising ``apply_font_style``
+    survivable at all (the figure is already reachable by the caller's
+    ``close_figures`` in ``finally``); doing it per-page in an interleaved
+    record→style→record loop would honor that only up to the failing page, and would
+    strand every later page of the same list — already returned by ``fn()``, live in
+    matplotlib's registry, never recorded, unreachable. Hence the two-pass shape below.
+
+    Each call is made via ``call_with_figure_cleanup`` (#721), which acquires
+    ``FIGURE_REGISTRY_LOCK`` for the duration of that one call and, on exception, closes
+    any figure the callable allocated and then abandoned by raising *before returning*.
+    For a paginating plotter that is exactly the "built pages 1..k, died on page k+1"
+    case: the k finished pages never reached the caller, so the two-pass recording above
+    cannot see them — the per-call cleanup is what closes them. The lock is held per key,
+    not for the whole loop: it is a mutex, so narrowing to per-key doesn't reopen the race
+    it exists to close, and it minimizes how long any one ``generate_figures`` invocation
+    blocks every other concurrent figure-creating call in the process.
     """
     for key, fn in resolved_calls.items():
-        figures[key] = call_with_figure_cleanup(fn)
-        apply_font_style(figures[key], font_family=font_family, font_size=font_size)
+        result = call_with_figure_cleanup(fn)
+        if isinstance(result, list):
+            page_keys = [f"{key}_page{i}" for i in range(1, len(result) + 1)]
+            for page_key, fig in zip(page_keys, result):
+                figures[page_key] = fig
+        else:
+            page_keys = [key]
+            figures[key] = result
+        for page_key in page_keys:
+            apply_font_style(
+                figures[page_key], font_family=font_family, font_size=font_size
+            )
 
 
 def close_figures(figures: "dict[str, Figure]") -> None:

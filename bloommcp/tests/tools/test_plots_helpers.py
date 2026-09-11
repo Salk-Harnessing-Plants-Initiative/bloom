@@ -552,14 +552,161 @@ def test_generate_figures_records_figure_before_styling(monkeypatch):
     assert "a" in figures  # recorded before the (simulated) styling failure
 
 
+# ── generate_figures: paginated (list[Figure]) plotter returns, bloom#462 ─────
+#
+# `sleap_roots_analyze.create_heritability_plot` returns a single Figure at or below
+# its `traits_per_page` default (50 traits) and a `list[Figure]` above it. Before
+# bloom#462 a list return would have been stored under one key and then handed to
+# `plt.close(<list>)` by `close_figures`, leaking every page.
+
+
+def test_generate_figures_expands_a_list_return_into_numbered_pages():
+    figures: dict = {}
+    generate_figures({"multi": lambda: ["p1", "p2", "p3"]}, figures)
+    assert figures == {"multi_page1": "p1", "multi_page2": "p2", "multi_page3": "p3"}
+
+
+def test_generate_figures_single_figure_key_naming_is_unchanged():
+    """Regression guard for pca_analysis/umap_analysis/clustering: a scalar return
+    must keep its bare key, with no `_page` suffix. Their persisted output keys
+    (`<key>.png`) are a caller-visible contract this change must not move."""
+    figures: dict = {}
+    generate_figures({"a": lambda: "fig_a", "b": lambda: "fig_b"}, figures)
+    assert figures == {"a": "fig_a", "b": "fig_b"}
+    assert not any("_page" in k for k in figures)
+
+
+def test_generate_figures_mixes_scalar_and_list_returns_in_one_call():
+    figures: dict = {}
+    generate_figures(
+        {"solo": lambda: "fig_solo", "multi": lambda: ["p1", "p2"]}, figures
+    )
+    assert figures == {"solo": "fig_solo", "multi_page1": "p1", "multi_page2": "p2"}
+
+
+def test_generate_figures_empty_list_return_records_no_phantom_entry():
+    figures: dict = {}
+    generate_figures({"multi": lambda: []}, figures)
+    assert figures == {}
+
+
+def test_generate_figures_expansion_is_isinstance_list_not_duck_typed():
+    """A string is iterable. If the expansion probed `__iter__` instead of checking
+    `isinstance(..., list)`, this module's own string-sentinel tests above would
+    silently become one page per character."""
+    figures: dict = {}
+    generate_figures({"a": lambda: "fig_a"}, figures)
+    assert figures == {"a": "fig_a"}
+
+
+def test_generate_figures_closes_every_page_of_a_list_return():
+    """End-to-end with real figures: close_figures must reach every page."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from bloom_mcp.tools._plots import close_figures
+
+    plt.close("all")
+    figures: dict = {}
+    generate_figures({"multi": lambda: [plt.figure() for _ in range(3)]}, figures)
+    assert len(figures) == 3
+    close_figures(figures)
+    assert plt.get_fignums() == []
+
+
+def test_generate_figures_records_all_pages_before_styling_any(monkeypatch):
+    """The two-pass shape, pinned: a styling failure on page 2 of a 3-page return must
+    still leave pages 1-3 in the caller's dict for close_figures to reach in finally.
+
+    An interleaved record->style->record loop would satisfy this only for pages 1-2:
+    page 3 was already allocated by fn() (the whole list is produced in one call),
+    live in matplotlib's registry, but never recorded and so unreachable."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from bloom_mcp.tools import _plots
+    from bloom_mcp.tools._plots import close_figures
+
+    calls = {"n": 0}
+
+    def _boom_on_second(fig, *, font_family=None, font_size=None):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("styling blew up on page 2")
+
+    monkeypatch.setattr(_plots, "apply_font_style", _boom_on_second)
+
+    plt.close("all")
+    figures: dict = {}
+    with pytest.raises(RuntimeError):
+        generate_figures(
+            {"multi": lambda: [plt.figure() for _ in range(3)]},
+            figures,
+            font_family="serif",
+        )
+    assert set(figures) == {"multi_page1", "multi_page2", "multi_page3"}
+    close_figures(figures)
+    assert plt.get_fignums() == []
+
+
+def test_generate_figures_closes_pages_a_plotter_built_then_abandoned():
+    """No figure a call creates is left open on any exit path — both halves.
+
+    Pages an earlier key *returned* are recorded in the caller's dict and reach
+    `close_figures` in `finally`. Pages a later key *built and then abandoned by raising*
+    never reach the caller, so recording cannot see them — `call_with_figure_cleanup`
+    (#721, landed in #726) closes those under `FIGURE_REGISTRY_LOCK` before re-raising. A
+    paginating plotter is exactly where this matters: it may build several pages before
+    dying on a later one.
+
+    An earlier version of this test asserted the abandoned pages DID leak (2), because the
+    fignums-diff fix is only sound under a process-wide lock and #726 had not yet landed;
+    it carried the instruction to flip to `== 0` once it did. This is that flip.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from bloom_mcp.tools._plots import close_figures
+
+    plt.close("all")
+
+    def _builds_two_pages_then_raises():
+        plt.figure()
+        plt.figure()
+        raise RuntimeError("plotter died mid-pagination")
+
+    figures: dict = {}
+    with pytest.raises(RuntimeError):
+        generate_figures(
+            {
+                "first": lambda: [plt.figure() for _ in range(3)],
+                "second": _builds_two_pages_then_raises,
+            },
+            figures,
+        )
+
+    # Everything the first key returned is recorded and therefore closable.
+    assert set(figures) == {"first_page1", "first_page2", "first_page3"}
+    close_figures(figures)
+    # The two the second key abandoned were closed by call_with_figure_cleanup on the way
+    # out — nothing is left in matplotlib's registry.
+    assert plt.get_fignums() == []
+
+
 # ── FIGURE_REGISTRY_LOCK (#466 review round 6) ───────────────────────────────
 
 
 def test_figure_registry_lock_is_a_real_process_wide_lock():
     """A minimal smoke test that the lock exists, is acquirable/releasable, and is
     genuinely process-wide (module-level singleton, not per-import) — the 3
-    #466-converged viz tools and (once #726/#721 lands) generate_figures's own
-    allocate-then-raise cleanup all import and acquire this SAME object."""
+    #466-converged viz tools and generate_figures's own allocate-then-raise cleanup
+    (#726) all import and acquire this SAME object."""
     import threading
 
     assert isinstance(FIGURE_REGISTRY_LOCK, type(threading.Lock()))
