@@ -121,33 +121,33 @@ COMMENT ON COLUMN public.scrna_embeddings.ingested_at IS
 
 -- 3. Its member datasets ------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS public.scrna_embedding_members (
+CREATE TABLE IF NOT EXISTS public.scrna_embedding_dataset_members (
   embedding_id BIGINT NOT NULL,
   dataset_id   BIGINT NOT NULL,
   role         TEXT NOT NULL,
   ordinal      SMALLINT NOT NULL,
   n_points     INTEGER NOT NULL,
-  CONSTRAINT scrna_embedding_members_pkey PRIMARY KEY (embedding_id, dataset_id),
-  CONSTRAINT scrna_embedding_members_ordinal_unique UNIQUE (embedding_id, ordinal),
-  CONSTRAINT scrna_embedding_members_embedding_fkey FOREIGN KEY (embedding_id)
+  CONSTRAINT scrna_embedding_dataset_members_pkey PRIMARY KEY (embedding_id, dataset_id),
+  CONSTRAINT scrna_embedding_dataset_members_ordinal_unique UNIQUE (embedding_id, ordinal),
+  CONSTRAINT scrna_embedding_dataset_members_embedding_fkey FOREIGN KEY (embedding_id)
     REFERENCES public.scrna_embeddings (id) ON DELETE CASCADE,
-  CONSTRAINT scrna_embedding_members_dataset_fkey FOREIGN KEY (dataset_id)
+  CONSTRAINT scrna_embedding_dataset_members_dataset_fkey FOREIGN KEY (dataset_id)
     REFERENCES public.scrna_datasets (id) ON DELETE RESTRICT,
-  CONSTRAINT scrna_embedding_members_role_valid CHECK (role IN ('reference', 'query')),
-  CONSTRAINT scrna_embedding_members_ordinal_range CHECK (ordinal >= 0),
-  CONSTRAINT scrna_embedding_members_points_positive CHECK (n_points > 0)
+  CONSTRAINT scrna_embedding_dataset_members_role_valid CHECK (role IN ('reference', 'query')),
+  CONSTRAINT scrna_embedding_dataset_members_ordinal_range CHECK (ordinal >= 0),
+  CONSTRAINT scrna_embedding_dataset_members_points_positive CHECK (n_points > 0)
 );
 
 -- The dataset delete check and the soft-delete guard look members up by dataset.
-CREATE INDEX IF NOT EXISTS scrna_embedding_members_dataset_idx
-  ON public.scrna_embedding_members (dataset_id);
+CREATE INDEX IF NOT EXISTS scrna_embedding_dataset_members_dataset_idx
+  ON public.scrna_embedding_dataset_members (dataset_id);
 
-ALTER TABLE public.scrna_embedding_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.scrna_embedding_dataset_members ENABLE ROW LEVEL SECURITY;
 
-COMMENT ON COLUMN public.scrna_embedding_members.role IS
+COMMENT ON COLUMN public.scrna_embedding_dataset_members.role IS
   'reference: an atlas whose own labels anchor the space. query: a dataset whose '
   'labels were transferred from the references.';
-COMMENT ON COLUMN public.scrna_embedding_members.ordinal IS
+COMMENT ON COLUMN public.scrna_embedding_dataset_members.ordinal IS
   'The member''s order in the embedding; the read function reports each point''s '
   'member by it.';
 
@@ -165,7 +165,7 @@ CREATE TABLE IF NOT EXISTS public.scrna_embedding_labels (
     REFERENCES public.scrna_embeddings (id) ON DELETE CASCADE,
   CONSTRAINT scrna_embedding_labels_native_member_fkey
     FOREIGN KEY (embedding_id, native_dataset_id)
-    REFERENCES public.scrna_embedding_members (embedding_id, dataset_id) ON DELETE CASCADE,
+    REFERENCES public.scrna_embedding_dataset_members (embedding_id, dataset_id) ON DELETE CASCADE,
   CONSTRAINT scrna_embedding_labels_key_shape
     CHECK (key ~ '^[a-z][a-z0-9_]{0,63}$' AND key <> 'genotype'),
   CONSTRAINT scrna_embedding_labels_lengths
@@ -217,7 +217,7 @@ CREATE TABLE IF NOT EXISTS public.scrna_embedding_points (
   -- cell_id first, so this also serves the check when a cell is deleted.
   CONSTRAINT scrna_embedding_points_cell_unique UNIQUE (cell_id, embedding_id),
   CONSTRAINT scrna_embedding_points_member_fkey FOREIGN KEY (embedding_id, dataset_id)
-    REFERENCES public.scrna_embedding_members (embedding_id, dataset_id) ON DELETE CASCADE,
+    REFERENCES public.scrna_embedding_dataset_members (embedding_id, dataset_id) ON DELETE CASCADE,
   CONSTRAINT scrna_embedding_points_cell_fkey FOREIGN KEY (dataset_id, cell_id)
     REFERENCES public.scrna_cells (dataset_id, id) ON DELETE RESTRICT,
   CONSTRAINT scrna_embedding_points_ordinal_range CHECK (ordinal >= 0),
@@ -261,7 +261,7 @@ BEGIN
       USING ERRCODE = 'check_violation';
   END IF;
   IF NEW.deleted_at IS NOT NULL AND OLD.deleted_at IS NULL
-     AND EXISTS (SELECT 1 FROM public.scrna_embedding_members m WHERE m.dataset_id = NEW.id) THEN
+     AND EXISTS (SELECT 1 FROM public.scrna_embedding_dataset_members m WHERE m.dataset_id = NEW.id) THEN
     RAISE EXCEPTION 'dataset % is in a joint embedding; remove the embedding first', NEW.id
       USING ERRCODE = 'check_violation';
   END IF;
@@ -297,7 +297,7 @@ BEGIN
       USING ERRCODE = 'check_violation';
   END IF;
   SELECT m.dataset_id INTO short_member
-    FROM public.scrna_embedding_members m
+    FROM public.scrna_embedding_dataset_members m
    WHERE m.embedding_id = NEW.id
      AND m.n_points <> (SELECT count(*) FROM public.scrna_embedding_points p
                          WHERE p.embedding_id = m.embedding_id
@@ -345,7 +345,7 @@ AS $$
   FROM public.scrna_embedding_points p
   JOIN public.scrna_embeddings e
     ON e.id = p.embedding_id AND e.ingested_at IS NOT NULL
-  JOIN public.scrna_embedding_members m
+  JOIN public.scrna_embedding_dataset_members m
     ON m.embedding_id = p.embedding_id AND m.dataset_id = p.dataset_id
   WHERE p.embedding_id = emb_id
   HAVING count(*) > 0;
@@ -418,7 +418,7 @@ DO $$
 DECLARE
   t TEXT;
 BEGIN
-  FOREACH t IN ARRAY ARRAY['scrna_embeddings', 'scrna_embedding_members',
+  FOREACH t IN ARRAY ARRAY['scrna_embeddings', 'scrna_embedding_dataset_members',
                            'scrna_embedding_labels', 'scrna_embedding_points'] LOOP
     EXECUTE format('DROP POLICY IF EXISTS admin_all_%1$s ON public.%1$I', t);
     EXECUTE format('CREATE POLICY admin_all_%1$s ON public.%1$I FOR ALL TO bloom_admin '
@@ -432,7 +432,7 @@ BEGIN
   END LOOP;
 
   -- Members, labels and points go only into an embedding still being loaded.
-  FOREACH t IN ARRAY ARRAY['scrna_embedding_members', 'scrna_embedding_labels',
+  FOREACH t IN ARRAY ARRAY['scrna_embedding_dataset_members', 'scrna_embedding_labels',
                            'scrna_embedding_points'] LOOP
     EXECUTE format('DROP POLICY IF EXISTS writer_insert_%1$s ON public.%1$I', t);
     EXECUTE format('CREATE POLICY writer_insert_%1$s ON public.%1$I FOR INSERT TO bloom_writer '
@@ -455,22 +455,22 @@ CREATE POLICY writer_finish_scrna_embeddings
 -- New tables start with Supabase's default grants (everything to anon,
 -- authenticated and service_role) and the role migrations' defaults. Those come
 -- away, and what each role needs is granted explicitly.
-REVOKE ALL ON public.scrna_embeddings, public.scrna_embedding_members,
+REVOKE ALL ON public.scrna_embeddings, public.scrna_embedding_dataset_members,
               public.scrna_embedding_labels, public.scrna_embedding_points
   FROM anon, authenticated, bloom_user, bloom_agent, bloom_writer;
-REVOKE UPDATE, DELETE, TRUNCATE ON public.scrna_embeddings, public.scrna_embedding_members,
+REVOKE UPDATE, DELETE, TRUNCATE ON public.scrna_embeddings, public.scrna_embedding_dataset_members,
               public.scrna_embedding_labels, public.scrna_embedding_points
   FROM service_role;
 
-GRANT SELECT ON public.scrna_embeddings, public.scrna_embedding_members,
+GRANT SELECT ON public.scrna_embeddings, public.scrna_embedding_dataset_members,
                 public.scrna_embedding_labels, public.scrna_embedding_points
   TO bloom_user, bloom_agent;
-GRANT SELECT, INSERT ON public.scrna_embeddings, public.scrna_embedding_members,
+GRANT SELECT, INSERT ON public.scrna_embeddings, public.scrna_embedding_dataset_members,
                         public.scrna_embedding_labels, public.scrna_embedding_points
   TO bloom_writer;
 GRANT UPDATE (ingested_at) ON public.scrna_embeddings TO bloom_writer;
 GRANT SELECT, INSERT, UPDATE, DELETE
-  ON public.scrna_embeddings, public.scrna_embedding_members,
+  ON public.scrna_embeddings, public.scrna_embedding_dataset_members,
      public.scrna_embedding_labels, public.scrna_embedding_points
   TO bloom_admin;
 

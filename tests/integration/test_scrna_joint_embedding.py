@@ -21,7 +21,7 @@ psycopg = pytest.importorskip("psycopg")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 NAME = "scrna_joint_embedding"
-TABLES = ("scrna_embeddings", "scrna_embedding_members",
+TABLES = ("scrna_embeddings", "scrna_embedding_dataset_members",
           "scrna_embedding_labels", "scrna_embedding_points")
 CHECKSUM = "a" * 64
 
@@ -75,7 +75,7 @@ def _embedding(cur, n_points=4, **cols) -> int:
 
 def _member(cur, embedding_id, dataset_id, role, ordinal, n_points):
     cur.execute(
-        "INSERT INTO scrna_embedding_members (embedding_id, dataset_id, role, ordinal, "
+        "INSERT INTO scrna_embedding_dataset_members (embedding_id, dataset_id, role, ordinal, "
         "n_points) VALUES (%s, %s, %s, %s, %s)",
         (embedding_id, dataset_id, role, ordinal, n_points),
     )
@@ -227,13 +227,13 @@ def test_a_member_is_listed_once_and_in_one_place(pg_conn):
     with pg_conn.cursor() as cur:
         emb, a, b = _embedding(cur), _dataset(cur), _dataset(cur)
         _member(cur, emb, a, "reference", 0, 1)
-        with _refused(cur, "scrna_embedding_members_pkey"):
+        with _refused(cur, "scrna_embedding_dataset_members_pkey"):
             _member(cur, emb, a, "query", 1, 1)
-        with _refused(cur, "scrna_embedding_members_ordinal_unique"):
+        with _refused(cur, "scrna_embedding_dataset_members_ordinal_unique"):
             _member(cur, emb, b, "query", 0, 1)
-        with _refused(cur, "scrna_embedding_members_role_valid"):
+        with _refused(cur, "scrna_embedding_dataset_members_role_valid"):
             _member(cur, emb, b, "anchor", 1, 1)
-        with _refused(cur, "scrna_embedding_members_points_positive"):
+        with _refused(cur, "scrna_embedding_dataset_members_points_positive"):
             _member(cur, emb, b, "query", 1, 0)
     pg_conn.rollback()
 
@@ -513,7 +513,7 @@ def test_a_signed_in_reader_reads_the_same_map_as_the_owner(pg_conn, role):
             cur.execute("SELECT * FROM scrna_embedding_label_codes(%s, 'transgene_pos')",
                         (m["embedding"],))
             assert cur.fetchone() == owner_label
-            cur.execute("SELECT count(*) FROM scrna_embedding_members WHERE embedding_id = %s",
+            cur.execute("SELECT count(*) FROM scrna_embedding_dataset_members WHERE embedding_id = %s",
                         (m["embedding"],))
             assert cur.fetchone()[0] == 2
     pg_conn.rollback()

@@ -103,12 +103,12 @@ erDiagram
 "public.scrna_de_runs" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id)"
 "public.scrna_de_genes" }o--|| "public.scrna_de" : "FOREIGN KEY (dataset_id, de_id) REFERENCES scrna_de(dataset_id, id) ON DELETE CASCADE"
 "public.scrna_de_genes" }o--|| "public.scrna_genes" : "FOREIGN KEY (dataset_id, gene_id) REFERENCES scrna_genes(dataset_id, id)"
-"public.scrna_embedding_members" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id) ON DELETE RESTRICT"
-"public.scrna_embedding_members" }o--|| "public.scrna_embeddings" : "FOREIGN KEY (embedding_id) REFERENCES scrna_embeddings(id) ON DELETE CASCADE"
+"public.scrna_embedding_dataset_members" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id) ON DELETE RESTRICT"
+"public.scrna_embedding_dataset_members" }o--|| "public.scrna_embeddings" : "FOREIGN KEY (embedding_id) REFERENCES scrna_embeddings(id) ON DELETE CASCADE"
 "public.scrna_embedding_labels" }o--|| "public.scrna_embeddings" : "FOREIGN KEY (embedding_id) REFERENCES scrna_embeddings(id) ON DELETE CASCADE"
-"public.scrna_embedding_labels" }o--|| "public.scrna_embedding_members" : "FOREIGN KEY (embedding_id, native_dataset_id) REFERENCES scrna_embedding_members(embedding_id, dataset_id) ON DELETE CASCADE"
+"public.scrna_embedding_labels" }o--|| "public.scrna_embedding_dataset_members" : "FOREIGN KEY (embedding_id, native_dataset_id) REFERENCES scrna_embedding_dataset_members(embedding_id, dataset_id) ON DELETE CASCADE"
 "public.scrna_embedding_points" }o--|| "public.scrna_cells" : "FOREIGN KEY (dataset_id, cell_id) REFERENCES scrna_cells(dataset_id, id) ON DELETE RESTRICT"
-"public.scrna_embedding_points" }o--|| "public.scrna_embedding_members" : "FOREIGN KEY (embedding_id, dataset_id) REFERENCES scrna_embedding_members(embedding_id, dataset_id) ON DELETE CASCADE"
+"public.scrna_embedding_points" }o--|| "public.scrna_embedding_dataset_members" : "FOREIGN KEY (embedding_id, dataset_id) REFERENCES scrna_embedding_dataset_members(embedding_id, dataset_id) ON DELETE CASCADE"
 
 "public.species" {
   bigint id
@@ -1023,7 +1023,7 @@ erDiagram
   timestamp_with_time_zone created_at
   timestamp_with_time_zone ingested_at
 }
-"public.scrna_embedding_members" {
+"public.scrna_embedding_dataset_members" {
   bigint embedding_id FK
   bigint dataset_id FK
   text role

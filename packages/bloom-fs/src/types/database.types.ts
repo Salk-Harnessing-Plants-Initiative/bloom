@@ -3497,6 +3497,45 @@ export type Database = {
           },
         ]
       }
+      scrna_embedding_dataset_members: {
+        Row: {
+          dataset_id: number
+          embedding_id: number
+          n_points: number
+          ordinal: number
+          role: string
+        }
+        Insert: {
+          dataset_id: number
+          embedding_id: number
+          n_points: number
+          ordinal: number
+          role: string
+        }
+        Update: {
+          dataset_id?: number
+          embedding_id?: number
+          n_points?: number
+          ordinal?: number
+          role?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scrna_embedding_dataset_members_dataset_fkey"
+            columns: ["dataset_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_datasets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scrna_embedding_dataset_members_embedding_fkey"
+            columns: ["embedding_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_embeddings"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       scrna_embedding_labels: {
         Row: {
           description: string | null
@@ -3531,47 +3570,8 @@ export type Database = {
             foreignKeyName: "scrna_embedding_labels_native_member_fkey"
             columns: ["embedding_id", "native_dataset_id"]
             isOneToOne: false
-            referencedRelation: "scrna_embedding_members"
+            referencedRelation: "scrna_embedding_dataset_members"
             referencedColumns: ["embedding_id", "dataset_id"]
-          },
-        ]
-      }
-      scrna_embedding_members: {
-        Row: {
-          dataset_id: number
-          embedding_id: number
-          n_points: number
-          ordinal: number
-          role: string
-        }
-        Insert: {
-          dataset_id: number
-          embedding_id: number
-          n_points: number
-          ordinal: number
-          role: string
-        }
-        Update: {
-          dataset_id?: number
-          embedding_id?: number
-          n_points?: number
-          ordinal?: number
-          role?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "scrna_embedding_members_dataset_fkey"
-            columns: ["dataset_id"]
-            isOneToOne: false
-            referencedRelation: "scrna_datasets"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "scrna_embedding_members_embedding_fkey"
-            columns: ["embedding_id"]
-            isOneToOne: false
-            referencedRelation: "scrna_embeddings"
-            referencedColumns: ["id"]
           },
         ]
       }
@@ -3618,7 +3618,7 @@ export type Database = {
             foreignKeyName: "scrna_embedding_points_member_fkey"
             columns: ["embedding_id", "dataset_id"]
             isOneToOne: false
-            referencedRelation: "scrna_embedding_members"
+            referencedRelation: "scrna_embedding_dataset_members"
             referencedColumns: ["embedding_id", "dataset_id"]
           },
         ]

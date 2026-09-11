@@ -42,7 +42,7 @@ DROP FUNCTION IF EXISTS public.scrna_embedding_arrays(BIGINT);
 DROP TABLE IF EXISTS public.scrna_embedding_points;
 DROP FUNCTION IF EXISTS public.scrna_embedding_point_labels_ok(JSONB);
 DROP TABLE IF EXISTS public.scrna_embedding_labels;
-DROP TABLE IF EXISTS public.scrna_embedding_members;
+DROP TABLE IF EXISTS public.scrna_embedding_dataset_members;
 DROP TABLE IF EXISTS public.scrna_embeddings;
 DROP FUNCTION IF EXISTS public.scrna_embeddings_check_finished();
 
