@@ -105,3 +105,39 @@ export const EXPRESSION_FRAG = `
     gl_FragColor = vec4(col, edge);
   }
 `;
+
+/**
+ * Highlighted cells, drawn over the map in yellow with a dark rim so they read
+ * against any cluster colour. Every other point is sized to nothing.
+ */
+export const HIGHLIGHT_VERT = `
+  precision mediump float;
+  attribute vec2 position;
+  attribute float visible;
+  attribute float highlight;
+  uniform float zoom;
+  uniform vec2 translate;
+  uniform float pointSize;
+  varying float v_on;
+  void main() {
+    vec2 p = (position + translate) * zoom;
+    gl_Position = vec4(p, 0.0, 1.0);
+    v_on = (visible > 0.5 && highlight > 0.5) ? 1.0 : 0.0;
+    gl_PointSize = v_on > 0.5 ? pointSize : 0.0;
+  }
+`;
+
+/** Fragment shader — highlighted cells: yellow, with a dark rim. */
+export const HIGHLIGHT_FRAG = `
+  precision mediump float;
+  varying float v_on;
+  void main() {
+    if (v_on < 0.5) discard;
+    vec2 d = gl_PointCoord - vec2(0.5);
+    float r = length(d);
+    if (r > 0.5) discard;
+    float edge = smoothstep(0.5, 0.42, r);
+    vec3 col = r > 0.36 ? vec3(0.10, 0.09, 0.06) : vec3(0.980, 0.800, 0.082);
+    gl_FragColor = vec4(col, edge);
+  }
+`;

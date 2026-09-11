@@ -272,3 +272,51 @@ describe("ExpressionView — clicking a cell", () => {
     await waitFor(() => expect([...(latest().hiddenClusters ?? [])]).toEqual([]));
   });
 });
+
+describe("ExpressionView — highlighting a value", () => {
+  const LABELLED: LoadedPayload = {
+    ...LOADED,
+    cellCount: 3,
+    filters: ["sample", "transgene_pos"],
+    unlabelled: { sample: 0, transgene_pos: 0 },
+    cells: [
+      { replicate: "Col-0", facets: { transgene_pos: "False" } },
+      { replicate: "pFACT", facets: { transgene_pos: "True" } },
+      { replicate: "pFACT", facets: { transgene_pos: "False" } },
+    ],
+  };
+
+  const highlightedOf = (filter: string) =>
+    [...(latest().highlightedValues?.get(filter) ?? [])];
+
+  it("hands the map the value highlighted, hides nothing, and says what yellow means", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData(LABELLED);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Highlight True" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Highlight True" }));
+
+    await waitFor(() => expect(highlightedOf("transgene_pos")).toEqual(["True"]));
+    expect(hiddenOf("transgene_pos")).toEqual([]);
+    expect(screen.getByText(/drawn in yellow/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear highlight" }));
+    await waitFor(() => expect(highlightedOf("transgene_pos")).toEqual([]));
+    expect(screen.queryByText(/drawn in yellow/)).toBeNull();
+  });
+
+  it("opens another dataset with nothing highlighted", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    const { rerender } = render(<ExpressionView datasetId={1} />);
+    loadData(LABELLED);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Highlight Col-0" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Highlight Col-0" }));
+    await waitFor(() => expect(highlightedOf("sample")).toEqual(["Col-0"]));
+
+    rerender(<ExpressionView datasetId={2} />);
+    loadData(DATASET_2);
+    await waitFor(() => expect(screen.getByRole("button", { name: "WT 7" })).toBeTruthy());
+    expect(highlightedOf("sample")).toEqual([]);
+  });
+});

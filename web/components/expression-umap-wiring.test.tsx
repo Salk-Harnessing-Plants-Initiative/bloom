@@ -171,3 +171,32 @@ describe("ExpressionUmap — what reaches the packing", () => {
     expect(reported.cellCount).toBe(CELLS.length);
   });
 });
+
+describe("ExpressionUmap — highlighting", () => {
+  const highlightBuffer = () => buffers[4];
+
+  it("starts with no cell highlighted", async () => {
+    const { ExpressionUmap } = await import("./expression-umap");
+    render(<ExpressionUmap datasetId={1} />);
+    await waitFor(() => expect(buffers.length).toBeGreaterThan(4));
+    expect(Array.from(highlightBuffer().initial as Float32Array)).toEqual([0, 0, 0, 0]);
+  });
+
+  it("writes exactly the highlighted sample's cells, and moves and hides nothing", async () => {
+    const { ExpressionUmap } = await import("./expression-umap");
+    const { rerender } = render(<ExpressionUmap datasetId={1} />);
+    await waitFor(() => expect(buffers.length).toBeGreaterThan(4));
+
+    rerender(
+      <ExpressionUmap datasetId={1} highlightedValues={new Map([["sample", new Set(["pFACT"])]])} />,
+    );
+    await waitFor(() => expect(highlightBuffer().subdata).toHaveBeenCalled());
+
+    // cells 0 and 2 are pFACT; cell 3 records no sample and is not highlighted
+    const written = highlightBuffer().subdata.mock.calls.at(-1)?.[0];
+    expect(Array.from(written as Float32Array)).toEqual([1, 0, 1, 0]);
+    expect(positionBuffer().subdata).not.toHaveBeenCalled();
+    const visible = visibilityBuffer().subdata.mock.calls.at(-1)?.[0];
+    if (visible) expect(Array.from(visible as Float32Array)).toEqual([1, 1, 1, 1]);
+  });
+});

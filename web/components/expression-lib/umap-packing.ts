@@ -102,6 +102,29 @@ export function packVisibility(
   return out;
 }
 
+/** Values highlighted per filter row: the sample row and each label. */
+export type HighlightedValues = HiddenValues;
+
+/** Which cells are highlighted: 1 when the cell's value in any row is one the
+ *  reader highlighted. A cell with no value for a row is not highlighted by it. */
+export function packHighlight(
+  cells: Pick<CellArraysRow, "replicate" | "facets">[],
+  highlighted: HighlightedValues,
+): Float32Array {
+  const out = new Float32Array(cells.length);
+  for (let i = 0; i < cells.length; i++) {
+    for (const [filter, values] of highlighted) {
+      if (values.size === 0) continue;
+      const value = filterValue(cells[i], filter);
+      if (value !== null && values.has(value)) {
+        out[i] = 1.0;
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 /** Each value of one row, counting only the cells the other rows leave on the
  *  map, in first-seen order. A value no cell can reach shows 0 rather than
  *  disappearing. */

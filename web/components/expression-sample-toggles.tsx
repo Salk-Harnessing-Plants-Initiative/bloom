@@ -2,7 +2,8 @@
 
 /**
  * Show or hide the cells of each value in one filter row: the samples, or one of
- * the labels the cells carry, such as transgene status.
+ * the labels the cells carry, such as transgene status. Each value can also be
+ * highlighted, which draws its cells in yellow on top of the rest of the map.
  *
  * The values come from the cells themselves, so a dataset with different ones
  * — or none at all — needs no change here. A row with no values renders
@@ -27,6 +28,10 @@ interface Props {
   unlabelledCount: number;
   onToggle: (name: string) => void;
   onShowAll: () => void;
+  /** Values whose cells are drawn in yellow. */
+  highlighted?: ReadonlySet<string>;
+  /** Highlights or stops highlighting one value; without it no highlight buttons show. */
+  onHighlight?: (name: string) => void;
 }
 
 export function ExpressionSampleToggles({
@@ -37,6 +42,8 @@ export function ExpressionSampleToggles({
   unlabelledCount,
   onToggle,
   onShowAll,
+  highlighted,
+  onHighlight,
 }: Props) {
   if (samples.length === 0) return null;
 
@@ -50,30 +57,52 @@ export function ExpressionSampleToggles({
       </span>
       {samples.map((sample) => {
         const isHidden = hidden.has(sample.name);
+        const isHighlighted = highlighted?.has(sample.name) ?? false;
         return (
-          <button
-            key={sample.name}
-            type="button"
-            onClick={() => onToggle(sample.name)}
-            aria-pressed={!isHidden}
-            title={
-              isHidden
-                ? `Show ${sample.name}`
-                : `Hide ${sample.name}`
-            }
-            className={`inline-flex items-baseline gap-1.5 rounded-md border px-2.5 py-1 text-xs transition-colors ${
-              isHidden
-                ? "border-stone-200 bg-stone-50 text-stone-500 line-through decoration-stone-400"
-                : "border-lime-300 bg-lime-50 text-stone-700 hover:border-lime-400"
-            }`}
-          >
-            <span className="max-w-[18ch] truncate font-medium">
-              {sample.name}
-            </span>
-            <span className="tabular-nums text-[10px] text-stone-500">
-              {fmt.format(sample.count)}
-            </span>
-          </button>
+          <span key={sample.name} className="inline-flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => onToggle(sample.name)}
+              aria-pressed={!isHidden}
+              title={
+                isHidden
+                  ? `Show ${sample.name}`
+                  : `Hide ${sample.name}`
+              }
+              className={`inline-flex items-baseline gap-1.5 rounded-md border px-2.5 py-1 text-xs transition-colors ${
+                isHidden
+                  ? "border-stone-200 bg-stone-50 text-stone-500 line-through decoration-stone-400"
+                  : "border-lime-300 bg-lime-50 text-stone-700 hover:border-lime-400"
+              }`}
+            >
+              <span className="max-w-[18ch] truncate font-medium">
+                {sample.name}
+              </span>
+              <span className="tabular-nums text-[10px] text-stone-500">
+                {fmt.format(sample.count)}
+              </span>
+            </button>
+            {onHighlight && (
+              <button
+                type="button"
+                onClick={() => onHighlight(sample.name)}
+                aria-pressed={isHighlighted}
+                aria-label={`Highlight ${sample.name}`}
+                title={
+                  isHighlighted
+                    ? `Stop highlighting ${sample.name}`
+                    : `Highlight ${sample.name} in yellow`
+                }
+                className={`rounded-md border px-1.5 py-1 text-xs leading-none transition-colors ${
+                  isHighlighted
+                    ? "border-yellow-400 bg-yellow-300 text-stone-800"
+                    : "border-stone-200 bg-white text-stone-400 hover:border-yellow-300 hover:text-yellow-600"
+                }`}
+              >
+                ✦
+              </button>
+            )}
+          </span>
         );
       })}
       {allHidden && (
