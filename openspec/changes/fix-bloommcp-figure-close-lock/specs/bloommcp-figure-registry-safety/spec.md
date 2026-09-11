@@ -1,20 +1,58 @@
 ## ADDED Requirements
 
-### Requirement: Process-Wide Figure-Registry Lock Coverage
+### Requirement: Locked Figure Creation
 
-Every `matplotlib.pyplot.close` call reachable from a `bloom_mcp` tool SHALL execute while
-`bloom_mcp.tools._plots.FIGURE_REGISTRY_LOCK` is held, on **every** exit path — success,
+Figure creation SHALL go through `bloom_mcp.tools._plots.call_with_figure_cleanup`.
+Every call site in `bloom_mcp`'s own source that creates a matplotlib figure, or that calls
+a delegate which creates one, MUST use it — directly, or via
+`bloom_mcp.tools._plots.generate_figures`, which calls it per key. That helper holds
+`FIGURE_REGISTRY_LOCK` for the duration of the call and, on exception, closes any figure
+registered during it before re-raising.
+
+This is the create half of the lock's two-phase contract. It is already satisfied
+everywhere; it is stated here so this capability owns the whole contract rather than half
+of it, and so a new figure-creating tool cannot be added without it.
+
+#### Scenario: A figure-creating delegate call holds the lock
+
+- **WHEN** a `bloom_mcp` tool calls a delegate that creates one or more figures
+- **THEN** `FIGURE_REGISTRY_LOCK` is held for the duration of that call, and released once
+  it returns or raises
+
+#### Scenario: A delegate that allocates and then raises leaks no figure
+
+- **WHEN** a figure-creating delegate registers one or more figures and then raises before
+  returning them
+- **THEN** the tool raises a structured `BloomMCPError` and matplotlib's global figure
+  registry holds exactly the figures it held before the call
+
+### Requirement: Locked Figure Close
+
+Every `matplotlib.pyplot.close` **call site in `bloom_mcp`'s own source** SHALL execute
+while `bloom_mcp.tools._plots.FIGURE_REGISTRY_LOCK` is held, on every exit path — success,
 validation failure, discard of an unrequested figure, and exception cleanup alike.
 
 `matplotlib`'s pyplot figure registry (`Gcf.figs`) is a single process-wide `OrderedDict`,
 and FastMCP dispatches sync tool handlers on a thread pool, so two figure-handling tool
 calls in this process can genuinely interleave against it. `plt.close(fig)` →
 `Gcf.destroy_fig` **scans** `Gcf.figs.values()` to find the owning manager, and that scan is
-unsynchronized: a concurrent lock-holding create (`Gcf.set_active` inserts then
-`move_to_end`s) mutating the dict mid-scan raises
-`RuntimeError("OrderedDict mutated during iteration")` out of the *closing* caller.
+unsynchronized: a concurrent lock-holding create inserting a new figure number into the dict
+mid-scan raises `RuntimeError("OrderedDict mutated during iteration")` out of the *closing*
+caller.
 
-Locking figure **creation** alone SHALL NOT be treated as satisfying this requirement.
+Locking figure creation alone SHALL NOT be treated as satisfying this requirement.
+
+The delegate (`sleap_roots_analyze`) closes figures internally in some plotters. Those
+closes satisfy this contract only transitively, because every `bloom_mcp` call site that
+reaches a figure-handling delegate wraps it per **Locked Figure Creation**, which holds the
+lock for the delegate's whole call. A `bloom_mcp` tool SHALL NOT call a delegate entry point
+that creates or closes matplotlib figures outside that wrapper; verification of this
+requirement by inspecting `bloom_mcp`'s own source is conditional on that, and on the pinned
+delegate version.
+
+The nearest narrower statement of this invariant is `bloommcp-viz-tools`'
+`Requirement: Figure-Registry Concurrency Safety`, which restates it for the 3 tools #466
+converged. This capability is canonical; that one is a per-tool restatement.
 
 #### Scenario: A tool's success-path close holds the lock
 
@@ -30,12 +68,17 @@ Locking figure **creation** alone SHALL NOT be treated as satisfying this requir
   request
 - **THEN** `FIGURE_REGISTRY_LOCK` is held at the moment each `plt.close` executes
 
-#### Scenario: No unlocked close site remains in the package
+#### Scenario: `remove_outliers` discarding unrequested figures holds the lock
 
-- **WHEN** `bloom_mcp`'s source is inspected for `plt.close` call sites
-- **THEN** every one of them is either inside a `FIGURE_REGISTRY_LOCK` acquisition or inside
-  `bloom_mcp.tools._plots.close_figures`, and no module defines a private lock-free
-  close-a-figure helper of its own
+- **WHEN** `remove_outliers` runs with `include_plots=True` and a `plots` subset naming
+  fewer keys than the method produces, so the remainder are discarded
+- **THEN** each discarding `plt.close` executes with the lock held, **and** the persisted
+  `outputs` contains the requested figure and none of the discarded ones
+
+#### Scenario: No unlocked close call site remains in the package
+
+- **WHEN** `bloom_mcp`'s own source is parsed and every `pyplot.close` call site located
+- **THEN** each one is lexically inside a `with FIGURE_REGISTRY_LOCK:` block
 
 ### Requirement: Batch Close Acquisition Discipline
 
@@ -50,11 +93,10 @@ mutation, never to disk I/O.
 `FIGURE_REGISTRY_LOCK` is non-reentrant, so a close batch SHALL NOT be nested inside a
 `bloom_mcp.tools._plots.call_with_figure_cleanup` call, which already holds the same lock.
 
-#### Scenario: A multi-figure cleanup takes one acquisition
+#### Scenario: A multi-figure cleanup takes exactly one acquisition
 
-- **WHEN** a tool closes a set of two or more figures
-- **THEN** the lock is acquired once before the first `plt.close` and released after the
-  last, rather than acquired and released per figure
+- **WHEN** a tool closes a batch of three or more figures
+- **THEN** the lock is entered exactly once for that batch, not once per figure
 
 #### Scenario: Persistence I/O runs unlocked
 
@@ -65,18 +107,19 @@ mutation, never to disk I/O.
 #### Scenario: Nothing to close acquires no lock
 
 - **WHEN** a tool call produces no figures at all (for example, `include_plots=False`)
-- **THEN** its cleanup path acquires `FIGURE_REGISTRY_LOCK` not at all, and does not import
-  `matplotlib.pyplot` on behalf of the cleanup
+- **THEN** its cleanup path acquires `FIGURE_REGISTRY_LOCK` not at all, and executes no
+  fresh `import matplotlib` statement on behalf of the cleanup
 
-### Requirement: Shared Batch-Close Helper
+### Requirement: Best-Effort, Observable Close
 
-Figure cleanup SHALL route through `bloom_mcp.tools._plots.close_figures` — the single
-shared implementation of "close a batch of figures under the lock" — rather than an ad hoc
-per-module close helper, wherever the cleanup owns a `dict[str, Figure]`.
-
-`close_figures` SHALL remain best-effort: a failure closing one figure SHALL NOT abort the
-batch (leaking the remaining figures) and SHALL NOT replace an exception already propagating
+Figure cleanup SHALL be best-effort: a failure closing one figure SHALL NOT abort the batch
+(leaking the remaining figures) and SHALL NOT replace an exception already propagating
 through the `finally` that invoked it.
+
+A swallowed close SHALL NOT be silent. Each one SHALL be logged at `WARNING` naming the
+figure and the exception, because a failed close leaks a figure in a long-lived server
+process and, once no close site raises, the log line is the only remaining signal that a
+registry race is still occurring.
 
 #### Scenario: One failing close does not strand the rest of the batch
 
@@ -86,22 +129,26 @@ through the `finally` that invoked it.
 
 #### Scenario: Cleanup does not mask the caller's error
 
-- **WHEN** a tool is already raising a `BloomMCPError` and its `finally` cleanup encounters a
-  failing `plt.close`
-- **THEN** the caller still observes the original `BloomMCPError`, not the cleanup failure
+- **WHEN** a tool is already raising and its `finally` cleanup encounters a failing
+  `plt.close`
+- **THEN** the caller still observes the original error, not the cleanup failure
 
-### Requirement: Lock Contract Documentation Accuracy
+#### Scenario: A swallowed close is not silent
 
-`bloom_mcp.tools._plots.FIGURE_REGISTRY_LOCK`'s explanatory comment SHALL enumerate the
-create-side and close-side call sites accurately, and SHALL NOT claim an outstanding
-unlocked close site once none remains.
+- **WHEN** `plt.close` raises on a figure of a cleanup batch
+- **THEN** a `WARNING` is logged naming the figure and the exception
 
-This comment is the only place the two-phase contract and its rationale are written down;
-a stale "still outstanding" entry there misleads the next contributor into believing the
-race is open (or that a already-deleted helper still needs wiring).
+### Requirement: Lock Contract Documentation Currency
+
+`bloom_mcp.tools._plots.FIGURE_REGISTRY_LOCK`'s explanatory comment SHALL NOT describe any
+close site as outstanding or unlocked once every close site in `bloom_mcp` holds the lock.
+
+This comment is the only place the two-phase contract and its rationale are written down, so
+a stale "still outstanding" entry misleads the next contributor into believing the race is
+open, or that an already-deleted helper still needs wiring.
 
 #### Scenario: The comment reflects a fully locked close side
 
 - **WHEN** every close site in `bloom_mcp` holds the lock
-- **THEN** the lock's comment states that, and names no site or tracking issue as still
-  outstanding
+- **THEN** the lock's comment names no site as still outstanding, and names
+  `close_figures` as the close path for the tools that use it
