@@ -19,7 +19,8 @@ const GREYED = `
   const float GREY_ALPHA = 0.35;
 `;
 
-/** Shared point-scatter vertex shader. */
+/** Shared point-scatter vertex shader. `fit` scales clip space so the map
+ *  keeps its shape on a canvas that is not square; [1, 1] leaves it as is. */
 export const POINT_VERT = `
   precision mediump float;
   attribute vec2 position;
@@ -28,6 +29,7 @@ export const POINT_VERT = `
   attribute float focus;
   uniform float zoom;
   uniform vec2 translate;
+  uniform vec2 fit;
   uniform float pointSize;
   uniform float focusMode;
   varying vec4 fragColor;
@@ -37,7 +39,7 @@ export const POINT_VERT = `
   ${FOCUS_PASS}
   void main() {
     vec2 p = (position + translate) * zoom;
-    gl_Position = vec4(p, 0.0, 1.0);
+    gl_Position = vec4(p * fit, 0.0, 1.0);
     gl_PointSize = pointSize;
     fragColor = color;
     v_visible = visible;
