@@ -1,8 +1,8 @@
 """Shape guard for the migration-isolation job in pr-checks.yml.
 
 The job runs on both bases: the script itself decides what counts as a migration change,
-so a promotion passes and a hotfix to main is still checked. It ships in warning mode
-(step-level continue-on-error) so the check stays green while its annotations show.
+so a promotion passes and a hotfix to main is still checked. It fails the check, so a PR
+that mixes a migration with other code goes red.
 """
 from __future__ import annotations
 
@@ -44,8 +44,9 @@ def test_lint_passes_the_base_sha():
     assert BASE_SHA in _lint_step(_job())["run"]
 
 
-def test_lint_step_is_in_warning_mode():
-    assert _lint_step(_job()).get("continue-on-error") is True
+def test_lint_step_fails_the_check():
+    step = _lint_step(_job())
+    assert "continue-on-error" not in step, "a failure that shows green lets a mixed PR merge"
 
 
 def test_existing_migration_lint_keeps_its_required_name():

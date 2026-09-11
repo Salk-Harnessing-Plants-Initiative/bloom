@@ -166,6 +166,7 @@ def test_opt_out_passes_for_a_function_only_migration():
         ("CREATE INDEX IF NOT EXISTS i ON public.t (a);", "i"),
         ("CREATE OR REPLACE VIEW public.cyl_plants_extended AS SELECT 1 AS id;", "cyl_plants_extended"),
         ("DROP VIEW IF EXISTS public.old_view;", "old_view"),
+        ("ALTER VIEW public.old_view RENAME TO new_view;", "old_view"),
     ],
 )
 def test_opt_out_fails_when_the_schema_changes(sql, named):
@@ -178,6 +179,42 @@ def test_diagram_must_show_a_created_view():
     missing = _problems("## Schema changes\n\n" + _diagram("cyl_plants") + "\n", facts)
     assert any("cyl_plants_extended" in p for p in missing)
     assert _problems("## Schema changes\n\n" + _diagram("cyl_plants_extended") + "\n", facts) == []
+
+
+def test_diagram_must_show_a_renamed_view_under_its_new_name():
+    facts = scan("ALTER VIEW public.old_view RENAME TO new_view;")
+    assert any("new_view" in p for p in _problems("## Schema changes\n\n" + _diagram("old_view") + "\n", facts))
+    assert _problems("## Schema changes\n\n" + _diagram("new_view") + "\n", facts) == []
+
+
+def test_missing_diagram_message_counts_views():
+    problems = _problems("## Schema changes\n\n" + _table(NAMES))
+    assert any("table, view, constraint or index" in p for p in problems)
+
+
+# --- migrations that only drop things ---------------------------------------------
+
+DROP_ONLY = (
+    "DROP VIEW IF EXISTS public.old_view;\n"
+    "DROP TABLE IF EXISTS public.old_table;\n"
+    "DROP INDEX IF EXISTS public.old_idx;\n"
+)
+
+
+def test_a_drop_only_migration_needs_no_diagram_only_the_names():
+    body = "## Schema changes\n\nDrops the view `old_view`, the table `old_table` and the index `old_idx`.\n"
+    assert _problems(body, scan(DROP_ONLY)) == []
+
+
+def test_a_drop_only_migration_must_name_everything_it_drops():
+    problems = _problems("## Schema changes\n\nDrops the view `old_view`.\n", scan(DROP_ONLY))
+    assert len(problems) == 1
+    assert "old_table" in problems[0] and "old_idx" in problems[0] and "old_view" not in problems[0]
+
+
+def test_opt_out_for_a_drop_only_migration_says_what_to_write_instead():
+    problems = _problems("No schema changes.\n", scan("DROP VIEW IF EXISTS public.old_view;"))
+    assert any("old_view" in p and "under Schema changes" in p for p in problems)
 
 
 def test_opt_out_inside_an_html_comment_is_ignored():

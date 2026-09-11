@@ -7,7 +7,7 @@ Subcommands:
          exit 1 when they differ from the checkout's migration files, because a
          diagram drawn from that database would not match what CI generates
   tables print the tbls --table list for a PR snapshot, from --tables a,b or from the
-         tables the branch's migration changes touch (--changed BASE)
+         tables and views the branch's migration changes touch (--changed BASE)
 """
 from __future__ import annotations
 
@@ -99,7 +99,7 @@ def changed_tables(
     staging_ref: str = "origin/staging",
     repo: Path = Path("."),
 ) -> list[str]:
-    """Tables the branch's migration changes create, structurally alter or rename."""
+    """Tables and views the branch's migration changes create, alter or rename to."""
     return sorted(changed_facts(base, head, staging_ref, repo).tables_touched)
 
 
@@ -113,7 +113,11 @@ def _tables(args: argparse.Namespace) -> int:
             print(f"Cannot compare with {args.changed}: {exc}", file=sys.stderr)
             return 2
     if not names:
-        print("This branch's migrations change no table; pass TABLES=… instead.", file=sys.stderr)
+        print(
+            "This branch's migrations create or change no table or view, so there is nothing to draw. "
+            "If they only drop things, name what they drop in the PR body instead; or pass TABLES=….",
+            file=sys.stderr,
+        )
         return 1
     print(qualify(names))
     return 0
@@ -128,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     tables = sub.add_parser("tables")
     source = tables.add_mutually_exclusive_group(required=True)
     source.add_argument("--tables", help="comma-separated table names")
-    source.add_argument("--changed", metavar="BASE", help="use the tables this branch's migrations touch")
+    source.add_argument("--changed", metavar="BASE", help="use the tables and views this branch's migrations touch")
     tables.add_argument("--head", default="HEAD")
     tables.add_argument("--staging-ref", default="origin/staging")
     tables.add_argument("--repo", default=".")
@@ -138,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             sys.stdout.write(wrap(sys.stdin.read()))
         except ValueError as exc:
-            print(f"{exc}; is the database reachable?", file=sys.stderr)
+            print(exc, file=sys.stderr)
             return 1
         return 0
     if args.command == "tables":

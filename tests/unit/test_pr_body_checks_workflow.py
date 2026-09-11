@@ -2,7 +2,7 @@
 
 Editing a PR description re-runs only this small workflow, not pr-checks.yml's image builds.
 It has no paths filter (a required check skipped by one would hang), reads the body only
-through env, and ships in warning mode.
+through env, and fails the check when a migration PR's body does not document the change.
 """
 from __future__ import annotations
 
@@ -70,8 +70,9 @@ def test_checkout_has_full_history_and_passes_the_base_sha():
     assert "${{ github.event.pull_request.base.sha }}" in _lint_step(workflow)["run"]
 
 
-def test_lint_step_is_in_warning_mode():
-    assert _lint_step(_load(BODY_CHECKS)).get("continue-on-error") is True
+def test_lint_step_fails_the_check():
+    step = _lint_step(_load(BODY_CHECKS))
+    assert "continue-on-error" not in step, "a failure that shows green lets an undocumented migration merge"
 
 
 def test_pr_checks_does_not_rerun_on_edits():
