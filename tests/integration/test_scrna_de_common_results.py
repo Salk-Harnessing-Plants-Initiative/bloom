@@ -30,15 +30,6 @@ import pytest
 
 psycopg = pytest.importorskip("psycopg")
 
-COUNTS = {
-    "n_genes_tested": 3,
-    "n_significant_fdr": 2,
-    "n_significant_fdr_lfc": 2,
-    "n_up": 1,
-    "n_down": 1,
-}
-
-
 def _dataset(cur, cell_types=("Cortex",)) -> int:
     tag = uuid.uuid4().hex[:10]
     cur.execute(
@@ -85,7 +76,7 @@ def _result(cur, dataset_id, run_id, **cols):
         "cluster_id": "Cortex", "contrast": "pFACT_vs_Col-0",
         "group1": "pFACT", "group2": "Col-0", "n_group1": 10, "n_group2": 20,
         "group_kind": "genotype", "method": "external", "params_hash": "h",
-        "tested": True, **COUNTS, **cols,
+        "tested": True, **cols,
     }
     names = ["dataset_id", "run_id", *row]
     values = [dataset_id, run_id, *row.values()]
@@ -342,22 +333,13 @@ def test_a_row_with_neither_a_file_nor_an_analysis_is_rejected(pg_conn):
     pg_conn.rollback()
 
 
-def test_a_comparison_that_never_ran_counts_nothing(pg_conn):
-    with pg_conn.cursor() as cur:
-        ds = _dataset(cur)
-        _rejects(cur, "scrna_de_untested_counted_nothing",
-                 _result, cur, ds, _run(cur, ds), tested=False)
-    pg_conn.rollback()
-
 
 def test_a_comparison_that_never_ran_is_a_row(pg_conn):
     """It carries the group sizes, which are what explain why it was skipped."""
     with pg_conn.cursor() as cur:
         ds = _dataset(cur)
         _result(cur, ds, _run(cur, ds), tested=False, file_path=None,
-                n_group1=0, n_group2=7,
-                n_genes_tested=0, n_significant_fdr=0,
-                n_significant_fdr_lfc=0, n_up=0, n_down=0)
+                n_group1=0, n_group2=7)
     pg_conn.rollback()
 
 
@@ -377,6 +359,20 @@ def _rollback_body() -> str:
     assert path.exists(), "rollback script not found"
     return "\n".join(
         line for line in path.read_text().splitlines()
+        if not re.match(r"^\s*(BEGIN|COMMIT)\s*;\s*$", line, re.IGNORECASE)
+    )
+
+
+def _later_rollback_body() -> str:
+    """The rollback for the migration layered on top of this one."""
+    import re
+    from pathlib import Path
+
+    matches = sorted((Path(__file__).parent.parent.parent / "supabase" / "rollbacks")
+                     .glob("*_scrna_de_results_belong_to_runs_rollback.sql"))
+    assert matches, "later rollback script not found"
+    return "\n".join(
+        line for line in matches[-1].read_text().splitlines()
         if not re.match(r"^\s*(BEGIN|COMMIT)\s*;\s*$", line, re.IGNORECASE)
     )
 
@@ -408,6 +404,9 @@ def test_rollback_runs_when_only_pre_run_rows_exist(pg_conn):
     goes -- and the one-vs-rest row comes through it unchanged."""
     with pg_conn.cursor() as cur:
         cur.execute("SAVEPOINT before_rollback")
+        # The layer above comes off first: this rollback restores a rule naming
+        # a count column that the later migration dropped.
+        cur.execute(_later_rollback_body())
         cur.execute(_rollback_body())
         cur.execute(
             "SELECT count(*) FROM information_schema.columns "
@@ -441,8 +440,8 @@ def test_a_writer_cannot_rewrite_a_submitted_result(pg_conn):
     pg_conn.rollback()
 
 
-def test_a_writer_may_still_read_and_insert(pg_conn):
-    """Only the editing goes; loading results is what a writer is for."""
+def test_a_writer_may_still_read(pg_conn):
+    """Only the editing goes; reading what was loaded stays."""
     with pg_conn.cursor() as cur:
         ds = _dataset(cur)
         de_id = _result(cur, ds, _run(cur, ds))
@@ -453,32 +452,27 @@ def test_a_writer_may_still_read_and_insert(pg_conn):
     pg_conn.rollback()
 
 
-def test_the_update_grant_is_gone_as_well_as_the_policy(pg_conn):
-    """The policy gates this while RLS is on; the grant is what would gate it if
-    RLS were ever lifted."""
+# Who can still change or remove a submitted result: bloom_admin, for a
+# developer's deliberate repair; the two roles that run migrations; and
+# Postgres's built-in pg_write_all_data, which nobody is a member of.
+MAY_CHANGE_RESULTS = {"bloom_admin", "postgres", "supabase_admin", "pg_write_all_data"}
+
+
+def test_only_admin_and_migration_roles_can_change_a_result(pg_conn):
+    """Measured across every role, column-level grants included, so a role or a
+    column grant added later is caught -- not only the roles the REVOKE names."""
     with pg_conn.cursor() as cur:
-        # Asserted as the whole set, not as the absence of the roles the REVOKE
-        # happens to name: written the other way it passes for as long as the
-        # revoke and the test agree with each other, and says nothing about a
-        # role granted UPDATE later.
-        # has_table_privilege, not role_table_grants: that view lists direct ACL
-        # entries only and does not follow role membership, while an inherited
-        # grant is exactly what this guards against.
         for table in ("scrna_de", "scrna_de_runs", "scrna_de_genes"):
-            for role in ("bloom_writer", "bloom_user", "bloom_agent",
-                         "authenticated", "anon", "service_role"):
-                for priv in ("UPDATE", "DELETE"):
-                    cur.execute(
-                        "SELECT has_table_privilege(%s, %s, %s)",
-                        (role, f"public.{table}", priv),
-                    )
-                    assert cur.fetchone()[0] is False, \
-                        f"{role} can {priv} {table}"
             cur.execute(
-                "SELECT has_table_privilege('bloom_admin', %s, 'UPDATE')",
-                (f"public.{table}",),
+                "SELECT array_agg(rolname) FROM pg_roles r "
+                "WHERE has_any_column_privilege(r.oid, %s::regclass, 'UPDATE') "
+                "OR has_table_privilege(r.oid, %s::regclass, 'DELETE')",
+                (f"public.{table}", f"public.{table}"),
             )
-            assert cur.fetchone()[0] is True, "bloom_admin lost its maintenance path"
+            assert set(cur.fetchone()[0]) == MAY_CHANGE_RESULTS, table
+        cur.execute("SELECT count(*) FROM pg_auth_members "
+                    "WHERE roleid = 'pg_write_all_data'::regrole")
+        assert cur.fetchone()[0] == 0, "a role was given pg_write_all_data"
 
 
 def test_bloom_admin_keeps_update_for_maintenance(pg_conn):
@@ -614,8 +608,8 @@ def test_up_and_down_are_a_query_not_a_column(pg_conn):
 
 
 def test_a_fold_change_that_could_not_be_computed_is_null_not_nan(pg_conn):
-    """NaN compares false against every threshold and sorts above every real
-    value, so it is invisible to a filter and first in a ranking. NULL says the
+    """Postgres ranks NaN above every number, so a NaN fold change would
+    pass every "greater than" cut and count as up-regulated. NULL says the
     same thing and behaves; the loader converts one to the other."""
     with pg_conn.cursor() as cur:
         ds = _dataset(cur)
