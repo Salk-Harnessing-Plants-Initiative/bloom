@@ -1,12 +1,8 @@
 """
 Integration tests for the database side of `scripts/ingest_scrnaseq_de.py`.
 
-The rows this writes are the ones the migration's CHECK constraints were written
-for, and a skipped comparison is the awkward shape: it names a contrast, so it
-has to carry all five counts, and it has no file. Nothing but a real database
-can tell whether the rows it builds are legal, so these write them for real.
-
-Storage is a stand-in that records what it was asked to write.
+A load is one analysis: a run, a row per comparison and a row per tested gene.
+Only a real database can say whether those rows are legal, so these write them.
 
 LOCAL ONLY: every test rolls back.
 """
@@ -14,15 +10,21 @@ LOCAL ONLY: every test rolls back.
 from __future__ import annotations
 
 import importlib.util
-import json
+import math
 import sys
 import uuid
 from pathlib import Path
 
 import pytest
 
+psycopg = pytest.importorskip("psycopg")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "ingest_scrnaseq_de.py"
+
+KEY = ("Cortex", "pFACT_vs_Col-0")
+GENES = ("AT1G00001", "AT1G00002")
+PARAMS = {"summary_sha256": "s", "results_sha256": "r"}
 
 
 @pytest.fixture(scope="module")
@@ -32,24 +34,6 @@ def de():
     sys.modules["ingest_scrnaseq_de"] = module
     spec.loader.exec_module(module)
     return module
-
-
-class FakeStorage:
-    """Records what was uploaded, and can stop partway on demand."""
-
-    def __init__(self, fail_on: int | None = None):
-        self.written: dict[str, bytes] = {}
-        self.options: dict[str, dict] = {}
-        self.calls = 0
-        self._fail_on = fail_on
-
-    def upload(self, path: str, file: bytes, file_options: dict) -> None:
-        self.calls += 1
-        if self.calls == self._fail_on:
-            raise RuntimeError("storage refused the object")
-        self.written[path] = file
-        self.options[path] = file_options
-
 
 
 def species(cur) -> int:
@@ -70,37 +54,50 @@ def dataset(cur, species_id: int, name: str = "de-set") -> int:
     return cur.fetchone()[0]
 
 
-def catalogue(cur, dataset_id: int, cell_types: list[str]) -> None:
+def loaded_dataset(cur, cell_types=("Cortex",), genes=GENES,
+                   name: str = "de-set") -> int:
+    """A dataset whose cells and gene counts are loaded: what a DE load needs."""
+    did = dataset(cur, species(cur), name)
     cur.executemany(
         "INSERT INTO scrna_clusters (dataset_id, cluster_id, ordinal, name, color) "
-        "VALUES (%s, %s, %s, %s, %s)",
-        [(dataset_id, t, i, t, f"#00000{i}") for i, t in enumerate(cell_types)],
+        "VALUES (%s, %s, %s, %s, '#000000')",
+        [(did, t, i, t) for i, t in enumerate(cell_types)],
     )
+    if genes:
+        cur.executemany(
+            "INSERT INTO scrna_genes (dataset_id, gene_number, gene_name) "
+            "VALUES (%s, %s, %s)",
+            [(did, i, g) for i, g in enumerate(genes)],
+        )
+    return did
 
 
-def entry(celltype="Cortex", contrast="pFACT_vs_Col-0", tested=True,
-          counts=None) -> dict:
-    return {
-        "celltype": celltype, "contrast": contrast,
-        "group1": "pFACT", "group2": "Col-0",
-        "n_group1": 10, "n_group2": 20, "tested": tested,
-        "counts": counts or ({"n_genes_tested": 3, "n_significant_fdr": 2,
-                              "n_significant_fdr_lfc": 2, "n_up": 1,
-                              "n_down": 1} if tested else None),
-    }
+def entry(celltype="Cortex", contrast="pFACT_vs_Col-0", tested=True) -> dict:
+    return {"celltype": celltype, "contrast": contrast, "group1": "pFACT",
+            "group2": "Col-0", "n_group1": 10, "n_group2": 20,
+            "tested": tested, "counts": None}
 
 
-def rows(genes=("AT1G00001", "AT1G00002")) -> list[dict]:
-    return [
-        {"gene": g, "p_val": 0.001, "avg_log2FC": 1.0, "pct.1": 0.5,
-         "pct.2": 0.25, "p_val_adj": 0.01, "_row": g,
-         "_fdr": True, "_fdr_lfc": True}
-        for g in genes
-    ]
+def rows(genes=GENES, log2fc=1.0) -> list[dict]:
+    return [{"gene": g, "log2fc": log2fc, "pvalue": 0.001, "fdr": 0.01,
+             "pct_1": 0.5, "pct_2": 0.25, "_fdr": True, "_fdr_lfc": True}
+            for g in genes]
+
+
+def load(de, conn, did, summary, groups, params_hash=None):
+    """Resolve the genes and write, as main() does once the checks pass."""
+    ids = de.gene_ids(conn, did, groups)
+    return de.write_de(conn, did, "seurat-wilcoxon", PARAMS,
+                       params_hash or uuid.uuid4().hex, summary, groups, ids)
+
+
+def scalar(cur, sql: str, *args):
+    cur.execute(sql, args)
+    return cur.fetchone()[0]
 
 
 # --------------------------------------------------------------------------- #
-# Finding the dataset and its cell types
+# Finding the dataset, its cell types and its genes
 # --------------------------------------------------------------------------- #
 
 
@@ -113,281 +110,234 @@ def test_an_unloaded_dataset_says_to_load_the_cells_first(de, pg_conn):
 
 
 def test_a_cell_type_the_catalogue_does_not_have_is_refused(de, pg_conn):
-    """The panel lists cell types straight from these rows, so one the map has
-    never heard of is offered and then colours nothing."""
     with pg_conn.cursor() as cur:
-        sid = species(cur)
-        did = dataset(cur, sid)
-        catalogue(cur, did, ["Cortex", "Xylem"])
-        with pytest.raises(de.IngestError, match="not in the catalogue"):
-            de.check_cell_types(pg_conn, did, [entry(celltype="Phellem")])
+        did = loaded_dataset(cur, ("Cortex", "Xylem"))
+    with pytest.raises(de.IngestError, match="not in the catalogue: Phellem"):
+        de.check_cell_types(pg_conn, did, [entry(celltype="Phellem")])
     pg_conn.rollback()
 
 
 def test_an_empty_catalogue_says_to_load_the_cells_first(de, pg_conn):
     with pg_conn.cursor() as cur:
-        sid = species(cur)
-        did = dataset(cur, sid)
-        with pytest.raises(de.IngestError, match="Load its cells first"):
-            de.check_cell_types(pg_conn, did, [entry()])
+        did = dataset(cur, species(cur))
+    with pytest.raises(de.IngestError, match="Load its cells first"):
+        de.check_cell_types(pg_conn, did, [entry()])
     pg_conn.rollback()
 
 
 def test_cell_types_that_all_exist_are_accepted(de, pg_conn):
     with pg_conn.cursor() as cur:
-        sid = species(cur)
-        did = dataset(cur, sid)
-        catalogue(cur, did, ["Cortex", "Xylem"])
-        de.check_cell_types(pg_conn, did, [entry(), entry(celltype="Xylem")])
+        did = loaded_dataset(cur, ("Cortex", "Xylem"))
+    de.check_cell_types(pg_conn, did, [entry(), entry(celltype="Xylem")])
     pg_conn.rollback()
 
 
-# --------------------------------------------------------------------------- #
-# Cross-checking the gene names against the ones the explorer knows
-# --------------------------------------------------------------------------- #
+def test_no_registered_genes_says_to_load_the_counts_first(de, pg_conn):
+    """Gene rows reference the catalogue, so without it they point at nothing."""
+    with pg_conn.cursor() as cur:
+        did = loaded_dataset(cur, genes=())
+    with pytest.raises(de.IngestError, match="Load its gene counts first"):
+        de.gene_ids(pg_conn, did, {KEY: rows()})
+    pg_conn.rollback()
 
 
 def test_a_gene_the_dataset_does_not_have_is_refused(de, pg_conn):
-    """Stripping the annotation release is what makes these names match the
-    expression matrix, so a name that still does not match means the stripping
-    was wrong for this export."""
     with pg_conn.cursor() as cur:
-        sid = species(cur)
-        did = dataset(cur, sid)
-        cur.executemany(
-            "INSERT INTO scrna_genes (dataset_id, gene_number, gene_name) "
-            "VALUES (%s, %s, %s)",
-            [(did, 0, "AT1G00001")],
-        )
-        with pytest.raises(de.IngestError, match="not registered for this dataset"):
-            de.check_genes(pg_conn, did, {("Cortex", "c"): rows()})
+        did = loaded_dataset(cur, genes=("AT1G00001",))
+    with pytest.raises(de.IngestError,
+                       match="not registered for this dataset: AT1G00002"):
+        de.gene_ids(pg_conn, did, {KEY: rows()})
     pg_conn.rollback()
 
 
-def test_genes_that_all_exist_are_counted_as_checked(de, pg_conn):
+def test_a_gene_registered_twice_cannot_be_resolved(de, pg_conn):
+    """Nothing makes a name unique within a dataset, so picking one would be a
+    guess about which gene a result means."""
     with pg_conn.cursor() as cur:
-        sid = species(cur)
-        did = dataset(cur, sid)
-        cur.executemany(
-            "INSERT INTO scrna_genes (dataset_id, gene_number, gene_name) "
-            "VALUES (%s, %s, %s)",
-            [(did, 0, "AT1G00001"), (did, 1, "AT1G00002"), (did, 2, "AT1G00003")],
-        )
-        assert de.check_genes(pg_conn, did, {("Cortex", "c"): rows()}) == (2, 3)
+        did = loaded_dataset(cur, genes=("AT1G00001", "AT1G00002", "AT1G00001"))
+    with pytest.raises(de.IngestError, match="registered more than once"):
+        de.gene_ids(pg_conn, did, {KEY: rows()})
     pg_conn.rollback()
 
 
-def test_no_registered_genes_means_no_cross_check_rather_than_a_refusal(de,
-                                                                       pg_conn):
-    """The gene counts are a separate step and may not have run. That is not an
-    error here, but the summary says so rather than implying a check happened."""
+def test_each_gene_resolves_to_its_own_catalogue_row(de, pg_conn):
     with pg_conn.cursor() as cur:
-        sid = species(cur)
-        did = dataset(cur, sid)
-        assert de.check_genes(pg_conn, did, {("Cortex", "c"): rows()}) == (0, 0)
+        did = loaded_dataset(cur)
+        cur.execute("SELECT gene_name, id FROM scrna_genes WHERE dataset_id = %s",
+                    (did,))
+        expected = dict(cur.fetchall())
+    assert de.gene_ids(pg_conn, did, {KEY: rows()}) == expected
     pg_conn.rollback()
 
 
 # --------------------------------------------------------------------------- #
-# Writing the rows the constraints were written for
+# Writing an analysis
 # --------------------------------------------------------------------------- #
 
 
-def test_a_tested_comparison_is_written_whole(de, pg_conn):
+def test_a_load_is_one_completed_batch_analysis(de, pg_conn):
     with pg_conn.cursor() as cur:
-        sid = species(cur)
-        did = dataset(cur, sid)
-        catalogue(cur, did, ["Cortex"])
-    summary = [entry()]
-    paths = {("Cortex", "pFACT_vs_Col-0"): "de/d/Cortex__pFACT_vs_Col-0.json"}
-    store = FakeStorage()
-
-    de.write_de(pg_conn, store, did, summary,
-                {("Cortex", "pFACT_vs_Col-0"): rows()}, paths)
-
+        did = loaded_dataset(cur)
+    run_id, results, genes = load(de, pg_conn, did, [entry()], {KEY: rows()},
+                                  "hash-1")
+    assert (results, genes) == (1, 2)
     with pg_conn.cursor() as cur:
         cur.execute(
-            "SELECT cluster_id, contrast, group1, group2, n_group1, n_group2, "
-            "file_path, n_genes_tested, n_significant_fdr, "
-            "n_significant_fdr_lfc, n_up, n_down "
-            "FROM scrna_de WHERE dataset_id = %s", (did,),
+            "SELECT dataset_id, source, status, method, params, params_hash, "
+            "completed_at IS NOT NULL FROM scrna_de_runs WHERE id = %s",
+            (run_id,),
         )
-        assert cur.fetchall() == [(
-            "Cortex", "pFACT_vs_Col-0", "pFACT", "Col-0", 10, 20,
-            "de/d/Cortex__pFACT_vs_Col-0.json", 3, 2, 2, 1, 1,
-        )]
+        assert cur.fetchone() == (did, "batch", "complete", "seurat-wilcoxon",
+                                  PARAMS, "hash-1", True)
     pg_conn.rollback()
 
 
-def test_a_skipped_comparison_stores_five_zeros_and_no_file(de, pg_conn):
-    """This is the shape the constraints are strict about: it names a contrast,
-    so it has to carry all five counts, and blanks would switch off the
-    arithmetic rules that compare them."""
+def test_a_tested_comparison_is_written_with_its_genes(de, pg_conn):
     with pg_conn.cursor() as cur:
-        sid = species(cur)
-        did = dataset(cur, sid)
-        catalogue(cur, did, ["Cortex"])
-
-    de.write_de(pg_conn, FakeStorage(), did, [entry(tested=False)], {}, {})
-
+        did = loaded_dataset(cur)
+    run_id, _, _ = load(de, pg_conn, did, [entry()], {KEY: rows()}, "hash-1")
     with pg_conn.cursor() as cur:
         cur.execute(
-            "SELECT file_path, n_group1, n_group2, n_genes_tested, "
-            "n_significant_fdr, n_significant_fdr_lfc, n_up, n_down "
+            "SELECT id, run_id, cluster_id, contrast, group1, group2, n_group1, "
+            "n_group2, group_kind, method, params_hash, tested, file_path "
             "FROM scrna_de WHERE dataset_id = %s", (did,),
         )
-        assert cur.fetchall() == [(None, 10, 20, 0, 0, 0, 0, 0)]
+        (de_id, *row), = cur.fetchall()
+        assert row == [run_id, "Cortex", "pFACT_vs_Col-0", "pFACT", "Col-0", 10,
+                       20, "genotype", "seurat-wilcoxon", "hash-1", True, None]
+        cur.execute(
+            "SELECT g.gene_name, d.log2fc, d.pvalue, d.fdr, d.pct_1, d.pct_2 "
+            "FROM scrna_de_genes d JOIN scrna_genes g ON g.id = d.gene_id "
+            "WHERE d.de_id = %s ORDER BY g.gene_name", (de_id,),
+        )
+        assert cur.fetchall() == [(g, 1.0, 0.001, 0.01, 0.5, 0.25) for g in GENES]
     pg_conn.rollback()
 
 
-def test_the_written_file_holds_only_what_the_panel_reads(de, pg_conn):
+def test_a_skipped_comparison_is_a_row_marked_untested_with_no_genes(de, pg_conn):
+    """The group sizes are what explain why it was skipped."""
     with pg_conn.cursor() as cur:
-        sid = species(cur)
-        did = dataset(cur, sid)
-        catalogue(cur, did, ["Cortex"])
-    key = ("Cortex", "pFACT_vs_Col-0")
-    store = FakeStorage()
-
-    de.write_de(pg_conn, store, did, [entry()], {key: rows()},
-                {key: "de/d/Cortex.json"})
-
-    written = json.loads(store.written["de/d/Cortex.json"])
-    assert len(written) == 2
-    assert list(written[0]) == ["gene", "p_val", "avg_log2FC", "pct.1",
-                                "pct.2", "p_val_adj", "_row"]
+        did = loaded_dataset(cur)
+    load(de, pg_conn, did, [entry(tested=False)], {})
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT id, tested, n_group1, n_group2, file_path "
+                    "FROM scrna_de WHERE dataset_id = %s", (did,))
+        de_id, *row = cur.fetchone()
+        assert row == [False, 10, 20, None]
+        assert scalar(cur, "SELECT count(*) FROM scrna_de_genes WHERE de_id = %s",
+                      de_id) == 0
     pg_conn.rollback()
 
 
-def test_a_reload_replaces_rather_than_accumulates(de, pg_conn):
+@pytest.mark.parametrize("log2fc", [None, math.inf, -math.inf])
+def test_a_fold_change_is_stored_as_read(de, pg_conn, log2fc):
+    """No fold change is NULL, and an unbounded one stays infinite."""
     with pg_conn.cursor() as cur:
-        sid = species(cur)
-        did = dataset(cur, sid)
-        catalogue(cur, did, ["Cortex", "Xylem"])
-    key = ("Cortex", "pFACT_vs_Col-0")
-
-    de.write_de(pg_conn, FakeStorage(), did, [entry(), entry(celltype="Xylem")],
-                {key: rows(), ("Xylem", "pFACT_vs_Col-0"): rows()},
-                {key: "a.json", ("Xylem", "pFACT_vs_Col-0"): "b.json"})
-    de.write_de(pg_conn, FakeStorage(), did, [entry()], {key: rows()},
-                {key: "a.json"})
-
+        did = loaded_dataset(cur)
+    load(de, pg_conn, did, [entry()], {KEY: rows(log2fc=log2fc)})
     with pg_conn.cursor() as cur:
-        cur.execute("SELECT cluster_id FROM scrna_de WHERE dataset_id = %s", (did,))
-        assert cur.fetchall() == [("Cortex",)]
+        cur.execute("SELECT DISTINCT log2fc FROM scrna_de_genes "
+                    "WHERE dataset_id = %s", (did,))
+        assert cur.fetchall() == [(log2fc,)]
     pg_conn.rollback()
 
 
-def test_one_dataset_s_results_do_not_touch_another_s(de, pg_conn):
+def test_loading_again_adds_an_analysis_beside_the_first(de, pg_conn):
+    """Nothing is replaced: the earlier analysis and its genes stay as they were."""
     with pg_conn.cursor() as cur:
-        sid = species(cur)
-        keep = dataset(cur, sid, "keep")
-        catalogue(cur, keep, ["Cortex"])
-        other = dataset(cur, sid, "other")
-        catalogue(cur, other, ["Cortex"])
-    key = ("Cortex", "pFACT_vs_Col-0")
-
-    de.write_de(pg_conn, FakeStorage(), keep, [entry()], {key: rows()},
-                {key: "keep.json"})
-    de.write_de(pg_conn, FakeStorage(), other, [entry()], {key: rows()},
-                {key: "other.json"})
-
+        did = loaded_dataset(cur)
+    first, _, _ = load(de, pg_conn, did, [entry()], {KEY: rows()}, "hash-1")
+    second, _, _ = load(de, pg_conn, did, [entry()], {KEY: rows()}, "hash-2")
     with pg_conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM scrna_de WHERE dataset_id = %s", (keep,))
-        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT run_id, count(*) FROM scrna_de WHERE dataset_id = %s "
+                    "GROUP BY run_id ORDER BY run_id", (did,))
+        assert cur.fetchall() == [(first, 1), (second, 1)]
+        assert scalar(cur, "SELECT count(*) FROM scrna_de_genes "
+                           "WHERE dataset_id = %s", did) == 4
+    pg_conn.rollback()
+
+
+def test_the_same_files_cannot_be_loaded_twice(de, pg_conn):
+    with pg_conn.cursor() as cur:
+        did = loaded_dataset(cur)
+    run_id, _, _ = load(de, pg_conn, did, [entry()], {KEY: rows()}, "hash-1")
+    with pytest.raises(de.IngestError,
+                       match=f"already loaded for dataset {did} as analysis "
+                             f"{run_id}"):
+        de.check_not_loaded(pg_conn, did, "hash-1")
+    de.check_not_loaded(pg_conn, did, "hash-2")
+    pg_conn.rollback()
+
+
+def test_one_dataset_s_load_does_not_touch_another_s(de, pg_conn):
+    with pg_conn.cursor() as cur:
+        keep = loaded_dataset(cur, name="keep")
+        other = loaded_dataset(cur, name="other")
+    load(de, pg_conn, keep, [entry()], {KEY: rows()})
+    load(de, pg_conn, other, [entry()], {KEY: rows()})
+    with pg_conn.cursor() as cur:
+        assert scalar(cur, "SELECT count(*) FROM scrna_de WHERE dataset_id = %s",
+                      keep) == 1
+        assert scalar(cur, "SELECT count(*) FROM scrna_de_genes "
+                           "WHERE dataset_id = %s", keep) == 2
     pg_conn.rollback()
 
 
 def test_every_comparison_of_the_real_shape_is_legal(de, pg_conn):
-    """69 comparisons over 23 cell types and 3 contrasts, 46 tested — the shape
+    """69 comparisons over 23 cell types and 3 contrasts, 46 tested -- the shape
     of the real export, written against the real constraints."""
     cell_types = [f"Type{i}" for i in range(23)]
     contrasts = ["pFACT_vs_Col-0", "pFACT_vs_pHORST", "pHORST_vs_Col-0"]
     with pg_conn.cursor() as cur:
-        sid = species(cur)
-        did = dataset(cur, sid)
-        catalogue(cur, did, cell_types)
-
-    summary, groups, paths = [], {}, {}
+        did = loaded_dataset(cur, cell_types)
+    summary, groups = [], {}
     for i, t in enumerate(cell_types):
         for j, c in enumerate(contrasts):
             tested = (i * 3 + j) < 46
             summary.append(entry(celltype=t, contrast=c, tested=tested))
             if tested:
-                key = (t, c)
-                groups[key] = rows()
-                summary[-1]["counts"] = de.recount(groups[key])
-                paths[key] = f"de/d/{t}__{c}.json"
-
-    objects, written = de.write_de(pg_conn, FakeStorage(), did, summary,
-                                   groups, paths)
-    assert (objects, written) == (46, 69)
+                groups[(t, c)] = rows()
+    _, results, genes = load(de, pg_conn, did, summary, groups)
+    assert (results, genes) == (69, 92)
     with pg_conn.cursor() as cur:
-        cur.execute(
-            "SELECT count(*) FILTER (WHERE file_path IS NOT NULL), "
-            "count(*) FILTER (WHERE file_path IS NULL) "
-            "FROM scrna_de WHERE dataset_id = %s", (did,),
-        )
+        cur.execute("SELECT count(*) FILTER (WHERE tested), "
+                    "count(*) FILTER (WHERE NOT tested) "
+                    "FROM scrna_de WHERE dataset_id = %s", (did,))
         assert cur.fetchone() == (46, 23)
     pg_conn.rollback()
 
 
-# --------------------------------------------------------------------------- #
-# A run that stops partway
-# --------------------------------------------------------------------------- #
-
-
-def test_a_row_the_database_refuses_costs_no_uploads(de, pg_conn):
-    """The rows go first precisely so this case is free.
-
-    A comparison whose fold-change cut is wider than its FDR cut breaks
-    scrna_de_lfc_cut_narrows_fdr_cut. Written the other way round, the objects
-    would already be in the bucket by the time the database said no.
-    """
-    import psycopg
-
+def test_a_refusal_partway_leaves_nothing_behind(de, pg_conn):
+    """The run, and every row written before the one refused, go with it."""
     with pg_conn.cursor() as cur:
-        sid = species(cur)
-        did = dataset(cur, sid)
-        catalogue(cur, did, ["Cortex"])
-    key = ("Cortex", "pFACT_vs_Col-0")
-    contradiction = {"n_genes_tested": 3, "n_significant_fdr": 0,
-                     "n_significant_fdr_lfc": 1, "n_up": 1, "n_down": 0}
-    store = FakeStorage()
-    with pytest.raises(psycopg.errors.CheckViolation):
-        de.write_de(pg_conn, store, did, [entry(counts=contradiction)],
-                    {key: rows()}, {key: "de/1/r/Cortex.json"})
-    assert store.written == {}
+        did = loaded_dataset(cur, ("Cortex", "Xylem"))
+        other = loaded_dataset(cur, name="other")
+        foreign = scalar(cur, "SELECT id FROM scrna_genes WHERE dataset_id = %s "
+                              "LIMIT 1", other)
+        cur.execute("SAVEPOINT before_load")
+    ids = {**de.gene_ids(pg_conn, did, {KEY: rows()}), "AT9G99999": foreign}
+    groups = {KEY: rows(), ("Xylem", "pFACT_vs_Col-0"): rows(genes=("AT9G99999",))}
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        de.write_de(pg_conn, did, "seurat-wilcoxon", PARAMS, "hash-1",
+                    [entry(), entry(celltype="Xylem")], groups, ids)
+    with pg_conn.cursor() as cur:
+        cur.execute("ROLLBACK TO SAVEPOINT before_load")
+        assert scalar(cur, "SELECT count(*) FROM scrna_de_runs "
+                           "WHERE dataset_id = %s", did) == 0
+        assert scalar(cur, "SELECT count(*) FROM scrna_de WHERE dataset_id = %s",
+                      did) == 0
     pg_conn.rollback()
 
 
-def test_a_failed_upload_says_how_far_it_got(de, pg_conn):
+def test_the_ingest_role_can_write_an_analysis(de, pg_conn):
+    """bloom_writer is the ingest role, so every read and insert a load makes
+    has to be one its grants and policies allow."""
     with pg_conn.cursor() as cur:
-        sid = species(cur)
-        did = dataset(cur, sid)
-        catalogue(cur, did, ["Cortex", "Xylem", "Phellem"])
-    summary, groups, paths = [], {}, {}
-    for cell_type in ("Cortex", "Xylem", "Phellem"):
-        key = (cell_type, "pFACT_vs_Col-0")
-        summary.append(entry(celltype=cell_type))
-        groups[key] = rows()
-        summary[-1]["counts"] = de.recount(groups[key])
-        paths[key] = f"de/{did}/r/{cell_type}.json"
-
-    with pytest.raises(de.UploadFailed, match="object 2 of 3"):
-        de.write_de(pg_conn, FakeStorage(fail_on=2), did, summary, groups, paths)
-    pg_conn.rollback()
-
-
-def test_the_upsert_flag_reaches_storage_as_the_string_the_sdk_wants(de, pg_conn):
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        did = dataset(cur, sid)
-        catalogue(cur, did, ["Cortex"])
-    key = ("Cortex", "pFACT_vs_Col-0")
-    store = FakeStorage()
-    de.write_de(pg_conn, store, did, [entry()], {key: rows()},
-                {key: "de/1/r/Cortex.json"})
-    assert store.options["de/1/r/Cortex.json"] == {
-        "content-type": "application/json", "upsert": "true",
-    }
+        did = loaded_dataset(cur)
+        cur.execute("SET LOCAL ROLE bloom_writer")
+    _, results, genes = load(de, pg_conn, did,
+                             [entry(), entry(contrast="x_vs_y", tested=False)],
+                             {KEY: rows()})
+    de.check_not_loaded(pg_conn, did, "not-this-one")
+    assert (results, genes) == (2, 2)
     pg_conn.rollback()

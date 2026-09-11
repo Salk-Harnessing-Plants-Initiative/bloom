@@ -1,20 +1,14 @@
 """
 Unit tests for `scripts/ingest_scrnaseq_de.py`.
 
-The differential expression panel shows the summary counts and opens the file
-the row points at. Nothing in the browser can tell whether the two agree, so
-these check that the script recomputes every count from the results and refuses
-the row when they disagree — and that the rows it writes are shaped the way the
-panel reads them.
-
-The database and storage writes are covered by
-tests/integration/test_scrna_ingest_de.py, which has both.
+Reading, checking and fingerprinting the two export files. The database writes
+are covered by tests/integration/test_scrna_ingest_de.py.
 """
 
 from __future__ import annotations
 
 import importlib.util
-import json
+import math
 import sys
 from pathlib import Path
 
@@ -32,6 +26,7 @@ RESULT_HEADER = (
     "wilcoxon_score\tlog2FC\tpvalue\tFDR\tpct_nz_group\tpct_expr_group1\t"
     "pct_expr_group2\tsig_FDR_0.05\tsig_FDR_0.05_abs_log2FC_0.5"
 )
+KEY = ("Cortex", "pFACT_vs_Col-0")
 
 
 @pytest.fixture(scope="module")
@@ -68,6 +63,17 @@ def files(tmp_path, summary_rows: list[str], result_rows: list[str]):
             write(tmp_path / "results.tsv", RESULT_HEADER, result_rows))
 
 
+def argv(summary: Path, results: Path, *extra: str) -> list[str]:
+    return ["--results", str(results), "--summary", str(summary),
+            "--dataset-name", "d", "--species-id", "1",
+            "--method", "seurat-wilcoxon", *extra]
+
+
+def one_result(de, tmp_path, **kwargs) -> dict:
+    _, r = files(tmp_path, [], [result_row("AT1G00001", **kwargs)])
+    return de.read_results(r)["groups"][KEY][0]
+
+
 DEFAULT_RESULTS = [
     result_row("AT1G00001.Araport11.447", log2fc=1.5),
     result_row("AT1G00002.Araport11.447", log2fc=-1.5),
@@ -84,9 +90,9 @@ DEFAULT_RESULTS = [
 def test_a_tested_comparison_carries_its_counts(de, tmp_path):
     s, _ = files(tmp_path, [summary_row()], [])
     entry = de.read_summary(s)[0]
-    assert entry["celltype"] == "Cortex"
-    assert entry["group1"] == "pFACT" and entry["group2"] == "Col-0"
-    assert entry["n_group1"] == 10 and entry["n_group2"] == 20
+    assert (entry["celltype"], entry["group1"], entry["group2"]) == \
+        ("Cortex", "pFACT", "Col-0")
+    assert (entry["n_group1"], entry["n_group2"]) == (10, 20)
     assert entry["counts"] == {
         "n_genes_tested": 3, "n_significant_fdr": 2,
         "n_significant_fdr_lfc": 2, "n_up": 1, "n_down": 1,
@@ -94,11 +100,10 @@ def test_a_tested_comparison_carries_its_counts(de, tmp_path):
 
 
 def test_a_skipped_comparison_keeps_its_group_sizes_and_no_counts(de, tmp_path):
-    """The sizes are what explain why it was skipped, so the panel can say so."""
+    """The sizes are what explain why it was skipped."""
     s, _ = files(tmp_path, [summary_row(tested=False)], [])
     entry = de.read_summary(s)[0]
-    assert entry["tested"] is False
-    assert entry["counts"] is None
+    assert entry["tested"] is False and entry["counts"] is None
     assert (entry["n_group1"], entry["n_group2"]) == (10, 20)
 
 
@@ -132,8 +137,7 @@ def test_a_missing_file_is_refused(de, tmp_path):
 
 
 def test_a_flag_that_is_not_a_boolean_is_refused(de, tmp_path):
-    """Anything unrecognised would otherwise read as false and quietly change
-    every count that follows from it."""
+    """Anything unrecognised would otherwise read as false."""
     s, _ = files(tmp_path, [summary_row().replace("\tTrue\t", "\tyes\t")], [])
     with pytest.raises(de.IngestError, match="expected True or False"):
         de.read_summary(s)
@@ -144,35 +148,28 @@ def test_a_flag_that_is_not_a_boolean_is_refused(de, tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_rows_are_shaped_the_way_the_panel_reads_them(de, tmp_path):
-    _, r = files(tmp_path, [], [result_row("AT1G00001.Araport11.447",
-                                           log2fc=2.0, pvalue=0.004,
-                                           fdr=0.04, pct1=0.6, pct2=0.3)])
-    row = de.read_results(r)["groups"][("Cortex", "pFACT_vs_Col-0")][0]
-    assert row["p_val"] == 0.004
-    assert row["avg_log2FC"] == 2.0
-    assert row["pct.1"] == 0.6 and row["pct.2"] == 0.3
-    assert row["p_val_adj"] == 0.04
-    assert row["_row"] == "AT1G00001"
+def test_a_row_carries_what_the_gene_table_stores(de, tmp_path):
+    row = one_result(de, tmp_path, log2fc=2.0, pvalue=0.004, fdr=0.04,
+                     pct1=0.6, pct2=0.3)
+    assert {k: row[k] for k in ("gene", "log2fc", "pvalue", "fdr", "pct_1",
+                                "pct_2")} == {
+        "gene": "AT1G00001", "log2fc": 2.0, "pvalue": 0.004, "fdr": 0.04,
+        "pct_1": 0.6, "pct_2": 0.3,
+    }
 
 
 def test_the_annotation_release_is_stripped_from_gene_names(de, tmp_path):
-    """The expression matrix names the same gene without it, so leaving it on
-    means nothing in this table can be looked up anywhere else."""
     _, r = files(tmp_path, [], [result_row("AT1G00001.Araport11.447")])
     read = de.read_results(r)
-    row = read["groups"][("Cortex", "pFACT_vs_Col-0")][0]
-    assert row["gene"] == "AT1G00001"
+    assert read["groups"][KEY][0]["gene"] == "AT1G00001"
     assert read["suffixed"] == 1
 
 
 def test_a_gene_with_no_release_suffix_is_left_alone(de, tmp_path):
-    """The transgene is named the same way in both files and must not be
-    trimmed into something that does not exist."""
+    """The transgene is named the same way in both files."""
     _, r = files(tmp_path, [], [result_row("AT4G28110.Fusion")])
     read = de.read_results(r)
-    assert read["groups"][("Cortex", "pFACT_vs_Col-0")][0]["gene"] == \
-        "AT4G28110.Fusion"
+    assert read["groups"][KEY][0]["gene"] == "AT4G28110.Fusion"
     assert read["suffixed"] == 0
 
 
@@ -183,26 +180,75 @@ def test_two_rows_for_one_gene_after_stripping_are_refused(de, tmp_path):
         de.read_results(r)
 
 
-def test_only_the_panel_s_columns_are_written(de, tmp_path):
-    """The working flags are recomputed from, not written; a reader of the file
-    should not be able to disagree with the row that points at it."""
-    _, r = files(tmp_path, [], DEFAULT_RESULTS)
-    rows = de.read_results(r)["groups"][("Cortex", "pFACT_vs_Col-0")]
-    written = json.loads(de.as_json(rows))
-    assert list(written[0]) == ["gene", "p_val", "avg_log2FC", "pct.1",
-                                "pct.2", "p_val_adj", "_row"]
-    assert not any(k.startswith("_fdr") for k in written[0])
+@pytest.mark.parametrize("value", ["NaN", "nan", "NA"])
+def test_a_fold_change_that_could_not_be_computed_is_stored_as_none(
+        de, tmp_path, value):
+    """The database refuses NaN; no fold change is what it means."""
+    assert one_result(de, tmp_path, log2fc=value)["log2fc"] is None
+
+
+@pytest.mark.parametrize("value,expected", [("Inf", math.inf),
+                                            ("-Inf", -math.inf)])
+def test_an_infinite_fold_change_is_kept(de, tmp_path, value, expected):
+    """A gene absent from one group has an unbounded ratio: a measurement."""
+    assert one_result(de, tmp_path, log2fc=value)["log2fc"] == expected
+
+
+@pytest.mark.parametrize("field,value,message", [
+    ("pvalue", "NaN", "not a finite number"),
+    ("fdr", "Inf", "not a finite number"),
+    ("pvalue", "NA", "which is not a number"),
+    ("log2fc", "up", "which is not a number"),
+    ("pvalue", "1.5", "outside 0 to 1"),
+    ("pct1", "45.0", "looks like a percentage"),
+    ("pct2", "-0.1", "outside 0 to 1"),
+])
+def test_a_value_the_gene_table_cannot_hold_is_refused(de, tmp_path, field,
+                                                       value, message):
+    with pytest.raises(de.IngestError, match=message):
+        one_result(de, tmp_path, **{field: value})
+
+
+def test_an_fdr_below_its_own_p_value_is_refused(de, tmp_path):
+    with pytest.raises(de.IngestError, match="below its own p-value"):
+        one_result(de, tmp_path, pvalue=0.05, fdr=0.01)
+
+
+@pytest.mark.parametrize("pvalue,fdr", [(0.0, 0.0), (1.0, 1.0), (0.2, 0.2)])
+def test_legitimate_edge_values_are_accepted(de, tmp_path, pvalue, fdr):
+    """A p-value that underflowed to 0, an FDR capped at 1, and equality."""
+    row = one_result(de, tmp_path, pvalue=pvalue, fdr=fdr)
+    assert (row["pvalue"], row["fdr"]) == (pvalue, fdr)
+
+
+def test_a_refused_value_names_the_gene_and_the_column(de, tmp_path):
+    """One bad cell in hundreds of thousands of rows is only actionable if the
+    refusal says which one."""
+    _, r = files(tmp_path, [], [result_row("AT1G00001"),
+                                result_row("AT1G00002", celltype="Xylem",
+                                           pvalue="NaN")])
+    with pytest.raises(de.IngestError,
+                       match=r"Xylem / pFACT_vs_Col-0, gene AT1G00002: pvalue"):
+        de.read_results(r)
+
+
+def test_a_truncated_last_row_is_refused(de, tmp_path):
+    """DictReader fills a short row's missing columns with None."""
+    r = tmp_path / "results.tsv"
+    r.write_text(RESULT_HEADER + "\n" + result_row("AT1G00001") + "\n"
+                 + "Cortex\tpFACT_vs_Col-0\tpFACT\tCol-0\t10\t20\tAT1G00002\n")
+    with pytest.raises(de.IngestError, match="is not a number"):
+        de.read_results(r)
 
 
 # --------------------------------------------------------------------------- #
-# Recomputing the counts, which is the point of the whole step
+# Checking the summary against the results
 # --------------------------------------------------------------------------- #
 
 
 def test_the_counts_are_worked_out_from_the_rows(de, tmp_path):
     _, r = files(tmp_path, [], DEFAULT_RESULTS)
-    rows = de.read_results(r)["groups"][("Cortex", "pFACT_vs_Col-0")]
-    assert de.recount(rows) == {
+    assert de.recount(de.read_results(r)["groups"][KEY]) == {
         "n_genes_tested": 3, "n_significant_fdr": 2,
         "n_significant_fdr_lfc": 2, "n_up": 1, "n_down": 1,
     }
@@ -217,8 +263,6 @@ def test_a_summary_that_matches_the_results_is_accepted(de, tmp_path):
     ("tested_genes", 4), ("fdr", 3), ("fdr_lfc", 1), ("up", 2), ("down", 0),
 ])
 def test_every_count_is_checked_not_just_the_first(de, tmp_path, field, value):
-    """Each of the five is compared, so a summary wrong in any one of them is
-    refused rather than written and displayed."""
     s, r = files(tmp_path, [summary_row(**{field: value})], DEFAULT_RESULTS)
     with pytest.raises(de.IngestError, match="the summary says"):
         de.reconcile(de.read_summary(s), de.read_results(r)["groups"])
@@ -226,7 +270,7 @@ def test_every_count_is_checked_not_just_the_first(de, tmp_path, field, value):
 
 def test_a_comparison_marked_tested_with_no_results_is_refused(de, tmp_path):
     s, r = files(tmp_path, [summary_row()],
-                 [result_row("AT1G00001.Araport11.447", celltype="Xylem")])
+                 [result_row("AT1G00001", celltype="Xylem")])
     with pytest.raises(de.IngestError, match="marked tested but the results"):
         de.reconcile(de.read_summary(s), de.read_results(r)["groups"])
 
@@ -237,60 +281,44 @@ def test_a_comparison_marked_skipped_with_results_is_refused(de, tmp_path):
         de.reconcile(de.read_summary(s), de.read_results(r)["groups"])
 
 
-def test_results_for_a_comparison_the_summary_never_mentions_are_refused(de,
-                                                                        tmp_path):
+def test_results_for_a_comparison_the_summary_never_mentions_are_refused(
+        de, tmp_path):
     s, r = files(tmp_path, [summary_row()],
-                 DEFAULT_RESULTS + [result_row("AT2G00001.Araport11.447",
-                                               celltype="Xylem")])
+                 DEFAULT_RESULTS + [result_row("AT2G00001", celltype="Xylem")])
     with pytest.raises(de.IngestError, match="no summary row"):
         de.reconcile(de.read_summary(s), de.read_results(r)["groups"])
 
 
-def test_a_gene_with_no_fold_change_counts_as_down(de, tmp_path):
-    """Up is above zero and everything else is down, which is what makes up plus
-    down equal the number significant."""
-    _, r = files(tmp_path, [], [result_row("AT1G00001.Araport11.447", log2fc=0.0)])
-    counted = de.recount(de.read_results(r)["groups"][("Cortex", "pFACT_vs_Col-0")])
+@pytest.mark.parametrize("log2fc", [0.0, "NaN"])
+def test_a_significant_gene_without_a_positive_fold_change_counts_as_down(
+        de, tmp_path, log2fc):
+    """Up is above zero and everything else is down, so up plus down is the
+    number significant."""
+    counted = de.recount([one_result(de, tmp_path, log2fc=log2fc)])
     assert (counted["n_up"], counted["n_down"]) == (0, 1)
-    assert counted["n_up"] + counted["n_down"] == counted["n_significant_fdr_lfc"]
 
 
 # --------------------------------------------------------------------------- #
-# Where each comparison's file goes
+# Identifying what was loaded
 # --------------------------------------------------------------------------- #
 
 
-def test_only_tested_comparisons_get_a_file(de, tmp_path):
-    s, _ = files(tmp_path, [summary_row(), summary_row(celltype="Xylem",
-                                                       tested=False)], [])
-    paths = de.check_paths(de.read_summary(s))
-    assert set(paths) == {("Cortex", "pFACT_vs_Col-0")}
+def test_the_same_files_give_the_same_fingerprint_wherever_they_are(de, tmp_path):
+    s, r = files(tmp_path, [summary_row()], DEFAULT_RESULTS)
+    moved = tmp_path / "moved"
+    moved.mkdir()
+    s2, r2 = moved / "a.tsv", moved / "b.tsv"
+    s2.write_bytes(s.read_bytes())
+    r2.write_bytes(r.read_bytes())
+    assert de.fingerprint(s, r) == de.fingerprint(s2, r2)
 
 
-def test_a_cell_type_with_punctuation_still_makes_one_path(de, tmp_path):
-    s, _ = files(tmp_path, [summary_row(celltype="Cortex (elongation/maturation)")],
-                 [])
-    paths = de.check_paths(de.read_summary(s))
-    assert paths[("Cortex (elongation/maturation)", "pFACT_vs_Col-0")] == \
-        "Cortex_elongation_maturation___pFACT_vs_Col-0.json"
-
-
-def test_two_cell_types_that_would_share_a_file_are_refused(de, tmp_path):
-    """Punctuation is flattened to make a path, so two names that differ only in
-    punctuation collide -- and the second written would replace the first."""
-    s, _ = files(tmp_path, [summary_row(celltype="Cortex maturation"),
-                            summary_row(celltype="Cortex/maturation")], [])
-    with pytest.raises(de.IngestError, match="would share one object"):
-        de.check_paths(de.read_summary(s))
-
-
-def test_the_real_cell_types_do_not_collide(de, tmp_path):
-    """Two of them are 'Cortex (maturation)' and 'Cortex maturation'."""
-    rows = [summary_row(celltype=t) for t in
-            ("Cortex", "Cortex (maturation)", "Cortex maturation",
-             "Cortex (elongation/maturation)", "Cortex/Atrichoblast (maturation)")]
-    s, _ = files(tmp_path, rows, [])
-    assert len(de.check_paths(de.read_summary(s))) == 5
+def test_a_changed_results_file_changes_the_fingerprint(de, tmp_path):
+    s, r = files(tmp_path, [summary_row()], DEFAULT_RESULTS)
+    params, before = de.fingerprint(s, r)
+    assert set(params) == {"summary_sha256", "results_sha256"}
+    r.write_text(r.read_text().replace("0.001", "0.002", 1))
+    assert de.fingerprint(s, r)[1] != before
 
 
 # --------------------------------------------------------------------------- #
@@ -298,95 +326,35 @@ def test_the_real_cell_types_do_not_collide(de, tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_a_dry_run_needs_no_credentials_and_writes_nothing(de, tmp_path,
-                                                           monkeypatch, capsys):
-    for name in ("DATABASE_URL", "SUPABASE_URL", "SUPABASE_SERVICE_KEY"):
-        monkeypatch.delenv(name, raising=False)
+def test_a_dry_run_needs_no_database_and_writes_nothing(de, tmp_path,
+                                                        monkeypatch, capsys):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     s, r = files(tmp_path, [summary_row(), summary_row(celltype="Xylem",
                                                        tested=False)],
                  DEFAULT_RESULTS)
-    code = de.main(["--results", str(r), "--summary", str(s),
-                    "--dataset-name", "d", "--species-id", "1", "--dry-run"])
+    assert de.main(argv(s, r, "--dry-run")) == 0
     out = capsys.readouterr().out
-    assert code == 0
-    assert "2 comparisons, 1 tested, 1 skipped" in out
-    assert "1 objects would be written" in out
+    assert "2 comparisons: 1 tested, 1 skipped" in out
+    assert "3 gene results, 0 with no fold change" in out
+    assert "dry run — nothing written" in out
 
 
 def test_a_dry_run_still_refuses_a_summary_that_disagrees(de, tmp_path, capsys):
     s, r = files(tmp_path, [summary_row(up=2)], DEFAULT_RESULTS)
-    code = de.main(["--results", str(r), "--summary", str(s),
-                    "--dataset-name", "d", "--species-id", "1", "--dry-run"])
-    assert code == 1
+    assert de.main(argv(s, r, "--dry-run")) == 1
     assert "the summary says n_up is 2" in capsys.readouterr().err
 
 
-def test_writing_needs_all_three_credentials(de, tmp_path, monkeypatch, capsys):
+def test_the_method_has_to_be_named(de, tmp_path):
+    """It is recorded on the analysis, so it cannot be left to a default."""
     s, r = files(tmp_path, [summary_row()], DEFAULT_RESULTS)
-    for name in ("DATABASE_URL", "SUPABASE_URL", "SUPABASE_SERVICE_KEY"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("DATABASE_URL", "set")
-    code = de.main(["--results", str(r), "--summary", str(s),
-                    "--dataset-name", "d", "--species-id", "1"])
-    assert code == 1
-    assert "are all" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as exc:
+        de.main(argv(s, r)[:-2])
+    assert exc.value.code == 2
 
 
-# --------------------------------------------------------------------------- #
-# Numbers that cannot be written as JSON
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize("column,value", [
-    ("log2FC", "NaN"), ("log2FC", "Inf"), ("log2FC", "-Inf"),
-    ("pvalue", "NaN"), ("FDR", "Inf"),
-])
-def test_a_value_json_cannot_hold_is_refused(de, tmp_path, column, value):
-    """json.dumps spells these NaN and Infinity, which JSON.parse rejects. The
-    object would upload, the row would carry counts that look right, and the
-    panel would fail to read the comparison at all."""
-    fields = {"log2FC": "log2fc", "pvalue": "pvalue", "FDR": "fdr"}
-    s, r = files(tmp_path, [summary_row()],
-                 [result_row("AT1G00001", **{fields[column]: value})])
-    with pytest.raises(de.IngestError, match="cannot be written as JSON"):
-        de.read_results(r)
-
-
-def test_a_refused_value_names_the_gene_and_the_column(de, tmp_path):
-    """One bad cell in a file of hundreds of thousands of rows is only
-    actionable if the refusal says which one."""
-    s, r = files(tmp_path, [summary_row()],
-                 [result_row("AT1G00001"),
-                  result_row("AT1G00002", celltype="Xylem", log2fc="NaN")])
-    with pytest.raises(de.IngestError,
-                       match=r"Xylem / pFACT_vs_Col-0, gene AT1G00002: log2FC"):
-        de.read_results(r)
-
-
-def test_a_statistic_r_could_not_compute_is_refused_as_not_a_number(de, tmp_path):
-    """R writes NA, which float() cannot read. Before this it escaped as a bare
-    ValueError with no file, no row and no gene."""
-    s, r = files(tmp_path, [summary_row()],
-                 [result_row("AT1G00001", pvalue="NA")])
-    with pytest.raises(de.IngestError, match="pvalue is 'NA', which is not a number"):
-        de.read_results(r)
-
-
-def test_a_truncated_last_row_is_refused(de, tmp_path):
-    """A partial transfer leaves a short row, and DictReader fills the missing
-    columns with None rather than complaining."""
-    r = tmp_path / "results.tsv"
-    r.write_text(RESULT_HEADER + "\n" + result_row("AT1G00001") + "\n"
-                 + "Cortex\tpFACT_vs_Col-0\tpFACT\tCol-0\t10\t20\tAT1G00002\n")
-    with pytest.raises(de.IngestError, match="is not a number"):
-        de.read_results(r)
-
-
-def test_as_json_refuses_rather_than_writing_an_unparseable_file(de):
-    """A backstop for _number: if a non-finite value ever reaches here, this
-    should fail rather than write a file the panel cannot read."""
-    row = {c: 0.0 for c in de.RESULT_COLUMNS}
-    row["gene"] = row["_row"] = "AT1G00001"
-    row["avg_log2FC"] = float("nan")
-    with pytest.raises(ValueError, match="not JSON compliant"):
-        de.as_json([row])
+def test_writing_needs_a_database(de, tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    s, r = files(tmp_path, [summary_row()], DEFAULT_RESULTS)
+    assert de.main(argv(s, r)) == 1
+    assert "DATABASE_URL is required" in capsys.readouterr().err

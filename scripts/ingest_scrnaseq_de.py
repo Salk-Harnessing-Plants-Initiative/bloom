@@ -1,46 +1,36 @@
 #!/usr/bin/env python3
 """Write a single-cell dataset's differential expression into the explorer.
 
-Reads the two files the analysis produces -- the summary of every comparison
-that was considered, and the full per-gene results for the ones that ran -- and
-writes one object per comparison that ran, plus a row per comparison either way.
+Reads the two files the analysis produces -- the summary of every comparison it
+considered, and the per-gene results for the ones that ran -- and records them as
+one analysis: a run, a row per comparison, and a row per gene tested.
 
-A comparison that was skipped still gets a row. The panel needs to be able to
-say "this was not tested" rather than leaving a cell type silently absent, and
-the group sizes explain why it was skipped.
+A skipped comparison still gets a row, marked untested, so the panel can say
+"not tested" rather than leaving a cell type silently absent.
 
-The summary is not trusted. Every count in it is recomputed from the results
-file and the row is refused if they disagree, because the summary is what the
-panel shows and the results file is what a reader would check it against.
+The summary's counts are not stored, but they are checked: each is recomputed
+from the results, and the load is refused if they disagree.
 
-Run deliberately against a chosen database and storage:
+Run deliberately against a chosen database:
 
     DATABASE_URL=postgresql://user:pass@host:5432/postgres \
-    SUPABASE_URL=http://localhost:8000 \
-    SUPABASE_SERVICE_KEY=... \
-      uv run --with 'psycopg[binary]' --with supabase \
+      uv run --with 'psycopg[binary]' \
         python scripts/ingest_scrnaseq_de.py \
         --results ALL_LEVEL1_DE_RESULTS.tsv \
         --summary LEVEL1_DE_SUMMARY.tsv \
         --dataset-name "MYB41 transgene" \
-        --species-id 1
+        --species-id 1 \
+        --method seurat-wilcoxon
 
-Re-running replaces this dataset's differential expression entirely. A
-comparison keeps the same object path every run, so a re-run rewrites its
-object in place rather than adding another -- nothing accumulates in the bucket.
-
-The rows are transactional and go first, so a row the database refuses costs no
-uploads at all. The objects are not transactional: if an upload fails partway,
-the rows roll back and the objects already rewritten hold the new results while
-the rows still describe the previous ones. Re-running the same command is what
-resolves that, and with the same inputs the rewrite is byte-for-byte what was
-there already.
+Loading again adds a new analysis beside the old one; loading the same two files
+twice is refused. Everything is written in one transaction.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
@@ -49,30 +39,17 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-BUCKET = "scrna"
-
-# The panel downloads whatever path the row carries, so this is ours to choose.
-# Keyed on dataset_id rather than the name: names are not unique, and two
-# datasets sharing one would write over each other's objects.
-DE_PREFIX = "de/{dataset_id}"
-
-# The name within a dataset. It has to survive being a path segment and stay
-# one-to-one with the cell type.
-DE_NAME = "{celltype}__{contrast}.json"
-UNSAFE_IN_PATH = re.compile(r"[^A-Za-z0-9._-]+")
-
 # The results name genes with the annotation release appended; the expression
-# matrix does not. Stripping it is what lets a gene in the table be looked up in
-# the rest of the explorer. Checked against the registered genes, not assumed.
+# matrix does not. Stripping it is what lets a gene be looked up in the catalogue.
 GENE_SUFFIX = re.compile(r"\.Araport11\.\d+$")
 
-# The column names the panel reads, which are Seurat's rather than this
-# analysis's. web/components/expression-differential-analysis.tsx.
-RESULT_COLUMNS = ("gene", "p_val", "avg_log2FC", "pct.1", "pct.2",
-                  "p_val_adj", "_row")
+# The export compares genotypes within a cell type.
+GROUP_KIND = "genotype"
 
-# Fields the two files must carry. Named so a changed export is refused with
-# something an operator can act on rather than a KeyError.
+# Gene rows per INSERT. An analysis is roughly 675k rows.
+GENE_BATCH = 10_000
+
+# Fields the two files must carry, so a changed export is refused by name.
 SUMMARY_FIELDS = ("celltype", "contrast", "group1", "group2", "n_group1",
                   "n_group2", "tested", "n_genes_tested", "n_FDR_0.05",
                   "n_FDR_0.05_abs_log2FC_0.5", "n_up", "n_down")
@@ -80,17 +57,27 @@ RESULT_FIELDS = ("celltype", "contrast", "gene", "log2FC", "pvalue", "FDR",
                  "pct_expr_group1", "pct_expr_group2", "sig_FDR_0.05",
                  "sig_FDR_0.05_abs_log2FC_0.5")
 
+INSERT_RUN = (
+    "INSERT INTO public.scrna_de_runs "
+    "(dataset_id, source, status, method, params, params_hash, completed_at) "
+    "VALUES (%s, 'batch', 'complete', %s, %s::jsonb, %s, now()) RETURNING id"
+)
+INSERT_RESULT = (
+    "INSERT INTO public.scrna_de "
+    "(dataset_id, run_id, cluster_id, contrast, group1, group2, n_group1, "
+    " n_group2, group_kind, method, params_hash, tested) "
+    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id"
+)
+INSERT_GENES = (
+    "INSERT INTO public.scrna_de_genes "
+    "(de_id, dataset_id, gene_id, log2fc, pvalue, fdr, pct_1, pct_2) "
+    "SELECT * FROM unnest(%s::bigint[], %s::bigint[], %s::bigint[], "
+    "%s::real[], %s::float8[], %s::float8[], %s::real[], %s::real[])"
+)
+
 
 class IngestError(RuntimeError):
     """Something about the files or the dataset makes this unsafe to write."""
-
-
-class UploadFailed(RuntimeError):
-    """An upload stopped partway, so the rows it belongs with are rolled back.
-
-    Says how far it got, because the objects written before it stopped are not
-    rolled back with them. Re-running is what finishes it.
-    """
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -103,6 +90,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "considered, tested or not")
     p.add_argument("--dataset-name", required=True)
     p.add_argument("--species-id", type=int, required=True)
+    p.add_argument("--method", required=True,
+                   help="the test that produced the results, e.g. "
+                        "seurat-wilcoxon; recorded on the analysis")
     p.add_argument("--dry-run", action="store_true",
                    help="read and check everything, write nothing")
     return p.parse_args(argv)
@@ -126,8 +116,7 @@ def _rows(path: Path, required: tuple[str, ...]) -> list[dict]:
 
 
 def _flag(value: str) -> bool:
-    """The exports write Python booleans. Anything else is refused rather than
-    guessed at, because guessing wrong silently changes every count."""
+    """The exports write Python booleans; anything else is refused, not guessed."""
     if value not in ("True", "False"):
         raise IngestError(f"expected True or False, got {value!r}")
     return value == "True"
@@ -139,15 +128,7 @@ def _where(row: dict) -> str:
 
 
 def _number(row: dict, column: str) -> float:
-    """A finite number from one results column, or a refusal naming the gene.
-
-    R writes NA for a statistic it could not compute, and NaN for a fold change
-    between two groups that both express nothing. Neither can be written as
-    JSON: json.dumps spells them NaN and Infinity, which JSON.parse rejects. The
-    panel would then fail to read the whole comparison while its row went on
-    carrying counts that look right, so they are refused here -- before anything
-    is uploaded -- rather than at the point of writing the file.
-    """
+    """A finite number from one results column, or a refusal naming the gene."""
     value = row[column]
     try:
         number = float(value)
@@ -156,15 +137,36 @@ def _number(row: dict, column: str) -> float:
             f"{_where(row)}: {column} is {value!r}, which is not a number"
         ) from None
     if not math.isfinite(number):
+        raise IngestError(f"{_where(row)}: {column} is {value!r}, not a finite number")
+    return number
+
+
+def _fraction(row: dict, column: str) -> float:
+    """A value between 0 and 1: a probability or a proportion of cells."""
+    number = _number(row, column)
+    if not 0 <= number <= 1:
+        hint = "; it looks like a percentage" if 1 < number <= 100 else ""
         raise IngestError(
-            f"{_where(row)}: {column} is {value!r}, which cannot be written as "
-            f"JSON; the panel would fail to read this whole comparison"
+            f"{_where(row)}: {column} is {number}, outside 0 to 1{hint}"
         )
     return number
 
 
-def safe_segment(name: str) -> str:
-    return UNSAFE_IN_PATH.sub("_", name)
+def _fold_change(row: dict) -> float | None:
+    """log2FC, or None where the analysis could not compute one.
+
+    R writes NA or NaN when both groups express nothing. That is stored as no
+    fold change. An infinite one is kept: it is a measurement, not a gap.
+    """
+    if row["log2FC"] == "NA":
+        return None
+    try:
+        number = float(row["log2FC"])
+    except (TypeError, ValueError):
+        raise IngestError(
+            f"{_where(row)}: log2FC is {row['log2FC']!r}, which is not a number"
+        ) from None
+    return None if math.isnan(number) else number
 
 
 def read_summary(path: Path) -> list[dict]:
@@ -205,23 +207,26 @@ def read_summary(path: Path) -> list[dict]:
 
 
 def read_results(path: Path) -> dict:
-    """The per-gene rows, grouped by the comparison they belong to, already in
-    the shape the panel reads."""
+    """The per-gene rows, grouped by the comparison they belong to."""
     grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
     suffixed = 0
     for row in _rows(path, RESULT_FIELDS):
         gene = GENE_SUFFIX.sub("", row["gene"])
         if gene != row["gene"]:
             suffixed += 1
+        pvalue, fdr = _fraction(row, "pvalue"), _fraction(row, "FDR")
+        if fdr < pvalue:
+            raise IngestError(
+                f"{_where(row)}: FDR {fdr} is below its own p-value {pvalue}"
+            )
         grouped[(row["celltype"], row["contrast"])].append({
             "gene": gene,
-            "p_val": _number(row, "pvalue"),
-            "avg_log2FC": _number(row, "log2FC"),
-            "pct.1": _number(row, "pct_expr_group1"),
-            "pct.2": _number(row, "pct_expr_group2"),
-            "p_val_adj": _number(row, "FDR"),
-            "_row": gene,
-            # Kept out of the written row; the counts are recomputed from them.
+            "log2fc": _fold_change(row),
+            "pvalue": pvalue,
+            "fdr": fdr,
+            "pct_1": _fraction(row, "pct_expr_group1"),
+            "pct_2": _fraction(row, "pct_expr_group2"),
+            # Not written; the summary's counts are checked against them.
             "_fdr": _flag(row["sig_FDR_0.05"]),
             "_fdr_lfc": _flag(row["sig_FDR_0.05_abs_log2FC_0.5"]),
         })
@@ -239,22 +244,18 @@ def read_results(path: Path) -> dict:
 def recount(rows: list[dict]) -> dict[str, int]:
     """What the summary should say, worked out from the rows themselves."""
     significant = [r for r in rows if r["_fdr_lfc"]]
+    up = sum(1 for r in significant if r["log2fc"] is not None and r["log2fc"] > 0)
     return {
         "n_genes_tested": len(rows),
         "n_significant_fdr": sum(1 for r in rows if r["_fdr"]),
         "n_significant_fdr_lfc": len(significant),
-        "n_up": sum(1 for r in significant if r["avg_log2FC"] > 0),
-        "n_down": sum(1 for r in significant if r["avg_log2FC"] <= 0),
+        "n_up": up,
+        "n_down": len(significant) - up,
     }
 
 
 def reconcile(summary: list[dict], groups: dict[tuple[str, str], list[dict]]) -> None:
-    """Refuse any summary row the results file does not bear out.
-
-    The summary is what the panel puts on screen and the results file is what a
-    reader would check it against, so a disagreement is not something to record
-    and move past.
-    """
+    """Refuse any summary row the results file does not bear out."""
     for entry in summary:
         key = (entry["celltype"], entry["contrast"])
         rows = groups.get(key)
@@ -287,98 +288,18 @@ def reconcile(summary: list[dict], groups: dict[tuple[str, str], list[dict]]) ->
         )
 
 
-def check_paths(summary: list[dict]) -> dict[tuple[str, str], str]:
-    """One object name per tested comparison, and no two the same.
+def fingerprint(summary: Path, results: Path) -> tuple[dict, str]:
+    """What this analysis was loaded from, and a hash that identifies it.
 
-    Two cell types whose names differ only in punctuation would otherwise share
-    a name, and the second written would replace the first for both.
+    Two loads with the same hash are the same files, so the second is refused
+    rather than recorded as a second analysis that agrees with the first.
     """
-    names: dict[tuple[str, str], str] = {}
-    for entry in summary:
-        if not entry["tested"]:
-            continue
-        key = (entry["celltype"], entry["contrast"])
-        names[key] = DE_NAME.format(
-            celltype=safe_segment(entry["celltype"]),
-            contrast=safe_segment(entry["contrast"]),
-        )
-    collisions = defaultdict(list)
-    for key, name in names.items():
-        collisions[name].append(key)
-    clashing = {n: k for n, k in collisions.items() if len(k) > 1}
-    if clashing:
-        name, keys = next(iter(clashing.items()))
-        raise IngestError(
-            f"{len(keys)} comparisons would share one object: "
-            f"{' and '.join(f'{c} / {k}' for c, k in keys)} all become {name}"
-        )
-    return names
-
-
-def object_paths(names: dict[tuple[str, str], str],
-                 dataset_id: int) -> dict[tuple[str, str], str]:
-    """Where this dataset's comparisons live. One path each, stable across runs.
-
-    A comparison keeps the same path every run, so re-running replaces its
-    object rather than adding another. Nothing accumulates and nothing has to be
-    swept.
-    """
-    prefix = DE_PREFIX.format(dataset_id=dataset_id)
-    return {key: f"{prefix}/{name}" for key, name in names.items()}
-
-
-def check_cell_types(conn, dataset_id: int, summary: list[dict]) -> None:
-    """Every cell type named here has to exist in the catalogue.
-
-    The panel lists cell types straight from these rows, so one the map has
-    never heard of is offered and then colours nothing.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT cluster_id FROM public.scrna_clusters WHERE dataset_id = %s",
-            (dataset_id,),
-        )
-        catalogue = {row[0] for row in cur.fetchall()}
-    if not catalogue:
-        raise IngestError(
-            f"dataset {dataset_id} has no cell types. Load its cells first with "
-            f"scripts/ingest_scrnaseq.py"
-        )
-    unknown = sorted({e["celltype"] for e in summary} - catalogue)
-    if unknown:
-        raise IngestError(
-            f"{len(unknown)} cell types are not in the catalogue, so the panel "
-            f"would offer cell types the map does not have: "
-            f"{', '.join(unknown[:5])}"
-        )
-
-
-def check_genes(conn, dataset_id: int,
-                groups: dict[tuple[str, str], list[dict]]) -> tuple[int, int]:
-    """Cross-check gene names against the ones registered for this dataset.
-
-    Returns how many were checked and how many are registered. Zero registered
-    means the gene counts have not been loaded, which is not an error here --
-    but it is reported, so an unchecked run is visible rather than silent.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT gene_name FROM public.scrna_genes WHERE dataset_id = %s",
-            (dataset_id,),
-        )
-        registered = {row[0] for row in cur.fetchall()}
-    if not registered:
-        return 0, 0
-
-    named = {r["gene"] for rows in groups.values() for r in rows}
-    missing = sorted(named - registered)
-    if missing:
-        raise IngestError(
-            f"{len(missing)} genes in the results are not registered for this "
-            f"dataset, so nothing in the table could be looked up: "
-            f"{', '.join(missing[:5])}"
-        )
-    return len(named), len(registered)
+    params = {
+        "summary_sha256": hashlib.sha256(summary.read_bytes()).hexdigest(),
+        "results_sha256": hashlib.sha256(results.read_bytes()).hexdigest(),
+    }
+    canonical = json.dumps(params, sort_keys=True, separators=(",", ":"))
+    return params, hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def open_dataset(conn, name: str, species_id: int) -> int:
@@ -402,92 +323,133 @@ def open_dataset(conn, name: str, species_id: int) -> int:
     return found[0][0]
 
 
-def as_json(rows: list[dict]) -> bytes:
-    """Only the columns the panel reads, in the order it declares them.
+def check_cell_types(conn, dataset_id: int, summary: list[dict]) -> None:
+    """Every cell type named here has to exist in the dataset's catalogue.
 
-    allow_nan=False is a backstop: _number has already refused anything that
-    could trip it, and if that ever stops being true this should fail rather
-    than write a file the panel cannot parse.
-    """
-    return json.dumps(
-        [{c: r[c] for c in RESULT_COLUMNS} for r in rows], allow_nan=False
-    ).encode("utf-8")
-
-
-def write_de(conn, storage, dataset_id: int, summary: list[dict],
-             groups: dict[tuple[str, str], list[dict]],
-             paths: dict[tuple[str, str], str]) -> tuple[int, int]:
-    """Replace this dataset's differential expression.
-
-    The rows go first, so a row the database refuses -- a count contradicting
-    another, a blank contrast, a column the migration has not added yet -- costs
-    nothing. It is rejected before a single object is uploaded.
-
-    The objects follow, rewriting each comparison in place. An upload that stops
-    partway raises, which rolls the rows back with it -- but not the objects
-    already rewritten, which is why the error says how far it got.
+    The database refuses it too; this says which ones and what to do about it.
     """
     with conn.cursor() as cur:
-        cur.execute("DELETE FROM public.scrna_de WHERE dataset_id = %s",
-                    (dataset_id,))
-        cur.executemany(
-            "INSERT INTO public.scrna_de "
-            "(dataset_id, cluster_id, contrast, group1, group2, n_group1, "
-            " n_group2, file_path, n_genes_tested, n_significant_fdr, "
-            " n_significant_fdr_lfc, n_up, n_down) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            [
-                (
-                    dataset_id, e["celltype"], e["contrast"], e["group1"],
-                    e["group2"], e["n_group1"], e["n_group2"],
-                    paths.get((e["celltype"], e["contrast"])),
-                    # A skipped comparison stores five zeros rather than five
-                    # blanks: it names a contrast, and a row that names one
-                    # carries all five counts. Blanks would also switch off the
-                    # arithmetic rules that compare them.
-                    *( (e["counts"]["n_genes_tested"],
-                        e["counts"]["n_significant_fdr"],
-                        e["counts"]["n_significant_fdr_lfc"],
-                        e["counts"]["n_up"], e["counts"]["n_down"])
-                       if e["tested"] else (0, 0, 0, 0, 0) ),
-                )
-                for e in summary
-            ],
+        cur.execute(
+            "SELECT cluster_id FROM public.scrna_clusters WHERE dataset_id = %s",
+            (dataset_id,),
+        )
+        catalogue = {row[0] for row in cur.fetchall()}
+    if not catalogue:
+        raise IngestError(
+            f"dataset {dataset_id} has no cell types. Load its cells first with "
+            f"scripts/ingest_scrnaseq.py"
+        )
+    unknown = sorted({e["celltype"] for e in summary} - catalogue)
+    if unknown:
+        raise IngestError(
+            f"{len(unknown)} cell types are not in the catalogue: "
+            f"{', '.join(unknown[:5])}"
         )
 
-    for n, (key, path) in enumerate(paths.items(), start=1):
-        try:
-            storage.upload(
-                path=path,
-                file=as_json(groups[key]),
-                file_options={"content-type": "application/json",
-                              "upsert": "true"},
-            )
-        except Exception as exc:
-            # Any failure of the call means the object did not land, and the
-            # operator needs to be told how far it got rather than shown a
-            # traceback. Raising here takes the rows back with it.
-            raise UploadFailed(
-                f"stopped at object {n} of {len(paths)}, {path}: {exc}"
-            ) from exc
 
-    return len(paths), len(summary)
+def gene_ids(conn, dataset_id: int,
+             groups: dict[tuple[str, str], list[dict]]) -> dict[str, int]:
+    """The catalogue id of every gene the results name.
+
+    Gene rows reference the catalogue, so the genes have to be registered first,
+    and a name registered twice cannot be resolved to one gene.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT gene_name, id FROM public.scrna_genes WHERE dataset_id = %s",
+            (dataset_id,),
+        )
+        registered = cur.fetchall()
+    if not registered:
+        raise IngestError(
+            f"dataset {dataset_id} has no registered genes. Load its gene "
+            f"counts first with scripts/ingest_scrnaseq_counts.py"
+        )
+    ids: dict[str, int] = {}
+    twice = set()
+    for name, gene_id in registered:
+        if name in ids:
+            twice.add(name)
+        ids[name] = gene_id
+
+    named = {r["gene"] for rows in groups.values() for r in rows}
+    ambiguous = sorted(named & twice)
+    if ambiguous:
+        raise IngestError(
+            f"{len(ambiguous)} genes are registered more than once for this "
+            f"dataset, so a result cannot say which it means: "
+            f"{', '.join(ambiguous[:5])}"
+        )
+    missing = sorted(named - set(ids))
+    if missing:
+        raise IngestError(
+            f"{len(missing)} genes in the results are not registered for this "
+            f"dataset: {', '.join(missing[:5])}"
+        )
+    return ids
 
 
+def check_not_loaded(conn, dataset_id: int, params_hash: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM public.scrna_de_runs "
+            "WHERE dataset_id = %s AND params_hash = %s",
+            (dataset_id, params_hash),
+        )
+        found = cur.fetchone()
+    if found:
+        raise IngestError(
+            f"these two files were already loaded for dataset {dataset_id} as "
+            f"analysis {found[0]}"
+        )
 
 
-def summarise(summary: list[dict], read: dict, checked: tuple[int, int]) -> str:
+def write_de(conn, dataset_id: int, method: str, params: dict,
+             params_hash: str, summary: list[dict],
+             groups: dict[tuple[str, str], list[dict]],
+             ids: dict[str, int]) -> tuple[int, int, int]:
+    """Record the analysis, its comparisons and their genes.
+
+    Runs inside the caller's transaction, so a refusal anywhere leaves nothing.
+    Returns the run id, the comparisons written and the gene rows written.
+    """
+    genes = 0
+    with conn.cursor() as cur:
+        cur.execute(INSERT_RUN, (dataset_id, method, json.dumps(params),
+                                 params_hash))
+        run_id = cur.fetchone()[0]
+        for e in summary:
+            cur.execute(INSERT_RESULT, (
+                dataset_id, run_id, e["celltype"], e["contrast"], e["group1"],
+                e["group2"], e["n_group1"], e["n_group2"], GROUP_KIND, method,
+                params_hash, e["tested"],
+            ))
+            de_id = cur.fetchone()[0]
+            rows = groups.get((e["celltype"], e["contrast"]), [])
+            for start in range(0, len(rows), GENE_BATCH):
+                batch = rows[start:start + GENE_BATCH]
+                cur.execute(INSERT_GENES, (
+                    [de_id] * len(batch), [dataset_id] * len(batch),
+                    [ids[r["gene"]] for r in batch],
+                    [r["log2fc"] for r in batch], [r["pvalue"] for r in batch],
+                    [r["fdr"] for r in batch], [r["pct_1"] for r in batch],
+                    [r["pct_2"] for r in batch],
+                ))
+            genes += len(rows)
+    return run_id, len(summary), genes
+
+
+def describe(summary: list[dict], read: dict) -> str:
     tested = sum(1 for e in summary if e["tested"])
-    named, registered = checked
-    genes = (f"{named} genes, all registered for this dataset"
-             if registered else
-             "gene names not cross-checked: no genes are registered for this "
-             "dataset yet")
+    genes = sum(len(rows) for rows in read["groups"].values())
+    no_fold = sum(1 for rows in read["groups"].values() for r in rows
+                  if r["log2fc"] is None)
     return (
         f"{len(summary)} comparisons: {tested} tested, {len(summary) - tested} "
-        f"skipped\n  every count in the summary agrees with the results\n  "
-        f"{genes}\n  "
-        f"annotation release stripped from {read['suffixed']} gene names"
+        f"skipped\n"
+        f"  every count in the summary agrees with the results\n"
+        f"  {genes} gene results, {no_fold} with no fold change\n"
+        f"  annotation release stripped from {read['suffixed']} gene names"
     )
 
 
@@ -498,63 +460,41 @@ def main(argv: list[str] | None = None) -> int:
         summary = read_summary(args.summary)
         read = read_results(args.results)
         reconcile(summary, read["groups"])
-        names = check_paths(summary)
+        params, params_hash = fingerprint(args.summary, args.results)
     except IngestError as exc:
         print(f"refusing to ingest: {exc}", file=sys.stderr)
         return 1
 
+    print(describe(summary, read))
     if args.dry_run:
-        tested = sum(1 for e in summary if e["tested"])
-        print(f"{args.summary.name}: {len(summary)} comparisons, {tested} "
-              f"tested, {len(summary) - tested} skipped")
-        print("  every count in the summary agrees with the results")
-        print(f"  annotation release stripped from {read['suffixed']} gene names")
-        print(f"  {len(names)} objects would be written, one per tested "
-              f"comparison")
         print("dry run — nothing written")
         return 0
 
     database_url = os.getenv("DATABASE_URL")
-    supabase_url = os.getenv("SUPABASE_URL")
-    service_key = os.getenv("SUPABASE_SERVICE_KEY")
-    if not (database_url and supabase_url and service_key):
-        print(
-            "DATABASE_URL, SUPABASE_URL and SUPABASE_SERVICE_KEY are all "
-            "required: the rows go straight to the database, and the objects "
-            "go through the storage API so the browser can read them back "
-            "under the same policies as every other private bucket.",
-            file=sys.stderr,
-        )
+    if not database_url:
+        print("DATABASE_URL is required to write.", file=sys.stderr)
         return 1
 
     import psycopg
-    from supabase import create_client
-
-    storage = create_client(supabase_url, service_key).storage.from_(BUCKET)
 
     try:
         with psycopg.connect(database_url) as conn:
             dataset_id = open_dataset(conn, args.dataset_name, args.species_id)
             check_cell_types(conn, dataset_id, summary)
-            checked = check_genes(conn, dataset_id, read["groups"])
-            objects, rows = write_de(conn, storage, dataset_id, summary,
-                                     read["groups"],
-                                     object_paths(names, dataset_id))
+            ids = gene_ids(conn, dataset_id, read["groups"])
+            check_not_loaded(conn, dataset_id, params_hash)
+            run_id, results, genes = write_de(
+                conn, dataset_id, args.method, params, params_hash, summary,
+                read["groups"], ids)
     except IngestError as exc:
         print(f"refusing to ingest: {exc}", file=sys.stderr)
-        return 1
-    except UploadFailed as exc:
-        print(f"the upload {exc}\nNo rows were changed. The objects already "
-              f"replaced hold this run's results while the rows still describe "
-              f"the previous one, so re-run the same command to finish.",
-              file=sys.stderr)
         return 1
     except psycopg.Error as exc:
         print(f"the database refused the load: {exc}", file=sys.stderr)
         return 1
 
-    print(summarise(summary, read, checked))
-    print(f"  wrote {objects} objects and {rows} rows for dataset {dataset_id}")
+    print(f"  wrote analysis {run_id}: {results} comparisons and {genes} gene "
+          f"rows for dataset {dataset_id}")
     return 0
 
 
