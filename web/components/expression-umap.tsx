@@ -142,12 +142,6 @@ export interface ExpressionUmapProps {
     cellCount: number;
     /** Cells whose `cluster_id` had no row in `scrna_clusters` (sentinel ordinal 255). */
     orphanCount: number;
-    /** How many cells came from each sample, in the order they first appear.
-     *  Empty for a dataset whose cells record no sample. */
-    samples: { name: string; count: number }[];
-    /** Cells recording no sample. They are drawn and no toggle can hide them,
-     *  so the "everything is hidden" message has to account for them. */
-    unlabelledCount: number;
     /** The filter rows the cells offer, the sample row first. */
     filters: string[];
     /** Per filter row, the cells with no value for it. */
@@ -259,8 +253,7 @@ export function ExpressionUmap({
         visibility.fill(1.0);
         // Counted from the cells themselves, so a dataset with different
         // samples — or none — needs no change here.
-        const { clusterOrdinals, orphanCount, samples, unlabelledCount, filters, unlabelled } =
-          packCellArrays(cells);
+        const { clusterOrdinals, orphanCount, filters, unlabelled } = packCellArrays(cells);
         const loaded: LoadedData = {
           dataset,
           clusters,
@@ -279,8 +272,6 @@ export function ExpressionUmap({
           clusters,
           cellCount: cells.length,
           orphanCount,
-          samples,
-          unlabelledCount,
           filters,
           unlabelled,
           cells,

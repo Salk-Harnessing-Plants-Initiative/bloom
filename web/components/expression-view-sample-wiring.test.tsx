@@ -49,11 +49,6 @@ const LOADED: LoadedPayload = {
   clusters: CLUSTERS,
   cellCount: 9,
   orphanCount: 0,
-  samples: [
-    { name: "Col-0", count: 4 },
-    { name: "pFACT", count: 5 },
-  ],
-  unlabelledCount: 0,
   filters: ["sample"],
   unlabelled: { sample: 0 },
   cells: [
@@ -65,7 +60,6 @@ const LOADED: LoadedPayload = {
 const DATASET_2: LoadedPayload = {
   ...LOADED,
   cellCount: 7,
-  samples: [{ name: "WT", count: 7 }],
   cells: Array(7).fill({ replicate: "WT", facets: null }),
 };
 

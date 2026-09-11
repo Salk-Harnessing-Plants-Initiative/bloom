@@ -37,12 +37,7 @@ interface LoadedMeta {
   orphanCount: number;
   /** from scrna_cluster_stats.cell_count, keyed by ordinal */
   counts: Record<number, number>;
-  /** Cells per sample, taken from the cells themselves. Empty when the dataset
-   *  records no sample, which is when the toggles are not shown at all. */
-  samples: { name: string; count: number }[];
-  /** Cells recording no sample. Drawn, and no toggle can hide them. */
-  unlabelledCount: number;
-  /** The filter rows to show, the sample row first. */
+  /** The filter rows to show, the sample row first. Empty means no toggles. */
   filters: string[];
   /** Per filter row, the cells with no value for it. */
   unlabelled: Record<string, number>;
@@ -113,8 +108,6 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
       clusters: Cluster[];
       cellCount: number;
       orphanCount: number;
-      samples: { name: string; count: number }[];
-      unlabelledCount: number;
       filters: string[];
       unlabelled: Record<string, number>;
       cells: Pick<CellArraysRow, "replicate" | "facets">[];
@@ -124,8 +117,6 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
         clusters: ctx.clusters,
         cellCount: ctx.cellCount,
         orphanCount: ctx.orphanCount,
-        samples: ctx.samples,
-        unlabelledCount: ctx.unlabelledCount,
         filters: ctx.filters,
         unlabelled: ctx.unlabelled,
         cells: ctx.cells,

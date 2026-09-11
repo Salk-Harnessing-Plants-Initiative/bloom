@@ -109,7 +109,7 @@ describe("packPositions", () => {
 
 describe("packCellArrays", () => {
   it("counts each sample's own cells, in the order they first appear", () => {
-    expect(packCellArrays(CELLS).samples).toEqual([
+    expect(countsFor(CELLS, NO_SAMPLES, "sample")).toEqual([
       { name: "pHORST", count: 1 },
       { name: "pFACT", count: 2 },
       { name: "Col-0", count: 1 },
@@ -122,9 +122,8 @@ describe("packCellArrays", () => {
       cell(1, 1, 0, null),
       cell(2, 2, 0, ""),
     ];
-    const { samples, unlabelledCount } = packCellArrays(cells);
-    expect(samples).toEqual([{ name: "Col-0", count: 1 }]);
-    expect(unlabelledCount).toBe(2);
+    expect(countsFor(cells, NO_SAMPLES, "sample")).toEqual([{ name: "Col-0", count: 1 }]);
+    expect(packCellArrays(cells).unlabelled).toEqual({ sample: 2 });
   });
 
   it("counts a row that carries no sample field at all as unlabelled", () => {
@@ -133,9 +132,8 @@ describe("packCellArrays", () => {
     // entry; the map then offers a toggle labelled with a bare number.
     const cells = [{ x: 0, y: 0, cluster_ordinal: 0 }] as unknown as
       CellArraysRow[];
-    const { samples, unlabelledCount } = packCellArrays(cells);
-    expect(samples).toEqual([]);
-    expect(unlabelledCount).toBe(1);
+    expect(countsFor(cells, NO_SAMPLES, "sample")).toEqual([]);
+    expect(packCellArrays(cells).filters).toEqual([]);
   });
 
   it("gives back one cluster ordinal per cell, in cell order", () => {
@@ -157,8 +155,6 @@ describe("packCellArrays", () => {
     expect(packCellArrays([])).toEqual({
       clusterOrdinals: new Uint8Array(0),
       orphanCount: 0,
-      samples: [],
-      unlabelledCount: 0,
       filters: [],
       unlabelled: {},
     });

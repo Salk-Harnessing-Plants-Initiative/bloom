@@ -2918,6 +2918,7 @@ export type Database = {
           id: number
           name: string | null
           ordinal: number
+          source: string | null
         }
         Insert: {
           cluster_id: string
@@ -2926,6 +2927,7 @@ export type Database = {
           id?: number
           name?: string | null
           ordinal: number
+          source?: string | null
         }
         Update: {
           cluster_id?: string
@@ -2934,6 +2936,7 @@ export type Database = {
           id?: number
           name?: string | null
           ordinal?: number
+          source?: string | null
         }
         Relationships: [
           {

@@ -153,10 +153,10 @@ describe("ExpressionUmap — what reaches the packing", () => {
     expect(Array.from(written as Float32Array)).toEqual([0, 1, 0, 1]);
   });
 
-  it("reports the samples it counted, so the toggles can be built from them", async () => {
-    // The view renders the toggles only when this payload carries samples, and
+  it("reports the filter rows and the cells, so the toggles can be built from them", async () => {
+    // The view renders the toggles only when this payload carries rows, and
     // it mocks this component away to test itself. Without an assertion here,
-    // `samples: []` in the report removes the whole feature from the page with
+    // `filters: []` in the report removes the whole feature from the page with
     // every test still passing -- and a page with no toggles is exactly what a
     // dataset recording no sample is meant to look like, so nothing would show.
     const { ExpressionUmap } = await import("./expression-umap");
@@ -165,11 +165,9 @@ describe("ExpressionUmap — what reaches the packing", () => {
 
     await waitFor(() => expect(onDataLoaded).toHaveBeenCalled());
     const reported = onDataLoaded.mock.calls[0][0];
-    expect(reported.samples).toEqual([
-      { name: "pFACT", count: 2 },
-      { name: "Col-0", count: 1 },
-    ]);
-    expect(reported.unlabelledCount).toBe(1);
+    expect(reported.filters).toEqual(["sample"]);
+    expect(reported.unlabelled).toEqual({ sample: 1 });
+    expect(reported.cells).toHaveLength(CELLS.length);
     expect(reported.cellCount).toBe(CELLS.length);
   });
 });

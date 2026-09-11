@@ -63,7 +63,7 @@ export function ExpressionClusterSidebar({
           const count = cellCounts?.[c.ordinal];
           const color = c.color ?? "#a8a29e";
           const label = c.name ?? c.cluster_id;
-          const source = (c as { source?: string | null }).source?.trim() || null;
+          const source = c.source?.trim() || null;
 
           return (
             <li key={c.ordinal}>

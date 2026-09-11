@@ -1,11 +1,12 @@
 "use client";
 
 /**
- * Show or hide each sample on the map.
+ * Show or hide the cells of each value in one filter row: the samples, or one of
+ * the labels the cells carry, such as transgene status.
  *
- * The samples come from the cells themselves, so a dataset with different ones
- * — or none at all — needs no change here. A dataset whose cells record no
- * sample gets no control, rather than an empty box.
+ * The values come from the cells themselves, so a dataset with different ones
+ * — or none at all — needs no change here. A row with no values renders
+ * nothing, rather than an empty box.
  */
 
 export interface SampleCount {
@@ -20,9 +21,9 @@ interface Props {
   noun?: string;
   samples: SampleCount[];
   hidden: ReadonlySet<string>;
-  /** Cells recording no sample. They stay on the map whatever is hidden, so
-   *  hiding every sample does not empty it. Required, so dropping the wire is
-   *  a compile error rather than a quietly wrong message. */
+  /** Cells with no value in this row. They stay on the map whatever the row
+   *  hides, so hiding every value does not empty it. Required, so dropping the
+   *  wire is a compile error rather than a quietly wrong message. */
   unlabelledCount: number;
   onToggle: (name: string) => void;
   onShowAll: () => void;

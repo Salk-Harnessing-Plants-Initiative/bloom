@@ -155,11 +155,6 @@ export function packPositions(cells: CellArraysRow[]): {
 export interface CellArrays {
   clusterOrdinals: Uint8Array;
   orphanCount: number;
-  /** Cells per sample, in first-seen order. Cells recording no sample are
-   *  counted in `unlabelledCount` instead, because a sample with no name is
-   *  not something the map can offer a toggle for. */
-  samples: { name: string; count: number }[];
-  unlabelledCount: number;
   /** The filter rows the cells offer: the sample row when any cell records a
    *  sample, then each label in the order first seen. */
   filters: string[];
@@ -171,35 +166,22 @@ export interface CellArrays {
 /** One pass over the cells for everything the sidebar and the toggles need. */
 export function packCellArrays(cells: CellArraysRow[]): CellArrays {
   const clusterOrdinals = new Uint8Array(cells.length);
-  const sampleCounts = new Map<string, number>();
   const labelled = new Map<string, number>();
   let orphanCount = 0;
-  let unlabelledCount = 0;
+  let withSample = 0;
   for (let i = 0; i < cells.length; i++) {
     clusterOrdinals[i] = cells[i].cluster_ordinal;
     if (cells[i].cluster_ordinal === ORPHAN_CLUSTER_ORDINAL) orphanCount++;
-    const sample = cells[i].replicate;
-    if (sample != null && sample !== "") {
-      sampleCounts.set(sample, (sampleCounts.get(sample) ?? 0) + 1);
-    } else {
-      unlabelledCount++;
-    }
+    if (filterValue(cells[i], SAMPLE_FILTER) !== null) withSample++;
     for (const [name, value] of Object.entries(cells[i].facets ?? {})) {
       // A label named like the sample row would be shadowed by it.
       if (name === SAMPLE_FILTER || value == null || value === "") continue;
       labelled.set(name, (labelled.get(name) ?? 0) + 1);
     }
   }
-  const filters = [...(sampleCounts.size > 0 ? [SAMPLE_FILTER] : []), ...labelled.keys()];
+  const filters = [...(withSample > 0 ? [SAMPLE_FILTER] : []), ...labelled.keys()];
   const unlabelled: Record<string, number> = {};
-  if (sampleCounts.size > 0) unlabelled[SAMPLE_FILTER] = unlabelledCount;
+  if (withSample > 0) unlabelled[SAMPLE_FILTER] = cells.length - withSample;
   for (const [name, n] of labelled) unlabelled[name] = cells.length - n;
-  return {
-    clusterOrdinals,
-    orphanCount,
-    samples: [...sampleCounts].map(([name, count]) => ({ name, count })),
-    unlabelledCount,
-    filters,
-    unlabelled,
-  };
+  return { clusterOrdinals, orphanCount, filters, unlabelled };
 }
