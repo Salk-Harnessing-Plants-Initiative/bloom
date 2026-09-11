@@ -279,7 +279,8 @@ def scrna_accounts():
         pytest.skip("no SERVICE_ROLE_KEY — the stack is not configured")
     made = {}
     for role, flag in (("writer", "is_writer"), ("admin", "is_admin")):
-        email = f"scrna-{role}-{uuid.uuid4().hex[:8]}@test.bloom.local"
+        # Sign-ups are limited to @salk.edu (check_email_trigger).
+        email = f"scrna-{role}-{uuid.uuid4().hex[:8]}@salk.edu"
         password = uuid.uuid4().hex
         status, body = api_request(
             "/api/auth/v1/admin/users", api_key=SERVICE_ROLE_KEY, method="POST",
