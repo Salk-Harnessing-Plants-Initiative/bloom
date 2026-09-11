@@ -979,52 +979,32 @@ def test_sweep_withheld_complete_on_404_never_reaches_reconciliation(monkeypatch
     worker.sweep_once(object())  # must not raise
 
 
-def test_sweep_withholds_reconciliation_on_404_even_when_status_is_partial_or_failed(
+def test_sweep_still_reconciles_partial_or_failed_despite_an_unresolved_sibling_workflow(
     monkeypatch,
 ):
-    """Found in human PR review: the existing withheld-on-404 rule (above)
-    only ever applied to a 'complete' conclusion, because only 'complete'
-    requires every phase to have resolved Succeeded. A 'partial'/'failed'
-    rollup can be reached from confirmed-bad phases alone regardless of what
-    an unresolved sibling workflow turns out to have been (see
-    test_sweep_still_concludes_failed_or_partial_despite_an_unresolved_workflow)
-    — but that reasoning covers the STATUS conclusion, not this backstop's
-    reconciliation action. Reconciling a leftover 'queued' row permanently
-    marks it 'failed' in the DB; that is only safe once every workflow this
-    cycle actually reported a real phase. With a leftover queued row AND an
-    unresolved workflow this cycle, both the reconciliation and this cycle's
-    status write must be withheld and retried next cycle."""
+    """Round 7 finding: a prior round's fix (design.md's Decision 6 addendum 7,
+    item 1) gated this backstop's reconciliation on `not any_unknown`, based on
+    the premise that an unresolved (404'd) workflow "might still resolve" on a
+    later cycle. That premise doesn't hold given get_workflow_status's actual
+    contract: it returns None ONLY on a clean 404 ("most often ttlStrategy
+    already cleaned it up" — its own docstring), which is, by construction,
+    normally a *permanent* condition, not transient — a genuine transient
+    failure raises K8sStatusError instead, a completely separate path this
+    loop's outer try/except already isolates per-run. Gating reconciliation on
+    any_unknown therefore didn't protect against a real "might still resolve"
+    case; it just made a TTL-GC'd sibling workflow (an ordinary, expected
+    occurrence in any multi-batch run per addendum 5's own numbers) able to
+    stall this run's reconciliation AND status write forever, silently
+    (`ok=True` every such cycle) — confirmed independently by two review
+    rounds tracing the same mechanism. Reverted: restores Decision 6's
+    original, already-adversarially-reviewed design, which already reasoned
+    that a 404'd workflow's own queued rows are safe to reconcile ("it cannot
+    still be silently running")."""
     monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
     monkeypatch.setattr(
         worker,
         "_fetch_effective_phases",
         lambda c, r: (["Failed"], True, 0, 1, ["wf-a"]),
-    )
-
-    def boom(client, name):
-        raise AssertionError("must not reconcile while a workflow is unresolved")
-
-    monkeypatch.setattr(worker, "_reconcile_unresolved_scans", boom)
-
-    def update_boom(*a, **k):
-        raise AssertionError("must not write a status while reconciliation is withheld")
-
-    monkeypatch.setattr(worker, "update_run_status", update_boom)
-    assert worker.sweep_once(object()) is True
-
-
-def test_sweep_still_reconciles_partial_or_failed_when_nothing_is_unresolved(
-    monkeypatch,
-):
-    """Contrast case: with every phase resolved this cycle (any_unknown is
-    False), a 'partial'/'failed' conclusion still reconciles and writes
-    normally — the new withhold above must be scoped to any_unknown, not to
-    'partial'/'failed' conclusions generally."""
-    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
-    monkeypatch.setattr(
-        worker,
-        "_fetch_effective_phases",
-        lambda c, r: (["Failed"], False, 0, 1, ["wf-a"]),
     )
     reconcile_calls = []
     monkeypatch.setattr(
@@ -1040,6 +1020,8 @@ def test_sweep_still_reconciles_partial_or_failed_when_nothing_is_unresolved(
         lambda c, r, s, d=None, f=None: calls.append((r, s, d, f)),
     )
     worker.sweep_once(object())
+    assert reconcile_calls == ["wf-a"]
+    assert calls == [(1, "failed", 0, 2)]
     assert reconcile_calls == ["wf-a"]
     assert calls == [(1, "failed", 0, 2)]
 

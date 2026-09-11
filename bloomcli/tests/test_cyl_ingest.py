@@ -1816,6 +1816,70 @@ def test_batch_ingest_cli_reconcile_generic_error_has_no_role_hint(monkeypatch, 
     assert "bloom_workflows" not in reconciliation_entries[0]["error"]
 
 
+def test_batch_ingest_cli_reconcile_unrelated_permission_denied_gets_no_hint(
+    monkeypatch, tmp_path
+):
+    """Round 7 finding (Behavioral Correctness): the hint's old substring check
+    (`"permission denied" in message.lower()`) had no anchor to this specific RPC —
+    a message that happens to contain "permission denied" for a completely
+    unrelated reason (e.g. a nested error from a different grant inside the
+    SECURITY DEFINER body) would get the same misleading bloom_workflows hint
+    tacked on. Anchored to the exact RPC name instead."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-unrelated-perm-denied")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+
+    def boom(client, name):
+        raise _api_error(
+            "permission denied for relation some_other_unrelated_table"
+        )
+
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
+    _write_envelope(tmp_path, "scan_1")
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    reconciliation_entries = [e for e in payload.values() if e["status"] == "failed"]
+    assert len(reconciliation_entries) == 1
+    assert "bloom_workflows" not in reconciliation_entries[0]["error"], (
+        "must not hint at the wrong role for a permission error on something else entirely"
+    )
+
+
+def test_batch_ingest_cli_reconcile_signature_not_found_is_reported_as_expected(
+    monkeypatch, tmp_path
+):
+    """Round 7 finding (Testing Strategy): the poller side (status_poller.py) treats a
+    PGRST202 from this same RPC (added by the same migration) as an expected, transient
+    deploy-ordering condition, not an alarming failure — but this bloomcli call site had
+    no matching framing, reporting a bare, unhinted "function not found" message
+    indistinguishable from a real problem. retriable stays True either way (Argo's own
+    retryStrategy is the correct recovery mechanism for this transient window), but the
+    message should say so is expected rather than reading as a fresh failure."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-pgrst202")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+
+    def boom(client, name):
+        raise _api_error(
+            "Could not find the function public.fail_cyl_pipeline_run_scans_without_result",
+            code="PGRST202",
+        )
+
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
+    _write_envelope(tmp_path, "scan_1")
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    reconciliation_entries = [e for e in payload.values() if e["status"] == "failed"]
+    assert len(reconciliation_entries) == 1
+    error = reconciliation_entries[0]["error"].lower()
+    assert "expected" in error and ("transient" in error or "deploy" in error)
+    assert reconciliation_entries[0]["retriable"] is True
+
+
 def test_batch_ingest_cli_reconcile_failure_on_empty_batch_is_reported(monkeypatch, tmp_path):
     """Same isolation, exercised through the zero-envelopes early-return branch, which has its
     own bespoke 'nothing to ingest' message/exit path distinct from the main batch flow."""

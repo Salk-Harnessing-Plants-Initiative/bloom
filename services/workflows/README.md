@@ -212,7 +212,21 @@ scan's write-back genuinely resolved in that window. If the reconciliation
 call itself fails, the status write is skipped entirely for that run this
 cycle — it remains a candidate and is retried next cycle, the same isolation
 already given to every other per-run failure — rather than writing a
-terminal status while leaving those rows permanently unresolved.
+terminal status while leaving those rows permanently unresolved. This
+reconciliation is deliberately **not** gated on whether some other workflow
+in the run is unresolved (404'd) this cycle: `get_workflow_status` returns
+`None` only on a clean 404, which is normally a permanent condition (the
+Workflow object no longer exists), not a transient one — a genuine transient
+K8s failure raises `K8sStatusError` instead, an entirely separate path this
+loop already isolates per-run. A prior attempt to add such a gate was
+reverted after two review passes traced it letting an ordinary, expected
+TTL-GC'd sibling workflow stall a run's reconciliation and status write
+forever (see `openspec/changes/fix-cyl-pipeline-run-scan-status/design.md`'s
+Decision 6 addendum 8). Like `update_cyl_pipeline_run_status` below, the
+reconciliation RPC call also treats a `PGRST202` (function-signature-not-found)
+response as an expected, transient condition during the brief window between
+this deploy's app code going live and its migration actually applying —
+logged quietly, without marking the poll cycle unclean.
 
 The rollup rule that maps a run's per-workflow phases to one status is
 specified normatively in the `cyl-pipeline-status-polling` OpenSpec capability

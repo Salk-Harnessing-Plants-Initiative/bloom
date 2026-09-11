@@ -486,6 +486,13 @@ def call_insert_envelope(
     return client.rpc("insert_cyl_result_envelope", payload).execute().data
 
 
+# PostgREST's "function signature not found" code — mirrors status_poller.py's
+# own `_SIGNATURE_NOT_FOUND_CODE` (both call an RPC from the same migration and
+# are exposed to the same deploy-ordering window).
+_SIGNATURE_NOT_FOUND_CODE = "PGRST202"
+_RECONCILE_RPC_NAME = "fail_cyl_pipeline_run_scans_without_result"
+
+
 def reconcile_unresolved_scans(client: Any, argo_workflow_name: str) -> int:
     """Close out, as `'failed'`, any scan dispatched under `argo_workflow_name`
     that write-back never resolved either way — a prediction failure before
@@ -535,10 +542,28 @@ def _reconcile_unresolved_scans_result(client: Any, argo_workflow_name: str) -> 
         # via the same client as write-back, which is not guaranteed to carry
         # the bloom_workflows grant this RPC actually requires.
         message = getattr(exc, "message", None) or str(exc)
+        if exc.code == _SIGNATURE_NOT_FOUND_CODE:
+            # Same expected deploy-ordering window status_poller.py's own
+            # reconciliation call already treats quietly (round 7 finding —
+            # this bloomcli call site had no matching framing): the migration
+            # adding this RPC hasn't applied yet in this environment.
+            # retriable stays True (the default) — Argo's own retryStrategy
+            # is the correct recovery for this transient window.
+            return ScanResult(
+                "<reconciliation>",
+                "failed",
+                f"reconciliation for workflow {argo_workflow_name!r} deferred — RPC "
+                "signature not yet migrated (expected, transient deploy-ordering "
+                f"window): {message}",
+            )
+        # Anchored to this specific RPC's exact "permission denied for function
+        # <name>" wording (round 7 finding — Behavioral Correctness) rather than
+        # a bare "permission denied" substring, which could false-positive on an
+        # unrelated permission error that happens to contain the same phrase.
         hint = (
             " — this account must be granted the bloom_workflows role to run "
             "reconciliation (a different grant than write-back's own RPC requires)"
-            if "permission denied" in message.lower()
+            if f"permission denied for function {_RECONCILE_RPC_NAME}" in message
             else ""
         )
         return ScanResult(

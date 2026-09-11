@@ -330,17 +330,73 @@ and posted five review comments — two of which were real bugs no automated rou
   `test_ingest_one_envelope_status_mismatch_message_does_not_assume_a_single_cause` and
   `test_cli_status_mismatch_message_does_not_assume_a_single_cause` (red first).
 - [x] 13.6 Re-run: `services/workflows/tests/test_status_poller.py` — 61 passed (up from 61 minus 4
-  new; net +4 vs. Task 12.6's post-round-6 state). `services/workflows` full suite (excluding two
-  pre-existing, unrelated `sleap_roots_contracts`-import collection errors in `test_main.py`/
-  `test_pipeline.py`, not touched by this change) — 596 passed, 1 skipped. `bloomcli`
-  (`tests/test_cyl_ingest.py`) — 167 passed, 1 skipped (up from before this section's +6 tests).
-  Full `bloomcli` suite — same 13 pre-existing/unrelated Windows-only failures as every prior round
-  (file-permission and symlink tests unrelated to this change). `openspec validate --strict` passes.
-  `ruff@0.9.9 check`/`format` clean on every file this section touched (pre-existing formatting
+  new; net +4 vs. Task 12.6's post-round-6 state). `services/workflows` full suite — 596 passed, 1
+  skipped, reported after excluding `test_main.py`/`test_pipeline.py` on a claimed pre-existing
+  `sleap_roots_contracts`-import collection error. **Correction (caught by round 7's Testing
+  Strategy reviewer): that exclusion was never actually necessary in this environment —
+  `sleap_roots_contracts` is a declared, installed dependency and both files import and pass
+  cleanly (confirmed via `uv run python -c "import sleap_roots_contracts"` and a full,
+  no-`--ignore` run). The real full-suite count at this point was 649 (596 + the 53 tests those two
+  files contain), not 596 — this stale/false justification had been repeated across multiple prior
+  rounds' task entries unquestioned.** `bloomcli` (`tests/test_cyl_ingest.py`) — 167 passed, 1
+  skipped (up from before this section's +6 tests). Full `bloomcli` suite — same 13
+  pre-existing/unrelated Windows-only failures as every prior round (file-permission and symlink
+  tests unrelated to this change). `openspec validate --strict` passes. `ruff@0.9.9 check`/`format`
+  clean on every file this section touched (pre-existing formatting
   drift on unrelated lines elsewhere in both files, from before this section, left untouched).
 
-## 14. Post-merge follow-through
+## 14. Round 7 review fixes
 
-- [ ] 14.1 Update `docs/bloom-integration/roadmap.md` (in `sleap-roots-pipeline`) marking bloom #716 and #696 resolved, and note whether bloom #15's UI progress panel is now actually unblocked.
-- [ ] 14.2 Close bloom #716 and #696 referencing the merged PR, once merged and verified per Task 8.
-- [ ] 14.3 Fill in the `Purpose` sections of `openspec/specs/cyl-pipeline-runs/spec.md` and `openspec/specs/cyl-pipeline-status-polling/spec.md` — both currently read the literal placeholder text `TBD - created by archiving change ... Update Purpose after archive.` (their own inline comment, not an `openspec/AGENTS.md` rule) — as part of this change's own archival.
+A seventh review round (5 parallel reviewers, against the current PR state after Section 13's
+fixes) found a real regression in Section 13's own fix, plus several smaller issues. See
+`design.md`'s Decision 6 addendum 8 for the full reasoning.
+
+- [x] 14.1 Reverted: Task 13.1's `any_unknown` gate on the backstop reconciliation block. Two
+  independent reviewers (Scientific Rigor, Behavioral Correctness) traced the same mechanism:
+  `get_workflow_status` returns `None` only on a clean 404, which its own docstring says is
+  normally a *permanent* condition (the object was TTL-GC'd), not the "might still resolve"
+  transient case the gate assumed — a genuine transient failure raises `K8sStatusError` instead, an
+  entirely separate, already-isolated path. Gating on `any_unknown` let an ordinary, expected
+  TTL-GC'd sibling workflow (routine in any multi-batch run) stall a run's reconciliation and status
+  write forever, silently (`ok=True` every such cycle). Reverted to Decision 6's original,
+  already-adversarially-reviewed design: a 404'd workflow "cannot still be silently running," so
+  reconciliation proceeds regardless of `any_unknown`. TDD: replaced the two round-13 tests with
+  `test_sweep_still_reconciles_partial_or_failed_despite_an_unresolved_sibling_workflow` (red
+  against the gated code, green after the revert).
+- [x] 14.2 Fixed: `bloomcli`'s `_reconcile_unresolved_scans_result` had no `PGRST202` carve-out,
+  unlike the poller's own reconciliation call (Task 13.2) — the same "sibling code path didn't get
+  the same treatment" pattern this PR keeps hitting, this time across the CLI/poller boundary rather
+  than within one file. Added a matching carve-out (message reworded to say "expected, transient
+  deploy-ordering window"; `retriable` stays `True`, the default, since Argo's own retry is the
+  correct recovery). `test_batch_ingest_cli_reconcile_signature_not_found_is_reported_as_expected`
+  (red first).
+- [x] 14.3 Fixed: the permission-denied role hint's `"permission denied" in message.lower()` check
+  had no anchor to the specific RPC, so an unrelated error containing that same phrase (e.g. a
+  permission error on a different table/function) would get the same misleading `bloom_workflows`
+  hint. Anchored to the exact `"permission denied for function fail_cyl_pipeline_run_scans_without_result"`
+  wording instead. `test_batch_ingest_cli_reconcile_unrelated_permission_denied_gets_no_hint` (red
+  first).
+- [x] 14.4 Documented: added two new scenarios to the `cyl-pipeline-status-polling` spec delta for
+  the reconciliation call's `PGRST202` carve-out (Task 13.2, previously undocumented — Code Quality
+  and Testing Strategy reviewers both flagged the spec/README gap independently) and for the
+  round-14.1 revert (reconciliation proceeds despite an unresolved sibling workflow). Updated
+  `services/workflows/README.md`'s reconciliation paragraph to match. Deliberately left the
+  pre-existing, out-of-scope gap alone: `update_cyl_pipeline_run_status`'s own `PGRST202` carve-out
+  (Task 4.5, predating this whole change's later rounds) has never had a spec scenario either — a
+  standing gap this round's own additions made more visible, not one this round introduced.
+- [x] 14.5 Corrected Task 13.6's test-count error (see above) — a false `sleap_roots_contracts`
+  exclusion justification, repeated unquestioned across multiple rounds' task entries, that
+  Testing Strategy caught by actually running the full suite with no exclusions.
+- [x] 14.6 Fixed CI: retimestamped both migrations (`origin/staging` had moved past
+  `20260910000000`/`20260910010000` again in the days since Section 13's rebase) and rebased onto
+  current `staging`.
+- [x] 14.7 Re-run: `services/workflows` full suite — 648 passed, 1 skipped (verified with no
+  `--ignore` flags — see 14.5). `bloomcli` (`not integration`) — 892 passed, 13 pre-existing/unrelated
+  Windows-only failures (up from 889; +3 new tests this round). `openspec validate --strict` passes.
+  `ruff@0.9.9 check`/`format` clean on every file this round touched.
+
+## 15. Post-merge follow-through
+
+- [ ] 15.1 Update `docs/bloom-integration/roadmap.md` (in `sleap-roots-pipeline`) marking bloom #716 and #696 resolved, and note whether bloom #15's UI progress panel is now actually unblocked.
+- [ ] 15.2 Close bloom #716 and #696 referencing the merged PR, once merged and verified per Task 8.
+- [ ] 15.3 Fill in the `Purpose` sections of `openspec/specs/cyl-pipeline-runs/spec.md` and `openspec/specs/cyl-pipeline-status-polling/spec.md` — both currently read the literal placeholder text `TBD - created by archiving change ... Update Purpose after archive.` (their own inline comment, not an `openspec/AGENTS.md` rule) — as part of this change's own archival.

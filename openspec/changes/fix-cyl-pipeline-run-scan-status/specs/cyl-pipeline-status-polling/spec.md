@@ -157,6 +157,35 @@ matching `dispatch_worker.py`'s established conventions for both.
   already has a status other than `'queued'`
 - **THEN** the poller makes no `fail_cyl_pipeline_run_scans_without_result` call for that run
 
+#### Scenario: A leftover queued row is reconciled even when a sibling workflow is unresolved this cycle
+
+- **WHEN** a candidate run's rollup concludes `'partial'`/`'failed'` from one or more confirmed-bad
+  phases, it has a `'queued'` row under some `argo_workflow_name`, and a *different* workflow in the
+  same run returned `None` (404) from `get_workflow_status` this cycle
+- **THEN** the poller still calls `fail_cyl_pipeline_run_scans_without_result` for the leftover queued
+  row's workflow and still writes the run's status this cycle — reconciliation is not withheld merely
+  because some other workflow in the run is unresolved: a 404'd workflow cannot still be silently
+  running, so it is treated the same as any other terminal workflow for this purpose, not as
+  ambiguous evidence requiring a wait (a prior attempt to withhold in this case was found, during
+  review, to let an ordinary TTL-GC'd sibling workflow stall a run's reconciliation and status write
+  forever, since such a 404 never resolves)
+
+#### Scenario: A signature-not-found error during the reconciliation call is treated as expected and transient
+
+- **WHEN** the `fail_cyl_pipeline_run_scans_without_result` call raises a PostgREST `APIError` whose
+  code is `PGRST202` (the RPC's signature not yet migrated in this environment — the expected,
+  transient window between this deploy's app code going live and its migration actually applying)
+- **THEN** the poller logs this quietly (not as a warning) and does not mark the cycle unclean, the
+  same way `update_cyl_pipeline_run_status`'s own signature-not-found carve-out already behaves — but
+  still leaves the run's status update skipped this cycle, same as any other reconciliation failure
+
+#### Scenario: A non-signature-not-found error during the reconciliation call still marks the cycle unclean
+
+- **WHEN** the `fail_cyl_pipeline_run_scans_without_result` call raises any error other than a
+  `PGRST202` `APIError` (a different `APIError` code, or any other exception)
+- **THEN** the poller marks the cycle unclean, same as the existing "a failed reconciliation call
+  leaves the run unsettled" behavior
+
 #### Scenario: Three consecutive unclean cycles trigger a proactive reconnect
 
 - **WHEN** three sweep cycles in a row each have at least one isolated error (a K8s error, a DB-read

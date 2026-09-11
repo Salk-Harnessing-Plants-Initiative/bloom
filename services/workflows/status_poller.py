@@ -365,29 +365,21 @@ def sweep_once(client) -> bool:
         # cycle so the run stays a candidate and is retried next cycle,
         # matching this loop's existing per-run isolation discipline.
         #
-        # Found in human PR review (design.md's Decision 6 addendum 7): a
-        # 'partial'/'failed' rollup can be safely concluded from confirmed-bad
-        # phases alone even with an unresolved (404'd) sibling workflow this
-        # cycle (see rollup()'s docstring and
-        # test_sweep_still_concludes_failed_or_partial_despite_an_unresolved_workflow)
-        # — but that reasoning only covers the STATUS conclusion, not this
-        # reconciliation action. Reconciling permanently marks a leftover
-        # 'queued' row 'failed'; that's only safe once every workflow this
-        # cycle actually reported a real phase, so any_unknown must also gate
-        # this block (not just the 'complete' withhold above), and — since
-        # skipping reconciliation here means the leftover row is still
-        # unresolved — this cycle's status write must be withheld too so the
-        # run stays a candidate and is retried next cycle.
-        if status != "running" and queued_workflow_names and any_unknown:
-            logger.warning(
-                "status_poller: run %s has a leftover 'queued' scan and an "
-                "unresolved (404'd) workflow this cycle — withholding both "
-                "reconciliation and this cycle's status write, since the "
-                "unconfirmed workflow's real outcome could still resolve "
-                "that scan",
-                run_id,
-            )
-            continue
+        # Deliberately NOT gated on `any_unknown` (round 7 reverted a prior
+        # round's attempt to add that gate — see design.md's Decision 6
+        # addendum 8): get_workflow_status returns None ONLY on a clean 404,
+        # which its own docstring says is normally a *permanent* condition
+        # ("most often ttlStrategy already cleaned it up") — a genuine
+        # transient failure raises K8sStatusError instead, an entirely
+        # separate path this loop's outer try/except already isolates
+        # per-run. A 404'd workflow "cannot still be silently running," so a
+        # row still 'queued' under it (or under any other terminal-rollup
+        # workflow in this run) is exactly this backstop's target regardless
+        # of any_unknown. Gating on any_unknown instead let an ordinary,
+        # expected TTL-GC'd sibling workflow (any multi-batch run's batches
+        # routinely finish more than the ~1hr default TTL apart — see
+        # addendum 5) stall this run's reconciliation and status write
+        # forever, since any_unknown for a GC'd workflow never clears.
         if status != "running" and queued_workflow_names:
             try:
                 for name in queued_workflow_names:
