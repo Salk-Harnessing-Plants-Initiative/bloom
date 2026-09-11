@@ -94,7 +94,7 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = scrolled;
 });
 
-const summaryHeader = () => screen.findByRole("button", { name: /All cell types/ });
+const summaryHeader = () => screen.findByRole("button", { name: /All cell type summary/ });
 
 describe("the summary in the tab", () => {
   it("sits between the cuts and the comparison it opens", async () => {

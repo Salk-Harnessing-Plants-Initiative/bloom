@@ -463,7 +463,7 @@ export default function DeSummary({ comparisons, cuts, onSelect }: {
     >
       <AccordionSummary expandIcon={<ExpandMoreIcon />}>
         <Box display="flex" alignItems="center" gap={1.5} flexWrap="wrap">
-          <Typography variant="subtitle1" fontWeight="bold">All cell types</Typography>
+          <Typography variant="subtitle1" fontWeight="bold">All cell type summary</Typography>
           <Typography variant="body2" color="text.secondary">{headline}</Typography>
           {loading && cutsValid && !error && <CircularProgress size={16} />}
         </Box>

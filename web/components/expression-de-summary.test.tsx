@@ -102,7 +102,7 @@ beforeEach(() => {
   db.reads = [];
 });
 
-const header = () => screen.getByRole("button", { name: /All cell types/ });
+const header = () => screen.getByRole("button", { name: /All cell type summary/ });
 
 const open = async () => {
   await screen.findByText(/genes? pass/);
