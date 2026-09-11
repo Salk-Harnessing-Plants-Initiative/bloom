@@ -413,8 +413,7 @@ def test_rollback_runs_when_only_pre_run_rows_exist(pg_conn):
     goes -- and the one-vs-rest row comes through it unchanged."""
     with pg_conn.cursor() as cur:
         cur.execute("SAVEPOINT before_rollback")
-        # The layer above comes off first: this rollback restores a rule naming
-        # a count column that the later migration dropped.
+        # Unwind the later migration first.
         cur.execute(_later_rollback_body())
         cur.execute(_rollback_body())
         cur.execute(
@@ -461,15 +460,12 @@ def test_a_writer_may_still_read(pg_conn):
     pg_conn.rollback()
 
 
-# Who can still change or remove a submitted result: bloom_admin, for a
-# developer's deliberate repair; the two roles that run migrations; and
-# Postgres's built-in pg_write_all_data, which nobody is a member of.
+# May update or delete a result: bloom_admin, the migration roles, pg_write_all_data.
 MAY_CHANGE_RESULTS = {"bloom_admin", "postgres", "supabase_admin", "pg_write_all_data"}
 
 
 def test_only_admin_and_migration_roles_can_change_a_result(pg_conn):
-    """Measured across every role, column-level grants included, so a role or a
-    column grant added later is caught -- not only the roles the REVOKE names."""
+    """Across every role, column-level grants included."""
     with pg_conn.cursor() as cur:
         for table in ("scrna_de", "scrna_de_runs", "scrna_de_genes"):
             cur.execute(
@@ -617,9 +613,7 @@ def test_up_and_down_are_a_query_not_a_column(pg_conn):
 
 
 def test_a_fold_change_that_could_not_be_computed_is_null_not_nan(pg_conn):
-    """Postgres ranks NaN above every number, so a NaN fold change would
-    pass every "greater than" cut and count as up-regulated. NULL says the
-    same thing and behaves; the loader converts one to the other."""
+    """NaN is refused; a fold change that could not be computed is NULL."""
     with pg_conn.cursor() as cur:
         ds = _dataset(cur)
         de_id = _result(cur, ds, _run(cur, ds))

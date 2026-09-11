@@ -1,13 +1,6 @@
-"""
-Integration tests for 20260911002809_scrna_de_results_belong_to_runs.sql.
+"""Integration tests for 20260911002809_scrna_de_results_belong_to_runs.sql.
 
-The four threshold counts are gone and n_genes_tested stays, a new result has
-to belong to an analysis, and a cell type cannot be moved to another dataset.
-
-Each rejection names the constraint it expects, because a row usually breaks
-more than one rule and the first to fire wins.
-
-LOCAL ONLY: every test rolls back.
+Each rejection names the constraint it expects. Every test rolls back.
 """
 
 import re
@@ -296,8 +289,7 @@ def test_each_role_holds_what_it_needs_on_the_new_tables(pg_conn, table):
 
 
 def test_the_rollback_brings_the_count_columns_back_empty(pg_conn):
-    """What they held went with them, so the two rules demanding all five
-    counts come back NOT VALID."""
+    """The four columns return empty; the rules needing all five return NOT VALID."""
     with pg_conn.cursor() as cur:
         cur.execute(_script("rollbacks", f"*_{NAME}_rollback.sql"))
         assert COUNT_COLUMNS <= _columns(cur)
@@ -314,7 +306,7 @@ def test_the_rollback_brings_the_count_columns_back_empty(pg_conn):
 
 
 def test_the_migration_applies_again_after_its_rollback(pg_conn):
-    """Re-runnable, and valid against the rows already on the server."""
+    """The migration re-applies after its rollback."""
     with pg_conn.cursor() as cur:
         cur.execute(_script("rollbacks", f"*_{NAME}_rollback.sql"))
         cur.execute(_script("migrations", f"*_{NAME}.sql"))

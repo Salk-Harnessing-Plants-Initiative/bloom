@@ -1,8 +1,5 @@
 -- Manual rollback for 20260911002809_scrna_de_results_belong_to_runs.sql.
--- The four threshold columns come back empty: what they held was dropped with
--- them. The two rules that demand all five counts come back NOT VALID for that
--- reason. The explicit grants and the validated cell-type key stay: the grants
--- match the defaults they restate, and a key cannot be un-validated.
+-- The four columns return empty. Grants, the validated key and comments stay.
 
 BEGIN;
 
@@ -43,7 +40,7 @@ ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_up_plus_down_is_lfc_significant,
   DROP CONSTRAINT IF EXISTS scrna_de_contrast_rows_carry_counts;
 
--- NOT VALID: rows written since carry n_genes_tested and none of the other four.
+-- NOT VALID: run rows carry n_genes_tested only, and renames into them are refused.
 ALTER TABLE public.scrna_de
   ADD CONSTRAINT scrna_de_counts_all_or_none
   CHECK (num_nonnulls(n_genes_tested, n_significant_fdr,

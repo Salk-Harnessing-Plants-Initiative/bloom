@@ -392,11 +392,7 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
                 " (SELECT count(*) FROM public.scrna_de WHERE dataset_id = %(d)s)",
                 {"d": dataset_id},
             )
-            # Anything keyed by cell-type name or by cell position blocks a
-            # reload. The first two cascade off the catalogue; the counts name
-            # files read by cell position, which renumbering shifts; the
-            # differential expression rows reference the catalogue, which
-            # refuses to drop a cell type they name.
+            # Anything keyed by cell type or cell position blocks a reload.
             blocked = [
                 what
                 for what, n in zip(

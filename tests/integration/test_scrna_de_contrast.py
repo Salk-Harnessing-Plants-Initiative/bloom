@@ -218,9 +218,7 @@ def test_never_run_row_is_accepted(pg_conn):
 
 
 def test_one_cluster_holds_several_contrasts(pg_conn):
-    """The feature. 23 cell types x 3 contrasts plus a marker list per cluster is
-    the shape PRs after this one write, and it is what the uniqueness rule has to
-    permit. Narrowing that rule's column list must turn this red."""
+    """Several contrasts and a marker list fit one cluster."""
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
         run = _seed_run(cur, ds)
@@ -257,8 +255,7 @@ def test_the_same_contrast_may_appear_on_different_clusters(pg_conn):
 
 
 def test_the_real_summary_file_loads(pg_conn):
-    """Every row of the pipeline's own summary, read off disk, as one analysis:
-    proof the rules accept real output rather than only hand-typed rows."""
+    """The pipeline's own summary loads as one analysis."""
     with SUMMARY_TSV.open() as fh:
         rows = list(csv.DictReader(fh, delimiter="\t"))
     assert len(rows) == 69, f"expected 69 summary rows, found {len(rows)}"
@@ -350,8 +347,7 @@ def test_group_sizes_without_a_comparison_are_rejected(pg_conn):
 
 
 def test_results_without_a_file_are_accepted_once_they_belong_to_a_run(pg_conn):
-    """The per-gene results live in rows now, so a comparison with no object is
-    exactly what a current row looks like."""
+    """A run row needs no file: its genes are rows."""
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
         _insert(cur, ds, file_path=None, **_run_row(_seed_run(cur, ds)),
@@ -407,8 +403,7 @@ def test_negative_size_is_rejected(pg_conn, column):
 )
 @pytest.mark.parametrize("column", ["file_path", "contrast", "group1", "group2", "cluster_id"])
 def test_blank_text_is_rejected(pg_conn, column, blank):
-    """NULL is the only way to say nothing. An empty contrast reads as
-    one-vs-rest; an empty file_path renders as a link that goes nowhere."""
+    """NULL is the only way to say nothing."""
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
         if column == "file_path":
@@ -422,8 +417,7 @@ def test_blank_text_is_rejected(pg_conn, column, blank):
 
 
 def test_oversized_contrast_is_rejected(pg_conn):
-    """contrast is indexed, so an oversized value would otherwise fail at insert
-    with a btree row-size error rather than anything a reader could act on."""
+    """contrast is indexed, so its length is bounded."""
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
         _rejects(cur, ds, "scrna_de_name_lengths",
@@ -619,16 +613,13 @@ def _table_is_empty(cur) -> bool:
     return cur.fetchone()[0] == 0
 
 
-# The counts a contrast row carried in this migration's shape. The layers above
-# are peeled off first, so these rows are written the way this shape held them.
+# The five counts a contrast row carried in 20260908's shape.
 SHAPE_COUNTS = {"n_genes_tested": 100, "n_significant_fdr": 5,
                 "n_significant_fdr_lfc": 4, "n_up": 3, "n_down": 1}
 
 
 def test_rollback_refuses_when_contrast_data_exists(pg_conn):
-    """Nothing automated runs these scripts, so the only time one runs is by hand
-    against a table someone has already filled. Dropping the columns would
-    discard every contrast."""
+    """Dropping the columns would discard every contrast."""
     with pg_conn.cursor() as cur:
         cur.execute(_later_rollback_body())
         ds = _seed_dataset(cur)
@@ -641,8 +632,7 @@ def test_rollback_refuses_when_contrast_data_exists(pg_conn):
 
 
 def test_rollback_refuses_when_a_row_has_no_file(pg_conn):
-    """A comparison that never ran has no file, and the original table cannot
-    hold a row without one."""
+    """The original table cannot hold a row without a file."""
     with pg_conn.cursor() as cur:
         cur.execute(_later_rollback_body())
         ds = _seed_dataset(cur)
@@ -744,9 +734,7 @@ def _migration_body() -> str:
     )
 
 
-# The migrations layered on top of this one, newest first. Rollbacks unwind in
-# reverse, so reaching the shape that predates contrasts means peeling these off
-# first -- otherwise their foreign keys and rules are still in force.
+# Later migrations on scrna_de, newest first; their rollbacks run before this one's.
 LATER_LAYERS = ("scrna_de_results_belong_to_runs", "scrna_de_common_results")
 
 
