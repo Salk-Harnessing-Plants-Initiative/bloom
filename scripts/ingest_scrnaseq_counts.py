@@ -96,7 +96,7 @@ def parse_expectations(pairs: list[str]) -> dict[str, int]:
             raise IngestError(
                 f"--expect-nonzero wants GENE=COUNT, got {pair!r}"
             )
-        out[name] = int(count)
+        out[ingest_api.strip_release(name)] = int(count)
     return out
 
 
@@ -115,7 +115,8 @@ def read_genes(h5ad_path: Path, expectations: dict[str, int]) -> dict:
     if adata.n_vars == 0:
         raise IngestError(f"{h5ad_path.name} holds no genes")
 
-    names = [str(v) for v in adata.var_names]
+    # Plain AGIs, as the differential expression loader looks them up.
+    names = [ingest_api.strip_release(str(v)) for v in adata.var_names]
 
     blank = sum(1 for g in names if not g.strip())
     if blank:

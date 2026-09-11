@@ -51,9 +51,12 @@ import scrna_ingest_api as ingest_api
 
 IngestError = ingest_api.IngestError
 
-# The results name genes with the annotation release appended; the expression
-# matrix does not. Stripping it is what lets a gene be looked up in the catalogue.
-GENE_SUFFIX = re.compile(r"\.Araport11\.\d+$")
+# The results name genes with the annotation release appended; the counts loader
+# strips it when registering genes, so stripping it here finds them.
+GENE_SUFFIX = ingest_api.RELEASE_SUFFIX
+
+# Float noise at the bounds of a fraction: the real export writes 1.0000000000000002.
+FRACTION_MARGIN = 1e-9
 
 # The export compares genotypes within a cell type.
 GROUP_KIND = "genotype"
@@ -139,6 +142,8 @@ def _number(row: dict, column: str) -> float:
 def _fraction(row: dict, column: str) -> float:
     """A value between 0 and 1: a probability or a proportion of cells."""
     number = _number(row, column)
+    if -FRACTION_MARGIN <= number < 0 or 1 < number <= 1 + FRACTION_MARGIN:
+        return float(round(number))
     if not 0 <= number <= 1:
         hint = "; it looks like a percentage" if 1 < number <= 100 else ""
         raise IngestError(

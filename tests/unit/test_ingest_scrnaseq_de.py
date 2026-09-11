@@ -210,6 +210,23 @@ def test_a_value_the_gene_table_cannot_hold_is_refused(de, tmp_path, field,
         one_result(de, tmp_path, **{field: value})
 
 
+@pytest.mark.parametrize("field,value,column,stored", [
+    ("pct1", "1.0000000000000002", "pct_1", 1.0),
+    ("pct2", "-1e-17", "pct_2", 0.0),
+    ("fdr", "1.0000000000000002", "fdr", 1.0),
+])
+def test_rounding_just_past_0_or_1_is_read_as_the_bound(de, tmp_path, field, value,
+                                                      column, stored):
+    """The real export writes 1.0000000000000002 for a gene in every cell: float
+    noise, not a percentage."""
+    assert one_result(de, tmp_path, **{field: value})[column] == stored
+
+
+def test_a_value_past_the_rounding_margin_is_still_refused(de, tmp_path):
+    with pytest.raises(de.IngestError, match="outside 0 to 1"):
+        one_result(de, tmp_path, pct1="1.000001")
+
+
 def test_an_fdr_below_its_own_p_value_is_refused(de, tmp_path):
     with pytest.raises(de.IngestError, match="below its own p-value"):
         one_result(de, tmp_path, pvalue=0.05, fdr=0.01)

@@ -258,6 +258,14 @@ def update(writer: Writer, step: str, table: str, values: dict, *, eq: dict) -> 
     writer.write(step, send)
 
 
+# The annotation release some exports append to a gene name, e.g. AT1G01010.Araport11.447.
+RELEASE_SUFFIX = re.compile(r"\.Araport11\.\d+$")
+
+
+def strip_release(gene: str) -> str:
+    return RELEASE_SUFFIX.sub("", gene)
+
+
 # What a dataset name may hold, since the counts objects are stored under it.
 SAFE_DATASET_NAME = re.compile(r"[A-Za-z0-9._ -]+")
 DOTS_ONLY = re.compile(r"\.+")

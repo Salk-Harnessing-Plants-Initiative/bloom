@@ -137,6 +137,29 @@ def test_a_file_with_no_genes_is_refused(counts, tmp_path):
         counts.read_genes(path, {})
 
 
+def test_the_annotation_release_is_stripped_from_gene_names(counts, tmp_path):
+    """The differential expression loader strips it too, and people search by the
+    plain AGI. A name with another suffix, like the transgene, is left alone."""
+    path = write_h5ad(tmp_path / "release.h5ad", np.eye(2, dtype="float32"),
+                      ["AT1G01010.Araport11.447", "AT4G28110.Fusion"])
+    assert counts.read_genes(path, {})["names"] == ["AT1G01010", "AT4G28110.Fusion"]
+
+
+def test_two_releases_of_one_gene_are_refused(counts, tmp_path):
+    path = write_h5ad(tmp_path / "releases.h5ad", np.eye(2, dtype="float32"),
+                      ["AT1G01010.Araport11.447", "AT1G01010.Araport11.448"])
+    with pytest.raises(counts.IngestError, match="more than once"):
+        counts.read_genes(path, {})
+
+
+def test_an_expectation_may_name_a_gene_with_its_release(counts, tmp_path):
+    matrix = np.array([[1, 0], [2, 0]], dtype="float32")
+    path = write_h5ad(tmp_path / "expect_release.h5ad", matrix,
+                      ["AT1G01010.Araport11.447", "AT1G01020.Araport11.447"])
+    read = counts.read_genes(path, counts.parse_expectations(["AT1G01010.Araport11.447=2"]))
+    assert read["expectations"] == {"AT1G01010": 2}
+
+
 def test_two_genes_with_one_name_are_refused(counts, tmp_path):
     """They would write to one object, and the second would replace the first
     for both of them -- so both genes would then colour identically."""
