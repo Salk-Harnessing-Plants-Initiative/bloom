@@ -1,8 +1,9 @@
 """
 Unit tests for `scripts/ingest_scrnaseq_de.py`.
 
-Reading, checking and fingerprinting the two export files. The database writes
-are covered by tests/integration/test_scrna_ingest_de.py.
+Reading, checking and fingerprinting the two export files, and the command line.
+The write path is in test_ingest_scrnaseq_de_load.py and, through the real API, in
+tests/integration/test_scrna_ingest_de.py.
 """
 
 from __future__ import annotations
@@ -326,9 +327,13 @@ def test_a_changed_results_file_changes_the_fingerprint(de, tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_a_dry_run_needs_no_database_and_writes_nothing(de, tmp_path,
-                                                        monkeypatch, capsys):
-    monkeypatch.delenv("DATABASE_URL", raising=False)
+def test_a_dry_run_needs_no_account_and_says_what_it_would_write(
+        de, tmp_path, monkeypatch, capsys):
+    def refuse(*a, **k):
+        raise AssertionError("a dry run must not reach the site")
+    monkeypatch.setattr(de.ingest_api, "resolve_api", refuse)
+    monkeypatch.setattr(de.ingest_api, "sign_in", refuse)
+    monkeypatch.delenv("BLOOM_PASSWORD", raising=False)
     s, r = files(tmp_path, [summary_row(), summary_row(celltype="Xylem",
                                                        tested=False)],
                  DEFAULT_RESULTS)
@@ -336,6 +341,7 @@ def test_a_dry_run_needs_no_database_and_writes_nothing(de, tmp_path,
     out = capsys.readouterr().out
     assert "2 comparisons: 1 tested, 1 skipped" in out
     assert "3 gene results, 0 with no fold change" in out
+    assert "would write one analysis of 2 comparisons and 3 gene rows" in out
     assert "dry run — nothing written" in out
 
 
@@ -353,8 +359,52 @@ def test_the_method_has_to_be_named(de, tmp_path):
     assert exc.value.code == 2
 
 
-def test_writing_needs_a_database(de, tmp_path, monkeypatch, capsys):
+def _signed_in(de, monkeypatch):
+    api = de.ingest_api
+    monkeypatch.setattr(api, "resolve_api", lambda server, url, key, **_: ("http://x/api", "k"))
+    monkeypatch.setattr(api, "sign_in", lambda url, key, email, password, **_: api.Session(
+        lambda: (None, "bloom_writer", "u1"), None, "bloom_writer", "u1"))
+    monkeypatch.setenv("BLOOM_PASSWORD", "pw")
     monkeypatch.delenv("DATABASE_URL", raising=False)
+
+
+def test_writing_needs_an_email(de, tmp_path, monkeypatch, capsys):
+    _signed_in(de, monkeypatch)
     s, r = files(tmp_path, [summary_row()], DEFAULT_RESULTS)
-    assert de.main(argv(s, r)) == 1
-    assert "DATABASE_URL is required" in capsys.readouterr().err
+    assert de.main(argv(s, r, "--server", "https://x")) == 1
+    assert "--email" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("result,said", [
+    ((5, 1, 3, "loaded"), "wrote analysis 5: 1 comparisons and 3 gene rows"),
+    ((5, 0, 2, "resumed"), "resumed analysis 5: 0 comparisons and 2 gene rows"),
+    ((5, 0, 0, "already loaded"), "already loaded for dataset d as analysis 5"),
+])
+def test_main_hands_load_the_analysis_and_says_what_happened(
+        de, tmp_path, monkeypatch, capsys, result, said):
+    _signed_in(de, monkeypatch)
+    seen = {}
+
+    def recorder(writer, name, species_id, method, params, params_hash, summary,
+                 groups):
+        seen.update(name=name, method=method, params=params, hash=params_hash,
+                    comparisons=len(summary))
+        return result
+    monkeypatch.setattr(de, "load", recorder)
+    s, r = files(tmp_path, [summary_row()], DEFAULT_RESULTS)
+    code = de.main(argv(s, r, "--server", "https://x", "--email", "me@salk.edu"))
+    assert code == 0 and said in capsys.readouterr().out
+    params, params_hash = de.fingerprint(s, r)
+    assert seen == {"name": "d", "method": "seurat-wilcoxon", "params": params,
+                    "hash": params_hash, "comparisons": 1}
+
+
+def test_the_wait_is_checked_before_signing_in(de, tmp_path, monkeypatch, capsys):
+    _signed_in(de, monkeypatch)
+    def no_sign_in(*a, **k):
+        raise AssertionError("signed in during the wait")
+    monkeypatch.setattr(de.ingest_api, "sign_in", no_sign_in)
+    s, r = files(tmp_path, [summary_row()], DEFAULT_RESULTS)
+    de.ingest_api.Marker(de.ingest_api.marker_path(r, "d")).record("insert gene rows")
+    assert de.main(argv(s, r, "--server", "https://x", "--email", "me@salk.edu")) == 1
+    assert "seconds" in capsys.readouterr().err

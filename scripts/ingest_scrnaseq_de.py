@@ -11,19 +11,25 @@ A skipped comparison still gets a row, marked untested, so the panel can say
 The summary's counts are not stored, but they are checked: each is recomputed
 from the results, and the load is refused if they disagree.
 
-Run deliberately against a chosen database:
+The cells have to be loaded first, by scripts/ingest_scrnaseq.py, and the genes
+registered, by scripts/ingest_scrnaseq_counts.py. It signs in to the site as a
+writer (or admin) account and writes through the API. The password is read from
+BLOOM_PASSWORD, never from the command line:
 
-    DATABASE_URL=postgresql://user:pass@host:5432/postgres \
-      uv run --with 'psycopg[binary]' \
-        python scripts/ingest_scrnaseq_de.py \
-        --results ALL_LEVEL1_DE_RESULTS.tsv \
-        --summary LEVEL1_DE_SUMMARY.tsv \
-        --dataset-name "MYB41 transgene" \
-        --species-id 1 \
-        --method seurat-wilcoxon
+    BLOOM_PASSWORD=... uv run --with supabase \
+      python scripts/ingest_scrnaseq_de.py \
+        --server https://staging.bloom.salk.edu --email you@salk.edu \
+        --results ALL_LEVEL1_DE_RESULTS.tsv --summary LEVEL1_DE_SUMMARY.tsv \
+        --dataset-name "MYB41 transgene" --species-id 1 --method seurat-wilcoxon
 
-Loading again adds a new analysis beside the old one; loading the same two files
-twice is refused. Everything is written in one transaction.
+--api-url and --anon-key give the API address instead of --server. How an admin
+makes an account a writer is in scripts/ingest_scrnaseq.py.
+
+The two files are one analysis, identified by their checksums. If a load stops,
+run the same command again: it adds only the comparisons and gene rows still
+missing, and until then the analysis shows with gene rows missing. Different
+files make a new analysis beside the old one. Load a dataset from one terminal at
+a time.
 """
 
 from __future__ import annotations
@@ -33,11 +39,17 @@ import csv
 import hashlib
 import json
 import math
-import os
 import re
 import sys
 from collections import defaultdict
+from datetime import UTC, datetime
 from pathlib import Path
+
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import scrna_ingest_api as ingest_api
+
+IngestError = ingest_api.IngestError
 
 # The results name genes with the annotation release appended; the expression
 # matrix does not. Stripping it is what lets a gene be looked up in the catalogue.
@@ -46,7 +58,7 @@ GENE_SUFFIX = re.compile(r"\.Araport11\.\d+$")
 # The export compares genotypes within a cell type.
 GROUP_KIND = "genotype"
 
-# Gene rows per INSERT. An analysis is roughly 675k rows.
+# Gene rows per insert request. An analysis is roughly 675k rows.
 GENE_BATCH = 10_000
 
 # Fields the two files must carry, so a changed export is refused by name.
@@ -56,29 +68,6 @@ SUMMARY_FIELDS = ("celltype", "contrast", "group1", "group2", "n_group1",
 RESULT_FIELDS = ("celltype", "contrast", "gene", "log2FC", "pvalue", "FDR",
                  "pct_expr_group1", "pct_expr_group2", "sig_FDR_0.05",
                  "sig_FDR_0.05_abs_log2FC_0.5")
-
-INSERT_RUN = (
-    "INSERT INTO public.scrna_de_runs "
-    "(dataset_id, source, status, method, params, params_hash, completed_at) "
-    "VALUES (%s, 'batch', 'complete', %s, %s::jsonb, %s, now()) RETURNING id"
-)
-INSERT_RESULT = (
-    "INSERT INTO public.scrna_de "
-    "(dataset_id, run_id, cluster_id, contrast, group1, group2, n_group1, "
-    " n_group2, group_kind, method, params_hash, tested) "
-    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id"
-)
-INSERT_GENES = (
-    "INSERT INTO public.scrna_de_genes "
-    "(de_id, dataset_id, gene_id, log2fc, pvalue, fdr, pct_1, pct_2) "
-    "SELECT * FROM unnest(%s::bigint[], %s::bigint[], %s::bigint[], "
-    "%s::real[], %s::float8[], %s::float8[], %s::real[], %s::real[])"
-)
-
-
-class IngestError(RuntimeError):
-    """Something about the files or the dataset makes this unsafe to write."""
-
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
@@ -93,6 +82,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--method", required=True,
                    help="the test that produced the results, e.g. "
                         "seurat-wilcoxon; recorded on the analysis")
+    p.add_argument("--server", help="the site, e.g. https://staging.bloom.salk.edu; "
+                   "the API address is read from it")
+    p.add_argument("--api-url", help="the API address, instead of reading it from --server")
+    p.add_argument("--anon-key", help="the site's public key, with --api-url")
+    p.add_argument("--email", help="the writer account to sign in as; the password "
+                   "is read from BLOOM_PASSWORD")
     p.add_argument("--dry-run", action="store_true",
                    help="read and check everything, write nothing")
     return p.parse_args(argv)
@@ -302,38 +297,28 @@ def fingerprint(summary: Path, results: Path) -> tuple[dict, str]:
     return params, hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def open_dataset(conn, name: str, species_id: int) -> int:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT id FROM public.scrna_datasets "
-            "WHERE name = %s AND species_id = %s AND deleted_at IS NULL",
-            (name, species_id),
-        )
-        found = cur.fetchall()
-    if not found:
+def open_dataset(writer, name: str, species_id: int) -> int:
+    found = ingest_api.find_dataset(writer, species_id, name)
+    if found is None:
         raise IngestError(
-            f"no dataset named {name!r} for species {species_id}. Load its "
+            f"no dataset named {name.strip()!r} for species {species_id}. Load its "
             f"cells first with scripts/ingest_scrnaseq.py"
         )
-    if len(found) > 1:
+    if not found.get("ingested_at"):
         raise IngestError(
-            f"{len(found)} datasets are named {name!r} for species "
-            f"{species_id}; cannot tell which to write to"
+            f"dataset {found['id']}'s cells are not finished. Finish them first by "
+            f"running scripts/ingest_scrnaseq.py again"
         )
-    return found[0][0]
+    return found["id"]
 
 
-def check_cell_types(conn, dataset_id: int, summary: list[dict]) -> None:
+def check_cell_types(writer, dataset_id: int, summary: list[dict]) -> None:
     """Every cell type named here has to exist in the dataset's catalogue.
 
     The database refuses it too; this says which ones and what to do about it.
     """
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT cluster_id FROM public.scrna_clusters WHERE dataset_id = %s",
-            (dataset_id,),
-        )
-        catalogue = {row[0] for row in cur.fetchall()}
+    catalogue = {r["cluster_id"] for r in ingest_api.read_all(
+        writer, "scrna_clusters", "cluster_id", filters=[("eq", "dataset_id", dataset_id)])}
     if not catalogue:
         raise IngestError(
             f"dataset {dataset_id} has no cell types. Load its cells first with "
@@ -347,19 +332,15 @@ def check_cell_types(conn, dataset_id: int, summary: list[dict]) -> None:
         )
 
 
-def gene_ids(conn, dataset_id: int,
+def gene_ids(writer, dataset_id: int,
              groups: dict[tuple[str, str], list[dict]]) -> dict[str, int]:
     """The catalogue id of every gene the results name.
 
     Gene rows reference the catalogue, so the genes have to be registered first,
     and a name registered twice cannot be resolved to one gene.
     """
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT gene_name, id FROM public.scrna_genes WHERE dataset_id = %s",
-            (dataset_id,),
-        )
-        registered = cur.fetchall()
+    registered = ingest_api.read_all(writer, "scrna_genes", "id,gene_name",
+                                     filters=[("eq", "dataset_id", dataset_id)])
     if not registered:
         raise IngestError(
             f"dataset {dataset_id} has no registered genes. Load its gene "
@@ -367,10 +348,10 @@ def gene_ids(conn, dataset_id: int,
         )
     ids: dict[str, int] = {}
     twice = set()
-    for name, gene_id in registered:
-        if name in ids:
-            twice.add(name)
-        ids[name] = gene_id
+    for row in registered:
+        if row["gene_name"] in ids:
+            twice.add(row["gene_name"])
+        ids[row["gene_name"]] = row["id"]
 
     named = {r["gene"] for rows in groups.values() for r in rows}
     ambiguous = sorted(named & twice)
@@ -389,54 +370,118 @@ def gene_ids(conn, dataset_id: int,
     return ids
 
 
-def check_not_loaded(conn, dataset_id: int, params_hash: str) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT id FROM public.scrna_de_runs "
-            "WHERE dataset_id = %s AND params_hash = %s",
-            (dataset_id, params_hash),
-        )
-        found = cur.fetchone()
-    if found:
+def find_run(writer, dataset_id: int, method: str, params_hash: str) -> dict | None:
+    """The batch analysis already recorded from these two files, if any."""
+    runs = ingest_api.read_all(writer, "scrna_de_runs", "id,method", filters=[
+        ("eq", "dataset_id", dataset_id), ("eq", "params_hash", params_hash),
+        ("eq", "source", "batch")])
+    if len(runs) > 1:
         raise IngestError(
-            f"these two files were already loaded for dataset {dataset_id} as "
-            f"analysis {found[0]}"
+            f"these two files are recorded for dataset {dataset_id} as "
+            f"{len(runs)} analyses ({', '.join(str(r['id']) for r in runs)}); cannot "
+            f"tell which to continue. An admin has to remove the extra ones"
         )
+    if runs and runs[0]["method"] != method:
+        raise IngestError(
+            f"these two files are recorded for dataset {dataset_id} as analysis "
+            f"{runs[0]['id']} with method {runs[0]['method']!r}; this load says "
+            f"{method!r}"
+        )
+    return runs[0] if runs else None
 
 
-def write_de(conn, dataset_id: int, method: str, params: dict,
-             params_hash: str, summary: list[dict],
-             groups: dict[tuple[str, str], list[dict]],
-             ids: dict[str, int]) -> tuple[int, int, int]:
-    """Record the analysis, its comparisons and their genes.
+def plan(summary: list[dict], groups: dict[tuple[str, str], list[dict]],
+         existing: dict[tuple[str, str], int], have: dict[int, set[int]],
+         ids: dict[str, int]) -> tuple[list[dict], dict[tuple[str, str], list[dict]]]:
+    """What is missing: the comparisons not yet written, and for each comparison the
+    gene rows it does not hold yet."""
+    new = [e for e in summary if (e["celltype"], e["contrast"]) not in existing]
+    genes = {}
+    for e in summary:
+        key = (e["celltype"], e["contrast"])
+        held = have.get(existing.get(key), set())
+        missing = [r for r in groups.get(key, []) if ids[r["gene"]] not in held]
+        if missing:
+            genes[key] = missing
+    return new, genes
 
-    Runs inside the caller's transaction, so a refusal anywhere leaves nothing.
-    Returns the run id, the comparisons written and the gene rows written.
+
+def _json_number(value: float | None):
+    """JSON has no spelling for infinity; Postgres reads this text as the number."""
+    if value is not None and math.isinf(value):
+        return "Infinity" if value > 0 else "-Infinity"
+    return value
+
+
+def comparison_row(dataset_id: int, run_id: int, method: str, params_hash: str,
+                   e: dict, n_genes: int) -> dict:
+    return {"dataset_id": dataset_id, "run_id": run_id, "cluster_id": e["celltype"],
+            "contrast": e["contrast"], "group1": e["group1"], "group2": e["group2"],
+            "n_group1": e["n_group1"], "n_group2": e["n_group2"],
+            "group_kind": GROUP_KIND, "method": method, "params_hash": params_hash,
+            "tested": e["tested"], "n_genes_tested": n_genes}
+
+
+def gene_row(dataset_id: int, de_id: int, gene_id: int, r: dict) -> dict:
+    return {"de_id": de_id, "dataset_id": dataset_id, "gene_id": gene_id,
+            "log2fc": _json_number(r["log2fc"]), "pvalue": r["pvalue"], "fdr": r["fdr"],
+            "pct_1": r["pct_1"], "pct_2": r["pct_2"]}
+
+
+def _stored(writer, run_id: int) -> tuple[dict, dict]:
+    existing = {(r["cluster_id"], r["contrast"]): r["id"] for r in ingest_api.read_all(
+        writer, "scrna_de", "id,cluster_id,contrast", filters=[("eq", "run_id", run_id)])}
+    have: dict[int, set[int]] = defaultdict(set)
+    if existing:
+        for r in ingest_api.read_all(writer, "scrna_de_genes", "id,de_id,gene_id",
+                                     filters=[("in_", "de_id", sorted(existing.values()))]):
+            have[r["de_id"]].add(r["gene_id"])
+    return existing, have
+
+
+def load(writer, name: str, species_id: int, method: str, params: dict,
+         params_hash: str, summary: list[dict],
+         groups: dict[tuple[str, str], list[dict]]) -> tuple[int, int, int, str]:
+    """Record the analysis, or continue the one these files already started.
+
+    Returns the run id, the comparisons and gene rows written, and "loaded",
+    "resumed" or "already loaded".
     """
+    dataset_id = open_dataset(writer, name, species_id)
+    check_cell_types(writer, dataset_id, summary)
+    ids = gene_ids(writer, dataset_id, groups)
+
+    run = find_run(writer, dataset_id, method, params_hash)
+    if run is None:
+        (run,) = ingest_api.insert(writer, "record the analysis", "scrna_de_runs", [{
+            "dataset_id": dataset_id, "source": "batch", "status": "complete",
+            "method": method, "params": params, "params_hash": params_hash,
+            "requested_by": writer.session.user_id,
+            "completed_at": datetime.now(UTC).isoformat()}], returning=True)
+        existing, have, outcome = {}, {}, "loaded"
+    else:
+        (existing, have), outcome = _stored(writer, run["id"]), "resumed"
+
+    new, missing = plan(summary, groups, existing, have, ids)
+    if outcome == "resumed" and not new and not missing:
+        return run["id"], 0, 0, "already loaded"
+    if new:
+        written = ingest_api.insert(
+            writer, f"write {len(new)} comparisons", "scrna_de",
+            [comparison_row(dataset_id, run["id"], method, params_hash, e,
+                            len(groups.get((e["celltype"], e["contrast"]), [])))
+             for e in new], returning=True)
+        existing = {**existing, **{(r["cluster_id"], r["contrast"]): r["id"]
+                                   for r in written}}
     genes = 0
-    with conn.cursor() as cur:
-        cur.execute(INSERT_RUN, (dataset_id, method, json.dumps(params),
-                                 params_hash))
-        run_id = cur.fetchone()[0]
-        for e in summary:
-            cur.execute(INSERT_RESULT, (
-                dataset_id, run_id, e["celltype"], e["contrast"], e["group1"],
-                e["group2"], e["n_group1"], e["n_group2"], GROUP_KIND, method,
-                params_hash, e["tested"],
-            ))
-            de_id = cur.fetchone()[0]
-            rows = groups.get((e["celltype"], e["contrast"]), [])
-            for start in range(0, len(rows), GENE_BATCH):
-                batch = rows[start:start + GENE_BATCH]
-                cur.execute(INSERT_GENES, (
-                    [de_id] * len(batch), [dataset_id] * len(batch),
-                    [ids[r["gene"]] for r in batch],
-                    [r["log2fc"] for r in batch], [r["pvalue"] for r in batch],
-                    [r["fdr"] for r in batch], [r["pct_1"] for r in batch],
-                    [r["pct_2"] for r in batch],
-                ))
-            genes += len(rows)
-    return run_id, len(summary), genes
+    for key, rows in missing.items():
+        for start in range(0, len(rows), GENE_BATCH):
+            batch = rows[start:start + GENE_BATCH]
+            ingest_api.insert(writer, f"write gene rows of {key[0]} / {key[1]}",
+                              "scrna_de_genes", [gene_row(dataset_id, existing[key],
+                                                          ids[r["gene"]], r) for r in batch])
+            genes += len(batch)
+    return run["id"], len(new), genes, outcome
 
 
 def describe(summary: list[dict], read: dict) -> str:
@@ -467,34 +512,38 @@ def main(argv: list[str] | None = None) -> int:
 
     print(describe(summary, read))
     if args.dry_run:
+        genes = sum(len(rows) for rows in read["groups"].values())
+        print(f"  would write one analysis of {len(summary)} comparisons and {genes} "
+              f"gene rows")
         print("dry run — nothing written")
         return 0
 
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        print("DATABASE_URL is required to write.", file=sys.stderr)
+    if not args.email:
+        print("refusing to ingest: --email names the account to sign in as; its "
+              "password is read from BLOOM_PASSWORD", file=sys.stderr)
         return 1
 
-    import psycopg
-
+    name = args.dataset_name.strip()
+    marker = ingest_api.Marker(ingest_api.marker_path(args.results, name))
     try:
-        with psycopg.connect(database_url) as conn:
-            dataset_id = open_dataset(conn, args.dataset_name, args.species_id)
-            check_cell_types(conn, dataset_id, summary)
-            ids = gene_ids(conn, dataset_id, read["groups"])
-            check_not_loaded(conn, dataset_id, params_hash)
-            run_id, results, genes = write_de(
-                conn, dataset_id, args.method, params, params_hash, summary,
-                read["groups"], ids)
+        marker.check()
+        password = ingest_api.read_password()
+        api_url, anon_key = ingest_api.resolve_api(args.server, args.api_url, args.anon_key)
+        session = ingest_api.sign_in(api_url, anon_key, args.email, password)
+        run_id, comparisons, genes, outcome = load(
+            ingest_api.Writer(session, marker), args.dataset_name, args.species_id,
+            args.method, params, params_hash, summary, read["groups"])
     except IngestError as exc:
         print(f"refusing to ingest: {exc}", file=sys.stderr)
         return 1
-    except psycopg.Error as exc:
-        print(f"the database refused the load: {exc}", file=sys.stderr)
-        return 1
 
-    print(f"  wrote analysis {run_id}: {results} comparisons and {genes} gene "
-          f"rows for dataset {dataset_id}")
+    if outcome == "already loaded":
+        print(f"  these two files are already loaded for dataset {name} as analysis "
+              f"{run_id}")
+    else:
+        verb = "wrote" if outcome == "loaded" else "resumed"
+        print(f"  {verb} analysis {run_id}: {comparisons} comparisons and {genes} "
+              f"gene rows")
     return 0
 
 
