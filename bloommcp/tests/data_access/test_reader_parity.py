@@ -5,6 +5,13 @@ mid-read storage failure during cleaned-tier resolution must convert to a
 caller-safe `ExperimentReadError`, never a raw exception) holds identically
 on both adapters, via one shared scenario body and two backend-specific
 injection techniques.
+
+One documented exemption from the shared scenario set (#573): the
+foreign-catalog mismatch (`ForeignCatalogError`) cannot be represented here —
+`FakeReader` has no manifest or backend concept. Both real adapters'
+behavior is proven over real manifests instead (see the #573 tests in
+`test_local_reader.py` / `test_supabase_reader.py`), per the
+`bloommcp-experiment-read` spec's `FakeReader Adapter` carve-out.
 """
 
 from __future__ import annotations

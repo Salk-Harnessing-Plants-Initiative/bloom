@@ -29,6 +29,7 @@ _BLOOM_ENV_VARS = (
     "BLOOM_OUTPUT_DIR",
     "BLOOM_PLOTS_DIR",
     "BLOOM_PLOTS_URL",
+    "BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST",
 )
 
 
@@ -53,6 +54,25 @@ def test_fresh_interpreter_imports_server_with_no_bloom_env():
     immune to env already set by conftest in this process.
     """
     env = {k: v for k, v in os.environ.items() if k not in _BLOOM_ENV_VARS}
+    result = subprocess.run(
+        [sys.executable, "-c", "import bloom_mcp.server"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_fresh_interpreter_imports_server_with_invalid_allow_foreign_value():
+    """Import succeeds even with an INVALID BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST.
+
+    The #573 guard reads the variable only at manifest-read or boot-validation
+    time — an import-time read (even one with a graceful default) could not
+    pass this probe with an invalid value in the env, so this is the shape that
+    actually distinguishes a lazy read from import-time-with-default.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _BLOOM_ENV_VARS}
+    env["BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST"] = "yes"
     result = subprocess.run(
         [sys.executable, "-c", "import bloom_mcp.server"],
         env=env,
@@ -123,16 +143,18 @@ def test_retained_heavy_deps_are_each_imported():
         "matplotlib": "matplotlib",
     }
     unused = {dist for dist, mod in retained.items() if mod not in imported}
-    assert (
-        not unused
-    ), f"declared deps not imported by shipped code (prune them): {sorted(unused)}"
+    assert not unused, (
+        f"declared deps not imported by shipped code (prune them): {sorted(unused)}"
+    )
 
 
 def _pyproject() -> dict:
     import tomllib
 
     return tomllib.loads(
-        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
     )
 
 
@@ -269,7 +291,9 @@ def _boot_env(monkeypatch, tmp_path, *, local: bool) -> None:
         monkeypatch.setenv("BLOOM_AGENT_KEY", "fake-jwt")
 
 
-def test_main_prints_active_backend_before_uvicorn_run_supabase(monkeypatch, tmp_path, capsys):
+def test_main_prints_active_backend_before_uvicorn_run_supabase(
+    monkeypatch, tmp_path, capsys
+):
     """server.main() must print which storage backend is active (#478) — the
     supabase branch — so a stray shell-exported BLOOM_STORAGE_BACKEND=local
     (newly possible now the compose toggle is ${VAR:-}-interpolated, not
@@ -284,7 +308,9 @@ def test_main_prints_active_backend_before_uvicorn_run_supabase(monkeypatch, tmp
     assert "storage backend: supabase" in capsys.readouterr().out
 
 
-def test_main_prints_active_backend_before_uvicorn_run_local(monkeypatch, tmp_path, capsys):
+def test_main_prints_active_backend_before_uvicorn_run_local(
+    monkeypatch, tmp_path, capsys
+):
     """Same as above, fully-local branch."""
     import bloom_mcp.server as server
 

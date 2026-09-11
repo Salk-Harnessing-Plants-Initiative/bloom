@@ -102,6 +102,24 @@ class ManifestIncompatibleError(ManifestReadError):
     """
 
 
+class CatalogBackendMismatchError(ManifestReadError):
+    """The resolved catalog was written by a different storage backend than the
+    active one — #573's *foreign catalog* (a copied/synced bucket, a restored
+    backup, a shared root, or a tampered ``storage_backend`` sentinel).
+
+    A subclass of :class:`ManifestReadError`, mirroring
+    :class:`ManifestIncompatibleError`'s pattern exactly: every existing
+    ``except ManifestReadError``/``except ResultStoreError`` handler (and every
+    consumer tool's ``errors=(…, ManifestReadError)`` declaration) still
+    catches it, while an ``isinstance()`` check distinguishes "storage flaked"
+    from "this catalog belongs to another backend". A permanent condition — a
+    retry cannot fix it, so messages must not invite one. On the write path
+    (``create_run``/``commit``) it is raised regardless of the
+    ``BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST`` escape hatch, which sanctions
+    reads only.
+    """
+
+
 @dataclass
 class RunHandle:
     """An in-progress run: write outputs into ``staging_dir``, then ``commit``.

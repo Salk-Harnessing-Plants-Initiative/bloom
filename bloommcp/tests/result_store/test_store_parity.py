@@ -1,4 +1,14 @@
-"""FakeResultStore ↔ SupabaseResultStore behave equivalently for observers."""
+"""FakeResultStore ↔ SupabaseResultStore behave equivalently for observers.
+
+One documented exemption from the shared scenario set (#573): the
+foreign-catalog backend-mismatch failure (`CatalogBackendMismatchError`) cannot
+be represented here — `FakeResultStore` never constructs a real `Manifest` and
+has no backend concept. Its adapter-level behavior is proven against the real
+manifest path instead (`test_supabase_result_store.py`'s foreign-catalog tests
+over the in-memory storage boundary, and `test_storage_backend.py`'s guard
+tests over the local backend), per the `bloommcp-result-store` spec's
+"The fake's exemption is explicit, not silent" scenario.
+"""
 
 from __future__ import annotations
 

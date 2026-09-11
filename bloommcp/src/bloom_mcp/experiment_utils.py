@@ -475,12 +475,35 @@ def _resolve_one_class(
     """
     import tempfile
 
-    from bloom_mcp.manifest import AnalysisDir, ManifestSchemaError
+    from bloom_mcp.manifest import (
+        AnalysisDir,
+        ManifestBackendMismatchError,
+        ManifestSchemaError,
+    )
     from bloom_mcp.supabase_client import download_file, list_prefix
 
     analysis_dir = AnalysisDir("bloommcp_output", f"{stem}.csv", tool_class)
     try:
         entry = analysis_dir.get_version(version)
+    except ManifestBackendMismatchError as e:
+        # #573: a foreign catalog is a hard, typed error on every caller path —
+        # never stringified into this function's soft (None, None, error)
+        # channel, whose readers discard the string and demote it
+        # (`LocalReader` to CleanedVersionRequiredError, whose "run qc_clean
+        # first" remedy would invite committing on top of the foreign catalog;
+        # `SupabaseReader` to ExperimentNotFoundError, misreporting a
+        # present-but-foreign catalog as absent). Raised as the reader-port
+        # type here, at the shared resolution helper, so every consumer —
+        # both reader adapters AND the tools that call load_experiment_data
+        # directly — surfaces the same structured error, already covered by
+        # the tools' `errors=(ExperimentReadError, …)` declarations. The
+        # import is lazy (like AnalysisDir's above): `bloom_mcp.data_access`
+        # imports this module at package-import time, so a top-level import
+        # here would be circular. Message passthrough is leak-safe by
+        # construction (logical prefix + backend names only).
+        from bloom_mcp.data_access.ports import ForeignCatalogError
+
+        raise ForeignCatalogError(str(e)) from e
     except ManifestSchemaError as e:
         return None, None, f"manifest schema error for '{stem}': {e}"
     except Exception as e:

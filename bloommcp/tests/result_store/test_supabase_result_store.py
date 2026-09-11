@@ -10,6 +10,7 @@ import pytest
 
 from bloom_mcp.contract import Provenance
 from bloom_mcp.result_store import (
+    CatalogBackendMismatchError,
     CommitFailedError,
     ManifestIncompatibleError,
     ManifestReadError,
@@ -630,3 +631,116 @@ def test_create_run_guard_does_not_swallow_a_next_version_id_bug(
     store = SupabaseResultStore()
     with pytest.raises(TypeError, match="boom: not a manifest read failure"):
         store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+
+
+# ── #573: foreign-catalog mismatch surfaces as a distinguishable error ───────
+#
+# A foreign manifest is manufactured by mutating the stored sentinel after a
+# normal commit — never by flipping BLOOM_STORAGE_BACKEND, which points at a
+# physically different (empty) store rather than a mismatched one. The
+# `fake_supabase_storage` fixture patches only the manifest module's storage
+# helpers; `active_backend_name()` still resolves the real (default: supabase)
+# backend, so the guard itself runs for real here.
+
+
+def _foreignize_manifest(fake_storage, experiment: str = "exp.csv") -> str:
+    key = f"bloommcp_output/qc_{Path(experiment).stem}/manifest.json"
+    raw = json.loads(fake_storage.objects[key])
+    assert raw["storage_backend"] == "supabase"
+    raw["storage_backend"] = "local"
+    fake_storage.objects[key] = json.dumps(raw).encode()
+    return key
+
+
+def _commit_one(store: SupabaseResultStore, experiment: str = "exp.csv"):
+    run = store.create_run(experiment=experiment, tool_class="qc", provenance=_prov())
+    (run.staging_dir / "o.csv").write_bytes(b"x")
+    return store.commit(run, {"o": "o.csv"})
+
+
+@pytest.mark.parametrize("call_site", sorted(_CALL_SITES))
+def test_foreign_catalog_raises_catalog_backend_mismatch(
+    call_site, fake_supabase_storage, monkeypatch
+):
+    """Spec: "Every read call site raises the distinguishable error" — a
+    subclass of ManifestReadError (existing handlers keep catching it), message
+    naming both backends, no path/URL leak."""
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    store = SupabaseResultStore()
+    _commit_one(store)
+    _foreignize_manifest(fake_supabase_storage)
+
+    with pytest.raises(CatalogBackendMismatchError) as excinfo:
+        _CALL_SITES[call_site](store)
+
+    assert isinstance(excinfo.value, ManifestReadError)
+    msg = str(excinfo.value)
+    assert "'local'" in msg and "'supabase'" in msg
+    assert "http" not in msg.lower()
+    assert "/users/" not in msg.lower() and "/var" not in msg
+
+
+@pytest.mark.parametrize("hatch", [None, "1"])
+def test_create_run_foreign_catalog_fails_before_any_write(
+    fake_supabase_storage, monkeypatch, hatch
+):
+    """Spec: "create_run against a foreign catalog fails before any write" —
+    no staging dir handed out, no object written, hatch or no hatch (the
+    escape hatch sanctions reads only)."""
+    if hatch is None:
+        monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    else:
+        monkeypatch.setenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", hatch)
+    store = SupabaseResultStore()
+    _commit_one(store)
+    _foreignize_manifest(fake_supabase_storage)
+
+    staged: list[str] = []
+    import tempfile as _tempfile
+
+    real_mkdtemp = _tempfile.mkdtemp
+    monkeypatch.setattr(
+        "tempfile.mkdtemp",
+        lambda **kw: staged.append("hit") or real_mkdtemp(**kw),
+    )
+    objects_before = dict(fake_supabase_storage.objects)
+
+    with pytest.raises(CatalogBackendMismatchError):
+        store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+
+    assert staged == []
+    assert fake_supabase_storage.objects == objects_before
+
+
+@pytest.mark.parametrize("hatch", [None, "1"])
+def test_commit_foreign_catalog_never_restamps(
+    fake_supabase_storage, monkeypatch, hatch
+):
+    """Spec: "A commit never re-stamps a foreign catalog" — the commit raises
+    CatalogBackendMismatchError (never the generic "transient — retry"
+    CommitFailedError), uploads nothing, appends nothing, and the foreign
+    sentinel survives byte-for-byte — hatch or no hatch."""
+    if hatch is None:
+        monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    else:
+        monkeypatch.setenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", hatch)
+    store = SupabaseResultStore()
+    _commit_one(store)
+
+    # Open the second run while the catalog is still native, then foreignize —
+    # the state changing between create_run and commit is exactly the window
+    # the commit-path re-check exists for.
+    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "o.csv").write_bytes(b"y")
+    manifest_key = _foreignize_manifest(fake_supabase_storage)
+    manifest_before = fake_supabase_storage.objects[manifest_key]
+    keys_before = set(fake_supabase_storage.objects)
+
+    with pytest.raises(CatalogBackendMismatchError) as excinfo:
+        store.commit(run, {"o": "o.csv"})
+
+    msg = str(excinfo.value)
+    assert "transient" not in msg
+    assert not isinstance(excinfo.value, CommitFailedError)
+    assert fake_supabase_storage.objects[manifest_key] == manifest_before
+    assert set(fake_supabase_storage.objects) == keys_before
