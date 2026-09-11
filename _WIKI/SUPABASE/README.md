@@ -61,6 +61,14 @@ cancel the statement**: the backend keeps running and may complete after the
 browser has given up. Check `pg_stat_activity` before retrying, and prefer `psql`
 on the deploy host for anything expected to exceed five minutes.
 
+**Saved SQL-editor queries** are `.sql` files in `volumes/snippets/` in the deploy
+checkout (`/data/bloom/{production,staging}/volumes/snippets`), mounted into Studio
+at `/app/snippets` via `SNIPPETS_MANAGEMENT_FOLDER`. The folder must be owned by
+root (`0:0`, mode 700): Studio runs as root with `cap_drop: ALL`, which cannot write
+into a folder it does not own, so the editor opens but every save fails. Do not fix
+that with `chmod 777` or `cap_add: DAC_OVERRIDE`. Neither the Postgres backup nor
+the object-storage backup covers this folder.
+
 ## The four bloom\_\* Postgres roles
 
 The repo defines four custom Postgres roles that the storage / REST APIs switch into based on the JWT's `role` claim.
