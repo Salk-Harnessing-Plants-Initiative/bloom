@@ -68,9 +68,12 @@ def test_sleap_roots_and_core_sections_registered():
 
 
 def test_sleap_roots_section_exposes_the_expected_namespaced_tools():
-    """The 10 sleap-roots-analyze consumers (the original 7 + the 3 plotting tools
-    #466 converged onto @as_mcp_tool) + the 2 remaining bare-mcp.tool() plots are
-    namespaced sleap_roots_<tool> on the combined surface."""
+    """The 12 sleap-roots-analyze consumers are namespaced sleap_roots_<tool> on the
+    combined surface: the original 7, cross_experiment_correlations, the 3 plotting
+    tools #466 converged onto @as_mcp_tool, and heritability_analysis (#462), which
+    absorbed the last two bare-mcp.tool() plots (plot_heritability_bar and
+    plot_variance_decomposition) as optional outputs of the call that returns the
+    numbers. Zero bare-mcp.tool() plotting tools remain."""
     import asyncio
 
     tools = {t.name for t in asyncio.run(server.mcp.list_tools())}
@@ -82,11 +85,11 @@ def test_sleap_roots_section_exposes_the_expected_namespaced_tools():
         "clustering",
         "umap_analysis",
         "descriptive_stats",
+        "cross_experiment_correlations",
+        "heritability_analysis",
         "plot_trait_histograms",
         "plot_trait_boxplots",
         "plot_correlation_matrix",
-        "plot_heritability_bar",
-        "plot_variance_decomposition",
     }
     for tool in expected:
         assert f"sleap_roots_{tool}" in tools
