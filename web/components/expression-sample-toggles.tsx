@@ -1,11 +1,12 @@
 "use client";
 
 /**
- * Show or hide each sample on the map.
+ * Show or hide the cells of each value in one filter row: the samples, or one of
+ * the labels the cells carry, such as transgene status.
  *
- * The samples come from the cells themselves, so a dataset with different ones
- * — or none at all — needs no change here. A dataset whose cells record no
- * sample gets no control, rather than an empty box.
+ * The values come from the cells themselves, so a dataset with different ones
+ * — or none at all — needs no change here. A row with no values renders
+ * nothing, rather than an empty box.
  */
 
 export interface SampleCount {
@@ -14,17 +15,23 @@ export interface SampleCount {
 }
 
 interface Props {
+  /** What the row filters on: "Samples", or a label's own name. */
+  label?: string;
+  /** One of the row's values, in words: "sample", or "transgene_pos value". */
+  noun?: string;
   samples: SampleCount[];
   hidden: ReadonlySet<string>;
-  /** Cells recording no sample. They stay on the map whatever is hidden, so
-   *  hiding every sample does not empty it. Required, so dropping the wire is
-   *  a compile error rather than a quietly wrong message. */
+  /** Cells with no value in this row. They stay on the map whatever the row
+   *  hides, so hiding every value does not empty it. Required, so dropping the
+   *  wire is a compile error rather than a quietly wrong message. */
   unlabelledCount: number;
   onToggle: (name: string) => void;
   onShowAll: () => void;
 }
 
 export function ExpressionSampleToggles({
+  label = "Samples",
+  noun = "sample",
   samples,
   hidden,
   unlabelledCount,
@@ -39,7 +46,7 @@ export function ExpressionSampleToggles({
   return (
     <div className="flex flex-wrap items-center gap-2">
       <span className="text-[10px] uppercase tracking-widest text-stone-500">
-        Samples
+        {label}
       </span>
       {samples.map((sample) => {
         const isHidden = hidden.has(sample.name);
@@ -72,18 +79,18 @@ export function ExpressionSampleToggles({
       {allHidden && (
         <span className="text-xs text-stone-500">
           {unlabelledCount > 0
-            ? `Every sample is hidden. ${fmt.format(unlabelledCount)} cell${
+            ? `Every ${noun} is hidden. ${fmt.format(unlabelledCount)} cell${
                 unlabelledCount === 1 ? "" : "s"
-              } record${unlabelledCount === 1 ? "s" : ""} no sample and stay${
+              } record${unlabelledCount === 1 ? "s" : ""} no ${noun} and stay${
                 unlabelledCount === 1 ? "s" : ""
               } on the map.`
-            : "Every sample is hidden, so the map is empty."}{" "}
+            : `Every ${noun} is hidden, so the map is empty.`}{" "}
           <button
             type="button"
             onClick={onShowAll}
             className="underline hover:text-stone-700"
           >
-            Show all samples
+            Show all {noun}s
           </button>
         </span>
       )}

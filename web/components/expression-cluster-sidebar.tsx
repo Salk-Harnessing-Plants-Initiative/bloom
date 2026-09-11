@@ -16,7 +16,8 @@ export interface ExpressionClusterSidebarProps {
   onHideAll: () => void;
 }
 
-/** Cluster list: bullet, name, count, visibility dot. Row click solos; dot toggles visibility. */
+/** Cluster list: bullet, name, where its label came from, count, visibility dot.
+ *  Row click solos; dot toggles visibility. */
 export function ExpressionClusterSidebar({
   clusters,
   hiddenOrdinals,
@@ -62,6 +63,7 @@ export function ExpressionClusterSidebar({
           const count = cellCounts?.[c.ordinal];
           const color = c.color ?? "#a8a29e";
           const label = c.name ?? c.cluster_id;
+          const source = c.source?.trim() || null;
 
           return (
             <li key={c.ordinal}>
@@ -80,18 +82,28 @@ export function ExpressionClusterSidebar({
                   className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
                   style={{ background: visible ? color : "transparent", border: visible ? "none" : `1px solid ${color}` }}
                 />
-                <span
-                  className={[
-                    "flex-1 truncate text-sm",
-                    isSolo
-                      ? "text-stone-900 font-medium"
-                      : visible
-                        ? "text-stone-700"
-                        : "text-stone-400",
-                  ].join(" ")}
-                  title={label}
-                >
-                  {label}
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span
+                    className={[
+                      "truncate text-sm",
+                      isSolo
+                        ? "text-stone-900 font-medium"
+                        : visible
+                          ? "text-stone-700"
+                          : "text-stone-400",
+                    ].join(" ")}
+                    title={label}
+                  >
+                    {label}
+                  </span>
+                  {source && (
+                    <span
+                      className="truncate text-[11px] text-stone-400"
+                      title={`Label transferred from ${source}`}
+                    >
+                      from {source}
+                    </span>
+                  )}
                 </span>
                 {count != null ? (
                   <span
