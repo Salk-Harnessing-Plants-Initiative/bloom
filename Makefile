@@ -533,10 +533,11 @@ erd:
 		-c "SELECT version, name FROM supabase_migrations.schema_migrations"); \
 	printf '%s\n' "$$ROWS" | python3 scripts/schema_erd.py guard --migrations-dir supabase/migrations; \
 	TBLS_DSN="postgres://$$PG_USER:$$PG_PASSWORD@localhost:5432/$$PG_DB?sslmode=disable"; export TBLS_DSN; \
-	docker run --rm -e TBLS_DSN --network "container:$$DB" -v "$(CURDIR):/work" -w /work \
-		$(TBLS_IMAGE) out -c .tbls.yml -t mermaid > /tmp/bloom_erd.mmd; \
-	python3 scripts/schema_erd.py wrap < /tmp/bloom_erd.mmd > _WIKI/SUPABASE/erd.md; \
-	rm -f /tmp/bloom_erd.mmd; \
+	TMP=$$(mktemp -d); trap 'rm -rf "$$TMP"' EXIT; \
+	docker run --rm -e TBLS_DSN --network "container:$$DB" -v "$(CURDIR)/.tbls.yml:/work/.tbls.yml:ro" -w /work \
+		$(TBLS_IMAGE) out -c .tbls.yml -t mermaid > "$$TMP/erd.mmd"; \
+	python3 scripts/schema_erd.py wrap < "$$TMP/erd.mmd" > "$$TMP/erd.md"; \
+	mv "$$TMP/erd.md" _WIKI/SUPABASE/erd.md; \
 	echo "Wrote _WIKI/SUPABASE/erd.md"
 
 ## Print a mermaid block for a PR body: TABLES=a,b or CHANGED=origin/staging, plus their direct neighbours
@@ -563,7 +564,7 @@ erd-snapshot:
 	LIST=$$(python3 scripts/schema_erd.py tables $(if $(TABLES),--tables "$(TABLES)",--changed "$(CHANGED)")); \
 	TBLS_DSN="postgres://$$PG_USER:$$PG_PASSWORD@localhost:5432/$$PG_DB?sslmode=disable"; export TBLS_DSN; \
 	echo '```mermaid'; \
-	docker run --rm -e TBLS_DSN --network "container:$$DB" -v "$(CURDIR):/work" -w /work \
+	docker run --rm -e TBLS_DSN --network "container:$$DB" -v "$(CURDIR)/.tbls.yml:/work/.tbls.yml:ro" -w /work \
 		$(TBLS_IMAGE) out -c .tbls.yml -t mermaid --table "$$LIST" --distance 1; \
 	echo '```'
 
