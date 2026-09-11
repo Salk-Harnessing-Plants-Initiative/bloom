@@ -81,6 +81,14 @@ export async function searchGenes(
   return (data ?? []).map((row) => row.gene_name);
 }
 
+/** A dataset stores no expression for this gene; most datasets have many such genes. */
+export class NoStoredExpressionError extends Error {
+  constructor(readonly gene: string) {
+    super(`fetchGeneCounts: ${gene} has no stored expression in this dataset`);
+    this.name = "NoStoredExpressionError";
+  }
+}
+
 /** Download one gene's expression, as a value per cell in `cell_number` order.
  *
  * The object path comes from `scrna_counts`, never from the dataset and gene
@@ -130,11 +138,7 @@ export async function fetchGeneCounts(
     ?.counts_object_path;
   // Not an error to report as a failure: most datasets in the platform have
   // genes registered whose object was never written.
-  if (!path) {
-    throw new Error(
-      `fetchGeneCounts: ${geneName} has no stored expression in this dataset`,
-    );
-  }
+  if (!path) throw new NoStoredExpressionError(geneName);
 
   const { data, error } = await supabase.storage
     .from(STORAGE_BUCKET)

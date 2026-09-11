@@ -8,6 +8,7 @@ import {
   fetchClusters,
   fetchDataset,
   fetchGeneCounts,
+  NoStoredExpressionError,
   ORPHAN_CLUSTER_ORDINAL,
   type CellArraysRow,
 } from "@/components/expression-lib/scrna-client";
@@ -171,6 +172,11 @@ export interface ExpressionUmapProps {
   }) => void;
   /** Fires whenever the currently-overlaid gene's min/max changes */
   onExpressionRangeChanged?: (range: { min: number; max: number } | null) => void;
+  /** The part of the gene's range the colours span, from the colour bar; the
+   *  gene's whole range when absent. */
+  colourRange?: { min: number; max: number } | null;
+  /** Why the gene picked cannot be shown, in words, or null once it can. */
+  onGeneError?: (message: string | null) => void;
   /** Fires with a cell's cluster ordinal when that cell is clicked */
   onCellClick?: (ordinal: number) => void;
   /** Whether each cluster's label carries its transgene-positive count. */
@@ -199,6 +205,8 @@ export function ExpressionUmap({
   height = 600,
   onDataLoaded,
   onExpressionRangeChanged,
+  colourRange,
+  onGeneError,
   onCellClick,
   showTransgene = true,
 }: ExpressionUmapProps) {
@@ -245,6 +253,7 @@ export function ExpressionUmap({
   const translateRef = useRef(translate);
   const expressionArrRef = useRef(expressionArr);
   const expressionRangeRef = useRef(expressionRange);
+  const colourRangeRef = useRef(colourRange ?? null);
   const dirtyRef = useRef(true);
   /** Whether a focus is set, so the greyed pass is drawn only then. */
   const focusSetRef = useRef(false);
@@ -262,6 +271,7 @@ export function ExpressionUmap({
     onCellClickRef.current = onCellClick;
     expressionArrRef.current = expressionArr;
     expressionRangeRef.current = expressionRange;
+    colourRangeRef.current = colourRange ?? null;
     dirtyRef.current = true;
   });
 
@@ -330,6 +340,7 @@ export function ExpressionUmap({
       setExpressionArr(null);
       setExpressionRange(null);
       onExpressionRangeChanged?.(null);
+      onGeneError?.(null);
       return;
     }
     let cancelled = false;
@@ -351,19 +362,25 @@ export function ExpressionUmap({
         const range = { min, max };
         setExpressionRange(range);
         onExpressionRangeChanged?.(range);
+        onGeneError?.(null);
       } catch (err) {
         if (!cancelled) {
           setExpressionArr(null);
           setExpressionRange(null);
           onExpressionRangeChanged?.(null);
-          console.error("[ExpressionUmap] gene bin fetch failed:", err);
+          // The map stays on cell types, and the page says why.
+          onGeneError?.(
+            err instanceof NoStoredExpressionError
+              ? `${geneName} has no stored expression in this dataset.`
+              : `Could not load ${geneName}: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [data, geneName, onExpressionRangeChanged]);
+  }, [data, geneName, onExpressionRangeChanged, onGeneError]);
 
   // -------- visibility recompute from hidden set -----------------------------
   const visibility = useMemo(
@@ -526,7 +543,7 @@ export function ExpressionUmap({
         regl.poll();
         regl.clear({ color: [0.05, 0.05, 0.08, 1], depth: 1 });
         const expArr = expressionArrRef.current;
-        const expRange = expressionRangeRef.current;
+        const expRange = colourRangeRef.current ?? expressionRangeRef.current;
         const z = zoomRef.current;
         const t = translateRef.current;
         // With a focus set, the cells outside it go down first in grey and the

@@ -14,8 +14,7 @@ import {
 } from "@/components/expression-lib/umap-packing";
 import type { CellArraysRow } from "@/components/expression-lib/scrna-client";
 import { ExpressionSampleToggles } from "./expression-sample-toggles";
-// Gene search disabled — see the JSX comment below.
-// import { ExpressionGeneSearch } from "@/components/expression-gene-search";
+import { ExpressionGeneSearch } from "@/components/expression-gene-search";
 import { ExpressionColorbar } from "@/components/expression-colorbar";
 import { ExpressionClusterSidebar } from "@/components/expression-cluster-sidebar";
 import { ExpressionClusterDetailPanel } from "@/components/expression-cluster-detail-panel";
@@ -76,10 +75,18 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
     // dataset for the whole of this one's fetch, and a click in that window
     // writes a name the new dataset may not have into the hidden set.
     setMeta(null);
+    // A gene picked on one dataset may not exist in the next.
+    setGeneName(null);
   }, [datasetId]);
-  const [exprRange, setExprRange] = useState<{ min: number; max: number } | null>(
-    null,
-  );
+  // The gene's whole range, as the map reports it, and the part of it the
+  // colours span, which the colour bar narrows.
+  const [dataRange, setDataRange] = useState<{ min: number; max: number } | null>(null);
+  const [colourRange, setColourRange] = useState<{ min: number; max: number } | null>(null);
+  const [geneError, setGeneError] = useState<string | null>(null);
+  const handleRangeChanged = useCallback((range: { min: number; max: number } | null) => {
+    setDataRange(range);
+    setColourRange(range);
+  }, []);
 
   useEffect(() => {
     // load cluster counts from scrna_cluster_stats alongside the
@@ -252,9 +259,26 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           </Box>
         )}
 
-        {/* Gene search disabled — re-enable by uncommenting the Box below
-            and restoring ExpressionGeneSearch + colorbar wiring. The
-            geneName state is kept so UMAP/colorbar code paths stay typed. */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="w-72">
+            <ExpressionGeneSearch
+              datasetId={datasetId}
+              value={geneName}
+              onChange={setGeneName}
+              disabled={!meta}
+            />
+          </div>
+          {geneError ? (
+            <span role="alert" className="text-xs text-rose-700">
+              {geneError}
+            </span>
+          ) : geneName && dataRange ? (
+            <span className="text-xs text-stone-500">
+              Cells are coloured by {geneName}; clear the search to see cell types again.
+            </span>
+          ) : null}
+        </div>
+
         {(() => {
           const clusters = meta?.clusters ?? [];
           if (clusters.length === 0) return null;
@@ -350,21 +374,23 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           hiddenValues={hiddenValues}
           focusedValues={focusedValues}
           onDataLoaded={handleDataLoaded}
-          onExpressionRangeChanged={setExprRange}
+          onExpressionRangeChanged={handleRangeChanged}
+          colourRange={colourRange}
+          onGeneError={setGeneError}
           onCellClick={handleSolo}
           showTransgene={showTransgene}
         />
       </Box>
 
       <Box sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 2 }}>
-        {geneName && exprRange && (
+        {geneName && dataRange && colourRange && (
           <Box sx={{ width: 120 }}>
             <ExpressionColorbar
               geneName={geneName}
-              dataMin={exprRange.min}
-              dataMax={exprRange.max}
-              range={exprRange}
-              onRangeChange={setExprRange}
+              dataMin={dataRange.min}
+              dataMax={dataRange.max}
+              range={colourRange}
+              onRangeChange={setColourRange}
               unitsLabel={unitsLabel}
             />
           </Box>
