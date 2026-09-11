@@ -571,10 +571,12 @@ def batch_download_for_predict(
     --scan-ids, a comma-separated list) into OUT_DIR, one nested {scan_key}/ directory per
     scan — the batch sibling of `download-for-predict`. Isolates per-scan failures, including
     lock contention on a scan (one bad or contended scan doesn't abort the batch); exits 0 if
-    every scan succeeded, was skipped, or the input was empty, and exits 3 (not 1 — a real
-    partial-success code, mirroring sleap_roots_predict/trait_extractor's own `0`/`3`
-    convention) if at least one scan failed. A usage error or manifest-lock/write failure
-    still exits 2/1 respectively, independent of any scan's outcome (bloom #772).
+    every scan succeeded, was skipped, or the input was empty, and exits 3 (not 1, mirroring
+    sleap_roots_predict/trait_extractor's own `0`/`3` convention) if at least one scan failed
+    — one scan or every scan; 3 only means "not every scan succeeded," never "some scan did"
+    (check the written RunManifest or --json output for which scans actually staged). A usage
+    error or manifest-lock/write failure still exits 2/1 respectively, independent of any
+    scan's outcome (bloom #772).
 
     Each scan's frames download via up to `--workers` concurrent threads (bloom #652); scans
     themselves are still staged one at a time.

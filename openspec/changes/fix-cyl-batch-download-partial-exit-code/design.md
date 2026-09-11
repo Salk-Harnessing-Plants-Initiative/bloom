@@ -108,3 +108,10 @@ would already cover this case once the DAG can reach write-back:
 Consequence: this change's own scope stays exactly "exit code + docs + tests" for
 `download_for_predict.py`. The run-level status-marking question pipeline#56 raises is already
 answered by code in flight elsewhere, not a gap this change needs to fill.
+
+**Caveat (found during `/review-pr`):** the paragraph above is read directly off PR #774's diff as
+of this writing, but that PR is open and unmerged — this change has no test or other verification
+surface of its own that would catch it if #774's RPC-selection logic changes shape before merging
+(e.g. if it stops being purely `ARGO_WORKFLOW_NAME`-scoped). Treat this as a reasoned assumption
+about in-flight code, not a verified guarantee; worth re-confirming against #774's actual merged
+state before relying on it operationally.
