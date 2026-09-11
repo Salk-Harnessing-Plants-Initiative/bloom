@@ -851,14 +851,236 @@ def test_plot_style_fields_ignored_when_include_plots_false(injected_ports):
     assert not any(k.endswith(".png") for k in result.outputs)
 
 
+# ── plot_cmap allowlist (#721) ────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("include_plots", [True, False])
+def test_unregistered_plot_cmap_is_invalid_input_before_any_computation(
+    injected_ports, monkeypatch, include_plots
+):
+    """A misspelling like 'virdis' must be rejected before perform_umap_analysis runs —
+    not after burning a full UMAP fit and failing late with a raw matplotlib error."""
+    real = umap_analysis_tool.perform_umap_analysis
+    called = []
+
+    def _spy(*args, **kwargs):
+        called.append(True)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(umap_analysis_tool, "perform_umap_analysis", _spy)
+
+    with pytest.raises(BloomMCPError) as exc:
+        umap_analysis(
+            {
+                "experiment": _EXPERIMENT,
+                "include_plots": include_plots,
+                "plot_cmap": "virdis",
+            }
+        )
+    assert exc.value.code == "invalid_input"
+    assert "virdis" in exc.value.message
+    assert called == []
+
+
+@pytest.mark.parametrize("include_plots", [True, False])
+@pytest.mark.parametrize("cmap", ["hsv", "tab10", "hsv_r"])
+def test_excluded_but_registered_plot_cmap_is_invalid_input(
+    injected_ports, monkeypatch, cmap, include_plots
+):
+    """hsv/tab10 are real matplotlib colormaps but neither sequential nor diverging —
+    misleading for continuous trait data, so they're rejected like an unknown name,
+    regardless of include_plots (same rule as the misspelling case above). hsv_r confirms
+    the allowlist's own _r-variant inclusion doesn't accidentally admit an excluded base
+    name's reversed form too — only allowed base names get a matching _r entry."""
+    real = umap_analysis_tool.perform_umap_analysis
+    called = []
+
+    def _spy(*args, **kwargs):
+        called.append(True)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(umap_analysis_tool, "perform_umap_analysis", _spy)
+
+    with pytest.raises(BloomMCPError) as exc:
+        umap_analysis(
+            {
+                "experiment": _EXPERIMENT,
+                "include_plots": include_plots,
+                "plot_cmap": cmap,
+            }
+        )
+    assert exc.value.code == "invalid_input"
+    assert called == []
+
+
+@pytest.mark.parametrize("cmap", ["viridis", "RdBu", "viridis_r"])
+def test_allowed_sequential_or_diverging_plot_cmap_is_accepted(
+    injected_ports, monkeypatch, cmap
+):
+    """viridis_r confirms the allowlist's _r reversed variants are actually reachable,
+    not just present in the frozenset construction."""
+    captured = {}
+    real = sleap_roots_analyze.create_umap_single_trait
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_umap_single_trait", _spy)
+    _run(include_plots=True, plots=["create_umap_single_trait"], plot_cmap=cmap)
+    assert captured["cmap"] == cmap
+
+
+def test_unset_plot_cmap_skips_the_allowlist_check(injected_ports):
+    """plot_cmap=None (the default) must not trigger the new check at all."""
+    result = _run(include_plots=False)
+    assert not any(k.endswith(".png") for k in result.outputs)
+
+
+def test_plot_font_size_and_point_size_ceilings_are_in_the_json_schema():
+    """#721 PR review: removing the Field(gt=0, le=...) constraint (in favor of a
+    tool-body check that can name the submitted value) must not make the ceiling
+    undiscoverable to a schema-reading caller — restored via json_schema_extra, which
+    documents the bound without Pydantic enforcing it directly (enforcement stays in
+    check_plot_style_ceiling)."""
+    schema = UMAPAnalysisParams.model_json_schema()
+    font_size_schema = schema["properties"]["plot_font_size"]
+    point_size_schema = schema["properties"]["plot_point_size"]
+    assert font_size_schema["maximum"] == 100
+    assert font_size_schema["exclusiveMinimum"] == 0
+    assert point_size_schema["maximum"] == 10000
+    assert point_size_schema["exclusiveMinimum"] == 0
+    # And confirm the schema-declared ceiling is documentation, not enforcement — the
+    # real check lives in check_plot_style_ceiling, not a Field constraint.
+    UMAPAnalysisParams(experiment="x.csv", plot_font_size=99999)  # must not raise
+
+
+def test_plot_cmap_max_length_rejects_a_pathologically_long_string(injected_ports):
+    """#721 PR review: plot_cmap had no length cap, so an arbitrarily long string would
+    be fully parsed and compared before the cheap allowlist check ever ran. 32 is
+    generous — the longest real allowlisted name (with its _r variant) is 11 chars.
+    Checked in the tool body (round 4), not a Pydantic Field(max_length=...) constraint
+    — the same reason the numeric ceilings moved out of Field: a Field constraint's
+    violation names only the field, never the submitted value's actual length."""
+    with pytest.raises(BloomMCPError) as exc:
+        umap_analysis({"experiment": _EXPERIMENT, "plot_cmap": "x" * 1000})
+    assert exc.value.code == "invalid_input"
+    assert "1000" in exc.value.message
+
+
+def test_allowed_cmaps_are_all_registered_in_installed_matplotlib():
+    """Regression guard for the hand-authored allowlist (#721 design.md Decision 3): if a
+    future matplotlib release renames or drops one of these names, this fails loudly
+    instead of silently rejecting a name callers expect to work."""
+    import matplotlib.pyplot as plt
+
+    registered = set(plt.colormaps())
+    missing = umap_analysis_tool._ALLOWED_CMAPS - registered
+    assert not missing, f"allowlisted colormap(s) no longer registered: {missing}"
+
+
+# Hand-verified against matplotlib's own colormap-reference documentation as available at
+# or before matplotlib 3.7.0 — bloommcp/pyproject.toml's declared floor ("matplotlib>=3.7.0",
+# no upper bound). This is a deliberately SEPARATE piece of tribal knowledge from
+# `_ALLOWED_CMAP_BASE_NAMES` (not derived from it, not derived from whatever matplotlib
+# happens to be installed): the test below fails if someone adds a new name to the
+# allowlist without also adding it here, forcing them to consciously check "does this name
+# actually exist at the declared floor?" before it can pass — the exact question
+# `test_allowed_cmaps_are_all_registered_in_installed_matplotlib` above cannot ask, since
+# the installed/locked matplotlib (3.10.8 as of #721) is strictly newer than the floor and
+# already has every name berlin/managua/vanimo included, which is exactly why that test
+# alone did not catch this PR's own floor-mismatch bug (see design.md Decision 3 / the PR
+# review that found it).
+_KNOWN_GOOD_AT_MATPLOTLIB_3_7_BASE_NAMES: frozenset[str] = frozenset(
+    {
+        "viridis",
+        "plasma",
+        "inferno",
+        "magma",
+        "cividis",
+        "Greys",
+        "Purples",
+        "Blues",
+        "Greens",
+        "Oranges",
+        "Reds",
+        "YlOrBr",
+        "YlOrRd",
+        "OrRd",
+        "PuRd",
+        "RdPu",
+        "BuPu",
+        "GnBu",
+        "PuBu",
+        "YlGnBu",
+        "PuBuGn",
+        "BuGn",
+        "YlGn",
+        "binary",
+        "gist_yarg",
+        "gist_gray",
+        "gray",
+        "bone",
+        "pink",
+        "spring",
+        "summer",
+        "autumn",
+        "winter",
+        "cool",
+        "Wistia",
+        "hot",
+        "afmhot",
+        "gist_heat",
+        "copper",
+        "PiYG",
+        "PRGn",
+        "BrBG",
+        "PuOr",
+        "RdGy",
+        "RdBu",
+        "RdYlBu",
+        "RdYlGn",
+        "Spectral",
+        "coolwarm",
+        "bwr",
+        "seismic",
+    }
+)
+
+
+def test_allowed_cmaps_exist_at_the_declared_dependency_floor():
+    """#721 PR review: the test above checks the allowlist against whatever matplotlib is
+    actually installed (3.10.8, locked) — strictly newer than pyproject.toml's declared
+    floor (matplotlib>=3.7.0) — so it provides zero protection against re-adding a
+    3.8+/3.9+/3.10+-only name (like the berlin/managua/vanimo this PR removed for exactly
+    that reason). This checks against a separately hand-maintained floor snapshot instead,
+    so it actually catches that mistake."""
+    unverified_at_floor = (
+        umap_analysis_tool._ALLOWED_CMAP_BASE_NAMES
+        - _KNOWN_GOOD_AT_MATPLOTLIB_3_7_BASE_NAMES
+    )
+    assert not unverified_at_floor, (
+        f"colormap(s) added to the allowlist without confirming they exist at "
+        f"bloommcp's declared matplotlib floor (>=3.7.0): {unverified_at_floor}. Verify "
+        f"against matplotlib's release notes, then add to "
+        f"_KNOWN_GOOD_AT_MATPLOTLIB_3_7_BASE_NAMES above."
+    )
+
+
 @pytest.mark.parametrize("include_plots", [True, False])
 @pytest.mark.parametrize(
     "field,value",
     [
         ("plot_point_size", 0),
         ("plot_point_size", -1),
+        ("plot_point_size", 10001),
+        ("plot_point_size", float("inf")),
+        ("plot_point_size", float("nan")),
         ("plot_alpha", 1.5),
         ("plot_alpha", -0.1),
+        ("plot_font_size", 101),
+        ("plot_font_size", float("inf")),
+        ("plot_font_size", float("nan")),
     ],
 )
 def test_out_of_range_plot_style_field_is_invalid_input_regardless_of_include_plots(
@@ -883,6 +1105,54 @@ def test_plot_alpha_boundary_values_accepted(injected_ports, monkeypatch, alpha)
     monkeypatch.setattr(sleap_roots_analyze, "create_umap_single_trait", _spy)
     _run(include_plots=True, plots=["create_umap_single_trait"], plot_alpha=alpha)
     assert captured["alpha"] == alpha
+
+
+def test_plot_font_size_at_ceiling_is_accepted(injected_ports, monkeypatch):
+    """#721: 100 is the new inclusive ceiling. Follows
+    test_plot_font_family_and_size_forwarded_and_applied's pattern (font_size is applied
+    to the figure by generate_figures, not forwarded as a plotter kwarg) rather than the
+    plot_alpha spy pattern, since this boundary is on a font-style field, not a plotter
+    kwarg — the point is to confirm the call succeeds and the value is actually applied,
+    not just that Pydantic construction doesn't raise."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    captured = {}
+
+    def _fake_calls(result_dict, frame, trait_cols, **kwargs):
+        def _make():
+            fig, ax = plt.subplots()
+            ax.set_title("t")
+            captured["fig"] = fig
+            return fig
+
+        return {"create_umap_single_trait": _make}
+
+    monkeypatch.setattr(umap_analysis_tool, "_umap_plot_calls", _fake_calls)
+
+    _run(
+        include_plots=True,
+        plots=["create_umap_single_trait"],
+        plot_font_size=100,
+    )
+
+    assert captured["fig"].axes[0].title.get_fontsize() == 100
+
+
+def test_plot_point_size_at_ceiling_is_accepted(injected_ports, monkeypatch):
+    """#721: 10000 is the new inclusive ceiling — must still reach the plotter."""
+    captured = {}
+    real = sleap_roots_analyze.create_umap_single_trait
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_umap_single_trait", _spy)
+    _run(include_plots=True, plots=["create_umap_single_trait"], plot_point_size=10000)
+    assert captured["point_size"] == 10000
 
 
 def test_umap_single_trait_plot_png_round_trip(injected_ports, monkeypatch):
@@ -988,6 +1258,34 @@ def test_top_traits_internal_pca_failure_logs_original_exception(
     )
 
 
+def test_top_traits_pca_computed_before_generate_figures_not_lazily_in_the_plot_callable(
+    injected_ports, monkeypatch
+):
+    """#721 PR review: the internal PCA fit for create_umap_colored_by_top_traits must
+    run before generate_figures — and therefore outside _FIGURE_REGISTRY_LOCK's held
+    window — not lazily inside the plot callable itself, which would hold that lock for
+    an unrelated PCA fit, not just the matplotlib rendering call. Proven by replacing
+    generate_figures with a no-op that never invokes any callable in resolved_calls: if
+    the PCA fit still ran, it must have happened before generate_figures was even
+    called."""
+    real_pca = umap_analysis_tool.perform_pca_analysis
+    called = []
+
+    def _spy(*a, **k):
+        called.append(True)
+        return real_pca(*a, **k)
+
+    monkeypatch.setattr(umap_analysis_tool, "perform_pca_analysis", _spy)
+    monkeypatch.setattr(
+        umap_analysis_tool,
+        "generate_figures",
+        lambda resolved_calls, figures, **k: None,
+    )
+
+    _run(include_plots=True, plots=["create_umap_colored_by_top_traits"])
+    assert called == [True]
+
+
 def test_plots_subset_generates_only_requested(injected_ports, monkeypatch):
     _reader, store = injected_ports
     staged = _capture_staged_bytes(store, monkeypatch)
@@ -1027,6 +1325,35 @@ def test_figure_cleanup_get_fignums_empty_on_partial_plotter_failure(
     def _patched(result_dict, frame, trait_cols, **kwargs):
         calls = real(result_dict, frame, trait_cols, **kwargs)
         calls["create_umap_colored_by_top_traits"] = _boom
+        return calls
+
+    monkeypatch.setattr(umap_analysis_tool, "_umap_plot_calls", _patched)
+
+    with pytest.raises(BloomMCPError):
+        _run(
+            include_plots=True,
+            plots=["create_umap_single_trait", "create_umap_colored_by_top_traits"],
+        )
+    assert plt.get_fignums() == []
+
+
+def test_figure_cleanup_survives_a_plotter_that_allocates_then_raises(
+    injected_ports, monkeypatch
+):
+    """#721: unlike ``_boom`` above (zero figure allocation), a real ``plot_cmap``
+    failure allocates a figure via ``plt.subplots()`` and then raises later in the same
+    call — the exact shape that used to leak a figure per bad call."""
+    import matplotlib.pyplot as plt
+
+    real = umap_analysis_tool._umap_plot_calls
+
+    def _allocate_then_boom(*a, **k):
+        plt.subplots()
+        raise RuntimeError("plotter allocated a figure, then blew up")
+
+    def _patched(result_dict, frame, trait_cols, **kwargs):
+        calls = real(result_dict, frame, trait_cols, **kwargs)
+        calls["create_umap_colored_by_top_traits"] = _allocate_then_boom
         return calls
 
     monkeypatch.setattr(umap_analysis_tool, "_umap_plot_calls", _patched)
@@ -1095,11 +1422,13 @@ def test_plot_font_fields_ignored_when_include_plots_false(injected_ports):
     assert not any(k.endswith(".png") for k in result.outputs)
 
 
-def test_plot_font_size_just_above_zero_is_accepted():
-    assert (
-        UMAPAnalysisParams(experiment="x.csv", plot_font_size=0.01).plot_font_size
-        == 0.01
-    )
+def test_plot_font_size_just_above_zero_is_accepted(injected_ports):
+    """#721: plot_font_size validation moved from a Pydantic Field constraint into the
+    tool body (check_plot_style_ceiling), so this must go through the real tool call —
+    constructing UMAPAnalysisParams directly no longer exercises any range check at all.
+    """
+    result = _run(include_plots=False, plot_font_size=0.01)
+    assert not any(k.endswith(".png") for k in result.outputs)
 
 
 def test_plots_subset_with_font_override_never_generates_non_requested_plots(

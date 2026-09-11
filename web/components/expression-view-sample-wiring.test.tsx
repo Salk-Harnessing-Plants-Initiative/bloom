@@ -1,0 +1,462 @@
+// @vitest-environment jsdom
+/**
+ * The toggles and the map are wired together here, and nothing else tested it:
+ * the control could render, light up and fire its handler while the map never
+ * heard about it. Deleting `hiddenValues={hiddenValues}` from the
+ * <ExpressionUmap> element left the whole suite green.
+ *
+ * So these drive the real ExpressionView and assert what the map is actually
+ * handed, with the canvas stubbed out -- it needs a WebGL context that jsdom
+ * does not have.
+ */
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+
+import type { ExpressionUmapProps } from "./expression-umap";
+
+/** Exactly what the map reports, so a change to that contract breaks here. */
+type LoadedPayload = Parameters<
+  NonNullable<ExpressionUmapProps["onDataLoaded"]>
+>[0];
+
+/** Every set of props the map has been rendered with, newest last. */
+const umapProps: ExpressionUmapProps[] = [];
+
+vi.mock("@/components/expression-umap", () => ({
+  ExpressionUmap: (props: ExpressionUmapProps) => {
+    umapProps.push(props);
+    return <div data-testid="umap-stub" />;
+  },
+}));
+
+// Showing one cell type opens its detail panel, which fetches on its own.
+vi.mock("@/components/expression-cluster-detail-panel", () => ({
+  ExpressionClusterDetailPanel: () => null,
+}));
+
+// The search box reads genes from the site; stand in for picking and clearing one.
+vi.mock("@/components/expression-gene-search", () => ({
+  ExpressionGeneSearch: ({ onChange }: { onChange: (gene: string | null) => void }) => (
+    <div>
+      <button type="button" onClick={() => onChange("AT1G01010")}>Pick AT1G01010</button>
+      <button type="button" onClick={() => onChange(null)}>Clear gene</button>
+    </div>
+  ),
+}));
+
+// The colour bar's slider cannot be dragged in jsdom; stand in for narrowing it.
+vi.mock("@/components/expression-colorbar", () => ({
+  ExpressionColorbar: ({
+    range,
+    onRangeChange,
+  }: {
+    range: { min: number; max: number };
+    onRangeChange: (range: { min: number; max: number }) => void;
+  }) => (
+    <div data-testid="expression-colorbar">
+      {range.min}–{range.max}
+      <button type="button" onClick={() => onRangeChange({ min: 1, max: 2 })}>Narrow</button>
+    </div>
+  ),
+}));
+
+// The cluster stats rows the view reads for its cell counts.
+const stats = vi.hoisted(() => ({ rows: [] as { cluster_id: string; cell_count: number }[] }));
+
+vi.mock("@/lib/supabase/client", () => ({
+  createClientSupabaseClient: () => ({
+    from: () => ({
+      select: () => ({ eq: async () => ({ data: stats.rows, error: null }) }),
+    }),
+  }),
+}));
+
+const DATASET = { id: 1, name: "ds", expression_units: null } as unknown as
+  LoadedPayload["dataset"];
+const CLUSTERS = [
+  { ordinal: 0, cluster_id: "Cortex", name: "Cortex", color: "#112233" },
+] as unknown as LoadedPayload["clusters"];
+
+const LOADED: LoadedPayload = {
+  dataset: DATASET,
+  clusters: CLUSTERS,
+  cellCount: 9,
+  orphanCount: 0,
+  filters: ["sample"],
+  unlabelled: { sample: 0 },
+  cells: [
+    ...Array(4).fill({ replicate: "Col-0", facets: null }),
+    ...Array(5).fill({ replicate: "pFACT", facets: null }),
+  ],
+};
+
+const DATASET_2: LoadedPayload = {
+  ...LOADED,
+  cellCount: 7,
+  cells: Array(7).fill({ replicate: "WT", facets: null }),
+};
+
+/** The map reports its data once it has loaded; drive that from the stub. */
+function loadData(payload: LoadedPayload = LOADED) {
+  umapProps[umapProps.length - 1].onDataLoaded?.(payload);
+}
+
+const latest = () => umapProps[umapProps.length - 1];
+
+/** The values of one filter row the map was last told to hide. */
+const hiddenOf = (filter = "sample") => [...(latest().hiddenValues?.get(filter) ?? [])];
+
+beforeEach(() => {
+  umapProps.length = 0;
+  stats.rows = [];
+});
+afterEach(cleanup);
+
+describe("ExpressionView — sample filtering reaches the map", () => {
+  it("hands the map the sample the user switched off", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData();
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Col-0 4" })).toBeTruthy(),
+    );
+    expect(hiddenOf()).toEqual([]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Col-0 4" }));
+
+    await waitFor(() =>
+      expect(hiddenOf()).toEqual(["Col-0"]),
+    );
+  });
+
+  it("hands back a sample switched on again, and only that one", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData();
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Col-0 4" })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Col-0 4" }));
+    fireEvent.click(screen.getByRole("button", { name: "pFACT 5" }));
+    await waitFor(() =>
+      expect(hiddenOf().sort()).toEqual([
+        "Col-0",
+        "pFACT",
+      ]),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Col-0 4" }));
+    await waitFor(() =>
+      expect(hiddenOf()).toEqual(["pFACT"]),
+    );
+  });
+
+  it("clears every hidden sample when the way back is used", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData();
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Col-0 4" })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Col-0 4" }));
+    fireEvent.click(screen.getByRole("button", { name: "pFACT 5" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Show all samples" })).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show all samples" }));
+    await waitFor(() => expect(hiddenOf()).toEqual([]));
+  });
+
+  it("says the figures around the map do not follow the filter", async () => {
+    // Cluster sizes and the no-cluster count come from the whole dataset. With
+    // one genotype soloed they describe something other than what is drawn, and
+    // a reader has no way to tell.
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData();
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Col-0 4" })).toBeTruthy(),
+    );
+    expect(screen.queryByText(/for the whole dataset/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Col-0 4" }));
+    await waitFor(() =>
+      expect(screen.getByText(/for the whole dataset/)).toBeTruthy(),
+    );
+  });
+
+  it("opens another dataset with nothing hidden", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    const { rerender } = render(<ExpressionView datasetId={1} />);
+    loadData();
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Col-0 4" })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Col-0 4" }));
+    await waitFor(() =>
+      expect(hiddenOf()).toEqual(["Col-0"]),
+    );
+
+    // Col-0 is in most Arabidopsis datasets, so a carried-over hidden set would
+    // open the next one with the wild type already switched off. Load the new
+    // dataset rather than only switching the id: the reset firing is not the
+    // same as the hidden set being clean once its cells arrive.
+    rerender(<ExpressionView datasetId={2} />);
+    loadData(DATASET_2);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "WT 7" })).toBeTruthy(),
+    );
+    expect(hiddenOf()).toEqual([]);
+    expect(
+      screen.getByRole("button", { name: "WT 7" }).getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(screen.queryByText(/for the whole dataset/)).toBeNull();
+  });
+
+  it("takes the previous dataset's chips down while the next one loads", async () => {
+    // Left up, they stay clickable, and a click writes a name the new dataset
+    // may not have into the hidden set -- which then cannot be cleared from the
+    // UI, because no chip shows as hidden and the way-back button needs every
+    // sample hidden to appear.
+    const { ExpressionView } = await import("./expression-view");
+    const { rerender } = render(<ExpressionView datasetId={1} />);
+    loadData();
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Col-0 4" })).toBeTruthy(),
+    );
+
+    rerender(<ExpressionView datasetId={2} />);
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Col-0 4" })).toBeNull(),
+    );
+  });
+});
+
+describe("ExpressionView — label rows", () => {
+  const LABELLED: LoadedPayload = {
+    ...LOADED,
+    cellCount: 5,
+    filters: ["sample", "transgene_pos"],
+    unlabelled: { sample: 0, transgene_pos: 0 },
+    cells: [
+      { replicate: "Col-0", cluster_ordinal: 0, facets: { transgene_pos: "False" } },
+      { replicate: "Col-0", cluster_ordinal: 0, facets: { transgene_pos: "False" } },
+      { replicate: "pFACT", cluster_ordinal: 0, facets: { transgene_pos: "True" } },
+      { replicate: "pFACT", cluster_ordinal: 0, facets: { transgene_pos: "True" } },
+      { replicate: "pFACT", cluster_ordinal: 0, facets: { transgene_pos: "False" } },
+    ],
+  };
+
+  it("shows a row per label and hands the map the value switched off", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData(LABELLED);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "True 2" })).toBeTruthy());
+    expect(screen.getByText("transgene_pos")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "True 2" }));
+    await waitFor(() => expect(hiddenOf("transgene_pos")).toEqual(["True"]));
+    expect(hiddenOf()).toEqual([]);
+  });
+
+  it("recounts a label row against the samples shown", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData(LABELLED);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "False 3" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Col-0 2" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "False 1" })).toBeTruthy());
+    expect(screen.getByRole("button", { name: "True 2" })).toBeTruthy();
+  });
+});
+
+describe("ExpressionView — clicking a cell", () => {
+  const TWO_TYPES: LoadedPayload = {
+    ...LOADED,
+    clusters: [
+      { ordinal: 0, cluster_id: "Cortex", name: "Cortex", color: "#112233" },
+      { ordinal: 1, cluster_id: "Xylem", name: "Xylem", color: "#445566" },
+    ] as unknown as LoadedPayload["clusters"],
+  };
+
+  it("shows only that cell's type, and clicking it again shows every type", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData(TWO_TYPES);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Col-0 4" })).toBeTruthy());
+
+    latest().onCellClick?.(1);
+    await waitFor(() => expect([...(latest().hiddenClusters ?? [])]).toEqual([0]));
+
+    latest().onCellClick?.(1);
+    await waitFor(() => expect([...(latest().hiddenClusters ?? [])]).toEqual([]));
+  });
+});
+
+describe("ExpressionView — focusing on values", () => {
+  const LABELLED: LoadedPayload = {
+    ...LOADED,
+    cellCount: 3,
+    filters: ["sample", "transgene_pos"],
+    unlabelled: { sample: 0, transgene_pos: 0 },
+    cells: [
+      { replicate: "Col-0", cluster_ordinal: 0, facets: { transgene_pos: "False" } },
+      { replicate: "pFACT", cluster_ordinal: 0, facets: { transgene_pos: "True" } },
+      { replicate: "pFACT", cluster_ordinal: 0, facets: { transgene_pos: "False" } },
+    ],
+  };
+
+  const focusedOf = (filter: string) =>
+    [...(latest().focusedValues?.get(filter) ?? [])];
+
+  it("hands the map every value focused on, hides nothing, and says what is in focus", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData(LABELLED);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Focus on True" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Focus on True" }));
+    await waitFor(() => expect(focusedOf("transgene_pos")).toEqual(["True"]));
+    expect(hiddenOf("transgene_pos")).toEqual([]);
+    expect(screen.getByText(/1 cell is transgene_pos True; every other cell is greyed out/))
+      .toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Focus on pFACT" }));
+    await waitFor(() => expect(focusedOf("sample")).toEqual(["pFACT"]));
+    expect(screen.getByText(/1 cell is pFACT and transgene_pos True/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear focus" }));
+    await waitFor(() => expect(focusedOf("transgene_pos")).toEqual([]));
+    expect(focusedOf("sample")).toEqual([]);
+    expect(screen.queryByText(/greyed out/)).toBeNull();
+  });
+
+  it("opens another dataset with nothing focused", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    const { rerender } = render(<ExpressionView datasetId={1} />);
+    loadData(LABELLED);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Focus on Col-0" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Focus on Col-0" }));
+    await waitFor(() => expect(focusedOf("sample")).toEqual(["Col-0"]));
+
+    rerender(<ExpressionView datasetId={2} />);
+    loadData(DATASET_2);
+    await waitFor(() => expect(screen.getByRole("button", { name: "WT 7" })).toBeTruthy());
+    expect(focusedOf("sample")).toEqual([]);
+  });
+});
+
+describe("ExpressionView — the transgene counts switch", () => {
+  const CARRIERS: LoadedPayload = {
+    ...LOADED,
+    cellCount: 3,
+    filters: ["transgene_pos"],
+    unlabelled: { transgene_pos: 0 },
+    cells: [
+      { replicate: "Col-0", cluster_ordinal: 0, facets: { transgene_pos: "True" } },
+      { replicate: "Col-0", cluster_ordinal: 0, facets: { transgene_pos: "True" } },
+      { replicate: "pFACT", cluster_ordinal: 0, facets: { transgene_pos: "False" } },
+    ],
+  };
+
+  it("hides every transgene count at once, and brings them back", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData(CARRIERS);
+
+    await waitFor(() => expect(screen.getByTestId("transgene-summary")).toBeTruthy());
+    expect(screen.getByText(/2 transgene\+ ·/)).toBeTruthy();
+    expect(latest().showTransgene).toBe(true);
+
+    fireEvent.click(screen.getByRole("switch", { name: "Transgene counts" }));
+    await waitFor(() => expect(screen.queryByTestId("transgene-summary")).toBeNull());
+    expect(screen.queryByText(/transgene\+/)).toBeNull();
+    expect(latest().showTransgene).toBe(false);
+
+    fireEvent.click(screen.getByRole("switch", { name: "Transgene counts" }));
+    await waitFor(() => expect(screen.getByTestId("transgene-summary")).toBeTruthy());
+    expect(latest().showTransgene).toBe(true);
+  });
+
+  it("offers no switch for a dataset that records no transgene status", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData({
+      ...LOADED,
+      cellCount: 1,
+      filters: ["sample"],
+      unlabelled: { sample: 0 },
+      cells: [{ replicate: "Col-0", cluster_ordinal: 0, facets: null }],
+    });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Col-0 1" })).toBeTruthy());
+    expect(screen.queryByRole("switch", { name: "Transgene counts" })).toBeNull();
+    expect(screen.queryByTestId("transgene-summary")).toBeNull();
+  });
+});
+
+describe("ExpressionView — colouring the map by a gene", () => {
+  async function pickGene() {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Col-0 4" })).toBeTruthy());
+    expect(latest().geneName ?? null).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Pick AT1G01010" }));
+    await waitFor(() => expect(latest().geneName).toBe("AT1G01010"));
+  }
+
+  it("hands the map the gene picked, shows its colour bar, and clears both", async () => {
+    await pickGene();
+    act(() => latest().onExpressionRangeChanged?.({ min: 0, max: 3 }));
+    await waitFor(() => expect(screen.getByTestId("expression-colorbar")).toBeTruthy());
+    expect(latest().colourRange).toEqual({ min: 0, max: 3 });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear gene" }));
+    await waitFor(() => expect(latest().geneName).toBeNull());
+    act(() => latest().onExpressionRangeChanged?.(null));
+    await waitFor(() => expect(screen.queryByTestId("expression-colorbar")).toBeNull());
+  });
+
+  it("narrows the map's colours with the colour bar", async () => {
+    await pickGene();
+    act(() => latest().onExpressionRangeChanged?.({ min: 0, max: 3 }));
+    await waitFor(() => expect(screen.getByTestId("expression-colorbar")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Narrow" }));
+    await waitFor(() => expect(latest().colourRange).toEqual({ min: 1, max: 2 }));
+  });
+
+  it("says when a gene has no stored expression, and shows no colour bar", async () => {
+    await pickGene();
+    act(() => latest().onGeneError?.("AT1G01010 has no stored expression in this dataset."));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("no stored expression"),
+    );
+    expect(screen.queryByTestId("expression-colorbar")).toBeNull();
+  });
+});
+
+describe("ExpressionView — cell counts in the cluster list", () => {
+  it("shows each cluster's count even when the stats arrive before the map's cells", async () => {
+    stats.rows = [{ cluster_id: "Cortex", cell_count: 9 }];
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    // The stats request settles first; only then does the map report its cells.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    loadData();
+    const sidebar = await screen.findByTestId("expression-cluster-sidebar");
+    await waitFor(() => expect(within(sidebar).getByText("9")).toBeTruthy());
+  });
+});

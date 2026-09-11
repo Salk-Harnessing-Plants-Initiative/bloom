@@ -88,6 +88,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "types will not exist in the catalogue",
     )
     p.add_argument("--sample-column", default="sample")
+    p.add_argument(
+        "--source-column",
+        help="an obs column naming where each cell's label came from, such as "
+             "the reference atlas it was transferred from. Recorded per cell "
+             "type, since that is where it varies",
+    )
     p.add_argument("--umap-key", default="X_umap")
     p.add_argument(
         "--expect-cells",
@@ -117,6 +123,7 @@ def read_cells(
     sample_column: str,
     umap_key: str,
     expect_cells: int | None,
+    source_column: str | None = None,
 ) -> dict:
     """Pull everything the explorer needs out of the file, or refuse.
 
@@ -206,6 +213,7 @@ def read_cells(
 
     labels = _text_column(adata, annotation)
     samples = _text_column(adata, sample_column)
+    sources = _text_column(adata, source_column) if source_column else None
     barcodes = _barcodes(adata)
     levels = sorted(set(labels))
     if len(levels) > len(PALETTE):
@@ -228,6 +236,7 @@ def read_cells(
         "samples": samples,
         "levels": levels,
         "barcodes": barcodes,
+        "sources": label_sources(labels, sources) if sources else {},
     }
 
 
@@ -257,6 +266,26 @@ def _barcodes(adata) -> list[str]:
             f"one cell"
         )
     return text
+
+
+def label_sources(labels: list[str], sources: list[str]) -> dict[str, str]:
+    """Summarise, per cell type, where its label came from.
+    """
+    per_type: dict[str, Counter] = {}
+    for label, source in zip(labels, sources):
+        per_type.setdefault(label, Counter())[source] += 1
+
+    summary = {}
+    for label, counts in per_type.items():
+        if len(counts) == 1:
+            summary[label] = next(iter(counts))
+        else:
+            total = sum(counts.values())
+            summary[label] = ", ".join(
+                f"{name} ({round(n * 100 / total)}%)"
+                for name, n in counts.most_common()
+            )
+    return summary
 
 
 def _text_column(adata, column: str) -> list[str]:
@@ -297,6 +326,9 @@ def summarise(cells: dict) -> str:
         f"{len(cells['levels'])} cell types\n  "
         + "samples: "
         + ", ".join(f"{k} {v}" for k, v in sorted(per_sample.items()))
+        + (f"\n  label sources: "
+           + ", ".join(sorted(set(cells["sources"].values())))
+           if cells.get("sources") else "")
     )
 
 
@@ -360,12 +392,7 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
                 " (SELECT count(*) FROM public.scrna_de WHERE dataset_id = %(d)s)",
                 {"d": dataset_id},
             )
-            # Anything keyed by cell-type name or by cell position blocks a
-            # reload. The first two cascade off the catalogue; the counts name
-            # files read by cell position, which renumbering shifts; the
-            # differential expression rows name cell types and have no foreign
-            # key to the catalogue, so a changed cell-type set leaves them
-            # naming types that no longer exist.
+            # Anything keyed by cell type or cell position blocks a reload.
             blocked = [
                 what
                 for what, n in zip(
@@ -401,11 +428,12 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
             )
             dataset_id = cur.fetchone()[0]
 
-        # A cluster's name, colour and label source are edited by hand after a
-        # load -- the backfill script seeds them and says to fix the biology in
-        # Studio -- and none can be rebuilt from the file, so a surviving cell
-        # type keeps all three. A new one takes a colour no surviving type is
-        # already using, and no source.
+        # A cluster's name and colour are edited by hand after a load -- the
+        # backfill script seeds them and says to fix the biology in Studio --
+        # and neither can be rebuilt from the file, so a surviving cell type
+        # keeps both. A source can be rebuilt, but only when this run was given
+        # a source column; otherwise a surviving type keeps that by hand too.
+        # A new one takes a colour no surviving type is already using.
         cur.execute(
             "SELECT cluster_id, name, color, source FROM public.scrna_clusters "
             "WHERE dataset_id = %s", (dataset_id,),
@@ -422,13 +450,14 @@ def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
         cur.execute("DELETE FROM public.scrna_clusters WHERE dataset_id = %s", (dataset_id,))
 
         catalogue = []
+        from_file = cells.get("sources") or {}
         for ordinal, level in enumerate(cells["levels"]):
             name, color, source = kept.get(level, (None, None, None))
             catalogue.append((
                 dataset_id, level, ordinal,
                 (name or "").strip() or level,
                 (color or "").strip() or next(spare),
-                (source or "").strip() or None,
+                (from_file.get(level) or source or "").strip() or None,
             ))
         cur.executemany(
             "INSERT INTO public.scrna_clusters "
@@ -476,7 +505,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cells = read_cells(
             args.h5ad, args.annotation, args.sample_column,
-            args.umap_key, args.expect_cells,
+            args.umap_key, args.expect_cells, args.source_column,
         )
     except IngestError as exc:
         print(f"refusing to ingest: {exc}", file=sys.stderr)

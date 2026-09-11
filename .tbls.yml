@@ -1,0 +1,9 @@
+# tbls draws _WIKI/SUPABASE/erd.md from a migrated database (`make erd`, and CI's drift check).
+dsn: ${TBLS_DSN}
+include:
+  - public.*
+exclude:
+  # Created at runtime by LangChain's checkpointer, not by a migration.
+  - public.checkpoint*
+er:
+  format: mermaid

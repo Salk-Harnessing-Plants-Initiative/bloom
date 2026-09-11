@@ -1,6 +1,6 @@
-"""Pixel-level rendering regression tests for the 5 sleap_roots plotting tools (#713).
+"""Pixel-level rendering regression tests for the 3 sleap_roots plotting tools (#713).
 
-`test_viz_tools.py` only ever asserted `.is_file()` on a generated PNG -- a dependency
+The former `test_viz_tools.py` only ever asserted `.is_file()` on a generated PNG -- a dependency
 bump (matplotlib, Pillow, numpy) or a refactor that silently changes color mapping, plot
 geometry, or layout would ship with every existing assertion still green. This file closes
 that gap by comparing each tool's real output against a committed baseline PNG
@@ -18,13 +18,20 @@ macOS**, not on Linux (see `plot_baselines/MANIFEST.json` and design.md Decision
 was unavailable to produce a Linux-rendered baseline matching the `python-audit` CI job's
 `ubuntu-latest` runner at authoring time), so this test's *first* real cross-platform
 comparison is CI's own run, not this docstring's say-so. `_TOL` was picked from a real,
-reproducible measurement, not guessed, and checked against **all 5 baselines**, not just
-one (design.md Decision 2 has the full table): uniformly dimming each baseline by
-2%/5%/10% (`PIL.ImageEnhance.Brightness`) scores RMS≈5.4-5.7 / ≈11.7-12.5 / ≈23.4-24.9
-respectively -- the 5 plots agree within ~0.3 RMS at every level despite very different
-pixel content, because a *uniform* shift's RMS is dominated by the large shared
-white-background area, not each plot's distinct foreground (contrast the localized-
-regression case below, whose RMS genuinely does vary a lot by plot type).
+reproducible measurement, not guessed, and checked against **all 5 baselines that existed
+when it was measured**, not just one (design.md Decision 2 has the full table): uniformly
+dimming each baseline by 2%/5%/10% (`PIL.ImageEnhance.Brightness`) scores RMS≈5.4-5.7 /
+≈11.7-12.5 / ≈23.4-24.9 respectively -- the 5 plots agreed within ~0.3 RMS at every level
+despite very different pixel content, because a *uniform* shift's RMS is dominated by the
+large shared white-background area, not each plot's distinct foreground (contrast the
+localized-regression case below, whose RMS genuinely does vary a lot by plot type).
+
+Two of those five (`heritability_bar`, `variance_decomposition`) were retired into
+`heritability_analysis` by bloom#462 and their baselines deleted. The ranges above are left
+as recorded rather than restated for the surviving 3: they are the measurement that was
+actually taken, and the surviving plots' individual figures sat inside those ranges, so
+narrowing the quoted band would imply a re-measurement that did not happen. `_TOL` itself
+is unchanged and still clears the 5%-dim noise floor for every baseline still present.
 `test_tolerance_catches_a_real_regression` reproduces the 10%-dim case for `histograms`
 live rather than hardcoding it. `_TOL = 15` sits above the 5%-dim noise floor (leaving
 headroom for legitimate cross-platform hinting noise, which manifests as far subtler pixel
@@ -60,17 +67,19 @@ unaffected pixel, and *how much* it's diluted depends on both the perturbed area
   the two are the same order of magnitude. This is not a gap this PR closes; it's a real,
   permanent limit of whole-image RMS comparison applied to a 55-cell grid, tracked as
   **#768** rather than left as an implicit assumption.
-- **`heritability_bar`** (same 11 traits -> 11 bars): bar *area* varies with each trait's
-  H2 value (near-zero for a low-H2 bar up to the full bar height for H2≈1) -- measured
-  directly via each bar patch's `get_window_extent()`: real single-bar areas range
-  ~0%-2.89% of the image, median ~2.41%. The `test_tolerance_catches_a_localized_regression`
-  case below uses 2% -- within the real, measured range for a plausible single-bar defect
-  (not merely an assumed number), and clears `_TOL=15` (RMS≈17.0).
-- `histograms`/`boxplots`/`variance_decomposition`: not individually re-measured at their
-  real single-element size -- all three carry large enough headroom at a uniform 2% probe
-  (RMS≈21.7-22.1, well above `_TOL=15`) that a smaller real element is very likely still
-  caught, but this is not asserted by a dedicated test the way the two tools above are (see
-  the comment on `_SNAPSHOT_TOOLS`/`_LOCALIZED_REGRESSION_CASES` below).
+- **`heritability_bar`** (RETIRED by bloom#462 -- kept here as the record of what was
+  measured, since it is what justified the localized-regression probe size): same 11 traits
+  -> 11 bars, bar *area* varying with each trait's H2 value (near-zero for a low-H2 bar up
+  to the full bar height for H2≈1) -- measured directly via each bar patch's
+  `get_window_extent()`: real single-bar areas ranged ~0%-2.89% of the image, median ~2.41%,
+  and a 2% probe cleared `_TOL=15` at RMS≈17.0. With that tool retired, the only remaining
+  localized-regression case is `correlation_matrix`'s, so **no bar-shaped probe is exercised
+  any more** -- an honest reduction in what this file proves, not an oversight.
+- `histograms`/`boxplots`: not individually re-measured at their real single-element size --
+  both carry large enough headroom at a uniform 2% probe (RMS≈21.7-22.1, well above
+  `_TOL=15`) that a smaller real element is very likely still caught, but this is not
+  asserted by a dedicated test the way `correlation_matrix` is (see the comment on
+  `_SNAPSHOT_TOOLS`/`_LOCALIZED_REGRESSION_CASES` below).
 
 `test_tolerance_catches_a_localized_regression` proves `_TOL` catches a **several-cells-
 worth** regression in `correlation_matrix` (~3% area, ~6-7 real cells) -- a plausible
@@ -79,14 +88,16 @@ claim that single-cell defects are covered. These measurements are a snapshot of
 baselines, not a law -- re-measure after any change to a plot's trait count, color
 density, or layout.
 
-Scope: the 5 dedicated plotting tools only (matching `test_viz_tools.py`'s existing
-`_TOOLS` list) -- the optional plot keys `pca_analysis`/`umap_analysis`/`clustering` can
+Scope: the 3 dedicated plotting tools only (5 until #462 retired the two heritability
+plots into `heritability_analysis`, which renders them through `ResultStore` — see the note
+on `_SNAPSHOT_TOOLS`) -- the optional plot keys `pca_analysis`/`umap_analysis`/`clustering` can
 also emit (`create_pca_biplot`, `create_cluster_scatter_pca`, etc.) are a deliberate
 non-goal here; see proposal.md.
 """
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -101,14 +112,26 @@ from sleap_roots_analyze.visualization import create_correlation_heatmap
 from bloom_mcp import experiment_utils as eu
 from bloom_mcp.sections.sleap_roots.analysis import (
     plot_correlation_matrix as plot_correlation_matrix_mod,
-    plot_heritability_bar as plot_heritability_bar_mod,
     plot_trait_boxplots as plot_trait_boxplots_mod,
     plot_trait_histograms as plot_trait_histograms_mod,
-    plot_variance_decomposition as plot_variance_decomposition_mod,
 )
 
 _BASELINES = Path(__file__).resolve().parents[1] / "fixtures" / "plot_baselines"
 _EXPERIMENT = "turface_19.csv"
+# The same CSV `viz_env` copies into TRAITS_DIR — the converged tools read through the
+# ExperimentReader port instead, so their FakeReader has to be seeded from it directly.
+_RAW_FIXTURE = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "turface_19_final_data.csv"
+)
+
+# The converged 3 name their committed PNG after the tool, not after the experiment, so the
+# legacy `<label>_turface_19.png` names in _SNAPSHOT_TOOLS don't apply to them. Baselines
+# keep their original names — only the produced file's name differs.
+_PRODUCED_NAME_OVERRIDES = {
+    "histograms": "trait_histograms.png",
+    "boxplots": "trait_boxplots.png",
+    "correlation_matrix": "correlation_matrix.png",
+}
 
 # Empirically derived, not guessed -- see the module docstring's Tolerance and Known
 # limitation sections (design.md Decisions 2 & 3 have the full measurement + fallback
@@ -117,13 +140,19 @@ _TOL = 15
 
 # (label, tool module, tool fn name, produced PNG name, baseline PNG name)
 #
-# All 5 are covered by test_plot_matches_baseline_within_tolerance (the production
-# comparison). Only `heritability_bar` and `correlation_matrix` additionally get a
-# dedicated localized-regression negative-control case below
-# (_LOCALIZED_REGRESSION_CASES) -- `histograms`/`boxplots`/`variance_decomposition`'s
-# ~2%-area floor is documented in the module docstring's "Known limitation" section but
-# NOT independently test-enforced; nothing in CI would catch a future baseline
-# regeneration quietly eroding their margin against `_TOL=15`.
+# All 3 are covered by test_plot_matches_baseline_within_tolerance (the production
+# comparison). Only `correlation_matrix` additionally gets a dedicated localized-
+# regression negative-control case below (_LOCALIZED_REGRESSION_CASES) --
+# `histograms`/`boxplots`'s ~2%-area floor is documented in the module docstring's
+# "Known limitation" section but NOT independently test-enforced; nothing in CI would
+# catch a future baseline regeneration quietly eroding their margin against `_TOL=15`.
+#
+# This list was 5 until bloom#462 retired `plot_heritability_bar` and
+# `plot_variance_decomposition` into `heritability_analysis`. That tool renders the same
+# two figures, but persists them through the `ResultStore` port rather than writing to
+# `PLOTS_DIR`, so this harness (built entirely around `viz_env`/`PLOTS_DIR`) does not
+# reach them -- snapshot coverage for them would need a different fixture, tracked as a
+# follow-up rather than bolted on here.
 _SNAPSHOT_TOOLS = [
     (
         "histograms",
@@ -146,22 +175,54 @@ _SNAPSHOT_TOOLS = [
         "correlation_matrix_turface_19.png",
         "correlation_matrix_turface_19_baseline.png",
     ),
-    (
-        "heritability_bar",
-        plot_heritability_bar_mod,
-        "plot_heritability_bar",
-        "heritability_turface_19.png",
-        "heritability_turface_19_baseline.png",
-    ),
-    (
-        "variance_decomposition",
-        plot_variance_decomposition_mod,
-        "plot_variance_decomposition",
-        "variance_decomposition_turface_19.png",
-        "variance_decomposition_turface_19_baseline.png",
-    ),
 ]
 _IDS = [label for label, *_ in _SNAPSHOT_TOOLS]
+
+
+# The 3 tools #466 converged onto `@as_mcp_tool` no longer match the legacy calling
+# convention the other 2 still use, so this file can no longer drive all 5 the same way.
+# They take a Pydantic params model (not a bare experiment string), return a result model
+# (not a "Plot saved: ..." string), and persist their PNG into a ResultStore version dir
+# (not PLOTS_DIR). Pixel coverage is preserved for them rather than dropped: the render
+# itself is unchanged, and these baselines still match within `_TOL` (verified against the
+# committed baselines when this adaptation landed, #466 review round 7).
+def _render_to_dir(label, module, fn_name, viz_env):
+    """Run one plotting tool and return the directory its PNG(s) landed in.
+
+    All 3 tools here write into a ``ResultStore`` staging dir that ``commit`` deletes on
+    success, so their bytes are copied out inside a ``commit`` spy — the last point at which
+    the committed file still exists on disk. Capturing at commit (rather than spying on
+    ``savefig``) means the bytes compared are exactly the bytes that were committed, not an
+    intermediate render. (A ``PLOTS_DIR`` branch for the two legacy tools lived here until
+    #462 retired them; ``viz_env`` now serves only as scratch space.)
+    """
+    fn = getattr(module, fn_name)
+
+    import pandas as pd
+    from bloom_mcp.data_access import FakeReader, SupabaseReader
+    from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+    from bloom_mcp.tools import _ports
+
+    captured = viz_env / f"_committed_{label}"
+    captured.mkdir(parents=True, exist_ok=True)
+
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, pd.read_csv(_RAW_FIXTURE))
+    store = FakeResultStore()
+    real_commit = store.commit
+
+    def _spy_commit(run, outputs):
+        for name in outputs:
+            shutil.copy(run.staging_dir / name, captured / name)
+        return real_commit(run, outputs)
+
+    store.commit = _spy_commit
+    _ports.configure(reader=reader, store=store)
+    try:
+        fn(experiment=_EXPERIMENT)
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    return captured
 
 
 @pytest.mark.parametrize(
@@ -170,11 +231,9 @@ _IDS = [label for label, *_ in _SNAPSHOT_TOOLS]
 def test_plot_matches_baseline_within_tolerance(
     _label, module, fn_name, produced_name, baseline_name, viz_env
 ):
-    fn = getattr(module, fn_name)
-    result = fn(_EXPERIMENT)
-    assert "Plot saved:" in result
+    produced_dir = _render_to_dir(_label, module, fn_name, viz_env)
 
-    actual = viz_env / produced_name
+    actual = produced_dir / _PRODUCED_NAME_OVERRIDES.get(_label, produced_name)
     baseline = _BASELINES / baseline_name
     assert actual.is_file()
     assert baseline.is_file(), (
@@ -240,14 +299,15 @@ def test_tolerance_catches_a_real_regression(tmp_path):
 
 
 _LOCALIZED_REGRESSION_CASES = [
-    # (baseline filename, area fraction). heritability_bar's 2% is within the real,
-    # measured single-bar-area range (~0%-2.89%, median ~2.41% -- see module docstring).
+    # (baseline filename, area fraction). This held a second entry -- heritability_bar at
+    # 2%, the only *bar-shaped* localized probe -- until bloom#462 retired that tool; the
+    # measured single-bar range that justified it (~0%-2.89%, median ~2.41%) is kept in the
+    # module docstring as the record of what was measured, not silently deleted.
     # correlation_matrix's 3% is deliberately NOT a single real cell (one cell measures
     # ~0.455%, see test_realistic_single_cell_defect_in_correlation_matrix_is_not_caught
     # below, which pins that a real single-cell defect is NOT caught) -- 3% represents
     # ~6-7 real cells' worth of area, a plausible "whole row/column wrong" bug shape, with
     # real margin above the ~2.5% RMS-crossing point measured for that size.
-    ("heritability_turface_19_baseline.png", 0.02),
     ("correlation_matrix_turface_19_baseline.png", 0.03),
 ]
 
@@ -257,7 +317,9 @@ _LOCALIZED_REGRESSION_CASES = [
     _LOCALIZED_REGRESSION_CASES,
     ids=[name.split("_turface")[0] for name, _ in _LOCALIZED_REGRESSION_CASES],
 )
-def test_tolerance_catches_a_localized_regression(tmp_path, baseline_name, area_fraction):
+def test_tolerance_catches_a_localized_regression(
+    tmp_path, baseline_name, area_fraction
+):
     """A *global* dim (above) isn't the only regression shape worth proving `_TOL` catches
     -- a spatially small miscoloring only touches part of the image, and RMS is a
     whole-image average (see module docstring's "Known limitation"). Proves `_TOL` catches
@@ -316,7 +378,7 @@ def _measure_live_correlation_cell_area_fraction() -> float:
         ax = fig.axes[0]
         fig.canvas.draw()
         ax_bbox = ax.get_window_extent(fig.canvas.get_renderer())
-        save_dpi = 150  # matches _viz_shared.save_plot's dpi
+        save_dpi = 150  # matches the dpi the 3 converged tools pass to savefig
         scale = save_dpi / fig.dpi
         cell_area_px = (ax_bbox.width * scale / n) * (ax_bbox.height * scale / n)
     finally:

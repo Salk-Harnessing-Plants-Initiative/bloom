@@ -94,9 +94,8 @@ def _ensure_subfolder(path: Path, label: str) -> None:
     """Auto-create a ``BLOOM_LOCAL_ROOT``-derived subfolder, failing clearly if blocked.
 
     Only the top-level ``BLOOM_LOCAL_ROOT`` folder must pre-exist (validated by
-    ``_validate_local_root_dir``); its subfolders auto-create here, mirroring the
-    ``PLOTS_DIR.mkdir(parents=True, exist_ok=True)`` idiom ``_viz_shared.save_plot``
-    already uses, just run at boot instead of at first write. ``label`` names the
+    ``_validate_local_root_dir``); its subfolders auto-create here with the
+    ``mkdir(parents=True, exist_ok=True)`` idiom, run at boot instead of at first write. ``label`` names the
     subfolder in the raised error (e.g. "input root") without leaking the
     absolute host path.
     """
@@ -220,9 +219,10 @@ def _validate_dirs() -> None:
                 # Post-create writability recheck — mirrors the fall-through
                 # checks validate_experiment_local_root (readable) and
                 # validate_storage_backend (writable) both perform after their
-                # own _ensure_subfolder call; plots are a write destination
-                # (_viz_shared.save_plot), so a raw PermissionError there
-                # should surface at boot, not mid-analysis.
+                # own _ensure_subfolder call. Nothing in bloom_mcp writes to the
+                # plots root any more (#466/#462 moved every plot onto
+                # ResultStore), but it is still provisioned and served; keep the
+                # boot-time writability check until PLOTS_DIR's own retirement.
                 if not os.access(path, os.W_OK):
                     raise RuntimeError("BLOOM_LOCAL_ROOT's plots root is not writable.")
                 continue

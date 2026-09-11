@@ -5,12 +5,15 @@ import {
   fetchClusterStats,
   type ClusterStatsRow,
 } from "@/components/expression-lib/cluster-markers";
+import type { TransgeneCount } from "@/components/expression-lib/transgene";
 
 export interface ExpressionClusterDetailPanelProps {
   datasetId: number;
   clusterId: string;
   clusterName: string | null;
   clusterColor: string | null;
+  /** The cluster's transgene-positive cells; absent when the dataset records none. */
+  transgene?: TransgeneCount;
 }
 
 /**
@@ -23,6 +26,7 @@ export function ExpressionClusterDetailPanel({
   clusterId,
   clusterName,
   clusterColor,
+  transgene,
 }: ExpressionClusterDetailPanelProps) {
   const [stats, setStats] = useState<ClusterStatsRow | null>(null);
   const [failed, setFailed] = useState(false);
@@ -52,6 +56,9 @@ export function ExpressionClusterDetailPanel({
 
   const name = clusterName ?? clusterId;
   const markers = stats?.markers ?? null;
+  // A cell type labelled from two atlases has markers from each; say which is which.
+  const mixedSources =
+    new Set((markers?.top ?? []).map((m) => m.source).filter(Boolean)).size > 1;
   // pct is stored as a percentage (0..100) per the column name; render directly.
   const pctHuman =
     stats?.pct != null ? stats.pct.toFixed(1) : "—";
@@ -85,10 +92,33 @@ export function ExpressionClusterDetailPanel({
         </div>
       </div>
 
+      {transgene && (
+        <div className="border-b border-stone-200 p-5">
+          <div
+            data-testid="cluster-transgene"
+            className="rounded-lg bg-emerald-600 px-4 py-3 text-white shadow-sm"
+          >
+            <div className="text-[10px] uppercase tracking-widest text-emerald-100">
+              Transgene-positive cells
+            </div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums">
+              {new Intl.NumberFormat("en-US").format(transgene.positive)}{" "}
+              <span className="text-sm font-normal text-emerald-50">
+                of {new Intl.NumberFormat("en-US").format(transgene.total)} ·{" "}
+                {transgene.total > 0
+                  ? ((transgene.positive / transgene.total) * 100).toFixed(1)
+                  : "0.0"}
+                %
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 border-b border-stone-200">
         <StatTile label="% of dataset" value={`${pctHuman}%`} suffix={false} />
         <StatTile
-          label="DE genes Q<.01"
+          label="Significant markers"
           value={markers ? String(markers.n_significant) : "—"}
           borderLeft
         />
@@ -99,7 +129,7 @@ export function ExpressionClusterDetailPanel({
           <span className="text-xs uppercase tracking-widest text-stone-500">
             Top markers
           </span>
-          <span className="text-[10px] text-stone-400">(scrna_cluster_stats)</span>
+          <span className="text-[10px] text-stone-400">one vs the rest, strongest first</span>
         </div>
 
         {loading ? (
@@ -110,7 +140,7 @@ export function ExpressionClusterDetailPanel({
           </div>
         ) : !markers || markers.top.length === 0 ? (
           <div className="text-xs italic text-stone-400">
-            No markers yet — waiting on DE ingest.
+            No markers stored for this cell type.
           </div>
         ) : (
           <table className="w-full text-xs">
@@ -118,8 +148,10 @@ export function ExpressionClusterDetailPanel({
               <tr className="text-[10px] uppercase tracking-widest text-stone-500">
                 <th className="text-left font-normal pb-2">Gene</th>
                 <th className="text-right font-normal pb-2">Log₂FC</th>
-                <th className="text-right font-normal pb-2">Q</th>
-                <th className="text-right font-normal pb-2">Pct.1</th>
+                <th className="text-right font-normal pb-2">Adj. p</th>
+                <th className="text-right font-normal pb-2" title="Share of the cell type's cells expressing the gene">
+                  In type
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -128,7 +160,21 @@ export function ExpressionClusterDetailPanel({
                   key={m.gene}
                   className="border-b border-dashed border-stone-200/70 last:border-0"
                 >
-                  <td className="py-2 font-mono text-stone-800">{m.gene}</td>
+                  <td className="py-2 text-stone-800">
+                    {m.symbol ? (
+                      <>
+                        <span className="font-semibold">{m.symbol}</span>{" "}
+                        <span className="font-mono text-[10px] text-stone-400">{m.gene}</span>
+                      </>
+                    ) : (
+                      <span className="font-mono">{m.gene}</span>
+                    )}
+                    {mixedSources && m.source && (
+                      <span className="ml-1 rounded bg-stone-100 px-1 text-[9px] uppercase tracking-wide text-stone-500">
+                        {m.source}
+                      </span>
+                    )}
+                  </td>
                   <td className="py-2 text-right tabular-nums text-lime-700 font-semibold">
                     {m.log2fc.toFixed(2)}
                   </td>
@@ -136,7 +182,7 @@ export function ExpressionClusterDetailPanel({
                     {m.q.toExponential(0)}
                   </td>
                   <td className="py-2 text-right tabular-nums text-stone-600">
-                    {m.pct_1.toFixed(2)}
+                    {`${Math.round(m.pct_1 * 100)}%`}
                   </td>
                 </tr>
               ))}
@@ -145,27 +191,6 @@ export function ExpressionClusterDetailPanel({
         )}
       </div>
 
-      <div className="p-5 flex gap-4 text-xs">
-        <button
-          type="button"
-          className="text-lime-700 hover:underline"
-          onClick={() => {
-            /* Rename — placeholder, follow-up PR wires the real modal */
-          }}
-        >
-          Rename
-        </button>
-        <span className="text-stone-300">·</span>
-        <button
-          type="button"
-          className="text-lime-700 hover:underline"
-          onClick={() => {
-            /* Run DE vs. all — placeholder */
-          }}
-        >
-          Run DE vs. all
-        </button>
-      </div>
     </aside>
   );
 }

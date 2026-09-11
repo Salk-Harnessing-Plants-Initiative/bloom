@@ -1,8 +1,11 @@
 import * as React from 'react';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { DataGrid, GridColDef } from '@mui/x-data-grid';
 import Paper from '@mui/material/Paper';
-import { Database } from "@/lib/database.types";
+import Button from '@mui/material/Button';
+import FormControlLabel from '@mui/material/FormControlLabel';
+import Checkbox from '@mui/material/Checkbox';
+import TextField from '@mui/material/TextField';
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import Box from '@mui/material/Box';
 import InputLabel from '@mui/material/InputLabel';
@@ -19,6 +22,20 @@ import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import * as d3 from "d3";
 
+import DeSummary from "./expression-de-summary";
+import {
+  DEFAULT_FDR_CUT,
+  DEFAULT_LOG2FC_CUT,
+  FIRST_GROUP_COLOUR,
+  SECOND_GROUP_COLOUR,
+  formatFoldChange,
+  groupNames,
+  passes,
+  type AnalysisRun,
+  type Client,
+  type DeEntry,
+} from "./expression-lib/de-types";
+
 type GeneData = {
   gene: string;
   p_val: number;
@@ -29,7 +46,7 @@ type GeneData = {
   _row: string;
 };
 
-const columns: GridColDef[] = [
+export const columnsFor = (entry: DeEntry | null): GridColDef[] => [
   { field: '_row', headerName: 'Gene Name', width: 180 },
   {
     field: 'avg_log2FC',
@@ -37,13 +54,13 @@ const columns: GridColDef[] = [
     width: 140,
     renderCell: (params) => {
       const value = params.value as number;
-      const color = value > 0 ? '#2e7d32' : value < 0 ? '#c62828' : '#666';
-      return <span style={{ color, fontWeight: 'bold' }}>{value?.toFixed(3)}</span>;
+      const color = value > 0 ? FIRST_GROUP_COLOUR : value < 0 ? SECOND_GROUP_COLOUR : '#666';
+      return <span style={{ color, fontWeight: 'bold' }}>{formatFoldChange(value, 3)}</span>;
     }
   },
   {
     field: 'p_val_adj',
-    headerName: 'Adj. p-value',
+    headerName: 'FDR (adj. p-value)',
     width: 120,
     renderCell: (params) => {
       const value = params.value as number;
@@ -52,7 +69,7 @@ const columns: GridColDef[] = [
   },
   {
     field: 'pct.1',
-    headerName: '% in Cluster',
+    headerName: `% in ${groupNames(entry).a}`,
     width: 120,
     renderCell: (params) => {
       const value = params.value as number;
@@ -61,7 +78,7 @@ const columns: GridColDef[] = [
   },
   {
     field: 'pct.2',
-    headerName: '% in Others',
+    headerName: `% in ${groupNames(entry).b}`,
     width: 120,
     renderCell: (params) => {
       const value = params.value as number;
@@ -79,12 +96,12 @@ const columns: GridColDef[] = [
   }
 ];
 
-export function DataTable({ rows }: { rows: GeneData[] }) {
+export function DataTable({ rows, entry }: { rows: GeneData[]; entry: DeEntry | null }) {
   return (
     <Paper sx={{ height: 500, width: '100%' }}>
       <DataGrid
         rows={rows ?? []}
-        columns={columns}
+        columns={columnsFor(entry)}
         getRowId={(row) => row._row}
         initialState={{
           pagination: {
@@ -102,73 +119,234 @@ export function DataTable({ rows }: { rows: GeneData[] }) {
   );
 }
 
-/** A row of scrna_de. A null file_path means the comparison was never run. */
-type DeEntry = { cluster_id: string | null; file_path: string | null };
+/** Beyond this a fold change means "absent from one group" rather than a
+ *  measured ratio, so it is not allowed to set the width of the plot. */
+const OFF_SCALE_LOG2FC = 20;
+
+/** A stored gene result, with its name from the dataset's gene catalogue. An
+ *  infinite fold change arrives as text, since JSON has no number for it. */
+type GeneRow = {
+  log2fc: number | string | null;
+  pvalue: number;
+  fdr: number;
+  pct_1: number | null;
+  pct_2: number | null;
+  scrna_genes: { gene_name: string } | null;
+};
+
+/** Rows per request when reading a comparison's genes. Reading stops at the
+ *  first empty page, so a server-side row cap cannot cut the list short. */
+const PAGE_ROWS = 1000;
+
+/** The dataset's most recently completed analysis, or null when it has none. */
+export async function fetchLatestRun(supabase: Client, datasetId: number): Promise<AnalysisRun | null> {
+  const { data, error } = await supabase
+    .from("scrna_de_runs")
+    .select("id, method, params, completed_at")
+    .eq("dataset_id", datasetId)
+    .eq("status", "complete")
+    .order("completed_at", { ascending: false })
+    .limit(1);
+  if (error) throw new Error(error.message);
+  return (data?.[0] as AnalysisRun | undefined) ?? null;
+}
+
+/** An analysis's comparisons, by cell type and then contrast. */
+export async function fetchComparisons(supabase: Client, runId: number): Promise<DeEntry[]> {
+  const { data, error } = await supabase
+    .from("scrna_de")
+    .select("id, cluster_id, contrast, group1, group2, n_group1, n_group2, n_genes_tested, tested")
+    .eq("run_id", runId);
+  if (error) throw new Error(error.message);
+  return ((data ?? []) as DeEntry[]).sort(
+    (a, b) =>
+      (a.cluster_id ?? "").localeCompare(b.cluster_id ?? "") ||
+      (a.contrast ?? "").localeCompare(b.contrast ?? ""),
+  );
+}
+
+/** A stored gene row in the shape the chart and the table use. A fold change
+ *  the analysis could not compute is stored as null and read as NaN, which both
+ *  leave out. */
+export function toGeneData(row: GeneRow): GeneData {
+  const gene = row.scrna_genes?.gene_name ?? "";
+  return {
+    gene,
+    _row: gene,
+    avg_log2FC: row.log2fc === null ? NaN : Number(row.log2fc),
+    p_val: row.pvalue,
+    p_val_adj: row.fdr,
+    "pct.1": row.pct_1 ?? NaN,
+    "pct.2": row.pct_2 ?? NaN,
+  };
+}
+
+/** Every gene result of one comparison, a page at a time. */
+export async function fetchGeneRows(supabase: Client, deId: number): Promise<GeneData[]> {
+  const out: GeneData[] = [];
+  for (let start = 0; ; start += PAGE_ROWS) {
+    const { data, error } = await supabase
+      .from("scrna_de_genes")
+      .select("log2fc, pvalue, fdr, pct_1, pct_2, scrna_genes!inner(gene_name)")
+      .eq("de_id", deId)
+      .order("id")
+      .range(start, start + PAGE_ROWS - 1);
+    if (error) throw new Error(error.message);
+    const rows = (data ?? []) as unknown as GeneRow[];
+    if (rows.length === 0) return out;
+    for (const row of rows) out.push(toGeneData(row));
+  }
+}
+
+/** Each group's cells before depth matching, from the analysis notes, e.g.
+ *  "pFACT 245, Col-0 172". Empty when the notes do not record this comparison. */
+export function beforeDepthMatching(run: AnalysisRun | null, entry: DeEntry | null): string {
+  if (!run || !entry?.cluster_id || !entry.contrast || !entry.group1 || !entry.group2) return "";
+  const notes = (run.params as {
+    notes?: { cells_before_depth_matching?: Record<string, Record<string, number>> };
+  } | null)?.notes;
+  const counts = notes?.cells_before_depth_matching?.[`${entry.cluster_id} / ${entry.contrast}`];
+  if (!counts) return "";
+  const fmt = new Intl.NumberFormat("en-US");
+  return [entry.group1, entry.group2]
+    .filter((group) => typeof counts[group] === "number")
+    .map((group) => `${group} ${fmt.format(counts[group])}`)
+    .join(", ");
+}
+
+/** What a comparison is called in the selectors. */
+function contrastLabel(entry: DeEntry): string {
+  return entry.contrast ?? "vs all other cells";
+}
+
+/** "15,430 genes tested", straight from the row, before any gene is fetched. */
+export function testedLabel(entry: DeEntry): string {
+  if (entry.tested === false || entry.n_genes_tested === 0) return "not tested";
+  if (entry.n_genes_tested === null) return "";
+  return `${new Intl.NumberFormat("en-US").format(entry.n_genes_tested)} genes tested`;
+}
+
+/** Genes passing both cuts, split by direction. */
+export function countSignificant(
+  rows: { p_val_adj: number; avg_log2FC: number }[],
+  fdrCut: number,
+  lfcCut: number,
+): { up: number; down: number; total: number } {
+  let up = 0;
+  let down = 0;
+  for (const r of rows) {
+    if (!passes(r.p_val_adj, r.avg_log2FC, { fdr: fdrCut, log2fc: lfcCut })) continue;
+    if (r.avg_log2FC > 0) up++;
+    else down++;
+  }
+  return { up, down, total: up + down };
+}
+
+/** Which way round the fold change reads, in the names of the two groups. */
+export function directionLabel(entry: DeEntry): string {
+  if (!entry.group1 || !entry.group2) {
+    return "A positive fold change is higher in this cell type than in the rest.";
+  }
+  return `A positive fold change is higher in ${entry.group1} than in ` +
+    `${entry.group2}; a negative one is higher in ${entry.group2}.`;
+}
 
 export default function DifferentialExpressionAnalysis({ file_id }: { file_id: number }) {
+  const [run, setRun] = useState<AnalysisRun | null>(null);
   const [clusterList, setClusterList] = useState<DeEntry[]>([]);
   const [selectedCluster, setSelectedCluster] = useState<DeEntry | null>(null);
   const [chartData, setChartData] = useState<GeneData[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [fdrCut, setFdrCut] = useState(DEFAULT_FDR_CUT);
+  const [lfcCut, setLfcCut] = useState(DEFAULT_LOG2FC_CUT);
+  const [onlySignificant, setOnlySignificant] = useState(false);
+  // How many genes fall outside the default x-range, so the chart can say so.
+  const [offScaleCount, setOffScaleCount] = useState(0);
   const supabase = createClientSupabaseClient();
   const chartRef = useRef<SVGSVGElement | null>(null);
+  const comparisonRef = useRef<HTMLDivElement | null>(null);
 
-  // Fetch cluster list
+  // The dataset's latest complete analysis, and its comparisons.
   useEffect(() => {
+    let cancelled = false;
     const fetchData = async () => {
       setLoading(true);
-      const { data: clusterlabels, error } = await supabase
-        .from("scrna_de")
-        .select("cluster_id, file_path")
-        .eq("dataset_id", file_id);
-
-      if (error) {
-        console.error("Error fetching DE clusters:", error);
+      setLoadError(null);
+      try {
+        const latest = await fetchLatestRun(supabase, file_id);
+        const rows = latest ? await fetchComparisons(supabase, latest.id) : [];
+        if (cancelled) return;
+        setRun(latest);
+        setClusterList(rows);
+        setSelectedCluster(rows.find((row) => row.tested !== false) ?? rows[0] ?? null);
+      } catch (err) {
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err));
       }
-
-      setClusterList(clusterlabels || []);
-      if (clusterlabels && clusterlabels.length > 0) {
-        setSelectedCluster(clusterlabels[0]);
-      }
-      setLoading(false);
+      if (!cancelled) setLoading(false);
     };
     fetchData();
+    return () => {
+      cancelled = true;
+    };
   }, [file_id]);
 
-  // Fetch DE data for selected cluster
+  // The selected comparison's gene results.
   useEffect(() => {
     if (!selectedCluster) return;
 
-    const filePath = selectedCluster.file_path;
-    if (!filePath) {
-      setChartData(null);
+    setChartData(null);
+    if (selectedCluster.tested === false) {
       setDataLoading(false);
+      setLoadError(null);
       return;
     }
 
+    let cancelled = false;
     const fetchData = async () => {
       setDataLoading(true);
-      const { data: storageData, error: storageError } = await supabase.storage
-        .from("scrna")
-        .download(filePath);
-
-      if (storageError) {
-        console.error("Storage download error:", storageError);
-        setDataLoading(false);
-        return;
-      }
-      const textData = await storageData.text();
+      setLoadError(null);
       try {
-        const jsonData = JSON.parse(textData);
-        setChartData(jsonData);
-      } catch (error) {
-        console.error("Failed to parse JSON:", error);
+        const rows = await fetchGeneRows(supabase, selectedCluster.id);
+        if (cancelled) return;
+        setChartData(rows);
+        if (rows.length === 0) setLoadError("no gene results are stored for it");
+      } catch (err) {
+        if (cancelled) return;
+        setChartData(null);
+        setLoadError(err instanceof Error ? err.message : String(err));
       }
       setDataLoading(false);
     };
     fetchData();
+    // Switching comparison while one is in flight would otherwise let the
+    // slower answer land last and draw itself under the new comparison's name.
+    return () => {
+      cancelled = true;
+    };
   }, [selectedCluster]);
+
+  // The cell types, in the order the rows came back, each appearing once.
+  const cellTypes: string[] = useMemo(() => {
+    const seen: string[] = [];
+    for (const row of clusterList) {
+      const name = row.cluster_id ?? "";
+      if (name && !seen.includes(name)) seen.push(name);
+    }
+    return seen;
+  }, [clusterList]);
+
+  const contrastsForCellType = useMemo(
+    () => clusterList.filter((row) => row.cluster_id === selectedCluster?.cluster_id),
+    [clusterList, selectedCluster],
+  );
+
+  // A result chosen in the summary opens its comparison here.
+  const openComparison = (entry: DeEntry) => {
+    setSelectedCluster(entry);
+    comparisonRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   // Draw volcano plot
   useEffect(() => {
@@ -183,27 +361,44 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
     const innerWidth = width - margin.left - margin.right;
     const innerHeight = height - margin.top - margin.bottom;
 
+    // Height is the raw p-value, not the adjusted one. With this many genes
+    // tested and few of them significant, almost every adjusted value is 1, so
+    // -log10 of it is a flat line with a handful of spikes -- not a volcano.
+    // Significance is still judged on the adjusted value, which is what colours
+    // the points and where the line sits.
     const transformedData = chartData
-      .filter((d: GeneData) => d.p_val_adj > 0 && !isNaN(d.avg_log2FC))
+      .filter((d: GeneData) => d.p_val > 0 && !isNaN(d.avg_log2FC))
       .map((d: GeneData) => ({
         ...d,
         x: +d.avg_log2FC,
-        y: -Math.log10(+d.p_val_adj),
+        y: -Math.log10(+d.p_val),
       }));
 
     if (transformedData.length === 0) return;
 
-    // Find significant genes for labeling
     const significantGenes = transformedData
-      .filter(d => d.p_val_adj < 0.05 && Math.abs(d.x) > 1)
+      .filter(d => passes(d.p_val_adj, d.x, { fdr: fdrCut, log2fc: lfcCut }))
       .sort((a, b) => a.p_val_adj - b.p_val_adj)
       .slice(0, 10);
 
-    const xExtent = d3.extent(transformedData, d => d.x) as [number, number];
+    // A gene absent from one group divides by nothing, and comes out at a fold
+    // change of twenty or more. On this dataset that is a fifth of the genes,
+    // none of them significant, scattered far enough to squash the real cloud
+    // into a stripe. The axis covers what can be read; the rest is drawn at the
+    // edge and counted underneath.
+    const readable = transformedData
+      .filter(d => Math.abs(d.x) <= OFF_SCALE_LOG2FC)
+      .map(d => Math.abs(d.x));
+    const xLimit = Math.max(
+      lfcCut * 1.5,
+      (d3.quantile(readable.sort(d3.ascending), 0.995) ?? 2) * 1.1,
+    );
+    setOffScaleCount(transformedData.filter(d => Math.abs(d.x) > xLimit).length);
+    const xExtent: [number, number] = [-xLimit, xLimit];
     const yMax = d3.max(transformedData, d => d.y) || 10;
 
     // Symmetric x-axis
-    const xMax = Math.max(Math.abs(xExtent[0]), Math.abs(xExtent[1])) * 1.1;
+    const xMax = Math.max(Math.abs(xExtent[0]), Math.abs(xExtent[1]));
 
     const xScale = d3.scaleLinear()
       .domain([-xMax, xMax])
@@ -239,6 +434,14 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       .attr("height", innerHeight)
       .attr("fill", "#fafafa");
 
+    // Everything that moves when the reader pans or zooms lives in here, and
+    // is clipped rather than clamped: a gene keeps its real position and goes
+    // out of view, instead of being drawn at a fold change it does not have.
+    const clipId = `volcano-clip-${Math.random().toString(36).slice(2)}`;
+    plot.append("defs").append("clipPath").attr("id", clipId)
+      .append("rect").attr("width", innerWidth).attr("height", innerHeight);
+    const content = plot.append("g").attr("clip-path", `url(#${clipId})`);
+
     // Grid lines
     plot.append("g")
       .attr("class", "grid")
@@ -253,31 +456,39 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       .selectAll("line")
       .attr("stroke", "#e0e0e0");
 
-    // Significance threshold lines
-    // Horizontal line at -log10(0.05) ≈ 1.3
-    const sigY = -Math.log10(0.05);
-    plot.append("line")
-      .attr("x1", 0)
-      .attr("x2", innerWidth)
-      .attr("y1", yScale(sigY))
-      .attr("y2", yScale(sigY))
-      .attr("stroke", "#999")
-      .attr("stroke-dasharray", "5,5")
-      .attr("stroke-width", 1);
+    // The height is a raw p-value but significance is judged on the adjusted
+    // one, and the two do not line up at a fixed height: the line goes where
+    // the weakest gene still passing the cut actually sits. No line when
+    // nothing passes, rather than one drawn somewhere arbitrary.
+    const passing = transformedData.filter(d => d.p_val_adj < fdrCut);
+    if (passing.length > 0) {
+      const sigY = d3.min(passing, d => d.y) as number;
+      content.append("line")
+        .attr("class", "fdr-line")
+        .attr("x1", 0)
+        .attr("x2", innerWidth)
+        .attr("y1", yScale(sigY))
+        .attr("y2", yScale(sigY))
+        .attr("stroke", "#999")
+        .attr("stroke-dasharray", "5,5")
+        .attr("stroke-width", 1);
+    }
 
-    // Vertical lines at log2FC = ±1
-    plot.append("line")
-      .attr("x1", xScale(-1))
-      .attr("x2", xScale(-1))
+    // Vertical lines at the reader's fold-change cut.
+    content.append("line")
+      .attr("class", "lfc-line-neg")
+      .attr("x1", xScale(-lfcCut))
+      .attr("x2", xScale(-lfcCut))
       .attr("y1", 0)
       .attr("y2", innerHeight)
       .attr("stroke", "#999")
       .attr("stroke-dasharray", "5,5")
       .attr("stroke-width", 1);
 
-    plot.append("line")
-      .attr("x1", xScale(1))
-      .attr("x2", xScale(1))
+    content.append("line")
+      .attr("class", "lfc-line-pos")
+      .attr("x1", xScale(lfcCut))
+      .attr("x2", xScale(lfcCut))
       .attr("y1", 0)
       .attr("y2", innerHeight)
       .attr("stroke", "#999")
@@ -285,9 +496,10 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       .attr("stroke-width", 1);
 
     // X-axis
-    plot.append("g")
-      .attr("transform", `translate(0,${innerHeight})`)
-      .call(d3.axisBottom(xScale))
+    const xAxisG = plot.append("g")
+      .attr("class", "x-axis")
+      .attr("transform", `translate(0,${innerHeight})`);
+    xAxisG.call(d3.axisBottom(xScale))
       .selectAll("text")
       .style("font-size", "12px");
 
@@ -313,7 +525,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       .attr("text-anchor", "middle")
       .attr("font-size", "14px")
       .attr("font-weight", "bold")
-      .text("-Log10(Adjusted p-value)");
+      .text("-Log10(raw p-value)");
 
     // Title
     plot.append("text")
@@ -322,10 +534,13 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       .attr("text-anchor", "middle")
       .attr("font-size", "16px")
       .attr("font-weight", "bold")
-      .text(`Volcano Plot: ${selectedCluster?.cluster_id || ''} vs Other Clusters`);
+      .text(
+        `Volcano Plot: ${groupNames(selectedCluster).a} vs ${groupNames(selectedCluster).b}` +
+        (selectedCluster?.cluster_id ? `, in ${selectedCluster.cluster_id}` : ""),
+      );
 
     // Points
-    plot.selectAll("circle")
+    content.selectAll("circle")
       .data(transformedData)
       .enter()
       .append("circle")
@@ -333,9 +548,8 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       .attr("cy", d => yScale(d.y))
       .attr("r", d => significantGenes.some(g => g.gene === d.gene) ? 5 : 3)
       .attr("fill", d => {
-        if (d.p_val_adj < 0.05 && d.x > 1) return "#c62828";  // Upregulated
-        if (d.p_val_adj < 0.05 && d.x < -1) return "#1565c0"; // Downregulated
-        return "#9e9e9e"; // Not significant
+        if (!passes(d.p_val_adj, d.x, { fdr: fdrCut, log2fc: lfcCut })) return "#9e9e9e";
+        return d.x > 0 ? FIRST_GROUP_COLOUR : SECOND_GROUP_COLOUR;
       })
       .attr("opacity", 0.7)
       .attr("stroke", d => significantGenes.some(g => g.gene === d.gene) ? "#000" : "none")
@@ -348,10 +562,11 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
           .style("display", "block")
           .html(`
             <strong>${d.gene}</strong><br/>
-            Log2 FC: <span style="color:${d.x > 0 ? '#c62828' : '#1565c0'}">${d.x.toFixed(3)}</span><br/>
-            Adj. p-value: ${d.p_val_adj.toExponential(2)}<br/>
-            % in cluster: ${(d['pct.1'] * 100).toFixed(1)}%<br/>
-            % in others: ${(d['pct.2'] * 100).toFixed(1)}%
+            Log2 FC: <span style="color:${d.x > 0 ? FIRST_GROUP_COLOUR : SECOND_GROUP_COLOUR}">${formatFoldChange(d.x, 3)}</span><br/>
+            p-value: ${d.p_val.toExponential(2)}<br/>
+            Adj. p-value (FDR): ${d.p_val_adj.toExponential(2)}<br/>
+            % in ${groupNames(selectedCluster).a}: ${(d['pct.1'] * 100).toFixed(1)}%<br/>
+            % in ${groupNames(selectedCluster).b}: ${(d['pct.2'] * 100).toFixed(1)}%
           `);
       })
       .on("mousemove", (event) => {
@@ -368,7 +583,8 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
 
     // Labels for top significant genes
     significantGenes.forEach(d => {
-      plot.append("text")
+      content.append("text")
+        .attr("class", "gene-label")
         .attr("x", xScale(d.x) + 8)
         .attr("y", yScale(d.y) + 4)
         .attr("font-size", "10px")
@@ -378,18 +594,18 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
 
     // Legend
     const legend = plot.append("g")
-      .attr("transform", `translate(${innerWidth - 150}, 10)`);
+      .attr("transform", `translate(${innerWidth - 210}, 10)`);
 
     legend.append("rect")
-      .attr("width", 140)
+      .attr("width", 200)
       .attr("height", 80)
       .attr("fill", "white")
       .attr("stroke", "#ddd")
       .attr("rx", 4);
 
     const legendData = [
-      { color: "#c62828", label: "Upregulated" },
-      { color: "#1565c0", label: "Downregulated" },
+      { color: FIRST_GROUP_COLOUR, label: `Higher in ${groupNames(selectedCluster).a}` },
+      { color: SECOND_GROUP_COLOUR, label: `Higher in ${groupNames(selectedCluster).b}` },
       { color: "#9e9e9e", label: "Not significant" }
     ];
 
@@ -407,19 +623,38 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
         .text(item.label);
     });
 
+    // The default view is the readable range, so the cloud is not squashed by
+    // the far outliers. Zooming out brings them back at their real positions.
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.05, 20])
+      .on("zoom", (event) => {
+        const zx = event.transform.rescaleX(xScale);
+        xAxisG.call(d3.axisBottom(zx));
+        content.selectAll<SVGCircleElement, typeof transformedData[number]>("circle")
+          .attr("cx", d => zx(d.x));
+        content.selectAll<SVGTextElement, unknown>("text.gene-label")
+          .attr("x", (_, i) => zx(significantGenes[i].x) + 8);
+        content.select(".lfc-line-neg").attr("x1", zx(-lfcCut)).attr("x2", zx(-lfcCut));
+        content.select(".lfc-line-pos").attr("x1", zx(lfcCut)).attr("x2", zx(lfcCut));
+      });
+    svg.call(zoom).on("dblclick.zoom", null);
+    // Double-click is the way back, rather than a second zoom-in.
+    svg.on("dblclick", () => svg.transition().duration(250).call(zoom.transform, d3.zoomIdentity));
+
     return () => {
+      svg.on(".zoom", null).on("dblclick", null);
       tooltip.remove();
     };
-  }, [chartData, selectedCluster]);
+  }, [chartData, selectedCluster, fdrCut, lfcCut]);
 
-  // Download CSV function
+  /** Download the table as it stands, filtered or not, as CSV. */
   const downloadCSV = () => {
     if (!chartData) return;
 
     const headers = ['gene', 'avg_log2FC', 'p_val', 'p_val_adj', 'pct.1', 'pct.2'];
     const csvContent = [
       headers.join(','),
-      ...chartData.map(row =>
+      ...tableRows.map(row =>
         headers.map(h => row[h as keyof GeneData]).join(',')
       )
     ].join('\n');
@@ -445,6 +680,16 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
     );
   }
 
+  if (loadError && clusterList.length === 0) {
+    return (
+      <Box sx={{ p: 3 }}>
+        <Alert severity="error">
+          The differential expression analysis could not be loaded: {loadError}
+        </Alert>
+      </Box>
+    );
+  }
+
   // No DE data available
   if (clusterList.length === 0) {
     return (
@@ -462,8 +707,13 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
   }
 
   // Compute summary stats
-  const upregulated = chartData?.filter(d => d.p_val_adj < 0.05 && d.avg_log2FC > 1).length || 0;
-  const downregulated = chartData?.filter(d => d.p_val_adj < 0.05 && d.avg_log2FC < -1).length || 0;
+  const { up: upregulated, down: downregulated } =
+    countSignificant(chartData ?? [], fdrCut, lfcCut);
+  const tableRows = onlySignificant
+    ? (chartData ?? []).filter(
+        d => passes(d.p_val_adj, d.avg_log2FC, { fdr: fdrCut, log2fc: lfcCut }),
+      )
+    : chartData ?? [];
 
   return (
     <Box sx={{ p: 2 }}>
@@ -472,49 +722,141 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
         <Typography variant="h5" fontWeight="bold">
           Differential Expression Analysis
         </Typography>
-        <Tooltip title="Compare gene expression between a cluster and all other cells">
+        <Tooltip title="Compare gene expression between the two groups a comparison names">
           <InfoOutlinedIcon color="action" />
         </Tooltip>
       </Box>
 
       <Typography variant="body2" color="text.secondary" mb={3}>
         Differential expression analysis identifies genes that are significantly up- or down-regulated
-        in a specific cluster compared to all other cells. Statistical significance is determined using
+        in one group compared to the other. Statistical significance is determined using
         the Wilcoxon rank-sum test with Benjamini-Hochberg FDR correction.
+        {run && ` Showing analysis ${run.id} (${run.method}).`}
       </Typography>
 
-      {/* Cluster Selection */}
+      {/* One set of cuts for the whole tab. */}
       <Paper sx={{ p: 2, mb: 3 }}>
         <Box display="flex" alignItems="center" gap={2} flexWrap="wrap">
-          <FormControl sx={{ minWidth: 250 }}>
-            <InputLabel id="cluster-select-label">Select Cluster</InputLabel>
-            <Select
-              labelId="cluster-select-label"
-              value={selectedCluster?.cluster_id || ""}
-              label="Select Cluster"
-              onChange={(e) => {
-                const selected = clusterList.find(cluster => cluster.cluster_id === e.target.value);
-                setSelectedCluster(selected || null);
+          <Typography variant="subtitle2" fontWeight="bold">
+            Significance
+          </Typography>
+          <TextField
+            label="FDR below"
+            type="number"
+            size="small"
+            value={fdrCut}
+            onChange={(e) => setFdrCut(Math.max(0, Number(e.target.value)))}
+            inputProps={{ step: 0.01, min: 0, max: 1 }}
+            sx={{ width: 130 }}
+          />
+          <TextField
+            label="|log2FC| above"
+            type="number"
+            size="small"
+            value={lfcCut}
+            onChange={(e) => setLfcCut(Math.max(0, Number(e.target.value)))}
+            inputProps={{ step: 0.1, min: 0 }}
+            sx={{ width: 150 }}
+          />
+          {(fdrCut !== DEFAULT_FDR_CUT || lfcCut !== DEFAULT_LOG2FC_CUT) && (
+            <Button
+              size="small"
+              onClick={() => {
+                setFdrCut(DEFAULT_FDR_CUT);
+                setLfcCut(DEFAULT_LOG2FC_CUT);
               }}
             >
-              {clusterList.map((cluster, index) => (
-                <MenuItem key={index} value={cluster.cluster_id ?? ""}>
-                  {cluster.cluster_id ?? "Unknown"}
+              Reset cuts
+            </Button>
+          )}
+        </Box>
+        <Typography variant="caption" color="text.secondary"
+                    display="block" sx={{ mt: 1 }}>
+          These start at FDR &lt; {DEFAULT_FDR_CUT} and |log2FC| &gt; {DEFAULT_LOG2FC_CUT}.
+          Change them and the whole tab follows: the summary, the plot, its counts and
+          the table.
+        </Typography>
+      </Paper>
+
+      <DeSummary
+        comparisons={clusterList}
+        cuts={{ fdr: fdrCut, log2fc: lfcCut }}
+        onSelect={openComparison}
+      />
+
+      {/* Which comparison */}
+      <Paper ref={comparisonRef} sx={{ p: 2, mb: 3 }}>
+        <Box display="flex" alignItems="center" gap={2} flexWrap="wrap">
+          <FormControl sx={{ minWidth: 260 }}>
+            <InputLabel id="cluster-select-label">Cell type</InputLabel>
+            <Select
+              labelId="cluster-select-label"
+              value={selectedCluster?.cluster_id ?? ""}
+              label="Cell type"
+              onChange={(e) => {
+                const next = e.target.value;
+                // Keep the contrast if this cell type was also compared that
+                // way, so moving down the list does not reset the question.
+                const sameContrast = clusterList.find(
+                  (row) => row.cluster_id === next &&
+                    row.contrast === selectedCluster?.contrast,
+                );
+                setSelectedCluster(
+                  sameContrast ??
+                    clusterList.find((row) => row.cluster_id === next) ?? null,
+                );
+              }}
+            >
+              {cellTypes.map((cellType) => (
+                <MenuItem key={cellType} value={cellType}>
+                  {cellType}
                 </MenuItem>
               ))}
             </Select>
           </FormControl>
 
+          {/* Older one-vs-rest datasets have a single comparison per cell type
+              and nothing to choose between, so they keep one selector. */}
+          {contrastsForCellType.length > 1 && (
+            <FormControl sx={{ minWidth: 300 }}>
+              <InputLabel id="contrast-select-label">Comparison</InputLabel>
+              <Select
+                labelId="contrast-select-label"
+                value={selectedCluster?.contrast ?? ""}
+                label="Comparison"
+                onChange={(e) => {
+                  setSelectedCluster(
+                    contrastsForCellType.find(
+                      (row) => (row.contrast ?? "") === e.target.value,
+                    ) ?? null,
+                  );
+                }}
+              >
+                {contrastsForCellType.map((row) => (
+                  <MenuItem key={row.contrast ?? ""} value={row.contrast ?? ""}>
+                    {contrastLabel(row)}
+                    {testedLabel(row) && (
+                      <Typography component="span" variant="caption"
+                                  color="text.secondary" sx={{ ml: 1 }}>
+                        {testedLabel(row)}
+                      </Typography>
+                    )}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
+
           {chartData && (
             <>
               <Chip
-                label={`${upregulated} Upregulated`}
+                label={`${upregulated} higher in ${groupNames(selectedCluster).a}`}
                 color="error"
                 variant="outlined"
                 size="small"
               />
               <Chip
-                label={`${downregulated} Downregulated`}
+                label={`${downregulated} higher in ${groupNames(selectedCluster).b}`}
                 color="primary"
                 variant="outlined"
                 size="small"
@@ -524,15 +866,70 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
                 variant="outlined"
                 size="small"
               />
-              <Tooltip title="Download as CSV">
+              <Tooltip title="Download the table as CSV">
                 <IconButton onClick={downloadCSV} size="small">
                   <FileDownloadIcon />
                 </IconButton>
               </Tooltip>
             </>
           )}
+
         </Box>
+
+        {selectedCluster && (
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
+            {selectedCluster.group1 && selectedCluster.group2 ? (
+              <>
+                {selectedCluster.group1}
+                {selectedCluster.n_group1 !== null &&
+                  ` (${selectedCluster.n_group1.toLocaleString()} cells)`}
+                {" against "}
+                {selectedCluster.group2}
+                {selectedCluster.n_group2 !== null &&
+                  ` (${selectedCluster.n_group2.toLocaleString()} cells)`}
+                {", in "}
+                {selectedCluster.cluster_id}. {directionLabel(selectedCluster)}
+              </>
+            ) : (
+              directionLabel(selectedCluster)
+            )}
+          </Typography>
+        )}
+        {beforeDepthMatching(run, selectedCluster) && (
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+            Cells compared after depth matching. Before it:{" "}
+            {beforeDepthMatching(run, selectedCluster)}.
+          </Typography>
+        )}
       </Paper>
+
+      {loadError && (
+        <Alert severity="error" sx={{ mb: 3 }}>
+          This comparison could not be loaded: {loadError}
+        </Alert>
+      )}
+
+      {/* Considered, never run. The group sizes are what explain why. */}
+      {selectedCluster && selectedCluster.tested === false && !dataLoading && (
+        <Alert severity="info" sx={{ mb: 3 }}>
+          <Typography variant="subtitle2" fontWeight="bold">
+            This comparison was not run
+          </Typography>
+          <Typography variant="body2" sx={{ mt: 0.5 }}>
+            {selectedCluster.group1 && selectedCluster.group2 ? (
+              <>
+                {selectedCluster.cluster_id} has{" "}
+                {selectedCluster.n_group1?.toLocaleString() ?? "no"} cells in{" "}
+                {selectedCluster.group1} and{" "}
+                {selectedCluster.n_group2?.toLocaleString() ?? "no"} in{" "}
+                {selectedCluster.group2} — too few on one side to compare.
+              </>
+            ) : (
+              <>There are no results stored for {selectedCluster.cluster_id}.</>
+            )}
+          </Typography>
+        </Alert>
+      )}
 
       {/* Loading indicator for data */}
       {dataLoading && (
@@ -540,6 +937,15 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
           <CircularProgress size={24} />
           <Typography sx={{ ml: 2 }}>Loading cluster data...</Typography>
         </Box>
+      )}
+
+      {/* Nothing passes the cuts: say so, rather than leave an all-grey plot. */}
+      {chartData && !dataLoading && chartData.length > 0 && upregulated + downregulated === 0 && (
+        <Alert severity="info" sx={{ mb: 3 }}>
+          No gene in this comparison has an adjusted p-value below {fdrCut} and a
+          fold change beyond ±{lfcCut}, so every point is grey. Loosen the cuts
+          above to see more.
+        </Alert>
       )}
 
       {/* Volcano Plot */}
@@ -550,9 +956,19 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
               Volcano Plot
             </Typography>
             <Typography variant="caption" color="text.secondary" display="block" mb={2}>
-              Points above the horizontal line (p &lt; 0.05) and beyond vertical lines (|log2FC| &gt; 1)
-              are considered significantly differentially expressed. Red = upregulated, Blue = downregulated.
+              Height is the raw p-value; colour is the adjusted p-value (FDR), so a high grey
+              point is one that does not survive the correction for testing every gene.
+              Points beyond the vertical lines (|log2FC| &gt; {lfcCut}) and above the dashed line
+              pass FDR &lt; {fdrCut}. Red = higher in {groupNames(selectedCluster).a}, blue = higher
+              in {groupNames(selectedCluster).b}. Drag to pan, scroll to zoom.
             </Typography>
+            {offScaleCount > 0 && (
+              <Typography variant="caption" color="text.secondary" display="block" mb={1}>
+                {offScaleCount.toLocaleString()} gene
+                {offScaleCount === 1 ? " is" : "s are"} outside this view — zoom out to see
+                {offScaleCount === 1 ? " it" : " them"}.
+              </Typography>
+            )}
             <Box sx={{ display: "flex", justifyContent: "center" }}>
               <svg style={{ width: "100%", maxWidth: "800px", height: "500px" }} ref={chartRef}></svg>
             </Box>
@@ -560,10 +976,25 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
 
           {/* Data Table */}
           <Paper sx={{ p: 2 }}>
-            <Typography variant="subtitle2" fontWeight="bold" mb={2}>
-              Gene Table (sorted by adjusted p-value)
-            </Typography>
-            <DataTable rows={chartData} />
+            <Box display="flex" alignItems="center" justifyContent="space-between"
+                 flexWrap="wrap" mb={2}>
+              <Typography variant="subtitle2" fontWeight="bold">
+                Gene table{onlySignificant
+                  ? ` — ${tableRows.length.toLocaleString()} passing the cuts`
+                  : ` — all ${tableRows.length.toLocaleString()} genes tested`}
+              </Typography>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={onlySignificant}
+                    onChange={(e) => setOnlySignificant(e.target.checked)}
+                  />
+                }
+                label="Significant only"
+              />
+            </Box>
+            <DataTable rows={tableRows} entry={selectedCluster} />
           </Paper>
         </>
       )}
