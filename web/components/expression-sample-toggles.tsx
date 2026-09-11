@@ -3,7 +3,7 @@
 /**
  * Show or hide the cells of each value in one filter row: the samples, or one of
  * the labels the cells carry, such as transgene status. Each value can also be
- * highlighted, which draws its cells in yellow on top of the rest of the map.
+ * focused on, which greys out every cell that does not have it.
  *
  * The values come from the cells themselves, so a dataset with different ones
  * — or none at all — needs no change here. A row with no values renders
@@ -28,10 +28,10 @@ interface Props {
   unlabelledCount: number;
   onToggle: (name: string) => void;
   onShowAll: () => void;
-  /** Values whose cells are drawn in yellow. */
-  highlighted?: ReadonlySet<string>;
-  /** Highlights or stops highlighting one value; without it no highlight buttons show. */
-  onHighlight?: (name: string) => void;
+  /** Values focused on; cells without them are greyed out. */
+  focused?: ReadonlySet<string>;
+  /** Focuses on or stops focusing on one value; without it no focus buttons show. */
+  onFocus?: (name: string) => void;
 }
 
 export function ExpressionSampleToggles({
@@ -42,8 +42,8 @@ export function ExpressionSampleToggles({
   unlabelledCount,
   onToggle,
   onShowAll,
-  highlighted,
-  onHighlight,
+  focused,
+  onFocus,
 }: Props) {
   if (samples.length === 0) return null;
 
@@ -57,7 +57,7 @@ export function ExpressionSampleToggles({
       </span>
       {samples.map((sample) => {
         const isHidden = hidden.has(sample.name);
-        const isHighlighted = highlighted?.has(sample.name) ?? false;
+        const isFocused = focused?.has(sample.name) ?? false;
         return (
           <span key={sample.name} className="inline-flex items-center gap-0.5">
             <button
@@ -82,24 +82,24 @@ export function ExpressionSampleToggles({
                 {fmt.format(sample.count)}
               </span>
             </button>
-            {onHighlight && (
+            {onFocus && (
               <button
                 type="button"
-                onClick={() => onHighlight(sample.name)}
-                aria-pressed={isHighlighted}
-                aria-label={`Highlight ${sample.name}`}
+                onClick={() => onFocus(sample.name)}
+                aria-pressed={isFocused}
+                aria-label={`Focus on ${sample.name}`}
                 title={
-                  isHighlighted
-                    ? `Stop highlighting ${sample.name}`
-                    : `Highlight ${sample.name} in yellow`
+                  isFocused
+                    ? `Stop focusing on ${sample.name}`
+                    : `Focus on ${sample.name}: grey out every other cell`
                 }
                 className={`rounded-md border px-1.5 py-1 text-xs leading-none transition-colors ${
-                  isHighlighted
-                    ? "border-yellow-400 bg-yellow-300 text-stone-800"
-                    : "border-stone-200 bg-white text-stone-400 hover:border-yellow-300 hover:text-yellow-600"
+                  isFocused
+                    ? "border-stone-700 bg-stone-700 text-white"
+                    : "border-stone-200 bg-white text-stone-400 hover:border-stone-400 hover:text-stone-700"
                 }`}
               >
-                ✦
+                ◎
               </button>
             )}
           </span>

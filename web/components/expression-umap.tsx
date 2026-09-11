@@ -15,17 +15,16 @@ import {
   packCellArrays,
   packClusterColors,
   packPositions,
-  packHighlight,
+  focusIsSet,
+  packFocus,
   packVisibility,
+  type FocusedValues,
   type HiddenValues,
-  type HighlightedValues,
 } from "@/components/expression-lib/umap-packing";
 import {
   CLUSTER_FRAG,
   EXPRESSION_FRAG,
   EXPRESSION_VERT,
-  HIGHLIGHT_FRAG,
-  HIGHLIGHT_VERT,
   POINT_VERT,
 } from "@/components/expression-lib/shaders";
 import type { Database } from "@/lib/database.types";
@@ -34,8 +33,6 @@ type Dataset = Database["public"]["Tables"]["scrna_datasets"]["Row"];
 type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
 
 const DEFAULT_POINT_SIZE = 4.0;
-/** Highlighted cells are drawn a little larger, so they stand out on top. */
-const HIGHLIGHT_POINT_SIZE = 6.0;
 
 const NO_HIDDEN_VALUES: HiddenValues = new Map();
 
@@ -147,8 +144,8 @@ export interface ExpressionUmapProps {
   hiddenClusters?: ReadonlySet<number>;
   /** Values hidden per filter row: the sample row and each label. Empty = all visible. */
   hiddenValues?: HiddenValues;
-  /** Values highlighted per filter row; their cells are drawn in yellow on top. */
-  highlightedValues?: HighlightedValues;
+  /** Values focused on per filter row; cells outside the focus are greyed out. */
+  focusedValues?: FocusedValues;
   /** Height of the canvas in pixels; width fills the parent */
   height?: number;
   /** Fires when data is loaded so parent can render colorbar / sidebar */
@@ -189,7 +186,7 @@ export function ExpressionUmap({
   geneName,
   hiddenClusters,
   hiddenValues,
-  highlightedValues,
+  focusedValues,
   height = 600,
   onDataLoaded,
   onExpressionRangeChanged,
@@ -205,10 +202,9 @@ export function ExpressionUmap({
   const colorBufferRef = useRef<ReglBuffer | null>(null);
   const visibilityBufferRef = useRef<ReglBuffer | null>(null);
   const expressionBufferRef = useRef<ReglBuffer | null>(null);
-  const highlightBufferRef = useRef<ReglBuffer | null>(null);
+  const focusBufferRef = useRef<ReglBuffer | null>(null);
   const drawClustersRef = useRef<DrawCommand | null>(null);
   const drawExpressionRef = useRef<DrawCommand | null>(null);
-  const drawHighlightRef = useRef<DrawCommand | null>(null);
   /**
    * Length the GPU buffers were allocated for. Subdata writes from the
    * [visibility] / [expressionArr] effects skip when array length doesn't
@@ -238,8 +234,8 @@ export function ExpressionUmap({
   const expressionArrRef = useRef(expressionArr);
   const expressionRangeRef = useRef(expressionRange);
   const dirtyRef = useRef(true);
-  /** Whether any cell is highlighted, so the highlight pass is skipped otherwise. */
-  const anyHighlightRef = useRef(false);
+  /** Whether a focus is set, so the greyed pass is drawn only then. */
+  const focusSetRef = useRef(false);
   // Hit-testing reads these from a handler created once, so they are mirrored here.
   const positionsRef = useRef<Float32Array | null>(null);
   const visibilityRef = useRef<Float32Array | null>(null);
@@ -371,10 +367,10 @@ export function ExpressionUmap({
     [data, hiddenClusters, hiddenValues],
   );
 
-  // -------- highlight recompute from highlighted values ----------------------
-  const highlight = useMemo(
-    () => (data ? packHighlight(data.cells, highlightedValues ?? NO_HIDDEN_VALUES) : null),
-    [data, highlightedValues],
+  // -------- focus recompute from focused values -----------------------------
+  const focus = useMemo(
+    () => (data ? packFocus(data.cells, focusedValues ?? NO_HIDDEN_VALUES) : null),
+    [data, focusedValues],
   );
 
   // -------- regl init + render loop (runs ONCE per dataset) ------------------
@@ -414,12 +410,12 @@ export function ExpressionUmap({
     const expressionBuffer = regl.buffer(
       expressionArr ?? new Float32Array(data.cells.length),
     );
-    const highlightBuffer = regl.buffer(highlight ?? new Float32Array(data.cells.length));
+    const focusBuffer = regl.buffer(focus ?? new Float32Array(data.cells.length).fill(1));
     positionBufferRef.current = positionBuffer;
     colorBufferRef.current = colorBuffer;
     visibilityBufferRef.current = visibilityBuffer;
     expressionBufferRef.current = expressionBuffer;
-    highlightBufferRef.current = highlightBuffer;
+    focusBufferRef.current = focusBuffer;
     cellCountRef.current = data.cells.length;
 
     const drawClusters = regl({
@@ -429,11 +425,13 @@ export function ExpressionUmap({
         position: positionBuffer,
         color: colorBuffer,
         visible: visibilityBuffer,
+        focus: focusBuffer,
       },
       uniforms: {
         zoom: regl.prop<{ zoom: number }, "zoom">("zoom"),
         translate: regl.prop<{ translate: [number, number] }, "translate">("translate"),
         pointSize: DEFAULT_POINT_SIZE,
+        focusMode: regl.prop<{ focusMode: number }, "focusMode">("focusMode"),
       },
       count: data.cells.length,
       primitive: "points",
@@ -451,6 +449,7 @@ export function ExpressionUmap({
         position: positionBuffer,
         expression: expressionBuffer,
         visible: visibilityBuffer,
+        focus: focusBuffer,
       },
       uniforms: {
         zoom: regl.prop<{ zoom: number }, "zoom">("zoom"),
@@ -458,29 +457,7 @@ export function ExpressionUmap({
         pointSize: DEFAULT_POINT_SIZE,
         expMin: regl.prop<{ expMin: number }, "expMin">("expMin"),
         expMax: regl.prop<{ expMax: number }, "expMax">("expMax"),
-      },
-      count: data.cells.length,
-      primitive: "points",
-      blend: {
-        enable: true,
-        func: { src: "src alpha", dst: "one minus src alpha" },
-      },
-      depth: { enable: false },
-    });
-
-    // Drawn last, over either colouring, so highlighted cells sit on top.
-    const drawHighlight = regl({
-      vert: HIGHLIGHT_VERT,
-      frag: HIGHLIGHT_FRAG,
-      attributes: {
-        position: positionBuffer,
-        visible: visibilityBuffer,
-        highlight: highlightBuffer,
-      },
-      uniforms: {
-        zoom: regl.prop<{ zoom: number }, "zoom">("zoom"),
-        translate: regl.prop<{ translate: [number, number] }, "translate">("translate"),
-        pointSize: HIGHLIGHT_POINT_SIZE,
+        focusMode: regl.prop<{ focusMode: number }, "focusMode">("focusMode"),
       },
       count: data.cells.length,
       primitive: "points",
@@ -493,7 +470,6 @@ export function ExpressionUmap({
 
     drawClustersRef.current = drawClusters;
     drawExpressionRef.current = drawExpression;
-    drawHighlightRef.current = drawHighlight;
 
     // Size the canvas's backing store to its CSS box × devicePixelRatio
     // so points render crisp on retina/4K. ResizeObserver re-syncs on any
@@ -545,17 +521,21 @@ export function ExpressionUmap({
         const expRange = expressionRangeRef.current;
         const z = zoomRef.current;
         const t = translateRef.current;
-        if (expArr && expRange) {
-          drawExpression({
-            zoom: z,
-            translate: t,
-            expMin: expRange.min,
-            expMax: expRange.max,
-          });
-        } else {
-          drawClusters({ zoom: z, translate: t });
+        // With a focus set, the cells outside it go down first in grey and the
+        // cells inside it are drawn over them in colour.
+        for (const focusMode of focusSetRef.current ? [1, 2] : [0]) {
+          if (expArr && expRange) {
+            drawExpression({
+              zoom: z,
+              translate: t,
+              expMin: expRange.min,
+              expMax: expRange.max,
+              focusMode,
+            });
+          } else {
+            drawClusters({ zoom: z, translate: t, focusMode });
+          }
         }
-        if (anyHighlightRef.current) drawHighlight({ zoom: z, translate: t });
         dirtyRef.current = false;
       }
       rafId = requestAnimationFrame(tick);
@@ -570,17 +550,16 @@ export function ExpressionUmap({
       colorBuffer.destroy();
       visibilityBuffer.destroy();
       expressionBuffer.destroy();
-      highlightBuffer.destroy();
+      focusBuffer.destroy();
       regl.destroy();
       reglRef.current = null;
       positionBufferRef.current = null;
       colorBufferRef.current = null;
       visibilityBufferRef.current = null;
       expressionBufferRef.current = null;
-      highlightBufferRef.current = null;
+      focusBufferRef.current = null;
       drawClustersRef.current = null;
       drawExpressionRef.current = null;
-      drawHighlightRef.current = null;
       cellCountRef.current = 0;
     };
     // Only re-init on dataset change. Camera and buffer updates flow
@@ -600,15 +579,15 @@ export function ExpressionUmap({
     dirtyRef.current = true;
   }, [visibility]);
 
-  // -------- highlight update (in-place subdata) -------------------------------
+  // -------- focus update (in-place subdata) -----------------------------------
   useEffect(() => {
-    const buf = highlightBufferRef.current;
-    if (!buf || !highlight) return;
-    if (highlight.length !== cellCountRef.current) return;
-    buf.subdata(highlight);
-    anyHighlightRef.current = highlight.some((v) => v > 0);
+    const buf = focusBufferRef.current;
+    if (!buf || !focus) return;
+    if (focus.length !== cellCountRef.current) return;
+    buf.subdata(focus);
+    focusSetRef.current = focusIsSet(focusedValues ?? NO_HIDDEN_VALUES);
     dirtyRef.current = true;
-  }, [highlight]);
+  }, [focus, focusedValues]);
 
   // -------- expression update (in-place subdata) ------------------------------
   useEffect(() => {
