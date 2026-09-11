@@ -87,6 +87,7 @@ non-goal here; see proposal.md.
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -109,6 +110,20 @@ from bloom_mcp.sections.sleap_roots.analysis import (
 
 _BASELINES = Path(__file__).resolve().parents[1] / "fixtures" / "plot_baselines"
 _EXPERIMENT = "turface_19.csv"
+# The same CSV `viz_env` copies into TRAITS_DIR — the converged tools read through the
+# ExperimentReader port instead, so their FakeReader has to be seeded from it directly.
+_RAW_FIXTURE = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "turface_19_final_data.csv"
+)
+
+# The converged 3 name their committed PNG after the tool, not after the experiment, so the
+# legacy `<label>_turface_19.png` names in _SNAPSHOT_TOOLS don't apply to them. Baselines
+# keep their original names — only the produced file's name differs.
+_PRODUCED_NAME_OVERRIDES = {
+    "histograms": "trait_histograms.png",
+    "boxplots": "trait_boxplots.png",
+    "correlation_matrix": "correlation_matrix.png",
+}
 
 # Empirically derived, not guessed -- see the module docstring's Tolerance and Known
 # limitation sections (design.md Decisions 2 & 3 have the full measurement + fallback
@@ -163,6 +178,57 @@ _SNAPSHOT_TOOLS = [
 ]
 _IDS = [label for label, *_ in _SNAPSHOT_TOOLS]
 
+# The 3 tools #466 converged onto `@as_mcp_tool` no longer match the legacy calling
+# convention the other 2 still use, so this file can no longer drive all 5 the same way.
+# They take a Pydantic params model (not a bare experiment string), return a result model
+# (not a "Plot saved: ..." string), and persist their PNG into a ResultStore version dir
+# (not PLOTS_DIR). Pixel coverage is preserved for them rather than dropped: the render
+# itself is unchanged, and these baselines still match within `_TOL` (verified against the
+# committed baselines when this adaptation landed, #466 review round 7).
+_CONVERGED = {"histograms", "boxplots", "correlation_matrix"}
+
+
+def _render_to_dir(label, module, fn_name, viz_env):
+    """Run one plotting tool and return the directory its PNG(s) landed in.
+
+    Legacy tools write straight into ``PLOTS_DIR`` (``viz_env``). The converged 3 write
+    into a ``ResultStore`` staging dir that ``commit`` deletes on success, so their bytes
+    are copied out inside a ``commit`` spy — the last point at which the committed file
+    still exists on disk. Capturing at commit (rather than spying on ``savefig``) means the
+    bytes compared are exactly the bytes that were committed, not an intermediate render.
+    """
+    fn = getattr(module, fn_name)
+    if label not in _CONVERGED:
+        result = fn(_EXPERIMENT)
+        assert "Plot saved:" in result
+        return viz_env
+
+    import pandas as pd
+    from bloom_mcp.data_access import FakeReader, SupabaseReader
+    from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+    from bloom_mcp.tools import _ports
+
+    captured = viz_env / f"_committed_{label}"
+    captured.mkdir(parents=True, exist_ok=True)
+
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, pd.read_csv(_RAW_FIXTURE))
+    store = FakeResultStore()
+    real_commit = store.commit
+
+    def _spy_commit(run, outputs):
+        for name in outputs:
+            shutil.copy(run.staging_dir / name, captured / name)
+        return real_commit(run, outputs)
+
+    store.commit = _spy_commit
+    _ports.configure(reader=reader, store=store)
+    try:
+        fn(experiment=_EXPERIMENT)
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    return captured
+
 
 @pytest.mark.parametrize(
     "_label,module,fn_name,produced_name,baseline_name", _SNAPSHOT_TOOLS, ids=_IDS
@@ -170,11 +236,9 @@ _IDS = [label for label, *_ in _SNAPSHOT_TOOLS]
 def test_plot_matches_baseline_within_tolerance(
     _label, module, fn_name, produced_name, baseline_name, viz_env
 ):
-    fn = getattr(module, fn_name)
-    result = fn(_EXPERIMENT)
-    assert "Plot saved:" in result
+    produced_dir = _render_to_dir(_label, module, fn_name, viz_env)
 
-    actual = viz_env / produced_name
+    actual = produced_dir / _PRODUCED_NAME_OVERRIDES.get(_label, produced_name)
     baseline = _BASELINES / baseline_name
     assert actual.is_file()
     assert baseline.is_file(), (
