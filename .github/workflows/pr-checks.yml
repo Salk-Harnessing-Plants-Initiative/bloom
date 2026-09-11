@@ -567,9 +567,7 @@ jobs:
           # Diffs against the base SHA and compares with origin/staging
           fetch-depth: 0
 
-      # Warning mode until the rollout makes it blocking.
       - name: Enforce migration PR isolation
-        continue-on-error: true
         run: python3 scripts/lint_migration_isolation.py ${{ github.event.pull_request.base.sha }}
 
   lint-cve-isolation:
@@ -947,10 +945,9 @@ jobs:
             psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
             < supabase/grants/schema_grants.sql
 
-      # Redraw the ER diagram from the freshly migrated schema; a stale erd.md fails (warning mode for now).
+      # Redraw the ER diagram; a failed redraw fails here, a stale erd.md fails the job after the tests.
       - name: Check the ER diagram is current
         id: erd
-        continue-on-error: true
         env:
           POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
         run: |
@@ -959,16 +956,17 @@ jobs:
           export TBLS_DSN="postgres://supabase_admin:${POSTGRES_PASSWORD}@localhost:5432/postgres?sslmode=disable"
           mkdir -p "$RUNNER_TEMP/erd"
           # tbls gets only its config, not the workspace (.env.ci, the checkout token).
-          docker run --rm -e TBLS_DSN --network "container:${DB}" -v "$PWD/.tbls.yml:/work/.tbls.yml:ro" -w /work \
-            "$TBLS_IMAGE" out -c .tbls.yml -t mermaid > "$RUNNER_TEMP/erd.mmd"
-          python3 scripts/schema_erd.py wrap < "$RUNNER_TEMP/erd.mmd" > "$RUNNER_TEMP/erd/erd.md"
+          if ! docker run --rm -e TBLS_DSN --network "container:${DB}" -v "$PWD/.tbls.yml:/work/.tbls.yml:ro" -w /work \
+              "$TBLS_IMAGE" out -c .tbls.yml -t mermaid > "$RUNNER_TEMP/erd.mmd" \
+            || ! python3 scripts/schema_erd.py wrap < "$RUNNER_TEMP/erd.mmd" > "$RUNNER_TEMP/erd/erd.md"; then
+            echo "::error title=ER diagram could not be redrawn::tbls produced no diagram from the migrated database; see this step's log."
+            exit 1
+          fi
           if ! cmp -s "$RUNNER_TEMP/erd/erd.md" _WIKI/SUPABASE/erd.md; then
             echo "stale=true" >> "$GITHUB_OUTPUT"
             echo "::error title=ER diagram is stale::_WIKI/SUPABASE/erd.md does not match the migrated schema. Download the erd artifact from this run and commit it as _WIKI/SUPABASE/erd.md."
-            exit 1
           fi
 
-      # Only a successful redraw is uploaded; a tbls failure fails the step with no artifact.
       - name: Upload the redrawn ER diagram
         if: steps.erd.outputs.stale == 'true'
         uses: actions/upload-artifact@v4
@@ -1137,6 +1135,13 @@ jobs:
           docker compose $COMPOSE_FILES --env-file .env.ci logs langchain-agent --tail=50
           echo "=== bloommcp logs ==="
           docker compose $COMPOSE_FILES --env-file .env.ci logs bloommcp --tail=50
+
+      # A stale ER diagram fails the job here, once the tests have run; the erd step annotated it.
+      - name: Fail on a stale ER diagram
+        if: steps.erd.outputs.stale == 'true'
+        run: |
+          echo "_WIKI/SUPABASE/erd.md is stale. Commit the erd artifact from this run as _WIKI/SUPABASE/erd.md."
+          exit 1
 
       # Guarded: if: always() fires both when a superseding push cancels this
       # run and when an earlier step fails, before .env.ci is ever generated

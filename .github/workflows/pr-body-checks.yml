@@ -25,9 +25,8 @@ jobs:
           # Diffs against the base SHA and compares with origin/staging
           fetch-depth: 0
 
-      # Warning mode until the rollout makes it blocking. The body arrives as data via env.
+      # The body arrives as data via env.
       - name: Check the Schema changes section
-        continue-on-error: true
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: python3 scripts/lint_migration_pr_body.py ${{ github.event.pull_request.base.sha }}

@@ -1,9 +1,10 @@
 """Check that a migration PR's body documents its schema change.
 
-The body needs a mermaid erDiagram naming every table the migration changes touch and, when
-they add constraints or indexes, a constraints table (header with `Name` and
-`How it is added`) naming each one. `No schema changes.` on its own line passes only when
-that is true.
+The body needs a mermaid erDiagram naming every table and view the migration changes create,
+alter or rename to and, when they add constraints or indexes, a constraints table (header
+with `Name` and `How it is added`) naming each one. Migrations that only drop tables, views
+or indexes have nothing to draw, so the body names what they drop instead. `No schema
+changes.` on its own line passes only when that is true.
 
 Usage:
   lint_migration_pr_body.py BASE [--head HEAD] [--staging-ref REF] [--repo DIR] [--body-file PATH]
@@ -88,7 +89,9 @@ def _summary(facts: MigrationFacts) -> str:
         ("add", facts.constraints_added | facts.indexes_added),
         ("drop constraint or index", facts.constraints_dropped | facts.indexes_dropped),
         ("create view", facts.views_created),
+        ("alter view", facts.views_altered),
         ("drop view", facts.views_dropped),
+        ("rename view", {old for old, _ in facts.views_renamed}),
     ):
         if names:
             parts.append(f"{verb} {', '.join(sorted(names))}")
@@ -108,23 +111,39 @@ def check_body(body: str | None, facts: MigrationFacts) -> list[str]:
         f"An unnamed constraint is added to {table}. Name every constraint so it can be listed."
         for table in facts.unnamed_constraints
     ]
+    # Nothing is left to draw when the migrations only drop things; the body names them instead.
+    gone = [] if facts.tables_touched else sorted(
+        facts.tables_dropped | facts.views_dropped | facts.indexes_dropped
+    )
 
     if any(line.strip() == OPT_OUT for line in text.split("\n")):
         if facts.changes_schema:
-            problems.append(f"`{OPT_OUT}` is not true: the migrations {_summary(facts)}.")
+            problem = f"`{OPT_OUT}` is not true: the migrations {_summary(facts)}."
+            if gone:
+                problem += " Remove that line and name what they drop under Schema changes."
+            problems.append(problem)
         return problems
 
-    diagrams = [m.group(1) for m in _MERMAID.finditer(text) if "erDiagram" in m.group(1)]
-    if not diagrams:
-        problems.append(
-            f"No mermaid erDiagram block. Paste the output of `{SNAPSHOT}` under Schema changes, "
-            f"or add `{OPT_OUT}` if the migrations change no table, constraint or index."
-        )
+    # A change with nothing to draw names what it drops; no change at all still needs the opt-out.
+    if facts.tables_touched or not facts.changes_schema:
+        diagrams =[m.group(1) for m in _MERMAID.finditer(text) if "erDiagram" in m.group(1)]
+        if not diagrams:
+            problems.append(
+                f"No mermaid erDiagram block. Paste the output of `{SNAPSHOT}` under Schema changes, "
+                f"or add `{OPT_OUT}` if the migrations change no table, view, constraint or index."
+            )
+        else:
+            drawn = "\n".join(diagrams)
+            missing = sorted(t for t in facts.tables_touched if not _has_token(t, drawn))
+            if missing:
+                problems.append(f"The erDiagram does not show: {', '.join(missing)}.")
     else:
-        drawn = "\n".join(diagrams)
-        missing = sorted(t for t in facts.tables_touched if not _has_token(t, drawn))
-        if missing:
-            problems.append(f"The erDiagram does not show: {', '.join(missing)}.")
+        unnamed = [name for name in gone if not _has_token(name, text)]
+        if unnamed:
+            problems.append(
+                "The migrations only drop things, so no diagram is needed; name each one under "
+                f"Schema changes. Not named: {', '.join(unnamed)}."
+            )
 
     required = sorted(facts.constraints_added | facts.indexes_added)
     if required:

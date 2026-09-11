@@ -39,6 +39,9 @@ _CREATE_VIEW = re.compile(
     rf"(?:MATERIALIZED\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?({_QNAME})",
     re.I,
 )
+_ALTER_VIEW = re.compile(
+    rf"\bALTER\s+(?:MATERIALIZED\s+)?VIEW\s+(?:IF\s+EXISTS\s+)?({_QNAME})\s*(.*)$", re.I | re.S
+)
 _DROP_VIEW = re.compile(
     rf"\bDROP\s+(?:MATERIALIZED\s+)?VIEW\s+(?:IF\s+EXISTS\s+)?({_QNAME_LIST})", re.I
 )
@@ -48,6 +51,7 @@ _ADD_CONSTRAINT = re.compile(rf"^ADD\s+CONSTRAINT\s+({_IDENT})", re.I)
 _ADD_UNNAMED = re.compile(r"^ADD\s+(?:CHECK|UNIQUE|PRIMARY\s+KEY|FOREIGN\s+KEY|EXCLUDE)\b", re.I)
 _DROP_CONSTRAINT = re.compile(rf"^DROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?({_IDENT})", re.I)
 _RENAME_TO = re.compile(rf"^RENAME\s+TO\s+({_IDENT})", re.I)
+_RENAME_COLUMN = re.compile(rf"^RENAME\s+(?:COLUMN\s+)?(?!TO\b){_IDENT}\s+TO\b", re.I)
 _STRUCTURAL_ACTION = re.compile(r"^(?:ADD|DROP|ALTER|RENAME)\b", re.I)
 
 
@@ -62,17 +66,21 @@ class MigrationFacts:
     indexes_added: frozenset[str] = frozenset()
     indexes_dropped: frozenset[str] = frozenset()
     views_created: frozenset[str] = frozenset()
+    views_altered: frozenset[str] = frozenset()
     views_dropped: frozenset[str] = frozenset()
+    views_renamed: frozenset[tuple[str, str]] = frozenset()
     unnamed_constraints: tuple[str, ...] = ()
 
     @property
     def tables_touched(self) -> frozenset[str]:
-        """What a diagram of this change must show: tables created, altered or renamed to, and views created."""
+        """Tables and views a diagram of this change must show: created, altered or renamed to."""
         return (
             self.tables_created
             | self.tables_altered
             | {new for _, new in self.tables_renamed}
             | self.views_created
+            | self.views_altered
+            | {new for _, new in self.views_renamed}
         )
 
     @property
@@ -82,7 +90,8 @@ class MigrationFacts:
                 self.tables_created, self.tables_altered, self.tables_dropped,
                 self.tables_renamed, self.constraints_added, self.constraints_dropped,
                 self.indexes_added, self.indexes_dropped, self.views_created,
-                self.views_dropped, self.unnamed_constraints,
+                self.views_altered, self.views_dropped, self.views_renamed,
+                self.unnamed_constraints,
             )
         )
 
@@ -97,7 +106,9 @@ class MigrationFacts:
             indexes_added=self.indexes_added | other.indexes_added,
             indexes_dropped=self.indexes_dropped | other.indexes_dropped,
             views_created=self.views_created | other.views_created,
+            views_altered=self.views_altered | other.views_altered,
             views_dropped=self.views_dropped | other.views_dropped,
+            views_renamed=self.views_renamed | other.views_renamed,
             unnamed_constraints=tuple(
                 dict.fromkeys(self.unnamed_constraints + other.unnamed_constraints)
             ),
@@ -233,7 +244,9 @@ class _Collector:
         self.i_added: set[str] = set()
         self.i_dropped: set[str] = set()
         self.v_created: set[str] = set()
+        self.v_altered: set[str] = set()
         self.v_dropped: set[str] = set()
+        self.v_renamed: set[tuple[str, str]] = set()
         self.unnamed: list[str] = []
 
     def statement(self, code: str) -> None:
@@ -246,6 +259,7 @@ class _Collector:
                 ("drop_index", _DROP_INDEX),
                 ("drop_table", _DROP_TABLE),
                 ("create_view", _CREATE_VIEW),
+                ("alter_view", _ALTER_VIEW),
                 ("drop_view", _DROP_VIEW),
             )
             if (m := pattern.search(code))
@@ -287,6 +301,14 @@ class _Collector:
     def _create_view(self, m: re.Match, code: str) -> None:
         self.v_created.add(_table(m.group(1)))
 
+    def _alter_view(self, m: re.Match, code: str) -> None:
+        # Only renames change what the diagram draws; owner, option and default changes do not.
+        view, action = _table(m.group(1)), m.group(2).strip()
+        if rename := _RENAME_TO.match(action):
+            self.v_renamed.add((view, _unquote(rename.group(1))))
+        elif _RENAME_COLUMN.match(action):
+            self.v_altered.add(view)
+
     def _drop_view(self, m: re.Match, code: str) -> None:
         self.v_dropped.update(_table(name) for name in _split_names(m.group(1)))
 
@@ -301,7 +323,9 @@ class _Collector:
             indexes_added=frozenset(self.i_added),
             indexes_dropped=frozenset(self.i_dropped),
             views_created=frozenset(self.v_created),
+            views_altered=frozenset(self.v_altered),
             views_dropped=frozenset(self.v_dropped),
+            views_renamed=frozenset(self.v_renamed),
             unnamed_constraints=tuple(dict.fromkeys(self.unnamed)),
         )
 

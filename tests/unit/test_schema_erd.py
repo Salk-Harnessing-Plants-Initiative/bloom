@@ -141,8 +141,21 @@ def test_wrap_cli_fails_on_empty_input_and_prints_nothing():
         [sys.executable, str(SCRIPT), "wrap"], input="", capture_output=True, text=True
     )
     assert result.returncode == 1
-    assert "erDiagram" in result.stderr
+    assert "no erDiagram" in result.stderr
+    assert "Traceback" not in result.stderr, "the refusal is a message, not a crash"
     assert result.stdout == ""
+
+
+def test_tables_cli_says_a_drop_only_branch_has_nothing_to_draw(tmp_path):
+    repo = _branch_with_migration(tmp_path, "DROP VIEW IF EXISTS public.old_view;\n")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "tables", "--changed", "staging", "--head", "feature",
+         "--staging-ref", "staging", "--repo", str(repo)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "nothing to draw" in result.stderr and "PR body" in result.stderr
 
 
 def test_qualify_adds_public_only_where_missing():

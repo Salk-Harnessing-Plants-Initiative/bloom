@@ -332,11 +332,61 @@ def test_view_inside_a_function_body_is_ignored():
     assert not facts.changes_schema
 
 
+def test_view_rename_is_touched_under_its_new_name():
+    facts = scan("ALTER VIEW IF EXISTS public.old_v RENAME TO new_v; ALTER MATERIALIZED VIEW mv RENAME TO mv2;")
+    assert facts.views_renamed == {("old_v", "new_v"), ("mv", "mv2")}
+    assert facts.tables_touched == {"new_v", "mv2"}
+    assert facts.changes_schema
+
+
+def test_view_column_rename_is_an_alteration():
+    facts = scan("ALTER VIEW public.v RENAME COLUMN a TO b;")
+    assert facts.views_altered == {"v"}
+    assert facts.tables_touched == {"v"}
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "ALTER VIEW public.v OWNER TO postgres;",
+        "ALTER VIEW public.v SET (security_invoker = true);",
+        "ALTER VIEW public.v ALTER COLUMN a SET DEFAULT 1;",
+        "COMMENT ON VIEW public.v IS 'x';",
+        "GRANT SELECT ON public.v TO authenticated;",
+        "REFRESH MATERIALIZED VIEW public.mv;",
+    ],
+)
+def test_view_changes_the_diagram_does_not_draw_are_not_schema_changes(sql):
+    assert not scan(sql).changes_schema
+
+
+@pytest.mark.parametrize(
+    "sql, created",
+    [
+        ('CREATE VIEW public."Odd View" AS SELECT 1;', "Odd View"),
+        ("CREATE OR REPLACE VIEW public.v WITH (security_invoker = true) AS SELECT 1;", "v"),
+        ("CREATE VIEW public.v (a, b) AS SELECT 1, 2;", "v"),
+        ("CREATE VIEW public.v AS SELECT 'drop table x' AS note;", "v"),
+        ("DO $$ BEGIN CREATE VIEW public.v AS SELECT 1; END $$;", "v"),
+    ],
+)
+def test_created_view_is_named(sql, created):
+    assert scan(sql).views_created == {created}
+
+
+def test_drop_view_cascade_names_each_view():
+    assert scan("DROP VIEW IF EXISTS public.a, public.b CASCADE;").views_dropped == {"a", "b"}
+
+
 def test_scan_files_unions_facts(tmp_path):
     a = tmp_path / "a.sql"
     b = tmp_path / "b.sql"
+    c = tmp_path / "c.sql"
     a.write_text("CREATE TABLE x (id int);")
     b.write_text("ALTER TABLE y ADD CONSTRAINT c CHECK (true);")
-    facts = migration_sql.scan_files([a, b])
-    assert facts.tables_touched == {"x", "y"}
+    c.write_text("CREATE VIEW v AS SELECT 1; DROP VIEW w; ALTER VIEW o RENAME TO n; ALTER VIEW z RENAME a TO b;")
+    facts = migration_sql.scan_files([a, b, c])
+    assert facts.tables_touched == {"x", "y", "v", "n", "z"}
     assert facts.constraints_added == {"c"}
+    assert facts.views_created == {"v"} and facts.views_dropped == {"w"}
+    assert facts.views_renamed == {("o", "n")} and facts.views_altered == {"z"}
