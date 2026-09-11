@@ -413,8 +413,10 @@ marker, run in the `dev-stack-smoke` CI job.
 
 ## 15. Follow-ups (not this change)
 
-- [ ] 15.1 `heritability_analysis` (#462) — its `csv_content` path once that branch merges, using
-      `resolve_inline_or_experiment`. One-tool follow-up.
+- [ ] 15.1 `heritability_analysis` — its `csv_content` path, using
+      `resolve_inline_or_experiment`. One-tool follow-up. **#462 merged to `staging` on
+      2026-09-11**, so this is no longer blocked; fold it into PR 2 or PR 3 rather than leaving
+      it as a separate follow-up, since the roster tests now enumerate it.
 - [ ] 15.2 A per-caller ephemeral plot channel — the prerequisite for inline `include_plots` and
       for giving the five legacy plot tools any inline path at all.
 - [ ] 15.3 Declare memory limits on bloommcp and langchain-agent in `docker-compose.prod.yml`. No

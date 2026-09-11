@@ -33,8 +33,30 @@ sequenced it first, and added `read-path` #298); the design doc uses the `A–H`
 | `pin.json`                           | The pin manifest: `package`, `version`, full schema `$id`, `source`, file paths                              | The declared pin                                          |
 | `generated/result-envelope.ts`       | TypeScript types (`ResultEnvelope`/`Provenance`/`TraitValue`/`BlobRef` + sub-defs) generated from the schema | Emitted by codegen — **do not edit by hand**              |
 
-**Currently pinned: `v0.1.0a5`.** These are the _contract_ types (from the JSON Schema), distinct
+**Currently pinned: `v0.1.0a7`.** These are the _contract_ types (from the JSON Schema), distinct
 from the Supabase `database.types.ts` (generated from the database by `make gen-types`).
+
+> Note on `v0.1.0a7`: re-pinned from `v0.1.0a5` for Bloom change `repin-cyl-contract-a7` (bloom
+> #685) — an **`$id`-only structural no-op for the JSON Schema** (verified by diffing the fetched
+> `v0.1.0a7` schema against the vendored `a5` schema with the version string normalized out: no
+> other bytes differ; also independently true of the intermediate `a6` release — see below).
+> `BlobRef`/`Provenance` are unchanged and the generated TS is byte-identical apart from the `$id`
+> line. The substantive addition in this contracts release is on the Python package side —
+> `sleap_roots_contracts.RunManifest`/`RUN_MANIFEST_FILENAME`, a new run-scoping
+> producer↔producer contract (`bloomctl` writes it, `sleap-roots-predict`/`sleap-roots` traits
+> read it) for cross-repo manifest-scoped processing (`talmolab/sleap-roots-pipeline#37`) — not a
+> schema field, so it doesn't surface in the drift-guard diff. This is also the re-pin that fixed
+> the write-back RPC's own hardcoded `contract_version` literal, which had drifted two versions
+> behind this vendored pin (stuck at `a3` while this file had already moved to `a5` for unrelated
+> changes #411/#407) — see `supabase/migrations/*_cyl_writeback_contract_a7.sql`.
+
+> Note on `v0.1.0a6` (skipped in prior re-pins; documented here for completeness): a **`$id`-only
+> structural no-op for the JSON Schema**, same as `a7` above. The substantive addition is again
+> Python-package-side and producer↔producer, not schema-emitted — `sleap_roots_contracts.LabelCard`/`Mode`
+> (a new label-selection contract shared by the `/build-labeling-package` workflow and
+> training/lineage tooling) plus a validation tightening of the already-shipped `ModelCard`
+> (rejects an off-vocabulary `mode` and a `bool`/`numpy.bool_` coerced into an integer age field).
+> Neither touches `ResultEnvelope`/`Provenance`/`BlobRef`.
 
 > Note on `v0.1.0a5`: re-pinned from `v0.1.0a4` for Bloom change `add-cyl-blob-upload` (#407) — an **`$id`-only structural no-op for the JSON Schema** (verified by diffing the fetched `v0.1.0a5` schema against the vendored `a4` schema with the version string normalized out: no other bytes differ). `BlobRef`/`Provenance` are unchanged and the generated TS is byte-identical apart from the `$id` line. The substantive addition in this contracts release is on the Python package side — `sleap_roots_contracts.PredictionArtifact`/`PredictionManifest`, promoted from `sleap-roots-predict` (talmolab/sleap-roots-contracts#22) so `bloomctl cyl ingest-result --predictions-dir` can read predict's per-scan manifest without a PyPI-absent dependency — not a schema field, so it doesn't surface in the drift-guard diff.
 
@@ -91,6 +113,24 @@ field change produces a TS diff and fails the drift guard — that is the signal
 4. Run `npm run contracts:check` — it passes when `pin.json`, the schema `$id`, and the regenerated
    types all agree. For a `$id`-only bump the types diff is empty; any other diff is a real contract
    change to review.
+5. **If the migration for this re-pin adds a cutover guard** (a `DO` block that raises if real
+   historical data would be silently orphaned by the re-pin — the pattern in
+   `supabase/migrations/20260706170000_cyl_writeback_contract_a3.sql` and
+   `supabase/migrations/20260831130000_cyl_writeback_contract_a7.sql`, and any later migration
+   following the same pattern): before merging, check the real state of staging via SSH to the
+   deploy host, using the same `scripts/deploy_run_supabase.sh` / in-container `psql` pattern
+   `deploy.yml` already uses for schema grants. **Check production too, unless you can positively
+   confirm from schema/migration history that the guarded condition cannot exist there** —
+   "probably fine, we already checked staging" is exactly the unfalsifiable judgment call that
+   let bloom#685 happen (the guard correctly blocked the staging deploy on real pre-existing rows
+   nobody had checked for before merging); skipping the production check requires an affirmative,
+   checkable reason, not an absence of curiosity. If either check finds rows that would trip the
+   guard, fold the reconciliation into the same PR rather than discovering it at deploy time.
+
+   This step is **manual, not a CI gate**: regular pull request CI has no route to
+   staging/production secrets (they are scoped behind `environment: staging`/
+   `environment: production`, reachable only from a `push` to `staging`/`main` or an explicit
+   `workflow_dispatch`, never a `pull_request` event) — nothing today blocks a PR that skips it.
 
 ## Gotchas
 
@@ -101,14 +141,19 @@ field change produces a TS diff and fails the drift guard — that is the signal
 - `generated/*.ts` is pinned to LF via `.gitattributes` so the guard is reproducible on Windows and
   Linux.
 
-## Consumer hand-offs (recorded for later changes, not enforced here)
+## Consumer hand-offs
 
-The generated types have **no consumer yet** (changes B/C/D/G pending). When the write-back path is
-built, the consumer (D/G) MUST, at the write boundary:
+The write-back RPC (`insert_cyl_result_envelope`, change D) has been the live consumer of these
+types since `repin-cyl-contract-a3`. At the write boundary it:
 
-- validate `provenance.contract_version` against the pinned `version` (or an explicit compatibility
-  set) — the per-row provenance-of-origin anchor;
-- validate each `TraitValue.value` is finite-or-null (the contract normalizes NaN/inf → null).
+- validates `provenance.contract_version` against the single pinned `version` — never an explicit
+  compatibility set, a range, or a set of accepted versions. That alternative was considered and
+  rejected twice (`repin-cyl-contract-a3`, then again in `repin-cyl-contract-a7`): it would dilute
+  the per-row provenance-of-origin anchor this field exists to provide, and every version bump
+  since `a3` has been schema-identical, so there is no functional case for a range — only a
+  literal-churn cost for keeping the single pin exact on each re-pin (see this contract's own
+  history above);
+- validates each `TraitValue.value` is finite-or-null (the contract normalizes NaN/inf → null).
 
 The reproducibility anchors `inputs.images_checksum` / `image_ids` and `params.param_hash` ride
 inside the opaque `metadata` jsonb and are not promoted to columns by change A.

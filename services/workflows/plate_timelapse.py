@@ -24,8 +24,18 @@ PLATE_FPS = 4
 PLATE_TIMEZONE = ZoneInfo("America/Los_Angeles")
 
 # The band the label sits in, so it never covers tissue and never moves.
-LABEL_BAND_HEIGHT = 44
-LABEL_FONT_SIZE = 16
+#
+# Sized from what the video is watched at, not from the frame. A 1440-wide
+# plate is around 2068 rows tall with the band, and a player shows it well
+# under that, so the label shrinks with the picture while the band does not.
+#
+# What matters is the ink, not the font size: the default face draws digits at
+# about 70% of its em, so 16px was 11 rows of 2068 — under 6px on a 1080-tall
+# player, where the elapsed line goes first and it is the one that makes an
+# irregular capture gap visible rather than silent. 32px draws 23 rows, which
+# is 12px at 1080 and 9px at 800.
+LABEL_BAND_HEIGHT = 80
+LABEL_FONT_SIZE = 32
 LABEL_PADDING = 8
 
 _BAND_FILL = (0, 0, 0)

@@ -16,10 +16,14 @@ here. Sections (namespace -> tools):
     (list_available_experiments, load_experiment_data, list_existing_analyses)
   - sleap_roots: umbrella for the sleap-roots pipeline family. analysis/
     populated (qc_clean, qc_inspect, pca_analysis, remove_outliers, clustering,
-    umap_analysis, descriptive_stats, + 5 plotting tools — histograms, boxplots,
-    correlation matrix, heritability bar, variance decomposition — each
-    delegating all analysis/plotting math to sleap_roots_analyze, never
-    re-implementing it);
+    umap_analysis, descriptive_stats, cross_experiment_correlations,
+    heritability_analysis, + 3 plotting tools — histograms, boxplots,
+    correlation matrix — each delegating all analysis/plotting math to
+    sleap_roots_analyze, never re-implementing it. heritability_analysis (#462)
+    replaced the standalone heritability-bar and variance-decomposition plot
+    tools: both figures are now optional outputs of the same call that returns
+    the per-trait H2 numbers, so a chart and the numbers beside it cannot come
+    from two separate computations);
     extraction/ reserved for future sleap-roots trait-extraction tools (not
     built here).
   - phenotyping_segmentation: Lin's segmentation tools (empty scaffold today)
@@ -35,6 +39,7 @@ which also moved every surviving tool into the sections/ layout above.)
 """
 
 import logging
+import sys
 
 from fastmcp import FastMCP
 from fastmcp.utilities.lifespan import combine_lifespans
@@ -44,6 +49,8 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from starlette.routing import Mount
 from starlette.staticfiles import StaticFiles
+
+from bloom_mcp import __version__
 
 # Env validation is lazy (see supabase_client / experiment_utils validate_env):
 # importing this module no longer requires Supabase or the BLOOM_*_DIR env, so
@@ -181,7 +188,13 @@ def main() -> None:
     credentials are not required and the local input root is validated instead;
     otherwise the Supabase gate runs exactly as before. prod/staging never set
     ``local``, so their fail-fast is unchanged.
+
+    ``--version``/``-V`` returns before any of the above — a release gate needs
+    something to assert against without standing up the full runtime env.
     """
+    if {"--version", "-V"} & set(sys.argv[1:]):
+        print(f"bloom-mcp {__version__}")
+        return
     from bloom_mcp.experiment_utils import validate_experiment_local_root
     from bloom_mcp.storage_backend import is_local_backend
 

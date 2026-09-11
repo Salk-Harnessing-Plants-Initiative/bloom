@@ -110,7 +110,8 @@ result = qc_clean(csv_content="<the CSV file's text>", return_cleaned_csv=true)
 
 **Which tools accept that text is still growing.** `qc_clean` is the only tool with a
 `csv_content` parameter today; `pca_analysis`, `clustering`, `umap_analysis`,
-`descriptive_stats` and `remove_outliers` gain one in the follow-up work tracked by
+`descriptive_stats`, `remove_outliers`, `qc_inspect`, `cross_experiment_correlations` and
+`heritability_analysis` gain one in the follow-up work tracked by
 [#582](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/582). Until then
 `cleaned_csv` is something you hold onto or write to a file — passing it to another tool will
 fail schema validation, because the parameter does not exist yet. Check a tool's schema for
@@ -135,6 +136,37 @@ outside `kept_trait_columns` as a cleaning failure.
 bloommcp's normal operation. Raising the server's log level to `DEBUG` makes the MCP transport
 log whole request bodies, inline CSV included, into the container's logs. Don't run a shared
 bloommcp at `DEBUG` while callers are passing data they chose not to register.
+
+## Retired tools and what replaced them
+
+If a call fails with an unknown-tool error, the tool was probably retired into a more
+capable one. Current retirements:
+
+| Retired tool                                                 | Use instead                                                                                                            |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `sleap_roots_plot_heritability_bar(filename=X, threshold=T)` | `sleap_roots_heritability_analysis(experiment=X, threshold=T, include_plots=true, plots=["create_heritability_plot"])` |
+| `sleap_roots_plot_variance_decomposition(filename=X)`        | `sleap_roots_heritability_analysis(experiment=X, include_plots=true, plots=["create_variance_decomposition_plot"])`    |
+
+`heritability_analysis` ([#462](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/462))
+is not a drop-in rename, and the differences are the point of the change:
+
+- **It returns the numbers.** The retired tools computed per-trait H² internally and then
+  threw it away, handing back a PNG link and one aggregate count. You now get every
+  trait's H², variance components, genotype and observation counts, and model type as
+  data you can query — with the figures as an optional extra from the same call.
+- **It requires a cleaned experiment.** Run `sleap_roots_qc_clean` first. The retired
+  tools fitted a mixed model on raw data, where the delegate's own per-trait `dropna()`
+  silently changed how many samples each trait was scored on, with no signal to you.
+- **It persists a versioned run.** You get object-key links to `heritability.csv` and
+  `heritability_result.json` with provenance, discoverable later through
+  `core_list_existing_analyses`, instead of a loose PNG at a static URL.
+- **One call, both figures.** Asking for both plots computes heritability once, so the
+  two charts and the numbers beside them can't come from separate computations.
+
+One thing to know when reading a wide experiment: the bar plot orders traits by H²
+descending, while `per_trait` and the persisted table keep the experiment's own trait
+order. Same numbers, different slice — so the inline top-50 of a truncated result is not
+the first plotted page.
 
 ## Claude Desktop / Claude Enterprise
 
