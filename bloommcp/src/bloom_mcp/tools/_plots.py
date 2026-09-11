@@ -157,7 +157,8 @@ def check_plot_style_ceiling(
 # This is why every matplotlib-figure-creating call site in bloommcp goes through
 # `call_with_figure_cleanup` (directly, or via `generate_figures`) rather than acquiring
 # this lock ad hoc: `qc_inspect.py`'s `_render_report`, `remove_outliers.py`'s
-# `_make_figures`, `clustering.py`, and each of the 5 legacy `plot_*` tools
+# `_make_figures`, `clustering.py`, and each of the 5 `plot_*` tools — the 3 #466-converged
+# ones and the 2 legacy ones —
 # (`plot_trait_boxplots.py`, `plot_correlation_matrix.py`, `plot_heritability_bar.py`,
 # `plot_variance_decomposition.py`, `plot_trait_histograms.py`) all call it around their
 # own figure-creating delegate call. Scoped to just that one call (not the caller's full
@@ -165,6 +166,28 @@ def check_plot_style_ceiling(
 # that is *created* while the lock is held, and the lock is a mutex — no other call's
 # creation step can execute concurrently, regardless of how long the holder then takes to
 # save/close/commit *after* creating.
+#
+# Sufficient for THAT hazard — but creation is only half of the contract. There is a
+# second, independent race the create-side lock does not cover: `plt.close(fig)` ->
+# `Gcf.destroy_fig` first *scans* `Gcf.figs.values()` to find the manager owning the
+# figure, and that scan is unsynchronized. A locked create (`Gcf.set_active` does
+# `figs[num] = manager` then `move_to_end`) mutating the dict mid-scan raises
+# `RuntimeError("OrderedDict mutated during iteration")` out of the *closing* caller —
+# reproduced deterministically on PR #683 (#466 review round 7, which caught round 6
+# shipping a create-only half-fix). So every call site must hold this lock around
+# `plt.close` too, not just around creation. Where that stands:
+#   - `call_with_figure_cleanup`'s own exception-path close: inside its `with` (done).
+#   - `plot_trait_histograms.py`/`plot_trait_boxplots.py`/`plot_correlation_matrix.py`:
+#     create via `call_with_figure_cleanup`, success-path close under a second, separate
+#     acquisition in `finally` (done, #466) — separate so `savefig`/commit I/O never runs
+#     on a process-wide lock.
+#   - `close_figures` below: one acquisition around the batch (done, #466).
+#   - STILL OUTSTANDING — the success-path `plt.close` in `qc_inspect.py`'s
+#     `_render_report`, `remove_outliers.py`'s `_make_figures`, and `_viz_shared.py`'s
+#     `save_plot` (hence the 2 legacy `plot_*` tools). Tracked at
+#     https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/808. Until those
+#     are wired, this lock is a precondition for closing the race process-wide, not by
+#     itself sufficient.
 #
 # Non-reentrant: a future plotter that transitively re-enters `call_with_figure_cleanup`
 # (or any other lock-acquiring call) from inside its own locked call would deadlock.
@@ -249,16 +272,24 @@ def close_figures(figures: "dict[str, Figure]") -> None:
 
     Returns immediately on an empty dict to avoid importing matplotlib on the
     default no-plots path (Tier-0 import-clean guarantee).
+
+    Holds ``FIGURE_REGISTRY_LOCK`` across the closes: ``plt.close`` scans the
+    shared ``Gcf.figs`` registry, so an unlocked close here could race a locked
+    create elsewhere in the process (see that lock's comment above). Acquired
+    once around the whole batch rather than per figure — the lock is
+    non-reentrant and nothing under it re-enters, and one acquisition keeps a
+    multi-figure cleanup from interleaving with a create halfway through.
     """
     if not figures:
         return
     try:
         import matplotlib.pyplot as plt
 
-        for fig in figures.values():
-            try:
-                plt.close(fig)
-            except Exception:  # pragma: no cover — best-effort cleanup
-                pass
+        with FIGURE_REGISTRY_LOCK:
+            for fig in figures.values():
+                try:
+                    plt.close(fig)
+                except Exception:  # pragma: no cover — best-effort cleanup
+                    pass
     except Exception:  # pragma: no cover — best-effort cleanup
         pass
