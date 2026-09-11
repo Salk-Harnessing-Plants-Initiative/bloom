@@ -272,3 +272,56 @@ describe("ExpressionView — clicking a cell", () => {
     await waitFor(() => expect([...(latest().hiddenClusters ?? [])]).toEqual([]));
   });
 });
+
+describe("ExpressionView — focusing on values", () => {
+  const LABELLED: LoadedPayload = {
+    ...LOADED,
+    cellCount: 3,
+    filters: ["sample", "transgene_pos"],
+    unlabelled: { sample: 0, transgene_pos: 0 },
+    cells: [
+      { replicate: "Col-0", facets: { transgene_pos: "False" } },
+      { replicate: "pFACT", facets: { transgene_pos: "True" } },
+      { replicate: "pFACT", facets: { transgene_pos: "False" } },
+    ],
+  };
+
+  const focusedOf = (filter: string) =>
+    [...(latest().focusedValues?.get(filter) ?? [])];
+
+  it("hands the map every value focused on, hides nothing, and says what is in focus", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData(LABELLED);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Focus on True" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Focus on True" }));
+    await waitFor(() => expect(focusedOf("transgene_pos")).toEqual(["True"]));
+    expect(hiddenOf("transgene_pos")).toEqual([]);
+    expect(screen.getByText(/1 cell is transgene_pos True; every other cell is greyed out/))
+      .toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Focus on pFACT" }));
+    await waitFor(() => expect(focusedOf("sample")).toEqual(["pFACT"]));
+    expect(screen.getByText(/1 cell is pFACT and transgene_pos True/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear focus" }));
+    await waitFor(() => expect(focusedOf("transgene_pos")).toEqual([]));
+    expect(focusedOf("sample")).toEqual([]);
+    expect(screen.queryByText(/greyed out/)).toBeNull();
+  });
+
+  it("opens another dataset with nothing focused", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    const { rerender } = render(<ExpressionView datasetId={1} />);
+    loadData(LABELLED);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Focus on Col-0" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Focus on Col-0" }));
+    await waitFor(() => expect(focusedOf("sample")).toEqual(["Col-0"]));
+
+    rerender(<ExpressionView datasetId={2} />);
+    loadData(DATASET_2);
+    await waitFor(() => expect(screen.getByRole("button", { name: "WT 7" })).toBeTruthy());
+    expect(focusedOf("sample")).toEqual([]);
+  });
+});

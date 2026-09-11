@@ -15,7 +15,10 @@ import {
   packCellArrays,
   packClusterColors,
   packPositions,
+  focusIsSet,
+  packFocus,
   packVisibility,
+  type FocusedValues,
   type HiddenValues,
 } from "@/components/expression-lib/umap-packing";
 import {
@@ -141,6 +144,8 @@ export interface ExpressionUmapProps {
   hiddenClusters?: ReadonlySet<number>;
   /** Values hidden per filter row: the sample row and each label. Empty = all visible. */
   hiddenValues?: HiddenValues;
+  /** Values focused on per filter row; cells outside the focus are greyed out. */
+  focusedValues?: FocusedValues;
   /** Height of the canvas in pixels; width fills the parent */
   height?: number;
   /** Fires when data is loaded so parent can render colorbar / sidebar */
@@ -181,6 +186,7 @@ export function ExpressionUmap({
   geneName,
   hiddenClusters,
   hiddenValues,
+  focusedValues,
   height = 600,
   onDataLoaded,
   onExpressionRangeChanged,
@@ -196,6 +202,7 @@ export function ExpressionUmap({
   const colorBufferRef = useRef<ReglBuffer | null>(null);
   const visibilityBufferRef = useRef<ReglBuffer | null>(null);
   const expressionBufferRef = useRef<ReglBuffer | null>(null);
+  const focusBufferRef = useRef<ReglBuffer | null>(null);
   const drawClustersRef = useRef<DrawCommand | null>(null);
   const drawExpressionRef = useRef<DrawCommand | null>(null);
   /**
@@ -227,6 +234,8 @@ export function ExpressionUmap({
   const expressionArrRef = useRef(expressionArr);
   const expressionRangeRef = useRef(expressionRange);
   const dirtyRef = useRef(true);
+  /** Whether a focus is set, so the greyed pass is drawn only then. */
+  const focusSetRef = useRef(false);
   // Hit-testing reads these from a handler created once, so they are mirrored here.
   const positionsRef = useRef<Float32Array | null>(null);
   const visibilityRef = useRef<Float32Array | null>(null);
@@ -358,6 +367,12 @@ export function ExpressionUmap({
     [data, hiddenClusters, hiddenValues],
   );
 
+  // -------- focus recompute from focused values -----------------------------
+  const focus = useMemo(
+    () => (data ? packFocus(data.cells, focusedValues ?? NO_HIDDEN_VALUES) : null),
+    [data, focusedValues],
+  );
+
   // -------- regl init + render loop (runs ONCE per dataset) ------------------
   useEffect(() => {
     if (!data || !canvasRef.current) return;
@@ -395,10 +410,12 @@ export function ExpressionUmap({
     const expressionBuffer = regl.buffer(
       expressionArr ?? new Float32Array(data.cells.length),
     );
+    const focusBuffer = regl.buffer(focus ?? new Float32Array(data.cells.length).fill(1));
     positionBufferRef.current = positionBuffer;
     colorBufferRef.current = colorBuffer;
     visibilityBufferRef.current = visibilityBuffer;
     expressionBufferRef.current = expressionBuffer;
+    focusBufferRef.current = focusBuffer;
     cellCountRef.current = data.cells.length;
 
     const drawClusters = regl({
@@ -408,11 +425,13 @@ export function ExpressionUmap({
         position: positionBuffer,
         color: colorBuffer,
         visible: visibilityBuffer,
+        focus: focusBuffer,
       },
       uniforms: {
         zoom: regl.prop<{ zoom: number }, "zoom">("zoom"),
         translate: regl.prop<{ translate: [number, number] }, "translate">("translate"),
         pointSize: DEFAULT_POINT_SIZE,
+        focusMode: regl.prop<{ focusMode: number }, "focusMode">("focusMode"),
       },
       count: data.cells.length,
       primitive: "points",
@@ -430,6 +449,7 @@ export function ExpressionUmap({
         position: positionBuffer,
         expression: expressionBuffer,
         visible: visibilityBuffer,
+        focus: focusBuffer,
       },
       uniforms: {
         zoom: regl.prop<{ zoom: number }, "zoom">("zoom"),
@@ -437,6 +457,7 @@ export function ExpressionUmap({
         pointSize: DEFAULT_POINT_SIZE,
         expMin: regl.prop<{ expMin: number }, "expMin">("expMin"),
         expMax: regl.prop<{ expMax: number }, "expMax">("expMax"),
+        focusMode: regl.prop<{ focusMode: number }, "focusMode">("focusMode"),
       },
       count: data.cells.length,
       primitive: "points",
@@ -500,15 +521,20 @@ export function ExpressionUmap({
         const expRange = expressionRangeRef.current;
         const z = zoomRef.current;
         const t = translateRef.current;
-        if (expArr && expRange) {
-          drawExpression({
-            zoom: z,
-            translate: t,
-            expMin: expRange.min,
-            expMax: expRange.max,
-          });
-        } else {
-          drawClusters({ zoom: z, translate: t });
+        // With a focus set, the cells outside it go down first in grey and the
+        // cells inside it are drawn over them in colour.
+        for (const focusMode of focusSetRef.current ? [1, 2] : [0]) {
+          if (expArr && expRange) {
+            drawExpression({
+              zoom: z,
+              translate: t,
+              expMin: expRange.min,
+              expMax: expRange.max,
+              focusMode,
+            });
+          } else {
+            drawClusters({ zoom: z, translate: t, focusMode });
+          }
         }
         dirtyRef.current = false;
       }
@@ -524,12 +550,14 @@ export function ExpressionUmap({
       colorBuffer.destroy();
       visibilityBuffer.destroy();
       expressionBuffer.destroy();
+      focusBuffer.destroy();
       regl.destroy();
       reglRef.current = null;
       positionBufferRef.current = null;
       colorBufferRef.current = null;
       visibilityBufferRef.current = null;
       expressionBufferRef.current = null;
+      focusBufferRef.current = null;
       drawClustersRef.current = null;
       drawExpressionRef.current = null;
       cellCountRef.current = 0;
@@ -550,6 +578,16 @@ export function ExpressionUmap({
     buf.subdata(visibility);
     dirtyRef.current = true;
   }, [visibility]);
+
+  // -------- focus update (in-place subdata) -----------------------------------
+  useEffect(() => {
+    const buf = focusBufferRef.current;
+    if (!buf || !focus) return;
+    if (focus.length !== cellCountRef.current) return;
+    buf.subdata(focus);
+    focusSetRef.current = focusIsSet(focusedValues ?? NO_HIDDEN_VALUES);
+    dirtyRef.current = true;
+  }, [focus, focusedValues]);
 
   // -------- expression update (in-place subdata) ------------------------------
   useEffect(() => {
