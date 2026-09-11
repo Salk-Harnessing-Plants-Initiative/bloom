@@ -325,9 +325,12 @@ def scrna_species(pg_conninfo):
         conn.execute("DELETE FROM public.scrna_datasets WHERE id = ANY(%s)", (ids,))
         conn.execute("DELETE FROM public.species WHERE id = %s", (species_id,))
     # By prefix, so objects a stopped load uploaded without a row go too.
+    import re
+
     paths = []
-    for _, name in found:
-        prefix = f"counts/{name}/"
+    for dataset_id, name in found:
+        cleaned = re.sub(r"\s+", "_", name)
+        prefix = f"counts/{cleaned}_{dataset_id}_/"
         status, listed = api_request("/api/storage/v1/object/list/scrna",
                                      api_key=SERVICE_ROLE_KEY, method="POST",
                                      data={"prefix": prefix, "limit": 10000})

@@ -107,9 +107,9 @@ def test_a_first_load_numbers_genes_by_position_and_records_every_object(counts,
     table = genes(["G0", "G1", "G2"])
     genes_rows, counts_rows, _ = snapshot(client)
     assert genes_rows == [(0, "G0"), (1, "G1"), (2, "G2")]
-    assert counts_rows == [(g, f"counts/MYB41/{g}.json") for g in ("G0", "G1", "G2")]
+    assert counts_rows == [(g, f"counts/MYB41_7_/{g}.json") for g in ("G0", "G1", "G2")]
     for i, g in enumerate(("G0", "G1", "G2")):
-        body, options = client.objects[("scrna", f"counts/MYB41/{g}.json")]
+        body, options = client.objects[("scrna", f"counts/MYB41_7_/{g}.json")]
         assert json.loads(body) == counts.gene_counts(table["by_gene"], i)
         assert options == {"content-type": "application/json", "upsert": "true"}
 
@@ -131,14 +131,14 @@ def test_no_row_is_written_before_its_object(counts, tmp_path, monkeypatch):
         load(counts, client, tmp_path)
     recorded = {c["counts_object_path"] for c in client.tables["scrna_counts"]}
     assert recorded == {path for (_, path) in client.objects} == {
-        "counts/MYB41/G0.json", "counts/MYB41/G1.json"}
+        "counts/MYB41_7_/G0.json", "counts/MYB41_7_/G1.json"}
 
 
 def test_the_object_path_uses_the_trimmed_name(counts, tmp_path):
     client = client_with()
     load(counts, client, tmp_path, name="  MYB41 ")
     assert {path for (_, path) in client.objects} == {
-        f"counts/MYB41/{g}.json" for g in ("G0", "G1", "G2")}
+        f"counts/MYB41_7_/{g}.json" for g in ("G0", "G1", "G2")}
 
 
 # --------------------------------------------------------------------------- #
@@ -172,7 +172,7 @@ def test_a_stop_during_an_upload_resumes_without_a_second_row(counts, tmp_path):
         load(counts, client, tmp_path, NAMES)
     load(counts, client, tmp_path, NAMES)
     recorded = [c["counts_object_path"] for c in client.tables["scrna_counts"]]
-    assert sorted(recorded) == sorted(f"counts/MYB41/{g}.json" for g in NAMES)
+    assert sorted(recorded) == sorted(f"counts/MYB41_7_/{g}.json" for g in NAMES)
 
 
 def test_a_complete_load_is_already_loaded(counts, tmp_path):

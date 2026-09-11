@@ -120,7 +120,7 @@ def test_a_first_load_writes_genes_rows_and_objects_as_the_writer(
         (path,) = db.execute("SELECT c.counts_object_path FROM scrna_counts c JOIN "
                              "scrna_genes g ON g.id = c.gene_id WHERE g.gene_name = %s "
                              "AND c.dataset_id = %s", (gene, dataset_id)).fetchone()
-        assert path == f"counts/{name}/{gene}.json"
+        assert path == f"counts/{name}_{dataset_id}_/{gene}.json"
         assert download(writer, path) == counts.gene_counts(table["by_gene"], column)
 
 

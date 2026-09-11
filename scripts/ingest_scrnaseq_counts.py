@@ -44,11 +44,10 @@ IngestError = ingest_api.IngestError
 
 BUCKET = "scrna"
 
-# Recorded on scrna_counts.counts_object_path and read back from there, so the
-# shape of this path is ours to choose -- scrna-client.ts follows the row rather
-# than rebuilding the path. The object itself is the sparse JSON gene_counts()
-# writes, which is what fetchGeneCounts parses.
-COUNTS_PATH = "counts/{dataset}/{gene}.json"
+# The shape the bloom-js CLI writes: the id keeps datasets that share a name apart,
+# the name keeps a bucket listing readable. The explorer reads whatever path the
+# scrna_counts row records, so older name-only paths keep working.
+COUNTS_PATH = "counts/{dataset}_{dataset_id}_/{gene}.json"
 
 # A gene name becomes part of an object path, so it is held to accession
 # characters. The dataset name's rule is shared with the cells loader.
@@ -212,8 +211,17 @@ def check_dataset_name(name: str) -> None:
         )
 
 
-def object_path(dataset_name: str, gene: str) -> str:
-    return COUNTS_PATH.format(dataset=dataset_name.strip(), gene=gene)
+def clean_dataset_name(name: str) -> str:
+    """The dataset name as the bloom-js CLI puts it in a path."""
+    name = re.sub(r"^\\+", "", name.strip())
+    name = re.sub(r"\s+", "_", name)
+    name = re.sub(r'[<>:"|?*\\%]', "", name)
+    return re.sub(r"\.json$", "", name)
+
+
+def object_path(dataset_name: str, dataset_id: int, gene: str) -> str:
+    return COUNTS_PATH.format(dataset=clean_dataset_name(dataset_name),
+                              dataset_id=dataset_id, gene=gene)
 
 
 def open_dataset(writer, name: str, species_id: int, barcodes: list[str]) -> int:
@@ -333,7 +341,7 @@ def write_counts(writer, dataset_id: int, dataset_name: str, genes: dict,
     for number, gene in enumerate(genes["names"]):
         if gene in done:
             continue
-        path = object_path(dataset_name, gene)
+        path = object_path(dataset_name, dataset_id, gene)
         upload(writer, path, json.dumps(gene_counts(genes["by_gene"], number)).encode())
         pending.append({"dataset_id": dataset_id, "gene_id": gene_ids[gene],
                         "counts_object_path": path})
@@ -392,7 +400,8 @@ def main(argv: list[str] | None = None) -> int:
         # doing nothing is visible rather than reading as a pass.
         for gene, count in sorted(expectations.items()):
             print(f"  {gene} is non-zero in {count} cells, as expected")
-        prefix = COUNTS_PATH.split("{gene}")[0].format(dataset=name)
+        prefix = COUNTS_PATH.split("{gene}")[0].format(
+            dataset=clean_dataset_name(name), dataset_id="<dataset id>")
         print(f"would write {len(genes['names'])} objects under {prefix} and a row "
               f"for each")
         print("dry run — nothing written")

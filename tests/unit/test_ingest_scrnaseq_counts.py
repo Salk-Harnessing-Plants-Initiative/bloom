@@ -226,24 +226,30 @@ def test_expectations_are_collected_from_every_flag(counts):
 # --------------------------------------------------------------------------- #
 
 
-def test_the_object_path_is_the_one_the_explorer_fetches(counts):
-    """web/components/expression-lib/scrna-client.ts builds this path from the
-    dataset and gene names, so it is a contract rather than a choice."""
-    assert counts.object_path("MYB41 transgene", "AT4G28110.Fusion") == \
-        "counts/MYB41 transgene/AT4G28110.Fusion.json"
+def test_the_object_path_is_the_one_the_cli_writes(counts):
+    """counts/<name>_<dataset id>_/, as the bloom-js CLI writes it: the id keeps two
+    datasets with one name apart, the name keeps a bucket listing readable."""
+    assert counts.object_path("MYB41 transgene", 7, "AT4G28110.Fusion") == \
+        "counts/MYB41_transgene_7_/AT4G28110.Fusion.json"
 
 
-def test_the_object_path_uses_the_trimmed_dataset_name(counts):
-    """The cells loader stores the trimmed name; a padded one would put the
-    objects under a prefix that name never finds."""
-    assert counts.object_path("  MYB41 transgene ", "G") == "counts/MYB41 transgene/G.json"
+@pytest.mark.parametrize("name,cleaned", [
+    ("  MYB41 transgene ", "MYB41_transgene"), ("a  b\tc", "a_b_c"),
+    ("pennycress_data2.json", "pennycress_data2"),
+])
+def test_the_dataset_name_is_cleaned_as_the_cli_cleans_it(counts, name, cleaned):
+    assert counts.object_path(name, 3, "G") == f"counts/{cleaned}_3_/G.json"
+
+
+def test_two_datasets_with_one_name_get_separate_paths(counts):
+    assert counts.object_path("d", 1, "G") != counts.object_path("d", 2, "G")
 
 
 def test_every_gene_gets_its_own_path(counts, tmp_path):
     path = write_h5ad(tmp_path / "paths.h5ad", np.eye(3, dtype="float32"),
                       ["A", "B", "C"])
     read = counts.read_genes(path, {})
-    paths = {counts.object_path("d", g) for g in read["names"]}
+    paths = {counts.object_path("d", 1, g) for g in read["names"]}
     assert len(paths) == 3
 
 
@@ -274,7 +280,7 @@ def test_a_dry_run_needs_no_account_and_says_what_it_would_write(
     assert code == 0
     assert "2 genes over 2 cells" in out
     assert "HIT is non-zero in 2 cells, as expected" in out
-    assert "would write 2 objects under counts/d/" in out
+    assert "would write 2 objects under counts/d_<dataset id>_/" in out
     assert "dry run — nothing written" in out
 
 
