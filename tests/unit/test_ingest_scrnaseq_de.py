@@ -425,3 +425,51 @@ def test_the_wait_is_checked_before_signing_in(de, tmp_path, monkeypatch, capsys
     de.ingest_api.Marker(de.ingest_api.marker_path(r, "d")).record("insert gene rows")
     assert de.main(argv(s, r, "--server", "https://x", "--email", "me@salk.edu")) == 1
     assert "seconds" in capsys.readouterr().err
+
+
+def _notes(tmp_path, text: str) -> Path:
+    path = tmp_path / "notes.json"
+    path.write_text(text)
+    return path
+
+
+def test_notes_are_stored_with_the_analysis_without_changing_its_fingerprint(
+        de, tmp_path, monkeypatch, capsys):
+    """The fingerprint is what a re-run finds the analysis by, so it stays the
+    files' own."""
+    _signed_in(de, monkeypatch)
+    seen = {}
+
+    def recorder(writer, name, species_id, method, params, params_hash, summary,
+                 groups):
+        seen.update(params=params, hash=params_hash)
+        return (5, 1, 3, "loaded")
+    monkeypatch.setattr(de, "load", recorder)
+    s, r = files(tmp_path, [summary_row()], DEFAULT_RESULTS)
+    notes = _notes(tmp_path, '{"depth_matching": "lowest 20% by UMI dropped"}')
+    assert de.main(argv(s, r, "--server", "https://x", "--email", "me@salk.edu",
+                        "--notes", str(notes))) == 0
+    params, params_hash = de.fingerprint(s, r)
+    assert seen == {"params": {**params, "notes": {"depth_matching": "lowest 20% by UMI dropped"}},
+                    "hash": params_hash}
+
+
+@pytest.mark.parametrize("text", ["[1, 2]", "not json", '"a string"'])
+def test_notes_that_are_not_a_json_object_are_refused_before_anything_else(
+        de, tmp_path, capsys, text):
+    s, r = files(tmp_path, [summary_row()], DEFAULT_RESULTS)
+    assert de.main(argv(s, r, "--notes", str(_notes(tmp_path, text)), "--dry-run")) == 1
+    assert "notes.json" in capsys.readouterr().err
+
+
+def test_a_missing_notes_file_is_refused(de, tmp_path, capsys):
+    s, r = files(tmp_path, [summary_row()], DEFAULT_RESULTS)
+    assert de.main(argv(s, r, "--notes", str(tmp_path / "absent.json"), "--dry-run")) == 1
+    assert "no such file" in capsys.readouterr().err
+
+
+def test_a_dry_run_names_the_notes_it_would_record(de, tmp_path, capsys):
+    s, r = files(tmp_path, [summary_row()], DEFAULT_RESULTS)
+    notes = _notes(tmp_path, '{"b": 1, "a": 2}')
+    assert de.main(argv(s, r, "--notes", str(notes), "--dry-run")) == 0
+    assert "notes recorded with the analysis: a, b" in capsys.readouterr().out

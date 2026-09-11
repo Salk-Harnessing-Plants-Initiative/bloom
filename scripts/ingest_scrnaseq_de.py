@@ -39,7 +39,6 @@ import csv
 import hashlib
 import json
 import math
-import re
 import sys
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -85,6 +84,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--method", required=True,
                    help="the test that produced the results, e.g. "
                         "seurat-wilcoxon; recorded on the analysis")
+    p.add_argument("--notes", type=Path,
+                   help="a JSON object of notes recorded with the analysis, such as "
+                        "how its cells were chosen; written when it is first recorded")
     p.add_argument("--server", help="the site, e.g. https://staging.bloom.salk.edu; "
                    "the API address is read from it")
     p.add_argument("--api-url", help="the API address, instead of reading it from --server")
@@ -286,6 +288,21 @@ def reconcile(summary: list[dict], groups: dict[tuple[str, str], list[dict]]) ->
             f"{len(extra)} comparisons appear in the results with no summary "
             f"row: {', '.join(f'{c} / {k}' for c, k in first)}"
         )
+
+
+def read_notes(path: Path | None) -> dict | None:
+    """Notes recorded with the analysis; they do not change its fingerprint."""
+    if path is None:
+        return None
+    if not path.exists():
+        raise IngestError(f"no such file: {path}")
+    try:
+        notes = json.loads(path.read_text())
+    except ValueError as exc:
+        raise IngestError(f"{path.name} is not JSON: {exc}") from None
+    if not isinstance(notes, dict):
+        raise IngestError(f"{path.name} must hold a JSON object of notes")
+    return notes
 
 
 def fingerprint(summary: Path, results: Path) -> tuple[dict, str]:
@@ -511,11 +528,15 @@ def main(argv: list[str] | None = None) -> int:
         read = read_results(args.results)
         reconcile(summary, read["groups"])
         params, params_hash = fingerprint(args.summary, args.results)
+        notes = read_notes(args.notes)
     except IngestError as exc:
         print(f"refusing to ingest: {exc}", file=sys.stderr)
         return 1
 
     print(describe(summary, read))
+    if notes:
+        params = {**params, "notes": notes}
+        print(f"  notes recorded with the analysis: {', '.join(sorted(notes))}")
     if args.dry_run:
         genes = sum(len(rows) for rows in read["groups"].values())
         print(f"  would write one analysis of {len(summary)} comparisons and {genes} "
