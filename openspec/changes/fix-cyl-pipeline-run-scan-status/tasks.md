@@ -1,0 +1,402 @@
+## 1. Migration A: `insert_cyl_result_envelope` gains per-scan status write-back
+
+- [x] 1.1 Write failing tests (extend `tests/integration/test_cyl_writeback_rpc.py`) covering: (a) a matching `p_argo_workflow_name` on a `'queued'` row moves it to `'written'` and sets its `source_id`; (b) a no-op re-delivery with the same `p_argo_workflow_name` also lands on `'written'` (not `'reused'` — that value stays reserved for the separate, unimplemented pre-dispatch skip-if-done mechanism); (c) omitting `p_argo_workflow_name` leaves the table untouched (existing manual-invocation shape); (d) a non-matching `p_argo_workflow_name` affects zero rows without erroring; (e) an otherwise-invalid envelope with a would-have-matched `p_argo_workflow_name` leaves the row unchanged (rollback covers the new write too); (f) a `p_argo_workflow_name` matching a row already `'failed'` does NOT flip it back to `'written'` (the late-delivery guard); (g) update the pre-existing `test_execute_grants_are_exactly_the_sanctioned_roles` (and any other test hardcoding the literal signature `insert_cyl_result_envelope(jsonb)`) to check `insert_cyl_result_envelope(jsonb, text)` instead — the 1-arg overload is dropped by 1.2, and `has_function_privilege` against a since-removed signature raises rather than failing an assertion. This test file has no existing helper that seeds `cyl_pipeline_run_scans`/`cyl_pipeline_runs` rows (only `test_cyl_pipeline_dispatch.py` does today) — add one.
+- [x] 1.2 Write the forward migration, `supabase/migrations/20260911090000_add_cyl_writeback_run_scan_status.sql` (this exact 14-digit-timestamped filename — holding only this concern, per Decision 5): `DROP FUNCTION public.insert_cyl_result_envelope(jsonb);` then `CREATE FUNCTION public.insert_cyl_result_envelope(envelope jsonb, p_argo_workflow_name text DEFAULT NULL) RETURNS jsonb ...` — **keep the first parameter named `envelope`, unchanged** (every existing caller, including `bloomctl`'s `client.rpc("insert_cyl_result_envelope", {"envelope": ...})`, keys on this exact name via PostgREST's named-parameter dispatch; renaming it breaks every caller). Add step (7)'s `UPDATE cyl_pipeline_run_scans ... SET status = 'written', source_id = <resolved source id> WHERE argo_workflow_name = p_argo_workflow_name AND scan_id = <resolved scan id> AND status != 'failed'` inside the existing transaction. Re-issue the existing `GRANT EXECUTE ... TO bloom_writer, service_role, bloom_admin, bloom_workflows` and the existing `ALTER FUNCTION ... OWNER TO postgres` (both a `DROP`+`CREATE` loses prior grants and ownership — re-issue both explicitly rather than assuming they carry over). Do not use `CREATE OR REPLACE` — adding a parameter changes the signature and `CREATE OR REPLACE` would leave the old 1-arg overload behind as dead, still-callable code.
+- [x] 1.3 Write the companion rollback script, `supabase/rollbacks/20260911090000_add_cyl_writeback_run_scan_status_rollback.sql`, restoring the 1-arg signature and its original grants/ownership.
+- [x] 1.4 Run the tests from 1.1 against the migrated schema; confirm green. **Docker became available mid-session; applied both migrations directly to the running `bloom_v2_dev-db-dev-1` dev stack and ran the real suite — all pass (see Task 7.3 for the consolidated count). Also fixed 3 pre-existing tests this exposed for real (not just theoretically): the ambient DEV DB is cumulative across all migrations, so applying this migration made two OTHER pre-existing rollback tests (testing earlier migrations' rollbacks in isolation) and one unrelated file's hardcoded-signature `DROP FUNCTION` fail for real — fixed by reordering to reverse-chronological rollback application and by making the unrelated DROP signature-agnostic. Full detail in the commit/PR description.**
+
+## 2. Migration A (continued): `fail_cyl_pipeline_run_scans_without_result`
+
+- [x] 2.1 Write failing tests (same test file as Task 1): marks a `'queued'` row `'failed'` with the supplied `error_message` and returns `1`; leaves an already-`'written'`/`'failed'` row for the same workflow name untouched and uncounted; a second call for the same workflow name is a no-op returning `0` with no rows changed; an unmatched workflow name returns `0` without erroring; `EXECUTE` is granted only to `bloom_workflows` (denied to `anon`/`authenticated`/`PUBLIC`/`bloom_user`/`bloom_writer`/`bloom_admin`).
+- [x] 2.2 Implement the function in **the same migration file as Task 1** (`20260911090000_add_cyl_writeback_run_scan_status.sql` — same concern: per-scan write-back status), as `SECURITY DEFINER`, triple-revoke (`PUBLIC`, `anon`, `authenticated`) + single-grant (`bloom_workflows`), matching `fail_cyl_pipeline_batch`'s existing convention.
+- [x] 2.3 Add the drop to the same rollback script as Task 1.3.
+- [x] 2.4 Run the tests from 2.1; confirm green. **Confirmed against the live dev DB — see 1.4.**
+
+## 3. Migration B: `update_cyl_pipeline_run_status` gains `done_count`/`failed_count`
+
+- [x] 3.1 Write failing tests: supplying both updates both columns while leaving `status` behavior unchanged; omitting either (or both) leaves the corresponding column(s) unchanged (`COALESCE` semantics); every pre-existing scenario for this function (terminal-status `completed_at` advance, `'queued'`/`'complete'`/`'failed'` no-ops — including that `done_count`/`failed_count` specifically, not just `status`, stay unchanged for an already-terminal run even when new values are supplied — invalid-`p_status` rejection, nonexistent-run no-op) still passes against the new 4-argument signature; update the pre-existing `test_wrapper_denied_to_public_and_session_roles` (and any other test hardcoding `update_cyl_pipeline_run_status(bigint, text)`) to check `update_cyl_pipeline_run_status(bigint, text, integer, integer)` instead, for the same reason as Task 1.1(g).
+- [x] 3.2 A **separate** migration file, `supabase/migrations/20260911091000_add_cyl_pipeline_run_scan_counts.sql` (a different concern from Task 1/2 — the run-level rollup, consumed only by `status_poller.py`, not by write-back): `DROP FUNCTION public.update_cyl_pipeline_run_status(bigint, text);` then `CREATE FUNCTION public.update_cyl_pipeline_run_status(p_run_id bigint, p_status text, p_done_count integer DEFAULT NULL, p_failed_count integer DEFAULT NULL) RETURNS void ...`, re-issuing the `bloom_workflows`-only grant and ownership. (Migration A and B share no cross-references and apply independently of each other's order.)
+- [x] 3.3 Write a separate companion rollback script, `supabase/rollbacks/20260911091000_add_cyl_pipeline_run_scan_counts_rollback.sql`, restoring the 2-arg signature — kept independent of Task 1/2's rollback so either half can be rolled back without the other (see `design.md` Decision 5).
+- [x] 3.4 Run the tests from 3.1; confirm green. **Confirmed against the live dev DB — see 1.4. Also fixed `test_rollback_removes_new_function` (same reverse-chronological-rollback issue as 1.4's other two fixes) once run for real.**
+
+## 4. `status_poller.py`: compute and pass counts; drop the `'running'`-unchanged skip
+
+- [x] 4.1 Read `services/workflows/status_poller.py` and `services/workflows/tests/test_status_poller.py` in full first. `_fetch_effective_phases` already selects `argo_workflow_name, status` (`status_poller.py:156-157`) — the status values are already fetched, just not returned; extend its return value to a 4-tuple `(phases, any_unknown, done_count, failed_count)` so `sweep_once` can carry both counts through to `update_run_status` without a second DB read. Before writing any implementation:
+  - (a) Update every pre-existing test that monkeypatches `_fetch_effective_phases` or `update_run_status`, or calls the real (unmocked) `_fetch_effective_phases` and unpacks its return as a fixed-arity tuple, to match the new 4-tuple/4-arg shapes — do not leave a stale-arity lambda or unpacking in place (it will raise `TypeError`/`ValueError`, not just fail an assertion). This includes, at minimum: `test_sweep_calls_update_with_the_computed_status`, `test_sweep_isolates_a_k8sstatuserror_on_one_run_from_the_rest`, `test_sweep_isolates_a_generic_exception_fetching_phases_from_the_rest`, `test_sweep_logs_and_continues_when_update_call_fails`, `test_sweep_withholds_complete_when_a_workflow_is_unresolved_this_cycle`, `test_sweep_still_concludes_failed_or_partial_despite_an_unresolved_workflow`, `test_sweep_once_returns_true_on_a_fully_clean_cycle`, `test_sweep_once_returns_false_when_an_update_call_fails`, `test_sweep_once_returns_false_when_a_run_has_an_isolated_error`, `test_sweep_still_writes_a_dispatch_settled_partial_runs_first_real_confirmation`, `test_sweep_still_writes_when_computed_status_differs_from_known_status`, `test_sweep_partial_run_with_a_still_running_workflow_resolves_to_running`, `test_signal_during_sweep_lets_it_finish_before_exiting` (mocked call shapes), AND `test_rollup_treats_dispatch_failed_scan_as_effective_failed_phase`, `test_run_with_no_workflow_names_and_no_dispatch_failures_is_left_unchanged`, `test_rollup_skips_a_404d_workflow_rather_than_guessing`, `test_a_404_alongside_an_observed_succeeded_sibling_is_flagged_as_unknown` (these four call the real, unmocked `_fetch_effective_phases` directly and unpack a 2-tuple today).
+  - (b) **Delete or invert** `test_sweep_skips_the_write_when_a_running_run_is_reconfirmed_running` — this change explicitly removes the skip it asserts (design.md Decision 3); leaving it in place means it fails, not that it's "unmodified."
+  - (c) Add a new failing test: given a fixture of `cyl_pipeline_run_scans` rows mixing `'written'`/`'failed'`/`'queued'`, `sweep_once` computes the correct `done_count`/`failed_count` and passes them to `update_run_status`.
+  - (d) Add a new failing test distinct from (c): call `sweep_once` twice in direct succession against an **identical** fixture (same known `'running'` status, same scan-row counts both times) and assert `update_run_status` is called with the same status and counts on **both** calls — proving the removed skip is truly unconditional (every cycle a candidate run has scan rows), not merely "correct the first time." (There is no persisted prior-cycle state to compare against — counts are recomputed fresh every cycle — so this is the only way to actually distinguish "unconditional" from "happened to be correct once.")
+  - (e) Confirm the existing withheld-`'complete'`-on-404 test still holds: that case skips the call entirely (no status *and* no counts written).
+- [x] 4.2 Implement: widen `_fetch_effective_phases`'s return to the 4-tuple from 4.1, computing `done_count`/`failed_count` from the `status` values it already fetches (no new query needed); remove the `computed_status == known_status == 'running'` skip branch in `sweep_once`; pass both counts on every `update_run_status` call that isn't withheld by the 404/empty-phase-list rules.
+- [x] 4.3 Run the tests from 4.1; confirm green — including the full pre-existing suite, so any test not explicitly touched by 4.1(a)/(b) is confirmed to show zero diff in behavior. **Actually executed: `uv run --frozen --extra test pytest tests/test_status_poller.py` — 45 passed.**
+- [x] 4.4 Rewrite `services/workflows/README.md`'s entire same-value-skip paragraph (currently ~lines 184-198) — not just its first sentence. The paragraph makes three linked claims that all become obsolete once 4.2 lands: (i) a `'running'`-reconfirming cycle is a no-op; (ii) `'partial'` is carved out as an exception to that no-op; (iii) a `'partial'` run whose batches are all already resolved therefore "gets re-written identically forever," described as a "cosmetic trade-off." Once the skip is removed entirely, (ii) and (iii) are as obsolete as (i) — replace the whole paragraph with a description of the new unconditional-call behavior (every cycle a candidate run has scan rows, carrying freshly computed `done_count`/`failed_count`, except the withheld-404-on-complete case).
+- [x] 4.5 Add a targeted mitigation for the deploy-ordering window `design.md`'s Risks section documents: in `sweep_once`'s per-run exception handling, catch the specific "function/signature not found" error class (Postgrest's `PGRST202`, raised when `update_run_status` is called against a not-yet-migrated database) distinctly from a generic isolated error — log it at a lower severity as an expected, transient condition, and exclude it from the 3-consecutive-unclean-cycles reconnect counter (a burst of these during a deploy's brief migration-lag window shouldn't trigger an unnecessary client reconnect). Write a failing test first: a `PGRST202`-shaped exception from `update_run_status` is isolated (as today) but does NOT count toward the reconnect threshold, verified by confirming 3+ consecutive `PGRST202` cycles do NOT trigger a reconnect while 3 consecutive *other* exceptions still do.
+
+## 5. `bloomctl` CLI: thread `ARGO_WORKFLOW_NAME` through write-back; reconcile unresolved scans
+
+- [x] 5.1 Write failing tests (bloomcli's test suite for `cyl/ingest.py`): `call_insert_envelope`/`ingest_one_envelope` reads `os.environ.get("ARGO_WORKFLOW_NAME")` and includes it as `p_argo_workflow_name` in the RPC payload only when set and non-empty (omitting the key, not sending an empty string, when unset); `batch_ingest_result` calls `fail_cyl_pipeline_run_scans_without_result` exactly once, after all discovered envelopes are processed, only when `ARGO_WORKFLOW_NAME` is set, passing a descriptive `p_error_message` — **including when zero envelopes are discovered** (an empty `envelopes_dir` with no manifest present): the reconciliation call still fires exactly once even though there was nothing to ingest, so the implementation must not gate the call on `if discovered: ...`; `batch_ingest_result` makes no such call when `ARGO_WORKFLOW_NAME` is unset (manual/local invocation, unchanged behavior); the standalone `ingest_result` command also threads the env var into its single `call_insert_envelope` call but never calls the reconciliation RPC (it has no batch to reconcile).
+- [x] 5.2 Implement the changes to `call_insert_envelope`, `ingest_one_envelope`, and `batch_ingest_result`.
+- [x] 5.3 Run the tests from 5.1; confirm green. **Actually executed: `uv run --extra test pytest tests/test_cyl_ingest.py` — 148 passed, 1 skipped.**
+- [x] 5.4 Update `bloomcli/README.md`'s `ingest-result`/`batch-ingest-result` sections to document the `ARGO_WORKFLOW_NAME`-driven behavior (per-scan status linkage on `ingest-result`; the end-of-batch reconciliation call on `batch-ingest-result`), and add a `bloomcli/CHANGELOG.md` `[Unreleased]` entry under `### Added` (this surfaces new optional behavior gated on an environment variable, not a bug fix, so `### Added` fits better than the `### Fixed` heading PR #697's precedent used for its own, differently-shaped change).
+- [x] 5.5 Update `_WIKI/SUPABASE/README.md`'s existing mentions of `insert_cyl_result_envelope(envelope jsonb)` and `update_cyl_pipeline_run_status(p_run_id, p_status)` to their new signatures, and add a short mention of the new `fail_cyl_pipeline_run_scans_without_result` function alongside the existing pipeline-trigger-tables documentation there — this wiki doc's own header states it must be updated whenever something durable about the schema changes.
+
+## 6. Integration: real-Postgres proof that the two ends actually connect
+
+- [x] 6.1 Write one real-Postgres integration test (new or extended in `tests/integration/`) that: seeds a `cyl_pipeline_runs` row and several `cyl_pipeline_run_scans` rows sharing one `argo_workflow_name`; calls `insert_cyl_result_envelope` with that workflow name for some scans and `fail_cyl_pipeline_run_scans_without_result` for the rest; then calls `update_cyl_pipeline_run_status` with counts computed the same way `status_poller.py` computes them (a plain `COUNT ... WHERE status IN (...)` query against the seeded schema); asserts the resulting `cyl_pipeline_runs.done_count`/`failed_count` match the real per-scan split. This is the only place besides the manual Task 8 E2E run that exercises the full write-back → rollup path against a real schema, rather than a mocked Supabase client (`status_poller.py`'s own unit tests) or hardcoded counts (`update_cyl_pipeline_run_status`'s own unit tests). No existing test file seeds `cyl_pipeline_run_scans` today except `test_cyl_pipeline_dispatch.py` — add a seed helper here rather than assuming one exists.
+- [x] 6.2 Run the test from 6.1; confirm green. **`test_writeback_and_rollup_connect_end_to_end` passes against the live dev DB.**
+
+## 7. Generated artifacts and validation
+
+- [ ] 7.1 Regenerate the tracked `database.types.ts` files (`web/`, `packages/bloom-js`, `packages/bloom-nextjs-auth`, `packages/bloom-fs`) against the migrated schema — never hand-edit them. Then run `npx tsc --noEmit` in `web/` and `npx tsc -p tsconfig.json` in `packages/bloom-js`, `packages/bloom-fs`, **and `packages/bloom-nextjs-auth`** to confirm the regenerated types compile cleanly in all four regenerated locations — no code today calls either changed RPC from TypeScript, so a silently-stale regen would not otherwise be caught by any existing check. **Not done — deliberately skipped, not just blocked: the `bloom_v2_dev-db-dev-1` dev stack that became available mid-session is itself missing several unrelated, already-merged migrations (confirmed: `cyl_scan_latest_source` and `cyl_experiment_trait_counts`, from `fix-cyl-scan-traits-latest-rollup`, do not exist in it, though e.g. `gravi_plate_videos` does — this dev stack's schema is behind on a specific subset, not uniformly stale). Regenerating `database.types.ts` from this DB would silently strip valid, currently-tracked type entries for those unrelated tables/columns — actively corrupting the tracked files rather than just leaving them stale. Regenerate from a fully-migrated environment instead (or run `make migrate-local`/equivalent to bring this dev stack fully current first, then regenerate).**
+- [x] 7.2 `openspec validate fix-cyl-pipeline-run-scan-status --strict`; resolve any issues. **Passes: "Change 'fix-cyl-pipeline-run-scan-status' is valid".**
+- [x] 7.3 Run: `uv run --extra test pytest tests/integration/ -v` (real-Postgres write-back/dispatch/status-polling suites, including the grant-signature updates from 1.1(g)/3.1 and the new test from 6.1); `cd services/workflows && uv run --frozen --extra test pytest tests/ -v` (confirm the diff against `test_status_poller.py` is limited to what 4.1 actually required); `cd bloomcli && uv run --extra test pytest tests/ -m "not integration" -v`; `bash scripts/lint_migrations.sh origin/staging` against both new migration/rollback pairs; pre-commit `ruff`/`ruff-format`/`black` on `services/workflows/` (all three hooks cover it) and pre-commit `ruff` only on `bloomcli/` (this repo's `black`/`ruff-format` pre-commit hooks do not scope to `bloomcli/` — `bloomcli`'s own `ruff format` is invoked separately if desired, but is not a pre-commit hook here). **Docker became available mid-session (`bloom_v2_dev-db-dev-1`); applied both new migrations to it directly and ran everything for real: `services/workflows` — 45 passed. `bloomcli` `test_cyl_ingest.py` — 148 passed, 1 skipped; full `bloomcli/tests/` sweep — 863 passed, 13 failed, all 13 pre-existing/unrelated (POSIX file-permission/symlink assumptions failing on this Windows dev machine, none in files this change touches). `tests/integration/` targeted at every file referencing either changed RPC (`test_cyl_writeback_rpc.py`, `test_cyl_pipeline_status_polling.py`, `test_cyl_pipeline_dispatch.py`, `test_cyl_read_path.py`, `test_cyl_scan_intermediates.py`, `test_contract_migration_match.py`) — 222 passed, 2 skipped, clean, after fixing 4 real issues this actually running surfaced (3 pre-existing rollback tests needed reverse-chronological rollback ordering once a later migration changed a function's arg count; one pre-existing unrelated test — `test_contract_migration_match.py::test_writeback_rpc_regression_is_detected` — hardcoded the old 1-arg `DROP FUNCTION` signature and was made signature-agnostic). The full unscoped `tests/integration/` directory was also run once (35 min) and showed ~174 failures/100 errors, but investigation confirmed these are pre-existing: this dev stack's schema is missing several unrelated, already-merged migrations (`cyl_scan_latest_source`, `cyl_experiment_trait_counts` from `fix-cyl-scan-traits-latest-rollup` — confirmed absent) plus infra flakiness during the long run (one transient Postgres `Permission denied` file-I/O error) — none in files this change touches. `scripts/lint_migrations.sh origin/staging` — passed. `ruff@0.9.9 check`/`format` (pinned to the exact version `.pre-commit-config.yaml` uses, since `pre-commit` itself wasn't installed) — clean on every touched file except pre-existing, untouched violations elsewhere in the same files.**
+
+## 8. Real-cluster E2E verification
+
+- [ ] 8.1 Before triggering anything, check for concurrent sessions competing for the shared `busch-lab` 2-GPU RunAI quota or the 3 synthetic test scans (`12894745`/`46`/`47`); coordinate timing or create a 4th synthetic scan (via `insert_image_v2_0` under the `staging-writer` profile, uploading a real sample image, mirroring how the existing 3 were made) if a fresh, uncontended scan is needed. Also confirm this PR's migrations have actually applied to the target environment before triggering — per `design.md`'s deploy-ordering risk, `bloomctl`'s GHCR image can publish and reach a write-back pod on a timeline decoupled from the migration-apply step, and running E2E before the migration lands would produce a flaky, non-representative result rather than a real signal.
+- [ ] 8.2 Trigger a full-success batch against `A4-PIPELINE-E2E-TEST` (`experiment_id 12880747`); poll `GET /workflows/runs/{run_id}` to a terminal status; confirm `done_count` equals the number of scans that actually wrote back and `failed_count` is `0` — not just "some positive number." While this deploy is rolling out, watch the `workflows` container's logs for the transient RPC-signature-mismatch window `design.md`'s deploy-ordering risk describes (now distinguished from other errors per Task 4.5), and confirm it is brief and self-heals rather than persisting.
+- [ ] 8.3 Trigger a poison-scan scenario expecting a `'partial'` outcome; confirm `done_count` and `failed_count` both match the real success/failure split for that run, are not double-counted across poller cycles, and are not stuck at a dispatch-level attempt count.
+- [ ] 8.4 Record the actual observed counts from 8.2/8.3 (not just pass/fail) as the verification evidence for this change.
+
+## 9. Review round 1 fixes (`/review-pr` against PR #774, post-implementation)
+
+Three real BLOCKING/IMPORTANT gaps survived Task 7's implementation, found once `/review-pr`'s 5
+parallel reviewers read the actual diff (as opposed to the design doc's description of it) — see
+`design.md`'s Decision 6. All three trace back to the same theme: a scan can stay `'queued'` forever
+if either `bloomctl`'s own failure-isolation has a hole, or if `bloomctl` never runs at all.
+
+- [x] 9.1 Write a failing test proving the isolation gap: monkeypatch/force `load_envelope` (or
+  write a real file with invalid UTF-8 bytes) so it raises something other than `EnvelopeError`
+  (e.g. `UnicodeDecodeError`) inside `ingest_one_envelope`, and confirm it currently propagates
+  instead of returning a failed `ScanResult`. **Done: `test_ingest_one_envelope_isolates_unreadable_file_error`
+  and `test_batch_ingest_cli_isolates_unreadable_file_among_several` (a real file with invalid UTF-8
+  bytes, no monkeypatching needed) — confirmed both failed against the pre-fix code with a raw
+  `UnicodeDecodeError`/`JSONDecodeError` before 9.2 landed.**
+- [x] 9.2 Fix: merge `ingest_one_envelope`'s three separate try/except blocks (narrow
+  `EnvelopeError`/`EnvelopeValidationError` catches around read/validate, broad `Exception` catch
+  around blob+RPC only) into one try block spanning the whole per-envelope pipeline, with a single
+  `except Exception` isolating any failure at any stage into that envelope's own failed
+  `ScanResult`. Run 9.1's test; confirm green. **Done — 150 passed, 1 skipped.**
+- [x] 9.3 Write failing tests for the reconciliation call's own isolation: (a) `batch_ingest_result`
+  with every envelope succeeding but `reconcile_unresolved_scans` raising — must not crash with an
+  unhandled exception, must still print the batch summary/JSON reflecting every real envelope
+  outcome, must include a distinct failed entry for the reconciliation failure, and must exit
+  non-zero; (b) the same for the zero-envelopes early-return branch; (c) a successful reconciliation
+  with a non-zero returned count logs that count (previously discarded silently). **Done: 3 new
+  tests, confirmed red against pre-fix code (crashed with the raw `APIError`/`Error P0001` instead
+  of a clean click exit; the logging test found no INFO record).**
+- [x] 9.4 Fix: add a small wrapper (e.g. `_reconcile_unresolved_scans_result`) around
+  `reconcile_unresolved_scans` that isolates any exception into a synthetic failed `ScanResult`
+  (`scan_key="<reconciliation>"`) folded into `scan_results`/`missing_results` before `BatchResult`
+  is built at both call sites, and logs the returned count via `logger.info` on success. Run 9.3's
+  tests; confirm green. **Done — 153 passed, 1 skipped (bloomcli/tests/test_cyl_ingest.py in full).**
+- [x] 9.5 Write failing tests for the `status_poller.py` backstop (extending
+  `services/workflows/tests/test_status_poller.py`): (a) a candidate run whose rollup concludes a
+  non-`'running'` status with a `'queued'` row under some `argo_workflow_name` — `sweep_once` calls
+  `fail_cyl_pipeline_run_scans_without_result` for that name, and the `failed_count` passed to
+  `update_cyl_pipeline_run_status` includes the reconciled row; (b) multiple distinct `'queued'`
+  workflow names for one run — reconciled once each; (c) rollup concludes `'running'` — no
+  reconciliation call at all; (d) the reconciliation call itself raises — `update_cyl_pipeline_run_status`
+  is NOT called for that run this cycle (left unsettled, `ok=False`), and the sweep still continues
+  to the next candidate; (e) no leftover `'queued'` rows — no reconciliation call, behavior
+  unchanged; (f) the existing withheld-`'complete'`-on-404 case still short-circuits before ever
+  reaching the new reconciliation logic (no reconciliation call in that case either). **Done: 6 new
+  tests added (one per scenario a-f), plus assertions on the new `queued_workflow_names` return
+  value added to the 4 pre-existing direct-call tests of `_fetch_effective_phases`, and a
+  `_reconcile_unresolved_scans` no-op mock added to `test_sweep_once_computes_counts_from_real_scan_rows_and_passes_them_through`
+  (its fixture's leftover 'queued' row would otherwise also exercise this new path, muddying its
+  original counting-only intent).**
+- [x] 9.6 Fix: widen `_fetch_effective_phases`'s return to also include the sorted, distinct
+  `argo_workflow_name`s among rows with `status = 'queued'`; in `sweep_once`, once `status` is known
+  and not withheld, reconcile each such name (isolated in one try/except covering the whole
+  per-run reconciliation loop — any failure skips this run's `update_cyl_pipeline_run_status` call
+  entirely this cycle, marks the cycle unclean, and moves on) and fold the reconciled counts into
+  `failed_count` before the status write. Run 9.5's tests; confirm green — including the full
+  pre-existing suite, so anything not explicitly touched by 9.5 shows zero diff in behavior. **Done
+  — 51 passed (up from 45; all 6 new tests plus every pre-existing test, unchanged in behavior).**
+- [x] 9.7 Update `services/workflows/README.md` and `bloomcli/README.md`/`CHANGELOG.md` if their
+  existing descriptions of the reconciliation call's behavior need amending given 9.2/9.4/9.6.
+  **Done — also caught and fixed a pre-existing staleness in `status_poller.py`'s own module
+  docstring (still described the same-value 'running' skip that Task 4 already removed).**
+- [x] 9.8 Re-run: `uv run --extra test pytest tests/integration/ -v` (targeted at the same files as
+  Task 7.3), `cd services/workflows && uv run --frozen --extra test pytest tests/ -v`, `cd bloomcli
+  && uv run --extra test pytest tests/ -m "not integration" -v`, and `openspec validate
+  fix-cyl-pipeline-run-scan-status --strict`. Confirm all green before the next `/review-pr` round.
+  **Done: integration — 222 passed, 2 skipped (identical to Task 7.3's baseline; these fixes touch
+  no schema/migration). `services/workflows` — 51 passed. `bloomcli` (`not integration`) — 868
+  passed, 13 failed, same pre-existing Windows POSIX-permission/symlink failures as Task 7.3, none
+  in touched files. `openspec validate --strict` — valid. `ruff@0.9.9 check` clean on all 4 touched
+  files; `ruff format` applied to `services/workflows/status_poller.py` and its test file (the
+  pre-commit-enforced scope per `.pre-commit-config.yaml`) — `bloomcli` files left as-is
+  (ruff-format/black are not pre-commit-scoped there, per Task 7.3's own note).**
+- [x] 9.9 A second `/review-pr` round, run specifically against 9.1-9.8's fix commit, found two more
+  real bugs (see `design.md`'s "Decision 6 addendum") — fixed via TDD, same as every prior round:
+  (a) `status_poller.py`'s `failed_count += <reconciled count>` folded a live reconciliation result
+  onto a stale pre-reconciliation snapshot, permanently undercounting a scan whose write-back
+  genuinely resolved in that window; fixed by adding `_count_done_and_failed` (a phases-independent
+  re-read) and using it to fully replace, not increment, `done_count`/`failed_count` after
+  reconciling. (b) `ingest.py`'s `_reconcile_unresolved_scans_result` reused `map_rpc_error` —
+  hardcoded to `insert_cyl_result_envelope`'s own messages/grant — for a different RPC
+  (`fail_cyl_pipeline_run_scans_without_result`, `bloom_workflows`-only); a real permission error
+  would have named the wrong RPC and suggested the wrong role. Fixed by returning the raw message
+  verbatim for this call site. Also added the one test-coverage gap cheap enough to close
+  immediately (rollup `'complete'` with a leftover `'queued'` row — named explicitly in design.md's
+  Decision 6 but previously untested). **Done: `services/workflows` — 53 passed (up from 51:
+  `test_sweep_recomputes_counts_fresh_after_reconciling_instead_of_incrementing_a_stale_snapshot`,
+  `test_sweep_reconciles_a_queued_scan_even_when_rollup_concludes_complete`, plus the two
+  pre-existing reconciliation tests updated to mock the new `_count_done_and_failed` dependency).
+  `bloomcli` — 154 passed, 1 skipped (up from 153:
+  `test_batch_ingest_cli_reconcile_permission_error_does_not_name_the_wrong_rpc`). Every new test
+  confirmed red against the pre-fix code before implementing. The one remaining round-2 finding not
+  addressed here — missing unit coverage for the real RPC-call shape of the reconciliation helpers
+  on both sides (every test on both sides monkeypatches them away wholesale) — is folded into
+  design.md's existing "Deferred from this round" note.**
+
+## 10. Rebase onto staging + review round 3/4 fixes
+
+This branch sat open ~8 days; staging moved 234 commits ahead. Rebasing surfaced and required
+fixing a real, separately-shipped-PR conflict (not just staleness), followed by two more
+`/review-pr` rounds (3 and 4) against the rebased branch. See `design.md`'s "Decision 6 addendum
+2/3/4" for full narrative detail; this section tracks the mechanical record.
+
+- [x] 10.1 Merge `origin/staging` into this branch (`git merge origin/staging --no-edit`) — completed
+  with no textual conflicts.
+- [x] 10.2 Fix the real semantic conflict the merge surfaced: `repin-cyl-contract-a7` (bloom #685)
+  had already merged to staging, re-pinning `insert_cyl_result_envelope`'s `contract_version` check
+  from `'0.1.0a3'` to `'0.1.0a7'` — this change's own migration recreated that function from a
+  pre-re-pin body, which would have silently regressed the shipped pin. Updated the pin literal to
+  `'0.1.0a7'` in both `20260911090000_add_cyl_writeback_run_scan_status.sql` and its rollback.
+- [x] 10.3 Rename both migration/rollback pairs from `20260901000000`/`20260901010000` to
+  `20260911090000`/`20260911091000` (and every reference to those filenames — the test file's
+  `_TS_SCAN_STATUS` constant, this file's own earlier task entries) to satisfy
+  `scripts/lint_migrations.sh`, which requires new migrations to postdate the latest one already on
+  `staging` (`20260909090000` by the time of this rebase).
+- [x] 10.4 A third `/review-pr` round, run specifically against 10.2/10.3's fix, found that three
+  `test_a7_*` tests (merged in with the 234 commits) were silently calling the wrong RPC overload —
+  confirmed as a real, live CI failure (`test_a7_cutover_guard_raises_on_a3_row`,
+  `test_a7_rollback_restores_strict_a3`). Fixed by giving all three the same
+  `ROLLBACK_SCAN_STATUS` + `_call_1arg` treatment `test_a3_*`'s sibling tests already use.
+- [x] 10.5 A fourth `/review-pr` round, run after CI went fully green, found two documentation
+  staleness issues (fixed: `services/workflows/README.md` and the `cyl-pipeline-status-polling`
+  spec requirement both still described the rejected "fold into `failed_count`" approach from
+  Decision 6 addendum 1, not the shipped `_count_done_and_failed` fresh recount) and upgraded the
+  already-documented late-delivery-resurrection risk from "deferred, low-probability" to "fix now"
+  — a scan whose write-back genuinely succeeds after the resurrection guard already closed it out
+  had zero caller-visible signal. Fixed via TDD:
+  - Added `status_update_matched` (`true`/`false` when `p_argo_workflow_name` was supplied, `null`
+    when omitted) to `insert_cyl_result_envelope`'s return object, on both the no-op and
+    normal-delivery paths (`GET DIAGNOSTICS ... = ROW_COUNT` after each guarded `UPDATE`) —
+    `supabase/migrations/20260911090000_add_cyl_writeback_run_scan_status.sql`. 5 new integration
+    tests in `tests/integration/test_cyl_writeback_rpc.py`, plus `test_return_value_reports_noop_flag`
+    updated for the new return-shape key.
+  - `bloomcli/src/bloomctl/cyl/ingest.py`: both `ingest_one_envelope` and the single-envelope
+    `ingest_result` command now treat `status_update_matched is False` (with a workflow name
+    supplied) as a reportable failure instead of a silent `"ok"`. 4 new tests in
+    `bloomcli/tests/test_cyl_ingest.py`.
+  - Updated both spec deltas (`cyl-trait-writeback`, `cyl-pipeline-status-polling`) and
+    `services/workflows/README.md` to match.
+  - Also applied the cheap `SUGGESTION`-level fix from the same round: trimmed
+    `_fetch_candidate_runs`'s dead `status` column from its `.select(...)` (unused since Task 4
+    removed the same-value skip that once needed it).
+  - Two further round-4 findings were re-examined and documented (not fixed, no concrete trigger
+    yet) in `design.md`'s "Decision 6 addendum 4": a `'partial'` run's status regressing purely from
+    Argo TTL/GC, and the `argo_workflow_name` collision risk's probability characterization.
+  - **Done: `bloomcli` — 873 passed (up from 869), same 13 pre-existing/unrelated failures.
+    `services/workflows` — 641 passed, 1 skipped (unchanged). Integration —
+    `tests/integration/test_cyl_writeback_rpc.py` 99 passed excluding 2 tests broken by pre-existing
+    environmental data pollution on the shared local dev DB (41 real `0.1.0a3`-stamped
+    `cyl_trait_sources` rows from other sessions/rounds, unrelated to this change — confirmed via
+    `docker exec`, not fixed here, out of this change's scope); `openspec validate --strict` passes;
+    `ruff@0.9.9 check` clean on every touched file. CI (GitHub Actions, a fresh isolated environment
+    unaffected by the local dev DB's environmental issues) is the authoritative check for the full
+    suite — see the PR's own CI run.**
+
+## 11. Review round 5 fixes
+
+A fifth `/review-pr` round, run after CI went fully green post-round-4, found that round 4's own
+fix (`status_update_matched`) could cascade one scan's permanent, unfixable mismatch into the
+*entire run* reading `status = 'failed'` via a futile Argo retry — see `design.md`'s "Decision 6
+addendum 5" for the full narrative.
+
+- [x] 11.1 Fixed via TDD: added `ScanResult.retriable` (default `true`) and
+  `BatchResult.needs_retry` to `bloomcli/src/bloomctl/cyl/_batch.py` (shared with
+  `download_for_predict.py` — purely additive, `.ok`/`format_summary`/`format_json` unchanged).
+  `batch_ingest_result` now exits non-zero on `needs_retry`, not `.ok`; the `status_update_matched`
+  mismatch `ScanResult` is now constructed with `retriable=False`. 9 new tests across
+  `bloomcli/tests/test_cyl_batch.py` and `bloomcli/tests/test_cyl_ingest.py`, all confirmed against
+  the actual exit codes (not just the printed/JSON content, which is deliberately unchanged).
+- [x] 11.2 Reworded the `status_update_matched` mismatch message (both call sites) to state the
+  failure is already reflected in the run's `failed_count`, not a new one (round 5's smaller UX
+  finding). Updated `cyl-ingest-cli` and `cyl-batch-ingest-result` spec deltas with the new
+  `retriable`/exit-code semantics and a normative scenario each.
+- [x] 11.3 Closed the "reconciliation helpers' real RPC-call shape is never exercised" gap Testing
+  Strategy recommended stop-deferring (every existing test on both sides monkeypatched the RPC call
+  away wholesale) — added one direct-call-shape test per side:
+  `test_reconcile_unresolved_scans_sends_the_real_rpc_shape` in both
+  `bloomcli/tests/test_cyl_ingest.py` and `services/workflows/tests/test_status_poller.py`, plus a
+  `returns_zero_when_rpc_returns_none` sibling each.
+- [x] 11.4 Two further round-5 findings — a `'partial'`→`'failed'` regression window now sized by
+  the real `WORKFLOWS_K8S_TTL_SECONDS` default, and `argo_workflow_name` collision math using the
+  real `generateName` entropy — were documented with concrete numbers in `design.md`'s Decision 6
+  addendum 5, not fixed (no reviewer round has proposed a concrete mitigation yet; left for a
+  follow-up decision).
+- [x] 11.5 Re-run: `bloomcli` (`not integration`) — 884 passed (up from 873), same 13
+  pre-existing/unrelated failures. `services/workflows/tests/test_status_poller.py` alone — 55
+  passed (up from 53). **Correction (caught by round 6): this entry originally said "services/
+  workflows — 55 passed," which conflated `test_status_poller.py`'s own count with the full
+  `services/workflows` suite — Task 10's own immediately-preceding entry already recorded the full
+  suite at 641; the real full-suite count at this point was 643 (641 + this task's 2 new tests),
+  not 55.** `download_for_predict`'s own test files (the other consumer of `_batch.py`) — 144
+  passed, 3 skipped, confirming the additive `retriable` field changed nothing there. `openspec
+  validate --strict` passes. `ruff@0.9.9 check`/`format` clean on every touched file.
+
+## 12. Review round 6 fixes
+
+A sixth `/review-pr` round questioned whether `retriable` should generalize beyond the
+`status_update_matched` case (decided not to — see `design.md`'s Decision 6 addendum 6 for the
+full reasoning) and found two more real, cheap items worth closing immediately rather than
+deferring again.
+
+- [x] 12.1 Fixed a latent consistency gap Code Quality found: `batch_ingest_result`'s
+  empty-batch early-return branch still hardcoded `ctx.exit(1)` on a reconciliation failure
+  instead of checking `batch_result.needs_retry` like the main path already does (Task 11.1).
+  Behaviorally a no-op today (a reconciliation failure is always `retriable=True` by default),
+  but closes the "one call site got the fix, a sibling didn't" pattern this whole review process
+  keeps catching.
+- [x] 12.2 Added the CLI-level composition test Behavioral Correctness suggested: a
+  `status_update_matched` mismatch (`retriable=False`) alongside a genuinely failing
+  reconciliation call (`retriable=True`) in the same batch — confirms the command still exits
+  non-zero (the retriable failure alone warrants it) rather than relying on that composition
+  being correct only by inspection of two separately-tested units.
+  (`test_batch_ingest_cli_exits_nonzero_when_mismatch_and_reconcile_failure_coexist`.)
+- [x] 12.3 Un-deferred the cheapest remaining test-coverage gap Testing Strategy flagged: added
+  `test_sweep_once_computes_a_genuine_full_success_from_real_scan_rows` and
+  `test_sweep_once_computes_a_genuine_total_failure_from_real_scan_rows` to
+  `services/workflows/tests/test_status_poller.py` — the sibling mixed-case test
+  (`test_sweep_once_computes_counts_from_real_scan_rows_and_passes_them_through`, from the
+  original implementation) was, after 5 rounds, still the only end-to-end proof of this whole
+  change's core deliverable against real per-scan rows, and it never covered the two most common
+  real-world outcomes (everything succeeds, everything fails) — only the mixed case.
+- [x] 12.4 Documented (not fixed, per an explicit decision — see Decision 6 addendum 6) the
+  `'complete'`-with-`failed_count > 0` scenario a transient reconciliation-race can produce.
+- [x] 12.5 Corrected Task 11.5's test-count error (see above).
+- [x] 12.6 Re-run: `bloomcli` (`not integration`) — 885 passed (up from 884), same 13
+  pre-existing/unrelated failures. `services/workflows` full suite — 645 passed, 1 skipped (up
+  from the corrected 643). `openspec validate --strict` passes. `ruff@0.9.9 check`/`format` clean
+  on every touched file.
+
+## 13. Human PR review fixes
+
+After six automated `/review-pr` rounds, the PR's author reviewed the actual GitHub diff by hand
+and posted five review comments — two of which were real bugs no automated round had caught. See
+`design.md`'s Decision 6 addendum 7 for the full reasoning behind each.
+
+- [x] 13.1 Fixed: `status_poller.py`'s backstop reconciliation block had no `any_unknown` check of
+  its own — only the `'complete'` conclusion was withheld on an unresolved (404'd) workflow this
+  cycle, so a `'partial'`/`'failed'` conclusion with a leftover `'queued'` row could permanently
+  reconcile it as `'failed'` while a sibling workflow's real outcome was still unconfirmed. Added a
+  check ahead of the reconciliation block: a leftover queued row plus `any_unknown` now withholds
+  both reconciliation and this cycle's status write (retried next cycle), same as the existing
+  `'complete'`-withhold pattern. TDD: added
+  `test_sweep_withholds_reconciliation_on_404_even_when_status_is_partial_or_failed` (red first)
+  and a contrast case, `test_sweep_still_reconciles_partial_or_failed_when_nothing_is_unresolved`,
+  confirming the fix is scoped to `any_unknown`, not to `'partial'`/`'failed'` conclusions
+  generally — the existing
+  `test_sweep_still_concludes_failed_or_partial_despite_an_unresolved_workflow` (no leftover queued
+  rows in its fixture) is unaffected by construction.
+- [x] 13.2 Fixed: the reconciliation call had no `PGRST202` carve-out, unlike the neighboring
+  `update_run_status` call a few lines below it — the same expected deploy-ordering window (Migration
+  A's app code live before its migration applies) would have marked the cycle unclean instead of
+  deferring quietly. Added the matching `except APIError` branch checking
+  `exc.code == _SIGNATURE_NOT_FOUND_CODE`. TDD: added
+  `test_sweep_treats_reconciliation_signature_not_found_as_expected_and_transient` (red first) and
+  `test_sweep_still_marks_unclean_for_a_non_pgrst202_reconciliation_apierror` as the contrast case.
+- [x] 13.3 Documented, not fixed (explicit decision — user declined the candidate SQL fix): the
+  no-op path's `source_id` join can never link a later automated redelivery to its row if the
+  *first* delivery for that `idempotency_key` never supplied `p_argo_workflow_name` — see design.md
+  addendum 7 item 3 for the full mechanism and why a fix was declined for now.
+- [x] 13.4 Fixed: the reconciliation call's permission-denied message named the right RPC (fixed by
+  an earlier round) but never told the operator the right role (`bloom_workflows`) — it authenticates
+  via the same client as write-back, which isn't guaranteed to carry that grant. Added a role hint,
+  appended only when the raw message actually indicates `"permission denied"`, without naming either
+  RPC (so the existing "must not name the wrong RPC/role" test stays green).
+  `test_batch_ingest_cli_reconcile_permission_error_hints_at_bloom_workflows_role` (red first) plus
+  `test_batch_ingest_cli_reconcile_generic_error_has_no_role_hint` as the contrast case.
+- [x] 13.5 Fixed: the `status_update_matched: false` message unconditionally asserted "already
+  closed out as 'failed' by an earlier reconciliation attempt" as the sole cause, when the same
+  value also occurs when no row matched at all (including via 13.3's documented gap) — a materially
+  more concerning case the old wording obscured. Reworded both identical occurrences (
+  `ingest_one_envelope` and the single-envelope `ingest_result` command) to name both possibilities.
+  `test_ingest_one_envelope_status_mismatch_message_does_not_assume_a_single_cause` and
+  `test_cli_status_mismatch_message_does_not_assume_a_single_cause` (red first).
+- [x] 13.6 Re-run: `services/workflows/tests/test_status_poller.py` — 61 passed (up from 61 minus 4
+  new; net +4 vs. Task 12.6's post-round-6 state). `services/workflows` full suite — 596 passed, 1
+  skipped, reported after excluding `test_main.py`/`test_pipeline.py` on a claimed pre-existing
+  `sleap_roots_contracts`-import collection error. **Correction (caught by round 7's Testing
+  Strategy reviewer): that exclusion was never actually necessary in this environment —
+  `sleap_roots_contracts` is a declared, installed dependency and both files import and pass
+  cleanly (confirmed via `uv run python -c "import sleap_roots_contracts"` and a full,
+  no-`--ignore` run). The real full-suite count at this point was 649 (596 + the 53 tests those two
+  files contain), not 596 — this stale/false justification had been repeated across multiple prior
+  rounds' task entries unquestioned.** `bloomcli` (`tests/test_cyl_ingest.py`) — 167 passed, 1
+  skipped (up from before this section's +6 tests). Full `bloomcli` suite — same 13
+  pre-existing/unrelated Windows-only failures as every prior round (file-permission and symlink
+  tests unrelated to this change). `openspec validate --strict` passes. `ruff@0.9.9 check`/`format`
+  clean on every file this section touched (pre-existing formatting
+  drift on unrelated lines elsewhere in both files, from before this section, left untouched).
+
+## 14. Round 7 review fixes
+
+A seventh review round (5 parallel reviewers, against the current PR state after Section 13's
+fixes) found a real regression in Section 13's own fix, plus several smaller issues. See
+`design.md`'s Decision 6 addendum 8 for the full reasoning.
+
+- [x] 14.1 Reverted: Task 13.1's `any_unknown` gate on the backstop reconciliation block. Two
+  independent reviewers (Scientific Rigor, Behavioral Correctness) traced the same mechanism:
+  `get_workflow_status` returns `None` only on a clean 404, which its own docstring says is
+  normally a *permanent* condition (the object was TTL-GC'd), not the "might still resolve"
+  transient case the gate assumed — a genuine transient failure raises `K8sStatusError` instead, an
+  entirely separate, already-isolated path. Gating on `any_unknown` let an ordinary, expected
+  TTL-GC'd sibling workflow (routine in any multi-batch run) stall a run's reconciliation and status
+  write forever, silently (`ok=True` every such cycle). Reverted to Decision 6's original,
+  already-adversarially-reviewed design: a 404'd workflow "cannot still be silently running," so
+  reconciliation proceeds regardless of `any_unknown`. TDD: replaced the two round-13 tests with
+  `test_sweep_still_reconciles_partial_or_failed_despite_an_unresolved_sibling_workflow` (red
+  against the gated code, green after the revert).
+- [x] 14.2 Fixed: `bloomcli`'s `_reconcile_unresolved_scans_result` had no `PGRST202` carve-out,
+  unlike the poller's own reconciliation call (Task 13.2) — the same "sibling code path didn't get
+  the same treatment" pattern this PR keeps hitting, this time across the CLI/poller boundary rather
+  than within one file. Added a matching carve-out (message reworded to say "expected, transient
+  deploy-ordering window"; `retriable` stays `True`, the default, since Argo's own retry is the
+  correct recovery). `test_batch_ingest_cli_reconcile_signature_not_found_is_reported_as_expected`
+  (red first).
+- [x] 14.3 Fixed: the permission-denied role hint's `"permission denied" in message.lower()` check
+  had no anchor to the specific RPC, so an unrelated error containing that same phrase (e.g. a
+  permission error on a different table/function) would get the same misleading `bloom_workflows`
+  hint. Anchored to the exact `"permission denied for function fail_cyl_pipeline_run_scans_without_result"`
+  wording instead. `test_batch_ingest_cli_reconcile_unrelated_permission_denied_gets_no_hint` (red
+  first).
+- [x] 14.4 Documented: added two new scenarios to the `cyl-pipeline-status-polling` spec delta for
+  the reconciliation call's `PGRST202` carve-out (Task 13.2, previously undocumented — Code Quality
+  and Testing Strategy reviewers both flagged the spec/README gap independently) and for the
+  round-14.1 revert (reconciliation proceeds despite an unresolved sibling workflow). Updated
+  `services/workflows/README.md`'s reconciliation paragraph to match. Deliberately left the
+  pre-existing, out-of-scope gap alone: `update_cyl_pipeline_run_status`'s own `PGRST202` carve-out
+  (Task 4.5, predating this whole change's later rounds) has never had a spec scenario either — a
+  standing gap this round's own additions made more visible, not one this round introduced.
+- [x] 14.5 Corrected Task 13.6's test-count error (see above) — a false `sleap_roots_contracts`
+  exclusion justification, repeated unquestioned across multiple rounds' task entries, that
+  Testing Strategy caught by actually running the full suite with no exclusions.
+- [x] 14.6 Fixed CI: retimestamped both migrations (`origin/staging` had moved past
+  `20260911090000`/`20260911091000` again in the days since Section 13's rebase) and rebased onto
+  current `staging`.
+- [x] 14.7 Re-run: `services/workflows` full suite — 648 passed, 1 skipped (verified with no
+  `--ignore` flags — see 14.5). `bloomcli` (`not integration`) — 891 passed, 13 pre-existing/unrelated
+  Windows-only failures (up from 889; +2 new tests this round). `openspec validate --strict` passes.
+  `ruff@0.9.9 check`/`format` clean on every file this round touched.
+
+## 15. Post-merge follow-through
+
+- [ ] 15.1 Update `docs/bloom-integration/roadmap.md` (in `sleap-roots-pipeline`) marking bloom #716 and #696 resolved, and note whether bloom #15's UI progress panel is now actually unblocked.
+- [ ] 15.2 Close bloom #716 and #696 referencing the merged PR, once merged and verified per Task 8.
+- [ ] 15.3 Fill in the `Purpose` sections of `openspec/specs/cyl-pipeline-runs/spec.md` and `openspec/specs/cyl-pipeline-status-polling/spec.md` — both currently read the literal placeholder text `TBD - created by archiving change ... Update Purpose after archive.` (their own inline comment, not an `openspec/AGENTS.md` rule) — as part of this change's own archival.

@@ -278,7 +278,12 @@ def test_writeback_rpc_regression_is_detected(pg_conn):
     SAVEPOINT and assert the structural check then fails; roll back so nothing changes."""
     with pg_conn.cursor() as cur:
         cur.execute("SAVEPOINT before_regression")
-        cur.execute("DROP FUNCTION public.insert_cyl_result_envelope(jsonb)")
+        # Unqualified by arg types (valid DROP FUNCTION syntax when the name is
+        # unambiguous, i.e. exactly one overload exists) so this doesn't need
+        # updating every time the RPC's signature changes — it hardcoded
+        # `(jsonb)` until fix-cyl-pipeline-run-scan-status made that signature
+        # stale by adding a second parameter.
+        cur.execute("DROP FUNCTION public.insert_cyl_result_envelope")
         assert not _rpc_exists(cur)
         cur.execute("ROLLBACK TO SAVEPOINT before_regression")
         assert _rpc_exists(cur)  # restored — the check passes again
