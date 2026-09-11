@@ -332,6 +332,19 @@ def test_cli_reports_status_update_mismatch_as_a_failure(monkeypatch):
     assert "not updated" in res.output
 
 
+def test_cli_status_mismatch_message_does_not_assume_a_single_cause(monkeypatch):
+    """Same human-review finding as ingest_one_envelope's — the single-envelope
+    command's identical message must also not unconditionally assert the
+    reconciliation-attempt explanation as the only possible cause."""
+    _patch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-cli-mismatch-cause")
+    mismatched = {**RESULT_OK, "status_update_matched": False}
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: mismatched)
+    res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
+    assert res.exit_code != 0
+    assert "no row matched" in res.output.lower() or "no matching row" in res.output.lower()
+
+
 def test_cli_sends_original_envelope_unchanged(monkeypatch):
     captured = {}
 
@@ -1316,6 +1329,24 @@ def test_ingest_one_envelope_reports_status_update_mismatch_as_failed(monkeypatc
     assert "not updated" in result.error
 
 
+def test_ingest_one_envelope_status_mismatch_message_does_not_assume_a_single_cause(
+    monkeypatch, tmp_path
+):
+    """Human PR review finding: status_update_matched=False also occurs when NO row
+    ever matched this scan under this workflow at all (e.g. the no-op-path source_id
+    gap documented in design.md), not only when a matching row was already 'failed'
+    by an earlier reconciliation attempt. The message must not unconditionally assert
+    the reconciliation-attempt explanation as if it were the only possibility."""
+    _skip_contract_validation(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-mismatch-cause")
+    path = _write_envelope(tmp_path, "scan_mismatch_cause")
+    mismatched = {**RESULT_OK, "status_update_matched": False}
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: mismatched)
+    result = ing.ingest_one_envelope(object(), path)
+    assert result.status == "failed"
+    assert "no row matched" in result.error.lower() or "no matching row" in result.error.lower()
+
+
 def test_ingest_one_envelope_status_update_matched_true_is_unaffected(monkeypatch, tmp_path):
     _skip_contract_validation(monkeypatch)
     monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-ok")
@@ -1733,6 +1764,56 @@ def test_batch_ingest_cli_reconcile_permission_error_does_not_name_the_wrong_rpc
         "must not suggest the wrong role — fail_cyl_pipeline_run_scans_without_result "
         "is granted to bloom_workflows only"
     )
+
+
+def test_batch_ingest_cli_reconcile_permission_error_hints_at_bloom_workflows_role(
+    monkeypatch, tmp_path
+):
+    """Human PR review finding: the reconciliation call authenticates via the same
+    client as write-back (`_authed_client(profile)`), which is not guaranteed to
+    carry the `bloom_workflows` role that `fail_cyl_pipeline_run_scans_without_result`
+    is actually granted to — round 2's fix only stopped the message from naming the
+    WRONG role, it never told the operator the RIGHT one to use instead."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-perm-denied-hint")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+
+    def boom(client, name):
+        raise _api_error(
+            "permission denied for function fail_cyl_pipeline_run_scans_without_result"
+        )
+
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
+    _write_envelope(tmp_path, "scan_1")
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    reconciliation_entries = [e for e in payload.values() if e["status"] == "failed"]
+    assert len(reconciliation_entries) == 1
+    assert "bloom_workflows" in reconciliation_entries[0]["error"]
+
+
+def test_batch_ingest_cli_reconcile_generic_error_has_no_role_hint(monkeypatch, tmp_path):
+    """Contrast case: a non-permission error (e.g. a transient network blip) must not
+    get the bloom_workflows role hint tacked on — that hint is only accurate/relevant
+    for an actual permission-denied response."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-generic-error")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+
+    def boom(client, name):
+        raise _api_error("simulated transient reconciliation failure")
+
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
+    _write_envelope(tmp_path, "scan_1")
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    reconciliation_entries = [e for e in payload.values() if e["status"] == "failed"]
+    assert len(reconciliation_entries) == 1
+    assert "bloom_workflows" not in reconciliation_entries[0]["error"]
 
 
 def test_batch_ingest_cli_reconcile_failure_on_empty_batch_is_reported(monkeypatch, tmp_path):

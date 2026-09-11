@@ -979,6 +979,71 @@ def test_sweep_withheld_complete_on_404_never_reaches_reconciliation(monkeypatch
     worker.sweep_once(object())  # must not raise
 
 
+def test_sweep_withholds_reconciliation_on_404_even_when_status_is_partial_or_failed(
+    monkeypatch,
+):
+    """Found in human PR review: the existing withheld-on-404 rule (above)
+    only ever applied to a 'complete' conclusion, because only 'complete'
+    requires every phase to have resolved Succeeded. A 'partial'/'failed'
+    rollup can be reached from confirmed-bad phases alone regardless of what
+    an unresolved sibling workflow turns out to have been (see
+    test_sweep_still_concludes_failed_or_partial_despite_an_unresolved_workflow)
+    — but that reasoning covers the STATUS conclusion, not this backstop's
+    reconciliation action. Reconciling a leftover 'queued' row permanently
+    marks it 'failed' in the DB; that is only safe once every workflow this
+    cycle actually reported a real phase. With a leftover queued row AND an
+    unresolved workflow this cycle, both the reconciliation and this cycle's
+    status write must be withheld and retried next cycle."""
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
+    monkeypatch.setattr(
+        worker,
+        "_fetch_effective_phases",
+        lambda c, r: (["Failed"], True, 0, 1, ["wf-a"]),
+    )
+
+    def boom(client, name):
+        raise AssertionError("must not reconcile while a workflow is unresolved")
+
+    monkeypatch.setattr(worker, "_reconcile_unresolved_scans", boom)
+
+    def update_boom(*a, **k):
+        raise AssertionError("must not write a status while reconciliation is withheld")
+
+    monkeypatch.setattr(worker, "update_run_status", update_boom)
+    assert worker.sweep_once(object()) is True
+
+
+def test_sweep_still_reconciles_partial_or_failed_when_nothing_is_unresolved(
+    monkeypatch,
+):
+    """Contrast case: with every phase resolved this cycle (any_unknown is
+    False), a 'partial'/'failed' conclusion still reconciles and writes
+    normally — the new withhold above must be scoped to any_unknown, not to
+    'partial'/'failed' conclusions generally."""
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
+    monkeypatch.setattr(
+        worker,
+        "_fetch_effective_phases",
+        lambda c, r: (["Failed"], False, 0, 1, ["wf-a"]),
+    )
+    reconcile_calls = []
+    monkeypatch.setattr(
+        worker,
+        "_reconcile_unresolved_scans",
+        lambda c, name: reconcile_calls.append(name) or 1,
+    )
+    monkeypatch.setattr(worker, "_count_done_and_failed", lambda c, r: (0, 2))
+    calls = []
+    monkeypatch.setattr(
+        worker,
+        "update_run_status",
+        lambda c, r, s, d=None, f=None: calls.append((r, s, d, f)),
+    )
+    worker.sweep_once(object())
+    assert reconcile_calls == ["wf-a"]
+    assert calls == [(1, "failed", 0, 2)]
+
+
 # --- round 2: a real (unmocked) K8sStatusError from get_workflow_status -----
 
 
@@ -1048,6 +1113,65 @@ def test_sweep_still_marks_unclean_for_a_non_pgrst202_apierror(monkeypatch):
         raise APIError({"code": "PGRST301", "message": "JWT expired"})
 
     monkeypatch.setattr(worker, "update_run_status", fake_update)
+    assert worker.sweep_once(object()) is False
+
+
+def test_sweep_treats_reconciliation_signature_not_found_as_expected_and_transient(
+    monkeypatch,
+):
+    """Found in human PR review: unlike update_run_status's own PGRST202
+    carve-out above, the reconciliation call added by
+    fix-cyl-pipeline-run-scan-status round 2 had no such carve-out — a
+    fail_cyl_pipeline_run_scans_without_result call made during the same
+    deploy-ordering window would mark the cycle unclean instead of quietly
+    deferring, exactly the failure mode the update_run_status carve-out
+    exists to avoid."""
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
+    monkeypatch.setattr(
+        worker,
+        "_fetch_effective_phases",
+        lambda c, r: (["Succeeded"], False, 0, 0, ["wf-a"]),
+    )
+
+    def fake_reconcile(client, name):
+        raise APIError({"code": "PGRST202", "message": "function not found"})
+
+    monkeypatch.setattr(worker, "_reconcile_unresolved_scans", fake_reconcile)
+
+    def update_boom(*a, **k):
+        raise AssertionError(
+            "must not write a status this cycle when reconciliation itself "
+            "could not run"
+        )
+
+    monkeypatch.setattr(worker, "update_run_status", update_boom)
+    assert worker.sweep_once(object()) is True
+
+
+def test_sweep_still_marks_unclean_for_a_non_pgrst202_reconciliation_apierror(
+    monkeypatch,
+):
+    """Contrast case: an APIError from reconciliation that is NOT the
+    signature-not-found code is a real problem and must still mark the cycle
+    unclean, exactly like a generic reconciliation failure already does."""
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
+    monkeypatch.setattr(
+        worker,
+        "_fetch_effective_phases",
+        lambda c, r: (["Succeeded"], False, 0, 0, ["wf-a"]),
+    )
+
+    def fake_reconcile(client, name):
+        raise APIError({"code": "PGRST301", "message": "JWT expired"})
+
+    monkeypatch.setattr(worker, "_reconcile_unresolved_scans", fake_reconcile)
+
+    def update_boom(*a, **k):
+        raise AssertionError(
+            "must not write a status this cycle when reconciliation itself failed"
+        )
+
+    monkeypatch.setattr(worker, "update_run_status", update_boom)
     assert worker.sweep_once(object()) is False
 
 

@@ -285,8 +285,62 @@ deferring again.
   from the corrected 643). `openspec validate --strict` passes. `ruff@0.9.9 check`/`format` clean
   on every touched file.
 
-## 13. Post-merge follow-through
+## 13. Human PR review fixes
 
-- [ ] 13.1 Update `docs/bloom-integration/roadmap.md` (in `sleap-roots-pipeline`) marking bloom #716 and #696 resolved, and note whether bloom #15's UI progress panel is now actually unblocked.
-- [ ] 13.2 Close bloom #716 and #696 referencing the merged PR, once merged and verified per Task 8.
-- [ ] 13.3 Fill in the `Purpose` sections of `openspec/specs/cyl-pipeline-runs/spec.md` and `openspec/specs/cyl-pipeline-status-polling/spec.md` — both currently read the literal placeholder text `TBD - created by archiving change ... Update Purpose after archive.` (their own inline comment, not an `openspec/AGENTS.md` rule) — as part of this change's own archival.
+After six automated `/review-pr` rounds, the PR's author reviewed the actual GitHub diff by hand
+and posted five review comments — two of which were real bugs no automated round had caught. See
+`design.md`'s Decision 6 addendum 7 for the full reasoning behind each.
+
+- [x] 13.1 Fixed: `status_poller.py`'s backstop reconciliation block had no `any_unknown` check of
+  its own — only the `'complete'` conclusion was withheld on an unresolved (404'd) workflow this
+  cycle, so a `'partial'`/`'failed'` conclusion with a leftover `'queued'` row could permanently
+  reconcile it as `'failed'` while a sibling workflow's real outcome was still unconfirmed. Added a
+  check ahead of the reconciliation block: a leftover queued row plus `any_unknown` now withholds
+  both reconciliation and this cycle's status write (retried next cycle), same as the existing
+  `'complete'`-withhold pattern. TDD: added
+  `test_sweep_withholds_reconciliation_on_404_even_when_status_is_partial_or_failed` (red first)
+  and a contrast case, `test_sweep_still_reconciles_partial_or_failed_when_nothing_is_unresolved`,
+  confirming the fix is scoped to `any_unknown`, not to `'partial'`/`'failed'` conclusions
+  generally — the existing
+  `test_sweep_still_concludes_failed_or_partial_despite_an_unresolved_workflow` (no leftover queued
+  rows in its fixture) is unaffected by construction.
+- [x] 13.2 Fixed: the reconciliation call had no `PGRST202` carve-out, unlike the neighboring
+  `update_run_status` call a few lines below it — the same expected deploy-ordering window (Migration
+  A's app code live before its migration applies) would have marked the cycle unclean instead of
+  deferring quietly. Added the matching `except APIError` branch checking
+  `exc.code == _SIGNATURE_NOT_FOUND_CODE`. TDD: added
+  `test_sweep_treats_reconciliation_signature_not_found_as_expected_and_transient` (red first) and
+  `test_sweep_still_marks_unclean_for_a_non_pgrst202_reconciliation_apierror` as the contrast case.
+- [x] 13.3 Documented, not fixed (explicit decision — user declined the candidate SQL fix): the
+  no-op path's `source_id` join can never link a later automated redelivery to its row if the
+  *first* delivery for that `idempotency_key` never supplied `p_argo_workflow_name` — see design.md
+  addendum 7 item 3 for the full mechanism and why a fix was declined for now.
+- [x] 13.4 Fixed: the reconciliation call's permission-denied message named the right RPC (fixed by
+  an earlier round) but never told the operator the right role (`bloom_workflows`) — it authenticates
+  via the same client as write-back, which isn't guaranteed to carry that grant. Added a role hint,
+  appended only when the raw message actually indicates `"permission denied"`, without naming either
+  RPC (so the existing "must not name the wrong RPC/role" test stays green).
+  `test_batch_ingest_cli_reconcile_permission_error_hints_at_bloom_workflows_role` (red first) plus
+  `test_batch_ingest_cli_reconcile_generic_error_has_no_role_hint` as the contrast case.
+- [x] 13.5 Fixed: the `status_update_matched: false` message unconditionally asserted "already
+  closed out as 'failed' by an earlier reconciliation attempt" as the sole cause, when the same
+  value also occurs when no row matched at all (including via 13.3's documented gap) — a materially
+  more concerning case the old wording obscured. Reworded both identical occurrences (
+  `ingest_one_envelope` and the single-envelope `ingest_result` command) to name both possibilities.
+  `test_ingest_one_envelope_status_mismatch_message_does_not_assume_a_single_cause` and
+  `test_cli_status_mismatch_message_does_not_assume_a_single_cause` (red first).
+- [x] 13.6 Re-run: `services/workflows/tests/test_status_poller.py` — 61 passed (up from 61 minus 4
+  new; net +4 vs. Task 12.6's post-round-6 state). `services/workflows` full suite (excluding two
+  pre-existing, unrelated `sleap_roots_contracts`-import collection errors in `test_main.py`/
+  `test_pipeline.py`, not touched by this change) — 596 passed, 1 skipped. `bloomcli`
+  (`tests/test_cyl_ingest.py`) — 167 passed, 1 skipped (up from before this section's +6 tests).
+  Full `bloomcli` suite — same 13 pre-existing/unrelated Windows-only failures as every prior round
+  (file-permission and symlink tests unrelated to this change). `openspec validate --strict` passes.
+  `ruff@0.9.9 check`/`format` clean on every file this section touched (pre-existing formatting
+  drift on unrelated lines elsewhere in both files, from before this section, left untouched).
+
+## 14. Post-merge follow-through
+
+- [ ] 14.1 Update `docs/bloom-integration/roadmap.md` (in `sleap-roots-pipeline`) marking bloom #716 and #696 resolved, and note whether bloom #15's UI progress panel is now actually unblocked.
+- [ ] 14.2 Close bloom #716 and #696 referencing the merged PR, once merged and verified per Task 8.
+- [ ] 14.3 Fill in the `Purpose` sections of `openspec/specs/cyl-pipeline-runs/spec.md` and `openspec/specs/cyl-pipeline-status-polling/spec.md` — both currently read the literal placeholder text `TBD - created by archiving change ... Update Purpose after archive.` (their own inline comment, not an `openspec/AGENTS.md` rule) — as part of this change's own archival.

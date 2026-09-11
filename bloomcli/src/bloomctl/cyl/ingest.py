@@ -529,13 +529,23 @@ def _reconcile_unresolved_scans_result(client: Any, argo_workflow_name: str) -> 
         # against fail_cyl_pipeline_run_scans_without_result — granted to
         # bloom_workflows only, a different role entirely (review finding:
         # reusing that mapper here would name the wrong RPC and suggest the
-        # wrong role). The raw message is returned verbatim instead.
+        # wrong role). The raw message is returned verbatim instead, plus a
+        # role hint of our own on an actual permission-denied response (human
+        # PR review, design.md's Decision 6 addendum 7): this call authenticates
+        # via the same client as write-back, which is not guaranteed to carry
+        # the bloom_workflows grant this RPC actually requires.
         message = getattr(exc, "message", None) or str(exc)
+        hint = (
+            " — this account must be granted the bloom_workflows role to run "
+            "reconciliation (a different grant than write-back's own RPC requires)"
+            if "permission denied" in message.lower()
+            else ""
+        )
         return ScanResult(
             "<reconciliation>",
             "failed",
             f"failed to reconcile unresolved scans for workflow {argo_workflow_name!r}: "
-            f"{message}",
+            f"{message}{hint}",
         )
     except Exception as exc:
         return ScanResult(
@@ -664,16 +674,24 @@ def ingest_one_envelope(
         # retriable failure, so an Argo-retried write-back pod would burn its whole retry
         # budget on something no retry could fix, ultimately failing the entire Workflow —
         # and with it, every other scan in the same batch that actually succeeded.
+        #
+        # Message wording (human PR review, design.md's Decision 6 addendum 7): False also
+        # means no row matched the (argo_workflow_name, source_id) join at all — a distinct,
+        # more concerning case than "already closed out failed" (see the no-op-path source_id
+        # gap this same addendum documents as an accepted risk) — so the message must not
+        # assert the reconciliation-attempt explanation as the sole cause.
         if argo_workflow_name is not None and result.get("status_update_matched") is False:
             return ScanResult(
                 scan_key,
                 "failed",
                 f"write-back succeeded (source_id={result.get('source_id')}) but this "
-                "scan's cyl_pipeline_run_scans status was not updated — it was likely "
-                "already closed out as 'failed' by an earlier reconciliation attempt, and "
-                "that outcome is already reflected in the run's failed_count (this is not "
-                "a new failure). The written trait/blob data is correct; verify manually "
-                "if the mismatch is unexpected.",
+                "scan's cyl_pipeline_run_scans status was not updated. Either no row "
+                "matched this scan under this workflow, or a matching row was already "
+                "closed out as 'failed' by an earlier reconciliation attempt — in the "
+                "latter case that outcome is already reflected in the run's failed_count "
+                "(not a new failure), but in the former case this scan may still be sitting "
+                "as 'queued' with nothing left to resolve it. The written trait/blob data is "
+                "correct either way; verify this scan's row manually.",
                 retriable=False,
             )
 
@@ -815,14 +833,20 @@ def ingest_result(
     # non-zero exit here has no automated-retry consequence to worry about:
     # this command is the manual/ad-hoc invocation shape, run by a human who
     # sees the failure directly, not a write-back pod Argo will retry.
+    #
+    # Message wording (human PR review, design.md's Decision 6 addendum 7): see
+    # ingest_one_envelope's identical message for why this must not assert the
+    # reconciliation-attempt explanation as the sole cause.
     if argo_workflow_name is not None and result.get("status_update_matched") is False:
         raise click.ClickException(
             f"write-back succeeded (source_id={result.get('source_id')}) but this "
-            "scan's cyl_pipeline_run_scans status was not updated — it was likely "
-            "already closed out as 'failed' by an earlier reconciliation attempt, and "
-            "that outcome is already reflected in the run's failed_count (this is not "
-            "a new failure). The written trait/blob data is correct; verify manually "
-            "if the mismatch is unexpected."
+            "scan's cyl_pipeline_run_scans status was not updated. Either no row "
+            "matched this scan under this workflow, or a matching row was already "
+            "closed out as 'failed' by an earlier reconciliation attempt — in the "
+            "latter case that outcome is already reflected in the run's failed_count "
+            "(not a new failure), but in the former case this scan may still be sitting "
+            "as 'queued' with nothing left to resolve it. The written trait/blob data is "
+            "correct either way; verify this scan's row manually."
         )
 
 

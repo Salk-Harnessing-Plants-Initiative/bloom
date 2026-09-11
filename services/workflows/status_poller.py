@@ -364,22 +364,82 @@ def sweep_once(client) -> bool:
         # reconciliation itself fails, skip the status write entirely this
         # cycle so the run stays a candidate and is retried next cycle,
         # matching this loop's existing per-run isolation discipline.
+        #
+        # Found in human PR review (design.md's Decision 6 addendum 7): a
+        # 'partial'/'failed' rollup can be safely concluded from confirmed-bad
+        # phases alone even with an unresolved (404'd) sibling workflow this
+        # cycle (see rollup()'s docstring and
+        # test_sweep_still_concludes_failed_or_partial_despite_an_unresolved_workflow)
+        # — but that reasoning only covers the STATUS conclusion, not this
+        # reconciliation action. Reconciling permanently marks a leftover
+        # 'queued' row 'failed'; that's only safe once every workflow this
+        # cycle actually reported a real phase, so any_unknown must also gate
+        # this block (not just the 'complete' withhold above), and — since
+        # skipping reconciliation here means the leftover row is still
+        # unresolved — this cycle's status write must be withheld too so the
+        # run stays a candidate and is retried next cycle.
+        if status != "running" and queued_workflow_names and any_unknown:
+            logger.warning(
+                "status_poller: run %s has a leftover 'queued' scan and an "
+                "unresolved (404'd) workflow this cycle — withholding both "
+                "reconciliation and this cycle's status write, since the "
+                "unconfirmed workflow's real outcome could still resolve "
+                "that scan",
+                run_id,
+            )
+            continue
         if status != "running" and queued_workflow_names:
             try:
                 for name in queued_workflow_names:
                     _reconcile_unresolved_scans(client, name)
-                # Re-derive both counts fresh, rather than incrementing the
-                # snapshot _fetch_effective_phases already returned — that
-                # snapshot was taken before this cycle's K8s lookups and the
-                # reconciliation call above even ran, and can go stale if a
-                # scan's write-back genuinely resolved in that window (see
-                # _count_done_and_failed's own docstring for the failure mode
-                # this avoids).
-                done_count, failed_count = _count_done_and_failed(client, run_id)
+            except APIError as exc:
+                if exc.code == _SIGNATURE_NOT_FOUND_CODE:
+                    # Same expected deploy-ordering window as
+                    # update_run_status's carve-out below — found missing
+                    # here in human PR review (design.md's Decision 6
+                    # addendum 7).
+                    logger.info(
+                        "status_poller: run %s reconciliation deferred — RPC "
+                        "signature not yet migrated (expected transient "
+                        "deploy-ordering window): %s",
+                        run_id,
+                        exc,
+                    )
+                else:
+                    logger.warning(
+                        "status_poller: run %s failed to reconcile unresolved "
+                        "scans before writing terminal status %s, leaving "
+                        "unsettled for the next cycle: %s",
+                        run_id,
+                        status,
+                        exc,
+                    )
+                    ok = False
+                continue
             except Exception as exc:
                 logger.warning(
                     "status_poller: run %s failed to reconcile unresolved "
                     "scans before writing terminal status %s, leaving "
+                    "unsettled for the next cycle: %s",
+                    run_id,
+                    status,
+                    exc,
+                )
+                ok = False
+                continue
+            # Re-derive both counts fresh, rather than incrementing the
+            # snapshot _fetch_effective_phases already returned — that
+            # snapshot was taken before this cycle's K8s lookups and the
+            # reconciliation call above even ran, and can go stale if a
+            # scan's write-back genuinely resolved in that window (see
+            # _count_done_and_failed's own docstring for the failure mode
+            # this avoids).
+            try:
+                done_count, failed_count = _count_done_and_failed(client, run_id)
+            except Exception as exc:
+                logger.warning(
+                    "status_poller: run %s failed to recount scans after "
+                    "reconciling before writing terminal status %s, leaving "
                     "unsettled for the next cycle: %s",
                     run_id,
                     status,
