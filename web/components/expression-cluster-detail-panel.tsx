@@ -191,27 +191,6 @@ export function ExpressionClusterDetailPanel({
         )}
       </div>
 
-      <div className="p-5 flex gap-4 text-xs">
-        <button
-          type="button"
-          className="text-lime-700 hover:underline"
-          onClick={() => {
-            /* Rename — placeholder, follow-up PR wires the real modal */
-          }}
-        >
-          Rename
-        </button>
-        <span className="text-stone-300">·</span>
-        <button
-          type="button"
-          className="text-lime-700 hover:underline"
-          onClick={() => {
-            /* Run DE vs. all — placeholder */
-          }}
-        >
-          Run DE vs. all
-        </button>
-      </div>
     </aside>
   );
 }

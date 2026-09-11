@@ -48,6 +48,9 @@ describe("ExpressionClusterDetailPanel", () => {
     expect(screen.getByText("Loading…")).toBeTruthy();
     await waitFor(() => expect(screen.getByText("AT5G09530")).toBeTruthy());
     expect(screen.getByText(/164 cells/)).toBeTruthy();
+    // No buttons that do nothing.
+    expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Run DE vs. all" })).toBeNull();
   });
 
   it("says so when the load fails, instead of loading forever", async () => {
