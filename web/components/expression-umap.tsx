@@ -7,7 +7,7 @@ import {
   fetchCells,
   fetchClusters,
   fetchDataset,
-  fetchGeneBin,
+  fetchGeneCounts,
   type CellArraysRow,
 } from "@/components/expression-lib/scrna-client";
 import {
@@ -194,7 +194,9 @@ export function ExpressionUmap({
     let cancelled = false;
     (async () => {
       try {
-        const arr = await fetchGeneBin(data.dataset.name, geneName);
+        const arr = await fetchGeneCounts(
+          data.dataset.id, geneName, data.cells.length,
+        );
         if (cancelled) return;
         let min = Infinity;
         let max = -Infinity;
