@@ -307,6 +307,26 @@ def test_results_for_a_comparison_the_summary_never_mentions_are_refused(
         de.reconcile(de.read_summary(s), de.read_results(r)["groups"])
 
 
+def test_percentages_must_be_whole_cells_of_the_group_size(de, tmp_path):
+    """n_group has to count the cells the percentages are over. An export that gives
+    sizes from before depth matching beside percentages from after it is refused."""
+    s, r = files(tmp_path, [summary_row(n1=21)], DEFAULT_RESULTS)
+    with pytest.raises(de.IngestError, match=r"pct_expr_group1 .* 21 cells"):
+        de.reconcile(de.read_summary(s), de.read_results(r)["groups"])
+
+
+def test_whole_cells_are_recognised_through_float_noise(de, tmp_path):
+    """7/21 prints as 0.3333333333333333 and 21/21 as 1.0000000000000002."""
+    results = [
+        result_row("AT1G00001", log2fc=1.5, pct1="0.3333333333333333"),
+        result_row("AT1G00002", log2fc=-1.5, pct1="1.0000000000000002"),
+        result_row("AT1G00003", log2fc=0.1, pct1="0.6666666666666666",
+                   sig_fdr=False, sig_lfc=False),
+    ]
+    s, r = files(tmp_path, [summary_row(n1=21)], results)
+    de.reconcile(de.read_summary(s), de.read_results(r)["groups"])
+
+
 @pytest.mark.parametrize("log2fc", [0.0, "NaN"])
 def test_a_significant_gene_without_a_positive_fold_change_counts_as_down(
         de, tmp_path, log2fc):

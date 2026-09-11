@@ -57,6 +57,9 @@ GENE_SUFFIX = ingest_api.RELEASE_SUFFIX
 # Float noise at the bounds of a fraction: the real export writes 1.0000000000000002.
 FRACTION_MARGIN = 1e-9
 
+# How far a percentage times its group size may sit from a whole number of cells.
+WHOLE_CELL_MARGIN = 1e-6
+
 # The export compares genotypes within a cell type.
 GROUP_KIND = "genotype"
 
@@ -256,6 +259,22 @@ def recount(rows: list[dict]) -> dict[str, int]:
     }
 
 
+def _check_whole_cells(key: tuple[str, str], entry: dict, rows: list[dict]) -> None:
+    """Each percentage is a count of cells out of its group, so n_group has to be
+    the cells the test compared."""
+    for g in ("1", "2"):
+        n = entry[f"n_group{g}"]
+        for r in rows:
+            cells = r[f"pct_{g}"] * n
+            if abs(cells - round(cells)) > WHOLE_CELL_MARGIN:
+                raise IngestError(
+                    f"{key[0]} / {key[1]}: pct_expr_group{g} of {r['gene']} is "
+                    f"{r[f'pct_{g}']}, not a whole number out of n_group{g} = {n} "
+                    f"cells; the group sizes must count the cells the percentages "
+                    f"are over"
+                )
+
+
 def reconcile(summary: list[dict], groups: dict[tuple[str, str], list[dict]]) -> None:
     """Refuse any summary row the results file does not bear out."""
     for entry in summary:
@@ -280,6 +299,7 @@ def reconcile(summary: list[dict], groups: dict[tuple[str, str], list[dict]]) ->
                     f"{key[0]} / {key[1]}: the summary says {field} is "
                     f"{expected}, the results give {counted[field]}"
                 )
+        _check_whole_cells(key, entry, rows)
 
     extra = set(groups) - {(e["celltype"], e["contrast"]) for e in summary}
     if extra:
