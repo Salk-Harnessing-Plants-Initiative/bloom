@@ -52,8 +52,9 @@ def _validate_experiment_name(experiment: str, label: str = "experiment") -> Non
     ``Path(experiment).name != experiment`` alone is not enough: ``pathlib.Path`` only
     treats ``\\`` as a separator on Windows, so on POSIX (the deploy target)
     ``Path("..\\\\secret.csv").name`` equals the input unchanged and the traversal payload
-    would slip past this guard. Check for either separator explicitly (mirrors the fix in
-    ``sections/sleap_roots/analysis/_viz_shared.validate_filename``).
+    would slip past this guard. Check for either separator explicitly (the same fix the
+    since-deleted ``_viz_shared.validate_filename`` carried for the bare-``mcp.tool()``
+    plot tools, until #462 retired the last of those).
 
     ``label`` names the offending field in the error message. Single-experiment callers
     (``qc_inspect``) can rely on the ``"experiment"`` default; a multi-experiment caller
