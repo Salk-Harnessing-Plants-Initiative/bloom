@@ -1,10 +1,10 @@
 """Check that a migration PR's body documents its schema change.
 
 The body needs a mermaid erDiagram naming every table and view the migration changes create,
-alter or rename to and, when they add constraints or indexes, a constraints table (header
-with `Name` and `How it is added`) naming each one. Migrations that only drop tables, views
-or indexes have nothing to draw, so the body names what they drop instead. `No schema
-changes.` on its own line passes only when that is true.
+alter or rename to; a constraints table (header with `Name` and `How it is added`) naming each
+constraint and index they add; and, under its Schema changes heading, the name of every table,
+view and index they drop. Indexes are not drawn, so a change that creates or alters no table
+or view needs no diagram. `No schema changes.` on its own line passes only when that is true.
 
 Usage:
   lint_migration_pr_body.py BASE [--head HEAD] [--staging-ref REF] [--repo DIR] [--body-file PATH]
@@ -34,6 +34,7 @@ SNAPSHOT = "make erd-snapshot CHANGED=origin/staging"
 
 _COMMENT = re.compile(r"<!--.*?-->", re.S)
 _MERMAID = re.compile(r"^```mermaid[ \t]*\n(.*?)^```", re.M | re.S)
+_HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t#]*$", re.M)
 _SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
 
 
@@ -44,6 +45,17 @@ def _normalise(body: str | None) -> str:
 
 def _has_token(name: str, text: str) -> bool:
     return re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", text) is not None
+
+
+def _schema_section(text: str) -> str:
+    """The body under its `Schema changes` heading, up to the next heading at that level or above."""
+    headings = list(_HEADING.finditer(text))
+    for i, heading in enumerate(headings):
+        if heading.group(2).strip().lower() == "schema changes":
+            level = len(heading.group(1))
+            end = next((h.start() for h in headings[i + 1 :] if len(h.group(1)) <= level), len(text))
+            return text[heading.end() : end]
+    return ""
 
 
 def _cells(line: str) -> list[str]:
@@ -111,22 +123,19 @@ def check_body(body: str | None, facts: MigrationFacts) -> list[str]:
         f"An unnamed constraint is added to {table}. Name every constraint so it can be listed."
         for table in facts.unnamed_constraints
     ]
-    # Nothing is left to draw when the migrations only drop things; the body names them instead.
-    gone = [] if facts.tables_touched else sorted(
-        facts.tables_dropped | facts.views_dropped | facts.indexes_dropped
-    )
+    dropped = sorted(facts.tables_dropped | facts.views_dropped | facts.indexes_dropped)
 
     if any(line.strip() == OPT_OUT for line in text.split("\n")):
         if facts.changes_schema:
             problem = f"`{OPT_OUT}` is not true: the migrations {_summary(facts)}."
-            if gone:
+            if dropped:
                 problem += " Remove that line and name what they drop under Schema changes."
             problems.append(problem)
         return problems
 
-    # A change with nothing to draw names what it drops; no change at all still needs the opt-out.
+    # Indexes are not drawn, so a change that creates or alters no table or view needs no diagram.
     if facts.tables_touched or not facts.changes_schema:
-        diagrams =[m.group(1) for m in _MERMAID.finditer(text) if "erDiagram" in m.group(1)]
+        diagrams = [m.group(1) for m in _MERMAID.finditer(text) if "erDiagram" in m.group(1)]
         if not diagrams:
             problems.append(
                 f"No mermaid erDiagram block. Paste the output of `{SNAPSHOT}` under Schema changes, "
@@ -137,13 +146,14 @@ def check_body(body: str | None, facts: MigrationFacts) -> list[str]:
             missing = sorted(t for t in facts.tables_touched if not _has_token(t, drawn))
             if missing:
                 problems.append(f"The erDiagram does not show: {', '.join(missing)}.")
-    else:
-        unnamed = [name for name in gone if not _has_token(name, text)]
-        if unnamed:
-            problems.append(
-                "The migrations only drop things, so no diagram is needed; name each one under "
-                f"Schema changes. Not named: {', '.join(unnamed)}."
-            )
+
+    section = _schema_section(text)
+    unnamed = [name for name in dropped if not _has_token(name, section)]
+    if unnamed:
+        problems.append(
+            "Name every table, view and index the migrations drop under the Schema changes heading. "
+            f"Not named there: {', '.join(unnamed)}."
+        )
 
     required = sorted(facts.constraints_added | facts.indexes_added)
     if required:

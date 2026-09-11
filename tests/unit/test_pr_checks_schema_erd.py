@@ -1,8 +1,8 @@
 """Shape guard and behaviour test for the ER-diagram drift check in compose-health-check.
 
 The drift step redraws _WIKI/SUPABASE/erd.md with tbls from the freshly migrated database.
-A redraw that fails, fails the job there. A stale committed file is flagged and the redraw
-uploaded for the author to commit, and the job fails at the end, after the tests have run.
+A stale committed file, or a redraw that fails, is flagged with an annotation (a stale redraw
+is uploaded for the author to commit), and the job fails at the end, after the tests have run.
 The database password reaches tbls through the environment only. The step's shell also runs
 here against a fake docker, so its failure paths are tested, not just its text.
 """
@@ -27,7 +27,19 @@ MAKEFILE = REPO_ROOT / "Makefile"
 JOB = "compose-health-check"
 ERD = "_WIKI/SUPABASE/erd.md"
 STALE = "steps.erd.outputs.stale == 'true'"
+GATE = "steps.erd.outputs.stale == 'true' || steps.erd.outputs.redraw_failed == 'true'"
 TBLS_OUTPUT = 'erDiagram\n\n"public.t" {\n  bigint id\n}\n'
+
+
+def _load_schema_erd():
+    sys.path.insert(0, str(SCRIPTS))
+    spec = importlib.util.spec_from_file_location("schema_erd", SCRIPTS / "schema_erd.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+WRAPPED = _load_schema_erd().wrap(TBLS_OUTPUT)
 
 
 def _job() -> dict:
@@ -87,23 +99,27 @@ def test_drift_step_is_not_in_warning_mode():
     assert "continue-on-error" not in steps[drift], "a failure that shows green lets a stale diagram merge"
 
 
-def test_the_stale_redraw_is_uploaded():
+def test_the_stale_redraw_is_uploaded_before_the_tests():
     steps, drift = _drift_step()
     assert steps[drift].get("id") == "erd"
     uploads = [
-        s for s in steps[drift + 1 :]
+        i for i, s in enumerate(steps)
         if str(s.get("uses", "")).startswith("actions/upload-artifact")
         and s.get("with", {}).get("name") == "erd"
     ]
     assert len(uploads) == 1, "expected one upload of the redrawn erd.md"
-    assert uploads[0].get("if") == STALE
-    assert "runner.temp" in str(uploads[0]["with"]["path"])
+    upload = steps[uploads[0]]
+    assert upload.get("if") == STALE
+    assert "runner.temp" in str(upload["with"]["path"])
+    assert drift < uploads[0] < _step_index(steps, "Run integration tests"), (
+        "after a failing step the upload would be skipped, leaving the error pointing at no artifact"
+    )
 
 
-def test_a_stale_diagram_fails_the_job_after_the_tests_run():
+def test_a_stale_or_unredrawable_diagram_fails_the_job_after_the_tests_run():
     steps = _job()["steps"]
-    gates = [i for i, s in enumerate(steps) if s.get("if") == STALE and "exit 1" in str(s.get("run", ""))]
-    assert len(gates) == 1, "expected one step that fails the job on a stale diagram"
+    gates = [i for i, s in enumerate(steps) if s.get("if") == GATE and "exit 1" in str(s.get("run", ""))]
+    assert len(gates) == 1, "expected one step that fails the job on a stale or unredrawable diagram"
     assert gates[0] > _step_index(steps, "Run integration tests")
     assert gates[0] > _step_index(steps, "Run Playwright E2E tests")
     assert "continue-on-error" not in steps[gates[0]]
@@ -125,21 +141,16 @@ def test_makefile_and_workflow_pin_the_same_image():
 # --- the step's shell, run against a fake docker ------------------------------------
 
 
-def _wrap(text: str) -> str:
-    sys.path.insert(0, str(SCRIPTS))
-    spec = importlib.util.spec_from_file_location("schema_erd", SCRIPTS / "schema_erd.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.wrap(text)
-
-
 def _executable(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
 def _run_drift_step(tmp_path: Path, tbls_stdout: str, tbls_exit: int = 0, committed: str | None = None):
-    """Run the step's shell with docker faked; return the result, $GITHUB_OUTPUT and the redraw's path."""
+    """Run the step's shell with docker faked.
+
+    Returns the result, $GITHUB_OUTPUT, the redraw's path, and the arguments of the docker run call.
+    """
     work = tmp_path / "work"
     (work / "scripts").mkdir(parents=True)
     for name in ("schema_erd.py", "migration_changes.py", "migration_sql.py"):
@@ -149,11 +160,16 @@ def _run_drift_step(tmp_path: Path, tbls_stdout: str, tbls_exit: int = 0, commit
         (work / ERD).write_text(committed, encoding="utf-8")
     tbls_out = tmp_path / "tbls.out"
     tbls_out.write_text(tbls_stdout, encoding="utf-8")
+    run_args = tmp_path / "docker_run_args"
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _executable(
         bin_dir / "docker",
-        f'#!/bin/sh\nif [ "$1" = compose ]; then echo db-container; exit 0; fi\ncat "{tbls_out}"\nexit {tbls_exit}\n',
+        "#!/bin/sh\n"
+        'if [ "$1" = compose ]; then echo db-container; exit 0; fi\n'
+        f'printf "%s\\n" "$@" > "{run_args}"\n'
+        f'cat "{tbls_out}"\n'
+        f"exit {tbls_exit}\n",
     )
     _executable(bin_dir / "python3", f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
     runner_temp = tmp_path / "runner"
@@ -172,23 +188,33 @@ def _run_drift_step(tmp_path: Path, tbls_stdout: str, tbls_exit: int = 0, commit
         "TBLS_IMAGE": "tbls@sha256:0",
     }
     result = subprocess.run(["bash", "-e", str(script)], cwd=work, env=env, capture_output=True, text=True)
-    return result, github_output.read_text(encoding="utf-8"), runner_temp / "erd" / "erd.md"
+    args = run_args.read_text(encoding="utf-8").splitlines() if run_args.exists() else []
+    return result, github_output.read_text(encoding="utf-8"), runner_temp / "erd" / "erd.md", args
 
 
 def test_step_passes_quietly_when_the_diagram_is_current(tmp_path):
-    result, outputs, _ = _run_drift_step(tmp_path, TBLS_OUTPUT, committed=_wrap(TBLS_OUTPUT))
+    result, outputs, _, _ = _run_drift_step(tmp_path, TBLS_OUTPUT, committed=WRAPPED)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "stale" not in outputs
+    assert outputs == ""
     assert "::error" not in result.stdout
+
+
+def test_tbls_runs_on_the_database_network_with_only_its_config(tmp_path):
+    _, _, _, args = _run_drift_step(tmp_path, TBLS_OUTPUT, committed=WRAPPED)
+    assert args[0] == "run"
+    assert args[args.index("--network") + 1] == "container:db-container"
+    assert args[args.index("-e") + 1] == "TBLS_DSN", "the DSN goes by name, never by value"
+    mounts = [args[i + 1] for i, a in enumerate(args) if a == "-v"]
+    assert len(mounts) == 1 and mounts[0].endswith("/.tbls.yml:/work/.tbls.yml:ro")
 
 
 @pytest.mark.parametrize("committed", ["an older diagram\n", None], ids=["differs", "missing"])
 def test_stale_diagram_is_flagged_and_the_redraw_kept_for_upload(tmp_path, committed):
-    result, outputs, redraw = _run_drift_step(tmp_path, TBLS_OUTPUT, committed=committed)
+    result, outputs, redraw, _ = _run_drift_step(tmp_path, TBLS_OUTPUT, committed=committed)
     assert result.returncode == 0, "the tests still run; a later step fails the job"
-    assert "stale=true" in outputs
+    assert outputs == "stale=true\n"
     assert "::error title=ER diagram is stale::" in result.stdout
-    assert redraw.read_text(encoding="utf-8") == _wrap(TBLS_OUTPUT)
+    assert redraw.read_text(encoding="utf-8") == WRAPPED
 
 
 @pytest.mark.parametrize(
@@ -196,8 +222,8 @@ def test_stale_diagram_is_flagged_and_the_redraw_kept_for_upload(tmp_path, commi
     [("", 1), ("", 0), ("Error: could not connect to the database\n", 0)],
     ids=["tbls fails", "tbls prints nothing", "tbls prints an error"],
 )
-def test_a_failed_redraw_fails_the_step_loudly_with_nothing_to_upload(tmp_path, tbls_stdout, tbls_exit):
-    result, outputs, _ = _run_drift_step(tmp_path, tbls_stdout, tbls_exit, committed=_wrap(TBLS_OUTPUT))
-    assert result.returncode != 0
-    assert "stale" not in outputs
+def test_a_failed_redraw_is_flagged_and_the_tests_still_run(tmp_path, tbls_stdout, tbls_exit):
+    result, outputs, _, _ = _run_drift_step(tmp_path, tbls_stdout, tbls_exit, committed=WRAPPED)
+    assert result.returncode == 0, "the tests still run; a later step fails the job"
+    assert outputs == "redraw_failed=true\n"
     assert "::error title=ER diagram could not be redrawn::" in result.stdout

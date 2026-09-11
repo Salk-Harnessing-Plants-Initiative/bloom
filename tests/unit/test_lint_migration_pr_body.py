@@ -167,6 +167,7 @@ def test_opt_out_passes_for_a_function_only_migration():
         ("CREATE OR REPLACE VIEW public.cyl_plants_extended AS SELECT 1 AS id;", "cyl_plants_extended"),
         ("DROP VIEW IF EXISTS public.old_view;", "old_view"),
         ("ALTER VIEW public.old_view RENAME TO new_view;", "old_view"),
+        ("ALTER VIEW public.plant_view RENAME COLUMN a TO b;", "plant_view"),
     ],
 )
 def test_opt_out_fails_when_the_schema_changes(sql, named):
@@ -215,6 +216,42 @@ def test_a_drop_only_migration_must_name_everything_it_drops():
 def test_opt_out_for_a_drop_only_migration_says_what_to_write_instead():
     problems = _problems("No schema changes.\n", scan("DROP VIEW IF EXISTS public.old_view;"))
     assert any("old_view" in p and "under Schema changes" in p for p in problems)
+
+
+def test_a_drop_alongside_other_changes_must_still_be_named():
+    facts = scan("DROP TABLE IF EXISTS public.old_data;\nALTER TABLE public.t ADD COLUMN IF NOT EXISTS c int;\n")
+    problems = _problems("## Schema changes\n\n" + _diagram("t") + "\n", facts)
+    assert len(problems) == 1 and "old_data" in problems[0]
+    assert _problems("## Schema changes\n\nDrops `old_data`.\n\n" + _diagram("t") + "\n", facts) == []
+
+
+def test_dropped_names_count_only_under_schema_changes():
+    body = "## Summary\n\nRetires old_view, old_table and old_idx.\n\n## Schema changes\n\nSee the summary.\n"
+    problems = _problems(body, scan(DROP_ONLY))
+    assert len(problems) == 1
+    assert all(name in problems[0] for name in ("old_view", "old_table", "old_idx"))
+
+
+def test_dropped_names_inside_a_comment_do_not_count():
+    assert _problems("## Schema changes\n\n<!-- old_view old_table old_idx -->\n", scan(DROP_ONLY))
+
+
+def test_an_index_only_migration_needs_its_constraints_row_but_no_diagram():
+    facts = scan("CREATE INDEX IF NOT EXISTS i ON public.t (a);")
+    assert _problems("## Schema changes\n\n" + _table(["i"]) + "\n", facts) == []
+    assert any("No constraints table" in p for p in _problems("## Schema changes\n\nAdds an index.\n", facts))
+
+
+def test_a_replaced_index_is_named_by_its_constraints_row():
+    facts = scan("DROP INDEX IF EXISTS public.i;\nCREATE INDEX i ON public.t (a);\n")
+    assert _problems("## Schema changes\n\n" + _table(["i"]) + "\n", facts) == []
+
+
+def test_messages_never_claim_a_migration_only_drops_when_it_also_adds():
+    facts = scan("DROP INDEX IF EXISTS public.old_i;\nCREATE INDEX new_i ON public.t (a);\n")
+    problems = _problems("## Schema changes\n\nSwaps an index.\n", facts)
+    assert any("old_i" in p for p in problems) and any("new_i" in p for p in problems)
+    assert not any("only drop" in p for p in problems)
 
 
 def test_opt_out_inside_an_html_comment_is_ignored():

@@ -85,11 +85,12 @@ def test_template_says_to_delete_the_section_without_migrations():
     assert any("Delete this section if this PR changes no migrations" in l for l in _section(TEMPLATE))
 
 
-def test_template_and_command_tell_drop_only_prs_what_to_write():
+def test_template_and_command_say_to_name_what_is_dropped():
     for path in (TEMPLATE, PR_DESCRIPTION):
         section = "\n".join(_section(path))
+        assert "Name every table, view and index the migrations drop" in section, path.name
+        assert "no diagram is needed" in section, path.name
         assert "table, view, constraint or index" in section, path.name
-        assert "only drop" in section, path.name
 
 
 def test_command_names_the_snapshot_and_the_pre_check():

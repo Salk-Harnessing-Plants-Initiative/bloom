@@ -339,10 +339,22 @@ def test_view_rename_is_touched_under_its_new_name():
     assert facts.changes_schema
 
 
-def test_view_column_rename_is_an_alteration():
-    facts = scan("ALTER VIEW public.v RENAME COLUMN a TO b;")
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "ALTER VIEW public.v RENAME COLUMN a TO b;",
+        "ALTER VIEW IF EXISTS public.v RENAME a TO b;",
+        'ALTER MATERIALIZED VIEW IF EXISTS public.v RENAME COLUMN "A" TO b;',
+    ],
+)
+def test_view_column_rename_is_an_alteration(sql):
+    facts = scan(sql)
     assert facts.views_altered == {"v"}
     assert facts.tables_touched == {"v"}
+
+
+def test_alter_table_rename_on_a_view_counts_as_a_rename():
+    assert scan("ALTER TABLE public.v RENAME TO w;").tables_touched == {"w"}
 
 
 @pytest.mark.parametrize(

@@ -26,9 +26,9 @@ drop, then add (CHECK); guarded add (FOREIGN KEY); guarded add that compares the
 Add NOT VALID where existing rows may violate it. Check the section with
 `make pr-body-check BODY=<file>`.
 
-If the migrations only drop tables, views or indexes, replace the diagram with a line naming
-each one. If they change no table, view, constraint or index, delete the diagram and table
-above and keep only this line:
+Name every table, view and index the migrations drop in this section. Indexes are not drawn,
+so if the migrations create or change no table or view, no diagram is needed. If they change
+no table, view, constraint or index, delete the diagram and table above and keep only this line:
 No schema changes.
 -->
 

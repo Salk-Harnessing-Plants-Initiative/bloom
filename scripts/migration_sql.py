@@ -51,7 +51,7 @@ _ADD_CONSTRAINT = re.compile(rf"^ADD\s+CONSTRAINT\s+({_IDENT})", re.I)
 _ADD_UNNAMED = re.compile(r"^ADD\s+(?:CHECK|UNIQUE|PRIMARY\s+KEY|FOREIGN\s+KEY|EXCLUDE)\b", re.I)
 _DROP_CONSTRAINT = re.compile(rf"^DROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?({_IDENT})", re.I)
 _RENAME_TO = re.compile(rf"^RENAME\s+TO\s+({_IDENT})", re.I)
-_RENAME_COLUMN = re.compile(rf"^RENAME\s+(?:COLUMN\s+)?(?!TO\b){_IDENT}\s+TO\b", re.I)
+_RENAME_COLUMN = re.compile(rf"^RENAME\s+(?:COLUMN\s+)?{_IDENT}\s+TO\b", re.I)
 _STRUCTURAL_ACTION = re.compile(r"^(?:ADD|DROP|ALTER|RENAME)\b", re.I)
 
 

@@ -945,7 +945,7 @@ jobs:
             psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
             < supabase/grants/schema_grants.sql
 
-      # Redraw the ER diagram; a failed redraw fails here, a stale erd.md fails the job after the tests.
+      # Redraw the ER diagram; a stale or failed redraw is flagged here and fails the job after the tests.
       - name: Check the ER diagram is current
         id: erd
         env:
@@ -959,10 +959,9 @@ jobs:
           if ! docker run --rm -e TBLS_DSN --network "container:${DB}" -v "$PWD/.tbls.yml:/work/.tbls.yml:ro" -w /work \
               "$TBLS_IMAGE" out -c .tbls.yml -t mermaid > "$RUNNER_TEMP/erd.mmd" \
             || ! python3 scripts/schema_erd.py wrap < "$RUNNER_TEMP/erd.mmd" > "$RUNNER_TEMP/erd/erd.md"; then
-            echo "::error title=ER diagram could not be redrawn::tbls produced no diagram from the migrated database; see this step's log."
-            exit 1
-          fi
-          if ! cmp -s "$RUNNER_TEMP/erd/erd.md" _WIKI/SUPABASE/erd.md; then
+            echo "redraw_failed=true" >> "$GITHUB_OUTPUT"
+            echo "::error title=ER diagram could not be redrawn::tbls did not produce a diagram (pulling its image or reading the database failed); see this step's log."
+          elif ! cmp -s "$RUNNER_TEMP/erd/erd.md" _WIKI/SUPABASE/erd.md; then
             echo "stale=true" >> "$GITHUB_OUTPUT"
             echo "::error title=ER diagram is stale::_WIKI/SUPABASE/erd.md does not match the migrated schema. Download the erd artifact from this run and commit it as _WIKI/SUPABASE/erd.md."
           fi
@@ -1136,11 +1135,17 @@ jobs:
           echo "=== bloommcp logs ==="
           docker compose $COMPOSE_FILES --env-file .env.ci logs bloommcp --tail=50
 
-      # A stale ER diagram fails the job here, once the tests have run; the erd step annotated it.
-      - name: Fail on a stale ER diagram
-        if: steps.erd.outputs.stale == 'true'
+      # A stale or unredrawable ER diagram fails the job here, once the tests have run.
+      - name: Fail on the ER diagram check
+        if: steps.erd.outputs.stale == 'true' || steps.erd.outputs.redraw_failed == 'true'
+        env:
+          REDRAW_FAILED: ${{ steps.erd.outputs.redraw_failed }}
         run: |
-          echo "_WIKI/SUPABASE/erd.md is stale. Commit the erd artifact from this run as _WIKI/SUPABASE/erd.md."
+          if [ "$REDRAW_FAILED" = true ]; then
+            echo "The ER diagram could not be redrawn; see the 'Check the ER diagram is current' step."
+          else
+            echo "_WIKI/SUPABASE/erd.md is stale. Commit the erd artifact from this run as _WIKI/SUPABASE/erd.md."
+          fi
           exit 1
 
       # Guarded: if: always() fires both when a superseding push cancels this

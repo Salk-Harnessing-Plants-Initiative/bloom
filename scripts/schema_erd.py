@@ -115,7 +115,7 @@ def _tables(args: argparse.Namespace) -> int:
     if not names:
         print(
             "This branch's migrations create or change no table or view, so there is nothing to draw. "
-            "If they only drop things, name what they drop in the PR body instead; or pass TABLES=….",
+            "Name anything they drop under Schema changes in the PR body instead; or pass TABLES=….",
             file=sys.stderr,
         )
         return 1
