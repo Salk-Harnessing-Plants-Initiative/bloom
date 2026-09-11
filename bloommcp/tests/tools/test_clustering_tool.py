@@ -318,9 +318,9 @@ def test_gmm_autoselect_bic_aic_reflect_the_selected_model(injected_ports, monke
     idx = result.n_clusters - 1
     # On this dataset auto-select collapses to n=1 out of the default max_components=5
     # candidates — making the negative assertion unconditional (selected ≠ last candidate).
-    assert result.n_clusters == 1, (
-        f"expected auto-collapse to n=1, got {result.n_clusters}"
-    )
+    assert (
+        result.n_clusters == 1
+    ), f"expected auto-collapse to n=1, got {result.n_clusters}"
     assert len(d["bic_scores"]) == 5  # default max_components=5
     # Corrected values == the selected candidate's per-candidate scores.
     assert result.bic == pytest.approx(d["bic_scores"][idx], abs=_TOL)
@@ -643,6 +643,10 @@ def test_persists_labels_and_returns_links_not_the_vector(injected_ports):
     stored = store.get_run(_EXPERIMENT, "clustering", "latest")
     assert set(stored.output_keys) == {"labels.csv", "cluster_result.json"}
     assert set(result.outputs) == {"labels.csv", "cluster_result.json"}
+    # #582 widened RunLinks' run-link fields to Optional, so Pydantic no longer
+    # rejects a persisting tool that leaves them unset. `==` alone would pass
+    # vacuously if a regression made BOTH sides None, so pin non-null explicitly.
+    assert result.run_ref is not None
     assert result.run_ref == stored.run_ref
 
     # bloom#581: a signed link + hash + size per output — ClusteringResult
