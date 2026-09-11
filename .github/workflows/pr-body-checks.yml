@@ -1,0 +1,33 @@
+name: PR Body Checks
+
+# A migration PR's description must document its schema change. Kept apart from
+# pr-checks.yml so editing the description re-runs only this.
+on:
+  pull_request:
+    branches: [staging, main]
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-body-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  migration-pr-body:
+    name: Migration PR body documents the schema change
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Diffs against the base SHA and compares with origin/staging
+          fetch-depth: 0
+
+      # Warning mode until the rollout makes it blocking. The body arrives as data via env.
+      - name: Check the Schema changes section
+        continue-on-error: true
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 scripts/lint_migration_pr_body.py ${{ github.event.pull_request.base.sha }}
