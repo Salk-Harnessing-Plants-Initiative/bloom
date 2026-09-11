@@ -79,3 +79,17 @@ export async function fetchClusterStats(
     markers: parseMarkers(data.markers),
   };
 }
+
+/** Every cluster's markers in a dataset, by cluster id; a cluster with no stats
+ *  row is absent. */
+export async function fetchClusterMarkers(
+  datasetId: number,
+): Promise<Map<string, ClusterMarkers | null>> {
+  const supabase = createClientSupabaseClient();
+  const { data, error } = await supabase
+    .from("scrna_cluster_stats")
+    .select("cluster_id, markers")
+    .eq("dataset_id", datasetId);
+  if (error) throw new Error(`fetchClusterMarkers failed: ${error.message}`);
+  return new Map((data ?? []).map((row) => [row.cluster_id, parseMarkers(row.markers)]));
+}

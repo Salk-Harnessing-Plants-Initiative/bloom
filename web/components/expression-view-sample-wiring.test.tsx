@@ -11,7 +11,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import type { ExpressionUmapProps } from "./expression-umap";
 
@@ -33,6 +33,32 @@ vi.mock("@/components/expression-umap", () => ({
 // Showing one cell type opens its detail panel, which fetches on its own.
 vi.mock("@/components/expression-cluster-detail-panel", () => ({
   ExpressionClusterDetailPanel: () => null,
+}));
+
+// The search box reads genes from the site; stand in for picking and clearing one.
+vi.mock("@/components/expression-gene-search", () => ({
+  ExpressionGeneSearch: ({ onChange }: { onChange: (gene: string | null) => void }) => (
+    <div>
+      <button type="button" onClick={() => onChange("AT1G01010")}>Pick AT1G01010</button>
+      <button type="button" onClick={() => onChange(null)}>Clear gene</button>
+    </div>
+  ),
+}));
+
+// The colour bar's slider cannot be dragged in jsdom; stand in for narrowing it.
+vi.mock("@/components/expression-colorbar", () => ({
+  ExpressionColorbar: ({
+    range,
+    onRangeChange,
+  }: {
+    range: { min: number; max: number };
+    onRangeChange: (range: { min: number; max: number }) => void;
+  }) => (
+    <div data-testid="expression-colorbar">
+      {range.min}–{range.max}
+      <button type="button" onClick={() => onRangeChange({ min: 1, max: 2 })}>Narrow</button>
+    </div>
+  ),
 }));
 
 vi.mock("@/lib/supabase/client", () => ({
@@ -372,5 +398,46 @@ describe("ExpressionView — the transgene counts switch", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Col-0 1" })).toBeTruthy());
     expect(screen.queryByRole("switch", { name: "Transgene counts" })).toBeNull();
     expect(screen.queryByTestId("transgene-summary")).toBeNull();
+  });
+});
+
+describe("ExpressionView — colouring the map by a gene", () => {
+  async function pickGene() {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Col-0 4" })).toBeTruthy());
+    expect(latest().geneName ?? null).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Pick AT1G01010" }));
+    await waitFor(() => expect(latest().geneName).toBe("AT1G01010"));
+  }
+
+  it("hands the map the gene picked, shows its colour bar, and clears both", async () => {
+    await pickGene();
+    act(() => latest().onExpressionRangeChanged?.({ min: 0, max: 3 }));
+    await waitFor(() => expect(screen.getByTestId("expression-colorbar")).toBeTruthy());
+    expect(latest().colourRange).toEqual({ min: 0, max: 3 });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear gene" }));
+    await waitFor(() => expect(latest().geneName).toBeNull());
+    act(() => latest().onExpressionRangeChanged?.(null));
+    await waitFor(() => expect(screen.queryByTestId("expression-colorbar")).toBeNull());
+  });
+
+  it("narrows the map's colours with the colour bar", async () => {
+    await pickGene();
+    act(() => latest().onExpressionRangeChanged?.({ min: 0, max: 3 }));
+    await waitFor(() => expect(screen.getByTestId("expression-colorbar")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Narrow" }));
+    await waitFor(() => expect(latest().colourRange).toEqual({ min: 1, max: 2 }));
+  });
+
+  it("says when a gene has no stored expression, and shows no colour bar", async () => {
+    await pickGene();
+    act(() => latest().onGeneError?.("AT1G01010 has no stored expression in this dataset."));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("no stored expression"),
+    );
+    expect(screen.queryByTestId("expression-colorbar")).toBeNull();
   });
 });
