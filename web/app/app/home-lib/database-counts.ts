@@ -47,7 +47,9 @@ async function countScrnaDatasets(
     .from("scrna_datasets")
     .select("*", { count: "exact", head: true })
     .is("deleted_at", null)
-    .neq("name", "NULL_DATASET");
+    .neq("name", "NULL_DATASET")
+    // Reference atlases hold no cells of their own; they only back integration maps.
+    .neq("kind", "reference");
   return count ?? 0;
 }
 

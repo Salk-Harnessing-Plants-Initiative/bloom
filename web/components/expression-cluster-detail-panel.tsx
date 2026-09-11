@@ -5,12 +5,15 @@ import {
   fetchClusterStats,
   type ClusterStatsRow,
 } from "@/components/expression-lib/cluster-markers";
+import type { TransgeneCount } from "@/components/expression-lib/transgene";
 
 export interface ExpressionClusterDetailPanelProps {
   datasetId: number;
   clusterId: string;
   clusterName: string | null;
   clusterColor: string | null;
+  /** The cluster's transgene-positive cells; absent when the dataset records none. */
+  transgene?: TransgeneCount;
 }
 
 /**
@@ -23,6 +26,7 @@ export function ExpressionClusterDetailPanel({
   clusterId,
   clusterName,
   clusterColor,
+  transgene,
 }: ExpressionClusterDetailPanelProps) {
   const [stats, setStats] = useState<ClusterStatsRow | null>(null);
   const [failed, setFailed] = useState(false);
@@ -84,6 +88,29 @@ export function ExpressionClusterDetailPanel({
           {failed ? " · could not load" : ` · ${cellsHuman} cells`}
         </div>
       </div>
+
+      {transgene && (
+        <div className="border-b border-stone-200 p-5">
+          <div
+            data-testid="cluster-transgene"
+            className="rounded-lg bg-emerald-600 px-4 py-3 text-white shadow-sm"
+          >
+            <div className="text-[10px] uppercase tracking-widest text-emerald-100">
+              Transgene-positive cells
+            </div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums">
+              {new Intl.NumberFormat("en-US").format(transgene.positive)}{" "}
+              <span className="text-sm font-normal text-emerald-50">
+                of {new Intl.NumberFormat("en-US").format(transgene.total)} ·{" "}
+                {transgene.total > 0
+                  ? ((transgene.positive / transgene.total) * 100).toFixed(1)
+                  : "0.0"}
+                %
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 border-b border-stone-200">
         <StatTile label="% of dataset" value={`${pctHuman}%`} suffix={false} />
