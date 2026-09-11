@@ -37,6 +37,14 @@ const NO_HIDDEN_VALUES: HiddenValues = new Map();
 export const MIN_ZOOM = 0.2;
 export const MAX_ZOOM = 50;
 
+/** A press and release this close together, in CSS pixels, is a click rather
+ *  than the start of a pan. */
+export const CLICK_SLOP_PX = 4;
+
+export function isClick(down: { x: number; y: number }, up: { x: number; y: number }): boolean {
+  return Math.hypot(up.x - down.x, up.y - down.y) <= CLICK_SLOP_PX;
+}
+
 /** How near the cursor a point must be, in CSS pixels, to be the one hovered.
  *  Points are drawn at 4px, so this is a little forgiveness around them. */
 const HOVER_RADIUS_PX = 8;
@@ -151,6 +159,8 @@ export interface ExpressionUmapProps {
   }) => void;
   /** Fires whenever the currently-overlaid gene's min/max changes */
   onExpressionRangeChanged?: (range: { min: number; max: number } | null) => void;
+  /** Fires with a cell's cluster ordinal when that cell is clicked */
+  onCellClick?: (ordinal: number) => void;
 }
 
 interface LoadedData {
@@ -174,6 +184,7 @@ export function ExpressionUmap({
   height = 600,
   onDataLoaded,
   onExpressionRangeChanged,
+  onCellClick,
 }: ExpressionUmapProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -219,11 +230,15 @@ export function ExpressionUmap({
   // Hit-testing reads these from a handler created once, so they are mirrored here.
   const positionsRef = useRef<Float32Array | null>(null);
   const visibilityRef = useRef<Float32Array | null>(null);
+  const ordinalsRef = useRef<Uint8Array | null>(null);
+  const onCellClickRef = useRef(onCellClick);
   useEffect(() => {
     zoomRef.current = zoom;
     translateRef.current = translate;
     positionsRef.current = data?.positions ?? null;
     visibilityRef.current = visibility;
+    ordinalsRef.current = data?.clusterOrdinals ?? null;
+    onCellClickRef.current = onCellClick;
     expressionArrRef.current = expressionArr;
     expressionRangeRef.current = expressionRange;
     dirtyRef.current = true;
@@ -558,6 +573,16 @@ export function ExpressionUmap({
   const dragState = useRef<{ x: number; y: number; origTx: number; origTy: number } | null>(
     null,
   );
+  /** The visible cell at a point on the canvas, or null. */
+  const cellAt = (rect: DOMRect, x: number, y: number): number | null =>
+    pickCell(
+      positionsRef.current ?? new Float32Array(0),
+      visibilityRef.current,
+      { zoom: zoomRef.current, translate: translateRef.current,
+        width: rect.width, height: rect.height },
+      { x, y },
+    );
+
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -590,19 +615,10 @@ export function ExpressionUmap({
 
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      const index = pickCell(
-        positionsRef.current ?? new Float32Array(0),
-        visibilityRef.current,
-        {
-          zoom: zoomRef.current,
-          translate: translateRef.current,
-          width: rect.width,
-          height: rect.height,
-        },
-        { x, y },
-      );
+      const index = cellAt(rect, x, y);
       setHovered(index === null ? null : { index, x, y });
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
@@ -618,8 +634,16 @@ export function ExpressionUmap({
   const handlePointerUp = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       e.currentTarget.releasePointerCapture(e.pointerId);
+      const down = dragState.current;
       dragState.current = null;
+      // A click on a cell picks its cell type; a drag only pans.
+      if (!down || !canvasRef.current || !isClick(down, { x: e.clientX, y: e.clientY })) return;
+      const rect = canvasRef.current.getBoundingClientRect();
+      const index = cellAt(rect, e.clientX - rect.left, e.clientY - rect.top);
+      const ordinals = ordinalsRef.current;
+      if (index !== null && ordinals) onCellClickRef.current?.(ordinals[index]);
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 

@@ -30,6 +30,11 @@ vi.mock("@/components/expression-umap", () => ({
   },
 }));
 
+// Showing one cell type opens its detail panel, which fetches on its own.
+vi.mock("@/components/expression-cluster-detail-panel", () => ({
+  ExpressionClusterDetailPanel: () => null,
+}));
+
 vi.mock("@/lib/supabase/client", () => ({
   createClientSupabaseClient: () => ({
     from: () => ({
@@ -242,5 +247,28 @@ describe("ExpressionView — label rows", () => {
     fireEvent.click(screen.getByRole("button", { name: "Col-0 2" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "False 1" })).toBeTruthy());
     expect(screen.getByRole("button", { name: "True 2" })).toBeTruthy();
+  });
+});
+
+describe("ExpressionView — clicking a cell", () => {
+  const TWO_TYPES: LoadedPayload = {
+    ...LOADED,
+    clusters: [
+      { ordinal: 0, cluster_id: "Cortex", name: "Cortex", color: "#112233" },
+      { ordinal: 1, cluster_id: "Xylem", name: "Xylem", color: "#445566" },
+    ] as unknown as LoadedPayload["clusters"],
+  };
+
+  it("shows only that cell's type, and clicking it again shows every type", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData(TWO_TYPES);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Col-0 4" })).toBeTruthy());
+
+    latest().onCellClick?.(1);
+    await waitFor(() => expect([...(latest().hiddenClusters ?? [])]).toEqual([0]));
+
+    latest().onCellClick?.(1);
+    await waitFor(() => expect([...(latest().hiddenClusters ?? [])]).toEqual([]));
   });
 });

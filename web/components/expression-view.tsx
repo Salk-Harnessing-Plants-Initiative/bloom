@@ -283,6 +283,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           hiddenValues={hiddenValues}
           onDataLoaded={handleDataLoaded}
           onExpressionRangeChanged={setExprRange}
+          onCellClick={handleSolo}
         />
       </Box>
 

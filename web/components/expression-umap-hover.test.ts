@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { describeCell, pickCell } from "./expression-umap";
+import { describeCell, isClick, pickCell } from "./expression-umap";
 import type { CellArraysRow } from "./expression-lib/scrna-client";
 
 /** The shader draws at (position + translate) * zoom, so at zoom 1 and no
@@ -109,5 +109,16 @@ describe("describeCell", () => {
 
   it("returns nothing for a cell that is not there", () => {
     expect(describeCell(99, cells, ordinals, CLUSTERS)).toBeNull();
+  });
+});
+
+describe("isClick", () => {
+  it("counts a press and release in place, or nearly, as a click", () => {
+    expect(isClick({ x: 10, y: 10 }, { x: 10, y: 10 })).toBe(true);
+    expect(isClick({ x: 10, y: 10 }, { x: 13, y: 12 })).toBe(true);
+  });
+
+  it("counts a press that travelled as a pan, not a click", () => {
+    expect(isClick({ x: 10, y: 10 }, { x: 30, y: 10 })).toBe(false);
   });
 });
