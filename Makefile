@@ -7,6 +7,9 @@ POSTGRES_HOST     ?= localhost
 POSTGRES_PORT     ?= 5432
 POSTGRES_DB       ?= postgres
 
+# tbls draws _WIKI/SUPABASE/erd.md; pr-checks.yml pins the same image.
+TBLS_IMAGE ?= ghcr.io/k1low/tbls:v1.96.0@sha256:35e29e5c2e2d8a4555b36eacfdac9d78d8af5aee5c73cc68219cac9cf3723ee1
+
 # Default target when you just run `make`
 .PHONY: help
 help:
@@ -35,6 +38,9 @@ help:
 	@echo "  make list-buckets     - List all S3 buckets"
 	@echo "  make configure-storage-dev - Configure storage backend (MinIO or AWS S3)"
 	@echo "  make gen-types         - Generate database.types.ts from local DB and sync to all packages"
+	@echo "  make erd              - Redraw _WIKI/SUPABASE/erd.md with tbls (dev DB must match this checkout)"
+	@echo "  make erd-snapshot TABLES=a,b | CHANGED=origin/staging - Mermaid block of those tables and their neighbours, for a PR body"
+	@echo "  make pr-body-check BODY=path.md - Check a drafted PR body's Schema changes section"
 
 # Generate a local .env.dev from .env.dev.example with fresh secrets.
 # Pass FORCE=1 to overwrite an existing .env.dev (it is backed up first).
@@ -208,7 +214,7 @@ reset-storage:
 
 	@echo "Bringing dev stack back up..."
 	@docker compose -f docker-compose.dev.yml --env-file .env.dev up -d --build
-	
+
 	@echo "Waiting for database to be ready..."
 	@for i in 1 2 3 4 5 6 7 8 9 10; do \
 		if docker compose -f docker-compose.dev.yml exec -T db-dev pg_isready -U supabase_admin -h localhost >/dev/null 2>&1; then \
@@ -218,7 +224,7 @@ reset-storage:
 		echo "Waiting for database... ($$i/10)"; \
 		sleep 2; \
 	done
-	
+
 	@echo "Truncating all tables to remove seed data..."
 	@docker compose -f docker-compose.dev.yml exec -T db-dev psql -U supabase_admin -d postgres -c "\
 		DO \$$\$$ \
@@ -229,7 +235,7 @@ reset-storage:
 				EXECUTE 'TRUNCATE TABLE public.' || quote_ident(r.tablename) || ' CASCADE'; \
 			END LOOP; \
 		END \$$\$$;" || echo "Note: Some tables may not exist yet"
-	
+
 	@echo "reset-storage completed. Database and storage are now empty."
 
 ## Create a new migration file
@@ -505,3 +511,67 @@ gen-types:
 	@echo "  - packages/bloom-nextjs-auth/src/lib/database.types.ts"
 	@echo "  - web/lib/database.types.ts"
 	@echo "Done. All packages now have identical types."
+
+## Redraw _WIKI/SUPABASE/erd.md with tbls from the dev DB; refuses when the DB doesn't match this checkout
+.PHONY: erd
+erd:
+	@if ! docker ps | grep -q db-dev; then \
+		echo "Error: Development database not running. Start with 'make dev-up' first."; \
+		exit 1; \
+	fi
+	@if [ ! -f .env.dev ]; then \
+		echo "Error: .env.dev not found. Run 'make init' first."; \
+		exit 1; \
+	fi
+	@set -e; \
+	PG_USER=$$(sed -n 's/^POSTGRES_USER=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); PG_USER=$${PG_USER:-supabase_admin}; \
+	PG_PASSWORD=$$(sed -n 's/^POSTGRES_PASSWORD=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); \
+	PG_DB=$$(sed -n 's/^POSTGRES_DB=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); PG_DB=$${PG_DB:-postgres}; \
+	DEV="docker compose -f docker-compose.dev.yml --env-file .env.dev"; \
+	DB=$$($$DEV ps -q db-dev 2>/dev/null); [ -n "$$DB" ] || { echo "Error: no db-dev container for this checkout."; exit 1; }; \
+	ROWS=$$($$DEV exec -T -e PGPASSWORD="$$PG_PASSWORD" db-dev psql -U "$$PG_USER" -d "$$PG_DB" -At -F '|' \
+		-c "SELECT version, name FROM supabase_migrations.schema_migrations"); \
+	printf '%s\n' "$$ROWS" | python3 scripts/schema_erd.py guard --migrations-dir supabase/migrations; \
+	TBLS_DSN="postgres://$$PG_USER:$$PG_PASSWORD@localhost:5432/$$PG_DB?sslmode=disable"; export TBLS_DSN; \
+	docker run --rm -e TBLS_DSN --network "container:$$DB" -v "$(CURDIR):/work" -w /work \
+		$(TBLS_IMAGE) out -c .tbls.yml -t mermaid > /tmp/bloom_erd.mmd; \
+	python3 scripts/schema_erd.py wrap < /tmp/bloom_erd.mmd > _WIKI/SUPABASE/erd.md; \
+	rm -f /tmp/bloom_erd.mmd; \
+	echo "Wrote _WIKI/SUPABASE/erd.md"
+
+## Print a mermaid block for a PR body: TABLES=a,b or CHANGED=origin/staging, plus their direct neighbours
+.PHONY: erd-snapshot
+erd-snapshot:
+	@if [ -z "$(TABLES)$(CHANGED)" ]; then \
+		echo "Usage: make erd-snapshot TABLES=scrna_de[,other] | CHANGED=origin/staging"; \
+		exit 1; \
+	fi
+	@if ! docker ps | grep -q db-dev; then \
+		echo "Error: Development database not running. Start with 'make dev-up' first."; \
+		exit 1; \
+	fi
+	@if [ ! -f .env.dev ]; then \
+		echo "Error: .env.dev not found. Run 'make init' first."; \
+		exit 1; \
+	fi
+	@set -e; \
+	PG_USER=$$(sed -n 's/^POSTGRES_USER=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); PG_USER=$${PG_USER:-supabase_admin}; \
+	PG_PASSWORD=$$(sed -n 's/^POSTGRES_PASSWORD=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); \
+	PG_DB=$$(sed -n 's/^POSTGRES_DB=//p' .env.dev 2>/dev/null | head -n1 | tr -d '\r'); PG_DB=$${PG_DB:-postgres}; \
+	DEV="docker compose -f docker-compose.dev.yml --env-file .env.dev"; \
+	DB=$$($$DEV ps -q db-dev 2>/dev/null); [ -n "$$DB" ] || { echo "Error: no db-dev container for this checkout."; exit 1; }; \
+	LIST=$$(python3 scripts/schema_erd.py tables $(if $(TABLES),--tables "$(TABLES)",--changed "$(CHANGED)")); \
+	TBLS_DSN="postgres://$$PG_USER:$$PG_PASSWORD@localhost:5432/$$PG_DB?sslmode=disable"; export TBLS_DSN; \
+	echo '```mermaid'; \
+	docker run --rm -e TBLS_DSN --network "container:$$DB" -v "$(CURDIR):/work" -w /work \
+		$(TBLS_IMAGE) out -c .tbls.yml -t mermaid --table "$$LIST" --distance 1; \
+	echo '```'
+
+## Check a drafted PR body's Schema changes section before opening the PR
+.PHONY: pr-body-check
+pr-body-check:
+	@if [ -z "$(BODY)" ]; then \
+		echo "Usage: make pr-body-check BODY=path/to/body.md [BASE=origin/staging]"; \
+		exit 1; \
+	fi
+	@python3 scripts/lint_migration_pr_body.py $(or $(BASE),origin/staging) --body-file "$(BODY)"

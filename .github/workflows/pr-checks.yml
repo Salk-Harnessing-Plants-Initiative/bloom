@@ -555,6 +555,23 @@ jobs:
       - name: Run migration lint
         run: ./scripts/lint_migrations.sh origin/${{ github.base_ref }}
 
+  lint-migration-isolation:
+    name: Lint migration changes are isolated
+    # Both bases: the script counts only migrations not already on staging, so a
+    # promotion has nothing to check and a hotfix straight to main still does.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Diffs against the base SHA and compares with origin/staging
+          fetch-depth: 0
+
+      # Warning mode until the rollout makes it blocking.
+      - name: Enforce migration PR isolation
+        continue-on-error: true
+        run: python3 scripts/lint_migration_isolation.py ${{ github.event.pull_request.base.sha }}
+
   lint-cve-isolation:
     name: Lint CVE changes are isolated
     # Only staging-bound PRs — that's where a suppression is authored and where
@@ -618,6 +635,8 @@ jobs:
       # custom services so PR CI can build locally even after PR-3 flips
       # docker-compose.prod.yml to `image: ghcr.io/...` refs.
       COMPOSE_FILES: -f docker-compose.prod.yml -f docker-compose.ci.yml
+      # tbls draws _WIKI/SUPABASE/erd.md; same pin as the Makefile's TBLS_IMAGE.
+      TBLS_IMAGE: ghcr.io/k1low/tbls:v1.96.0@sha256:35e29e5c2e2d8a4555b36eacfdac9d78d8af5aee5c73cc68219cac9cf3723ee1
     steps:
       # Reclaim ~25 GB before anything runs. ubuntu-latest ships only ~14 GB
       # free on /, and this job builds the full prod compose stack
@@ -927,6 +946,31 @@ jobs:
             -e PGPASSWORD="${POSTGRES_PASSWORD}" db-prod \
             psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
             < supabase/grants/schema_grants.sql
+
+      # Redraw the ER diagram from the freshly migrated schema; a stale erd.md fails (warning mode for now).
+      - name: Check the ER diagram is current
+        id: erd
+        continue-on-error: true
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+        run: |
+          set -euo pipefail
+          DB=$(docker compose $COMPOSE_FILES --env-file .env.ci ps -q db-prod)
+          export TBLS_DSN="postgres://supabase_admin:${POSTGRES_PASSWORD}@localhost:5432/postgres?sslmode=disable"
+          docker run --rm -e TBLS_DSN --network "container:${DB}" -v "$PWD:/work" -w /work \
+            "$TBLS_IMAGE" out -c .tbls.yml -t mermaid > "$RUNNER_TEMP/erd.mmd"
+          python3 scripts/schema_erd.py wrap < "$RUNNER_TEMP/erd.mmd" > _WIKI/SUPABASE/erd.md
+          if [ -n "$(git status --porcelain -- _WIKI/SUPABASE/erd.md)" ]; then
+            echo "::error title=ER diagram is stale::_WIKI/SUPABASE/erd.md does not match the migrated schema. Download the erd artifact from this run and commit it as _WIKI/SUPABASE/erd.md."
+            exit 1
+          fi
+
+      - name: Upload the redrawn ER diagram
+        if: steps.erd.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: erd
+          path: _WIKI/SUPABASE/erd.md
 
       # Layer B — runs only on failure. Prints applied-vs-pending state so an
       # on-call engineer can see which migration broke without digging through
