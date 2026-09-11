@@ -119,7 +119,7 @@ GRANT UPDATE, DELETE ON public.scrna_de TO authenticated, anon, service_role;
 
 DROP POLICY IF EXISTS writer_update_scrna_de ON public.scrna_de;
 CREATE POLICY writer_update_scrna_de
-  ON public.scrna_de FOR UPDATE TO bloom_writer USING (true);
+  ON public.scrna_de FOR UPDATE TO bloom_writer USING (true) WITH CHECK (true);
 
 DROP POLICY IF EXISTS "Authenticated users can update scrna_de" ON public.scrna_de;
 CREATE POLICY "Authenticated users can update scrna_de"

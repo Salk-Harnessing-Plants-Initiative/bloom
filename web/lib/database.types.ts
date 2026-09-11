@@ -3099,52 +3099,176 @@ export type Database = {
           contrast: string | null
           dataset_id: number
           file_path: string | null
+          group_kind: string | null
           group1: string | null
           group2: string | null
           id: number
-          n_down: number | null
+          method: string | null
           n_genes_tested: number | null
           n_group1: number | null
           n_group2: number | null
-          n_significant_fdr: number | null
-          n_significant_fdr_lfc: number | null
-          n_up: number | null
+          params_hash: string | null
+          run_id: number | null
+          tested: boolean | null
         }
         Insert: {
           cluster_id?: string | null
           contrast?: string | null
           dataset_id: number
           file_path?: string | null
+          group_kind?: string | null
           group1?: string | null
           group2?: string | null
           id?: number
-          n_down?: number | null
+          method?: string | null
           n_genes_tested?: number | null
           n_group1?: number | null
           n_group2?: number | null
-          n_significant_fdr?: number | null
-          n_significant_fdr_lfc?: number | null
-          n_up?: number | null
+          params_hash?: string | null
+          run_id?: number | null
+          tested?: boolean | null
         }
         Update: {
           cluster_id?: string | null
           contrast?: string | null
           dataset_id?: number
           file_path?: string | null
+          group_kind?: string | null
           group1?: string | null
           group2?: string | null
           id?: number
-          n_down?: number | null
+          method?: string | null
           n_genes_tested?: number | null
           n_group1?: number | null
           n_group2?: number | null
-          n_significant_fdr?: number | null
-          n_significant_fdr_lfc?: number | null
-          n_up?: number | null
+          params_hash?: string | null
+          run_id?: number | null
+          tested?: boolean | null
         }
         Relationships: [
           {
+            foreignKeyName: "scrna_de_cluster_in_catalogue"
+            columns: ["dataset_id", "cluster_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_clusters"
+            referencedColumns: ["dataset_id", "cluster_id"]
+          },
+          {
             foreignKeyName: "scrna_de_dataset_id_fkey"
+            columns: ["dataset_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_datasets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scrna_de_run_in_same_dataset"
+            columns: ["dataset_id", "run_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_de_runs"
+            referencedColumns: ["dataset_id", "id"]
+          },
+        ]
+      }
+      scrna_de_genes: {
+        Row: {
+          dataset_id: number
+          de_id: number
+          fdr: number
+          gene_id: number
+          id: number
+          log2fc: number | null
+          pct_1: number | null
+          pct_2: number | null
+          pvalue: number
+        }
+        Insert: {
+          dataset_id: number
+          de_id: number
+          fdr: number
+          gene_id: number
+          id?: number
+          log2fc?: number | null
+          pct_1?: number | null
+          pct_2?: number | null
+          pvalue: number
+        }
+        Update: {
+          dataset_id?: number
+          de_id?: number
+          fdr?: number
+          gene_id?: number
+          id?: number
+          log2fc?: number | null
+          pct_1?: number | null
+          pct_2?: number | null
+          pvalue?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scrna_de_genes_gene_belongs_to_dataset"
+            columns: ["dataset_id", "gene_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_genes"
+            referencedColumns: ["dataset_id", "id"]
+          },
+          {
+            foreignKeyName: "scrna_de_genes_result_in_same_dataset"
+            columns: ["dataset_id", "de_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_de"
+            referencedColumns: ["dataset_id", "id"]
+          },
+        ]
+      }
+      scrna_de_runs: {
+        Row: {
+          argo_workflow_name: string | null
+          completed_at: string | null
+          created_at: string
+          dataset_id: number
+          error_message: string | null
+          id: number
+          method: string
+          params: Json
+          params_hash: string
+          requested_by: string | null
+          source: string
+          status: string
+          submitted_at: string | null
+        }
+        Insert: {
+          argo_workflow_name?: string | null
+          completed_at?: string | null
+          created_at?: string
+          dataset_id: number
+          error_message?: string | null
+          id?: number
+          method: string
+          params?: Json
+          params_hash: string
+          requested_by?: string | null
+          source: string
+          status?: string
+          submitted_at?: string | null
+        }
+        Update: {
+          argo_workflow_name?: string | null
+          completed_at?: string | null
+          created_at?: string
+          dataset_id?: number
+          error_message?: string | null
+          id?: number
+          method?: string
+          params?: Json
+          params_hash?: string
+          requested_by?: string | null
+          source?: string
+          status?: string
+          submitted_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scrna_de_runs_dataset_id_fkey"
             columns: ["dataset_id"]
             isOneToOne: false
             referencedRelation: "scrna_datasets"
