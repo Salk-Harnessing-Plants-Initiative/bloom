@@ -1236,7 +1236,7 @@ def test_a3_rollback_restores_strict_a2(pg_conn):
 # fail_cyl_pipeline_run_scans_without_result)
 # --------------------------------------------------------------------------- #
 
-_TS_SCAN_STATUS = "20260910000000_add_cyl_writeback_run_scan_status"
+_TS_SCAN_STATUS = "20260911090000_add_cyl_writeback_run_scan_status"
 MIGRATION_SCAN_STATUS = REPO_ROOT / "supabase" / "migrations" / f"{_TS_SCAN_STATUS}.sql"
 ROLLBACK_SCAN_STATUS = REPO_ROOT / "supabase" / "rollbacks" / f"{_TS_SCAN_STATUS}_rollback.sql"
 

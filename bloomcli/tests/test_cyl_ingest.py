@@ -1816,9 +1816,7 @@ def test_batch_ingest_cli_reconcile_generic_error_has_no_role_hint(monkeypatch, 
     assert "bloom_workflows" not in reconciliation_entries[0]["error"]
 
 
-def test_batch_ingest_cli_reconcile_unrelated_permission_denied_gets_no_hint(
-    monkeypatch, tmp_path
-):
+def test_batch_ingest_cli_reconcile_unrelated_permission_denied_gets_no_hint(monkeypatch, tmp_path):
     """Round 7 finding (Behavioral Correctness): the hint's old substring check
     (`"permission denied" in message.lower()`) had no anchor to this specific RPC —
     a message that happens to contain "permission denied" for a completely
@@ -1830,9 +1828,7 @@ def test_batch_ingest_cli_reconcile_unrelated_permission_denied_gets_no_hint(
     monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
 
     def boom(client, name):
-        raise _api_error(
-            "permission denied for relation some_other_unrelated_table"
-        )
+        raise _api_error("permission denied for relation some_other_unrelated_table")
 
     monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
     _write_envelope(tmp_path, "scan_1")
