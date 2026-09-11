@@ -109,7 +109,7 @@ def _dimension_matched_markers() -> dict[str, bytes]:
     different content, so it's distinguishable from a fresh, correct re-render.
     """
     markers = {}
-    for baseline_name, _tool_fn, _produced_name in gen._TOOLS:
+    for baseline_name, _tool_fn, _produced_name, _converged in gen._TOOLS:
         real = _REAL_BASELINES_DIR / baseline_name
         dimmed = ImageEnhance.Brightness(Image.open(real)).enhance(0.5)
         buf = io.BytesIO()
@@ -156,5 +156,5 @@ def test_build_writes_new_baselines_without_needing_yes(tmp_path, monkeypatch):
         wrote = gen.build(Path(scratch), confirmed=False)
 
     assert wrote is True
-    for baseline_name, _tool_fn, _produced_name in gen._TOOLS:
+    for baseline_name, _tool_fn, _produced_name, _converged in gen._TOOLS:
         assert (fake_baselines / baseline_name).is_file()

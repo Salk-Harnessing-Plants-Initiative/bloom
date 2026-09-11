@@ -14,6 +14,7 @@ the tool family in lockstep rather than drifting as separate copies.
 from __future__ import annotations
 
 import math
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -130,7 +131,10 @@ def _validate_trait_subset(
                     "least one certified trait column."
                 ),
             )
-        duplicates = sorted({c for c in requested if requested.count(c) > 1})
+        # O(n) via Counter, not O(n^2) via a .count()-per-element comprehension over the
+        # same list — matters at cylinder's ~846-trait scale (#466 review round 3, which
+        # made the identical fix in _viz_shared.resolve_trait_columns; backported here).
+        duplicates = sorted(c for c, n in Counter(requested).items() if n > 1)
         if duplicates:
             raise BloomMCPError(
                 code="invalid_input",

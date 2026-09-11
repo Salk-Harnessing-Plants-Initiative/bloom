@@ -17,10 +17,16 @@ permission bug (this script's reason for existing) were still present.
 Seeds the raw ``turface_19_raw_data.csv`` fixture into the **real**, host-side
 bind-mounted ``bloommcp/data/TRAITS_DIR/`` (not a host tempdir) as
 ``turface_raw.csv``, so the running container can see it at its
-``BLOOM_TRAITS_DIR`` (``/app/data/TRAITS_DIR``). Unaffected by bloom#551's
-DB-only SupabaseReader rewrite: ``sleap_roots_plot_trait_histograms`` (like all
-5 plotting tools) reads via ``experiment_utils.load_experiment_data`` directly,
-a separate local-``BLOOM_TRAITS_DIR`` raw tier that rewrite never touched.
+``BLOOM_TRAITS_DIR`` (``/app/data/TRAITS_DIR``). Targets
+``sleap_roots_plot_heritability_bar`` — one of the 2 plot tools still reading via
+``experiment_utils.load_experiment_data`` directly (a separate local-``BLOOM_TRAITS_DIR``
+raw tier bloom#551's DB-only SupabaseReader rewrite never touched) and still writing
+straight to the bind-mounted ``PLOTS_DIR`` this script exists to exercise. Previously
+targeted ``plot_trait_histograms``; retargeted by #466, which converged
+``plot_trait_histograms`` (and ``plot_trait_boxplots``/``plot_correlation_matrix``) onto
+``@as_mcp_tool`` + ``ResultStore``-backed persistence — its PNG is no longer a
+``BLOOM_PLOTS_DIR`` bind-mount write, so it can no longer prove what this script exists to
+prove (see ``test_plot_trait_histograms_smoke.py`` for its replacement DB-backed coverage).
 
 Env (sourced from ``.env.dev`` by the ``make bloommcp-plot-smoke`` target):
     BLOOMMCP_PORT      host port the bloommcp container publishes 8811 on
@@ -42,7 +48,7 @@ FIXTURE = REPO_ROOT / "bloommcp" / "tests" / "fixtures" / "turface_19_raw_data.c
 TRAITS_DIR = REPO_ROOT / "bloommcp" / "data" / "TRAITS_DIR"
 PLOTS_DIR = REPO_ROOT / "bloommcp" / "data" / "PLOTS_DIR"
 EXPERIMENT = "turface_raw.csv"
-PNG = PLOTS_DIR / "histograms_turface_raw.png"
+PNG = PLOTS_DIR / "heritability_turface_raw.png"
 
 _CHECKS: list[tuple[str, bool, str]] = []
 
@@ -90,11 +96,11 @@ async def main() -> int:
     try:
         async with Client(url, auth=api_key, timeout=30, init_timeout=15) as client:
             result = await client.call_tool(
-                "sleap_roots_plot_trait_histograms", {"filename": EXPERIMENT}
+                "sleap_roots_plot_heritability_bar", {"filename": EXPERIMENT}
             )
     except Exception as exc:  # noqa: BLE001 — report, don't hide, the failure
         _check(
-            "sleap_roots_plot_trait_histograms call succeeds",
+            "sleap_roots_plot_heritability_bar call succeeds",
             False,
             _redact(api_key, repr(exc)),
         )
@@ -103,7 +109,7 @@ async def main() -> int:
 
     text = result.data if isinstance(result.data, str) else str(result.data)
     _check(
-        "sleap_roots_plot_trait_histograms returns a success summary, not a permission error",
+        "sleap_roots_plot_heritability_bar returns a success summary, not a permission error",
         "Plot saved:" in text and "denied" not in text.lower(),
         text,
     )

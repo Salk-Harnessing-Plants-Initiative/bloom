@@ -5,6 +5,12 @@ import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
 
 import { ExpressionUmap } from "@/components/expression-umap";
+import {
+  countsFor,
+  SAMPLE_FILTER,
+} from "@/components/expression-lib/umap-packing";
+import type { CellArraysRow } from "@/components/expression-lib/scrna-client";
+import { ExpressionSampleToggles } from "./expression-sample-toggles";
 // Gene search disabled — see the JSX comment below.
 // import { ExpressionGeneSearch } from "@/components/expression-gene-search";
 import { ExpressionColorbar } from "@/components/expression-colorbar";
@@ -31,13 +37,34 @@ interface LoadedMeta {
   orphanCount: number;
   /** from scrna_cluster_stats.cell_count, keyed by ordinal */
   counts: Record<number, number>;
+  /** The filter rows to show, the sample row first. Empty means no toggles. */
+  filters: string[];
+  /** Per filter row, the cells with no value for it. */
+  unlabelled: Record<string, number>;
+  /** The cells, so each row counts what the other rows leave showing. */
+  cells: Pick<CellArraysRow, "replicate" | "facets">[];
 }
+
+const NOTHING_HIDDEN: ReadonlySet<string> = new Set();
 
 /** Composes the UMAP canvas + gene search + colorbar + cluster sidebar for a dataset. */
 export function ExpressionView({ datasetId }: ExpressionViewProps) {
   const [meta, setMeta] = useState<LoadedMeta | null>(null);
   const [geneName, setGeneName] = useState<string | null>(null);
   const [hidden, setHidden] = useState<Set<number>>(new Set());
+  // Hidden values per filter row: the sample row and each label.
+  const [hiddenValues, setHiddenValues] = useState<Map<string, Set<string>>>(
+    new Map(),
+  );
+  // Sample names repeat across datasets -- Col-0 is in most of them -- so a
+  // hidden set carried over would open the next dataset with one already off.
+  useEffect(() => {
+    setHiddenValues(new Map());
+    // The chips come from `meta`. Left alone it still describes the previous
+    // dataset for the whole of this one's fetch, and a click in that window
+    // writes a name the new dataset may not have into the hidden set.
+    setMeta(null);
+  }, [datasetId]);
   const [exprRange, setExprRange] = useState<{ min: number; max: number } | null>(
     null,
   );
@@ -81,17 +108,43 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
       clusters: Cluster[];
       cellCount: number;
       orphanCount: number;
+      filters: string[];
+      unlabelled: Record<string, number>;
+      cells: Pick<CellArraysRow, "replicate" | "facets">[];
     }) => {
       setMeta((prev) => ({
         dataset: ctx.dataset,
         clusters: ctx.clusters,
         cellCount: ctx.cellCount,
         orphanCount: ctx.orphanCount,
+        filters: ctx.filters,
+        unlabelled: ctx.unlabelled,
+        cells: ctx.cells,
         counts: prev?.counts ?? {},
       }));
     },
     [],
   );
+
+  const handleFilterToggle = useCallback((filter: string, value: string) => {
+    setHiddenValues((prev) => {
+      const next = new Map(prev);
+      const hidden = new Set(next.get(filter) ?? []);
+      if (!hidden.delete(value)) hidden.add(value);
+      next.set(filter, hidden);
+      return next;
+    });
+  }, []);
+
+  const handleShowAllOf = useCallback((filter: string) => {
+    setHiddenValues((prev) => {
+      const next = new Map(prev);
+      next.set(filter, new Set());
+      return next;
+    });
+  }, []);
+
+  const anyValueHidden = [...hiddenValues.values()].some((s) => s.size > 0);
 
   const handleVisibilityChange = useCallback(
     (ordinal: number, visible: boolean) => {
@@ -199,13 +252,38 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           </span>
         )}
 
+        {meta && meta.filters.length > 0 && (
+          <Box sx={{ pb: 1, display: "flex", flexDirection: "column", gap: 1 }}>
+            {meta.filters.map((filter) => (
+              <ExpressionSampleToggles
+                key={filter}
+                label={filter === SAMPLE_FILTER ? "Samples" : filter}
+                noun={filter === SAMPLE_FILTER ? "sample" : `${filter} value`}
+                samples={countsFor(meta.cells, hiddenValues, filter)}
+                hidden={hiddenValues.get(filter) ?? NOTHING_HIDDEN}
+                unlabelledCount={meta.unlabelled[filter] ?? 0}
+                onToggle={(value) => handleFilterToggle(filter, value)}
+                onShowAll={() => handleShowAllOf(filter)}
+              />
+            ))}
+            {anyValueHidden && (
+              <span className="block text-xs text-stone-500" role="status">
+                Cluster sizes, marker genes and the no-cluster figure are for
+                the whole dataset, not only the cells shown.
+              </span>
+            )}
+          </Box>
+        )}
+
         {/* canvas */}
         <ExpressionUmap
           datasetId={datasetId}
           geneName={geneName}
           hiddenClusters={hidden}
+          hiddenValues={hiddenValues}
           onDataLoaded={handleDataLoaded}
           onExpressionRangeChanged={setExprRange}
+          onCellClick={handleSolo}
         />
       </Box>
 

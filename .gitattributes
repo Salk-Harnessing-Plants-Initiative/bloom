@@ -41,6 +41,9 @@ volumes/pooler/** text eol=lf
 # reproducible cross-platform. (The vendored schema is already covered by *.json.)
 contracts/generated/*.ts text eol=lf
 
+# Drawn by tbls (make erd / CI); collapsed in diffs as generated.
+_WIKI/SUPABASE/erd.md text eol=lf linguist-generated
+
 # cyl-blob-upload predictions fixture (bloom #407): these placeholder .slp
 # files' exact bytes are sha256-checksummed in the sibling
 # scan0K9E8BI.predictions.json fixture. Real .slp files are binary (HDF5);

@@ -15,6 +15,7 @@ from pathlib import Path
 from sleap_roots_analyze import statistics as stats_module
 from sleap_roots_analyze.visualization import create_heritability_plot
 from bloom_mcp.experiment_utils import load_experiment_data as _load_data
+from bloom_mcp.tools._plots import call_with_figure_cleanup
 
 from ._viz_shared import save_plot_or_plots, validate_filename
 
@@ -58,7 +59,14 @@ def plot_heritability_bar(filename: str, threshold: float = 0.5) -> str:
         return f"Heritability calculation failed: {h2_results['error']}"
 
     try:
-        fig = create_heritability_plot(h2_results, threshold=threshold)
+        # call_with_figure_cleanup: acquires the shared FIGURE_REGISTRY_LOCK around
+        # this delegate call (#721 PR review) and closes any figure it allocates before
+        # raising, instead of leaking it — this file's own `except Exception: return
+        # ...` below would otherwise swallow such an exception without closing whatever
+        # was already rendered.
+        fig = call_with_figure_cleanup(
+            lambda: create_heritability_plot(h2_results, threshold=threshold)
+        )
     except Exception:
         return "Heritability plot failed: the plot could not be generated for the computed estimates."
 

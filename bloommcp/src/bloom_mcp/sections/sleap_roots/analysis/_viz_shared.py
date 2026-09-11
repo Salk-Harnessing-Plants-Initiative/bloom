@@ -1,10 +1,19 @@
-"""Shared helpers for the 5 sleap_roots plotting tools (one file per tool).
+"""Shared helpers for the sleap_roots plotting tools (one file per tool).
 
-Single-sourced here (mirrors ``tools/_qc_shared.py``'s rationale) so the 5 plot
-files can't silently desync on how a figure gets saved or how a trait list gets
-parsed.
+Single-sourced here (mirrors ``tools/_qc_shared.py``'s rationale) so the plot files can't
+silently desync on how a figure gets saved or how a trait list gets resolved.
+
+Two generations of tool coexist here post-#466: ``save_plot``/``save_plot_or_plots``/
+``parse_traits``/``validate_filename`` remain used by the 2 tools still on the pre-#466 bare
+``mcp.tool()`` pattern (``plot_heritability_bar``, ``plot_variance_decomposition`` — retiring
+into ``heritability_analysis`` per #462). ``TRAIT_BATCH_THRESHOLD`` and
+:func:`resolve_trait_columns` are shared with (and, for the latter, exclusively used by) the 3
+tools #466 converged onto ``@as_mcp_tool`` (``plot_trait_histograms``, ``plot_trait_boxplots``,
+``plot_correlation_matrix``), which resolve their trait selection via
+:func:`resolve_trait_columns` instead of ``parse_traits``/``validate_filename``.
 """
 
+from collections import Counter
 from pathlib import Path
 
 import matplotlib
@@ -12,7 +21,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.experiment_utils import PLOTS_DIR, PLOTS_URL
+from bloom_mcp.tools._qc_shared import _validate_trait_subset
 
 # Trait count above which plot_trait_histograms/plot_trait_boxplots switch to their
 # delegate's *_batched variant (list[Figure]) instead of rendering every trait into
@@ -98,3 +109,69 @@ def validate_filename(filename: str) -> str | None:
     ):
         return "filename must be a bare experiment identifier (no path separators)."
     return None
+
+
+def resolve_trait_columns(
+    frame, trait_columns: list[str] | None, experiment: str
+) -> list[str]:
+    """Resolve a caller-supplied ``trait_columns`` subset for a raw-frame viz tool.
+
+    Shared by the 3 tools #466 converged onto ``@as_mcp_tool``
+    (``plot_trait_histograms``/``plot_trait_boxplots``/``plot_correlation_matrix``) so the
+    three files can't silently drift on this validation — previously reimplemented three
+    times as each tool's own private ``_resolve_trait_cols`` (#466 review finding).
+
+    - ``None`` -> every detected trait column.
+    - ``[]`` (an explicit empty list) -> rejected (``invalid_input``); ambiguous with "all
+      traits", so it must be named explicitly rather than silently treated as one or the
+      other.
+    - Existence + numeric dtype checked via ``_qc_shared._validate_trait_subset`` at its
+      non-certified strictness level — the same one ``qc_clean``/``qc_inspect`` use for a
+      raw (not cleaned-consumer) frame.
+    - **Duplicate names are rejected here**, unlike ``_validate_trait_subset``'s
+      non-certified branch, which intentionally tolerates duplicates for
+      ``qc_clean``/``qc_inspect`` (harmless there). A duplicate is NOT harmless for these 3
+      tools: ``plot_correlation_matrix`` would silently count a duplicated column's
+      self-correlation (r=1.0) as a "strong positive correlation" in a result that is a
+      permanent, provenance-stamped ``ResultStore`` artifact (not a transient string), and
+      ``plot_trait_histograms``/``plot_trait_boxplots`` would render the same trait's panel
+      twice.
+    - The resolved set must be non-empty (``invalid_input`` naming ``experiment``) — a
+      metadata-only frame with no detected numeric trait has nothing to plot/correlate.
+
+    Matching (existence, numeric check, and the duplicate check above) is exact-string,
+    case-sensitive, matching ``pandas`` column-lookup semantics — ``"Trait_A"`` and
+    ``"trait_a"`` are different names, by design, not a bug a future reader should "fix" by
+    adding case-folding.
+    """
+    if trait_columns is not None:
+        if not trait_columns:
+            raise BloomMCPError(
+                code="invalid_input",
+                message=f"trait_columns for {experiment!r} was given as an empty list.",
+                remedy="Omit trait_columns to use all detected traits, or name at least "
+                "one trait column.",
+            )
+        # Counter, not `[c for c in trait_columns if trait_columns.count(c) > 1]`: the
+        # latter is O(n^2) (a .count() call per element over the same list), which matters
+        # at cylinder's ~846-trait scale (#466 review).
+        duplicates = sorted(c for c, n in Counter(trait_columns).items() if n > 1)
+        if duplicates:
+            raise BloomMCPError(
+                code="invalid_input",
+                message=(
+                    f"trait_columns for {experiment!r} contains duplicate columns: "
+                    f"{duplicates}."
+                ),
+                remedy="List each trait column at most once.",
+            )
+        _validate_trait_subset(frame, trait_columns, experiment)
+    trait_cols = list(trait_columns or frame.trait_cols)
+    if not trait_cols:
+        raise BloomMCPError(
+            code="invalid_input",
+            message=f"No numeric trait columns detected in {experiment!r}.",
+            remedy="Check the experiment has numeric trait columns, or pass trait_columns "
+            "explicitly.",
+        )
+    return trait_cols

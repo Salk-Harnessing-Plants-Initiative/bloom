@@ -831,6 +831,8 @@ services:
       STUDIO_PG_META_URL: http://meta:8080
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       EDGE_FUNCTIONS_MANAGEMENT_FOLDER: /tmp/edge-functions
+      # SQL editor saved queries; unset, the editor errors on every load.
+      SNIPPETS_MANAGEMENT_FOLDER: /app/snippets
       DEFAULT_ORGANIZATION_NAME: ${STUDIO_DEFAULT_ORGANIZATION}
       DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
@@ -839,6 +841,8 @@ services:
       SUPABASE_PUBLIC_URL: ${STUDIO_SUPABASE_PUBLIC_URL}
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+    volumes:
+      - ./volumes/snippets:/app/snippets:z
     # supabase/studio:2026.03.30-sha-12a43e5 ships Node but NOT wget or curl
     # (verified: `docker exec <container> which wget` returns empty). Use
     # node's built-in fetch against /api/platform/profile — matches both

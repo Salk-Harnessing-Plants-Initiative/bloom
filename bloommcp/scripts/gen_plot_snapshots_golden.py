@@ -71,32 +71,43 @@ _RAW = _FIXTURES / "turface_19_final_data.csv"
 _EXPERIMENT = "turface_19.csv"
 _BASELINES = _FIXTURES / "plot_baselines"
 
-# (output basename, tool callable, PNG name the tool itself writes under PLOTS_DIR)
+# (output basename, tool callable, PNG name the tool itself writes, is-converged)
+#
+# The 3 tools #466 converged onto `@as_mcp_tool` take a Pydantic params model rather than a
+# bare experiment string, return a result model rather than a "Plot saved: ..." string, and
+# persist into a ResultStore version dir rather than PLOTS_DIR — so they are rendered via
+# `_render_converged` below instead of the legacy call. The rendered pixels are unchanged;
+# only the calling convention and the output path are (#466 review round 7).
 _TOOLS = [
     (
         "histograms_turface_19_baseline.png",
         plot_trait_histograms_mod.plot_trait_histograms,
-        "histograms_turface_19.png",
+        "trait_histograms.png",
+        True,
     ),
     (
         "boxplots_turface_19_baseline.png",
         plot_trait_boxplots_mod.plot_trait_boxplots,
-        "boxplots_turface_19.png",
+        "trait_boxplots.png",
+        True,
     ),
     (
         "correlation_matrix_turface_19_baseline.png",
         plot_correlation_matrix_mod.plot_correlation_matrix,
-        "correlation_matrix_turface_19.png",
+        "correlation_matrix.png",
+        True,
     ),
     (
         "heritability_turface_19_baseline.png",
         plot_heritability_bar_mod.plot_heritability_bar,
         "heritability_turface_19.png",
+        False,
     ),
     (
         "variance_decomposition_turface_19_baseline.png",
         plot_variance_decomposition_mod.plot_variance_decomposition,
         "variance_decomposition_turface_19.png",
+        False,
     ),
 ]
 
@@ -116,6 +127,45 @@ def _report_regeneration(target: Path, produced: Path, rel: Path) -> str:
         "the PR description should say what visually changed and why "
         "(see this script's module docstring)"
     )
+
+
+def _render_converged(tool_fn, produced_name: str, capture_root: Path) -> Path:
+    """Render one #466-converged tool and return the committed PNG on disk.
+
+    These tools read through the `ExperimentReader` port and persist through a
+    `ResultStore`, so the script's `TRAITS_DIR`/`PLOTS_DIR` monkeypatching does not reach
+    them. A `FakeReader`/`FakeResultStore` pair stands in, and the bytes are copied out
+    inside a `commit` spy — `FakeResultStore.commit` deletes the staging dir on success, so
+    that is the last moment the committed file exists. The pixels are the committed ones,
+    not an intermediate render.
+    """
+    import pandas as pd
+    from bloom_mcp.data_access import FakeReader, SupabaseReader
+    from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+    from bloom_mcp.tools import _ports
+
+    capture_root.mkdir(parents=True, exist_ok=True)
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, pd.read_csv(_RAW))
+    store = FakeResultStore()
+    real_commit = store.commit
+
+    def _spy_commit(run, outputs):
+        for name in outputs:
+            shutil.copy(run.staging_dir / name, capture_root / name)
+        return real_commit(run, outputs)
+
+    store.commit = _spy_commit
+    _ports.configure(reader=reader, store=store)
+    try:
+        tool_fn(experiment=_EXPERIMENT)
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    produced = capture_root / produced_name
+    if not produced.is_file():
+        raise RuntimeError(f"expected {produced} to exist after commit")
+    return produced
 
 
 def build(tmp_path: Path, *, confirmed: bool) -> bool:
@@ -144,13 +194,20 @@ def build(tmp_path: Path, *, confirmed: bool) -> bool:
     _BASELINES.mkdir(parents=True, exist_ok=True)
     copies: list[tuple[Path, Path]] = []
     any_existing = False
-    for baseline_name, tool_fn, produced_name in _TOOLS:
-        result = tool_fn(_EXPERIMENT)
-        if "Plot saved:" not in result:
-            raise RuntimeError(f"{tool_fn.__module__} did not report success: {result}")
-        produced = plots / produced_name
-        if not produced.is_file():
-            raise RuntimeError(f"expected {produced} to exist, tool reported: {result}")
+    for baseline_name, tool_fn, produced_name, converged in _TOOLS:
+        if converged:
+            produced = _render_converged(tool_fn, produced_name, tmp_path / "committed")
+        else:
+            result = tool_fn(_EXPERIMENT)
+            if "Plot saved:" not in result:
+                raise RuntimeError(
+                    f"{tool_fn.__module__} did not report success: {result}"
+                )
+            produced = plots / produced_name
+            if not produced.is_file():
+                raise RuntimeError(
+                    f"expected {produced} to exist, tool reported: {result}"
+                )
 
         target = _BASELINES / baseline_name
         rel = target.relative_to(_FIXTURES.parents[1])
