@@ -973,6 +973,15 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
         </Box>
       )}
 
+      {/* Nothing passes the cuts: say so, rather than leave an all-grey plot. */}
+      {chartData && !dataLoading && chartData.length > 0 && upregulated + downregulated === 0 && (
+        <Alert severity="info" sx={{ mb: 3 }}>
+          No gene in this comparison has an adjusted p-value below {fdrCut} and a
+          fold change beyond ±{lfcCut}, so every point is grey. Loosen the cuts
+          above to see more.
+        </Alert>
+      )}
+
       {/* Volcano Plot */}
       {chartData && !dataLoading && (
         <>

@@ -133,8 +133,12 @@ describe("toGeneData", () => {
 const ROWS = [
   twoGroup,
   { ...twoGroup, id: 2, contrast: "pHORST_vs_Col-0", group1: "pHORST" },
+  { ...twoGroup, id: 4, cluster_id: "Phloem" },
   { ...neverRun, cluster_id: "Xylem" },
 ];
+
+/** A comparison whose genes all fall short of the cuts. */
+const NOTHING_SIGNIFICANT = 4;
 
 /** Releases each comparison's genes only when the test says so, and records
  *  every query the panel makes. */
@@ -153,8 +157,8 @@ function answer(table: string, filters: Record<string, unknown>, start: number):
     gate.order.push(deId);
     gate.release[deId] = () =>
       resolve({
-        data: [{ log2fc: 2, pvalue: 0.01, fdr: 0.01, pct_1: 0.5, pct_2: 0.1,
-                 scrna_genes: { gene_name: `gene-of-${deId}` } }],
+        data: [{ log2fc: 2, pvalue: 0.01, fdr: deId === NOTHING_SIGNIFICANT ? 0.9 : 0.01,
+                 pct_1: 0.5, pct_2: 0.1, scrna_genes: { gene_name: `gene-of-${deId}` } }],
         error: null,
       });
   });
@@ -236,6 +240,26 @@ describe("the panel", () => {
     expect(screen.getByText(/A positive fold change is higher in pFACT than in Col-0/))
       .toBeTruthy();
     expect(screen.getByText(/Before it: pFACT 300, Col-0 200/)).toBeTruthy();
+  });
+
+  it("says so when no gene passes the cuts, rather than leave a grey plot unexplained", async () => {
+    render(<Panel file_id={1} />);
+    await waitFor(() => expect(gate.order).toContain(1));
+
+    fireEvent.mouseDown(screen.getByLabelText("Cell type"));
+    fireEvent.click(await screen.findByRole("option", { name: "Phloem" }));
+    await waitFor(() => expect(gate.order).toContain(NOTHING_SIGNIFICANT));
+    gate.release[NOTHING_SIGNIFICANT]();
+
+    expect(await screen.findByText(/so every point is grey/)).toBeTruthy();
+  });
+
+  it("does not say so when some genes pass", async () => {
+    render(<Panel file_id={1} />);
+    await waitFor(() => expect(gate.order).toContain(1));
+    gate.release[1]();
+    await screen.findAllByText("gene-of-1");
+    expect(screen.queryByText(/so every point is grey/)).toBeNull();
   });
 
   it("says a comparison was never run, with the sizes that explain why", async () => {
