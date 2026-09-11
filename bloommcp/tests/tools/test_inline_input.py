@@ -1083,8 +1083,73 @@ def test_wide_data_row_inside_the_scan_bound_is_rejected_by_the_column_cap():
     assert "data row" in exc.value.message
 
 
+def test_a_narrower_first_data_row_is_accepted_and_nan_padded():
+    """The direction that is safe, and that an earlier `!=` check wrongly rejected.
+
+    A first data row NARROWER than the header carries no misalignment risk:
+    pandas NaN-pads the trailing columns and every value stays under its own
+    name (verified — `a,b,c` over `1,2` gives 1/2/NaN on a plain RangeIndex,
+    no warning). Rejecting it turned a previously-valid inline CSV with a short
+    trailing first row into a hard error for nothing.
+
+    Deliberately distinguishes the two directions, which no earlier test did:
+    the nearest one (`test_malformed_csv_is_a_structured_error_not_a_raw_parser_error`)
+    happens to pair a narrow row with a *wide* one, so it would pass either way.
+    """
+    helper = _import_helper()
+    frame = helper.parse_inline_csv_frame(
+        "Barcode,geno,traitA\nS1,g1\nS2,g2,2.0\nS3,g3,3.0\n"
+    )
+
+    assert list(frame.df.columns) == ["Barcode", "geno", "traitA"]
+    assert list(frame.df["Barcode"]) == ["S1", "S2", "S3"]
+    assert list(frame.df["geno"]) == ["g1", "g2", "g3"]
+    assert pd.isna(
+        frame.df["traitA"].iloc[0]
+    ), "the missing trailing value should be NaN in its own column, not a shift"
+    assert list(frame.df.index) == [0, 1, 2], "no index promotion on this path"
+
+
+def test_a_narrow_first_row_does_not_reopen_the_expensive_path():
+    """Why allowing the narrow direction is safe rather than merely harmless.
+
+    The width pandas locks in comes from the *first* data row. Once that row is
+    narrower than the header, a later wider row is a tokenizer error raised in
+    ~0.000s rather than an index promotion — measured here against a following
+    200,000-field row, which is the shape the whole guard exists to stop. Index
+    promotion, the silent and slow branch, requires the first data row to be the
+    wide one, which the guard still rejects.
+    """
+    import time
+
+    helper = _import_helper()
+    payload = "a,b,c\n1,2\n" + ",".join("9" for _ in range(200_000)) + "\n"
+
+    start = time.perf_counter()
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame(payload)
+    elapsed = time.perf_counter() - start
+
+    assert exc.value.code == "invalid_input"
+    assert elapsed < 2.0, f"narrow-then-wide rejection took {elapsed:.2f}s"
+
+
+def test_narrow_and_wide_first_rows_are_treated_differently():
+    """Pins the asymmetry itself, so a future `!=` regression fails loudly rather
+    than merely making the tool stricter."""
+    helper = _import_helper()
+
+    narrower = "Barcode,geno,traitA\nS1,g1\nS2,g2,2.0\n"
+    wider = "Barcode,geno,traitA\nS1,g1,1.0,extra\nS2,g2,2.0,extra2\n"
+
+    helper.parse_inline_csv_frame(narrower)  # accepted
+
+    with pytest.raises(BloomMCPError):
+        helper.parse_inline_csv_frame(wider)
+
+
 def test_header_data_divergence_is_rejected_rather_than_silently_realigned():
-    """Divergence is a correctness bug, not just a cost one.
+    """A data row WIDER than the header is a correctness bug, not just a cost one.
 
     Measured on a 3-name header against 4-field rows: the default `read_csv`
     promotes the first field to the index, so every remaining value lands under

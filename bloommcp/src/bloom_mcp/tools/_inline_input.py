@@ -280,25 +280,41 @@ def parse_inline_csv_frame(csv_content: str) -> ExperimentFrame:
                 "an experiment instead of passing it inline."
             ),
         )
-    if data_columns is not None and data_columns != header_columns:
-        # Rejecting divergence outright, rather than letting pandas resolve it,
-        # is a correctness fix as much as a cost one. Measured on a 3-name
-        # header against 4-field rows: the default read silently promotes the
-        # first field to the index, so every remaining value lands under the
+    if data_columns is not None and data_columns > header_columns:
+        # Rejecting a data row WIDER than the header, rather than letting pandas
+        # resolve it, is a correctness fix as much as a cost one. Measured on a
+        # 3-name header against 4-field rows: the default read silently promotes
+        # the first field to the index, so every remaining value lands under the
         # WRONG column name (the barcodes became the index and the genotypes
         # became "Barcode"); `index_col=False` instead silently drops the last
         # field. For a tool whose whole point is traceable, contract-valid trait
         # data, either outcome is worse than a refusal — a misaligned frame
         # cleans and analyzes without complaint and reports confident nonsense.
         #
-        # This does not reject the common "saved with the index" round trip:
+        # Deliberately `>` and not `!=`. A first data row NARROWER than the
+        # header is a different situation and a safe one: pandas NaN-pads the
+        # trailing columns and every value stays under its own name (verified —
+        # `a,b,c` over `1,2` yields Barcode/geno/traitA = 1/2/NaN with a plain
+        # RangeIndex and no warning). An earlier `!=` here rejected that too,
+        # turning a previously-valid inline CSV with a short trailing first row
+        # into a hard error for no benefit.
+        #
+        # Allowing the narrow case does not reopen the expensive path, because
+        # the width pandas locks in comes from the FIRST data row: once that row
+        # is narrower than the header, any later wider row is a tokenizer error
+        # raised in ~0.000s rather than an index promotion — measured, including
+        # against a following 200,000-field row (0.002s). Index promotion, the
+        # silent and slow branch, requires the first data row to be the wide one,
+        # which is exactly what this check rejects.
+        #
+        # This also does not reject the common "saved with the index" round trip:
         # `to_csv(index=True)` emits an empty first header name, so the field
         # counts still match (verified: 4 and 4).
         raise BloomMCPError(
             code="invalid_input",
             message=(
                 f"csv_content's header has {header_columns} fields but its "
-                f"first data row has {data_columns}. A row wider than the "
+                f"first data row has {data_columns}. A data row wider than the "
                 f"header would silently shift values into the wrong columns."
             ),
             remedy=(
@@ -623,6 +639,36 @@ def reject_registered_only_params(
     )
 
 
+REGISTERED_ONLY = "registered_only"
+
+
+def registered_only_fields(params: Any) -> dict[str, Any]:
+    """Collect the values of every field *marked* registered-only on ``params``.
+
+    A field declares itself registered-only in its own schema::
+
+        version: Optional[str] = Field(
+            default=None,
+            json_schema_extra={REGISTERED_ONLY: True},
+            description="...",
+        )
+
+    and both the rejection and the test that polices it read the same marker.
+    That closes the loop an earlier design left open: each tool used to hand
+    ``resolve_inline_or_experiment`` a hand-written dict, so a tool could simply
+    forget a field and silently accept-but-ignore it — the exact failure this
+    module exists to prevent, and one that gets nine more chances to happen as
+    the remaining consumer tools adopt this path. Marking the field is the only
+    step; nothing has to be kept in sync with it.
+    """
+    marked: dict[str, Any] = {}
+    for name, field in type(params).model_fields.items():
+        extra = field.json_schema_extra
+        if isinstance(extra, dict) and extra.get(REGISTERED_ONLY):
+            marked[name] = getattr(params, name)
+    return marked
+
+
 def resolve_inline_or_experiment(
     *,
     experiment: Optional[str],
@@ -717,6 +763,8 @@ __all__ = [
     "compute_input_sha256",
     "inline_enabled",
     "parse_inline_csv_frame",
+    "REGISTERED_ONLY",
+    "registered_only_fields",
     "reject_registered_only_params",
     "resolve_inline_or_experiment",
     "serialize_table_csv",

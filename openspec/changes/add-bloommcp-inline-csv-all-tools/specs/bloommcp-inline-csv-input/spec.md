@@ -1,3 +1,174 @@
+## MODIFIED Requirements
+
+> **Archive-order dependency.** This block is written against
+> `add-bloommcp-inline-csv-input`'s text, which is merged to `staging` but **not yet archived**.
+> This change MUST be archived **after** it, or the predecessor's narrower version of this
+> requirement would replace the strengthened one below with no validation error.
+
+### Requirement: Inline CSV Column-Count Guard Runs Before Parsing
+
+A byte-size cap alone SHALL NOT be treated as sufficient to bound the CPU cost of parsing inline
+content: a pathologically wide-but-short CSV (many narrow columns in one or few rows) can sit
+comfortably under `MAX_INLINE_CSV_BYTES` while still costing seconds of CPU in `pandas.read_csv`'s
+per-column overhead (measured: approximately 480,000 columns in a single row, 4.69 MB, cost
+approximately 7.7 seconds of CPU) — a real, reproducible denial-of-service vector against the
+shared container, which has no rate limiting in front of this path and no persistence step to
+create natural backpressure.
+
+**Measuring the header row alone is not sufficient, and left the guard fully bypassable.**
+Reproduced: a 3-field header paired with 480,000-field *data* rows — 1.92 MB, under every
+declared cap — was accepted after 16.03 seconds in `pandas.read_csv`, and accepted *silently*,
+because `read_csv` does not require data rows to match the header's width and absorbs the surplus
+into an implicit index rather than raising. The resulting frame had 3 columns, so even the
+post-parse `df.shape[1]` backstop passed. Parse cost tracks the **widest row's** field count, not
+the header's. The system SHALL therefore scan the header row **and the first data row** — before
+`pandas.read_csv` is ever invoked — and SHALL reject content when either exceeds
+`MAX_INLINE_CSV_COLUMNS` (2000), with a `BloomMCPError` (`invalid_input`) naming the offending
+count and the limit.
+
+Sampling one data row SHALL be treated as sufficient, on this basis: the silent, expensive
+index-promotion path requires the divergence to be *consistent*, and the width `read_csv` locks in
+comes from the first data row. A wide row appearing later is inconsistent with the first and is
+rejected by the tokenizer itself with a `ParserError` in approximately 0.000 seconds (measured,
+including against a following 200,000-field row at 0.002 seconds) — already mapped to
+`invalid_input`. So a wide row beyond the scan window is either consistent with the first row and
+caught by this guard, or inconsistent and caught cheaply by the parser.
+
+**A first data row WIDER than the header SHALL be rejected** rather than resolved by
+`pandas.read_csv`, as a correctness requirement and not only a cost one. Measured on a 3-name
+header against 4-field rows: the default read promotes the first field to the index, so every
+remaining value lands under the **wrong column name** (the barcodes became the index and the
+genotypes became `Barcode`); `index_col=False` instead silently drops the trailing field. A
+misaligned frame cleans and analyzes without complaint and reports confident nonsense, which for a
+traceability-focused tool is worse than a refusal — so neither resolution is acceptable and the
+content SHALL be refused.
+
+**A first data row NARROWER than the header SHALL be accepted.** That direction carries no
+misalignment risk: `pandas` NaN-pads the trailing columns and every value stays under its own name
+(verified — a `a,b,c` header over a `1,2` row yields `1`/`2`/`NaN` on a plain `RangeIndex`, with
+no warning). Rejecting it would turn a previously-valid inline CSV with a short trailing first row
+into a hard error for no benefit, and would not close any bypass, per the sampling argument above.
+
+This scan SHALL correctly resolve a row's true extent even when a cell contains a literal newline
+inside quotes (valid CSV) — a naive single-line split (e.g. `csv_content.split("\n", 1)[0]`)
+cuts such a row short and undercounts, which was found to let the exact denial-of-service payload
+above bypass this guard entirely when one header cell carried an embedded newline (reproduced: the
+estimate reported "1 column," and `pandas.read_csv` ran anyway, costing several seconds of CPU
+before a post-parse check caught it — defeating the guard's purpose). The scan SHALL instead read
+rows via a multi-line-aware tokenizer (the same mechanism by which iterating a real file correctly
+handles a quoted field spanning multiple physical lines), bounded to a fixed maximum number of
+bytes so that an *unterminated* quote cannot force scanning the entire payload in search of a
+closing quote that never comes. Content whose leading rows cannot be resolved within that bound
+SHALL be rejected outright with a `BloomMCPError` (`invalid_input`), rather than guessed at. This
+bound SHALL be understood as load-bearing beyond the unterminated-quote case: a single
+legitimately-terminated but enormous row also exhausts it, and is refused in milliseconds rather
+than measured and then refused.
+
+The size checks SHALL run before this scan, so that content which is simply too large is reported
+as too large rather than as an unreadable leading row. Encoding a payload already known to be
+within the cap is bounded work, so nothing is lost by ordering them that way.
+
+A post-parse `df.shape[1]` check SHALL be retained as an exact backstop for any residual
+divergence between the pre-parse scan and `pandas.read_csv`'s own tokenization, but SHALL NOT be
+the primary guard, since by the time it runs the expensive parse has already completed — and, as
+the bypass above showed, in the implicit-index case it does not fire at all.
+
+#### Scenario: A wide-but-short CSV is rejected before pandas.read_csv runs
+
+- **WHEN** `parse_inline_csv_frame` is called with content whose header row implies more than
+  `MAX_INLINE_CSV_COLUMNS` columns, sized well under `MAX_INLINE_CSV_BYTES`
+- **THEN** it raises `BloomMCPError(code="invalid_input")`, and `pandas.read_csv` is never
+  called — verified by a spy/mock asserting zero calls
+- **AND** the reproduction of the reported denial-of-service shape (~480,000 columns, ~4.69 MB)
+  is rejected in well under one second, not after paying the multi-second parse cost a
+  post-parse-only check would incur
+
+#### Scenario: Wide data rows behind a narrow header are rejected before parsing
+
+- **WHEN** `parse_inline_csv_frame` is called with a 3-field header paired with data rows of
+  approximately 480,000 fields, sized under `MAX_INLINE_CSV_BYTES`
+- **THEN** it raises `BloomMCPError(code="invalid_input")`, `pandas.read_csv` is never called,
+  and rejection happens in well under one second — where the header-only guard accepted this
+  same payload after approximately 16 seconds and returned a 3-column frame
+
+#### Scenario: A wide data row that fits inside the scan bound is still rejected
+
+- **WHEN** `parse_inline_csv_frame` is called with a narrow header and data rows of a few
+  thousand fields — small enough that the bounded scan reads them without exhausting its budget
+- **THEN** the data-row column check itself rejects the content, naming the field count, and
+  `pandas.read_csv` is never called
+
+#### Scenario: A data row wider than the header is rejected rather than silently realigned
+
+- **WHEN** `parse_inline_csv_frame` is called with a 3-name header and a first data row of 4
+  fields
+- **THEN** it raises `BloomMCPError(code="invalid_input")` naming both counts, and
+  `pandas.read_csv` is never called — rather than producing a frame whose values sit under the
+  wrong column names
+
+#### Scenario: A data row narrower than the header is accepted and NaN-padded
+
+- **WHEN** `parse_inline_csv_frame` is called with a 3-name header whose first data row has 2
+  fields
+- **THEN** the content is accepted, every supplied value appears under its own column name, the
+  missing trailing value is `NaN`, and the frame carries a plain `RangeIndex`
+
+#### Scenario: A narrow first row does not reopen the expensive path
+
+- **WHEN** `parse_inline_csv_frame` is called with a narrow first data row followed by a row of
+  approximately 200,000 fields
+- **THEN** it raises `BloomMCPError(code="invalid_input")` in well under one second — the
+  tokenizer rejects the inconsistency rather than promoting an index
+
+#### Scenario: An embedded newline in a header cell cannot bypass the guard
+
+- **WHEN** `parse_inline_csv_frame` is called with content shaped like the denial-of-service
+  payload above, except one header cell is a quoted value containing a literal newline —
+  crafted so that a naive single-line split would undercount the row's true width
+- **THEN** the guard still resolves the row's true column count (or rejects via the scan-bound
+  below, whichever applies), `pandas.read_csv` is never called, and rejection happens in well
+  under one second — not after the multi-second parse cost a naive single-line estimate would
+  have let through
+
+#### Scenario: A legitimate embedded newline in a header cell is counted correctly, not just tolerated
+
+- **WHEN** `parse_inline_csv_frame` is called with a small, well-formed header whose one cell
+  contains a literal newline inside quotes, and a column count safely under
+  `MAX_INLINE_CSV_COLUMNS` — including the case where legitimate-looking columns precede the
+  newline-bearing cell
+- **THEN** the content is accepted, with that cell's value (embedded newline included) preserved
+  intact as the column name — proving the estimate genuinely counts through the embedded newline
+  rather than merely failing safe when it cannot
+
+#### Scenario: An unterminated quote in the header is rejected without scanning the whole payload
+
+- **WHEN** `parse_inline_csv_frame` is called with content whose header row opens a quote that
+  never closes, followed by a large amount of filler content
+- **THEN** it raises `BloomMCPError(code="invalid_input")` once a fixed maximum scan size is
+  exceeded, rather than scanning arbitrarily far (up to the entire payload) looking for a closing
+  quote that does not exist — rejection happens quickly regardless of how much filler follows
+
+#### Scenario: A single row too wide to measure cheaply is refused
+
+- **WHEN** `parse_inline_csv_frame` is called with content under `MAX_INLINE_CSV_BYTES` whose
+  single data row exceeds the scan bound
+- **THEN** it is rejected, naming the scan bound — a row that cannot be measured without reading
+  the very payload the bound exists to avoid reading is refused rather than waved through
+
+#### Scenario: A header value containing a quoted comma is not falsely rejected
+
+- **WHEN** `parse_inline_csv_frame` is called with exactly `MAX_INLINE_CSV_COLUMNS` real columns,
+  one of whose header names contains a comma inside quotes (which a naive `str.count(",")`
+  estimate would overcount by one, pushing it over the limit)
+- **THEN** the column-count estimate — computed via `csv.reader` on the header line, not a naive
+  comma count — correctly counts the quoted field as one column, and the content is accepted
+
+#### Scenario: Column count at the limit is accepted
+
+- **WHEN** `parse_inline_csv_frame` is called with well-formed content whose real column count is
+  exactly `MAX_INLINE_CSV_COLUMNS`
+- **THEN** parsing proceeds normally
+
 ## ADDED Requirements
 
 ### Requirement: Exactly One of experiment or csv_content

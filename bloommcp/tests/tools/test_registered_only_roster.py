@@ -1,19 +1,19 @@
 """Schema-driven guard on the registered-only parameter roster (#582).
 
-Rejecting a parameter that cannot apply to inline content is enforced per call
-site: each tool hands ``resolve_inline_or_experiment`` a dict of the fields it
-believes are registered-only. That works, and `qc_clean` lists every one of its
-fields correctly today — but it is *manual enumeration*, and PR 2 and PR 3 add
-nine more tools to the same pattern. A tool that simply forgets a field would
-accept-but-ignore it, which is precisely the failure class
-``_inline_input``'s own docstring says must never happen: a caller who supplied
-a pin and got a successful result believing it took effect.
+A field that cannot apply to inline content declares itself registered-only in
+its own schema (``json_schema_extra={REGISTERED_ONLY: True}``). Both halves read
+that one marker: ``registered_only_fields`` builds the rejection from it, and
+this module walks every inline-capable tool's ``*Params`` model and asserts each
+marked field really is rejected when combined with ``csv_content``.
 
-So instead of trusting each author to remember, this walks every inline-capable
-tool's ``*Params`` model and asserts that every field known to be
-registered-only is actually rejected when combined with ``csv_content``. It is
-derived from the schema, so a newly-added field is covered the moment the tool
-declares it — no test edit required.
+An earlier design had each tool hand ``resolve_inline_or_experiment`` a
+hand-written dict. That worked and `qc_clean` listed its fields correctly, but a
+tool could simply forget one and then silently accept-but-ignore it — precisely
+the failure class ``_inline_input``'s own docstring says must never happen (a
+caller who supplied a pin, got a successful result, and believes it took
+effect). With nine more consumers due in PR 2 and PR 3, that is nine fresh
+chances to forget. Marking the field is now the only step, and a newly-added
+field is covered the moment the tool declares it.
 
 PR 1 wires only ``qc_clean``; ``_INLINE_CAPABLE_TOOLS`` grows as PR 2 and PR 3
 land, and the roster test grows with it automatically.
@@ -28,6 +28,7 @@ from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
 from bloom_mcp.sections.sleap_roots.analysis.qc_clean import QCCleanParams, qc_clean
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools._inline_input import REGISTERED_ONLY
 
 _VALID_CSV = "Barcode,geno,traitA,traitB\nS1,g1,1.0,2.0\nS2,g2,3.0,4.0\nS3,g1,5.0,6.0\n"
 
@@ -44,11 +45,11 @@ def injected_ports():
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
 
-# Field-name -> a value that is meaningfully "supplied" for that field. Anything
-# a tool declares whose name matches one of these is registered-only by
-# construction: it names stored state (a source, a committed version, a version
-# directory) or configures an artifact only a persisted run can hold.
-_REGISTERED_ONLY_FIELDS: dict[str, object] = {
+# A "supplied" value per field *type*, so a marked field can be exercised without
+# anyone maintaining a parallel list of which fields are marked. Which fields are
+# registered-only comes from the schema itself (see `_registered_only_fields`);
+# this only answers "what is a non-default value for a field of this shape".
+_SAMPLE_BY_NAME: dict[str, object] = {
     "source_id": 9,
     "run_id": "p9",
     "version": "v2",
@@ -77,8 +78,35 @@ _INLINE_CAPABLE_TOOLS = [
 
 
 def _registered_only_fields(params_model) -> list[str]:
-    """The registered-only fields this tool actually declares."""
-    return [f for f in params_model.model_fields if f in _REGISTERED_ONLY_FIELDS]
+    """The registered-only fields this tool declares, read from the schema.
+
+    Derived from each field's own `json_schema_extra={REGISTERED_ONLY: True}`
+    marker rather than from a list kept here. A tool that adds a registered-only
+    field marks it once; the rejection (via `registered_only_fields`) and this
+    test both follow from that single marker, so there is no second place to
+    forget. Falls back to nothing if a tool marks no fields — which the first
+    assertion below turns into a failure rather than a silent pass.
+    """
+    return [
+        name
+        for name, field in params_model.model_fields.items()
+        if isinstance(field.json_schema_extra, dict)
+        and field.json_schema_extra.get(REGISTERED_ONLY)
+    ]
+
+
+def _sample_value(params_model, field: str) -> object:
+    """A value that counts as "supplied" for `field`."""
+    if field in _SAMPLE_BY_NAME:
+        return _SAMPLE_BY_NAME[field]
+    annotation = params_model.model_fields[field].annotation
+    for kind, value in ((str, "x"), (int, 7), (float, 1.5), (bool, True)):
+        if kind.__name__ in str(annotation):
+            return value
+    raise AssertionError(
+        f"{params_model.__name__}.{field} is marked registered-only but this "
+        f"test has no sample value for it — add one to _SAMPLE_BY_NAME"
+    )
 
 
 @pytest.mark.parametrize("tool,params_model,base_kwargs", _INLINE_CAPABLE_TOOLS)
@@ -89,13 +117,14 @@ def test_every_registered_only_field_the_tool_declares_is_rejected(
     list, so a field added in a later PR is covered without anyone remembering."""
     declared = _registered_only_fields(params_model)
     assert declared, (
-        f"{params_model.__name__} declares no registered-only fields — either the "
-        f"tool genuinely has none (fine, remove it from _INLINE_CAPABLE_TOOLS) or "
-        f"_REGISTERED_ONLY_FIELDS has drifted from the schema"
+        f"{params_model.__name__} marks no fields with "
+        f"json_schema_extra={{{REGISTERED_ONLY!r}: True}} — either the tool "
+        f"genuinely has none (fine, remove it from _INLINE_CAPABLE_TOOLS) or a "
+        f"field that should be rejected on the inline path was never marked"
     )
 
     for field in declared:
-        kwargs = {**base_kwargs, field: _REGISTERED_ONLY_FIELDS[field]}
+        kwargs = {**base_kwargs, field: _sample_value(params_model, field)}
         with pytest.raises(BloomMCPError) as exc:
             tool(params_model(**kwargs))
         assert exc.value.code == "invalid_input", field
@@ -126,3 +155,33 @@ def test_registered_only_fields_are_optional_so_omitting_them_is_valid(
             f"{field} is required on {params_model.__name__}, which makes the "
             f"csv_content path impossible to call"
         )
+
+
+@pytest.mark.parametrize("tool,params_model,base_kwargs", _INLINE_CAPABLE_TOOLS)
+def test_no_known_registered_only_field_is_left_unmarked(
+    tool, params_model, base_kwargs
+):
+    """The other direction: a field that *should* be marked but wasn't.
+
+    The marker drives the rejection, so an unmarked field is silently accepted
+    and ignored — and the schema-derived test above cannot catch that, because it
+    only checks fields the tool actually marked. This closes the loop from the
+    other side using the same vocabulary `_SAMPLE_BY_NAME` already maintains:
+    these names are registered-only wherever they appear, so any tool declaring
+    one must have marked it.
+
+    Belt and braces on purpose. The marker is the mechanism; this is the net that
+    catches forgetting to attach it, which is the one step a tool author still
+    has to remember as PR 2 and PR 3 add nine more consumers.
+    """
+    marked = set(_registered_only_fields(params_model))
+    declared_known = {f for f in params_model.model_fields if f in _SAMPLE_BY_NAME}
+
+    unmarked = sorted(declared_known - marked)
+    assert not unmarked, (
+        f"{params_model.__name__} declares {unmarked} but did not mark "
+        f"{'them' if len(unmarked) > 1 else 'it'} with "
+        f"json_schema_extra={{{REGISTERED_ONLY!r}: True}}, so "
+        f"{'they are' if len(unmarked) > 1 else 'it is'} silently accepted and "
+        f"ignored on the csv_content path"
+    )

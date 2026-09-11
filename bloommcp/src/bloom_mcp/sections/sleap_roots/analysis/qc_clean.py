@@ -192,17 +192,24 @@ class QCCleanParams(BaseModel):
     )
     user_label: Optional[str] = Field(
         default=None,
+        # Names the version directory a committed run is written into; the inline
+        # path creates none, so accepting it would leave the caller believing they
+        # had labelled something. The marker is what makes that rejection happen —
+        # see _inline_input.registered_only_fields.
+        json_schema_extra={_inline_input.REGISTERED_ONLY: True},
         description="Optional slug appended to the version directory name. Not "
         "applicable to csv_content, which creates no version directory.",
     )
     source_id: Optional[int] = Field(
         default=None,
+        json_schema_extra={_inline_input.REGISTERED_ONLY: True},
         description="Pin cleaning to a specific raw DB source (see "
         "core_list_experiment_sources). Omit to use the latest source, same as "
         "today. Mutually exclusive with run_id. Not applicable to csv_content.",
     )
     run_id: Optional[str] = Field(
         default=None,
+        json_schema_extra={_inline_input.REGISTERED_ONLY: True},
         description="Pin cleaning to a specific raw DB source by its pipeline "
         "run id (see core_list_experiment_sources). Omit to use the latest "
         "source, same as today. Mutually exclusive with source_id. Not "
@@ -381,14 +388,11 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         experiment=params.experiment,
         csv_content=params.csv_content,
         reader_call=_read_raw,
-        registered_only={
-            "source_id": params.source_id,
-            "run_id": params.run_id,
-            # user_label names the version directory a run is committed into; the
-            # inline path creates none, so accepting it would leave the caller
-            # believing they had labelled something.
-            "user_label": params.user_label,
-        },
+        # Derived from the fields' own schema markers, not restated here — a
+        # field this tool declares registered-only cannot be forgotten at the
+        # call site, which is the failure mode nine more consumers would each
+        # get a fresh chance at.
+        registered_only=_inline_input.registered_only_fields(params),
     )
     is_inline = resolved_input.is_inline
     frame = resolved_input.frame
