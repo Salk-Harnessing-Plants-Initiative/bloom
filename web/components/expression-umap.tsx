@@ -173,6 +173,8 @@ export interface ExpressionUmapProps {
   onExpressionRangeChanged?: (range: { min: number; max: number } | null) => void;
   /** Fires with a cell's cluster ordinal when that cell is clicked */
   onCellClick?: (ordinal: number) => void;
+  /** Whether each cluster's label carries its transgene-positive count. */
+  showTransgene?: boolean;
 }
 
 interface LoadedData {
@@ -198,6 +200,7 @@ export function ExpressionUmap({
   onDataLoaded,
   onExpressionRangeChanged,
   onCellClick,
+  showTransgene = true,
 }: ExpressionUmapProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -685,9 +688,11 @@ export function ExpressionUmap({
         text: names.get(anchor.level) ?? "",
         x: anchor.x,
         y: anchor.y,
-        badge: transgeneBadge(transgene?.get(anchor.level)?.positive ?? 0) ?? undefined,
+        badge: showTransgene
+          ? transgeneBadge(transgene?.get(anchor.level)?.positive ?? 0) ?? undefined
+          : undefined,
       }));
-  }, [data, visibility, transgene]);
+  }, [data, visibility, transgene, showTransgene]);
 
   const hoveredCell = useMemo(() => {
     if (!hovered || !data) return null;

@@ -18,6 +18,7 @@ import {
   transgeneBadge,
 } from "@/components/expression-lib/transgene";
 import { TransgeneSummary } from "@/components/transgene-summary";
+import { TransgeneToggle } from "@/components/transgene-toggle";
 import {
   CELL_TYPE_KEY,
   combinedRow,
@@ -84,6 +85,7 @@ export function IntegrationView({ embeddingId, members, labelKeys, cellTypeLabel
   const [focused, setFocused] = useState<Sets>(new Map());
   const [selected, setSelected] = useState<number | null>(null);
   const [fullScreen, setFullScreen] = useState(false);
+  const [showTransgene, setShowTransgene] = useState(true);
 
   useEffect(() => {
     if (!fullScreen) return;
@@ -215,10 +217,11 @@ export function IntegrationView({ embeddingId, members, labelKeys, cellTypeLabel
         text: colourRow.levels[anchor.level],
         x: anchor.x,
         y: anchor.y,
-        badge: flagged ? transgeneBadge(flagged[anchor.level]) ?? undefined : undefined,
+        badge:
+          showTransgene && flagged ? transgeneBadge(flagged[anchor.level]) ?? undefined : undefined,
       }),
     );
-  }, [base, colourRow, visibility, flagged]);
+  }, [base, colourRow, visibility, flagged, showTransgene]);
 
   const toggleHidden = useCallback(
     (key: string, level: number) => setHidden((prev) => toggled(prev, key, level)),
@@ -351,17 +354,22 @@ export function IntegrationView({ embeddingId, members, labelKeys, cellTypeLabel
           </div>
         </div>
 
-        {transgeneTotals && transgeneTotals.positive > 0 && (
-          <TransgeneSummary
-            positive={transgeneTotals.positive}
-            total={transgeneTotals.recorded}
-            totalNoun="cells that record it"
-            top={
-              flagged && colourRow
-                ? topGroups(colourRow.levels.map((name, i) => ({ name, positive: flagged[i] })))
-                : []
-            }
-          />
+        {transgeneTotals && (
+          <div className="flex flex-wrap items-center gap-2">
+            <TransgeneToggle on={showTransgene} onChange={setShowTransgene} />
+            {showTransgene && transgeneTotals.positive > 0 && (
+              <TransgeneSummary
+                positive={transgeneTotals.positive}
+                total={transgeneTotals.recorded}
+                totalNoun="cells that record it"
+                top={
+                  flagged && colourRow
+                    ? topGroups(colourRow.levels.map((name, i) => ({ name, positive: flagged[i] })))
+                    : []
+                }
+              />
+            )}
+          </div>
         )}
 
         {colourRow && (
@@ -373,7 +381,7 @@ export function IntegrationView({ embeddingId, members, labelKeys, cellTypeLabel
             noValueCount={noValue.get(colourRow.key) ?? 0}
             hidden={hidden.get(colourRow.key) ?? NOTHING}
             focused={focused.get(colourRow.key) ?? NOTHING}
-            badges={flagged ? flagged.map(transgeneBadge) : undefined}
+            badges={showTransgene && flagged ? flagged.map(transgeneBadge) : undefined}
             onToggle={(level) => toggleHidden(colourRow.key, level)}
             onFocus={(level) => toggleFocus(colourRow.key, level)}
             onShowAll={() => setHiddenLevels(colourRow.key, [])}

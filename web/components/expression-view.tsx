@@ -20,6 +20,7 @@ import { ExpressionColorbar } from "@/components/expression-colorbar";
 import { ExpressionClusterSidebar } from "@/components/expression-cluster-sidebar";
 import { ExpressionClusterDetailPanel } from "@/components/expression-cluster-detail-panel";
 import { TransgeneSummary } from "@/components/transgene-summary";
+import { TransgeneToggle } from "@/components/transgene-toggle";
 import { topGroups, transgeneByCluster } from "@/components/expression-lib/transgene";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import type { Database } from "@/lib/database.types";
@@ -169,8 +170,10 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
   const focusSet = focusIsSet(focusedValues);
   const focusedCount = meta && focusSet ? countFocused(meta.cells, focusedValues, hiddenValues) : 0;
 
-  // Transgene-positive cells per cluster, over the whole dataset.
+  // Transgene-positive cells per cluster, over the whole dataset, and whether
+  // the map shows them.
   const transgene = useMemo(() => (meta ? transgeneByCluster(meta.cells) : null), [meta]);
+  const [showTransgene, setShowTransgene] = useState(true);
   const transgeneTotal = transgene
     ? [...transgene.values()].reduce((sum, t) => sum + t.positive, 0)
     : 0;
@@ -225,7 +228,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
         clusters={meta?.clusters ?? []}
         hiddenOrdinals={hidden}
         cellCounts={meta?.counts}
-        transgene={transgene ?? undefined}
+        transgene={showTransgene ? transgene ?? undefined : undefined}
         onVisibilityChange={handleVisibilityChange}
         onSolo={handleSolo}
         onShowAll={handleShowAll}
@@ -282,18 +285,23 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           </span>
         )}
 
-        {meta && transgene && transgeneTotal > 0 && (
-          <TransgeneSummary
-            positive={transgeneTotal}
-            total={meta.cellCount}
-            totalNoun="cells"
-            top={topGroups(
-              meta.clusters.map((c) => ({
-                name: c.name || c.cluster_id,
-                positive: transgene.get(c.ordinal)?.positive ?? 0,
-              })),
+        {meta && transgene && (
+          <div className="flex flex-wrap items-center gap-2">
+            <TransgeneToggle on={showTransgene} onChange={setShowTransgene} />
+            {showTransgene && transgeneTotal > 0 && (
+              <TransgeneSummary
+                positive={transgeneTotal}
+                total={meta.cellCount}
+                totalNoun="cells"
+                top={topGroups(
+                  meta.clusters.map((c) => ({
+                    name: c.name || c.cluster_id,
+                    positive: transgene.get(c.ordinal)?.positive ?? 0,
+                  })),
+                )}
+              />
             )}
-          />
+          </div>
         )}
 
         {meta && meta.filters.length > 0 && (
@@ -344,6 +352,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           onDataLoaded={handleDataLoaded}
           onExpressionRangeChanged={setExprRange}
           onCellClick={handleSolo}
+          showTransgene={showTransgene}
         />
       </Box>
 
@@ -373,7 +382,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
               clusterId={soloCluster.cluster_id}
               clusterName={soloCluster.name}
               clusterColor={soloCluster.color}
-              transgene={transgene?.get(soloCluster.ordinal)}
+              transgene={showTransgene ? transgene?.get(soloCluster.ordinal) : undefined}
             />
           );
         })()}

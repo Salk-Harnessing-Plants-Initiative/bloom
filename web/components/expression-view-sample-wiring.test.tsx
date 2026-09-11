@@ -325,3 +325,52 @@ describe("ExpressionView — focusing on values", () => {
     expect(focusedOf("sample")).toEqual([]);
   });
 });
+
+describe("ExpressionView — the transgene counts switch", () => {
+  const CARRIERS: LoadedPayload = {
+    ...LOADED,
+    cellCount: 3,
+    filters: ["transgene_pos"],
+    unlabelled: { transgene_pos: 0 },
+    cells: [
+      { replicate: "Col-0", cluster_ordinal: 0, facets: { transgene_pos: "True" } },
+      { replicate: "Col-0", cluster_ordinal: 0, facets: { transgene_pos: "True" } },
+      { replicate: "pFACT", cluster_ordinal: 0, facets: { transgene_pos: "False" } },
+    ],
+  };
+
+  it("hides every transgene count at once, and brings them back", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData(CARRIERS);
+
+    await waitFor(() => expect(screen.getByTestId("transgene-summary")).toBeTruthy());
+    expect(screen.getByText(/2 transgene\+ ·/)).toBeTruthy();
+    expect(latest().showTransgene).toBe(true);
+
+    fireEvent.click(screen.getByRole("switch", { name: "Transgene counts" }));
+    await waitFor(() => expect(screen.queryByTestId("transgene-summary")).toBeNull());
+    expect(screen.queryByText(/transgene\+/)).toBeNull();
+    expect(latest().showTransgene).toBe(false);
+
+    fireEvent.click(screen.getByRole("switch", { name: "Transgene counts" }));
+    await waitFor(() => expect(screen.getByTestId("transgene-summary")).toBeTruthy());
+    expect(latest().showTransgene).toBe(true);
+  });
+
+  it("offers no switch for a dataset that records no transgene status", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData({
+      ...LOADED,
+      cellCount: 1,
+      filters: ["sample"],
+      unlabelled: { sample: 0 },
+      cells: [{ replicate: "Col-0", cluster_ordinal: 0, facets: null }],
+    });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Col-0 1" })).toBeTruthy());
+    expect(screen.queryByRole("switch", { name: "Transgene counts" })).toBeNull();
+    expect(screen.queryByTestId("transgene-summary")).toBeNull();
+  });
+});
