@@ -19,6 +19,10 @@ test = [
     # required by tests/unit/test_ingest_scrnaseq.py — the ingest script reads
     # .h5ad files, and the tests build real ones to exercise its refusals.
     "anndata>=0.10,<0.13",
+    # imported directly by tests/unit/test_ingest_scrnaseq_counts.py to build the
+    # sparse matrix the real file uses. anndata pulls it in anyway; declared so a
+    # change in that graph cannot drop it with nothing here to notice.
+    "scipy>=1.11",
     # required by tests/unit/test_ci_workflow_uv_conventions.py — parses
     # .github/workflows/*.{yml,yaml} via yaml.safe_load to enforce uv conventions.
     "pyyaml>=6",

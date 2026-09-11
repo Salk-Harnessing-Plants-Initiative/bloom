@@ -48,12 +48,14 @@ def write_h5ad(
     samples: list[str] | None = None,
     coords: "np.ndarray | None" = None,
     barcodes: list[str] | None = None,
+    extra_obs: dict | None = None,
 ) -> Path:
     """A miniature dataset shaped like the real one."""
     obs = pd.DataFrame(
         {
             annotation: labels or ["Phellem", "Cortex"] * (n_cells // 2),
             sample_column: samples or ["Col-0", "pFACT", "pHORST"] * (n_cells // 3),
+            **(extra_obs or {}),
         },
         index=barcodes or [f"CELL{i}-Col-0" for i in range(n_cells)],
     )
@@ -273,14 +275,22 @@ def test_summary_names_the_samples_and_their_counts(ingest, tmp_path):
         assert sample in text
 
 
-def test_dry_run_writes_nothing_and_needs_no_credentials(ingest, tmp_path, capsys):
+def test_dry_run_writes_nothing_and_needs_no_credentials(ingest, tmp_path, capsys,
+                                                         monkeypatch):
+    def no_network(*a, **k):
+        raise AssertionError("a dry run must not reach the site")
+    monkeypatch.setattr(ingest.ingest_api, "resolve_api", no_network)
+    monkeypatch.setattr(ingest.ingest_api, "sign_in", no_network)
+    monkeypatch.delenv("BLOOM_PASSWORD", raising=False)
     path = write_h5ad(tmp_path / "dry.h5ad")
     code = ingest.main([
         "--h5ad", str(path), "--dataset-name", "t",
         "--species-id", "1", "--annotation", "nn_label_plain", "--dry-run",
     ])
+    out = capsys.readouterr().out
     assert code == 0
-    assert "nothing written" in capsys.readouterr().out
+    assert "'t'" in out and "6 cells" in out and "2 cell types" in out
+    assert "dry run — nothing written" in out
 
 
 def test_a_bad_file_exits_non_zero_without_touching_the_database(ingest, tmp_path, capsys):
@@ -513,35 +523,37 @@ def test_the_duplicate_share_is_where_it_was_measured(ingest):
 # What main() hands load(), and what it says afterwards
 # --------------------------------------------------------------------------- #
 #
-# The integration tests call load() directly and pass `create` themselves, so
-# nothing there sees the wiring. These stand between the flags and the writer:
-# without them, `create=args.create` can be edited to `create=True` and every
-# other test still passes, which is the defect --create exists to prevent.
+# load()'s own tests pass `create` and the options themselves, so nothing there
+# sees the wiring. These stand between the flags and the writer.
 
 
-def _wired(ingest, monkeypatch, tmp_path, argv_extra, name="wiring"):
-    """Run main() with load() replaced by a recorder, and return what it saw
-    along with everything main() printed."""
-    import contextlib
-    import psycopg
+def _signed_in(ingest, monkeypatch):
+    api = ingest.ingest_api
+    monkeypatch.setattr(api, "resolve_api", lambda server, url, key, **_: ("http://x/api", "k"))
+    monkeypatch.setattr(api, "sign_in", lambda url, key, email, password, **_: api.Session(
+        lambda: (None, "bloom_writer", "u1"), None, "bloom_writer", "u1"))
+    monkeypatch.setenv("BLOOM_PASSWORD", "pw")
+    for var in ("DATABASE_URL", "SUPABASE_URL", "SUPABASE_SERVICE_KEY"):
+        monkeypatch.delenv(var, raising=False)
 
+
+def _wired(ingest, monkeypatch, tmp_path, argv_extra, name="wiring", outcome=None):
+    """Run main() signed in against a stand-in, with load() replaced by a
+    recorder, and return what it saw."""
     seen = {}
 
-    def recorder(conn, ds_name, species_id, cells, checksum, units, annotation,
-                 create=False):
-        seen.update(name=ds_name, annotation=annotation, units=units,
-                    create=create, cells=cells)
-        return 7, cells["n_cells"], create
+    def recorder(writer, ds_name, species_id, cells, checksum, options, create=False):
+        seen.update(name=ds_name, options=options, create=create, cells=cells)
+        return 7, cells["n_cells"], outcome or ("registered" if create else "resumed")
 
+    _signed_in(ingest, monkeypatch)
     monkeypatch.setattr(ingest, "load", recorder)
-    monkeypatch.setattr(psycopg, "connect", lambda url: contextlib.nullcontext(None))
-    monkeypatch.setenv("DATABASE_URL", "postgresql://nobody@nowhere/none")
-
     path = write_h5ad(tmp_path / f"{name}.h5ad", n_cells=240,
                       labels=["A", "B", "C", "D"] * 60)
     code = ingest.main([
         "--h5ad", str(path), "--dataset-name", "d", "--species-id", "1",
-        "--annotation", "nn_label_plain", *argv_extra,
+        "--annotation", "nn_label_plain", "--server", "https://x",
+        "--email", "me@salk.edu", *argv_extra,
     ])
     return code, seen
 
@@ -554,14 +566,13 @@ def test_main_hands_load_the_annotation_not_some_other_column(
     code, seen = _wired(ingest, monkeypatch, tmp_path, [])
     capsys.readouterr()
     assert code == 0
-    assert seen["annotation"] == "nn_label_plain"
+    assert seen["options"]["annotation"] == "nn_label_plain"
     assert seen["name"] == "d"
 
 
 def test_the_create_flag_reaches_the_writer(ingest, tmp_path, monkeypatch, capsys):
-    """Both directions. `create=True` hard-coded here would put back the silent
-    fork this flag exists to stop; `create=False` would make a first load
-    impossible. Neither is visible from load()'s own tests."""
+    """Both directions: hard-coded True forks a mistyped name, False makes a
+    first load impossible."""
     code, seen = _wired(ingest, monkeypatch, tmp_path, ["--create"], "with")
     capsys.readouterr()
     assert code == 0 and seen["create"] is True
@@ -571,18 +582,15 @@ def test_the_create_flag_reaches_the_writer(ingest, tmp_path, monkeypatch, capsy
     assert code == 0 and seen["create"] is False
 
 
-def test_the_closing_line_says_which_happened(ingest, tmp_path, monkeypatch, capsys):
-    """Registering and replacing are the two outcomes an operator needs to tell
-    apart after a mistyped name, and the sentence is the only place they differ."""
-    ingest_code, _ = _wired(ingest, monkeypatch, tmp_path, ["--create"], "said")
-    out = capsys.readouterr().out
-    assert ingest_code == 0
-    assert "registered dataset 7" in out and "replaced" not in out
-
-    ingest_code, _ = _wired(ingest, monkeypatch, tmp_path, [], "said2")
-    out = capsys.readouterr().out
-    assert ingest_code == 0
-    assert "replaced the cells of dataset 7" in out and "registered" not in out
+@pytest.mark.parametrize("outcome,said", [
+    ("registered", "registered dataset 7"), ("resumed", "resumed dataset 7"),
+    ("already loaded", "already loaded"),
+])
+def test_the_closing_line_says_which_happened(ingest, tmp_path, monkeypatch, capsys,
+                                              outcome, said):
+    code, _ = _wired(ingest, monkeypatch, tmp_path, [], outcome.replace(" ", "_"),
+                     outcome=outcome)
+    assert code == 0 and said in capsys.readouterr().out
 
 
 def test_the_expression_units_reach_the_writer(ingest, tmp_path, monkeypatch, capsys):
@@ -590,7 +598,37 @@ def test_the_expression_units_reach_the_writer(ingest, tmp_path, monkeypatch, ca
     code, seen = _wired(ingest, monkeypatch, tmp_path,
                         ["--expression-units", "CPM"], "units")
     capsys.readouterr()
-    assert code == 0 and seen["units"] == "CPM"
+    assert code == 0 and seen["options"]["expression_units"] == "CPM"
+
+
+def test_a_load_needs_no_database_url_or_service_key(ingest, tmp_path, monkeypatch,
+                                                     capsys):
+    code, _ = _wired(ingest, monkeypatch, tmp_path, [], "nodb")
+    capsys.readouterr()
+    assert code == 0
+
+
+def test_writing_needs_an_email(ingest, tmp_path, monkeypatch, capsys):
+    _signed_in(ingest, monkeypatch)
+    path = write_h5ad(tmp_path / "noemail.h5ad")
+    code = ingest.main(["--h5ad", str(path), "--dataset-name", "d", "--species-id",
+                        "1", "--annotation", "nn_label_plain", "--server", "https://x"])
+    assert code == 1 and "--email" in capsys.readouterr().err
+
+
+def test_the_wait_is_checked_before_signing_in(ingest, tmp_path, monkeypatch, capsys):
+    """A write that may still be finishing on the server is waited out before
+    anything is read, so nothing is written twice."""
+    _signed_in(ingest, monkeypatch)
+    def no_sign_in(*a, **k):
+        raise AssertionError("signed in during the wait")
+    monkeypatch.setattr(ingest.ingest_api, "sign_in", no_sign_in)
+    path = write_h5ad(tmp_path / "wait.h5ad")
+    ingest.ingest_api.Marker(ingest.ingest_api.marker_path(path, "d")).record("insert cells")
+    code = ingest.main(["--h5ad", str(path), "--dataset-name", "d", "--species-id",
+                        "1", "--annotation", "nn_label_plain", "--server", "https://x",
+                        "--email", "me@salk.edu"])
+    assert code == 1 and "seconds" in capsys.readouterr().err
 
 
 def test_a_refusal_does_not_replay_the_file_at_the_terminal(ingest, tmp_path):
@@ -634,3 +672,98 @@ def test_a_real_cell_type_that_merely_looks_odd_still_loads(ingest, tmp_path):
     a.write_h5ad(path)
     cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
     assert cells["levels"] == ["Cortex", "Nanodomain"]
+
+
+# --------------------------------------------------------------------------- #
+# Labels the map can filter on, and genotypes
+# --------------------------------------------------------------------------- #
+
+LABELLED_OBS = {
+    "transgene_pos": [False, True, False, True, False, False],
+    "saturn_timezone": ["Meristem", "Elongation", "Meristem", "Maturation",
+                        "Elongation", "Meristem"],
+}
+
+
+def test_label_columns_are_read_per_cell_as_text(ingest, tmp_path):
+    path = write_h5ad(tmp_path / "labels.h5ad", extra_obs=LABELLED_OBS)
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                              facet_columns=("transgene_pos", "saturn_timezone"))
+    assert cells["facets"][0] == {"transgene_pos": "False", "saturn_timezone": "Meristem"}
+    assert cells["facets"][1] == {"transgene_pos": "True", "saturn_timezone": "Elongation"}
+    assert len(cells["facets"]) == 6
+
+
+def test_no_label_columns_means_no_labels(ingest, tmp_path):
+    cells = ingest.read_cells(write_h5ad(tmp_path / "plain.h5ad"), "nn_label_plain",
+                              "sample", "X_umap", None)
+    assert cells["facets"] is None and cells["genotypes"] is None
+
+
+def test_a_label_column_the_file_lacks_is_refused(ingest, tmp_path):
+    path = write_h5ad(tmp_path / "nolabel.h5ad")
+    with pytest.raises(ingest.IngestError, match="no obs\\['transgene_pos'\\]"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                          facet_columns=("transgene_pos",))
+
+
+def test_a_label_column_with_too_many_values_is_refused(ingest, tmp_path):
+    """A row of toggles holds a handful of values; hundreds means a measurement."""
+    path = write_h5ad(tmp_path / "many.h5ad", n_cells=14,
+                      labels=["Phellem", "Cortex"] * 7,
+                      samples=["Col-0", "pFACT"] * 7,
+                      extra_obs={"score": [f"v{i}" for i in range(14)]})
+    with pytest.raises(ingest.IngestError, match="14 values, more than the 12"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                          facet_columns=("score",))
+
+
+def test_a_blank_label_is_refused(ingest, tmp_path):
+    path = write_h5ad(tmp_path / "blanklabel.h5ad",
+                      extra_obs={"transgene_pos": ["True", "", "False", "True", "False", "True"]})
+    with pytest.raises(ingest.IngestError, match="blank"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                          facet_columns=("transgene_pos",))
+
+
+def test_genotypes_are_read_per_cell(ingest, tmp_path):
+    cells = ingest.read_cells(write_h5ad(tmp_path / "geno.h5ad"), "nn_label_plain",
+                              "sample", "X_umap", None, genotype_column="sample")
+    assert cells["genotypes"] == ["Col-0", "pFACT", "pHORST"] * 2
+
+
+def test_genotype_rows_name_the_control_and_each_construct(ingest):
+    rows = ingest.genotype_rows(["pHORST", "Col-0", "pFACT"], "Col-0",
+                                {"pFACT": "pFACT:MYB41", "pHORST": "pHORST:MYB41"})
+    assert rows == [
+        {"name": "Col-0", "is_control": True, "construct": None},
+        {"name": "pFACT", "is_control": False, "construct": "pFACT:MYB41"},
+        {"name": "pHORST", "is_control": False, "construct": "pHORST:MYB41"},
+    ]
+
+
+@pytest.mark.parametrize("control,constructs,named", [
+    (None, {}, "--control"),
+    ("WT", {}, "WT"),
+    ("Col-0", {"pFOO": "x"}, "pFOO"),
+])
+def test_genotype_rows_refuse_what_the_file_does_not_hold(ingest, control, constructs, named):
+    with pytest.raises(ingest.IngestError, match=named):
+        ingest.genotype_rows(["Col-0", "pFACT"], control, constructs)
+
+
+@pytest.mark.parametrize("bad", ["pFACT", "=x", "pFACT="])
+def test_a_malformed_construct_is_refused(ingest, bad):
+    with pytest.raises(ingest.IngestError, match="GENOTYPE=NAME"):
+        ingest.parse_constructs([bad])
+
+
+def test_the_dry_run_names_the_labels_and_genotypes(ingest, tmp_path, capsys):
+    path = write_h5ad(tmp_path / "drylabels.h5ad", extra_obs=LABELLED_OBS)
+    code = ingest.main(["--h5ad", str(path), "--dataset-name", "t", "--species-id", "1",
+                        "--annotation", "nn_label_plain", "--facet", "transgene_pos",
+                        "--genotype-column", "sample", "--control", "Col-0", "--dry-run"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "label transgene_pos: False 4, True 2" in out
+    assert "genotypes: Col-0 (control), pFACT, pHORST" in out
