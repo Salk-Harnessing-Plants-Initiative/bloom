@@ -65,30 +65,7 @@ ALTER TABLE public.scrna_de
   CHECK (run_id IS NOT NULL OR contrast IS NULL) NOT VALID;
 
 
--- 3. A cell type stays in its dataset ------------------------------------------
--- Renaming its identifier still cascades into results and cells.
-
-CREATE OR REPLACE FUNCTION public.scrna_clusters_keep_their_dataset()
-RETURNS trigger
-LANGUAGE plpgsql
-SET search_path = ''
-AS $$
-BEGIN
-  RAISE EXCEPTION 'cell type % belongs to dataset % and cannot move to another',
-    OLD.cluster_id, OLD.dataset_id
-    USING ERRCODE = 'check_violation';
-END
-$$;
-
-DROP TRIGGER IF EXISTS scrna_clusters_keep_their_dataset ON public.scrna_clusters;
-CREATE TRIGGER scrna_clusters_keep_their_dataset
-  BEFORE UPDATE OF dataset_id ON public.scrna_clusters
-  FOR EACH ROW
-  WHEN (NEW.dataset_id IS DISTINCT FROM OLD.dataset_id)
-  EXECUTE FUNCTION public.scrna_clusters_keep_their_dataset();
-
-
--- 4. Left open by 20260911000000 -----------------------------------------------
+-- 3. Left open by 20260911000000 -----------------------------------------------
 
 -- The orphan check returned 0 on staging and production.
 ALTER TABLE public.scrna_de VALIDATE CONSTRAINT scrna_de_cluster_in_catalogue;

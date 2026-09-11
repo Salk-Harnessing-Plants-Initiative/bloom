@@ -3,9 +3,6 @@
 
 BEGIN;
 
-DROP TRIGGER IF EXISTS scrna_clusters_keep_their_dataset ON public.scrna_clusters;
-DROP FUNCTION IF EXISTS public.scrna_clusters_keep_their_dataset();
-
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_run_metadata_needs_a_run,
   DROP CONSTRAINT IF EXISTS scrna_de_run_rows_name_no_file,

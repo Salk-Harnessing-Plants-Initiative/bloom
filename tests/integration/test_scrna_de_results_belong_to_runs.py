@@ -224,46 +224,6 @@ def test_the_other_rules_hold_for_every_existing_row(pg_conn, constraint):
 
 
 # --------------------------------------------------------------------------- #
-# A cell type stays in its dataset
-# --------------------------------------------------------------------------- #
-
-
-def test_a_cell_type_cannot_move_to_another_dataset(pg_conn):
-    """Its results would follow it through the cascade."""
-    with pg_conn.cursor() as cur:
-        ds, other = _dataset(cur), _dataset(cur, ("Xylem",))
-        _insert(cur, ds, file_path="de/markers_Cortex.json")
-        with pytest.raises(psycopg.errors.CheckViolation,
-                           match="cannot move to another"):
-            cur.execute("UPDATE scrna_clusters SET dataset_id = %s "
-                        "WHERE dataset_id = %s", (other, ds))
-    pg_conn.rollback()
-
-
-def test_a_writer_cannot_move_one_either(pg_conn):
-    """bloom_writer can update the catalogue, and the cascade ignores its grants."""
-    with pg_conn.cursor() as cur:
-        ds, other = _dataset(cur), _dataset(cur, ("Xylem",))
-        cur.execute("SET LOCAL ROLE bloom_writer")
-        with pytest.raises(psycopg.errors.CheckViolation):
-            cur.execute("UPDATE scrna_clusters SET dataset_id = %s "
-                        "WHERE dataset_id = %s", (other, ds))
-    pg_conn.rollback()
-
-
-def test_renaming_a_cell_type_still_carries_its_results(pg_conn):
-    """Changing the identifier is what the cascade is for."""
-    with pg_conn.cursor() as cur:
-        ds = _dataset(cur)
-        rid = _insert(cur, ds, file_path="de/markers_Cortex.json")
-        cur.execute("UPDATE scrna_clusters SET cluster_id = 'Cortex_v2' "
-                    "WHERE dataset_id = %s", (ds,))
-        cur.execute("SELECT cluster_id FROM scrna_de WHERE id = %s", (rid,))
-        assert cur.fetchone()[0] == "Cortex_v2"
-    pg_conn.rollback()
-
-
-# --------------------------------------------------------------------------- #
 # Grants on the tables 20260911000000 created
 # --------------------------------------------------------------------------- #
 
@@ -299,9 +259,6 @@ def test_the_rollback_brings_the_count_columns_back_empty(pg_conn):
         assert constraints["scrna_de_counts_all_or_none"] is False
         assert "n_genes_tested" in _columns(cur)
         assert not NEW_RULES & set(constraints)
-        cur.execute("SELECT count(*) FROM pg_trigger "
-                    "WHERE tgname = 'scrna_clusters_keep_their_dataset'")
-        assert cur.fetchone()[0] == 0
     pg_conn.rollback()
 
 
