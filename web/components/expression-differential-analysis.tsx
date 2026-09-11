@@ -123,39 +123,135 @@ const DEFAULT_LOG2FC_CUT = 0.5;
  *  measured ratio, so it is not allowed to set the width of the plot. */
 const OFF_SCALE_LOG2FC = 20;
 
-/** A row of scrna_de.
+/** A comparison in the dataset's analysis: a row of scrna_de.
  *
- * A null `file_path` means the comparison was considered and never run — the
- * group sizes on the row are what explain why, so it is shown rather than
- * hidden. A null `contrast` is an older one-vs-rest row, which has one
- * selector and no groups to name.
+ * `tested` false means it was considered and skipped; the group sizes on the row
+ * are what explain why, so it is shown rather than hidden. A null `contrast` is
+ * an older one-vs-rest row, which has one selector and no groups to name.
  */
 type DeEntry = {
+  id: number;
   cluster_id: string | null;
-  file_path: string | null;
   contrast: string | null;
   group1: string | null;
   group2: string | null;
   n_group1: number | null;
   n_group2: number | null;
   n_genes_tested: number | null;
-  n_significant_fdr_lfc: number | null;
+  tested: boolean | null;
 };
+
+/** The analysis the comparisons belong to: a row of scrna_de_runs. */
+type AnalysisRun = {
+  id: number;
+  method: string;
+  completed_at: string | null;
+  params: Database["public"]["Tables"]["scrna_de_runs"]["Row"]["params"];
+};
+
+/** A stored gene result, with its name from the dataset's gene catalogue. An
+ *  infinite fold change arrives as text, since JSON has no number for it. */
+type GeneRow = {
+  log2fc: number | string | null;
+  pvalue: number;
+  fdr: number;
+  pct_1: number | null;
+  pct_2: number | null;
+  scrna_genes: { gene_name: string } | null;
+};
+
+type Client = ReturnType<typeof createClientSupabaseClient>;
+
+/** Rows per request when reading a comparison's genes. Reading stops at the
+ *  first empty page, so a server-side row cap cannot cut the list short. */
+const PAGE_ROWS = 1000;
+
+/** The dataset's most recently completed analysis, or null when it has none. */
+export async function fetchLatestRun(supabase: Client, datasetId: number): Promise<AnalysisRun | null> {
+  const { data, error } = await supabase
+    .from("scrna_de_runs")
+    .select("id, method, params, completed_at")
+    .eq("dataset_id", datasetId)
+    .eq("status", "complete")
+    .order("completed_at", { ascending: false })
+    .limit(1);
+  if (error) throw new Error(error.message);
+  return (data?.[0] as AnalysisRun | undefined) ?? null;
+}
+
+/** An analysis's comparisons, by cell type and then contrast. */
+export async function fetchComparisons(supabase: Client, runId: number): Promise<DeEntry[]> {
+  const { data, error } = await supabase
+    .from("scrna_de")
+    .select("id, cluster_id, contrast, group1, group2, n_group1, n_group2, n_genes_tested, tested")
+    .eq("run_id", runId);
+  if (error) throw new Error(error.message);
+  return ((data ?? []) as DeEntry[]).sort(
+    (a, b) =>
+      (a.cluster_id ?? "").localeCompare(b.cluster_id ?? "") ||
+      (a.contrast ?? "").localeCompare(b.contrast ?? ""),
+  );
+}
+
+/** A stored gene row in the shape the chart and the table use. A fold change
+ *  the analysis could not compute is stored as null and read as NaN, which both
+ *  leave out. */
+export function toGeneData(row: GeneRow): GeneData {
+  const gene = row.scrna_genes?.gene_name ?? "";
+  return {
+    gene,
+    _row: gene,
+    avg_log2FC: row.log2fc === null ? NaN : Number(row.log2fc),
+    p_val: row.pvalue,
+    p_val_adj: row.fdr,
+    "pct.1": row.pct_1 ?? NaN,
+    "pct.2": row.pct_2 ?? NaN,
+  };
+}
+
+/** Every gene result of one comparison, a page at a time. */
+export async function fetchGeneRows(supabase: Client, deId: number): Promise<GeneData[]> {
+  const out: GeneData[] = [];
+  for (let start = 0; ; start += PAGE_ROWS) {
+    const { data, error } = await supabase
+      .from("scrna_de_genes")
+      .select("log2fc, pvalue, fdr, pct_1, pct_2, scrna_genes!inner(gene_name)")
+      .eq("de_id", deId)
+      .order("id")
+      .range(start, start + PAGE_ROWS - 1);
+    if (error) throw new Error(error.message);
+    const rows = (data ?? []) as unknown as GeneRow[];
+    if (rows.length === 0) return out;
+    for (const row of rows) out.push(toGeneData(row));
+  }
+}
+
+/** Each group's cells before depth matching, from the analysis notes, e.g.
+ *  "pFACT 245, Col-0 172". Empty when the notes do not record this comparison. */
+export function beforeDepthMatching(run: AnalysisRun | null, entry: DeEntry | null): string {
+  if (!run || !entry?.cluster_id || !entry.contrast || !entry.group1 || !entry.group2) return "";
+  const notes = (run.params as {
+    notes?: { cells_before_depth_matching?: Record<string, Record<string, number>> };
+  } | null)?.notes;
+  const counts = notes?.cells_before_depth_matching?.[`${entry.cluster_id} / ${entry.contrast}`];
+  if (!counts) return "";
+  const fmt = new Intl.NumberFormat("en-US");
+  return [entry.group1, entry.group2]
+    .filter((group) => typeof counts[group] === "number")
+    .map((group) => `${group} ${fmt.format(counts[group])}`)
+    .join(", ");
+}
 
 /** What a comparison is called in the selectors. */
 function contrastLabel(entry: DeEntry): string {
   return entry.contrast ?? "vs all other cells";
 }
 
-/** "142 of 15,430 significant", straight from the row — no file needed. */
-export function significanceLabel(entry: DeEntry): string {
-  if (entry.n_genes_tested === null || entry.n_significant_fdr_lfc === null) {
-    return "";
-  }
-  if (entry.n_genes_tested === 0) return "not tested";
-  const fmt = new Intl.NumberFormat("en-US");
-  return `${fmt.format(entry.n_significant_fdr_lfc)} of ` +
-    `${fmt.format(entry.n_genes_tested)} significant`;
+/** "15,430 genes tested", straight from the row, before any gene is fetched. */
+export function testedLabel(entry: DeEntry): string {
+  if (entry.tested === false || entry.n_genes_tested === 0) return "not tested";
+  if (entry.n_genes_tested === null) return "";
+  return `${new Intl.NumberFormat("en-US").format(entry.n_genes_tested)} genes tested`;
 }
 
 /** Genes passing both cuts, split by direction.
@@ -173,6 +269,8 @@ export function countSignificant(
   let up = 0;
   let down = 0;
   for (const r of rows) {
+    // No fold change means no direction, so it is neither up nor down.
+    if (Number.isNaN(r.avg_log2FC)) continue;
     if (r.p_val_adj >= fdrCut || Math.abs(r.avg_log2FC) <= lfcCut) continue;
     if (r.avg_log2FC > 0) up++;
     else down++;
@@ -190,6 +288,7 @@ export function directionLabel(entry: DeEntry): string {
 }
 
 export default function DifferentialExpressionAnalysis({ file_id }: { file_id: number }) {
+  const [run, setRun] = useState<AnalysisRun | null>(null);
   const [clusterList, setClusterList] = useState<DeEntry[]>([]);
   const [selectedCluster, setSelectedCluster] = useState<DeEntry | null>(null);
   const [chartData, setChartData] = useState<GeneData[] | null>(null);
@@ -204,37 +303,36 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
   const supabase = createClientSupabaseClient();
   const chartRef = useRef<SVGSVGElement | null>(null);
 
-  // Fetch cluster list
+  // The dataset's latest complete analysis, and its comparisons.
   useEffect(() => {
+    let cancelled = false;
     const fetchData = async () => {
       setLoading(true);
-      const { data: clusterlabels, error } = await supabase
-        .from("scrna_de")
-        // One literal, because the typed client reads the column list from
-        // the string itself to work out the row shape.
-        .select("cluster_id, file_path, contrast, group1, group2, n_group1, n_group2, n_genes_tested, n_significant_fdr_lfc")
-        .eq("dataset_id", file_id);
-
-      if (error) {
-        console.error("Error fetching DE clusters:", error);
+      setLoadError(null);
+      try {
+        const latest = await fetchLatestRun(supabase, file_id);
+        const rows = latest ? await fetchComparisons(supabase, latest.id) : [];
+        if (cancelled) return;
+        setRun(latest);
+        setClusterList(rows);
+        setSelectedCluster(rows.find((row) => row.tested !== false) ?? rows[0] ?? null);
+      } catch (err) {
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err));
       }
-
-      setClusterList(clusterlabels || []);
-      if (clusterlabels && clusterlabels.length > 0) {
-        setSelectedCluster(clusterlabels[0]);
-      }
-      setLoading(false);
+      if (!cancelled) setLoading(false);
     };
     fetchData();
+    return () => {
+      cancelled = true;
+    };
   }, [file_id]);
 
-  // Fetch DE data for selected cluster
+  // The selected comparison's gene results.
   useEffect(() => {
     if (!selectedCluster) return;
 
     setChartData(null);
-    const filePath = selectedCluster.file_path;
-    if (!filePath) {
+    if (selectedCluster.tested === false) {
       setDataLoading(false);
       setLoadError(null);
       return;
@@ -244,24 +342,15 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
     const fetchData = async () => {
       setDataLoading(true);
       setLoadError(null);
-      const { data: storageData, error: storageError } = await supabase.storage
-        .from("scrna")
-        .download(filePath);
-
-      if (cancelled) return;
-      if (storageError || !storageData) {
-        setChartData(null);
-        setLoadError(storageError?.message ?? "the file could not be read");
-        setDataLoading(false);
-        return;
-      }
-      const textData = await storageData.text();
-      if (cancelled) return;
       try {
-        setChartData(JSON.parse(textData));
-      } catch {
+        const rows = await fetchGeneRows(supabase, selectedCluster.id);
+        if (cancelled) return;
+        setChartData(rows);
+        if (rows.length === 0) setLoadError("no gene results are stored for it");
+      } catch (err) {
+        if (cancelled) return;
         setChartData(null);
-        setLoadError("the file could not be read");
+        setLoadError(err instanceof Error ? err.message : String(err));
       }
       setDataLoading(false);
     };
@@ -587,31 +676,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
     };
   }, [chartData, selectedCluster, fdrCut, lfcCut]);
 
-  // Download CSV function
-  /** Download the stored file itself.
-   *
-   * Separate from the chart on purpose: the results a reader takes away should
-   * be the ones the analysis produced, not a re-serialisation of whatever the
-   * plot managed to parse. It needs no chart, so it works while one is loading.
-   */
-  const downloadFile = async () => {
-    const filePath = selectedCluster?.file_path;
-    if (!filePath) return;
-    const { data, error } = await supabase.storage.from("scrna").download(filePath);
-    if (error || !data) {
-      setLoadError(error?.message ?? "the file could not be read");
-      return;
-    }
-    const url = URL.createObjectURL(data);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filePath.split("/").pop() ?? "differential-expression.json";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
+  /** Download the table as it stands, filtered or not, as CSV. */
   const downloadCSV = () => {
     if (!chartData) return;
 
@@ -640,6 +705,16 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
         <CircularProgress />
         <Typography sx={{ ml: 2 }}>Loading differential expression data...</Typography>
+      </Box>
+    );
+  }
+
+  if (loadError && clusterList.length === 0) {
+    return (
+      <Box sx={{ p: 3 }}>
+        <Alert severity="error">
+          The differential expression analysis could not be loaded: {loadError}
+        </Alert>
       </Box>
     );
   }
@@ -685,6 +760,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
         Differential expression analysis identifies genes that are significantly up- or down-regulated
         in one group compared to the other. Statistical significance is determined using
         the Wilcoxon rank-sum test with Benjamini-Hochberg FDR correction.
+        {run && ` Showing analysis ${run.id} (${run.method}).`}
       </Typography>
 
       {/* Which comparison */}
@@ -738,10 +814,10 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
                 {contrastsForCellType.map((row) => (
                   <MenuItem key={row.contrast ?? ""} value={row.contrast ?? ""}>
                     {contrastLabel(row)}
-                    {significanceLabel(row) && (
+                    {testedLabel(row) && (
                       <Typography component="span" variant="caption"
                                   color="text.secondary" sx={{ ml: 1 }}>
-                        {significanceLabel(row)}
+                        {testedLabel(row)}
                       </Typography>
                     )}
                   </MenuItem>
@@ -777,11 +853,6 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
             </>
           )}
 
-          {selectedCluster?.file_path && (
-            <Button size="small" onClick={downloadFile}>
-              Download results
-            </Button>
-          )}
         </Box>
 
         {selectedCluster && (
@@ -801,6 +872,12 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
             ) : (
               directionLabel(selectedCluster)
             )}
+          </Typography>
+        )}
+        {beforeDepthMatching(run, selectedCluster) && (
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+            Cells compared after depth matching. Before it:{" "}
+            {beforeDepthMatching(run, selectedCluster)}.
           </Typography>
         )}
       </Paper>
@@ -867,7 +944,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       )}
 
       {/* Considered, never run. The group sizes are what explain why. */}
-      {selectedCluster && !selectedCluster.file_path && !dataLoading && (
+      {selectedCluster && selectedCluster.tested === false && !dataLoading && (
         <Alert severity="info" sx={{ mb: 3 }}>
           <Typography variant="subtitle2" fontWeight="bold">
             This comparison was not run
