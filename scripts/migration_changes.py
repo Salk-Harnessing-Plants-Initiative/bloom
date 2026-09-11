@@ -1,4 +1,4 @@
-"""Which migration files a PR really changes.
+"""Which migration files a PR really changes, and what they do.
 
 A migration change is a path under supabase/migrations/ that the PR adds, modifies or
 deletes and whose content at the PR head differs from staging (or is absent there).
@@ -8,7 +8,12 @@ has its own.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from migration_sql import MigrationFacts, scan  # noqa: E402
 
 MIGRATIONS_DIR = "supabase/migrations/"
 
@@ -55,3 +60,18 @@ def migration_changes(
         if path.startswith(MIGRATIONS_DIR)
         and _blob(head, path, repo) != _blob(staging_ref, path, repo)
     ]
+
+
+def changed_facts(
+    base: str,
+    head: str = "HEAD",
+    staging_ref: str = "origin/staging",
+    repo: Path = Path("."),
+) -> MigrationFacts:
+    """What the PR's migration changes do, read at head. A deleted migration adds nothing."""
+    facts = MigrationFacts()
+    for path in migration_changes(base, head, staging_ref, repo):
+        shown = _git(repo, "show", f"{head}:{path}")
+        if shown.returncode == 0:
+            facts = facts | scan(shown.stdout)
+    return facts

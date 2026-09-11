@@ -40,6 +40,7 @@ help:
 	@echo "  make gen-types         - Generate database.types.ts from local DB and sync to all packages"
 	@echo "  make erd              - Redraw _WIKI/SUPABASE/erd.md with tbls (dev DB must match this checkout)"
 	@echo "  make erd-snapshot TABLES=a,b | CHANGED=origin/staging - Mermaid block of those tables and their neighbours, for a PR body"
+	@echo "  make pr-body-check BODY=path.md - Check a drafted PR body's Schema changes section"
 
 # Generate a local .env.dev from .env.dev.example with fresh secrets.
 # Pass FORCE=1 to overwrite an existing .env.dev (it is backed up first).
@@ -565,3 +566,12 @@ erd-snapshot:
 	docker run --rm -e TBLS_DSN --network "container:$$DB" -v "$(CURDIR):/work" -w /work \
 		$(TBLS_IMAGE) out -c .tbls.yml -t mermaid --table "$$LIST" --distance 1; \
 	echo '```'
+
+## Check a drafted PR body's Schema changes section before opening the PR
+.PHONY: pr-body-check
+pr-body-check:
+	@if [ -z "$(BODY)" ]; then \
+		echo "Usage: make pr-body-check BODY=path/to/body.md [BASE=origin/staging]"; \
+		exit 1; \
+	fi
+	@python3 scripts/lint_migration_pr_body.py $(or $(BASE),origin/staging) --body-file "$(BODY)"
