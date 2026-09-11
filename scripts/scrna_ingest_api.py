@@ -27,6 +27,9 @@ WAIT_MARGIN_S = 30
 
 RERUN = "re-run the same command to continue"
 
+# Rows per read. Each page is one request that has to finish inside Kong's 60 s.
+PAGE_ROWS = 5000
+
 # PostgREST codes for a missing, invalid or expired token.
 UNAUTHORISED_CODES = ("PGRST301", "PGRST303", 401, "401")
 
@@ -63,21 +66,25 @@ def read_password(env=None) -> str:
     return password
 
 
-def role_of(access_token: str) -> str:
-    """The role claim of a JWT, read without verifying it; the server verifies."""
+def claims_of(access_token: str) -> dict:
+    """A JWT's claims, read without verifying it; the server verifies."""
     payload = access_token.split(".")[1]
     payload += "=" * (-len(payload) % 4)
-    return json.loads(base64.urlsafe_b64decode(payload)).get("role", "")
+    return json.loads(base64.urlsafe_b64decode(payload))
+
+
+def role_of(access_token: str) -> str:
+    return claims_of(access_token).get("role", "")
 
 
 class Session:
-    """A signed-in client, and the means to sign in again."""
+    """A signed-in client, who signed in, and the means to sign in again."""
 
-    def __init__(self, attempt, client, role: str):
-        self._attempt, self.client, self.role = attempt, client, role
+    def __init__(self, attempt, client, role: str, user_id: str):
+        self._attempt, self.client, self.role, self.user_id = attempt, client, role, user_id
 
     def renew(self) -> None:
-        self.client, self.role = self._attempt()
+        self.client, self.role, self.user_id = self._attempt()
 
 
 def sign_in(api_url: str, anon_key: str, email: str, password: str,
@@ -95,14 +102,22 @@ def sign_in(api_url: str, anon_key: str, email: str, password: str,
             raise IngestError(f"could not sign in as {email}: {exc}") from None
         if not getattr(res, "session", None):
             raise IngestError(f"could not sign in as {email}: no session returned")
-        role = role_of(res.session.access_token)
+        claims = claims_of(res.session.access_token)
+        role = claims.get("role", "")
         if role not in WRITE_ROLES:
             raise IngestError(f"{email} signs in as {role}; loading needs a writer "
                               f"or admin account")
-        return client, role
+        return client, role, claims.get("sub", "")
 
-    client, role = attempt()
-    return Session(attempt, client, role)
+    return Session(attempt, *attempt())
+
+
+def _api_errors() -> tuple:
+    """The exceptions a request can raise; anything else is a fault in the loader."""
+    import httpx
+    from postgrest.exceptions import APIError
+    from storage3.exceptions import StorageApiError
+    return (httpx.HTTPError, APIError, StorageApiError)
 
 
 def classify(exc: BaseException) -> str:
@@ -161,14 +176,23 @@ class Writer:
     def __init__(self, session: Session, marker: Marker):
         self.session, self.marker = session, marker
 
+    def read(self, fetch):
+        """Run fetch(client); a read may be repeated, after one fresh sign-in."""
+        for attempt in (1, 2):
+            try:
+                return fetch(self.session.client)
+            except _api_errors() as exc:
+                if classify(exc) == "unauthorised" and attempt == 1:
+                    self.session.renew()
+                    continue
+                raise IngestError(f"reading failed: {exc}; {RERUN}") from None
+
     def write(self, step: str, send):
         """Run send(client), one request, under the write rules."""
         for attempt in (1, 2):
             try:
                 return send(self.session.client)
-            except IngestError:
-                raise
-            except Exception as exc:
+            except _api_errors() as exc:
                 kind = classify(exc)
                 if kind == "unauthorised" and attempt == 1:
                     self.session.renew()
@@ -192,10 +216,54 @@ def pick_dataset(rows: list[dict], name: str) -> dict | None:
     return live[0] if live else None
 
 
-def find_dataset(client, species_id: int, name: str) -> dict | None:
+def read_all(writer: Writer, table: str, columns: str, *, filters=(),
+             order: str = "id", page: int = PAGE_ROWS) -> list[dict]:
+    """Every matching row, one page per request, ordered by `order`.
+
+    filters: (method, column, value), e.g. ("eq", "dataset_id", 7) or
+    ("is_", "deleted_at", "null").
+    """
+    rows: list[dict] = []
+    start = 0
+    while True:
+        def fetch(client, start=start):
+            query = client.table(table).select(columns)
+            for method, column, value in filters:
+                query = getattr(query, method)(column, value)
+            return query.order(order).range(start, start + page - 1).execute().data
+        batch = writer.read(fetch)
+        rows.extend(batch)
+        if len(batch) < page:
+            return rows
+        start += page
+
+
+def insert(writer: Writer, step: str, table: str, rows: list[dict], *,
+           returning: bool = False) -> list[dict]:
+    """Insert rows in one request, sent once."""
+    def send(client):
+        query = client.table(table).insert(
+            rows, returning="representation" if returning else "minimal")
+        return query.retry(False).execute().data
+    return writer.write(step, send)
+
+
+def update(writer: Writer, step: str, table: str, values: dict, *, eq: dict) -> None:
+    """Update the rows matching every eq pair, in one request, sent once."""
+    def send(client):
+        query = client.table(table).update(values, returning="minimal")
+        for column, value in eq.items():
+            query = query.eq(column, value)
+        return query.retry(False).execute().data
+    writer.write(step, send)
+
+
+DATASET_COLUMNS = "id,name,deleted_at,source_checksum,ingested_at,metadata,n_cells"
+
+
+def find_dataset(writer: Writer, species_id: int, name: str) -> dict | None:
     """Look a dataset up by trimmed name; PostgREST cannot filter on btrim(name)."""
-    rows = (client.table("scrna_datasets")
-            .select("id,name,deleted_at,source_checksum,ingested_at")
-            .eq("species_id", species_id).is_("deleted_at", "null")
-            .execute().data)
+    rows = read_all(writer, "scrna_datasets", DATASET_COLUMNS,
+                    filters=[("eq", "species_id", species_id),
+                             ("is_", "deleted_at", "null")])
     return pick_dataset(rows, name)
