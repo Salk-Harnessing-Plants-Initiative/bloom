@@ -823,7 +823,7 @@ def test_batch_cli_isolates_unexpected_network_error_among_several(tmp_path, mon
         cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
     )
 
-    assert result.exit_code != 0
+    assert result.exit_code == 3
     assert (out / "scan_1" / "scan_1.scan_metadata.json").exists()
     assert (out / "scan_3" / "scan_3.scan_metadata.json").exists()
     assert "scan_2" in result.output
@@ -951,7 +951,7 @@ def test_batch_cli_isolates_one_bad_scan(tmp_path, monkeypatch):
         cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
     )
 
-    assert result.exit_code != 0
+    assert result.exit_code == 3
     assert (out / "scan_1" / "scan_1.scan_metadata.json").exists()
     assert (out / "scan_3" / "scan_3.scan_metadata.json").exists()
     assert not (out / "scan_2").exists()
@@ -968,7 +968,7 @@ def test_batch_cli_isolates_one_bad_scan_json(tmp_path, monkeypatch):
         cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file), "--json"]
     )
 
-    assert result.exit_code != 0
+    assert result.exit_code == 3
     payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
     assert payload["scan_1"]["status"] == "ok"
     assert payload["scan_2"]["status"] == "failed"
@@ -988,7 +988,7 @@ def test_batch_oracle_discover_scans_accepts_the_survivors(tmp_path, monkeypatch
     result = CliRunner().invoke(
         cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
     )
-    assert result.exit_code != 0
+    assert result.exit_code == 3
 
     scans = sleap_roots_predict.discover_scans(out)
     assert {s.scan_key for s in scans} == {"scan_1", "scan_3"}
@@ -1079,7 +1079,7 @@ def test_batch_cli_source_and_flag_both_given_is_usage_error(tmp_path, monkeypat
         ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file), "--scan-ids", "1"],
     )
 
-    assert result.exit_code != 0
+    assert result.exit_code == 2
     assert not out.exists()
 
 
@@ -1146,7 +1146,7 @@ def test_batch_cli_mixed_statuses_json_output(tmp_path, monkeypatch):
     result = CliRunner().invoke(
         cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file), "--json"]
     )
-    assert result.exit_code != 0
+    assert result.exit_code == 3
     payload = {entry["scan_key"]: entry["status"] for entry in json.loads(result.output)}
     assert payload == {"scan_1": "ok", "scan_2": "skipped", "scan_3": "failed"}
 
@@ -1158,7 +1158,7 @@ def test_batch_cli_mixed_statuses_default_output(tmp_path, monkeypatch):
     result = CliRunner().invoke(
         cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
     )
-    assert result.exit_code != 0
+    assert result.exit_code == 3
     assert "1 skipped" in result.output.lower()
     assert "1 failed" in result.output.lower()
     assert "scan_3" in result.output
@@ -1256,7 +1256,7 @@ def test_batch_cli_lock_contention_isolates_one_scan_others_succeed(tmp_path, mo
         cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
     )
 
-    assert result.exit_code != 0
+    assert result.exit_code == 3
     assert "scan_1" in result.output
     assert (out / "scan_2" / "scan_2.scan_metadata.json").exists()
     assert not (out / "scan_1" / "scan_1.scan_metadata.json").exists()
@@ -1446,7 +1446,7 @@ def test_batch_cli_manifest_lock_contention_fails_without_corrupting_existing_ma
         cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
     )
 
-    assert result.exit_code != 0
+    assert result.exit_code == 1
     # A clean click.ClickException (and a plain ctx.exit()) both normalize to SystemExit via
     # CliRunner — a raw, unhandled exception (e.g. an OSError escaping acquire_lock) would
     # instead surface here as that exception's own instance, not SystemExit. Confirmed
@@ -1511,7 +1511,7 @@ def test_batch_cli_all_scans_failed_no_prior_manifest_skips_write_no_crash(tmp_p
         cli, ["cyl", "batch-download-for-predict", str(out), "--scan-ids-file", str(ids_file)]
     )
 
-    assert result.exit_code != 0
+    assert result.exit_code == 3
     assert isinstance(result.exception, SystemExit)
     assert not (out / RUN_MANIFEST_FILENAME).exists()
 
