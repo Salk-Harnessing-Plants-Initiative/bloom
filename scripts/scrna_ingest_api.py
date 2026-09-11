@@ -258,6 +258,15 @@ def update(writer: Writer, step: str, table: str, values: dict, *, eq: dict) -> 
     writer.write(step, send)
 
 
+# What a dataset name may hold, since the counts objects are stored under it.
+SAFE_DATASET_NAME = re.compile(r"[A-Za-z0-9._ -]+")
+DOTS_ONLY = re.compile(r"\.+")
+
+
+def dataset_name_ok(name: str) -> bool:
+    return bool(SAFE_DATASET_NAME.fullmatch(name)) and not DOTS_ONLY.fullmatch(name)
+
+
 DATASET_COLUMNS = "id,name,deleted_at,source_checksum,ingested_at,metadata,n_cells"
 
 

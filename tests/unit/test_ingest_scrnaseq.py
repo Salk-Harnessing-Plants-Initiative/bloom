@@ -273,14 +273,22 @@ def test_summary_names_the_samples_and_their_counts(ingest, tmp_path):
         assert sample in text
 
 
-def test_dry_run_writes_nothing_and_needs_no_credentials(ingest, tmp_path, capsys):
+def test_dry_run_writes_nothing_and_needs_no_credentials(ingest, tmp_path, capsys,
+                                                         monkeypatch):
+    def no_network(*a, **k):
+        raise AssertionError("a dry run must not reach the site")
+    monkeypatch.setattr(ingest.ingest_api, "resolve_api", no_network)
+    monkeypatch.setattr(ingest.ingest_api, "sign_in", no_network)
+    monkeypatch.delenv("BLOOM_PASSWORD", raising=False)
     path = write_h5ad(tmp_path / "dry.h5ad")
     code = ingest.main([
         "--h5ad", str(path), "--dataset-name", "t",
         "--species-id", "1", "--annotation", "nn_label_plain", "--dry-run",
     ])
+    out = capsys.readouterr().out
     assert code == 0
-    assert "nothing written" in capsys.readouterr().out
+    assert "'t'" in out and "6 cells" in out and "2 cell types" in out
+    assert "dry run — nothing written" in out
 
 
 def test_a_bad_file_exits_non_zero_without_touching_the_database(ingest, tmp_path, capsys):
@@ -513,35 +521,37 @@ def test_the_duplicate_share_is_where_it_was_measured(ingest):
 # What main() hands load(), and what it says afterwards
 # --------------------------------------------------------------------------- #
 #
-# The integration tests call load() directly and pass `create` themselves, so
-# nothing there sees the wiring. These stand between the flags and the writer:
-# without them, `create=args.create` can be edited to `create=True` and every
-# other test still passes, which is the defect --create exists to prevent.
+# load()'s own tests pass `create` and the options themselves, so nothing there
+# sees the wiring. These stand between the flags and the writer.
 
 
-def _wired(ingest, monkeypatch, tmp_path, argv_extra, name="wiring"):
-    """Run main() with load() replaced by a recorder, and return what it saw
-    along with everything main() printed."""
-    import contextlib
-    import psycopg
+def _signed_in(ingest, monkeypatch):
+    api = ingest.ingest_api
+    monkeypatch.setattr(api, "resolve_api", lambda server, url, key, **_: ("http://x/api", "k"))
+    monkeypatch.setattr(api, "sign_in", lambda url, key, email, password, **_: api.Session(
+        lambda: (None, "bloom_writer", "u1"), None, "bloom_writer", "u1"))
+    monkeypatch.setenv("BLOOM_PASSWORD", "pw")
+    for var in ("DATABASE_URL", "SUPABASE_URL", "SUPABASE_SERVICE_KEY"):
+        monkeypatch.delenv(var, raising=False)
 
+
+def _wired(ingest, monkeypatch, tmp_path, argv_extra, name="wiring", outcome=None):
+    """Run main() signed in against a stand-in, with load() replaced by a
+    recorder, and return what it saw."""
     seen = {}
 
-    def recorder(conn, ds_name, species_id, cells, checksum, units, annotation,
-                 create=False):
-        seen.update(name=ds_name, annotation=annotation, units=units,
-                    create=create, cells=cells)
-        return 7, cells["n_cells"], create
+    def recorder(writer, ds_name, species_id, cells, checksum, options, create=False):
+        seen.update(name=ds_name, options=options, create=create, cells=cells)
+        return 7, cells["n_cells"], outcome or ("registered" if create else "resumed")
 
+    _signed_in(ingest, monkeypatch)
     monkeypatch.setattr(ingest, "load", recorder)
-    monkeypatch.setattr(psycopg, "connect", lambda url: contextlib.nullcontext(None))
-    monkeypatch.setenv("DATABASE_URL", "postgresql://nobody@nowhere/none")
-
     path = write_h5ad(tmp_path / f"{name}.h5ad", n_cells=240,
                       labels=["A", "B", "C", "D"] * 60)
     code = ingest.main([
         "--h5ad", str(path), "--dataset-name", "d", "--species-id", "1",
-        "--annotation", "nn_label_plain", *argv_extra,
+        "--annotation", "nn_label_plain", "--server", "https://x",
+        "--email", "me@salk.edu", *argv_extra,
     ])
     return code, seen
 
@@ -554,14 +564,13 @@ def test_main_hands_load_the_annotation_not_some_other_column(
     code, seen = _wired(ingest, monkeypatch, tmp_path, [])
     capsys.readouterr()
     assert code == 0
-    assert seen["annotation"] == "nn_label_plain"
+    assert seen["options"]["annotation"] == "nn_label_plain"
     assert seen["name"] == "d"
 
 
 def test_the_create_flag_reaches_the_writer(ingest, tmp_path, monkeypatch, capsys):
-    """Both directions. `create=True` hard-coded here would put back the silent
-    fork this flag exists to stop; `create=False` would make a first load
-    impossible. Neither is visible from load()'s own tests."""
+    """Both directions: hard-coded True forks a mistyped name, False makes a
+    first load impossible."""
     code, seen = _wired(ingest, monkeypatch, tmp_path, ["--create"], "with")
     capsys.readouterr()
     assert code == 0 and seen["create"] is True
@@ -571,18 +580,15 @@ def test_the_create_flag_reaches_the_writer(ingest, tmp_path, monkeypatch, capsy
     assert code == 0 and seen["create"] is False
 
 
-def test_the_closing_line_says_which_happened(ingest, tmp_path, monkeypatch, capsys):
-    """Registering and replacing are the two outcomes an operator needs to tell
-    apart after a mistyped name, and the sentence is the only place they differ."""
-    ingest_code, _ = _wired(ingest, monkeypatch, tmp_path, ["--create"], "said")
-    out = capsys.readouterr().out
-    assert ingest_code == 0
-    assert "registered dataset 7" in out and "replaced" not in out
-
-    ingest_code, _ = _wired(ingest, monkeypatch, tmp_path, [], "said2")
-    out = capsys.readouterr().out
-    assert ingest_code == 0
-    assert "replaced the cells of dataset 7" in out and "registered" not in out
+@pytest.mark.parametrize("outcome,said", [
+    ("registered", "registered dataset 7"), ("resumed", "resumed dataset 7"),
+    ("already loaded", "already loaded"),
+])
+def test_the_closing_line_says_which_happened(ingest, tmp_path, monkeypatch, capsys,
+                                              outcome, said):
+    code, _ = _wired(ingest, monkeypatch, tmp_path, [], outcome.replace(" ", "_"),
+                     outcome=outcome)
+    assert code == 0 and said in capsys.readouterr().out
 
 
 def test_the_expression_units_reach_the_writer(ingest, tmp_path, monkeypatch, capsys):
@@ -590,7 +596,37 @@ def test_the_expression_units_reach_the_writer(ingest, tmp_path, monkeypatch, ca
     code, seen = _wired(ingest, monkeypatch, tmp_path,
                         ["--expression-units", "CPM"], "units")
     capsys.readouterr()
-    assert code == 0 and seen["units"] == "CPM"
+    assert code == 0 and seen["options"]["expression_units"] == "CPM"
+
+
+def test_a_load_needs_no_database_url_or_service_key(ingest, tmp_path, monkeypatch,
+                                                     capsys):
+    code, _ = _wired(ingest, monkeypatch, tmp_path, [], "nodb")
+    capsys.readouterr()
+    assert code == 0
+
+
+def test_writing_needs_an_email(ingest, tmp_path, monkeypatch, capsys):
+    _signed_in(ingest, monkeypatch)
+    path = write_h5ad(tmp_path / "noemail.h5ad")
+    code = ingest.main(["--h5ad", str(path), "--dataset-name", "d", "--species-id",
+                        "1", "--annotation", "nn_label_plain", "--server", "https://x"])
+    assert code == 1 and "--email" in capsys.readouterr().err
+
+
+def test_the_wait_is_checked_before_signing_in(ingest, tmp_path, monkeypatch, capsys):
+    """A write that may still be finishing on the server is waited out before
+    anything is read, so nothing is written twice."""
+    _signed_in(ingest, monkeypatch)
+    def no_sign_in(*a, **k):
+        raise AssertionError("signed in during the wait")
+    monkeypatch.setattr(ingest.ingest_api, "sign_in", no_sign_in)
+    path = write_h5ad(tmp_path / "wait.h5ad")
+    ingest.ingest_api.Marker(ingest.ingest_api.marker_path(path, "d")).record("insert cells")
+    code = ingest.main(["--h5ad", str(path), "--dataset-name", "d", "--species-id",
+                        "1", "--annotation", "nn_label_plain", "--server", "https://x",
+                        "--email", "me@salk.edu"])
+    assert code == 1 and "seconds" in capsys.readouterr().err
 
 
 def test_a_refusal_does_not_replay_the_file_at_the_terminal(ingest, tmp_path):

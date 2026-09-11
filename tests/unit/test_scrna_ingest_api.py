@@ -354,3 +354,11 @@ def test_the_dataset_lookup_reads_the_species_datasets(api, tmp_path):
     ]})
     w = signed_in(api, tmp_path, client)
     assert api.find_dataset(w, 1, "MYB41")["id"] == 7
+
+
+@pytest.mark.parametrize("name,ok", [
+    ("MYB41 transgene", True), ("run_2.v1-a", True),
+    ("a/b", False), ("..", False), ("x\\y", False), ("", False),
+])
+def test_a_dataset_name_must_fit_a_storage_path(api, name, ok):
+    assert api.dataset_name_ok(name) is ok

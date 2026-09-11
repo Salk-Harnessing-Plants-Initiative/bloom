@@ -254,3 +254,79 @@ def supabase_db_url():
         f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@127.0.0.1:"
         f"{POSTGRES_HOST_PORT}/{POSTGRES_DB}?sslmode=disable"
     )
+
+
+# -----------------------------------------------------------------------------
+# Single-cell loaders: accounts that sign in as a writer or an admin, and the
+# clean-up their loads need, since writes through the API commit.
+# -----------------------------------------------------------------------------
+
+SCRNA_API_URL = f"{BASE_URL}/api"
+
+# Every table a single-cell load writes, children before parents.
+SCRNA_TABLES = ("scrna_de_genes", "scrna_de", "scrna_de_runs", "scrna_counts",
+                "scrna_genes", "scrna_cells", "scrna_cluster_stats",
+                "scrna_cluster_neighbors", "scrna_clusters")
+
+
+@pytest.fixture(scope="session")
+def scrna_accounts():
+    """A writer and an admin account, created through the auth admin API and
+    deleted when the session ends."""
+    import uuid
+
+    if not SERVICE_ROLE_KEY:
+        pytest.skip("no SERVICE_ROLE_KEY — the stack is not configured")
+    made = {}
+    for role, flag in (("writer", "is_writer"), ("admin", "is_admin")):
+        email = f"scrna-{role}-{uuid.uuid4().hex[:8]}@test.bloom.local"
+        password = uuid.uuid4().hex
+        status, body = api_request(
+            "/api/auth/v1/admin/users", api_key=SERVICE_ROLE_KEY, method="POST",
+            data={"email": email, "password": password, "email_confirm": True,
+                  "app_metadata": {flag: True}},
+        )
+        assert status in (200, 201), f"could not create the {role} account: {status} {body}"
+        made[role] = {"email": email, "password": password, "id": body["id"]}
+    yield made
+    for account in made.values():
+        api_request(f"/api/auth/v1/admin/users/{account['id']}",
+                    api_key=SERVICE_ROLE_KEY, method="DELETE")
+
+
+@pytest.fixture
+def scrna_api() -> tuple[str, str]:
+    """The API URL and anon key the loaders are given as --api-url and --anon-key."""
+    return SCRNA_API_URL, ANON_KEY
+
+
+@pytest.fixture
+def scrna_species(pg_conninfo):
+    """A species of its own for one test. Loads through the API commit, so every
+    dataset under it is removed afterwards with its rows and counts objects."""
+    import uuid
+
+    import psycopg
+
+    tag = uuid.uuid4().hex[:10]
+    with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+        (species_id,) = conn.execute(
+            "INSERT INTO public.species (common_name, genus, species) "
+            "VALUES (%s, %s, %s) RETURNING id",
+            (f"ingest-{tag}", f"Ingestus-{tag}", f"testis-{tag}"),
+        ).fetchone()
+    yield species_id
+    with psycopg.connect(pg_conninfo) as conn, conn.transaction():
+        ids = [i for (i,) in conn.execute(
+            "SELECT id FROM public.scrna_datasets WHERE species_id = %s", (species_id,))]
+        paths = [p.removeprefix("scrna/") for (p,) in conn.execute(
+            "SELECT counts_object_path FROM public.scrna_counts "
+            "WHERE dataset_id = ANY(%s)", (ids,))]
+        for table in SCRNA_TABLES:
+            conn.execute(f"DELETE FROM public.{table} WHERE dataset_id = ANY(%s)", (ids,))
+        conn.execute("DELETE FROM public.scrna_datasets WHERE id = ANY(%s)", (ids,))
+        conn.execute("DELETE FROM public.species WHERE id = %s", (species_id,))
+    if paths:
+        status, body = api_request("/api/storage/v1/object/scrna", api_key=SERVICE_ROLE_KEY,
+                                   method="DELETE", data={"prefixes": paths})
+        assert status == 200, f"could not remove the counts objects: {status} {body}"

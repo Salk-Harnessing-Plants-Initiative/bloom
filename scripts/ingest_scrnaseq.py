@@ -3,49 +3,52 @@
 Load a single-cell dataset's cells into the expression explorer.
 
 Reads an `.h5ad` and writes three tables: `scrna_datasets` (the registration),
-`scrna_clusters` (the cell-type catalogue, one row per label with a stable
-ordinal and colour) and `scrna_cells` (one row per cell: its UMAP coordinates,
-its cell type, and which sample it came from).
+`scrna_clusters` (the cell-type catalogue, one row per label with an ordinal and
+a colour) and `scrna_cells` (one row per cell: its UMAP coordinates, its cell
+type, and which sample it came from). Per-gene expression is loaded afterwards
+by ingest_scrnaseq_counts.py.
 
-Nothing here touches object storage. The explorer's `scrna_cell_arrays` RPC
-selects straight from `scrna_cells` joined to `scrna_clusters`, ordered by
-`cell_number`, so the coordinates have to be columns. Per-gene expression is the
-part that lives in storage, and it is loaded separately.
+It signs in to the site as a writer (or admin) account and writes through the
+API. The password is read from BLOOM_PASSWORD, never from the command line:
 
-Run deliberately against a chosen database, never as part of a migration. The
-whole load is one transaction over a direct connection, so a failure leaves the
-dataset exactly as it was:
-
-    DATABASE_URL=postgresql://user:pass@host:5432/postgres \
-      uv run --with anndata --with 'psycopg[binary]' python scripts/ingest_scrnaseq.py \
+    BLOOM_PASSWORD=... uv run --with anndata --with supabase \
+      python scripts/ingest_scrnaseq.py \
+        --server https://staging.bloom.salk.edu --email you@salk.edu \
         --h5ad myb41_joint_SATURN_LABELS.h5ad \
-        --dataset-name "MYB41 transgene" \
-        --species-id 1 \
-        --annotation nn_label_plain \
-        --expect-cells 8683 \
-        --create
+        --dataset-name "MYB41 transgene" --species-id 1 \
+        --annotation nn_label_plain --expect-cells 8683 --create
 
-Re-running replaces that dataset's cells and catalogue, and needs no --create:
-that flag guards registration only, so a mistyped name is refused rather than
-loaded as a second copy alongside the real one. Because it is one transaction,
-an interrupted run rolls back and can simply be run again.
+--server reads the API address from the site; --api-url and --anon-key give it
+directly instead. An admin makes an account a writer with:
+
+    UPDATE auth.users SET raw_app_meta_data = raw_app_meta_data || '{"is_writer": true}'
+    WHERE email = 'you@salk.edu';
+
+--create registers a new dataset; without it an unknown name is refused, so a
+typo cannot load a second copy. If a load stops, run the same command again: it
+continues from what is already stored. A finished dataset is not loaded again;
+replacing one is an admin task. Load a dataset from one terminal at a time.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
-import os
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
-# Cluster colours. Assigning them here rather than in the browser is what keeps
-# a cell type the same colour between users, and a reload keeps the colour and
-# the name each surviving cell type already had. This supersedes the 20-colour
-# list in scripts/backfill_scrna_cluster_colors.sql, which cannot cover the 23
-# cell types this dataset carries.
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import scrna_ingest_api as ingest_api
+
+IngestError = ingest_api.IngestError
+
+# Cluster colours, one per ordinal, so a cell type is the same colour for every
+# user. This supersedes the 20-colour list in
+# scripts/backfill_scrna_cluster_colors.sql, which cannot cover the 23 cell types
+# this dataset carries.
 PALETTE = [
     "#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F",
     "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC",
@@ -53,6 +56,24 @@ PALETTE = [
     "#8CD17D", "#B6992D", "#499894", "#FABFD2", "#D4A6C8",
     "#79706E", "#D7B5A6", "#6B4C9A",
 ]
+
+# Cells per insert request; each has to finish well inside the gateway's 60 s.
+CELL_BATCH = 5000
+
+# The options a resumed load must share with the load it continues.
+OPTION_KEYS = ("annotation", "sample_column", "umap_key", "source_column",
+               "expression_units")
+
+# Rows written after the cells. On a dataset whose cells are unfinished they
+# mean something went wrong.
+LATER_TABLES = (
+    ("scrna_cluster_stats", "per-cluster statistics"),
+    ("scrna_cluster_neighbors", "neighbour rows"),
+    ("scrna_counts", "per-gene expression rows"),
+    ("scrna_de", "differential expression rows"),
+)
+
+ADMIN = "replacing a loaded dataset is an admin task"
 
 # A real embedding gives essentially every cell its own point: on this dataset's
 # 8,683 cells and on the 138,865-row joint embedding, every single point is
@@ -69,10 +90,6 @@ NOT_A_VALUE = {"", "nan", "none", "na", "<na>", "null"}
 # scrna_cell_arrays casts x and y to REAL on the way out, so a coordinate above
 # this stores fine and then fails for every reader of the dataset.
 FLOAT32_MAX = 3.4028235e38
-
-
-class IngestError(RuntimeError):
-    """Something about the file or the database makes this load unsafe."""
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -110,8 +127,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="register the dataset if no dataset of this name exists for this "
              "species. Without it an unrecognised name is refused, so a typo "
-             "cannot load a second copy alongside the real one",
+             "cannot load a second copy alongside the real one. Accepted when "
+             "resuming, so the same command continues a stopped load",
     )
+    p.add_argument("--server", help="the site, e.g. https://staging.bloom.salk.edu; "
+                   "the API address is read from it")
+    p.add_argument("--api-url", help="the API address, instead of reading it from --server")
+    p.add_argument("--anon-key", help="the site's public key, with --api-url")
+    p.add_argument("--email", help="the writer account to sign in as; the password "
+                   "is read from BLOOM_PASSWORD")
     p.add_argument("--dry-run", action="store_true",
                    help="read and check the file, write nothing")
     return p.parse_args(argv)
@@ -332,171 +356,157 @@ def summarise(cells: dict) -> str:
     )
 
 
-def load(conn, name: str, species_id: int, cells: dict, source_checksum: str,
-         units: str, annotation: str, create: bool = False) -> tuple[int, int, bool]:
-    """Write the dataset, its catalogue and its cells in one transaction.
+def _check_columns(cells: dict) -> None:
+    n = cells["n_cells"]
+    for key in ("x", "y", "labels", "samples", "barcodes"):
+        if len(cells[key]) != n:
+            raise IngestError(f"{key} holds {len(cells[key])} values for {n} cells")
 
-    Order matters twice over. `scrna_cells` references the catalogue with
-    ON DELETE RESTRICT, so the cells go first or the catalogue delete is refused
-    on every run after the first. And the dataset's counts and checksum are
-    written last, after reading back what actually landed, so the row can never
-    attest to a file it does not hold.
 
-    A reload is refused outright when the dataset already has rows that name a
-    cell type or a cell position, since nothing here can rebuild them.
+def _check_resume(found: dict, source_checksum: str, options: dict) -> str:
+    """'resumed' or 'already loaded', or refuse."""
+    dataset_id, stored = found["id"], found.get("source_checksum")
+    if not stored:
+        raise IngestError(f"dataset {dataset_id} records no source file, so this "
+                          f"load cannot tell whether it is the same one; {ADMIN}")
+    if found.get("ingested_at"):
+        if stored == source_checksum:
+            return "already loaded"
+        raise IngestError(f"dataset {dataset_id} was loaded from a file with checksum "
+                          f"{stored}; this file's is {source_checksum}. {ADMIN}")
+    if stored != source_checksum:
+        raise IngestError(f"dataset {dataset_id} was started from a file with checksum "
+                          f"{stored}; this file's is {source_checksum}. Resume it with "
+                          f"the same file")
+    started = (found.get("metadata") or {}).get("load_options") or {}
+    changed = [f"{k} was {started.get(k)!r}, now {options.get(k)!r}"
+               for k in OPTION_KEYS if started.get(k) != options.get(k)]
+    if changed:
+        raise IngestError(f"dataset {dataset_id} was started with other options: "
+                          f"{'; '.join(changed)}. Resume it with the same options")
+    return "resumed"
 
-    Registering a dataset that does not exist yet takes `create`, so a mistyped
-    name is refused rather than quietly loaded as a second copy.
 
-    Returns the dataset id, the number of cells actually stored, and whether the
-    dataset was registered by this call rather than replaced.
+def _check_nothing_later(writer, dataset_id: int) -> None:
+    found = [what for table, what in LATER_TABLES if writer.read(
+        lambda c, table=table: c.table(table).select("dataset_id")
+        .eq("dataset_id", dataset_id).limit(1).execute().data)]
+    if found:
+        raise IngestError(f"dataset {dataset_id} has unfinished cells but already has "
+                          f"{' and '.join(found)}; an admin has to look at it")
+
+
+def catalogue_rows(dataset_id: int, cells: dict) -> list[dict]:
+    """One cell type per label, sorted: ordinal is the index, colour the palette."""
+    sources = cells.get("sources") or {}
+    return [{"dataset_id": dataset_id, "cluster_id": level, "ordinal": i,
+             "name": level, "color": PALETTE[i],
+             "source": (sources.get(level) or "").strip() or None}
+            for i, level in enumerate(cells["levels"])]
+
+
+def _write_catalogue(writer, dataset_id: int, cells: dict, resuming: bool) -> None:
+    wanted = {level: i for i, level in enumerate(cells["levels"])}
+    if resuming:
+        stored = {r["cluster_id"]: r["ordinal"] for r in ingest_api.read_all(
+            writer, "scrna_clusters", "cluster_id,ordinal",
+            filters=[("eq", "dataset_id", dataset_id)])}
+        if stored == wanted:
+            return
+        if stored:
+            def show(m):
+                return ", ".join(f"{k}={v}" for k, v in sorted(m.items(), key=lambda kv: kv[1]))
+            raise IngestError(f"dataset {dataset_id} holds the cell types {show(stored)}; "
+                              f"the file has {show(wanted)}")
+    ingest_api.insert(writer, "write the cell-type catalogue", "scrna_clusters",
+                      catalogue_rows(dataset_id, cells))
+
+
+def _cell_numbers(writer, dataset_id: int) -> list[int]:
+    return [r["cell_number"] for r in ingest_api.read_all(
+        writer, "scrna_cells", "cell_number", filters=[("eq", "dataset_id", dataset_id)])]
+
+
+def _check_numbers(dataset_id: int, numbers: list[int], n: int, *, complete: bool) -> None:
+    """Every stored cell_number in 0 … n−1 and each once; with `complete`, all of them."""
+    seen = Counter(numbers)
+    problems = []
+    repeated = sorted(k for k, v in seen.items() if v > 1)
+    outside = sorted(k for k in seen if not 0 <= k < n)
+    if repeated:
+        problems.append(f"{len(repeated)} cell numbers repeated (e.g. {repeated[:3]})")
+    if outside:
+        problems.append(f"{len(outside)} outside 0–{n - 1} (e.g. {outside[:3]})")
+    if complete and len(seen) - len(outside) != n:
+        problems.append(f"{n - (len(seen) - len(outside))} of {n} cells missing")
+    if problems:
+        raise IngestError(f"dataset {dataset_id} stores {'; '.join(problems)}. It is "
+                          f"not finished; an admin has to look at it")
+
+
+def _insert_cells(writer, dataset_id: int, cells: dict, missing: list[int]) -> None:
+    for start in range(0, len(missing), CELL_BATCH):
+        chunk = missing[start:start + CELL_BATCH]
+        rows = [{"dataset_id": dataset_id, "cell_number": i,
+                 "barcode": cells["barcodes"][i], "x": cells["x"][i], "y": cells["y"][i],
+                 "cluster_id": cells["labels"][i], "replicate": cells["samples"][i]}
+                for i in chunk]
+        ingest_api.insert(writer, f"insert cells {chunk[0]}–{chunk[-1]}",
+                          "scrna_cells", rows)
+
+
+def load(writer, name: str, species_id: int, cells: dict, source_checksum: str,
+         options: dict, *, create: bool = False) -> tuple[int, int, str]:
+    """Register or resume the dataset, write what is missing, then finish it.
+
+    Returns the dataset id, the number of cells stored, and "registered",
+    "resumed" or "already loaded".
     """
     name = name.strip()
     if not name:
         raise IngestError("the dataset name is blank")
     if len(cells["levels"]) > len(PALETTE):
-        raise IngestError(
-            f"{len(cells['levels'])} cell types and {len(PALETTE)} colours to "
-            f"tell them apart; two would be drawn identically"
-        )
-    with conn.cursor() as cur:
-        cur.execute(
-            # btrim on the column too: rows registered before the name was
-            # trimmed here can carry padding, and an exact match would miss
-            # them and offer to register a second copy.
-            "SELECT id FROM public.scrna_datasets "
-            "WHERE btrim(name) = %s AND species_id = %s AND deleted_at IS NULL",
-            (name, species_id),
-        )
-        found = cur.fetchall()
-        if len(found) > 1:
-            raise IngestError(
-                f"{len(found)} datasets are named {name!r} for species "
-                f"{species_id}; cannot tell which to replace"
-            )
+        raise IngestError(f"{len(cells['levels'])} cell types and {len(PALETTE)} "
+                          f"colours to tell them apart; two would be drawn identically")
+    _check_columns(cells)
 
-        created = not found
-        if found and create:
-            raise IngestError(
-                f"dataset {found[0][0]} is already named {name!r} for species "
-                f"{species_id}. Re-run without --create to replace its cells; "
-                f"--create is for registering a dataset that does not exist yet"
-            )
-        if found:
-            dataset_id = found[0][0]
-            cur.execute(
-                "SELECT"
-                " (SELECT count(*) FROM public.scrna_cluster_stats WHERE dataset_id = %(d)s),"
-                " (SELECT count(*) FROM public.scrna_cluster_neighbors WHERE dataset_id = %(d)s),"
-                " (SELECT count(*) FROM public.scrna_counts WHERE dataset_id = %(d)s),"
-                " (SELECT count(*) FROM public.scrna_de WHERE dataset_id = %(d)s)",
-                {"d": dataset_id},
-            )
-            # Anything keyed by cell type or cell position blocks a reload.
-            blocked = [
-                what
-                for what, n in zip(
-                    ("per-cluster statistics", "neighbour rows",
-                     "per-gene expression rows",
-                     "differential expression rows"),
-                    cur.fetchone(),
-                )
-                if n
-            ]
-            if blocked:
-                raise IngestError(
-                    f"dataset {dataset_id} has {' and '.join(blocked)} that "
-                    f"reloading its cells would invalidate. Remove them "
-                    f"deliberately first, then re-run."
-                )
-        else:
-            # Creating on a miss is how a mistyped name forks a dataset: the
-            # load succeeds, reports the same sentence a replace does, and the
-            # next run with the name spelled right finds two and refuses every
-            # time after. Count files are keyed by dataset name, so the copies
-            # would share a namespace too.
-            if not create:
-                raise IngestError(
-                    f"no dataset named {name!r} for species {species_id}. Pass "
-                    f"--create to register a new one; without it a mistyped "
-                    f"name would silently load a second copy"
-                )
-            cur.execute(
-                "INSERT INTO public.scrna_datasets (name, species_id) "
-                "VALUES (%s, %s) RETURNING id",
-                (name, species_id),
-            )
-            dataset_id = cur.fetchone()[0]
+    found = ingest_api.find_dataset(writer, species_id, name)
+    if found is None:
+        if not create:
+            raise IngestError(f"no dataset named {name!r} for species {species_id}. "
+                              f"Pass --create to register a new one; without it a "
+                              f"mistyped name would load a second copy")
+        if not ingest_api.dataset_name_ok(name):
+            raise IngestError(f"{name!r} cannot be part of a storage path; use letters, "
+                              f"digits, spaces, '.', '_' and '-'")
+        (found,) = ingest_api.insert(writer, "register the dataset", "scrna_datasets", [{
+            "name": name, "species_id": species_id, "source_checksum": source_checksum,
+            "metadata": {"load_options": options}}], returning=True)
+        outcome = "registered"
+    else:
+        outcome = _check_resume(found, source_checksum, options)
+        if outcome == "already loaded":
+            return found["id"], found.get("n_cells") or 0, outcome
+        _check_nothing_later(writer, found["id"])
+    dataset_id, n = found["id"], cells["n_cells"]
 
-        # A cluster's name and colour are edited by hand after a load -- the
-        # backfill script seeds them and says to fix the biology in Studio --
-        # and neither can be rebuilt from the file, so a surviving cell type
-        # keeps both. A source can be rebuilt, but only when this run was given
-        # a source column; otherwise a surviving type keeps that by hand too.
-        # A new one takes a colour no surviving type is already using.
-        cur.execute(
-            "SELECT cluster_id, name, color, source FROM public.scrna_clusters "
-            "WHERE dataset_id = %s", (dataset_id,),
-        )
-        kept = {
-            cid: (name, color, source)
-            for cid, name, color, source in cur.fetchall()
-            if cid in set(cells["levels"])
-        }
-        taken = {color.lower() for _, color, _ in kept.values() if color}
-        spare = iter([c for c in PALETTE if c.lower() not in taken])
+    _write_catalogue(writer, dataset_id, cells, resuming=outcome == "resumed")
+    numbers = _cell_numbers(writer, dataset_id) if outcome == "resumed" else []
+    _check_numbers(dataset_id, numbers, n, complete=False)
+    have = set(numbers)
+    _insert_cells(writer, dataset_id, cells, [i for i in range(n) if i not in have])
+    _check_numbers(dataset_id, _cell_numbers(writer, dataset_id), n, complete=True)
 
-        cur.execute("DELETE FROM public.scrna_cells WHERE dataset_id = %s", (dataset_id,))
-        cur.execute("DELETE FROM public.scrna_clusters WHERE dataset_id = %s", (dataset_id,))
-
-        catalogue = []
-        from_file = cells.get("sources") or {}
-        for ordinal, level in enumerate(cells["levels"]):
-            name, color, source = kept.get(level, (None, None, None))
-            catalogue.append((
-                dataset_id, level, ordinal,
-                (name or "").strip() or level,
-                (color or "").strip() or next(spare),
-                (from_file.get(level) or source or "").strip() or None,
-            ))
-        cur.executemany(
-            "INSERT INTO public.scrna_clusters "
-            "(dataset_id, cluster_id, ordinal, name, color, source) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            catalogue,
-        )
-        cur.executemany(
-            "INSERT INTO public.scrna_cells "
-            "(dataset_id, cell_number, barcode, x, y, cluster_id, replicate) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            [
-                (dataset_id, i, barcode, x, y, label, sample)
-                for i, (barcode, x, y, label, sample) in enumerate(
-                    zip(cells["barcodes"], cells["x"], cells["y"],
-                        cells["labels"], cells["samples"])
-                )
-            ],
-        )
-
-        cur.execute(
-            "SELECT count(*) FROM public.scrna_cells WHERE dataset_id = %s", (dataset_id,)
-        )
-        stored = cur.fetchone()[0]
-        if stored != cells["n_cells"]:
-            raise IngestError(
-                f"wrote {stored} cells but the file holds {cells['n_cells']}"
-            )
-
-        cur.execute(
-            "UPDATE public.scrna_datasets SET n_cells = %s, n_genes = %s, "
-            "source_checksum = %s, ingested_at = %s, expression_units = %s, "
-            "metadata = COALESCE(metadata, '{}'::jsonb) "
-            "  || jsonb_build_object('cell_type_column', %s::text) "
-            "WHERE id = %s",
-            (cells["n_cells"], cells["n_genes"], source_checksum,
-             datetime.now(timezone.utc), units, annotation, dataset_id),
-        )
-    return dataset_id, stored, created
+    (current,) = writer.read(lambda c: c.table("scrna_datasets").select("metadata")
+                             .eq("id", dataset_id).execute().data)
+    ingest_api.update(writer, "finish the dataset", "scrna_datasets", {
+        "n_cells": n, "n_genes": cells["n_genes"],
+        "expression_units": options["expression_units"],
+        "metadata": {**(current.get("metadata") or {}),
+                     "cell_type_column": options["annotation"]},
+        "ingested_at": datetime.now(UTC).isoformat(),
+    }, eq={"id": dataset_id})
+    return dataset_id, n, outcome
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -511,47 +521,40 @@ def main(argv: list[str] | None = None) -> int:
         print(f"refusing to ingest: {exc}", file=sys.stderr)
         return 1
 
-    print(f"{args.h5ad.name}: {summarise(cells)}")
+    print(f"{args.dataset_name.strip()!r} from {args.h5ad.name}: {summarise(cells)}")
 
     if args.dry_run:
         print("dry run — nothing written")
         return 0
 
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        print(
-            "DATABASE_URL is required — a direct connection, so the whole load "
-            "is one transaction. The role needs SELECT, INSERT and DELETE on "
-            "scrna_clusters and scrna_cells, SELECT, INSERT and UPDATE on "
-            "scrna_datasets, and SELECT on scrna_cluster_stats, "
-            "scrna_cluster_neighbors, scrna_counts and scrna_de.",
-            file=sys.stderr,
-        )
+    if not args.email:
+        print("refusing to ingest: --email names the account to sign in as; its "
+              "password is read from BLOOM_PASSWORD", file=sys.stderr)
         return 1
 
-    import psycopg
-
+    options = {"annotation": args.annotation, "sample_column": args.sample_column,
+               "umap_key": args.umap_key, "source_column": args.source_column,
+               "expression_units": args.expression_units}
+    marker = ingest_api.Marker(ingest_api.marker_path(args.h5ad, args.dataset_name))
     try:
-        with psycopg.connect(database_url) as conn:
-            dataset_id, stored, created = load(
-                conn, args.dataset_name, args.species_id, cells,
-                checksum(args.h5ad), args.expression_units, args.annotation,
-                create=args.create,
-            )
+        marker.check()
+        password = ingest_api.read_password()
+        api_url, anon_key = ingest_api.resolve_api(args.server, args.api_url, args.anon_key)
+        session = ingest_api.sign_in(api_url, anon_key, args.email, password)
+        dataset_id, stored, outcome = load(
+            ingest_api.Writer(session, marker), args.dataset_name, args.species_id,
+            cells, checksum(args.h5ad), options, create=args.create,
+        )
     except IngestError as exc:
         print(f"refusing to ingest: {exc}", file=sys.stderr)
         return 1
-    except psycopg.Error as exc:
-        # A species id that is right on one database and wrong on another is the
-        # likeliest operator mistake, and it arrives as a foreign key violation.
-        print(f"the database refused the load: {exc}", file=sys.stderr)
-        return 1
 
-    # Which of the two happened, because they are the same sentence otherwise
-    # and a mistyped name is exactly the case worth seeing.
-    what = "registered" if created else "replaced the cells of"
-    print(f"{what} dataset {dataset_id} ({args.dataset_name.strip()!r}): "
-          f"{stored} cells")
+    name = args.dataset_name.strip()
+    if outcome == "already loaded":
+        print(f"dataset {dataset_id} ({name!r}) is already loaded from this file: "
+              f"{stored} cells")
+    else:
+        print(f"{outcome} dataset {dataset_id} ({name!r}): {stored} cells")
     return 0
 
 

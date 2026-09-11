@@ -52,6 +52,10 @@ class Query:
         self.order_by = (column, desc)
         return self
 
+    def limit(self, size, **_):
+        self.window = (0, size - 1)
+        return self
+
     def range(self, start, end):
         self.window = (start, end)
         return self
