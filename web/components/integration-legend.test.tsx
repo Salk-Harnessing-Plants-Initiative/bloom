@@ -62,6 +62,12 @@ describe("the legend", () => {
     expect(onHideAll).toHaveBeenCalledTimes(1);
   });
 
+  it("shows a green badge on the values that have one", () => {
+    setup({ badges: ["82 transgene+", null] });
+    expect(screen.getByText("82 transgene+")).toBeTruthy();
+    expect(screen.getAllByText(/transgene\+/)).toHaveLength(1);
+  });
+
   it("says how many points have no value, and only when some do", () => {
     setup({ noValueCount: 19755 });
     expect(screen.getByText(/19,755 points have no shahan_cell_type/)).toBeTruthy();

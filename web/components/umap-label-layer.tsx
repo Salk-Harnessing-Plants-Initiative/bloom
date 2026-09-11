@@ -7,6 +7,8 @@ export interface MapLabel {
   /** Where to write it, in the map's own coordinates. */
   x: number;
   y: number;
+  /** A green badge after the name, such as its transgene-positive cells. */
+  badge?: string;
 }
 
 interface Props {
@@ -41,6 +43,14 @@ export function UmapLabelLayer({ labels, project, width, height }: Props) {
               }}
             >
               {label.text}
+              {label.badge && (
+                <span
+                  className="ml-1.5 rounded-full bg-emerald-500 px-1.5 py-0.5 align-middle text-[10px] font-bold text-white ring-1 ring-emerald-200"
+                  style={{ textShadow: "none" }}
+                >
+                  {label.badge}
+                </span>
+              )}
             </div>
           );
         })}

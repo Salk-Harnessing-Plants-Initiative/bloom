@@ -35,6 +35,19 @@ describe("the label layer", () => {
     expect(screen.getAllByTestId("umap-label")).toHaveLength(1);
   });
 
+  it("shows a label's green badge", () => {
+    render(
+      <UmapLabelLayer
+        labels={[{ text: "Phellem", x: 10, y: 20, badge: "82 transgene+" }, { text: "Xylem", x: 30, y: 20 }]}
+        project={project}
+        width={100}
+        height={100}
+      />,
+    );
+    expect(screen.getByText("82 transgene+")).toBeTruthy();
+    expect(screen.getAllByText(/transgene\+/)).toHaveLength(1);
+  });
+
   it("draws nothing, not even the button, with no labels", () => {
     render(<UmapLabelLayer labels={[]} project={project} width={100} height={100} />);
     expect(screen.queryByRole("button")).toBeNull();

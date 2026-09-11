@@ -305,3 +305,15 @@ export function combinedRow(
   }
   return { key, levels, codes };
 }
+
+/** Per value of `row`, how many points have the flag's chosen value: how many
+ *  transgene-positive cells each cell type holds, say. */
+export function countFlagged(row: LabelRow, flag: LabelRow, flagLevel: number): number[] {
+  const out = new Array<number>(row.levels.length).fill(0);
+  if (flagLevel < 0) return out;
+  for (let i = 0; i < row.codes.length; i++) {
+    const code = row.codes[i];
+    if (code >= 0 && flag.codes[i] === flagLevel) out[code]++;
+  }
+  return out;
+}

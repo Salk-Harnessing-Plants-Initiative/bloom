@@ -12,6 +12,8 @@ interface Props {
   noValueCount: number;
   hidden: ReadonlySet<number>;
   focused: ReadonlySet<number>;
+  /** A green badge per value, such as its transgene-positive cells; null for none. */
+  badges?: (string | null)[];
   onToggle: (level: number) => void;
   onFocus: (level: number) => void;
   onShowAll: () => void;
@@ -29,6 +31,7 @@ export function IntegrationLegend({
   noValueCount,
   hidden,
   focused,
+  badges,
   onToggle,
   onFocus,
   onShowAll,
@@ -92,6 +95,11 @@ export function IntegrationLegend({
                 <span className="text-[10px] tabular-nums text-stone-500">
                   {fmt.format(counts[i] ?? 0)}
                 </span>
+                {badges?.[i] && (
+                  <span className="rounded-full bg-emerald-600 px-1.5 py-px text-[10px] font-bold text-white">
+                    {badges[i]}
+                  </span>
+                )}
               </button>
               <button
                 type="button"

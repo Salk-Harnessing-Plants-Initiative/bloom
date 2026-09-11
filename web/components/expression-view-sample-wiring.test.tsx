@@ -218,11 +218,11 @@ describe("ExpressionView — label rows", () => {
     filters: ["sample", "transgene_pos"],
     unlabelled: { sample: 0, transgene_pos: 0 },
     cells: [
-      { replicate: "Col-0", facets: { transgene_pos: "False" } },
-      { replicate: "Col-0", facets: { transgene_pos: "False" } },
-      { replicate: "pFACT", facets: { transgene_pos: "True" } },
-      { replicate: "pFACT", facets: { transgene_pos: "True" } },
-      { replicate: "pFACT", facets: { transgene_pos: "False" } },
+      { replicate: "Col-0", cluster_ordinal: 0, facets: { transgene_pos: "False" } },
+      { replicate: "Col-0", cluster_ordinal: 0, facets: { transgene_pos: "False" } },
+      { replicate: "pFACT", cluster_ordinal: 0, facets: { transgene_pos: "True" } },
+      { replicate: "pFACT", cluster_ordinal: 0, facets: { transgene_pos: "True" } },
+      { replicate: "pFACT", cluster_ordinal: 0, facets: { transgene_pos: "False" } },
     ],
   };
 
@@ -280,9 +280,9 @@ describe("ExpressionView — focusing on values", () => {
     filters: ["sample", "transgene_pos"],
     unlabelled: { sample: 0, transgene_pos: 0 },
     cells: [
-      { replicate: "Col-0", facets: { transgene_pos: "False" } },
-      { replicate: "pFACT", facets: { transgene_pos: "True" } },
-      { replicate: "pFACT", facets: { transgene_pos: "False" } },
+      { replicate: "Col-0", cluster_ordinal: 0, facets: { transgene_pos: "False" } },
+      { replicate: "pFACT", cluster_ordinal: 0, facets: { transgene_pos: "True" } },
+      { replicate: "pFACT", cluster_ordinal: 0, facets: { transgene_pos: "False" } },
     ],
   };
 

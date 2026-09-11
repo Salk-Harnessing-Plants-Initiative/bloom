@@ -12,8 +12,16 @@ import { IntegrationUmap } from "@/components/integration-umap";
 import { fetchJointArrays, fetchLabelCodes } from "@/components/integration-lib/joint-client";
 import { labelAnchors } from "@/components/expression-lib/umap-labels";
 import {
+  topGroups,
+  TRANSGENE_FACET,
+  TRANSGENE_POSITIVE,
+  transgeneBadge,
+} from "@/components/expression-lib/transgene";
+import { TransgeneSummary } from "@/components/transgene-summary";
+import {
   CELL_TYPE_KEY,
   combinedRow,
+  countFlagged,
   countFocused,
   countLevels,
   countNoValue,
@@ -173,14 +181,44 @@ export function IntegrationView({ embeddingId, members, labelKeys, cellTypeLabel
   const shownCount = useMemo(() => visibility.reduce((sum, v) => sum + v, 0), [visibility]);
   const anyHidden = [...hidden.values()].some((values) => values.size > 0);
 
-  // Names on the map for what it is coloured by. Datasets are left unnamed:
-  // they lie over one another, so no one spot belongs to any of them.
+  // Transgene-positive cells, over every cell that records a transgene status:
+  // in all, and per value of what the map is coloured by.
+  const transgeneRow = labelRows.get(TRANSGENE_FACET);
+  const positiveLevel = transgeneRow ? transgeneRow.levels.indexOf(TRANSGENE_POSITIVE) : -1;
+  const transgeneTotals = useMemo(() => {
+    if (!transgeneRow || positiveLevel < 0) return null;
+    let positive = 0;
+    let recorded = 0;
+    for (let i = 0; i < transgeneRow.codes.length; i++) {
+      const code = transgeneRow.codes[i];
+      if (code < 0) continue;
+      recorded++;
+      if (code === positiveLevel) positive++;
+    }
+    return { positive, recorded };
+  }, [transgeneRow, positiveLevel]);
+  const flagged = useMemo(() => {
+    if (!colourRow || !transgeneRow || positiveLevel < 0) return null;
+    if (colourRow.key === TRANSGENE_FACET || transgeneRow.codes.length !== colourRow.codes.length) {
+      return null;
+    }
+    return countFlagged(colourRow, transgeneRow, positiveLevel);
+  }, [colourRow, transgeneRow, positiveLevel]);
+
+  // Names on the map for what it is coloured by, each with a green badge for
+  // its transgene-positive cells. Datasets are left unnamed: they lie over one
+  // another, so no one spot belongs to any of them.
   const mapLabels = useMemo(() => {
     if (!base || !colourRow || colourRow.key === DATASET_KEY) return [];
     return labelAnchors(base.positions, colourRow.codes, colourRow.levels.length, visibility).map(
-      (anchor) => ({ text: colourRow.levels[anchor.level], x: anchor.x, y: anchor.y }),
+      (anchor) => ({
+        text: colourRow.levels[anchor.level],
+        x: anchor.x,
+        y: anchor.y,
+        badge: flagged ? transgeneBadge(flagged[anchor.level]) ?? undefined : undefined,
+      }),
     );
-  }, [base, colourRow, visibility]);
+  }, [base, colourRow, visibility, flagged]);
 
   const toggleHidden = useCallback(
     (key: string, level: number) => setHidden((prev) => toggled(prev, key, level)),
@@ -313,6 +351,19 @@ export function IntegrationView({ embeddingId, members, labelKeys, cellTypeLabel
           </div>
         </div>
 
+        {transgeneTotals && transgeneTotals.positive > 0 && (
+          <TransgeneSummary
+            positive={transgeneTotals.positive}
+            total={transgeneTotals.recorded}
+            totalNoun="cells that record it"
+            top={
+              flagged && colourRow
+                ? topGroups(colourRow.levels.map((name, i) => ({ name, positive: flagged[i] })))
+                : []
+            }
+          />
+        )}
+
         {colourRow && (
           <IntegrationLegend
             title={rowTitle(colourRow.key)}
@@ -322,6 +373,7 @@ export function IntegrationView({ embeddingId, members, labelKeys, cellTypeLabel
             noValueCount={noValue.get(colourRow.key) ?? 0}
             hidden={hidden.get(colourRow.key) ?? NOTHING}
             focused={focused.get(colourRow.key) ?? NOTHING}
+            badges={flagged ? flagged.map(transgeneBadge) : undefined}
             onToggle={(level) => toggleHidden(colourRow.key, level)}
             onFocus={(level) => toggleFocus(colourRow.key, level)}
             onShowAll={() => setHiddenLevels(colourRow.key, [])}

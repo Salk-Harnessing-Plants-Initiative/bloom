@@ -32,6 +32,7 @@ import { POINT_BLEND } from "@/components/expression-lib/point-blend";
 import { UmapZoomBar } from "@/components/umap-zoom-bar";
 import { UmapLabelLayer } from "@/components/umap-label-layer";
 import { labelAnchors, projectXY } from "@/components/expression-lib/umap-labels";
+import { transgeneBadge, transgeneByCluster } from "@/components/expression-lib/transgene";
 import type { Database } from "@/lib/database.types";
 
 type Dataset = Database["public"]["Tables"]["scrna_datasets"]["Row"];
@@ -166,7 +167,7 @@ export interface ExpressionUmapProps {
     /** Per filter row, the cells with no value for it. */
     unlabelled: Record<string, number>;
     /** The cells, so each row can count what the other rows leave showing. */
-    cells: Pick<CellArraysRow, "replicate" | "facets">[];
+    cells: Pick<CellArraysRow, "replicate" | "facets" | "cluster_ordinal">[];
   }) => void;
   /** Fires whenever the currently-overlaid gene's min/max changes */
   onExpressionRangeChanged?: (range: { min: number; max: number } | null) => void;
@@ -671,15 +672,22 @@ export function ExpressionUmap({
     setTranslate([0, 0]);
   }, []);
 
-  // Each cluster's name, written on its densest patch of shown cells.
+  // Each cluster's name, written on its densest patch of shown cells, with a
+  // green badge for its transgene-positive cells.
+  const transgene = useMemo(() => (data ? transgeneByCluster(data.cells) : null), [data]);
   const mapLabels = useMemo(() => {
     if (!data || !visibility) return [];
     const names = new Map(data.clusters.map((c) => [c.ordinal, c.name || c.cluster_id]));
     const nLevels = data.clusters.reduce((most, c) => Math.max(most, c.ordinal + 1), 0);
     return labelAnchors(data.positions, data.clusterOrdinals, nLevels, visibility)
       .filter((anchor) => names.has(anchor.level))
-      .map((anchor) => ({ text: names.get(anchor.level) ?? "", x: anchor.x, y: anchor.y }));
-  }, [data, visibility]);
+      .map((anchor) => ({
+        text: names.get(anchor.level) ?? "",
+        x: anchor.x,
+        y: anchor.y,
+        badge: transgeneBadge(transgene?.get(anchor.level)?.positive ?? 0) ?? undefined,
+      }));
+  }, [data, visibility, transgene]);
 
   const hoveredCell = useMemo(() => {
     if (!hovered || !data) return null;

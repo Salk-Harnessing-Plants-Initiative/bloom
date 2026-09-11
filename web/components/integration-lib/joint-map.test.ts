@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   cellTypeLabels,
   combinedRow,
+  countFlagged,
   memberNames,
   countFocused,
   countLevels,
@@ -243,5 +244,17 @@ describe("memberNames", () => {
 
   it("is empty when the map names none", () => {
     expect(memberNames({ cell_type_labels: { "0": "x" } }).size).toBe(0);
+  });
+});
+
+describe("countFlagged", () => {
+  it("counts, per value, the points the flag marks", () => {
+    // transgene_pos True marks points 2 and 4; point 4 has no cell type.
+    expect(countFlagged(CELL_TYPE, TRANSGENE, 1)).toEqual([1, 0]);
+    expect(countFlagged(DATASETS, TRANSGENE, 1)).toEqual([0, 2]);
+  });
+
+  it("counts nothing for a flag value the row does not have", () => {
+    expect(countFlagged(CELL_TYPE, TRANSGENE, -1)).toEqual([0, 0]);
   });
 });
