@@ -9,15 +9,17 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  countsFor,
   packCellArrays,
   packPositions,
   packVisibility,
+  type HiddenValues,
 } from "./expression-lib/umap-packing";
 import type { CellArraysRow } from "./expression-lib/scrna-client";
 
-function cell(x: number, y: number, ordinal: number, replicate: string | null):
-  CellArraysRow {
-  return { x, y, cluster_ordinal: ordinal, replicate };
+function cell(x: number, y: number, ordinal: number, replicate: string | null,
+              facets: Record<string, string> | null = null): CellArraysRow {
+  return { x, y, cluster_ordinal: ordinal, replicate, facets };
 }
 
 // x and y differ on every cell, so packing one from the other is visible; and
@@ -32,7 +34,8 @@ const CELLS = [
 const ORDINALS = new Uint8Array(CELLS.map((c) => c.cluster_ordinal));
 
 const NO_CLUSTERS: ReadonlySet<number> = new Set();
-const NO_SAMPLES: ReadonlySet<string> = new Set();
+const NO_SAMPLES: HiddenValues = new Map();
+const hide = (...names: string[]): HiddenValues => new Map([["sample", new Set(names)]]);
 
 describe("packVisibility", () => {
   it("shows every cell when nothing is hidden", () => {
@@ -43,19 +46,19 @@ describe("packVisibility", () => {
 
   it("hides exactly the cells of the hidden sample", () => {
     expect(
-      Array.from(packVisibility(CELLS, ORDINALS, NO_CLUSTERS, new Set(["pFACT"]))),
+      Array.from(packVisibility(CELLS, ORDINALS, NO_CLUSTERS, hide("pFACT"))),
     ).toEqual([1, 0, 1, 0]);
   });
 
   it("keeps one entry per cell, so nothing is removed from the data", () => {
-    const hidden = packVisibility(CELLS, ORDINALS, NO_CLUSTERS, new Set(["pFACT"]));
+    const hidden = packVisibility(CELLS, ORDINALS, NO_CLUSTERS, hide("pFACT"));
     expect(hidden.length).toBe(CELLS.length);
   });
 
   it("hides a cell that either its cluster or its sample rules out", () => {
     expect(
       Array.from(
-        packVisibility(CELLS, ORDINALS, new Set([0]), new Set(["pFACT"])),
+        packVisibility(CELLS, ORDINALS, new Set([0]), hide("pFACT")),
       ),
     ).toEqual([0, 0, 0, 0]);
     expect(
@@ -68,7 +71,7 @@ describe("packVisibility", () => {
     expect(
       Array.from(
         packVisibility(unlabelled, new Uint8Array([0, 0]), NO_CLUSTERS,
-                       new Set(["Col-0", ""])),
+                       hide("Col-0", "")),
       ),
     ).toEqual([1, 0]);
   });
@@ -156,6 +159,128 @@ describe("packCellArrays", () => {
       orphanCount: 0,
       samples: [],
       unlabelledCount: 0,
+      filters: [],
+      unlabelled: {},
     });
+  });
+});
+
+describe("packVisibility with labels", () => {
+  // Transgene status is the first label: 232 of 8,683 cells on the real
+  // dataset, and none of them in the control genotype.
+  const LABELLED = [
+    cell(0, 0, 0, "Col-0", { transgene_pos: "False" }),
+    cell(1, 1, 0, "pFACT", { transgene_pos: "True" }),
+    cell(2, 2, 1, "pFACT", { transgene_pos: "False" }),
+    cell(3, 3, 1, "pHORST", { transgene_pos: "True" }),
+  ];
+  const ORD = new Uint8Array([0, 0, 1, 1]);
+  const nothing = new Set<number>();
+
+  it("hides the cells carrying a hidden label value", () => {
+    const hidden = new Map([["transgene_pos", new Set(["False"])]]);
+    expect(Array.from(packVisibility(LABELLED, ORD, nothing, hidden))).toEqual([0, 1, 0, 1]);
+  });
+
+  it("combines with the sample row, so one genotype's positives can be shown alone", () => {
+    const both = new Map([
+      ["transgene_pos", new Set(["False"])],
+      ["sample", new Set(["Col-0", "pHORST"])],
+    ]);
+    expect(Array.from(packVisibility(LABELLED, ORD, nothing, both))).toEqual([0, 1, 0, 0]);
+  });
+
+  it("keeps one entry per cell, so nothing is removed from the data", () => {
+    const hidden = new Map([["transgene_pos", new Set(["True", "False"])]]);
+    expect(packVisibility(LABELLED, ORD, nothing, hidden).length).toBe(LABELLED.length);
+  });
+
+  it("never hides a cell on a label it has no value for", () => {
+    const mixed = [cell(0, 0, 0, "a", { other: "x" }), cell(1, 1, 0, "a", null)];
+    const hidden = new Map([["transgene_pos", new Set(["False", "True"])]]);
+    expect(Array.from(packVisibility(mixed, new Uint8Array([0, 0]), nothing, hidden))).toEqual([1, 1]);
+  });
+
+  it("applies every label, not just the first", () => {
+    const two = [
+      cell(0, 0, 0, "a", { one: "keep", two: "keep" }),
+      cell(1, 1, 0, "a", { one: "keep", two: "drop" }),
+    ];
+    const hidden = new Map([["two", new Set(["drop"])]]);
+    expect(Array.from(packVisibility(two, new Uint8Array([0, 0]), nothing, hidden))).toEqual([1, 0]);
+  });
+});
+
+describe("countsFor", () => {
+  // The shape of the real dataset: the control genotype carries none of the
+  // construct, and the other two carry a little of it.
+  const CELLS_3 = [
+    cell(0, 0, 0, "Col-0", { transgene_pos: "False" }),
+    cell(1, 1, 0, "Col-0", { transgene_pos: "False" }),
+    cell(2, 2, 0, "pFACT", { transgene_pos: "True" }),
+    cell(3, 3, 0, "pFACT", { transgene_pos: "False" }),
+    cell(4, 4, 0, "pHORST", { transgene_pos: "True" }),
+  ];
+  const nothingHidden: HiddenValues = new Map();
+
+  it("counts every cell when nothing is filtered, in first-seen order", () => {
+    expect(countsFor(CELLS_3, nothingHidden, "transgene_pos")).toEqual([
+      { name: "False", count: 3 },
+      { name: "True", count: 2 },
+    ]);
+  });
+
+  it("counts only what the other rows leave visible", () => {
+    // The control genotype alone has no transgene-positive cells, so offering
+    // "2 positive" would read as a finding rather than a filter.
+    const onlyCol0 = new Map([["sample", new Set(["pFACT", "pHORST"])]]);
+    expect(countsFor(CELLS_3, onlyCol0, "transgene_pos")).toEqual([
+      { name: "False", count: 2 },
+      { name: "True", count: 0 },
+    ]);
+  });
+
+  it("ignores its own hidden values, so a row does not zero itself out", () => {
+    const hidden = new Map([["transgene_pos", new Set(["True"])]]);
+    expect(countsFor(CELLS_3, hidden, "transgene_pos")).toEqual([
+      { name: "False", count: 3 },
+      { name: "True", count: 2 },
+    ]);
+  });
+
+  it("counts samples the same way, against the other rows", () => {
+    const onlyPositive = new Map([["transgene_pos", new Set(["False"])]]);
+    expect(countsFor(CELLS_3, onlyPositive, "sample")).toEqual([
+      { name: "Col-0", count: 0 },
+      { name: "pFACT", count: 1 },
+      { name: "pHORST", count: 1 },
+    ]);
+  });
+
+  it("skips cells that have no value for the row", () => {
+    const mixed = [...CELLS_3, cell(9, 9, 0, null, null)];
+    expect(countsFor(mixed, nothingHidden, "sample").length).toBe(3);
+  });
+});
+
+describe("packCellArrays filter rows", () => {
+  it("offers the sample row first, then each label in first-seen order", () => {
+    const cells = [
+      cell(0, 0, 0, "Col-0", { transgene_pos: "False" }),
+      cell(1, 1, 0, "pFACT", { transgene_pos: "True", saturn_timezone: "Meristem" }),
+    ];
+    const { filters, unlabelled } = packCellArrays(cells);
+    expect(filters).toEqual(["sample", "transgene_pos", "saturn_timezone"]);
+    // The first cell has no timezone, so it stays on the map whatever that row hides.
+    expect(unlabelled).toEqual({ sample: 0, transgene_pos: 0, saturn_timezone: 1 });
+  });
+
+  it("offers no rows for cells with no sample and no labels", () => {
+    expect(packCellArrays([cell(0, 0, 0, null)]).filters).toEqual([]);
+  });
+
+  it("does not let a label named like the sample row shadow it", () => {
+    const { filters } = packCellArrays([cell(0, 0, 0, "Col-0", { sample: "x" })]);
+    expect(filters).toEqual(["sample"]);
   });
 });

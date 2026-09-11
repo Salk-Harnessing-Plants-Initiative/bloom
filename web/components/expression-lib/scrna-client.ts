@@ -21,6 +21,10 @@ export interface CellArraysRow {
   cluster_ordinal: number;
   /** The sample this cell came from, or null for datasets that record none. */
   replicate: string | null;
+  /** The cell's genotype, or null when none was loaded. */
+  genotype?: string | null;
+  /** Labels the map can filter on, such as transgene status; null when none were loaded. */
+  facets?: Record<string, string> | null;
 }
 
 /** Cluster ordinal returned by the RPC for cells with no matching catalog row. */

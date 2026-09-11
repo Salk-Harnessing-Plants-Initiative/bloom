@@ -15,6 +15,7 @@ import {
   packClusterColors,
   packPositions,
   packVisibility,
+  type HiddenValues,
 } from "@/components/expression-lib/umap-packing";
 import {
   CLUSTER_FRAG,
@@ -29,14 +30,16 @@ type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
 
 const DEFAULT_POINT_SIZE = 4.0;
 
+const NO_HIDDEN_VALUES: HiddenValues = new Map();
+
 export interface ExpressionUmapProps {
   datasetId: number;
   /** Currently-selected gene for expression overlay; null = color by cluster */
   geneName?: string | null;
   /** Clusters currently hidden (ordinal set). Empty = all visible. */
   hiddenClusters?: ReadonlySet<number>;
-  /** Samples currently hidden by name. Empty = all visible. */
-  hiddenSamples?: ReadonlySet<string>;
+  /** Values hidden per filter row: the sample row and each label. Empty = all visible. */
+  hiddenValues?: HiddenValues;
   /** Height of the canvas in pixels; width fills the parent */
   height?: number;
   /** Fires when data is loaded so parent can render colorbar / sidebar */
@@ -52,6 +55,12 @@ export interface ExpressionUmapProps {
     /** Cells recording no sample. They are drawn and no toggle can hide them,
      *  so the "everything is hidden" message has to account for them. */
     unlabelledCount: number;
+    /** The filter rows the cells offer, the sample row first. */
+    filters: string[];
+    /** Per filter row, the cells with no value for it. */
+    unlabelled: Record<string, number>;
+    /** The cells, so each row can count what the other rows leave showing. */
+    cells: Pick<CellArraysRow, "replicate" | "facets">[];
   }) => void;
   /** Fires whenever the currently-overlaid gene's min/max changes */
   onExpressionRangeChanged?: (range: { min: number; max: number } | null) => void;
@@ -74,7 +83,7 @@ export function ExpressionUmap({
   datasetId,
   geneName,
   hiddenClusters,
-  hiddenSamples,
+  hiddenValues,
   height = 600,
   onDataLoaded,
   onExpressionRangeChanged,
@@ -148,7 +157,7 @@ export function ExpressionUmap({
         visibility.fill(1.0);
         // Counted from the cells themselves, so a dataset with different
         // samples — or none — needs no change here.
-        const { clusterOrdinals, orphanCount, samples, unlabelledCount } =
+        const { clusterOrdinals, orphanCount, samples, unlabelledCount, filters, unlabelled } =
           packCellArrays(cells);
         const loaded: LoadedData = {
           dataset,
@@ -170,6 +179,9 @@ export function ExpressionUmap({
           orphanCount,
           samples,
           unlabelledCount,
+          filters,
+          unlabelled,
+          cells,
         });
       } catch (err) {
         if (!cancelled) {
@@ -232,10 +244,10 @@ export function ExpressionUmap({
             data.cells,
             data.clusterOrdinals,
             hiddenClusters ?? new Set<number>(),
-            hiddenSamples ?? new Set<string>(),
+            hiddenValues ?? NO_HIDDEN_VALUES,
           )
         : null,
-    [data, hiddenClusters, hiddenSamples],
+    [data, hiddenClusters, hiddenValues],
   );
 
   // -------- regl init + render loop (runs ONCE per dataset) ------------------

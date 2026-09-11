@@ -50,6 +50,36 @@ export function packClusterColors(
   return out;
 }
 
+/** The filter row for the cells' sample; every other row is one of their labels. */
+export const SAMPLE_FILTER = "sample";
+
+/** Values hidden per filter row: the sample row and each label. */
+export type HiddenValues = ReadonlyMap<string, ReadonlySet<string>>;
+
+/** A cell's value for one filter row, or null when it has none. */
+export function filterValue(
+  cell: Pick<CellArraysRow, "replicate" | "facets">,
+  filter: string,
+): string | null {
+  const value = filter === SAMPLE_FILTER ? cell.replicate : cell.facets?.[filter];
+  return value == null || value === "" ? null : value;
+}
+
+/** Whether any row other than `skip` hides this cell. A cell with no value for
+ *  a row is never hidden by it: the row says nothing about that cell. */
+function ruledOut(
+  cell: Pick<CellArraysRow, "replicate" | "facets">,
+  hidden: HiddenValues,
+  skip?: string,
+): boolean {
+  for (const [filter, values] of hidden) {
+    if (filter === skip || values.size === 0) continue;
+    const value = filterValue(cell, filter);
+    if (value !== null && values.has(value)) return true;
+  }
+  return false;
+}
+
 /** Which cells are drawn: 1 for shown, 0 for hidden.
  *
  * Hiding is done here rather than by filtering the cells, and that is the whole
@@ -57,21 +87,36 @@ export function packClusterColors(
  * `packPositions` runs once over every cell and never sees the hidden set.
  */
 export function packVisibility(
-  cells: Pick<CellArraysRow, "replicate">[],
+  cells: Pick<CellArraysRow, "replicate" | "facets">[],
   clusterOrdinals: Uint8Array,
   hiddenClusters: ReadonlySet<number>,
-  hiddenSamples: ReadonlySet<string>,
+  hidden: HiddenValues = new Map(),
 ): Float32Array {
   const out = new Float32Array(cells.length);
   for (let i = 0; i < cells.length; i++) {
-    const sample = cells[i].replicate;
     out[i] =
-      hiddenClusters.has(clusterOrdinals[i]) ||
-      (sample != null && hiddenSamples.has(sample))
+      hiddenClusters.has(clusterOrdinals[i]) || ruledOut(cells[i], hidden)
         ? 0
         : 1.0;
   }
   return out;
+}
+
+/** Each value of one row, counting only the cells the other rows leave on the
+ *  map, in first-seen order. A value no cell can reach shows 0 rather than
+ *  disappearing. */
+export function countsFor(
+  cells: Pick<CellArraysRow, "replicate" | "facets">[],
+  hidden: HiddenValues,
+  filter: string,
+): { name: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const cell of cells) {
+    const value = filterValue(cell, filter);
+    if (value === null) continue;
+    counts.set(value, (counts.get(value) ?? 0) + (ruledOut(cell, hidden, filter) ? 0 : 1));
+  }
+  return [...counts].map(([name, count]) => ({ name, count }));
 }
 
 export function packPositions(cells: CellArraysRow[]): {
@@ -115,12 +160,19 @@ export interface CellArrays {
    *  not something the map can offer a toggle for. */
   samples: { name: string; count: number }[];
   unlabelledCount: number;
+  /** The filter rows the cells offer: the sample row when any cell records a
+   *  sample, then each label in the order first seen. */
+  filters: string[];
+  /** Per filter row, the cells with no value for it. They stay on the map
+   *  whatever that row hides. */
+  unlabelled: Record<string, number>;
 }
 
 /** One pass over the cells for everything the sidebar and the toggles need. */
 export function packCellArrays(cells: CellArraysRow[]): CellArrays {
   const clusterOrdinals = new Uint8Array(cells.length);
   const sampleCounts = new Map<string, number>();
+  const labelled = new Map<string, number>();
   let orphanCount = 0;
   let unlabelledCount = 0;
   for (let i = 0; i < cells.length; i++) {
@@ -132,11 +184,22 @@ export function packCellArrays(cells: CellArraysRow[]): CellArrays {
     } else {
       unlabelledCount++;
     }
+    for (const [name, value] of Object.entries(cells[i].facets ?? {})) {
+      // A label named like the sample row would be shadowed by it.
+      if (name === SAMPLE_FILTER || value == null || value === "") continue;
+      labelled.set(name, (labelled.get(name) ?? 0) + 1);
+    }
   }
+  const filters = [...(sampleCounts.size > 0 ? [SAMPLE_FILTER] : []), ...labelled.keys()];
+  const unlabelled: Record<string, number> = {};
+  if (sampleCounts.size > 0) unlabelled[SAMPLE_FILTER] = unlabelledCount;
+  for (const [name, n] of labelled) unlabelled[name] = cells.length - n;
   return {
     clusterOrdinals,
     orphanCount,
     samples: [...sampleCounts].map(([name, count]) => ({ name, count })),
     unlabelledCount,
+    filters,
+    unlabelled,
   };
 }
