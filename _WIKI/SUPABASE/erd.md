@@ -51,7 +51,7 @@ erDiagram
 "public.cyl_dataset_traits" }o--|| "public.cyl_scan_traits" : "FOREIGN KEY (trait_id) REFERENCES cyl_scan_traits(id)"
 "public.cyl_dataset_traits" }o--|| "public.cyl_datasets" : "FOREIGN KEY (dataset_id) REFERENCES cyl_datasets(id)"
 "public.scrna_de" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id)"
-"public.scrna_de" }o--|| "public.scrna_clusters" : "FOREIGN KEY (dataset_id, cluster_id) REFERENCES scrna_clusters(dataset_id, cluster_id) ON UPDATE CASCADE ON DELETE RESTRICT NOT VALID"
+"public.scrna_de" }o--|| "public.scrna_clusters" : "FOREIGN KEY (dataset_id, cluster_id) REFERENCES scrna_clusters(dataset_id, cluster_id) ON UPDATE CASCADE ON DELETE RESTRICT"
 "public.scrna_de" }o--|| "public.scrna_de_runs" : "FOREIGN KEY (dataset_id, run_id) REFERENCES scrna_de_runs(dataset_id, id)"
 "public.experiment_progress_logs" }o--|| "public.gene_candidates" : "FOREIGN KEY (gene) REFERENCES gene_candidates(gene) ON DELETE CASCADE"
 "public.plates_exp" }o--o| "public.plates_source_table" : "FOREIGN KEY (blob_storage_path) REFERENCES plates_source_table(id)"
@@ -442,10 +442,6 @@ erDiagram
   integer n_group1
   integer n_group2
   integer n_genes_tested
-  integer n_significant_fdr
-  integer n_significant_fdr_lfc
-  integer n_up
-  integer n_down
   bigint run_id FK
   text group_kind
   text method
