@@ -1,8 +1,8 @@
 """
 Integration tests for 20260911002809_scrna_de_results_belong_to_runs.sql.
 
-The five summary counts are gone, a new result has to belong to an analysis,
-and a cell type cannot be moved to another dataset.
+The four threshold counts are gone and n_genes_tested stays, a new result has
+to belong to an analysis, and a cell type cannot be moved to another dataset.
 
 Each rejection names the constraint it expects, because a row usually breaks
 more than one rule and the first to fire wins.
@@ -21,17 +21,17 @@ psycopg = pytest.importorskip("psycopg")
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 NAME = "scrna_de_results_belong_to_runs"
 
-COUNT_COLUMNS = {"n_genes_tested", "n_significant_fdr", "n_significant_fdr_lfc",
-                 "n_up", "n_down"}
+COUNT_COLUMNS = {"n_significant_fdr", "n_significant_fdr_lfc", "n_up", "n_down"}
 COUNT_RULES = {
     "scrna_de_counts_all_or_none", "scrna_de_counts_non_negative",
     "scrna_de_significant_within_tested", "scrna_de_lfc_cut_narrows_fdr_cut",
     "scrna_de_up_plus_down_is_lfc_significant",
-    "scrna_de_contrast_rows_carry_counts", "scrna_de_untested_counted_nothing",
+    "scrna_de_contrast_rows_carry_counts",
 }
 NEW_RULES = {
     "scrna_de_run_metadata_needs_a_run", "scrna_de_run_rows_name_no_file",
-    "scrna_de_new_contrasts_belong_to_a_run", "scrna_de_group_sizes_non_negative",
+    "scrna_de_new_contrasts_belong_to_a_run", "scrna_de_sizes_non_negative",
+    "scrna_de_run_rows_count_their_genes", "scrna_de_tested_means_genes_tested",
 }
 # What describes an analysis on a result row.
 RUN_COLUMNS = {"group_kind": "genotype", "method": "m", "params_hash": "h",
@@ -82,7 +82,8 @@ def _insert(cur, dataset_id, **cols) -> int:
 def _current(cur, dataset_id, **cols) -> dict:
     """A result as one is written now: under an analysis, naming no file."""
     return {"run_id": _run(cur, dataset_id), **RUN_COLUMNS,
-            "contrast": "a_vs_b", "group1": "a", "group2": "b", **cols}
+            "n_genes_tested": 100, "contrast": "a_vs_b", "group1": "a",
+            "group2": "b", **cols}
 
 
 def _rejects(cur, dataset_id, constraint, **cols):
@@ -116,13 +117,15 @@ def _columns(cur) -> set[str]:
 
 
 # --------------------------------------------------------------------------- #
-# The summary counts
+# The threshold counts, and the one that stays
 # --------------------------------------------------------------------------- #
 
 
-def test_the_summary_counts_are_gone(pg_conn):
+def test_the_threshold_counts_are_gone_and_genes_tested_stays(pg_conn):
     with pg_conn.cursor() as cur:
-        assert not _columns(cur) & COUNT_COLUMNS
+        columns = _columns(cur)
+        assert not columns & COUNT_COLUMNS
+        assert "n_genes_tested" in columns
 
 
 def test_the_rules_that_compared_them_are_gone(pg_conn):
@@ -130,14 +133,37 @@ def test_the_rules_that_compared_them_are_gone(pg_conn):
         assert not set(_constraints(cur)) & COUNT_RULES
 
 
-@pytest.mark.parametrize("column", ["n_group1", "n_group2"])
-def test_a_group_size_still_cannot_be_negative(pg_conn, column):
-    """The dropped counts_non_negative covered the group sizes too."""
+@pytest.mark.parametrize("column", ["n_group1", "n_group2", "n_genes_tested"])
+def test_a_size_still_cannot_be_negative(pg_conn, column):
+    """The dropped counts_non_negative covered these too."""
     with pg_conn.cursor() as cur:
         ds = _dataset(cur)
         row = _current(cur, ds, n_group1=1, n_group2=1)
         row[column] = -1
-        _rejects(cur, ds, "scrna_de_group_sizes_non_negative", **row)
+        _rejects(cur, ds, "scrna_de_sizes_non_negative", **row)
+    pg_conn.rollback()
+
+
+def test_a_row_under_an_analysis_says_how_many_genes_it_tested(pg_conn):
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        _rejects(cur, ds, "scrna_de_run_rows_count_their_genes",
+                 **_current(cur, ds, n_genes_tested=None))
+    pg_conn.rollback()
+
+
+def test_a_tested_comparison_tested_some_genes(pg_conn):
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        _rejects(cur, ds, "scrna_de_tested_means_genes_tested",
+                 **_current(cur, ds, n_genes_tested=0))
+    pg_conn.rollback()
+
+
+def test_an_untested_comparison_with_no_genes_is_accepted(pg_conn):
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        _insert(cur, ds, **_current(cur, ds, tested=False, n_genes_tested=0))
     pg_conn.rollback()
 
 
@@ -196,7 +222,8 @@ def test_contrasts_loaded_before_runs_are_left_as_they_are(pg_conn):
 
 @pytest.mark.parametrize("constraint", [
     "scrna_de_run_metadata_needs_a_run", "scrna_de_run_rows_name_no_file",
-    "scrna_de_group_sizes_non_negative", "scrna_de_cluster_in_catalogue",
+    "scrna_de_sizes_non_negative", "scrna_de_run_rows_count_their_genes",
+    "scrna_de_tested_means_genes_tested", "scrna_de_cluster_in_catalogue",
 ])
 def test_the_other_rules_hold_for_every_existing_row(pg_conn, constraint):
     with pg_conn.cursor() as cur:
@@ -269,14 +296,16 @@ def test_each_role_holds_what_it_needs_on_the_new_tables(pg_conn, table):
 
 
 def test_the_rollback_brings_the_count_columns_back_empty(pg_conn):
-    """What they held went with them, so the rule demanding counts on a contrast
-    row comes back NOT VALID."""
+    """What they held went with them, so the two rules demanding all five
+    counts come back NOT VALID."""
     with pg_conn.cursor() as cur:
         cur.execute(_script("rollbacks", f"*_{NAME}_rollback.sql"))
         assert COUNT_COLUMNS <= _columns(cur)
         constraints = _constraints(cur)
         assert COUNT_RULES <= set(constraints)
         assert constraints["scrna_de_contrast_rows_carry_counts"] is False
+        assert constraints["scrna_de_counts_all_or_none"] is False
+        assert "n_genes_tested" in _columns(cur)
         assert not NEW_RULES & set(constraints)
         cur.execute("SELECT count(*) FROM pg_trigger "
                     "WHERE tgname = 'scrna_clusters_keep_their_dataset'")

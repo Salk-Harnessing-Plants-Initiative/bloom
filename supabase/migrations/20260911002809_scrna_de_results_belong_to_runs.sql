@@ -1,12 +1,14 @@
--- Differential expression results are gene rows under an analysis now. The five
--- summary counts go, a new result has to belong to an analysis, and a few gaps
+-- Differential expression results are gene rows under an analysis now. The four
+-- threshold counts go, a new result has to belong to an analysis, and a few gaps
 -- left by 20260911000000 are closed.
 
 BEGIN;
 
--- 1. The summary counts --------------------------------------------------------
--- Each was an answer at one FDR and fold-change cut, and nothing recorded which.
--- The gene rows answer the same question at whatever cut a reader asks with.
+-- 1. The threshold counts ------------------------------------------------------
+-- n_significant_fdr, n_significant_fdr_lfc, n_up and n_down were each an answer
+-- at one FDR and fold-change cut, and nothing recorded which. The gene rows
+-- answer the same questions at whatever cut a reader asks with. n_genes_tested
+-- stays: it is a fact about the analysis, not an answer at a cut.
 
 ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_counts_all_or_none,
@@ -14,22 +16,36 @@ ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_significant_within_tested,
   DROP CONSTRAINT IF EXISTS scrna_de_lfc_cut_narrows_fdr_cut,
   DROP CONSTRAINT IF EXISTS scrna_de_up_plus_down_is_lfc_significant,
-  DROP CONSTRAINT IF EXISTS scrna_de_contrast_rows_carry_counts,
-  DROP CONSTRAINT IF EXISTS scrna_de_untested_counted_nothing;
+  DROP CONSTRAINT IF EXISTS scrna_de_contrast_rows_carry_counts;
 
 ALTER TABLE public.scrna_de
-  DROP COLUMN IF EXISTS n_genes_tested,
   DROP COLUMN IF EXISTS n_significant_fdr,
   DROP COLUMN IF EXISTS n_significant_fdr_lfc,
   DROP COLUMN IF EXISTS n_up,
   DROP COLUMN IF EXISTS n_down;
 
--- counts_non_negative also covered the group sizes; they keep that rule.
+-- counts_non_negative also covered the group sizes and genes tested.
 ALTER TABLE public.scrna_de
-  DROP CONSTRAINT IF EXISTS scrna_de_group_sizes_non_negative;
+  DROP CONSTRAINT IF EXISTS scrna_de_sizes_non_negative;
 ALTER TABLE public.scrna_de
-  ADD CONSTRAINT scrna_de_group_sizes_non_negative
-  CHECK (n_group1 >= 0 AND n_group2 >= 0);
+  ADD CONSTRAINT scrna_de_sizes_non_negative
+  CHECK (n_group1 >= 0 AND n_group2 >= 0 AND n_genes_tested >= 0);
+
+-- A row under an analysis says how many genes it tested: none when it was not
+-- tested (scrna_de_untested_counted_nothing), some when it was.
+ALTER TABLE public.scrna_de
+  DROP CONSTRAINT IF EXISTS scrna_de_run_rows_count_their_genes,
+  DROP CONSTRAINT IF EXISTS scrna_de_tested_means_genes_tested;
+ALTER TABLE public.scrna_de
+  ADD CONSTRAINT scrna_de_run_rows_count_their_genes
+  CHECK (run_id IS NULL OR n_genes_tested IS NOT NULL);
+ALTER TABLE public.scrna_de
+  ADD CONSTRAINT scrna_de_tested_means_genes_tested
+  CHECK (tested IS NOT TRUE OR n_genes_tested > 0);
+
+COMMENT ON COLUMN public.scrna_de.n_genes_tested IS
+  'Genes the comparison tested, one row each in scrna_de_genes. 0 when it was '
+  'not tested.';
 
 
 -- 2. A result belongs to an analysis --------------------------------------------

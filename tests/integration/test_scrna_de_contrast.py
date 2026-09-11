@@ -41,8 +41,9 @@ TABLE = "scrna_de"
 # untouched by this migration -- so its privileges are what correct looks like.
 SIBLING = "scrna_cells"
 
-# The summary counts it also added were dropped by 20260911002809.
-ADDED_COLUMNS = ["contrast", "group1", "group2", "n_group1", "n_group2"]
+# The four threshold counts it also added were dropped by 20260911002809.
+ADDED_COLUMNS = ["contrast", "group1", "group2", "n_group1", "n_group2",
+                 "n_genes_tested"]
 
 ORIGINAL_COLUMNS = {"id", "dataset_id", "file_path", "cluster_id"}
 
@@ -122,8 +123,10 @@ def _seed_clusters(cur, dataset_id, cell_types) -> None:
 
 def _run_row(run_id, **cols) -> dict:
     """The columns a run-tagged row must carry, with `cols` overriding."""
+    tested = cols.get("tested", True)
     return {"run_id": run_id, "group_kind": "genotype", "method": "external",
-            "params_hash": "h", "tested": True, **cols}
+            "params_hash": "h", "tested": True,
+            "n_genes_tested": 100 if tested else 0, **cols}
 
 
 def _insert(cur, dataset_id, **cols):
@@ -268,7 +271,8 @@ def test_the_real_summary_file_loads(pg_conn):
             _insert(
                 cur, ds,
                 cluster_id=row["celltype"],
-                **_run_row(run, tested=row["tested"] == "True"),
+                **_run_row(run, tested=row["tested"] == "True",
+                           n_genes_tested=int(row["n_genes_tested"])),
                 contrast=row["contrast"],
                 group1=row["group1"], group2=row["group2"],
                 n_group1=int(row["n_group1"]), n_group2=int(row["n_group2"]),
@@ -385,14 +389,14 @@ def test_the_same_comparison_may_appear_in_different_datasets(pg_conn):
     pg_conn.rollback()
 
 
-@pytest.mark.parametrize("column", ["n_group1", "n_group2"])
-def test_negative_group_size_is_rejected(pg_conn, column):
+@pytest.mark.parametrize("column", ["n_group1", "n_group2", "n_genes_tested"])
+def test_negative_size_is_rejected(pg_conn, column):
     with pg_conn.cursor() as cur:
         ds = _seed_dataset(cur)
         row = {**_run_row(_seed_run(cur, ds)), "contrast": "a_vs_b",
                "group1": "a", "group2": "b", "n_group1": 1, "n_group2": 1}
         row[column] = -1
-        _rejects(cur, ds, "scrna_de_group_sizes_non_negative", **row)
+        _rejects(cur, ds, "scrna_de_sizes_non_negative", **row)
     pg_conn.rollback()
 
 

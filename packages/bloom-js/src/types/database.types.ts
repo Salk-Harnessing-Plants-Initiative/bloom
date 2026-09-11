@@ -3104,6 +3104,7 @@ export type Database = {
           group2: string | null
           id: number
           method: string | null
+          n_genes_tested: number | null
           n_group1: number | null
           n_group2: number | null
           params_hash: string | null
@@ -3120,6 +3121,7 @@ export type Database = {
           group2?: string | null
           id?: number
           method?: string | null
+          n_genes_tested?: number | null
           n_group1?: number | null
           n_group2?: number | null
           params_hash?: string | null
@@ -3136,6 +3138,7 @@ export type Database = {
           group2?: string | null
           id?: number
           method?: string | null
+          n_genes_tested?: number | null
           n_group1?: number | null
           n_group2?: number | null
           params_hash?: string | null

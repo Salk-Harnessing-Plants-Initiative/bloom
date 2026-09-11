@@ -76,7 +76,8 @@ def _result(cur, dataset_id, run_id, **cols):
         "cluster_id": "Cortex", "contrast": "pFACT_vs_Col-0",
         "group1": "pFACT", "group2": "Col-0", "n_group1": 10, "n_group2": 20,
         "group_kind": "genotype", "method": "external", "params_hash": "h",
-        "tested": True, **cols,
+        "tested": True, "n_genes_tested": 3 if cols.get("tested", True) else 0,
+        **cols,
     }
     names = ["dataset_id", "run_id", *row]
     values = [dataset_id, run_id, *row.values()]
@@ -332,6 +333,14 @@ def test_a_row_with_neither_a_file_nor_an_analysis_is_rejected(pg_conn):
         assert exc.value.diag.constraint_name == "scrna_de_result_is_somewhere"
     pg_conn.rollback()
 
+
+
+def test_a_comparison_that_never_ran_counts_nothing(pg_conn):
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur)
+        _rejects(cur, "scrna_de_untested_counted_nothing",
+                 _result, cur, ds, _run(cur, ds), tested=False, n_genes_tested=3)
+    pg_conn.rollback()
 
 
 def test_a_comparison_that_never_ran_is_a_row(pg_conn):

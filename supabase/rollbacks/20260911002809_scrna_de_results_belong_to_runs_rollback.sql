@@ -1,8 +1,8 @@
 -- Manual rollback for 20260911002809_scrna_de_results_belong_to_runs.sql.
--- The count columns come back empty: what they held was dropped with them. The
--- rule demanding counts on a contrast row comes back NOT VALID for that reason.
--- The explicit grants and the validated cell-type key stay: the grants match
--- the defaults they restate, and a key cannot be un-validated.
+-- The four threshold columns come back empty: what they held was dropped with
+-- them. The two rules that demand all five counts come back NOT VALID for that
+-- reason. The explicit grants and the validated cell-type key stay: the grants
+-- match the defaults they restate, and a key cannot be un-validated.
 
 BEGIN;
 
@@ -13,10 +13,11 @@ ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_run_metadata_needs_a_run,
   DROP CONSTRAINT IF EXISTS scrna_de_run_rows_name_no_file,
   DROP CONSTRAINT IF EXISTS scrna_de_new_contrasts_belong_to_a_run,
-  DROP CONSTRAINT IF EXISTS scrna_de_group_sizes_non_negative;
+  DROP CONSTRAINT IF EXISTS scrna_de_sizes_non_negative,
+  DROP CONSTRAINT IF EXISTS scrna_de_run_rows_count_their_genes,
+  DROP CONSTRAINT IF EXISTS scrna_de_tested_means_genes_tested;
 
 ALTER TABLE public.scrna_de
-  ADD COLUMN IF NOT EXISTS n_genes_tested INT DEFAULT NULL,
   ADD COLUMN IF NOT EXISTS n_significant_fdr INT DEFAULT NULL,
   ADD COLUMN IF NOT EXISTS n_significant_fdr_lfc INT DEFAULT NULL,
   ADD COLUMN IF NOT EXISTS n_up INT DEFAULT NULL,
@@ -40,13 +41,13 @@ ALTER TABLE public.scrna_de
   DROP CONSTRAINT IF EXISTS scrna_de_significant_within_tested,
   DROP CONSTRAINT IF EXISTS scrna_de_lfc_cut_narrows_fdr_cut,
   DROP CONSTRAINT IF EXISTS scrna_de_up_plus_down_is_lfc_significant,
-  DROP CONSTRAINT IF EXISTS scrna_de_contrast_rows_carry_counts,
-  DROP CONSTRAINT IF EXISTS scrna_de_untested_counted_nothing;
+  DROP CONSTRAINT IF EXISTS scrna_de_contrast_rows_carry_counts;
 
+-- NOT VALID: rows written since carry n_genes_tested and none of the other four.
 ALTER TABLE public.scrna_de
   ADD CONSTRAINT scrna_de_counts_all_or_none
   CHECK (num_nonnulls(n_genes_tested, n_significant_fdr,
-                      n_significant_fdr_lfc, n_up, n_down) IN (0, 5));
+                      n_significant_fdr_lfc, n_up, n_down) IN (0, 5)) NOT VALID;
 ALTER TABLE public.scrna_de
   ADD CONSTRAINT scrna_de_counts_non_negative
   CHECK (
@@ -67,9 +68,6 @@ ALTER TABLE public.scrna_de
 ALTER TABLE public.scrna_de
   ADD CONSTRAINT scrna_de_up_plus_down_is_lfc_significant
   CHECK (n_up + n_down = n_significant_fdr_lfc);
-ALTER TABLE public.scrna_de
-  ADD CONSTRAINT scrna_de_untested_counted_nothing
-  CHECK (tested IS NOT FALSE OR COALESCE(n_genes_tested, 0) = 0);
 ALTER TABLE public.scrna_de
   ADD CONSTRAINT scrna_de_contrast_rows_carry_counts
   CHECK (contrast IS NULL
