@@ -1,4 +1,4 @@
--- Manual rollback for 20260912090000_scrna_de_common_results.sql
+-- Manual rollback for 20260911000000_scrna_de_common_results.sql
 --
 -- Removes the run dimension from scrna_de and drops the two tables the
 -- migration added. The one-vs-rest rows that predate runs come through

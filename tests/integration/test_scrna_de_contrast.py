@@ -76,7 +76,7 @@ EXPECTED_PRIVILEGES = {
     "bloom_user": {"SELECT", "INSERT"},
     "bloom_agent": {"SELECT"},
     "bloom_admin": {"SELECT", "INSERT", "UPDATE", "DELETE"},
-    # UPDATE was taken away by 20260912090000: a submitted result is not edited,
+    # UPDATE was taken away by 20260911000000: a submitted result is not edited,
     # and correcting one is loading it again. bloom_admin keeps it for a
     # developer repairing the database deliberately.
     "bloom_writer": {"SELECT", "INSERT"},
@@ -114,7 +114,7 @@ def _seed_dataset(cur) -> int:
 def _seed_run(cur, dataset_id) -> int:
     """A completed analysis to hang results off.
 
-    Since 20260912090000 a result belongs to a run: it is what considered the
+    Since 20260911000000 a result belongs to a run: it is what considered the
     comparison, whether or not it went on to test it.
     """
     cur.execute(
@@ -402,7 +402,7 @@ def test_contrast_row_without_counts_is_rejected(pg_conn):
 
 
 def test_a_row_belonging_to_no_analysis_and_naming_no_file_is_rejected(pg_conn):
-    """Since 20260912090000 a result is reachable either through the object it
+    """Since 20260911000000 a result is reachable either through the object it
     names or through the analysis it belongs to. A row with neither describes
     nothing, and the counts here are internally consistent so no other rule can
     be what rejects it."""
@@ -622,7 +622,7 @@ def test_privileges_match_an_untouched_sibling_apart_from_the_one_revoke(pg_conn
     """This migration grants nothing, so any difference from a sibling would mean
     it re-granted something -- except the one difference put there on purpose.
 
-    20260912090000 revoked UPDATE from the roles a person arrives as, because a
+    20260911000000 revoked UPDATE from the roles a person arrives as, because a
     submitted result is not edited. Subtracting exactly that from the sibling and
     requiring the rest to match still catches a stray regrant, which is what this
     test is for."""
@@ -726,7 +726,7 @@ def test_pre_existing_policies_are_left_alone(pg_conn):
         assert {
             "Authenticated users can insert scrna_de",
             # "Authenticated users can update scrna_de" was removed by
-            # 20260912090000 -- see EXPECTED_PRIVILEGES above.
+            # 20260911000000 -- see EXPECTED_PRIVILEGES above.
             "Authenticated users can read scrna_de",
             "Anon users can select scrna_de",
         } <= names
@@ -797,7 +797,7 @@ def test_rollback_restores_the_original_shape(pg_conn):
         # original shape is never reached.
         cur.execute(_later_rollback_body())
 
-        # Captured after that, not before: 20260912090000 revoked UPDATE and
+        # Captured after that, not before: 20260911000000 revoked UPDATE and
         # DELETE and its rollback grants them back, so a snapshot taken first
         # could never match. What this test is about is that *this* migration's
         # rollback revokes nothing, which is what comparing across it shows.
@@ -879,7 +879,7 @@ def _migration_body() -> str:
 def _later_rollback_body() -> str:
     """The rollback for the migration layered on top of this one.
 
-    20260912090000 adds columns and a foreign key to `scrna_de` above the
+    20260911000000 adds columns and a foreign key to `scrna_de` above the
     contrast dimension. Rollbacks unwind in reverse, so reaching the shape that
     predates contrasts means peeling that layer off first -- otherwise the
     foreign key is still in force and a legacy row naming a cell type the
