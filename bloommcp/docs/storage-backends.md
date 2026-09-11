@@ -27,10 +27,12 @@ new outputs there, which is why it stays empty.
 Two env vars look like they'd control this and don't:
 
 - **`BLOOM_OUTPUT_DIR`** — post-migration this only feeds a startup dir-existence
-  check and a _legacy read_ fallback for pre-migration cleaned CSVs. Nothing
-  writes new outputs there. (It _is_ reused as a fallback local root — but only
-  when you opt into the `local` backend below, and only as the last-resort tier;
-  see the precedence table there.)
+  check. Nothing writes new outputs there, and nothing reads from it either: the
+  versioned-cleaned resolver still accepts it as a parameter but ignores it
+  outright, because the storage prefix is fixed at `bloommcp_output` in the bucket
+  (see `_resolve_versioned_cleaned`'s own docstring). (It _is_ reused as a fallback
+  local root — but only when you opt into the `local` backend below, and only as
+  the last-resort tier; see the precedence table there.)
 - **`BLOOM_USE_LOCAL`** — dead/commented-out, and it was only ever about CLI login
   credentials, never about outputs.
 
@@ -41,6 +43,31 @@ Two env vars look like they'd control this and don't:
 - **Supabase Studio** — `http://localhost:${STUDIO_PORT}` (default `55323`),
   Storage → bucket `bloommcp-data`.
 - **The bloommcp MCP read tools** (`list_existing_analyses`, `load_experiment_data`, …).
+
+## Where experiment data is read from (`supabase` mode)
+
+This doc is mostly about where outputs land, but the default path's **input** side
+moved too, and no longer touches a CSV on local disk at all. Two tiers, both remote:
+
+- **Raw tier — read directly from Postgres.** Since Tier 2 (#551),
+  `SupabaseReader.load_experiment` parses the `experiment` argument as
+  `str(experiment_id)`, resolves and pins exactly one concrete trait source, and
+  fetches rows through the `get_experiment_traits` RPC, pivoting them wide in
+  memory. There is **no `BLOOM_TRAITS_DIR` CSV read and no local-disk fallback**
+  here: a non-numeric identifier raises `ExperimentNotFoundError` rather than
+  falling through to a file. This is why every tool documents its `experiment`
+  parameter as an _experiment identifier_ rather than a CSV filename (#552).
+- **Cleaned tier — read back out of the bucket.** Any `version` other than
+  `"raw"` resolves `bloommcp_output/<tool_class>_<stem>/manifest.json` in the
+  `bloommcp-data` bucket and downloads that version's cleaned CSV to a temp file,
+  so callers can `pd.read_csv` it unchanged. That is object storage — the same
+  place outputs are written — not the database, and not `BLOOM_OUTPUT_DIR`.
+
+`BLOOM_TRAITS_DIR` is still listed in the boot-time `_REQUIRED_DIRS` gate even
+though nothing on the `supabase` path reads it any more; retiring it from boot
+validation, compose, and the Dockerfile is tracked separately in #476. Under the
+`local` backend it stays live and supported, as the last-resort tier of the
+input-root precedence table below.
 
 ## Reaching outputs: signed URLs and direct paths (`output_links`)
 
@@ -299,14 +326,23 @@ non-technical users (a Claude Desktop bundle / installer) is a separate decision
 
 ## Scope
 
-PostgREST/table reads (`get_postgrest_client`, `read_input_csv`) remain **out of
-scope** of `BLOOM_STORAGE_BACKEND` — they are the database, not the experiment-read
-port. The fully-local `qc_clean → pca_analysis` path does not touch them (the store
-commit path uses only object-storage helpers routed through the active backend), so
-it is Supabase-free; a tool that reads a database table is not part of that path.
+`BLOOM_STORAGE_BACKEND` routes **object-storage** traffic only. Database reads
+(`get_postgrest_client` and the trait RPCs riding it) are not routed by it — but
+since Tier 2 (#551) they _are_ the `supabase` reader's raw experiment-read source,
+so the older framing of "the database, not the experiment-read port" no longer
+holds on that path. What keeps the two halves consistent is the reader/store
+coupling described above: `LocalReader` is wired only when the object-storage
+backend is also `local`, so a fully-local run never reaches Postgres, while a
+`supabase` run reads traits from it by design. The fully-local
+`qc_clean → pca_analysis` path therefore stays Supabase-free end to end (its store
+commit path uses only object-storage helpers routed through the active backend).
 Production and staging stay on Supabase; `local` is opt-in for local/dev.
+
+`read_input_csv` in `supabase_client.py` is a pre-Tier-2 leftover — an
+object-storage CSV read (not a table read) with no remaining call sites. It is not
+part of any current read path.
 
 Related: this reshapes the same `supabase_client.py` storage boundary #388
 (user-facing upload/download of bloommcp files) is scoped against. Its
-"return output CSVs" third has landed — see "Downloading outputs" above; the
+"return output CSVs" third has landed — see "Reaching outputs" above; the
 ad-hoc upload and file-explorer thirds remain open, tracked separately.
