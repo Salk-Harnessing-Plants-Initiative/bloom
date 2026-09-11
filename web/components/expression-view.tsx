@@ -8,6 +8,9 @@ import { ExpressionUmap } from "@/components/expression-umap";
 import {
   countsFor,
   SAMPLE_FILTER,
+  countFocused,
+  describeFocus,
+  focusIsSet,
 } from "@/components/expression-lib/umap-packing";
 import type { CellArraysRow } from "@/components/expression-lib/scrna-client";
 import { ExpressionSampleToggles } from "./expression-sample-toggles";
@@ -46,6 +49,7 @@ interface LoadedMeta {
 }
 
 const NOTHING_HIDDEN: ReadonlySet<string> = new Set();
+const NOTHING_FOCUSED: ReadonlySet<string> = new Set();
 
 /** Composes the UMAP canvas + gene search + colorbar + cluster sidebar for a dataset. */
 export function ExpressionView({ datasetId }: ExpressionViewProps) {
@@ -56,10 +60,15 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
   const [hiddenValues, setHiddenValues] = useState<Map<string, Set<string>>>(
     new Map(),
   );
+  // Values focused on per filter row; every cell outside the focus is greyed out.
+  const [focusedValues, setFocusedValues] = useState<Map<string, Set<string>>>(
+    new Map(),
+  );
   // Sample names repeat across datasets -- Col-0 is in most of them -- so a
   // hidden set carried over would open the next dataset with one already off.
   useEffect(() => {
     setHiddenValues(new Map());
+    setFocusedValues(new Map());
     // The chips come from `meta`. Left alone it still describes the previous
     // dataset for the whole of this one's fetch, and a click in that window
     // writes a name the new dataset may not have into the hidden set.
@@ -144,7 +153,19 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
     });
   }, []);
 
+  const handleFocusToggle = useCallback((filter: string, value: string) => {
+    setFocusedValues((prev) => {
+      const next = new Map(prev);
+      const values = new Set(next.get(filter) ?? []);
+      if (!values.delete(value)) values.add(value);
+      next.set(filter, values);
+      return next;
+    });
+  }, []);
+
   const anyValueHidden = [...hiddenValues.values()].some((s) => s.size > 0);
+  const focusSet = focusIsSet(focusedValues);
+  const focusedCount = meta && focusSet ? countFocused(meta.cells, focusedValues, hiddenValues) : 0;
 
   const handleVisibilityChange = useCallback(
     (ordinal: number, visible: boolean) => {
@@ -264,12 +285,27 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
                 unlabelledCount={meta.unlabelled[filter] ?? 0}
                 onToggle={(value) => handleFilterToggle(filter, value)}
                 onShowAll={() => handleShowAllOf(filter)}
+                focused={focusedValues.get(filter) ?? NOTHING_FOCUSED}
+                onFocus={(value) => handleFocusToggle(filter, value)}
               />
             ))}
             {anyValueHidden && (
               <span className="block text-xs text-stone-500" role="status">
                 Cluster sizes, marker genes and the no-cluster figure are for
                 the whole dataset, not only the cells shown.
+              </span>
+            )}
+            {focusSet && (
+              <span className="block text-xs text-stone-500" role="status">
+                {focusedCount.toLocaleString()} {focusedCount === 1 ? "cell is" : "cells are"}{" "}
+                {describeFocus(focusedValues)}; every other cell is greyed out.{" "}
+                <button
+                  type="button"
+                  onClick={() => setFocusedValues(new Map())}
+                  className="underline hover:text-stone-700"
+                >
+                  Clear focus
+                </button>
               </span>
             )}
           </Box>
@@ -281,6 +317,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           geneName={geneName}
           hiddenClusters={hidden}
           hiddenValues={hiddenValues}
+          focusedValues={focusedValues}
           onDataLoaded={handleDataLoaded}
           onExpressionRangeChanged={setExprRange}
           onCellClick={handleSolo}
