@@ -8,6 +8,7 @@ import {
   fetchClusters,
   fetchDataset,
   fetchGeneCounts,
+  ORPHAN_CLUSTER_ORDINAL,
   type CellArraysRow,
 } from "@/components/expression-lib/scrna-client";
 import {
@@ -31,6 +32,98 @@ type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
 const DEFAULT_POINT_SIZE = 4.0;
 
 const NO_HIDDEN_VALUES: HiddenValues = new Map();
+
+/** How far the map can be zoomed, in each direction. */
+export const MIN_ZOOM = 0.2;
+export const MAX_ZOOM = 50;
+
+/** How near the cursor a point must be, in CSS pixels, to be the one hovered.
+ *  Points are drawn at 4px, so this is a little forgiveness around them. */
+const HOVER_RADIUS_PX = 8;
+
+/** Which cell is under the cursor, or null when none is near enough.
+ *
+ * The shader places a point at `(position + translate) * zoom` in clip space,
+ * so this projects every cell the same way and compares in pixels. Hidden cells
+ * are skipped: a cell filtered off the map should not be identifiable by
+ * pointing at where it used to be.
+ */
+export function pickCell(
+  positions: Float32Array,
+  visibility: Float32Array | null,
+  view: { zoom: number; translate: [number, number]; width: number; height: number },
+  cursor: { x: number; y: number },
+  radiusPx: number = HOVER_RADIUS_PX,
+): number | null {
+  const { zoom, translate, width, height } = view;
+  if (width === 0 || height === 0) return null;
+  let best: number | null = null;
+  let bestDistance = radiusPx * radiusPx;
+  for (let i = 0; i < positions.length / 2; i++) {
+    if (visibility && visibility[i] === 0) continue;
+    const clipX = (positions[i * 2] + translate[0]) * zoom;
+    const clipY = (positions[i * 2 + 1] + translate[1]) * zoom;
+    const px = ((clipX + 1) / 2) * width;
+    const py = ((1 - clipY) / 2) * height;
+    const dx = px - cursor.x;
+    const dy = py - cursor.y;
+    const distance = dx * dx + dy * dy;
+    if (distance <= bestDistance) {
+      bestDistance = distance;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/** What a hovered cell says about itself: its cell type from the catalogue, then
+ *  its genotype and which reference its label was transferred from. */
+export function describeCell(
+  index: number,
+  cells: Pick<CellArraysRow, "replicate" | "facets" | "genotype">[],
+  clusterOrdinals: Uint8Array,
+  clusters: { ordinal: number; cluster_id: string; name: string | null }[],
+): { cellType: string; detail: string } | null {
+  const cell = cells[index];
+  if (!cell) return null;
+  const ordinal = clusterOrdinals[index];
+  const cluster = clusters.find((c) => c.ordinal === ordinal);
+  const cellType =
+    ordinal === ORPHAN_CLUSTER_ORDINAL || !cluster
+      ? "No cell type"
+      : cluster.name || cluster.cluster_id;
+
+  const parts: string[] = [];
+  const genotype = cell.genotype ?? cell.replicate;
+  if (genotype) parts.push(genotype);
+  const source = cell.facets?.nn_source;
+  if (source) parts.push(`label from ${source}`);
+  return { cellType, detail: parts.join(" · ") };
+}
+
+/** Zoom the map on scroll, and stop the page moving with it.
+ *
+ * Bound natively rather than through React's `onWheel`, because React attaches
+ * its wheel listener to the root passively, and `preventDefault()` inside a
+ * passive listener does nothing. A trackpad pinch arrives as a wheel event with
+ * `ctrlKey` set, which the browser would otherwise turn into a page zoom.
+ *
+ * Returns the function that removes the listener again.
+ */
+export function attachWheelZoom(
+  canvas: HTMLCanvasElement,
+  setZoom: (update: (z: number) => number) => void,
+): () => void {
+  const onWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    // A pinch reports far larger deltas than a scroll, so it takes a gentler factor.
+    const perDelta = e.ctrlKey ? 0.0002 : 0.001;
+    const factor = Math.exp(-e.deltaY * perDelta);
+    setZoom((z) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * factor)));
+  };
+  canvas.addEventListener("wheel", onWheel, { passive: false });
+  return () => canvas.removeEventListener("wheel", onWheel);
+}
 
 export interface ExpressionUmapProps {
   datasetId: number;
@@ -118,6 +211,10 @@ export function ExpressionUmap({
   } | null>(null);
 
   const [zoom, setZoom] = useState(1);
+  /** The cell under the cursor and where to put its label, or null. */
+  const [hovered, setHovered] = useState<
+    { index: number; x: number; y: number } | null
+  >(null);
   const [translate, setTranslate] = useState<[number, number]>([0, 0]);
 
   const zoomRef = useRef(zoom);
@@ -125,9 +222,14 @@ export function ExpressionUmap({
   const expressionArrRef = useRef(expressionArr);
   const expressionRangeRef = useRef(expressionRange);
   const dirtyRef = useRef(true);
+  // Hit-testing reads these from a handler created once, so they are mirrored here.
+  const positionsRef = useRef<Float32Array | null>(null);
+  const visibilityRef = useRef<Float32Array | null>(null);
   useEffect(() => {
     zoomRef.current = zoom;
     translateRef.current = translate;
+    positionsRef.current = data?.positions ?? null;
+    visibilityRef.current = visibility;
     expressionArrRef.current = expressionArr;
     expressionRangeRef.current = expressionRange;
     dirtyRef.current = true;
@@ -454,11 +556,13 @@ export function ExpressionUmap({
   }, [expressionArr]);
 
   // -------- zoom / pan handlers ----------------------------------------------
-  const handleWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    const factor = Math.exp(-e.deltaY * 0.001);
-    setZoom((z) => Math.min(50, Math.max(0.2, z * factor)));
-  }, []);
+  // The canvas only exists once the data has loaded, so the listener is bound
+  // then, and again for each dataset's canvas.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    return attachWheelZoom(canvas, setZoom);
+  }, [data]);
 
   const dragState = useRef<{ x: number; y: number; origTx: number; origTy: number } | null>(
     null,
@@ -478,18 +582,48 @@ export function ExpressionUmap({
   );
   const handlePointerMove = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
-      if (!dragState.current || !canvasRef.current) return;
+      if (!canvasRef.current) return;
       const rect = canvasRef.current.getBoundingClientRect();
-      const dx = ((e.clientX - dragState.current.x) / rect.width) * 2;
-      const dy = -((e.clientY - dragState.current.y) / rect.height) * 2;
-      const z = zoomRef.current;
-      setTranslate([
-        dragState.current.origTx + dx / z,
-        dragState.current.origTy + dy / z,
-      ]);
+
+      if (dragState.current) {
+        // No hover while dragging: it would name a different cell every frame.
+        const dx = ((e.clientX - dragState.current.x) / rect.width) * 2;
+        const dy = -((e.clientY - dragState.current.y) / rect.height) * 2;
+        const z = zoomRef.current;
+        setTranslate([
+          dragState.current.origTx + dx / z,
+          dragState.current.origTy + dy / z,
+        ]);
+        return;
+      }
+
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const index = pickCell(
+        positionsRef.current ?? new Float32Array(0),
+        visibilityRef.current,
+        {
+          zoom: zoomRef.current,
+          translate: translateRef.current,
+          width: rect.width,
+          height: rect.height,
+        },
+        { x, y },
+      );
+      setHovered(index === null ? null : { index, x, y });
     },
     [],
   );
+
+  const handlePointerLeave = useCallback(() => setHovered(null), []);
+
+  const hoveredCell = useMemo(() => {
+    if (!hovered || !data) return null;
+    const described = describeCell(
+      hovered.index, data.cells, data.clusterOrdinals, data.clusters,
+    );
+    return described && { ...described, x: hovered.x, y: hovered.y };
+  }, [hovered, data]);
   const handlePointerUp = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       e.currentTarget.releasePointerCapture(e.pointerId);
@@ -558,22 +692,58 @@ export function ExpressionUmap({
   return (
     // Canvas dimensions are set imperatively in the init effect against
     // parent.clientWidth × devicePixelRatio. We don't set width/height here.
-    <canvas
-      ref={canvasRef}
-      data-testid="expression-umap-canvas"
-      onWheel={handleWheel}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      style={{
-        width: "100%",
-        height,
-        display: "block",
-        borderRadius: 8,
-        cursor: dragState.current ? "grabbing" : "grab",
-        touchAction: "none",
-      }}
-    />
+    <div style={{ position: "relative" }}>
+      <canvas
+        ref={canvasRef}
+        data-testid="expression-umap-canvas"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={handlePointerLeave}
+        style={{
+          width: "100%",
+          height,
+          display: "block",
+          borderRadius: 8,
+          cursor: dragState.current ? "grabbing" : "grab",
+          touchAction: "none",
+        }}
+      />
+      {hoveredCell && (
+        <div
+          role="status"
+          data-testid="expression-umap-tooltip"
+          style={{
+            position: "absolute",
+            // Offset from the cursor so the point stays visible, and flipped near
+            // the right edge so the label never leaves the canvas.
+            left: hoveredCell.x > 0.8 * (canvasRef.current?.clientWidth ?? 0)
+              ? undefined
+              : hoveredCell.x + 14,
+            right: hoveredCell.x > 0.8 * (canvasRef.current?.clientWidth ?? 0)
+              ? (canvasRef.current?.clientWidth ?? 0) - hoveredCell.x + 14
+              : undefined,
+            top: Math.max(0, hoveredCell.y - 12),
+            pointerEvents: "none",
+            background: "rgba(24,24,27,0.94)",
+            color: "#fafaf9",
+            borderRadius: 6,
+            padding: "6px 9px",
+            fontSize: 12,
+            lineHeight: 1.45,
+            maxWidth: 260,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          <div style={{ fontWeight: 600 }}>{hoveredCell.cellType}</div>
+          {hoveredCell.detail && (
+            <div style={{ color: "#a8a29e" }}>{hoveredCell.detail}</div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
