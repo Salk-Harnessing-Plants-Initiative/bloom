@@ -248,12 +248,15 @@ def insert(writer: Writer, step: str, table: str, rows: list[dict], *,
     return writer.write(step, send)
 
 
-def update(writer: Writer, step: str, table: str, values: dict, *, eq: dict) -> None:
-    """Update the rows matching every eq pair, in one request, sent once."""
+def update(writer: Writer, step: str, table: str, values: dict, *, eq: dict,
+           in_: dict | None = None) -> None:
+    """Update the rows matching every eq pair and in_ list, in one request, sent once."""
     def send(client):
         query = client.table(table).update(values, returning="minimal")
         for column, value in eq.items():
             query = query.eq(column, value)
+        for column, allowed in (in_ or {}).items():
+            query = query.in_(column, allowed)
         return query.retry(False).execute().data
     writer.write(step, send)
 

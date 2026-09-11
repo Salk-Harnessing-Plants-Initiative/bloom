@@ -28,14 +28,23 @@ directly instead. An admin makes an account a writer with:
 typo cannot load a second copy. If a load stops, run the same command again: it
 continues from what is already stored. A finished dataset is not loaded again;
 replacing one is an admin task. Load a dataset from one terminal at a time.
+
+Genotypes and labels the map can filter on come from obs columns:
+
+    --genotype-column sample --control Col-0 --construct pFACT=pFACT:MYB41 \
+    --facet transgene_pos --facet saturn_timezone --source-column nn_source
+
+With --add-labels, the same options add these to a dataset already loaded from
+this file, leaving its cells where they are.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -60,9 +69,28 @@ PALETTE = [
 # Cells per insert request; each has to finish well inside the gateway's 60 s.
 CELL_BATCH = 5000
 
+# Options that label the cells, recorded with the dataset when labels are added.
+LABEL_KEYS = ("source_column", "genotype_column", "control", "constructs", "facets")
+
 # The options a resumed load must share with the load it continues.
-OPTION_KEYS = ("annotation", "sample_column", "umap_key", "source_column",
-               "expression_units")
+OPTION_KEYS = ("annotation", "sample_column", "umap_key", "expression_units",
+               *LABEL_KEYS)
+
+# A label becomes a row of toggles, so it has to be a handful of values. More is a
+# measurement, and would reach the browser as hundreds of buttons.
+MAX_FACET_VALUES = 12
+
+# The database's limits on a cell's labels (scrna_facets_are_flat_text) and on a
+# genotype (scrna_genotypes_lengths).
+MAX_FACETS = 32
+MAX_FACET_KEY = 64
+MAX_FACET_VALUE = 200
+MAX_FACETS_JSON = 1024
+MAX_GENOTYPE_NAME = 100
+MAX_CONSTRUCT = 200
+
+# Cells per label update; their numbers travel in the request's URL.
+LABEL_BATCH = 500
 
 # Rows written after the cells. On a dataset whose cells are unfinished they
 # mean something went wrong.
@@ -111,6 +139,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "the reference atlas it was transferred from. Recorded per cell "
              "type, since that is where it varies",
     )
+    p.add_argument(
+        "--genotype-column",
+        help="an obs column naming each cell's genotype. Each value becomes a "
+             "genotype the cells point at; needs --control",
+    )
+    p.add_argument("--control", metavar="GENOTYPE",
+                   help="which genotype is the control, named rather than guessed")
+    p.add_argument("--construct", action="append", default=[], metavar="GENOTYPE=NAME",
+                   help="the construct a transgenic line carries; repeatable")
+    p.add_argument("--facet", action="append", default=[], metavar="COLUMN",
+                   help="an obs column of labels to filter the map by, such as "
+                        "transgene status. A few short values only; repeatable")
+    p.add_argument("--add-labels", action="store_true",
+                   help="add the genotypes, labels and cell-type sources to a dataset "
+                        "already loaded from this file, leaving its cells as they are")
     p.add_argument("--umap-key", default="X_umap")
     p.add_argument(
         "--expect-cells",
@@ -148,6 +191,8 @@ def read_cells(
     umap_key: str,
     expect_cells: int | None,
     source_column: str | None = None,
+    genotype_column: str | None = None,
+    facet_columns: tuple[str, ...] = (),
 ) -> dict:
     """Pull everything the explorer needs out of the file, or refuse.
 
@@ -223,8 +268,8 @@ def read_cells(
             f"coarsely that cells collide"
         )
 
-    for column in (annotation, sample_column):
-        if column not in adata.obs:
+    for column in (annotation, sample_column, source_column, genotype_column):
+        if column and column not in adata.obs:
             raise IngestError(
                 f"{h5ad_path.name} has no obs[{column!r}]. Found: "
                 f"{', '.join(sorted(adata.obs.columns))}"
@@ -238,6 +283,11 @@ def read_cells(
     labels = _text_column(adata, annotation)
     samples = _text_column(adata, sample_column)
     sources = _text_column(adata, source_column) if source_column else None
+    genotypes = _text_column(adata, genotype_column) if genotype_column else None
+    too_long = sorted({g for g in genotypes or () if len(g) > MAX_GENOTYPE_NAME})
+    if too_long:
+        raise IngestError(f"genotype names longer than {MAX_GENOTYPE_NAME} characters: "
+                          f"{', '.join(too_long[:3])}")
     barcodes = _barcodes(adata)
     levels = sorted(set(labels))
     if len(levels) > len(PALETTE):
@@ -261,7 +311,75 @@ def read_cells(
         "levels": levels,
         "barcodes": barcodes,
         "sources": label_sources(labels, sources) if sources else {},
+        "genotypes": genotypes,
+        "facets": read_facets(adata, facet_columns) if facet_columns else None,
     }
+
+
+def read_facets(adata, columns: tuple[str, ...]) -> list[dict[str, str]]:
+    """Each cell's labels to filter the map by, as {column: value}.
+
+    Refused rather than truncated when a column has too many values: a label is a
+    row of toggles, and a column with hundreds of them is a measurement.
+    """
+    if len(columns) > MAX_FACETS:
+        raise IngestError(f"{len(columns)} label columns; a cell holds at most {MAX_FACETS}")
+    per_column = {}
+    for column in columns:
+        if column not in adata.obs:
+            raise IngestError(f"no obs[{column!r}] to use as a label. Found: "
+                              f"{', '.join(sorted(adata.obs.columns))}")
+        if len(column) > MAX_FACET_KEY:
+            raise IngestError(f"label column {column!r} is longer than {MAX_FACET_KEY} characters")
+        values = _text_column(adata, column)
+        levels = sorted(set(values))
+        if len(levels) > MAX_FACET_VALUES:
+            raise IngestError(f"obs[{column!r}] has {len(levels)} values, more than the "
+                              f"{MAX_FACET_VALUES} a row of toggles can show; it looks like "
+                              f"a measurement rather than a label")
+        long = [v for v in levels if len(v) > MAX_FACET_VALUE]
+        if long:
+            raise IngestError(f"obs[{column!r}] has values longer than {MAX_FACET_VALUE} "
+                              f"characters, e.g. {long[0][:40]!r}")
+        per_column[column] = values
+    facets = [{c: per_column[c][i] for c in columns} for i in range(adata.n_obs)]
+    for i, cell in enumerate(facets):
+        if len(json.dumps(cell)) > MAX_FACETS_JSON:
+            raise IngestError(f"cell {i}'s labels come to more than {MAX_FACETS_JSON} "
+                              f"characters; label fewer columns")
+    return facets
+
+
+def parse_constructs(pairs: list[str]) -> dict[str, str]:
+    """`GENOTYPE=NAME` arguments, refused rather than ignored when malformed."""
+    out = {}
+    for pair in pairs:
+        genotype, sep, construct = pair.partition("=")
+        if not sep or not genotype.strip() or not construct.strip():
+            raise IngestError(f"--construct wants GENOTYPE=NAME, got {pair!r}")
+        if len(construct.strip()) > MAX_CONSTRUCT:
+            raise IngestError(f"the construct for {genotype.strip()!r} is longer than "
+                              f"{MAX_CONSTRUCT} characters")
+        out[genotype.strip()] = construct.strip()
+    return out
+
+
+def genotype_rows(genotypes: list[str], control: str | None,
+                  constructs: dict[str, str]) -> list[dict]:
+    """One row per genotype in the file: which is the control, and each line's construct."""
+    names = sorted(set(genotypes))
+    if control is None:
+        raise IngestError("--genotype-column needs --control, naming which genotype is "
+                          "the control; it is not guessed")
+    if control not in names:
+        raise IngestError(f"--control names {control!r}, which is not a genotype in this "
+                          f"file: {', '.join(names)}")
+    unknown = sorted(set(constructs) - set(names))
+    if unknown:
+        raise IngestError(f"--construct names {', '.join(unknown)}, not a genotype in this "
+                          f"file: {', '.join(names)}")
+    return [{"name": n, "is_control": n == control, "construct": constructs.get(n)}
+            for n in names]
 
 
 def _barcodes(adata) -> list[str]:
@@ -350,16 +468,22 @@ def summarise(cells: dict) -> str:
         f"{len(cells['levels'])} cell types\n  "
         + "samples: "
         + ", ".join(f"{k} {v}" for k, v in sorted(per_sample.items()))
-        + (f"\n  label sources: "
+        + ("\n  label sources: "
            + ", ".join(sorted(set(cells["sources"].values())))
            if cells.get("sources") else "")
+        + "".join(
+            f"\n  label {column}: " + ", ".join(
+                f"{value} {n}" for value, n in sorted(
+                    Counter(f[column] for f in cells["facets"]).items()))
+            for column in (cells["facets"][0] if cells.get("facets") else ())
+        )
     )
 
 
 def _check_columns(cells: dict) -> None:
     n = cells["n_cells"]
-    for key in ("x", "y", "labels", "samples", "barcodes"):
-        if len(cells[key]) != n:
+    for key in ("x", "y", "labels", "samples", "barcodes", "genotypes", "facets"):
+        if cells.get(key) is not None and len(cells[key]) != n:
             raise IngestError(f"{key} holds {len(cells[key])} values for {n} cells")
 
 
@@ -422,6 +546,37 @@ def _write_catalogue(writer, dataset_id: int, cells: dict, resuming: bool) -> No
                       catalogue_rows(dataset_id, cells))
 
 
+def _plan_genotypes(writer, dataset_id: int, rows: list[dict]) -> tuple[dict, list[dict]]:
+    """The ids of the genotypes already stored, and the rows still to write.
+
+    A stored genotype that disagrees about being the control or its construct is
+    refused, naming it: which line is which is not something to overwrite quietly.
+    """
+    stored = {g["name"]: g for g in ingest_api.read_all(
+        writer, "scrna_genotypes", "id,name,is_control,construct",
+        filters=[("eq", "dataset_id", dataset_id)])}
+    for row in rows:
+        have = stored.get(row["name"])
+        if have and (bool(have["is_control"]), have.get("construct")) != (
+                row["is_control"], row["construct"]):
+            raise IngestError(
+                f"dataset {dataset_id} already records genotype {row['name']!r} as "
+                f"control={have['is_control']}, construct={have.get('construct')!r}; "
+                f"this load says control={row['is_control']}, construct={row['construct']!r}")
+    ids = {name: g["id"] for name, g in stored.items()}
+    return ids, [r for r in rows if r["name"] not in stored]
+
+
+def _write_genotypes(writer, dataset_id: int, ids: dict, missing: list[dict]) -> dict:
+    if missing:
+        written = ingest_api.insert(writer, f"record {len(missing)} genotypes",
+                                    "scrna_genotypes",
+                                    [{"dataset_id": dataset_id, **r} for r in missing],
+                                    returning=True)
+        ids = {**ids, **{g["name"]: g["id"] for g in written}}
+    return ids
+
+
 def _cell_numbers(writer, dataset_id: int) -> list[int]:
     return [r["cell_number"] for r in ingest_api.read_all(
         writer, "scrna_cells", "cell_number", filters=[("eq", "dataset_id", dataset_id)])]
@@ -444,12 +599,24 @@ def _check_numbers(dataset_id: int, numbers: list[int], n: int, *, complete: boo
                           f"not finished; an admin has to look at it")
 
 
-def _insert_cells(writer, dataset_id: int, cells: dict, missing: list[int]) -> None:
+def _cell_labels(cells: dict, genotype_ids: dict | None, i: int) -> dict:
+    """The genotype and labels written on cell i, when the load has them."""
+    out = {}
+    if genotype_ids is not None:
+        out["genotype_id"] = genotype_ids[cells["genotypes"][i]]
+    if cells.get("facets") is not None:
+        out["facets"] = cells["facets"][i]
+    return out
+
+
+def _insert_cells(writer, dataset_id: int, cells: dict, missing: list[int],
+                  genotype_ids: dict | None = None) -> None:
     for start in range(0, len(missing), CELL_BATCH):
         chunk = missing[start:start + CELL_BATCH]
         rows = [{"dataset_id": dataset_id, "cell_number": i,
                  "barcode": cells["barcodes"][i], "x": cells["x"][i], "y": cells["y"][i],
-                 "cluster_id": cells["labels"][i], "replicate": cells["samples"][i]}
+                 "cluster_id": cells["labels"][i], "replicate": cells["samples"][i],
+                 **_cell_labels(cells, genotype_ids, i)}
                 for i in chunk]
         ingest_api.insert(writer, f"insert cells {chunk[0]}–{chunk[-1]}",
                           "scrna_cells", rows)
@@ -491,10 +658,17 @@ def load(writer, name: str, species_id: int, cells: dict, source_checksum: str,
     dataset_id, n = found["id"], cells["n_cells"]
 
     _write_catalogue(writer, dataset_id, cells, resuming=outcome == "resumed")
+    genotype_ids = None
+    if cells.get("genotypes") is not None:
+        rows = genotype_rows(cells["genotypes"], options.get("control"),
+                             options.get("constructs") or {})
+        genotype_ids = _write_genotypes(writer, dataset_id,
+                                        *_plan_genotypes(writer, dataset_id, rows))
     numbers = _cell_numbers(writer, dataset_id) if outcome == "resumed" else []
     _check_numbers(dataset_id, numbers, n, complete=False)
     have = set(numbers)
-    _insert_cells(writer, dataset_id, cells, [i for i in range(n) if i not in have])
+    _insert_cells(writer, dataset_id, cells, [i for i in range(n) if i not in have],
+                  genotype_ids)
     _check_numbers(dataset_id, _cell_numbers(writer, dataset_id), n, complete=True)
 
     (current,) = writer.read(lambda c: c.table("scrna_datasets").select("metadata")
@@ -509,19 +683,114 @@ def load(writer, name: str, species_id: int, cells: dict, source_checksum: str,
     return dataset_id, n, outcome
 
 
+def _check_same_cells(writer, dataset_id: int, cells: dict) -> None:
+    """Labels are paired to cells by position, so the stored cells have to be the
+    file's, in the file's order, and so do the stored cell types."""
+    stored = [r["barcode"] for r in ingest_api.read_all(
+        writer, "scrna_cells", "cell_number,barcode",
+        filters=[("eq", "dataset_id", dataset_id)], order="cell_number")]
+    if stored != cells["barcodes"]:
+        where = next((i for i, (a, b) in enumerate(zip(stored, cells["barcodes"])) if a != b),
+                     min(len(stored), len(cells["barcodes"])))
+        raise IngestError(f"dataset {dataset_id} does not hold these cells in this order: "
+                          f"they first differ at cell {where} ({len(stored)} stored, "
+                          f"{len(cells['barcodes'])} in the file)")
+    catalogue = {r["cluster_id"]: r["ordinal"] for r in ingest_api.read_all(
+        writer, "scrna_clusters", "cluster_id,ordinal",
+        filters=[("eq", "dataset_id", dataset_id)])}
+    if catalogue != {level: i for i, level in enumerate(cells["levels"])}:
+        raise IngestError(f"dataset {dataset_id}'s stored cell types differ from the file's")
+
+
+def add_labels(writer, name: str, species_id: int, cells: dict, source_checksum: str,
+               options: dict) -> tuple[int, dict]:
+    """Add genotypes, cell labels and cell-type sources to a dataset already loaded
+    from this file, leaving its cells where they are.
+
+    Everything is checked before anything is written. Every write sets fixed
+    values, so running it again changes nothing more. Returns the dataset id and
+    how many genotypes, cells and cell-type sources were written.
+    """
+    name = name.strip()
+    _check_columns(cells)
+    found = ingest_api.find_dataset(writer, species_id, name)
+    if found is None:
+        raise IngestError(f"no dataset named {name!r} for species {species_id}; load its "
+                          f"cells first")
+    dataset_id = found["id"]
+    if not found.get("ingested_at"):
+        raise IngestError(f"dataset {dataset_id}'s cells are not finished; finish loading "
+                          f"them before adding labels")
+    if found.get("source_checksum") != source_checksum:
+        raise IngestError(f"dataset {dataset_id} was loaded from a file with checksum "
+                          f"{found.get('source_checksum')}; this file's is {source_checksum}. "
+                          f"Labels are paired to cells by position, so they have to come "
+                          f"from the same file")
+    _check_same_cells(writer, dataset_id, cells)
+    plan = None
+    if cells.get("genotypes") is not None:
+        rows = genotype_rows(cells["genotypes"], options.get("control"),
+                             options.get("constructs") or {})
+        plan = _plan_genotypes(writer, dataset_id, rows)
+
+    added = {"genotypes": 0, "cells": 0, "sources": 0}
+    for level, source in sorted((cells.get("sources") or {}).items()):
+        ingest_api.update(writer, f"record where {level}'s label came from", "scrna_clusters",
+                          {"source": source.strip() or None},
+                          eq={"dataset_id": dataset_id, "cluster_id": level})
+        added["sources"] += 1
+
+    genotype_ids = None
+    if plan is not None:
+        genotype_ids = _write_genotypes(writer, dataset_id, *plan)
+        added["genotypes"] = len(genotype_ids)
+    if genotype_ids is not None or cells.get("facets") is not None:
+        groups: dict[str, list[int]] = defaultdict(list)
+        for i in range(cells["n_cells"]):
+            groups[json.dumps(_cell_labels(cells, genotype_ids, i), sort_keys=True)].append(i)
+        for key, numbers in groups.items():
+            for start in range(0, len(numbers), LABEL_BATCH):
+                chunk = numbers[start:start + LABEL_BATCH]
+                ingest_api.update(writer, f"label cells {chunk[0]}–{chunk[-1]}", "scrna_cells",
+                                  json.loads(key), eq={"dataset_id": dataset_id},
+                                  in_={"cell_number": chunk})
+        added["cells"] = cells["n_cells"]
+
+    (current,) = writer.read(lambda c: c.table("scrna_datasets").select("metadata")
+                             .eq("id", dataset_id).execute().data)
+    metadata = current.get("metadata") or {}
+    load_options = {**(metadata.get("load_options") or {}),
+                    **{k: options.get(k) for k in LABEL_KEYS}}
+    ingest_api.update(writer, "record the label options", "scrna_datasets",
+                      {"metadata": {**metadata, "load_options": load_options}},
+                      eq={"id": dataset_id})
+    return dataset_id, added
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
     try:
+        if args.control and not args.genotype_column:
+            raise IngestError("--control names a genotype, so it needs --genotype-column")
+        constructs = parse_constructs(args.construct)
         cells = read_cells(
             args.h5ad, args.annotation, args.sample_column,
             args.umap_key, args.expect_cells, args.source_column,
+            args.genotype_column, tuple(args.facet),
         )
+        genotypes = (genotype_rows(cells["genotypes"], args.control, constructs)
+                     if cells["genotypes"] is not None else [])
     except IngestError as exc:
         print(f"refusing to ingest: {exc}", file=sys.stderr)
         return 1
 
     print(f"{args.dataset_name.strip()!r} from {args.h5ad.name}: {summarise(cells)}")
+    if genotypes:
+        print("  genotypes: " + ", ".join(
+            f"{g['name']} (control)" if g["is_control"]
+            else f"{g['name']} ({g['construct']})" if g["construct"] else g["name"]
+            for g in genotypes))
 
     if args.dry_run:
         print("dry run — nothing written")
@@ -534,13 +803,28 @@ def main(argv: list[str] | None = None) -> int:
 
     options = {"annotation": args.annotation, "sample_column": args.sample_column,
                "umap_key": args.umap_key, "source_column": args.source_column,
-               "expression_units": args.expression_units}
+               "expression_units": args.expression_units,
+               "genotype_column": args.genotype_column, "control": args.control,
+               "constructs": constructs or None, "facets": list(args.facet) or None}
+    if args.add_labels and not (args.source_column or args.genotype_column or args.facet):
+        print("refusing to ingest: --add-labels needs --source-column, --genotype-column "
+              "or --facet to add", file=sys.stderr)
+        return 1
     marker = ingest_api.Marker(ingest_api.marker_path(args.h5ad, args.dataset_name))
     try:
         marker.check()
         password = ingest_api.read_password()
         api_url, anon_key = ingest_api.resolve_api(args.server, args.api_url, args.anon_key)
         session = ingest_api.sign_in(api_url, anon_key, args.email, password)
+        if args.add_labels:
+            dataset_id, added = add_labels(
+                ingest_api.Writer(session, marker), args.dataset_name, args.species_id,
+                cells, checksum(args.h5ad), options,
+            )
+            print(f"added labels to dataset {dataset_id} ({args.dataset_name.strip()!r}): "
+                  f"{added['genotypes']} genotypes, {added['cells']} cells labelled, "
+                  f"{added['sources']} cell-type sources")
+            return 0
         dataset_id, stored, outcome = load(
             ingest_api.Writer(session, marker), args.dataset_name, args.species_id,
             cells, checksum(args.h5ad), options, create=args.create,

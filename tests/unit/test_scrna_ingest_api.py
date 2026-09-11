@@ -362,3 +362,17 @@ def test_the_dataset_lookup_reads_the_species_datasets(api, tmp_path):
 ])
 def test_a_dataset_name_must_fit_a_storage_path(api, name, ok):
     assert api.dataset_name_ok(name) is ok
+
+
+def test_update_can_narrow_by_a_list_of_values(api, tmp_path):
+    from tests.unit.fake_supabase import FakeClient
+
+    client = FakeClient({"scrna_cells": [{"id": i, "dataset_id": 7, "cell_number": i,
+                                          "facets": None} for i in range(4)]})
+    w = api.Writer(api.Session(lambda: (client, "bloom_writer", "u1"), client,
+                               "bloom_writer", "u1"), api.Marker(tmp_path / "m.json", wait_s=0))
+    api.update(w, "label cells", "scrna_cells", {"facets": {"t": "True"}},
+               eq={"dataset_id": 7}, in_={"cell_number": [1, 3]})
+    assert [r["facets"] for r in client.tables["scrna_cells"]] == [
+        None, {"t": "True"}, None, {"t": "True"}]
+    assert client.log[-1][3] is False

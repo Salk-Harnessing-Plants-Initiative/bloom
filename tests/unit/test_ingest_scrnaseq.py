@@ -48,12 +48,14 @@ def write_h5ad(
     samples: list[str] | None = None,
     coords: "np.ndarray | None" = None,
     barcodes: list[str] | None = None,
+    extra_obs: dict | None = None,
 ) -> Path:
     """A miniature dataset shaped like the real one."""
     obs = pd.DataFrame(
         {
             annotation: labels or ["Phellem", "Cortex"] * (n_cells // 2),
             sample_column: samples or ["Col-0", "pFACT", "pHORST"] * (n_cells // 3),
+            **(extra_obs or {}),
         },
         index=barcodes or [f"CELL{i}-Col-0" for i in range(n_cells)],
     )
@@ -670,3 +672,98 @@ def test_a_real_cell_type_that_merely_looks_odd_still_loads(ingest, tmp_path):
     a.write_h5ad(path)
     cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
     assert cells["levels"] == ["Cortex", "Nanodomain"]
+
+
+# --------------------------------------------------------------------------- #
+# Labels the map can filter on, and genotypes
+# --------------------------------------------------------------------------- #
+
+LABELLED_OBS = {
+    "transgene_pos": [False, True, False, True, False, False],
+    "saturn_timezone": ["Meristem", "Elongation", "Meristem", "Maturation",
+                        "Elongation", "Meristem"],
+}
+
+
+def test_label_columns_are_read_per_cell_as_text(ingest, tmp_path):
+    path = write_h5ad(tmp_path / "labels.h5ad", extra_obs=LABELLED_OBS)
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                              facet_columns=("transgene_pos", "saturn_timezone"))
+    assert cells["facets"][0] == {"transgene_pos": "False", "saturn_timezone": "Meristem"}
+    assert cells["facets"][1] == {"transgene_pos": "True", "saturn_timezone": "Elongation"}
+    assert len(cells["facets"]) == 6
+
+
+def test_no_label_columns_means_no_labels(ingest, tmp_path):
+    cells = ingest.read_cells(write_h5ad(tmp_path / "plain.h5ad"), "nn_label_plain",
+                              "sample", "X_umap", None)
+    assert cells["facets"] is None and cells["genotypes"] is None
+
+
+def test_a_label_column_the_file_lacks_is_refused(ingest, tmp_path):
+    path = write_h5ad(tmp_path / "nolabel.h5ad")
+    with pytest.raises(ingest.IngestError, match="no obs\\['transgene_pos'\\]"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                          facet_columns=("transgene_pos",))
+
+
+def test_a_label_column_with_too_many_values_is_refused(ingest, tmp_path):
+    """A row of toggles holds a handful of values; hundreds means a measurement."""
+    path = write_h5ad(tmp_path / "many.h5ad", n_cells=14,
+                      labels=["Phellem", "Cortex"] * 7,
+                      samples=["Col-0", "pFACT"] * 7,
+                      extra_obs={"score": [f"v{i}" for i in range(14)]})
+    with pytest.raises(ingest.IngestError, match="14 values, more than the 12"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                          facet_columns=("score",))
+
+
+def test_a_blank_label_is_refused(ingest, tmp_path):
+    path = write_h5ad(tmp_path / "blanklabel.h5ad",
+                      extra_obs={"transgene_pos": ["True", "", "False", "True", "False", "True"]})
+    with pytest.raises(ingest.IngestError, match="blank"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                          facet_columns=("transgene_pos",))
+
+
+def test_genotypes_are_read_per_cell(ingest, tmp_path):
+    cells = ingest.read_cells(write_h5ad(tmp_path / "geno.h5ad"), "nn_label_plain",
+                              "sample", "X_umap", None, genotype_column="sample")
+    assert cells["genotypes"] == ["Col-0", "pFACT", "pHORST"] * 2
+
+
+def test_genotype_rows_name_the_control_and_each_construct(ingest):
+    rows = ingest.genotype_rows(["pHORST", "Col-0", "pFACT"], "Col-0",
+                                {"pFACT": "pFACT:MYB41", "pHORST": "pHORST:MYB41"})
+    assert rows == [
+        {"name": "Col-0", "is_control": True, "construct": None},
+        {"name": "pFACT", "is_control": False, "construct": "pFACT:MYB41"},
+        {"name": "pHORST", "is_control": False, "construct": "pHORST:MYB41"},
+    ]
+
+
+@pytest.mark.parametrize("control,constructs,named", [
+    (None, {}, "--control"),
+    ("WT", {}, "WT"),
+    ("Col-0", {"pFOO": "x"}, "pFOO"),
+])
+def test_genotype_rows_refuse_what_the_file_does_not_hold(ingest, control, constructs, named):
+    with pytest.raises(ingest.IngestError, match=named):
+        ingest.genotype_rows(["Col-0", "pFACT"], control, constructs)
+
+
+@pytest.mark.parametrize("bad", ["pFACT", "=x", "pFACT="])
+def test_a_malformed_construct_is_refused(ingest, bad):
+    with pytest.raises(ingest.IngestError, match="GENOTYPE=NAME"):
+        ingest.parse_constructs([bad])
+
+
+def test_the_dry_run_names_the_labels_and_genotypes(ingest, tmp_path, capsys):
+    path = write_h5ad(tmp_path / "drylabels.h5ad", extra_obs=LABELLED_OBS)
+    code = ingest.main(["--h5ad", str(path), "--dataset-name", "t", "--species-id", "1",
+                        "--annotation", "nn_label_plain", "--facet", "transgene_pos",
+                        "--genotype-column", "sample", "--control", "Col-0", "--dry-run"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "label transgene_pos: False 4, True 2" in out
+    assert "genotypes: Col-0 (control), pFACT, pHORST" in out

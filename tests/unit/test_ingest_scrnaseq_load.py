@@ -280,3 +280,129 @@ def test_repeated_cells_stop_it_before_finishing(ingest, tmp_path):
     with pytest.raises(ingest.IngestError, match="repeated"):
         load(ingest, client, tmp_path, create=False)
     assert ds["ingested_at"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Genotypes and labels
+# --------------------------------------------------------------------------- #
+
+LABEL_OPTIONS = {**OPTIONS, "genotype_column": "sample", "control": "Col-0",
+                 "constructs": {"pFACT": "pFACT:MYB41"}, "facets": ["transgene_pos"],
+                 "source_column": "nn_source"}
+
+
+def labelled(labels=("A", "B", "A", "B")):
+    table = cells(labels, samples=["Col-0", "pFACT", "pFACT", "Col-0"][:len(labels)])
+    table["genotypes"] = list(table["samples"])
+    table["facets"] = [{"transgene_pos": v} for v in ("False", "True", "True", "False")][:len(labels)]
+    table["sources"] = {"A": "shahan", "B": "nuclei"}
+    return table
+
+
+def test_a_first_load_writes_genotypes_and_labels_with_the_cells(ingest, tmp_path):
+    client = FakeClient()
+    dataset_id, _, _ = ingest.load(writer(ingest, client, tmp_path), "MYB41", 1, labelled(),
+                                   "sha-1", LABEL_OPTIONS, create=True)
+    genotypes = {g["name"]: g for g in client.tables["scrna_genotypes"]}
+    assert {n: (g["is_control"], g["construct"]) for n, g in genotypes.items()} == {
+        "Col-0": (True, None), "pFACT": (False, "pFACT:MYB41")}
+    assert all(g["dataset_id"] == dataset_id for g in genotypes.values())
+    rows = sorted(client.tables["scrna_cells"], key=lambda r: r["cell_number"])
+    assert [r["genotype_id"] for r in rows] == [genotypes[n]["id"] for n in
+                                               ("Col-0", "pFACT", "pFACT", "Col-0")]
+    assert [r["facets"] for r in rows] == [{"transgene_pos": v} for v in
+                                           ("False", "True", "True", "False")]
+
+
+def finished_without_labels(ingest, client, tmp_path):
+    """A dataset loaded before labels existed: cells, catalogue, no genotypes."""
+    table = labelled()
+    plain = {k: v for k, v in table.items() if k not in ("genotypes", "facets")}
+    plain["sources"] = {}
+    dataset_id, _, _ = ingest.load(writer(ingest, client, tmp_path), "MYB41", 1, plain,
+                                   "sha-1", OPTIONS, create=True)
+    return dataset_id, table
+
+
+def test_labels_are_added_to_a_finished_dataset_from_the_same_file(ingest, tmp_path):
+    client = FakeClient()
+    dataset_id, table = finished_without_labels(ingest, client, tmp_path)
+    before = len(client.tables["scrna_cells"])
+
+    got_id, added = ingest.add_labels(writer(ingest, client, tmp_path), "MYB41", 1, table,
+                                      "sha-1", LABEL_OPTIONS)
+    assert got_id == dataset_id
+    assert added == {"genotypes": 2, "cells": 4, "sources": 2}
+    assert len(client.tables["scrna_cells"]) == before, "no cell is inserted"
+    sources = {c["cluster_id"]: c["source"] for c in client.tables["scrna_clusters"]}
+    assert sources == {"A": "shahan", "B": "nuclei"}
+    ids = {g["name"]: g["id"] for g in client.tables["scrna_genotypes"]}
+    rows = sorted(client.tables["scrna_cells"], key=lambda r: r["cell_number"])
+    assert [r["genotype_id"] for r in rows] == [ids[n] for n in ("Col-0", "pFACT", "pFACT", "Col-0")]
+    assert [r["facets"]["transgene_pos"] for r in rows] == ["False", "True", "True", "False"]
+    (ds,) = client.tables["scrna_datasets"]
+    assert ds["metadata"]["load_options"]["facets"] == ["transgene_pos"]
+    assert ds["metadata"]["load_options"]["control"] == "Col-0"
+    assert ds["metadata"]["cell_type_column"] == "ann", "other metadata is kept"
+
+
+def test_adding_labels_twice_changes_nothing_more(ingest, tmp_path):
+    client = FakeClient()
+    _, table = finished_without_labels(ingest, client, tmp_path)
+    ingest.add_labels(writer(ingest, client, tmp_path), "MYB41", 1, table, "sha-1", LABEL_OPTIONS)
+    snapshot = stored(client), sorted(map(repr, client.tables["scrna_genotypes"]))
+    ingest.add_labels(writer(ingest, client, tmp_path), "MYB41", 1, table, "sha-1", LABEL_OPTIONS)
+    assert (stored(client), sorted(map(repr, client.tables["scrna_genotypes"]))) == snapshot
+
+
+def test_label_updates_go_out_with_retries_off_and_in_groups(ingest, tmp_path):
+    client = FakeClient()
+    _, table = finished_without_labels(ingest, client, tmp_path)
+    since = len(client.log)
+    ingest.add_labels(writer(ingest, client, tmp_path), "MYB41", 1, table, "sha-1", LABEL_OPTIONS)
+    cell_updates = [e for e in writes(client, since) if e[:2] == ("update", "scrna_cells")]
+    # two genotypes x two transgene values, all four cells in two groups here
+    assert 1 <= len(cell_updates) <= 4
+    assert all(e[3] is False for e in writes(client, since))
+
+
+def test_labels_are_refused_for_an_unfinished_dataset(ingest, tmp_path):
+    client = FakeClient()
+    dataset(client)
+    with pytest.raises(ingest.IngestError, match="not finished"):
+        ingest.add_labels(writer(ingest, client, tmp_path), "MYB41", 1, labelled(), "sha-1",
+                          LABEL_OPTIONS)
+    assert writes(client) == []
+
+
+def test_labels_are_refused_from_another_file(ingest, tmp_path):
+    client = FakeClient()
+    finished_without_labels(ingest, client, tmp_path)
+    since = len(client.log)
+    with pytest.raises(ingest.IngestError, match="sha-1.*sha-2"):
+        ingest.add_labels(writer(ingest, client, tmp_path), "MYB41", 1, labelled(), "sha-2",
+                          LABEL_OPTIONS)
+    assert writes(client, since) == []
+
+
+def test_labels_are_refused_when_the_stored_cells_differ_from_the_file(ingest, tmp_path):
+    client = FakeClient()
+    _, table = finished_without_labels(ingest, client, tmp_path)
+    table["barcodes"] = list(reversed(table["barcodes"]))
+    since = len(client.log)
+    with pytest.raises(ingest.IngestError, match="does not hold these cells in this order"):
+        ingest.add_labels(writer(ingest, client, tmp_path), "MYB41", 1, table, "sha-1",
+                          LABEL_OPTIONS)
+    assert writes(client, since) == []
+
+
+def test_a_stored_genotype_that_disagrees_is_refused(ingest, tmp_path):
+    client = FakeClient()
+    dataset_id, table = finished_without_labels(ingest, client, tmp_path)
+    client.tables["scrna_genotypes"] = [{"id": 1, "dataset_id": dataset_id, "name": "pFACT",
+                                         "is_control": True, "construct": None}]
+    since = len(client.log)
+    with pytest.raises(ingest.IngestError, match="pFACT"):
+        ingest.add_labels(writer(ingest, client, tmp_path), "MYB41", 1, table, "sha-1",
+                          LABEL_OPTIONS)
+    assert writes(client, since) == []
