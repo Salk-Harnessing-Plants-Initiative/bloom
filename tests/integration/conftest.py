@@ -317,15 +317,22 @@ def scrna_species(pg_conninfo):
         ).fetchone()
     yield species_id
     with psycopg.connect(pg_conninfo) as conn, conn.transaction():
-        ids = [i for (i,) in conn.execute(
-            "SELECT id FROM public.scrna_datasets WHERE species_id = %s", (species_id,))]
-        paths = [p.removeprefix("scrna/") for (p,) in conn.execute(
-            "SELECT counts_object_path FROM public.scrna_counts "
-            "WHERE dataset_id = ANY(%s)", (ids,))]
+        found = conn.execute("SELECT id, btrim(name) FROM public.scrna_datasets "
+                             "WHERE species_id = %s", (species_id,)).fetchall()
+        ids = [i for i, _ in found]
         for table in SCRNA_TABLES:
             conn.execute(f"DELETE FROM public.{table} WHERE dataset_id = ANY(%s)", (ids,))
         conn.execute("DELETE FROM public.scrna_datasets WHERE id = ANY(%s)", (ids,))
         conn.execute("DELETE FROM public.species WHERE id = %s", (species_id,))
+    # By prefix, so objects a stopped load uploaded without a row go too.
+    paths = []
+    for _, name in found:
+        prefix = f"counts/{name}/"
+        status, listed = api_request("/api/storage/v1/object/list/scrna",
+                                     api_key=SERVICE_ROLE_KEY, method="POST",
+                                     data={"prefix": prefix, "limit": 10000})
+        assert status == 200, f"could not list {prefix}: {status} {listed}"
+        paths += [prefix + o["name"] for o in listed]
     if paths:
         status, body = api_request("/api/storage/v1/object/scrna", api_key=SERVICE_ROLE_KEY,
                                    method="DELETE", data={"prefixes": paths})
