@@ -957,20 +957,24 @@ jobs:
           set -euo pipefail
           DB=$(docker compose $COMPOSE_FILES --env-file .env.ci ps -q db-prod)
           export TBLS_DSN="postgres://supabase_admin:${POSTGRES_PASSWORD}@localhost:5432/postgres?sslmode=disable"
-          docker run --rm -e TBLS_DSN --network "container:${DB}" -v "$PWD:/work" -w /work \
+          mkdir -p "$RUNNER_TEMP/erd"
+          # tbls gets only its config, not the workspace (.env.ci, the checkout token).
+          docker run --rm -e TBLS_DSN --network "container:${DB}" -v "$PWD/.tbls.yml:/work/.tbls.yml:ro" -w /work \
             "$TBLS_IMAGE" out -c .tbls.yml -t mermaid > "$RUNNER_TEMP/erd.mmd"
-          python3 scripts/schema_erd.py wrap < "$RUNNER_TEMP/erd.mmd" > _WIKI/SUPABASE/erd.md
-          if [ -n "$(git status --porcelain -- _WIKI/SUPABASE/erd.md)" ]; then
+          python3 scripts/schema_erd.py wrap < "$RUNNER_TEMP/erd.mmd" > "$RUNNER_TEMP/erd/erd.md"
+          if ! cmp -s "$RUNNER_TEMP/erd/erd.md" _WIKI/SUPABASE/erd.md; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
             echo "::error title=ER diagram is stale::_WIKI/SUPABASE/erd.md does not match the migrated schema. Download the erd artifact from this run and commit it as _WIKI/SUPABASE/erd.md."
             exit 1
           fi
 
+      # Only a successful redraw is uploaded; a tbls failure fails the step with no artifact.
       - name: Upload the redrawn ER diagram
-        if: steps.erd.outcome == 'failure'
+        if: steps.erd.outputs.stale == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: erd
-          path: _WIKI/SUPABASE/erd.md
+          path: ${{ runner.temp }}/erd/erd.md
 
       # Layer B — runs only on failure. Prints applied-vs-pending state so an
       # on-call engineer can see which migration broke without digging through

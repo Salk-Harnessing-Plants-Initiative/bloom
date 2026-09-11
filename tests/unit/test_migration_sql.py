@@ -306,6 +306,32 @@ def test_comment_on_constraint_is_not_an_addition():
     assert not facts.changes_schema
 
 
+def test_create_view_is_a_schema_change():
+    facts = scan("CREATE OR REPLACE VIEW public.cyl_plants_extended AS SELECT 1 AS id;")
+    assert facts.views_created == {"cyl_plants_extended"}
+    assert facts.tables_touched == {"cyl_plants_extended"}
+    assert facts.changes_schema
+
+
+def test_create_materialized_view():
+    facts = scan("CREATE MATERIALIZED VIEW IF NOT EXISTS public.mv AS SELECT 1;")
+    assert facts.views_created == {"mv"}
+
+
+def test_drop_view_is_a_schema_change():
+    facts = scan("DROP VIEW IF EXISTS public.v, public.w; DROP MATERIALIZED VIEW mv;")
+    assert facts.views_dropped == {"v", "w", "mv"}
+    assert facts.changes_schema
+
+
+def test_view_inside_a_function_body_is_ignored():
+    facts = scan(
+        "CREATE FUNCTION f() RETURNS void AS $$ BEGIN CREATE VIEW hidden AS SELECT 1; END $$ "
+        "LANGUAGE plpgsql;"
+    )
+    assert not facts.changes_schema
+
+
 def test_scan_files_unions_facts(tmp_path):
     a = tmp_path / "a.sql"
     b = tmp_path / "b.sql"

@@ -53,9 +53,22 @@ def test_password_reaches_tbls_through_the_environment_only():
     assert not re.search(r"-e TBLS_DSN=", run), "pass the variable by name so its value stays out of argv"
 
 
-def test_drift_step_checks_the_committed_file():
+def _drift_run() -> str:
     steps, drift = _drift_step()
-    assert f"git status --porcelain -- {ERD}" in steps[drift]["run"]
+    return steps[drift]["run"]
+
+
+def test_redraw_goes_to_a_temp_file_compared_with_the_committed_one():
+    run = _drift_run()
+    assert f"> {ERD}" not in run, "redrawing over the committed file loses it when the redraw fails"
+    assert "$RUNNER_TEMP" in run
+    assert re.search(rf"cmp -s \S+ {re.escape(ERD)}", run)
+
+
+def test_tbls_sees_only_its_config():
+    run = _drift_run()
+    assert '-v "$PWD/.tbls.yml:/work/.tbls.yml:ro"' in run
+    assert '-v "$PWD:/work"' not in run, "the workspace holds .env.ci and the checkout token"
 
 
 def test_drift_step_is_in_warning_mode():
@@ -63,19 +76,27 @@ def test_drift_step_is_in_warning_mode():
     assert steps[drift].get("continue-on-error") is True
 
 
-def test_redrawn_file_is_uploaded_when_the_check_fails():
+def test_only_a_successful_redraw_is_uploaded():
     steps, drift = _drift_step()
-    step_id = steps[drift].get("id")
-    assert step_id, "the drift step needs an id so the upload can key on its outcome"
+    run = steps[drift]["run"]
+    assert steps[drift].get("id") == "erd"
+    assert "stale=true" in run and "$GITHUB_OUTPUT" in run
+    assert "erd artifact" in run
     uploads = [
         s for s in steps[drift + 1 :]
         if str(s.get("uses", "")).startswith("actions/upload-artifact")
-        and ERD in str(s.get("with", {}).get("path", ""))
+        and s.get("with", {}).get("name") == "erd"
     ]
     assert len(uploads) == 1, "expected one upload of the redrawn erd.md"
-    assert f"steps.{step_id}.outcome == 'failure'" in str(uploads[0].get("if", ""))
-    assert uploads[0]["with"]["name"] == "erd"
-    assert "erd artifact" in steps[drift]["run"]
+    assert uploads[0].get("if") == "steps.erd.outputs.stale == 'true'"
+    assert "runner.temp" in str(uploads[0]["with"]["path"])
+
+
+def test_makefile_gives_tbls_only_its_config_and_never_truncates_erd_md():
+    text = MAKEFILE.read_text(encoding="utf-8")
+    assert "$(CURDIR):/work" not in text
+    assert text.count('-v "$(CURDIR)/.tbls.yml:/work/.tbls.yml:ro"') == 2
+    assert f"> {ERD}" not in text, "make erd must not truncate erd.md before wrap succeeds"
 
 
 def test_makefile_and_workflow_pin_the_same_image():
