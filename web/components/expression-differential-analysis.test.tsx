@@ -151,6 +151,8 @@ const gate: {
 function answer(table: string, filters: Record<string, unknown>, start: number): Promise<unknown> {
   if (table === "scrna_de_runs") return Promise.resolve({ data: [RUN], error: null });
   if (table === "scrna_de") return Promise.resolve({ data: ROWS, error: null });
+  // The all-cell-types summary asks by a list of comparisons; it has nothing here.
+  if (filters.summary) return Promise.resolve({ data: [], error: null });
   if (start > 0) return Promise.resolve({ data: [], error: null });
   const deId = filters.de_id as number;
   return new Promise((resolve) => {
@@ -175,6 +177,12 @@ vi.mock("@/lib/supabase/client", () => ({
           filters[column] = value;
           return query;
         },
+        in: () => {
+          filters.summary = true;
+          return query;
+        },
+        lt: () => query,
+        or: () => query,
         order: () => query,
         limit: () => query,
         range: (from: number) => {
