@@ -40,8 +40,6 @@ interface LoadedMeta {
   cellCount: number;
   /** Cells whose `cluster_id` had no row in `scrna_clusters` (sentinel ordinal 255). */
   orphanCount: number;
-  /** from scrna_cluster_stats.cell_count, keyed by ordinal */
-  counts: Record<number, number>;
   /** The filter rows to show, the sample row first. Empty means no toggles. */
   filters: string[];
   /** Per filter row, the cells with no value for it. */
@@ -88,11 +86,13 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
     setColourRange(range);
   }, []);
 
+  // Cells per cluster from scrna_cluster_stats, by cluster id. Read alongside the
+  // map's own fetch, so its first paint does not wait on them.
+  const [statsCounts, setStatsCounts] = useState<Record<string, number> | null>(null);
+
   useEffect(() => {
-    // load cluster counts from scrna_cluster_stats alongside the
-    // datasets/clusters that the UMAP fetches independently. We keep
-    // this separate so the UMAP's first paint doesn't wait on stats.
     let cancelled = false;
+    setStatsCounts(null);
     (async () => {
       const supabase = createClientSupabaseClient();
       const { data, error } = await supabase
@@ -100,21 +100,9 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
         .select("cluster_id,cell_count")
         .eq("dataset_id", datasetId);
       if (cancelled || error || !data) return;
-      // map cluster_id (text) → cell_count; ordinal mapping happens on
-      // handleDataLoaded when we know the cluster catalog.
-      const byClusterText: Record<string, number> = {};
-      for (const row of data) {
-        byClusterText[row.cluster_id] = row.cell_count;
-      }
-      setMeta((prev) => {
-        if (!prev) return prev;
-        const counts: Record<number, number> = {};
-        for (const c of prev.clusters) {
-          const n = byClusterText[c.cluster_id];
-          if (typeof n === "number") counts[c.ordinal] = n;
-        }
-        return { ...prev, counts };
-      });
+      const byClusterId: Record<string, number> = {};
+      for (const row of data) byClusterId[row.cluster_id] = row.cell_count;
+      setStatsCounts(byClusterId);
     })();
     return () => {
       cancelled = true;
@@ -131,7 +119,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
       unlabelled: Record<string, number>;
       cells: Pick<CellArraysRow, "replicate" | "facets" | "cluster_ordinal">[];
     }) => {
-      setMeta((prev) => ({
+      setMeta({
         dataset: ctx.dataset,
         clusters: ctx.clusters,
         cellCount: ctx.cellCount,
@@ -139,11 +127,22 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
         filters: ctx.filters,
         unlabelled: ctx.unlabelled,
         cells: ctx.cells,
-        counts: prev?.counts ?? {},
-      }));
+      });
     },
     [],
   );
+
+  // The stats rows and the map's cells arrive in either order, so they are joined
+  // here, by the map's ordinals, rather than whenever one of them lands.
+  const counts = useMemo(() => {
+    if (!meta || !statsCounts) return undefined;
+    const out: Record<number, number> = {};
+    for (const c of meta.clusters) {
+      const n = statsCounts[c.cluster_id];
+      if (typeof n === "number") out[c.ordinal] = n;
+    }
+    return out;
+  }, [meta, statsCounts]);
 
   const handleFilterToggle = useCallback((filter: string, value: string) => {
     setHiddenValues((prev) => {
@@ -234,7 +233,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
       <ExpressionClusterSidebar
         clusters={meta?.clusters ?? []}
         hiddenOrdinals={hidden}
-        cellCounts={meta?.counts}
+        cellCounts={counts}
         transgene={showTransgene ? transgene ?? undefined : undefined}
         onVisibilityChange={handleVisibilityChange}
         onSolo={handleSolo}

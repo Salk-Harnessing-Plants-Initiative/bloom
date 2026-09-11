@@ -11,7 +11,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import type { ExpressionUmapProps } from "./expression-umap";
 
@@ -61,10 +61,13 @@ vi.mock("@/components/expression-colorbar", () => ({
   ),
 }));
 
+// The cluster stats rows the view reads for its cell counts.
+const stats = vi.hoisted(() => ({ rows: [] as { cluster_id: string; cell_count: number }[] }));
+
 vi.mock("@/lib/supabase/client", () => ({
   createClientSupabaseClient: () => ({
     from: () => ({
-      select: () => ({ eq: async () => ({ data: [], error: null }) }),
+      select: () => ({ eq: async () => ({ data: stats.rows, error: null }) }),
     }),
   }),
 }));
@@ -106,6 +109,7 @@ const hiddenOf = (filter = "sample") => [...(latest().hiddenValues?.get(filter) 
 
 beforeEach(() => {
   umapProps.length = 0;
+  stats.rows = [];
 });
 afterEach(cleanup);
 
@@ -439,5 +443,20 @@ describe("ExpressionView — colouring the map by a gene", () => {
       expect(screen.getByRole("alert").textContent).toContain("no stored expression"),
     );
     expect(screen.queryByTestId("expression-colorbar")).toBeNull();
+  });
+});
+
+describe("ExpressionView — cell counts in the cluster list", () => {
+  it("shows each cluster's count even when the stats arrive before the map's cells", async () => {
+    stats.rows = [{ cluster_id: "Cortex", cell_count: 9 }];
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    // The stats request settles first; only then does the map report its cells.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    loadData();
+    const sidebar = await screen.findByTestId("expression-cluster-sidebar");
+    await waitFor(() => expect(within(sidebar).getByText("9")).toBeTruthy());
   });
 });
