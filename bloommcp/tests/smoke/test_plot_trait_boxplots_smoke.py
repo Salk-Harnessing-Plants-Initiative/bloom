@@ -1,14 +1,19 @@
-"""Live smoke: ``plot_trait_boxplots`` through the real running dev stack (#483).
+"""Live smoke: ``plot_trait_boxplots`` through the real running dev stack (#483, #466).
 
-Cylinder is additionally marked ``live_smoke_slow``. ``plot_trait_boxplots`` now
-routes cylinder's 846 traits through ``create_trait_boxplots_by_genotype_batched``
-(53 pages) instead of the unbatched single-figure delegate (see ``_viz_shared.py``'s
-``TRAIT_BATCH_THRESHOLD``) -- fixing the same class of bug ``plot_heritability_bar``
-hit, and producing legible paginated output for a real user. That pagination fix does
-NOT meaningfully reduce total wall-clock time (still ~109-111s observed across runs,
-same total rendering work just reorganized), so the cylinder case stays
-``live_smoke_slow``: it exceeded the 120s client timeout in CI (this is the failure
-that prompted the pagination fix + this marker in the first place).
+Converged onto ``@as_mcp_tool`` + the ``ExperimentReader`` port (#466): like the 7 granular
+analysis tools, it now routes through ``SupabaseReader``'s DB-only raw tier, so this test uses
+the ``db_experiment_id``/``call_tool`` harness (not ``seeded_experiment``/``call_plot_tool``,
+which it used pre-#466 — see ``conftest.py``). The fast/unmarked contract + batching-boundary
+tests live in ``tests/tools/test_plot_trait_boxplots_tool.py``; this test only proves the tool
+round-trips correctly through the real container.
+
+Cylinder is additionally marked ``live_smoke_slow``. ``plot_trait_boxplots`` routes cylinder's
+846 traits through ``create_trait_boxplots_by_genotype_batched`` (53 pages) instead of the
+unbatched single-figure delegate (see ``_viz_shared.py``'s ``TRAIT_BATCH_THRESHOLD``) — the
+batching itself is unchanged by #466 (only persistence is), and does NOT meaningfully reduce
+total wall-clock time (still ~109-111s observed pre-#466), so cylinder stays
+``live_smoke_slow``: it exceeded the 120s client timeout in CI (the original failure that
+prompted the pagination fix + this marker).
 """
 
 from __future__ import annotations
@@ -22,8 +27,14 @@ pytestmark = pytest.mark.live_smoke
     "fixture_name",
     ["turface_19", pytest.param("cylinder", marks=pytest.mark.live_smoke_slow)],
 )
-def test_plot_trait_boxplots_smoke(
-    call_plot_tool, assert_plot_success, seeded_experiment: str
-) -> None:
-    text = call_plot_tool("sleap_roots_plot_trait_boxplots", filename=seeded_experiment)
-    assert_plot_success(text)
+def test_plot_trait_boxplots_smoke(call_tool, db_experiment_id: str) -> None:
+    result = call_tool(
+        "sleap_roots_plot_trait_boxplots", {"experiment": db_experiment_id}
+    )
+
+    assert result["experiment"] == db_experiment_id
+    assert result["genotype_column"]
+    assert result["n_traits_plotted"] > 0
+    assert result["outputs"]
+    assert result["run_ref"]
+    assert result["manifest_path"]

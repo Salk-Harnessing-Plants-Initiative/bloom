@@ -23,7 +23,7 @@ interface StubBuffer {
 }
 
 /** Every buffer regl was asked for, in creation order: position, color,
- *  visibility, expression -- see the init effect. */
+ *  visibility, expression, focus -- see the init effect. */
 const buffers: StubBuffer[] = [];
 
 vi.mock("regl", () => {
@@ -103,7 +103,7 @@ const visibilityBuffer = () => buffers[2];
 describe("ExpressionUmap — what reaches the packing", () => {
   it("packs every cell, not the ones left showing", async () => {
     const { ExpressionUmap } = await import("./expression-umap");
-    render(<ExpressionUmap datasetId={1} hiddenSamples={new Set(["pFACT"])} />);
+    render(<ExpressionUmap datasetId={1} hiddenValues={new Map([["sample", new Set(["pFACT"])]])} />);
 
     await waitFor(() => expect(packPositions).toHaveBeenCalled());
     expect(packPositions.mock.calls[0][0]).toHaveLength(CELLS.length);
@@ -112,7 +112,7 @@ describe("ExpressionUmap — what reaches the packing", () => {
 
   it("gives the canvas one position per cell even when a sample is hidden", async () => {
     const { ExpressionUmap } = await import("./expression-umap");
-    render(<ExpressionUmap datasetId={1} hiddenSamples={new Set(["pFACT"])} />);
+    render(<ExpressionUmap datasetId={1} hiddenValues={new Map([["sample", new Set(["pFACT"])]])} />);
 
     await waitFor(() => expect(buffers.length).toBeGreaterThan(2));
     expect((positionBuffer().initial as Float32Array).length).toBe(
@@ -125,12 +125,12 @@ describe("ExpressionUmap — what reaches the packing", () => {
     // re-packing on a filter would move every remaining cell.
     const { ExpressionUmap } = await import("./expression-umap");
     const { rerender } = render(
-      <ExpressionUmap datasetId={1} hiddenSamples={new Set()} />,
+      <ExpressionUmap datasetId={1} hiddenValues={new Map()} />,
     );
     await waitFor(() => expect(buffers.length).toBeGreaterThan(2));
     const before = Array.from(positionBuffer().initial as Float32Array);
 
-    rerender(<ExpressionUmap datasetId={1} hiddenSamples={new Set(["Col-0"])} />);
+    rerender(<ExpressionUmap datasetId={1} hiddenValues={new Map([["sample", new Set(["Col-0"])]])} />);
     await waitFor(() => expect(visibilityBuffer().subdata).toHaveBeenCalled());
 
     expect(positionBuffer().subdata).not.toHaveBeenCalled();
@@ -141,11 +141,11 @@ describe("ExpressionUmap — what reaches the packing", () => {
   it("switches off exactly the hidden sample's cells in the visibility buffer", async () => {
     const { ExpressionUmap } = await import("./expression-umap");
     const { rerender } = render(
-      <ExpressionUmap datasetId={1} hiddenSamples={new Set()} />,
+      <ExpressionUmap datasetId={1} hiddenValues={new Map()} />,
     );
     await waitFor(() => expect(buffers.length).toBeGreaterThan(2));
 
-    rerender(<ExpressionUmap datasetId={1} hiddenSamples={new Set(["pFACT"])} />);
+    rerender(<ExpressionUmap datasetId={1} hiddenValues={new Map([["sample", new Set(["pFACT"])]])} />);
     await waitFor(() => expect(visibilityBuffer().subdata).toHaveBeenCalled());
 
     const written = visibilityBuffer().subdata.mock.calls.at(-1)?.[0];
@@ -153,10 +153,10 @@ describe("ExpressionUmap — what reaches the packing", () => {
     expect(Array.from(written as Float32Array)).toEqual([0, 1, 0, 1]);
   });
 
-  it("reports the samples it counted, so the toggles can be built from them", async () => {
-    // The view renders the toggles only when this payload carries samples, and
+  it("reports the filter rows and the cells, so the toggles can be built from them", async () => {
+    // The view renders the toggles only when this payload carries rows, and
     // it mocks this component away to test itself. Without an assertion here,
-    // `samples: []` in the report removes the whole feature from the page with
+    // `filters: []` in the report removes the whole feature from the page with
     // every test still passing -- and a page with no toggles is exactly what a
     // dataset recording no sample is meant to look like, so nothing would show.
     const { ExpressionUmap } = await import("./expression-umap");
@@ -165,11 +165,38 @@ describe("ExpressionUmap — what reaches the packing", () => {
 
     await waitFor(() => expect(onDataLoaded).toHaveBeenCalled());
     const reported = onDataLoaded.mock.calls[0][0];
-    expect(reported.samples).toEqual([
-      { name: "pFACT", count: 2 },
-      { name: "Col-0", count: 1 },
-    ]);
-    expect(reported.unlabelledCount).toBe(1);
+    expect(reported.filters).toEqual(["sample"]);
+    expect(reported.unlabelled).toEqual({ sample: 1 });
+    expect(reported.cells).toHaveLength(CELLS.length);
     expect(reported.cellCount).toBe(CELLS.length);
+  });
+});
+
+describe("ExpressionUmap — focusing", () => {
+  const focusBuffer = () => buffers[4];
+
+  it("starts with every cell in focus", async () => {
+    const { ExpressionUmap } = await import("./expression-umap");
+    render(<ExpressionUmap datasetId={1} />);
+    await waitFor(() => expect(buffers.length).toBeGreaterThan(4));
+    expect(Array.from(focusBuffer().initial as Float32Array)).toEqual([1, 1, 1, 1]);
+  });
+
+  it("writes exactly the cells in focus, and moves and hides nothing", async () => {
+    const { ExpressionUmap } = await import("./expression-umap");
+    const { rerender } = render(<ExpressionUmap datasetId={1} />);
+    await waitFor(() => expect(buffers.length).toBeGreaterThan(4));
+
+    rerender(
+      <ExpressionUmap datasetId={1} focusedValues={new Map([["sample", new Set(["pFACT"])]])} />,
+    );
+    await waitFor(() => expect(focusBuffer().subdata).toHaveBeenCalled());
+
+    // cells 0 and 2 are pFACT; cell 3 records no sample, so it is greyed out
+    const written = focusBuffer().subdata.mock.calls.at(-1)?.[0];
+    expect(Array.from(written as Float32Array)).toEqual([1, 0, 1, 0]);
+    expect(positionBuffer().subdata).not.toHaveBeenCalled();
+    const visible = visibilityBuffer().subdata.mock.calls.at(-1)?.[0];
+    if (visible) expect(Array.from(visible as Float32Array)).toEqual([1, 1, 1, 1]);
   });
 });

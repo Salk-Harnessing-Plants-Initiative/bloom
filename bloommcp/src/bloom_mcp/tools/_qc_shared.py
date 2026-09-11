@@ -14,6 +14,7 @@ the tool family in lockstep rather than drifting as separate copies.
 from __future__ import annotations
 
 import math
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -51,8 +52,9 @@ def _validate_experiment_name(experiment: str, label: str = "experiment") -> Non
     ``Path(experiment).name != experiment`` alone is not enough: ``pathlib.Path`` only
     treats ``\\`` as a separator on Windows, so on POSIX (the deploy target)
     ``Path("..\\\\secret.csv").name`` equals the input unchanged and the traversal payload
-    would slip past this guard. Check for either separator explicitly (mirrors the fix in
-    ``sections/sleap_roots/analysis/_viz_shared.validate_filename``).
+    would slip past this guard. Check for either separator explicitly (the same fix the
+    since-deleted ``_viz_shared.validate_filename`` carried for the bare-``mcp.tool()``
+    plot tools, until #462 retired the last of those).
 
     ``label`` names the offending field in the error message. Single-experiment callers
     (``qc_inspect``) can rely on the ``"experiment"`` default; a multi-experiment caller
@@ -130,7 +132,10 @@ def _validate_trait_subset(
                     "least one certified trait column."
                 ),
             )
-        duplicates = sorted({c for c in requested if requested.count(c) > 1})
+        # O(n) via Counter, not O(n^2) via a .count()-per-element comprehension over the
+        # same list — matters at cylinder's ~846-trait scale (#466 review round 3, which
+        # made the identical fix in _viz_shared.resolve_trait_columns; backported here).
+        duplicates = sorted(c for c, n in Counter(requested).items() if n > 1)
         if duplicates:
             raise BloomMCPError(
                 code="invalid_input",

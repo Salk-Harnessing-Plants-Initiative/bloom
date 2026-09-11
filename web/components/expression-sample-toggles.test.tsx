@@ -112,3 +112,17 @@ describe("ExpressionSampleToggles", () => {
     expect(screen.queryByText(/Every sample is hidden/)).toBeNull();
   });
 });
+
+describe("ExpressionSampleToggles as a label row", () => {
+  it("names the row and its values by the label it filters on", () => {
+    renderToggles({
+      label: "transgene_pos",
+      noun: "transgene_pos value",
+      samples: [{ name: "False", count: 8451 }, { name: "True", count: 232 }],
+      hidden: new Set(["False", "True"]),
+    });
+    expect(screen.getByText("transgene_pos")).toBeTruthy();
+    expect(screen.getByText(/Every transgene_pos value is hidden, so the map is empty/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Show all transgene_pos values" })).toBeTruthy();
+  });
+});

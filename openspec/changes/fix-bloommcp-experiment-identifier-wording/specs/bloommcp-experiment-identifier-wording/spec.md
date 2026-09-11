@@ -42,9 +42,10 @@ exact accept/reject behavior — only their message text changes.
 #### Scenario: Discovery-tool and consumer docstrings do not claim a CSV filename
 
 - **WHEN** the docstrings of `load_experiment_data`, `list_available_experiments`,
-  `summarize_trait`, and the five plotting tools (`plot_correlation_matrix`,
-  `plot_heritability_bar`, `plot_trait_boxplots`, `plot_trait_histograms`,
-  `plot_variance_decomposition`) are inspected, along with
+  `summarize_trait`, and the three surviving plotting tools (`plot_correlation_matrix`,
+  `plot_trait_boxplots`, `plot_trait_histograms`) are inspected — it was five until
+  `add-bloommcp-heritability-analysis-tool` (#462) retired `plot_heritability_bar` and
+  `plot_variance_decomposition` into `heritability_analysis` — along with
   `list_available_experiments`'s hardcoded "how to analyze an experiment" response text
 - **THEN** none describes the input as a "CSV filename" or "CSV file"; each identifies it
   as an experiment identifier
