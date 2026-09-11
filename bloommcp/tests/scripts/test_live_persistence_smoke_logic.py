@@ -519,7 +519,7 @@ def test_heritability_persist_checks_flags_non_null_seed():
 
 def test_heritability_persist_checks_flags_wrong_tool():
     kwargs = _good_heritability_kwargs()
-    kwargs["tool"] = "plot_heritability_bar"
+    kwargs["tool"] = "descriptive_stats"  # a real tool, just not this leg's
     checks = smoke.heritability_persist_checks(**kwargs)
     assert any("tool == 'heritability_analysis'" in c.name and not c.ok for c in checks)
 

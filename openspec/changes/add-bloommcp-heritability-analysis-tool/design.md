@@ -206,24 +206,22 @@ follow-up is precisely the wiring that unmasks it. Cheap to get right now.
 validation/cleanup path); storing the list under one key (pushes the special case into three call
 sites instead of one).
 
-**In-flight interaction with PR #726 (#721)** — larger than a textual conflict, and detailed in
-tasks.md's rebase note. Three parts: (i) #726 wraps this same loop in a `FIGURE_REGISTRY_LOCK` and
-an allocate-then-raise `plt.get_fignums()` diff — that diff becomes *more* valuable with lists (a
-plotter that allocates 11 pages then raises on page 12 gets all 11 closed), and the merge is
-"keep #726's wrapper, apply the expansion to `fn()`'s return inside it, record-then-style";
-(ii) #726 also edits **both modules this change deletes**, producing modify/delete conflicts;
-(iii) #726's lock docstring enumerates "the 5 legacy `plot_*` tools … must acquire this SAME lock"
-by name, which this change falsifies — the new tool is covered because it goes through
-`generate_figures`, which holds the lock, and that comment must be corrected by whichever lands
-second.
+**Interaction with PR #726 (#721) — resolved at merge.** #726 landed first (2026-09-10) and
+reshaped `generate_figures` around a per-call `call_with_figure_cleanup`, which acquires
+`FIGURE_REGISTRY_LOCK` for one plotter call and closes any figure the callable allocated then
+abandoned by raising. The two designs compose cleanly: `result = call_with_figure_cleanup(fn)`,
+then the list expansion and record-all-pages-then-style pass operate on what it returned. That
+also closes the leak this document had recorded as out of reach — a paginating plotter that
+builds k pages and dies on page k+1 now has those k pages closed by the per-call cleanup, so
+the helper test that pinned "2 leak" asserts "0 leak". #726's edits to the two retired modules
+resolved as deletions, and its lock comment's enumeration of "the 5 legacy `plot_*` tools" was
+corrected to the 3 converged ones plus `heritability_analysis`.
 
-Because #726 holds that lock across the whole `resolved_calls` loop, `compare_trait_heritabilities`
-and D7's guard must run **before** `generate_figures`, with only the finished `comparison_df`
-captured in the closure — otherwise that work blocks every concurrent figure-creating call in the
-process. That ordering is required by D7's "no run committed on a bad frame" guarantee anyway. The
-lock is also non-reentrant, so the new tool must not route figures through `_viz_shared`'s
-save helpers (which the 3 surviving plot tools still use): `generate_figures` → a lock-acquiring
-helper would self-deadlock.
+Because the lock is held per plotter call, `compare_trait_heritabilities` and D7's guard still
+run **before** `generate_figures` — only the finished `comparison_df` is captured in the
+closure — and this tool does not route figures through any other lock-acquiring helper (the
+lock is non-reentrant). With #462 deleting `_viz_shared`'s save helpers, no such helper
+remains to route through anyway.
 
 ### D7 — `compare_trait_heritabilities` is computed lazily, and its guard is kept
 

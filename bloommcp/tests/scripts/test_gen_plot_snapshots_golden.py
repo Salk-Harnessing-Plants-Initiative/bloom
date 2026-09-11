@@ -47,14 +47,16 @@ def _use_fake_baselines_dir(monkeypatch, tmp_path: Path) -> Path:
     files to pre-seed).
 
     Also registers every module-level global `build()` mutates via plain assignment (not
-    `monkeypatch.setattr`) for monkeypatch auto-revert: `eu.TRAITS_DIR`/`eu.PLOTS_DIR`/
-    `_viz_shared.PLOTS_DIR`, AND -- easy to miss, and exactly what broke a first version of
-    this helper (it registered only the first three, and 30 unrelated tests elsewhere in
-    the suite started failing from the corrupted `list_prefix`s leaking through
-    `fake_supabase_storage`'s own monkeypatch-revert chain) -- `_manifest.list_prefix` /
-    `_sc.list_prefix`. Plain assignment is safe for the script's own one-shot `__main__`
-    use, but calling `build()` directly from a test in a shared pytest session would
-    otherwise leak all five globals into every test that runs afterward.
+    `monkeypatch.setattr`) for monkeypatch auto-revert: `eu.TRAITS_DIR`, AND -- easy to
+    miss, and exactly what broke a first version of this helper (it registered only the
+    directory globals, and 30 unrelated tests elsewhere in the suite started failing from
+    the corrupted `list_prefix`s leaking through `fake_supabase_storage`'s own
+    monkeypatch-revert chain) -- `_manifest.list_prefix` / `_sc.list_prefix`. Plain
+    assignment is safe for the script's own one-shot `__main__` use, but calling `build()`
+    directly from a test in a shared pytest session would otherwise leak all three globals
+    into every test that runs afterward. (The two PLOTS_DIR globals used to be on this
+    list too; #462 removed the last tool that wrote there and `build()` no longer touches
+    either.)
     `monkeypatch.setattr(obj, name, <its own current value>)` is enough: monkeypatch
     restores whatever value it captured *before* the test ran at teardown, regardless of
     what `build()` reassigns in between.
@@ -64,8 +66,6 @@ def _use_fake_baselines_dir(monkeypatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(gen, "_FIXTURES", fixtures)
     monkeypatch.setattr(gen, "_BASELINES", baselines)
     monkeypatch.setattr(gen.eu, "TRAITS_DIR", gen.eu.TRAITS_DIR)
-    monkeypatch.setattr(gen.eu, "PLOTS_DIR", gen.eu.PLOTS_DIR)
-    monkeypatch.setattr(gen._viz_shared, "PLOTS_DIR", gen._viz_shared.PLOTS_DIR)
     monkeypatch.setattr(gen._manifest, "list_prefix", gen._manifest.list_prefix)
     monkeypatch.setattr(gen._sc, "list_prefix", gen._sc.list_prefix)
     return baselines
@@ -111,7 +111,7 @@ def _dimension_matched_markers() -> dict[str, bytes]:
     different content, so it's distinguishable from a fresh, correct re-render.
     """
     markers = {}
-    for baseline_name, _tool_fn, _produced_name in gen._TOOLS:
+    for baseline_name, _tool_fn, _produced_name, _converged in gen._TOOLS:
         real = _REAL_BASELINES_DIR / baseline_name
         dimmed = ImageEnhance.Brightness(Image.open(real)).enhance(0.5)
         buf = io.BytesIO()
@@ -158,5 +158,5 @@ def test_build_writes_new_baselines_without_needing_yes(tmp_path, monkeypatch):
         wrote = gen.build(Path(scratch), confirmed=False)
 
     assert wrote is True
-    for baseline_name, _tool_fn, _produced_name in gen._TOOLS:
+    for baseline_name, _tool_fn, _produced_name, _converged in gen._TOOLS:
         assert (fake_baselines / baseline_name).is_file()

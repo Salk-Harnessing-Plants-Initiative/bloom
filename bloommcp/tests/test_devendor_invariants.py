@@ -93,9 +93,9 @@ def test_no_shipped_module_imports_vendored_analysis():
     offenders: list[str] = []
     for py in _SRC.rglob("*.py"):
         offenders.extend(_vendored_imports_in(py))
-    assert not offenders, (
-        "shipped modules still import vendored analysis code:\n" + "\n".join(offenders)
-    )
+    assert (
+        not offenders
+    ), "shipped modules still import vendored analysis code:\n" + "\n".join(offenders)
 
 
 def test_vendored_analysis_modules_absent():
@@ -439,8 +439,9 @@ def test_expected_tool_surface():
         "sleap_roots_descriptive_stats",
         "sleap_roots_cross_experiment_correlations",
         "sleap_roots_heritability_analysis",
-        # sleap_roots: the 3 surviving plots (bloom#462 folded the heritability bar
-        # and variance-decomposition figures into sleap_roots_heritability_analysis)
+        # sleap_roots: the 3 plotting tools, all on @as_mcp_tool since #466. #462 folded
+        # the heritability bar and variance-decomposition figures into
+        # sleap_roots_heritability_analysis above, so no bare-mcp.tool() plot remains.
         "sleap_roots_plot_trait_histograms",
         "sleap_roots_plot_trait_boxplots",
         "sleap_roots_plot_correlation_matrix",

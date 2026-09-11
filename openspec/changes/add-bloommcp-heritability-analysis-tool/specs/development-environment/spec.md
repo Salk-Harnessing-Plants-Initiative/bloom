@@ -8,15 +8,19 @@ clone — specifically `bloommcp/data/TRAITS_DIR`, `bloommcp/data/PLOTS_DIR`, an
 `bloommcp/data/ANALYSIS_OUTPUT`. This SHALL NOT rely on Docker's default behavior for a missing bind-mount source
 (creating it owned by the Docker daemon's user, typically root) — that default leaves the
 non-root `bloommcp` container user unable to write into them, which silently breaks every
-tool that writes to local disk (the 3 surviving `sleap_roots` plotting tools always do,
-regardless of `BLOOM_STORAGE_BACKEND`; the QC/analysis tools do only in fully-local
-storage-backend mode).
+tool that writes to local disk (in fully-local storage-backend mode, every granular tool
+does; no tool writes to `PLOTS_DIR` unconditionally any more).
 
-`heritability_analysis` — which replaced the retired `plot_heritability_bar` /
-`plot_variance_decomposition` — is deliberately **not** covered by the "always writes to local
-disk" clause despite rendering figures: it persists them through the `ResultStore` port like
-every other granular consumer, so in a Supabase-backed configuration it never touches
-`PLOTS_DIR`. "Plot tool" and "writes to `PLOTS_DIR`" are no longer equivalent.
+The parenthetical used to say the `sleap_roots` plotting tools "always do, regardless of
+`BLOOM_STORAGE_BACKEND`". That stopped being true in two steps: #466 moved
+`plot_trait_histograms`/`plot_trait_boxplots`/`plot_correlation_matrix` onto `ResultStore`
+persistence, and #462 retired the last two `PLOTS_DIR`-writing tools
+(`plot_heritability_bar`, `plot_variance_decomposition`) into `heritability_analysis`, which
+also persists through `ResultStore`. `PLOTS_DIR` is still provisioned, mounted, and served
+(static mount, env validation, compose bind-mount) but nothing in `bloom_mcp` writes to it;
+retiring that plumbing is a separate follow-up. The end-to-end "a plotting tool saves its PNG
+to `PLOTS_DIR`" scenario that this requirement carried, and the `make bloommcp-plot-smoke`
+step that proved it, went with the last tool that could satisfy it.
 
 #### Scenario: Fresh clone provisions writable data directories
 
@@ -27,12 +31,13 @@ every other granular consumer, so in a Supabase-backed configuration it never to
 - **AND** no plotting or fully-local-backend analysis tool call fails with a permission error
   as a result of directory ownership
 
-#### Scenario: A plotting tool succeeds end-to-end against the dev stack
+#### Scenario: A figure-producing tool succeeds end-to-end against the dev stack
 
-- **WHEN** the dev stack is up and a plotting tool (e.g. `plot_trait_histograms`) is called
-  through the MCP interface
-- **THEN** it renders and saves its PNG to `PLOTS_DIR` without a permission error and returns
-  the expected "Plot saved: `<url>`" summary
+- **WHEN** the dev stack is up and a figure-producing tool (e.g. `heritability_analysis` with
+  `include_plots=true`, or `plot_trait_histograms`) is called through the MCP interface
+- **THEN** it renders its figure(s) and persists them through the `ResultStore` port without a
+  permission error, returning `resource_link`s into a versioned run — never a bare
+  `PLOTS_DIR` URL
 
 #### Scenario: A regression is caught by CI, not a developer
 

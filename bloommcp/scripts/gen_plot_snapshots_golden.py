@@ -14,12 +14,17 @@ matching the ``ubuntu-latest`` runner ``python-audit`` actually asserts against,
 *starting* comparison point is the canonical one rather than an already-off-tolerance
 macOS render.
 
-Calls the 5 MCP tool functions directly (not just their delegates) against
+Calls the 3 MCP tool functions directly (not just their delegates) against
 ``turface_19_final_data.csv`` -- the same fixture and tool entrypoints
-``tests/tools/test_viz_tools.py``'s ``viz_env`` already exercises -- so the baseline
-reflects the full save path (``_viz_shared.save_plot``/``save_plot_or_plots``, including
-``dpi``/``bbox_inches``), not a hand-rolled re-render that could quietly drift from what
-the tool actually produces.
+``tests/tools/test_viz_snapshot.py`` exercises through the shared ``viz_env`` fixture -- and
+captures the bytes each tool *commits* to its ``ResultStore`` run (via a ``commit`` spy, the
+last point at which the file exists on disk), so the baseline reflects the full save path
+(the tool's own ``savefig`` call, ``dpi``/``bbox_inches`` included), not a hand-rolled
+re-render that could quietly drift from what the tool actually produces.
+
+This was 5 tools until #462 retired ``plot_heritability_bar``/``plot_variance_decomposition``
+into ``heritability_analysis``; those two wrote straight to ``PLOTS_DIR``, and the branch that
+captured them from there went with them.
 
 Run:  cd bloommcp && uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py --yes
 
@@ -58,7 +63,6 @@ import bloom_mcp.manifest.manifest as _manifest
 import bloom_mcp.supabase_client as _sc
 from bloom_mcp import experiment_utils as eu
 from bloom_mcp.sections.sleap_roots.analysis import (
-    _viz_shared,
     plot_correlation_matrix as plot_correlation_matrix_mod,
     plot_trait_boxplots as plot_trait_boxplots_mod,
     plot_trait_histograms as plot_trait_histograms_mod,
@@ -69,22 +73,31 @@ _RAW = _FIXTURES / "turface_19_final_data.csv"
 _EXPERIMENT = "turface_19.csv"
 _BASELINES = _FIXTURES / "plot_baselines"
 
-# (output basename, tool callable, PNG name the tool itself writes under PLOTS_DIR)
+# (output basename, tool callable, PNG name the tool itself writes, is-converged)
+#
+# The 3 tools #466 converged onto `@as_mcp_tool` take a Pydantic params model rather than a
+# bare experiment string, return a result model rather than a "Plot saved: ..." string, and
+# persist into a ResultStore version dir rather than PLOTS_DIR — so they are rendered via
+# `_render_converged` below instead of the legacy call. The rendered pixels are unchanged;
+# only the calling convention and the output path are (#466 review round 7).
 _TOOLS = [
     (
         "histograms_turface_19_baseline.png",
         plot_trait_histograms_mod.plot_trait_histograms,
-        "histograms_turface_19.png",
+        "trait_histograms.png",
+        True,
     ),
     (
         "boxplots_turface_19_baseline.png",
         plot_trait_boxplots_mod.plot_trait_boxplots,
-        "boxplots_turface_19.png",
+        "trait_boxplots.png",
+        True,
     ),
     (
         "correlation_matrix_turface_19_baseline.png",
         plot_correlation_matrix_mod.plot_correlation_matrix,
-        "correlation_matrix_turface_19.png",
+        "correlation_matrix.png",
+        True,
     ),
 ]
 
@@ -106,14 +119,53 @@ def _report_regeneration(target: Path, produced: Path, rel: Path) -> str:
     )
 
 
+def _render_converged(tool_fn, produced_name: str, capture_root: Path) -> Path:
+    """Render one #466-converged tool and return the committed PNG on disk.
+
+    These tools read through the `ExperimentReader` port and persist through a
+    `ResultStore`, so the script's `TRAITS_DIR`/`PLOTS_DIR` monkeypatching does not reach
+    them. A `FakeReader`/`FakeResultStore` pair stands in, and the bytes are copied out
+    inside a `commit` spy — `FakeResultStore.commit` deletes the staging dir on success, so
+    that is the last moment the committed file exists. The pixels are the committed ones,
+    not an intermediate render.
+    """
+    import pandas as pd
+    from bloom_mcp.data_access import FakeReader, SupabaseReader
+    from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+    from bloom_mcp.tools import _ports
+
+    capture_root.mkdir(parents=True, exist_ok=True)
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, pd.read_csv(_RAW))
+    store = FakeResultStore()
+    real_commit = store.commit
+
+    def _spy_commit(run, outputs):
+        for name in outputs:
+            shutil.copy(run.staging_dir / name, capture_root / name)
+        return real_commit(run, outputs)
+
+    store.commit = _spy_commit
+    _ports.configure(reader=reader, store=store)
+    try:
+        tool_fn(experiment=_EXPERIMENT)
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+    produced = capture_root / produced_name
+    if not produced.is_file():
+        raise RuntimeError(f"expected {produced} to exist after commit")
+    return produced
+
+
 def build(tmp_path: Path, *, confirmed: bool) -> bool:
-    """Render all 5 tools and print each baseline's old-vs-new RMS. Only actually writes
+    """Render all 3 tools and print each baseline's old-vs-new RMS. Only actually writes
     the PNGs if `confirmed` is True, or none of them already exist (a first-time run has
     nothing to silently launder) -- all-or-nothing, not a per-file mix, so the "did this
     actually write anything" question always has one simple answer. Returns whether
     anything was written (`main()` uses this to decide whether `write_manifest()` runs).
     """
-    # Same versioned-manifest miss `tests/tools/test_viz_tools.py`'s `viz_env` fixture
+    # Same versioned-manifest miss `tests/tools/conftest.py`'s `viz_env` fixture
     # forces via `fake_supabase_storage` -- no Supabase env is configured here, so
     # without this, `load_experiment_data`'s manifest lookup raises before ever
     # falling through to the raw TRAITS_DIR read.
@@ -125,20 +177,15 @@ def build(tmp_path: Path, *, confirmed: bool) -> bool:
     shutil.copy(_RAW, traits / _EXPERIMENT)
     eu.TRAITS_DIR = traits
 
-    plots = tmp_path / "plots"
-    eu.PLOTS_DIR = plots
-    _viz_shared.PLOTS_DIR = plots
-
     _BASELINES.mkdir(parents=True, exist_ok=True)
     copies: list[tuple[Path, Path]] = []
     any_existing = False
-    for baseline_name, tool_fn, produced_name in _TOOLS:
-        result = tool_fn(_EXPERIMENT)
-        if "Plot saved:" not in result:
-            raise RuntimeError(f"{tool_fn.__module__} did not report success: {result}")
-        produced = plots / produced_name
-        if not produced.is_file():
-            raise RuntimeError(f"expected {produced} to exist, tool reported: {result}")
+    # The 4th tuple field was a `converged` flag selecting between this ResultStore
+    # capture and a legacy branch that read the PNG straight out of PLOTS_DIR. #462 retired
+    # the last two tools that took the legacy branch, so every entry is converged now; the
+    # field is kept only because the test module destructures the tuple.
+    for baseline_name, tool_fn, produced_name, _converged in _TOOLS:
+        produced = _render_converged(tool_fn, produced_name, tmp_path / "committed")
 
         target = _BASELINES / baseline_name
         rel = target.relative_to(_FIXTURES.parents[1])

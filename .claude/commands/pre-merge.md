@@ -95,12 +95,13 @@ make prod-down
 Drives a workflow end-to-end through the **real** `SupabaseReader`/`SupabaseResultStore`
 against the dev stack and asserts the committed run is a v3 manifest whose
 `output_sha256` matches the bytes actually stored (issue #326). Same `make bloommcp-smoke`
-target CI runs, so local and CI never drift. `make bloommcp-plot-smoke` similarly calls a
-real plotting tool through the container's actual MCP transport (issue #472) — CI already
-runs both; do the same locally.
+target CI runs, so local and CI never drift. (`make bloommcp-plot-smoke`, which called a
+bare-`mcp.tool()` plotting tool to exercise the bind-mounted `PLOTS_DIR` write path — issue
+#472 — was retired with the last such tool in #462; every plotting tool now persists through
+`ResultStore`, which this smoke already covers.)
 
 ```bash
-make dev-up && make migrate-local && make check && make bloommcp-smoke && make bloommcp-plot-smoke
+make dev-up && make migrate-local && make check && make bloommcp-smoke
 make dev-down
 ```
 

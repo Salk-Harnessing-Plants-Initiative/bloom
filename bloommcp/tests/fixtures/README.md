@@ -223,7 +223,7 @@ turface_19's.
 Added for #713 to close a gap the other goldens in this file don't touch: every entry
 above is a **numeric** oracle/characterization snapshot (JSON), so none of them would
 catch a matplotlib/Pillow/numpy dependency bump or a refactor that silently changes
-*pixel* content (color mapping, plot geometry, layout) — `test_viz_tools.py` only ever
+*pixel* content (color mapping, plot geometry, layout) — the former `test_viz_tools.py` only ever
 asserted `.is_file()` on the generated PNG.
 
 - `plot_baselines/{histograms,boxplots,correlation_matrix}_turface_19_baseline.png` — one

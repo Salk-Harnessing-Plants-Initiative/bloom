@@ -576,9 +576,25 @@ expects every `- [ ]` to become `- [x]`.)
   PR #724's harness is built around `viz_env`/`PLOTS_DIR`, which this tool never writes to
   (it persists through `ResultStore`), so its baselines were deleted with the retired tools
   rather than re-pointed. Restoring equivalent coverage needs a different fixture.
-- **10.7** Once bloom#721 / PR #726 lands its `plt.get_fignums()` diff and process-wide
-  lock, tighten `test_generate_figures_records_pages_from_earlier_keys_when_a_later_key_raises`
-  from "asserts 2 leak" to "asserts 0 leak" and update `generate_figures`' docstring.
+- **10.7** ~~Once bloom#721 / PR #726 lands …~~ **Done on the merge with `staging`** (#726
+  merged 2026-09-10): `generate_figures` now routes each call through #726's
+  `call_with_figure_cleanup` and expands a `list[Figure]` return from what it gives back;
+  the leak test flipped from "asserts 2 leak" to "asserts 0 leak"
+  (`test_generate_figures_closes_pages_a_plotter_built_then_abandoned`) and the stale
+  "deliberately not duplicated here" docstring paragraph was replaced.
+- **10.8** **Retire the `PLOTS_DIR` plumbing.** After #466 and this change, nothing in
+  `bloom_mcp` writes to `PLOTS_DIR`, but it is still provisioned by `ensure-bloommcp-data-dirs`,
+  bind-mounted by both compose files (a `tests/unit/` guard asserts the prod mount stays),
+  validated as a required env var, and served as a static mount by `server.py`. That is a
+  coordinated change across compose, Makefile, env docs, `server.py`, and the
+  `development-environment` spec — deliberately not folded into this merge, which removed only
+  the dead *test/smoke* surface (`live_plot_tool_smoke.py`, `make bloommcp-plot-smoke`, its CI
+  step and guard, the `seeded_experiment`/`call_plot_tool` fixtures, and `_viz_shared`'s
+  `save_plot`/`save_plot_or_plots`/`parse_traits`/`validate_filename`, all of which had no
+  subject left).
+- **10.9** #808 tracked wiring the success-path `plt.close` under `FIGURE_REGISTRY_LOCK` at
+  three sites; one of them (`_viz_shared.save_plot`) was deleted here rather than wired. The
+  other two (`qc_inspect._render_report`, `remove_outliers._make_figures`) remain #808's.
 - **10.4** **File upstream (talmolab/sleap-roots-analyze):** a degenerate fit with
   `var_genetic == 0.0` and `var_residual == 0.0` computes `0.0 / np.float64(0.0)` → `nan`, which
   `max(0, min(1, nan))` clamps to **`1.0`** — reporting a *perfect* heritability with all-finite

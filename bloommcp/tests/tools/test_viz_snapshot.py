@@ -1,6 +1,6 @@
-"""Pixel-level rendering regression tests for the 5 sleap_roots plotting tools (#713).
+"""Pixel-level rendering regression tests for the 3 sleap_roots plotting tools (#713).
 
-`test_viz_tools.py` only ever asserted `.is_file()` on a generated PNG -- a dependency
+The former `test_viz_tools.py` only ever asserted `.is_file()` on a generated PNG -- a dependency
 bump (matplotlib, Pillow, numpy) or a refactor that silently changes color mapping, plot
 geometry, or layout would ship with every existing assertion still green. This file closes
 that gap by comparing each tool's real output against a committed baseline PNG
@@ -88,14 +88,16 @@ claim that single-cell defects are covered. These measurements are a snapshot of
 baselines, not a law -- re-measure after any change to a plot's trait count, color
 density, or layout.
 
-Scope: the 5 dedicated plotting tools only (matching `test_viz_tools.py`'s existing
-`_TOOLS` list) -- the optional plot keys `pca_analysis`/`umap_analysis`/`clustering` can
+Scope: the 3 dedicated plotting tools only (5 until #462 retired the two heritability
+plots into `heritability_analysis`, which renders them through `ResultStore` — see the note
+on `_SNAPSHOT_TOOLS`) -- the optional plot keys `pca_analysis`/`umap_analysis`/`clustering` can
 also emit (`create_pca_biplot`, `create_cluster_scatter_pca`, etc.) are a deliberate
 non-goal here; see proposal.md.
 """
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -116,6 +118,20 @@ from bloom_mcp.sections.sleap_roots.analysis import (
 
 _BASELINES = Path(__file__).resolve().parents[1] / "fixtures" / "plot_baselines"
 _EXPERIMENT = "turface_19.csv"
+# The same CSV `viz_env` copies into TRAITS_DIR — the converged tools read through the
+# ExperimentReader port instead, so their FakeReader has to be seeded from it directly.
+_RAW_FIXTURE = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "turface_19_final_data.csv"
+)
+
+# The converged 3 name their committed PNG after the tool, not after the experiment, so the
+# legacy `<label>_turface_19.png` names in _SNAPSHOT_TOOLS don't apply to them. Baselines
+# keep their original names — only the produced file's name differs.
+_PRODUCED_NAME_OVERRIDES = {
+    "histograms": "trait_histograms.png",
+    "boxplots": "trait_boxplots.png",
+    "correlation_matrix": "correlation_matrix.png",
+}
 
 # Empirically derived, not guessed -- see the module docstring's Tolerance and Known
 # limitation sections (design.md Decisions 2 & 3 have the full measurement + fallback
@@ -163,17 +179,61 @@ _SNAPSHOT_TOOLS = [
 _IDS = [label for label, *_ in _SNAPSHOT_TOOLS]
 
 
+# The 3 tools #466 converged onto `@as_mcp_tool` no longer match the legacy calling
+# convention the other 2 still use, so this file can no longer drive all 5 the same way.
+# They take a Pydantic params model (not a bare experiment string), return a result model
+# (not a "Plot saved: ..." string), and persist their PNG into a ResultStore version dir
+# (not PLOTS_DIR). Pixel coverage is preserved for them rather than dropped: the render
+# itself is unchanged, and these baselines still match within `_TOL` (verified against the
+# committed baselines when this adaptation landed, #466 review round 7).
+def _render_to_dir(label, module, fn_name, viz_env):
+    """Run one plotting tool and return the directory its PNG(s) landed in.
+
+    All 3 tools here write into a ``ResultStore`` staging dir that ``commit`` deletes on
+    success, so their bytes are copied out inside a ``commit`` spy — the last point at which
+    the committed file still exists on disk. Capturing at commit (rather than spying on
+    ``savefig``) means the bytes compared are exactly the bytes that were committed, not an
+    intermediate render. (A ``PLOTS_DIR`` branch for the two legacy tools lived here until
+    #462 retired them; ``viz_env`` now serves only as scratch space.)
+    """
+    fn = getattr(module, fn_name)
+
+    import pandas as pd
+    from bloom_mcp.data_access import FakeReader, SupabaseReader
+    from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+    from bloom_mcp.tools import _ports
+
+    captured = viz_env / f"_committed_{label}"
+    captured.mkdir(parents=True, exist_ok=True)
+
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, pd.read_csv(_RAW_FIXTURE))
+    store = FakeResultStore()
+    real_commit = store.commit
+
+    def _spy_commit(run, outputs):
+        for name in outputs:
+            shutil.copy(run.staging_dir / name, captured / name)
+        return real_commit(run, outputs)
+
+    store.commit = _spy_commit
+    _ports.configure(reader=reader, store=store)
+    try:
+        fn(experiment=_EXPERIMENT)
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    return captured
+
+
 @pytest.mark.parametrize(
     "_label,module,fn_name,produced_name,baseline_name", _SNAPSHOT_TOOLS, ids=_IDS
 )
 def test_plot_matches_baseline_within_tolerance(
     _label, module, fn_name, produced_name, baseline_name, viz_env
 ):
-    fn = getattr(module, fn_name)
-    result = fn(_EXPERIMENT)
-    assert "Plot saved:" in result
+    produced_dir = _render_to_dir(_label, module, fn_name, viz_env)
 
-    actual = viz_env / produced_name
+    actual = produced_dir / _PRODUCED_NAME_OVERRIDES.get(_label, produced_name)
     baseline = _BASELINES / baseline_name
     assert actual.is_file()
     assert baseline.is_file(), (
@@ -318,7 +378,7 @@ def _measure_live_correlation_cell_area_fraction() -> float:
         ax = fig.axes[0]
         fig.canvas.draw()
         ax_bbox = ax.get_window_extent(fig.canvas.get_renderer())
-        save_dpi = 150  # matches _viz_shared.save_plot's dpi
+        save_dpi = 150  # matches the dpi the 3 converged tools pass to savefig
         scale = save_dpi / fig.dpi
         cell_area_px = (ax_bbox.width * scale / n) * (ax_bbox.height * scale / n)
     finally:

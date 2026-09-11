@@ -142,20 +142,23 @@ tasks.md §10 point here rather than re-listing.
   duplicate is what drifts.
 - **Dependencies:** none added. Every delegate is public in the pinned
   `sleap-roots-analyze>=0.1.0a5` (verified against `bloommcp/uv.lock`); no lockfile change.
-- **Sequencing — three in-flight PRs touch this change's files.** This change should land **last**
-  of the four:
-  - **PR #724** (`egao28/bloommcp-plot-snapshot-tests-713`, open) adds pixel-diff snapshot tests
-    that import **both retired modules at module level**, plus committed baseline PNGs for both.
-    If #724 lands first and this change does not delete those, `python-audit` fails at *collection*
-    — the whole bloommcp suite, not just the snapshot cases. Handled by tasks.md §7.14.
-  - **PR #683** (`egao28/bloommcp-converge-viz-tools-466`, open) rewrites `test_viz_tools.py` and
-    edits `_viz_shared.py`, `sections/sleap_roots/__init__.py`, `test_sections_scaffold.py`,
-    `test_devendor_invariants.py`, `tests/smoke/conftest.py`, and `list_existing_analyses.py` —
-    essentially this change's entire non-new-file footprint.
-  - **PR #726** (`egao28/bloommcp-plot-guards-721`, open) edits `_plots.py` **and both retired
-    modules**, producing modify/delete conflicts. Mitigation: extract this change's
-    `generate_figures` extension into its own small PR first (tasks.md commit plan C3), so #726
-    rebases onto a 10-line addition rather than the reverse.
+- **Sequencing — resolved.** Three sibling PRs touched this change's files; all three landed
+  first, and this change merged `staging` on top of them (2026-09-11):
+  - **#724** (plot-snapshot tests) imported both retired modules at module level; handled by
+    tasks.md §7.14.
+  - **#726** (#721 figure-registry lock) rewrote `generate_figures` around
+    `call_with_figure_cleanup` and edited both retired modules; the list-expansion now sits
+    inside that per-call cleanup, the two modules resolved as deletions, and the leak test this
+    change had pinned as a known gap flipped to asserting no leak (tasks.md §10.7).
+  - **#683** (#466, converged the other 3 plot tools onto `@as_mcp_tool`) had explicitly kept
+    `_viz_shared`'s `save_plot`/`save_plot_or_plots`/`parse_traits`/`validate_filename`, the
+    `seeded_experiment`/`call_plot_tool` smoke fixtures, `test_viz_tools.py`'s tool cases, and
+    `live_plot_tool_smoke.py` + `make bloommcp-plot-smoke` alive *only* for the two tools this
+    change deletes. The merge therefore also removes that now-subjectless surface — the
+    designed hand-off #683's own docstrings describe ("retiring into `heritability_analysis`
+    per #462"), not scope creep. What survives of `_viz_shared` (`TRAIT_BATCH_THRESHOLD`,
+    `resolve_trait_columns`) is tested in the renamed `test_viz_shared.py`. `PLOTS_DIR`'s own
+    plumbing is left for a follow-up (tasks.md §10.8).
 - **Branch/PR:** branch `egao28/bloommcp-heritability-analysis-462`, cut from `origin/staging`;
   single PR targeting `staging`, titled
   `feat(bloommcp): add heritability_analysis, retire plot_heritability_bar/plot_variance_decomposition (#462)`,

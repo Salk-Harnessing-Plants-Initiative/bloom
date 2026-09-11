@@ -1,10 +1,18 @@
 # =============================================================================
 # Bloom v2 Production Stack
 #
-# Minimum Resource Requirements:
+# Minimum Resource Requirements — what this stack needs to run at all:
 #   CPU:     8 vCPU
 #   RAM:     16 GB
 #   Disk:    100 GB SSD
+#
+# The Bloom server it actually runs on (bloom-dev, measured 2026-09-08):
+#   RAM:     754 GB, of which ~620 GB free
+#   Swap:    8 GB
+#   Note:    the production and staging stacks both run here, so the per-
+#            container limits below are set against this machine, not against
+#            the minimum above — and they exceed it. Do not size a limit from
+#            that number, and do not read the minimum as covering them.
 #
 # Services: ~15 containers (caddy, bloom-web, langchain-agent, bloommcp,
 #   kong, auth, rest, realtime, minio, minio-init, storage, imgproxy,
@@ -198,9 +206,19 @@ services:
       context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
+    # Bounds a runaway render to this container, so the OOM killer takes the
+    # uvicorn worker rather than choosing by resident size across the stack.
+    # Generous on purpose: a real plate does not fit the ~1.4 GB that
+    # tests/unit/test_workflows_single_worker.py derives from the frame
+    # ceilings and the tmpfs, and 8g is about 1% of this host.
+    mem_limit: 8g
+    # Without this Docker allows twice mem_limit in swap, so a runaway render
+    # would grind against disk indefinitely instead of being killed. Equal
+    # values mean no swap: hit the ceiling and stop.
+    memswap_limit: 8g
     tmpfs:
-      # Size-capped so the temp MP4 can't exhaust host RAM (sized for concurrent encodes
-      # in the one worker, with headroom).
+      # RAM-backed, so this counts against mem_limit and is budgeted with the
+      # frames. One plate video is 3-12 MB depending on how the run compresses.
       - /tmp:mode=1777,size=512m
     security_opt:
       - no-new-privileges:true
@@ -228,10 +246,13 @@ services:
       - kong
       - db-prod
     restart: unless-stopped
-    # One worker: the per-scan lock in video.py holds only within a single process, so raising
-    # this reopens the overwrite race it closes. Start here and watch — raise it when this one
-    # is actually saturated, or once the encode moves to a worker container and the database
-    # enforces the serialisation instead, whichever comes first.
+    # One worker: the per-scan lock in video.py and the per-plate lock in
+    # plate_encode.py both hold only within a single process, so raising this reopens the
+    # overwrite race they close — the object keys are deterministic and unversioned, so two
+    # workers would race to write the same one. The encode semaphore bounds concurrency but
+    # not that. Start here and watch — raise it when this one is actually saturated, or once
+    # the encode moves to a worker container and the database enforces the serialisation
+    # instead, whichever comes first.
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "1"]
 
   # Consumes the cyl_pipeline_dispatch pgmq queue (bloom #11/#404 Phase 2) and
@@ -810,6 +831,8 @@ services:
       STUDIO_PG_META_URL: http://meta:8080
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       EDGE_FUNCTIONS_MANAGEMENT_FOLDER: /tmp/edge-functions
+      # SQL editor saved queries; unset, the editor errors on every load.
+      SNIPPETS_MANAGEMENT_FOLDER: /app/snippets
       DEFAULT_ORGANIZATION_NAME: ${STUDIO_DEFAULT_ORGANIZATION}
       DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
@@ -818,6 +841,8 @@ services:
       SUPABASE_PUBLIC_URL: ${STUDIO_SUPABASE_PUBLIC_URL}
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+    volumes:
+      - ./volumes/snippets:/app/snippets:z
     # supabase/studio:2026.03.30-sha-12a43e5 ships Node but NOT wget or curl
     # (verified: `docker exec <container> which wget` returns empty). Use
     # node's built-in fetch against /api/platform/profile — matches both

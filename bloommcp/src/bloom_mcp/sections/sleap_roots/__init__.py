@@ -9,12 +9,14 @@ one package it happens to populate today. See
 rationale (D3 in this change's ``design.md``).
 
 Two subgroups:
-  - ``analysis/`` — the 9 granular ``sleap-roots-analyze`` consumers
+  - ``analysis/`` — the 12 granular ``sleap-roots-analyze`` consumers
     (``pca_analysis``, ``qc_clean``, ``qc_inspect``, ``remove_outliers``,
     ``clustering``, ``umap_analysis``, ``descriptive_stats``,
-    ``cross_experiment_correlations``, ``heritability_analysis``) + the 3
-    surviving plotting tools. ``heritability_analysis`` (#462) absorbed the two
-    that used to make it 5 — ``plot_heritability_bar`` and
+    ``cross_experiment_correlations``, ``heritability_analysis``, and the 3
+    plotting tools ``plot_trait_histograms``, ``plot_trait_boxplots``,
+    ``plot_correlation_matrix``, which #466 converged onto ``@as_mcp_tool``).
+    No bare-``mcp.tool()`` plotting tool remains: ``heritability_analysis``
+    (#462) absorbed the last two — ``plot_heritability_bar`` and
     ``plot_variance_decomposition`` — as its ``include_plots``/``plots``
     parameters, so its numbers and its figures come from one computation.
     Populated here.

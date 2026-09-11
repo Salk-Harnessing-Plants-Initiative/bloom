@@ -1,32 +1,74 @@
 ## MODIFIED Requirements
 
+### Requirement: Smoke Script Location
+
+The bloommcp live-stack smoke driver SHALL live under `bloommcp/tests/smoke/`, not
+`bloommcp/scripts/`. The `bloommcp-smoke` Makefile target MUST invoke the script at its
+relocated path, and the existing CI gate test MUST continue to pass without modification.
+
+A second driver, `live_plot_tool_smoke.py`, and its `bloommcp-plot-smoke` target existed to
+call a bare-`mcp.tool()` plotting tool through the container and prove the real bind-mounted
+`PLOTS_DIR` write path worked (issue #472). #466 moved three of those tools onto `ResultStore`
+persistence and #462 retired the last two into `heritability_analysis`, so no tool in
+`bloom_mcp` writes to `PLOTS_DIR` any more; the driver, its Makefile target, its CI step, and
+the `tests/unit/` ordering assertion that guarded it were removed together. Retiring the
+`PLOTS_DIR` plumbing itself (static mount, env validation, compose bind-mount) is a separate
+follow-up, not part of this change.
+
+#### Scenario: Makefile target invokes the relocated script
+
+- **WHEN** `make bloommcp-smoke` runs
+- **THEN** it executes `bloommcp/tests/smoke/live_persistence_smoke.py`, and
+  `bloommcp/scripts/` does not contain that file
+
+#### Scenario: The plot-smoke driver is gone
+
+- **WHEN** the repository is inspected after #462
+- **THEN** `bloommcp/tests/smoke/live_plot_tool_smoke.py` does not exist, the `Makefile` has
+  no `bloommcp-plot-smoke` target, and `.github/workflows/pr-checks.yml` has no step invoking
+  one
+
+#### Scenario: Existing CI gate test is unaffected
+
+- **WHEN** `tests/unit/test_bloommcp_live_smoke_gate.py` runs after the relocation
+- **THEN** it still passes, because it asserts on the `make bloommcp-smoke` step's
+  presence and its ordering relative to `make migrate-local` in
+  `.github/workflows/pr-checks.yml`, not on the script's file path
+
 ### Requirement: Granular Tool Smoke Coverage
 
 `bloommcp/tests/smoke/` SHALL contain a smoke test for each of `qc_clean`, `qc_inspect`,
 `remove_outliers`, `pca_analysis`, `clustering` (kmeans, gmm, hierarchical), `umap_analysis`,
-`descriptive_stats`, `cross_experiment_correlations`, `heritability_analysis`, and the 3
-surviving plotting tools (`plot_trait_histograms`, `plot_trait_boxplots`,
-`plot_correlation_matrix`) that exercises the tool against both the `turface_19` and `cylinder`
-fixtures through a real call into the running dev stack (network/MCP-transport call, not an
-in-process or mocked call).
+`descriptive_stats`, `cross_experiment_correlations`, `heritability_analysis`,
+`plot_trait_histograms`, `plot_trait_boxplots`, and `plot_correlation_matrix` that exercises
+the tool against both the `turface_19` and `cylinder` fixtures through a real call into the
+running dev stack (network/MCP-transport call, not an in-process or mocked call).
+
+One experiment-identification harness SHALL exist in `conftest.py`: the `db_experiment_id`
+fixture (a numeric id already seeded in Postgres), used by every smoke test, because every
+tool above reads through the `ExperimentReader` port's DB-only `SupabaseReader` raw tier. The
+filename-based `seeded_experiment`/`call_plot_tool` harness — which #466 had narrowed to the
+two bare-`mcp.tool()` plot tools still calling `experiment_utils.load_experiment_data`
+directly — was removed by #462 together with those two tools; a smoke test SHALL NOT obtain
+its experiment identifier from a local CSV filename.
 
 The retired `plot_heritability_bar` and `plot_variance_decomposition` smoke tests are removed
-along with the tools themselves; `heritability_analysis` inherits their coverage, exercising both
-the numeric result and — via `include_plots=true` — both rendered figures in a single call. Being
-a `ResultStore`-persisting granular consumer rather than a `PLOTS_DIR` writer, its smoke SHALL
-resolve its input through the DB-backed experiment-id fixture the other granular tools use, not
-the filename-based fixture the retired plot tools used.
-
-(The roster above also names `umap_analysis`, `descriptive_stats`, and
-`cross_experiment_correlations`, each of which already has a smoke module. Their omission from the
-previous wording was pre-existing drift, corrected here rather than propagated.)
+along with the tools themselves; `heritability_analysis` inherits their coverage, exercising
+both the numeric result and — via `include_plots=true` — both rendered figures in a single
+call.
 
 #### Scenario: Every tool has smoke coverage on both fixtures
 
 - **WHEN** the smoke suite in `bloommcp/tests/smoke/` is collected
-- **THEN** each of the 12 tool surfaces above has at least one test parametrized (or duplicated)
-  over both `turface_19` and `cylinder`, calling the tool through the real running dev stack
-  rather than a mock
+- **THEN** each of the 12 tool surfaces above has at least one test parametrized (or
+  duplicated) over both `turface_19` and `cylinder`, calling the tool through the real
+  running dev stack rather than a mock
+
+#### Scenario: Every smoke test uses the DB-only harness
+
+- **WHEN** any smoke test in `bloommcp/tests/smoke/` resolves its experiment
+- **THEN** it obtains the identifier from the `db_experiment_id` fixture, and `conftest.py`
+  defines no `seeded_experiment` or `call_plot_tool` fixture
 
 #### Scenario: The retired plot tools have no smoke tests
 
