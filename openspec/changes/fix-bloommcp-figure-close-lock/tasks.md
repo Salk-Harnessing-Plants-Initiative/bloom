@@ -275,15 +275,15 @@ Tasks 2.1-2.5 land in one atomic commit. Spy discipline from section 1 applies.
       `pytest --collect-only` before pushing. This matters here because open **PR #778**
       touches both test files this change edits (additively, with no source overlap — see
       `proposal.md` Impact).
-- [ ] 6.5 Open the PR against `staging` with `Fixes #808`, including task 0.4's recorded
+- [x] 6.5 Open the PR against `staging` with `Fixes #808`, including task 0.4's recorded
       pre/post lock-state output, and stating that (a) the issue's `_viz_shared.save_plot`
       bullet was already resolved by #462/PR #777 (merged after #808 was opened) and (b)
       `remove_outliers` had 3 unlocked closes rather than the 1 the issue names.
-- [ ] 6.6 Comment on #808 recording why its third bullet needed no change, citing #777's
+- [x] 6.6 Comment on #808 recording why its third bullet needed no change, citing #777's
       removal of both caller files and the merge timestamp. The issue title names
       `_viz_shared.save_plot` and will outlive the fix; with 0 comments on the issue, the
       closed record would otherwise read as a silently dropped location.
-- [ ] 6.7 Set every task above to `- [x]` only once the work it describes is actually done.
+- [x] 6.7 Set every task above to `- [x]` only once the work it describes is actually done.
 
 ## 7. Recommended follow-ups (not implemented here)
 
