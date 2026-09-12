@@ -6,6 +6,12 @@ stamped ``Provenance``, versioned ``ResultStore`` persistence under its own tool
 The delegate rendering (``create_correlation_heatmap``) is unchanged; the reported strong-
 correlation counts are still computed directly in this module (never delegated), pinned against
 an independent ``df.corr()`` computation.
+
+The final section covers the per-pair disclosure added by #784/#785: ``strong_correlation_pairs``
+with its overlap/Fisher-interval evidence and the uncapped overlap summaries beside it, and
+``locally_constant_trait_pairs`` — the third blank-cell bucket, whose defining property (every
+off-diagonal ``NaN`` claimed by exactly one of the three lists) is pinned directly rather than
+only sampled.
 """
 
 from __future__ import annotations
@@ -950,3 +956,504 @@ def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
         _run()
     assert exc.value.code == "tool_error"
     assert "manifest read failure" in exc.value.message
+
+
+# ── per-pair disclosure: strong-pair evidence + the third blank-cell bucket ──────────
+# (#784/#785, openspec change add-bloommcp-corr-pair-disclosure). The tests below build
+# their own degenerate frames rather than decorating _raw_df(), so each fixture's
+# degeneracy is visible at the point of use — same approach as the low-overlap oracles
+# above, factored through one helper because this section adds many of them.
+
+
+def _run_with_frame(df: pd.DataFrame, store=None) -> PlotCorrelationMatrixResult:
+    """Run the tool over a purpose-built frame, restoring the real ports afterwards."""
+    reader = FakeReader()
+    reader.add_experiment(_EXPERIMENT, df)
+    _ports.configure(reader=reader, store=store or FakeResultStore())
+    try:
+        return plot_correlation_matrix(
+            PlotCorrelationMatrixParams(experiment=_EXPERIMENT)
+        )
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+
+
+def _meta(n: int) -> dict:
+    """The metadata columns every fixture frame in this file carries."""
+    return {"Barcode": [f"b{i}" for i in range(n)], "geno": ["g1", "g2"] * (n // 2)}
+
+
+def _strong_pairs_oracle(df: pd.DataFrame) -> dict:
+    """Independent recomputation: {(a, b): (r, overlap_n)} for every |r| > 0.7 pair."""
+    traits = [c for c in df.columns if c not in ("Barcode", "geno")]
+    out = {}
+    for i, a in enumerate(traits):
+        for b in traits[i + 1 :]:
+            overlap = df[[a, b]].dropna()
+            if len(overlap) < plot_correlation_matrix_tool._MIN_CORR_OVERLAP:
+                continue
+            r = overlap[a].corr(overlap[b])
+            if pd.notna(r) and abs(r) > 0.7:
+                out[(a, b)] = (float(r), len(overlap))
+    return out
+
+
+def _reject_constant(token):  # pragma: no cover - only called on invalid JSON
+    raise AssertionError(f"non-finite JSON token {token!r} reached the payload")
+
+
+def _collinear_frame(n_traits: int, n_rows: int, seed: int = 0) -> pd.DataFrame:
+    """A heavily collinear frame (one latent factor) — the shape real root-trait data has,
+    where nearly every pair clears |r| > 0.7."""
+    rng = np.random.default_rng(seed)
+    latent = rng.normal(size=n_rows)
+    data = dict(_meta(n_rows))
+    for t in range(n_traits):
+        values = latent * (t + 1) + 0.05 * rng.normal(size=n_rows)
+        # Stagger missingness so the pairs land at a spread of distinct overlaps.
+        n_missing = t % 7
+        if n_missing:
+            values[-n_missing:] = np.nan
+        data[f"t{t}"] = values
+    return pd.DataFrame(data)
+
+
+def test_strong_pairs_report_overlap_and_ci(injected_ports):
+    """#784: strong_positive/negative_correlations are bare counts — a caller cannot tell
+    whether they rest on n=10 (r=0.7 has a 95% CI of ~[0.13, 0.92] there) or n=1000. Each
+    counted pair must carry the overlap and interval behind it."""
+    n = 30
+    rng = np.random.default_rng(4)
+    base = rng.normal(size=n)
+    other = rng.normal(size=n)
+    df = pd.DataFrame(
+        {
+            **_meta(n),
+            # Strong over all 30 rows.
+            "full_a": base,
+            "full_b": base * 2 + 0.1 * rng.normal(size=n),
+            # Strong over exactly 10 rows — clears min_periods, but only just. Driven by
+            # its own latent series, so no pair here is exactly collinear (r == 1.0 would
+            # legitimately report a null interval, which this test is not about).
+            "thin_a": [float(v) if i < 10 else None for i, v in enumerate(other)],
+            "thin_b": [
+                float(v * 3 + 0.1 * w) if i < 10 else None
+                for i, (v, w) in enumerate(zip(other, rng.normal(size=n)))
+            ],
+        }
+    )
+    result = _run_with_frame(df)
+    oracle = _strong_pairs_oracle(df)
+
+    assert result.strong_correlation_pairs, "no strong pairs reported"
+    reported = {
+        tuple(p.traits): (p.r, p.overlap_n) for p in result.strong_correlation_pairs
+    }
+    assert set(reported) == set(oracle)
+    for pair, (r, n_overlap) in oracle.items():
+        assert reported[pair][1] == n_overlap
+        assert reported[pair][0] == pytest.approx(r)
+    assert ("thin_a", "thin_b") in reported
+    assert reported[("thin_a", "thin_b")][1] == 10
+    for p in result.strong_correlation_pairs:
+        assert p.ci_low is not None and p.ci_high is not None
+        assert p.ci_low <= p.r <= p.ci_high
+
+
+def test_strong_pairs_ordered_by_ascending_overlap(injected_ports):
+    """Ascending overlap is what makes the cap safe (design.md Decision 2): it truncates the
+    best-supported end, so the least-supported pair is always reported."""
+    result = _run_with_frame(_collinear_frame(n_traits=6, n_rows=40))
+    overlaps = [p.overlap_n for p in result.strong_correlation_pairs]
+    assert len(set(overlaps)) > 1, "fixture must span distinct overlaps"
+    assert overlaps == sorted(overlaps)
+
+
+def test_strong_pairs_capped_but_counts_stay_true(injected_ports):
+    """At cylinder scale an uncapped list can exceed 100,000 entries (~12 MB of JSON). The
+    cap must not touch the authoritative counts, and must not hide the weakest pair."""
+    cap = plot_correlation_matrix_tool._MAX_STRONG_PAIRS_REPORTED
+    df = _collinear_frame(n_traits=16, n_rows=60)  # C(16,2) = 120 pairs
+    result = _run_with_frame(df)
+    oracle = _strong_pairs_oracle(df)
+
+    assert len(oracle) > cap, "fixture must exceed the cap"
+    assert len(result.strong_correlation_pairs) == cap
+    assert (
+        result.strong_positive_correlations + result.strong_negative_correlations
+    ) == len(oracle)
+    # The smallest-overlap strong pair survives truncation.
+    assert result.strong_correlation_pairs[0].overlap_n == min(
+        n for _r, n in oracle.values()
+    )
+
+
+def test_strong_pair_overlap_summaries_are_uncapped(injected_ports):
+    """A capped list is a biased sample — 50 low-n pairs out of 120 read as if the whole
+    population were poorly supported. The min/median/max scalars are computed over *all*
+    strong pairs so a caller can tell representative from exceptional (#784)."""
+    df = _collinear_frame(n_traits=16, n_rows=60)
+    result = _run_with_frame(df)
+    all_overlaps = sorted(n for _r, n in _strong_pairs_oracle(df).values())
+
+    assert len(result.strong_correlation_pairs) < len(all_overlaps)
+    assert result.strong_pair_overlap_min == all_overlaps[0]
+    assert result.strong_pair_overlap_max == all_overlaps[-1]
+    assert result.strong_pair_overlap_median == pytest.approx(
+        float(np.median(all_overlaps))
+    )
+    assert (
+        result.strong_pair_overlap_min == result.strong_correlation_pairs[0].overlap_n
+    )
+
+
+def test_fisher_ci_matches_closed_form(injected_ports):
+    """Oracle for the interval itself: tanh(arctanh(r) +/- z / sqrt(n - 3)), with z the
+    exact two-sided 95% normal quantile — written as a literal here rather than imported from
+    the module, so this stays an independent check of the formula."""
+    result = _run_with_frame(_collinear_frame(n_traits=5, n_rows=40))
+    assert result.strong_correlation_pairs
+    for p in result.strong_correlation_pairs:
+        z = np.arctanh(p.r)
+        se = 1.959963984540054 / np.sqrt(p.overlap_n - 3)
+        assert p.ci_low == pytest.approx(float(np.tanh(z - se)), abs=1e-9)
+        assert p.ci_high == pytest.approx(float(np.tanh(z + se)), abs=1e-9)
+
+
+def test_perfectly_collinear_pair_reports_null_ci(injected_ports):
+    """r == +/-1 puts arctanh at infinity and collapses the interval to [r, r]. Reporting
+    that zero-width interval would claim perfect precision — exactly the false confidence
+    this field exists to puncture — so it is reported as null (design.md Decision 3)."""
+    n = 20
+    df = pd.DataFrame(
+        {
+            **_meta(n),
+            "exact_a": [float(i) for i in range(n)],
+            "exact_b": [float(i) * 3 + 1 for i in range(n)],  # exactly collinear
+        }
+    )
+    result = _run_with_frame(df)
+    pairs = {tuple(p.traits): p for p in result.strong_correlation_pairs}
+    collinear = pairs[("exact_a", "exact_b")]
+
+    assert collinear.r == pytest.approx(1.0)
+    assert collinear.ci_low is None
+    assert collinear.ci_high is None
+
+
+def test_ci_is_null_below_four_overlap(injected_ports, monkeypatch):
+    """The Fisher standard error needs n > 3. Unreachable while the floor is 10, but the
+    constant is this module's own to change now (design.md Decision 5), so the branch is
+    exercised rather than left to a distant invariant."""
+    monkeypatch.setattr(plot_correlation_matrix_tool, "_MIN_CORR_OVERLAP", 2)
+    n = 12
+    df = pd.DataFrame(
+        {
+            **_meta(n),
+            "tiny_a": [1.0, 2.0, 3.5] + [None] * (n - 3),
+            "tiny_b": [2.0, 4.1, 7.0] + [None] * (n - 3),
+            "filler": [float(i % 5) for i in range(n)],
+        }
+    )
+    result = _run_with_frame(df)
+    pairs = {tuple(p.traits): p for p in result.strong_correlation_pairs}
+
+    assert ("tiny_a", "tiny_b") in pairs
+    tiny = pairs[("tiny_a", "tiny_b")]
+    assert tiny.overlap_n == 3
+    assert tiny.ci_low is None and tiny.ci_high is None
+
+
+def test_result_and_manifest_are_strict_json(injected_ports):
+    """Manifests are serialized by storage_backend._json_bytes via json.dumps with the
+    default allow_nan=True, which emits bare NaN/Infinity tokens and produces a file strict
+    JSON readers reject. Every new float must be finite-or-null before it gets there."""
+    _reader, store = injected_ports
+    n = 20
+    df = pd.DataFrame(
+        {
+            **_meta(n),
+            "exact_a": [float(i) for i in range(n)],  # r == 1.0 -> null CI
+            "exact_b": [float(i) * 3 + 1 for i in range(n)],
+            "noisy": [float((i * 7) % 11) for i in range(n)],
+        }
+    )
+    result = _run_with_frame(df, store=store)
+
+    json.loads(result.model_dump_json(), parse_constant=_reject_constant)
+    stored = store.get_run(_EXPERIMENT, "correlation_matrix", "latest")
+    json.loads(json.dumps(stored.params), parse_constant=_reject_constant)
+
+
+def test_strong_pairs_empty_when_nothing_is_strong(injected_ports):
+    n = 24
+    df = pd.DataFrame(
+        {
+            **_meta(n),
+            "flat": [float(i % 4) for i in range(n)],
+            "saw": [float((i * 5) % 7) for i in range(n)],
+        }
+    )
+    assert not _strong_pairs_oracle(df), "fixture must contain no strong pair"
+    result = _run_with_frame(df)
+
+    assert result.strong_correlation_pairs == []
+    assert result.strong_positive_correlations == 0
+    assert result.strong_negative_correlations == 0
+    assert result.strong_pair_overlap_min is None
+    assert result.strong_pair_overlap_median is None
+    assert result.strong_pair_overlap_max is None
+
+
+def test_strong_pairs_ordering_is_deterministic(injected_ports):
+    """The tool declares no random_state; ties in overlap_n must resolve the same way every
+    run (descending |r|, then trait order) or snapshot consumers see spurious churn."""
+    df = _collinear_frame(n_traits=8, n_rows=40, seed=11)
+    first = _run_with_frame(df)
+    second = _run_with_frame(df)
+
+    as_tuples = lambda res: [  # noqa: E731 - local, single-expression
+        (tuple(p.traits), p.r, p.overlap_n) for p in res.strong_correlation_pairs
+    ]
+    assert as_tuples(first) == as_tuples(second)
+    # Ties in overlap_n resolve by descending |r|.
+    by_overlap: dict[int, list[float]] = {}
+    for p in first.strong_correlation_pairs:
+        by_overlap.setdefault(p.overlap_n, []).append(abs(p.r))
+    assert any(len(v) > 1 for v in by_overlap.values()), "fixture must contain a tie"
+    for magnitudes in by_overlap.values():
+        assert magnitudes == sorted(magnitudes, reverse=True)
+
+
+# ── #785: the third blank-cell bucket ───────────────────────────────────────────────
+
+
+def _locally_constant_frame(n: int = 30) -> pd.DataFrame:
+    """`lc_b` is constant (7.0) on exactly the rows where `lc_a` is non-null, but varies
+    elsewhere — so both traits are globally non-constant, the overlap (15) clears the floor,
+    and Pearson r is still NaN. Verified against the pinned pandas."""
+    half = n // 2
+    return pd.DataFrame(
+        {
+            **_meta(n),
+            "lc_a": [float(i) for i in range(half)] + [None] * (n - half),
+            "lc_b": [7.0] * half + [float(i) for i in range(n - half)],
+        }
+    )
+
+
+def test_locally_constant_pair_is_named(injected_ports):
+    """#785: a pair can be globally non-constant AND clear the overlap floor and still be
+    locally constant within the shared overlap — a blank cell named by neither existing
+    disclosure list."""
+    df = _locally_constant_frame()
+    # Fixture self-check: the degeneracy is real and is not one of the other two causes.
+    assert df["lc_a"].std() > 0 and df["lc_b"].std() > 0
+    assert len(df[["lc_a", "lc_b"]].dropna()) >= 10
+    assert pd.isna(df[["lc_a", "lc_b"]].corr().loc["lc_a", "lc_b"])
+
+    result = _run_with_frame(df)
+
+    assert ["lc_a", "lc_b"] in result.locally_constant_trait_pairs
+    assert result.zero_variance_traits == []
+    assert result.low_overlap_trait_pairs == []
+    assert result.strong_positive_correlations == 0
+    assert result.strong_negative_correlations == 0
+
+
+def test_every_nan_cell_has_exactly_one_reason(injected_ports):
+    """The taxonomy-totality property (#785): with all three causes present at once, every
+    off-diagonal NaN cell is claimed by exactly one bucket — none unexplained, none twice.
+    """
+    n = 30
+    half = n // 2
+    df = pd.DataFrame(
+        {
+            **_meta(n),
+            "ok_a": [float(i) for i in range(n)],
+            "ok_b": [float((i * 3) % 11) for i in range(n)],
+            "constant": [1.0] * n,  # -> zero_variance_traits
+            "sparse_a": [float(i) if i < 10 else None for i in range(n)],
+            "sparse_b": [
+                float(i) if i >= 8 else None for i in range(n)
+            ],  # -> low overlap
+            "lc_a": [float(i) for i in range(half)] + [None] * (n - half),
+            "lc_b": [7.0] * half
+            + [float(i) for i in range(n - half)],  # -> locally const
+        }
+    )
+    result = _run_with_frame(df)
+    assert result.zero_variance_traits
+    assert result.low_overlap_trait_pairs
+    assert result.locally_constant_trait_pairs
+
+    traits = result.resolved_trait_columns
+    corr = (
+        df[traits]
+        .corr(min_periods=plot_correlation_matrix_tool._MIN_CORR_OVERLAP)
+        .to_numpy()
+    )
+    zero_variance = set(result.zero_variance_traits)
+    low = {tuple(p) for p in result.low_overlap_trait_pairs}
+    locally_constant = {tuple(p) for p in result.locally_constant_trait_pairs}
+
+    for i in range(len(traits)):
+        for j in range(i + 1, len(traits)):
+            if not np.isnan(corr[i, j]):
+                continue
+            pair = (traits[i], traits[j])
+            claims = [
+                traits[i] in zero_variance or traits[j] in zero_variance,
+                pair in low,
+                pair in locally_constant,
+            ]
+            assert sum(claims) == 1, f"{pair} claimed by {sum(claims)} buckets"
+
+
+def test_low_overlap_and_zero_variance_pair_lands_in_one_bucket(injected_ports):
+    """low_overlap_trait_pairs already drops pairs involving a zero-variance trait, so the
+    residual derivation must subtract the raw sub-threshold MASK, not that published list —
+    subtracting the list would leak such a pair into the new bucket (design.md Decision 1).
+    """
+    n = 30
+    df = pd.DataFrame(
+        {
+            **_meta(n),
+            # Constant AND observed on only 3 rows: both degenerate at once.
+            "constant_sparse": [5.0, 5.0, 5.0] + [None] * (n - 3),
+            "dense_a": [float(i) for i in range(n)],
+            "dense_b": [float((i * 2) % 13) for i in range(n)],
+        }
+    )
+    result = _run_with_frame(df)
+
+    assert "constant_sparse" in result.zero_variance_traits
+    for pair in result.low_overlap_trait_pairs + result.locally_constant_trait_pairs:
+        assert "constant_sparse" not in pair
+
+
+def test_locally_constant_capped_with_uncapped_count(injected_ports):
+    """This bucket's population is independent of the other two: one 'saturating' trait is
+    locally constant against every partner while low_overlap_trait_pairs stays empty, so the
+    list needs its own cap and its true size has to survive it (design.md Risks)."""
+    cap = plot_correlation_matrix_tool._MAX_LOCALLY_CONSTANT_PAIRS_REPORTED
+    n_rows, n_partners = 40, cap + 12
+    rng = np.random.default_rng(5)
+    data = dict(_meta(n_rows))
+    # Observed on rows 0..n-2 with a single value; its only variation is on the last row,
+    # which every partner leaves null — so it is globally non-constant but locally constant
+    # against all of them.
+    saturating = [4.0] * (n_rows - 1) + [99.0]
+    data["saturating"] = saturating
+    for t in range(n_partners):
+        values = rng.normal(size=n_rows)
+        values[-1] = np.nan
+        data[f"p{t}"] = values
+    result = _run_with_frame(pd.DataFrame(data))
+
+    assert result.zero_variance_traits == []
+    assert result.low_overlap_trait_pairs == []
+    assert result.locally_constant_pair_count == n_partners
+    assert len(result.locally_constant_trait_pairs) == cap
+
+
+def test_locally_constant_does_not_populate_heatmap_caveat(injected_ports, monkeypatch):
+    """heatmap_caveat warns about cells the image COLORS confidently despite thin support.
+    A locally-constant pair is NaN in the delegate's own unguarded corr too, so it renders
+    blank and that text would be false of it (design.md Decision 4)."""
+    captured = {}
+    real = plot_correlation_matrix_tool.create_correlation_heatmap
+
+    def _spy(*a, **k):
+        fig = real(*a, **k)
+        captured["fig"] = fig
+        return fig
+
+    monkeypatch.setattr(
+        plot_correlation_matrix_tool, "create_correlation_heatmap", _spy
+    )
+    result = _run_with_frame(_locally_constant_frame())
+
+    assert result.locally_constant_trait_pairs
+    assert result.zero_variance_traits == []
+    assert result.low_overlap_trait_pairs == []
+    assert result.heatmap_caveat is None
+    assert captured["fig"].texts == []
+
+
+def test_locally_constant_pairs_survive_a_manifest_json_round_trip(injected_ports):
+    """Same list[list[str]] shape contract the low-overlap pairs carry — a tuple would come
+    back from JSON as a list and silently break equality for a manifest reader."""
+    _reader, store = injected_ports
+    result = _run_with_frame(_locally_constant_frame(), store=store)
+    assert result.locally_constant_trait_pairs
+
+    stored = store.get_run(_EXPERIMENT, "correlation_matrix", "latest")
+    round_tripped = json.loads(
+        json.dumps(stored.params["locally_constant_trait_pairs"])
+    )
+    assert round_tripped == stored.params["locally_constant_trait_pairs"]
+    assert all(isinstance(pair, list) for pair in round_tripped)
+
+
+def test_non_finite_trait_is_reported_as_zero_variance(injected_ports):
+    """A column carrying +/-inf has a NaN standard deviation, so `not (std > 0)` already
+    files it here — but the field described only three cases, telling a scientist with an inf
+    that their trait is constant. Pins the corrected taxonomy (design.md Decision 7)."""
+    n = 20
+    df = pd.DataFrame(
+        {
+            **_meta(n),
+            "has_inf": [float(i) for i in range(n - 1)] + [np.inf],
+            "dense_a": [float(i) for i in range(n)],
+            "dense_b": [float((i * 3) % 7) for i in range(n)],
+        }
+    )
+    result = _run_with_frame(df)
+
+    assert "has_inf" in result.zero_variance_traits
+    for pair in result.low_overlap_trait_pairs + result.locally_constant_trait_pairs:
+        assert "has_inf" not in pair
+
+
+def test_min_corr_overlap_is_owned_not_aliased():
+    """#784: the floor is a pairwise degeneracy guard; _CANONICAL_MIN_SAMPLES_PER_TRAIT is a
+    per-trait completeness convention. They agree at 10 by coincidence, so a QC-side retune
+    must not silently move which pairs this tool counts and flags.
+
+    Deliberately does NOT assert the two constants are still equal: that equality is the
+    coincidence being decoupled, and pinning it would turn the next legitimate QC retune into
+    a test failure whose cheapest fix is to re-alias (design.md Decision 5).
+    """
+    assert plot_correlation_matrix_tool._MIN_CORR_OVERLAP == 10
+    assert not hasattr(plot_correlation_matrix_tool, "_CANONICAL_MIN_SAMPLES_PER_TRAIT")
+
+
+def test_new_disclosure_fields_stamped_into_manifest_params(injected_ports):
+    """A later manifest reader must recover the same evidence a live caller got — the same
+    contract resolved_trait_columns/heatmap_caveat already carry."""
+    _reader, store = injected_ports
+    n = 30
+    half = n // 2
+    df = pd.DataFrame(
+        {
+            **_meta(n),
+            "full_a": [float(i) for i in range(n)],
+            "full_b": [float(i) * 2 + (i % 3) for i in range(n)],
+            "lc_a": [float(i) for i in range(half)] + [None] * (n - half),
+            "lc_b": [7.0] * half + [float(i) for i in range(n - half)],
+        }
+    )
+    result = _run_with_frame(df, store=store)
+    assert result.strong_correlation_pairs
+    assert result.locally_constant_trait_pairs
+
+    params = store.get_run(_EXPERIMENT, "correlation_matrix", "latest").params
+    assert params["locally_constant_trait_pairs"] == result.locally_constant_trait_pairs
+    assert params["locally_constant_pair_count"] == result.locally_constant_pair_count
+    assert params["strong_pair_overlap_min"] == result.strong_pair_overlap_min
+    assert params["strong_pair_overlap_median"] == result.strong_pair_overlap_median
+    assert params["strong_pair_overlap_max"] == result.strong_pair_overlap_max
+    assert params["strong_correlation_pairs"] == [
+        p.model_dump() for p in result.strong_correlation_pairs
+    ]
