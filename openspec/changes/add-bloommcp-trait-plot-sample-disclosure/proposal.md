@@ -6,116 +6,129 @@ much of a trait's raw missingness was dropped before rendering. Both read **raw,
 by design (the same pre-clean EDA posture as `qc_inspect`) and delegate rendering to
 `sleap_roots_analyze.visualization`, whose handling of missing and non-finite values is silent.
 
-Three concrete, verified gaps (each probed against the live delegate, not assumed):
+Four gaps, each probed against the resolved delegate rather than assumed:
 
-- **A box built from 2 points is visually indistinguishable from one built from 200.**
+- **A box built from 2 points is pixel-identical to one built from 200.**
   `create_trait_boxplots_by_genotype` titles each subplot `f"{trait}"` — no `n`, unlike
-  `create_trait_histograms`, which titles each panel `f"{trait}\n(n={count})"`. A genotype group
-  reduced to a handful of rows by disjoint per-trait missingness renders as a normal-looking box.
-- **A genotype group with zero non-null rows for a trait vanishes from the panel entirely.** The
-  delegate does `df[[trait, genotype_col]].dropna()` and takes its tick labels from what survives,
-  so the group gets no tick, no box, and no gap — a reader cannot tell the genotype was ever
-  there. Confirmed: a 2-genotype frame with one all-null group renders ticks `['B']`.
-- **A trait carrying `±inf` corrupts the affected box silently.** Its quartiles come back `NaN`
-  (confirmed: the box patch's upper edge is literally `nan`), so the box renders broken, with no
-  error and no flag. The same value makes `plot_trait_histograms` *fail the whole run* with the
-  delegate's own `ValueError: supplied range of [1.0, inf] is not finite` — redacted by the error
-  path into a message that names no trait and offers no remedy.
+  `create_trait_histograms`, which titles each panel `f"{trait}\n(n={count})"`.
+- **A genotype group with zero non-null rows for a trait vanishes from the panel entirely** — the
+  delegate takes its tick labels from what survives `dropna()`, so the group gets no tick, no box
+  and no gap. Confirmed: a 2-genotype frame with one all-null group renders ticks `['B']`.
+- **A trait carrying `±inf` corrupts the affected box without erroring.** On `[1, 2, inf, 4, 5]`
+  the delegate draws `q1=2.0`, `median=4.0`, `q3=NaN` — the finite median is 3.0. The reader sees
+  a confidently drawn median in the wrong place and an open top, not something that reads as
+  corrupt data. The same value makes `plot_trait_histograms` fail the whole run with the
+  delegate's `ValueError: supplied range of [1.0, inf] is not finite`, redacted by the error path
+  into a message naming no trait and offering no remedy.
+- **Rows whose genotype value is null are dropped from every box**, uncounted.
 
-This is the same "silently misleading, no error" category #466 already fixed once for
-`plot_correlation_matrix` (`zero_variance_traits`, `low_overlap_trait_pairs`, `heatmap_caveat`)
-and #784/#785 extended with per-pair evidence. Those changes established the pattern this one
-reuses: compute the disclosure in bloommcp from the same selected frame, report it in the result
-*and* the persisted manifest, and put a signal on the image itself for the caller who only ever
-opens the PNG.
+This is the "silently misleading, no error" category #466 already fixed once for
+`plot_correlation_matrix` (`zero_variance_traits`, `low_overlap_trait_pairs`, `heatmap_caveat`).
+That work established the pattern reused here: compute the disclosure in bloommcp from the same
+selected frame, report a capped worst-first tail with uncapped scalars beside it, stamp it into
+the manifest, and put a signal on the image for the caller who only opens the PNG.
 
-**Why both tools in one change.** They are the same wrapper shape, the same `_viz_shared` helpers,
-the same batching/pagination path, the same persistence flow, and the same missingness question
-asked at two different granularities (per trait vs per trait-per-genotype). The non-finite case
-spans both and has to be settled once, since the two tools' delegates react to it differently
-(one raises, one corrupts silently). Splitting would mean two rounds of schema churn and two
-passes at the same cylinder-scale (846-trait) cost question.
+**Why both tools in one change.** Same wrapper shape, same `_viz_shared` helpers, same
+pagination path, same persistence flow, and the same missingness question at two granularities.
+The non-finite case spans both and has to be settled once, since the delegates react to it
+differently.
 
-Sibling issues [#747](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/747)
-(heatmap not masked per-cell) and
-[#768](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/768) (snapshot test
-can't catch a single-cell defect) stay **out of scope** — see `design.md` Decision 8.
+**On scope.** #748's round-6 comment calls the fix "cheap" and asks for a "fast follow". This
+change is larger than that framing: it adds an image change, a committed table per tool, a
+histogram error-path change, and a regenerated snapshot baseline. Two things drove the growth,
+both from the issue's own text — "consider whether per-group sample counts should also land in
+the rendered image itself", and "mirroring `qc_inspect`'s `per_trait_nan_fraction`/
+`per_trait_inf_count`", which cannot be done honestly without confronting that `count()` treats
+`±inf` as present. The severable pieces are named in `design.md` Decision 11 so a reviewer can
+cut rather than guess.
+
+Sibling issues [#747](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/747) and
+[#768](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/768) are
+`plot_correlation_matrix`-only and stay out of scope (`design.md` Decision 11).
 
 ## What Changes
 
 ### `plot_trait_boxplots`
 
-- **Per-group sample sizes, computed here and disclosed three ways.** One vectorized
-  `groupby(genotype)[traits].count()` yields every (trait × genotype) box's `n`. From it:
-  - `group_n_min`/`_median`/`_max` — uncapped scalars over **every** box in the run.
-  - `small_sample_groups` — boxes with `0 < n < _MIN_PLOTTED_SAMPLES`, ascending by `n` (weakest
-    first, so the cap truncates the best-supported end), capped at 20, with an uncapped
-    `small_sample_group_count`.
-  - `absent_genotype_groups` — boxes with `n == 0`, which are **not drawn at all**; capped at 20
-    with an uncapped `absent_genotype_group_count`.
-  - `group_sample_sizes.csv` — a committed run output carrying every (trait, genotype) pair's
-    `n_plotted` and `n_non_finite`, uncapped. Links, not blobs: the complete table is a download,
-    the response carries only the flagged tail and the scalars.
-- **A sample-size footer is drawn on every rendered page** (`sample_size_note`), not only when
-  something is flagged — this is the only signal a PNG-only reader gets, and "min 2, median 8,
-  max 10 across 57 groups" is exactly the context the image otherwise withholds. On a paginated
-  render the footer is **page-scoped** (derived from that page's `page_traits`), so it never
-  names a trait the viewer cannot see. It escalates to a `⚠`-prefixed dark-red warning naming the
-  flagged groups (capped at 10, `+N more`) when any is small, absent, or non-finite.
-- `rows_missing_genotype`, `n_genotype_groups`, `n_rows_read` — the denominators behind the
-  above; rows whose genotype value itself is null appear in no box at all.
-- `non_finite_traits` (capped) + `non_finite_trait_count` — traits whose `±inf` values make the
-  affected group's quartiles `NaN`.
+- **Per-(trait, genotype) sample sizes**, from one vectorized `groupby(genotype)[traits].count()`:
+  - `box_n_min`/`_median`/`_max` — uncapped scalars over every cell carrying at least one
+    **finite** observation, with `n_boxes_summarized`/`n_boxes_drawn` naming that population
+    explicitly. Absent cells are excluded: including them prints `median=0` on a run where every
+    drawn box is healthy (`design.md` Decision 7).
+  - Four mutually exclusive, exhaustive buckets (`design.md` Decision 5): `no_data_traits`,
+    `absent_genotype_groups`, `non_finite_groups`, `small_sample_groups` — each capped at
+    `MAX_FLAGGED_REPORTED = 20`, ordered **ascending by count then `(trait, genotype)`** so the cap
+    is deterministic under the ties a replicated design guarantees, each with an uncapped count.
+  - `group_sample_sizes.csv` — a committed output carrying every cell's
+    `n_rows_in_group,n_plotted,n_finite,n_non_finite,n_missing,nan_fraction`, uncapped.
+- **The image carries the disclosure two ways** (`design.md` Decision 4):
+  - each genotype tick label gains its own ` (n=…)`, matched by tick text against the count table
+    — no geometry, no orientation branch, self-checking, with `box_labels_annotated` reporting
+    whether the match succeeded;
+  - an **always-on** note below the axes gives min/median/max, every denominator, and its own
+    page scope, escalating to a `⚠` clause naming the flagged groups **as a fraction**
+    (`846 of 16,074 box(es) below n=5`) when any is flagged.
+  - `fig.tight_layout()` is called on unbatched renders only — the batched delegate already does
+    it, and paying for it 53 times is what would break the cylinder smoke timeout.
+- `n_rows_read`, `n_genotype_groups`, `rows_missing_genotype`, `max_nan_fraction` +
+  `max_nan_fraction_group`, `non_finite_traits`.
 
 ### `plot_trait_histograms`
 
-- **Per-trait plotted `n` and missingness**, mirroring `qc_inspect`'s
-  `per_trait_nan_fraction`: `plotted_n_min`/`_median`/`_max` (uncapped scalars),
-  `low_sample_traits` (traits under the floor, with each one's `plotted_n` and `nan_fraction`,
-  ascending, capped at 20) + `low_sample_trait_count`, and a committed
-  `trait_sample_sizes.csv` with every trait's `n_plotted`/`n_missing`/`nan_fraction`.
-  `plotted_n == 0` is the "No data" panel, named in the result rather than only in the image.
-- **A non-finite trait now fails with a structured error that names it.** The render cannot
-  succeed (matplotlib raises on a non-finite histogram range), so this replaces an opaque,
-  redacted delegate `ValueError` with `BloomMCPError(code="assumption_violated")` naming the
-  offending traits and pointing at `qc_clean`/`remove_outliers`. Detected **before** any run is
-  created, so no staging directory is written and torn down.
-- **The rendered image is unchanged** — the delegate already titles every panel `(n=…)`, so the
-  PNG-only gap this change closes for boxplots does not exist here (`design.md` Decision 4).
+- `trait_n_min`/`_median`/`_max`, `low_sample_traits` (capped, ascending, with each trait's
+  binned count and missing fraction) + `low_sample_trait_count`, `max_nan_fraction` +
+  `max_nan_fraction_trait`, `n_rows_read`, and a committed `trait_sample_sizes.csv`
+  (`trait,n_plotted,n_missing,nan_fraction`). A trait with `n_plotted == 0` — the "No data" panel
+  — is named in the result rather than only in the image.
+- **A non-finite trait now fails with a structured error that names it**, raised *before* the run
+  is created so no staging directory is written and torn down. The render already cannot succeed.
+- **The rendered image is unchanged** — the delegate already titles each panel `(n=…)`, so the
+  PNG-only gap does not exist here (`design.md` Decision 4).
 
 ### Shared
 
-- `_viz_shared._MIN_PLOTTED_SAMPLES = 5` — the viz family's own degeneracy floor, deliberately
-  **not** aliased to `_qc_shared._CANONICAL_MIN_SAMPLES_PER_TRAIT` (10), following the ownership
-  decoupling #784 applied to `_MIN_CORR_OVERLAP`. Below 5 points a box's quartiles interpolate
-  between at most 4 observations and its whiskers/outlier dots are artifacts of individual
-  values. Like that constant, it is a degeneracy floor, **not** a sufficiency threshold
-  (`design.md` Decision 3).
-- Every new field is stamped into the persisted run's `params`, so a later manifest read
-  recovers the same signal a live call got.
+- `_viz_shared.MIN_PLOTTED_SAMPLES = 5` (public, like the neighbouring `TRAIT_BATCH_THRESHOLD`),
+  owned here rather than aliased to `_qc_shared._CANONICAL_MIN_SAMPLES_PER_TRAIT`. n=5 is the
+  smallest sample above 1 at which Q1, the median and Q3 all land on actual order statistics.
+  It is a degeneracy floor and makes **no** claim about whiskers or fliers, which stay
+  artifact-prone well above it (`design.md` Decision 3).
+- `MAX_FLAGGED_REPORTED = 20`, `MAX_NOTE_NAMES = 10`, and the shared counting helpers.
+- Every scalar is `Optional` and `None` on an empty population — an all-null genotype column
+  renders fine today and must not start crashing (`design.md` Decision 8) — and every stamped
+  value is coerced to a native Python type, because `np.int64` in `params` raises
+  `PydanticSerializationError` at the manifest write (`design.md` Decision 9).
 
 ## Impact
 
-- Affected specs: `bloommcp-viz-tools` (4 ADDED requirements, 1 MODIFIED)
+- Affected specs: `bloommcp-viz-tools` (5 ADDED requirements, 1 MODIFIED)
 - Affected code:
-  - `bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/plot_trait_boxplots.py`
-  - `bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/plot_trait_histograms.py`
-  - `bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/_viz_shared.py`
+  - `bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/plot_trait_boxplots.py`,
+    `plot_trait_histograms.py`, `_viz_shared.py`
   - `bloommcp/tests/tools/test_plot_trait_boxplots_tool.py`,
     `test_plot_trait_histograms_tool.py`, `test_viz_shared.py`
-  - `bloommcp/tests/smoke/test_plot_trait_boxplots_smoke.py`,
-    `test_plot_trait_histograms_smoke.py`
+  - `bloommcp/tests/tools/test_viz_snapshot.py` — its module docstring carries measured,
+    load-bearing headroom numbers and instructs re-measurement after a layout change
+  - `bloommcp/scripts/gen_plot_snapshots_golden.py` + `bloommcp/tests/scripts/` —
+    `_report_regeneration` calls `compare_images` with no guard, and that **raises** on a canvas
+    resize before anything is copied (`design.md` Decision 10)
   - `bloommcp/tests/fixtures/plot_baselines/boxplots_turface_19_baseline.png` + `MANIFEST.json`
-    — **the boxplot render changes on purpose**, so its snapshot baseline is regenerated via
-    `scripts/gen_plot_snapshots_golden.py` and the printed RMS is quoted in the PR, per that
-    script's review convention. The histogram and correlation baselines are untouched.
-- **Backward compatible except for one deliberate error-path change**: all result fields are
-  additive and every existing field keeps its value. The exception is a histogram run over a
-  trait carrying `±inf`, which already failed and now fails earlier with a better-labelled
-  structured error (`design.md` Decision 5).
-- **Archive ordering**: these deltas ADD to and MODIFY requirements that still live in the
-  pending `converge-bloommcp-viz-tools` change (PR #683, merged 2026-09-11, not yet archived).
-  `openspec validate --strict` does not catch a dangling MODIFIED target, so the ordering is a
-  real hazard — see `tasks.md` §6. The same note applies to the in-flight
-  `add-bloommcp-corr-pair-disclosure` change (PR #833), which touches disjoint requirements of
-  the same capability.
+  - `bloommcp/tests/smoke/test_plot_trait_boxplots_smoke.py`, `test_plot_trait_histograms_smoke.py`
+- **Not backward compatible in three named ways**, all deliberate:
+  1. `outputs`/`output_links` gain the committed sample-size table, so
+     `len(result.outputs) == n_pages` no longer holds. Two currently-green assertions
+     (`test_plot_trait_boxplots_tool.py:161`, `test_plot_trait_histograms_tool.py:121-122`) are
+     retargeted in tasks §2.9.
+  2. The boxplot render changes (labels, note, unbatched layout), so its snapshot baseline is
+     regenerated.
+  3. A histogram run over a `±inf` trait fails earlier, with a better-labelled structured error.
+     It already failed.
+  Every pre-existing **result field** keeps its value and meaning.
+- **Archive ordering**: these deltas ADD to and MODIFY requirements that still live in the pending
+  `converge-bloommcp-viz-tools` change (PR #683, merged 2026-09-11, not archived).
+  `openspec validate --strict` does not catch a dangling MODIFIED target — see `tasks.md` §8.
+  The in-flight `add-bloommcp-corr-pair-disclosure` (PR #833) touches disjoint requirements of the
+  same capability; its **code** is also not in this branch's tree, so nothing here references its
+  symbols. PR #832 (#808) edits `bloom_mcp/tools/_plots.py`, the home of the figure-lifecycle
+  helpers this change draws inside — no file overlap today, but worth a rebase check.
+
+Closes #748.

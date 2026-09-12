@@ -1,186 +1,277 @@
 ## 1. RED — tests that fail against today's code
 
 Boxplot tests in `bloommcp/tests/tools/test_plot_trait_boxplots_tool.py`, histogram tests in
-`test_plot_trait_histograms_tool.py`, shared-constant tests in `test_viz_shared.py` — all using
-each file's existing `injected_ports` fixture (`FakeReader` + `FakeResultStore`) and `_run(...)`
-helper.
+`test_plot_trait_histograms_tool.py`, shared-constant tests in `test_viz_shared.py`.
 
-- [ ] 1.0 Write every test below **first**, run them against unmodified code, and record that
-      each fails for the expected reason (missing field / wrong bucket / no footer), not an
-      import error. The TDD gate is this checkbox, not the prose.
+**Fixture notes for the implementer.** The shared `_wide_df` helper builds 12 rows over 3
+genotypes — **n=4 per cell, below the new floor of 5** — so every existing batched test's render
+becomes flagged once §2 lands (expected, not a regression), and `_wide_df` cannot serve the
+"only one page has a thin group" test; §1.2.4 builds its own frame.
+`FakeResultStore.commit` **rmtree's the staging dir**, so a committed CSV's bytes are unreachable
+after `_run()`; §1.0.1 adds the commit-spy helper the CSV tests need.
 
-### 1.1 Boxplot per-group sample sizes (#748 core)
+- [ ] 1.0 Write every test in §1 **first**, run them against unmodified code, and record that each
+      fails for the expected reason (missing field / wrong bucket / no note), not an import error.
+      §1b tests are exempt — they are green today by construction.
+- [ ] 1.0.1 Add a `_captured_outputs(store, monkeypatch)` helper to both test files: a `commit`
+      spy that copies `run.staging_dir` contents before delegating (the pattern in
+      `test_pca_analysis_tool.py` and `test_viz_snapshot._render_to_dir`), filtering by suffix so
+      a bare `read_text` never hits a `.png`.
 
-- [ ] 1.1.1 `test_group_sample_sizes_match_an_independent_recount` — a frame with deliberately
-      uneven per-(trait, genotype) missingness. Every reported count matches an independent
-      `df.groupby(geno)[trait].count()` recomputation, and the scalars match
-      `min`/`median`/`max` over that same table.
-- [ ] 1.1.2 `test_small_sample_groups_named_with_trait_genotype_and_n` — a group with
-      `0 < n < _MIN_PLOTTED_SAMPLES` for one trait only: it is named with its trait, genotype and
-      count, and the unaffected traits' groups are not.
-- [ ] 1.1.3 `test_small_sample_groups_ordered_ascending_and_capped` — more flagged groups than
-      the cap: the list is non-decreasing in `n`, its length equals the cap, entry `[0]` is the
-      global smallest non-empty box, and `small_sample_group_count` reports the true total.
-- [ ] 1.1.4 `test_group_n_summaries_are_uncapped` — same over-cap frame: `group_n_min`/`_median`/
-      `_max` match an independent computation over **every** (trait, genotype) cell, including
-      the zeros, not just the reported sample.
-- [ ] 1.1.5 `test_absent_group_is_its_own_bucket_and_renders_no_tick` — a genotype that is
-      entirely null for one trait: it is in `absent_genotype_groups`, **not** in
-      `small_sample_groups`, and a spy on the delegate's returned figure confirms that trait's
-      panel carries no tick for it (pins the verified delegate behavior `design.md` documents).
-- [ ] 1.1.6 `test_every_group_cell_lands_in_exactly_one_bucket` — taxonomy totality over a frame
-      exercising absent, small and healthy groups at once: no cell unexplained, none
-      double-counted (mirrors `test_every_nan_cell_has_exactly_one_reason` next door).
-- [ ] 1.1.7 `test_rows_with_null_genotype_are_counted_and_excluded` — rows whose genotype value
-      is null are reported in `rows_missing_genotype` and appear in no group's count.
-- [ ] 1.1.8 `test_group_sample_sizes_csv_is_committed_and_complete` — the committed CSV has one
-      row per (resolved trait × genotype group), its counts match the independent recount, it
-      carries an `OutputLink`, and it covers groups the capped lists truncated away.
-- [ ] 1.1.9 `test_new_boxplot_fields_stamped_into_manifest_params` — every new field is
-      recoverable from the persisted manifest, matching the precedent set by
-      `resolved_trait_columns`.
-- [ ] 1.1.10 `test_boxplot_result_stays_links_not_blobs` — port
-      `test_provenance_stamped_seed_none_and_links_returned`'s 5,000-char-per-field assertion
-      into this tool's file and exercise it on a wide frame, so the caps are enforced by a test
-      rather than by intent (`design.md` Decision 2).
+### 1.1 Boxplot per-group sample sizes
 
-### 1.2 Boxplot figure footer
+- [ ] 1.1.1 `test_group_sample_sizes_match_hand_written_expectations` — a small frame with
+      **literal expected counts written out by hand** (`{("t1","A"): 2, ("t1","B"): 0, …}`), not a
+      recomputation of production's own `groupby().count()` expression. Where a larger frame needs
+      a recount, use a structurally different oracle (a Python loop over
+      `len(df[df[g]==k][t].dropna())`).
+- [ ] 1.1.2 `test_small_sample_groups_named_with_trait_genotype_and_n`.
+- [ ] 1.1.3 `test_small_sample_groups_ordered_and_capped` — parametrized at **cap−1, cap, cap+1**;
+      non-decreasing in `n`, entry `[0]` is the global smallest finite-backed box, uncapped count
+      true at every size.
+- [ ] 1.1.4 `test_small_sample_group_ordering_is_deterministic_on_ties` — more tied cells than the
+      cap; two runs give identical lists; the secondary key is `(trait, genotype)` lexicographic.
+- [ ] 1.1.5 `test_box_n_summaries_exclude_absent_cells` — the `design.md` Decision 7 frame where
+      **every drawn box has n=6** and many cells are absent: `box_n_min == box_n_median == 6`
+      (never 0), `n_boxes_summarized` equals the drawn count, and
+      `n_boxes_drawn + absent_genotype_group_count == n_traits × n_genotype_groups`.
+- [ ] 1.1.6 `test_absent_group_is_its_own_bucket` — a genotype all-null for one trait only: in
+      `absent_genotype_groups`, not in `small_sample_groups`, excluded from the summaries.
+- [ ] 1.1.7 `test_all_null_trait_collapses_to_no_data_traits` — one dead trait over the 19-genotype
+      fixture yields **one** `no_data_traits` entry and **zero** `absent_genotype_groups` entries,
+      so it cannot exhaust the cap by itself.
+- [ ] 1.1.8 `test_every_group_cell_lands_in_exactly_one_bucket` — totality over a frame exercising
+      no-data, absent, non-finite, small and healthy cells at once; none unexplained, none
+      double-counted.
+- [ ] 1.1.9 `test_bucket_boundaries` — parametrized `n ∈ {0, 1, floor−1, floor}`: 0 is absent (not
+      small), 1 is small (not absent), floor−1 is small, floor is unflagged.
+- [ ] 1.1.10 `test_rows_with_null_genotype_are_counted_and_excluded`.
+- [ ] 1.1.11 `test_max_nan_fraction_names_a_heavily_missing_cell_that_clears_the_floor`.
+- [ ] 1.1.12 `test_group_sample_sizes_csv_is_committed_and_complete` — via §1.0.1's spy: one row
+      per (resolved trait × genotype group), every column present
+      (`n_rows_in_group,n_plotted,n_finite,n_non_finite,n_missing,nan_fraction`), counts match the
+      independent oracle, and it covers cells the capped lists truncated away.
+- [ ] 1.1.13 `test_new_boxplot_fields_and_genotype_column_stamped_into_manifest_params` — including
+      `genotype_column`, which is data-dependent and recorded nowhere in the manifest today.
+- [ ] 1.1.14 `test_manifest_params_are_native_json_types` — stamp round-trips through
+      `model_dump(mode="json")`; a raw `np.int64`/`np.float64` raises
+      `PydanticSerializationError`, so this is a live hazard, not a hypothetical
+      (`design.md` Decision 9).
+- [ ] 1.1.15 `test_result_and_manifest_are_strict_json` — both tools: round-trip result and
+      persisted manifest bytes through `json.loads(..., parse_constant=_reject)` so a bare
+      `NaN`/`Infinity` fails the test. Needed more here than next door: this change reports
+      fractions whose denominator can be zero and medians whose population can be empty.
+- [ ] 1.1.16 `test_new_result_fields_stay_under_the_links_not_blobs_ceiling` — assert the
+      5,000-char ceiling over **only the fields this change adds**, at cylinder width. Do **not**
+      assert it over the whole result: `resolved_trait_columns` already measures ~24,862 chars for
+      846 real trait names and `page_traits` about the same, a pre-existing overrun recorded in §7.
 
-- [ ] 1.2.1 `test_sample_size_note_is_drawn_on_every_render` — a healthy frame: a `Figure.text`
-      spy shows exactly one note containing the min/median/max and the group count, with no
-      warning marker. Deliberately the *unflagged* path, which today draws nothing.
-- [ ] 1.2.2 `test_flagged_note_names_the_affected_groups` — a frame with a small group and an
-      absent group: the drawn text carries the warning marker, names both groups, and points at
-      the committed table.
-- [ ] 1.2.3 `test_note_name_list_is_capped_with_remainder` — more flagged groups than the
-      footer's name cap: at most the cap are named, and a `+N more` summary covers the rest.
-- [ ] 1.2.4 `test_paginated_notes_are_page_scoped` — a batched render where the only thin group
-      sits on one page: that page's drawn text names it, every other page's does not, and each
-      page's statistics match a recount restricted to that page's `page_traits`.
-- [ ] 1.2.5 `test_sample_size_note_recoverable_from_result_and_manifest` — `sample_size_note`
-      equals the drawn text for an unbatched render and is stamped into `params`.
-- [ ] 1.2.6 `test_histogram_render_gains_no_note` — a `Figure.text` spy over
-      `plot_trait_histograms` records no added note (`design.md` Decision 4).
+### 1.2 The rendered image
+
+- [ ] 1.2.1 `test_each_genotype_tick_label_carries_its_own_n` — parametrized over **2 genotypes
+      (vertical, x-ticks) and 10 genotypes (horizontal, y-ticks)**: select the axis by
+      `ax.get_title()`, filter `ax.get_visible()` (the delegate pads invisible blank-titled axes),
+      and assert each label matches `"<genotype> (n=<count>)"` against the oracle. A test reading
+      only `get_xticklabels()` at 10 genotypes would compare against the numeric scale and pass
+      for the wrong reason.
+- [ ] 1.2.2 `test_unmatched_tick_labels_are_left_alone_and_reported` — monkeypatch the delegate to
+      return a figure whose ticks are not genotype values: labels unchanged,
+      `box_labels_annotated is False`, note still drawn.
+- [ ] 1.2.3 `test_note_is_drawn_on_every_render_including_unflagged` — assert against the **saved
+      figure's** `fig.texts`, not a call spy, and **filter** rather than count: the delegate
+      already puts a suptitle in `fig.texts` on the vertical unbatched path
+      (`'Boxplot grouped by geno'`) and on every batched page.
+- [ ] 1.2.4 `test_note_is_drawn_before_savefig` — a `savefig` spy recording the matching
+      `fig.texts` at call time; the spec says "before it is saved", which a call-order-blind spy
+      cannot prove.
+- [ ] 1.2.5 `test_flagged_note_names_groups_and_reports_the_fraction`.
+- [ ] 1.2.6 `test_note_name_list_is_capped_with_remainder`.
+- [ ] 1.2.7 `test_paginated_notes_are_page_scoped` — purpose-built wide frame with the only thin
+      group on one page: that page's text names it, no other page's does, each page's statistics
+      match a recount restricted to its `page_traits`, the text identifies itself as page-scoped,
+      and `params["page_sample_size_notes"]` carries the exact per-page strings.
+- [ ] 1.2.8 `test_sample_size_note_recoverable_from_result_and_manifest` — non-empty, matches a
+      regex carrying min/median/max plus the box/genotype/trait denominators (an empty string must
+      not satisfy this), and equals the drawn text on an unbatched render.
+- [ ] 1.2.9 `test_tight_layout_called_only_when_unbatched` — spy `Figure.tight_layout`: called once
+      for an unbatched render, never for a batched one (the batched delegate already calls it).
+- [ ] 1.2.10 `test_note_drawing_failure_cleans_staging_and_leaks_no_figures` — the existing render
+      -failure test patches the *delegate*; the note is drawn at a different site and has its own
+      failure path.
 
 ### 1.3 Histogram per-trait disclosure
 
-- [ ] 1.3.1 `test_per_trait_plotted_n_and_missingness_reported` — counts and NaN fractions match
-      an independent recount; the scalars cover every resolved trait.
-- [ ] 1.3.2 `test_all_null_trait_is_named_with_zero_plotted_n` — the "No data" panel's trait is
-      in `low_sample_traits` with `plotted_n == 0` (today it is discoverable only by opening the
-      image).
-- [ ] 1.3.3 `test_low_sample_traits_ordered_ascending_and_capped_with_true_count` — mirrors
-      1.1.3 at trait granularity.
-- [ ] 1.3.4 `test_trait_sample_sizes_csv_is_committed_and_complete` — mirrors 1.1.8.
-- [ ] 1.3.5 `test_new_histogram_fields_stamped_into_manifest_params` — mirrors 1.1.9.
-- [ ] 1.3.6 `test_delegate_titles_each_panel_with_its_n` — pins the delegate's
-      `f"{trait}\n(n={count})"` titling directly against the live delegate. The existing
-      `_titled_traits` helper splits that suffix off before asserting, so nothing currently fails
-      if it disappears — and it is the entire reason this tool's image needs no footer
-      (`design.md` Decision 4 / Open Questions).
+- [ ] 1.3.1 `test_per_trait_plotted_n_and_missingness_reported` (hand-written expectations, as 1.1.1).
+- [ ] 1.3.2 `test_all_null_trait_is_named_with_zero_plotted_n`.
+- [ ] 1.3.3 `test_low_sample_traits_ordered_capped_and_deterministic` — mirrors 1.1.3/1.1.4.
+- [ ] 1.3.4 `test_max_nan_fraction_names_the_worst_trait`.
+- [ ] 1.3.5 `test_trait_sample_sizes_csv_is_committed_and_complete` — via §1.0.1's spy.
+- [ ] 1.3.6 `test_new_histogram_fields_stamped_into_manifest_params`.
 
 ### 1.4 Non-finite values
 
-- [ ] 1.4.1 `test_histogram_over_non_finite_trait_is_assumption_violated_naming_it` — a trait
-      carrying `+inf`: `BloomMCPError(code="assumption_violated")` naming the trait, with a
-      remedy. Assert the delegate was **never called** (spy) and no run was created, so the
-      detection is a pre-flight, not a rescued delegate failure.
-- [ ] 1.4.2 `test_histogram_non_finite_guard_leaves_no_staging_dir` — a `create_run` spy confirms
-      no staging directory is created or left behind for that call.
-- [ ] 1.4.3 `test_boxplot_over_non_finite_trait_renders_and_discloses` — the run completes, the
-      trait is in `non_finite_traits`, the CSV's `n_non_finite` column reports the affected
-      (trait, genotype) pair, and the drawn note warns about it.
-- [ ] 1.4.4 `test_non_finite_values_are_not_stripped_before_rendering` — the frame handed to the
-      boxplot delegate still contains the non-finite value (`design.md` Decision 5 — the wrapper
-      must not quietly alter a pre-clean EDA view).
+- [ ] 1.4.1 `test_histogram_over_non_finite_trait_is_assumption_violated_naming_it` — the RED
+      assertions are that the **delegate spy records zero calls** and the **`create_run` spy
+      records zero calls** (today the delegate raises *after* the run is created, and the existing
+      `except` branch already rmtree's staging, so "no staging dir left behind" passes today).
+- [ ] 1.4.2 `test_histogram_non_finite_guard_fires_on_a_batched_selection_too` — >50 traits, guard
+      still pre-`create_run`.
+- [ ] 1.4.3 `test_boxplot_over_non_finite_trait_renders_and_discloses` — trait in
+      `non_finite_traits`, cell in `non_finite_groups`, CSV column populated, note warns.
+- [ ] 1.4.4 `test_all_inf_cell_is_not_reported_as_a_healthy_box` — a cell whose every value is
+      `+inf`: `n_plotted > 0` but it is flagged non-finite, excluded from the `box_n_*` summaries,
+      and never unflagged. Pins `design.md` Decision 5 — `count()` includes `±inf`.
+- [ ] 1.4.5 `test_boxplot_non_finite_warning_lands_on_the_offending_page` — batched.
 
-### 1.5 Shared floor
+### 1.5 Shared floor and empty populations
 
-- [ ] 1.5.1 `test_min_plotted_samples_is_owned_not_aliased` — `_viz_shared._MIN_PLOTTED_SAMPLES`
-      is 5 and `_viz_shared` does not bind `_CANONICAL_MIN_SAMPLES_PER_TRAIT`, so the alias
-      #784 removed next door cannot be introduced here. Deliberately does **not** assert any
-      relationship to the QC constant — independence is the point.
-- [ ] 1.5.2 `test_both_plot_tools_use_the_shared_floor` — both tools flag at the same boundary,
-      pinned parametrically at `n = floor - 1` and `n = floor`.
+- [ ] 1.5.1 `test_min_plotted_samples_is_owned_not_aliased` — `MIN_PLOTTED_SAMPLES == 5` **and**
+      `"MIN_PLOTTED_SAMPLES" in _viz_shared.__dict__` (what "owned" means), **and** the module
+      does not bind `_CANONICAL_MIN_SAMPLES_PER_TRAIT` (the regression is a future
+      `from _qc_shared import ...`; `_viz_shared` already imports `_validate_trait_subset` from
+      there, so the negative alone is weak). Deliberately does **not** assert any relationship to
+      the QC constant — independence is the point.
+- [ ] 1.5.2 `test_both_plot_tools_flag_at_the_same_boundary` — parametrized at floor−1 and floor.
+- [ ] 1.5.3 `test_all_null_genotype_column_completes_with_null_summaries` — reachable today and
+      **renders successfully**; after §2 it must still complete: summaries `None` (never `NaN`),
+      `n_genotype_groups == 0`, `rows_missing_genotype == n_rows_read`, note says no box was drawn.
+- [ ] 1.5.4 `test_zero_row_frame_completes_with_null_summaries` — same for both tools.
+
+### 1.6 Delegate-behavior pins (guard the decisions that depend on them)
+
+- [ ] 1.6.1 `test_delegate_titles_each_panel_with_its_n` — pins `f"{trait}\n(n={count})"` against
+      the live delegate. `_titled_traits` splits the suffix off before asserting, so nothing fails
+      today if it disappears — and Decision 4's "the histogram image needs no note" rests on it.
+      Note the delegate titles the **bare trait name** for an all-NaN panel; assert the non-empty
+      case.
+- [ ] 1.6.2 `test_delegate_draws_fliers_on_both_orientation_paths` — pins that neither path passes
+      `showfliers=False`/`whis`, on the pandas `DataFrame.boxplot` path (≤8 genotypes) **and** the
+      `Axes.boxplot` path (>8). `design.md` Decision 11's "nothing is hidden, so nothing to
+      disclose" depends on defaults across two different APIs.
+- [ ] 1.6.3 `test_batched_delegate_calls_tight_layout` — pins the fact §2.6 relies on to justify
+      not calling it there.
+
+## 1b. Characterization guards (green today — must stay green)
+
+Listed separately because they do **not** fail against today's code; §1.0's gate does not apply.
+
+- [ ] 1b.1 `test_histogram_render_gains_no_note` — `fig.texts` filtered (batched histograms carry
+      their own suptitle), asserting no sample-size note is added.
+- [ ] 1b.2 `test_non_finite_values_are_not_stripped_before_rendering` — the frame reaching the
+      boxplot delegate still contains the `±inf`.
+- [ ] 1b.3 `test_absent_group_renders_no_tick` — pins the delegate behavior `design.md`'s table
+      records; true today.
 
 ## 2. GREEN — implementation
 
-- [ ] 2.1 `_viz_shared.py`: add `_MIN_PLOTTED_SAMPLES = 5` with its own rationale comment (a
-      quartile-degeneracy floor, owned here, explicitly not the QC per-trait completeness
-      convention, and honest that it is not a sufficiency threshold).
-- [ ] 2.2 `_viz_shared.py`: add the shared, vectorized count helper(s) the two tools call —
-      per-trait non-null counts, per-(trait, genotype) non-null counts, and the `isinf` mask —
-      so the two files cannot drift on how a "plotted observation" is defined. No Python loop
-      over the trait × genotype grid; only over the flagged tail.
-- [ ] 2.3 `plot_trait_histograms.py`: pre-flight non-finite guard **before** `store.create_run`,
-      raising `assumption_violated` naming the offending traits (capped) with a remedy pointing
-      at `qc_clean`/`remove_outliers`.
-- [ ] 2.4 `plot_trait_histograms.py`: add `n_rows_read`, `plotted_n_min`/`_median`/`_max`,
-      `low_sample_traits` (a small Pydantic model: trait, `plotted_n`, `nan_fraction`),
-      `low_sample_trait_count`; commit `trait_sample_sizes.csv`; stamp everything into `params`.
-- [ ] 2.5 `plot_trait_boxplots.py`: add `n_rows_read`, `n_genotype_groups`,
-      `rows_missing_genotype`, `group_n_min`/`_median`/`_max`, `small_sample_groups` +
-      `small_sample_group_count`, `absent_genotype_groups` + `absent_genotype_group_count`,
-      `non_finite_traits` + `non_finite_trait_count`, `sample_size_note`; commit
-      `group_sample_sizes.csv`; stamp everything into `params`.
-- [ ] 2.6 `plot_trait_boxplots.py`: draw the page-scoped note via `Figure.text(...)` before each
-      `savefig`, inside the existing figure-lifecycle block — neutral when nothing is flagged,
-      `⚠`-prefixed and dark red when something is. Keep the existing
-      `call_with_figure_cleanup` / `FIGURE_REGISTRY_LOCK` / staging-teardown structure untouched.
-- [ ] 2.7 Keep the sample-size CSV out of `page_traits` and out of `n_pages` (the MODIFIED
-      pagination requirement), while still committing it with its own `OutputLink`.
-- [ ] 2.8 Field descriptions carry the caps, the ascending ordering, the uncapped-scalar
-      rationale, and the fact that the floor is a degeneracy bound rather than a sufficiency
-      claim — the same standard the sibling correlation fields are held to.
+- [ ] 2.1 `_viz_shared.py`: add `MIN_PLOTTED_SAMPLES = 5`, `MAX_FLAGGED_REPORTED = 20`,
+      `MAX_NOTE_NAMES = 10` — public, matching the neighbouring `TRAIT_BATCH_THRESHOLD`, each with
+      its own rationale comment. The floor's comment states the order-statistic argument and its
+      explicit non-claim about whiskers/fliers.
+- [ ] 2.2 `_viz_shared.py`: the shared, vectorized counting helpers (per-trait counts,
+      per-(trait, genotype) counts, the `isinf` mask via
+      `to_numpy(dtype="float64", na_value=np.nan)` so a future nullable dtype does not raise), plus
+      one `_native(...)` coercion used by both tools at the result/stamp boundary.
+- [ ] 2.3 `plot_trait_histograms.py`: non-finite pre-flight guard **before** `store.create_run`.
+- [ ] 2.4 `plot_trait_histograms.py`: new fields + `trait_sample_sizes.csv`; stamp into `params`.
+- [ ] 2.5 `plot_trait_boxplots.py`: new fields and buckets (classification on the **finite**
+      count), `group_sample_sizes.csv`, stamp into `params` **including `genotype_column`**.
+- [ ] 2.6 `plot_trait_boxplots.py`: relabel genotype ticks by matching tick text; call
+      `fig.tight_layout()` **only when not batched**; draw the page-scoped note via `Figure.text`
+      before each `savefig`. Keep the existing `call_with_figure_cleanup` /
+      `FIGURE_REGISTRY_LOCK` / staging-teardown structure intact, and place the new drawing inside
+      the same figure lifecycle so a failure there still cleans up.
+- [ ] 2.7 Compute every summary **before** `store.create_run` — `Provenance` is stamped at run
+      creation and `commit` cannot amend it, so anything computed during the render loop is too
+      late to stamp.
+- [ ] 2.8 Keep the sample-size CSV out of `page_traits` and out of `n_pages` while still committing
+      it with its own `OutputLink`.
+- [ ] 2.9 Retarget the two assertions the new output breaks:
+      `test_plot_trait_boxplots_tool.py:161` and `test_plot_trait_histograms_tool.py:121-122`
+      (`len(result.outputs) == expected` → page count **plus one**, and the same for
+      `output_links`). Commit this together with 2.4/2.5 so no commit leaves the suite red for an
+      unrelated reason.
+- [ ] 2.10 Field descriptions carry: the caps, the ordering and its tie-break, that `n_plotted`
+      includes `±inf` and `n_non_finite` is a subset of it, the exact population behind each
+      scalar, that the floor is a degeneracy bound and not a sufficiency claim, that
+      `sample_size_note` is run-wide (and equals the drawn text only on a single-page render), and
+      the histogram/boxplot denominator difference reconciled by `rows_missing_genotype`.
 
 ## 3. Docs
 
-- [ ] 3.1 `plot_trait_boxplots.py` module docstring: replace the "**Unlike
-      `plot_correlation_matrix` … tracked at #748**" paragraph with a description of the shipped
-      disclosure — the three buckets, the always-on page-scoped footer, the committed CSV, and
-      what the floor does and does not claim. Keep the honest note that a zero-variance trait
-      still renders a degenerate box without a flag (that is not what #748 asked for, and it is
-      not silently misleading now that every box's `n` is reported).
-- [ ] 3.2 `plot_trait_histograms.py` module docstring: same treatment, plus the non-finite
-      pre-flight guard and why the rendered image is deliberately unchanged.
-- [ ] 3.3 Update both test modules' docstrings to cover the new surface.
-- [ ] 3.4 Add the new fields to `tests/smoke/test_plot_trait_boxplots_smoke.py` and
-      `test_plot_trait_histograms_smoke.py` — the only tests exercising this surface through the
-      real MCP server, and cylinder is exactly the scale the caps exist for.
+- [ ] 3.1 `plot_trait_boxplots.py` docstring: replace the "tracked at #748" paragraph with the
+      shipped disclosure — the buckets, the per-box labels and their fallback, the always-on
+      page-scoped note, the CSV, and what the floor does and does not claim. Keep the honest note
+      that a zero-variance trait still renders a degenerate box without a flag.
+- [ ] 3.2 `plot_trait_histograms.py` docstring: same treatment, plus the non-finite pre-flight
+      guard, why the image is deliberately unchanged, and the delegate's hardcoded `bins=30`
+      (a panel above the floor can still be visually degenerate).
+- [ ] 3.3 Record the assessed-but-unfixed outlier findings in **both** module docstrings, not only
+      in `design.md` (which gets archived): matplotlib's `whis=1.5`/`showfliers=True` defaults mean
+      nothing is hidden on the boxplot side, and `hist(..., bins=30)` with no `range=` clips
+      nothing on the histogram side — but a single extreme value collapses every real observation
+      into one bar while the `(n=…)` title still reads normally.
+- [ ] 3.4 Update both test modules' docstrings.
+- [ ] 3.5 Update `tests/tools/test_viz_snapshot.py`'s module docstring: its measured boxplot
+      headroom ("RMS≈21.7-22.1 at a uniform 2% probe") describes a render that no longer exists,
+      and the docstring itself instructs re-measurement after a layout change.
+- [ ] 3.6 Add the new fields to both smoke tests. Note `plot_trait_histograms`' disclosure is a
+      **no-op on cylinder** (every trait has `n_plotted == n_rows`, zero NaN), so assert the
+      fields' presence and internal consistency there rather than a non-trivial flag.
 
 ## 4. Snapshot baseline (deliberate render change)
 
-- [ ] 4.1 Run `uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py` with no
-      `--yes` first and record the printed old-vs-new RMS for all three baselines.
-- [ ] 4.2 Rerun with `--yes`, then restore `histograms_turface_19_baseline.png` and
-      `correlation_matrix_turface_19_baseline.png` from git — neither render changes, and the
-      script rewrites all three by design.
-- [ ] 4.3 Update `tests/fixtures/plot_baselines/MANIFEST.json` if the recorded environment moved.
-- [ ] 4.4 Quote the boxplot RMS and the reason for the change in the PR description, per the
-      generator script's review convention.
+- [ ] 4.1 `git rm bloommcp/tests/fixtures/plot_baselines/boxplots_turface_19_baseline.png` **first**.
+      `_report_regeneration` calls `compare_images`, which **raises** `ImageComparisonFailure` on a
+      canvas-size change rather than returning an RMS, and it is called for all three baselines
+      *before* anything is copied — so without this the script dies having written nothing.
+      Removing the file takes its "new baseline, no prior version to diff against" branch.
+- [ ] 4.2 Harden `_report_regeneration` to catch `ImageComparisonFailure` and print the old/new
+      dimensions instead, with a unit test in `tests/scripts/` — so the next deliberate render
+      change does not hit the same wall.
+- [ ] 4.3 Run the generator, then restore `histograms_turface_19_baseline.png` and
+      `correlation_matrix_turface_19_baseline.png` from git (the script rewrites all three by
+      design; neither of those renders changes).
+- [ ] 4.4 Update `MANIFEST.json` if the recorded environment moved.
+- [ ] 4.5 Quote the **old/new canvas dimensions** and the reason in the PR description — not an
+      RMS, which is undefined across a resize.
 
 ## 5. Verify
 
 - [ ] 5.1 `cd bloommcp && uv run --extra test pytest tests/tools/test_plot_trait_boxplots_tool.py
       tests/tools/test_plot_trait_histograms_tool.py tests/tools/test_viz_shared.py -q`.
-- [ ] 5.2 `cd bloommcp && uv run --extra test pytest tests/tools/ -q` — no sibling regression, in
-      particular `test_viz_snapshot.py` (boxplots against the regenerated baseline; histograms
-      and correlation_matrix must still match their untouched ones) and
-      `test_devendor_invariants.py`.
-- [ ] 5.3 `cd bloommcp && uv run black --check src tests scripts && uv run ruff check src tests
-      scripts`.
+- [ ] 5.2 `cd bloommcp && uv run --extra test pytest tests/tools/ tests/scripts/ -q` — no sibling
+      regression; `test_viz_snapshot.py` passes against the regenerated boxplot baseline and the
+      untouched other two.
+- [ ] 5.3 `cd bloommcp && uv run black --check src tests scripts && uv run ruff check src tests scripts`.
 - [ ] 5.4 `openspec validate add-bloommcp-trait-plot-sample-disclosure --strict`.
-- [ ] 5.5 Measure the added cost at cylinder width (846 traits) — the two vectorized passes and
-      the CSV write — and record the numbers in `design.md`'s Risks section rather than leaving
-      "vectorized, therefore fine" as an assertion.
-- [ ] 5.6 Re-read the diff against `design.md`: no existing field's value changed, no delegate
-      call's arguments changed, and the histogram render is byte-identical.
+- [ ] 5.5 Commit `benchmarks/trait_plot_sample_disclosure_bench.py` reproducing `design.md`'s
+      numbers (per-page render cost with/without relabelling and `tight_layout`, the cylinder-scale
+      counting cost, the flier-artifact rates, and the quartile order-statistic table), so every
+      figure in the design doc is re-checkable rather than asserted — the precedent PR #833 set.
+- [ ] 5.6 Measure the **cylinder boxplot smoke wall clock** before and after. It is already at
+      ~109-111s against a 120s client timeout (`tests/smoke/conftest.py`), and relabelling adds
+      ~8% per page across 53 pages. If it lands above ~115s, raise the timeout in the same PR
+      rather than leaving a known-marginal test.
+- [ ] 5.7 Re-read the diff against `design.md`: no existing **result field** changed value, no
+      delegate call's arguments changed, the histogram render is byte-identical, and every
+      `±inf`-sensitive comparison uses the finite count.
 
-## 6. Archive ordering (post-merge, not part of this PR)
+## 6. Follow-up issues to file (not fixed here)
 
-- [ ] 6.1 Archive `converge-bloommcp-viz-tools` **first**. This change MODIFIES a requirement
-      that still lives in that pending change, and `openspec validate --strict` passes without
-      checking that a MODIFIED target exists — archiving in the wrong order silently drops it.
-- [ ] 6.2 Coordinate with `add-bloommcp-corr-pair-disclosure` (PR #833): it MODIFIES disjoint
-      requirements of the same capability, so either order works between the two, but both must
-      follow `converge-bloommcp-viz-tools`.
+- [ ] 6.1 File: `resolved_trait_columns`/`page_traits` exceed the family's 5,000-char
+      "links, not blobs" convention at cylinder width (~24,862 chars for 846 real trait names) —
+      pre-existing, inherited by these tools, and not something this change should silently adopt
+      as acceptable.
+- [ ] 6.2 File: the residual on-image gaps this change leaves — a zero-variance trait still renders
+      a degenerate box with no flag, and a `box_labels_annotated=False` render falls back to the
+      note alone. Filing follows the precedent that made #785 exist: #466's review singled out the
+      one disclosed gap that lacked a tracking issue.
+
+## 7. Archive ordering (post-merge, not part of this PR)
+
+- [ ] 7.1 Archive `converge-bloommcp-viz-tools` **first**. This change MODIFIES a requirement that
+      still lives in that pending change, and `openspec validate --strict` passes without checking
+      that a MODIFIED target exists.
+- [ ] 7.2 Coordinate with `add-bloommcp-corr-pair-disclosure` (PR #833): disjoint requirements, so
+      either order works between the two, but both must follow `converge-bloommcp-viz-tools`.
