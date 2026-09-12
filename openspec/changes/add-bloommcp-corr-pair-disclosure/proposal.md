@@ -33,9 +33,10 @@ value is exactly the boundary between #785's new bucket and the existing
 `low_overlap_trait_pairs` one. The threshold has to be settled before the taxonomy can be.
 
 Sibling issues [#747](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/747)
-(rendered heatmap not masked per-cell) and
-[#748](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/748) (histogram/
-boxplot sample-size disclosure) are deliberately **out of scope** — see `design.md`
+(rendered heatmap not masked per-cell), [#748](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/748)
+(histogram/boxplot sample-size disclosure) and
+[#768](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/768) (snapshot test
+can't catch a single-cell defect) are deliberately **out of scope** — see `design.md`
 Decision 6.
 
 ## What Changes
@@ -43,38 +44,53 @@ Decision 6.
 - **`strong_correlation_pairs` (new result field, #784).** The pairs behind
   `strong_positive_correlations`/`strong_negative_correlations`, each carrying its Pearson
   `r`, its pairwise overlap `overlap_n`, and a Fisher-z 95% confidence interval
-  (`ci_low`/`ci_high`). Ordered **ascending by `overlap_n`** — weakest evidence first — and
-  capped, so the cap can never hide the worst-supported pair. The two existing counts stay
-  as the authoritative totals.
+  (`ci_low`/`ci_high`, null where the transform is undefined). Ordered **ascending by
+  `overlap_n`** — weakest evidence first — and capped at 50, so the cap can never hide the
+  worst-supported pair. The two existing counts stay as the authoritative totals.
+- **`strong_pair_overlap_min`/`_median`/`_max` (new result fields, #784).** Computed over
+  **every** strong pair, uncapped — three scalars that tell a caller whether the capped list's
+  low-`n` entries are representative or exceptional. Without them the cap answers "is the
+  weakest one weak?" but not #784's actual question at cylinder scale.
 - **`plot_correlation_matrix` owns its overlap threshold (#784).** `_MIN_CORR_OVERLAP` becomes
   a module-level constant with its own documented rationale (a pairwise degeneracy floor)
   instead of an alias for `_qc_shared._CANONICAL_MIN_SAMPLES_PER_TRAIT` (a per-trait
   completeness convention). **Same value (10), no behavior change** — this decouples two
   concepts that only coincidentally agree, so a future QC-side retune cannot silently move
-  correlation's reporting boundary.
-- **`locally_constant_trait_pairs` (new result field, #785).** The third and final blank-cell
-  bucket, derived by elimination from the guarded `corr` matrix rather than recomputed — every
-  `NaN` off-diagonal cell now falls into exactly one named bucket.
-- **`heatmap_caveat` is deliberately NOT extended to the new bucket.** It exists to warn about
-  the *masking mismatch* between the guarded JSON and the unguarded rendered PNG (#747). A
-  locally-constant pair is `NaN` in the vendored delegate's independent computation too, so the
-  image and the JSON already agree and there is no mismatch to warn about. See `design.md`
-  Decision 4.
-- Both new fields are stamped into the persisted run's manifest `params`, matching the existing
-  uncapped-lists-in-manifest precedent.
+  correlation's reporting boundary. It does not claim to *derive* the value; see `design.md`
+  Decision 5 and Open Questions.
+- **`locally_constant_trait_pairs` + `locally_constant_pair_count` (new result fields, #785).**
+  The third and final blank-cell bucket, derived by elimination from the guarded `corr` matrix
+  rather than recomputed — every `NaN` off-diagonal cell now falls into exactly one named
+  bucket. Capped at 50 with an uncapped count alongside: this bucket's population is
+  independent of the other two, and one "saturating" trait in a 300-trait frame measurably
+  produces 299 entries with the other two lists empty.
+- **`zero_variance_traits` gains its missing fourth case (correction, `design.md` Decision 7).**
+  A trait containing `±inf` has a `NaN` standard deviation and so already lands in this bucket,
+  but the field describes only three cases — telling a scientist with an `inf` in their data
+  that the trait is constant. The description and the requirement now name it. No behavior
+  change; a labelling fix.
+- **`heatmap_caveat` is deliberately NOT extended to the new bucket.** Its text is specifically
+  about cells the image *colors confidently* despite thin support; a locally-constant pair is
+  `NaN` in the vendored delegate's independent computation too, so it renders blank and that
+  text would be false of it. See `design.md` Decision 4.
+- Both new lists, the uncapped scalars, and the counts are stamped into the persisted run's
+  manifest `params`.
 - Module docstring updated: the two "tracked at #784 / #785" disclosure paragraphs become
   descriptions of shipped behavior.
 
 ## Impact
 
-- Affected specs: `bloommcp-viz-tools` (2 ADDED requirements, 1 MODIFIED)
+- Affected specs: `bloommcp-viz-tools` (2 ADDED requirements, 3 MODIFIED)
 - Affected code:
   - `bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/plot_correlation_matrix.py`
   - `bloommcp/tests/tools/test_plot_correlation_matrix_tool.py`
+  - `bloommcp/tests/smoke/test_plot_correlation_matrix_smoke.py` (asserts on the disclosure
+    surface through the real MCP server; gains the new fields)
 - **Backward compatible**: additive result fields only; `strong_positive_correlations`,
   `strong_negative_correlations`, `zero_variance_traits`, `low_overlap_trait_pairs`, and
-  `heatmap_caveat` all keep their current values and semantics.
-- **Archive ordering**: this change's `bloommcp-viz-tools` delta builds on requirements that
+  `heatmap_caveat` all keep their current values and semantics. The rendered PNG is untouched,
+  so `tests/tools/test_viz_snapshot.py` must stay byte-identical.
+- **Archive ordering**: this change's `bloommcp-viz-tools` deltas build on requirements that
   still live in the pending `converge-bloommcp-viz-tools` change (PR #683 merged
-  2026-09-11; the change is not archived yet). It MUST be archived after that one — see
-  `tasks.md` §5.
+  2026-09-11; the change is not archived yet). `openspec validate --strict` does **not** catch a
+  dangling MODIFIED target, so this is a real hazard, not a formality — see `tasks.md` §5.
