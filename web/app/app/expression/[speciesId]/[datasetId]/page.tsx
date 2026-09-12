@@ -29,9 +29,10 @@ export default async function Dataset({
     url: `/app/expression/${speciesId}/${datasetId}`,
   });
 
-  // NULL_DATASET rows are placeholders without real expression data —
-  // treat as not-found rather than rendering an empty cockpit.
-  if (!dataset || dataset.name === "NULL_DATASET") {
+  // NULL_DATASET rows are placeholders without real expression data, and a
+  // reference atlas has no cells of its own — treat both as not-found rather
+  // than rendering an empty cockpit.
+  if (!dataset || dataset.name === "NULL_DATASET" || dataset.kind === "reference") {
     return (
       <div className="max-w-5xl mx-auto">
         <div className="text-sm mb-6 select-none">

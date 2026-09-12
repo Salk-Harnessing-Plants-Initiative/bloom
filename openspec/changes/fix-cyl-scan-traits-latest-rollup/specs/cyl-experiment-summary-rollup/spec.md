@@ -16,7 +16,10 @@ those rows would fire that many full-experiment recomputes for one call. Instead
 (delete-then-reinsert, so an experiment that drops to zero matching traits is removed from the table) and
 SHALL be invoked by an external trigger independent of write volume — an automatic fixed schedule for
 production, and on-demand dispatch (no automatic schedule) for staging, since staging's write volume
-does not currently warrant one. Concurrent invocations SHALL be
+does not currently warrant one. This delete-then-reinsert SHALL succeed regardless of which role actually
+issues it — including a live `service_role` call over the real PostgREST RPC path — and SHALL NOT be
+rejected by any database-level guard against qualifier-free `DELETE`/`UPDATE` statements. Concurrent
+invocations SHALL be
 serialized (e.g. via a fixed-key advisory lock, since the refresh always rebuilds the whole table rather
 than one identifiable row) so that two overlapping calls cannot race the delete-then-reinsert into a
 primary-key conflict. Row-level security SHALL be enabled on
@@ -102,3 +105,13 @@ default to new tables. `refresh_cyl_experiment_trait_counts()` itself SHALL NOT 
 - **THEN** the statement is rejected for lacking `TRUNCATE` privilege — row-level security does not govern
   `TRUNCATE` at all (a Postgres limitation, not a policy gap), so this privilege must be revoked explicitly
   the same way as `cyl_scan_latest_source`'s equivalent scenario
+
+#### Scenario: A refresh succeeds when invoked as service_role over the real RPC connection path
+
+- **WHEN** `refresh_cyl_experiment_trait_counts()` is called from a session authenticated as
+  `authenticator` and then switched to `service_role` via `SET ROLE` — the same connection and role-switch
+  sequence PostgREST/Supavisor use for every live RPC call, as opposed to a direct `supabase_admin`
+  connection
+- **THEN** the call succeeds and commits its delete-then-reinsert as normal — the database's own
+  `authenticator`-scoped `DELETE`/`UPDATE`-without-`WHERE` safeguard SHALL NOT reject any statement this
+  function issues, regardless of which role ultimately executes it

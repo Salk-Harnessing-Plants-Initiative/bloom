@@ -1,22 +1,50 @@
 /** GLSL shader sources for the Expression UMAP canvas. */
 
-/** Shared point-scatter vertex shader. */
+/**
+ * Which cells a draw pass covers. Pass 0 draws every cell in colour; with a
+ * focus set, pass 1 draws the cells outside it in grey, and pass 2 draws the
+ * cells inside it in colour, on top.
+ */
+const FOCUS_PASS = `
+  float inFocusPass(float focus, float focusMode) {
+    if (focusMode < 0.5) return 1.0;
+    if (focusMode < 1.5) return focus < 0.5 ? 1.0 : 0.0;
+    return focus > 0.5 ? 1.0 : 0.0;
+  }
+`;
+
+/** Cells outside the focus: a faint grey, so the map keeps its shape. */
+const GREYED = `
+  const vec3 GREY = vec3(0.42, 0.42, 0.45);
+  const float GREY_ALPHA = 0.35;
+`;
+
+/** Shared point-scatter vertex shader. `fit` scales clip space so the map
+ *  keeps its shape on a canvas that is not square; [1, 1] leaves it as is. */
 export const POINT_VERT = `
   precision mediump float;
   attribute vec2 position;
   attribute vec4 color;
   attribute float visible;
+  attribute float focus;
   uniform float zoom;
   uniform vec2 translate;
+  uniform vec2 fit;
   uniform float pointSize;
+  uniform float focusMode;
   varying vec4 fragColor;
   varying float v_visible;
+  varying float v_inPass;
+  varying float v_grey;
+  ${FOCUS_PASS}
   void main() {
     vec2 p = (position + translate) * zoom;
-    gl_Position = vec4(p, 0.0, 1.0);
+    gl_Position = vec4(p * fit, 0.0, 1.0);
     gl_PointSize = pointSize;
     fragColor = color;
     v_visible = visible;
+    v_inPass = inFocusPass(focus, focusMode);
+    v_grey = (focusMode > 0.5 && focusMode < 1.5) ? 1.0 : 0.0;
   }
 `;
 
@@ -25,13 +53,20 @@ export const CLUSTER_FRAG = `
   precision mediump float;
   varying vec4 fragColor;
   varying float v_visible;
+  varying float v_inPass;
+  varying float v_grey;
+  ${GREYED}
   void main() {
-    if (v_visible < 0.5) discard;
+    if (v_visible < 0.5 || v_inPass < 0.5) discard;
     vec2 d = gl_PointCoord - vec2(0.5);
     float r = length(d);
     if (r > 0.5) discard;
     float edge = smoothstep(0.5, 0.42, r);
-    gl_FragColor = vec4(fragColor.rgb, fragColor.a * edge);
+    if (v_grey > 0.5) {
+      gl_FragColor = vec4(GREY, GREY_ALPHA * edge);
+    } else {
+      gl_FragColor = vec4(fragColor.rgb, fragColor.a * edge);
+    }
   }
 `;
 
@@ -41,13 +76,18 @@ export const EXPRESSION_VERT = `
   attribute vec2 position;
   attribute float expression;
   attribute float visible;
+  attribute float focus;
   uniform float zoom;
   uniform vec2 translate;
   uniform float pointSize;
   uniform float expMin;
   uniform float expMax;
+  uniform float focusMode;
   varying float t;
   varying float v_visible;
+  varying float v_inPass;
+  varying float v_grey;
+  ${FOCUS_PASS}
   void main() {
     vec2 p = (position + translate) * zoom;
     gl_Position = vec4(p, 0.0, 1.0);
@@ -55,6 +95,8 @@ export const EXPRESSION_VERT = `
     float denom = max(expMax - expMin, 1e-6);
     t = clamp((expression - expMin) / denom, 0.0, 1.0);
     v_visible = visible;
+    v_inPass = inFocusPass(focus, focusMode);
+    v_grey = (focusMode > 0.5 && focusMode < 1.5) ? 1.0 : 0.0;
   }
 `;
 
@@ -67,6 +109,9 @@ export const EXPRESSION_FRAG = `
   precision mediump float;
   varying float t;
   varying float v_visible;
+  varying float v_inPass;
+  varying float v_grey;
+  ${GREYED}
 
   const vec3 V0  = vec3(0.267, 0.005, 0.329);
   const vec3 V1  = vec3(0.283, 0.141, 0.458);
@@ -96,12 +141,17 @@ export const EXPRESSION_FRAG = `
   }
 
   void main() {
-    if (v_visible < 0.5) discard;
+    if (v_visible < 0.5 || v_inPass < 0.5) discard;
     vec2 d = gl_PointCoord - vec2(0.5);
     float r = length(d);
     if (r > 0.5) discard;
     float edge = smoothstep(0.5, 0.42, r);
-    vec3 col = viridisLookup(clamp(t, 0.0, 1.0));
-    gl_FragColor = vec4(col, edge);
+    if (v_grey > 0.5) {
+      gl_FragColor = vec4(GREY, GREY_ALPHA * edge);
+    } else {
+      vec3 col = viridisLookup(clamp(t, 0.0, 1.0));
+      gl_FragColor = vec4(col, edge);
+    }
   }
 `;
+

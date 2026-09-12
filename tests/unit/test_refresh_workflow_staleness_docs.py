@@ -35,6 +35,12 @@ BANNED_PHRASES = {
 # not a per-file dict, since the required text doesn't actually vary between files.
 REQUIRED_PHRASE = "bloom#736"
 
+# bloom#806 (Section 16): bloom#736's network fix was necessary but not sufficient -- the first
+# live run it enabled reached Postgres and hit a second, independent bug (an unqualified DELETE
+# rejected by the database's own safeupdate guard). Both sites must condition the bound claim on
+# BOTH issues now, not bloom#736 alone.
+REQUIRED_PHRASE_806 = "bloom#806"
+
 
 def _normalized_text(filename: str) -> str:
     return " ".join((REPO_ROOT / filename).read_text(encoding="utf-8").split())
@@ -55,4 +61,14 @@ def test_staleness_docs_reference_bloom_736():
         assert REQUIRED_PHRASE in text, (
             f"{filename}: expected a reference to {REQUIRED_PHRASE!r} conditioning the "
             "staleness-bound claim on an actual successful refresh (Section 15)."
+        )
+
+
+def test_staleness_docs_reference_bloom_806():
+    for filename in BANNED_PHRASES:
+        text = _normalized_text(filename)
+        assert REQUIRED_PHRASE_806 in text, (
+            f"{filename}: expected a reference to {REQUIRED_PHRASE_806!r} -- bloom#736's network "
+            "fix alone was not sufficient; the bound claim must also condition on bloom#806's "
+            "fix (Section 16)."
         )
