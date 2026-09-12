@@ -271,10 +271,10 @@ class TestRunInvocation:
         assert "--full" not in workflow
 
     def test_the_deploy_path_comes_from_a_secret(self, workflow: str):
-        # Never a hardcoded path: an earlier installer assumed /data/bloom,
-        # which is not where this repo deploys.
-        assert "secrets.PROD_DEPLOY_PATH" in workflow
-        assert "/data/bloom" not in workflow
+        # Never a hardcoded deploy tree: every DEPLOY_PATH is the secret.
+        values = re.findall(r"^\s*DEPLOY_PATH:\s*(.+?)\s*$", workflow, re.M)
+        assert values, "the workflow sets no DEPLOY_PATH"
+        assert set(values) == {"${{ secrets.PROD_DEPLOY_PATH }}"}
 
 
 class TestSupersededSchedulingIsGone:
@@ -380,7 +380,7 @@ class TestDispatchInputCannotReachTheRemoteShell:
             "RUN_TAG": "1-1",
             "DRY_RUN": "",
             "RUNNER_TEMP": "/tmp",
-            "STATE_DIR": "/var/lib/bloom-box-object-backup",
+            "STATE_DIR": "/data/bloom/box-object-backup",
             "PATH": os.environ["PATH"],
         }
         env.update(values)

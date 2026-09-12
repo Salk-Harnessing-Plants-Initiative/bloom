@@ -40,11 +40,11 @@ neither is a complete restore on its own. See "Restoring" below.
 2. **Create the destination folder** in Box matching `OBJECT_BACKUP_BOX_ROOT`
    (`Bloom-Backups/BloomV2-Data-Backup/prod/storage` by default).
 
-3. **State directory**, once, as root. The ledger lives here and it is what
-   makes the seed resumable:
+3. **State directory**, once, as `bloom-deploy`. The ledger lives here and it
+   is what makes the seed resumable. It sits on `/data`, outside both deploy
+   trees, so a deploy that resets a tree cannot touch it:
    ```bash
-   sudo install -d -m 0700 -o bloom-deploy -g bloom-deploy \
-       /var/lib/bloom-box-object-backup
+   mkdir -m 700 /data/bloom/box-object-backup
    ```
 
 4. **`bloom-deploy` must be in the `docker` group** — the job reaches Postgres
@@ -246,7 +246,7 @@ While the seed holds the lock, the scheduled workflow stands down and reports
 **skipped** rather than succeeded.
 
 The run is **resumable**: every successful copy is recorded in the SQLite
-ledger at `/var/lib/bloom-box-object-backup/ledger.db`, so an interrupted
+ledger at `/data/bloom/box-object-backup/ledger.db`, so an interrupted
 seed picks up where it stopped. Re-running costs one query, not one Box call
 per already-copied object — the ledger, not the Box listing, is what the plan
 is built against.
@@ -268,7 +268,7 @@ Whichever of these you use, the effect is the same:
 | where it is running | how to stop it |
 |---|---|
 | by hand in tmux | `Ctrl-C`, or `kill <pid>` from another shell |
-| detached, or you are not attached to it | `kill $(python3 -c 'import json;print(json.load(open("/var/lib/bloom-box-object-backup/backup.lock"))["pid"])')` |
+| detached, or you are not attached to it | `kill $(python3 -c 'import json;print(json.load(open("/data/bloom/box-object-backup/backup.lock"))["pid"])')` |
 | started by the scheduled workflow | cancel the run in the Actions tab |
 
 The lock file records the pid of whatever is running, so you never have to hunt
@@ -313,7 +313,7 @@ objects it never looked at.
 
 ```bash
 docker ps -a --filter name=bloom-box-backup-rclone     # expect: nothing
-sqlite3 /var/lib/bloom-box-object-backup/ledger.db \
+sqlite3 /data/bloom/box-object-backup/ledger.db \
   "SELECT started_at, outcome FROM runs ORDER BY id DESC LIMIT 3;"
 ```
 
@@ -559,7 +559,7 @@ a gap in a Box folder listing.
 That matters because neither of the other two records answers the question on
 its own. The mirror holds current state, so a week where nothing changed looks
 exactly like a week where nothing ran. The ledger's `runs` table does know the
-difference, but it lives in `/var/lib` behind SSH and SQLite.
+difference, but it lives on the deploy host behind SSH and SQLite.
 
 Each report carries the run's outcome (`ok`, `partial`, `error`), its
 duration, the counts (`listed`, `copied`, `failed`, `skipped`,
@@ -670,7 +670,7 @@ upload does not fail the run. A copy is always kept on the host under
 The same history, locally:
 
 ```bash
-sqlite3 /var/lib/bloom-box-object-backup/ledger.db \
+sqlite3 /data/bloom/box-object-backup/ledger.db \
   "SELECT started_at, finished_at, outcome, stats FROM runs ORDER BY id DESC LIMIT 10;"
 ```
 
@@ -728,7 +728,7 @@ host:
 sudo -i -u bloom-deploy
 export OBJECT_BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/prod/storage
 rclone copyto "box:$OBJECT_BACKUP_BOX_ROOT/_state/ledger.db" \
-    /var/lib/bloom-box-object-backup/ledger.db
+    /data/bloom/box-object-backup/ledger.db
 ```
 
 As `bloom-deploy`, because the Box token lives in that user's home. If you
@@ -739,11 +739,11 @@ Two things to check before running anything against it:
 
 ```bash
 # no stale write-ahead log beside the restored file
-ls /var/lib/bloom-box-object-backup/ledger.db-wal 2>/dev/null && \
+ls /data/bloom/box-object-backup/ledger.db-wal 2>/dev/null && \
     echo "REMOVE THIS — it belongs to the old file"
 
 # and it is the ledger you expect: ~8.0M rows, not a smoke test's twenty
-sqlite3 /var/lib/bloom-box-object-backup/ledger.db \
+sqlite3 /data/bloom/box-object-backup/ledger.db \
     "SELECT count(*) FROM copied;"
 ```
 
@@ -794,7 +794,7 @@ environment mirrored, so `.env.staging.defaults` deliberately carries no
 | `OBJECT_BACKUP_BOX_ROOT` | `Bloom-Backups/BloomV2-Data-Backup/prod/storage` | Folder on Box to mirror into |
 | `OBJECT_BACKUP_WORKERS` | `8` | Concurrent copies; lower it if Box throttles hard |
 | `OBJECT_BACKUP_BWLIMIT` | *(unset)* | rclone bandwidth cap, e.g. `20M` |
-| `OBJECT_BACKUP_STATE_DIR` | `/var/lib/bloom-box-object-backup` | Ledger location. Not in the env file — a code default. The workflow declares the same path once and passes it to all three of its ssh sessions; if `.env.prod` sets this to anything else the run **refuses to start** (exit 2) rather than let the cancel step and the summary watch an empty directory. The comparison is exact, so a trailing slash counts as different. |
+| `OBJECT_BACKUP_STATE_DIR` | `/data/bloom/box-object-backup` | Ledger location. Not in the env file — a code default. The workflow declares the same path once and passes it to all three of its ssh sessions; if `.env.prod` sets this to anything else the run **refuses to start** (exit 2) rather than let the cancel step and the summary watch an empty directory. The comparison is exact, so a trailing slash counts as different. |
 | `OBJECT_BACKUP_RC_PORT` | `5572` | Loopback port for the rclone daemon. Not in the env file — a code default. |
 
 `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` / `POSTGRES_USER` / `POSTGRES_DB`
