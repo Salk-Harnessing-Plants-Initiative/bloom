@@ -811,12 +811,14 @@ class TestWatermarkOrdering:
                 return "container"
 
             @staticmethod
-            def database_now(container, user, database):
+            def database_now(container, user, database, password=""):
                 calls.append("watermark")
                 return "2026-08-31T02:17:03+00"
 
             @staticmethod
-            def psql_query_to_file(container, sql, user, database, destination):
+            def psql_query_to_file(
+                container, sql, user, database, destination, password=""
+            ):
                 calls.append("snapshot")
                 destination.write_text("")
                 return 0
@@ -826,6 +828,7 @@ class TestWatermarkOrdering:
         # a dry run reaches both. Stubbed rather than supplied: this test is
         # about call order, and the checks have their own.
         monkeypatch.setattr(job, "minio_source_from_env", lambda a: object())
+        monkeypatch.setenv("POSTGRES_PASSWORD", "db-secret")
         monkeypatch.setattr(job, "require_rclone_config", lambda p, r: None)
         args = job.parse_args(
             [
@@ -872,11 +875,13 @@ class TestWatermarkOrdering:
                 return "container"
 
             @staticmethod
-            def database_now(container, user, database):
+            def database_now(container, user, database, password=""):
                 return db_time
 
             @staticmethod
-            def psql_query_to_file(container, sql, user, database, destination):
+            def psql_query_to_file(
+                container, sql, user, database, destination, password=""
+            ):
                 destination.write_text("")
                 return 0
 
@@ -1044,11 +1049,13 @@ class TestRunLockedWiresItsPartsTogether:
                 return "supanet"
 
             @staticmethod
-            def database_now(container, user, database):
+            def database_now(container, user, database, password=""):
                 return "2026-08-31T02:17:03+00"
 
             @staticmethod
-            def psql_query_to_file(container, sql, user, database, destination):
+            def psql_query_to_file(
+                container, sql, user, database, destination, password=""
+            ):
                 destination.write_text(TestRunLockedWiresItsPartsTogether.MANIFEST)
                 return 2
 
@@ -1085,6 +1092,7 @@ class TestRunLockedWiresItsPartsTogether:
         monkeypatch.setattr(job, "require_rclone_config", lambda path, remote: None)
         monkeypatch.setenv("MINIO_ROOT_USER", "root")
         monkeypatch.setenv("MINIO_ROOT_PASSWORD", "secret")
+        monkeypatch.setenv("POSTGRES_PASSWORD", "db-secret")
         state["client"] = FakeClient()
         # publish_report and publish_ledger build their own client from the
         # daemon's credentials rather than taking the one the run already has,
@@ -3365,6 +3373,7 @@ class TestConfigIsCheckedBeforeTheEightMillionRowRead:
 
     def drive(self, monkeypatch, tmp_path, extra_argv=(), **stubs):
         calls = []
+        monkeypatch.setenv("POSTGRES_PASSWORD", "db-secret")
 
         class FakeDock:
             DB_SERVICE = "db-prod"
@@ -3379,11 +3388,13 @@ class TestConfigIsCheckedBeforeTheEightMillionRowRead:
                 return "container"
 
             @staticmethod
-            def database_now(container, user, database):
+            def database_now(container, user, database, password=""):
                 return "2026-08-31T02:17:03+00"
 
             @staticmethod
-            def psql_query_to_file(container, sql, user, database, destination):
+            def psql_query_to_file(
+                container, sql, user, database, destination, password=""
+            ):
                 calls.append("manifest")
                 destination.write_text("")
                 return 0
@@ -3431,6 +3442,26 @@ class TestConfigIsCheckedBeforeTheEightMillionRowRead:
         with pytest.raises(lib.BackupError, match="rclone config not found"):
             job.run_locked(args, tmp_path)
         assert calls == []
+
+    def test_a_missing_postgres_password_is_refused_before_the_database_is_asked(
+        self, monkeypatch, tmp_path
+    ):
+        calls, args = self.drive(
+            monkeypatch,
+            tmp_path,
+            extra_argv=["--box-root", "Bloom-Backups/prod/storage"],
+            minio_source_from_env=lambda a: object(),
+            require_rclone_config=lambda p, r: None,
+        )
+        args.pg_password = ""
+        monkeypatch.setattr(
+            job.dock,
+            "database_now",
+            staticmethod(lambda *a, **k: calls.append("watermark")),
+        )
+        with pytest.raises(lib.BackupError, match="POSTGRES_PASSWORD is not set"):
+            job.run_locked(args, tmp_path)
+        assert calls == [], "the database was asked before the password check"
 
     def test_a_ledger_pointed_at_another_folder_is_refused_first_of_all(
         self, monkeypatch, tmp_path
@@ -3990,6 +4021,25 @@ class TestBothMinioCredentialsSurviveTheEnvFile:
         assert source.access_key == "bloomadmin"
         assert source.secret_key == "s3cret-pass"
 
+    def test_the_database_password_comes_off_the_file_too(self, monkeypatch, tmp_path):
+        """psql authenticates every connection, including one inside the
+        container, so a run without this dies at the first query."""
+        for key in ("MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD", "POSTGRES_PASSWORD"):
+            monkeypatch.delenv(key, raising=False)
+        (tmp_path / ".env.prod").write_text(
+            "MINIO_ROOT_USER=bloomadmin\n"
+            "MINIO_ROOT_PASSWORD=s3cret-pass\n"
+            "POSTGRES_PASSWORD=db-pass\n"
+            "OBJECT_BACKUP_MINIO_BUCKET=stub\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        seen = {}
+        monkeypatch.setattr(job, "run_backup", lambda a: seen.setdefault("args", a))
+
+        job.main(["--env", "prod", "--state-dir", str(tmp_path)])
+
+        assert seen["args"].pg_password == "db-pass"
+
     def test_an_export_still_wins_for_a_run_by_hand(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MINIO_ROOT_USER", "exported")
         monkeypatch.setenv("MINIO_ROOT_PASSWORD", "exported-pass")
@@ -4324,7 +4374,7 @@ class TestTheAllowListCoversEverySettingTheJobReads:
 
     # Named, not read off `SECRET_ENV_KEYS`: a test drawing its cases from the
     # tuple it guards shrinks silently when someone shortens the tuple.
-    CREDENTIALS = ("MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD")
+    CREDENTIALS = ("MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD", "POSTGRES_PASSWORD")
 
     def test_both_credentials_are_on_the_never_exported_list(self):
         assert set(job.SECRET_ENV_KEYS) == set(self.CREDENTIALS)
