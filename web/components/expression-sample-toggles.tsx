@@ -2,7 +2,8 @@
 
 /**
  * Show or hide the cells of each value in one filter row: the samples, or one of
- * the labels the cells carry, such as transgene status.
+ * the labels the cells carry, such as transgene status. Each value can also be
+ * focused on, which greys out every cell that does not have it.
  *
  * The values come from the cells themselves, so a dataset with different ones
  * — or none at all — needs no change here. A row with no values renders
@@ -27,6 +28,10 @@ interface Props {
   unlabelledCount: number;
   onToggle: (name: string) => void;
   onShowAll: () => void;
+  /** Values focused on; cells without them are greyed out. */
+  focused?: ReadonlySet<string>;
+  /** Focuses on or stops focusing on one value; without it no focus buttons show. */
+  onFocus?: (name: string) => void;
 }
 
 export function ExpressionSampleToggles({
@@ -37,6 +42,8 @@ export function ExpressionSampleToggles({
   unlabelledCount,
   onToggle,
   onShowAll,
+  focused,
+  onFocus,
 }: Props) {
   if (samples.length === 0) return null;
 
@@ -50,30 +57,52 @@ export function ExpressionSampleToggles({
       </span>
       {samples.map((sample) => {
         const isHidden = hidden.has(sample.name);
+        const isFocused = focused?.has(sample.name) ?? false;
         return (
-          <button
-            key={sample.name}
-            type="button"
-            onClick={() => onToggle(sample.name)}
-            aria-pressed={!isHidden}
-            title={
-              isHidden
-                ? `Show ${sample.name}`
-                : `Hide ${sample.name}`
-            }
-            className={`inline-flex items-baseline gap-1.5 rounded-md border px-2.5 py-1 text-xs transition-colors ${
-              isHidden
-                ? "border-stone-200 bg-stone-50 text-stone-500 line-through decoration-stone-400"
-                : "border-lime-300 bg-lime-50 text-stone-700 hover:border-lime-400"
-            }`}
-          >
-            <span className="max-w-[18ch] truncate font-medium">
-              {sample.name}
-            </span>
-            <span className="tabular-nums text-[10px] text-stone-500">
-              {fmt.format(sample.count)}
-            </span>
-          </button>
+          <span key={sample.name} className="inline-flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => onToggle(sample.name)}
+              aria-pressed={!isHidden}
+              title={
+                isHidden
+                  ? `Show ${sample.name}`
+                  : `Hide ${sample.name}`
+              }
+              className={`inline-flex items-baseline gap-1.5 rounded-md border px-2.5 py-1 text-xs transition-colors ${
+                isHidden
+                  ? "border-stone-200 bg-stone-50 text-stone-500 line-through decoration-stone-400"
+                  : "border-lime-300 bg-lime-50 text-stone-700 hover:border-lime-400"
+              }`}
+            >
+              <span className="max-w-[18ch] truncate font-medium">
+                {sample.name}
+              </span>
+              <span className="tabular-nums text-[10px] text-stone-500">
+                {fmt.format(sample.count)}
+              </span>
+            </button>
+            {onFocus && (
+              <button
+                type="button"
+                onClick={() => onFocus(sample.name)}
+                aria-pressed={isFocused}
+                aria-label={`Focus on ${sample.name}`}
+                title={
+                  isFocused
+                    ? `Stop focusing on ${sample.name}`
+                    : `Focus on ${sample.name}: grey out every other cell`
+                }
+                className={`rounded-md border px-1.5 py-1 text-xs leading-none transition-colors ${
+                  isFocused
+                    ? "border-stone-700 bg-stone-700 text-white"
+                    : "border-stone-200 bg-white text-stone-400 hover:border-stone-400 hover:text-stone-700"
+                }`}
+              >
+                ◎
+              </button>
+            )}
+          </span>
         );
       })}
       {allHidden && (

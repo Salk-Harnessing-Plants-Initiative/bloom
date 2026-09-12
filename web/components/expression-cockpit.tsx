@@ -4,15 +4,15 @@ import { useState, type ReactNode } from "react";
 
 import { ExpressionView } from "@/components/expression-view";
 import DifferentialExpressionAnalysis from "@/components/expression-differential-analysis";
+import { ExpressionGenesByCellType } from "@/components/expression-genes-by-cell-type";
 // The remaining tabs stay disabled until their schema is plumbed through —
 // re-enable one by uncommenting its import, its entry in the Tab union, its
 // button and its body.
-// import ExpressionGeneLevel from "@/components/expression-genelevel";
 // import ExpressionCorrelation from "@/components/expression-correlation-page";
 // import ExpressonDownloadFiles from "@/components/expression-download-files";
 import { ExpressionThemeProvider } from "@/components/expression-theme-provider";
 
-type Tab = "umap" | "de"; // | "gene" | "correlation" | "download";
+type Tab = "umap" | "genes" | "de"; // | "correlation" | "download";
 
 export interface ExpressionCockpitProps {
   datasetId: number;
@@ -34,13 +34,13 @@ export function ExpressionCockpit({
         <TabBtn active={tab === "umap"} onClick={() => setTab("umap")}>
           UMAP
         </TabBtn>
+        <TabBtn active={tab === "genes"} onClick={() => setTab("genes")}>
+          Genes by cell type
+        </TabBtn>
         <TabBtn active={tab === "de"} onClick={() => setTab("de")}>
           Differential expression
         </TabBtn>
         {/*
-        <TabBtn active={tab === "gene"} onClick={() => setTab("gene")}>
-          Gene explorer
-        </TabBtn>
         <TabBtn
           active={tab === "correlation"}
           onClick={() => setTab("correlation")}
@@ -58,11 +58,11 @@ export function ExpressionCockpit({
         {tab === "umap" && (
           <ExpressionView datasetId={datasetId} datasetName={datasetName} />
         )}
+        {tab === "genes" && <ExpressionGenesByCellType datasetId={datasetId} />}
         {tab === "de" && (
           <DifferentialExpressionAnalysis file_id={datasetId} />
         )}
         {/*
-        {tab === "gene" && <ExpressionGeneLevel file_id={datasetId} />}
         {tab === "correlation" && <ExpressionCorrelation file_id={datasetId} />}
         {tab === "download" && (
           <ExpressonDownloadFiles

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
 
@@ -8,14 +8,19 @@ import { ExpressionUmap } from "@/components/expression-umap";
 import {
   countsFor,
   SAMPLE_FILTER,
+  countFocused,
+  describeFocus,
+  focusIsSet,
 } from "@/components/expression-lib/umap-packing";
 import type { CellArraysRow } from "@/components/expression-lib/scrna-client";
 import { ExpressionSampleToggles } from "./expression-sample-toggles";
-// Gene search disabled — see the JSX comment below.
-// import { ExpressionGeneSearch } from "@/components/expression-gene-search";
+import { ExpressionGeneSearch } from "@/components/expression-gene-search";
 import { ExpressionColorbar } from "@/components/expression-colorbar";
 import { ExpressionClusterSidebar } from "@/components/expression-cluster-sidebar";
 import { ExpressionClusterDetailPanel } from "@/components/expression-cluster-detail-panel";
+import { TransgeneSummary } from "@/components/transgene-summary";
+import { TransgeneToggle } from "@/components/transgene-toggle";
+import { topGroups, transgeneByCluster } from "@/components/expression-lib/transgene";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import type { Database } from "@/lib/database.types";
 
@@ -35,17 +40,16 @@ interface LoadedMeta {
   cellCount: number;
   /** Cells whose `cluster_id` had no row in `scrna_clusters` (sentinel ordinal 255). */
   orphanCount: number;
-  /** from scrna_cluster_stats.cell_count, keyed by ordinal */
-  counts: Record<number, number>;
   /** The filter rows to show, the sample row first. Empty means no toggles. */
   filters: string[];
   /** Per filter row, the cells with no value for it. */
   unlabelled: Record<string, number>;
   /** The cells, so each row counts what the other rows leave showing. */
-  cells: Pick<CellArraysRow, "replicate" | "facets">[];
+  cells: Pick<CellArraysRow, "replicate" | "facets" | "cluster_ordinal">[];
 }
 
 const NOTHING_HIDDEN: ReadonlySet<string> = new Set();
+const NOTHING_FOCUSED: ReadonlySet<string> = new Set();
 
 /** Composes the UMAP canvas + gene search + colorbar + cluster sidebar for a dataset. */
 export function ExpressionView({ datasetId }: ExpressionViewProps) {
@@ -56,24 +60,39 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
   const [hiddenValues, setHiddenValues] = useState<Map<string, Set<string>>>(
     new Map(),
   );
+  // Values focused on per filter row; every cell outside the focus is greyed out.
+  const [focusedValues, setFocusedValues] = useState<Map<string, Set<string>>>(
+    new Map(),
+  );
   // Sample names repeat across datasets -- Col-0 is in most of them -- so a
   // hidden set carried over would open the next dataset with one already off.
   useEffect(() => {
     setHiddenValues(new Map());
+    setFocusedValues(new Map());
     // The chips come from `meta`. Left alone it still describes the previous
     // dataset for the whole of this one's fetch, and a click in that window
     // writes a name the new dataset may not have into the hidden set.
     setMeta(null);
+    // A gene picked on one dataset may not exist in the next.
+    setGeneName(null);
   }, [datasetId]);
-  const [exprRange, setExprRange] = useState<{ min: number; max: number } | null>(
-    null,
-  );
+  // The gene's whole range, as the map reports it, and the part of it the
+  // colours span, which the colour bar narrows.
+  const [dataRange, setDataRange] = useState<{ min: number; max: number } | null>(null);
+  const [colourRange, setColourRange] = useState<{ min: number; max: number } | null>(null);
+  const [geneError, setGeneError] = useState<string | null>(null);
+  const handleRangeChanged = useCallback((range: { min: number; max: number } | null) => {
+    setDataRange(range);
+    setColourRange(range);
+  }, []);
+
+  // Cells per cluster from scrna_cluster_stats, by cluster id. Read alongside the
+  // map's own fetch, so its first paint does not wait on them.
+  const [statsCounts, setStatsCounts] = useState<Record<string, number> | null>(null);
 
   useEffect(() => {
-    // load cluster counts from scrna_cluster_stats alongside the
-    // datasets/clusters that the UMAP fetches independently. We keep
-    // this separate so the UMAP's first paint doesn't wait on stats.
     let cancelled = false;
+    setStatsCounts(null);
     (async () => {
       const supabase = createClientSupabaseClient();
       const { data, error } = await supabase
@@ -81,21 +100,9 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
         .select("cluster_id,cell_count")
         .eq("dataset_id", datasetId);
       if (cancelled || error || !data) return;
-      // map cluster_id (text) → cell_count; ordinal mapping happens on
-      // handleDataLoaded when we know the cluster catalog.
-      const byClusterText: Record<string, number> = {};
-      for (const row of data) {
-        byClusterText[row.cluster_id] = row.cell_count;
-      }
-      setMeta((prev) => {
-        if (!prev) return prev;
-        const counts: Record<number, number> = {};
-        for (const c of prev.clusters) {
-          const n = byClusterText[c.cluster_id];
-          if (typeof n === "number") counts[c.ordinal] = n;
-        }
-        return { ...prev, counts };
-      });
+      const byClusterId: Record<string, number> = {};
+      for (const row of data) byClusterId[row.cluster_id] = row.cell_count;
+      setStatsCounts(byClusterId);
     })();
     return () => {
       cancelled = true;
@@ -110,9 +117,9 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
       orphanCount: number;
       filters: string[];
       unlabelled: Record<string, number>;
-      cells: Pick<CellArraysRow, "replicate" | "facets">[];
+      cells: Pick<CellArraysRow, "replicate" | "facets" | "cluster_ordinal">[];
     }) => {
-      setMeta((prev) => ({
+      setMeta({
         dataset: ctx.dataset,
         clusters: ctx.clusters,
         cellCount: ctx.cellCount,
@@ -120,11 +127,22 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
         filters: ctx.filters,
         unlabelled: ctx.unlabelled,
         cells: ctx.cells,
-        counts: prev?.counts ?? {},
-      }));
+      });
     },
     [],
   );
+
+  // The stats rows and the map's cells arrive in either order, so they are joined
+  // here, by the map's ordinals, rather than whenever one of them lands.
+  const counts = useMemo(() => {
+    if (!meta || !statsCounts) return undefined;
+    const out: Record<number, number> = {};
+    for (const c of meta.clusters) {
+      const n = statsCounts[c.cluster_id];
+      if (typeof n === "number") out[c.ordinal] = n;
+    }
+    return out;
+  }, [meta, statsCounts]);
 
   const handleFilterToggle = useCallback((filter: string, value: string) => {
     setHiddenValues((prev) => {
@@ -144,7 +162,27 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
     });
   }, []);
 
+  const handleFocusToggle = useCallback((filter: string, value: string) => {
+    setFocusedValues((prev) => {
+      const next = new Map(prev);
+      const values = new Set(next.get(filter) ?? []);
+      if (!values.delete(value)) values.add(value);
+      next.set(filter, values);
+      return next;
+    });
+  }, []);
+
   const anyValueHidden = [...hiddenValues.values()].some((s) => s.size > 0);
+  const focusSet = focusIsSet(focusedValues);
+  const focusedCount = meta && focusSet ? countFocused(meta.cells, focusedValues, hiddenValues) : 0;
+
+  // Transgene-positive cells per cluster, over the whole dataset, and whether
+  // the map shows them.
+  const transgene = useMemo(() => (meta ? transgeneByCluster(meta.cells) : null), [meta]);
+  const [showTransgene, setShowTransgene] = useState(true);
+  const transgeneTotal = transgene
+    ? [...transgene.values()].reduce((sum, t) => sum + t.positive, 0)
+    : 0;
 
   const handleVisibilityChange = useCallback(
     (ordinal: number, visible: boolean) => {
@@ -195,7 +233,8 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
       <ExpressionClusterSidebar
         clusters={meta?.clusters ?? []}
         hiddenOrdinals={hidden}
-        cellCounts={meta?.counts}
+        cellCounts={counts}
+        transgene={showTransgene ? transgene ?? undefined : undefined}
         onVisibilityChange={handleVisibilityChange}
         onSolo={handleSolo}
         onShowAll={handleShowAll}
@@ -219,9 +258,26 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           </Box>
         )}
 
-        {/* Gene search disabled — re-enable by uncommenting the Box below
-            and restoring ExpressionGeneSearch + colorbar wiring. The
-            geneName state is kept so UMAP/colorbar code paths stay typed. */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="w-72">
+            <ExpressionGeneSearch
+              datasetId={datasetId}
+              value={geneName}
+              onChange={setGeneName}
+              disabled={!meta}
+            />
+          </div>
+          {geneError ? (
+            <span role="alert" className="text-xs text-rose-700">
+              {geneError}
+            </span>
+          ) : geneName && dataRange ? (
+            <span className="text-xs text-stone-500">
+              Cells are coloured by {geneName}; clear the search to see cell types again.
+            </span>
+          ) : null}
+        </div>
+
         {(() => {
           const clusters = meta?.clusters ?? [];
           if (clusters.length === 0) return null;
@@ -252,6 +308,25 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           </span>
         )}
 
+        {meta && transgene && (
+          <div className="flex flex-wrap items-center gap-2">
+            <TransgeneToggle on={showTransgene} onChange={setShowTransgene} />
+            {showTransgene && transgeneTotal > 0 && (
+              <TransgeneSummary
+                positive={transgeneTotal}
+                total={meta.cellCount}
+                totalNoun="cells"
+                top={topGroups(
+                  meta.clusters.map((c) => ({
+                    name: c.name || c.cluster_id,
+                    positive: transgene.get(c.ordinal)?.positive ?? 0,
+                  })),
+                )}
+              />
+            )}
+          </div>
+        )}
+
         {meta && meta.filters.length > 0 && (
           <Box sx={{ pb: 1, display: "flex", flexDirection: "column", gap: 1 }}>
             {meta.filters.map((filter) => (
@@ -264,12 +339,27 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
                 unlabelledCount={meta.unlabelled[filter] ?? 0}
                 onToggle={(value) => handleFilterToggle(filter, value)}
                 onShowAll={() => handleShowAllOf(filter)}
+                focused={focusedValues.get(filter) ?? NOTHING_FOCUSED}
+                onFocus={(value) => handleFocusToggle(filter, value)}
               />
             ))}
             {anyValueHidden && (
               <span className="block text-xs text-stone-500" role="status">
                 Cluster sizes, marker genes and the no-cluster figure are for
                 the whole dataset, not only the cells shown.
+              </span>
+            )}
+            {focusSet && (
+              <span className="block text-xs text-stone-500" role="status">
+                {focusedCount.toLocaleString()} {focusedCount === 1 ? "cell is" : "cells are"}{" "}
+                {describeFocus(focusedValues)}; every other cell is greyed out.{" "}
+                <button
+                  type="button"
+                  onClick={() => setFocusedValues(new Map())}
+                  className="underline hover:text-stone-700"
+                >
+                  Clear focus
+                </button>
               </span>
             )}
           </Box>
@@ -281,21 +371,25 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           geneName={geneName}
           hiddenClusters={hidden}
           hiddenValues={hiddenValues}
+          focusedValues={focusedValues}
           onDataLoaded={handleDataLoaded}
-          onExpressionRangeChanged={setExprRange}
+          onExpressionRangeChanged={handleRangeChanged}
+          colourRange={colourRange}
+          onGeneError={setGeneError}
           onCellClick={handleSolo}
+          showTransgene={showTransgene}
         />
       </Box>
 
       <Box sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 2 }}>
-        {geneName && exprRange && (
+        {geneName && dataRange && colourRange && (
           <Box sx={{ width: 120 }}>
             <ExpressionColorbar
               geneName={geneName}
-              dataMin={exprRange.min}
-              dataMax={exprRange.max}
-              range={exprRange}
-              onRangeChange={setExprRange}
+              dataMin={dataRange.min}
+              dataMax={dataRange.max}
+              range={colourRange}
+              onRangeChange={setColourRange}
               unitsLabel={unitsLabel}
             />
           </Box>
@@ -313,6 +407,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
               clusterId={soloCluster.cluster_id}
               clusterName={soloCluster.name}
               clusterColor={soloCluster.color}
+              transgene={showTransgene ? transgene?.get(soloCluster.ordinal) : undefined}
             />
           );
         })()}

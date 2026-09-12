@@ -102,6 +102,63 @@ export function packVisibility(
   return out;
 }
 
+/** Values chosen per filter row to focus on: the sample row and each label. */
+export type FocusedValues = HiddenValues;
+
+/** Whether a cell meets the focus: in every row with a chosen value, its value
+ *  is one of those chosen. A cell with no value for such a row does not. */
+function meetsFocus(
+  cell: Pick<CellArraysRow, "replicate" | "facets">,
+  focused: FocusedValues,
+): boolean {
+  for (const [filter, values] of focused) {
+    if (values.size === 0) continue;
+    const value = filterValue(cell, filter);
+    if (value === null || !values.has(value)) return false;
+  }
+  return true;
+}
+
+/** Whether any row has a value chosen to focus on. */
+export function focusIsSet(focused: FocusedValues): boolean {
+  for (const values of focused.values()) if (values.size > 0) return true;
+  return false;
+}
+
+/** Which cells meet the focus: 1 when they do, 0 when they are greyed out.
+ *  With nothing chosen, every cell meets it. */
+export function packFocus(
+  cells: Pick<CellArraysRow, "replicate" | "facets">[],
+  focused: FocusedValues,
+): Float32Array {
+  const out = new Float32Array(cells.length);
+  for (let i = 0; i < cells.length; i++) out[i] = meetsFocus(cells[i], focused) ? 1.0 : 0;
+  return out;
+}
+
+/** How many cells meet the focus, among those the filter rows leave on the map. */
+export function countFocused(
+  cells: Pick<CellArraysRow, "replicate" | "facets">[],
+  focused: FocusedValues,
+  hidden: HiddenValues,
+): number {
+  let n = 0;
+  for (const cell of cells) if (meetsFocus(cell, focused) && !ruledOut(cell, hidden)) n++;
+  return n;
+}
+
+/** The focus in words, samples first: "pFACT and transgene_pos True". */
+export function describeFocus(focused: FocusedValues): string {
+  const rows = [...focused].filter(([, values]) => values.size > 0);
+  rows.sort(([a], [b]) => Number(b === SAMPLE_FILTER) - Number(a === SAMPLE_FILTER));
+  return rows
+    .map(([filter, values]) => {
+      const listed = [...values].join(" or ");
+      return filter === SAMPLE_FILTER ? listed : `${filter} ${listed}`;
+    })
+    .join(" and ");
+}
+
 /** Each value of one row, counting only the cells the other rows leave on the
  *  map, in first-seen order. A value no cell can reach shows 0 rather than
  *  disappearing. */

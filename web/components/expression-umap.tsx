@@ -8,6 +8,7 @@ import {
   fetchClusters,
   fetchDataset,
   fetchGeneCounts,
+  NoStoredExpressionError,
   ORPHAN_CLUSTER_ORDINAL,
   type CellArraysRow,
 } from "@/components/expression-lib/scrna-client";
@@ -15,7 +16,10 @@ import {
   packCellArrays,
   packClusterColors,
   packPositions,
+  focusIsSet,
+  packFocus,
   packVisibility,
+  type FocusedValues,
   type HiddenValues,
 } from "@/components/expression-lib/umap-packing";
 import {
@@ -24,6 +28,12 @@ import {
   EXPRESSION_VERT,
   POINT_VERT,
 } from "@/components/expression-lib/shaders";
+import { MAX_ZOOM, MIN_ZOOM } from "@/components/expression-lib/umap-zoom";
+import { POINT_BLEND } from "@/components/expression-lib/point-blend";
+import { UmapZoomBar } from "@/components/umap-zoom-bar";
+import { UmapLabelLayer } from "@/components/umap-label-layer";
+import { labelAnchors, projectXY } from "@/components/expression-lib/umap-labels";
+import { transgeneBadge, transgeneByCluster } from "@/components/expression-lib/transgene";
 import type { Database } from "@/lib/database.types";
 
 type Dataset = Database["public"]["Tables"]["scrna_datasets"]["Row"];
@@ -31,11 +41,12 @@ type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
 
 const DEFAULT_POINT_SIZE = 4.0;
 
+/** This map is drawn stretched to its canvas, as it always has been. */
+const NO_FIT: [number, number] = [1, 1];
+
 const NO_HIDDEN_VALUES: HiddenValues = new Map();
 
-/** How far the map can be zoomed, in each direction. */
-export const MIN_ZOOM = 0.2;
-export const MAX_ZOOM = 50;
+export { MAX_ZOOM, MIN_ZOOM };
 
 /** A press and release this close together, in CSS pixels, is a click rather
  *  than the start of a pan. */
@@ -141,6 +152,8 @@ export interface ExpressionUmapProps {
   hiddenClusters?: ReadonlySet<number>;
   /** Values hidden per filter row: the sample row and each label. Empty = all visible. */
   hiddenValues?: HiddenValues;
+  /** Values focused on per filter row; cells outside the focus are greyed out. */
+  focusedValues?: FocusedValues;
   /** Height of the canvas in pixels; width fills the parent */
   height?: number;
   /** Fires when data is loaded so parent can render colorbar / sidebar */
@@ -155,12 +168,19 @@ export interface ExpressionUmapProps {
     /** Per filter row, the cells with no value for it. */
     unlabelled: Record<string, number>;
     /** The cells, so each row can count what the other rows leave showing. */
-    cells: Pick<CellArraysRow, "replicate" | "facets">[];
+    cells: Pick<CellArraysRow, "replicate" | "facets" | "cluster_ordinal">[];
   }) => void;
   /** Fires whenever the currently-overlaid gene's min/max changes */
   onExpressionRangeChanged?: (range: { min: number; max: number } | null) => void;
+  /** The part of the gene's range the colours span, from the colour bar; the
+   *  gene's whole range when absent. */
+  colourRange?: { min: number; max: number } | null;
+  /** Why the gene picked cannot be shown, in words, or null once it can. */
+  onGeneError?: (message: string | null) => void;
   /** Fires with a cell's cluster ordinal when that cell is clicked */
   onCellClick?: (ordinal: number) => void;
+  /** Whether each cluster's label carries its transgene-positive count. */
+  showTransgene?: boolean;
 }
 
 interface LoadedData {
@@ -181,10 +201,14 @@ export function ExpressionUmap({
   geneName,
   hiddenClusters,
   hiddenValues,
+  focusedValues,
   height = 600,
   onDataLoaded,
   onExpressionRangeChanged,
+  colourRange,
+  onGeneError,
   onCellClick,
+  showTransgene = true,
 }: ExpressionUmapProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -196,6 +220,7 @@ export function ExpressionUmap({
   const colorBufferRef = useRef<ReglBuffer | null>(null);
   const visibilityBufferRef = useRef<ReglBuffer | null>(null);
   const expressionBufferRef = useRef<ReglBuffer | null>(null);
+  const focusBufferRef = useRef<ReglBuffer | null>(null);
   const drawClustersRef = useRef<DrawCommand | null>(null);
   const drawExpressionRef = useRef<DrawCommand | null>(null);
   /**
@@ -221,12 +246,17 @@ export function ExpressionUmap({
     { index: number; x: number; y: number } | null
   >(null);
   const [translate, setTranslate] = useState<[number, number]>([0, 0]);
+  /** The canvas's width in CSS pixels, so the labels can be placed on it. */
+  const [canvasWidth, setCanvasWidth] = useState(0);
 
   const zoomRef = useRef(zoom);
   const translateRef = useRef(translate);
   const expressionArrRef = useRef(expressionArr);
   const expressionRangeRef = useRef(expressionRange);
+  const colourRangeRef = useRef(colourRange ?? null);
   const dirtyRef = useRef(true);
+  /** Whether a focus is set, so the greyed pass is drawn only then. */
+  const focusSetRef = useRef(false);
   // Hit-testing reads these from a handler created once, so they are mirrored here.
   const positionsRef = useRef<Float32Array | null>(null);
   const visibilityRef = useRef<Float32Array | null>(null);
@@ -241,6 +271,7 @@ export function ExpressionUmap({
     onCellClickRef.current = onCellClick;
     expressionArrRef.current = expressionArr;
     expressionRangeRef.current = expressionRange;
+    colourRangeRef.current = colourRange ?? null;
     dirtyRef.current = true;
   });
 
@@ -309,6 +340,7 @@ export function ExpressionUmap({
       setExpressionArr(null);
       setExpressionRange(null);
       onExpressionRangeChanged?.(null);
+      onGeneError?.(null);
       return;
     }
     let cancelled = false;
@@ -330,19 +362,25 @@ export function ExpressionUmap({
         const range = { min, max };
         setExpressionRange(range);
         onExpressionRangeChanged?.(range);
+        onGeneError?.(null);
       } catch (err) {
         if (!cancelled) {
           setExpressionArr(null);
           setExpressionRange(null);
           onExpressionRangeChanged?.(null);
-          console.error("[ExpressionUmap] gene bin fetch failed:", err);
+          // The map stays on cell types, and the page says why.
+          onGeneError?.(
+            err instanceof NoStoredExpressionError
+              ? `${geneName} has no stored expression in this dataset.`
+              : `Could not load ${geneName}: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [data, geneName, onExpressionRangeChanged]);
+  }, [data, geneName, onExpressionRangeChanged, onGeneError]);
 
   // -------- visibility recompute from hidden set -----------------------------
   const visibility = useMemo(
@@ -356,6 +394,12 @@ export function ExpressionUmap({
           )
         : null,
     [data, hiddenClusters, hiddenValues],
+  );
+
+  // -------- focus recompute from focused values -----------------------------
+  const focus = useMemo(
+    () => (data ? packFocus(data.cells, focusedValues ?? NO_HIDDEN_VALUES) : null),
+    [data, focusedValues],
   );
 
   // -------- regl init + render loop (runs ONCE per dataset) ------------------
@@ -395,10 +439,12 @@ export function ExpressionUmap({
     const expressionBuffer = regl.buffer(
       expressionArr ?? new Float32Array(data.cells.length),
     );
+    const focusBuffer = regl.buffer(focus ?? new Float32Array(data.cells.length).fill(1));
     positionBufferRef.current = positionBuffer;
     colorBufferRef.current = colorBuffer;
     visibilityBufferRef.current = visibilityBuffer;
     expressionBufferRef.current = expressionBuffer;
+    focusBufferRef.current = focusBuffer;
     cellCountRef.current = data.cells.length;
 
     const drawClusters = regl({
@@ -408,18 +454,18 @@ export function ExpressionUmap({
         position: positionBuffer,
         color: colorBuffer,
         visible: visibilityBuffer,
+        focus: focusBuffer,
       },
       uniforms: {
         zoom: regl.prop<{ zoom: number }, "zoom">("zoom"),
         translate: regl.prop<{ translate: [number, number] }, "translate">("translate"),
+        fit: NO_FIT,
         pointSize: DEFAULT_POINT_SIZE,
+        focusMode: regl.prop<{ focusMode: number }, "focusMode">("focusMode"),
       },
       count: data.cells.length,
       primitive: "points",
-      blend: {
-        enable: true,
-        func: { src: "src alpha", dst: "one minus src alpha" },
-      },
+      blend: POINT_BLEND,
       depth: { enable: false },
     });
 
@@ -430,6 +476,7 @@ export function ExpressionUmap({
         position: positionBuffer,
         expression: expressionBuffer,
         visible: visibilityBuffer,
+        focus: focusBuffer,
       },
       uniforms: {
         zoom: regl.prop<{ zoom: number }, "zoom">("zoom"),
@@ -437,13 +484,11 @@ export function ExpressionUmap({
         pointSize: DEFAULT_POINT_SIZE,
         expMin: regl.prop<{ expMin: number }, "expMin">("expMin"),
         expMax: regl.prop<{ expMax: number }, "expMax">("expMax"),
+        focusMode: regl.prop<{ focusMode: number }, "focusMode">("focusMode"),
       },
       count: data.cells.length,
       primitive: "points",
-      blend: {
-        enable: true,
-        func: { src: "src alpha", dst: "one minus src alpha" },
-      },
+      blend: POINT_BLEND,
       depth: { enable: false },
     });
 
@@ -458,6 +503,7 @@ export function ExpressionUmap({
       if (!parent) return;
       const dpr = window.devicePixelRatio || 1;
       const cssW = parent.clientWidth;
+      setCanvasWidth(cssW);
       const cssH = height;
       // Bail out if nothing changed — avoids a redraw on every observer tick.
       if (
@@ -497,18 +543,23 @@ export function ExpressionUmap({
         regl.poll();
         regl.clear({ color: [0.05, 0.05, 0.08, 1], depth: 1 });
         const expArr = expressionArrRef.current;
-        const expRange = expressionRangeRef.current;
+        const expRange = colourRangeRef.current ?? expressionRangeRef.current;
         const z = zoomRef.current;
         const t = translateRef.current;
-        if (expArr && expRange) {
-          drawExpression({
-            zoom: z,
-            translate: t,
-            expMin: expRange.min,
-            expMax: expRange.max,
-          });
-        } else {
-          drawClusters({ zoom: z, translate: t });
+        // With a focus set, the cells outside it go down first in grey and the
+        // cells inside it are drawn over them in colour.
+        for (const focusMode of focusSetRef.current ? [1, 2] : [0]) {
+          if (expArr && expRange) {
+            drawExpression({
+              zoom: z,
+              translate: t,
+              expMin: expRange.min,
+              expMax: expRange.max,
+              focusMode,
+            });
+          } else {
+            drawClusters({ zoom: z, translate: t, focusMode });
+          }
         }
         dirtyRef.current = false;
       }
@@ -524,12 +575,14 @@ export function ExpressionUmap({
       colorBuffer.destroy();
       visibilityBuffer.destroy();
       expressionBuffer.destroy();
+      focusBuffer.destroy();
       regl.destroy();
       reglRef.current = null;
       positionBufferRef.current = null;
       colorBufferRef.current = null;
       visibilityBufferRef.current = null;
       expressionBufferRef.current = null;
+      focusBufferRef.current = null;
       drawClustersRef.current = null;
       drawExpressionRef.current = null;
       cellCountRef.current = 0;
@@ -550,6 +603,16 @@ export function ExpressionUmap({
     buf.subdata(visibility);
     dirtyRef.current = true;
   }, [visibility]);
+
+  // -------- focus update (in-place subdata) -----------------------------------
+  useEffect(() => {
+    const buf = focusBufferRef.current;
+    if (!buf || !focus) return;
+    if (focus.length !== cellCountRef.current) return;
+    buf.subdata(focus);
+    focusSetRef.current = focusIsSet(focusedValues ?? NO_HIDDEN_VALUES);
+    dirtyRef.current = true;
+  }, [focus, focusedValues]);
 
   // -------- expression update (in-place subdata) ------------------------------
   useEffect(() => {
@@ -623,6 +686,30 @@ export function ExpressionUmap({
   );
 
   const handlePointerLeave = useCallback(() => setHovered(null), []);
+
+  const resetView = useCallback(() => {
+    setZoom(1);
+    setTranslate([0, 0]);
+  }, []);
+
+  // Each cluster's name, written on its densest patch of shown cells, with a
+  // green badge for its transgene-positive cells.
+  const transgene = useMemo(() => (data ? transgeneByCluster(data.cells) : null), [data]);
+  const mapLabels = useMemo(() => {
+    if (!data || !visibility) return [];
+    const names = new Map(data.clusters.map((c) => [c.ordinal, c.name || c.cluster_id]));
+    const nLevels = data.clusters.reduce((most, c) => Math.max(most, c.ordinal + 1), 0);
+    return labelAnchors(data.positions, data.clusterOrdinals, nLevels, visibility)
+      .filter((anchor) => names.has(anchor.level))
+      .map((anchor) => ({
+        text: names.get(anchor.level) ?? "",
+        x: anchor.x,
+        y: anchor.y,
+        badge: showTransgene
+          ? transgeneBadge(transgene?.get(anchor.level)?.positive ?? 0) ?? undefined
+          : undefined,
+      }));
+  }, [data, visibility, transgene, showTransgene]);
 
   const hoveredCell = useMemo(() => {
     if (!hovered || !data) return null;
@@ -758,6 +845,13 @@ export function ExpressionUmap({
           )}
         </div>
       )}
+      <UmapLabelLayer
+        labels={mapLabels}
+        project={(x, y) => projectXY(x, y, { zoom, translate, width: canvasWidth, height }, NO_FIT)}
+        width={canvasWidth}
+        height={height}
+      />
+      <UmapZoomBar zoom={zoom} onZoomChange={setZoom} onReset={resetView} />
     </div>
   );
 }
