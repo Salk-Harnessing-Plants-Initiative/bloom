@@ -45,7 +45,7 @@ Decision 6.
   `strong_positive_correlations`/`strong_negative_correlations`, each carrying its Pearson
   `r`, its pairwise overlap `overlap_n`, and a Fisher-z 95% confidence interval
   (`ci_low`/`ci_high`, null where the transform is undefined). Ordered **ascending by
-  `overlap_n`** — weakest evidence first — and capped at 50, so the cap can never hide the
+  `overlap_n`** — weakest evidence first — and capped at 20, so the cap can never hide the
   worst-supported pair. The two existing counts stay as the authoritative totals.
 - **`strong_pair_overlap_min`/`_median`/`_max` (new result fields, #784).** Computed over
   **every** strong pair, uncapped — three scalars that tell a caller whether the capped list's
@@ -61,7 +61,7 @@ Decision 6.
 - **`locally_constant_trait_pairs` + `locally_constant_pair_count` (new result fields, #785).**
   The third and final blank-cell bucket, derived by elimination from the guarded `corr` matrix
   rather than recomputed — every `NaN` off-diagonal cell now falls into exactly one named
-  bucket. Capped at 50 with an uncapped count alongside: this bucket's population is
+  bucket. Capped at 20 with an uncapped count alongside: this bucket's population is
   independent of the other two, and one "saturating" trait in a 300-trait frame measurably
   produces 299 entries with the other two lists empty.
 - **`zero_variance_traits` gains its missing fourth case (correction, `design.md` Decision 7).**

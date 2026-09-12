@@ -109,7 +109,15 @@ underlying measurement):
 | 3              | 107,183                    | ~12.4 MB      |
 
 A 12 MB MCP tool response is not a disclosure, it is a denial of service against the caller's
-context. So the list is capped at `_MAX_STRONG_PAIRS_REPORTED = 50`.
+context. So the list is capped at `_MAX_STRONG_PAIRS_REPORTED = 20`.
+
+**Why 20 and not 50.** An earlier draft said 50. Implementation turned up a binding constraint
+the draft had missed: `test_provenance_stamped_seed_none_and_links_returned` enforces this
+file's "links, not blobs" contract by rejecting any single result field whose repr exceeds
+5,000 chars, and 50 structured pairs (~116 B each) clears that on a 20-trait experiment. The
+right response was to respect the existing contract rather than relax it — 20 also sits in
+line with `heatmap_caveat`'s own 10-name cap, and the uncapped scalars below carry everything
+the truncated tail would have.
 
 **The ordering is what makes the cap safe.** Sorting *ascending by `overlap_n`* means the cap
 truncates the best-supported end, never the worst. `strong_correlation_pairs[0]` is always the
@@ -118,7 +126,7 @@ cannot see. A cap on an arbitrarily-ordered (or `|r|`-ordered) list would have h
 the pairs the field exists to surface.
 
 **But a capped list is still a biased sample**, and biased in a way that can mislead in the
-opposite direction: 50 low-`n` pairs out of 44,137 look like the whole population is poorly
+opposite direction: 20 low-`n` pairs out of 44,137 look like the whole population is poorly
 supported. #784's actual question — "do my 12 strong correlations rest on n=10 or n=1000?" — is
 not answered by the capped list at cylinder scale. So the result also reports
 `strong_pair_overlap_min`/`_median`/`_max`, computed over **every** strong pair, uncapped. Three
@@ -142,7 +150,8 @@ requires the caller to know the Fisher transform to act on it, and the issue's o
 CI ("r=0.7 at n=10 has a 95% CI of roughly [0.13, 0.92]"). The CI is what converts the
 disclosure into a decision.
 
-Computed as `tanh(arctanh(r) ± 1.96 / sqrt(n − 3))`, with both undefined cases reported as
+Computed as `tanh(arctanh(r) ± z / sqrt(n − 3))`, with `z` the exact two-sided 95% normal
+quantile (1.959963984540054, not the rounded 1.96), and both undefined cases reported as
 `None`:
 
 - `|r| ≥ 1` → `arctanh` is `±inf` and the interval collapses to `[r, r]`. A perfectly collinear
@@ -275,8 +284,8 @@ risk").
   → **~1.5% added to an existing 0.41 s**, no new O(n²) allocation beyond boolean masks over
   arrays already held (a `846²` bool array is 0.7 MB). Reproducible via the committed benchmark.
 
-- **Response size.** Bounded by construction now that *both* new lists are capped at 50 entries
-  each (~6 KB together) with uncapped scalars carrying the true magnitudes. An earlier draft
+- **Response size.** Bounded by construction now that *both* new lists are capped at 20 entries
+  each (~3 KB together) with uncapped scalars carrying the true magnitudes. An earlier draft
   shipped `locally_constant_trait_pairs` uncapped, arguing that a frame degenerate enough to
   fill it would already be filling `low_overlap_trait_pairs`. **That premise was false** — the
   buckets are independent by construction, since this one exists precisely for pairs that
