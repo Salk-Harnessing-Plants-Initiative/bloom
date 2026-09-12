@@ -744,3 +744,216 @@ def test_close_figures_releases_the_registry_lock_afterwards():
 
     close_figures({"a": plt.figure()})
     assert not FIGURE_REGISTRY_LOCK.locked()
+
+
+# ── best-effort close is observable (#808) ───────────────────────────────────
+
+
+def test_a_failing_close_does_not_strand_the_rest_of_the_batch(monkeypatch, caplog):
+    """A raising `plt.close` must not abort the batch, must not propagate, and must
+    not be silent.
+
+    Before #808 the inner handler was a bare `pass` marked `# pragma: no cover`, so
+    nothing exercised it. Note `test_close_figures_does_not_raise_on_already_closed_figure`
+    does NOT cover this: closing an already-closed figure raises nothing at all, so it
+    exercises no failure path.
+
+    Asserts outside the spy deliberately — `close_figures` swallows per-figure
+    exceptions, so an `assert` raised *inside* the spy would itself be swallowed and
+    the test would pass vacuously.
+    """
+    import logging
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    real_close = plt.close
+    figs = {"a": plt.figure(), "b": plt.figure(), "c": plt.figure()}
+    attempted: list[object] = []
+
+    def _flaky_close(fig=None):
+        attempted.append(fig)
+        if fig is figs["a"]:
+            raise RuntimeError("OrderedDict mutated during iteration")
+        return real_close(fig) if fig is not None else real_close()
+
+    monkeypatch.setattr(plt, "close", _flaky_close)
+    with caplog.at_level(logging.WARNING, logger="bloom_mcp.tools._plots"):
+        close_figures(figs)  # must not raise
+    monkeypatch.undo()
+
+    assert attempted == [figs["a"], figs["b"], figs["c"]], (
+        "the failing close aborted the batch, stranding the rest"
+    )
+    live = plt.get_fignums()
+    assert figs["b"].number not in live and figs["c"].number not in live
+
+    assert caplog.records, "the swallowed close was silent — no WARNING logged"
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "a" in logged and "OrderedDict mutated" in logged, logged
+    real_close("all")
+
+
+def test_lock_comment_describes_no_outstanding_close_site():
+    """`_plots.py`'s lock comment is the only place the two-phase contract is written
+    down, so a stale "still outstanding" entry misleads the next contributor into
+    believing the race is still open.
+
+    Asserts positively as well as negatively, so deleting the whole "Where that
+    stands" block does not pass. Deliberately does NOT forbid the string "808": that
+    file cites #466/#683/#721/#726 for provenance and a post-fix "close side now
+    covered everywhere (#808)" line is legitimate.
+    """
+    from pathlib import Path
+
+    from bloom_mcp.tools import _plots
+
+    src = Path(_plots.__file__).read_text(encoding="utf-8")
+    assert "STILL OUTSTANDING" not in src
+    assert "Until those are wired" not in src
+    for expected in ("close_figures", "qc_inspect", "remove_outliers"):
+        assert expected in src, f"the lock comment no longer mentions {expected}"
+
+
+# ── structural invariants (#808) ─────────────────────────────────────────────
+
+
+def _pyplot_aliases(tree):
+    """Names bound to `matplotlib.pyplot` in this module, plus bare-`close` imports."""
+    aliases, bare_close = set(), False
+    for node in __import__("ast").walk(tree):
+        ast = __import__("ast")
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "matplotlib.pyplot":
+                    aliases.add(a.asname or "matplotlib")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "matplotlib":
+                for a in node.names:
+                    if a.name == "pyplot":
+                        aliases.add(a.asname or "pyplot")
+            elif node.module == "matplotlib.pyplot":
+                for a in node.names:
+                    if a.name == "close":
+                        bare_close = True
+    return aliases, bare_close
+
+
+def test_every_plt_close_in_bloom_mcp_is_lexically_inside_the_registry_lock():
+    """No `pyplot.close` call site in `bloom_mcp`'s own source may sit outside a
+    `with FIGURE_REGISTRY_LOCK:` block (spec: "No unlocked close call site remains in
+    the package").
+
+    AST-based, not a substring match — the house rule, stated in
+    `tests/test_persistence_import_guard.py`'s own docstring ("The scan is AST-based
+    … so a comment or docstring mentioning a forbidden name doesn't trip it") and in
+    `test_devendor_invariants.py`. A substring guard would both false-positive on the
+    prose in `_plots.py`'s lock comment (which quotes `plt.close(fig)`) and on the
+    explanatory comments at the converted `qc_inspect` sites, and would false-NEGATIVE
+    on a file that holds the lock correctly in one function and adds an unlocked close
+    in another.
+
+    Needs no allow-list and no `_plots.py` exclusion: every remaining call site —
+    `call_with_figure_cleanup`'s exception path, `close_figures`' batch, and the 3
+    converged `plot_*` tools' `finally` — is genuinely inside a `with` block.
+
+    RED on the pre-#808 tree: `qc_inspect._render_report`'s two closes and
+    `remove_outliers._close_figure`'s one were all outside any acquisition.
+    """
+    import ast
+    from pathlib import Path
+
+    from bloom_mcp.tools import _plots
+
+    src_root = Path(_plots.__file__).resolve().parents[1]  # src/bloom_mcp
+    offenders: list[str] = []
+
+    for py in sorted(src_root.rglob("*.py")):
+        tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
+        aliases, bare_close = _pyplot_aliases(tree)
+        if not aliases and not bare_close:
+            continue
+
+        locked_nodes: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.With) and any(
+                (
+                    isinstance(i.context_expr, ast.Name)
+                    and i.context_expr.id.endswith("FIGURE_REGISTRY_LOCK")
+                )
+                or (
+                    isinstance(i.context_expr, ast.Attribute)
+                    and i.context_expr.attr.endswith("FIGURE_REGISTRY_LOCK")
+                )
+                for i in node.items
+            ):
+                locked_nodes.update(id(d) for d in ast.walk(node))
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            is_close = (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "close"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in aliases
+            ) or (
+                bare_close
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "close"
+            )
+            if is_close and id(node) not in locked_nodes:
+                offenders.append(f"{py.relative_to(src_root)}:{node.lineno}")
+
+    assert not offenders, (
+        "pyplot.close outside a `with FIGURE_REGISTRY_LOCK:` block — route it through "
+        f"bloom_mcp.tools._plots.close_figures instead: {offenders}"
+    )
+
+
+class _CountingLock:
+    """Proxy counting `with` entries, delegating to the real lock.
+
+    A proxy on the *module attribute* is the only option: `threading.Lock` is a C type
+    whose `acquire` is read-only (`'_thread.lock' object attribute 'acquire' is
+    read-only`), so the lock object itself cannot be monkeypatched.
+    """
+
+    def __init__(self, real):
+        self._real = real
+        self.entries = 0
+
+    def __enter__(self):
+        self.entries += 1
+        return self._real.__enter__()
+
+    def __exit__(self, *exc):
+        return self._real.__exit__(*exc)
+
+    def locked(self):
+        return self._real.locked()
+
+
+def test_a_multi_figure_cleanup_takes_exactly_one_acquisition(monkeypatch):
+    """One acquisition per *batch*, not per figure — the property Decision 1 rejects
+    the "make `_close_figure` acquire the lock" alternative over, and which nothing
+    covered: `test_close_figures_holds_the_registry_lock_while_closing` asserts
+    `held == [True, True]`, which a release-and-reacquire-per-figure implementation
+    satisfies equally well."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from bloom_mcp.tools import _plots
+
+    counting = _CountingLock(_plots.FIGURE_REGISTRY_LOCK)
+    monkeypatch.setattr(_plots, "FIGURE_REGISTRY_LOCK", counting)
+
+    close_figures({"a": plt.figure(), "b": plt.figure(), "c": plt.figure()})
+
+    assert counting.entries == 1, (
+        f"a 3-figure batch took {counting.entries} acquisitions, expected 1"
+    )

@@ -105,7 +105,7 @@ from bloom_mcp.experiment_utils import (
     fit_is_trustworthy,
 )
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools._plots import call_with_figure_cleanup
+from bloom_mcp.tools._plots import call_with_figure_cleanup, close_figures
 from bloom_mcp.tools._qc_shared import _role_kwargs, _validate_trait_subset
 
 if TYPE_CHECKING:  # matplotlib stays out of the runtime import graph (Tier-0)
@@ -544,8 +544,12 @@ def remove_outliers(
             outputs[rel] = rel
         stored = store.commit(run, outputs)
     finally:
-        for fig in figures.values():
-            _close_figure(fig)
+        # One FIGURE_REGISTRY_LOCK acquisition for the batch, taken here rather than
+        # around the persistence region above: the lock must never span disk I/O.
+        # close_figures never raises, which matters specifically at this site — it
+        # runs after store.commit, so a raising close would report failure for a trim
+        # that is already visible to every require_clean=True consumer.
+        close_figures(figures)
 
     return RemoveOutliersResult(
         experiment=params.experiment,
@@ -614,8 +618,7 @@ def _make_figures(
         return available
     unknown = [k for k in params.plots if k not in available]
     if unknown:
-        for fig in available.values():
-            _close_figure(fig)
+        close_figures(available)
         raise BloomMCPError(
             code="invalid_input",
             message=f"plots names figure key(s) not produced by method={params.method!r}: "
@@ -623,16 +626,5 @@ def _make_figures(
             remedy="Use one of the available figure keys, or omit plots to persist all.",
         )
     selected = {k: available[k] for k in params.plots}
-    for name, fig in available.items():
-        if name not in selected:
-            _close_figure(fig)
+    close_figures({k: v for k, v in available.items() if k not in selected})
     return selected
-
-
-def _close_figure(fig: "Figure") -> None:
-    try:
-        import matplotlib.pyplot as plt
-
-        plt.close(fig)
-    except Exception:  # pragma: no cover - best-effort cleanup
-        pass

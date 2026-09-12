@@ -1183,3 +1183,195 @@ def test_discoverable_via_list_existing_analyses(injected_ports):
         list_existing_analyses_mod._RESPONSE_CACHE.clear()
 
     assert "qc_inspect" in response["analyses"]
+
+
+# ── FIGURE_REGISTRY_LOCK participation (#808) ────────────────────────────────
+#
+# #466 review round 7 established that the lock contract is create AND close:
+# `plt.close` -> `Gcf.destroy_fig` scans the same shared `Gcf.figs` dict a concurrent
+# locked create mutates, so creation-only locking is a half-fix. #726 locked every
+# create site and #683 locked the close side in the 3 converged plot_* tools, but
+# `_render_report`'s two success-path closes were #726's own in-flight diff and stayed
+# bare. These pin them shut.
+#
+# Spy discipline: `close_figures` wraps each `plt.close` in `try/except`, so an
+# `assert` raised INSIDE a close spy is swallowed and the test passes vacuously.
+# Record into a list, assert outside. And never `plt.close("all")` after installing
+# the spy — that call is recorded too, with the lock unheld, and poisons `all(held)`.
+
+
+def _close_spy(monkeypatch):
+    """Patch `matplotlib.pyplot.close`, returning (records, real_close).
+
+    Patches the shared pyplot module object directly rather than a tool module's
+    `plt` attribute: `qc_inspect` no longer imports pyplot (#808 deleted the dead
+    import), and `close_figures` re-imports this same object, so the spy is visible
+    through it either way.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from bloom_mcp.tools import _plots
+
+    real_close = plt.close
+    records: list[tuple[object, bool]] = []
+
+    def _spy(fig=None):
+        records.append((fig, _plots.FIGURE_REGISTRY_LOCK.locked()))
+        return real_close(fig) if fig is not None else real_close()
+
+    monkeypatch.setattr(plt, "close", _spy)
+    return records, real_close
+
+
+class _CountingLock:
+    """Proxy recording each `with` entry, delegating to the real lock.
+
+    A proxy on the *module attribute* is the only option: `threading.Lock` is a C
+    type whose `acquire` is read-only (`'_thread.lock' object attribute 'acquire' is
+    read-only`), so the lock object itself cannot be patched.
+    """
+
+    def __init__(self, real):
+        self._real = real
+        self.entries = 0
+
+    def __enter__(self):
+        self.entries += 1
+        return self._real.__enter__()
+
+    def __exit__(self, *exc):
+        return self._real.__exit__(*exc)
+
+    def locked(self):
+        return self._real.locked()
+
+
+def test_closes_figures_while_holding_the_figure_registry_lock(
+    injected_ports, monkeypatch
+):
+    """Both `_render_report` closes run under the lock — the #808 gap.
+
+    Asserts the property directly (was the lock held at the moment `plt.close` ran?)
+    rather than counting acquisitions, so a later refactor that still enters the lock
+    but moves the close back outside it fails here rather than silently reopening the
+    race (#466 review round 7's own lesson).
+    """
+    from bloom_mcp.tools import _plots
+
+    real_eda = qc_inspect_tool.create_trait_eda_plots
+    produced: dict[str, object] = {}
+
+    def _spy_eda(*a, **k):
+        figs = real_eda(*a, **k)
+        produced.update(figs)
+        return figs
+
+    monkeypatch.setattr(qc_inspect_tool, "create_trait_eda_plots", _spy_eda)
+    records, _real = _close_spy(monkeypatch)
+
+    _run()
+
+    assert records, "the tool never closed a figure"
+    assert all(held for _f, held in records), (
+        "plt.close ran without FIGURE_REGISTRY_LOCK held: "
+        f"{[held for _f, held in records]}"
+    )
+    # Anti-vacuity: bind the assertion to the figures the site under test produced.
+    # Without this, a fixture change that makes the delegate raise leaves eda_figs
+    # empty, close_figures early-returns, and the only recorded closes would be
+    # call_with_figure_cleanup's own (legitimately locked) ones — so all(held) would
+    # pass WITHOUT the fix.
+    assert produced, "create_trait_eda_plots produced nothing — test is vacuous"
+    closed = {id(f) for f, _held in records}
+    assert {id(f) for f in produced.values()} <= closed, (
+        "the site under test never closed the delegate's own figures"
+    )
+    assert not _plots.FIGURE_REGISTRY_LOCK.locked(), "the lock was not released"
+
+
+def test_an_empty_figure_set_adds_no_lock_acquisition(injected_ports, monkeypatch):
+    """`summary_figs == {}` must take the lock zero times (spec: "Nothing to close
+    acquires no lock") — `close_figures`' empty-dict early return.
+
+    Asserted as the *difference* between a heatmap-present and a heatmap-absent run
+    rather than an absolute count, so the assertion stays about the close side and
+    does not silently depend on how many times the create side acquires the lock
+    (`call_with_figure_cleanup` takes one per delegate call).
+
+    Deliberately exercises the heatmap-ABSENT frame rather than substituting a
+    fabricated figure for the real delegate: on turface_19
+    `create_exploratory_summary_plots` returns 5 real figures including
+    missing_data_pattern and does not raise, so the present-heatmap case is already
+    covered by the test above. This is the branch nothing covered.
+    """
+    from bloom_mcp.tools import _plots
+
+    def _count_acquisitions(*, heatmap_fails: bool) -> int:
+        with pytest.MonkeyPatch.context() as mp:
+            if heatmap_fails:
+
+                def _boom_summary(*a, **k):
+                    raise RuntimeError("degenerate frame: heatmap unavailable")
+
+                mp.setattr(
+                    qc_inspect_tool, "create_exploratory_summary_plots", _boom_summary
+                )
+            counting = _CountingLock(_plots.FIGURE_REGISTRY_LOCK)
+            mp.setattr(_plots, "FIGURE_REGISTRY_LOCK", counting)
+            result = _run()
+            assert ("missing_data_pattern.png" in result.outputs) is not heatmap_fails
+            return counting.entries
+
+    with_heatmap = _count_acquisitions(heatmap_fails=False)
+    without_heatmap = _count_acquisitions(heatmap_fails=True)
+
+    assert with_heatmap - without_heatmap == 1, (
+        "the non-empty heatmap set must cost exactly one more lock acquisition than "
+        f"the empty one (got {with_heatmap} vs {without_heatmap})"
+    )
+
+
+def test_cleanup_failure_does_not_mask_the_tools_own_error(injected_ports, monkeypatch):
+    """Pre-#808, a raising `plt.close` in `_render_report`'s `finally` REPLACED the
+    in-flight exception, so a cleanup artifact masked the tool's real error (e.g. a
+    disk-full savefig). Best-effort close means the caller keeps its own error.
+
+    Uses a `BloomMCPError` as the real failure because `as_mcp_tool` re-raises that
+    type unchanged (`wrap.py`'s `except BloomMCPError: raise`) while mapping anything
+    undeclared to a fixed `internal_error` whose message carries only a correlation
+    id. So the surviving error is identifiable by `code`, which a plain
+    message-substring assertion could not do — every leaked detail is redacted either
+    way, which would make such a test pass vacuously.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+
+    def _boom_savefig(self, *a, **k):
+        raise BloomMCPError(
+            code="assumption_violated",
+            message="THE_REAL_FAILURE: disk full",
+            remedy="free space",
+        )
+
+    def _boom_close(*a, **k):
+        raise RuntimeError("CLEANUP_ARTIFACT: OrderedDict mutated during iteration")
+
+    monkeypatch.setattr(Figure, "savefig", _boom_savefig)
+    monkeypatch.setattr(plt, "close", _boom_close)
+
+    with pytest.raises(BloomMCPError) as exc:
+        _run()
+
+    # Pre-fix the bare `finally` close raised, replacing the BloomMCPError, and the
+    # undeclared RuntimeError mapped to internal_error.
+    assert exc.value.code == "assumption_violated", (
+        "the cleanup failure replaced the tool's own error "
+        f"(got code={exc.value.code!r})"
+    )
+    assert "THE_REAL_FAILURE" in exc.value.message

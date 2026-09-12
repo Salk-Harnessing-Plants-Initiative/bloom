@@ -11,6 +11,7 @@ importable with no live stack and no matplotlib import at module level.
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections import Counter
 from typing import TYPE_CHECKING, Callable, TypeVar
@@ -19,6 +20,8 @@ if TYPE_CHECKING:  # matplotlib stays out of the runtime import graph
     from matplotlib.figure import Figure
 
 from bloom_mcp.contract import BloomMCPError
+
+logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
@@ -155,13 +158,18 @@ def check_plot_style_ceiling(
 # blanking its plot with no error surfaced to it at all (#721 PR review).
 #
 # This is why every matplotlib-figure-creating call site in bloommcp goes through
-# `call_with_figure_cleanup` (directly, or via `generate_figures`) rather than acquiring
-# this lock ad hoc: `qc_inspect.py`'s `_render_report`, `remove_outliers.py`'s
-# `_make_figures`, `clustering.py`, and each of the 3 `plot_*` tools #466 converged onto
-# `@as_mcp_tool` (`plot_trait_histograms.py`, `plot_trait_boxplots.py`,
-# `plot_correlation_matrix.py`) all call it around their own figure-creating delegate
-# call; `heritability_analysis.py` (#462, which retired the last 2 bare-`mcp.tool()`
-# plot tools) reaches it via `generate_figures`. Scoped to just that one call (not the caller's full
+# `call_with_figure_cleanup` rather than acquiring this lock ad hoc. Two shapes:
+#   - Direct callers, wrapping their own figure-creating delegate call:
+#     `qc_inspect.py`'s `_render_report`, `remove_outliers.py`'s `_make_figures`, and
+#     each of the 3 `plot_*` tools #466 converged onto `@as_mcp_tool`
+#     (`plot_trait_histograms.py`, `plot_trait_boxplots.py`,
+#     `plot_correlation_matrix.py`).
+#   - Via `generate_figures`, which calls it once per plot key: `pca_analysis.py`,
+#     `umap_analysis.py`, `clustering.py`, and `heritability_analysis.py` (#462, which
+#     retired the last 2 bare-`mcp.tool()` plot tools).
+# Those two lists are exhaustive; keep them that way when adding a figure-creating tool.
+#
+# Scoping the lock to just that one call (not the caller's full
 # save/commit/persist span) is sufficient: the diff can only ever be confused by a figure
 # that is *created* while the lock is held, and the lock is a mutex — no other call's
 # creation step can execute concurrently, regardless of how long the holder then takes to
@@ -181,14 +189,18 @@ def check_plot_style_ceiling(
 #     create via `call_with_figure_cleanup`, success-path close under a second, separate
 #     acquisition in `finally` (done, #466) — separate so `savefig`/commit I/O never runs
 #     on a process-wide lock.
-#   - `close_figures` below: one acquisition around the batch (done, #466).
-#   - STILL OUTSTANDING — the success-path `plt.close` in `qc_inspect.py`'s
-#     `_render_report` and `remove_outliers.py`'s `_make_figures`. (`_viz_shared.py`'s
-#     `save_plot` was the third item here; #462 deleted it along with its only two
-#     callers rather than wiring it.) Tracked at
-#     https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/808. Until those
-#     are wired, this lock is a precondition for closing the race process-wide, not by
-#     itself sufficient.
+#   - `close_figures` below: one acquisition around the batch (done, #466), and the
+#     close path for every `dict`-holding tool — `pca_analysis.py`, `umap_analysis.py`,
+#     `clustering.py`, `heritability_analysis.py`, and `qc_inspect.py`'s
+#     `_render_report` + `remove_outliers.py` (both done, #808; the latter's private
+#     lock-free `_close_figure` helper was deleted in favour of this).
+# The close side is now covered everywhere in `bloom_mcp`, so this lock is sufficient
+# for the race and no longer merely a precondition for closing it (#808). A third item
+# used to sit in this list — `_viz_shared.py`'s `save_plot` — but #462 deleted that
+# helper along with its only two callers rather than wiring it, so there is nothing
+# left there to lock. `tests/tools/test_plots_helpers.py` pins both halves: that this
+# comment claims no outstanding site, and (by AST walk) that no `plt.close` call site
+# in `bloom_mcp` sits outside a `with FIGURE_REGISTRY_LOCK:` block.
 #
 # Non-reentrant: a future plotter that transitively re-enters `call_with_figure_cleanup`
 # (or any other lock-acquiring call) from inside its own locked call would deadlock.
@@ -320,6 +332,18 @@ def close_figures(figures: "dict[str, Figure]") -> None:
     once around the whole batch rather than per figure — the lock is
     non-reentrant and nothing under it re-enters, and one acquisition keeps a
     multi-figure cleanup from interleaving with a create halfway through.
+
+    Since #808 this is the close path for every ``dict``-holding tool:
+    ``pca_analysis``, ``umap_analysis``, ``clustering``, ``heritability_analysis``,
+    and — newly — ``qc_inspect`` and ``remove_outliers``.
+
+    **Best-effort but not silent.** A failure closing one figure neither aborts the
+    batch (which would strand the rest) nor propagates (which, called from a
+    ``finally``, would replace whatever exception was already in flight) — but it is
+    logged at ``WARNING`` naming the key. That log line matters more than it looks:
+    no close site in ``bloom_mcp`` raises any more, so it is the only remaining
+    signal that a registry race is still occurring, and a swallowed close means a
+    figure leaked in a long-lived server process.
     """
     if not figures:
         return
@@ -327,10 +351,18 @@ def close_figures(figures: "dict[str, Figure]") -> None:
         import matplotlib.pyplot as plt
 
         with FIGURE_REGISTRY_LOCK:
-            for fig in figures.values():
+            for key, fig in figures.items():
                 try:
                     plt.close(fig)
-                except Exception:  # pragma: no cover — best-effort cleanup
-                    pass
-    except Exception:  # pragma: no cover — best-effort cleanup
-        pass
+                except Exception as exc:
+                    logger.warning(
+                        "close_figures: plt.close failed for %r (figure leaked): %r",
+                        key,
+                        exc,
+                    )
+    except Exception as exc:  # pragma: no cover — best-effort cleanup
+        logger.warning(
+            "close_figures: could not close %d figure(s) (all leaked): %r",
+            len(figures),
+            exc,
+        )
