@@ -83,7 +83,7 @@ env:
   # finds the lock there, the summary falls back to the reports there — and
   # none of the last two reads the env file, so they cannot look it up. The
   # run step refuses to start if the job's value differs from this one.
-  STATE_DIR: /var/lib/bloom-box-object-backup
+  STATE_DIR: /data/bloom/box-object-backup
   # `prod` is what the env file and the script call it; the GitHub Environment
   # is called `production`. Production is the only thing this workflow mirrors,
   # and staging is deliberately not offered: both environments live on this one
