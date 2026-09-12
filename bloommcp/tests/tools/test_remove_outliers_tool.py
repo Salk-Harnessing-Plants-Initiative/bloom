@@ -1307,3 +1307,258 @@ def test_cylinder_isolation_forest_outlier_removal_matches_golden(
     )
     assert result.fit_is_trustworthy is None
     assert result.goodness_of_fit is None
+
+
+# ── FIGURE_REGISTRY_LOCK participation (#808) ────────────────────────────────
+#
+# All three of this tool's closes routed through a lock-free private `_close_figure`
+# until #808. Unlike qc_inspect's bare closes, these already swallowed — so the race
+# here never raised, it leaked a figure in a long-lived server process. #808 deleted
+# that helper in favour of `_plots.close_figures` (one lock acquisition per batch).
+#
+# Spy discipline: `close_figures` wraps each `plt.close` in `try/except`, so an
+# `assert` raised INSIDE a close spy is swallowed and the test passes vacuously.
+# Record into a list, assert outside. And never `plt.close("all")` AFTER installing
+# the spy — that call is recorded too, with the lock unheld, poisoning `all(held)`.
+
+
+def _close_spy(monkeypatch):
+    """Patch `matplotlib.pyplot.close`, returning the (figure, lock_held) records.
+
+    Patches the shared pyplot module object: this tool module imports matplotlib
+    lazily and has no module-level `plt`, and `close_figures` re-imports the same
+    object, so the spy is visible through it.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from bloom_mcp.tools import _plots
+
+    real_close = plt.close
+    records: list[tuple[object, bool]] = []
+
+    def _spy(fig=None):
+        records.append((fig, _plots.FIGURE_REGISTRY_LOCK.locked()))
+        return real_close(fig) if fig is not None else real_close()
+
+    monkeypatch.setattr(plt, "close", _spy)
+    return records
+
+
+def _delegate_spy(monkeypatch):
+    """Capture the figures `plot_outlier_analysis` actually produced.
+
+    Anti-vacuity anchor: without it, a fixture change that made the delegate raise
+    would leave nothing for the site under test to close, `close_figures` would
+    early-return, and the only recorded closes would be `call_with_figure_cleanup`'s
+    own legitimately-locked ones — so `all(held)` would pass WITHOUT the fix.
+    """
+    real = remove_outliers_tool.plot_outlier_analysis
+    produced: dict[str, object] = {}
+
+    def _spy(*a, **k):
+        figs = real(*a, **k)
+        produced.update(figs)
+        return figs
+
+    monkeypatch.setattr(remove_outliers_tool, "plot_outlier_analysis", _spy)
+    return produced
+
+
+class _CountingLock:
+    """Proxy recording each `with` entry, delegating to the real lock.
+
+    A proxy on the *module attribute* is the only option: `threading.Lock` is a C
+    type whose `acquire` is read-only (`'_thread.lock' object attribute 'acquire' is
+    read-only`), so the lock object itself cannot be monkeypatched.
+    """
+
+    def __init__(self, real):
+        self._real = real
+        self.entries = 0
+
+    def __enter__(self):
+        self.entries += 1
+        return self._real.__enter__()
+
+    def __exit__(self, *exc):
+        return self._real.__exit__(*exc)
+
+    def locked(self):
+        return self._real.locked()
+
+
+def _assert_all_held(records, produced):
+    assert records, "the tool never closed a figure"
+    assert all(held for _f, held in records), (
+        "plt.close ran without FIGURE_REGISTRY_LOCK held: "
+        f"{[held for _f, held in records]}"
+    )
+    assert len(produced) >= 2, (
+        f"the fixture no longer yields a multi-figure set ({sorted(produced)}) — "
+        "this test would be vacuous"
+    )
+    closed = {id(f) for f, _held in records}
+    assert {id(f) for f in produced.values()} <= closed, (
+        "the site under test never closed the delegate's own figures"
+    )
+
+
+def test_success_path_closes_figures_while_holding_the_figure_registry_lock(
+    injected_ports, monkeypatch
+):
+    """The tool body's `finally` close (after store.commit) runs under the lock.
+
+    method=isolation_forest, never gated by the fit-trustworthiness check — a
+    mahalanobis call on this fixture raises at that gate before any figure exists,
+    making the assertion vacuous (same reasoning as
+    test_include_plots_success_closes_all_figures).
+    """
+    from bloom_mcp.tools import _plots
+
+    produced = _delegate_spy(monkeypatch)
+    records = _close_spy(monkeypatch)
+
+    _run(method="isolation_forest", include_plots=True)
+
+    _assert_all_held(records, produced)
+    assert not _plots.FIGURE_REGISTRY_LOCK.locked(), "the lock was not released"
+
+
+def test_unknown_plot_key_close_holds_the_figure_registry_lock(
+    injected_ports, monkeypatch
+):
+    """`_make_figures`' validation-failure path discards everything the delegate
+    produced — under the lock."""
+    produced = _delegate_spy(monkeypatch)
+    records = _close_spy(monkeypatch)
+
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="isolation_forest", include_plots=True, plots=["not_a_real_figure"])
+
+    assert exc.value.code == "invalid_input"
+    _assert_all_held(records, produced)
+
+
+def test_unselected_figure_discard_holds_the_figure_registry_lock(
+    injected_ports, monkeypatch
+):
+    """`_make_figures`' discard path closes the built-but-unrequested figures.
+
+    Non-vacuous on plain isolation_forest: `plot_outlier_analysis` is called with
+    `which=None`, so the delegate's `genotype_requested = requested is None` branch
+    adds `outliers_per_genotype` whenever a genotype column is present — and
+    turface_19 has `geno`. So isolation_forest produces TWO figures here, and
+    requesting one discards the other.
+    """
+    produced = _delegate_spy(monkeypatch)
+    records = _close_spy(monkeypatch)
+
+    result = _run(
+        method="isolation_forest",
+        include_plots=True,
+        plots=["isolation_forest_analysis"],
+    )
+
+    _assert_all_held(records, produced)
+    assert "isolation_forest_analysis.png" in result.outputs
+    assert "outliers_per_genotype.png" not in result.outputs
+
+
+def test_unselected_discard_holds_the_lock_on_the_four_figure_mahalanobis_set(
+    injected_ports, monkeypatch
+):
+    """The same discard path at the wider 4-produced/1-kept/3-discarded shape, so the
+    assertion does not rest on isolation_forest's set size staying above one."""
+    _force_trustworthy_mahalanobis_fit(monkeypatch)
+    produced = _delegate_spy(monkeypatch)
+    records = _close_spy(monkeypatch)
+
+    result = _run(
+        method="mahalanobis", include_plots=True, plots=["mahalanobis_pc_analysis"]
+    )
+
+    _assert_all_held(records, produced)
+    assert len(produced) == 4, sorted(produced)
+    assert "mahalanobis_pc_analysis.png" in result.outputs
+    for discarded in _MAHALANOBIS_FIGS - {"mahalanobis_pc_analysis.png"}:
+        assert discarded not in result.outputs
+
+
+def test_no_plots_run_acquires_the_figure_registry_lock_not_at_all(
+    injected_ports, monkeypatch
+):
+    """`include_plots=False` leaves `figures` empty, so `close_figures` returns before
+    acquiring anything (spec: "Nothing to close acquires no lock")."""
+    from bloom_mcp.tools import _plots
+
+    counting = _CountingLock(_plots.FIGURE_REGISTRY_LOCK)
+    monkeypatch.setattr(_plots, "FIGURE_REGISTRY_LOCK", counting)
+
+    _run(method="isolation_forest", include_plots=False)
+
+    assert counting.entries == 0, (
+        f"the lock was acquired {counting.entries}x on a no-plots run"
+    )
+
+
+def test_default_path_never_executes_an_import_matplotlib_statement(
+    injected_ports, monkeypatch
+):
+    """Mirrors the identical guard in test_umap_analysis_tool / test_clustering_tool /
+    test_pca_analysis_tool / test_heritability_analysis_tool, with their corrected
+    framing: this does NOT prove matplotlib is absent from ``sys.modules`` — it is
+    already resident via this module's own top-level ``sleap_roots_analyze`` import.
+    What it proves is narrower but real: the ``include_plots=False`` path executes no
+    fresh ``import matplotlib`` statement, which is the property ``close_figures``'
+    empty-dict early return (ahead of its own lazy import) preserves.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "matplotlib", None)
+    _run(method="isolation_forest")  # must not raise ImportError
+
+
+def test_persistence_io_runs_without_the_registry_lock_held(
+    injected_ports, monkeypatch
+):
+    """`FIGURE_REGISTRY_LOCK` must never span disk I/O (spec: "Persistence I/O runs
+    unlocked"): hold time stays proportional to registry mutation, not to `savefig`
+    and `commit`. Catches the plausible regression of widening the `finally`'s
+    acquisition to span the whole `try/finally`.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from matplotlib.figure import Figure
+
+    from bloom_mcp.tools import _plots
+
+    _reader, store = injected_ports
+    observed: dict[str, list[bool]] = {"savefig": [], "commit": []}
+
+    real_savefig = Figure.savefig
+
+    def _spy_savefig(self, *a, **k):
+        observed["savefig"].append(_plots.FIGURE_REGISTRY_LOCK.locked())
+        return real_savefig(self, *a, **k)
+
+    real_commit = store.commit
+
+    def _spy_commit(*a, **k):
+        observed["commit"].append(_plots.FIGURE_REGISTRY_LOCK.locked())
+        return real_commit(*a, **k)
+
+    monkeypatch.setattr(Figure, "savefig", _spy_savefig)
+    monkeypatch.setattr(store, "commit", _spy_commit)
+
+    _run(method="isolation_forest", include_plots=True)
+
+    assert observed["savefig"], "no figure was written — test is vacuous"
+    assert observed["commit"], "the run never committed — test is vacuous"
+    assert not any(observed["savefig"]), "savefig ran with FIGURE_REGISTRY_LOCK held"
+    assert not any(observed["commit"]), (
+        "store.commit ran with FIGURE_REGISTRY_LOCK held"
+    )
