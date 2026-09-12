@@ -3443,6 +3443,26 @@ class TestConfigIsCheckedBeforeTheEightMillionRowRead:
             job.run_locked(args, tmp_path)
         assert calls == []
 
+    def test_a_missing_postgres_password_is_refused_before_the_database_is_asked(
+        self, monkeypatch, tmp_path
+    ):
+        calls, args = self.drive(
+            monkeypatch,
+            tmp_path,
+            extra_argv=["--box-root", "Bloom-Backups/prod/storage"],
+            minio_source_from_env=lambda a: object(),
+            require_rclone_config=lambda p, r: None,
+        )
+        args.pg_password = ""
+        monkeypatch.setattr(
+            job.dock,
+            "database_now",
+            staticmethod(lambda *a, **k: calls.append("watermark")),
+        )
+        with pytest.raises(lib.BackupError, match="POSTGRES_PASSWORD is not set"):
+            job.run_locked(args, tmp_path)
+        assert calls == [], "the database was asked before the password check"
+
     def test_a_ledger_pointed_at_another_folder_is_refused_first_of_all(
         self, monkeypatch, tmp_path
     ):
