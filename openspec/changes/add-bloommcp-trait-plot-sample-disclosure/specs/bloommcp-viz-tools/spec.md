@@ -145,9 +145,12 @@ note SHALL escalate to a visibly marked warning that names the affected groups (
 calibrate severity rather than only presence, and points at the committed sample-size table.
 
 On a paginated render the note SHALL be **page-scoped** and SHALL say so in its own text: its
-statistics and named groups SHALL cover only the traits rendered on that page. The exact text
-drawn on each page SHALL be stamped into the persisted run's `params`, and the result SHALL
-report the run-wide note as a field.
+statistics and named groups SHALL cover only the traits rendered on that page. The text drawn on
+each page SHALL be stamped into the persisted run's `params` — its content, the line wrapping
+applied for rendering aside — and the result SHALL report the run-wide note as a field. A
+run-wide string matches no page of a paginated render, so stamping only that would leave a
+manifest reader re-deriving each page's note from the floor, the cap, the ordering rule and the
+phrasing.
 
 `plot_trait_histograms` SHALL NOT gain an equivalent note: its delegate already titles every
 panel with that trait's own `(n=…)`.
@@ -184,7 +187,7 @@ panel with that trait's own `(n=…)`.
   page only
 - **THEN** that group is named on its own page's note and on no other page's note, each page's
   statistics cover only that page's traits, the note's own text identifies itself as page-scoped,
-  and the persisted run's `params` carries the exact text drawn on each page
+  and the persisted run's `params` carries each page's note
 
 #### Scenario: The histogram render is unchanged
 
@@ -198,8 +201,10 @@ panel with that trait's own `(n=…)`.
 binned and how much of the raw column was missing — the delegate drops null values silently, and
 an all-null trait renders a literal "No data" panel that appears nowhere in the structured result.
 
-The result SHALL report uncapped minimum/median/maximum binned counts over the traits carrying at
-least one observation, a capped list of traits falling below the documented minimum (each with its
+The result SHALL report uncapped minimum/median/maximum binned counts over **every resolved
+trait**, including traits with none — unlike the boxplot summaries, which exclude absent cells,
+because here a panel *is* drawn for every selected trait (an empty one carries a literal "No data"
+label), so a zero is describing something the reader can see. It SHALL report a capped list of traits falling below the documented minimum (each with its
 binned count and missing fraction) ordered by ascending count then trait name, with an uncapped
 count alongside, the largest missing fraction and the trait carrying it, the number of rows read,
 and SHALL persist the complete per-trait table as a committed run output with its own download
@@ -322,10 +327,17 @@ statistics.
 
 #### Scenario: A frame with no drawable box still completes
 
-- **WHEN** the detected genotype column is entirely null, or the frame has no rows
+- **WHEN** `plot_trait_boxplots` reads a frame whose detected genotype column is entirely null, or
+  which has no rows
 - **THEN** the run still completes, every sample-size summary is null rather than `NaN`, the
   reported genotype-group count is zero, the note drawn on the figure says no box was drawn, and
   both the result and the persisted manifest parse as strict JSON
+
+#### Scenario: A zero-row histogram reports zeros, not nulls
+
+- **WHEN** `plot_trait_histograms` reads a frame with no rows
+- **THEN** the run still completes and its summaries report zero — a panel is still drawn per
+  trait, so the population is not empty — and the result parses as strict JSON
 
 ## MODIFIED Requirements
 

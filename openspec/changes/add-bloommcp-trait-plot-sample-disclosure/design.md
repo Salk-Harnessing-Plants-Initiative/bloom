@@ -67,9 +67,10 @@ in one vectorized pass, and it agrees cell-for-cell with what the delegate's own
 `dropna=True` matching the delegate's dropping of null-genotype rows). Nothing iterates over the
 grid in Python; only the flagged tail is materialized.
 
-Measured at cylinder width (3,000 rows × 846 traits × 60 genotypes): `groupby().count()` 5 ms,
-the `isinf` mask plus its grouped sum 4 ms, and the long-form CSV write 14 ms for 50,760 rows
-(0.54 MB). The cost is in the rendering, not here.
+Measured at cylinder width (3,000 rows × 846 traits × 60 genotypes) by this change's
+`benchmarks/trait_plot_sample_disclosure_bench.py`: the whole table — both grouped passes and the
+long-form reshape — takes **14 ms for 50,760 cells**, and the committed CSV is **1.95 MB**. The
+cost is in the rendering, not here.
 
 **Why not read it off the rendered figure**: that couples the wrapper to subplot geometry and the
 orientation switch. The frame is ground truth; the figure is derived from it. **Why not ask the
@@ -170,11 +171,11 @@ So `tight_layout()` is called **on unbatched renders only**. The rule is that si
 caller in its own docstring. So this change adds it exactly where the delegate left it undone.
 
 That split is also what keeps the cost off the hot path. Measured at 40 genotypes × 16 traits
-(one cylinder page's shape): relabelling alone costs +8% (1.49s → 1.61s), while relabelling plus
-a `tight_layout` call costs **+25%** (1.86s). Paying that 53 times is what would push the
+(one cylinder page's shape): relabelling alone costs **+5%** (1.66s → 1.74s), while relabelling
+plus a `tight_layout` call costs **+21%** (2.01s). Paying that 53 times is what would push the
 cylinder smoke test past its 120s client timeout — and it is unnecessary, because those pages are
-already laid out. On the unbatched path it is one render and it is free where it matters:
-measured 0.25s vs 0.30s at 5 genotypes × 11 traits.
+already laid out. On the unbatched path it is one render, and free where it matters: 0.25s vs
+0.30s at 5 genotypes × 11 traits.
 
 It also fixes a second, measured defect. Because the unbatched delegate skips `tight_layout`, its
 figure carries a large unused bottom margin that `bbox_inches="tight"` crops away today — so a
@@ -337,7 +338,7 @@ docstring describing a render that no longer exists.
 
 ## Risks / Trade-offs
 
-- **Render cost.** +8% per page from relabelling; `tight_layout` only on the unbatched path,
+- **Render cost.** +5% per page from relabelling; `tight_layout` only on the unbatched path,
   where the delegate left it undone. The cylinder boxplot smoke test is already at ~109-111s
   against a 120s client timeout, so tasks §5.5 measures it end-to-end rather than extrapolating,
   and raises the timeout if it lands above ~115s.
@@ -354,9 +355,9 @@ docstring describing a render that no longer exists.
   Every existing batched test's render becomes flagged the moment the note lands — expected, not a
   regression, but it means those frames cannot serve the "only one page has a thin group" test
   (tasks §1.2.4 builds its own).
-- **`group_sample_sizes.csv` can be large** (traits × genotypes rows; 0.54 MB measured at cylinder
-  width). It is a download, not a response field — the same trade-off
-  `cross_experiment_correlations` already makes.
+- **`group_sample_sizes.csv` can be large** (traits × genotypes rows; 1.95 MB measured at
+  cylinder width — six columns per cell, not one). It is a download, not a response field: the
+  same trade-off `cross_experiment_correlations` already makes with its genotype-means CSVs.
 - **Tick-label coupling.** Relabelling matches on tick text. If a future delegate stops labelling
   ticks with genotype values, the match fails, `box_labels_annotated` goes `False`, and the note
   still carries the disclosure — degraded, not wrong.
