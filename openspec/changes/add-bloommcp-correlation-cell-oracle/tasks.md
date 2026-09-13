@@ -93,7 +93,16 @@
 - [x] 6.3 Confirm the new tests are collected by that marker filter (spec Requirement 4)
 - [x] 6.4 `black --check` / `ruff check` clean on the touched files
 - [x] 6.5 `openspec validate add-bloommcp-correlation-cell-oracle --strict` passes
-- [ ] 6.6 After the PR opens, read the `python-audit` job log directly (not just the green tick)
+- [x] 6.6 After the PR opens, read the `python-audit` job log directly (not just the green tick)
       to confirm the suite passes on `ubuntu-latest`. The `tol=0` assertion in 3.5 is the
       strictest in the suite and has never run cross-platform; same posture as the sibling
-      change's Decision 3
+      change's Decision 3.
+      **Outcome: passed.** Read from the job log (PR #840, run 34767405143, job 103750727593)
+      on Ubuntu 24.04.5: all 16 `test_viz_cell_oracle.py` tests PASSED, and the bloommcp sweep
+      reported `1725 passed, 31 deselected` — the same count as the local run. The four
+      assertions whose cross-platform behavior was genuinely open all held on Linux: the
+      `tol=0` tie to the tool's committed PNG, the `atol=0.01` saved-pixel check (whose 0.00196
+      noise floor was measured on macOS), the glyph-bias check (the one place a FreeType
+      hinting difference would surface), and all four negative-control shifts — so "whole-image
+      RMS misses a single-cell defect" is now verified on the CI platform too, not only where
+      it was measured
