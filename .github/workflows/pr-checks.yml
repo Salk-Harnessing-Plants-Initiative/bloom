@@ -285,6 +285,77 @@ jobs:
       - name: Check vendored Argo Workflow drift
         run: python3 scripts/check_vendored_workflow_drift.py
 
+  # The backup job's image gets its own job, run only when the job's folder changed.
+  # Gated by `if:` because a skipped job counts as passing; a `paths:` filter would not.
+  detect-box-object-backup-changes:
+    name: Detect Box Object Backup Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for changes to the backup job
+        id: filter
+        run: |
+          if git diff --quiet "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" -- \
+            scheduled-jobs/box-object-backup; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  box-object-backup-image:
+    name: Build Box Object Backup Image & Scan for CVEs
+    needs: detect-box-object-backup-changes
+    if: needs.detect-box-object-backup-changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build box-object-backup image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./scheduled-jobs/box-object-backup
+          file: scheduled-jobs/box-object-backup/Dockerfile
+          tags: box-object-backup:ci
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=box-object-backup
+          cache-to: type=gha,mode=max,scope=box-object-backup
+
+      - name: Smoke-test box-object-backup image
+        run: |
+          docker run --rm box-object-backup:ci --help > /dev/null
+          docker run --rm --entrypoint sh box-object-backup:ci -c \
+            'rclone version && psql --version && test "$(id -u)" != 0 && ! ls /app/*_test.py /app/conftest.py 2>/dev/null'
+
+      - name: Scan box-object-backup image
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'box-object-backup:ci'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+          format: 'table'
+          trivyignores: '.trivyignore'
+
+      - name: Check box-object-backup for critical CVEs
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'box-object-backup:ci'
+          severity: 'CRITICAL'
+          exit-code: '1'
+          trivyignores: '.trivyignore'
+
   docker-build:
     name: Build Docker Images & Scan for CVEs
     runs-on: ubuntu-latest
