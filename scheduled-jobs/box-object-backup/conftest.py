@@ -2,9 +2,9 @@
 
 The suite is advertised as needing no network, no database and no Box account,
 and it was not true: thirty tests reached a real socket on 127.0.0.1:5572
-because `publish_report` and `publish_ledger` build their own `RcloneRC` from
-the daemon's credentials rather than taking the one the run already holds, so
-faking `wait_for_daemon` did not cover them.
+because `publish_report` builds its own `RcloneRC` from the daemon's
+credentials rather than taking the one the run already holds, so faking
+`wait_for_daemon` did not cover it.
 
 That port is `rclone_rc.DEFAULT_RC_PORT` — the port this job's own rclone
 daemon binds. The tests passed only because nothing was listening on the

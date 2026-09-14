@@ -901,6 +901,13 @@ class TestExitCodeReachesTheWorkflow:
     def test_failed_copies_outrank_a_mismatch(self):
         assert job.exit_code(failed=2, verify_mismatched=5) == 1
 
+    def test_there_is_no_exit_six(self):
+        # Nothing about a copy of the ledger on Box can fail a run.
+        import inspect
+
+        assert "6 =" not in job.__doc__
+        assert "ledger_flag" not in inspect.signature(job.exit_code).parameters
+
     def test_the_documented_codes_match_what_is_returned(self):
         doc = job.__doc__
         for code in ("1 =", "2 =", "3 =", "4 =", "5 ="):
@@ -1032,32 +1039,28 @@ class TestRunLockedWiresItsPartsTogether:
         monkeypatch.setenv("MINIO_ROOT_PASSWORD", "secret")
         monkeypatch.setenv("POSTGRES_PASSWORD", "db-secret")
         state["client"] = FakeClient()
-        # publish_report and publish_ledger build their own client from the
-        # daemon's credentials rather than taking the one the run already has,
-        # so faking `wait_for_daemon` alone left both uploads talking to a real
-        # socket on 127.0.0.1:5572 — DEFAULT_RC_PORT, the port this job's own
-        # rclone daemon binds on the deploy host. Thirty tests here were
-        # quietly logging "upload failed: Connection refused" and exercising
-        # the error path, and publish_report's success path had never run.
+        # publish_report builds its own client from the daemon's credentials
+        # rather than taking the one the run already has, so faking
+        # `wait_for_daemon` alone left the upload talking to a real socket on
+        # 127.0.0.1:5572 — DEFAULT_RC_PORT, the port this job's own rclone
+        # daemon binds. Thirty tests here were quietly logging "upload failed:
+        # Connection refused" and exercising the error path, and
+        # publish_report's success path had never run.
         #
-        # They passed only because nothing was listening locally. On the
-        # deploy host during a seed something is: a daemon holding the Box
-        # OAuth token and MinIO's root credentials, which these tests would
-        # have POSTed operations/copyfile at.
+        # They passed only because nothing was listening locally. Wherever a
+        # run is going something is: a daemon holding the Box OAuth token and
+        # MinIO's root credentials, which these tests would have POSTed
+        # operations/copyfile at.
         monkeypatch.setattr(job, "RcloneRC", lambda *a, **kw: state["client"])
         return state, tmp_path
 
     def object_copies(self, state):
-        """The mirrored objects, without the report and ledger uploads.
+        """The mirrored objects, without the report upload.
 
-        Those two reach the fake now, so anything counting `copied` sees them
+        That reaches the fake too, so anything counting `copied` sees it
         unless it says otherwise.
         """
-        return [
-            c
-            for c in state["copied"]
-            if c[1] != "ledger.db" and not c[2].endswith(".json")
-        ]
+        return [c for c in state["copied"] if not c[2].endswith(".json")]
 
     def args(self, tmp_path, **overrides):
         argv = [
@@ -1080,7 +1083,7 @@ class TestRunLockedWiresItsPartsTogether:
         self, harness, caplog
     ):
         """Without it the summary falls back to the step's own outcome, and
-        every branch keyed on a flag — stale ledger, refused name, incomplete
+        every branch keyed on a flag — a refused name, an incomplete
         verification — silently stops firing."""
         import logging as _logging
 
@@ -1090,28 +1093,37 @@ class TestRunLockedWiresItsPartsTogether:
         assert f"{job.STATUS_KEY}=ok" in caplog.text
         assert f"{job.FLAGS_KEY}=" in caplog.text
 
-    def test_the_status_line_carries_the_flags_that_apply(self, harness, caplog):
-        """A run can succeed AND have left the Box ledger behind. The flags
-        are separate from the verdict for exactly that reason."""
+    def test_the_status_line_carries_the_flags_that_apply(
+        self, harness, monkeypatch, caplog
+    ):
+        """A run can succeed AND have refused a name. The flags are separate
+        from the verdict for exactly that reason."""
         import logging as _logging
 
         caplog.set_level(_logging.INFO)
+        monkeypatch.setattr(
+            TestRunLockedWiresItsPartsTogether,
+            "MANIFEST",
+            f"images\t{self.ILLEGAL}\tv1\t100\t2026-08-31T00:00:00+00\n"
+            "images\texp-42/fine.png\tv2\t200\t2026-08-31T00:00:01+00\n",
+        )
         state, tmp_path = harness
-        monkeypatch_target = state["client"]
-
-        def refuse(src_fs, src_remote, dst_fs, dst_remote):
-            if src_remote == "ledger.db":
-                raise RcloneError("Box said no")
-            return None
-
-        monkeypatch_target.copy_file = refuse
         job.run_locked(self.args(tmp_path), tmp_path)
         flags = [
             ln.split("=", 1)[1]
             for ln in caplog.text.splitlines()
             if f"{job.FLAGS_KEY}=" in ln
         ]
-        assert flags and "ledger_stale" in flags[-1], flags
+        assert flags and "skipped_names" in flags[-1], flags
+
+    def test_the_ledger_stays_on_the_host(self, harness):
+        """The objects and the run reports on Box are the backup; the ledger
+        is this host's record of what it has copied."""
+        state, tmp_path = harness
+        assert job.run_locked(self.args(tmp_path), tmp_path) == 0
+        uploads = [c for c in state["copied"] if "ledger" in c[1] or "ledger" in c[2]]
+        assert uploads == [], uploads
+        assert any(c[2].endswith(".json") for c in state["copied"]), "no report went up"
 
     def test_the_report_is_uploaded_from_the_state_dir(self, harness):
         # rclone runs beside the job, so it reads the state dir itself.
@@ -1857,15 +1869,6 @@ class TestTheDaemonIsAlwaysStopped:
             )
         assert state["daemon_stopped"], "the rclone daemon was stranded"
 
-    def test_it_is_stopped_when_the_ledger_upload_raises(self, harness, monkeypatch):
-        state, tmp_path = harness
-        monkeypatch.setattr(job, "publish_ledger", self.boom)
-        with pytest.raises(RuntimeError):
-            job.run_locked(
-                TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
-            )
-        assert state["daemon_stopped"], "the rclone daemon was stranded"
-
     def test_it_is_stopped_on_an_ordinary_clean_run(self, harness):
         state, tmp_path = harness
         assert (
@@ -1994,473 +1997,6 @@ class TestRunBackupTakesTheHostLock:
     def test_the_exit_code_is_whatever_the_run_returned(self, tmp_path, monkeypatch):
         monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 4)
         assert job.run_backup(self.args(tmp_path)) == 4
-
-
-class TestTheLedgerIsCopiedToBox:
-    """The ledger lives on the host this job exists to survive losing.
-
-    It records which version of every object is on Box, and it is what lets a
-    multi-week seed stop and carry on. Without a copy off the host, rebuilding
-    the server means re-transferring all eight million objects — and listing
-    Box cannot reconstruct it, because the ledger is keyed on each object's
-    version and a listing shows only that a path exists.
-    """
-
-    @pytest.fixture
-    def harness(self, monkeypatch, tmp_path):
-        state, tmp_path = TestRunLockedWiresItsPartsTogether().harness.__wrapped__(
-            TestRunLockedWiresItsPartsTogether(), monkeypatch, tmp_path
-        )
-        # publish_report and publish_ledger build their own client from the
-        # daemon's credentials rather than taking the one the run already has,
-        # so the harness's fake never sees either upload — every harness test
-        # has been quietly logging "upload failed: Connection refused" and
-        # falling back to the local copy. Substitute the class so the uploads
-        # are observable.
-        monkeypatch.setattr(job, "RcloneRC", lambda *a, **kw: state["client"])
-        return state, tmp_path
-
-    def uploads(self, state):
-        return [c for c in state["copied"] if c[1] == "ledger.db"]
-
-    def test_it_is_uploaded_to_its_own_folder(self, harness):
-        state, tmp_path = harness
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        sent = self.uploads(state)
-        assert len(sent) == 1, "the ledger was not uploaded"
-        assert sent[0][2] == (
-            "Bloom-Backups/BloomV2-Data-Backup/prod/storage/_state/ledger.db"
-        ), sent[0][2]
-
-    def test_it_is_not_mixed_in_with_the_objects(self, harness):
-        state, tmp_path = harness
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        for _, _, dst in self.uploads(state):
-            assert "/_state/" in dst, f"the ledger landed among the mirror: {dst}"
-
-    def test_the_uploaded_copy_is_complete(self, harness, monkeypatch, tmp_path):
-        """The reason it is closed before being sent.
-
-        SQLite runs in WAL mode, so committed rows sit in ledger.db-wal until
-        the file is checkpointed. Uploading ledger.db while the connection is
-        open ships a file missing everything the run just recorded — which
-        would look fine until the day it was restored.
-
-        So: take a copy of ledger.db ALONE at the moment it is uploaded, the
-        way rclone would, and read it back with no WAL beside it.
-        """
-        import shutil
-        import sqlite3
-
-        state, tmp_path = harness
-        snapshot = tmp_path / "snapshot" / "ledger.db"
-        snapshot.parent.mkdir()
-        real_copy = state["client"].copy_file
-
-        def snapshotting_copy(src_fs, src_remote, dst_fs, dst_remote):
-            real_copy(src_fs, src_remote, dst_fs, dst_remote)
-            if src_remote == "ledger.db":
-                shutil.copyfile(tmp_path / "ledger.db", snapshot)
-
-        monkeypatch.setattr(state["client"], "copy_file", snapshotting_copy)
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-
-        assert snapshot.exists(), "the ledger was never uploaded"
-        conn = sqlite3.connect(str(snapshot))
-        copied = conn.execute("SELECT count(*) FROM copied").fetchone()[0]
-        runs = conn.execute(
-            "SELECT count(*) FROM runs WHERE outcome IS NOT NULL"
-        ).fetchone()[0]
-        conn.close()
-        assert copied == 2, f"the copy is missing rows the run recorded: {copied}"
-        assert runs == 1, "the copy does not record the run that made it"
-
-    DEST = "Bloom-Backups/BloomV2-Data-Backup/prod/storage/_state/ledger.db"
-
-    def with_remote_size(self, state, monkeypatch, size):
-        """Make Box report a ledger of `size` bytes at the destination."""
-        real_stat = state["client"].stat
-
-        def sized(fs, remote):
-            if remote == TestTheLedgerIsCopiedToBox.DEST:
-                return None if size is None else {"Size": size}
-            return real_stat(fs, remote)
-
-        monkeypatch.setattr(state["client"], "stat", sized)
-
-    def test_it_refuses_to_replace_a_larger_copy(self, harness, monkeypatch, caplog):
-        """The scenario the whole feature exists for, and would have broken.
-
-        Host dies, gets rebuilt, ledger is empty. The wiki's smoke test copies
-        twenty objects — enough to trigger this upload — and without a floor it
-        replaces the record of eight million copied objects with a record of
-        twenty. The one thing needed to avoid a three-week re-seed, destroyed
-        by the first command the operator runs.
-        """
-        state, tmp_path = harness
-        self.with_remote_size(state, monkeypatch, 1_700_000_000)
-        code = job.run_locked(
-            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
-        )
-        assert self.uploads(state) == [], "overwrote a larger ledger on Box"
-        assert code == 6, (
-            "a refused ledger upload must fail the run: every other route to a "
-            "human is a notice inside a SUCCESSFUL run's summary, and GitHub "
-            "notifies nobody on those"
-        )
-        assert "NOT uploaded" in caplog.text
-        assert "RESTORE it onto this host" in caplog.text, "did not say how to recover"
-
-    def test_a_refused_upload_says_the_box_ledger_is_ahead_not_stale(
-        self, harness, monkeypatch, caplog
-    ):
-        """The run still exits 0, so the summary would read "succeeded" — but
-        this case needs the OPPOSITE remedy to a stale Box copy.
-
-        Here Box holds the eight-million-row ledger and this host holds a
-        stub, which is exactly why the upload was refused. Reported as
-        "stale", an operator is told the host has the good copy and Box needs
-        fixing — so they overwrite the only good record and buy a three-week
-        re-seed, which is the disaster the size guard exists to prevent. The
-        two situations must never share a marker.
-        """
-        state, tmp_path = harness
-        caplog.set_level(logging.INFO)
-        self.with_remote_size(state, monkeypatch, 1_700_000_000)
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        assert job.LEDGER_AHEAD_MARKER in caplog.text
-        assert job.LEDGER_STALE_MARKER not in caplog.text, (
-            "a refused upload was reported as a stale Box copy"
-        )
-        assert "RESTORE it onto this host" in caplog.text, "does not say to restore"
-        # The FLAG, not just the log line. The summary branches on this, and
-        # swapping the two return values survived the suite entirely — the
-        # operator would then be told to fix a stale Box copy, and overwrite
-        # eight million rows with twenty.
-        assert f"{job.FLAGS_KEY}=ledger_ahead" in caplog.text, (
-            "the refusal reaches the summary as the wrong condition"
-        )
-        assert "ledger_stale" not in caplog.text
-
-    def test_a_ledger_that_cannot_be_read_says_the_box_copy_is_stale(
-        self, harness, monkeypatch, caplog
-    ):
-        """The third failure path, and the one that had no test at all.
-
-        Deleting this branch outright left the suite green, while the PR
-        described all three paths as covered. It is reached by the real
-        failures this feature exists for — a full disk, a wiped state dir, a
-        permissions change — and it is one where the run still exits 0 and
-        the summary would otherwise read "succeeded".
-        """
-        state, tmp_path = harness
-        caplog.set_level(logging.INFO)
-        real_stat = Path.stat
-
-        def refuse(self, *args, **kwargs):
-            if self.name == "ledger.db":
-                raise OSError(13, "Permission denied")
-            return real_stat(self, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "stat", refuse)
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        assert job.LEDGER_STALE_MARKER in caplog.text
-        assert f"{job.FLAGS_KEY}=ledger_stale" in caplog.text, (
-            "the unreadable-ledger path reaches the summary as nothing at all"
-        )
-        assert self.uploads(state) == [], "uploaded a ledger it could not read"
-
-    def test_a_failed_upload_says_the_box_copy_is_stale(
-        self, harness, monkeypatch, caplog
-    ):
-        """The other way it goes stale: the upload itself throws.
-
-        Caught broadly on purpose, because it runs in the cleanup path — so
-        without the marker it is one ERROR line in a job reporting success.
-        """
-        state, tmp_path = harness
-        caplog.set_level(logging.INFO)
-
-        def refuse(src_fs, src_remote, dst_fs, dst_remote):
-            if src_remote == "ledger.db":
-                raise RcloneError("Box said no")
-            return None
-
-        monkeypatch.setattr(state["client"], "copy_file", refuse)
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        assert job.LEDGER_STALE_MARKER in caplog.text
-        assert f"{job.FLAGS_KEY}=ledger_stale" in caplog.text, (
-            "a failed upload reaches the summary as the wrong condition"
-        )
-
-    def test_a_real_run_records_where_it_mirrored_to(self, harness):
-        """The other half of the destination guard.
-
-        The guard is only as good as the recording: with nothing written, a
-        ledger seeded against the wrong folder never has anything to be
-        compared against, and every later run is waved through.
-        """
-        state, tmp_path = harness
-        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
-        job.run_locked(args, tmp_path)
-        recorded = Ledger.open(str(tmp_path / "ledger.db")).destination()
-        assert recorded == f"{args.box_remote}:{args.box_root}", (
-            f"the run mirrored somewhere and recorded {recorded!r}"
-        )
-
-    def test_the_next_run_against_another_folder_is_refused(self, harness):
-        """End to end: one run records, the next one is stopped."""
-        state, tmp_path = harness
-        base = TestRunLockedWiresItsPartsTogether()
-        job.run_locked(base.args(tmp_path), tmp_path)
-        moved = base.args(tmp_path)
-        moved.box_root = "Bloom-Backups/BloomV2-Data-Backup/prod/storag"
-        with pytest.raises(lib.BackupError, match="different place on Box"):
-            job.run_locked(moved, tmp_path)
-
-    def test_a_row_with_no_image_behind_it_leaves_the_run_clean(
-        self, harness, monkeypatch, caplog
-    ):
-        """Driven end to end, because the damage is in what the run RECORDS.
-
-        Folding the count back into `totals.failed` leaves every unit test
-        green — and makes `run_outcome` return `partial`, so no run is ever
-        recorded `ok`, `last_successful_run()` stays None, and every night
-        re-reads all eight million rows for ever. Only a whole run shows it.
-        """
-        state, tmp_path = harness
-        caplog.set_level(logging.INFO)
-        dead = "storage-single-tenant/images/exp-42/a.png/v1"
-        # Absent from MinIO, so the confirming stat says so.
-        state["missing"].add(dead)
-        original = state["client"].copy_file
-
-        def copy(src_fs, src_remote, dst_fs, dst_remote):
-            if src_remote == dead:
-                raise RcloneError("404 not found", retryable=False)
-            return original(src_fs, src_remote, dst_fs, dst_remote)
-
-        monkeypatch.setattr(state["client"], "copy_file", copy)
-        # The copy loop takes the client `wait_for_daemon` returns, which the
-        # harness builds fresh — patching `state["client"]` alone reaches the
-        # report and ledger uploads and NOTHING in the copy path, so the dead
-        # row was never actually hit and every assertion below passed on a run
-        # where nothing went wrong.
-        monkeypatch.setattr(
-            job, "wait_for_daemon", lambda daemon, attempts=30: state["client"]
-        )
-        code = job.run_locked(
-            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
-        )
-        assert code == 0, f"one dead row failed the whole run (exit {code})"
-        led = Ledger.open(str(tmp_path / "ledger.db"))
-        assert [r[0] for r in led.conn.execute("SELECT outcome FROM runs")] == ["ok"]
-        assert led.last_successful_run() is not None, (
-            "the watermark never engages, so every night re-reads the table"
-        )
-        assert copier.SOURCE_GONE_MARKER in caplog.text, (
-            "the dead row was never reached, so this proves nothing"
-        )
-        assert f"{job.STATUS_KEY}=ok" in caplog.text
-        assert f"{job.FLAGS_KEY}=source_gone" in caplog.text
-        # It is NOT recorded as backed up — the run stopped chasing it, which
-        # is not the same as believing it is on Box.
-        assert led.copied_versions().get(("images", "exp-42/a.png")) is None
-        # And the object it COULD copy still got copied.
-        assert any(
-            "b.png" in dst
-            for _, _, dst in TestRunLockedWiresItsPartsTogether().object_copies(state)
-        ), "the healthy object beside the dead row was not copied"
-
-    def test_a_stopped_night_whose_ledger_upload_failed_still_says_stopped(
-        self, harness, monkeypatch, caplog
-    ):
-        """The commonest night of the seed, driven end to end.
-
-        The 240-minute job limit stops the run; the multi-GB ledger upload is
-        then throttled by Box. `exit_code` ranks the ledger condition above
-        the stop — deliberately, so it keeps its own number — which meant the
-        status line was computed from code 6 and the night reported FAILED,
-        with "some or all of tonight's objects were not mirrored" over a run
-        that had copied and recorded everything it reached.
-
-        Driven rather than asserted on `_status_for` directly, because the
-        defect was in what `run_locked` PASSES it: dropping the `stopped=`
-        argument leaves every unit test green.
-        """
-        state, tmp_path = harness
-        caplog.set_level(logging.INFO)
-
-        # The stop lands AFTER the first object, not before it: a run that
-        # copied nothing does not upload its ledger at all, so a
-        # stop-everything fake never reaches the condition under test.
-        stopped = [False]
-        original = state["client"].copy_file
-
-        def copy_then_stop(src_fs, src_remote, dst_fs, dst_remote):
-            if src_remote == "ledger.db":
-                raise RcloneError("Box said no")
-            result = original(src_fs, src_remote, dst_fs, dst_remote)
-            stopped[0] = True
-            return result
-
-        monkeypatch.setattr(state["client"], "copy_file", copy_then_stop)
-        monkeypatch.setattr(job.stopping, "stopping", lambda: stopped[0])
-        code = job.run_locked(
-            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
-        )
-        assert state["copied"], "nothing was copied, so the ledger was never uploaded"
-        assert code == 6, "the ledger condition lost its own exit code"
-        assert f"{job.STATUS_KEY}=stopped" in caplog.text, (
-            "a stopped night reported something other than stopped: "
-            + next(
-                (ln for ln in caplog.text.splitlines() if job.STATUS_KEY in ln), "none"
-            )
-        )
-        assert f"{job.FLAGS_KEY}=ledger_stale" in caplog.text, (
-            "the ledger condition vanished when the headline changed"
-        )
-
-    def test_a_stop_while_the_daemon_starts_is_reported_as_stopped(
-        self, harness, monkeypatch, caplog
-    ):
-        """`lib.Stopped` exists so this is not reported as a crash.
-
-        Nothing exercised `run_locked` CATCHING it — disabling the catch left
-        the whole suite green while a stop during startup unwound as an
-        error, which renders FAILED on a night that is fine.
-        """
-        state, tmp_path = harness
-        caplog.set_level(logging.INFO)
-        monkeypatch.setattr(job.stopping, "stopping", lambda: True)
-
-        def stop_during_startup(daemon, attempts=30):
-            raise lib.Stopped("stopped while waiting for the rclone daemon")
-
-        monkeypatch.setattr(job, "wait_for_daemon", stop_during_startup)
-        code = job.run_locked(
-            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
-        )
-        assert code == 3, f"a deliberate stop exited {code}"
-        assert f"{job.STATUS_KEY}=stopped" in caplog.text
-        assert f"{job.STATUS_KEY}=failed" not in caplog.text
-        assert state["daemon_stopped"], "the rclone daemon was left running"
-        # The run must still be recorded, or the next night cannot resume.
-        rows = (
-            Ledger.open(str(tmp_path / "ledger.db"))
-            .conn.execute("SELECT outcome FROM runs")
-            .fetchall()
-        )
-        assert rows == [("partial",)], rows
-
-    def test_a_night_that_copied_nothing_is_not_called_stale(self, harness, caplog):
-        """The copy is only stale if the ledger changed without it.
-
-        A quiet night changed nothing, so the copy on Box is still current.
-        Crying stale here would train people to ignore the marker, which is
-        the only signal the real case has.
-        """
-        state, tmp_path = harness
-        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
-        job.run_locked(args, tmp_path)
-        state["copied"].clear()
-        caplog.clear()
-        job.run_locked(args, tmp_path)
-        assert job.LEDGER_STALE_MARKER not in caplog.text
-
-    def test_it_uploads_when_the_copy_on_box_is_smaller(self, harness, monkeypatch):
-        state, tmp_path = harness
-        self.with_remote_size(state, monkeypatch, 1)
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        assert len(self.uploads(state)) == 1, "refused to update a stale copy"
-
-    def test_it_uploads_when_box_has_no_copy_yet(self, harness, monkeypatch):
-        state, tmp_path = harness
-        self.with_remote_size(state, monkeypatch, None)
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        assert len(self.uploads(state)) == 1, "the first upload never happens"
-
-    def test_an_equal_sized_copy_is_still_replaced(
-        self, harness, monkeypatch, tmp_path
-    ):
-        """Only SMALLER is refused. Equal means the same ledger, and a run that
-        copied something has almost certainly changed it."""
-        state, tmp_path = harness
-        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
-        job.run_locked(args, tmp_path)  # first run creates the ledger
-        size = (tmp_path / "ledger.db").stat().st_size
-        state["copied"].clear()
-        self.with_remote_size(state, monkeypatch, size)
-        # Something new to copy, so the upload is reached at all.
-        monkeypatch.setattr(
-            TestRunLockedWiresItsPartsTogether,
-            "MANIFEST",
-            "images\texp-42/c.png\tv3\t100\t2026-08-31T00:00:02+00\n",
-        )
-        job.run_locked(args, tmp_path)
-        assert len(self.uploads(state)) == 1
-
-    def test_a_night_that_copied_nothing_does_not_send_it(self, harness):
-        """It is a gigabyte or two once seeded, and an unchanged file."""
-        state, tmp_path = harness
-        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
-        job.run_locked(args, tmp_path)
-        state["copied"].clear()
-        job.run_locked(args, tmp_path)  # everything already current
-        assert self.uploads(state) == [], "re-sent an unchanged ledger"
-
-    def test_a_crashed_run_does_not_replace_the_good_copy(self, harness, monkeypatch):
-        """Crashing AFTER copying, which is the case the guard is for.
-
-        A run that dies before copying anything is already covered by the
-        nothing-copied rule; only a run that copied and then crashed can reach
-        the upload with a ledger the run never finished writing.
-        """
-        state, tmp_path = harness
-
-        def boom(*a, **kw):
-            raise RuntimeError("Box refused during verification")
-
-        monkeypatch.setattr(job, "verify_sample", boom)
-        args = TestRunLockedWiresItsPartsTogether().args(tmp_path, verify=50)
-        with pytest.raises(RuntimeError):
-            job.run_locked(args, tmp_path)
-        assert state["copied"], "nothing was copied, so this proves nothing"
-        assert self.uploads(state) == [], "a half-written ledger was uploaded"
-
-    def test_a_run_that_copied_nothing_and_crashed_is_also_skipped(
-        self, harness, monkeypatch
-    ):
-        state, tmp_path = harness
-
-        def boom(*a, **kw):
-            raise RuntimeError("preflight could not reach MinIO")
-
-        monkeypatch.setattr(job, "preflight_source", boom)
-        with pytest.raises(RuntimeError):
-            job.run_locked(
-                TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
-            )
-        assert self.uploads(state) == []
-
-    def test_a_failed_upload_neither_fails_the_run_nor_strands_the_container(
-        self, harness, monkeypatch, caplog
-    ):
-        state, tmp_path = harness
-        real_copy = state["client"].copy_file
-
-        def refuse_the_ledger(src_fs, src_remote, dst_fs, dst_remote):
-            if src_remote == "ledger.db":
-                raise RcloneError("box: quota exceeded", retryable=False)
-            return real_copy(src_fs, src_remote, dst_fs, dst_remote)
-
-        monkeypatch.setattr(state["client"], "copy_file", refuse_the_ledger)
-        code = job.run_locked(
-            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
-        )
-        assert code == 6, "a failed ledger upload must fail the run"
-        assert state["daemon_stopped"], "the rclone daemon was left behind"
-        assert "upload failed" in caplog.text
 
 
 class TestACrashedRunStillLeavesARecord:
@@ -2982,17 +2518,16 @@ class TestTheVerdictTheSummaryReads:
             assert job._status_for(code, "partial") == "failed", code
 
     def test_a_condition_the_run_found_is_not_a_failed_run(self):
-        """4, 5 and 6 exit non-zero, and none of them means copying failed.
+        """4 and 5 exit non-zero, and neither means copying failed.
 
-        Exit 4 is a verification mismatch, 5 a refused collision, 6 a ledger
-        upload that did not land — on all three, every copy the run attempted
-        succeeded. Reported as `failed`, the summary told the operator that
-        objects had not been mirrored on a night when they had, contradicting
-        the log two lines below it and, for exit 6, its own notice one line
-        below. The condition still reaches them: it is in the flags, and the
-        non-zero exit still raises the red tick.
+        Exit 4 is a verification mismatch and 5 a refused collision — on both,
+        every copy the run attempted succeeded. Reported as `failed`, the
+        summary told the operator that objects had not been mirrored on a night
+        when they had, contradicting the log two lines below it. The condition
+        still reaches them: it is in the flags, and the non-zero exit still
+        raises the red tick.
         """
-        for code in (4, 5, 6):
+        for code in (4, 5):
             assert job._status_for(code, "ok") == "ok", code
             assert job._status_for(code, "partial") == "partial", code
 
@@ -3012,15 +2547,13 @@ class TestTheVerdictTheSummaryReads:
     def test_a_stop_is_still_a_stop_when_a_condition_outranks_it(self):
         """Exit code and headline answer different questions.
 
-        A seed night stopped by the job's 240-minute limit whose ledger
-        upload was throttled exits 6, because the ledger is the thing worth
-        a person's attention. It is still a stopped night, and "stopped,
-        progress kept — nothing is lost" is what its operator must read.
+        A seed night stopped by the job's 240-minute limit that also refused a
+        collision exits 5, because the collision is the thing worth a person's
+        attention. It is still a stopped night, and "stopped, progress kept —
+        nothing is lost" is what its operator must read.
         """
-        code = job.exit_code(
-            failed=0, verify_mismatched=0, stopped=True, ledger_flag="ledger_stale"
-        )
-        assert code == 6, "the ledger condition lost its own exit code"
+        code = job.exit_code(failed=0, verify_mismatched=0, stopped=True, collisions=1)
+        assert code == 5, "the collision lost its own exit code"
         assert job._status_for(code, "partial", stopped=True) == "stopped"
 
     def test_failed_copies_outrank_a_stop_in_the_headline(self):
@@ -3066,8 +2599,6 @@ class TestTheVerdictTheSummaryReads:
             "skipped_names": self.totals(skipped=1),
             "verify_mismatch": self.totals(verify_mismatched=1),
             "verify_incomplete": self.totals(verify_unverified=1),
-            "ledger_stale": self.totals(ledger_flag="ledger_stale"),
-            "ledger_ahead": self.totals(ledger_flag="ledger_ahead"),
         }
         for flag, totals in cases.items():
             assert flag in job._flags_for(totals), f"{flag} never reaches the summary"
@@ -3090,7 +2621,7 @@ class TestTheVerdictTheSummaryReads:
             skipped=5,
             verify_mismatched=1,
             verify_unverified=1,
-            ledger_flag="ledger_stale",
+            source_gone=1,
         )
         flags = job._flags_for(every)
         assert set(flags) <= set(job.FLAG_VALUES)
@@ -3103,9 +2634,9 @@ class TestTheVerdictTheSummaryReads:
         import logging as _logging
 
         caplog.set_level(_logging.INFO)
-        job.emit_status("ok", ("collisions", "ledger_stale"))
+        job.emit_status("ok", ("collisions", "source_gone"))
         line = [ln for ln in caplog.text.splitlines() if job.FLAGS_KEY in ln][-1]
-        assert "collisions,ledger_stale" in line, line
+        assert "collisions,source_gone" in line, line
 
 
 class TestTheStandDownVerdictReachesTheSummary:

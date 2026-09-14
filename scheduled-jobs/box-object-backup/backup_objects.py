@@ -24,8 +24,6 @@ Exit codes:
   4 = copying reported success but verification found objects missing from Box
   5 = one or more objects were refused because two names collide on one Box
       path; rename one of each pair in Supabase
-  6 = every object copied, but the ledger's Box copy is stale or ahead of this
-      host — the record that makes a re-seed unnecessary is not safe
 """
 
 from __future__ import annotations
@@ -71,21 +69,6 @@ BATCH_SIZE = 20_000
 # Verification samples from the objects this run copied; cap what we retain
 # so a multi-million-object seed doesn't hold them all to check 50.
 VERIFY_POOL_CAP = 5_000
-
-# Printed when the ledger changed and its Box copy did not, because the upload
-# could not be made. The upload is best-effort by design — the objects are
-# already on Box — so the run still exits 0 and the summary would otherwise read
-# "succeeded" while the only copy of the resume record sits on the host this job
-# exists to survive losing.
-LEDGER_STALE_MARKER = "the Box copy of the ledger is STALE"
-
-# The opposite situation, and it needs the opposite remedy, so it cannot share
-# the marker above. Here the upload was REFUSED because Box holds the larger
-# ledger: Box is the good copy and this host's is a stub — a rebuilt host, or a
-# wiped state dir. Told to "fix" a stale Box copy, an operator would overwrite
-# eight million rows with twenty and buy a three-week re-seed, which is the
-# exact disaster the size guard exists to prevent.
-LEDGER_AHEAD_MARKER = "the ledger on Box is AHEAD of this host"
 
 # Printed when Box did not answer for every object the pass sampled. A failed
 # stat is not evidence against the backup and must not fail the run — but a
@@ -156,8 +139,6 @@ FLAG_VALUES = (
     "skipped_names",
     "verify_mismatch",
     "verify_incomplete",
-    "ledger_stale",
-    "ledger_ahead",
     "source_gone",
 )
 
@@ -285,10 +266,9 @@ def _status_for(code: int, outcome: str, stopped: bool = False) -> str:
     if code in (1, 2):
         return "failed"
     # Taken directly rather than read off code 3, which a higher-ranked
-    # condition takes first. A seed night stopped by the job's time limit
-    # whose ledger upload was throttled exits 6, and it is still a stopped
-    # night — "stopped, progress kept" is exactly what its operator needs to
-    # read, and it is the one headline meaning "this is fine".
+    # condition takes first. A stopped night that also found a mismatch or a
+    # collision exits 4 or 5, and it is still a stopped night — "stopped,
+    # progress kept" is exactly what its operator needs to read.
     if stopped or code == 3:
         return "stopped"
     return "partial" if outcome == "partial" else "ok"
@@ -298,8 +278,7 @@ def _flags_for(totals: "Totals") -> tuple:
     """The conditions that are independent of the headline verdict.
 
     Each can occur on a night that otherwise succeeded, so none of them can be
-    a branch of the result — that is what made the ledger notice invisible
-    before, and it applies to all of these.
+    a branch of the result.
     """
     flags = []
     if totals.collisions:
@@ -310,8 +289,6 @@ def _flags_for(totals: "Totals") -> tuple:
         flags.append("verify_mismatch")
     if totals.verify_unverified:
         flags.append("verify_incomplete")
-    if totals.ledger_flag:
-        flags.append(totals.ledger_flag)
     if totals.source_gone:
         flags.append("source_gone")
     return tuple(flags)
@@ -669,11 +646,9 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             outcome,
             stopped=stopping.stopping(),
         )
-        # The four flags already final go in too, or a cancelled night recovers
-        # its headline and loses every notice — including the refused-filename
-        # one, whose whole justification is that you get exactly one. The ledger
-        # flags cannot: the upload has not run. Those reach a human by exit code
-        # 6, which notifies whether or not the summary renders anything.
+        # The flags go in too, or a cancelled night recovers its headline and
+        # loses every notice — including the refused-filename one, whose whole
+        # justification is that you get exactly one.
         report_flags = _flags_for(totals)
         # Nested so the teardown below cannot be skipped. Everything in this
         # block can raise — the ledger writes raise sqlite3.Error on a full disk
@@ -702,22 +677,12 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             # record matters most, and it is the local audit trail this job's own
             # error messages tell operators to read.
             ledger.finish_run(run_id, outcome, stats)
-            # Closed BEFORE it is uploaded. SQLite runs in WAL mode here, so
-            # committed rows can still be sitting in ledger.db-wal; a copy of
-            # ledger.db on its own would be missing them. close() checkpoints
-            # the WAL into the file, which makes the uploaded copy complete.
+            # close() checkpoints the WAL into ledger.db, so the file on the
+            # host is complete between runs.
             ledger.close()
-            totals.ledger_flag = publish_ledger(
-                daemon,
-                state_dir,
-                box_fs,
-                args,
-                copied=totals.copied,
-                crashed=crashed,
-            )
         finally:
-            # Last, so the daemon is still alive for both uploads above, and
-            # unconditional, so nothing above can strand the daemon.
+            # Last, so the daemon is still alive for the report upload above,
+            # and unconditional, so nothing above can strand the daemon.
             daemon.stop()
     logger.info(
         "done — copied %d, failed %d, already current %d, skipped %d",
@@ -812,7 +777,6 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         verify_mismatched=totals.verify_mismatched,
         stopped=stopping.stopping(),
         collisions=totals.collisions,
-        ledger_flag=totals.ledger_flag,
     )
     # Same verdict the report already carries; printed here because the log is
     # the faster route when the connection does survive.
@@ -845,10 +809,6 @@ class Totals:
     # re-read the whole table. Same treatment, and the same reason, as a
     # filename Box cannot store.
     source_gone: int = 0
-    # Which way the ledger upload went, if it did not go cleanly. Set by
-    # publish_ledger, read by _flags_for — the two conditions are
-    # opposites and the summary must tell them apart.
-    ledger_flag: str | None = None
     failures: list = field(default_factory=list)
     gone: list = field(default_factory=list)
     # Objects refused before any copy was attempted, and objects the check
@@ -893,7 +853,6 @@ def exit_code(
     verify_mismatched: int,
     stopped: bool = False,
     collisions: int = 0,
-    ledger_flag: str | None = None,
 ) -> int:
     """What the run tells its caller, which for a scheduled run is everything.
 
@@ -924,15 +883,6 @@ def exit_code(
     # for ever.
     if collisions:
         return 5
-    # The ledger's Box copy is not what it should be — either stale or ahead
-    # of this host. Its own code, and non-zero deliberately: every other route
-    # to a human is a notice inside a SUCCESSFUL run's summary, which notifies
-    # nobody. This is the one condition that silently erodes the record that
-    # makes a re-seed unnecessary, so it is worth a red tick and an email even
-    # though every object copied fine. The run still records `ok`, so the
-    # watermark is unaffected — the exit code and the watermark are separate.
-    if ledger_flag:
-        return 6
     # 3 is the documented "interrupted; progress is in the ledger and the
     # next run resumes". A signal handler means SIGINT no longer raises
     # KeyboardInterrupt, so without this a stopped run reports the clean 0
@@ -1071,87 +1021,6 @@ def publish_report(
         logger.info("run report on Box: %s", report.box_remote_path(entry))
     except RcloneError as exc:
         logger.error("run report stayed local at %s — upload failed: %s", local, exc)
-
-
-def publish_ledger(
-    daemon: rclone_daemon.Daemon,
-    state_dir: Path,
-    box_fs: str,
-    args: argparse.Namespace,
-    *,
-    copied: int,
-    crashed: bool,
-) -> str | None:
-    """Copy the ledger to Box, so losing the host does not mean re-seeding.
-
-    The ledger records which version of every object is on Box, and it is what
-    lets a multi-week seed stop and carry on. It lives on the deploy host —
-    the machine this job exists to survive losing. Without a copy, a rebuilt
-    host starts from an empty ledger, concludes nothing has ever been copied,
-    and re-transfers all eight million objects. Listing Box cannot rebuild it:
-    the ledger is keyed on each object's version, and a listing shows only
-    that a path exists.
-
-    Skipped in three cases: after a run that copied nothing — the file is a
-    gigabyte or two once seeded and a quiet night has not meaningfully changed
-    it; after one that crashed, so a half-written ledger cannot replace a good
-    copy; and when the copy on Box is larger than this one, which means this
-    host did not build the mirror that copy describes.
-
-    Best-effort, like the run report: the objects are already safely on Box
-    and a failed upload must not turn a good run into a failed one.
-    """
-    if crashed:
-        logger.info("ledger not uploaded: the run did not finish cleanly")
-        return None
-    if not copied:
-        logger.info("ledger not uploaded: nothing was copied this run")
-        return None
-    local = state_dir / report.LEDGER_FILENAME
-    try:
-        local_size = local.stat().st_size
-    except OSError as exc:
-        logger.error("cannot read %s: %s — %s", local, exc, LEDGER_STALE_MARKER)
-        return "ledger_stale"
-    destination = report.box_ledger_path(args.box_root)
-    try:
-        client = RcloneRC(daemon.url, daemon.user, daemon.password)
-        # Never replace a bigger copy with a smaller one. A ledger only grows,
-        # so a smaller one means this host did not build the mirror the copy on
-        # Box describes — a rebuilt host, or a wiped state dir. The smoke test
-        # in the wiki copies twenty objects, which is enough to trigger this
-        # upload, so without the check the first command an operator runs after
-        # losing the host would replace the record of eight million objects
-        # with a record of twenty.
-        existing = client.stat(box_fs, destination)
-        remote_size = existing.get("Size") if existing else None
-        if isinstance(remote_size, int) and local_size < remote_size:
-            logger.error(
-                "ledger NOT uploaded: %s. The copy at %s is %s and this run's "
-                "is only %s, so this host is not the one that built that "
-                "mirror. The Box copy is the good one — RESTORE it onto this "
-                "host before running again, and do not upload over it. See "
-                "'If the deploy host itself is gone' in the wiki. Uploading "
-                "now would lose the record of what is already backed up.",
-                LEDGER_AHEAD_MARKER,
-                destination,
-                lib.format_bytes(remote_size),
-                lib.format_bytes(local_size),
-            )
-            return "ledger_ahead"
-        client.copy_file(
-            str(state_dir.resolve()), report.LEDGER_FILENAME, box_fs, destination
-        )
-        logger.info("ledger on Box: %s (%s)", destination, lib.format_bytes(local_size))
-    except Exception as exc:
-        # Deliberately broad: this runs in the cleanup path, and anything
-        # raised here would skip the container teardown below it.
-        logger.error(
-            "ledger stayed on the host only — upload failed: %s — %s",
-            exc,
-            LEDGER_STALE_MARKER,
-        )
-        return "ledger_stale"
 
 
 def plan_batches(
