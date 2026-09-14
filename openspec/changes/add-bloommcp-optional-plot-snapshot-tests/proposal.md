@@ -5,9 +5,10 @@ dedicated plotting tools but deliberately scoped out the optional plot keys
 `pca_analysis`/`umap_analysis`/`clustering` emit under `include_plots=True`, tracking them
 as **#723** rather than dropping them silently. That follow-up is this change.
 
-The gap is worse than #723's own text states. #723 says these keys are "only asserted on
-via `.is_file()`-style checks" — there is in fact **no `.is_file()` check on any of them**.
-What the three tool test files assert is a 4-byte PNG magic-number check:
+#723 describes the existing coverage as "`.is_file()`-style checks". The real shape is
+different — and slightly stronger, not weaker: there is **no `.is_file()` check on any of
+these keys**. What the three tool test files assert is a 4-byte PNG magic-number check,
+which proves a little more than mere existence and still nothing about content:
 
 ```python
 assert staged[key][:4] == b"\x89PNG", f"{key} is not a valid PNG"
@@ -16,6 +17,9 @@ assert staged[key][:4] == b"\x89PNG", f"{key} is not a valid PNG"
 Nothing reads past byte 4. Every pixel of all 8 figures is untested: a matplotlib/Pillow/
 numpy bump, a `sleap-roots-analyze` delegate upgrade, or a refactor that changes color
 mapping, axes geometry, or label layout would ship with every existing assertion green.
+The live-smoke tests do not close this either — `test_pca_analysis_smoke.py` asserts an
+`outputs` set that excludes `.png` keys entirely, so `include_plots` is never exercised
+against the real stack.
 
 ## What Changes
 
@@ -42,9 +46,14 @@ mapping, axes geometry, or label layout would ship with every existing assertion
 
 - **8 keys, not #723's 7.** `create_umap_single_trait` is a first-class catalog key
   (`_UMAP_CATALOG_KEYS`) that #723's list omits; its own text anticipates this with "and any
-  other UMAP plot key it exposes". It is also the sole consumer of the `plot_cmap` /
-  `plot_point_size` / `plot_alpha` fields (#662/#721), so leaving it out would mean the plot
-  with the largest user-controllable style surface stays unsnapshotted.
+  other UMAP plot key it exposes" — though the issue contradicts itself, its Proposal
+  section saying "these **7** additional plot keys". This change follows the enumeration
+  clause, and Scenario 2 of the spec makes the set self-tracking off the catalogs so the
+  count cannot drift again. `create_umap_single_trait` is also the sole consumer of the
+  `plot_cmap` / `plot_point_size` fields (#662/#721) — `plot_alpha` is **not** exclusive to
+  it, since `pca_analysis` forwards its own `plot_alpha` to `create_pca_biplot` — so leaving
+  it out would mean the plot with the largest user-controllable style surface stays
+  unsnapshotted.
 - **`clustering` at its default `method="kmeans"` only** — 2 baselines, not 6. One baseline
   per catalog key matches the per-key scope #723 itself counts in. `gmm`/`hierarchical`
   rendering keeps its existing key-set and magic-byte coverage.
@@ -60,11 +69,15 @@ mapping, axes geometry, or label layout would ship with every existing assertion
   the same heavier-weight machinery design.md Decision 7 of #713 already argued against, and
   the same structural limit #768 tracks.
 - Not fixing the unrelated `outputs`-ordering non-determinism found while surveying these
-  tools (`list(frozenset)` in `pca_analysis.py:422` / `umap_analysis.py:649`, where
-  `clustering.py:644` sorts). It does not affect pixel content — only key insertion order —
-  so it is out of scope here; filed separately rather than fixed in a testing change.
+  tools: `pca_analysis.py:422` and `umap_analysis.py:649` iterate `list(frozenset)` where
+  `clustering.py:644` and `heritability_analysis.py:594` use `sorted(...)` — a 2-of-4
+  divergence across the plot-emitting family, not a two-tool outlier. It cannot affect pixel
+  content (the tests address figures by filename, never by `outputs` order), so it is out of
+  scope for a testing change. **No issue exists for it yet; one should be filed.**
 - Not restoring pixel coverage for `heritability_analysis`'s two folded-in figures (the
-  other gap `tests/fixtures/README.md` records). Different fixture shape, different issue.
+  other gap `tests/fixtures/README.md` records — it promises this is "a follow-up, not a
+  silent loss"). Different fixture shape, and outside what #723 asks for. **No issue exists
+  for it yet either; one should be filed.**
 
 ## Impact
 
@@ -73,9 +86,21 @@ mapping, axes geometry, or label layout would ship with every existing assertion
   alongside its three, not modifications to them).
 - **Affected code**:
   - `bloommcp/tests/fixtures/plot_baselines/` — 8 new PNGs (~581 KB total, largest 214 KB;
-    each under the 500 KB `check-added-large-files` pre-commit limit). `MANIFEST.json`
-    records environment provenance only and lists no filenames, so it needs no edit beyond
-    the regeneration stamp.
+    each under the 500 KB `check-added-large-files` pre-commit limit).
+  - `bloommcp/tests/fixtures/plot_baselines/MANIFEST.json` — **extended**. It currently
+    records only matplotlib/Pillow/sleap-roots-analyze/platform/python, which omits most of
+    what these 8 renders actually depend on: `umap-learn`, `numba`, `llvmlite` (both UMAP
+    baselines), `scikit-learn` (PCA solver and `svd_flip`'s sign convention), `seaborn` (the
+    heatmap), `adjustText` (the biplot's label solver, whose *absence* is swallowed by a bare
+    `except ImportError: pass` and silently changes layout), `numpy`, and matplotlib's
+    bundled FreeType version — the single biggest driver of the cross-platform text-extent
+    risk Decision 3 is about. It also gains the fixture's SHA-256 and the resolved seeds.
+  - `openspec/changes/add-bloommcp-plot-snapshot-tests/specs/…/spec.md` — corrected. That
+    delta still says "the 5 Plotting Tools" and requires two baselines #462 deleted, and its
+    regeneration command predates the `--frozen`/`--yes` flags. It is unarchived, so it would
+    carry both falsehoods into `openspec/specs/`. PR #724 merged to staging on 2026-09-03, so
+    the file is editable from this branch — and this is the next change to touch the
+    capability, which makes it the cheapest moment to fix.
   - `bloommcp/scripts/gen_plot_snapshots_golden.py` — extended, not restructured.
   - `bloommcp/tests/tools/test_viz_snapshot.py` — new parametrization + 2 negative controls.
   - `bloommcp/tests/scripts/test_gen_plot_snapshots_golden.py` — cover the new render path.

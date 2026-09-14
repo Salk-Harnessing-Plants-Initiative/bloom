@@ -60,7 +60,7 @@ That is same-machine determinism; see Decision 3 for the cross-platform half.
 
 `_TOL = 15` clears every 5%-dim value (max **12.9**) and sits below every 10%-dim value
 (min **20.5**), so the selection rule #713 used holds for all 8 without modification. The
-band is tighter than #713's 3 measured (5%: 12.0-12.5, 10%: 23.4-24.9) — `cluster_scatter_pca`
+band is tighter than #713's 3 measured (5%: 12.0-12.5, 10%: 23.8-24.9 for the 3 that survive #462) — `cluster_scatter_pca`
 and `pca_biplot` reach 12.9/12.8 at 5% — but the ordering `_TOL` depends on is intact, and a
 **shared** constant is worth more than a marginally better-fitted per-plot one: #713's
 Decision 7 already worked through why per-plot tolerances trade a real property (one
@@ -116,19 +116,54 @@ correctness — which is what `test_clustering_tool.py`'s numeric oracles are fo
 different membership sizes) — under `_TOL`. Recorded for completeness; the barplot catches
 every k-change, which is the regression shape that plot exists to show.
 
-**Blind spot B — `create_feature_contribution_heatmap`, one cell: RMS 14.0.** Geometry
-measured live via `ax.get_window_extent()` after `fig.canvas.draw()`, not assumed: the
-heatmap is 13 features x 5 PCs, its axes measure 622.2x704.4px, so one cell is
-124.4x54.2px = 6,742px² = **0.879%** of the 971x790 canvas. Recoloring exactly that
-footprint to the most-detectable-possible color (opaque orange) scores **RMS 14.0** —
-below `_TOL = 15`, though far closer to it than `correlation_matrix`'s 5.2. A real defect
-shifting a cell *within* the colormap would score lower still. Same class as #768; this
-plot is a second instance of it, not a new phenomenon.
+**Not a blind spot — `create_feature_contribution_heatmap` catches a real single-cell
+defect (RMS 40-64).** This section previously claimed the opposite, from a measurement that
+was wrong twice over. Recorded rather than quietly deleted, because the failure mode is
+instructive and is exactly the one #713's Decision 8 exists to prevent.
+
+*What went wrong.* The first measurement rendered the heatmap by calling the upstream
+plotter with every numeric column of the fixture — 13 rows — instead of going through the
+tool, which selects 11 certified trait columns (`Computation.Time.s` is excluded by
+`data_access/columns.py`'s `"time"` substring rule; `Replicate` is a role column). Dividing
+a correctly measured axes height by the wrong row count gave a cell of 124.4x54.2px
+(0.879%) instead of the real **124.4x64.0px = 7,968px² = 1.039%** of the 971x790 canvas.
+That is the very shortcut this change's own spec forbids — "through each tool's real MCP
+entrypoint ... not by calling the upstream plotter directly" — committed while writing the
+requirement that forbids it.
+
+*The deeper error.* Even at the right size, a synthetic opaque-orange recolor is not how a
+loadings defect manifests, and it is not stable: across five real cell positions it scores
+**8.35-16.20 RMS**, straddling `_TOL = 15`, so it cannot support a conclusion in either
+direction. The honest probe perturbs the *data*: change one loadings value and re-render.
+
+| perturbation | RMS | caught at `_TOL=15`? |
+|---|---|---|
+| feature[0] PC1, +0.151 → +0.351 | 58.8 | yes |
+| feature[0] PC1, +0.151 → +0.651 | 59.5 | yes |
+| feature[5] PC3, -0.089 → +0.111 | 40.1 | yes |
+| feature[10] PC5, +0.327 → +0.527 | 63.8 | yes |
+
+Comfortably caught, and for a structural reason: `sns.heatmap(annot=True, fmt=".3f")`
+prints every cell's value as text, so a wrong loading changes glyphs as well as color, and
+seaborn normalizes the colormap over the whole matrix, so one changed value rescales the
+color of **every** cell. That makes this heatmap the **opposite** of `correlation_matrix`'s
+55-cell grid, not "a second instance of it" — the earlier draft's claim. It gets a
+*positive* control, not a negative one.
+
+**Blind spot B — `create_cluster_size_barplot` misses a same-k membership change.**
+`method="hierarchical"` returns the same k=2 as the default but different cluster sizes, and
+scores **RMS 13.5** — under `_TOL`. Narrower than blind spot A (a k-change is caught at
+64.7-69.5), but real, and it undercuts any argument that the barplot fully compensates for
+the scatter's blindness: the one regression shape the scatter cannot see is also the shape
+the barplot handles worst. Pinned like blind spot A.
 
 Both blind spots get a negative-control test asserting `compare_images` returns `None`,
 mirroring `test_realistic_single_cell_defect_in_correlation_matrix_is_not_caught`. Pinning
 a limitation means any future change to it — a fix, or a regression into a worse one —
-fails loudly rather than passing unnoticed.
+fails loudly rather than passing unnoticed. Both pins are written to be two-sided: they
+also assert the perturbation actually changed the image, so a refactor that silently
+ignored the parameter could not satisfy them vacuously, and they assert the RMS stays in
+its measured band rather than merely being under `_TOL`.
 
 ## Decision 3: cross-platform risk is higher here than #713's, and accepted the same way
 
