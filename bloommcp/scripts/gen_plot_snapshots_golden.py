@@ -48,6 +48,8 @@ review convention. An RMS of 0 (or near it) confirms nothing visually changed --
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.metadata
 import json
 import platform
 import shutil
@@ -55,6 +57,7 @@ import tempfile
 from pathlib import Path
 
 import matplotlib
+import matplotlib.ft2font
 import PIL
 import sleap_roots_analyze as sra
 from matplotlib.testing.compare import compare_images
@@ -99,6 +102,27 @@ _TOOLS = [
         "correlation_matrix.png",
         True,
     ),
+]
+
+# (baseline basename, tool fn name, catalog key) for the `include_plots=True` optional keys
+# (#723). A separate table from `_TOOLS` rather than more rows in it: these tools take a
+# Pydantic params model, are `require_clean=True` consumers (seeded via
+# `add_cleaned_version`, not `add_experiment`), and emit N figures per call rather than one.
+# Concatenating the two would also break `tests/scripts/`'s 4-tuple destructuring.
+_OPTIONAL_CATALOG = {
+    "pca_analysis": (
+        "create_pca_scree_plot",
+        "create_pca_biplot",
+        "create_feature_contribution_plot",
+        "create_feature_contribution_heatmap",
+    ),
+    "umap_analysis": ("create_umap_single_trait", "create_umap_colored_by_top_traits"),
+    "clustering": ("create_cluster_scatter_pca", "create_cluster_size_barplot"),
+}
+_OPTIONAL_TOOLS = [
+    (f"{key}_turface_19_baseline.png", fn_name, f"{key}.png")
+    for fn_name, keys in _OPTIONAL_CATALOG.items()
+    for key in keys
 ]
 
 
@@ -158,6 +182,59 @@ def _render_converged(tool_fn, produced_name: str, capture_root: Path) -> Path:
     return produced
 
 
+def _render_optional(fn_name: str, capture_root: Path) -> Path:
+    """Render one `include_plots=True` tool's figures and return the capture dir.
+
+    Same `commit`-spy technique as `_render_converged` (the staging dir is deleted on
+    commit, so that is the last moment the bytes exist), differing only in seeding a
+    *cleaned* version -- these tools reject a raw frame with `require_clean=True` -- and in
+    taking a params model with `include_plots=True` rather than a bare experiment string.
+    """
+    import pandas as pd
+    from bloom_mcp.data_access import FakeReader, SupabaseReader
+    from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+    from bloom_mcp.sections.sleap_roots.analysis.clustering import (
+        ClusteringParams,
+        clustering,
+    )
+    from bloom_mcp.sections.sleap_roots.analysis.pca_analysis import (
+        PCAAnalysisParams,
+        pca_analysis,
+    )
+    from bloom_mcp.sections.sleap_roots.analysis.umap_analysis import (
+        UMAPAnalysisParams,
+        umap_analysis,
+    )
+    from bloom_mcp.tools import _ports
+
+    specs = {
+        "pca_analysis": (pca_analysis, PCAAnalysisParams),
+        "umap_analysis": (umap_analysis, UMAPAnalysisParams),
+        "clustering": (clustering, ClusteringParams),
+    }
+    tool_fn, model = specs[fn_name]
+
+    capture_root.mkdir(parents=True, exist_ok=True)
+    reader = FakeReader()
+    reader.add_cleaned_version(_EXPERIMENT, "v1", pd.read_csv(_RAW), make_latest=True)
+    store = FakeResultStore()
+    real_commit = store.commit
+
+    def _spy_commit(run, outputs):
+        for name in outputs:
+            if name.endswith(".png"):
+                shutil.copy(run.staging_dir / name, capture_root / name)
+        return real_commit(run, outputs)
+
+    store.commit = _spy_commit
+    _ports.configure(reader=reader, store=store)
+    try:
+        tool_fn(model(experiment=_EXPERIMENT, include_plots=True))
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    return capture_root
+
+
 def build(tmp_path: Path, *, confirmed: bool) -> bool:
     """Render all 3 tools and print each baseline's old-vs-new RMS. Only actually writes
     the PNGs if `confirmed` is True, or none of them already exist (a first-time run has
@@ -193,11 +270,34 @@ def build(tmp_path: Path, *, confirmed: bool) -> bool:
         any_existing = any_existing or target.is_file()
         copies.append((target, produced))
 
+    # The optional `include_plots=True` keys (#723). Rendered once per tool -- each call
+    # emits every key in that tool's catalog -- then matched to baselines by filename.
+    optional_capture = tmp_path / "committed_optional"
+    for fn_name in _OPTIONAL_CATALOG:
+        _render_optional(fn_name, optional_capture)
+    for baseline_name, _fn_name, produced_name in _OPTIONAL_TOOLS:
+        produced = optional_capture / produced_name
+        if not produced.is_file():
+            raise RuntimeError(f"expected {produced} to exist after commit")
+        target = _BASELINES / baseline_name
+        rel = target.relative_to(_FIXTURES.parents[1])
+        print(_report_regeneration(target, produced, rel))
+        any_existing = any_existing or target.is_file()
+        copies.append((target, produced))
+
     if any_existing and not confirmed:
         return False
     for target, produced in copies:
         shutil.copy(produced, target)
     return True
+
+
+def _version(module_name: str) -> str:
+    """Best-effort installed version, so a missing optional dep is recorded, not fatal."""
+    try:
+        return importlib.metadata.version(module_name)
+    except importlib.metadata.PackageNotFoundError:  # pragma: no cover - env-dependent
+        return "not installed"
 
 
 def write_manifest() -> None:
@@ -215,6 +315,28 @@ def write_manifest() -> None:
         "sleap_roots_analyze_version": sra.__version__,
         "platform": platform.platform(),
         "python_version": platform.python_version(),
+        # Everything below was added with the #723 optional-key baselines. Without it a
+        # cross-platform failure is undiagnosable: a scikit-learn `svd_flip` change alone
+        # mirrors the biplot for a scientifically meaningless reason, adjustText's absence
+        # is swallowed by a bare `except ImportError` and silently changes the biplot's
+        # layout, and FreeType is the single biggest driver of the text-extent differences
+        # that move a `bbox_inches="tight"` canvas.
+        "_optional_key_comment": (
+            "Libraries below back the pca_analysis/umap_analysis/clustering optional plot "
+            "keys; fixture_sha256 ties these baselines to the CSV that produced them, and "
+            "seeds record the stochastic tools' resolved defaults."
+        ),
+        "umap_learn_version": _version("umap-learn"),
+        "numba_version": _version("numba"),
+        "llvmlite_version": _version("llvmlite"),
+        "scikit_learn_version": _version("scikit-learn"),
+        "seaborn_version": _version("seaborn"),
+        "adjusttext_version": _version("adjustText"),
+        "numpy_version": _version("numpy"),
+        "freetype_version": matplotlib.ft2font.__freetype_version__,
+        "fixture": _RAW.name,
+        "fixture_sha256": hashlib.sha256(_RAW.read_bytes()).hexdigest(),
+        "seeds": {"umap_analysis": 42, "clustering": 42, "pca_analysis": None},
     }
     out = _BASELINES / "MANIFEST.json"
     out.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")

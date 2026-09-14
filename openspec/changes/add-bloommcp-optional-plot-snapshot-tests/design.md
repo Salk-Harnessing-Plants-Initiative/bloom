@@ -201,6 +201,15 @@ filenames (`trait_histograms.png`) drifted apart across #462/#466. Starting thes
 means no mapping table to keep in sync — one fewer place for a rename to rot. The existing 3
 are left alone; renaming them would churn committed binaries for cosmetics.
 
+## Measured cost
+
+Full bloommcp sweep (`pytest tests/ -m "not integration and not live_smoke"`), the exact
+invocation `python-audit` runs: **1709 → 1729 tests, 175.7s**, against a 20-minute job cap.
+The 20 added tests cost roughly 6-7s, nearly all of it umap-learn's numba JIT — paid once
+per process, and `test_umap_analysis_tool.py` already pays it. The per-tool render is
+memoized so `pca_analysis` is fitted once rather than once per its 4 parametrized keys
+(~3.6s rather than ~7.7s).
+
 ## Risks / Trade-offs
 
 - **CI fails cross-platform on first run** → Decision 3's ordered fallback; the diff-image
