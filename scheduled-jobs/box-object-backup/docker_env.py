@@ -14,7 +14,6 @@ import secrets
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from rclone_rc import redact
 
@@ -38,21 +37,10 @@ STATE_MOUNT = "/state"
 # read out of /proc/<pid>/cmdline.
 RC_PASS_ENV = "RCLONE_RC_PASS"
 
-# Rows psql pulls per cursor fetch. Bounds the db container's memory during
-# the manifest read regardless of how many objects the deploy holds.
-FETCH_COUNT = 10_000
-
-# Sent ahead of the SQL in every psql session this job opens. The backup
-# connects as the Postgres superuser, so nothing server-side would refuse a
-# write; this is the only thing that does. One constant rather than a literal
-# per call site, so a new query cannot be added without it.
-READ_ONLY_PREAMBLE = "SET default_transaction_read_only = on;\n"
-
 # The rclone daemon shares the host with the whole Bloom stack, so it gets a
 # hard ceiling rather than whatever it decides to take. Its own transfer
 # buffers are the bulk of it, and they scale with --transfers.
 RC_MEMORY_LIMIT = "512m"
-DB_SERVICE = "db-prod"
 COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
 COMPOSE_SERVICE_LABEL = "com.docker.compose.service"
 COMPOSE_NETWORK_LABEL = "com.docker.compose.network"
@@ -142,119 +130,6 @@ def find_network(project: str, network: str = "supanet") -> str:
             f"no '{network}' network for project '{project}' — is the deploy up?"
         )
     return names[0]
-
-
-def psql_query_to_file(
-    container: str, sql: str, user: str, database: str, destination: Path,
-    password: str = "",
-) -> int:
-    """Run a read-only query in the db container, streaming rows to a file.
-
-    Prod's `storage.objects` has millions of rows, so the result goes
-    straight to disk rather than through a string in memory. The SQL arrives
-    on stdin so a long bucket list can never hit the argv length limit, and
-    the session is pinned read-only so a mistake in query construction
-    cannot write.
-    """
-    cmd = [
-        which("docker"),
-        "exec",
-        "-i",
-        # Pass-through, deliberately valueless: db-prod authenticates every
-        # connection, including one opened inside the container, and an argv
-        # is world-readable through /proc/<pid>/cmdline.
-        "-e",
-        "PGPASSWORD",
-        container,
-        "psql",
-        "-U",
-        user,
-        "-d",
-        database,
-        "--no-align",
-        "--tuples-only",
-        "--field-separator",
-        "\t",
-        "--quiet",
-        "--no-psqlrc",
-        "-v",
-        "ON_ERROR_STOP=1",
-        # Without this psql buffers the whole result set in the db container
-        # before writing a byte — millions of rows of it, next to Postgres's
-        # own memory on a host that runs the entire stack. FETCH_COUNT makes
-        # psql read through a cursor and stream, at identical output format.
-        "-v",
-        f"FETCH_COUNT={FETCH_COUNT}",
-        "-f",
-        "-",
-    ]
-    preamble = READ_ONLY_PREAMBLE + "SET statement_timeout = '60min';\n"
-    rows = 0
-    with destination.open("w", encoding="utf-8") as out:
-        process = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=out,
-            stderr=subprocess.PIPE,
-            text=True,
-            env={**os.environ, "PGPASSWORD": password},
-        )
-        _, stderr = process.communicate(input=preamble + sql + ";\n")
-        if process.returncode != 0:
-            raise DockerError(
-                f"psql failed ({process.returncode}): {stderr.strip() or '(no stderr)'}"
-            )
-    with destination.open(encoding="utf-8") as handle:
-        rows = sum(1 for line in handle if line.strip())
-    return rows
-
-
-def database_now(container: str, user: str, database: str, password: str = "") -> str:
-    """The DATABASE's clock, in the format the manifest reports updated_at in.
-
-    The watermark is compared against `storage.objects.updated_at`, which
-    Postgres writes. Taking it from the deploy host instead compares two
-    clocks: if the host ever runs ahead, objects written inside the skew are
-    never enumerated again, silently and permanently. Containers share the
-    host kernel clock today, so this is latent rather than active — but the
-    comparison should not depend on that staying true.
-
-    The SQL goes on stdin rather than in `-c` so the read-only preamble can
-    precede it. psql runs a multi-statement `-c` as one transaction, and
-    `default_transaction_read_only` only governs transactions opened after it
-    is set, so a pin sitting beside the SELECT would not cover it.
-    """
-    sql = "SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SSOF');\n"
-    out = run(
-        [
-            which("docker"),
-            "exec",
-            "-i",
-            "-e",
-            "PGPASSWORD",
-            container,
-            "psql",
-            "-U",
-            user,
-            "-d",
-            database,
-            "--no-align",
-            "--tuples-only",
-            "--quiet",
-            "--no-psqlrc",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-f",
-            "-",
-        ],
-        # --quiet suppresses psql's `SET` command tags, so the preamble adds
-        # no lines of its own and the first line is still the timestamp.
-        input_text=READ_ONLY_PREAMBLE + sql,
-        env={**os.environ, "PGPASSWORD": password},
-    ).strip()
-    if not out:
-        raise DockerError("could not read the database clock for the watermark")
-    return out.splitlines()[0].strip()
 
 
 @dataclass

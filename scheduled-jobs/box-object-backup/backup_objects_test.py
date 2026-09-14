@@ -794,36 +794,21 @@ class TestWatermarkOrdering:
 
         This read the source and compared index positions, which a comment
         naming the function satisfied — moving the real call below the snapshot
-        while leaving `# previously: dock.database_now(` above it passed.
+        while leaving `# previously: postgres.database_now(` above it passed.
         """
         calls = []
 
-        class FakeDock:
-            DB_SERVICE = "db-prod"
-            DockerError = job.dock.DockerError
+        def database_now(conn):
+            calls.append("watermark")
+            return "2026-08-31T02:17:03+00"
 
-            @staticmethod
-            def project_name(env):
-                return f"bloom_v2_{env}"
+        def query_to_file(conn, sql, destination):
+            calls.append("snapshot")
+            destination.write_text("")
+            return 0
 
-            @staticmethod
-            def find_container(project, service):
-                return "container"
-
-            @staticmethod
-            def database_now(container, user, database, password=""):
-                calls.append("watermark")
-                return "2026-08-31T02:17:03+00"
-
-            @staticmethod
-            def psql_query_to_file(
-                container, sql, user, database, destination, password=""
-            ):
-                calls.append("snapshot")
-                destination.write_text("")
-                return 0
-
-        monkeypatch.setattr(job, "dock", FakeDock)
+        monkeypatch.setattr(job.postgres, "database_now", database_now)
+        monkeypatch.setattr(job.postgres, "query_to_file", query_to_file)
         # The connection config is validated before the manifest read now, so
         # a dry run reaches both. Stubbed rather than supplied: this test is
         # about call order, and the checks have their own.
@@ -862,30 +847,7 @@ class TestWatermarkOrdering:
         """
         db_time = "2019-01-01T00:00:00+00"
 
-        class FakeDock:
-            DB_SERVICE = "db-prod"
-            DockerError = job.dock.DockerError
-
-            @staticmethod
-            def project_name(env):
-                return f"bloom_v2_{env}"
-
-            @staticmethod
-            def find_container(project, service):
-                return "container"
-
-            @staticmethod
-            def database_now(container, user, database, password=""):
-                return db_time
-
-            @staticmethod
-            def psql_query_to_file(
-                container, sql, user, database, destination, password=""
-            ):
-                destination.write_text("")
-                return 0
-
-        monkeypatch.setattr(job, "dock", FakeDock)
+        monkeypatch.setattr(job.postgres, "database_now", lambda conn: db_time)
         # A dry run returns before start_run, so drive the ledger directly with
         # the value run_locked would hand it and prove it survives the round trip.
         led = Ledger.open(str(tmp_path / "ledger.db"))
@@ -1030,8 +992,11 @@ class TestRunLockedWiresItsPartsTogether:
             def stop(self):
                 state["daemon_stopped"] = True
 
+        def query_to_file(conn, sql, destination):
+            destination.write_text(TestRunLockedWiresItsPartsTogether.MANIFEST)
+            return 2
+
         class FakeDock:
-            DB_SERVICE = "db-prod"
             STATE_MOUNT = "/state"
             RC_CONTAINER_PREFIX = job.dock.RC_CONTAINER_PREFIX
             DockerError = job.dock.DockerError
@@ -1041,23 +1006,8 @@ class TestRunLockedWiresItsPartsTogether:
                 return f"bloom_v2_{env}"
 
             @staticmethod
-            def find_container(project, service):
-                return "container"
-
-            @staticmethod
             def find_network(project):
                 return "supanet"
-
-            @staticmethod
-            def database_now(container, user, database, password=""):
-                return "2026-08-31T02:17:03+00"
-
-            @staticmethod
-            def psql_query_to_file(
-                container, sql, user, database, destination, password=""
-            ):
-                destination.write_text(TestRunLockedWiresItsPartsTogether.MANIFEST)
-                return 2
 
             @staticmethod
             def find_stale_daemons():
@@ -1086,6 +1036,10 @@ class TestRunLockedWiresItsPartsTogether:
                 return "fake"
 
         monkeypatch.setattr(job, "dock", FakeDock)
+        monkeypatch.setattr(
+            job.postgres, "database_now", lambda conn: "2026-08-31T02:17:03+00"
+        )
+        monkeypatch.setattr(job.postgres, "query_to_file", query_to_file)
         monkeypatch.setattr(
             job, "wait_for_daemon", lambda daemon, attempts=30: FakeClient()
         )
@@ -3363,6 +3317,45 @@ class TestTheReadinessPollIsImpatient:
         assert not issubclass(lib.Stopped, lib.BackupError)
 
 
+class TestADatabaseFailureIsASetupError:
+    """A rejected password or an unreachable host exits 2 and moves nothing.
+
+    Raised as anything but a BackupError it would escape `main` as a traceback
+    and exit 1, which the workflow reads as "objects failed after retries".
+    """
+
+    def test_a_rejected_password_exits_two_before_a_run_is_recorded(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        def reject(conn):
+            raise job.postgres.PostgresError(
+                "psql failed (2): FATAL:  password authentication failed "
+                'for user "supabase_admin"'
+            )
+
+        monkeypatch.setattr(job.postgres, "database_now", reject)
+        monkeypatch.setattr(job, "require_rclone_config", lambda path, remote: None)
+        monkeypatch.setenv("MINIO_ROOT_USER", "root")
+        monkeypatch.setenv("MINIO_ROOT_PASSWORD", "secret")
+        monkeypatch.setenv("POSTGRES_PASSWORD", "wrong")
+        env_file = tmp_path / ".env.prod"
+        env_file.write_text(
+            "OBJECT_BACKUP_MINIO_BUCKET=bloom-storage\n"
+            "OBJECT_BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/prod/storage\n"
+        )
+        state = tmp_path / "state"
+
+        code = job.main(
+            ["--env", "prod", "--env-file", str(env_file), "--state-dir", str(state)]
+        )
+
+        assert code == 2
+        assert "password authentication failed" in caplog.text
+        assert "Traceback" not in caplog.text
+        runs = sqlite3.connect(state / "ledger.db").execute("SELECT count(*) FROM runs")
+        assert runs.fetchone()[0] == 0, "a run was started against a refused database"
+
+
 class TestConfigIsCheckedBeforeTheEightMillionRowRead:
     """Every one of these answers in a millisecond from a string or a file.
 
@@ -3375,31 +3368,15 @@ class TestConfigIsCheckedBeforeTheEightMillionRowRead:
         calls = []
         monkeypatch.setenv("POSTGRES_PASSWORD", "db-secret")
 
-        class FakeDock:
-            DB_SERVICE = "db-prod"
-            DockerError = job.dock.DockerError
+        def query_to_file(conn, sql, destination):
+            calls.append("manifest")
+            destination.write_text("")
+            return 0
 
-            @staticmethod
-            def project_name(env):
-                return f"bloom_v2_{env}"
-
-            @staticmethod
-            def find_container(project, service):
-                return "container"
-
-            @staticmethod
-            def database_now(container, user, database, password=""):
-                return "2026-08-31T02:17:03+00"
-
-            @staticmethod
-            def psql_query_to_file(
-                container, sql, user, database, destination, password=""
-            ):
-                calls.append("manifest")
-                destination.write_text("")
-                return 0
-
-        monkeypatch.setattr(job, "dock", FakeDock)
+        monkeypatch.setattr(
+            job.postgres, "database_now", lambda conn: "2026-08-31T02:17:03+00"
+        )
+        monkeypatch.setattr(job.postgres, "query_to_file", query_to_file)
         for name, value in stubs.items():
             monkeypatch.setattr(job, name, value)
         args = job.parse_args(
@@ -3455,9 +3432,9 @@ class TestConfigIsCheckedBeforeTheEightMillionRowRead:
         )
         args.pg_password = ""
         monkeypatch.setattr(
-            job.dock,
+            job.postgres,
             "database_now",
-            staticmethod(lambda *a, **k: calls.append("watermark")),
+            lambda *a, **k: calls.append("watermark"),
         )
         with pytest.raises(lib.BackupError, match="POSTGRES_PASSWORD is not set"):
             job.run_locked(args, tmp_path)

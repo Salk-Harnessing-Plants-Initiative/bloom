@@ -45,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import backup_lib as lib  # noqa: E402
 import docker_env as dock  # noqa: E402
+import postgres  # noqa: E402
 import report  # noqa: E402
 from copier import (  # noqa: E402
     MAX_ATTEMPTS,
@@ -114,6 +115,8 @@ SKIPPED_NAME_MARKER = "object(s) were SKIPPED for their names"
 ENV_KEYS = (
     "POSTGRES_USER",
     "POSTGRES_DB",
+    "POSTGRES_HOST",
+    "POSTGRES_PORT",
     "POSTGRES_PASSWORD",
     "MINIO_ROOT_USER",
     "MINIO_ROOT_PASSWORD",
@@ -526,13 +529,31 @@ def run_backup(args: argparse.Namespace) -> int:
         lock.release()
 
 
+def postgres_connection(args: argparse.Namespace) -> postgres.Connection:
+    """The database to read, by its service name on the stack's network.
+
+    A missing password is refused before anything asks the database, so the
+    failure names the setting rather than looking like a wrong password.
+    """
+    host = os.environ.get("POSTGRES_HOST", "db-prod")
+    if not args.pg_password:
+        raise lib.BackupError(
+            "POSTGRES_PASSWORD is not set — the deploy env file must define it "
+            f"for psql to authenticate against {host}"
+        )
+    return postgres.Connection(
+        host=host,
+        port=_env_int("POSTGRES_PORT", 5432),
+        user=os.environ.get("POSTGRES_USER", "supabase_admin"),
+        database=os.environ.get("POSTGRES_DB", "postgres"),
+        password=args.pg_password,
+    )
+
+
 def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
-    project = dock.project_name(args.env)
     box_fs = f"{args.box_remote}:"
 
     ledger = Ledger.open(str(state_dir / "ledger.db"))
-
-    db_container = dock.find_container(project, dock.DB_SERVICE)
 
     # Config first, before the manifest read. Every check below is a string
     # or a file on this host — none of them can pass at 02:00 and fail at
@@ -545,22 +566,13 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     check_destination(ledger, destination)
     minio = minio_source_from_env(args)
     require_rclone_config(args.rclone_config, args.box_remote)
-    if not args.pg_password:
-        raise lib.BackupError(
-            "POSTGRES_PASSWORD is not set — the deploy env file must define it "
-            f"for psql to authenticate against {dock.DB_SERVICE}"
-        )
+    conn = postgres_connection(args)
 
     # Taken from the database, BEFORE the manifest snapshot — not from the
     # host afterwards. Anchoring on a moment the snapshot cannot precede means
     # an object written while enumeration runs is re-checked next week rather
     # than falling into a gap nothing ever revisits.
-    watermark = dock.database_now(
-        db_container,
-        user=os.environ.get("POSTGRES_USER", "supabase_admin"),
-        database=os.environ.get("POSTGRES_DB", "postgres"),
-        password=args.pg_password,
-    )
+    watermark = postgres.database_now(conn)
 
     since = None if args.full else ledger.last_successful_run()
     logger.info(
@@ -569,16 +581,13 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         f"changed since {since}" if since else "full listing",
     )
     manifest = state_dir / "manifest.tsv"
-    listed = dock.psql_query_to_file(
-        db_container,
+    listed = postgres.query_to_file(
+        conn,
         lib.objects_query(
             buckets=[b.strip() for b in args.buckets.split(",") if b.strip()] or None,
             since=since,
         ),
-        user=os.environ.get("POSTGRES_USER", "supabase_admin"),
-        database=os.environ.get("POSTGRES_DB", "postgres"),
-        destination=manifest,
-        password=args.pg_password,
+        manifest,
     )
     logger.info("listed %d object(s)", listed)
 
@@ -595,7 +604,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     # wrote to.
     ledger.remember_destination(destination)
     run_id = ledger.start_run(now=watermark)
-    network = dock.find_network(project)
+    network = dock.find_network(dock.project_name(args.env))
     daemon = dock.start_rc_daemon(
         network=network,
         rclone_config=str(Path(args.rclone_config).resolve()),
