@@ -405,3 +405,53 @@ def test_the_daemon_password_stays_out_of_its_repr():
     )
 
     assert "hunter2" not in repr(daemon)
+
+
+class TestPsqlIsGivenThePasswordByEnvironment:
+    """db-prod authenticates every connection, including one from inside it.
+
+    By environment and not by argv: an argv is world-readable through
+    /proc/<pid>/cmdline on a host that runs the whole stack.
+    """
+
+    def test_the_streaming_query_passes_it(self, monkeypatch, tmp_path):
+        seen = {}
+
+        class FakeProc:
+            returncode = 0
+
+            def communicate(self, input=None):
+                return "", ""
+
+        def fake_popen(cmd, **kwargs):
+            seen["cmd"] = cmd
+            seen["env"] = kwargs.get("env") or {}
+            return FakeProc()
+
+        monkeypatch.setattr(dock.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(dock, "which", lambda name: f"/usr/bin/{name}")
+
+        dock.psql_query_to_file(
+            "db", "SELECT 1", "supabase_admin", "postgres",
+            tmp_path / "out.tsv", password="db-pass",
+        )
+
+        assert seen["env"].get("PGPASSWORD") == "db-pass"
+        assert "db-pass" not in " ".join(seen["cmd"]), "the password reached the argv"
+        assert "PGPASSWORD" in seen["cmd"], "docker was not told to pass it through"
+
+    def test_the_clock_read_passes_it(self, monkeypatch):
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = cmd
+            seen["env"] = kwargs.get("env") or {}
+            return "2026-01-01T00:00:00+00"
+
+        monkeypatch.setattr(dock, "run", fake_run)
+        monkeypatch.setattr(dock, "which", lambda name: f"/usr/bin/{name}")
+
+        dock.database_now("db", "supabase_admin", "postgres", password="db-pass")
+
+        assert seen["env"].get("PGPASSWORD") == "db-pass"
+        assert "db-pass" not in " ".join(seen["cmd"])
