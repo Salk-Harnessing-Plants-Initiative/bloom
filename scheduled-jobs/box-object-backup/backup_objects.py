@@ -203,6 +203,17 @@ def apply_env_file(path: Path) -> dict[str, str]:
     return found
 
 
+def scrub_credentials() -> None:
+    """Take the credentials out of this process's environment once they are on `args`.
+
+    Every child process inherits the environment, and each of these belongs to
+    one consumer: psql is handed its password explicitly, and MinIO's keys
+    reach rclone only inside remote-control calls.
+    """
+    for key in SECRET_ENV_KEYS:
+        os.environ.pop(key, None)
+
+
 def emit_status(status: str, flags=(), stats=None) -> None:
     """Print the run's verdict in a form no object name can imitate.
 
@@ -359,6 +370,8 @@ def main(argv: list[str] | None = None) -> int:
         args.minio_access = args.minio_access or found.get("MINIO_ROOT_USER", "")
         args.pg_password = args.pg_password or found.get("POSTGRES_PASSWORD", "")
         args.minio_secret = args.minio_secret or found.get("MINIO_ROOT_PASSWORD", "")
+        # Held on `args` from here on, and nowhere else, so no child inherits them.
+        scrub_credentials()
         check_state_dir(args, found.get("OBJECT_BACKUP_STATE_DIR", ""))
         return run_backup(args)
     except lib.BackupError as exc:

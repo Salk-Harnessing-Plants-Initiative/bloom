@@ -2924,6 +2924,117 @@ class TestADatabaseFailureIsASetupError:
         assert runs.fetchone()[0] == 0, "a run was started against a refused database"
 
 
+class TestCredentialsReachOnlyWhatUsesThem:
+    """The run holds the Postgres password and MinIO's root keys on `args`.
+
+    Left in the environment, every child process would inherit them. Taken out
+    at start-up, psql gets only its own password and rclone gets none.
+    """
+
+    PG = "pg-sentinel-7Q"
+    MINIO_USER = "minio-user-sentinel-3K"
+    MINIO_PASS = "minio-pass-sentinel-9Z"
+    CREDENTIALS = ("POSTGRES_PASSWORD", "MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD")
+
+    def setup_env(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("POSTGRES_PASSWORD", self.PG)
+        monkeypatch.setenv("MINIO_ROOT_USER", self.MINIO_USER)
+        monkeypatch.setenv("MINIO_ROOT_PASSWORD", self.MINIO_PASS)
+        monkeypatch.setattr(job, "require_rclone_config", lambda path, remote: None)
+        env_file = tmp_path / ".env.prod"
+        env_file.write_text(
+            "OBJECT_BACKUP_MINIO_BUCKET=bloom-storage\n"
+            "OBJECT_BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/prod/storage\n"
+        )
+        return [
+            "--env",
+            "prod",
+            "--env-file",
+            str(env_file),
+            "--state-dir",
+            str(tmp_path / "state"),
+        ]
+
+    def drive_dry_run(self, monkeypatch, tmp_path, *, psql_rc=0, psql_stderr=""):
+        """`main` through a dry run, with psql faked at the process boundary."""
+        import subprocess
+
+        envs = []
+
+        def fake_run(argv, *, input=None, capture_output=None, text=None, env=None):
+            envs.append(env)
+            return subprocess.CompletedProcess(
+                argv,
+                psql_rc,
+                "2026-08-31T02:17:03+00\n" if not psql_rc else "",
+                psql_stderr,
+            )
+
+        class FakeProc:
+            returncode = 0
+
+            def communicate(self, input=None):
+                return ("", "")
+
+        def fake_popen(argv, **kwargs):
+            envs.append(kwargs.get("env"))
+            return FakeProc()
+
+        monkeypatch.setattr(job.postgres.subprocess, "run", fake_run)
+        monkeypatch.setattr(job.postgres.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(
+            job.postgres.shutil, "which", lambda name: f"/usr/bin/{name}"
+        )
+        argv = self.setup_env(monkeypatch, tmp_path) + ["--dry-run"]
+        return job.main(argv), envs
+
+    def test_after_start_up_the_environment_holds_no_credential(
+        self, monkeypatch, tmp_path
+    ):
+        seen = {}
+
+        def capture(args):
+            seen["environ"] = dict(os.environ)
+            seen["args"] = args
+            return 0
+
+        monkeypatch.setattr(job, "run_backup", capture)
+        assert job.main(self.setup_env(monkeypatch, tmp_path)) == 0
+        for key in self.CREDENTIALS:
+            assert key not in seen["environ"], f"{key} is still in the environment"
+        assert seen["args"].pg_password == self.PG
+        assert seen["args"].minio_access == self.MINIO_USER
+        assert seen["args"].minio_secret == self.MINIO_PASS
+
+    def test_psql_gets_its_password_and_no_other_credential(
+        self, monkeypatch, tmp_path
+    ):
+        code, envs = self.drive_dry_run(monkeypatch, tmp_path)
+        assert code == 0
+        assert envs, "psql was never run"
+        for env in envs:
+            assert env["PGPASSWORD"] == self.PG
+            for key in self.CREDENTIALS:
+                assert key not in env, f"psql inherited {key}"
+
+    @pytest.mark.parametrize("refused", [False, True], ids=["clean", "refused"])
+    def test_no_log_record_carries_a_credential(
+        self, refused, monkeypatch, tmp_path, caplog
+    ):
+        caplog.set_level(logging.DEBUG)
+        code, _ = self.drive_dry_run(
+            monkeypatch,
+            tmp_path,
+            psql_rc=2 if refused else 0,
+            psql_stderr='FATAL:  password authentication failed for user "x"'
+            if refused
+            else "",
+        )
+        assert code == (2 if refused else 0)
+        for secret in (self.PG, self.MINIO_USER, self.MINIO_PASS):
+            assert secret not in caplog.text
+
+
 class TestConfigIsCheckedBeforeTheEightMillionRowRead:
     """Every one of these answers in a millisecond from a string or a file.
 
