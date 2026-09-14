@@ -337,7 +337,7 @@ jobs:
         run: |
           docker run --rm box-object-backup:ci --help > /dev/null
           docker run --rm --entrypoint sh box-object-backup:ci -c \
-            'rclone version && psql --version && test "$(id -u)" != 0 && ! ls /app/*_test.py /app/conftest.py 2>/dev/null'
+            'rclone version && psql --version && test "$(id -u)" != 0 && ! ls /app/*_test.py 2>/dev/null && ! test -e /app/conftest.py'
 
       - name: Scan box-object-backup image
         uses: aquasecurity/trivy-action@v0.35.0
