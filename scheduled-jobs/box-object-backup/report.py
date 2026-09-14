@@ -1,7 +1,7 @@
 """One dated JSON report per run, written to Box beside the mirrored objects.
 
 The ledger's `runs` table already records what each run did, but it lives in
-`/var/lib` on the deploy host — so answering "did the backup run last week?"
+the state directory on the deploy host — so answering "did the backup run last week?"
 means having SSH and knowing SQLite. The mirror itself cannot answer it
 either: it holds current state, and a week where nothing changed looks exactly
 like a week where nothing ran.

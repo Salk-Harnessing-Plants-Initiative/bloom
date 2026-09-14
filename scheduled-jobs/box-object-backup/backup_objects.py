@@ -60,7 +60,7 @@ from runlock import ACTIONS_RUN_ENV, SKIP_MARKER, LockHeld, RunLock  # noqa: E40
 
 logger = logging.getLogger("bloom_box_object_backup")
 
-DEFAULT_STATE_DIR = "/var/lib/bloom-box-object-backup"
+DEFAULT_STATE_DIR = "/data/bloom/box-object-backup"
 DEFAULT_WORKERS = 8
 
 # Objects planned per pass. Big enough that the per-batch ledger lookup is

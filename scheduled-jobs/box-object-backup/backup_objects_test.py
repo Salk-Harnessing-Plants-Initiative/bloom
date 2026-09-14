@@ -1611,7 +1611,7 @@ class TestRunLockedWiresItsPartsTogether:
         to `ok`. The report then carried `"outcome": "error", "status": "ok"`,
         contradicting itself in one file, and because the report is the
         fallback route a crashed night rendered "succeeded". The most likely
-        trigger at 8M scale is /var/lib filling during the ledger commit.
+        trigger at 8M scale is the state volume filling during the ledger commit.
         """
         state, tmp_path = harness
 
