@@ -1,8 +1,8 @@
 """The copy ledger — which object version currently sits on Box.
 
 Kept apart from backup_lib.py because it is the one piece with state and a
-lifecycle: a SQLite file under /var/lib that outlives any single run and is
-what makes a multi-day seed resumable.
+lifecycle: a SQLite file on the deploy host's /data volume that outlives any
+single run and is what makes a multi-day seed resumable.
 """
 
 from __future__ import annotations
