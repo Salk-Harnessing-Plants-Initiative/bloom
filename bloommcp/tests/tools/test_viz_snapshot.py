@@ -91,9 +91,12 @@ density, or layout.
 Scope: the 3 dedicated plotting tools (5 until #462 retired the two heritability plots into
 `heritability_analysis`, which renders them through `ResultStore` — see the note on
 `_SNAPSHOT_TOOLS`), **plus the 8 optional plot keys** `pca_analysis`/`umap_analysis`/
-`clustering` emit under `include_plots=True` (#723, the follow-up #713 scoped out). The
-optional-key section lives at the bottom of this file; `_TOL` was re-derived for those 8
-rather than assumed to carry over. `heritability_analysis`'s two folded-in figures remain
+`clustering` emit under `include_plots=True` (#723, the follow-up #713 scoped out) -- of
+which **6 carry a committed baseline**. The 2 UMAP keys are rendered and commit-checked but
+deliberately not pixel-compared: their canvas size is not stable across platforms (see
+`_CROSS_PLATFORM_UNSTABLE_KEYS` below, which records the measured CI evidence). The
+optional-key section lives at the bottom of this file; `_TOL` was re-derived for the
+baselined keys rather than assumed to carry over. `heritability_analysis`'s two folded-in figures remain
 uncovered -- they need a different fixture, and that is still a follow-up.
 
 **These baselines are a drift gate, not a correctness oracle.** Every baseline is generated
@@ -522,7 +525,30 @@ _OPTIONAL_TOOLS = [
     ),
 ]
 
-_OPTIONAL_KEYS = [(label, key) for label, _fn, keys in _OPTIONAL_TOOLS for key in keys]
+# The 2 UMAP keys are rendered and commit-checked like the rest, but have NO committed
+# baseline and are excluded from the pixel comparison. This is not a preference -- it is
+# what PR #841's first `python-audit` run measured on `ubuntu-latest`:
+#
+#     ImageComparisonFailure: Image sizes do not match
+#     expected size: (590, 769, 3)  actual size: (590, 771, 3)
+#
+# A 2px width difference, height identical, while the other 6 keys passed -- so this is not
+# global font metrics but UMAP's own embedding differing across numba/LLVM (the repo already
+# documents it as not bit-reproducible cross-platform, see `test_umap_analysis_tool.py`'s
+# docstring), shifting an axis tick label's width and therefore the `bbox_inches="tight"`
+# canvas. A Linux-generated baseline would invert the failure for every developer on macOS
+# rather than fix it, and `_TOL` cannot absorb a dimension mismatch at all -- `compare_images`
+# raises before any RMS is computed. Tracked as a follow-up; see design.md Decision 3.
+_CROSS_PLATFORM_UNSTABLE_KEYS = frozenset(
+    {"create_umap_single_trait", "create_umap_colored_by_top_traits"}
+)
+
+_OPTIONAL_KEYS = [
+    (label, key)
+    for label, _fn, keys in _OPTIONAL_TOOLS
+    for key in keys
+    if key not in _CROSS_PLATFORM_UNSTABLE_KEYS
+]
 _OPTIONAL_IDS = [key for _label, key in _OPTIONAL_KEYS]
 
 # Memo for the per-tool render. Deliberately a module-level dict rather than a
@@ -637,14 +663,22 @@ def test_baseline_set_matches_the_tool_catalogs():
     catalog = (
         set(_PCA_CATALOG_KEYS) | set(_UMAP_CATALOG_KEYS) | set(_CLUSTERING_CATALOG_KEYS)
     )
+    expected = catalog - _CROSS_PLATFORM_UNSTABLE_KEYS
     on_disk = {
         p.name[: -len("_turface_19_baseline.png")]
         for p in _BASELINES.glob("create_*_turface_19_baseline.png")
     }
-    assert on_disk == catalog, (
+    assert on_disk == expected, (
         "baseline set and tool catalogs disagree -- missing "
-        f"{sorted(catalog - on_disk)}, orphaned {sorted(on_disk - catalog)}. Run "
-        "`uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py --yes`"
+        f"{sorted(expected - on_disk)}, orphaned {sorted(on_disk - expected)}. Run "
+        "`uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py --yes` "
+        "(keys in _CROSS_PLATFORM_UNSTABLE_KEYS are deliberately unbaselined)"
+    )
+    # Guard the exclusion itself: if a listed key leaves the catalog, the exclusion is stale
+    # and should be deleted rather than silently suppressing a key that no longer exists.
+    assert _CROSS_PLATFORM_UNSTABLE_KEYS <= catalog, (
+        "_CROSS_PLATFORM_UNSTABLE_KEYS names keys no longer in any catalog: "
+        f"{sorted(_CROSS_PLATFORM_UNSTABLE_KEYS - catalog)}"
     )
 
 

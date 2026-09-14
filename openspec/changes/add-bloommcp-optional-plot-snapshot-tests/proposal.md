@@ -23,8 +23,11 @@ against the real stack.
 
 ## What Changes
 
-- **ADD** 8 committed baseline PNGs under `bloommcp/tests/fixtures/plot_baselines/`, one per
-  catalog plot key, named `<catalog_key>_turface_19_baseline.png` — so the baseline name
+- **ADD** 6 committed baseline PNGs under `bloommcp/tests/fixtures/plot_baselines/`, named
+  `<catalog_key>_turface_19_baseline.png`. All 8 keys are rendered and commit-checked, but
+  the 2 `umap_analysis` keys carry no baseline: CI measured their canvas size as
+  platform-dependent (design.md Decision 3 records the evidence), and no tolerance can
+  absorb a dimension mismatch. They keep the magic-byte coverage they had — so the baseline name
   matches the filename the tool itself commits (`create_pca_scree_plot.png`), removing the
   need for the `_PRODUCED_NAME_OVERRIDES` indirection the existing 3 require.
 - **EXTEND** `bloommcp/scripts/gen_plot_snapshots_golden.py` to render these 8 alongside the

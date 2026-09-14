@@ -61,6 +61,7 @@ import matplotlib.ft2font
 import PIL
 import sleap_roots_analyze as sra
 from matplotlib.testing.compare import compare_images
+from matplotlib.testing.exceptions import ImageComparisonFailure
 
 import bloom_mcp.manifest.manifest as _manifest
 import bloom_mcp.supabase_client as _sc
@@ -119,10 +120,21 @@ _OPTIONAL_CATALOG = {
     "umap_analysis": ("create_umap_single_trait", "create_umap_colored_by_top_traits"),
     "clustering": ("create_cluster_scatter_pca", "create_cluster_size_barplot"),
 }
+# No committed baseline: UMAP's embedding is not bit-reproducible across numba/LLVM, which
+# moves an axis tick label's width and therefore the `bbox_inches="tight"` canvas. PR #841's
+# first ubuntu-latest run measured a 2px width difference (769 -> 771) against the
+# macOS-generated baseline while all 6 other keys passed. `compare_images` raises on a
+# dimension mismatch rather than returning an RMS, so no tolerance can absorb it, and a
+# Linux-generated baseline would merely invert the failure for macOS developers. These keys
+# are still rendered and commit-checked by `test_viz_snapshot.py`, just not pixel-compared.
+_CROSS_PLATFORM_UNSTABLE_KEYS = frozenset(
+    {"create_umap_single_trait", "create_umap_colored_by_top_traits"}
+)
 _OPTIONAL_TOOLS = [
     (f"{key}_turface_19_baseline.png", fn_name, f"{key}.png")
     for fn_name, keys in _OPTIONAL_CATALOG.items()
     for key in keys
+    if key not in _CROSS_PLATFORM_UNSTABLE_KEYS
 ]
 
 
@@ -134,7 +146,20 @@ def _report_regeneration(target: Path, produced: Path, rel: Path) -> str:
     """
     if not target.is_file():
         return f"wrote {rel} (new baseline, no prior version to diff against)"
-    diff = compare_images(str(target), str(produced), tol=0, in_decorator=True)
+    try:
+        diff = compare_images(str(target), str(produced), tol=0, in_decorator=True)
+    except ImageComparisonFailure as exc:
+        # `compare_images` RAISES on a pixel-dimension mismatch rather than returning an
+        # RMS. That cannot happen for the dpi-pinned tools, but the #723 optional keys save
+        # with `bbox_inches="tight"` and no dpi, so their canvas is derived from rendered
+        # text extents -- and a platform whose font metrics or data labels differ by a pixel
+        # or two produces a different-sized PNG. Report it as the regeneration-worthy event
+        # it is instead of taking the whole `build()` down with an exception.
+        return (
+            f"REGENERATED {rel}: CANVAS SIZE CHANGED ({exc}) -- no RMS is computable "
+            "across different dimensions. This is the expected shape of a cross-platform "
+            "regeneration; confirm the content is otherwise unchanged before accepting it."
+        )
     rms = diff["rms"] if diff else 0.0
     return (
         f"REGENERATED {rel}: old-vs-new RMS={rms:.1f} -- if this is not ~0, "
@@ -273,7 +298,7 @@ def build(tmp_path: Path, *, confirmed: bool) -> bool:
     # The optional `include_plots=True` keys (#723). Rendered once per tool -- each call
     # emits every key in that tool's catalog -- then matched to baselines by filename.
     optional_capture = tmp_path / "committed_optional"
-    for fn_name in _OPTIONAL_CATALOG:
+    for fn_name in sorted({fn for _b, fn, _p in _OPTIONAL_TOOLS}):
         _render_optional(fn_name, optional_capture)
     for baseline_name, _fn_name, produced_name in _OPTIONAL_TOOLS:
         produced = optional_capture / produced_name

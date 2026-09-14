@@ -183,14 +183,40 @@ run**. Three reasons the risk is nonetheless larger for these 8:
 3. **UMAP is not bit-reproducible across platforms** (numba/LLVM/BLAS), as
    `test_umap_analysis_tool.py:3-4` already states. Decision 0's determinism is same-machine.
 
-Accepted rather than mitigated, because the alternatives are worse: skipping UMAP leaves the
-two plots at magic-byte coverage, and widening `_TOL` cannot help a dimension mismatch at
-all. This PR's own `python-audit` run is the first real cross-platform test, exactly as
-#713's was. **If it fails**, the fallback is per-key and evidence-led, in this order:
-(a) read the uploaded `*-failed-diff.png` artifact and confirm whether content or canvas
-size differs; (b) if canvas size, regenerate that key's baseline from Linux; (c) only if a
-genuine RMS-noise floor above `_TOL` is demonstrated, revisit the constant — never as a
-reflex, per #713's Decision 3.
+**Outcome: the risk materialised, for exactly the 2 keys predicted, and the fallback was
+exercised.** PR #841's first `python-audit` run on `ubuntu-latest` failed with:
+
+```
+ImageComparisonFailure: Image sizes do not match
+expected size: (590, 769, 3)  actual size: (590, 771, 3)
+```
+
+A **2px width difference, height identical**, on both UMAP keys — while all 6 PCA/clustering
+comparisons passed. That asymmetry is the diagnosis: a global font-metric difference would
+have moved the other 6 too, so this is reason 3 above (UMAP's embedding differing across
+numba/LLVM), shifting an axis tick label's width and therefore the tight-bbox canvas.
+
+Following the ordered fallback: (a) the failure is a canvas-size mismatch, not content —
+`compare_images` raised rather than returning an RMS; (b) step (b) said "regenerate that key
+from Linux", and that was **rejected on inspection**: it would not fix the instability, only
+invert it, failing for every developer running the suite on macOS. There is no single
+platform's baseline that satisfies both, and `_TOL` is irrelevant here — a dimension mismatch
+raises before any RMS is computed, so step (c) cannot apply either.
+
+**Resolution: the 2 UMAP keys are rendered and commit-checked but carry no baseline and are
+not pixel-compared** (`_CROSS_PLATFORM_UNSTABLE_KEYS` in `test_viz_snapshot.py`, which
+records this evidence inline). This is the per-key fallback rather than a global loosening,
+and it is honest about what it costs: those 2 figures keep only the magic-byte coverage they
+had before this change. Restoring them needs a rendering change that makes the canvas
+platform-independent — an explicit `dpi=` and a fixed figure size at the tool's `savefig`,
+which is production behaviour and out of scope for a testing change — so it is filed as a
+follow-up rather than bodged here.
+
+A second, genuine bug surfaced with it: `_report_regeneration` called
+`compare_images(..., tol=0)` with no exception handling, so a dimension mismatch took the
+whole `build()` down (it failed 2 generator tests in the same CI run). With the previously
+covered 3 — all `dpi=150`-pinned — that could never happen. Now fixed to report the canvas
+change instead of raising.
 
 ## Decision 4: baseline filenames match the committed PNG name
 

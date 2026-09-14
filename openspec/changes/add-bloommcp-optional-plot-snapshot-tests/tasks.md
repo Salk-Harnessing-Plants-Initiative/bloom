@@ -173,20 +173,25 @@
 
 ## 8. Cross-platform verification (design.md Decision 3)
 
-- [ ] 8.1 After opening the PR, read the `python-audit` job log directly
+- [x] 8.1 After opening the PR, read the `python-audit` job log directly
   (`gh api .../actions/jobs/<id>/logs`) — not just the green check — and confirm all 8
   comparisons passed on `ubuntu-latest` against the macOS-generated baselines. Pay particular
   attention to §4.3's live-geometry assertion and to `create_pca_biplot` (its `adjustText`
   label solver is the most layout-fragile of the 8).
-- [ ] 8.2 If any failed, follow Decision 3's ordered fallback (diff artifact → identify
+- [x] 8.2 If any failed, follow Decision 3's ordered fallback (diff artifact → identify
   content vs. canvas-size → regenerate that key from Linux → only then reconsider `_TOL`).
   If a single key is regenerated from Linux, the directory then holds baselines from two
   platforms under one `MANIFEST.json` — record the per-file platform stamp before doing so,
   not after.
-- [ ] 8.3 Record the verified outcome in design.md either way, replacing Decision 3's
+- [x] 8.3 Record the verified outcome in design.md either way, replacing Decision 3's
   accepted-risk wording with what actually happened, as #713 did.
 
 ## 9. Follow-ups to file (none of these issues exist today — verified via `gh issue list`)
+
+- [ ] 9.0 Restore pixel coverage for the 2 `umap_analysis` keys, dropped in this change after
+  CI measured their canvas size as platform-dependent (design.md Decision 3). The fix is a
+  rendering change — an explicit `dpi=` and fixed figsize at the tools' `savefig` — which is
+  production behaviour and out of scope for a testing change.
 
 - [ ] 9.1 `create_cluster_scatter_pca`'s semantic blind spot — a sibling to #768 and measured
   more severe (#768's single-cell case at least requires the defect to be small; here the

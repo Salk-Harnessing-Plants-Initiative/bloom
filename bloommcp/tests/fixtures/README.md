@@ -258,9 +258,16 @@ asserted `.is_file()` on the generated PNG.
   survivors; it was not re-run for the reduced set, because nothing about them changed.)
   `MANIFEST.json` records environment provenance only and lists no filenames, so removing
   two PNGs left nothing in it to update.
-- `plot_baselines/create_*_turface_19_baseline.png` — one baseline per optional plot key
-  (#723): the 4 `pca_analysis`, 2 `umap_analysis`, and 2 `clustering` figures emitted under
-  `include_plots=True`. Named after the catalog key the tool commits (`create_pca_biplot.png`
+- `plot_baselines/create_*_turface_19_baseline.png` — one baseline per *baselined* optional
+  plot key (#723): the 4 `pca_analysis` and 2 `clustering` figures emitted under
+  `include_plots=True`. **The 2 `umap_analysis` keys have no baseline**: PR #841's first
+  `ubuntu-latest` run measured a 2px canvas-width difference against the macOS-generated
+  baseline (769 → 771, height identical) while all 6 others passed — UMAP's embedding is not
+  bit-reproducible across numba/LLVM, which shifts an axis tick label and so the
+  `bbox_inches="tight"` canvas. `compare_images` raises on a dimension mismatch rather than
+  returning an RMS, so no tolerance absorbs it, and a Linux-generated baseline would just
+  invert the failure for macOS developers. Those two are still rendered and commit-checked,
+  just not pixel-compared. Named after the catalog key the tool commits (`create_pca_biplot.png`
   → `create_pca_biplot_turface_19_baseline.png`), so no name-mapping table is needed, unlike
   the three above. `_TOL = 15` was re-derived for these 8 rather than assumed to carry over
   (see `openspec/changes/add-bloommcp-optional-plot-snapshot-tests/design.md` Decision 1).
@@ -290,7 +297,7 @@ asserted `.is_file()` on the generated PNG.
   reordering the CSV's columns surfaces as a rendering regression. `MANIFEST.json` now
   records the fixture's SHA-256, so a fixture edit is attributable rather than appearing as
   unexplained pixel drift.
-- Regenerate all 11 + the manifest via
+- Regenerate all 9 + the manifest via
   `cd bloommcp && uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py --yes`
   after any intentional rendering change (matplotlib bump, plot-style-kwargs default change,
   delegate upgrade) — never hand-edit these PNGs. **If you're regenerating over existing
