@@ -1,7 +1,8 @@
 """Config-shape test for response compression in `caddy/Caddyfile`.
 
-Caddy's default `encode` list includes `text/*`, which would buffer the agent's
-`text/event-stream` chat, so the list must be explicit and leave it out.
+The type list is explicit because Caddy's default covers every `text/*` type,
+event streams included. The stream routes skip `encode` entirely, since it holds
+a response's headers until the first body byte.
 """
 
 from __future__ import annotations
@@ -19,6 +20,9 @@ from tests.unit._caddyfile_helpers import (
 )
 
 EXPECTED_FORMATS = ["zstd", "gzip"]
+
+ENCODE_MATCHER = "@compress"
+STREAM_ROUTES = {"/langchain/*", "/bloommcp/*"}
 
 # JSON, HTML, JavaScript, CSS and plain text.
 EXPECTED_TYPES = {
@@ -78,6 +82,27 @@ def _site_encode() -> tuple[str, str | None]:
     return top[0]
 
 
+def _encode_tokens() -> tuple[str | None, list[str]]:
+    """The site-level `encode`'s matcher (or None) and its formats."""
+    line, _ = _site_encode()
+    tokens = line.rstrip("{").split()[1:]
+    if tokens and tokens[0].startswith("@"):
+        return tokens[0], tokens[1:]
+    return None, tokens
+
+
+def _matcher_definition(name: str) -> list[list[str]]:
+    """Token lists of every site-level definition of the named matcher."""
+    site = _site()
+    masked = mask_quoted(site)
+    found = []
+    for match in re.finditer(rf"^[ \t]*{re.escape(name)}[ \t]+(.+)$", site, re.MULTILINE):
+        depth = masked.count("{", 0, match.start()) - masked.count("}", 0, match.start())
+        if depth == 0:
+            found.append(match.group(1).split())
+    return found
+
+
 def _match_types() -> set[str]:
     _, block = _site_encode()
     assert block is not None, "site-level `encode` has no block, so Caddy's default list applies"
@@ -98,8 +123,21 @@ def _caddy_header_match(pattern: str, value: str) -> bool:
 
 
 def test_site_block_compresses_with_zstd_then_gzip():
-    line, _ = _site_encode()
-    assert line.rstrip("{").split()[1:] == EXPECTED_FORMATS
+    _, formats = _encode_tokens()
+    assert formats == EXPECTED_FORMATS
+
+
+def test_encode_is_scoped_by_the_compress_matcher():
+    matcher, _ = _encode_tokens()
+    assert matcher == ENCODE_MATCHER, f"`encode` must be scoped by {ENCODE_MATCHER}, found {matcher}"
+
+
+def test_the_stream_routes_skip_encode():
+    definitions = _matcher_definition(ENCODE_MATCHER)
+    assert len(definitions) == 1, f"expected one site-level {ENCODE_MATCHER}, found {len(definitions)}"
+    tokens = definitions[0]
+    assert tokens[:2] == ["not", "path"], f"{ENCODE_MATCHER} must be `not path ...`, found {tokens}"
+    assert set(tokens[2:]) == STREAM_ROUTES
 
 
 def test_match_list_is_exactly_the_text_types():
