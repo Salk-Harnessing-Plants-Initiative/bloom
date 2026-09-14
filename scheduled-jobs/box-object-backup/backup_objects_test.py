@@ -984,7 +984,6 @@ class TestRunLockedWiresItsPartsTogether:
         }
 
         class FakeDaemon:
-            container = "c"
             url = "http://127.0.0.1:5572"
             user = "u"
             password = "p"
@@ -992,12 +991,17 @@ class TestRunLockedWiresItsPartsTogether:
             def stop(self):
                 state["daemon_stopped"] = True
 
+            def exit_code(self):
+                return None
+
+            def log_tail(self, lines=40):
+                return ""
+
         def query_to_file(conn, sql, destination):
             destination.write_text(TestRunLockedWiresItsPartsTogether.MANIFEST)
             return 2
 
         class FakeDock:
-            STATE_MOUNT = "/state"
             RC_CONTAINER_PREFIX = job.dock.RC_CONTAINER_PREFIX
             DockerError = job.dock.DockerError
 
@@ -1012,10 +1016,6 @@ class TestRunLockedWiresItsPartsTogether:
             @staticmethod
             def find_stale_daemons():
                 return state.get("stale", [])
-
-            @staticmethod
-            def start_rc_daemon(**kwargs):
-                return FakeDaemon()
 
         class FakeClient:
             def copy_file(self, src_fs, src_remote, dst_fs, dst_remote):
@@ -1040,6 +1040,7 @@ class TestRunLockedWiresItsPartsTogether:
             job.postgres, "database_now", lambda conn: "2026-08-31T02:17:03+00"
         )
         monkeypatch.setattr(job.postgres, "query_to_file", query_to_file)
+        monkeypatch.setattr(job.rclone_daemon, "start", lambda **kwargs: FakeDaemon())
         monkeypatch.setattr(
             job, "wait_for_daemon", lambda daemon, attempts=30: FakeClient()
         )
@@ -1128,6 +1129,14 @@ class TestRunLockedWiresItsPartsTogether:
             if f"{job.FLAGS_KEY}=" in ln
         ]
         assert flags and "ledger_stale" in flags[-1], flags
+
+    def test_the_report_is_uploaded_from_the_state_dir(self, harness):
+        # rclone runs beside the job, so it reads the state dir itself.
+        state, tmp_path = harness
+        job.run_locked(self.args(tmp_path), tmp_path)
+        reports = [c for c in state["copied"] if c[2].endswith(".json")]
+        assert reports, "no report was uploaded"
+        assert reports[-1][0] == str(tmp_path.resolve() / "_runs")
 
     def test_the_run_copies_from_the_tenant_prefixed_path(self, harness):
         # The prefix was dropped from the run and no test noticed: the shared
@@ -1736,7 +1745,7 @@ class TestStaleDaemonStopsTheRun:
             line for line in source.splitlines() if not line.lstrip().startswith("#")
         )
         assert executable.index("check_no_stale_daemon()") < executable.index(
-            "dock.start_rc_daemon("
+            "rclone_daemon.start("
         )
 
 
@@ -3288,7 +3297,11 @@ class TestTheReadinessPollIsImpatient:
 
         monkeypatch.setattr(job, "RcloneRC", Recorder)
         daemon = types.SimpleNamespace(
-            url="http://127.0.0.1:5572", user="u", password="p", container="c"
+            url="http://127.0.0.1:5572",
+            user="u",
+            password="p",
+            exit_code=lambda: None,
+            log_tail=lambda lines=40: "",
         )
         client = job.wait_for_daemon(daemon)
         assert seen[0] == job.DAEMON_READY_TIMEOUT_SECONDS
@@ -3307,7 +3320,11 @@ class TestTheReadinessPollIsImpatient:
         """
         monkeypatch.setattr(job.stopping, "stopping", lambda: True)
         daemon = types.SimpleNamespace(
-            url="http://127.0.0.1:5572", user="u", password="p", container="c"
+            url="http://127.0.0.1:5572",
+            user="u",
+            password="p",
+            exit_code=lambda: None,
+            log_tail=lambda lines=40: "",
         )
         with pytest.raises(lib.Stopped):
             job.wait_for_daemon(daemon)
@@ -3315,6 +3332,47 @@ class TestTheReadinessPollIsImpatient:
     def test_a_stop_is_not_a_backup_error(self):
         """They end the run for opposite reasons, so one cannot catch both."""
         assert not issubclass(lib.Stopped, lib.BackupError)
+
+
+class TestADaemonThatNeverAnswersIsASetupError:
+    """A daemon that dies or never listens ends the run as a setup error, with
+    its own log, rather than as thirty polls and a generic timeout."""
+
+    def daemon(self, exit_code=None):
+        return types.SimpleNamespace(
+            url="http://127.0.0.1:5572",
+            user="u",
+            password="p",
+            exit_code=lambda: exit_code,
+            log_tail=lambda lines=40: "ERROR : bind: address already in use",
+        )
+
+    def refusing_client(self, monkeypatch, polled):
+        class Refuse(job.RcloneRC):
+            def noop(self):
+                polled.append(1)
+                raise RcloneError("connection refused", retryable=True)
+
+        monkeypatch.setattr(job, "RcloneRC", Refuse)
+
+    def test_one_that_exited_fails_at_once_with_its_log(self, monkeypatch):
+        polled = []
+        self.refusing_client(monkeypatch, polled)
+        with pytest.raises(
+            job.rclone_daemon.DaemonError, match="address already in use"
+        ):
+            job.wait_for_daemon(self.daemon(exit_code=1))
+        assert polled == [], "it polled a daemon that had already exited"
+
+    def test_one_that_never_answers_fails_with_its_log(self, monkeypatch):
+        polled = []
+        self.refusing_client(monkeypatch, polled)
+        with pytest.raises(job.rclone_daemon.DaemonError, match="never became ready"):
+            job.wait_for_daemon(self.daemon(), attempts=3)
+        assert len(polled) == 3
+
+    def test_either_one_exits_two(self):
+        assert issubclass(job.rclone_daemon.DaemonError, lib.BackupError)
 
 
 class TestADatabaseFailureIsASetupError:

@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import backup_lib as lib  # noqa: E402
 import docker_env as dock  # noqa: E402
 import postgres  # noqa: E402
+import rclone_daemon  # noqa: E402
 import report  # noqa: E402
 from copier import (  # noqa: E402
     MAX_ATTEMPTS,
@@ -604,14 +605,11 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     # wrote to.
     ledger.remember_destination(destination)
     run_id = ledger.start_run(now=watermark)
-    network = dock.find_network(dock.project_name(args.env))
-    daemon = dock.start_rc_daemon(
-        network=network,
+    daemon = rclone_daemon.start(
         rclone_config=str(Path(args.rclone_config).resolve()),
         port=args.rc_port,
         transfers=args.workers,
         bwlimit=args.bwlimit,
-        state_dir=str(state_dir.resolve()),
     )
     totals = Totals()
     if args.verify:
@@ -724,7 +722,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             )
         finally:
             # Last, so the daemon is still alive for both uploads above, and
-            # unconditional, so nothing above can strand the container.
+            # unconditional, so nothing above can strand the daemon.
             daemon.stop()
     logger.info(
         "done — copied %d, failed %d, already current %d, skipped %d",
@@ -1011,7 +1009,7 @@ def run_outcome(
 
 
 def publish_report(
-    daemon: dock.RcDaemon,
+    daemon: rclone_daemon.Daemon,
     state_dir: Path,
     box_fs: str,
     args: argparse.Namespace,
@@ -1069,7 +1067,8 @@ def publish_report(
     try:
         client = RcloneRC(daemon.url, daemon.user, daemon.password)
         client.copy_file(
-            dock.STATE_MOUNT + "/" + report.REPORTS_DIRNAME,
+            # rclone runs beside the job, so it reads the state dir directly.
+            str(state_dir.resolve() / report.REPORTS_DIRNAME),
             entry.filename(),
             box_fs,
             report.box_remote_path(entry),
@@ -1080,7 +1079,7 @@ def publish_report(
 
 
 def publish_ledger(
-    daemon: dock.RcDaemon,
+    daemon: rclone_daemon.Daemon,
     state_dir: Path,
     box_fs: str,
     args: argparse.Namespace,
@@ -1145,7 +1144,9 @@ def publish_ledger(
                 lib.format_bytes(local_size),
             )
             return "ledger_ahead"
-        client.copy_file(dock.STATE_MOUNT, report.LEDGER_FILENAME, box_fs, destination)
+        client.copy_file(
+            str(state_dir.resolve()), report.LEDGER_FILENAME, box_fs, destination
+        )
         logger.info("ledger on Box: %s (%s)", destination, lib.format_bytes(local_size))
     except Exception as exc:
         # Deliberately broad: this runs in the cleanup path, and anything
@@ -1482,7 +1483,7 @@ def require_rclone_config(path: str, remote: str) -> None:
 DAEMON_READY_TIMEOUT_SECONDS = 10
 
 
-def wait_for_daemon(daemon: dock.RcDaemon, attempts: int = 30) -> RcloneRC:
+def wait_for_daemon(daemon: rclone_daemon.Daemon, attempts: int = 30) -> RcloneRC:
     """Poll rc/noop until the daemon answers, so the first copy isn't a race."""
     poll = RcloneRC(
         daemon.url,
@@ -1495,6 +1496,12 @@ def wait_for_daemon(daemon: dock.RcDaemon, attempts: int = 30) -> RcloneRC:
         # stop arriving while the daemon starts must not wait out the poll.
         if stopping.stopping():
             raise lib.Stopped("stopped while waiting for the rclone daemon")
+        code = daemon.exit_code()
+        if code is not None:
+            raise rclone_daemon.DaemonError(
+                f"rclone daemon exited ({code}) before it was ready. Its log:\n"
+                + daemon.log_tail()
+            )
         try:
             poll.noop()
             logger.info("rclone daemon ready (%s)", poll.version())
@@ -1503,9 +1510,8 @@ def wait_for_daemon(daemon: dock.RcDaemon, attempts: int = 30) -> RcloneRC:
             return RcloneRC(daemon.url, daemon.user, daemon.password)
         except RcloneError:
             time.sleep(0.5)
-    raise lib.BackupError(
-        "rclone daemon never became ready. Container logs:\n"
-        + dock.daemon_logs(daemon.container)
+    raise rclone_daemon.DaemonError(
+        "rclone daemon never became ready. Its log:\n" + daemon.log_tail()
     )
 
 
