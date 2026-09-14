@@ -13,11 +13,12 @@ import { FIRST_GROUP_COLOUR, SECOND_GROUP_COLOUR } from "./expression-lib/de-typ
 
 afterEach(cleanup);
 
+// The stand-in client serves one gene per comparison, so a tested one records one.
 const comparison = (id: number, cluster: string, contrast: string, tested = true) => {
   const [group1, group2] = contrast.split("_vs_");
   return {
     id, cluster_id: cluster, contrast, group1, group2,
-    n_group1: 120, n_group2: 80, n_genes_tested: tested ? 15000 : 0, tested,
+    n_group1: 120, n_group2: 80, n_genes_tested: tested ? 1 : 0, tested,
   };
 };
 
@@ -51,6 +52,7 @@ vi.mock("@/lib/supabase/client", () => ({
         order: () => query,
         limit: () => query,
         range: (from: number) => { start = from; return query; },
+        abortSignal: () => query,
         then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => {
           const answer = (() => {
             if (table === "scrna_de_runs") return { data: [RUN], error: null };
