@@ -44,7 +44,6 @@ from typing import Iterator
 sys.path.insert(0, str(Path(__file__).parent))
 
 import backup_lib as lib  # noqa: E402
-import docker_env as dock  # noqa: E402
 import postgres  # noqa: E402
 import rclone_daemon  # noqa: E402
 import report  # noqa: E402
@@ -133,9 +132,9 @@ ENV_KEYS = (
     "OBJECT_BACKUP_RCLONE_CONFIG",
 )
 
-# Returned to the caller instead of exported. Every `docker` child this job
-# starts inherits our environment, so a secret left in it travels further than
-# the one function that needs it.
+# Returned to the caller instead of exported. Every child this job starts
+# inherits our environment, so a secret left in it travels further than the
+# one function that needs it.
 # `.env.prod.defaults` classifies both of these as credentials rather than
 # config: they pair with an admin password.
 SECRET_ENV_KEYS = ("MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD", "POSTGRES_PASSWORD")
@@ -385,7 +384,7 @@ def main(argv: list[str] | None = None) -> int:
         args.minio_secret = args.minio_secret or found.get("MINIO_ROOT_PASSWORD", "")
         check_state_dir(args, found.get("OBJECT_BACKUP_STATE_DIR", ""))
         return run_backup(args)
-    except (dock.DockerError, lib.BackupError) as exc:
+    except lib.BackupError as exc:
         logger.error("%s", exc)
         return 2
     except KeyboardInterrupt:
@@ -597,10 +596,6 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         ledger.close()
         return dry_run_verdict(totals, listed)
 
-    # Left here rather than moved up with the config checks: it is the one
-    # that reads live state, and it is answered right before the daemon it
-    # is about would start.
-    check_no_stale_daemon()
     # Recorded only now — a dry run must not claim a destination it never
     # wrote to.
     ledger.remember_destination(destination)
@@ -682,8 +677,8 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         report_flags = _flags_for(totals)
         # Nested so the teardown below cannot be skipped. Everything in this
         # block can raise — the ledger writes raise sqlite3.Error on a full disk
-        # — and a container left holding the RC port makes every later night
-        # fail at check_no_stale_daemon until someone clears it by hand.
+        # — and a daemon left running holds the RC port, so the next run on
+        # this host could not start its own.
         try:
             publish_report(
                 daemon,
@@ -1323,34 +1318,6 @@ def minio_source_from_env(args: argparse.Namespace) -> MinioSource:
         secret_key=secret,
         bucket=args.minio_bucket,
         prefix=args.minio_prefix,
-    )
-
-
-def check_no_stale_daemon() -> None:
-    """Refuse to start while a previous run's container is still around.
-
-    Deliberately a refusal rather than a cleanup. Removing a container is
-    destructive and this job should not do destructive things on its own
-    initiative — a person can look, confirm it is a leftover, and remove it.
-
-    The alternative is what happens today: `docker run` fails with `port is
-    already allocated`, which says nothing about a run three nights ago being
-    the cause, and gives no hint that a `docker rm` is all that is needed.
-    """
-    stale = dock.find_stale_daemons()
-    if not stale:
-        return
-    listed = "\n".join(f"    {line}" for line in stale)
-    raise lib.BackupError(
-        "an rclone container from an earlier run is still present:\n"
-        f"{listed}\n"
-        "It holds the RC port and a live Box session, so this run cannot start "
-        "its own. `kill -9`, the OOM killer, a hard reboot or a crash skip the "
-        "cleanup that would normally remove it; a plain `kill`, a cancelled "
-        "workflow and Ctrl-C do not, and leave nothing behind.\n"
-        "Nothing else is using it: this run already holds the lock, so there is "
-        "no other backup in progress. Remove it and re-run:\n"
-        f"    docker rm --force $(docker ps -aq --filter name={dock.RC_CONTAINER_PREFIX})"
     )
 
 

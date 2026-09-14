@@ -975,7 +975,7 @@ class TestRunLockedWiresItsPartsTogether:
 
     @pytest.fixture
     def harness(self, monkeypatch, tmp_path):
-        """Fakes for docker and rclone; everything between them is real."""
+        """Fakes for the database and rclone; everything between them is real."""
         state = {
             "copied": [],
             "stat_calls": [],
@@ -1001,22 +1001,6 @@ class TestRunLockedWiresItsPartsTogether:
             destination.write_text(TestRunLockedWiresItsPartsTogether.MANIFEST)
             return 2
 
-        class FakeDock:
-            RC_CONTAINER_PREFIX = job.dock.RC_CONTAINER_PREFIX
-            DockerError = job.dock.DockerError
-
-            @staticmethod
-            def project_name(env):
-                return f"bloom_v2_{env}"
-
-            @staticmethod
-            def find_network(project):
-                return "supanet"
-
-            @staticmethod
-            def find_stale_daemons():
-                return state.get("stale", [])
-
         class FakeClient:
             def copy_file(self, src_fs, src_remote, dst_fs, dst_remote):
                 state["copied"].append((src_fs, src_remote, dst_remote))
@@ -1035,7 +1019,6 @@ class TestRunLockedWiresItsPartsTogether:
             def version(self):
                 return "fake"
 
-        monkeypatch.setattr(job, "dock", FakeDock)
         monkeypatch.setattr(
             job.postgres, "database_now", lambda conn: "2026-08-31T02:17:03+00"
         )
@@ -1579,10 +1562,10 @@ class TestRunLockedWiresItsPartsTogether:
         state, tmp_path = harness
 
         def boom(*a, **kw):
-            raise job.dock.DockerError("the daemon container died")
+            raise job.rclone_daemon.DaemonError("the rclone daemon died")
 
         monkeypatch.setattr(job, "copy_manifest", boom)
-        with pytest.raises(job.dock.DockerError):
+        with pytest.raises(job.rclone_daemon.DaemonError):
             job.run_locked(self.args(tmp_path), tmp_path)
         written = sorted((tmp_path / "_runs").glob("*.json"))
         assert written, "a crashed run wrote no report"
@@ -1649,16 +1632,6 @@ class TestRunLockedWiresItsPartsTogether:
         state, tmp_path = harness
         assert job.run_locked(self.args(tmp_path, verify=2), tmp_path) == 0
 
-    def test_a_leftover_container_stops_the_run_before_anything_is_copied(
-        self, harness
-    ):
-        # The check must be reachable from the run, not merely importable.
-        state, tmp_path = harness
-        state["stale"] = ["bloom-box-backup-rclone-dead (Up 3 days)"]
-        with pytest.raises(job.lib.BackupError, match="earlier run"):
-            job.run_locked(self.args(tmp_path), tmp_path)
-        assert state["copied"] == [], "copied despite a stale daemon holding the port"
-
     def test_a_bucket_scoped_run_does_not_record_itself_as_clean(self, harness):
         # run_outcome knowing about --buckets is useless if the run never tells
         # it. Removing the argument from the call site left the suite green.
@@ -1701,52 +1674,58 @@ class TestRunLockedWiresItsPartsTogether:
         )
         with pytest.raises(job.lib.BackupError):
             job.run_locked(self.args(tmp_path), tmp_path)
-        assert state["daemon_stopped"], "the rclone container was left running"
+        assert state["daemon_stopped"], "the rclone daemon was left running"
 
 
-class TestStaleDaemonStopsTheRun:
-    """A leftover container is refused, not removed.
+class TestTheJobNeverRunsDocker:
+    """The job runs in its own container, with no Docker socket.
 
-    Removing one is destructive, and this job should not do that on its own
-    initiative. What it owes the operator is a message that names the container
-    and the command — rather than docker's `port is already allocated`, which
-    says nothing about a run three nights ago.
+    A `docker` call would fail there on the night rather than in a test, so no
+    module may import the old plumbing or name the binary.
     """
 
-    def test_a_leftover_refuses_the_run(self, monkeypatch):
-        monkeypatch.setattr(
-            job.dock,
-            "find_stale_daemons",
-            lambda: ["bloom-box-backup-rclone-a1b2 (Up 3 days)"],
-        )
-        with pytest.raises(job.lib.BackupError) as caught:
-            job.check_no_stale_daemon()
-        message = str(caught.value)
-        assert "bloom-box-backup-rclone-a1b2" in message, "the container is not named"
-        assert "docker rm" in message, "no command to act on"
+    def modules(self):
+        here = Path(__file__).parent
+        return [
+            p
+            for p in sorted(here.glob("*.py"))
+            if not p.name.endswith("_test.py") and p.name != "conftest.py"
+        ]
 
-    def test_a_clean_host_passes(self, monkeypatch):
-        monkeypatch.setattr(job.dock, "find_stale_daemons", lambda: [])
-        job.check_no_stale_daemon()
+    def test_the_scan_sees_the_job(self):
+        names = {p.name for p in self.modules()}
+        assert {"backup_objects.py", "postgres.py", "rclone_daemon.py"} <= names
 
-    def test_the_message_says_why_it_is_safe_to_remove(self, monkeypatch):
-        # The operator's first worry is "is a backup using this?" — the run
-        # lock is already held here, so nothing else can be.
-        monkeypatch.setattr(job.dock, "find_stale_daemons", lambda: ["x (Up 1 day)"])
-        with pytest.raises(job.lib.BackupError) as caught:
-            job.check_no_stale_daemon()
-        assert "lock" in str(caught.value)
+    def test_no_module_names_the_docker_binary(self):
+        import ast
 
-    def test_the_check_runs_before_the_daemon_is_started(self):
-        # Order is the property: checking after `docker run` has already failed
-        # is no better than the error it replaces.
-        source = (Path(__file__).parent / "backup_objects.py").read_text()
-        executable = "\n".join(
-            line for line in source.splitlines() if not line.lstrip().startswith("#")
-        )
-        assert executable.index("check_no_stale_daemon()") < executable.index(
-            "rclone_daemon.start("
-        )
+        offenders = []
+        for path in self.modules():
+            tree = ast.parse(path.read_text())
+            docstrings = {
+                id(node.body[0].value)
+                for node in ast.walk(tree)
+                if isinstance(
+                    node,
+                    (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+                )
+                and node.body
+                and isinstance(node.body[0], ast.Expr)
+                and isinstance(node.body[0].value, ast.Constant)
+            }
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                    continue
+                if id(node) in docstrings:
+                    continue
+                words = node.value.split()
+                if (words and words[0] == "docker") or node.value.endswith("/docker"):
+                    offenders.append((path.name, node.lineno, node.value[:40]))
+        assert not offenders, offenders
+
+    def test_no_module_imports_the_old_plumbing(self):
+        for path in self.modules():
+            assert "docker_env" not in path.read_text(), path.name
 
 
 class TestBucketScopedRunsCannotBecomeTheWatermark:
@@ -1849,11 +1828,11 @@ class TestAStoppedRunIsResumable:
         assert "3 = interrupted" in job.__doc__
 
 
-class TestTheContainerIsAlwaysTornDown:
+class TestTheDaemonIsAlwaysStopped:
     """`daemon.stop()` is the one thing in the cleanup that must not be skipped.
 
-    A container left holding the RC port makes every later night fail at
-    check_no_stale_daemon until someone SSHes in. Reordering the cleanup so the
+    A daemon left running holds the RC port, so the next run on the host cannot
+    start its own. Reordering the cleanup so the
     ledger is closed before it is uploaded put daemon.stop() last, behind steps
     that can raise: publish_report catches only OSError and RcloneError, and
     the ledger writes can raise sqlite3.Error on a full disk — realistic on a
@@ -1876,7 +1855,7 @@ class TestTheContainerIsAlwaysTornDown:
             job.run_locked(
                 TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
             )
-        assert state["daemon_stopped"], "the rclone container was stranded"
+        assert state["daemon_stopped"], "the rclone daemon was stranded"
 
     def test_it_is_stopped_when_the_ledger_upload_raises(self, harness, monkeypatch):
         state, tmp_path = harness
@@ -1885,7 +1864,7 @@ class TestTheContainerIsAlwaysTornDown:
             job.run_locked(
                 TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
             )
-        assert state["daemon_stopped"], "the rclone container was stranded"
+        assert state["daemon_stopped"], "the rclone daemon was stranded"
 
     def test_it_is_stopped_on_an_ordinary_clean_run(self, harness):
         state, tmp_path = harness
@@ -2365,7 +2344,7 @@ class TestTheLedgerIsCopiedToBox:
         assert code == 3, f"a deliberate stop exited {code}"
         assert f"{job.STATUS_KEY}=stopped" in caplog.text
         assert f"{job.STATUS_KEY}=failed" not in caplog.text
-        assert state["daemon_stopped"], "the rclone container was left running"
+        assert state["daemon_stopped"], "the rclone daemon was left running"
         # The run must still be recorded, or the next night cannot resume.
         rows = (
             Ledger.open(str(tmp_path / "ledger.db"))
@@ -2480,7 +2459,7 @@ class TestTheLedgerIsCopiedToBox:
             TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
         )
         assert code == 6, "a failed ledger upload must fail the run"
-        assert state["daemon_stopped"], "the rclone container was left behind"
+        assert state["daemon_stopped"], "the rclone daemon was left behind"
         assert "upload failed" in caplog.text
 
 
@@ -4129,7 +4108,7 @@ class TestItReadsItsSettingsFromTheDeployEnvFile:
             assert leaked not in found
 
     def test_the_minio_secret_is_returned_and_not_exported(self, tmp_path, monkeypatch):
-        """Every `docker` child inherits this process's environment.
+        """Every child process inherits this process's environment.
 
         A secret left in it travels to all of them; returned instead, it
         reaches only the one function that builds the S3 source.
@@ -4269,7 +4248,7 @@ class TestAMalformedNumberIsAConfigFailure:
 
     @pytest.mark.parametrize("key", ["OBJECT_BACKUP_WORKERS", "OBJECT_BACKUP_RC_PORT"])
     # Blank is not malformed — `apply_env_file` treats it as absent and the
-    # default stands, so these would run on into a real `docker ps`.
+    # default stands, so these would run on into a real database connection.
     # `test_a_blank_value_still_falls_back_to_the_default` covers that.
     @pytest.mark.parametrize("bad", ["lots", "5572x", "8.5"])
     def test_it_names_the_key_and_exits_two(
@@ -4281,7 +4260,7 @@ class TestAMalformedNumberIsAConfigFailure:
 
         assert job.main(["--env", "prod", "--state-dir", str(tmp_path)]) == 2
         # The reason, not just the code: exit 2 is also what a run that reaches
-        # a real `docker ps` returns, so the code alone proves nothing.
+        # a real database connection returns, so the code alone proves nothing.
         assert key in caplog.text and "must be a whole number" in caplog.text
 
     def test_a_blank_value_still_falls_back_to_the_default(self, monkeypatch):
@@ -4418,7 +4397,7 @@ class TestTheAllowListCoversEverySettingTheJobReads:
     def test_neither_credential_reaches_the_environment(
         self, key, monkeypatch, tmp_path
     ):
-        """Every docker child inherits this process's environment."""
+        """Every child process inherits this process's environment."""
         monkeypatch.delenv(key, raising=False)
         (tmp_path / ".env.prod").write_text(f"{key}=from-the-file\n")
 
@@ -4430,7 +4409,7 @@ class TestTheAllowListCoversEverySettingTheJobReads:
     def test_a_half_filled_file_is_refused(self, monkeypatch, tmp_path):
         """The guard that refused every night until it was fixed must still refuse.
 
-        Driven to the guard rather than through `main`, whose container lookup
+        Driven to the guard rather than through `main`, whose database read
         comes first and would answer with an unrelated failure.
         """
         for key in self.CREDENTIALS:
