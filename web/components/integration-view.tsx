@@ -97,14 +97,15 @@ export function IntegrationView({ embeddingId, members, labelKeys, cellTypeLabel
   }, [fullScreen]);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    const { signal } = controller;
     setBase(null);
     setLoadError(null);
     setLabelRows(new Map());
     setLabelErrors([]);
-    fetchJointArrays(embeddingId).then(
+    fetchJointArrays(embeddingId, signal).then(
       (arrays) => {
-        if (cancelled) return;
+        if (signal.aborted) return;
         if (!arrays) {
           setLoadError("this map has no cells to show.");
           return;
@@ -115,23 +116,21 @@ export function IntegrationView({ embeddingId, members, labelKeys, cellTypeLabel
         });
       },
       (err) => {
-        if (!cancelled) setLoadError(message(err));
+        if (!signal.aborted) setLoadError(message(err));
       },
     );
     // Each label arrives on its own, so a slow one holds up none of the others.
     for (const key of labelKeys) {
-      fetchLabelCodes(embeddingId, key).then(
+      fetchLabelCodes(embeddingId, key, signal).then(
         ({ levels, codes }) => {
-          if (!cancelled) setLabelRows((prev) => new Map(prev).set(key, { key, levels, codes }));
+          if (!signal.aborted) setLabelRows((prev) => new Map(prev).set(key, { key, levels, codes }));
         },
         (err) => {
-          if (!cancelled) setLabelErrors((prev) => [...prev, message(err)]);
+          if (!signal.aborted) setLabelErrors((prev) => [...prev, message(err)]);
         },
       );
     }
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [embeddingId, members, labelKeys]);
 
   const n = base ? base.positions.length / 2 : 0;
