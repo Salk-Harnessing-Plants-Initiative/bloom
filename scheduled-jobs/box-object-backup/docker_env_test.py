@@ -344,6 +344,11 @@ class TestTheRcloneImageIsReal:
         assert "1.71.4" not in dock.RCLONE_IMAGE
         assert "1.71.5" not in dock.RCLONE_IMAGE
 
+    def test_the_pin_matches_the_job_s_dockerfile(self):
+        # One rclone release for the host job and its image; the two copies must not drift.
+        dockerfile = (Path(__file__).parent / "Dockerfile").read_text(encoding="utf-8")
+        assert f"COPY --from={dock.RCLONE_IMAGE} " in dockerfile
+
     @pytest.mark.needs_network
     @pytest.mark.skipif(
         os.environ.get("BLOOM_SKIP_NETWORK_TESTS") == "1",
@@ -366,7 +371,7 @@ class TestTheRcloneImageIsReal:
         import urllib.request
 
         # For a digest pin the manifest reference is the digest itself;
-        # "1.74.3@sha256:..." is not a reference the registry accepts.
+        # "<version>@sha256:..." is not a reference the registry accepts.
         reference = (
             dock.RCLONE_IMAGE.split("@", 1)[1]
             if "@" in dock.RCLONE_IMAGE
