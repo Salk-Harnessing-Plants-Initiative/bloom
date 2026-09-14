@@ -179,4 +179,45 @@ describe("cancelling requests", () => {
     rendered.unmount();
     expect(signal.aborted).toBe(true);
   });
+
+  /** A request that fails with an AbortError once cancelled, as supabase-js does. */
+  const rejectOnAbort = (signal: AbortSignal, message: string) =>
+    new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(new Error(message))));
+
+  it("shows nothing from the previous map's cancelled requests on the next map", async () => {
+    client.fetchJointArrays.mockImplementation((id: number, signal: AbortSignal) =>
+      id === 1
+        ? rejectOnAbort(signal, "Could not load the map's cells: AbortError: aborted")
+        : Promise.resolve(ARRAYS),
+    );
+    client.fetchLabelCodes.mockImplementation((id: number, key: string, signal: AbortSignal) =>
+      id === 1
+        ? rejectOnAbort(signal, `Could not load ${key}: AbortError: aborted`)
+        : Promise.resolve(LABELS[key]),
+    );
+    const rendered = render(view(1));
+    rendered.rerender(view(2));
+
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Cell type" }) as HTMLButtonElement).disabled).toBe(false),
+    );
+    expect(screen.queryAllByRole("alert")).toHaveLength(0);
+    expect(screen.queryByText(/AbortError/)).toBeNull();
+  });
+
+  it("shows the newly clicked cell, not the previous cell's cancelled request", async () => {
+    client.fetchPoint.mockImplementation((_id: number, index: number, signal: AbortSignal) =>
+      index === 2
+        ? rejectOnAbort(signal, "Could not load the cell: AbortError: aborted")
+        : Promise.resolve({ barcode: "AAAC-3", datasetId: 20, cellId: 6 }),
+    );
+    await renderLoaded();
+
+    act(() => lastMap().onPick(2));
+    act(() => lastMap().onPick(3));
+
+    const details = screen.getByTestId("integration-point-details");
+    expect(await within(details).findByText("AAAC-3")).toBeTruthy();
+    expect(within(details).queryByText(/AbortError/)).toBeNull();
+  });
 });
