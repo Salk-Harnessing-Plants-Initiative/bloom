@@ -212,6 +212,16 @@ platform-independent — an explicit `dpi=` and a fixed figure size at the tool'
 which is production behaviour and out of scope for a testing change — so it is filed as a
 follow-up rather than bodged here.
 
+**Confirmed green on the re-run.** With the 2 UMAP keys unbaselined and
+`_report_regeneration` hardened, `python-audit` passed on `ubuntu-latest`, verified by
+reading the job log rather than the check mark: all 6 optional-key comparisons passed
+against the macOS-generated baselines, as did both blind-spot pins
+(`..._does_not_catch_a_cluster_count_change`, `..._does_not_catch_a_same_k_membership_change`)
+— notable because those compare a *live Linux re-render* against a macOS baseline, the same
+shape as the failure above — plus all 3 `_compare_or_fail` boundary tests and the 3
+pre-existing dedicated-tool comparisons. So `_TOL = 15` holds cross-platform for every
+baseline this change ships, and the measured blind-spot RMS bands hold on Linux too.
+
 A second, genuine bug surfaced with it: `_report_regeneration` called
 `compare_images(..., tol=0)` with no exception handling, so a dimension mismatch took the
 whole `build()` down (it failed 2 generator tests in the same CI run). With the previously
