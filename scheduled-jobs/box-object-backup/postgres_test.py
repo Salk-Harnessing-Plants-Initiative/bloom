@@ -185,6 +185,13 @@ class TestItConnectsOverTheNetwork:
         postgres.query_to_file(CONN, "SELECT 1", tmp_path / "m.tsv")
         assert not any("docker" in a for a in seen["argv"])
 
+    def test_psql_stops_at_the_first_error(self, ran, piped, tmp_path):
+        # Without it psql carries on past a failed statement and can exit 0.
+        assert "ON_ERROR_STOP=1" in self.argv(ran)
+        seen, _ = piped
+        postgres.query_to_file(CONN, "SELECT 1", tmp_path / "m.tsv")
+        assert "ON_ERROR_STOP=1" in seen["argv"]
+
     def test_an_unreachable_host_fails_in_seconds(self, ran):
         seen, _ = ran
         postgres.database_now(CONN)
