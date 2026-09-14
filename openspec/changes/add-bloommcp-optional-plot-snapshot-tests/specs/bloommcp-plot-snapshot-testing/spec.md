@@ -100,13 +100,6 @@ satisfy it vacuously.
   claim that the barplot compensates for the scatter's blindness is bounded by a test rather
   than by prose
 
-#### Scenario: A geometry constant that documents a limit is re-measured by code
-
-- **WHEN** a test depends on a hardcoded figure-geometry constant to size a probe
-- **THEN** a companion test measures that geometry from the live figure and asserts the
-  constant is still within a stated relative tolerance of it, so the constant cannot drift
-  out of sync with the code it describes
-
 ### Requirement: Baselines Are A Drift Gate, Not A Correctness Oracle
 
 A baseline SHALL be treated as certifying *rendering stability* only, and SHALL NOT be

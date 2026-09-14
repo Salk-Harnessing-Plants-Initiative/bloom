@@ -8,9 +8,19 @@
   which these `require_clean=True` tools reject).
 - [ ] 1.2 **GREEN** — add `_render_optional_to_dir(...)` next to `_render_to_dir`, differing
   only in the seeding call and in taking a params model. Do not refactor `_render_to_dir`.
-  Make it **module-scoped and cached per tool**, so `pca_analysis` is rendered once rather
-  than once per each of its 4 parametrized keys (measured: umap 3.12s cold / ~0.4s warm,
-  pca 0.28s, clustering 0.15s — naive per-key rendering would cost ~7.7s instead of ~3.6s).
+  Cache the render **per tool** so `pca_analysis` is rendered once rather than once per each
+  of its 4 parametrized keys (measured: umap 3.12s cold / ~0.4s warm, pca 0.28s, clustering
+  0.15s — naive per-key rendering would cost ~7.7s instead of ~3.6s). Implement the cache as
+  a module-level dict keyed by tool, with the capture directory from the session-scoped
+  `tmp_path_factory` — **not** as a `@pytest.fixture(scope="module")`, which cannot be done
+  here: the obvious dependency `viz_env` is function-scoped (it takes `monkeypatch`,
+  `tmp_path`, and `fake_supabase_storage`), and pytest forbids a broader-scoped fixture
+  depending on narrower-scoped ones. The new tests do not need `viz_env` at all — `FakeReader`
+  bypasses the `TRAITS_DIR` read it sets up.
+  Keep the capture directory under pytest's own tmp root (which `tmp_path_factory`
+  guarantees), because CI's diff-artifact upload globs
+  `/tmp/pytest-of-*/**/*-failed-diff.png`; a capture dir outside it would silently stop
+  surfacing diagnostics on failure.
 - [ ] 1.3 **RED→GREEN** — `test_baseline_set_matches_the_tool_catalogs`: compare the on-disk
   set `plot_baselines/create_*_turface_19_baseline.png` against the union of
   `_PCA_CATALOG_KEYS`/`_UMAP_CATALOG_KEYS`/`_CLUSTERING_CATALOG_KEYS` imported from the tool
@@ -55,11 +65,14 @@
 - [ ] 2.7 Verify the 3 pre-existing baselines are byte-identical after the run — `git status`
   must show them unmodified. A change there means this PR altered coverage it does not own.
 - [ ] 2.8 **Only now** extend `tests/scripts/test_gen_plot_snapshots_golden.py` to cover the
-  new render path, iterating `gen._TOOLS + gen._OPTIONAL_TOOLS` everywhere it currently
-  iterates `gen._TOOLS` (otherwise `test_build_writes_new_baselines_without_needing_yes`
-  silently keeps covering 3 of 11). This must follow §2.3: `_dimension_matched_markers()`
-  reads a baseline file per `_TOOLS` entry, so extending the table before the PNGs exist
-  raises `FileNotFoundError` and takes the 3 existing generator tests down with it.
+  new render path, so `test_build_writes_new_baselines_without_needing_yes` and the two
+  `--yes` tests stop silently covering 3 of 11. Two constraints, both verified against the
+  file: (a) this must follow §2.3, because `_dimension_matched_markers()` (line 106) reads
+  `_REAL_BASELINES_DIR / baseline_name` for every table entry, so growing the table before
+  the PNGs exist raises `FileNotFoundError` and takes the 3 existing generator tests down
+  with it; (b) it must iterate the two tables **separately** rather than concatenating them —
+  line 114 destructures a 4-tuple (`baseline_name, _tool_fn, _produced_name, _converged`) and
+  `_OPTIONAL_TOOLS` has different arity, so `_TOOLS + _OPTIONAL_TOOLS` raises `ValueError`.
 
 ## 3. The comparison tests
 
