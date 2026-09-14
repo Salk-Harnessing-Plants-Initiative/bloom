@@ -54,7 +54,7 @@ NOT_COMPRESSED = [
 ]
 
 _ENCODE_TOKEN = re.compile(r"(?<![\w.-])encode(?![\w.-])")
-_CONTENT_TYPE_LINE = re.compile(r"^\s*header\s+Content-Type\s+(\S+)\s*$", re.MULTILINE)
+_HEADER_LINE = re.compile(r"^header\s+(\S+)\s+(\S+)$")
 
 
 def _encode_directives(body: str) -> list[tuple[int, str, str | None]]:
@@ -82,6 +82,12 @@ def _site_encode() -> tuple[str, str | None]:
     return top[0]
 
 
+def _encode_block() -> str:
+    _, block = _site_encode()
+    assert block is not None, "site-level `encode` has no block, so Caddy's default list applies"
+    return block
+
+
 def _encode_tokens() -> tuple[str | None, list[str]]:
     """The site-level `encode`'s matcher (or None) and its formats."""
     line, _ = _site_encode()
@@ -103,12 +109,38 @@ def _matcher_definition(name: str) -> list[list[str]]:
     return found
 
 
-def _match_types() -> set[str]:
-    _, block = _site_encode()
-    assert block is not None, "site-level `encode` has no block, so Caddy's default list applies"
-    match = block_after(block, r"(?<![\w.-])match\b")
+def _top_level_lines(block: str) -> list[str]:
+    """Non-blank lines at the block's own depth, nested blocks' bodies excluded."""
+    masked = mask_quoted(block)
+    lines, depth, offset = [], 0, 0
+    for line in block.splitlines(keepends=True):
+        if depth == 0 and line.strip():
+            lines.append(line.strip())
+        chunk = masked[offset : offset + len(line)]
+        depth += chunk.count("{") - chunk.count("}")
+        offset += len(line)
+    return lines
+
+
+def _canonical_field(field: str) -> str:
+    """Header field name as Caddy compares it (Go's CanonicalMIMEHeaderKey)."""
+    return "-".join(part[:1].upper() + part[1:].lower() for part in field.split("-"))
+
+
+def _match_lines() -> list[str]:
+    match = block_after(_encode_block(), r"(?<![\w.-])match\b")
     assert match is not None, "site-level `encode` has no `match` block"
-    return set(_CONTENT_TYPE_LINE.findall(match))
+    return [line.strip() for line in match.splitlines() if line.strip()]
+
+
+def _match_types() -> set[str]:
+    """Values of every `header Content-Type` line, whatever the field's case."""
+    types = set()
+    for line in _match_lines():
+        parsed = _HEADER_LINE.match(line)
+        if parsed and _canonical_field(parsed.group(1)) == "Content-Type":
+            types.add(parsed.group(2))
+    return types
 
 
 def _caddy_header_match(pattern: str, value: str) -> bool:
@@ -138,6 +170,20 @@ def test_the_stream_routes_skip_encode():
     tokens = definitions[0]
     assert tokens[:2] == ["not", "path"], f"{ENCODE_MATCHER} must be `not path ...`, found {tokens}"
     assert set(tokens[2:]) == STREAM_ROUTES
+
+
+def test_encode_block_holds_only_the_match_block():
+    lines = _top_level_lines(_encode_block())
+    assert lines == ["match {"], f"`encode` must contain only `match`, found {lines}"
+
+
+def test_match_block_holds_only_content_type_lines():
+    unknown = []
+    for line in _match_lines():
+        parsed = _HEADER_LINE.match(line)
+        if not parsed or _canonical_field(parsed.group(1)) != "Content-Type":
+            unknown.append(line)
+    assert not unknown, f"`match` narrows or widens the list beyond Content-Type: {unknown}"
 
 
 def test_match_list_is_exactly_the_text_types():
