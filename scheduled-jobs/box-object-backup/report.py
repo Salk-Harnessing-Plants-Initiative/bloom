@@ -65,8 +65,7 @@ class RunReport:
     # when the run ends, and the summary looks afterwards.
     actions_run: str = ""
     status: str = ""
-    # Flags known at write time. The two ledger flags are set later, so they
-    # never appear here — the exit code carries them instead.
+    # The run's flags; all are final by the time the report is written.
     flags: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:

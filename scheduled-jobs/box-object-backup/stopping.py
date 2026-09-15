@@ -27,7 +27,7 @@ logger = logging.getLogger("bloom_box_object_backup")
 
 # The signals that mean "stop", and where each comes from:
 #   SIGINT   Ctrl-C at a terminal, and GitHub's first cancellation signal
-#   SIGTERM  `docker stop` (forwarded by the container's init), `kill`, a reboot
+#   SIGTERM  `docker stop`, `kill`, a reboot, an Actions timeout
 #   SIGHUP   the SSH connection dropping, which is how a cancelled workflow
 #            reaches a run started over SSH
 STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
