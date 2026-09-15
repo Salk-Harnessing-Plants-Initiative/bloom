@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -459,12 +460,131 @@ def map_rpc_error(message: str | None, *, profile: str | None = None) -> str:
 # --- supabase / storage I/O -------------------------------------------------
 
 
-def call_insert_envelope(client: Any, envelope: dict[str, Any]) -> dict[str, Any]:
+def resolve_argo_workflow_name() -> str | None:
+    """`ARGO_WORKFLOW_NAME` when set and non-empty (Argo sets it inside the
+    write-back container — see sleap-roots-write-back-template.yaml), else
+    None for the existing manual/ad-hoc invocation shape."""
+    return os.environ.get("ARGO_WORKFLOW_NAME") or None
+
+
+def call_insert_envelope(
+    client: Any, envelope: dict[str, Any], *, argo_workflow_name: str | None = None
+) -> dict[str, Any]:
     """Call the SECURITY DEFINER RPC with the original envelope; return its jsonb summary.
+
+    `argo_workflow_name`, when given, links the write-back to the matching
+    `cyl_pipeline_run_scans` row (fix-cyl-pipeline-run-scan-status) — omitted
+    from the payload entirely when None, relying on the RPC's own
+    `DEFAULT NULL` rather than sending an explicit null, matching the
+    existing manual-invocation call shape exactly.
 
     Lets ``postgrest.APIError`` propagate so the command can map it to a message.
     """
-    return client.rpc("insert_cyl_result_envelope", {"envelope": envelope}).execute().data
+    payload: dict[str, Any] = {"envelope": envelope}
+    if argo_workflow_name is not None:
+        payload["p_argo_workflow_name"] = argo_workflow_name
+    return client.rpc("insert_cyl_result_envelope", payload).execute().data
+
+
+# PostgREST's "function signature not found" code — mirrors status_poller.py's
+# own `_SIGNATURE_NOT_FOUND_CODE` (both call an RPC from the same migration and
+# are exposed to the same deploy-ordering window).
+_SIGNATURE_NOT_FOUND_CODE = "PGRST202"
+_RECONCILE_RPC_NAME = "fail_cyl_pipeline_run_scans_without_result"
+
+
+def reconcile_unresolved_scans(client: Any, argo_workflow_name: str) -> int:
+    """Close out, as `'failed'`, any scan dispatched under `argo_workflow_name`
+    that write-back never resolved either way — a prediction failure before
+    write-back was ever attempted, or an envelope otherwise never produced
+    (including the "manifest-declared scan_key with no matching file" case).
+    Called once, at the end of a batch, only when `ARGO_WORKFLOW_NAME` is set.
+    Returns the number of scans marked failed."""
+    result = (
+        client.rpc(
+            "fail_cyl_pipeline_run_scans_without_result",
+            {
+                "p_argo_workflow_name": argo_workflow_name,
+                "p_error_message": "no result produced for this scan by write-back",
+            },
+        )
+        .execute()
+        .data
+    )
+    return result or 0
+
+
+def _reconcile_unresolved_scans_result(client: Any, argo_workflow_name: str) -> ScanResult | None:
+    """Call `reconcile_unresolved_scans`, isolating any failure instead of raising — matching
+    the per-envelope isolation the rest of this file already gives every other RPC call, so a
+    transient error on this one closing call can never crash a batch whose every envelope may
+    have already ingested successfully (review finding: this call had no isolation of its own).
+
+    Returns `None` on success, after logging how many scans were closed out (previously
+    discarded silently). On failure, returns a synthetic `'failed'` `ScanResult` describing it,
+    so it surfaces in the batch's own summary/`--json` output and exit code rather than crashing
+    the command with an unhandled traceback.
+    """
+    from postgrest import APIError
+
+    try:
+        count = reconcile_unresolved_scans(client, argo_workflow_name)
+    except APIError as exc:
+        # Deliberately NOT map_rpc_error: that mapper's hints (e.g. "permission
+        # denied" -> "log in with a bloom_writer / bloom_admin account") are
+        # hardcoded to insert_cyl_result_envelope's own grant, but this call is
+        # against fail_cyl_pipeline_run_scans_without_result — granted to
+        # bloom_workflows only, a different role entirely (review finding:
+        # reusing that mapper here would name the wrong RPC and suggest the
+        # wrong role). The raw message is returned verbatim instead, plus a
+        # role hint of our own on an actual permission-denied response (human
+        # PR review, design.md's Decision 6 addendum 7): this call authenticates
+        # via the same client as write-back, which is not guaranteed to carry
+        # the bloom_workflows grant this RPC actually requires.
+        message = getattr(exc, "message", None) or str(exc)
+        if exc.code == _SIGNATURE_NOT_FOUND_CODE:
+            # Same expected deploy-ordering window status_poller.py's own
+            # reconciliation call already treats quietly (round 7 finding —
+            # this bloomcli call site had no matching framing): the migration
+            # adding this RPC hasn't applied yet in this environment.
+            # retriable stays True (the default) — Argo's own retryStrategy
+            # is the correct recovery for this transient window.
+            return ScanResult(
+                "<reconciliation>",
+                "failed",
+                f"reconciliation for workflow {argo_workflow_name!r} deferred — RPC "
+                "signature not yet migrated (expected, transient deploy-ordering "
+                f"window): {message}",
+            )
+        # Anchored to this specific RPC's exact "permission denied for function
+        # <name>" wording (round 7 finding — Behavioral Correctness) rather than
+        # a bare "permission denied" substring, which could false-positive on an
+        # unrelated permission error that happens to contain the same phrase.
+        hint = (
+            " — this account must be granted the bloom_workflows role to run "
+            "reconciliation (a different grant than write-back's own RPC requires)"
+            if f"permission denied for function {_RECONCILE_RPC_NAME}" in message
+            else ""
+        )
+        return ScanResult(
+            "<reconciliation>",
+            "failed",
+            f"failed to reconcile unresolved scans for workflow {argo_workflow_name!r}: "
+            f"{message}{hint}",
+        )
+    except Exception as exc:
+        return ScanResult(
+            "<reconciliation>",
+            "failed",
+            f"failed to reconcile unresolved scans for workflow {argo_workflow_name!r}: {exc}",
+        )
+    if count:
+        logger.info(
+            "Reconciled %d scan(s) with no write-back result as 'failed' for workflow %s",
+            count,
+            argo_workflow_name,
+        )
+    return None
 
 
 # --- batch: non-raising per-envelope core ------------------------------------
@@ -492,19 +612,13 @@ def ingest_one_envelope(
 
     try:
         data = load_envelope(str(envelope_path))
-    except EnvelopeError as exc:
-        return ScanResult(scan_key, "failed", str(exc))
 
-    # Prefer the envelope's own provenance.scan_key once it's readable, so a failure after this
-    # point is reported under the scan's real key rather than the filename stem.
-    scan_key = (data.get("provenance") or {}).get("scan_key") or scan_key
+        # Prefer the envelope's own provenance.scan_key once it's readable, so a failure after
+        # this point is reported under the scan's real key rather than the filename stem.
+        scan_key = (data.get("provenance") or {}).get("scan_key") or scan_key
 
-    try:
         validate_envelope(data)
-    except EnvelopeValidationError as exc:
-        return ScanResult(scan_key, "failed", str(exc))
 
-    try:
         pending: list[PendingBlob] = []
         idempotency_key = ""
         if predictions_dir is not None:
@@ -553,8 +667,11 @@ def ingest_one_envelope(
 
         from postgrest import APIError
 
+        argo_workflow_name = resolve_argo_workflow_name()
         try:
-            result = call_insert_envelope(client, data)
+            result = call_insert_envelope(
+                client, data, argo_workflow_name=argo_workflow_name
+            )
         except APIError as exc:
             return ScanResult(
                 scan_key,
@@ -565,12 +682,54 @@ def ingest_one_envelope(
         if not isinstance(result, dict):
             return ScanResult(scan_key, "failed", f"unexpected RPC response shape: {result!r}")
 
+        # Found during /review-pr round 4: a delivery that genuinely writes trait/blob
+        # data (was_noop=false) can still have its per-scan status UPDATE silently
+        # skipped by the RPC's own late-delivery-resurrection guard (the scan was
+        # already 'failed' — reachable via an ordinary Argo retry racing this batch's
+        # own end-of-batch reconciliation, not an exotic case). Previously this reported
+        # "ok" with zero signal that done_count/failed_count would now permanently
+        # disagree with the real data just written. status_update_matched is None when
+        # argo_workflow_name wasn't supplied (not applicable — the existing manual/
+        # ad-hoc shape, unaffected).
+        #
+        # retriable=False (found during /review-pr round 5): this scan's row was already
+        # 'failed' BEFORE this call ran, and step 9's guard makes that permanent — nothing
+        # about re-running this same delivery can ever change the outcome. Without this,
+        # batch_ingest_result's exit code alone was indistinguishable from a genuinely
+        # retriable failure, so an Argo-retried write-back pod would burn its whole retry
+        # budget on something no retry could fix, ultimately failing the entire Workflow —
+        # and with it, every other scan in the same batch that actually succeeded.
+        #
+        # Message wording (human PR review, design.md's Decision 6 addendum 7): False also
+        # means no row matched the (argo_workflow_name, source_id) join at all — a distinct,
+        # more concerning case than "already closed out failed" (see the no-op-path source_id
+        # gap this same addendum documents as an accepted risk) — so the message must not
+        # assert the reconciliation-attempt explanation as the sole cause.
+        if argo_workflow_name is not None and result.get("status_update_matched") is False:
+            return ScanResult(
+                scan_key,
+                "failed",
+                f"write-back succeeded (source_id={result.get('source_id')}) but this "
+                "scan's cyl_pipeline_run_scans status was not updated. Either no row "
+                "matched this scan under this workflow, or a matching row was already "
+                "closed out as 'failed' by an earlier reconciliation attempt — in the "
+                "latter case that outcome is already reflected in the run's failed_count "
+                "(not a new failure), but in the former case this scan may still be sitting "
+                "as 'queued' with nothing left to resolve it. The written trait/blob data is "
+                "correct either way; verify this scan's row manually.",
+                retriable=False,
+            )
+
         if result.get("was_noop"):
             return ScanResult(scan_key, "skipped")
         return ScanResult(scan_key, "ok")
-    except Exception as exc:  # batch isolation: a transient network/auth error on one
-        # envelope must never abort the rest of the batch (review finding: this was
-        # previously uncaught for anything other than postgrest.APIError/BlobConstructionError).
+    except Exception as exc:  # batch isolation: any failure at any stage (an unreadable/corrupt
+        # file, a contract-validation error, a blob problem, a transient network/auth error) must
+        # never abort the rest of the batch. Deliberately covers the whole read->validate->blob->RPC
+        # pipeline in one block, not just the RPC call — review finding: load_envelope's
+        # Path.read_text can raise UnicodeDecodeError (a ValueError, not the OSError load_envelope
+        # itself catches), which previously escaped this function entirely since the narrower
+        # try/except around load_envelope only caught EnvelopeError.
         return ScanResult(scan_key, "failed", str(exc))
 
 
@@ -670,8 +829,11 @@ def ingest_result(
 
     from postgrest import APIError
 
+    argo_workflow_name = resolve_argo_workflow_name()
     try:
-        result = call_insert_envelope(client, data)
+        result = call_insert_envelope(
+            client, data, argo_workflow_name=argo_workflow_name
+        )
     except APIError as exc:
         raise click.ClickException(
             map_rpc_error(getattr(exc, "message", None), profile=profile)
@@ -686,6 +848,31 @@ def ingest_result(
         click.echo(json.dumps(result))
     else:
         click.echo(summarize_result(result))
+
+    # See ingest_one_envelope's identical check for why this matters (review
+    # round 4): a genuinely successful write whose status linkage was silently
+    # skipped by the resurrection guard. Checked after printing the result (the
+    # write itself did succeed) so the operator sees both the real outcome and
+    # the warning, then the command still exits non-zero — unlike
+    # batch_ingest_result's own retriable=False handling (review round 5), a
+    # non-zero exit here has no automated-retry consequence to worry about:
+    # this command is the manual/ad-hoc invocation shape, run by a human who
+    # sees the failure directly, not a write-back pod Argo will retry.
+    #
+    # Message wording (human PR review, design.md's Decision 6 addendum 7): see
+    # ingest_one_envelope's identical message for why this must not assert the
+    # reconciliation-attempt explanation as the sole cause.
+    if argo_workflow_name is not None and result.get("status_update_matched") is False:
+        raise click.ClickException(
+            f"write-back succeeded (source_id={result.get('source_id')}) but this "
+            "scan's cyl_pipeline_run_scans status was not updated. Either no row "
+            "matched this scan under this workflow, or a matching row was already "
+            "closed out as 'failed' by an earlier reconciliation attempt — in the "
+            "latter case that outcome is already reflected in the run's failed_count "
+            "(not a new failure), but in the former case this scan may still be sitting "
+            "as 'queued' with nothing left to resolve it. The written trait/blob data is "
+            "correct either way; verify this scan's row manually."
+        )
 
 
 # --- batch: command -----------------------------------------------------------
@@ -749,7 +936,40 @@ def batch_ingest_result(
         for key in discovered.missing_scan_keys
     ]
 
+    argo_workflow_name = resolve_argo_workflow_name()
+
     if not discovered.paths and not missing_results:
+        # Still reconcile when ARGO_WORKFLOW_NAME is set — even an empty batch
+        # (every scan's prediction failed before producing any file at all)
+        # must close out this workflow's scans as 'failed', not leave them
+        # 'queued' forever. Unset, this is the pre-existing manual/local
+        # no-envelopes-no-manifest shape: no client, no RPC call, unchanged.
+        if argo_workflow_name:
+            from ..cli import _authed_client
+
+            client = _authed_client(profile)
+            reconcile_failure = _reconcile_unresolved_scans_result(client, argo_workflow_name)
+            if reconcile_failure is not None:
+                batch_result = BatchResult([reconcile_failure])
+                if as_json:
+                    click.echo(format_json(batch_result))
+                else:
+                    click.echo(
+                        format_summary(
+                            batch_result,
+                            verb="Ingested",
+                            noun="envelope",
+                            destination=str(envelopes_dir),
+                        )
+                    )
+                # needs_retry, not batch_result.ok — same reasoning as the main path's
+                # exit check below (round 5 finding): today this is always True here
+                # (a reconciliation-call failure is always constructed with the
+                # retriable=True default), but checking needs_retry keeps this branch
+                # from silently reintroducing round 5's cascade if a future change
+                # ever marks a reconciliation failure non-retriable.
+                if batch_result.needs_retry:
+                    ctx.exit(1)
         click.echo("No envelope files found; nothing to ingest.")
         return
 
@@ -780,7 +1000,20 @@ def batch_ingest_result(
         missing_results = [r for r in missing_results if r.scan_key not in ingested_scan_keys]
         scan_results = ingest_results + missing_results
     else:
+        # Only manifest-declared-missing entries, no files at all. The
+        # pre-existing "never authenticate" behavior is preserved when
+        # ARGO_WORKFLOW_NAME is unset; when it IS set, a client is needed
+        # purely to make the one reconciliation call below.
+        if argo_workflow_name:
+            from ..cli import _authed_client
+
+            client = _authed_client(profile)
         scan_results = missing_results
+
+    if argo_workflow_name:
+        reconcile_failure = _reconcile_unresolved_scans_result(client, argo_workflow_name)
+        if reconcile_failure is not None:
+            scan_results = [*scan_results, reconcile_failure]
 
     batch_result = BatchResult(scan_results)
 
@@ -793,5 +1026,14 @@ def batch_ingest_result(
             )
         )
 
-    if not batch_result.ok:
+    # needs_retry, not .ok: a batch whose only failures are non-retriable
+    # status_update_matched mismatches (real data written, status linkage
+    # already permanently settled) still shows up as failed in the summary/JSON
+    # above — .ok correctly stays False, and any human/script reading that output
+    # sees it — but exiting non-zero here would tell Argo's retryStrategy to
+    # retry the whole write-back pod, which can never change this outcome and
+    # would burn the retry budget until the run's own Argo Workflow phase itself
+    # fails, cascading one already-fully-reported, unfixable scan into the
+    # entire run reading terminal 'failed' (found during /review-pr round 5).
+    if batch_result.needs_retry:
         ctx.exit(1)
