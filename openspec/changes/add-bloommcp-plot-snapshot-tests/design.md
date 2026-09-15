@@ -184,6 +184,18 @@ fixture resolution is unchanged from its perspective).
 
 ## Decision 7: why #768 (correlation_matrix single-cell detection) is tracked, not fixed here
 
+> **Update (#768 is now closed, by `add-bloommcp-correlation-cell-oracle`).** Everything below
+> still describes this change's own scope correctly and is left as written. What has changed is
+> the outcome it defers: the first of the two paths it names — a per-region/structural
+> comparison — was taken, as `bloommcp/tests/tools/test_viz_cell_oracle.py`. That file asserts
+> every cell the delegate draws against an independently recomputed `df[trait_cols].corr()`,
+> so a single-cell defect now fails CI even though whole-image RMS still cannot see it. Re-
+> measuring for that change also found this section's gap is *wider* than stated here: even the
+> widest error the colormap can express (the fixture's strongest pair, r=0.9942, drawn as
+> r=−0.306) scores only RMS≈11.3, still under `_TOL=15`. The conclusion below — that no `_TOL`
+> separates signal from noise — is therefore reinforced, not overturned. This note exists
+> because `plot_correlation_matrix.py`'s own docstring points readers at this document.
+
 Given the ~5 RMS single-cell signal sits in the same range as legitimate cross-platform
 noise (Decision 2's own measurements), a single global `_TOL` cannot both survive that
 noise and catch that signal. Two paths that could genuinely close this gap — a per-region/

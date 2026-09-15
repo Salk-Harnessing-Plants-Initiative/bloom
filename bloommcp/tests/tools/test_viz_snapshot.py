@@ -64,9 +64,16 @@ unaffected pixel, and *how much* it's diluted depends on both the perturbed area
   a bug producing exactly this failure mode would not be flagged. There is no `_TOL` value
   that both survives legitimate cross-platform noise (~5-12 RMS just from FreeType hinting
   differences, see the Tolerance section above) and clears a ~5 RMS single-cell signal --
-  the two are the same order of magnitude. This is not a gap this PR closes; it's a real,
-  permanent limit of whole-image RMS comparison applied to a 55-cell grid, tracked as
-  **#768** rather than left as an implicit assumption.
+  the two are the same order of magnitude. This is not a gap *this* file closes; it's a real,
+  permanent limit of whole-image RMS comparison applied to a 55-cell grid.
+  **It is, however, no longer an open gap: `test_viz_cell_oracle.py` (#768) closes it from the
+  other side**, asserting every drawn cell against an independently recomputed
+  `df[trait_cols].corr()` instead of a whole-image statistic. Re-measuring for that change found
+  the RMS blind spot is *wider* than the ~5.2 figure above suggests: even the widest error this
+  colormap can express -- the fixture's strongest pair, r=0.9942, drawn as r=-0.306 -- scores
+  only RMS≈11.3, still under `_TOL=15`. No single-cell correlation error in this heatmap is
+  caught here at any magnitude, which is why the per-cell layer exists rather than a lower
+  `_TOL`.
 - **`heritability_bar`** (RETIRED by bloom#462 -- kept here as the record of what was
   measured, since it is what justified the localized-regression probe size): same 11 traits
   -> 11 bars, bar *area* varying with each trait's H2 value (near-zero for a low-H2 bar up
@@ -97,7 +104,6 @@ non-goal here; see proposal.md.
 
 from __future__ import annotations
 
-import shutil
 import sys
 from pathlib import Path
 
@@ -115,6 +121,8 @@ from bloom_mcp.sections.sleap_roots.analysis import (
     plot_trait_boxplots as plot_trait_boxplots_mod,
     plot_trait_histograms as plot_trait_histograms_mod,
 )
+
+from .conftest import SNAPSHOT_TOL, render_tool_to_dir
 
 _BASELINES = Path(__file__).resolve().parents[1] / "fixtures" / "plot_baselines"
 _EXPERIMENT = "turface_19.csv"
@@ -136,7 +144,12 @@ _PRODUCED_NAME_OVERRIDES = {
 # Empirically derived, not guessed -- see the module docstring's Tolerance and Known
 # limitation sections (design.md Decisions 2 & 3 have the full measurement + fallback
 # plan). Changing this number should come with a fresh measurement, not a vibe.
-_TOL = 15
+#
+# Defined in `conftest.py` rather than here since #768: `test_viz_cell_oracle.py`'s negative
+# control asserts that whole-image RMS at this tolerance MISSES a single-cell defect that its
+# own per-cell checks catch. That claim is only meaningful against the same number this file's
+# production comparison uses, so the two must not be able to drift apart.
+_TOL = SNAPSHOT_TOL
 
 # (label, tool module, tool fn name, produced PNG name, baseline PNG name)
 #
@@ -186,43 +199,10 @@ _IDS = [label for label, *_ in _SNAPSHOT_TOOLS]
 # (not PLOTS_DIR). Pixel coverage is preserved for them rather than dropped: the render
 # itself is unchanged, and these baselines still match within `_TOL` (verified against the
 # committed baselines when this adaptation landed, #466 review round 7).
-def _render_to_dir(label, module, fn_name, viz_env):
-    """Run one plotting tool and return the directory its PNG(s) landed in.
-
-    All 3 tools here write into a ``ResultStore`` staging dir that ``commit`` deletes on
-    success, so their bytes are copied out inside a ``commit`` spy — the last point at which
-    the committed file still exists on disk. Capturing at commit (rather than spying on
-    ``savefig``) means the bytes compared are exactly the bytes that were committed, not an
-    intermediate render. (A ``PLOTS_DIR`` branch for the two legacy tools lived here until
-    #462 retired them; ``viz_env`` now serves only as scratch space.)
-    """
-    fn = getattr(module, fn_name)
-
-    import pandas as pd
-    from bloom_mcp.data_access import FakeReader, SupabaseReader
-    from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
-    from bloom_mcp.tools import _ports
-
-    captured = viz_env / f"_committed_{label}"
-    captured.mkdir(parents=True, exist_ok=True)
-
-    reader = FakeReader()
-    reader.add_experiment(_EXPERIMENT, pd.read_csv(_RAW_FIXTURE))
-    store = FakeResultStore()
-    real_commit = store.commit
-
-    def _spy_commit(run, outputs):
-        for name in outputs:
-            shutil.copy(run.staging_dir / name, captured / name)
-        return real_commit(run, outputs)
-
-    store.commit = _spy_commit
-    _ports.configure(reader=reader, store=store)
-    try:
-        fn(experiment=_EXPERIMENT)
-    finally:
-        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
-    return captured
+# Lives in `conftest.py` since #768 so `test_viz_cell_oracle.py` can tie its per-cell
+# assertions to the tool's really-committed PNG without a second copy of this setup drifting
+# from this one -- the same single-sourcing rationale that moved `viz_env` there for #713.
+_render_to_dir = render_tool_to_dir
 
 
 @pytest.mark.parametrize(
@@ -406,14 +386,20 @@ def test_real_correlation_cell_area_fraction_matches_measured_geometry():
 
 
 def test_realistic_single_cell_defect_in_correlation_matrix_is_not_caught(tmp_path):
-    """Honest negative result, not a gap papered over: a real single-cell defect in
-    `correlation_matrix` -- the tool where a silent wrong value is most scientifically
-    consequential -- is measurably NOT caught by `_TOL=15`. A PR review on #713 correctly
-    rejected an earlier version of this suite that tested at ~6x a real cell's actual size
-    and called the gap "resolved"; it wasn't. This test locks in the actual, current
-    behavior instead: it should fail loudly (telling us something changed, for better or
-    worse) if a future baseline regeneration or `_TOL` change ever alters this outcome --
-    it must NOT be treated as passing proof the gap is fine to ignore.
+    """Pins THIS layer's blind spot -- not an open gap in the suite as a whole.
+
+    A real single-cell defect in `correlation_matrix` is measurably NOT caught by `_TOL=15`. A
+    PR review on #713 correctly rejected an earlier version of this suite that tested at ~6x a
+    real cell's actual size and called the gap "resolved"; it wasn't. This test locks in the
+    actual, current behavior of the whole-image RMS check: it should fail loudly (telling us
+    something changed, for better or worse) if a future baseline regeneration or `_TOL` change
+    ever alters this outcome.
+
+    **The defect class itself is covered** -- by `test_viz_cell_oracle.py`, which asserts every
+    drawn cell against an independently recomputed correlation matrix (#768). This test is kept
+    after that landed because it is the regression guard on the two layers' division of labor:
+    delete it and a future `_TOL` change could silently reintroduce the confusion #768 was filed
+    to end. Read it as "RMS does not do this job", never as "nothing does".
 
     Uses opaque orange -- the same maximally-detectable color the other tests in this file
     use -- which is *more* detectable than a realistic bug: a real miscolored cell under
