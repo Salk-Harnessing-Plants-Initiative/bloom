@@ -519,27 +519,6 @@ def run_backup(args: argparse.Namespace) -> int:
         lock.release()
 
 
-def postgres_connection(args: argparse.Namespace) -> postgres.Connection:
-    """The database to read, by its service name on the stack's network.
-
-    A missing password is refused before anything asks the database, so the
-    failure names the setting rather than looking like a wrong password.
-    """
-    host = os.environ.get("POSTGRES_HOST", "db-prod")
-    if not args.pg_password:
-        raise lib.BackupError(
-            "POSTGRES_PASSWORD is not set — the deploy env file must define it "
-            f"for psql to authenticate against {host}"
-        )
-    return postgres.Connection(
-        host=host,
-        port=_env_int("POSTGRES_PORT", 5432),
-        user=os.environ.get("POSTGRES_USER", "supabase_admin"),
-        database=os.environ.get("POSTGRES_DB", "postgres"),
-        password=args.pg_password,
-    )
-
-
 def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     box_fs = f"{args.box_remote}:"
 
@@ -556,7 +535,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     check_destination(ledger, destination)
     minio = minio_source_from_env(args)
     require_rclone_config(args.rclone_config, args.box_remote)
-    conn = postgres_connection(args)
+    conn = postgres.connection_from_env(args.pg_password)
 
     # Taken from the database, BEFORE the manifest snapshot — not from the
     # host afterwards. Anchoring on a moment the snapshot cannot precede means

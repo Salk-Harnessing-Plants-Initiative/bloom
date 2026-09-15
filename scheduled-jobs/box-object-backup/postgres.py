@@ -27,6 +27,18 @@ READ_ONLY_PREAMBLE = "SET default_transaction_read_only = on;\n"
 # A host that does not answer fails in seconds instead of holding the run lock.
 CONNECT_TIMEOUT_SECONDS = 10
 
+# Caps the manifest read, the one long query the job runs.
+STATEMENT_TIMEOUT = "60min"
+
+# Where the job looks when the settings say nothing: production's database.
+DEFAULT_HOST = "db-prod"
+DEFAULT_PORT = 5432
+DEFAULT_USER = "supabase_admin"
+DEFAULT_DATABASE = "postgres"
+
+# All psql inherits from this process; a stray PGOPTIONS, for one, stays out.
+INHERITED_ENV = ("PATH", "HOME", "LANG", "LC_ALL")
+
 
 class PostgresError(lib.BackupError):
     """psql could not start, could not connect, or its query failed."""
@@ -40,6 +52,34 @@ class Connection:
     database: str
     # Kept out of the repr: the run's whole log reaches the job summary.
     password: str = field(repr=False)
+
+
+def connection_from_env(password: str) -> Connection:
+    """The database to read, from the POSTGRES_* settings or production's defaults.
+
+    A missing password is refused before anything asks the database, so the
+    failure names the setting rather than looking like a wrong password.
+    """
+    host = os.environ.get("POSTGRES_HOST") or DEFAULT_HOST
+    if not password:
+        raise PostgresError(
+            "POSTGRES_PASSWORD is not set — the deploy env file must define it "
+            f"for psql to authenticate against {host}"
+        )
+    raw_port = os.environ.get("POSTGRES_PORT") or str(DEFAULT_PORT)
+    try:
+        port = int(raw_port)
+    except ValueError:
+        raise PostgresError(
+            f"POSTGRES_PORT must be a whole number, not {raw_port!r}"
+        ) from None
+    return Connection(
+        host=host,
+        port=port,
+        user=os.environ.get("POSTGRES_USER") or DEFAULT_USER,
+        database=os.environ.get("POSTGRES_DB") or DEFAULT_DATABASE,
+        password=password,
+    )
 
 
 def _psql(conn: Connection, *, streaming: bool) -> list[str]:
@@ -72,11 +112,10 @@ def _psql(conn: Connection, *, streaming: bool) -> list[str]:
 
 
 def _env(conn: Connection) -> dict[str, str]:
-    return {
-        **os.environ,
-        "PGPASSWORD": conn.password,
-        "PGCONNECT_TIMEOUT": str(CONNECT_TIMEOUT_SECONDS),
-    }
+    env = {key: os.environ[key] for key in INHERITED_ENV if key in os.environ}
+    env["PGPASSWORD"] = conn.password
+    env["PGCONNECT_TIMEOUT"] = str(CONNECT_TIMEOUT_SECONDS)
+    return env
 
 
 def _failed(returncode: int, stderr: str) -> PostgresError:
@@ -93,7 +132,7 @@ def query_to_file(conn: Connection, sql: str, destination: Path) -> int:
     limit, and the session is pinned read-only so a mistake in query
     construction cannot write.
     """
-    preamble = READ_ONLY_PREAMBLE + "SET statement_timeout = '60min';\n"
+    preamble = READ_ONLY_PREAMBLE + f"SET statement_timeout = '{STATEMENT_TIMEOUT}';\n"
     with destination.open("w", encoding="utf-8") as out:
         try:
             process = subprocess.Popen(
