@@ -61,7 +61,7 @@ lock unheld, and poisons `all(held)` permanently. Put any such hygiene call befo
       empty, `close_figures` early-returns, and the only recorded closes are
       `call_with_figure_cleanup`'s legitimately-locked ones, so the test would pass
       **without the fix**. MUST fail against current code; record the failure.
-- [x] 1.2 In the same file, add `test_absent_heatmap_set_acquires_no_lock`, pinning site 2's
+- [x] 1.2 In the same file, add `test_an_empty_figure_set_adds_no_lock_acquisition`, pinning site 2's
       "nothing to close" path — the genuinely uncovered case. Monkeypatch
       `qc_inspect_tool.create_exploratory_summary_plots` to raise (mirroring the existing
       `test_run_commits_without_heatmap_when_summary_plots_fail`), so `summary_figs == {}`,
@@ -301,8 +301,91 @@ is a `proposal.md` Non-Goal with no existing issue tracking it.
       lock tests, converting a nested-acquisition hang into a named failure (currently
       bounded only by `pr-checks.yml`'s `timeout-minutes: 20`; cf. #454).
 - [ ] 7.4 Give the 3 converged `plot_*` tools the same non-raising close posture
-      (`design.md` Decision 3's "divergence left in place"): their bare `plt.close(fig)` runs
+      (`design.md` Decision 3, "Divergence left in place"): their bare `plt.close(fig)` runs
       in a `finally` *after* `store.commit`, so a raising close there can still produce a
       committed-but-reported-failed run.
 - [ ] 7.5 Guard `qc_inspect`'s heatmap `savefig`, whose failure aborts the whole tool despite
       the surrounding block being documented as best-effort.
+- [ ] 7.6 `remove_outliers` accepts `plots=[]` and silently persists nothing.
+      `_make_figures` never calls `validate_plot_keys` (which exists to reject `[]` and is
+      what `clustering`/`pca_analysis`/`umap_analysis`/`heritability_analysis` all use), and
+      `plots` carries no `min_length`, so `include_plots=True, plots=[]` takes the
+      `params.plots is not None` branch, finds no unknown keys, computes `selected = {}`,
+      closes every figure the delegate produced, and commits a run with no figures and no
+      error. Pre-existing and one line from code this change touches; a behavior fix, so out
+      of scope for a race fix.
+- [ ] 7.7 Ops: `bloommcp` declares neither `mem_limit` nor a `healthcheck` in the prod
+      compose file, while the sibling `workflows` service declares `mem_limit: 8g` with an
+      explicit rationale about the OOM killer picking by RSS across the stack. Combined with
+      no logging configuration and no metrics surface in `bloommcp` at all, the new
+      swallowed-close `WARNING` lands in an unaggregated stream on an unbounded container —
+      the right thing to log, but not yet operator-actionable.
+
+## 8. Follow-up review fixes (round 2)
+
+A second review of the merged-ready branch found no defect in the change itself, but five
+documentation-integrity and regression-net gaps. Given this change's own premise is that a
+stale comment misled contributors into believing the race was closed, shipping a fresh
+incorrect claim in the same comment block was the one that mattered.
+
+- [x] 8.1 **Correct the `OrderedDict` mechanism analysis, which was wrong.** An earlier
+      draft claimed the trigger is specifically "the size-changing insert of a brand-new
+      figure number", and that `move_to_end` on an existing key raises nothing — the
+      supporting measurement had used the one degenerate case, a key already at the end.
+      Re-measured on CPython 3.11: `move_to_end` on a non-last key raises, `set_active`'s
+      shape raises for an existing figure number as well as a new one, and `figs.pop(num)`
+      — what `Gcf.destroy` does — raises, which makes **close-vs-close a second racing
+      pair**. Corrected in `design.md`'s Context (now a measured table), the hazard table's
+      close row, `_plots.py`'s lock comment, and `spec.md`'s `Locked Figure Close`. The
+      narrow premise is how an unlocked close comes to look safe, so this is the correction
+      most likely to prevent a repeat.
+- [x] 8.2 **Stop claiming no close site in `bloom_mcp` raises.** `close_figures`' docstring,
+      `design.md` Decision 7 and `proposal.md` all said so, while `proposal.md`'s own
+      Non-Goals and task 7.4 defer exactly the 3 `plot_*` tools that still close bare (plus
+      `call_with_figure_cleanup`'s exception path). Narrowed to the true claim: no call site
+      reaching `close_figures` raises, so the log is the only signal *on that path*.
+- [x] 8.3 **Emit the swallowed-close `WARNING` after releasing the lock.** It was inside the
+      `with`, contradicting this change's own "never span disk I/O" rule (asserted at both
+      converted sites, in `spec.md`, and in `design.md`'s no-lock-inversion argument):
+      `logging` takes its module lock plus each handler's, and an emit is a write syscall —
+      and a race storm is exactly when many records would be emitted at once. Failures are
+      now collected under the lock and logged after it. Pinned by a `logging.Handler` probe
+      recording `FIGURE_REGISTRY_LOCK.locked()` at emit time; verified RED against the
+      previous implementation.
+- [x] 8.4 **Close the AST guard's false negatives.** It registered an alias only for
+      `import matplotlib.pyplot`, so a file using this repo's own house style
+      (`import matplotlib` + `matplotlib.pyplot.close(...)` — what `qc_inspect.py` already
+      does for `matplotlib.use`) was skipped entirely. Also missed the undotted
+      `import matplotlib.pyplot` form, `from matplotlib.pyplot import close as _c`, and a
+      `plt.close` inside a nested `def`/`lambda` lexically within the `with` (a closure may
+      be called after release). Now matches dotted `.pyplot.close` chains, keys bare
+      imports off `asname or name`, stops descending into nested function scopes, and
+      handles `async with`. All seven shapes verified against synthetic sources.
+- [x] 8.5 **Enforce the lock comment's call-site lists.** The comment says "these two lists
+      are exhaustive" and nothing checked it — and it had already drifted once (this change
+      corrected `clustering` being listed as a direct caller and `pca_analysis`/
+      `umap_analysis` being omitted). New test derives both sets from the actual
+      `_plots` imports and asserts each module appears in the matching block, so a new
+      figure-creating tool cannot leave the list stale. The previous comment test could not
+      fail: its positive assertion looked for `close_figures`, a function defined in that
+      same file.
+- [x] 8.6 Smaller fixes from the same review: `close_figures`' outer handler no longer
+      calls `len(figures)` (eagerly evaluated, it would raise `TypeError` on the
+      off-contract argument Decision 1 advertises as safe) and no longer reports "all
+      leaked" unconditionally when a mid-batch failure left some closed; the
+      swallowed-close test asserts on `record.args` with a distinctive key and filters by
+      logger name, rather than `"a" in logged` which a single character satisfied;
+      `qc_inspect`'s lock test now anchors on **both** delegates' figures, so site 2 cannot
+      go unexercised on site 1's evidence; `CountingLock` moved to `tests/tools/conftest.py`
+      (it was duplicated across three files) and now counts `acquire()` as well as
+      `__enter__`, so an acquire/release rewrite is measured rather than counting zero;
+      `_pyplot_aliases` no longer calls `__import__("ast")` per node; and
+      `remove_outliers.py`'s two "Tier-0 / matplotlib stays out of the runtime import
+      graph" comments — which `design.md` Decision 6 had already proven false — are
+      corrected rather than left standing.
+- [x] 8.7 **Add a create-vs-close concurrency test.** The suite proved create-vs-create
+      serialization and `locked()`-at-close-time separately; together those are a sound
+      mutual-exclusion argument only *given both sides take the same mutex*. The new test
+      races a slow `call_with_figure_cleanup` against a `close_figures` and asserts the
+      close cannot begin until the create returns. Verified it goes RED when the close side
+      is put on a different lock object — which every other test in the file tolerates.

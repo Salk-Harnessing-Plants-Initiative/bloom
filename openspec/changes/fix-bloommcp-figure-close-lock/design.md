@@ -14,12 +14,35 @@ num = next((manager.num for manager in cls.figs.values()
 
 an unsynchronized generator scan (the `== fig` comparison is the `__eq__` call PR #683 used
 to pause it). `Gcf.set_active` does `cls.figs[manager.num] = manager` then
-`cls.figs.move_to_end(...)`. Tested directly on an `OrderedDict` mid-`.values()`-iteration:
-inserting a **new** key raises `RuntimeError("OrderedDict mutated during iteration")`;
-`move_to_end` on an existing key raises nothing. So the trigger is specifically the
-size-changing insert of a brand-new figure number — exactly what a concurrent *create*
-does, which is why create-vs-close is the racing pair and why locking creation alone cannot
-protect the closer.
+`cls.figs.move_to_end(...)`; `Gcf.destroy` does `cls.figs.pop(num)`.
+
+Measured on CPython 3.11, mutating mid-`.values()`-iteration:
+
+| mutation | raises? |
+|---|---|
+| insert a brand-new key | **yes** |
+| `move_to_end` on a key that is not already last | **yes** |
+| `move_to_end` on an already-last key | no |
+| `set_active` shape (`figs[n] = m` then `move_to_end(n)`), new **or existing** `n` | **yes** |
+| `pop` an existing key — what `Gcf.destroy` does | **yes** |
+| reassign an existing key without reordering | no |
+
+So the rule is **any `Gcf.figs` touch that is not a pure lookup invalidates a concurrent
+scan** — not, as an earlier draft of this document claimed, specifically "the size-changing
+insert of a brand-new figure number". That draft's supporting measurement had accidentally
+used the one degenerate case (`move_to_end` on a key already at the end).
+
+Two consequences the narrower premise misses:
+
+1. `Gcf.set_active` breaks a concurrent scan whether the figure is new or merely
+   re-activated, so the create side is hazardous on more paths than "allocates a new num".
+2. **close-vs-close is a second racing pair**, because `Gcf.destroy`'s `pop` raises too.
+   Two unlocked closes can break each other with no create involved at all.
+
+This makes the fix *more* necessary than the narrow reading suggests, not less — and the
+narrow reading is precisely how an unlocked close comes to look safe ("it doesn't insert
+anything"), which is how the five sites this change fixes survived two prior rounds of
+lock work. Holding the lock around every registry touch covers all of it uniformly.
 
 `bloom_mcp.tools._plots.FIGURE_REGISTRY_LOCK` exists to serialize registry mutation. Its
 contract has two halves:
@@ -27,7 +50,7 @@ contract has two halves:
 | Phase | Hazard | Owner |
 |---|---|---|
 | **create** | `call_with_figure_cleanup`'s "new since I started" fignum diff cannot tell its own orphaned figure from one another concurrent call just allocated, and would close the other call's figure — silently blanking its plot with no error surfaced | `call_with_figure_cleanup` (#721/#726) — done everywhere |
-| **close** | `plt.close` → `Gcf.destroy_fig` scans `Gcf.figs.values()` unsynchronized; a concurrent locked create inserting a new fignum mid-scan raises `RuntimeError` out of the closing caller. Secondarily, an unlocked close landing *inside* another thread's `call_with_figure_cleanup` window (after its `before = plt.get_fignums()`) frees a number that `plt.figure()` then reuses — so that call's own orphan is already in `before` and its exception-path diff fails to close it, leaking it | per call site — **5 sites still unlocked** |
+| **close** | `plt.close` → `Gcf.destroy_fig` scans `Gcf.figs.values()` unsynchronized; any concurrent registry touch mid-scan — a create's `set_active`, or **another close's `pop`** — raises `RuntimeError` out of the closing caller. Secondarily, an unlocked close landing *inside* another thread's `call_with_figure_cleanup` window (after its `before = plt.get_fignums()`) frees a number that `plt.figure()` then reuses — so that call's own orphan is already in `before` and its exception-path diff fails to close it, leaking it | per call site — **5 sites still unlocked** |
 
 Round 6 of #466's review shipped a create-only half-fix; round 7 caught it. The 3 converged
 `plot_*` tools and `_plots.close_figures` were fixed in #683. This change closes the
@@ -122,6 +145,10 @@ currently bare, so this is a real behavior change — and an improvement:
   failing one, in a `finally` whose entire purpose is to not leak.
 - Today, that exception also **replaces whatever exception was already propagating** —
   masking the tool's real error (e.g. a disk-full `savefig`) with an `OrderedDict` artifact.
+  The damage is misclassification rather than loss: `__context__` still chains the original
+  and `from_exception` logs the chain, but its `isinstance(exc, declared)` check runs against
+  the *cleanup* exception, demoting a declared `CommitFailedError`/`ManifestReadError` from a
+  `tool_error` with an actionable message to an opaque `internal_error` + correlation id.
 - `remove_outliers` already had swallow-and-continue semantics via `_close_figure`, so this
   makes the two tools agree rather than diverge.
 
@@ -223,7 +250,7 @@ raises `ImportError` — the same guard and the same corrected framing already u
 
 `close_figures`' two handlers are a bare `pass` today, `_plots.py` imports no logger, and
 the other four callers log nothing. Since this change converts the last two raising closes
-in the package, without a log line **no close failure anywhere in `bloommcp` would produce
+on this path, without a log line **no close failure reaching `close_figures` would produce
 any signal at all** — no log, no metric, no error. That is not acceptable for a fix whose
 justification is a race that was reproduced deterministically: if the fix is ever incomplete
 (a future create site bypassing `call_with_figure_cleanup`, a delegate registering figures
@@ -265,7 +292,10 @@ in Decision 1.
   closing before committing is deliberately not attempted: it reorders persistence relative
   to cleanup at a tool that writes a cleaned artifact, a larger change than this race fix.
 - **No lock-order inversion.** Only `plt.close` executes under `FIGURE_REGISTRY_LOCK` and
-  nothing under it acquires another lock, so there is no inversion with the result store's
+  nothing under it acquires another lock — Decision 7's `WARNING` is deliberately emitted
+  *after* the `with` exits, precisely so that stays true, since `logging` takes its module
+  lock plus each handler's and an emit is a write syscall — so there is no inversion with the
+  result store's
   per-manifest `KeyedLock`. At `remove_outliers`, `commit`'s `KeyedLock` is always released
   (success or exception) before the `finally` acquires the figure lock — sequential, never
   nested. Contention can delay a call but cannot stall a session indefinitely.

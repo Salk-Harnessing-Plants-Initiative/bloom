@@ -20,6 +20,8 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
+
+from tools.conftest import CountingLock
 from sleap_roots_analyze import clean_traits_for_analysis
 
 from bloom_mcp.contract import BloomMCPError
@@ -1367,29 +1369,6 @@ def _delegate_spy(monkeypatch):
     return produced
 
 
-class _CountingLock:
-    """Proxy recording each `with` entry, delegating to the real lock.
-
-    A proxy on the *module attribute* is the only option: `threading.Lock` is a C
-    type whose `acquire` is read-only (`'_thread.lock' object attribute 'acquire' is
-    read-only`), so the lock object itself cannot be monkeypatched.
-    """
-
-    def __init__(self, real):
-        self._real = real
-        self.entries = 0
-
-    def __enter__(self):
-        self.entries += 1
-        return self._real.__enter__()
-
-    def __exit__(self, *exc):
-        return self._real.__exit__(*exc)
-
-    def locked(self):
-        return self._real.locked()
-
-
 def _assert_all_held(records, produced):
     assert records, "the tool never closed a figure"
     assert all(held for _f, held in records), (
@@ -1494,7 +1473,7 @@ def test_no_plots_run_acquires_the_figure_registry_lock_not_at_all(
     acquiring anything (spec: "Nothing to close acquires no lock")."""
     from bloom_mcp.tools import _plots
 
-    counting = _CountingLock(_plots.FIGURE_REGISTRY_LOCK)
+    counting = CountingLock(_plots.FIGURE_REGISTRY_LOCK)
     monkeypatch.setattr(_plots, "FIGURE_REGISTRY_LOCK", counting)
 
     _run(method="isolation_forest", include_plots=False)

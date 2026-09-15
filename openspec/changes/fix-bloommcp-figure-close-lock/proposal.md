@@ -58,18 +58,29 @@ actually holds.
   `pass` and `_plots.py` imports no logger. The two `qc_inspect` sites are currently the
   *only* `plt.close` calls in `bloom_mcp` that are neither swallowed nor already locked —
   i.e. the only place this race can leave evidence anywhere in the process. Converting them
-  to `close_figures` without adding a log line would mean **no close failure anywhere in
-  `bloommcp` produces any signal at all**, while the consequence of a swallowed close is a
-  leaked figure in a long-lived server (cylinder's 846 traits render 53 pages per call, and
-  a single render is on record costing seconds and multiple GB). So `close_figures` gains a
-  module logger and a `WARNING` naming the figure key and the exception on each swallowed
-  close. This is the one behavior addition beyond relocating the lock, and it is what keeps
-  the fix observable if it is ever incomplete.
+  to `close_figures` without adding a log line would mean **no close failure on the
+  `close_figures` path produces any signal at all**, while the consequence of a swallowed
+  close is a leaked figure in a long-lived server (cylinder's 846 traits render 53 pages per
+  call, and a single render is on record costing seconds and multiple GB). So
+  `close_figures` gains a module logger and a `WARNING` naming the figure key and the
+  exception on each swallowed close, **emitted after the lock is released** (logging takes
+  its own locks and an emit is a write syscall, so holding a process-wide mutex across it
+  would violate this change's own "never span I/O" rule — and a race storm is exactly when
+  many records would be emitted at once). This is the one behavior addition beyond
+  relocating the lock, and it is what keeps the fix observable if it is ever incomplete.
+  Scope note: the 3 converged `plot_*` tools still close bare under their own explicit
+  `with` and therefore still raise on a failed close — deliberately out of scope here
+  (`tasks.md` follow-up 7.4), so this is not a claim that nothing in `bloommcp` raises.
 - **Behavior change at `qc_inspect`:** its two closes become best-effort (never-raising),
   because `close_figures` swallows per-figure failures. Today an exception from `plt.close`
   in either `finally` block aborts the loop — leaking every remaining figure — *and*
-  replaces whatever exception was already in flight, so a cleanup artifact masks the tool's
-  real error. No persisted artifact changes: both `outputs` maps are fully populated in the
+  replaces whatever exception was already in flight. The precise damage is
+  **misclassification**, not loss: Python still chains the original via `__context__`, and
+  `from_exception` logs the full chain server-side — but its `isinstance(exc, declared)`
+  test then runs against the *cleanup* exception, so a declared `CommitFailedError` or
+  `ManifestReadError` that was propagating gets demoted from a `tool_error` carrying its own
+  actionable message to an opaque `internal_error` with only a correlation id. That is a
+  bigger improvement than "the traceback is tidier". No persisted artifact changes: both `outputs` maps are fully populated in the
   `try` body before either `finally` runs, and which artifacts are guaranteed is unchanged
   (`missing_data_pattern.png` stays optional). See `design.md` Decision 3;
   `remove_outliers` already had exactly these semantics via `_close_figure`.

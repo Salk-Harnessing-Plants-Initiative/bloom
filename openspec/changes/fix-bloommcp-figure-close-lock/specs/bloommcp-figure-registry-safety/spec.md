@@ -36,9 +36,12 @@ validation failure, discard of an unrequested figure, and exception cleanup alik
 and FastMCP dispatches sync tool handlers on a thread pool, so two figure-handling tool
 calls in this process can genuinely interleave against it. `plt.close(fig)` →
 `Gcf.destroy_fig` **scans** `Gcf.figs.values()` to find the owning manager, and that scan is
-unsynchronized: a concurrent lock-holding create inserting a new figure number into the dict
-mid-scan raises `RuntimeError("OrderedDict mutated during iteration")` out of the *closing*
-caller.
+unsynchronized: **any** concurrent mutation of that dict which is not a pure lookup raises
+`RuntimeError("OrderedDict mutated during iteration")` out of the *closing* caller. That
+includes a create's `Gcf.set_active` (whether the figure number is new or merely
+re-activated) **and another close's `Gcf.destroy` → `figs.pop(num)`** — so close-vs-close is
+a racing pair in its own right, not only create-vs-close. The requirement is therefore
+scoped to every close, not only to closes that might run alongside a create.
 
 Locking figure creation alone SHALL NOT be treated as satisfying this requirement.
 
@@ -88,7 +91,9 @@ the same cleanup.
 
 The lock SHALL NOT be held across the `savefig`, CSV-write, or result-store `commit` work
 that sits between figure creation and cleanup: hold time stays proportional to registry
-mutation, never to disk I/O.
+mutation, never to disk I/O. This extends to *diagnostics*: any log emitted about a cleanup
+failure SHALL be emitted after the lock is released, since `logging` acquires its own module
+and handler locks and an emit is a write syscall.
 
 `FIGURE_REGISTRY_LOCK` is non-reentrant, so a close batch SHALL NOT be nested inside a
 `bloom_mcp.tools._plots.call_with_figure_cleanup` call, which already holds the same lock.
@@ -137,6 +142,11 @@ registry race is still occurring.
 
 - **WHEN** `plt.close` raises on a figure of a cleanup batch
 - **THEN** a `WARNING` is logged naming the figure and the exception
+
+#### Scenario: The diagnostic does not extend the locked window
+
+- **WHEN** a cleanup batch logs one or more swallowed-close warnings
+- **THEN** each is emitted with `FIGURE_REGISTRY_LOCK` no longer held
 
 ### Requirement: Lock Contract Documentation Currency
 

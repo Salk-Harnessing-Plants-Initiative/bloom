@@ -17,6 +17,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from tools.conftest import CountingLock
+
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import (
     CleanedVersionRequiredError,
@@ -1226,29 +1228,6 @@ def _close_spy(monkeypatch):
     return records, real_close
 
 
-class _CountingLock:
-    """Proxy recording each `with` entry, delegating to the real lock.
-
-    A proxy on the *module attribute* is the only option: `threading.Lock` is a C
-    type whose `acquire` is read-only (`'_thread.lock' object attribute 'acquire' is
-    read-only`), so the lock object itself cannot be patched.
-    """
-
-    def __init__(self, real):
-        self._real = real
-        self.entries = 0
-
-    def __enter__(self):
-        self.entries += 1
-        return self._real.__enter__()
-
-    def __exit__(self, *exc):
-        return self._real.__exit__(*exc)
-
-    def locked(self):
-        return self._real.locked()
-
-
 def test_closes_figures_while_holding_the_figure_registry_lock(
     injected_ports, monkeypatch
 ):
@@ -1262,14 +1241,29 @@ def test_closes_figures_while_holding_the_figure_registry_lock(
     from bloom_mcp.tools import _plots
 
     real_eda = qc_inspect_tool.create_trait_eda_plots
+    real_summary = qc_inspect_tool.create_exploratory_summary_plots
     produced: dict[str, object] = {}
+    per_site: dict[str, int] = {}
 
     def _spy_eda(*a, **k):
         figs = real_eda(*a, **k)
         produced.update(figs)
+        per_site["eda"] = len(figs)
+        return figs
+
+    def _spy_summary(*a, **k):
+        figs = real_summary(*a, **k)
+        # Site 2's own anchor: without it, this test rests entirely on site 1's
+        # evidence, and a delegate that started returning {} would leave site 2
+        # unexercised while the test still passed.
+        produced.update(figs)
+        per_site["summary"] = len(figs)
         return figs
 
     monkeypatch.setattr(qc_inspect_tool, "create_trait_eda_plots", _spy_eda)
+    monkeypatch.setattr(
+        qc_inspect_tool, "create_exploratory_summary_plots", _spy_summary
+    )
     records, _real = _close_spy(monkeypatch)
 
     _run()
@@ -1284,10 +1278,16 @@ def test_closes_figures_while_holding_the_figure_registry_lock(
     # empty, close_figures early-returns, and the only recorded closes would be
     # call_with_figure_cleanup's own (legitimately locked) ones — so all(held) would
     # pass WITHOUT the fix.
-    assert produced, "create_trait_eda_plots produced nothing — test is vacuous"
+    # Both sites must have produced figures, or the site that did not is unexercised.
+    assert per_site.get("eda"), (
+        "create_trait_eda_plots produced nothing (site 1 vacuous)"
+    )
+    assert per_site.get("summary"), (
+        "create_exploratory_summary_plots produced nothing (site 2 vacuous)"
+    )
     closed = {id(f) for f, _held in records}
     assert {id(f) for f in produced.values()} <= closed, (
-        "the site under test never closed the delegate's own figures"
+        "a site under test never closed the delegate's own figures"
     )
     assert not _plots.FIGURE_REGISTRY_LOCK.locked(), "the lock was not released"
 
@@ -1319,7 +1319,7 @@ def test_an_empty_figure_set_adds_no_lock_acquisition(injected_ports, monkeypatc
                 mp.setattr(
                     qc_inspect_tool, "create_exploratory_summary_plots", _boom_summary
                 )
-            counting = _CountingLock(_plots.FIGURE_REGISTRY_LOCK)
+            counting = CountingLock(_plots.FIGURE_REGISTRY_LOCK)
             mp.setattr(_plots, "FIGURE_REGISTRY_LOCK", counting)
             result = _run()
             assert ("missing_data_pattern.png" in result.outputs) is not heatmap_fails

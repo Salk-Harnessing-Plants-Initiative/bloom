@@ -178,12 +178,24 @@ def check_plot_style_ceiling(
 # Sufficient for THAT hazard — but creation is only half of the contract. There is a
 # second, independent race the create-side lock does not cover: `plt.close(fig)` ->
 # `Gcf.destroy_fig` first *scans* `Gcf.figs.values()` to find the manager owning the
-# figure, and that scan is unsynchronized. A locked create (`Gcf.set_active` does
-# `figs[num] = manager` then `move_to_end`) mutating the dict mid-scan raises
+# figure, and that scan is unsynchronized. ANY concurrent `Gcf.figs` mutation that is
+# not a pure lookup invalidates that scan and raises
 # `RuntimeError("OrderedDict mutated during iteration")` out of the *closing* caller —
 # reproduced deterministically on PR #683 (#466 review round 7, which caught round 6
-# shipping a create-only half-fix). So every call site must hold this lock around
-# `plt.close` too, not just around creation. Where that stands:
+# shipping a create-only half-fix).
+#
+# Do NOT narrow that to "inserting a new key": measured on CPython 3.11, mid-iteration
+# over `.values()`, `figs[new] = manager` raises, `move_to_end` on a key that is not
+# already last raises (so even re-activating an EXISTING figure does), and
+# `figs.pop(num)` — what `Gcf.destroy` does — raises. Only a pure lookup and a
+# same-position reassignment are safe. Two consequences: `Gcf.set_active` breaks a
+# concurrent scan whether or not the figure is new, and close-vs-close is a second
+# racing pair, not just create-vs-close. This is why the rule is "hold the lock around
+# every registry touch", not "around the ones that resize the dict" — reasoning from
+# the narrower premise is how the sites #808 fixed came to look safe.
+#
+# So every call site must hold this lock around `plt.close` too, not just around
+# creation. Where that stands:
 #   - `call_with_figure_cleanup`'s own exception-path close: inside its `with` (done).
 #   - `plot_trait_histograms.py`/`plot_trait_boxplots.py`/`plot_correlation_matrix.py`:
 #     create via `call_with_figure_cleanup`, success-path close under a second, separate
@@ -198,9 +210,16 @@ def check_plot_style_ceiling(
 # for the race and no longer merely a precondition for closing it (#808). A third item
 # used to sit in this list — `_viz_shared.py`'s `save_plot` — but #462 deleted that
 # helper along with its only two callers rather than wiring it, so there is nothing
-# left there to lock. `tests/tools/test_plots_helpers.py` pins both halves: that this
-# comment claims no outstanding site, and (by AST walk) that no `plt.close` call site
-# in `bloom_mcp` sits outside a `with FIGURE_REGISTRY_LOCK:` block.
+# left there to lock.
+#
+# `tests/tools/test_plots_helpers.py` guards this from three complementary angles, none
+# of which is sufficient alone: an AST walk asserting no `pyplot.close` call site in
+# `bloom_mcp` sits outside a `with FIGURE_REGISTRY_LOCK:` block (catches a NEW unlocked
+# site, but counts syntactic call sites — a partial fix leaving one of several callers
+# on a shared lock-free helper still shows as one offender); per-site `locked()`-at-
+# close-time tests in each tool's own suite (catch exactly that partial case); and two
+# checks on this comment — that it claims no outstanding site, and that both call-site
+# lists above are exhaustive, derived from the actual imports rather than trusted.
 #
 # Non-reentrant: a future plotter that transitively re-enters `call_with_figure_cleanup`
 # (or any other lock-acquiring call) from inside its own locked call would deadlock.
@@ -341,12 +360,25 @@ def close_figures(figures: "dict[str, Figure]") -> None:
     batch (which would strand the rest) nor propagates (which, called from a
     ``finally``, would replace whatever exception was already in flight) — but it is
     logged at ``WARNING`` naming the key. That log line matters more than it looks:
-    no close site in ``bloom_mcp`` raises any more, so it is the only remaining
-    signal that a registry race is still occurring, and a swallowed close means a
-    figure leaked in a long-lived server process.
+    no call site reaching *this* helper raises on a failed close any more, so it is
+    the only signal on this path that a registry race is still occurring, and a
+    swallowed close means a figure leaked in a long-lived server process. (The 3
+    converged ``plot_*`` tools still close bare under their own explicit ``with``,
+    so they do still raise — deliberately out of scope for #808, tracked as its
+    follow-up 7.4.)
+
+    **The warnings are emitted after the lock is released**, never while holding it:
+    ``logging`` takes its own module lock and each handler's lock, and an emit is a
+    write syscall. Holding a process-wide mutex across that would contradict the
+    "never span I/O" property the rest of this module is built on — and the failure
+    this logging exists to observe is a race storm, i.e. precisely when the batch
+    would emit many records at once.
     """
     if not figures:
         return
+    # Collected under the lock, emitted after it is released (see docstring).
+    failures: list[tuple[object, BaseException]] = []
+    aborted: BaseException | None = None
     try:
         import matplotlib.pyplot as plt
 
@@ -355,14 +387,19 @@ def close_figures(figures: "dict[str, Figure]") -> None:
                 try:
                     plt.close(fig)
                 except Exception as exc:
-                    logger.warning(
-                        "close_figures: plt.close failed for %r (figure leaked): %r",
-                        key,
-                        exc,
-                    )
+                    failures.append((key, exc))
     except Exception as exc:  # pragma: no cover — best-effort cleanup
+        # Deliberately no len(figures) here: this handler must tolerate an
+        # off-contract argument (Decision 1 advertises close_figures(None) as safe),
+        # and len() on a non-Sized would raise out of a function documented never to.
+        aborted = exc
+    if aborted is not None:  # pragma: no cover — best-effort cleanup
         logger.warning(
-            "close_figures: could not close %d figure(s) (all leaked): %r",
-            len(figures),
-            exc,
+            "close_figures: cleanup aborted before the batch finished (%r); any "
+            "figure not yet closed is leaked.",
+            aborted,
+        )
+    for key, exc in failures:
+        logger.warning(
+            "close_figures: plt.close failed for %r (figure leaked): %r", key, exc
         )

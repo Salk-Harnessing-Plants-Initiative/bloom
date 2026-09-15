@@ -108,7 +108,7 @@ from bloom_mcp.tools import _ports
 from bloom_mcp.tools._plots import call_with_figure_cleanup, close_figures
 from bloom_mcp.tools._qc_shared import _role_kwargs, _validate_trait_subset
 
-if TYPE_CHECKING:  # matplotlib stays out of the runtime import graph (Tier-0)
+if TYPE_CHECKING:  # type-only; see the note on the lazy import in _make_figures
     from matplotlib.figure import Figure
 
 _TOOL_CLASS = OUTLIERS_TOOL_CLASS
@@ -594,8 +594,15 @@ def _make_figures(
     invalid_input) rather than surfacing the delegate's opaque ValueError.
     """
     # Import matplotlib lazily and select the headless Agg backend only on the plots
-    # path — this preserves the Tier-0 import-clean guarantee (matplotlib stays out of
-    # the module's runtime import graph), unlike the top-level viz_tools/correlation_tools.
+    # path. NOTE: this does NOT keep matplotlib out of this module's runtime import
+    # graph, despite what this comment claimed before #808 — the module-level
+    # `from sleap_roots_analyze import ...` above imports `matplotlib.pyplot` eagerly,
+    # so pyplot is already in `sys.modules` before any tool call (and the section
+    # `__init__` pulls in `qc_inspect`'s module-level `matplotlib.use("Agg")` too).
+    # What the laziness does buy is narrower but real, and is what the no-plots path
+    # is tested for: an `include_plots=False` call executes no `import matplotlib`
+    # statement of its own, and `close_figures`' empty-dict early return (ahead of its
+    # own lazy import) preserves that on the cleanup side.
     import matplotlib
 
     matplotlib.use("Agg")
