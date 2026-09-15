@@ -3,41 +3,71 @@
 ### Requirement: Foreign-Catalog Manifest Read Guard
 
 Every manifest read through `bloom_mcp.manifest.read_manifest` SHALL compare
-the resolved manifest's `storage_backend` sentinel, when present and
-non-empty, against `storage_backend.active_backend_name()` (the same function
-that stamps the sentinel at write time, so stamp and check cannot disagree).
+the document's `storage_backend` sentinel, when present and non-empty,
+against `storage_backend.active_backend_name()` (the same function that
+stamps the sentinel at write time, so stamp and check cannot disagree),
+through one shared predicate (`foreign_sentinel`) that the `ResultStore`
+write-path re-check also uses, so the two layers cannot drift apart. The
+comparison SHALL be case-insensitive after whitespace stripping (mirroring
+`_selected_backend_name`'s treatment of `BLOOM_STORAGE_BACKEND`, so a
+hand-edited `"LOCAL"` matches rather than bricking the catalog), and a
+present sentinel that is not a string or names no recognized backend SHALL
+fail closed with a clamped display placeholder — never interpolated verbatim
+into caller-facing text, since the sentinel is unvalidated storage bytes
+writable by any `bloom_agent`-key holder and flows into agent-facing error
+messages on paths with no length cap.
 `read_manifest` is the single chokepoint behind `AnalysisDir.get_version`,
 `AnalysisDir.read_manifest`, and `AnalysisDir.list_versions`, and therefore
 behind `get_run`, `list_runs`, `create_run`, `commit`'s allocation and
 re-check reads, `get_download_links`, and the reader's cleaned-tier
 resolution — so the comparison structurally covers every one of those paths
-with no per-call-site opt-in. On a mismatch — a *foreign catalog*: a manifest
+with no per-call-site opt-in. On a mismatch — a _foreign catalog_: a manifest
 written by a backend other than the one now serving it — the read SHALL fail
 closed by raising `ManifestBackendMismatchError` (defined beside
 `ManifestSchemaError` in `bloom_mcp.manifest`) instead of returning the
-manifest. The error message SHALL name both backends and the logical catalog
-identity (the manifest's storage prefix, e.g. `bloommcp_output/qc_<stem>`)
-and SHALL carry the remedy, and SHALL NOT contain any absolute host
-filesystem path.
+manifest. The error message SHALL name both backends (clamped as above) and
+the logical catalog identity (the manifest's storage prefix, e.g.
+`bloommcp_output/qc_<stem>`), SHALL point at the storage documentation,
+SHALL NOT contain any absolute host filesystem path, and SHALL NOT name the
+escape-hatch environment variable: bloommcp is LLM-driven, and a failure
+response that advertises its own bypass invites the agent to disable a
+data-integrity guard instead of investigating — the hatch is documented in
+the storage docs and named in the server-side warning log, the right
+audiences for it. The message SHALL fit within `safe_error_text`'s
+truncation cap so discovery paths cannot mangle it.
 
-The sentinel comparison SHALL run only after the existing schema validation
-(`validate_schema` and `Manifest.model_validate`) has accepted the manifest:
-a manifest that is both schema-incompatible and foreign SHALL surface as
-`ManifestSchemaError`, preserving the existing error precedence. A manifest
-whose `storage_backend` field is absent, `None`, or empty (written before
-manifest schema v5, or stripped) SHALL pass unguarded — failing it would
-brick every pre-#572 catalog — and this limitation SHALL be documented (the
-window closes when the catalog's next commit re-stamps the manifest).
+The sentinel comparison SHALL run after `validate_schema` has accepted the
+document's schema version but **before** full model validation, on the raw
+document: a manifest that is both schema-incompatible and foreign SHALL
+surface as `ManifestSchemaError` (precedence preserved), while a
+version-valid foreign manifest that is otherwise unparseable (e.g. one
+unknown key under `extra="forbid"` — a restored backup arriving malformed)
+SHALL still be identified as foreign rather than falling into the generic
+validation-error path, whose reader routing would demote it to the forbidden
+"run `qc_clean` first". A manifest whose `storage_backend` field is absent,
+`None`, or empty (written before manifest schema v5, or stripped) SHALL pass
+unguarded — failing it would brick every pre-#572 catalog — and this
+limitation SHALL be documented (the window closes when the catalog's next
+commit re-stamps the manifest, and that adoption is logged — see the
+`bloommcp-result-store` delta). This also bounds what the guard is: an
+accident-detection control, not a tamper-proof one — whoever can edit the
+manifest controls the compared value, and blanking the sentinel takes the
+pre-v5 pass-through.
 
 Setting `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1` SHALL downgrade the failure
 to a warning-level log line **per guarded read** (naming both backends and
 the catalog prefix; never once-per-process) that returns the manifest — the
 sanctioned path for deliberately inspecting an offline copy of another
-backend's catalog. The escape hatch sanctions **reads only**: the
-`ResultStore` write path (`create_run`, `commit`) SHALL reject a foreign
-catalog even when the hatch is set (see `bloommcp-result-store`'s
+backend's catalog. The hatch is **inspection-only**: serving a foreign
+catalog SHALL set a sticky, process-lifetime flag
+(`bloom_mcp.manifest.foreign_read_served`, cleared only by the test reset),
+and the `ResultStore` write path SHALL both reject a foreign target catalog
+unconditionally AND refuse **every** commit — including into a different,
+native catalog — once that flag is set (see `bloommcp-result-store`'s
 `Foreign-Catalog Mismatch Surfaces as a Distinguishable Structured Error`),
-so the hatch can never sanction extending or re-stamping a foreign catalog.
+so the hatch can never sanction extending or re-stamping a foreign catalog,
+nor laundering foreign-derived outputs into native catalogs with clean
+provenance.
 The variable's accepted values are unset, empty/whitespace (≡ unset, so the
 dev-compose `${VAR:-}` passthrough pattern delivers the default), `0`, and
 `1`; any other value SHALL fail fast at server startup through the same
@@ -55,7 +85,9 @@ physically disjoint catalogs each remain self-consistent, so a backend flip
 A → B → A still resolves A's own (possibly stale) `latest` with no mismatch —
 that residual SHALL remain documented as locally undetectable (per #395/#572),
 alongside what the guard does catch (copied, restored, synced, or
-shared-root catalogs, and sentinel tampering).
+shared-root catalogs; a sentinel edited to the other recognized backend's
+name also trips it, but tampering is not what the guard defends against —
+see the pass-through bound above).
 
 #### Scenario: A foreign catalog fails closed
 
@@ -64,7 +96,9 @@ shared-root catalogs, and sentinel tampering).
   `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST` is unset (or `0`)
 - **THEN** the read raises `ManifestBackendMismatchError` naming both the
   recorded and the active backend and the catalog's storage prefix, does not
-  return the manifest, and leaks no absolute host filesystem path
+  return the manifest, leaks no absolute host filesystem path, does not name
+  the escape-hatch environment variable, and fits within `safe_error_text`'s
+  truncation cap
 
 #### Scenario: A matching sentinel reads as before
 
@@ -85,7 +119,32 @@ shared-root catalogs, and sentinel tampering).
 - **WHEN** `read_manifest` reads a manifest that is both schema-incompatible
   (e.g. a newer `manifest_schema_version`) and foreign
 - **THEN** it raises `ManifestSchemaError`, exactly as before this change —
-  the sentinel comparison runs only on a schema-valid manifest
+  the sentinel comparison runs only on a schema-version-valid document
+
+#### Scenario: A version-valid but otherwise unparseable foreign manifest is still identified
+
+- **WHEN** `read_manifest` reads a document whose schema version is accepted
+  and whose sentinel is foreign, but which carries an unknown key that full
+  model validation (`extra="forbid"`) would reject — a restored backup
+  arriving malformed
+- **THEN** it raises `ManifestBackendMismatchError` (the sentinel is checked
+  on the raw document before model validation), not a generic validation
+  error that downstream routing would demote to "run the QC workflow first"
+
+#### Scenario: An unrecognized sentinel value is clamped, never interpolated
+
+- **WHEN** the stored sentinel is a value outside the recognized backends —
+  a wrong string, a non-string, an oversized value, or one carrying control
+  characters
+- **THEN** the read still fails closed, and the message reports the clamped
+  placeholder rather than the stored bytes
+
+#### Scenario: Sentinel comparison is case-insensitive
+
+- **WHEN** the stored sentinel is `"LOCAL"` and the active backend is `local`
+- **THEN** the read passes (normalized comparison — a hand-edited case
+  variant does not brick the catalog); an upper-cased foreign name still
+  fails closed, reported in normalized form
 
 #### Scenario: The escape hatch downgrades to a warning on every read
 

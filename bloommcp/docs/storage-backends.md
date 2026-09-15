@@ -285,13 +285,18 @@ and one is now **enforced** at read time (#573):
   every consumer passes through — `get_run`/`list_runs`, `require_clean`
   resolution, `create_run`/`commit`, download links. Manifests written before
   the sentinel existed (pre-v5) pass unguarded until their next commit
-  re-stamps them. For a **deliberate** foreign read — e.g. inspecting an
-  offline copy of a prod bucket via the `local` backend — set
+  re-stamps them (that adoption is logged at info level, so it is
+  forensically visible). For a **deliberate** foreign read — e.g. inspecting
+  an offline copy of a prod bucket via the `local` backend — set
   `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1`: each guarded read then succeeds
   and logs a warning naming both backends (a per-read audit trail, not a
-  one-time line). The hatch sanctions **reads only** — `create_run`/`commit`
+  one-time line). The hatch is **inspection-only**: `create_run`/`commit`
   refuse a foreign catalog unconditionally, so it can never be extended or
-  silently re-stamped. Accepted values: unset/empty (guard active, the
+  silently re-stamped — and once any foreign catalog has been served, the
+  process is read-only (every commit is refused, even into a native catalog,
+  until the process restarts without the variable), so foreign-derived
+  outputs can never land in native catalogs with clean provenance. Accepted
+  values: unset/empty (guard active, the
   default), `0`, `1`; anything else fails boot validation. In dev the variable
   passes through `docker-compose.dev.yml` (set it in your `.env.dev`);
   containerized staging/prod deliberately do **not** pass it through — using
@@ -312,8 +317,10 @@ catalog's sentinel always matches the backend serving it, even though a
 `local`-backed run happened in between and `supabase`'s `latest` is now
 silently stale relative to it. The guard rejects a catalog served by a backend
 that did not write it (a copied/synced bucket, a restored backup, a shared
-root, a tampered sentinel); it cannot join two disjoint catalogs or detect the
-mixing itself.
+root); it cannot join two disjoint catalogs or detect the mixing itself, and
+it is an accident-detection control, not a tamper-proof one — whoever can
+edit a manifest controls the compared value, and a deleted/blanked sentinel
+takes the pre-v5 pass-through.
 
 **This is a dev / power-user path, not a normal-user packaged distribution.**
 Bench scientists use the deployed web product; fully-local mode is for driving

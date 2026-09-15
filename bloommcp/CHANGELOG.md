@@ -15,10 +15,16 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   `ManifestBackendMismatchError` (`bloom_mcp.manifest`), surfaced by the result
   store as `CatalogBackendMismatchError` and by the experiment readers as
   `ForeignCatalogError` — all subclasses of the error types consumer tools
-  already declare. New env var `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST`
-  (unset/`0`/`1`, boot-validated) downgrades the **read** failure to a per-read
-  warning for deliberate offline inspection; the write path
-  (`create_run`/`commit`) refuses a foreign catalog unconditionally. See
+  already declare, each carrying a do-not-retry `agent_remedy` the contract
+  envelope now honors for declared errors. New env var
+  `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST` (unset/`0`/`1`, boot-validated)
+  downgrades the **read** failure to a per-read warning for deliberate offline
+  inspection; the hatch is inspection-only — the write path
+  (`create_run`/`commit`) refuses a foreign catalog unconditionally, and once
+  a foreign catalog has been served the whole process is read-only. Commits
+  onto pre-#572 unstamped catalogs log the adoption. New
+  `scripts/audit_backend_sentinels.py` classifies every catalog's sentinel
+  (matching/foreign/unstamped/unrecognized) for pre-deploy audits. See
   `docs/storage-backends.md`.
 
 ### Changed
@@ -26,8 +32,12 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 - Reads over a foreign catalog — previously served silently, with `qc_clean`'s
   `require_clean` contract and `pca_analysis` accepting whichever backend's
   "latest" they were pointed at — now fail closed with a message naming both
-  backends. Single-backend usage (the documented contract since #395) is
-  unaffected.
+  backends (clamped for unrecognized sentinel values; case-insensitive
+  comparison; checked before full model validation so malformed foreign
+  backups are still identified). The plain string tools (the viz plotters,
+  `load_experiment_data`, `summarize_trait`) surface the same typed message
+  instead of a generic "could not be read" / `invalid_input` flatten.
+  Single-backend usage (the documented contract since #395) is unaffected.
 
 ## [0.1.0a1] - 2026-09-02
 

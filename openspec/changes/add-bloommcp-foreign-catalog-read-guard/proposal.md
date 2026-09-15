@@ -6,9 +6,9 @@ Tracking: issue #573 (follow-up filed from PR #572's review, per its archived de
 
 `ResultStore.get_run(run_ref="latest")` and the cleaned-version resolution behind
 `require_clean=True` both resolve `manifest.latest` scoped entirely to whichever
-object-storage backend is currently active. #572 made backend mixing *observable*
+object-storage backend is currently active. #572 made backend mixing _observable_
 (the `storage_backend` sentinel stamped on every `manifest.json`, plus a one-time
-fresh-catalog info log), but nothing *enforces* the sentinel: a catalog served by a
+fresh-catalog info log), but nothing _enforces_ the sentinel: a catalog served by a
 backend that did not write it — a bucket copied to a local root, a restored backup,
 a shared/overlapping root — is served silently, on **every** read, long after the
 one-time log line has scrolled away, and a consumer tool (`pca_analysis` gating on
@@ -38,22 +38,29 @@ one-time log line has scrolled away, and a consumer tool (`pca_analysis` gating 
   "transient — retry" `CommitFailedError`.
 - Propagate the mismatch through the reader layer as a **typed** error:
   `_resolve_one_class` lets `ManifestBackendMismatchError` propagate (today it
-  stringifies unknown failures, and both reader adapters then *discard* the string
+  stringifies unknown failures, and both reader adapters then _discard_ the string
   — `LocalReader` demotes any resolution failure to `CleanedVersionRequiredError`,
   `SupabaseReader` to `ExperimentNotFoundError`), and both `LocalReader` and
   `SupabaseReader` surface it as `ForeignCatalogError`, a new
   `ExperimentReadError` subclass in `data_access/ports.py`. Never a soft miss
   (no fall-through to a lower-priority tool class, the legacy cleaned CSV, or
   raw), never the "run `qc_clean` first" demotion (which would invite committing
-  fresh runs on top of the foreign catalog), never "not found". Because tools
-  already declare `errors=(ExperimentReadError, CommitFailedError,
-  ManifestReadError)`, no per-tool code changes are needed for the message to
-  surface structurally.
+  fresh runs on top of the foreign catalog), never "not found". The analysis
+  tools' existing `errors=(ExperimentReadError, CommitFailedError,
+ManifestReadError)` declarations surface the message structurally with a
+  do-not-retry `agent_remedy` (a small, opt-in contract-envelope addition —
+  see the `bloommcp-tool-contract` delta); the plain string tools (the five
+  viz plotters, core `load_experiment_data`) catch the type explicitly
+  instead of flattening it, and `summarize_trait` declares it (PR #782
+  review, findings 2a and 3).
 - Add an opt-out for the deliberate case (inspecting an offline copy of a bucket):
   `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1` downgrades the **read** failure to a
-  warning-level log per guarded read. The hatch sanctions reads only — the write
-  path (`create_run`/`commit`) rejects a foreign catalog unconditionally, so the
-  hatch can never sanction re-stamping/taking over a foreign catalog. Accepted
+  warning-level log per guarded read. The hatch is inspection-only — the write
+  path (`create_run`/`commit`) rejects a foreign catalog unconditionally, and
+  once a foreign catalog has been served the whole process is read-only (a
+  sticky flag; PR #782 review finding 5), so the hatch can never sanction
+  re-stamping/taking over a foreign catalog nor laundering foreign-derived
+  outputs into native catalogs with clean provenance. Accepted
   values: unset/empty (≡ default, guard active), `0`, `1`; anything else fails
   boot validation (like `BLOOM_STORAGE_BACKEND`); at guard time only the exact
   value `1` enables the hatch; the variable is read lazily and never memoized. So
@@ -104,23 +111,25 @@ requirement overlap, but the same `supabase_store.commit` region.
     MODIFIED `Backend Parity and Provenance Integrity` (cross-reference the guard;
     fix the `selected_backend_name()` → `active_backend_name()` drift)
   - `bloommcp-result-store` — ADDED `Foreign-Catalog Mismatch Surfaces as a
-    Distinguishable Structured Error`; MODIFIED `FakeResultStore Adapter`
+Distinguishable Structured Error`; MODIFIED `FakeResultStore Adapter`
     (foreign-catalog equivalence carve-out)
   - `bloommcp-experiment-read` — ADDED `Cleaned-Version Resolution Rejects a
-    Foreign Catalog` (includes the `list_existing_analyses` isolation pin);
+Foreign Catalog` (includes the `list_existing_analyses` isolation pin);
     MODIFIED `FakeReader Adapter` (same carve-out)
   - `development-environment` — MODIFIED `Committed Local Environment Template`
     and `Externalized Local-Only Storage Backend Vars` (add
     `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST` to the enumerated opt-in vars)
+  - `bloommcp-tool-contract` — ADDED `Declared Errors May Carry Their Own
+Remedy` (the opt-in `agent_remedy` override; PR #782 review, finding 3)
   - `bloommcp-qc-clean-tool` / `bloommcp-pca-analysis-tool` are deliberately
     untouched: both tools already declare `errors=(ExperimentReadError,
-    CommitFailedError, ManifestReadError)`, and the new errors subclass those —
+CommitFailedError, ManifestReadError)`, and the new errors subclass those —
     the consumer-visible acceptance scenario lives in the
     `bloommcp-experiment-read` delta (the port both tools are required to read
     through), with an end-to-end test through `pca_analysis`/`qc_clean`.
 - Affected code (all Python under `bloommcp/` unless noted):
   - `bloommcp/src/bloom_mcp/manifest/manifest.py` — `ManifestBackendMismatchError`
-    + the guard in `read_manifest`
+    - the guard in `read_manifest`
   - `bloommcp/src/bloom_mcp/manifest/__init__.py` — export the new error
   - `bloommcp/src/bloom_mcp/storage_backend.py` — `allow_foreign_manifest()`
     accessor + `validate_storage_backend()` extension
@@ -135,8 +144,19 @@ requirement overlap, but the same `supabase_store.commit` region.
   - `bloommcp/src/bloom_mcp/data_access/local_reader.py`,
     `bloommcp/src/bloom_mcp/data_access/supabase_reader.py` — surface the typed
     error instead of demoting it
+  - `bloommcp/src/bloom_mcp/contract/errors.py` — opt-in `agent_remedy` for
+    declared exceptions (PR #782 review)
+  - `bloommcp/src/bloom_mcp/tools/_ports.py`, the five viz plotters under
+    `sections/sleap_roots/analysis/plot_*.py`,
+    `sections/phenotyping_segmentation/summarize_trait.py`,
+    `sections/core/load_experiment_data.py` — typed-error surfacing for every
+    direct consumer (PR #782 review, finding 2a)
+  - `bloommcp/scripts/audit_backend_sentinels.py` (new; task 5.6's runnable
+    form) + hatch notes in the two existing audit scripts
   - `docker-compose.dev.yml`, `.env.dev.example` (repo root) — dev passthrough +
-    template entry for the new var
+    template entry for the new var, gated by the extended tuples in
+    `tests/unit/test_compose_dev_env_files.py` / `tests/unit/test_init_dev.py`
+    (PR #782 review, finding 2c)
   - `bloommcp/docs/storage-backends.md`, `bloommcp/CHANGELOG.md`
   - tests: `bloommcp/tests/test_storage_backend.py`,
     `bloommcp/tests/result_store/test_supabase_result_store.py`,

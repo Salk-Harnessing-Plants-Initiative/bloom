@@ -20,16 +20,44 @@ the active backend and SHALL NOT leak host paths or URLs.
 The write path SHALL reject a foreign catalog **regardless of the
 `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST` escape hatch** (which sanctions reads
 only): `create_run` and `commit` SHALL verify the sentinel of the manifest
-they read even when the manifest-layer guard was downgraded to a warning, so
-a foreign catalog is never extended and never re-stamped — the silent
+they read — through the same shared `foreign_sentinel` predicate the read
+guard uses — even when the manifest-layer guard was downgraded to a warning,
+so a foreign catalog is never extended and never re-stamped — the silent
 take-over an unguarded `write_manifest` overwrite would perform. A
 `create_run` against a foreign catalog SHALL fail before any staging or
-upload happens, and a `commit` whose manifest read resolves a foreign catalog
-SHALL fail without writing any object or manifest. The commit-path failure
-SHALL surface as `CatalogBackendMismatchError` itself — mirroring the
-existing do-not-retry `KeyScopeGuardError` handling, not the generic
-`CommitFailedError` whose message suggests a transient, retryable condition —
-because a foreign catalog is a permanent state that a retry cannot fix.
+upload happens. On the commit path the guarantee is two checks with
+different windows, stated honestly: the allocation-time check fails before
+any object is written; the pre-write re-check — whose purpose is a catalog
+that turned foreign mid-commit — fires after uploads, in which case the
+already-uploaded objects are best-effort deleted (the same cleanup an upload
+failure takes) and the manifest is never advanced or re-stamped in either
+case. The commit-path failure SHALL surface as `CatalogBackendMismatchError`
+itself — mirroring the existing do-not-retry `KeyScopeGuardError` handling,
+not the generic `CommitFailedError` whose message suggests a transient,
+retryable condition — because a foreign catalog is a permanent state that a
+retry cannot fix; accordingly the staging directory SHALL be torn down (a
+handle has no `__del__` to reclaim it, and no retry can ever use it), and the
+refusal SHALL log a single warning without a traceback (the structured type
+fully describes a configuration condition; discovery paths sweep many tool
+classes per call).
+
+Additionally, once a foreign catalog has been **served** in this process
+(under the escape hatch — see `bloom_mcp.manifest.foreign_read_served`),
+`create_run` and `commit` SHALL refuse **every** subsequent write, including
+into a different, native catalog, surfacing as `CatalogBackendMismatchError`
+with a restart remedy: provenance has no field recording an input's storage
+backend, so a commit derived from foreign-read data would otherwise land
+with clean provenance (and `remove_outliers` would record a
+`based_on_version` that exists only in the foreign catalog — an
+affirmatively false lineage pointer). An inspection process is read-only
+from the first foreign read on.
+
+A commit onto a catalog whose sentinel is absent or empty (pre-#572) SHALL
+proceed — the pass-through documented in the guard requirement — and SHALL
+log, at info level, that a previously unstamped catalog is being adopted and
+stamped for the active backend, since the fresh-catalog log never fires for
+an existing manifest and the adoption would otherwise be forensically
+invisible.
 
 `FakeResultStore` is exempt: it never constructs a real `Manifest` and has no
 backend concept (per #572's design), so this failure mode cannot be
@@ -61,13 +89,42 @@ flip-and-read across the physically disjoint stores can never produce one).
 
 #### Scenario: A commit never re-stamps a foreign catalog
 
-- **WHEN** a commit's own manifest read (allocation or pre-write re-check)
-  resolves a foreign catalog — with or without the escape hatch set
+- **WHEN** a commit's allocation-time manifest read resolves a foreign
+  catalog — with or without the escape hatch set
 - **THEN** the commit raises `CatalogBackendMismatchError` (not a
   `CommitFailedError` claiming a transient, retryable condition), no object
-  is uploaded and no version entry is appended, and `write_manifest` is never
+  is uploaded and no version entry is appended, `write_manifest` is never
   reached — the foreign catalog's sentinel is not overwritten with the
-  active backend's name
+  active backend's name — and the staging directory is torn down
+
+#### Scenario: A catalog that turns foreign mid-upload is cleaned up, never written
+
+- **WHEN** the catalog's sentinel turns foreign between commit's allocation
+  check and its pre-write re-check (e.g. injected as a side effect of an
+  upload) — with or without the escape hatch set
+- **THEN** the commit raises `CatalogBackendMismatchError`, the objects
+  uploaded during that window are best-effort deleted, the manifest is
+  neither advanced nor re-stamped, and the staging directory is torn down —
+  removing the pre-write re-check must fail this scenario
+
+#### Scenario: After a foreign read, the whole process is read-only
+
+- **WHEN** a foreign catalog has been served under
+  `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1` in this process, and `create_run`
+  or `commit` is then called for a **different, native** catalog
+- **THEN** the call raises `CatalogBackendMismatchError` naming the foreign
+  read and a restart remedy, before any staging or upload for a `create_run`
+  (and with the staging directory torn down for a `commit` on an
+  already-open handle) — foreign-derived outputs never land with clean
+  provenance
+
+#### Scenario: Adopting an unstamped catalog is logged
+
+- **WHEN** a commit appends to an existing manifest whose sentinel is absent
+  or empty (pre-#572)
+- **THEN** the commit succeeds and stamps the catalog for the active backend,
+  and an info-level log names the adoption — the previously invisible case
+  the guard's pass-through permits
 
 #### Scenario: The fake's exemption is explicit, not silent
 

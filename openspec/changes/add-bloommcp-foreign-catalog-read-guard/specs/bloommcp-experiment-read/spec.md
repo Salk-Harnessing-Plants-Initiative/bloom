@@ -17,10 +17,19 @@ at the shared helper means **both** reader adapters (`LocalReader` and
 `SupabaseReader`) surface `ForeignCatalogError` — rather than discarding the
 resolution error and demoting it to their generic conditions, as both do
 today for resolution failures — and so does every tool that reads through
-`load_experiment_data` directly. Because every consumer tool already
-declares `errors=(ExperimentReadError, …)`, the mismatch then passes through
-the `@as_mcp_tool` envelope as a message-preserving structured error with no
-per-tool changes.
+`load_experiment_data` directly. The analysis tools' existing
+`errors=(ExperimentReadError, …)` declarations pass the mismatch through the
+`@as_mcp_tool` envelope as a message-preserving structured error whose
+remedy does not invite a retry (the type carries its own `agent_remedy` —
+see the `bloommcp-tool-contract` delta); `summarize_trait` declares the type
+(its `load_frame` seam no longer flattens the mismatch into the error-string
+channel, which used to become `invalid_input` with a
+pick-another-experiment remedy); and the plain string-returning consumers —
+the five viz plotters and the core `load_experiment_data` discovery tool,
+whose bare `except Exception` fallbacks would otherwise flatten the typed
+message into an unactionable "could not be read" — SHALL catch
+`ForeignCatalogError` explicitly and return its message (leak-safe by
+construction).
 
 The mismatch SHALL NOT be treated as a soft miss: resolution SHALL NOT fall
 through to a lower-priority cleaned tool class, the legacy un-versioned
@@ -66,7 +75,16 @@ manifest).
   foreign
 - **THEN** the tool returns a structured `BloomMCPError` whose message names
   the recorded and the active backend (not `internal_error`'s opaque fixed
-  message, and not the run-`qc_clean`-first remedy), and no run is persisted
+  message, and not the run-`qc_clean`-first remedy), whose remedy does not
+  invite a retry, and no run is persisted
+
+#### Scenario: A plain string-returning tool returns the typed message
+
+- **WHEN** one of the five viz plotters or the core `load_experiment_data`
+  discovery tool loads an experiment whose catalog is foreign
+- **THEN** the returned string carries the mismatch message (both backends
+  named), not the generic "the experiment data could not be read" flatten,
+  and not the escape-hatch variable name
 
 #### Scenario: A foreign tool-class catalog does not hide an experiment's other analyses from listing
 

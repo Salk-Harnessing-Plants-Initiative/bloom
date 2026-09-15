@@ -126,3 +126,17 @@ def test_declared_exception_without_agent_remedy_keeps_the_default():
     )
     assert err.code == "tool_error"
     assert err.remedy == "Check the inputs/experiment for this tool and retry."
+
+
+def test_undeclared_exception_with_agent_remedy_still_maps_to_internal_error():
+    """The agent_remedy override applies only to DECLARED exceptions — an
+    undeclared one keeps the fixed internal_error message/remedy even if it
+    happens to carry the attribute (no-internals-leak promise unchanged)."""
+
+    class _Sneaky(Exception):
+        agent_remedy = "do something questionable"
+
+    err = BloomMCPError.from_exception(_Sneaky("secret detail"), declared=())
+    assert err.code == "internal_error"
+    assert "secret detail" not in err.message
+    assert err.remedy != "do something questionable"

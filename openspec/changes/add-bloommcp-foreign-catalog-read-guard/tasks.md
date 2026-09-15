@@ -146,14 +146,14 @@ every test asserting default fail-closed behavior.
 
 - [x] 4.1 Update `bloommcp/docs/storage-backends.md` — rewrite, not append;
       these existing sentences become wrong or stale and must change:
-      (a) "This can't be *prevented* from purely local information … It is made
+      (a) "This can't be _prevented_ from purely local information … It is made
       **observable** instead" (~line 272) → serving a foreign catalog IS now
       prevented locally; cross-catalog divergence detection is not;
       (b) the sentinel bullet (~276) describing it as forensic-only
       ("inspecting either store's file directly identifies…") → now enforced
       at read time, with the hatch, pre-v5 pass-through, and reads-only
       semantics;
-      (c) "Known limitation" (~287): "they only make the *moment* of a
+      (c) "Known limitation" (~287): "they only make the _moment_ of a
       potential split observable, not the mixing itself" → the guard rejects a
       catalog served by a backend that did not write it; it cannot join two
       disjoint catalogs, and A → B → A stays silent;
@@ -183,7 +183,7 @@ every test asserting default fail-closed behavior.
       passes.
 - [x] 5.2 CI-equivalent bloommcp suite passes: in `bloommcp/`,
       `uv run --frozen --extra test pytest tests/ -m "not integration and not
-      live_smoke"` (matching `python-audit`), with the pre-existing
+live_smoke"` (matching `python-audit`), with the pre-existing
       storage/parity/result-store suites unchanged except where tasks above
       touch them.
 - [x] 5.3 Root unit suite passes: `uv run --extra test pytest tests/unit/`
@@ -191,23 +191,58 @@ every test asserting default fail-closed behavior.
       CI's `python-audit`).
 - [x] 5.4 `pre-commit run --files <touched files>` clean (black, ruff,
       ruff-format on Python; prettier on the touched `.md`).
-- [ ] 5.5 Run the dev-stack live smoke once after section 3
-      (`make bloommcp-smoke` against `make dev-up` + `make migrate-local`, or
-      the `/pre-merge` flow) — this change alters the exact read path every
-      smoke leg depends on; analysis says it cannot fire there (single backend,
-      self-consistent sentinels), verify it.
-- [ ] 5.6 One-time pre-merge audit (operator step, staging + prod): list
-      `manifest.json` objects under `bloommcp_output/` in each `bloommcp-data`
-      bucket and confirm none carries a `storage_backend` other than
-      `supabase`, so the guard's activation on deploy is a verified non-event.
+- [x] 5.5 Dev-stack live smoke: covered by CI — the PR #782 review verified
+      that `pr-checks.yml`'s dev-stack-smoke job (init → dev-up →
+      migrate-local → `make bloommcp-smoke`) runs against the real stack and
+      is green on this head, and confirmed from the code that the smoke
+      cannot fire the guard (single backend throughout; `write_manifest`
+      stamps from the same `active_backend_name()` the guard reads).
+- [ ] 5.6 One-time pre-merge audit (operator step, staging + prod, **gates
+      merge** — CI's database is empty, so only this can verify the real
+      buckets): run `scripts/audit_backend_sentinels.py` with each
+      environment's storage env and record BOTH numbers in the PR body — the
+      foreign/unrecognized count (must be 0: those reads fail closed on
+      deploy, and prod compose has no escape-hatch passthrough) AND the
+      unstamped count (pre-#572 catalogs the guard silently passes until
+      their next commit re-stamps them — the guard's actual day-one blind
+      spot, per the PR #782 review's amendment). Exit 0 = clean gate; exit 2 =
+      resolve before merging.
 
 ## Status notes
 
-- 5.5 is not runnable in this session (the Docker daemon is not running on
-  this machine); analysis in the PR description explains why the smoke cannot
-  fire the guard (single backend throughout, self-consistent sentinels) — run
-  `make dev-up && make migrate-local && make bloommcp-smoke` (or `/pre-merge`)
-  before merging to verify.
-- 5.6 is an operator step (needs staging/prod bucket access): list
-  `manifest.json` objects under `bloommcp_output/` in each `bloommcp-data`
-  bucket and confirm none carries a `storage_backend` other than `supabase`.
+- 5.6 is the one remaining gate: an operator step needing staging/prod bucket
+  access. `scripts/audit_backend_sentinels.py` (added in the review round) is
+  the runnable form; paste its summary lines into the PR body.
+
+## 6. PR #782 review round (@eberrigan, 2026-09-15)
+
+- [x] 6.1 (finding 8) Sentinel checked on the raw document before model
+      validation; precedence pinned both ways.
+- [x] 6.2 (finding 7 + suggestions) Shared `foreign_sentinel` predicate;
+      unrecognized/non-string values clamped, `!r` kept; case-insensitive
+      compare; whitespace-tolerant hatch value pinned.
+- [x] 6.3 (finding 6) Raised messages no longer advertise the escape hatch;
+      under safe_error_text's cap; docs/warning keep the hatch.
+- [x] 6.4 (finding 5) Hatch is inspection-only: sticky process flag; all
+      commits refused after a foreign read; staging torn down.
+- [x] 6.5 (finding 4) Post-upload re-check pinned (foreignize-via-upload
+      test asserting cleanup); delta wording states both windows honestly.
+- [x] 6.6 (finding 3) `agent_remedy` on the two error types, honored by the
+      envelope for declared errors only; new `bloommcp-tool-contract` delta.
+- [x] 6.7 (finding 2a) Viz tools, `load_frame`/`summarize_trait`, core
+      `load_experiment_data` surface the typed message;
+      `trim_staleness` wraps instead of leaking the manifest-layer type;
+      experiment_utils comment corrected.
+- [x] 6.8 (finding 2b) "Tampered sentinel" struck/qualified in all six
+      places; unstamped-catalog adoption logged at INFO and pinned.
+- [x] 6.9 (finding 2c) The new var joined the hardcoded tuples in
+      `tests/unit/test_compose_dev_env_files.py` and
+      `tests/unit/test_init_dev.py` — deleting the compose or
+      `.env.dev.example` line now fails the root suite.
+- [x] 6.10 (finding 1) `scripts/audit_backend_sentinels.py` + tests; task
+      5.6 reworded to gate merge and report the unstamped count.
+- [x] 6.11 (suggestions) Double-traceback logging downgraded to one warning;
+      audit scripts document the offline-sweep hatch requirement;
+      `data_access` exports alphabetized; `load_experiment_data` docstring
+      records the raise; explicit-version sibling-class fail-closed trade-off
+      recorded in design.md.
