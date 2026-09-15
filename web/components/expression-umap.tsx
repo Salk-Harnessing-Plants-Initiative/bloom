@@ -27,6 +27,7 @@ import {
   EXPRESSION_FRAG,
   EXPRESSION_VERT,
   POINT_VERT,
+  expressionPasses,
 } from "@/components/expression-lib/shaders";
 import { MAX_ZOOM, MIN_ZOOM } from "@/components/expression-lib/umap-zoom";
 import { POINT_BLEND } from "@/components/expression-lib/point-blend";
@@ -343,6 +344,10 @@ export function ExpressionUmap({
       onGeneError?.(null);
       return;
     }
+    // A new gene starts from nothing, never from the previous gene's colours.
+    setExpressionArr(null);
+    setExpressionRange(null);
+    onExpressionRangeChanged?.(null);
     let cancelled = false;
     (async () => {
       try {
@@ -485,6 +490,7 @@ export function ExpressionUmap({
         expMin: regl.prop<{ expMin: number }, "expMin">("expMin"),
         expMax: regl.prop<{ expMax: number }, "expMax">("expMax"),
         focusMode: regl.prop<{ focusMode: number }, "focusMode">("focusMode"),
+        valuePass: regl.prop<{ valuePass: number }, "valuePass">("valuePass"),
       },
       count: data.cells.length,
       primitive: "points",
@@ -548,16 +554,20 @@ export function ExpressionUmap({
         const t = translateRef.current;
         // With a focus set, the cells outside it go down first in grey and the
         // cells inside it are drawn over them in colour.
-        for (const focusMode of focusSetRef.current ? [1, 2] : [0]) {
-          if (expArr && expRange) {
+        if (expArr && expRange) {
+          // Cells at zero go down before the expressing cells, so no expressing cell is hidden.
+          for (const { focusMode, valuePass } of expressionPasses(focusSetRef.current)) {
             drawExpression({
               zoom: z,
               translate: t,
               expMin: expRange.min,
               expMax: expRange.max,
               focusMode,
+              valuePass,
             });
-          } else {
+          }
+        } else {
+          for (const focusMode of focusSetRef.current ? [1, 2] : [0]) {
             drawClusters({ zoom: z, translate: t, focusMode });
           }
         }

@@ -161,6 +161,9 @@ class TestTheContainerIsRecorded:
             .startswith("pid 123")
         )
 
+    def test_the_marker_is_the_one_docker_creates(self):
+        assert runlock.DOCKER_MARKER == Path("/.dockerenv")
+
     def test_a_container_is_detected_by_docker_s_marker_file(
         self, tmp_path: Path, monkeypatch
     ):

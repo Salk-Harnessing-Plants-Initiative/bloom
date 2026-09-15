@@ -152,7 +152,7 @@ class RcloneRC:
         # OSError rather than URLError: a daemon that closes the connection
         # mid-response raises http.client.RemoteDisconnected, which is a
         # ConnectionResetError and NOT a URLError — so it escaped as a raw
-        # traceback. That is exactly what a still-starting rclone container
+        # traceback. That is exactly what a still-starting rclone daemon
         # does, which meant `wait_for_daemon`'s retry loop never saw it and
         # the run died on the first poll instead of waiting half a second.
         # HTTPException covers the rest of the torn-response family
