@@ -1,7 +1,7 @@
 # The Box object backup: one container per run, removed by Docker when the run ends.
 # Its own project, so a deploy, `--remove-orphans` or the stack's `ps` never sees it.
 #
-# Run from the production deploy directory:
+# Run from a deploy tree (the staging tree until the main promotion):
 #   docker compose -f scheduled-jobs/box-object-backup/compose.yml --env-file .env.prod \
 #     run --rm -T --name box-object-backup-<tag> --user "$(id -u):$(id -g)" \
 #     box-object-backup --env prod --state-dir /data/bloom/box-object-backup --verify 50
@@ -23,7 +23,7 @@ services:
     mem_limit: 1g
     memswap_limit: 1g
     # Room for the copies in flight, rclone's own stop and the report; a kill after it is survivable.
-    stop_grace_period: 300s
+    stop_grace_period: 120s
     networks:
       - prod
     environment:
@@ -39,10 +39,11 @@ services:
         target: /data/bloom/box-object-backup
         bind:
           create_host_path: false
+      # Writable, because Box refresh tokens are single-use and rclone must save each new one.
+      # A folder of the job's own: rclone saves by renaming a temp file over rclone.conf.
       - type: bind
-        source: /home/bloom-deploy/.config/rclone/rclone.conf
-        target: /config/rclone/rclone.conf
-        read_only: true
+        source: /home/bloom-deploy/.config/rclone-box-object-backup
+        target: /config/rclone
         bind:
           create_host_path: false
       # Settings come from the committed defaults, not the deploy env file, which holds the signing keys.

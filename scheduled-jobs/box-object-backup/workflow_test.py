@@ -333,6 +333,13 @@ class TestTheRemoteRunGetsItsConfiguration:
         assert guard in script, "the container name is built from an unchecked tag"
         assert script.index(guard) < script.index(LAUNCH)
 
+    def test_only_the_run_name_is_passed_in_with_e(self, parsed: dict):
+        """Anything else from the host environment would bypass compose.yml's allow-list."""
+        script = _strip_comments(self.run_step(parsed))
+        assert re.findall(r"(?:^|\s)-e\s+([A-Za-z_]+)=", script, re.M) == [
+            runlock.ACTIONS_RUN_ENV
+        ]
+
     def test_the_container_runs_as_the_deploy_user(self, parsed: dict):
         # The rclone config is the deploy user's, mode 600, and the ledger and
         # reports must stay readable on the host.
@@ -648,10 +655,10 @@ class TestCancellingTheJobStopsTheRun:
 class TestTheRunNamesTheJobThatStartedIt:
     """The other half of the ownership guard.
 
-    The cancel step refuses to signal anything unless the run was started by
-    this job, and the summary finds this night's report the same way. If the
-    run step stops passing the name, a cancelled run keeps going on the host
-    and a lost verdict is never recovered — and nothing else would notice.
+    The cancel step stops only the container named for this run, and the
+    summary finds this night's report by the same name. If the run step stops
+    passing it, a lost verdict is never recovered — and nothing else would
+    notice.
     """
 
     def remote_script(self, parsed: dict) -> str:
@@ -669,8 +676,8 @@ class TestTheRunNamesTheJobThatStartedIt:
         assert f"export {runlock.ACTIONS_RUN_ENV}" not in script
         service = re.search(r"^\s*box-object-backup \\$", script, re.M)
         assert service, "the run step starts no box-object-backup service"
-        # After the service name it would be one of the job's own arguments.
-        assert script.index(LAUNCH) < script.index(passed) < service.start()
+        # Before `run`, compose rejects it; after the service name, the job takes it.
+        assert script.index("run --rm -T") < script.index(passed) < service.start()
 
     def test_it_is_the_tag_the_cancel_and_summary_steps_compare(self, parsed: dict):
         assert f'{runlock.ACTIONS_RUN_ENV}="$run_tag"' in self.remote_script(parsed)
@@ -684,14 +691,14 @@ class TestTheRunNamesTheJobThatStartedIt:
                 "${{ github.run_id }}-${{ github.run_attempt }}"
             ), f"{name} compares against a different tag than the run records"
 
-    def test_the_run_records_that_name_where_both_steps_look(
+    def test_the_run_records_that_name_where_the_summary_looks(
         self, tmp_path, monkeypatch
     ):
         """End to end through the real writers, not the string in the YAML.
 
-        The lock answers the cancel step and the report answers the summary,
-        and the two are written by different modules at different moments —
-        the lock as the run starts, the report as it ends.
+        The lock names the run to anyone who finds it held, and the report
+        answers the summary. They are written by different modules at
+        different moments: the lock as the run starts, the report as it ends.
         """
         monkeypatch.setenv(runlock.ACTIONS_RUN_ENV, "42-7")
         held = runlock.RunLock(tmp_path).acquire()
@@ -1083,7 +1090,7 @@ class TestTheSummaryStepFeedsTheRenderer:
 
 class TestProductionIsTheOnlyTarget:
     """Both environments share this host, so they share the ledger, the
-    watermark, the run lock, the rclone container name and the RC port. Two
+    watermark and the run lock. Two
     runs would advance each other's watermark, silently and in both
     directions. The job takes no environment input at all."""
 
@@ -1143,7 +1150,7 @@ def shell_lines(script: str) -> int:
 
 class TestNoStepGrowsIntoAProgram:
     """A `run:` block is for plumbing — ssh, secrets, `$GITHUB_OUTPUT`,
-    signalling a pid. Anything that parses, formats, or branches on state
+    starting or stopping a container. Anything that parses, formats, or branches on state
     belongs in a module beside the job, where a test can call it directly.
     """
 

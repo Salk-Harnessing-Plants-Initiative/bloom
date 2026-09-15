@@ -201,8 +201,9 @@ jobs:
           RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-        # Longer than compose.yml's stop_grace_period, so `docker stop` can finish.
-        timeout-minutes: 7
+        # Longer than compose.yml's grace period, and short enough that the summary
+        # still fits GitHub's 5-minute limit on a cancelled run.
+        timeout-minutes: 3
         run: |
           set -uo pipefail
           # Quoted for the same reason as the run step: ssh joins its trailing

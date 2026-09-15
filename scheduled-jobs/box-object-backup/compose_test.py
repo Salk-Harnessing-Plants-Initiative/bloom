@@ -10,7 +10,7 @@ import os
 import re
 import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 import yaml
@@ -29,6 +29,34 @@ SERVICE = "box-object-backup"
 PROJECT = "bloom-box-object-backup"
 CREDENTIALS = {"POSTGRES_PASSWORD", "MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD"}
 ALLOWED_ENVIRONMENT = {"HOME", "OBJECT_BACKUP_RCLONE_CONFIG", *CREDENTIALS}
+RCLONE_FOLDER = "/home/bloom-deploy/.config/rclone-box-object-backup"
+# (source, target) of every mount: the state, the job's own rclone folder, the settings.
+MOUNTS = {
+    (job.DEFAULT_STATE_DIR, job.DEFAULT_STATE_DIR),
+    (RCLONE_FOLDER, "/config/rclone"),
+    ("../../.env.prod.defaults", "/etc/box-object-backup/settings.env"),
+}
+# Every key the service may set; anything else (pid, privileged, devices...) is new review.
+SERVICE_KEYS = {
+    "image",
+    "init",
+    "restart",
+    "read_only",
+    "tmpfs",
+    "security_opt",
+    "cap_drop",
+    "mem_limit",
+    "memswap_limit",
+    "stop_grace_period",
+    "networks",
+    "environment",
+    "volumes",
+    "entrypoint",
+}
+# GitHub force-stops a cancelled run's remaining steps after 5 minutes.
+GITHUB_CANCEL_WINDOW_SECONDS = 300
+# What the summary step needs after the cancel step: one ssh and the renderer.
+SUMMARY_ALLOWANCE_SECONDS = 60
 
 
 @pytest.fixture(scope="module")
@@ -82,8 +110,9 @@ class TestOnlyProductionsNetwork:
             "name": f"{stack['name']}_supanet",
         }
 
-    def test_staging_is_never_named(self):
-        assert "staging" not in COMPOSE.read_text(encoding="utf-8")
+    def test_staging_is_never_named(self, compose: dict):
+        # The settings, not the comments: the header says where to run it from.
+        assert "staging" not in yaml.safe_dump(compose)
 
 
 class TestNothingListensAndNothingReachesDocker:
@@ -110,6 +139,15 @@ class TestHardening:
 
     def test_swap_cannot_double_the_memory_limit(self, service: dict):
         assert service["mem_limit"] == service["memswap_limit"]
+
+    def test_it_sets_nothing_beyond_the_reviewed_keys(self, service: dict):
+        assert set(service) == SERVICE_KEYS
+
+    def test_it_mounts_exactly_the_state_the_rclone_folder_and_the_settings(
+        self, service: dict
+    ):
+        """A wider mount, such as the whole deploy tree, would expose .env.prod."""
+        assert {(v["source"], v["target"]) for v in service["volumes"]} == MOUNTS
 
 
 class TestTheImage:
@@ -151,12 +189,20 @@ class TestSettingsAndCredentials:
             f"{key} would be blank without --env-file instead of refusing to start"
         )
 
-    def test_the_rclone_config_is_mounted_read_only_where_the_job_looks(
-        self, service: dict
-    ):
-        config = _bind(service, service["environment"]["OBJECT_BACKUP_RCLONE_CONFIG"])
-        assert config["read_only"] is True
-        assert config["bind"]["create_host_path"] is False
+    def test_rclone_can_save_the_refreshed_box_token(self, service: dict):
+        """Box refresh tokens are single-use, so each new one has to reach the disk.
+
+        The folder is mounted, not the file: rclone saves by renaming a temp
+        file over rclone.conf, which a single-file bind mount refuses.
+        """
+        config = PurePosixPath(service["environment"]["OBJECT_BACKUP_RCLONE_CONFIG"])
+        folder = _bind(service, str(config.parent))
+        assert not folder.get("read_only")
+        assert folder["bind"]["create_host_path"] is False
+
+    def test_the_rclone_folder_is_this_jobs_own(self, service: dict):
+        """The weekly Postgres backup refreshes its own login in ~/.config/rclone."""
+        assert _bind(service, "/config/rclone")["source"] == RCLONE_FOLDER
 
     def test_the_settings_are_the_committed_defaults(self, service: dict):
         target = service["entrypoint"][service["entrypoint"].index("--env-file") + 1]
@@ -182,14 +228,22 @@ class TestStopping:
             _seconds(service["stop_grace_period"]) > rclone_daemon.STOP_TIMEOUT_SECONDS
         )
 
-    def test_the_cancel_step_waits_longer_than_the_grace_period(self, service: dict):
+    @staticmethod
+    def _cancel_step() -> dict:
         workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-        cancel = next(
+        return next(
             s
             for s in workflow["jobs"]["mirror"]["steps"]
             if s.get("name", "").startswith("Ask the host to stop")
         )
-        assert cancel["timeout-minutes"] * 60 > _seconds(service["stop_grace_period"])
+
+    def test_the_cancel_step_waits_longer_than_the_grace_period(self, service: dict):
+        timeout = self._cancel_step()["timeout-minutes"] * 60
+        assert timeout > _seconds(service["stop_grace_period"])
+
+    def test_the_stop_and_the_summary_fit_githubs_cancel_window(self):
+        timeout = self._cancel_step()["timeout-minutes"] * 60
+        assert timeout + SUMMARY_ALLOWANCE_SECONDS <= GITHUB_CANCEL_WINDOW_SECONDS
 
 
 def _compose_config(env: dict[str, str]) -> subprocess.CompletedProcess:
