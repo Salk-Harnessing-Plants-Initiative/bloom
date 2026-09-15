@@ -19,7 +19,7 @@ Exit codes:
   0 = every planned object copied (or dry run completed), or another run held
       the lock and this one stood down
   1 = one or more objects failed after retries
-  2 = configuration or preflight error
+  2 = configuration or preflight error, or the rclone daemon stopped working
   3 = interrupted; progress is in the ledger and the next run resumes
   4 = copying reported success but verification found objects missing from Box
   5 = one or more objects were refused because two names collide on one Box
@@ -519,27 +519,6 @@ def run_backup(args: argparse.Namespace) -> int:
         lock.release()
 
 
-def postgres_connection(args: argparse.Namespace) -> postgres.Connection:
-    """The database to read, by its service name on the stack's network.
-
-    A missing password is refused before anything asks the database, so the
-    failure names the setting rather than looking like a wrong password.
-    """
-    host = os.environ.get("POSTGRES_HOST", "db-prod")
-    if not args.pg_password:
-        raise lib.BackupError(
-            "POSTGRES_PASSWORD is not set — the deploy env file must define it "
-            f"for psql to authenticate against {host}"
-        )
-    return postgres.Connection(
-        host=host,
-        port=_env_int("POSTGRES_PORT", 5432),
-        user=os.environ.get("POSTGRES_USER", "supabase_admin"),
-        database=os.environ.get("POSTGRES_DB", "postgres"),
-        password=args.pg_password,
-    )
-
-
 def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     box_fs = f"{args.box_remote}:"
 
@@ -556,7 +535,7 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     check_destination(ledger, destination)
     minio = minio_source_from_env(args)
     require_rclone_config(args.rclone_config, args.box_remote)
-    conn = postgres_connection(args)
+    conn = postgres.connection_from_env(args.pg_password)
 
     # Taken from the database, BEFORE the manifest snapshot — not from the
     # host afterwards. Anchoring on a moment the snapshot cannot precede means
@@ -590,21 +569,25 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     # wrote to.
     ledger.remember_destination(destination)
     run_id = ledger.start_run(now=watermark)
-    daemon = rclone_daemon.start(
-        rclone_config=str(Path(args.rclone_config).resolve()),
-        port=args.rc_port,
-        transfers=args.workers,
-        bwlimit=args.bwlimit,
-    )
     totals = Totals()
     if args.verify:
         totals.verify_pool = VerifyReservoir(VERIFY_POOL_CAP)
     started_at = datetime.now(timezone.utc)
     crashed = False
+    daemon = None
     try:
+        # Inside the try, so a daemon that cannot start still ends with a record.
+        daemon = rclone_daemon.start(
+            rclone_config=str(Path(args.rclone_config).resolve()),
+            port=args.rc_port,
+            transfers=args.workers,
+            bwlimit=args.bwlimit,
+        )
         client = wait_for_daemon(daemon)
         preflight_source(client, minio, sample_planned_objects(manifest))
-        copy_manifest(client, manifest, ledger, minio, box_fs, args, totals)
+        copy_manifest(
+            client, manifest, ledger, minio, box_fs, args, totals, daemon=daemon
+        )
         if args.verify and totals.verify_pool and len(totals.verify_pool):
             result = verify_sample(
                 client,
@@ -696,7 +679,8 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         finally:
             # Last, so the daemon is still alive for the report upload above,
             # and unconditional, so nothing above can strand the daemon.
-            daemon.stop()
+            if daemon is not None:
+                daemon.stop()
     logger.info(
         "done — copied %d, failed %d, already current %d, skipped %d",
         totals.copied,
@@ -967,7 +951,7 @@ def run_outcome(
 
 
 def publish_report(
-    daemon: rclone_daemon.Daemon,
+    daemon: rclone_daemon.Daemon | None,
     state_dir: Path,
     box_fs: str,
     args: argparse.Namespace,
@@ -1021,6 +1005,9 @@ def publish_report(
         local = report.write_local(entry, state_dir)
     except OSError as exc:
         logger.error("could not write the run report locally: %s", exc)
+        return
+    if daemon is None or daemon.exit_code() is not None:
+        logger.error("run report stayed local at %s — rclone is not running", local)
         return
     try:
         client = RcloneRC(daemon.url, daemon.user, daemon.password)
@@ -1123,7 +1110,10 @@ def copy_manifest(
     box_fs: str,
     args: argparse.Namespace,
     totals: Totals,
+    daemon: rclone_daemon.Daemon | None = None,
 ) -> None:
+    # Stop as soon as the daemon is gone, rather than retrying every object left.
+    alive = (lambda: daemon.exit_code() is None) if daemon is not None else None
     for plan in plan_batches(manifest, ledger, args.limit):
         # Between batches as well as between objects: a batch is 20,000
         # objects, and a stop should not have to wait for the rest of one.
@@ -1170,11 +1160,14 @@ def copy_manifest(
             failures=totals.failures,
             gone=totals.gone,
             succeeded=totals.verify_pool,
+            alive=alive,
         )
         totals.copied += copied
         totals.failed += failed
         totals.source_gone += gone
         # The reservoir is offered every successful copy inside copy_all.
+        if daemon is not None:
+            rclone_daemon.ensure_running(daemon, "during the run")
 
 
 def minio_source_from_env(args: argparse.Namespace) -> MinioSource:
@@ -1345,12 +1338,7 @@ def wait_for_daemon(daemon: rclone_daemon.Daemon, attempts: int = 30) -> RcloneR
         # stop arriving while the daemon starts must not wait out the poll.
         if stopping.stopping():
             raise lib.Stopped("stopped while waiting for the rclone daemon")
-        code = daemon.exit_code()
-        if code is not None:
-            raise rclone_daemon.DaemonError(
-                f"rclone daemon exited ({code}) before it was ready. Its log:\n"
-                + daemon.log_tail()
-            )
+        rclone_daemon.ensure_running(daemon, "before it was ready")
         try:
             poll.noop()
             logger.info("rclone daemon ready (%s)", poll.version())

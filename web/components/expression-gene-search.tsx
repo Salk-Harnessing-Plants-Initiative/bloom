@@ -28,6 +28,7 @@ export function ExpressionGeneSearch({
   const [options, setOptions] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // keep internal input in sync with outer-selected value
   useEffect(() => {
@@ -38,6 +39,7 @@ export function ExpressionGeneSearch({
     const trimmed = input.trim();
     if (!trimmed) {
       setOptions([]);
+      setError(null);
       return;
     }
     setLoading(true);
@@ -45,9 +47,10 @@ export function ExpressionGeneSearch({
       try {
         const results = await searchGenes(datasetId, trimmed, MAX_RESULTS);
         setOptions(results);
+        setError(null);
       } catch (err) {
-        console.error("[ExpressionGeneSearch] searchGenes failed:", err);
         setOptions([]);
+        setError(err instanceof Error ? err.message : String(err));
       } finally {
         setLoading(false);
       }
@@ -82,6 +85,8 @@ export function ExpressionGeneSearch({
           {...params}
           label="Gene"
           placeholder="e.g. AT1G01010"
+          error={Boolean(error)}
+          helperText={error ? `Could not search genes: ${error}` : undefined}
           InputProps={{
             ...params.InputProps,
             endAdornment: (

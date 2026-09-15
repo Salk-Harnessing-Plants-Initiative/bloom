@@ -265,9 +265,9 @@ def _headline(
         )
         if verdict.from_report:
             out.append(
-                "Check the job log for how the run ended: the verdict came "
-                "from the run report, which is written before the ledger is "
-                "committed."
+                "The job log was cut off before the verdict, so this came from "
+                "the run report on the host. How the run ended is recorded in "
+                "the `runs` table of the ledger there."
             )
         elif not verdict.flags:
             # Only when the night raised nothing. Every flag below prints a
