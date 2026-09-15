@@ -10,11 +10,12 @@ name: Nightly Box object mirror
 # Nightly rather than weekly so that at most a day's scans exist only in
 # MinIO, rather than up to a week's.
 #
-# The work happens on the deploy host: this workflow SSHes in and runs
-# scheduled-jobs/box-object-backup/backup_objects.py there, the same way
-# deploy.yml reaches the server. The job talks to Postgres and MinIO over the
-# deploy's own Docker network — neither port is published — so nothing is
-# copied onto the runner.
+# The work happens on the deploy host: this workflow SSHes in, the same way
+# deploy.yml reaches the server, and starts the job in a container of its own,
+# defined in scheduled-jobs/box-object-backup/compose.yml. The container joins
+# production's Docker network to reach Postgres and MinIO — neither port is
+# published — and runs rclone inside itself, so nothing listens on the host
+# and nothing is copied onto the runner.
 #
 # The job UPLOADS ONLY. It never deletes anything on Box.
 #
@@ -78,20 +79,18 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # The job's own default for OBJECT_BACKUP_STATE_DIR, in one place. Three separate
-  # ssh sessions need it — the run takes its lock there, the cancel step
-  # finds the lock there, the summary falls back to the reports there — and
-  # none of the last two reads the env file, so they cannot look it up. The
-  # run step refuses to start if the job's value differs from this one.
+  # The job's own default for OBJECT_BACKUP_STATE_DIR, in one place. The run
+  # step passes it to the job, and the summary falls back to the reports there
+  # over an ssh session that reads no env file. compose.yml mounts the same
+  # path, and the run step refuses to start if the job's value differs.
   STATE_DIR: /data/bloom/box-object-backup
   # `prod` is what the env file and the script call it; the GitHub Environment
   # is called `production`. Production is the only thing this workflow mirrors,
   # and staging is deliberately not offered: both environments live on this one
-  # host, so they would share the ledger, the watermark, the run lock, the
-  # rclone container name and the RC port, and two runs would read and advance
-  # each other's watermark — silently, and in both directions. Mirroring
-  # staging as well means scoping all of those per environment, which is a
-  # change worth making only if the need appears.
+  # host, so they would share the ledger, the watermark and the run lock, and
+  # two runs would read and advance each other's watermark — silently, and in
+  # both directions. Mirroring staging as well means scoping all of those per
+  # environment, which is a change worth making only if the need appears.
   ENV_NAME: prod
 
 jobs:
@@ -164,100 +163,84 @@ jobs:
           case "$verify" in
             ''|*[!0-9]*) echo "verify must be a whole number, got: $verify" >&2; exit 2 ;;
           esac
+          # The container is named from it, and the cancel step stops that name.
+          [[ "$run_tag" =~ ^[0-9]+-[0-9]+$ ]] || { echo "unexpected run tag: $run_tag" >&2; exit 2; }
 
           cd "$deploy_path"
 
-          # The job reads its own settings out of the deploy env file: an
-          # `ssh host cmd` shell reads no profile and no env file, and the
-          # systemd unit this replaced carried EnvironmentFile= to supply
-          # them. It takes only the keys it needs — the file beside them holds
-          # the JWT signing keys and the service-role secret — and reads them
-          # as data, so no character in a value is special. See ENV_KEYS in
-          # backup_objects.py.
-
+          # One container for this run, from the job's own compose file. The
+          # credentials come from the deploy env file through compose; every
+          # other setting comes from the committed defaults, mounted read-only.
+          #
           # The run records which GitHub job started it, in the lock it takes
-          # and in the report it writes. The cancel step and the summary both
-          # find this job's run by that name. A seed started by hand carries
-          # no name, so neither can ever act on it by mistake — which matters,
-          # because the seed holds the lock for days.
-          export OBJECT_BACKUP_ACTIONS_RUN="$run_tag"
-
+          # and in the report it writes. The cancel step stops this container by
+          # the same name, and the summary finds this run's report by it. A seed
+          # started by hand is named `box-object-backup-seed`, which no run tag
+          # can produce, so neither can ever act on it by mistake.
+          #
           # --verify on every scheduled run: an unverified mirror cannot tell a
           # copied object from a lost one.
-          python3 scheduled-jobs/box-object-backup/backup_objects.py \
+          docker compose -f scheduled-jobs/box-object-backup/compose.yml \
+            --env-file ".env.$env_name" \
+            run --rm -T --name "box-object-backup-$run_tag" \
+            --user "$(id -u):$(id -g)" \
+            -e OBJECT_BACKUP_ACTIONS_RUN="$run_tag" \
+            box-object-backup \
             --env "$env_name" --state-dir "$state_dir" \
             --verify "$verify" $dry_run
           REMOTE
 
-      # Cancelling this job kills the ssh client on the runner, not the python
-      # process on the host — the remote gets SIGHUP when the connection drops.
-      # That used to be a hard kill: the cleanup in `finally` never ran and the
-      # rclone container was left holding the RC port, so the NEXT run refused
-      # to start until someone removed it by hand.
-      #
-      # The job now handles SIGHUP, so the drop alone is survivable. This step
-      # is belt and braces for the case where the connection outlives the
-      # cancellation: it asks the run to stop by name, using the pid the lock
-      # file records, and gives it a moment to put itself away.
+      # Cancelling this job ends the ssh session, and with it the compose client
+      # on the host; the container can keep running. This step stops it by name:
+      # SIGTERM, then compose.yml's grace period, which the container carries as
+      # its own stop timeout. The job then finishes the copies in flight, records
+      # them, writes its report and exits, and Docker removes the container.
       - name: Ask the host to stop the run, if this job was cancelled
         if: cancelled()
         env:
           RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}
-          STATE_DIR: ${{ env.STATE_DIR }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-        timeout-minutes: 3
+        # Longer than compose.yml's stop_grace_period, so `docker stop` can finish.
+        timeout-minutes: 7
         run: |
           set -uo pipefail
           # Quoted for the same reason as the run step: ssh joins its trailing
           # words into one string for the remote shell to parse. This tag is a
           # run id and cannot carry a payload, but the pattern gets copied.
-          remote_args="$(printf '%q ' "$RUN_TAG" "$STATE_DIR")"
+          remote_args="$(printf '%q ' "$RUN_TAG")"
           ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=15 \
             -o StrictHostKeyChecking=yes \
             "${DEPLOY_USER}@${DEPLOY_HOST}" "bash -s -- $remote_args" <<'REMOTE' || true
           set -uo pipefail
-          run_tag="$1"; state_dir="$2"
-          lock="$state_dir/backup.lock"
-          [ -r "$lock" ] || { echo "no lock file — nothing was running"; exit 0; }
+          run_tag="$1"
+          # A run id and attempt only, so the name can never be the seed's.
+          if ! [[ "$run_tag" =~ ^[0-9]+-[0-9]+$ ]]; then
+            echo "unexpected run tag '$run_tag' — stopping nothing"
+            exit 0
+          fi
+          name="box-object-backup-$run_tag"
 
-          # Both fields out of ONE read. Two opens leave a window in which the
-          # file changes between them, and the pid of one run could then be
-          # signalled under the name of another.
-          read -r pid owner <<EOF
-          $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("pid",""), d.get("actions_run",""))' "$lock" 2>/dev/null || true)
-          EOF
-          case "${pid:-}" in
-            ''|*[!0-9]*) echo "no pid in the lock file — nothing to stop"; exit 0 ;;
-          esac
-          # `kill -TERM 0` signals the caller's whole process group. os.getpid()
-          # is never 0, so this is unreachable — and far too expensive to leave
-          # resting on that.
-          [ "$pid" -gt 0 ] || { echo "refusing to signal pid $pid"; exit 0; }
-
-          # Whoever holds the lock is not necessarily the run this job started.
-          # During the seed that distinction is days of work: the seed holds
-          # the lock, a nightly finds it held and stands down, and cancelling
-          # THAT job must not stop the seed. The seed is started by hand and
-          # so carries no job name, which no job name can equal.
-          if [ "${owner:-}" != "$run_tag" ]; then
-            echo "pid $pid was started by ${owner:-a person, not a GitHub job}" \
-                 "— leaving it alone"
+          # An exact lookup by name. The name has letters outside [0-9a-f], so
+          # Docker cannot read it as the start of a container id.
+          if ! project="$(docker container inspect \
+              --format '{{ index .Config.Labels "com.docker.compose.project" }}' \
+              "$name" 2>/dev/null)"; then
+            echo "no container $name — nothing was running"
+            exit 0
+          fi
+          # Only the backup job's own containers; nothing of the Bloom stack.
+          if [ "$project" != "bloom-box-object-backup" ]; then
+            echo "$name belongs to '${project:-no project}', not the backup job — leaving it alone"
             exit 0
           fi
 
-          kill -0 "$pid" 2>/dev/null || { echo "pid $pid is gone already"; exit 0; }
-
-          echo "asking pid $pid to stop"
-          kill -TERM "$pid"
-          for _ in $(seq 1 30); do
-            kill -0 "$pid" 2>/dev/null || { echo "stopped cleanly"; exit 0; }
-            sleep 2
-          done
-          # Deliberately not escalating to SIGKILL: that is the hard kill this
-          # exists to avoid, and it would leave the container behind again. A
-          # run still going after a minute is worth a human looking.
-          echo "::warning::pid $pid has not stopped yet; leaving it alone"
+          echo "asking $name to stop"
+          if docker stop "$name" > /dev/null; then
+            echo "$name has stopped"
+          else
+            echo "::warning::docker stop $name failed; check it on the host"
+          fi
           REMOTE
 
       # A run that stood down against the seed's lock exits 0, exactly as a
