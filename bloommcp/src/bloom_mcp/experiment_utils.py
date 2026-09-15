@@ -493,10 +493,14 @@ def _resolve_one_class(
         # first" remedy would invite committing on top of the foreign catalog;
         # `SupabaseReader` to ExperimentNotFoundError, misreporting a
         # present-but-foreign catalog as absent). Raised as the reader-port
-        # type here, at the shared resolution helper, so every consumer —
-        # both reader adapters AND the tools that call load_experiment_data
-        # directly — surfaces the same structured error, already covered by
-        # the tools' `errors=(ExperimentReadError, …)` declarations. The
+        # type here, at the shared resolution helper, so every consumer
+        # surfaces the same typed error: the envelope-wrapped analysis tools
+        # through their `errors=(ExperimentReadError, …)` declarations, and
+        # the plain string-returning tools (the five viz plotters and
+        # `sections.core.load_experiment_data`) through their own explicit
+        # `except ForeignCatalogError` branches — their bare `except
+        # Exception` fallbacks would otherwise flatten this into an
+        # unactionable "could not be read" (#573 review, finding 2a). The
         # import is lazy (like AnalysisDir's above): `bloom_mcp.data_access`
         # imports this module at package-import time, so a top-level import
         # here would be circular. Message passthrough is leak-safe by
@@ -780,16 +784,25 @@ def trim_staleness(stem: str) -> Optional[TrimStaleness]:
     `_log_if_trim_is_stale`, which does swallow, against
     `sections.core.list_existing_analyses`, which does not).
     """
-    from bloom_mcp.manifest import AnalysisDir
+    from bloom_mcp.manifest import AnalysisDir, ManifestBackendMismatchError
 
-    outliers_entry = AnalysisDir(
-        "bloommcp_output", f"{stem}.csv", OUTLIERS_TOOL_CLASS
-    ).get_version("latest")
-    if outliers_entry is None:
-        return None
-    qc_entry = AnalysisDir("bloommcp_output", f"{stem}.csv", QC_TOOL_CLASS).get_version(
-        "latest"
-    )
+    try:
+        outliers_entry = AnalysisDir(
+            "bloommcp_output", f"{stem}.csv", OUTLIERS_TOOL_CLASS
+        ).get_version("latest")
+        if outliers_entry is None:
+            return None
+        qc_entry = AnalysisDir(
+            "bloommcp_output", f"{stem}.csv", QC_TOOL_CLASS
+        ).get_version("latest")
+    except ManifestBackendMismatchError as e:
+        # #573 review: "propagates any manifest read failure" must not mean
+        # leaking a `bloom_mcp.manifest` type through a function whose callers
+        # handle reader-port errors — wrap it exactly as `_resolve_one_class`
+        # does (lazy import for the same circularity reason documented there).
+        from bloom_mcp.data_access.ports import ForeignCatalogError
+
+        raise ForeignCatalogError(str(e)) from e
     if qc_entry is None:
         return TrimStaleness(
             is_stale=True,
@@ -882,6 +895,11 @@ def load_experiment_data(
         source_label is one of "raw", "legacy_cleaned", "v<N>_cleaned", or
         "outliers_v<N>_cleaned".
         On error: (None, None, None, error_string)
+
+    Raises:
+        ForeignCatalogError: the resolved catalog was written by a different
+            storage backend than the active one (#573) — a hard, typed error,
+            deliberately not folded into the error-string channel.
     """
     t_dir = traits_dir or TRAITS_DIR
     o_dir = output_dir or OUTPUT_DIR

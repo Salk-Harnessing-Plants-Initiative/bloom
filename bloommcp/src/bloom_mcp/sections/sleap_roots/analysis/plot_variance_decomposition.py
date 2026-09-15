@@ -13,6 +13,7 @@ from pathlib import Path
 
 from sleap_roots_analyze import statistics as stats_module
 from sleap_roots_analyze.visualization import create_variance_decomposition_plot
+from bloom_mcp.data_access import ForeignCatalogError
 from bloom_mcp.experiment_utils import load_experiment_data as _load_data
 
 from ._viz_shared import save_plot, validate_filename
@@ -33,6 +34,12 @@ def plot_variance_decomposition(filename: str) -> str:
 
     try:
         df, trait_cols, config, source = _load_data(filename)
+    except ForeignCatalogError as exc:
+        # #573: actionable and leak-safe by construction (backend names + the
+        # catalog's logical storage prefix only) — never flattened into the
+        # generic unreadable-data message below, which would leave a scientist
+        # no way to see their read was refused over a foreign catalog.
+        return f"Could not load {filename!r}: {exc}"
     except Exception:
         return f"Could not load {filename!r}: the experiment data could not be read."
     if df is None:

@@ -7,6 +7,7 @@ adapter). Always-included in the agent's tool set.
 
 from typing import Optional
 
+from bloom_mcp.data_access import ForeignCatalogError
 from bloom_mcp.tools import _ports
 
 _load_data = _ports.load_frame
@@ -31,9 +32,15 @@ def load_experiment_data(
             run id (see core_list_experiment_sources). Omit to use the latest
             source, same as today. Mutually exclusive with source_id.
     """
-    df, trait_cols, config, source = _load_data(
-        filename, source_id=source_id, run_id=run_id
-    )
+    try:
+        df, trait_cols, config, source = _load_data(
+            filename, source_id=source_id, run_id=run_id
+        )
+    except ForeignCatalogError as exc:
+        # #573: load_frame propagates this instead of flattening it — for this
+        # plain string-returning tool, return the message (leak-safe by
+        # construction: backend names + the catalog's logical prefix only).
+        return f"Could not load {filename!r}: {exc}"
     if df is None:
         return source  # error string
 

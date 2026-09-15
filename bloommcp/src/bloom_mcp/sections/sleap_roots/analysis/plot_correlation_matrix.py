@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 from sleap_roots_analyze.visualization import create_correlation_heatmap
+from bloom_mcp.data_access import ForeignCatalogError
 from bloom_mcp.experiment_utils import load_experiment_data as _load_data
 
 from ._viz_shared import parse_traits, save_plot, validate_filename
@@ -39,6 +40,12 @@ def plot_correlation_matrix(filename: str, traits: str = "") -> str:
 
     try:
         df, trait_cols, config, source = _load_data(filename)
+    except ForeignCatalogError as exc:
+        # #573: actionable and leak-safe by construction (backend names + the
+        # catalog's logical storage prefix only) — never flattened into the
+        # generic unreadable-data message below, which would leave a scientist
+        # no way to see their read was refused over a foreign catalog.
+        return f"Could not load {filename!r}: {exc}"
     except Exception:
         return f"Could not load {filename!r}: the experiment data could not be read."
     if df is None:
