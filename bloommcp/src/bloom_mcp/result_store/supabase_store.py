@@ -149,9 +149,7 @@ def _guarded_manifest_read(adir: AnalysisDir, read: Callable[[], T]) -> T:
         # configuration condition the structured type fully describes, and
         # discovery paths sweep many tool classes per call — a full ERROR
         # traceback per class would spam the log for one poisoned experiment.
-        logger.warning(
-            "foreign catalog for %s/%s: %s", adir.tool_class, adir.stem, exc
-        )
+        logger.warning("foreign catalog for %s/%s: %s", adir.tool_class, adir.stem, exc)
         raise CatalogBackendMismatchError(str(exc)) from exc
     except ManifestSchemaError as exc:
         # `validate_schema` raises this both for "too new" and for "missing

@@ -854,9 +854,7 @@ def test_commit_foreign_catalog_detected_mid_upload_cleans_up(
     assert not run.staging_dir.exists()
 
 
-def test_commit_onto_unstamped_catalog_logs_the_adoption(
-    fake_supabase_storage, caplog
-):
+def test_commit_onto_unstamped_catalog_logs_the_adoption(fake_supabase_storage, caplog):
     """#573 review: an absent/blank sentinel passes both guards by design
     (pre-#572 catalogs), and the next commit re-stamps it for the active
     backend — an adoption that was previously forensically invisible (the
@@ -878,11 +876,7 @@ def test_commit_onto_unstamped_catalog_logs_the_adoption(
         stored = store.commit(run, {"o": "o.csv"})
 
     assert stored.run_ref == "v2"
-    adoptions = [
-        r
-        for r in caplog.records
-        if "previously unstamped" in r.getMessage()
-    ]
+    adoptions = [r for r in caplog.records if "previously unstamped" in r.getMessage()]
     assert len(adoptions) == 1 and adoptions[0].levelno == logging.INFO
     raw_after = json.loads(fake_supabase_storage.objects[manifest_key])
     assert raw_after["storage_backend"] == "supabase"
@@ -911,6 +905,8 @@ def test_commit_mismatch_logs_one_warning_no_traceback(
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert errors == []
     warnings_ = [
-        r for r in caplog.records if r.levelno == logging.WARNING and "refused" in r.getMessage()
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "refused" in r.getMessage()
     ]
     assert len(warnings_) == 1
