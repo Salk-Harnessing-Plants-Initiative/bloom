@@ -25,6 +25,7 @@ from tests.integration.test_cyl_read_path import (  # noqa: E402
     _deliver,
     _envelope,
     _seed_experiment_scan,
+    _seed_scan_in,
     _trait,
 )
 from tests.integration.test_cyl_scan_latest_source import (  # noqa: E402
@@ -804,6 +805,25 @@ def test_deleting_a_scans_traits_marks_its_experiment(pg_conn):
 
         cur.execute("DELETE FROM cyl_scan_traits WHERE scan_id=%s", (scan_id,))
         assert _pending_changes(cur, exp) == 1
+    pg_conn.rollback()
+
+
+def test_scan_in_a_wave_without_an_experiment_saves_and_logs_nothing(pg_conn):
+    """cyl_waves.experiment_id is nullable; such a scan can't count towards any experiment."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO cyl_waves (experiment_id, number) VALUES (NULL, 1) RETURNING id"
+        )
+        wave_id = cur.fetchone()[0]
+        scan_id, imgs = _seed_scan_in(cur, wave_id)
+        cur.execute("SELECT count(*) FROM cyl_experiment_trait_count_changes")
+        logged_before = cur.fetchone()[0]
+
+        _deliver(cur, imgs, "no-experiment", traits=[_trait("length", 1.0)])
+        cur.execute("DELETE FROM cyl_scan_traits WHERE scan_id=%s", (scan_id,))
+
+        cur.execute("SELECT count(*) FROM cyl_experiment_trait_count_changes")
+        assert cur.fetchone()[0] == logged_before
     pg_conn.rollback()
 
 

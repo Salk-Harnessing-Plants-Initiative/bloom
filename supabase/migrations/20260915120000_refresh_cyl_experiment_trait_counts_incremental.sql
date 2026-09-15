@@ -39,13 +39,15 @@ AS $$
 DECLARE
     v_scan_id bigint := coalesce(NEW.scan_id, OLD.scan_id);
 BEGIN
-    -- A scan already removed by a cascade no longer resolves to an experiment; nothing is logged.
+    -- Only scans that belong to an experiment are logged: a wave may have no experiment, and a
+    -- scan already removed by a cascade resolves to none.
     INSERT INTO public.cyl_experiment_trait_count_changes (experiment_id)
     SELECT w.experiment_id
     FROM public.cyl_scans  s
     JOIN public.cyl_plants p ON p.id = s.plant_id
     JOIN public.cyl_waves  w ON w.id = p.wave_id
-    WHERE s.id = v_scan_id;
+    WHERE s.id = v_scan_id
+      AND w.experiment_id IS NOT NULL;
     RETURN NULL;
 END;
 $$;
