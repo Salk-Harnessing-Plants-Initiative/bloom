@@ -229,11 +229,11 @@ round-5 shape tests were too loose to catch a broken implementation.
 
 ## 7. Post-merge (not part of this PR)
 
-- [ ] 7.1 After merge and a real deploy run: `openspec:archive harden-cutover-guard-deploy-gaps`.
-- [ ] 7.2 Confirm bloom#780 itself is closed once the fix is live. If closing manually rather than
-      via the PR's own `Closes #780` auto-close, get the user's explicit go-ahead for that specific
-      GitHub write before posting anything — same convention as every other GitHub write this
-      session. Applying this change's own lesson to itself: since this particular PR's merge
-      doesn't gate on a future deploy the way a migration would, "merged" is sufficient evidence
-      here (there is no deploy-time behavior to wait on beyond the merge itself) — this step is
-      about not skipping the authorization step, not about waiting for a deploy.
+- [x] 7.1 After merge and a real deploy run: `openspec:archive harden-cutover-guard-deploy-gaps`.
+      PR #807 merged 2026-09-10 (f3152d31); archived same day as
+      `2026-09-10-harden-cutover-guard-deploy-gaps`.
+- [x] 7.2 Confirm bloom#780 itself is closed once the fix is live. Confirmed: auto-closed
+      automatically by `auto-close-issues-on-staging.yml` 12 seconds after the merge (no manual
+      close needed, so the authorization-before-posting concern below didn't end up applying) —
+      a live, in-the-wild demonstration of the exact mechanism `harden-cutover-guard-deploy-gaps`
+      builds on working as intended.

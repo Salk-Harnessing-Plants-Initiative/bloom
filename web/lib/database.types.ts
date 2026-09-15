@@ -127,6 +127,20 @@ export type Database = {
             foreignKeyName: "assemblies_species_id_fkey"
             columns: ["species_id"]
             isOneToOne: false
+            referencedRelation: "cyl_accession_sample_counts"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "assemblies_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "assemblies_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
             referencedRelation: "cyl_plants_extended"
             referencedColumns: ["species_id"]
           },
@@ -159,6 +173,30 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      bloommcp_usage: {
+        Row: {
+          first_seen: string
+          identity: string
+          last_action: string | null
+          last_seen: string
+          request_count: number
+        }
+        Insert: {
+          first_seen?: string
+          identity: string
+          last_action?: string | null
+          last_seen?: string
+          request_count?: number
+        }
+        Update: {
+          first_seen?: string
+          identity?: string
+          last_action?: string | null
+          last_seen?: string
+          request_count?: number
+        }
+        Relationships: []
       }
       chat_threads: {
         Row: {
@@ -293,8 +331,22 @@ export type Database = {
             foreignKeyName: "cyl_datasets_experiment_id_fkey"
             columns: ["experiment_id"]
             isOneToOne: false
+            referencedRelation: "cyl_experiment_accessions"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_datasets_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
             referencedRelation: "cyl_experiments"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cyl_datasets_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["experiment_id"]
           },
           {
             foreignKeyName: "cyl_datasets_experiment_id_fkey"
@@ -330,6 +382,74 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "cyl_trait_sources"
             referencedColumns: ["id"]
+          },
+        ]
+      }
+      cyl_experiment_trait_counts: {
+        Row: {
+          experiment_id: number
+          n_traits: number
+          updated_at: string
+        }
+        Insert: {
+          experiment_id: number
+          n_traits: number
+          updated_at?: string
+        }
+        Update: {
+          experiment_id?: number
+          n_traits?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cyl_experiment_trait_counts_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: true
+            referencedRelation: "cyl_experiment_accessions"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_experiment_trait_counts_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: true
+            referencedRelation: "cyl_experiments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cyl_experiment_trait_counts_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: true
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_experiment_trait_counts_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: true
+            referencedRelation: "cyl_plants_extended"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_experiment_trait_counts_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: true
+            referencedRelation: "cyl_scans_extended"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_experiment_trait_counts_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: true
+            referencedRelation: "cyl_trait_by_experiment_wave"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_experiment_trait_counts_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: true
+            referencedRelation: "recent_experiments_by_cyl_scanner"
+            referencedColumns: ["experiment_id"]
           },
         ]
       }
@@ -382,6 +502,20 @@ export type Database = {
             foreignKeyName: "cyl_experiments_species_id_fkey"
             columns: ["species_id"]
             isOneToOne: false
+            referencedRelation: "cyl_accession_sample_counts"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "cyl_experiments_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "cyl_experiments_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
             referencedRelation: "cyl_plants_extended"
             referencedColumns: ["species_id"]
           },
@@ -412,60 +546,6 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "species"
             referencedColumns: ["id"]
-          },
-        ]
-      }
-      cyl_experiment_trait_counts: {
-        Row: {
-          experiment_id: number
-          n_traits: number
-          updated_at: string
-        }
-        Insert: {
-          experiment_id: number
-          n_traits: number
-          updated_at?: string
-        }
-        Update: {
-          experiment_id?: number
-          n_traits?: number
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "cyl_experiment_trait_counts_experiment_id_fkey"
-            columns: ["experiment_id"]
-            isOneToOne: true
-            referencedRelation: "cyl_experiments"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cyl_experiment_trait_counts_experiment_id_fkey"
-            columns: ["experiment_id"]
-            isOneToOne: true
-            referencedRelation: "cyl_plants_extended"
-            referencedColumns: ["experiment_id"]
-          },
-          {
-            foreignKeyName: "cyl_experiment_trait_counts_experiment_id_fkey"
-            columns: ["experiment_id"]
-            isOneToOne: true
-            referencedRelation: "cyl_scans_extended"
-            referencedColumns: ["experiment_id"]
-          },
-          {
-            foreignKeyName: "cyl_experiment_trait_counts_experiment_id_fkey"
-            columns: ["experiment_id"]
-            isOneToOne: true
-            referencedRelation: "cyl_trait_by_experiment_wave"
-            referencedColumns: ["experiment_id"]
-          },
-          {
-            foreignKeyName: "cyl_experiment_trait_counts_experiment_id_fkey"
-            columns: ["experiment_id"]
-            isOneToOne: true
-            referencedRelation: "recent_experiments_by_cyl_scanner"
-            referencedColumns: ["experiment_id"]
           },
         ]
       }
@@ -729,6 +809,13 @@ export type Database = {
             foreignKeyName: "cyl_plants_wave_id_fkey"
             columns: ["wave_id"]
             isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["wave_id"]
+          },
+          {
+            foreignKeyName: "cyl_plants_wave_id_fkey"
+            columns: ["wave_id"]
+            isOneToOne: false
             referencedRelation: "cyl_plants_extended"
             referencedColumns: ["wave_id"]
           },
@@ -840,6 +927,13 @@ export type Database = {
             foreignKeyName: "cyl_qc_codes_plant_id_fkey"
             columns: ["plant_id"]
             isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["plant_id"]
+          },
+          {
+            foreignKeyName: "cyl_qc_codes_plant_id_fkey"
+            columns: ["plant_id"]
+            isOneToOne: false
             referencedRelation: "cyl_plants"
             referencedColumns: ["id"]
           },
@@ -919,8 +1013,22 @@ export type Database = {
             foreignKeyName: "cyl_qc_sets_experiment_id_fkey"
             columns: ["experiment_id"]
             isOneToOne: false
+            referencedRelation: "cyl_experiment_accessions"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_qc_sets_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
             referencedRelation: "cyl_experiments"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cyl_qc_sets_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["experiment_id"]
           },
           {
             foreignKeyName: "cyl_qc_sets_experiment_id_fkey"
@@ -1200,6 +1308,13 @@ export type Database = {
             foreignKeyName: "cyl_scans_plant_id_fkey"
             columns: ["plant_id"]
             isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["plant_id"]
+          },
+          {
+            foreignKeyName: "cyl_scans_plant_id_fkey"
+            columns: ["plant_id"]
+            isOneToOne: false
             referencedRelation: "cyl_plants"
             referencedColumns: ["id"]
           },
@@ -1318,8 +1433,22 @@ export type Database = {
             foreignKeyName: "cyl_waves_experiment_id_fkey"
             columns: ["experiment_id"]
             isOneToOne: false
+            referencedRelation: "cyl_experiment_accessions"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_waves_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
             referencedRelation: "cyl_experiments"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cyl_waves_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["experiment_id"]
           },
           {
             foreignKeyName: "cyl_waves_experiment_id_fkey"
@@ -1704,6 +1833,20 @@ export type Database = {
             foreignKeyName: "gravi_experiments_species_id_fkey"
             columns: ["species_id"]
             isOneToOne: false
+            referencedRelation: "cyl_accession_sample_counts"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "gravi_experiments_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "gravi_experiments_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
             referencedRelation: "cyl_plants_extended"
             referencedColumns: ["species_id"]
           },
@@ -1770,6 +1913,13 @@ export type Database = {
             referencedRelation: "gravi_scans"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "gravi_images_scan_id_fkey"
+            columns: ["scan_id"]
+            isOneToOne: true
+            referencedRelation: "gravi_scans_extended"
+            referencedColumns: ["scan_id"]
+          },
         ]
       }
       gravi_plate_videos: {
@@ -1778,6 +1928,7 @@ export type Database = {
           experiment_id: number
           file_hash: string | null
           file_size_bytes: number | null
+          fps: number | null
           frame_count: number | null
           generated_at: string
           id: number
@@ -1791,6 +1942,7 @@ export type Database = {
           experiment_id: number
           file_hash?: string | null
           file_size_bytes?: number | null
+          fps?: number | null
           frame_count?: number | null
           generated_at?: string
           id?: number
@@ -1804,6 +1956,7 @@ export type Database = {
           experiment_id?: number
           file_hash?: string | null
           file_size_bytes?: number | null
+          fps?: number | null
           frame_count?: number | null
           generated_at?: string
           id?: number
@@ -1819,6 +1972,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "gravi_experiments"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "gravi_plate_videos_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "gravi_scans_extended"
+            referencedColumns: ["experiment_id"]
           },
           {
             foreignKeyName: "gravi_plate_videos_session_id_fkey"
@@ -1980,6 +2140,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "gravi_scan_sessions_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "gravi_scans_extended"
+            referencedColumns: ["experiment_id"]
+          },
+          {
             foreignKeyName: "gravi_scan_sessions_phenotyper_id_fkey"
             columns: ["phenotyper_id"]
             isOneToOne: false
@@ -2077,6 +2244,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "gravi_experiments"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "gravi_scans_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "gravi_scans_extended"
+            referencedColumns: ["experiment_id"]
           },
           {
             foreignKeyName: "gravi_scans_metadata_id_fkey"
@@ -2573,6 +2747,20 @@ export type Database = {
             foreignKeyName: "proteins_species_id_fkey"
             columns: ["species_id"]
             isOneToOne: false
+            referencedRelation: "cyl_accession_sample_counts"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "proteins_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "proteins_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
             referencedRelation: "cyl_plants_extended"
             referencedColumns: ["species_id"]
           },
@@ -2791,6 +2979,8 @@ export type Database = {
           cell_number: number
           cluster_id: string | null
           dataset_id: number
+          facets: Json | null
+          genotype_id: number | null
           id: number
           replicate: string | null
           x: number | null
@@ -2801,6 +2991,8 @@ export type Database = {
           cell_number: number
           cluster_id?: string | null
           dataset_id: number
+          facets?: Json | null
+          genotype_id?: number | null
           id?: number
           replicate?: string | null
           x?: number | null
@@ -2811,6 +3003,8 @@ export type Database = {
           cell_number?: number
           cluster_id?: string | null
           dataset_id?: number
+          facets?: Json | null
+          genotype_id?: number | null
           id?: number
           replicate?: string | null
           x?: number | null
@@ -2830,6 +3024,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "scrna_datasets"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scrna_cells_genotype_fkey"
+            columns: ["dataset_id", "genotype_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_genotypes"
+            referencedColumns: ["dataset_id", "id"]
           },
         ]
       }
@@ -2994,6 +3195,7 @@ export type Database = {
           expression_units: string | null
           id: number
           ingested_at: string | null
+          kind: string
           markers_method: string | null
           metadata: Json | null
           n_cells: number | null
@@ -3016,6 +3218,7 @@ export type Database = {
           expression_units?: string | null
           id?: number
           ingested_at?: string | null
+          kind?: string
           markers_method?: string | null
           metadata?: Json | null
           n_cells?: number | null
@@ -3038,6 +3241,7 @@ export type Database = {
           expression_units?: string | null
           id?: number
           ingested_at?: string | null
+          kind?: string
           markers_method?: string | null
           metadata?: Json | null
           n_cells?: number | null
@@ -3058,6 +3262,20 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "people"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scrna_datasets_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_accession_sample_counts"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "scrna_datasets_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["species_id"]
           },
           {
             foreignKeyName: "scrna_datasets_species_id_fkey"
@@ -3279,6 +3497,177 @@ export type Database = {
           },
         ]
       }
+      scrna_embedding_dataset_members: {
+        Row: {
+          dataset_id: number
+          embedding_id: number
+          n_points: number
+          ordinal: number
+          role: string
+        }
+        Insert: {
+          dataset_id: number
+          embedding_id: number
+          n_points: number
+          ordinal: number
+          role: string
+        }
+        Update: {
+          dataset_id?: number
+          embedding_id?: number
+          n_points?: number
+          ordinal?: number
+          role?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scrna_embedding_dataset_members_dataset_fkey"
+            columns: ["dataset_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_datasets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scrna_embedding_dataset_members_embedding_fkey"
+            columns: ["embedding_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_embeddings"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      scrna_embedding_labels: {
+        Row: {
+          description: string | null
+          embedding_id: number
+          key: string
+          native_dataset_id: number | null
+          source_column: string
+        }
+        Insert: {
+          description?: string | null
+          embedding_id: number
+          key: string
+          native_dataset_id?: number | null
+          source_column: string
+        }
+        Update: {
+          description?: string | null
+          embedding_id?: number
+          key?: string
+          native_dataset_id?: number | null
+          source_column?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scrna_embedding_labels_embedding_fkey"
+            columns: ["embedding_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_embeddings"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scrna_embedding_labels_native_member_fkey"
+            columns: ["embedding_id", "native_dataset_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_embedding_dataset_members"
+            referencedColumns: ["embedding_id", "dataset_id"]
+          },
+        ]
+      }
+      scrna_embedding_points: {
+        Row: {
+          barcode: string
+          cell_id: number | null
+          dataset_id: number
+          embedding_id: number
+          facets: Json | null
+          ordinal: number
+          x: number
+          y: number
+        }
+        Insert: {
+          barcode: string
+          cell_id?: number | null
+          dataset_id: number
+          embedding_id: number
+          facets?: Json | null
+          ordinal: number
+          x: number
+          y: number
+        }
+        Update: {
+          barcode?: string
+          cell_id?: number | null
+          dataset_id?: number
+          embedding_id?: number
+          facets?: Json | null
+          ordinal?: number
+          x?: number
+          y?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scrna_embedding_points_cell_fkey"
+            columns: ["dataset_id", "cell_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_cells"
+            referencedColumns: ["dataset_id", "id"]
+          },
+          {
+            foreignKeyName: "scrna_embedding_points_member_fkey"
+            columns: ["embedding_id", "dataset_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_embedding_dataset_members"
+            referencedColumns: ["embedding_id", "dataset_id"]
+          },
+        ]
+      }
+      scrna_embeddings: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          description: string | null
+          id: number
+          ingested_at: string | null
+          method: string
+          n_points: number
+          name: string
+          params: Json
+          run_name: string | null
+          source_checksum: string
+          title: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          description?: string | null
+          id?: number
+          ingested_at?: string | null
+          method: string
+          n_points: number
+          name: string
+          params?: Json
+          run_name?: string | null
+          source_checksum: string
+          title: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          description?: string | null
+          id?: number
+          ingested_at?: string | null
+          method?: string
+          n_points?: number
+          name?: string
+          params?: Json
+          run_name?: string | null
+          source_checksum?: string
+          title?: string
+        }
+        Relationships: []
+      }
       scrna_genes: {
         Row: {
           dataset_id: number
@@ -3301,6 +3690,54 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "scrna_genes_dataset_id_fkey"
+            columns: ["dataset_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_datasets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      scrna_genotypes: {
+        Row: {
+          accession_id: number | null
+          construct: string | null
+          created_at: string
+          dataset_id: number
+          id: number
+          is_control: boolean
+          name: string
+          notes: string | null
+        }
+        Insert: {
+          accession_id?: number | null
+          construct?: string | null
+          created_at?: string
+          dataset_id: number
+          id?: number
+          is_control?: boolean
+          name: string
+          notes?: string | null
+        }
+        Update: {
+          accession_id?: number | null
+          construct?: string | null
+          created_at?: string
+          dataset_id?: number
+          id?: number
+          is_control?: boolean
+          name?: string
+          notes?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scrna_genotypes_accession_id_fkey"
+            columns: ["accession_id"]
+            isOneToOne: false
+            referencedRelation: "arabidopsis_accessions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scrna_genotypes_dataset_id_fkey"
             columns: ["dataset_id"]
             isOneToOne: false
             referencedRelation: "scrna_datasets"
@@ -3498,6 +3935,77 @@ export type Database = {
       }
     }
     Views: {
+      cyl_accession_sample_counts: {
+        Row: {
+          accession_id: number | null
+          accession_name: string | null
+          plant_count: number | null
+          species_id: number | null
+          species_name: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cyl_plants_accession_id_fkey"
+            columns: ["accession_id"]
+            isOneToOne: false
+            referencedRelation: "accessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cyl_dataset_trait_names: {
+        Row: {
+          dataset_id: number | null
+          trait_name: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cyl_dataset_traits_dataset_id_fkey"
+            columns: ["dataset_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_datasets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cyl_experiment_accessions: {
+        Row: {
+          accession_id: number | null
+          accession_name: string | null
+          experiment_id: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cyl_plants_accession_id_fkey"
+            columns: ["accession_id"]
+            isOneToOne: false
+            referencedRelation: "accessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cyl_plant_search: {
+        Row: {
+          accession_id: number | null
+          accession_name: string | null
+          experiment_id: number | null
+          experiment_name: string | null
+          plant_id: number | null
+          qr_code: string | null
+          species_id: number | null
+          species_name: string | null
+          wave_id: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cyl_plants_accession_id_fkey"
+            columns: ["accession_id"]
+            isOneToOne: false
+            referencedRelation: "accessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cyl_plants_extended: {
         Row: {
           accession_id: number | null
@@ -3700,6 +4208,130 @@ export type Database = {
         }
         Relationships: []
       }
+      gravi_scans_extended: {
+        Row: {
+          accession_id: number | null
+          accession_name: string | null
+          capture_date: string | null
+          custom_note: string | null
+          cycle_number: number | null
+          experiment_id: number | null
+          experiment_name: string | null
+          format: string | null
+          grid_mode: string | null
+          metadata_id: number | null
+          phenotyper_id: number | null
+          plate_id: string | null
+          plate_index: string | null
+          resolution: number | null
+          scan_id: number | null
+          scan_mode: string | null
+          scanner_id: number | null
+          scanner_name: string | null
+          session_id: number | null
+          species_genus: string | null
+          species_id: number | null
+          species_name: string | null
+          species_species: string | null
+          system_name: string | null
+          transplant_date: string | null
+          uploaded_at: string | null
+          wave_number: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "gravi_experiments_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_accession_sample_counts"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "gravi_experiments_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "gravi_experiments_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plants_extended"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "gravi_experiments_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_scans_extended"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "gravi_experiments_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "recent_experiments_by_cyl_scanner"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "gravi_experiments_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "recent_phenotypes_by_plate_scanner"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "gravi_experiments_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "species"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "gravi_scan_metadata_accession_accession_id_fkey"
+            columns: ["accession_id"]
+            isOneToOne: false
+            referencedRelation: "accessions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "gravi_scans_metadata_id_fkey"
+            columns: ["metadata_id"]
+            isOneToOne: false
+            referencedRelation: "gravi_scan_metadata_accession"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "gravi_scans_phenotyper_id_fkey"
+            columns: ["phenotyper_id"]
+            isOneToOne: false
+            referencedRelation: "phenotypers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "gravi_scans_scanner_id_fkey"
+            columns: ["scanner_id"]
+            isOneToOne: false
+            referencedRelation: "gravi_scanners"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "gravi_scans_scanner_id_fkey"
+            columns: ["scanner_id"]
+            isOneToOne: false
+            referencedRelation: "recent_phenotypes_by_plate_scanner"
+            referencedColumns: ["scanner_id"]
+          },
+          {
+            foreignKeyName: "gravi_scans_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "gravi_scan_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       recent_experiments_by_cyl_scanner: {
         Row: {
           experiment_id: number | null
@@ -3745,10 +4377,21 @@ export type Database = {
             referencedRelation: "gravi_experiments"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "gravi_scans_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "gravi_scans_extended"
+            referencedColumns: ["experiment_id"]
+          },
         ]
       }
     }
     Functions: {
+      _settle_cyl_pipeline_run: {
+        Args: { p_run_id: number }
+        Returns: undefined
+      }
       append_experiment_log: {
         Args: { gene_id: string; new_log: Json }
         Returns: undefined
@@ -3769,6 +4412,15 @@ export type Database = {
           uid: string
         }[]
       }
+      claim_cyl_pipeline_batch: {
+        Args: { p_max_reads?: number; p_vt?: number }
+        Returns: {
+          batch_index: number
+          msg_id: number
+          run_id: number
+          scan_ids: number[]
+        }[]
+      }
       compare_gene_across_accessions: {
         Args: {
           match_count?: number
@@ -3783,6 +4435,16 @@ export type Database = {
           similarity: number
           uid: string
         }[]
+      }
+      complete_cyl_pipeline_batch: {
+        Args: {
+          p_argo_workflow_name: string
+          p_batch_index: number
+          p_msg_id: number
+          p_run_id: number
+          p_scan_ids: number[]
+        }
+        Returns: undefined
       }
       compute_cyl_experiment_summary_counts_live: {
         Args: { experiment_id_: number; run_id_: string; source_id_: number }
@@ -3803,6 +4465,27 @@ export type Database = {
         Returns: undefined
       }
       custom_access_token_hook: { Args: { event: Json }; Returns: Json }
+      cyl_experiment_search: {
+        Args: { p_limit?: number; p_query: string; p_species?: string }
+        Returns: {
+          created_at: string
+          id: number
+          name: string
+          species_id: number
+          species_name: string
+        }[]
+      }
+      cyl_plant_search_navigate: { Args: { p_text: string }; Returns: Json }
+      cyl_plant_search_query: {
+        Args: {
+          p_accession_ids?: number[]
+          p_barcodes?: string[]
+          p_experiment_ids?: number[]
+          p_limit?: number
+          p_species_ids?: number[]
+        }
+        Returns: Json
+      }
       dblink: { Args: { "": string }; Returns: Record<string, unknown>[] }
       dblink_cancel_query: { Args: { "": string }; Returns: string }
       dblink_close: { Args: { "": string }; Returns: string }
@@ -3841,13 +4524,39 @@ export type Database = {
         Args: { p_batch_index: number; p_run_id: number; p_scan_ids: number[] }
         Returns: number
       }
+      fail_cyl_pipeline_batch: {
+        Args: {
+          p_batch_index: number
+          p_error: string
+          p_msg_id: number
+          p_run_id: number
+          p_scan_ids: number[]
+        }
+        Returns: undefined
+      }
       get_experiment_summary_counts: {
         Args: { experiment_id_?: number; run_id_?: string; source_id_?: number }
         Returns: {
           experiment_id: number
           n_plants: number
           n_traits: number
-          n_traits_updated_at: string | null
+          n_traits_updated_at: string
+        }[]
+      }
+      get_experiment_traits: {
+        Args: { experiment_id_: number; run_id_?: string; source_id_?: number }
+        Returns: {
+          accession_name: string
+          date_scanned: string
+          germ_day: number
+          plant_age_days: number
+          plant_id: number
+          plant_qr_code: string
+          scan_id: number
+          source_id: number
+          trait_name: string
+          trait_value: number
+          wave_number: number
         }[]
       }
       get_orthogroup_info: {
@@ -3888,6 +4597,17 @@ export type Database = {
         Args: never
         Returns: {
           category: string
+        }[]
+      }
+      gravi_experiment_search: {
+        Args: { p_limit?: number; p_query: string; p_species?: string }
+        Returns: {
+          created_at: string
+          id: number
+          name: string
+          species_id: number
+          species_name: string
+          system_name: string
         }[]
       }
       insert_cyl_qc_codes: { Args: { qc_codes: Json }; Returns: undefined }
@@ -4031,18 +4751,69 @@ export type Database = {
           uid: string
         }[]
       }
+      list_experiment_trait_sources: {
+        Args: { experiment_id_: number }
+        Returns: {
+          pipeline_run_id: string
+          source_id: number
+          source_name: string
+        }[]
+      }
+      record_bloommcp_usage: {
+        Args: { p_action: string; p_identity: string }
+        Returns: undefined
+      }
+      record_cyl_scan_video: {
+        Args: { p_frames: number; p_path: string; p_scan_id: number }
+        Returns: undefined
+      }
+      record_gravi_plate_video: {
+        Args: {
+          p_duration_seconds: number
+          p_experiment_id: number
+          p_file_hash: string
+          p_file_size_bytes: number
+          p_fps: number
+          p_frame_count: number
+          p_object_path: string
+          p_plate_id: string
+          p_wave_number: number
+        }
+        Returns: undefined
+      }
       refresh_cyl_experiment_trait_counts: { Args: never; Returns: undefined }
       scrna_cell_arrays: {
         Args: { ds_id: number }
         Returns: {
           cluster_ordinal: number
           facets: Json
-          genotype: string | null
-          replicate: string | null
+          genotype: string
+          replicate: string
           x: number
           y: number
         }[]
       }
+      scrna_embedding_arrays: {
+        Args: { emb_id: number }
+        Returns: {
+          cell_id: number[]
+          member_ordinal: number[]
+          x: number[]
+          y: number[]
+        }[]
+      }
+      scrna_embedding_label_codes: {
+        Args: { emb_id: number; label_key: string }
+        Returns: {
+          codes: number[]
+          levels: string[]
+        }[]
+      }
+      scrna_embedding_point_labels_ok: {
+        Args: { facets: Json }
+        Returns: boolean
+      }
+      scrna_facets_are_flat_text: { Args: { facets: Json }; Returns: boolean }
       scrna_gene_search: {
         Args: { ds_id: number; lim?: number; q: string }
         Returns: {
@@ -4074,6 +4845,10 @@ export type Database = {
       show_trgm: { Args: { "": string }; Returns: string[] }
       soft_delete: {
         Args: { target_id: number; target_table: string }
+        Returns: undefined
+      }
+      update_cyl_pipeline_run_status: {
+        Args: { p_run_id: number; p_status: string }
         Returns: undefined
       }
     }

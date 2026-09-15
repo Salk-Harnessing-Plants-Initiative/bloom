@@ -48,6 +48,9 @@ describe("ExpressionClusterDetailPanel", () => {
     expect(screen.getByText("Loading…")).toBeTruthy();
     await waitFor(() => expect(screen.getByText("AT5G09530")).toBeTruthy());
     expect(screen.getByText(/164 cells/)).toBeTruthy();
+    // No buttons that do nothing.
+    expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Run DE vs. all" })).toBeNull();
   });
 
   it("says so when the load fails, instead of loading forever", async () => {
@@ -65,9 +68,49 @@ describe("ExpressionClusterDetailPanel", () => {
     fetchClusterStats.mockResolvedValue(null);
     render(panel());
     await waitFor(() =>
-      expect(screen.getByText(/No markers yet/)).toBeTruthy(),
+      expect(screen.getByText(/No markers stored for this cell type/)).toBeTruthy(),
     );
     expect(screen.queryByText("Could not load this cluster.")).toBeNull();
+  });
+
+  it("counts the significant markers and gives each marker's share in the cell type", async () => {
+    fetchClusterStats.mockResolvedValue(STATS);
+    render(panel());
+    await waitFor(() => expect(screen.getByText("AT5G09530")).toBeTruthy());
+    expect(screen.getByText("Significant markers")).toBeTruthy();
+    expect(screen.getByText("88%")).toBeTruthy();
+  });
+
+  it("shows a marker's symbol beside its gene id", async () => {
+    fetchClusterStats.mockResolvedValue({
+      ...STATS,
+      markers: { top: [{ ...STATS.markers.top[0], symbol: "PELPK1" }], n_significant: 1 },
+    });
+    render(panel());
+    await waitFor(() => expect(screen.getByText("PELPK1")).toBeTruthy());
+    expect(screen.getByText("AT5G09530")).toBeTruthy();
+  });
+
+  it("names the atlas only where a cell type's markers come from more than one", async () => {
+    const top = STATS.markers.top[0];
+    fetchClusterStats.mockResolvedValue({
+      ...STATS,
+      markers: {
+        top: [{ ...top, gene: "A", source: "nuclei" }, { ...top, gene: "B", source: "shahan" }],
+        n_significant: 2,
+      },
+    });
+    const { rerender } = render(panel("Pericycle"));
+    await waitFor(() => expect(screen.getByText("nuclei")).toBeTruthy());
+    expect(screen.getByText("shahan")).toBeTruthy();
+
+    fetchClusterStats.mockResolvedValue({
+      ...STATS,
+      markers: { top: [{ ...top, gene: "A", source: "nuclei" }], n_significant: 1 },
+    });
+    rerender(panel("LRC"));
+    await waitFor(() => expect(screen.getByText("A")).toBeTruthy());
+    expect(screen.queryByText("nuclei")).toBeNull();
   });
 
   it("clears the previous cluster when the selection changes", async () => {

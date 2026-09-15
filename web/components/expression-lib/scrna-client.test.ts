@@ -11,7 +11,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { fetchGeneCounts } from "./scrna-client";
+import { fetchGeneCounts, NoStoredExpressionError } from "./scrna-client";
 
 const downloaded: string[] = [];
 let response: { data: Blob | null; error: { message: string } | null };
@@ -76,6 +76,10 @@ describe("fetchGeneCounts", () => {
     storedPath = null;
     await expect(fetchGeneCounts(1, "NEVER_LOADED", 10)).rejects.toThrow(
       /no stored expression/,
+    );
+    // Its own kind of error, so a reader can tell a missing gene from a failed read.
+    await expect(fetchGeneCounts(1, "NEVER_LOADED", 10)).rejects.toBeInstanceOf(
+      NoStoredExpressionError,
     );
     storedPath = "counts/d/g.json";
   });

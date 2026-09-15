@@ -33,6 +33,8 @@ async function fetchBannerData(datasetId: number) {
       .is("deleted_at", null)
       .neq("id", datasetId)
       .neq("name", "NULL_DATASET")
+      // A reference atlas has no cells of its own; it is only seen on an integration map.
+      .neq("kind", "reference")
       .order("name"),
     supabase
       .from("scrna_cells")
