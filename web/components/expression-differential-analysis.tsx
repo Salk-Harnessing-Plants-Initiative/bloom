@@ -391,6 +391,16 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
     comparisonRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  // The plot's measured width, so it redraws once its tab is shown or the window resized.
+  const [chartWidth, setChartWidth] = useState(0);
+  useEffect(() => {
+    const svg = chartRef.current;
+    if (!svg || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => setChartWidth(svg.clientWidth));
+    observer.observe(svg);
+    return () => observer.disconnect();
+  }, [chartData]);
+
   // Draw volcano plot
   useEffect(() => {
     if (!chartData || !chartRef.current) return;
@@ -688,7 +698,7 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       svg.on(".zoom", null).on("dblclick", null);
       tooltip.remove();
     };
-  }, [chartData, selectedCluster, fdrCut, lfcCut]);
+  }, [chartData, selectedCluster, fdrCut, lfcCut, chartWidth]);
 
   /** Download the table as it stands, filtered or not, as CSV. */
   const downloadCSV = () => {
