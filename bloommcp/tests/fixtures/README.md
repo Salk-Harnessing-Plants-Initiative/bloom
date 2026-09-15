@@ -258,7 +258,46 @@ asserted `.is_file()` on the generated PNG.
   survivors; it was not re-run for the reduced set, because nothing about them changed.)
   `MANIFEST.json` records environment provenance only and lists no filenames, so removing
   two PNGs left nothing in it to update.
-- Regenerate all 3 + the manifest via
+- `plot_baselines/create_*_turface_19_baseline.png` — one baseline per *baselined* optional
+  plot key (#723): the 4 `pca_analysis` and 2 `clustering` figures emitted under
+  `include_plots=True`. **The 2 `umap_analysis` keys have no baseline**: PR #841's first
+  `ubuntu-latest` run measured a 2px canvas-width difference against the macOS-generated
+  baseline (769 → 771, height identical) while all 6 others passed — UMAP's embedding is not
+  bit-reproducible across numba/LLVM, which shifts an axis tick label and so the
+  `bbox_inches="tight"` canvas. `compare_images` raises on a dimension mismatch rather than
+  returning an RMS, so no tolerance absorbs it, and a Linux-generated baseline would just
+  invert the failure for macOS developers. Those two are still rendered and commit-checked,
+  just not pixel-compared. Named after the catalog key the tool commits (`create_pca_biplot.png`
+  → `create_pca_biplot_turface_19_baseline.png`), so no name-mapping table is needed, unlike
+  the three above. `_TOL = 15` was re-derived for these 8 rather than assumed to carry over
+  (see `openspec/changes/add-bloommcp-optional-plot-snapshot-tests/design.md` Decision 1).
+
+  **What these pin, and what they do not.** Like every golden in this file, they are a
+  **drift gate, not scientific ground truth** — a baseline is generated from the code as it
+  renders today, so a figure that is wrong today is frozen wrong. Two measured blind spots
+  are pinned by negative-control tests rather than presented as coverage:
+  `create_cluster_scatter_pca` does not detect a cluster-assignment change *at all*
+  (RMS 3.8–11.6, below its own 12.9 noise floor), and `create_cluster_size_barplot` misses a
+  same-k membership change (13.5). Clustering correctness is covered numerically by
+  `test_clustering_tool.py`, not here.
+
+  **Known upstream defect encoded in one baseline.**
+  `create_feature_contribution_heatmap` is titled "Feature Loadings (Correlations)" with a
+  "Loading (Correlation)" colorbar, but plots unit-norm eigenvector components — *not*
+  correlations. The trait–PC correlation is `component × sqrt(eigenvalue)`; on this fixture
+  that understates the PC1 column by ~2.7× and overstates PC5 by ~2×, so the error reverses
+  direction across the columns a reader compares. The baseline pins this figure as it
+  currently renders; fixing the label belongs upstream in `sleap-roots-analyze`.
+
+  **Implicit parameters.** These 8 pin the tools' *defaults*: `standardize=True`,
+  `explained_variance_threshold=0.95`, `seed=42`, `method="kmeans"` (auto-selecting k=2),
+  and the `n_neighbors`/`min_dist` defaults — and the **11 certified trait columns** the
+  reader resolves, not the 8-trait selection `turface_19_pca_golden.json` records. Also
+  note `create_umap_single_trait` colors by `trait_cols[0]` (`Maximum.Width.mm`), so
+  reordering the CSV's columns surfaces as a rendering regression. `MANIFEST.json` now
+  records the fixture's SHA-256, so a fixture edit is attributable rather than appearing as
+  unexplained pixel drift.
+- Regenerate all 9 + the manifest via
   `cd bloommcp && uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py --yes`
   after any intentional rendering change (matplotlib bump, plot-style-kwargs default change,
   delegate upgrade) — never hand-edit these PNGs. **If you're regenerating over existing

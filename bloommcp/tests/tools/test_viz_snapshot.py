@@ -88,11 +88,28 @@ claim that single-cell defects are covered. These measurements are a snapshot of
 baselines, not a law -- re-measure after any change to a plot's trait count, color
 density, or layout.
 
-Scope: the 3 dedicated plotting tools only (5 until #462 retired the two heritability
-plots into `heritability_analysis`, which renders them through `ResultStore` — see the note
-on `_SNAPSHOT_TOOLS`) -- the optional plot keys `pca_analysis`/`umap_analysis`/`clustering` can
-also emit (`create_pca_biplot`, `create_cluster_scatter_pca`, etc.) are a deliberate
-non-goal here; see proposal.md.
+Scope: the 3 dedicated plotting tools (5 until #462 retired the two heritability plots into
+`heritability_analysis`, which renders them through `ResultStore` — see the note on
+`_SNAPSHOT_TOOLS`), **plus the 8 optional plot keys** `pca_analysis`/`umap_analysis`/
+`clustering` emit under `include_plots=True` (#723, the follow-up #713 scoped out) -- of
+which **6 carry a committed baseline**. The 2 UMAP keys are rendered and commit-checked but
+deliberately not pixel-compared: their canvas size is not stable across platforms (see
+`_CROSS_PLATFORM_UNSTABLE_KEYS` below, which records the measured CI evidence). The
+optional-key section lives at the bottom of this file; `_TOL` was re-derived for the
+baselined keys rather than assumed to carry over. `heritability_analysis`'s two folded-in figures remain
+uncovered -- they need a different fixture, and that is still a follow-up.
+
+**These baselines are a drift gate, not a correctness oracle.** Every baseline is generated
+from the code as it renders today, so a figure that is scientifically wrong today is frozen
+wrong, and the regeneration gate then defends it. One such defect is already known and
+documented rather than silently canonized: `create_feature_contribution_heatmap` is titled
+"Feature Loadings (Correlations)" with a "Loading (Correlation)" colorbar, but plots
+unit-norm eigenvector components, which are **not** correlations (the trait-PC correlation is
+`component x sqrt(eigenvalue)`; on this fixture that understates PC1 by ~2.7x and overstates
+PC5 by ~2x, so the error reverses direction across the columns a reader compares). See
+`tests/fixtures/README.md`. What these tests prove is that rendering has not *drifted* --
+scientific correctness is the numeric goldens' job (`turface_19_pca_golden.json`,
+`test_clustering_tool.py`'s oracles), not this file's.
 """
 
 from __future__ import annotations
@@ -102,6 +119,7 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import pytest
 from matplotlib.testing.compare import compare_images
@@ -456,3 +474,444 @@ def test_missing_baseline_fails_with_an_actionable_message(monkeypatch, viz_env)
             "histograms_turface_19_baseline.png",
             viz_env,
         )
+
+
+# ── Optional plot keys: pca_analysis / umap_analysis / clustering (#723) ─────────────
+#
+# #713 scoped these out and tracked them as #723; this is that follow-up. They differ from
+# the 3 above in two ways that matter to the harness:
+#
+#   1. They are `require_clean=True` consumers, so their `FakeReader` is seeded with
+#      `add_cleaned_version` rather than `add_experiment`.
+#   2. They take a Pydantic params model and only emit figures when `include_plots=True`.
+#
+# Everything else -- the `commit` spy capture, `_compare_or_fail`, `_TOL` -- is shared, and
+# `_TOL = 15` was re-derived for these 8 rather than assumed to carry over (design.md
+# Decision 1 of add-bloommcp-optional-plot-snapshot-tests has the full dimming table; the
+# short version is that it clears every 5%-dim value, max 12.9, and sits under every
+# 10%-dim value, min 20.5).
+#
+# What these baselines do and do not prove: they are a **drift gate, not a correctness
+# oracle**. A baseline is generated from the code as it renders today, so a figure that is
+# scientifically wrong today is frozen wrong -- see `tests/fixtures/README.md`, which
+# records one such known defect in `create_feature_contribution_heatmap`'s title. Two
+# measured blind spots are pinned below rather than presented as coverage.
+
+_OPTIONAL_EXPERIMENT = "turface_19.csv"
+
+# (label, params factory, catalog keys) -- one render per tool, memoized, so `pca_analysis`
+# is not re-fitted once per parametrized key (measured: a naive per-key render costs ~7.7s
+# against ~3.6s memoized, almost all of it umap-learn's numba JIT).
+_OPTIONAL_TOOLS = [
+    (
+        "pca",
+        "pca_analysis",
+        (
+            "create_pca_scree_plot",
+            "create_pca_biplot",
+            "create_feature_contribution_plot",
+            "create_feature_contribution_heatmap",
+        ),
+    ),
+    (
+        "umap",
+        "umap_analysis",
+        ("create_umap_single_trait", "create_umap_colored_by_top_traits"),
+    ),
+    (
+        "clustering",
+        "clustering",
+        ("create_cluster_scatter_pca", "create_cluster_size_barplot"),
+    ),
+]
+
+# The 2 UMAP keys are rendered and commit-checked like the rest, but have NO committed
+# baseline and are excluded from the pixel comparison. This is not a preference -- it is
+# what PR #841's first `python-audit` run measured on `ubuntu-latest`:
+#
+#     ImageComparisonFailure: Image sizes do not match
+#     expected size: (590, 769, 3)  actual size: (590, 771, 3)
+#
+# A 2px width difference, height identical, while the other 6 keys passed -- so this is not
+# global font metrics but UMAP's own embedding differing across numba/LLVM (the repo already
+# documents it as not bit-reproducible cross-platform, see `test_umap_analysis_tool.py`'s
+# docstring), shifting an axis tick label's width and therefore the `bbox_inches="tight"`
+# canvas. A Linux-generated baseline would invert the failure for every developer on macOS
+# rather than fix it, and `_TOL` cannot absorb a dimension mismatch at all -- `compare_images`
+# raises before any RMS is computed. Tracked as a follow-up; see design.md Decision 3.
+_CROSS_PLATFORM_UNSTABLE_KEYS = frozenset(
+    {"create_umap_single_trait", "create_umap_colored_by_top_traits"}
+)
+
+_OPTIONAL_KEYS = [
+    (label, key)
+    for label, _fn, keys in _OPTIONAL_TOOLS
+    for key in keys
+    if key not in _CROSS_PLATFORM_UNSTABLE_KEYS
+]
+_OPTIONAL_IDS = [key for _label, key in _OPTIONAL_KEYS]
+
+# Memo for the per-tool render. Deliberately a module-level dict rather than a
+# `@pytest.fixture(scope="module")`: the natural dependency `viz_env` is function-scoped
+# (it takes `monkeypatch`/`tmp_path`/`fake_supabase_storage`), and pytest forbids a
+# broader-scoped fixture depending on narrower-scoped ones. These tests need no `viz_env`
+# at all -- `FakeReader` bypasses the `TRAITS_DIR` read it exists to set up.
+_OPTIONAL_RENDER_CACHE: dict = {}
+
+
+def _optional_params(fn_name: str, **overrides):
+    """Build a tool's params model with `include_plots=True` and otherwise defaults."""
+    from bloom_mcp.sections.sleap_roots.analysis.clustering import ClusteringParams
+    from bloom_mcp.sections.sleap_roots.analysis.pca_analysis import PCAAnalysisParams
+    from bloom_mcp.sections.sleap_roots.analysis.umap_analysis import UMAPAnalysisParams
+
+    models = {
+        "pca_analysis": PCAAnalysisParams,
+        "umap_analysis": UMAPAnalysisParams,
+        "clustering": ClusteringParams,
+    }
+    return models[fn_name](
+        experiment=_OPTIONAL_EXPERIMENT, include_plots=True, **overrides
+    )
+
+
+def _render_optional_to_dir(fn_name: str, capture: Path, **overrides) -> Path:
+    """Run one `include_plots=True` tool and return the dir its PNGs landed in.
+
+    Same `commit`-spy capture as `_render_to_dir` -- `FakeResultStore.commit` deletes the
+    staging dir on success, so that is the last moment the committed bytes exist on disk,
+    and capturing there means the pixels compared are the committed ones rather than an
+    intermediate render. Differs only in seeding a *cleaned* version (these tools are
+    `require_clean=True`) and in taking a params model.
+    """
+    from bloom_mcp.data_access import FakeReader, SupabaseReader
+    from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+    from bloom_mcp.sections.sleap_roots.analysis import clustering as clustering_mod
+    from bloom_mcp.sections.sleap_roots.analysis import pca_analysis as pca_mod
+    from bloom_mcp.sections.sleap_roots.analysis import umap_analysis as umap_mod
+    from bloom_mcp.tools import _ports
+
+    fns = {
+        "pca_analysis": pca_mod.pca_analysis,
+        "umap_analysis": umap_mod.umap_analysis,
+        "clustering": clustering_mod.clustering,
+    }
+    capture.mkdir(parents=True, exist_ok=True)
+
+    reader = FakeReader()
+    reader.add_cleaned_version(
+        _OPTIONAL_EXPERIMENT, "v1", pd.read_csv(_RAW_FIXTURE), make_latest=True
+    )
+    store = FakeResultStore()
+    real_commit = store.commit
+
+    def _spy_commit(run, outputs):
+        for name in outputs:
+            if name.endswith(".png"):
+                shutil.copy(run.staging_dir / name, capture / name)
+        return real_commit(run, outputs)
+
+    store.commit = _spy_commit
+    _ports.configure(reader=reader, store=store)
+    try:
+        fns[fn_name](_optional_params(fn_name, **overrides))
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    return capture
+
+
+def _rendered(label: str, tmp_path_factory) -> Path:
+    """Memoized default render for one tool, shared across its parametrized keys."""
+    if label not in _OPTIONAL_RENDER_CACHE:
+        fn_name = next(fn for lbl, fn, _k in _OPTIONAL_TOOLS if lbl == label)
+        # Kept under pytest's own tmp root so CI's `/tmp/pytest-of-*/**/*-failed-diff.png`
+        # artifact glob still matches any diff `compare_images` writes next to the actual.
+        capture = tmp_path_factory.mktemp(f"optional_{label}")
+        _OPTIONAL_RENDER_CACHE[label] = _render_optional_to_dir(fn_name, capture)
+    return _OPTIONAL_RENDER_CACHE[label]
+
+
+def _optional_baseline(key: str) -> Path:
+    return _BASELINES / f"{key}_turface_19_baseline.png"
+
+
+def test_optional_plot_keys_render_and_commit(tmp_path_factory):
+    """1.1 -- every catalog key actually reaches disk through the tool's commit path."""
+    for label, _fn, keys in _OPTIONAL_TOOLS:
+        produced = _rendered(label, tmp_path_factory)
+        for key in keys:
+            assert (
+                produced / f"{key}.png"
+            ).is_file(), (
+                f"{label}: expected {key}.png to be committed with include_plots=True"
+            )
+
+
+def test_baseline_set_matches_the_tool_catalogs():
+    """1.3 -- the baseline set tracks the tools' catalogs, in both directions.
+
+    Compared against files on disk rather than against this module's own parametrization
+    table: a table-vs-table check would pass while an orphaned baseline sat in the fixtures
+    directory after its catalog key was removed.
+    """
+    from bloom_mcp.sections.sleap_roots.analysis.clustering import (
+        _CLUSTERING_CATALOG_KEYS,
+    )
+    from bloom_mcp.sections.sleap_roots.analysis.pca_analysis import _PCA_CATALOG_KEYS
+    from bloom_mcp.sections.sleap_roots.analysis.umap_analysis import _UMAP_CATALOG_KEYS
+
+    catalog = (
+        set(_PCA_CATALOG_KEYS) | set(_UMAP_CATALOG_KEYS) | set(_CLUSTERING_CATALOG_KEYS)
+    )
+    expected = catalog - _CROSS_PLATFORM_UNSTABLE_KEYS
+    on_disk = {
+        p.name[: -len("_turface_19_baseline.png")]
+        for p in _BASELINES.glob("create_*_turface_19_baseline.png")
+    }
+    assert on_disk == expected, (
+        "baseline set and tool catalogs disagree -- missing "
+        f"{sorted(expected - on_disk)}, orphaned {sorted(on_disk - expected)}. Run "
+        "`uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py --yes` "
+        "(keys in _CROSS_PLATFORM_UNSTABLE_KEYS are deliberately unbaselined)"
+    )
+    # Guard the exclusion itself: if a listed key leaves the catalog, the exclusion is stale
+    # and should be deleted rather than silently suppressing a key that no longer exists.
+    assert _CROSS_PLATFORM_UNSTABLE_KEYS <= catalog, (
+        "_CROSS_PLATFORM_UNSTABLE_KEYS names keys no longer in any catalog: "
+        f"{sorted(_CROSS_PLATFORM_UNSTABLE_KEYS - catalog)}"
+    )
+
+
+@pytest.mark.parametrize("_label,key", _OPTIONAL_KEYS, ids=_OPTIONAL_IDS)
+def test_optional_plot_matches_baseline_within_tolerance(_label, key, tmp_path_factory):
+    """3.1 -- the production comparison for all 8 optional keys."""
+    produced = _rendered(_label, tmp_path_factory)
+    actual = produced / f"{key}.png"
+    baseline = _optional_baseline(key)
+    assert actual.is_file()
+    # Re-stated here rather than delegated: `_compare_or_fail` handles only the
+    # ImageComparisonFailure/OSError and RMS-string paths, and its message points at
+    # design.md Decision 3 -- never at the regeneration script.
+    assert baseline.is_file(), (
+        f"missing baseline {baseline} -- run "
+        "`uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py --yes` to create it"
+    )
+
+    _compare_or_fail(baseline, actual)
+
+
+def test_missing_optional_baseline_fails_with_an_actionable_message(
+    monkeypatch, tmp_path_factory, tmp_path
+):
+    """3.3 -- the missing-baseline guard is a committed test, not a one-off manual check."""
+    monkeypatch.setattr(sys.modules[__name__], "_BASELINES", tmp_path / "no_such_dir")
+    with pytest.raises(AssertionError, match="gen_plot_snapshots_golden"):
+        test_optional_plot_matches_baseline_within_tolerance(
+            "pca", "create_pca_scree_plot", tmp_path_factory
+        )
+
+
+# 3.4 -- positive controls over REAL semantic perturbations, not just a uniform dim.
+#
+# A uniform brightness shift is the weakest available probe: as this module's docstring
+# notes, its RMS is dominated by the large shared white background rather than by each
+# plot's own content. These cases instead re-render the tool with a genuinely different
+# scientific parameter, which is the regression shape these baselines exist to catch.
+# Recorded RMS values are from design.md Decision 2's measurement table.
+_REAL_REGRESSION_CASES = [
+    ("pca", {"standardize": False}, "create_pca_scree_plot", 110.2),
+    ("pca", {"standardize": False}, "create_feature_contribution_plot", 100.6),
+    ("clustering", {"n_clusters": 5}, "create_cluster_size_barplot", 67.1),
+]
+
+
+@pytest.mark.parametrize(
+    "label,overrides,key,recorded_rms",
+    _REAL_REGRESSION_CASES,
+    ids=[f"{k}" for _l, _o, k, _r in _REAL_REGRESSION_CASES],
+)
+def test_tolerance_catches_a_real_parameter_regression(
+    label, overrides, key, recorded_rms, tmp_path_factory
+):
+    """A changed scientific parameter is caught, well clear of `_TOL`."""
+    fn_name = next(fn for lbl, fn, _k in _OPTIONAL_TOOLS if lbl == label)
+    capture = tmp_path_factory.mktemp(f"regress_{key}")
+    produced = _render_optional_to_dir(fn_name, capture, **overrides)
+    baseline = _optional_baseline(key)
+
+    try:
+        diff = compare_images(str(baseline), str(produced / f"{key}.png"), tol=_TOL)
+    except ImageComparisonFailure:
+        # A canvas-size change is also a caught regression -- it is how 4 of the 8 keys
+        # surface a real parameter change (design.md Decision 2's "what is caught" table).
+        return
+    assert diff is not None, (
+        f"{key}: {overrides} no longer produces a difference over _TOL={_TOL} "
+        f"(was RMS~{recorded_rms}). Either the parameter stopped affecting the figure or "
+        "the baseline was regenerated from the perturbed render -- both are real problems."
+    )
+
+
+def test_single_cell_loadings_defect_is_caught(tmp_path_factory):
+    """3.4 -- a wrong loadings value in the heatmap IS caught (design.md Decision 2).
+
+    Recorded here because an earlier draft of this change claimed the opposite, from a
+    measurement taken through the *delegate* with every numeric column (13 rows) instead of
+    the tool's 11 certified traits. Re-measured correctly, a real single-cell defect scores
+    RMS 40-64: `sns.heatmap(annot=True, fmt=".3f")` prints each cell's value, so a wrong
+    loading changes glyphs as well as colour, and seaborn normalises the colormap across the
+    whole matrix, so one changed value rescales every other cell. That makes this heatmap the
+    opposite of `plot_correlation_matrix`'s 55-cell grid (#768), not another instance of it.
+    """
+    import copy
+
+    import sleap_roots_analyze as sra
+    from sleap_roots_analyze import create_feature_contribution_heatmap
+
+    from bloom_mcp.data_access import FakeReader
+
+    reader = FakeReader()
+    reader.add_cleaned_version(
+        _OPTIONAL_EXPERIMENT, "v1", pd.read_csv(_RAW_FIXTURE), make_latest=True
+    )
+    frame = reader.load_experiment(_OPTIONAL_EXPERIMENT, require_clean=True)
+    trait_cols = list(frame.trait_cols)
+    res = sra.perform_pca_analysis(frame.df[trait_cols], standardize=True)
+    result_dict = res if isinstance(res, dict) else dict(res)
+    n_comp = len(result_dict["explained_variance_ratio"])
+
+    out = tmp_path_factory.mktemp("heatmap_cell")
+
+    def _render(rd, path):
+        fig = create_feature_contribution_heatmap(
+            rd, n_components=n_comp, n_features=len(trait_cols), plot_type="loadings"
+        )
+        fig.savefig(path, bbox_inches="tight")  # the tool's own save call (no dpi=)
+        plt.close(fig)
+
+    clean = out / "clean.png"
+    _render(result_dict, clean)
+
+    perturbed = copy.deepcopy(result_dict)
+    loadings = np.array(perturbed["loadings"], dtype=float)
+    loadings.reshape(-1)[0] += 0.20  # one cell, a plausible defect magnitude
+    perturbed["loadings"] = loadings
+    defect = out / "defect.png"
+    _render(perturbed, defect)
+
+    diff = compare_images(str(clean), str(defect), tol=_TOL)
+    assert diff is not None, (
+        "a single wrong loadings value is no longer caught at _TOL -- design.md Decision 2 "
+        "and this test's docstring both need revisiting"
+    )
+
+
+def _rms_or_skip_on_canvas_change(baseline: Path, actual: Path) -> float:
+    """RMS between two images, failing loudly (with the pointer) on a canvas-size change.
+
+    The blind-spot pins below compare a LIVE re-render against a committed baseline, so on
+    a platform whose font metrics move a `bbox_inches="tight"` canvas, `compare_images`
+    raises rather than returning -- which would surface as an error with no explanation
+    instead of a failure naming the likely cause.
+    """
+    try:
+        diff = compare_images(str(baseline), str(actual), tol=0, in_decorator=True)
+    except (ImageComparisonFailure, OSError) as exc:
+        pytest.fail(f"{exc}{_CROSS_PLATFORM_POINTER}")
+    return diff["rms"] if diff else 0.0
+
+
+def test_cluster_scatter_pca_does_not_catch_a_cluster_count_change(tmp_path_factory):
+    """4.1 -- PINNED LIMITATION, not coverage (design.md Decision 2, blind spot A).
+
+    `create_cluster_scatter_pca` does not detect a change of cluster assignment at all:
+    measured RMS 3.8-11.6 across k=3/4/5/8, gmm and hierarchical, entirely below this
+    plot's own 5%-dim noise floor of 12.9 -- so no `_TOL` separates the signal from
+    ordinary cross-platform noise. ~153 small markers on a mostly-white canvas dilute the
+    whole-image average. Clustering *correctness* is covered numerically by
+    `test_clustering_tool.py`; this baseline covers rendering/layout/dependency drift only.
+
+    `n_clusters=8` is pinned deliberately: it is the worst measured case (RMS 11.60), so
+    this test has the least headroom to `_TOL` and fails first if the picture changes.
+    """
+    capture = tmp_path_factory.mktemp("scatter_blind")
+    produced = _render_optional_to_dir("clustering", capture, n_clusters=8)
+    baseline = _optional_baseline("create_cluster_scatter_pca")
+    actual = produced / "create_cluster_scatter_pca.png"
+
+    rms = _rms_or_skip_on_canvas_change(baseline, actual)
+    # Two-sided: a bare "not caught" assertion would also pass if the re-render were
+    # byte-identical (e.g. a refactor that silently ignored `n_clusters`), making the test
+    # vacuous while reading as coverage.
+    assert rms > 3.0, (
+        f"re-rendering with n_clusters=8 changed the image by only RMS={rms:.2f} -- the "
+        "perturbation is not taking effect, so this test proves nothing"
+    )
+    assert rms < _TOL, (
+        f"a cluster-count change is NOW caught at _TOL={_TOL} (RMS={rms:.2f}) -- this is an "
+        "IMPROVEMENT, but update design.md Decision 2 and this pin rather than leaving a "
+        "stale 'not caught' claim"
+    )
+    assert rms < 13.0, (
+        f"RMS={rms:.2f} has drifted above the measured 3.8-11.6 band -- re-measure before "
+        "trusting either this pin or design.md's table"
+    )
+
+
+def test_cluster_size_barplot_does_not_catch_a_same_k_membership_change(
+    tmp_path_factory,
+):
+    """4.2 -- PINNED LIMITATION (design.md Decision 2, blind spot B).
+
+    `method="hierarchical"` returns the same k=2 as the kmeans baseline but different
+    cluster sizes, scoring RMS 13.5 -- under `_TOL=15`. Narrower than blind spot A (a
+    k-change is caught at 64.7-69.5), but it bounds the design's claim that the barplot
+    compensates for the scatter's blindness: the one regression shape the scatter cannot
+    see is also the shape the barplot handles worst.
+    """
+    capture = tmp_path_factory.mktemp("barplot_blind")
+    produced = _render_optional_to_dir("clustering", capture, method="hierarchical")
+    baseline = _optional_baseline("create_cluster_size_barplot")
+    actual = produced / "create_cluster_size_barplot.png"
+
+    rms = _rms_or_skip_on_canvas_change(baseline, actual)
+    assert rms > 3.0, (
+        f"method='hierarchical' changed the image by only RMS={rms:.2f} -- the perturbation "
+        "is not taking effect, so this test proves nothing"
+    )
+    assert rms < _TOL, (
+        f"a same-k membership change is NOW caught at _TOL={_TOL} (RMS={rms:.2f}) -- an "
+        "IMPROVEMENT; update design.md Decision 2 and this pin"
+    )
+
+
+# 3.5 -- `_compare_or_fail`'s two failure paths, which 8 more keys now depend on and which
+# had only ever been driven through the happy path. #713's own review found a real bug in
+# this helper (the cross-platform pointer was dead code for the RMS branch), so the paths
+# that fire on a genuine cross-platform failure deserve their own coverage.
+def test_compare_or_fail_attaches_pointer_on_dimension_mismatch(tmp_path):
+    a, b = tmp_path / "a.png", tmp_path / "b.png"
+    Image.new("RGB", (40, 40), "white").save(a)
+    Image.new("RGB", (50, 50), "white").save(b)
+    with pytest.raises(pytest.fail.Exception, match="design.md Decision 3"):
+        _compare_or_fail(a, b)
+
+
+def test_compare_or_fail_attaches_pointer_on_zero_length_baseline(tmp_path):
+    a, b = tmp_path / "a.png", tmp_path / "b.png"
+    a.write_bytes(b"")
+    Image.new("RGB", (40, 40), "white").save(b)
+    with pytest.raises(pytest.fail.Exception, match="design.md Decision 3"):
+        _compare_or_fail(a, b)
+
+
+def test_compare_or_fail_attaches_pointer_on_truncated_baseline(tmp_path):
+    a, b = tmp_path / "a.png", tmp_path / "b.png"
+    # Noise rather than flat white, so the PNG is large enough that truncating it really
+    # does cut the image data stream -- a small flat image compresses to a few hundred
+    # bytes, where a "truncation" can still contain the whole IDAT chunk and decode fine.
+    rng = np.random.default_rng(0)
+    Image.fromarray(rng.integers(0, 255, (200, 200, 3), dtype=np.uint8)).save(b)
+    a.write_bytes(b.read_bytes()[: len(b.read_bytes()) // 2])
+    with pytest.raises(pytest.fail.Exception, match="design.md Decision 3"):
+        _compare_or_fail(a, b)
