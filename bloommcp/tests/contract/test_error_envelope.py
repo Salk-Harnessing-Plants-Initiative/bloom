@@ -94,3 +94,35 @@ def test_input_validation_does_not_leak_offending_values():
     assert err.code == "invalid_input"
     assert "leak-me-not" not in err.message
     assert "seed" in err.message  # the field location is named
+
+
+def test_declared_exception_with_agent_remedy_overrides_the_retry_default():
+    """#573 review: a declared type may carry its own `agent_remedy` when the
+    default "…and retry." advice would contradict the message it accompanies —
+    the foreign-catalog errors describe a permanent condition, and remedy is
+    the field designed to drive agent behaviour."""
+    from bloom_mcp.data_access import ForeignCatalogError
+    from bloom_mcp.result_store import CatalogBackendMismatchError
+
+    for exc_type in (ForeignCatalogError, CatalogBackendMismatchError):
+        err = BloomMCPError.from_exception(
+            exc_type("catalog written by 'supabase', active backend 'local'"),
+            declared=(exc_type,),
+        )
+        assert err.code == "tool_error"
+        assert "'supabase'" in err.message
+        assert "retry" not in err.remedy.lower()
+        assert "storage-backends.md" in err.remedy
+
+
+def test_declared_exception_without_agent_remedy_keeps_the_default():
+    """The override is opt-in: an ordinary declared error still gets the
+    stock check-and-retry remedy."""
+    from bloom_mcp.result_store import ManifestReadError as _ManifestReadError
+
+    err = BloomMCPError.from_exception(
+        _ManifestReadError("manifest read failed for qc/exp"),
+        declared=(_ManifestReadError,),
+    )
+    assert err.code == "tool_error"
+    assert err.remedy == "Check the inputs/experiment for this tool and retry."

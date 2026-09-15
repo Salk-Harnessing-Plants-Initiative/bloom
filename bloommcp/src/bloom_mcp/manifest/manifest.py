@@ -10,7 +10,11 @@ deployment topology bloommcp runs in.
 import logging
 from typing import Optional
 
-from bloom_mcp.storage_backend import active_backend_name, allow_foreign_manifest
+from bloom_mcp.storage_backend import (
+    VALID_BACKENDS,
+    active_backend_name,
+    allow_foreign_manifest,
+)
 from bloom_mcp.supabase_client import list_prefix, read_json, write_json
 
 from .schema import CURRENT_SCHEMA_VERSION, Manifest
@@ -21,6 +25,12 @@ KNOWN_SCHEMA_VERSION = CURRENT_SCHEMA_VERSION
 
 _MANIFEST_BASENAME = "manifest.json"
 
+# Display placeholder for a sentinel value outside VALID_BACKENDS: the sentinel
+# is unvalidated storage bytes writable by anyone holding the bloom_agent key,
+# and its text flows into agent-facing error messages on paths with no length
+# cap — so an unrecognized value is clamped rather than interpolated verbatim.
+_UNRECOGNIZED_SENTINEL = "<unrecognized backend name>"
+
 
 class ManifestSchemaError(Exception):
     """Raised when a manifest's schema version is newer than this code understands."""
@@ -29,11 +39,14 @@ class ManifestSchemaError(Exception):
 class ManifestBackendMismatchError(Exception):
     """Raised when a manifest's `storage_backend` sentinel names a backend other
     than the one now serving the read — a *foreign catalog* (#573): a bucket
-    copied to a local root, a restored backup, a shared/overlapping root, or a
-    tampered sentinel. Never raised for a manifest with no usable sentinel
-    (absent/empty — written before schema v5), and never for the disjoint
-    A→B→A flip, where each catalog's own sentinel always matches the backend
-    serving it (the #395/#572 locally-undetectable non-goal)."""
+    copied to a local root, a restored backup, or a shared/overlapping root.
+    Never raised for a manifest with no usable sentinel (absent/empty — written
+    before schema v5), and never for the disjoint A→B→A flip, where each
+    catalog's own sentinel always matches the backend serving it (the
+    #395/#572 locally-undetectable non-goal). This is an accident-detection
+    control, not a tamper-proof one: whoever can edit the manifest controls
+    the compared value, and deleting/blanking the sentinel takes the pre-v5
+    pass-through."""
 
 
 def validate_schema(manifest: dict) -> None:
@@ -48,6 +61,55 @@ def validate_schema(manifest: dict) -> None:
             f"manifest_schema_version {schema_version!r} is newer than supported "
             f"(this code understands up to {KNOWN_SCHEMA_VERSION})"
         )
+
+
+def foreign_sentinel(value: object) -> Optional[str]:
+    """The single #573 sentinel predicate, shared by the read guard here and
+    the write-path re-check in `result_store.supabase_store` so the two can
+    never drift apart.
+
+    `value` is the raw `storage_backend` field — possibly unvalidated storage
+    bytes. Returns a display-safe recorded-backend name when the manifest is
+    foreign (written by a backend other than the active one), else None.
+    Rules:
+
+    - absent (`None`) or empty/whitespace string → not foreign (pre-v5
+      pass-through — failing it would brick every catalog written before
+      #572; the window closes when the catalog's next commit re-stamps it);
+    - comparison is stripped + lower-cased, mirroring
+      `_selected_backend_name`'s treatment of `BLOOM_STORAGE_BACKEND`, so a
+      hand-edited ``"LOCAL"`` matches rather than bricking the catalog;
+    - a present value that is not a string, or a string outside
+      `VALID_BACKENDS`, is foreign with the clamped display placeholder —
+      never interpolated verbatim into caller-facing text (interpolation
+      sites additionally keep ``%r``/``!r`` so control characters could not
+      render even if this clamp were bypassed — keep both).
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return _UNRECOGNIZED_SENTINEL
+    recorded = value.strip().lower()
+    if not recorded or recorded == active_backend_name():
+        return None
+    if recorded not in VALID_BACKENDS:
+        return _UNRECOGNIZED_SENTINEL
+    return recorded
+
+
+# Sticky, process-lifetime flag: has this process served at least one foreign
+# catalog under the escape hatch? Consulted by the ResultStore write path to
+# refuse ALL commits afterwards — the hatch is an inspection mode, and a
+# commit derived from foreign-read data would land in a native catalog with
+# clean provenance (and, for remove_outliers, a based_on_version that exists
+# only in the foreign catalog) — an affirmatively false lineage. Reset only
+# via storage_backend.reset_backend_for_tests().
+_foreign_read_served = False
+
+
+def foreign_read_served() -> bool:
+    """Whether a foreign catalog has been served under the hatch in this process."""
+    return _foreign_read_served
 
 
 def _manifest_key(prefix: str) -> str:
@@ -67,35 +129,45 @@ def read_manifest(prefix: str) -> Optional[Manifest]:
         return None
     raw = read_json(_manifest_key(prefix))
     validate_schema(raw)
-    manifest = Manifest.model_validate(raw)
-    _check_backend_sentinel(prefix, manifest)
-    return manifest
+    # The sentinel is checked on the RAW dict, after the schema-version gate
+    # but BEFORE full model validation: a version-valid foreign manifest that
+    # is otherwise unparseable (e.g. one unknown key under extra="forbid" — a
+    # restored backup arriving malformed) must still be identified as foreign,
+    # not fall into the generic ValidationError path and out as a misleading
+    # "run the QC workflow first".
+    _check_backend_sentinel(prefix, raw.get("storage_backend"))
+    return Manifest.model_validate(raw)
 
 
-def _check_backend_sentinel(prefix: str, manifest: Manifest) -> None:
+def _check_backend_sentinel(prefix: str, raw_sentinel: object) -> None:
     """Fail closed when the manifest was written by a different backend (#573).
 
-    Runs only after schema validation (so `ManifestSchemaError` keeps
-    precedence) and compares against `active_backend_name()` — the same
-    function `write_manifest` stamps from, so stamp and check cannot disagree.
-    An absent/empty sentinel (pre-v5 manifest) passes: failing it would brick
-    every catalog written before #572; the window closes when the catalog's
-    next commit re-stamps it. The message carries only the logical storage
-    prefix — never an absolute host path.
+    Runs after `validate_schema` (so `ManifestSchemaError` keeps precedence)
+    and compares — via the shared `foreign_sentinel` predicate — against
+    `active_backend_name()`, the same function `write_manifest` stamps from,
+    so stamp and check cannot disagree. The message carries only the logical
+    storage prefix and clamped backend names — never an absolute host path,
+    and never the escape-hatch variable: bloommcp is LLM-driven, and the
+    failure response must direct investigation, not advertise its own bypass
+    (the hatch is documented in docs/storage-backends.md and named in the
+    server-side warning below, the right audiences for it).
     """
-    recorded = (manifest.storage_backend or "").strip()
-    if not recorded:
+    recorded = foreign_sentinel(raw_sentinel)
+    if recorded is None:
         return
     active = active_backend_name()
-    if recorded == active:
-        return
     if allow_foreign_manifest():
         # Deliberate foreign inspection (BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1):
         # warn per guarded read — never once-per-process, the one-time-signal
-        # failure mode of #572's fresh-catalog log that #573 exists to avoid.
+        # failure mode of #572's fresh-catalog log that #573 exists to avoid —
+        # and remember it: the write path refuses all commits in a process
+        # that has served foreign data (see foreign_read_served).
+        global _foreign_read_served
+        _foreign_read_served = True
         logger.warning(
-            "serving foreign catalog %s under the escape hatch: written by "
-            "storage backend %r, active backend is %r",
+            "serving foreign catalog %s under BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST: "
+            "written by storage backend %r, active backend is %r; commits are "
+            "disabled for the rest of this process",
             prefix.rstrip("/"),
             recorded,
             active,
@@ -105,9 +177,8 @@ def _check_backend_sentinel(prefix: str, manifest: Manifest) -> None:
         f"manifest at {prefix.rstrip('/')} was written by storage backend "
         f"{recorded!r} but the active backend is {active!r} — refusing to "
         f"serve a catalog another backend wrote. Do not mix storage backends "
-        f"for one experiment; for a deliberate offline copy set "
-        f"BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1 (reads only; a containerized "
-        f"deployment must pass the variable through compose)."
+        f"for one experiment; see bloommcp/docs/storage-backends.md "
+        f"('Do not mix backends') before proceeding."
     )
 
 

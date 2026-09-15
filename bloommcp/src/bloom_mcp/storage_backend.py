@@ -547,10 +547,13 @@ def allow_foreign_manifest() -> bool:
     Read lazily on **every** call — never at import (side-effect-free import
     contract) and never memoized (unlike ``_active``): the guard logs its
     warning per read, and tests flip the variable within one process. Only the
-    exact value ``1`` enables the hatch; anything else — including an invalid
-    value that escaped boot validation via a post-boot env mutation — keeps
-    the guard fail-closed. The hatch sanctions reads only: the ``ResultStore``
-    write path re-checks the sentinel unconditionally.
+    value ``1`` (after surrounding whitespace is stripped, matching the boot
+    validation's own strip) enables the hatch; anything else — including an
+    invalid value that escaped boot validation via a post-boot env mutation —
+    keeps the guard fail-closed. The hatch sanctions reads only: the
+    ``ResultStore`` write path re-checks the sentinel unconditionally, and
+    refuses every commit in a process that has served foreign data (see
+    ``bloom_mcp.manifest.foreign_read_served``).
     """
     return (os.environ.get(_ALLOW_FOREIGN_MANIFEST_VAR) or "").strip() == "1"
 
@@ -680,9 +683,20 @@ def active_backend_name() -> str:
 
 
 def reset_backend_for_tests() -> None:
-    """Clear the memoized backend so tests can re-select from a changed env."""
+    """Clear the memoized backend so tests can re-select from a changed env.
+
+    Also clears the #573 sticky foreign-read flag, which is scoped to "this
+    process" exactly like the memoized backend: every backend-touching test
+    fixture already routes through this reset, so piggybacking here keeps the
+    flag from leaking across tests without a second fixture to remember. The
+    import is lazy and test-only — `manifest` sits above this module, so a
+    top-level import would be circular.
+    """
     global _active
     _active = None
+    from bloom_mcp.manifest import manifest as _manifest_mod
+
+    _manifest_mod._foreign_read_served = False
 
 
 def validate_storage_backend() -> None:

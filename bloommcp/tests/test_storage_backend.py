@@ -2350,3 +2350,106 @@ def test_validate_storage_backend_accepts_allow_foreign_values(monkeypatch, valu
         monkeypatch.setenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", value)
 
     sb.validate_storage_backend()
+
+
+def test_foreign_message_names_no_bypass_and_stays_under_redaction_cap(
+    monkeypatch, local_manifest_backend, tmp_path
+):
+    """#573 review: bloommcp is LLM-driven — the raised message must direct
+    investigation, never advertise the env var that disables the guard, and
+    must survive safe_error_text's 300-char cap without losing its meaning."""
+    from bloom_mcp.manifest import AnalysisDir, ManifestBackendMismatchError
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+    _patch_sentinel(tmp_path / "root", "exp", "qc", "supabase")
+
+    with pytest.raises(ManifestBackendMismatchError) as exc_info:
+        AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    msg = str(exc_info.value)
+    assert "ALLOW_FOREIGN_MANIFEST" not in msg
+    assert "storage-backends.md" in msg  # investigation pointer instead
+    assert len(msg) <= 300
+
+
+def test_foreign_check_runs_before_model_validation(
+    monkeypatch, local_manifest_backend, tmp_path
+):
+    """#573 review: a version-valid, foreign manifest that is otherwise
+    unparseable (one unknown key under extra="forbid" — a restored backup
+    arriving malformed) must be identified as foreign, not fall into the
+    generic ValidationError path (which the readers would demote to the
+    forbidden "run the QC workflow first")."""
+    from bloom_mcp.manifest import AnalysisDir, ManifestBackendMismatchError
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+    path = tmp_path / "root" / "bloommcp_output" / "qc_exp" / "manifest.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["storage_backend"] = "supabase"
+    raw["unknown_key_from_a_malformed_backup"] = True
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ManifestBackendMismatchError):
+        AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+
+@pytest.mark.parametrize(
+    "poison",
+    ["x" * 1000, "evil\x1b[31mvalue", "minio", 12345, ["supabase"]],
+)
+def test_unrecognized_sentinel_is_clamped_in_the_message(
+    monkeypatch, local_manifest_backend, tmp_path, poison
+):
+    """#573 review: the sentinel is unvalidated storage bytes writable by any
+    bloom_agent-key holder and flows into agent-facing error text on paths
+    with no length cap — an unrecognized value (wrong string, non-string,
+    oversized, control chars) still fails closed but is reported via the
+    clamped placeholder, never interpolated verbatim."""
+    from bloom_mcp.manifest import AnalysisDir, ManifestBackendMismatchError
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+    _patch_sentinel(tmp_path / "root", "exp", "qc", poison)
+
+    with pytest.raises(ManifestBackendMismatchError) as exc_info:
+        AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    msg = str(exc_info.value)
+    assert "<unrecognized backend name>" in msg
+    assert "x" * 50 not in msg
+    assert "\x1b" not in msg
+    assert "minio" not in msg
+
+
+def test_sentinel_comparison_is_case_insensitive(
+    monkeypatch, local_manifest_backend, tmp_path
+):
+    """#573 review: a hand-edited "LOCAL" matches the active `local` backend
+    (mirroring _selected_backend_name's lower-casing) instead of bricking the
+    catalog; an upper-cased foreign name still mismatches, reported
+    normalized."""
+    from bloom_mcp.manifest import AnalysisDir, ManifestBackendMismatchError
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+
+    _patch_sentinel(tmp_path / "root", "exp", "qc", "LOCAL")
+    manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+    assert manifest is not None and manifest.latest == "v1"
+
+    _patch_sentinel(tmp_path / "root", "exp", "qc", "SUPABASE")
+    with pytest.raises(ManifestBackendMismatchError) as exc_info:
+        AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+    assert "'supabase'" in str(exc_info.value)
+
+
+def test_hatch_value_one_with_surrounding_whitespace_enables(monkeypatch):
+    """#573 review: boot validation and the guard both strip, so ` 1 ` and
+    `1\\n` enable the hatch — pinned so the docstring's wording ("after
+    surrounding whitespace is stripped") matches behaviour."""
+    for value in (" 1 ", "1\n"):
+        monkeypatch.setenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", value)
+        assert sb.allow_foreign_manifest(), repr(value)
+        sb.validate_storage_backend()  # accepted at boot too

@@ -842,6 +842,9 @@ def test_foreign_catalog_blocks_consumers_end_to_end(
     assert "'supabase'" in exc.value.message and "'local'" in exc.value.message
     assert "run the QC workflow" not in exc.value.message
     assert "qc_clean" not in exc.value.remedy
+    # #573 review: the remedy must not invite a retry of a permanent condition
+    # (agent_remedy overrides the envelope's stock "…and retry." advice).
+    assert "retry" not in exc.value.remedy.lower()
     assert not (store / "bloommcp_output" / "pca_offline_e2e").exists()
 
     # Producer gate: a qc_clean re-run refuses at create_run, hatch-independent

@@ -24,6 +24,8 @@ from bloom_mcp.manifest import (
     Manifest,
     ManifestBackendMismatchError,
     ManifestSchemaError,
+    foreign_read_served,
+    foreign_sentinel,
     next_version_id,
     version_dir_name,
     write_manifest,
@@ -143,9 +145,12 @@ def _guarded_manifest_read(adir: AnalysisDir, read: Callable[[], T]) -> T:
         # one. The manifest-layer message carries only logical identities (both
         # backend names + the storage prefix) by construction, so passing it
         # through leaks nothing — unlike the generic branch below, which must
-        # redact an arbitrary exception.
-        logger.error(
-            "foreign catalog for %s/%s", adir.tool_class, adir.stem, exc_info=True
+        # redact an arbitrary exception. Warning without a traceback: this is a
+        # configuration condition the structured type fully describes, and
+        # discovery paths sweep many tool classes per call — a full ERROR
+        # traceback per class would spam the log for one poisoned experiment.
+        logger.warning(
+            "foreign catalog for %s/%s: %s", adir.tool_class, adir.stem, exc
         )
         raise CatalogBackendMismatchError(str(exc)) from exc
     except ManifestSchemaError as exc:
@@ -176,20 +181,43 @@ def _reject_foreign_manifest(adir: AnalysisDir, manifest: Optional[Manifest]) ->
     returns the manifest — acceptable for reads, never for the write path:
     extending the catalog and re-stamping its sentinel via `write_manifest`
     would silently take over a foreign catalog. So `create_run` and `commit`
-    re-check the manifest they just read, unconditionally.
+    re-check the manifest they just read, unconditionally, through the same
+    `foreign_sentinel` predicate the read guard uses (one definition — the two
+    layers cannot drift apart).
     """
     if manifest is None:
         return
-    recorded = (manifest.storage_backend or "").strip()
-    if not recorded or recorded == active_backend_name():
+    recorded = foreign_sentinel(manifest.storage_backend)
+    if recorded is None:
         return
     raise CatalogBackendMismatchError(
         f"catalog for {adir.tool_class}/{adir.stem} was written by storage "
         f"backend {recorded!r} but the active backend is "
         f"{active_backend_name()!r} — refusing to extend or re-stamp a foreign "
-        f"catalog (permanent condition, do not retry; the "
-        f"BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST escape hatch sanctions reads "
-        f"only)."
+        f"catalog. This condition is permanent until the catalogs are "
+        f"untangled; see bloommcp/docs/storage-backends.md."
+    )
+
+
+def _refuse_commits_after_foreign_read(adir: AnalysisDir) -> None:
+    """Refuse every write in a process that has served foreign data (#573).
+
+    The escape hatch is an inspection mode. Once a foreign catalog has been
+    read in this process, a subsequent commit — even into a different, native
+    catalog — could persist foreign-derived outputs with clean provenance
+    (and, for `remove_outliers`, a `based_on_version` that exists only in the
+    foreign catalog: an affirmatively false lineage pointer). Provenance has
+    no field recording the input's storage backend, so the only safe posture
+    is to keep an inspection process read-only from the first foreign read on.
+    """
+    if not foreign_read_served():
+        return
+    raise CatalogBackendMismatchError(
+        f"commit refused for {adir.tool_class}/{adir.stem}: a foreign catalog "
+        f"was served under BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST in this "
+        f"process, so writes are disabled to keep foreign-derived data out of "
+        f"native catalogs. Restart the process without the variable to write "
+        f"again."
     )
 
 
@@ -228,6 +256,9 @@ class SupabaseResultStore:
                 }
             )
         adir = AnalysisDir(self._output_root, experiment, tool_class)
+        # #573: an inspection process (foreign data served under the hatch)
+        # is read-only from that point on — refuse before any manifest read.
+        _refuse_commits_after_foreign_read(adir)
         # Single-writer assumption (see _WIKI/BLOOMMCP/storage-workflow.md):
         # version_id is allocated from the current manifest now and the manifest
         # is re-read at commit without a compare-and-set, so two interleaved runs
@@ -265,6 +296,14 @@ class SupabaseResultStore:
             raise RunStateError("commit() on an unknown or already-committed run")
         validate_outputs(outputs)
         adir = state.adir
+        # #573: see create_run — the flag may have been set between the two
+        # calls (a foreign read served mid-tool-run), so commit checks again.
+        # A permanent refusal tears staging down first (mirroring the mismatch
+        # branch of the commit handler below): a retry can never succeed, and
+        # the handle has no __del__ to reclaim the directory later.
+        if foreign_read_served():
+            shutil.rmtree(run.staging_dir, ignore_errors=True)
+        _refuse_commits_after_foreign_read(adir)
 
         # Serializes every commit for this (output_root, experiment, tool_class)
         # within this process — see the lock's module-level docstring for why
@@ -412,6 +451,26 @@ class SupabaseResultStore:
                         latest=entry.id,
                     )
                 else:
+                    if not (
+                        isinstance(fresh.storage_backend, str)
+                        and fresh.storage_backend.strip()
+                    ):
+                        # #573 review: stamping a previously unstamped
+                        # (pre-#572) catalog. The absent-sentinel pass-through
+                        # means no mismatch check was possible for it, and
+                        # this write adopts the catalog for the active backend
+                        # — the fresh-catalog log above never fires here (the
+                        # manifest exists), so log the adoption or it is
+                        # forensically invisible.
+                        logger.info(
+                            "Stamping previously unstamped (pre-#572) catalog "
+                            "for %s/%s with storage backend %r; any prior "
+                            "backend identity was unrecorded and cannot be "
+                            "recovered from local information.",
+                            adir.tool_class,
+                            adir.stem,
+                            active_backend_name(),
+                        )
                     fresh.versions.append(entry)
                     fresh.latest = entry.id
                     if not fresh.experiment.input_sha256 and sha:
@@ -424,6 +483,29 @@ class SupabaseResultStore:
                 write_manifest(adir.path, manifest)
             except Exception as exc:
                 self._cleanup_uploaded(uploaded_keys, adir)
+                if isinstance(
+                    exc, (CatalogBackendMismatchError, ManifestBackendMismatchError)
+                ):
+                    # #573: a foreign catalog (from _reject_foreign_manifest,
+                    # or the manifest-layer guard firing inside commit's own
+                    # read with the hatch off). A permanent configuration
+                    # condition the structured type fully describes — one
+                    # warning, no traceback (unlike the malfunction branches
+                    # below), and the staging dir is torn down: "leave it for
+                    # retry" is wrong for the one condition a retry can never
+                    # fix, and the handle has no __del__ to reclaim it later.
+                    # A retry on the same handle re-raises at the first
+                    # manifest read, before staging is ever touched.
+                    logger.warning(
+                        "ResultStore.commit refused for %s/%s: %s",
+                        adir.tool_class,
+                        adir.stem,
+                        exc,
+                    )
+                    shutil.rmtree(run.staging_dir, ignore_errors=True)
+                    if isinstance(exc, CatalogBackendMismatchError):
+                        raise
+                    raise CatalogBackendMismatchError(str(exc)) from exc
                 # Leave the handle open and the staging dir intact so the
                 # caller can retry — a retry re-enters commit() and
                 # re-allocates a fresh id against a then-current manifest. The
@@ -432,17 +514,6 @@ class SupabaseResultStore:
                 logger.exception(
                     "ResultStore.commit failed for %s/%s", adir.tool_class, adir.stem
                 )
-                if isinstance(exc, CatalogBackendMismatchError):
-                    # #573: already the right caller-facing type, with
-                    # do-not-retry semantics — never wrap it into the generic
-                    # "transient — retry" CommitFailedError below.
-                    raise
-                if isinstance(exc, ManifestBackendMismatchError):
-                    # #573: the manifest-layer guard fired (hatch off) inside
-                    # commit's own read. Same permanent condition; surface it
-                    # as the store's distinguishable type, message passthrough
-                    # (logical identities only, safe by construction).
-                    raise CatalogBackendMismatchError(str(exc)) from exc
                 if isinstance(exc, KeyScopeGuardError):
                     # #598: this is a structural bug (a key outside this run's
                     # own prefix), not a transient condition — it will fail
