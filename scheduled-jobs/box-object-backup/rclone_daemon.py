@@ -7,8 +7,8 @@ password, HOME and PATH — so none of the job's credentials reach it except
 inside the remote-control calls that use them.
 
 The Box config is mounted read-only, so a token refresh lives only in the
-daemon's memory for the run. The runbook's two smoke runs an hour apart are
-what show the refresh token on disk still works for the next run.
+daemon's memory for the run; two runs more than an hour apart show whether the
+refresh token on disk still works.
 """
 
 from __future__ import annotations
