@@ -69,4 +69,16 @@ describe("ExpressionGeneSearch", () => {
 
     expect(screen.queryByText(/Could not search genes/)).toBeNull();
   });
+
+  it("stops the spinner when the box is cleared while a search is running", async () => {
+    search.held = new Map();
+    render(<ExpressionGeneSearch datasetId={1} value={null} onChange={() => {}} />);
+
+    type("AT1");
+    await waitFor(() => expect(search.held!.has("AT1")).toBe(true));
+    expect(screen.getByRole("progressbar")).toBeTruthy();
+
+    type("");
+    await waitFor(() => expect(screen.queryByRole("progressbar")).toBeNull());
+  });
 });

@@ -40,6 +40,7 @@ export function ExpressionGeneSearch({
     if (!trimmed) {
       setOptions([]);
       setError(null);
+      setLoading(false);
       return;
     }
     setLoading(true);
