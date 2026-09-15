@@ -942,9 +942,25 @@ class TestExitCodeReachesTheWorkflow:
     def test_there_is_no_exit_six(self):
         # Nothing about a copy of the ledger on Box can fail a run.
         import inspect
+        import itertools
 
         assert "6 =" not in job.__doc__
-        assert "ledger_flag" not in inspect.signature(job.exit_code).parameters
+        assert set(inspect.signature(job.exit_code).parameters) == {
+            "failed",
+            "verify_mismatched",
+            "stopped",
+            "collisions",
+        }
+        for failed, mismatched, stopped, collisions in itertools.product(
+            (0, 1), (0, 1), (False, True), (0, 1)
+        ):
+            code = job.exit_code(
+                failed=failed,
+                verify_mismatched=mismatched,
+                stopped=stopped,
+                collisions=collisions,
+            )
+            assert code in range(6), code
 
     def test_the_documented_codes_match_what_is_returned(self):
         doc = job.__doc__
@@ -2042,6 +2058,19 @@ class TestRunBackupTakesTheHostLock:
             first.release()
         assert "held by" in caplog.text
         assert str(os.getpid()) in caplog.text, "does not say which process has it"
+
+    def test_a_stood_down_run_names_the_container_holding_it(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        # Inside a container the pid means nothing on the host; the container does.
+        monkeypatch.setattr("runlock._container_name", lambda: "3f2a9c1b7d4e")
+        monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 0)
+        first = RunLock(tmp_path).acquire()
+        try:
+            job.run_backup(self.args(tmp_path))
+        finally:
+            first.release()
+        assert "held by container 3f2a9c1b7d4e" in caplog.text
 
     def test_the_lock_is_released_when_the_run_finishes(self, tmp_path, monkeypatch):
         monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 0)
