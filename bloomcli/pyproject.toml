@@ -40,8 +40,15 @@ bloomctl = "bloomctl.errors:main"
 
 # An extra, not a dependency-group, so CI runs `uv run --extra test pytest`.
 [project.optional-dependencies]
+# `scrna upload` checks a file's structure by reading its HDF5; downloading needs neither.
+scrna = [
+    "h5py>=3.10",
+    "numpy>=1.26",
+]
 test = [
     "pytest>=8.3",
+    "h5py>=3.10",
+    "numpy>=1.26",
 ]
 
 [build-system]
