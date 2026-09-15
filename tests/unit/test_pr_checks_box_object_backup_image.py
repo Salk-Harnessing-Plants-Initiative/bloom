@@ -154,6 +154,37 @@ def test_image_is_smoke_tested_after_the_build():
         assert check in run, f"smoke test does not check {check!r}"
 
 
+def _run_in_image_checks(tmp_path: Path, extra_files: list[str]) -> int:
+    """Run the smoke step's in-image script against a fake /app, with stub binaries."""
+    run = _step(_job(IMAGE_JOB), "Smoke-test box-object-backup image")["run"]
+    pieces = run.split("'")
+    assert len(pieces) == 3, "the in-image checks must be one single-quoted sh -c script"
+    app = tmp_path / "app"
+    app.mkdir()
+    for name in ["backup_objects.py", *extra_files]:
+        (app / name).write_text("")
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    for tool, output in (("rclone", "rclone v1.75.1"), ("psql", "psql 17"), ("id", "100")):
+        stub = stubs / tool
+        stub.write_text(f"#!/bin/sh\necho '{output}'\n", newline="\n")
+        stub.chmod(0o755)
+    return subprocess.run(
+        [BASH, "-c", pieces[1].replace("/app/", f"{app}/")],
+        env={**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ.get('PATH', '')}"},
+        capture_output=True,
+    ).returncode
+
+
+def test_in_image_checks_pass_on_a_clean_app(tmp_path: Path):
+    assert _run_in_image_checks(tmp_path, []) == 0
+
+
+@pytest.mark.parametrize("shipped", [["copier_test.py"], ["conftest.py"]], ids=["test-module", "conftest"])
+def test_in_image_checks_fail_when_test_files_ship(tmp_path: Path, shipped: list[str]):
+    assert _run_in_image_checks(tmp_path, shipped) != 0
+
+
 def test_shared_docker_build_job_does_not_build_it():
     assert "box-object-backup" not in yaml.safe_dump(_job("docker-build"))
 
