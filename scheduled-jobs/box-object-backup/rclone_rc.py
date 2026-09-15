@@ -7,8 +7,8 @@ connection every time; a single long-lived daemon reuses the Box token and
 its HTTP connections across the whole run, which matters far more than CPU
 here because Box throttles on API calls.
 
-The daemon runs in a container on `supanet` (MinIO's S3 port is never
-published to the host), with its RC port bound to loopback only.
+The daemon runs as a child of the job, in the job's own container on the
+stack's network, with its RC port bound to that container's loopback.
 """
 
 from __future__ import annotations

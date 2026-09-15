@@ -9,12 +9,15 @@ point of flock over a threading.Lock is that it spans processes.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
 import pytest
+
+import runlock
 from runlock import LOCK_FILENAME, LockHeld, LockHolder, RunLock, _format_elapsed
 
 HOLDER_SCRIPT = """
@@ -72,8 +75,6 @@ class TestSingleProcess:
         RunLock(tmp_path).acquire().release()
 
     def test_records_its_own_pid_while_held(self, tmp_path: Path):
-        import os
-
         lock = RunLock(tmp_path).acquire()
         data = json.loads((tmp_path / LOCK_FILENAME).read_text())
         assert data["pid"] == os.getpid()
@@ -116,6 +117,59 @@ class TestHolderDescription:
         ).describe()
         assert "pid 123" in text
         assert "2h" in text
+
+
+class TestTheContainerIsRecorded:
+    """Inside a container the pid means nothing on the host; the container is
+    what a person looks up and stops."""
+
+    def test_records_the_container_it_runs_in(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(runlock, "_container_name", lambda: "3f2a9c1b7d4e")
+        lock = RunLock(tmp_path).acquire()
+        data = json.loads((tmp_path / LOCK_FILENAME).read_text())
+        lock.release()
+        assert data["container"] == "3f2a9c1b7d4e"
+
+    def test_outside_a_container_records_none(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(runlock, "_container_name", lambda: "")
+        lock = RunLock(tmp_path).acquire()
+        data = json.loads((tmp_path / LOCK_FILENAME).read_text())
+        lock.release()
+        assert data["container"] == ""
+
+    def test_a_recorded_container_is_read_back(self, tmp_path: Path):
+        path = tmp_path / LOCK_FILENAME
+        path.write_text(json.dumps({"pid": 7, "container": "3f2a9c1b7d4e"}))
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            holder = runlock._read_holder(fd)
+        finally:
+            os.close(fd)
+        assert holder.container == "3f2a9c1b7d4e"
+
+    def test_the_description_leads_with_the_container(self):
+        text = LockHolder(
+            pid=7, started_at=None, argv=None, container="3f2a9c1b7d4e"
+        ).describe()
+        assert text.startswith("container 3f2a9c1b7d4e")
+        assert "pid 7 inside it" in text
+
+    def test_without_a_container_it_leads_with_the_pid(self):
+        assert (
+            LockHolder(pid=123, started_at=None, argv=None)
+            .describe()
+            .startswith("pid 123")
+        )
+
+    def test_a_container_is_detected_by_docker_s_marker_file(
+        self, tmp_path: Path, monkeypatch
+    ):
+        marker = tmp_path / ".dockerenv"
+        monkeypatch.setattr(runlock, "DOCKER_MARKER", marker)
+        monkeypatch.setattr(runlock.socket, "gethostname", lambda: "3f2a9c1b7d4e")
+        assert runlock._container_name() == ""
+        marker.touch()
+        assert runlock._container_name() == "3f2a9c1b7d4e"
 
 
 class TestElapsedFormatting:

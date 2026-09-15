@@ -134,10 +134,6 @@ type GeneRow = {
   scrna_genes: { gene_name: string } | null;
 };
 
-/** Rows per request when reading a comparison's genes. Reading stops at the
- *  first empty page, so a server-side row cap cannot cut the list short. */
-const PAGE_ROWS = 1000;
-
 /** The dataset's most recently completed analysis, or null when it has none. */
 export async function fetchLatestRun(supabase: Client, datasetId: number): Promise<AnalysisRun | null> {
   const { data, error } = await supabase
@@ -181,21 +177,64 @@ export function toGeneData(row: GeneRow): GeneData {
   };
 }
 
-/** Every gene result of one comparison, a page at a time. */
-export async function fetchGeneRows(supabase: Client, deId: number): Promise<GeneData[]> {
-  const out: GeneData[] = [];
-  for (let start = 0; ; start += PAGE_ROWS) {
-    const { data, error } = await supabase
-      .from("scrna_de_genes")
-      .select("log2fc, pvalue, fdr, pct_1, pct_2, scrna_genes!inner(gene_name)")
-      .eq("de_id", deId)
-      .order("id")
-      .range(start, start + PAGE_ROWS - 1);
-    if (error) throw new Error(error.message);
-    const rows = (data ?? []) as unknown as GeneRow[];
-    if (rows.length === 0) return out;
-    for (const row of rows) out.push(toGeneData(row));
+/** Every gene result of one comparison, in one request, in gene order. */
+export async function fetchGeneRows(
+  supabase: Client,
+  deId: number,
+  signal?: AbortSignal,
+): Promise<GeneData[]> {
+  const request = supabase
+    .from("scrna_de_genes")
+    .select("log2fc, pvalue, fdr, pct_1, pct_2, scrna_genes!inner(gene_name)")
+    .eq("de_id", deId)
+    .order("gene_id");
+  const { data, error } = await (signal ? request.abortSignal(signal) : request);
+  if (error) throw new Error(error.message);
+  return ((data ?? []) as unknown as GeneRow[]).map(toGeneData);
+}
+
+/** Why a load is incomplete when the genes received differ from the genes the
+ *  comparison tested; null when they agree or the row records no count. */
+export function incompleteLoad(entry: DeEntry, received: number): string | null {
+  const expected = entry.n_genes_tested;
+  if (expected === null || expected <= 0 || received === expected) return null;
+  const fmt = new Intl.NumberFormat("en-US");
+  return received < expected
+    ? `only ${fmt.format(received)} of ${fmt.format(expected)} genes arrived; reload to try again`
+    : `${fmt.format(received)} genes arrived for ${fmt.format(expected)} tested; reload to try again`;
+}
+
+/** Why "no gene passes" is not "no effect": the group sizes and the number of
+ *  genes tested bound what survives the FDR adjustment. */
+export function notEvidenceNote(entry: DeEntry): string {
+  const { group1, group2, n_group1, n_group2, n_genes_tested } = entry;
+  if (!group1 || !group2 || n_group1 === null || n_group2 === null || !n_genes_tested) {
+    return "This is not evidence of no difference: only large changes survive the " +
+      "adjustment for testing every gene at once.";
   }
+  const fmt = new Intl.NumberFormat("en-US");
+  const genes = `${fmt.format(n_genes_tested)} ${n_genes_tested === 1 ? "gene" : "genes"}`;
+  return `This is not evidence of no difference: with ${fmt.format(n_group1)} ${group1} and ` +
+    `${fmt.format(n_group2)} ${group2} cells, only large changes survive the adjustment for ` +
+    `testing ${genes} at once.`;
+}
+
+/** A name made safe for a file name or a CSV column. */
+function slug(text: string): string {
+  return text.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+/** The CSV's columns, with the percentages named after the two groups. */
+export function csvHeaders(entry: DeEntry | null): string[] {
+  const { a, b } = groupNames(entry);
+  return ["gene", "avg_log2FC", "p_val", "p_val_adj", `pct_${slug(a)}`, `pct_${slug(b)}`];
+}
+
+/** The CSV's file name: the cell type and the comparison, so a cell type's
+ *  comparisons do not overwrite each other. */
+export function csvFileName(entry: DeEntry | null): string {
+  const parts = [entry?.cluster_id || "cluster", entry?.contrast ?? ""].filter(Boolean).map(slug);
+  return `DE_${parts.join("_")}.csv`;
 }
 
 /** Each group's cells before depth matching, from the analysis notes, e.g.
@@ -303,28 +342,32 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
+    const { signal } = controller;
     const fetchData = async () => {
       setDataLoading(true);
       setLoadError(null);
       try {
-        const rows = await fetchGeneRows(supabase, selectedCluster.id);
-        if (cancelled) return;
-        setChartData(rows);
-        if (rows.length === 0) setLoadError("no gene results are stored for it");
+        const rows = await fetchGeneRows(supabase, selectedCluster.id, signal);
+        if (signal.aborted) return;
+        const incomplete = rows.length === 0 ? null : incompleteLoad(selectedCluster, rows.length);
+        if (incomplete) {
+          setChartData(null);
+          setLoadError(incomplete);
+        } else {
+          setChartData(rows);
+          if (rows.length === 0) setLoadError("no gene results are stored for it");
+        }
       } catch (err) {
-        if (cancelled) return;
+        if (signal.aborted) return;
         setChartData(null);
         setLoadError(err instanceof Error ? err.message : String(err));
       }
       setDataLoading(false);
     };
     fetchData();
-    // Switching comparison while one is in flight would otherwise let the
-    // slower answer land last and draw itself under the new comparison's name.
-    return () => {
-      cancelled = true;
-    };
+    // Cancel on switch or leave, so a slower answer can't land under the new comparison's name.
+    return () => controller.abort();
   }, [selectedCluster]);
 
   // The cell types, in the order the rows came back, each appearing once.
@@ -661,19 +704,17 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
   const downloadCSV = () => {
     if (!chartData) return;
 
-    const headers = ['gene', 'avg_log2FC', 'p_val', 'p_val_adj', 'pct.1', 'pct.2'];
+    const fields = ['gene', 'avg_log2FC', 'p_val', 'p_val_adj', 'pct.1', 'pct.2'] as const;
     const csvContent = [
-      headers.join(','),
-      ...tableRows.map(row =>
-        headers.map(h => row[h as keyof GeneData]).join(',')
-      )
+      csvHeaders(selectedCluster).join(','),
+      ...tableRows.map(row => fields.map(f => row[f]).join(','))
     ].join('\n');
 
     const blob = new Blob([csvContent], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `DE_${selectedCluster?.cluster_id || 'cluster'}.csv`;
+    a.download = csvFileName(selectedCluster);
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -929,9 +970,9 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
             {selectedCluster.group1 && selectedCluster.group2 ? (
               <>
                 {selectedCluster.cluster_id} has{" "}
-                {selectedCluster.n_group1?.toLocaleString() ?? "no"} cells in{" "}
+                {selectedCluster.n_group1?.toLocaleString() ?? "an unrecorded number of"} cells in{" "}
                 {selectedCluster.group1} and{" "}
-                {selectedCluster.n_group2?.toLocaleString() ?? "no"} in{" "}
+                {selectedCluster.n_group2?.toLocaleString() ?? "an unrecorded number"} in{" "}
                 {selectedCluster.group2} — too few on one side to compare.
               </>
             ) : (
@@ -953,8 +994,8 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       {chartData && !dataLoading && chartData.length > 0 && upregulated + downregulated === 0 && (
         <Alert severity="info" sx={{ mb: 3 }}>
           No gene in this comparison has an adjusted p-value below {fdrCut} and a
-          fold change beyond ±{lfcCut}, so every point is grey. Loosen the cuts
-          above to see more.
+          fold change beyond ±{lfcCut}, so every point is grey.{" "}
+          {selectedCluster ? notEvidenceNote(selectedCluster) : null}
         </Alert>
       )}
 

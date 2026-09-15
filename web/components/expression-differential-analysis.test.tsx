@@ -16,7 +16,11 @@ import Panel, {
   beforeDepthMatching,
   columnsFor,
   countSignificant,
+  csvFileName,
+  csvHeaders,
   directionLabel,
+  incompleteLoad,
+  notEvidenceNote,
   testedLabel,
   toGeneData,
 } from "./expression-differential-analysis";
@@ -126,29 +130,105 @@ describe("toGeneData", () => {
   });
 });
 
+describe("incompleteLoad", () => {
+  it("says nothing when every tested gene arrived", () => {
+    expect(incompleteLoad(twoGroup, 15430)).toBeNull();
+  });
+
+  it("names how many of the tested genes arrived when some are missing", () => {
+    expect(incompleteLoad(twoGroup, 1000)).toBe("only 1,000 of 15,430 genes arrived; reload to try again");
+  });
+
+  it("checks nothing for an older row that records no count", () => {
+    expect(incompleteLoad(oneVsRest, 5)).toBeNull();
+  });
+});
+
+describe("notEvidenceNote", () => {
+  it("names both groups' sizes and how many genes were tested", () => {
+    expect(notEvidenceNote(twoGroup)).toBe(
+      "This is not evidence of no difference: with 245 pFACT and 172 Col-0 cells, " +
+      "only large changes survive the adjustment for testing 15,430 genes at once.",
+    );
+  });
+
+  it("still explains itself when the row records no sizes", () => {
+    expect(notEvidenceNote(oneVsRest)).toBe(
+      "This is not evidence of no difference: only large changes survive the " +
+      "adjustment for testing every gene at once.",
+    );
+  });
+});
+
+describe("the CSV", () => {
+  it("names the percentage columns after the two groups", () => {
+    expect(csvHeaders(twoGroup)).toEqual(
+      ["gene", "avg_log2FC", "p_val", "p_val_adj", "pct_pFACT", "pct_Col-0"],
+    );
+  });
+
+  it("names them after the cell type and the rest for a one-vs-rest row", () => {
+    expect(csvHeaders(oneVsRest).slice(-2)).toEqual(["pct_Cortex", "pct_the_rest"]);
+  });
+
+  it("puts the cell type and the comparison in the file name, safe for a file system", () => {
+    expect(csvFileName({ ...twoGroup, cluster_id: "Cortex/Atrichoblast (maturation)" }))
+      .toBe("DE_Cortex_Atrichoblast_maturation_pFACT_vs_Col-0.csv");
+  });
+
+  it("gives a cell type's comparisons different file names", () => {
+    const other = { ...twoGroup, contrast: "pHORST_vs_Col-0", group1: "pHORST" };
+    expect(csvFileName(other)).not.toBe(csvFileName(twoGroup));
+  });
+});
+
 // --------------------------------------------------------------------------- //
 // The panel itself, rendered
 // --------------------------------------------------------------------------- //
 
+/** The stand-in client answers one gene per comparison, so the rows it serves
+ *  record one gene tested. */
+const ONE_GENE = { n_genes_tested: 1 };
+
 const ROWS = [
-  twoGroup,
-  { ...twoGroup, id: 2, contrast: "pHORST_vs_Col-0", group1: "pHORST" },
-  { ...twoGroup, id: 4, cluster_id: "Phloem" },
+  { ...twoGroup, ...ONE_GENE },
+  { ...twoGroup, ...ONE_GENE, id: 2, contrast: "pHORST_vs_Col-0", group1: "pHORST" },
+  { ...twoGroup, ...ONE_GENE, id: 4, cluster_id: "Phloem" },
   { ...neverRun, cluster_id: "Xylem" },
+  { ...twoGroup, id: 6, cluster_id: "Stele", n_genes_tested: 5 },
+  { ...neverRun, id: 7, cluster_id: "Phellem", n_group1: 32, n_group2: null },
 ];
 
 /** A comparison whose genes all fall short of the cuts. */
 const NOTHING_SIGNIFICANT = 4;
+/** A comparison that records more genes tested than the client sends. */
+const SHORT_LOAD = 6;
+
+type Query = {
+  table: string;
+  filters: Record<string, unknown>;
+  order?: string;
+  ranged: boolean;
+  signal?: AbortSignal;
+};
 
 /** Releases each comparison's genes only when the test says so, and records
  *  every query the panel makes. */
 const gate: {
   release: Record<number, () => void>;
   order: number[];
-  queries: { table: string; filters: Record<string, unknown> }[];
+  queries: Query[];
 } = { release: {}, order: [], queries: [] };
 
-function answer(table: string, filters: Record<string, unknown>, start: number): Promise<unknown> {
+const geneQueries = (deId: number) =>
+  gate.queries.filter((q) => q.table === "scrna_de_genes" && q.filters.de_id === deId);
+
+function answer(
+  table: string,
+  filters: Record<string, unknown>,
+  start: number,
+  signal?: AbortSignal,
+): Promise<unknown> {
   if (table === "scrna_de_runs") return Promise.resolve({ data: [RUN], error: null });
   if (table === "scrna_de") return Promise.resolve({ data: ROWS, error: null });
   // The all-cell-types summary asks by a list of comparisons; it has nothing here.
@@ -157,6 +237,10 @@ function answer(table: string, filters: Record<string, unknown>, start: number):
   const deId = filters.de_id as number;
   return new Promise((resolve) => {
     gate.order.push(deId);
+    // A cancelled request answers with an AbortError, as supabase-js does.
+    signal?.addEventListener("abort", () =>
+      resolve({ data: null, error: { message: "AbortError: aborted" } }),
+    );
     gate.release[deId] = () =>
       resolve({
         data: [{ log2fc: 2, pvalue: 0.01, fdr: deId === NOTHING_SIGNIFICANT ? 0.9 : 0.01,
@@ -171,6 +255,9 @@ vi.mock("@/lib/supabase/client", () => ({
     from: (table: string) => {
       const filters: Record<string, unknown> = {};
       let start = 0;
+      let ranged = false;
+      let order: string | undefined;
+      let signal: AbortSignal | undefined;
       const query = {
         select: () => query,
         eq: (column: string, value: unknown) => {
@@ -183,21 +270,34 @@ vi.mock("@/lib/supabase/client", () => ({
         },
         lt: () => query,
         or: () => query,
-        order: () => query,
+        order: (column: string) => {
+          order = column;
+          return query;
+        },
         limit: () => query,
         range: (from: number) => {
           start = from;
+          ranged = true;
+          return query;
+        },
+        abortSignal: (s: AbortSignal) => {
+          signal = s;
           return query;
         },
         then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => {
-          gate.queries.push({ table, filters: { ...filters } });
-          return answer(table, filters, start).then(resolve, reject);
+          gate.queries.push({ table, filters: { ...filters }, order, ranged, signal });
+          return answer(table, filters, start, signal).then(resolve, reject);
         },
       };
       return query;
     },
   }),
 }));
+
+async function chooseCellType(name: string) {
+  fireEvent.mouseDown(screen.getByLabelText("Cell type"));
+  fireEvent.click(await screen.findByRole("option", { name }));
+}
 
 describe("the panel", () => {
   // Shared across tests, so a later one could otherwise satisfy its own wait
@@ -214,6 +314,48 @@ describe("the panel", () => {
     expect(gate.queries.find((q) => q.table === "scrna_de_runs")?.filters)
       .toEqual({ dataset_id: 7, status: "complete" });
     expect(gate.queries.find((q) => q.table === "scrna_de")?.filters).toEqual({ run_id: 5 });
+  });
+
+  it("reads a comparison's genes in one request, ordered by gene", async () => {
+    render(<Panel file_id={1} />);
+    await waitFor(() => expect(gate.order).toContain(1));
+    gate.release[1]();
+    await screen.findAllByText("gene-of-1");
+
+    const queries = geneQueries(1);
+    expect(queries).toHaveLength(1);
+    expect(queries[0].order).toBe("gene_id");
+    expect(queries[0].ranged).toBe(false);
+  });
+
+  it("shows an incomplete load, not a chart, when fewer genes arrive than were tested", async () => {
+    render(<Panel file_id={1} />);
+    await waitFor(() => expect(gate.order).toContain(1));
+
+    await chooseCellType("Stele");
+    await waitFor(() => expect(gate.order).toContain(SHORT_LOAD));
+    gate.release[SHORT_LOAD]();
+
+    expect(await screen.findByText(/only 1 of 5 genes arrived/)).toBeTruthy();
+    expect(screen.queryByText(`gene-of-${SHORT_LOAD}`)).toBeNull();
+  });
+
+  it("cancels the previous comparison's request, and the open one when the panel closes", async () => {
+    const view = render(<Panel file_id={1} />);
+    await waitFor(() => expect(gate.order).toContain(1));
+
+    fireEvent.mouseDown(screen.getByLabelText("Comparison"));
+    fireEvent.click(await screen.findByRole("option", { name: /pHORST_vs_Col-0/ }));
+    await waitFor(() => expect(gate.order).toContain(2));
+
+    const first = geneQueries(1)[0].signal;
+    const second = geneQueries(2)[0].signal;
+    expect(first).toBeInstanceOf(AbortSignal);
+    expect(first?.aborted).toBe(true);
+    expect(second?.aborted).toBe(false);
+
+    view.unmount();
+    expect(second?.aborted).toBe(true);
   });
 
   it("ignores an answer that lands after the comparison changed", async () => {
@@ -237,6 +379,20 @@ describe("the panel", () => {
     expect(screen.queryAllByText("gene-of-2").length).toBeGreaterThan(0);
   });
 
+  it("shows nothing from the previous comparison's cancelled request", async () => {
+    render(<Panel file_id={1} />);
+    await waitFor(() => expect(gate.order).toContain(1));
+
+    fireEvent.mouseDown(screen.getByLabelText("Comparison"));
+    fireEvent.click(await screen.findByRole("option", { name: /pHORST_vs_Col-0/ }));
+    await waitFor(() => expect(gate.order).toContain(2));
+    gate.release[2]();
+
+    await screen.findAllByText("gene-of-2");
+    expect(screen.queryByText(/could not be loaded/)).toBeNull();
+    expect(screen.queryByText(/AbortError/)).toBeNull();
+  });
+
   it("names both groups, their sizes, and the counts before depth matching", async () => {
     render(<Panel file_id={1} />);
     await waitFor(() => expect(gate.order).toContain(1));
@@ -254,12 +410,23 @@ describe("the panel", () => {
     render(<Panel file_id={1} />);
     await waitFor(() => expect(gate.order).toContain(1));
 
-    fireEvent.mouseDown(screen.getByLabelText("Cell type"));
-    fireEvent.click(await screen.findByRole("option", { name: "Phloem" }));
+    await chooseCellType("Phloem");
     await waitFor(() => expect(gate.order).toContain(NOTHING_SIGNIFICANT));
     gate.release[NOTHING_SIGNIFICANT]();
 
     expect(await screen.findByText(/so every point is grey/)).toBeTruthy();
+  });
+
+  it("explains an empty result instead of suggesting looser cuts", async () => {
+    render(<Panel file_id={1} />);
+    await waitFor(() => expect(gate.order).toContain(1));
+
+    await chooseCellType("Phloem");
+    await waitFor(() => expect(gate.order).toContain(NOTHING_SIGNIFICANT));
+    gate.release[NOTHING_SIGNIFICANT]();
+
+    expect(await screen.findByText(/This is not evidence of no difference/)).toBeTruthy();
+    expect(screen.queryByText(/Loosen the cuts/)).toBeNull();
   });
 
   it("does not say so when some genes pass", async () => {
@@ -274,12 +441,21 @@ describe("the panel", () => {
     render(<Panel file_id={1} />);
     await waitFor(() => expect(gate.order).toContain(1));
 
-    fireEvent.mouseDown(screen.getByLabelText("Cell type"));
-    fireEvent.click(await screen.findByRole("option", { name: "Xylem" }));
+    await chooseCellType("Xylem");
 
     expect(await screen.findByText(/This comparison was not run/)).toBeTruthy();
     expect(screen.getByText(/too few on one side to compare/)).toBeTruthy();
     expect(screen.getByText(/3 cells in pFACT/)).toBeTruthy();
+  });
+
+  it("calls a group size the analysis did not record unrecorded, not none", async () => {
+    render(<Panel file_id={1} />);
+    await waitFor(() => expect(gate.order).toContain(1));
+
+    await chooseCellType("Phellem");
+
+    expect(await screen.findByText(/32 cells in pFACT and an unrecorded number in Col-0/)).toBeTruthy();
+    expect(screen.queryByText(/\bno in\b|\bno cells\b/)).toBeNull();
   });
 });
 
