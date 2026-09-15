@@ -22,15 +22,10 @@ logger = logging.getLogger(__name__)
 
 # Digest-pinned for the reason docker-compose.prod.yml gives for MinIO: a tag
 # can be re-pushed without this file changing, and this container holds the Box
-# OAuth token and MinIO's root credentials.
-#
-# 1.74.3 rather than the 1.71 line, which stops at 1.71.2 — the 1.71.4 pinned
-# here before was never published, so every run died at `docker run` with
-# "manifest not found" before the daemon could start. It is also the version
-# the connection-string escaping was verified against.
+# OAuth token and MinIO's root credentials. Same release as the job's Dockerfile.
 RCLONE_IMAGE = (
-    "rclone/rclone:1.74.3"
-    "@sha256:623378ad0ff3ebd5cebf77720843c0e02edfe46e2d5b5ac6bed54c6371780dfb"
+    "rclone/rclone:1.75.1"
+    "@sha256:45401ad7410db1d67ffdb58e19059ad20b0d8e0285a60e38bbec55cc1019c7a5"
 )
 RC_CONTAINER_PREFIX = "bloom-box-backup-rclone"
 
