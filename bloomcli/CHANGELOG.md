@@ -8,8 +8,27 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Added
+
+- `cyl ingest-result`/`cyl batch-ingest-result` now link write-back to the
+  originating pipeline run when the `ARGO_WORKFLOW_NAME` environment
+  variable is set (Argo sets it automatically inside the write-back
+  container): a successful ingest marks the matching `cyl_pipeline_run_scans`
+  row `'written'`, and `batch-ingest-result` closes out any scan that never
+  produced a result as `'failed'` once the batch is done. Feeds
+  `cyl_pipeline_runs.done_count`/`failed_count` (bloom #716/#696). Manual/
+  ad-hoc invocation with the variable unset is unaffected.
+
 ### Fixed
 
+- `cyl batch-ingest-result`: an envelope file that can't be read as UTF-8
+  (e.g. one truncated mid-write by an OOM-killed producer) is now isolated to
+  its own failed entry, instead of aborting the rest of the batch and
+  skipping the end-of-batch reconciliation call. A failure of the
+  reconciliation call itself is likewise isolated — reported as its own
+  failed entry in the batch summary/`--json` output rather than crashing the
+  command — and a successful reconciliation now logs how many scans it
+  closed out.
 - `bloomctl cyl batch-download-for-predict` now exits `3` (not `1`) when at least one scan in
   the batch failed — one scan or every scan, distinguishing that from a full crash (a usage
   error or manifest-lock/write failure still exits `2`/`1`) — mirrors

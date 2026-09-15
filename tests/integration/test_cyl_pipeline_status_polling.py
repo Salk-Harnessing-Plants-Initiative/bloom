@@ -88,8 +88,18 @@ def _run_row(cur, run_id: int):
     return cur.fetchone()
 
 
-def _update_status(cur, run_id: int, status: str) -> None:
-    cur.execute(f"SELECT {UPDATE_FN}(%s, %s)", (run_id, status))
+def _update_status(cur, run_id: int, status: str, *, done_count=None, failed_count=None) -> None:
+    cur.execute(
+        f"SELECT {UPDATE_FN}(%s, %s, %s, %s)", (run_id, status, done_count, failed_count)
+    )
+
+
+def _run_row_with_counts(cur, run_id: int):
+    cur.execute(
+        f"SELECT status, completed_at, done_count, failed_count FROM {RUNS_TABLE} WHERE id = %s",
+        (run_id,),
+    )
+    return cur.fetchone()
 
 
 # --------------------------------------------------------------------------- #
@@ -150,6 +160,41 @@ def test_update_is_a_noop_on_a_run_already_terminal(pg_conn):
         status, completed_at = _run_row(cur, run_id)
         assert status == "failed"
         assert completed_at is None
+    pg_conn.rollback()
+
+
+def test_update_with_counts_is_a_noop_on_a_run_already_terminal(pg_conn):
+    # Supplying done_count/failed_count for an already-terminal run must leave
+    # THOSE columns unchanged too, not just status/completed_at.
+    with pg_conn.cursor() as cur:
+        run_id = _seed_run(cur, status="failed")
+        cur.execute(f"UPDATE {RUNS_TABLE} SET done_count = 3, failed_count = 1 WHERE id = %s", (run_id,))
+        _update_status(cur, run_id, "complete", done_count=99, failed_count=99)
+        status, completed_at, done_count, failed_count = _run_row_with_counts(cur, run_id)
+        assert status == "failed" and completed_at is None
+        assert (done_count, failed_count) == (3, 1)
+    pg_conn.rollback()
+
+
+def test_update_supplying_both_counts_sets_both_columns(pg_conn):
+    with pg_conn.cursor() as cur:
+        run_id = _seed_run(cur, status="running")
+        _update_status(cur, run_id, "running", done_count=5, failed_count=1)
+        status, _completed_at, done_count, failed_count = _run_row_with_counts(cur, run_id)
+        assert status == "running"
+        assert (done_count, failed_count) == (5, 1)
+    pg_conn.rollback()
+
+
+def test_update_omitting_counts_leaves_them_unchanged(pg_conn):
+    with pg_conn.cursor() as cur:
+        run_id = _seed_run(cur, status="running")
+        _update_status(cur, run_id, "running", done_count=5, failed_count=1)
+        # a second call omitting counts (the pre-existing two-argument-style call
+        # shape, via psycopg NULL for both) must not reset them to NULL
+        _update_status(cur, run_id, "running")
+        _status, _completed_at, done_count, failed_count = _run_row_with_counts(cur, run_id)
+        assert (done_count, failed_count) == (5, 1)
     pg_conn.rollback()
 
 
@@ -288,8 +333,12 @@ def test_concurrent_update_calls_leave_the_run_in_a_valid_terminal_state(
 
 
 def test_wrapper_denied_to_public_and_session_roles(pg_conn):
+    # Signature is (bigint, text, integer, integer) as of fix-cyl-pipeline-run-
+    # scan-status — the 2-arg overload no longer exists (dropped by the new
+    # migration), so has_function_privilege against the old signature would
+    # raise, not fail.
     with pg_conn.cursor() as cur:
-        sig = f"{UPDATE_FN}(bigint, text)"
+        sig = f"{UPDATE_FN}(bigint, text, integer, integer)"
         denied = (
             "anon",
             "authenticated",
@@ -327,9 +376,16 @@ def test_migration_body_is_idempotent(pg_conn):
 
 
 def test_rollback_removes_new_function(pg_conn):
+    """Rollbacks must be applied in reverse-chronological order: this migration's
+    rollback only ever knew how to drop the 2-arg signature it originally created,
+    but fix-cyl-pipeline-run-scan-status's later migration changed the live function
+    to a 4-arg signature — so that later migration's own rollback must run FIRST
+    (restoring the 2-arg signature) before this rollback can actually remove it."""
     if MIGRATION is None or ROLLBACK is None:
         pytest.skip("migration/rollback not written yet")
     with pg_conn.cursor() as cur:
+        if COUNTS_ROLLBACK is not None:
+            cur.execute(_sql_body(COUNTS_ROLLBACK))
         cur.execute(_sql_body(ROLLBACK))
         cur.execute("SELECT 1 FROM pg_proc WHERE proname = %s", (UPDATE_FN,))
         assert cur.fetchone() is None, "rollback did not drop update_cyl_pipeline_run_status"
@@ -344,3 +400,48 @@ def test_rollback_removes_new_function(pg_conn):
             cur.execute("SELECT 1 FROM pg_proc WHERE proname = %s", (fn,))
             assert cur.fetchone() is not None, f"rollback must not drop {fn}"
     pg_conn.rollback()  # restore the schema — leave the DB untouched
+
+
+# --------------------------------------------------------------------------- #
+# fix-cyl-pipeline-run-scan-status — done_count/failed_count migration
+# --------------------------------------------------------------------------- #
+
+_COUNTS_MIGRATION_GLOB = "*_add_cyl_pipeline_run_scan_counts.sql"
+_COUNTS_ROLLBACK_GLOB = "*_add_cyl_pipeline_run_scan_counts_rollback.sql"
+COUNTS_MIGRATION = _find_one("migrations", _COUNTS_MIGRATION_GLOB)
+COUNTS_ROLLBACK = _find_one("rollbacks", _COUNTS_ROLLBACK_GLOB)
+
+
+def test_counts_migration_body_is_idempotent(pg_conn):
+    if COUNTS_MIGRATION is None:
+        pytest.skip("migration not written yet")
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(COUNTS_MIGRATION))
+        cur.execute(_sql_body(COUNTS_MIGRATION))
+        cur.execute(
+            "SELECT 1 FROM pg_proc WHERE proname = %s AND pronargs = 4", (UPDATE_FN,)
+        )
+        assert cur.fetchone() is not None
+    pg_conn.rollback()
+
+
+def test_counts_rollback_restores_2arg_signature(pg_conn):
+    if COUNTS_MIGRATION is None or COUNTS_ROLLBACK is None:
+        pytest.skip("migration/rollback not written yet")
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(COUNTS_MIGRATION))
+        cur.execute(_sql_body(COUNTS_ROLLBACK))
+        cur.execute(
+            "SELECT 1 FROM pg_proc WHERE proname = %s AND pronargs = 4", (UPDATE_FN,)
+        )
+        assert cur.fetchone() is None, "rollback did not remove the 4-arg signature"
+        cur.execute(
+            "SELECT 1 FROM pg_proc WHERE proname = %s AND pronargs = 2", (UPDATE_FN,)
+        )
+        assert cur.fetchone() is not None, "rollback did not restore the 2-arg signature"
+        # the restored 2-arg signature is genuinely callable via the old shape
+        run_id = _seed_run(cur, status="submitted")
+        cur.execute(f"SELECT {UPDATE_FN}(%s, %s)", (run_id, "running"))
+        status, _ = _run_row(cur, run_id)
+        assert status == "running"
+    pg_conn.rollback()
