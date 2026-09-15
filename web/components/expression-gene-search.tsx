@@ -43,19 +43,26 @@ export function ExpressionGeneSearch({
       return;
     }
     setLoading(true);
+    // A search replaced by a newer one keeps quiet, whenever its answer lands.
+    let stale = false;
     const id = setTimeout(async () => {
       try {
         const results = await searchGenes(datasetId, trimmed, MAX_RESULTS);
+        if (stale) return;
         setOptions(results);
         setError(null);
       } catch (err) {
+        if (stale) return;
         setOptions([]);
         setError(err instanceof Error ? err.message : String(err));
       } finally {
-        setLoading(false);
+        if (!stale) setLoading(false);
       }
     }, DEBOUNCE_MS);
-    return () => clearTimeout(id);
+    return () => {
+      stale = true;
+      clearTimeout(id);
+    };
   }, [input, datasetId]);
 
   // always include the current selected value in the options list so MUI
