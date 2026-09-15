@@ -61,13 +61,18 @@ vi.mock("@/components/expression-colorbar", () => ({
   ),
 }));
 
-// The cluster stats rows the view reads for its cell counts.
-const stats = vi.hoisted(() => ({ rows: [] as { cluster_id: string; cell_count: number }[] }));
+// The cluster stats rows the view reads for its cell counts, or the error it gets.
+const stats = vi.hoisted(() => ({
+  rows: [] as { cluster_id: string; cell_count: number }[],
+  error: null as { message: string } | null,
+}));
 
 vi.mock("@/lib/supabase/client", () => ({
   createClientSupabaseClient: () => ({
     from: () => ({
-      select: () => ({ eq: async () => ({ data: stats.rows, error: null }) }),
+      select: () => ({
+        eq: async () => ({ data: stats.error ? null : stats.rows, error: stats.error }),
+      }),
     }),
   }),
 }));
@@ -110,6 +115,7 @@ const hiddenOf = (filter = "sample") => [...(latest().hiddenValues?.get(filter) 
 beforeEach(() => {
   umapProps.length = 0;
   stats.rows = [];
+  stats.error = null;
 });
 afterEach(cleanup);
 
@@ -303,6 +309,50 @@ describe("ExpressionView — clicking a cell", () => {
   });
 });
 
+describe("ExpressionView — counting with a cell type hidden", () => {
+  // Cortex holds two Col-0 cells and one pFACT; Xylem holds three pFACT.
+  const TWO_TYPES: LoadedPayload = {
+    ...LOADED,
+    clusters: [
+      { ordinal: 0, cluster_id: "Cortex", name: "Cortex", color: "#112233" },
+      { ordinal: 1, cluster_id: "Xylem", name: "Xylem", color: "#445566" },
+    ] as unknown as LoadedPayload["clusters"],
+    cellCount: 6,
+    cells: [
+      { replicate: "Col-0", cluster_ordinal: 0, facets: null },
+      { replicate: "Col-0", cluster_ordinal: 0, facets: null },
+      { replicate: "pFACT", cluster_ordinal: 0, facets: null },
+      { replicate: "pFACT", cluster_ordinal: 1, facets: null },
+      { replicate: "pFACT", cluster_ordinal: 1, facets: null },
+      { replicate: "pFACT", cluster_ordinal: 1, facets: null },
+    ],
+  };
+
+  async function showOnlyCortex() {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData(TWO_TYPES);
+    await waitFor(() => expect(screen.getByRole("button", { name: "pFACT 4" })).toBeTruthy());
+    latest().onCellClick?.(0);
+    await waitFor(() => expect([...(latest().hiddenClusters ?? [])]).toEqual([1]));
+  }
+
+  it("counts only the cells of the types shown, under the filters and in the focus note", async () => {
+    await showOnlyCortex();
+    expect(await screen.findByRole("button", { name: "pFACT 1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Col-0 2" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Focus on pFACT" }));
+    expect(await screen.findByText(/1 cell is pFACT; every other cell is greyed out/)).toBeTruthy();
+  });
+
+  it("does not say the counts cover the whole dataset when only a cell type is hidden", async () => {
+    await showOnlyCortex();
+    await screen.findByRole("button", { name: "pFACT 1" });
+    expect(screen.queryByText(/for the whole dataset/)).toBeNull();
+  });
+});
+
 describe("ExpressionView — focusing on values", () => {
   const LABELLED: LoadedPayload = {
     ...LOADED,
@@ -458,5 +508,13 @@ describe("ExpressionView — cell counts in the cluster list", () => {
     loadData();
     const sidebar = await screen.findByTestId("expression-cluster-sidebar");
     await waitFor(() => expect(within(sidebar).getByText("9")).toBeTruthy());
+  });
+
+  it("says the counts could not be loaded when the read fails", async () => {
+    stats.error = { message: "permission denied" };
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData();
+    expect(await screen.findByText("Could not load the cell counts: permission denied")).toBeTruthy();
   });
 });
