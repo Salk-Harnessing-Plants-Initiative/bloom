@@ -2,11 +2,12 @@
 /**
  * The volcano plot redraws at its visible width. Drawn while its tab is hidden,
  * it has no width to measure; when the tab is shown, or the window resized, it
- * must redraw at the width it now has.
+ * must redraw at the width it now has, and a hidden tab's zero width is ignored.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { zoomIdentity, type ZoomTransform } from "d3";
 
 import Panel from "./expression-differential-analysis";
 
@@ -83,9 +84,24 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  delete (SVGElement.prototype as { clientWidth?: number }).clientWidth;
 });
 
 const plot = () => document.querySelector("svg[width]") as SVGSVGElement | null;
+
+/** Tells the plot its width is now `width`, as a real observer would. */
+function resizeTo(width: number) {
+  plotWidth = width;
+  act(() => watchers.forEach((w) => w([])));
+}
+
+async function drawnAt(width: number) {
+  render(<Panel file_id={1} />);
+  await screen.findAllByText("AT1G01010");
+  await waitFor(() => expect(plot()).not.toBeNull());
+  resizeTo(width);
+  await waitFor(() => expect(plot()!.getAttribute("width")).toBe(String(width)));
+}
 
 describe("the volcano plot", () => {
   it("redraws at the width it has once it can be measured", async () => {
@@ -94,11 +110,26 @@ describe("the volcano plot", () => {
     await waitFor(() => expect(plot()).not.toBeNull());
     const hiddenWidth = plot()!.getAttribute("width");
 
-    // A real observer always passes its entries; none are needed here.
-    plotWidth = 720;
-    act(() => watchers.forEach((w) => w([])));
-
+    resizeTo(720);
     await waitFor(() => expect(plot()!.getAttribute("width")).toBe("720"));
     expect(hiddenWidth).not.toBe("720");
+  });
+
+  it("ignores the zero width it reports while its tab is hidden", async () => {
+    await drawnAt(720);
+    resizeTo(0);
+    await act(async () => {});
+    expect(plot()!.getAttribute("width")).toBe("720");
+  });
+
+  it("starts a redraw from the unzoomed view, so the next scroll cannot snap back", async () => {
+    await drawnAt(720);
+    const node = plot()! as unknown as { __zoom: ZoomTransform };
+    node.__zoom = zoomIdentity.scale(3).translate(40, 40);
+
+    resizeTo(800);
+    await waitFor(() => expect(plot()!.getAttribute("width")).toBe("800"));
+    expect(node.__zoom.k).toBe(1);
+    expect([node.__zoom.x, node.__zoom.y]).toEqual([0, 0]);
   });
 });

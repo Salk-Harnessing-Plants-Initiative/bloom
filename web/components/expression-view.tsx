@@ -283,6 +283,10 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
             <span className="text-xs text-stone-500">
               Cells are coloured by {geneName}; clear the search to see cell types again.
             </span>
+          ) : geneName ? (
+            <span className="text-xs text-stone-500" role="status">
+              Loading {geneName}…
+            </span>
           ) : null}
         </div>
 
@@ -329,7 +333,9 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
               <TransgeneSummary
                 positive={transgeneTotal}
                 total={meta.cellCount}
-                totalNoun="cells"
+                totalNoun={
+                  anyValueHidden || hidden.size > 0 ? "cells in the whole dataset" : "cells"
+                }
                 top={topGroups(
                   meta.clusters.map((c) => ({
                     name: c.name || c.cluster_id,
