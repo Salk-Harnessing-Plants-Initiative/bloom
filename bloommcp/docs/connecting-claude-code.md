@@ -130,6 +130,17 @@ no-NaN guarantee `qc_clean` reports covers the trait columns it kept, not the wh
 identifier and metadata columns can legitimately still be blank, so don't read an empty cell
 outside `kept_trait_columns` as a cleaning failure.
 
+### Limits on inline content
+
+Inline content is bounded so a single call cannot monopolise the shared server.
+A call is refused, with a message naming the limit it hit, when the content is
+larger than 5 MiB, has more than 2,000 columns or 20,000 rows, or contains a
+single row too large to measure cheaply (over 256 KB) — no real trait table has a
+row that size, so in practice that last one means a malformed quote. A data row
+_wider_ than the header is also refused: pandas would silently shift the values
+into the wrong columns, which is worse than a refusal for data you intend to
+analyse. A row narrower than the header is fine and is padded with blanks.
+
 ### One caveat worth stating plainly
 
 `csv_content` is never written anywhere and never logged — but that guarantee is about

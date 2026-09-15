@@ -21,6 +21,8 @@ land, and the roster test grows with it automatically.
 
 from __future__ import annotations
 
+from typing import get_args, get_origin
+
 import pytest
 
 from bloom_mcp.contract import BloomMCPError
@@ -95,17 +97,57 @@ def _registered_only_fields(params_model) -> list[str]:
     ]
 
 
+# Names that are registered-only wherever they appear, beyond the exact entries in
+# _SAMPLE_BY_NAME. The reason table in _inline_input is already prefix-tolerant
+# (a new `plot_dpi` inherits correct rejection wording); mirroring that here keeps
+# the net from being narrower than the behaviour it polices — otherwise a future
+# `plot_dpi` would be worded correctly and never checked.
+_REGISTERED_ONLY_PREFIXES = ("plot_",)
+_REGISTERED_ONLY_SUFFIXES = ("_1", "_2")  # per-side pins on two-sided tools
+
+
+def _is_registered_only_by_name(field: str) -> bool:
+    if field in _SAMPLE_BY_NAME:
+        return True
+    if field.startswith(_REGISTERED_ONLY_PREFIXES):
+        return True
+    # version_1 / run_id_2 and friends: a per-side spelling of a rostered name.
+    for suffix in _REGISTERED_ONLY_SUFFIXES:
+        if field.endswith(suffix) and field[: -len(suffix)] in _SAMPLE_BY_NAME:
+            return True
+    return False
+
+
 def _sample_value(params_model, field: str) -> object:
     """A value that counts as "supplied" for `field`."""
     if field in _SAMPLE_BY_NAME:
         return _SAMPLE_BY_NAME[field]
+    # Deliberately not a substring match on the annotation: "str" appears inside
+    # `list[str] | None`, so a marked list field would be handed "x" and blow up
+    # with a pydantic ValidationError instead of the actionable assertion below.
+    # Unwrap Optional/Union and match the concrete origin type instead.
     annotation = params_model.model_fields[field].annotation
-    for kind, value in ((str, "x"), (int, 7), (float, 1.5), (bool, True)):
-        if kind.__name__ in str(annotation):
-            return value
+    candidates = (
+        [a for a in get_args(annotation) if a is not type(None)]
+        if get_origin(annotation) is not None
+        else [annotation]
+    ) or [annotation]
+    for candidate in candidates:
+        base = get_origin(candidate) or candidate
+        if base is bool:
+            return True
+        if base is int:
+            return 7
+        if base is float:
+            return 1.5
+        if base is str:
+            return "x"
+        if base is list:
+            return ["x"]
     raise AssertionError(
         f"{params_model.__name__}.{field} is marked registered-only but this "
-        f"test has no sample value for it — add one to _SAMPLE_BY_NAME"
+        f"test has no sample value for it (annotation {annotation!r}) — add one "
+        f"to _SAMPLE_BY_NAME"
     )
 
 
@@ -175,7 +217,9 @@ def test_no_known_registered_only_field_is_left_unmarked(
     has to remember as PR 2 and PR 3 add nine more consumers.
     """
     marked = set(_registered_only_fields(params_model))
-    declared_known = {f for f in params_model.model_fields if f in _SAMPLE_BY_NAME}
+    declared_known = {
+        f for f in params_model.model_fields if _is_registered_only_by_name(f)
+    }
 
     unmarked = sorted(declared_known - marked)
     assert not unmarked, (
@@ -185,3 +229,46 @@ def test_no_known_registered_only_field_is_left_unmarked(
         f"{'they are' if len(unmarked) > 1 else 'it is'} silently accepted and "
         f"ignored on the csv_content path"
     )
+
+
+def test_the_unmarked_net_follows_the_same_prefix_rule_as_the_reason_table():
+    """The net must not be narrower than the behaviour it polices.
+
+    `_inline_input`'s reason table matches `plot*` by prefix, so a future
+    `plot_dpi` inherits correct rejection wording automatically. If the net here
+    only intersected the 13 literal names, that same field would be worded
+    correctly and never checked — correct-looking and unprotected.
+    """
+    assert _is_registered_only_by_name("plot_dpi")
+    assert _is_registered_only_by_name("plot_marker_style")
+    # Per-side spellings on a two-sided tool.
+    assert _is_registered_only_by_name("version_1")
+    assert _is_registered_only_by_name("source_id_2")
+    # And it stays a net, not a dragnet: ordinary analysis params are untouched.
+    for benign in ("trait_columns", "csv_content", "experiment", "seed", "method"):
+        assert not _is_registered_only_by_name(benign), benign
+
+
+def test_sample_value_handles_a_list_annotation():
+    """A substring match on the annotation would see "str" inside
+    `list[str] | None` and hand back "x", failing with an opaque pydantic
+    ValidationError instead of the actionable "add a sample" assertion."""
+    from typing import Optional
+
+    from pydantic import BaseModel, Field as PField
+
+    class Params(BaseModel):
+        # Deliberately names NOT in _SAMPLE_BY_NAME, so the annotation path runs
+        # rather than the lookup short-circuiting it.
+        unrostered_list: Optional[list[str]] = PField(default=None)
+        unrostered_float: Optional[float] = PField(default=None)
+        unrostered_str: Optional[str] = PField(default=None)
+        unrostered_bool: bool = PField(default=False)
+
+    assert _sample_value(Params, "unrostered_list") == ["x"]
+    assert _sample_value(Params, "unrostered_float") == 1.5
+    assert _sample_value(Params, "unrostered_str") == "x"
+    assert _sample_value(Params, "unrostered_bool") is True
+
+    # A rostered name still short-circuits to its curated value.
+    assert _sample_value(Params, "plots") == _SAMPLE_BY_NAME["plots"]

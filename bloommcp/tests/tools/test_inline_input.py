@@ -87,9 +87,9 @@ def test_content_at_the_limit_is_accepted():
     content = header + f"S1,g1,{filler}\n" * rows
 
     assert len(content.encode("utf-8")) <= helper.MAX_INLINE_CSV_BYTES
-    assert (
-        len(content.encode("utf-8")) > helper.MAX_INLINE_CSV_BYTES * 0.9
-    ), "the point of this test is a payload genuinely near the cap"
+    assert len(content.encode("utf-8")) > helper.MAX_INLINE_CSV_BYTES * 0.9, (
+        "the point of this test is a payload genuinely near the cap"
+    )
 
     frame = helper.parse_inline_csv_frame(content)
     assert isinstance(frame, ExperimentFrame)
@@ -316,9 +316,9 @@ def test_wide_csv_dos_repro_is_rejected_fast():
     elapsed = time.perf_counter() - start
 
     assert exc.value.code == "invalid_input"
-    assert (
-        elapsed < 1.0
-    ), f"rejection took {elapsed:.2f}s — the pre-parse guard didn't fire"
+    assert elapsed < 1.0, (
+        f"rejection took {elapsed:.2f}s — the pre-parse guard didn't fire"
+    )
 
 
 def test_embedded_newline_in_header_cell_does_not_bypass_the_guard():
@@ -353,9 +353,9 @@ def test_embedded_newline_in_header_cell_does_not_bypass_the_guard():
         mock_read_csv.assert_not_called()
 
     assert exc.value.code == "invalid_input"
-    assert (
-        elapsed < 2.0
-    ), f"rejection took {elapsed:.2f}s — a pre-parse guard didn't fire"
+    assert elapsed < 2.0, (
+        f"rejection took {elapsed:.2f}s — a pre-parse guard didn't fire"
+    )
 
 
 def test_embedded_newline_past_legitimate_looking_columns_is_still_counted_correctly():
@@ -1028,9 +1028,9 @@ def test_wide_data_rows_are_rejected_despite_a_narrow_header():
     """The reproduced bypass: the payload that used to be accepted in 16s."""
     helper = _import_helper()
     payload = _wide_data_row_payload(480_000)
-    assert (
-        len(payload.encode("utf-8")) < helper.MAX_INLINE_CSV_BYTES
-    ), "the point of this shape is that it sits under the byte cap"
+    assert len(payload.encode("utf-8")) < helper.MAX_INLINE_CSV_BYTES, (
+        "the point of this shape is that it sits under the byte cap"
+    )
 
     with patch("pandas.read_csv") as mock_read_csv:
         with pytest.raises(BloomMCPError) as exc:
@@ -1054,9 +1054,9 @@ def test_wide_data_rows_are_rejected_fast():
         helper.parse_inline_csv_frame(payload)
     elapsed = time.perf_counter() - start
 
-    assert (
-        elapsed < 2.0
-    ), f"rejection took {elapsed:.2f}s; the parse it avoids took ~16s"
+    assert elapsed < 2.0, (
+        f"rejection took {elapsed:.2f}s; the parse it avoids took ~16s"
+    )
 
 
 def test_wide_data_row_inside_the_scan_bound_is_rejected_by_the_column_cap():
@@ -1070,9 +1070,9 @@ def test_wide_data_row_inside_the_scan_bound_is_rejected_by_the_column_cap():
     helper = _import_helper()
     fields = helper.MAX_INLINE_CSV_COLUMNS + 1000
     payload = _wide_data_row_payload(fields)
-    assert (
-        len(payload.encode("utf-8")) < helper._MAX_HEADER_SCAN_BYTES
-    ), "this payload must fit inside the scan bound for the test to mean anything"
+    assert len(payload.encode("utf-8")) < helper._MAX_HEADER_SCAN_BYTES, (
+        "this payload must fit inside the scan bound for the test to mean anything"
+    )
 
     with patch("pandas.read_csv") as mock_read_csv:
         with pytest.raises(BloomMCPError) as exc:
@@ -1104,9 +1104,9 @@ def test_a_narrower_first_data_row_is_accepted_and_nan_padded():
     assert list(frame.df.columns) == ["Barcode", "geno", "traitA"]
     assert list(frame.df["Barcode"]) == ["S1", "S2", "S3"]
     assert list(frame.df["geno"]) == ["g1", "g2", "g3"]
-    assert pd.isna(
-        frame.df["traitA"].iloc[0]
-    ), "the missing trailing value should be NaN in its own column, not a shift"
+    assert pd.isna(frame.df["traitA"].iloc[0]), (
+        "the missing trailing value should be NaN in its own column, not a shift"
+    )
     assert list(frame.df.index) == [0, 1, 2], "no index promotion on this path"
 
 
@@ -1131,6 +1131,14 @@ def test_a_narrow_first_row_does_not_reopen_the_expensive_path():
     elapsed = time.perf_counter() - start
 
     assert exc.value.code == "invalid_input"
+    # Assert on the mechanism, not just the outcome. Both an `!=` guard firing
+    # instantly and the tokenizer rejecting the inconsistency produce
+    # invalid_input quickly, so code + elapsed alone would pass under either —
+    # and this test exists specifically to document that the *tokenizer* is what
+    # makes allowing the narrow direction safe.
+    assert "could not be parsed as CSV" in exc.value.message, (
+        f"expected the pandas tokenizer to reject this, got: {exc.value.message}"
+    )
     assert elapsed < 2.0, f"narrow-then-wide rejection took {elapsed:.2f}s"
 
 
@@ -1254,3 +1262,281 @@ def test_multibyte_content_under_the_character_bound_still_gets_the_exact_check(
         "this payload is only over the cap once encoded, so it must reach the "
         "exact byte check rather than the character-count short circuit"
     )
+
+
+# ── blank-line bypass of the width guard (PR #778 round 4, blocking) ────────
+#
+# `csv.reader` yields [] for a blank line and ['   '] for a whitespace-only one;
+# `read_csv` runs with skip_blank_lines=True and discards both. Taking literally
+# the second row the reader yielded made the scanner and the parser disagree
+# about which row is the first data row — and with `>` that disagreement failed
+# OPEN, because a reported width of 0 is never greater than the header's.
+#
+# Reproduced before fixing: a blank line between a 3-field header and
+# 480,000-field rows was ACCEPTED after 13.56s, producing a frame whose real data
+# had been hoisted into a 479,997-level phantom index that `resolve_columns` then
+# ran over. Every shape below was one that `!=` happened to catch and `>` did not
+# — the operator was never the bug, the scanner was.
+
+
+def _blank_bypass_payload(separator: str, fields: int = 60_000) -> str:
+    wide = ",".join(str(i % 10) for i in range(fields))
+    return f"Barcode,geno,trait.a\n{separator}{wide}\n{wide}\n"
+
+
+@pytest.mark.parametrize(
+    "label,separator",
+    [
+        ("blank line", "\n"),
+        ("two blank lines", "\n\n"),
+        ("CRLF blank line", "\r\n"),
+        ("whitespace-only row", "   \n"),
+        ("tab-only row", "\t\n"),
+    ],
+)
+def test_a_skipped_row_after_the_header_cannot_hide_wide_data(label, separator):
+    """Every shape `read_csv` skips must also be skipped by the scan, or the
+    width guard is simply absent for that payload."""
+    helper = _import_helper()
+    payload = _blank_bypass_payload(separator)
+    assert len(payload.encode("utf-8")) < helper.MAX_INLINE_CSV_BYTES
+
+    with patch("pandas.read_csv") as mock_read_csv:
+        with pytest.raises(BloomMCPError) as exc:
+            helper.parse_inline_csv_frame(payload)
+        mock_read_csv.assert_not_called()
+
+    assert exc.value.code == "invalid_input", label
+
+
+def test_the_scan_reports_the_real_first_data_row_past_skipped_rows():
+    """Pins the mechanism, not just the outcome: the scan must report the width
+    of the row `read_csv` will treat as first, not of the blank line before it."""
+    helper = _import_helper()
+    header, data = helper._scan_leading_row_widths("Barcode,geno,trait.a\n\n\n1,2,3\n")
+    assert (header, data) == (3, 3), (
+        "a reported width of 0 would be a blank line counted as the data row, "
+        "which is never greater than the header and so fails the guard open"
+    )
+
+
+def test_blank_line_bypass_is_rejected_fast_at_the_reported_scale():
+    """The reported payload: 480,000 fields behind a blank line, under every cap.
+    Accepted in 13.56s before the fix."""
+    import time
+
+    helper = _import_helper()
+    payload = _blank_bypass_payload("\n", fields=480_000)
+    assert len(payload.encode("utf-8")) < helper.MAX_INLINE_CSV_BYTES
+
+    start = time.perf_counter()
+    with pytest.raises(BloomMCPError):
+        helper.parse_inline_csv_frame(payload)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 2.0, f"took {elapsed:.2f}s; the parse it avoids took ~13.6s"
+
+
+@pytest.mark.parametrize(
+    "label,separator",
+    [
+        ("blank line", "\n"),
+        ("two blank lines", "\n\n"),
+        ("CRLF blank line", "\r\n"),
+        ("whitespace-only row", "   \n"),
+    ],
+)
+def test_ordinary_csvs_with_a_skipped_row_still_parse(label, separator):
+    """The non-regression that keeps the fix honest. A blank line after the
+    header is a common spreadsheet export; before the fix the width guard was
+    silently inert for every one of them, and an over-eager fix would instead
+    reject them outright."""
+    helper = _import_helper()
+    frame = helper.parse_inline_csv_frame(
+        f"Barcode,geno,traitA\n{separator}S1,g1,1.0\nS2,g2,2.0\n"
+    )
+    assert list(frame.df["Barcode"]) == ["S1", "S2"], label
+    assert frame.df.index.nlevels == 1, "no phantom index"
+
+
+def test_rows_read_csv_does_not_skip_are_not_skipped_by_the_scan():
+    """The mirror failure. `#note` and a lone `x` become real NaN-padded data
+    rows in `read_csv`, so skipping them here would recreate the same
+    scanner/parser disagreement in the other direction."""
+    helper = _import_helper()
+    assert helper._scan_leading_row_widths("a,b,c\n#note\n1,2,3\n") == (3, 1)
+    assert helper._scan_leading_row_widths("a,b,c\nx\n1,2,3\n") == (3, 1)
+    assert helper._is_skipped_by_read_csv(["#note"]) is False
+    assert helper._is_skipped_by_read_csv(["x"]) is False
+    assert helper._is_skipped_by_read_csv([]) is True
+    assert helper._is_skipped_by_read_csv(["   "]) is True
+
+
+def test_many_skipped_rows_cannot_stall_the_scan():
+    """Skipping is bounded: `_bounded_lines` still caps total bytes consumed, so
+    a payload of nothing but blank lines cannot walk the scan through the whole
+    body looking for a data row."""
+    import time
+
+    helper = _import_helper()
+    payload = "a,b,c\n" + "\n" * (helper._MAX_HEADER_SCAN_BYTES + 1024) + "1,2,3\n"
+
+    start = time.perf_counter()
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame(payload)
+    elapsed = time.perf_counter() - start
+
+    assert exc.value.code == "invalid_input"
+    assert elapsed < 2.0
+
+
+# ── round-4 review: default-filtering, roles, csv.Error, float fidelity ─────
+
+
+def test_a_default_valued_marked_field_is_not_reported_as_supplied():
+    """The failure that would have broken every inline call in PR 2.
+
+    `include_plots: bool = Field(default=False)` exists on five of the tools
+    still to adopt this path, and the roster net will require it to be marked.
+    Collecting raw values and rejecting on `is not None` would then reject
+    `False` — the default — so marking the field would have made every inline
+    call die with "include_plots cannot be used with csv_content": the net
+    forcing the very configuration that breaks the path it protects.
+    """
+    from pydantic import BaseModel, Field as PField
+
+    helper = _import_helper()
+
+    class Params(BaseModel):
+        csv_content: str | None = None
+        include_plots: bool = PField(
+            default=False, json_schema_extra={helper.REGISTERED_ONLY: True}
+        )
+        version: str | None = PField(
+            default=None, json_schema_extra={helper.REGISTERED_ONLY: True}
+        )
+
+    assert helper.registered_only_fields(Params()) == {}
+    assert helper.registered_only_fields(Params(include_plots=False)) == {}, (
+        "explicitly asking for the default is not a request to reject"
+    )
+    assert helper.registered_only_fields(Params(include_plots=True)) == {
+        "include_plots": True
+    }
+    assert helper.registered_only_fields(Params(version="v2")) == {"version": "v2"}
+
+
+def test_an_unmarked_field_is_never_collected():
+    from pydantic import BaseModel, Field as PField
+
+    helper = _import_helper()
+
+    class Params(BaseModel):
+        version: str | None = PField(default=None)  # deliberately unmarked
+
+    assert helper.registered_only_fields(Params(version="v2")) == {}
+
+
+def test_an_oversized_single_field_is_a_structured_error_not_a_raw_csv_error():
+    """`csv.reader` raises a bare `_csv.Error` for a field longer than
+    `csv.field_size_limit()`. The scan runs before `pandas.read_csv`, so the
+    try/except around that call never saw it and it surfaced as an opaque
+    internal_error — contradicting this module's "never a raw exception"
+    guarantee."""
+    import csv as _csv
+
+    helper = _import_helper()
+    payload = "a,b,c\n" + "x" * (_csv.field_size_limit() + 10) + ",2,3\n"
+
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame(payload)
+    assert exc.value.code == "invalid_input"
+    assert str(_csv.field_size_limit()) in exc.value.remedy
+
+
+def test_round_trip_guard_rejects_a_role_that_would_re_resolve_differently():
+    """Traits alone are not the whole analysis shape.
+
+    A caller passing `genotype_column="Line"` gets a result naming `Line`; a
+    consumer handed this text re-detects roles from scratch and lands on `geno`.
+    The next call groups by a different column than the one just reported — and
+    `cleaned_csv_sha256` matches, because the bytes really are identical, so the
+    caller's own integrity check confirms the wrong thing.
+    """
+    helper = _import_helper()
+    df = pd.DataFrame(
+        {
+            "Barcode": ["S1", "S2", "S3"],
+            "Line": ["L1", "L2", "L1"],
+            "geno": ["g1", "g2", "g1"],
+            "traitA": [1.0, 2.0, 3.0],
+        }
+    )
+    with pytest.raises(BloomMCPError) as exc:
+        helper.serialize_table_csv(
+            df,
+            field="cleaned_csv",
+            verify_roles={"genotype": "Line", "sample_id": "Barcode"},
+        )
+    assert exc.value.code == "assumption_violated"
+    assert "genotype" in exc.value.message
+    assert "'Line'" in exc.value.message
+
+
+def test_round_trip_guard_accepts_roles_that_survive_the_hop():
+    helper = _import_helper()
+    df = pd.DataFrame(
+        {
+            "Barcode": ["S1", "S2", "S3"],
+            "genotype": ["g1", "g2", "g1"],
+            "traitA": [1.0, 2.0, 3.0],
+        }
+    )
+    text = helper.serialize_table_csv(
+        df,
+        field="cleaned_csv",
+        verify_roles={"genotype": "genotype", "sample_id": "Barcode"},
+    )
+    assert "traitA" in text
+
+
+def test_float_values_survive_the_chaining_hop_exactly():
+    """`cleaned_csv_sha256` is documented as letting a caller prove a later call
+    analyzed the table this one produced. pandas' default float parser is not
+    correctly-rounded, so without `float_precision="round_trip"` the digest
+    proves the text matched rather than the values.
+
+    Measured over 5,000 draws on the default parser: 90.4% of values around 1e-3
+    changed on a single hop, by up to 7,270 ULPs. Root traits — curvature,
+    radian angles, ratios, solidity — sit squarely in that band, and the drift
+    compounds across chained calls.
+    """
+    import numpy as np
+
+    helper = _import_helper()
+    rng = np.random.default_rng(0)
+
+    for scale in (1e6, 1e0, 1e-3):
+        values = rng.random(2000) * scale
+        text = helper.serialize_table_csv(
+            pd.DataFrame({"Barcode": [f"S{i}" for i in range(2000)], "traitA": values})
+        )
+        back = helper.parse_inline_csv_frame(text).df["traitA"].to_numpy()
+        changed = int((back != values).sum())
+        assert changed == 0, (
+            f"{changed}/2000 values at scale {scale:g} changed across the hop"
+        )
+
+
+def test_reserializing_a_returned_table_is_byte_stable():
+    """The property that makes chaining over several hops sound: drift that is
+    invisible per hop still accumulates."""
+    import numpy as np
+
+    helper = _import_helper()
+    rng = np.random.default_rng(1)
+    df = pd.DataFrame(
+        {"Barcode": [f"S{i}" for i in range(500)], "traitA": rng.random(500) * 1e-3}
+    )
+    first = helper.serialize_table_csv(df)
+    second = helper.serialize_table_csv(helper.parse_inline_csv_frame(first).df)
+    assert first == second

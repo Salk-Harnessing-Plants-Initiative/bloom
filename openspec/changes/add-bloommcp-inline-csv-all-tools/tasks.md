@@ -24,6 +24,12 @@ inline `qc_inspect` call.
       widening does not reach them. Each needs its own `Optional` widening in the PR that adds
       its inline path (PR 2 for `clustering`, PR 3 for `qc_inspect`), or the inline branch will
       fail output validation. Raised in PR #778's review.
+- [ ] 0.3d **Mark each tool's registered-only fields as you add its inline path.** The rejection
+      is now derived from `json_schema_extra={REGISTERED_ONLY: True}` on the field itself, so
+      adding `csv_content` to a tool without marking its `version` / `user_label` /
+      `include_plots` / `plots` / `plot_*` fields leaves them silently accepted and ignored.
+      `test_no_known_registered_only_field_is_left_unmarked` catches this once the tool joins
+      `_INLINE_CAPABLE_TOOLS`, which is the same step.
 - [ ] 0.3c **`_validate_trait_subset`'s `certified` flag has no integration coverage yet.** It is
       unit-tested in `test_qc_shared_validator.py`, but `qc_clean` — PR 1's only consumer — does
       not pass `require_certified=True`, so no tool actually exercises it end to end. The first
@@ -414,9 +420,14 @@ marker, run in the `dev-stack-smoke` CI job.
 ## 15. Follow-ups (not this change)
 
 - [ ] 15.1 `heritability_analysis` — its `csv_content` path, using
-      `resolve_inline_or_experiment`. One-tool follow-up. **#462 merged to `staging` on
-      2026-09-11**, so this is no longer blocked; fold it into PR 2 or PR 3 rather than leaving
-      it as a separate follow-up, since the roster tests now enumerate it.
+      `resolve_inline_or_experiment`. **#462 merged to `staging` on 2026-09-11**, so this is no
+      longer blocked; fold it into PR 2 or PR 3.
+
+      *Correction to an earlier merge note, which said it "joins the roster": it does not, and
+      cannot yet. At this ref it declares `version`, `include_plots`, `plots` and `user_label`,
+      carries zero `REGISTERED_ONLY` markers, and is absent from `_INLINE_CAPABLE_TOOLS` — as it
+      should be, having no `csv_content` parameter. Marking those four fields is part of adding
+      its inline path, not something PR 1 could have done. Raised in PR #778's round-4 review.*
 - [ ] 15.2 A per-caller ephemeral plot channel — the prerequisite for inline `include_plots` and
       for giving the five legacy plot tools any inline path at all.
 - [ ] 15.3 Declare memory limits on bloommcp and langchain-agent in `docker-compose.prod.yml`. No

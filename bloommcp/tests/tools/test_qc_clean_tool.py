@@ -1467,9 +1467,34 @@ def test_single_source_experiment_gets_no_advisory_note(injected_ports):
     assert result.source_note is None
 
 
-def test_csv_content_path_never_surfaces_a_source_note(injected_ports):
+def test_csv_content_path_states_that_nothing_was_recorded(injected_ports):
+    """The inline result has to say it is ephemeral, not merely imply it.
+
+    Supersedes an earlier assertion that `source_note` is None here. Everything
+    marking this result as ephemeral was a *null* — run_ref, version_dir,
+    manifest_path — so a client that drops null fields rendered it as an
+    ordinary complete qc_clean summary. These numbers get pasted into notebooks
+    and methods sections; the spec already requires this disclaimer of
+    `load_experiment_data`, and the structured tools whose output actually gets
+    cited should not be the ones that omit it.
+
+    It must not name a source pin: the multi-source advisory this field carries
+    on the experiment path has no meaning without a registered experiment.
+    """
     csv_text = _RAW.read_text(encoding="utf-8")
     result = qc_clean(QCCleanParams(csv_content=csv_text, max_nans_per_trait=_MNT))
+
+    assert result.source_note is not None
+    assert "not registered" in result.source_note
+    assert "no run was recorded" in result.source_note
+    assert result.input_sha256 in result.source_note
+    assert "core_list_experiment_sources" not in result.source_note
+
+
+def test_experiment_path_source_note_is_unchanged(injected_ports):
+    """The registered path keeps its own meaning for this field: None unless the
+    experiment really has more than one source."""
+    result = _run()
     assert result.source_note is None
 
 
@@ -1599,13 +1624,18 @@ def test_serialized_table_that_would_lose_a_certified_trait_is_rejected(
     reported. Here that surfaces as a structured error instead."""
     real = qc_clean_tool._inline_input.serialize_table_csv
 
-    def _drop_a_certified_trait(df, *, field="csv", verify_trait_cols=None):
+    def _drop_a_certified_trait(
+        df, *, field="csv", verify_trait_cols=None, verify_roles=None
+    ):
         # Serialize a frame missing one certified trait, while still claiming the
         # full certified set — the shape a retained-but-undetected column produces
         # from the guard's point of view.
         victim = sorted(verify_trait_cols)[0]
         return real(
-            df.drop(columns=[victim]), field=field, verify_trait_cols=verify_trait_cols
+            df.drop(columns=[victim]),
+            field=field,
+            verify_trait_cols=verify_trait_cols,
+            verify_roles=verify_roles,
         )
 
     monkeypatch.setattr(
@@ -1671,7 +1701,7 @@ def test_oversized_cleaned_table_is_rejected_not_truncated(injected_ports, monke
     bypass it."""
     calls: list[str] = []
 
-    def _refuse(df, *, field="csv", verify_trait_cols=None):
+    def _refuse(df, *, field="csv", verify_trait_cols=None, verify_roles=None):
         calls.append(field)
         raise BloomMCPError(
             code="invalid_input",

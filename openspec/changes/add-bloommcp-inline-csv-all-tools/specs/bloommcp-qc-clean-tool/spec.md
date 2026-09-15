@@ -188,3 +188,62 @@ experiment — rather than returning a multi-megabyte string through the MCP tra
   `csv_content`
 - **THEN** it succeeds and returns the missingness diagnostics for that content — the
   recommendation is verified against the real tool, not merely asserted to name it
+
+### Requirement: QC Clean Rejects Non-Finite Values, Not Only NaN
+
+`qc_clean` SHALL treat ±inf in a kept trait column as disqualifying, on **both** input paths, and
+SHALL refuse to certify such a table as analysis-ready. The refusal SHALL name the offending
+columns and SHALL explain that these are not NaN and so are unaffected by the cleanup thresholds.
+
+The no-NaN guarantee was implemented with `isna()`, which is `False` for infinity. A table
+carrying ±inf therefore passed with `cleaned_nan_cells_remaining == 0` and no validation warning,
+was certified clean, and then failed in every downstream analysis with "Input X contains
+infinity". That closes a loop this change's own specification opens: a non-finite consumer's
+remedy directs the caller to `qc_clean(csv_content=..., return_cleaned_csv=true)`, `qc_clean`
+certifies the inf-bearing table, and the consumer rejects it again.
+
+**This is a deliberate behaviour change on the registered path**, which this change otherwise
+holds byte-identical. It is stated as such rather than narrowed to the inline path to preserve
+that promise: certifying an infinity as analysis-ready is precisely what the no-NaN guarantee
+exists to prevent, and a cleaned run containing one was never usable — the consumers reject it
+already, only later and less legibly. An experiment whose cleaned output contains ±inf will begin
+failing `qc_clean` where it previously committed a run.
+
+`cleaned_nan_cells_remaining` SHALL continue to count NaN cells specifically, so its name keeps
+matching its contents; the finiteness check is a separate guard with its own message.
+
+#### Scenario: A table carrying an infinity is refused rather than certified
+
+- **WHEN** `qc_clean` cleans content whose surviving trait columns contain ±inf
+- **THEN** it raises `BloomMCPError(code="assumption_violated")` naming the affected columns and
+  stating that non-finite values are not NaN, with a remedy pointing at a divide-by-zero in an
+  upstream trait computation and at `exclude_columns`
+
+#### Scenario: The refusal applies to a registered experiment too
+
+- **WHEN** a registered experiment's cleanup leaves ±inf in a kept trait column
+- **THEN** the same refusal occurs and no run is committed
+
+#### Scenario: A finite table is unaffected
+
+- **WHEN** `qc_clean` cleans content whose surviving trait columns are all finite
+- **THEN** it completes normally with `cleaned_nan_cells_remaining == 0`
+
+#### Scenario: The remedy loop terminates
+
+- **WHEN** a caller follows a consumer's non-finite remedy to
+  `qc_clean(csv_content=..., return_cleaned_csv=true)` with inf-bearing content
+- **THEN** `qc_clean` refuses with an actionable message, rather than returning a certified table
+  that the consumer will reject again
+
+### Requirement: QC Clean Pins the Line Terminator of the Persisted Cleaned CSV
+
+The cleaned CSV written into a committed run SHALL pin its line terminator rather than inheriting
+the platform's, for the same reason the ephemeral copy does and with more force: the persisted
+file is content-hashed into the manifest, so an unpinned terminator makes the recorded digest
+depend on which platform produced the run.
+
+#### Scenario: The persisted cleaned CSV uses a pinned terminator
+
+- **WHEN** `qc_clean` commits a run for a registered experiment
+- **THEN** the written `_cleaned.csv` contains no carriage returns, regardless of host platform

@@ -52,14 +52,14 @@ MAX_INLINE_CSV_BYTES = 5 * 1024 * 1024
 # server.py) and no persistence step to create natural backpressure — a real,
 # reproducible DoS vector for the shared container. A post-parse check on
 # `df.shape[1]` cannot prevent this: the expensive parse has already run by the
-# time it fires. `_estimate_header_columns` below is the actual guard — a cheap
-# pre-parse estimate that rejects before `pandas.read_csv` is ever called;
+# time it fires. `_scan_leading_row_widths` below is the actual guard — a cheap
+# pre-parse scan that rejects before `pandas.read_csv` is ever called;
 # `df.shape[1] > MAX_INLINE_CSV_COLUMNS` after parsing is kept only as an exact
 # backstop, not the primary guard.
 MAX_INLINE_CSV_COLUMNS = 2000
 
-# Caps how much of csv_content `_estimate_header_columns` will scan looking for
-# the header row's closing boundary. A row-aware scan (see below) must read an
+# Caps how much of csv_content `_scan_leading_row_widths` will scan looking for
+# the leading rows' closing boundaries. A row-aware scan (see below) must read an
 # unterminated quoted field until it finds the closing quote or gives up — an
 # attacker who never closes the quote could otherwise force a scan of the
 # entire payload, defeating the point of a "cheap" pre-parse check. No real
@@ -128,6 +128,24 @@ def _bounded_lines(text: str):
         yield line
 
 
+def _is_skipped_by_read_csv(row: list[str]) -> bool:
+    """Whether ``pandas.read_csv`` would discard this row rather than treat it as data.
+
+    ``skip_blank_lines=True`` (the default) drops a truly blank line — which
+    `csv.reader` yields as ``[]`` — and a row whose single field is entirely
+    whitespace, which it yields as e.g. ``['   ']`` or ``['\t']``. Verified
+    against pandas 3.0.2 for ``\n``, ``\n\n``, ``\r\n``, spaces and tabs.
+
+    Nothing else qualifies. A comment-looking ``['#note']`` and a lone ``['x']``
+    both become real NaN-padded data rows, so returning ``True`` for them would
+    make this scanner skip a row the parser counts — the mirror image of the bug
+    this predicate exists to fix.
+    """
+    if not row:
+        return True
+    return len(row) == 1 and not row[0].strip()
+
+
 def _scan_leading_row_widths(csv_content: str) -> tuple[int, Optional[int]]:
     """Cheap field-count scan of the header **and the first data row**.
 
@@ -168,17 +186,39 @@ def _scan_leading_row_widths(csv_content: str) -> tuple[int, Optional[int]]:
     ``invalid_input``. So a wide row hiding beyond the scan window is either
     consistent with row 1 — and caught here — or inconsistent, and caught
     cheaply by the parser itself.
+
+    **The scan must skip exactly what `read_csv` skips, or the guard fails open.**
+    `csv.reader` yields ``[]`` for a blank line and ``['   ']`` for a
+    whitespace-only one; `read_csv` runs with ``skip_blank_lines=True`` and
+    discards both. Taking literally the second row the reader yields therefore
+    made the scanner and the parser disagree about which row is the first data
+    row — and the disagreement failed *open*, because a reported width of 0 is
+    never greater than the header's. Reproduced: a blank line between the header
+    and 480,000-field rows was accepted after 13.6s, producing a frame whose real
+    data had been hoisted into a 479,997-level phantom index, which
+    `resolve_columns` then ran over. Two further consequences: the byte bound
+    never engaged (the scan stopped after seven bytes), and the width guard was
+    silently inert for any ordinary CSV with a blank line after its header — a
+    common spreadsheet export.
+
+    Skipping is deliberately limited to what `read_csv` actually discards
+    (verified against pandas 3.0.2): blank and whitespace-only rows, and nothing
+    else. A ``#note`` row or a lone ``x`` is *not* skipped by `read_csv` — each
+    becomes a real, NaN-padded data row — so treating them as skippable here
+    would reintroduce the same disagreement in the other direction. Many blank
+    lines cannot be used to stall the scan, because `_bounded_lines` still caps
+    total bytes consumed.
     """
     reader = csv.reader(_bounded_lines(csv_content))
     try:
         header = next(reader)
     except StopIteration:
         return 0, None
-    try:
-        data = next(reader)
-    except StopIteration:
-        return len(header), None
-    return len(header), len(data)
+    for row in reader:
+        if _is_skipped_by_read_csv(row):
+            continue
+        return len(header), len(row)
+    return len(header), None
 
 
 def parse_inline_csv_frame(csv_content: str) -> ExperimentFrame:
@@ -251,7 +291,24 @@ def parse_inline_csv_frame(csv_content: str) -> ExperimentFrame:
     # parse has been paid, and in the divergence case below it never fires at all.
     # Encoding a payload already known to be within the cap is bounded work, so
     # nothing is lost by checking size first.
-    header_columns, data_columns = _scan_leading_row_widths(csv_content)
+    try:
+        header_columns, data_columns = _scan_leading_row_widths(csv_content)
+    except csv.Error as exc:
+        # `csv.reader` raises a bare `_csv.Error` for a field longer than
+        # `csv.field_size_limit()` (131,072 on this build). The scan runs before
+        # `pandas.read_csv`, so the try/except around that call never sees it,
+        # and it would surface as an opaque internal_error — contradicting this
+        # module's "never a raw exception" guarantee. It fails fast, so this is
+        # a legibility fix rather than a cost one: map it like its neighbours.
+        raise BloomMCPError(
+            code="invalid_input",
+            message=f"csv_content's leading rows could not be read: {exc}",
+            remedy=(
+                "Check for an unterminated quote or a single field larger than "
+                f"{csv.field_size_limit()} characters, or register the data as "
+                "an experiment instead of passing it inline."
+            ),
+        ) from None
     if header_columns > MAX_INLINE_CSV_COLUMNS:
         raise BloomMCPError(
             code="invalid_input",
@@ -324,7 +381,20 @@ def parse_inline_csv_frame(csv_content: str) -> ExperimentFrame:
         )
 
     try:
-        df = pd.read_csv(io.StringIO(csv_content))
+        # float_precision="round_trip" is not a nicety here. pandas' default
+        # float parser is not correctly-rounded, and the error is worst exactly
+        # where root traits live: measured over 5,000 draws, 90.4% of values
+        # around 1e-3 changed on a single to_csv/read_csv hop, by up to 7,270
+        # ULPs (values around 1e0: 35.4%; around 1e6: 10.1%). With round_trip,
+        # zero changed at every scale.
+        #
+        # Far below measurement noise, so no scientific conclusion turns on it —
+        # but `cleaned_csv_sha256` is documented as letting a caller prove a
+        # later call analyzed the table this one produced, and a drifting parse
+        # makes the digest prove the text matched rather than the values. Curv-
+        # ature, radian angles, ratios and solidity all sit in the worst band,
+        # and the drift compounds over chained hops.
+        df = pd.read_csv(io.StringIO(csv_content), float_precision="round_trip")
     except pd.errors.EmptyDataError:
         raise BloomMCPError(
             code="invalid_input",
@@ -351,7 +421,7 @@ def parse_inline_csv_frame(csv_content: str) -> ExperimentFrame:
             remedy="Supply CSV content with a header row naming at least one column.",
         )
     if df.shape[1] > MAX_INLINE_CSV_COLUMNS:
-        # Exact backstop, not the primary guard: _estimate_header_columns
+        # Exact backstop, not the primary guard: _scan_leading_row_widths
         # above already uses the same csv.reader-based, multi-line-aware
         # tokenization pandas itself effectively performs, so this should not
         # fire in practice — kept as defense-in-depth against any residual
@@ -434,6 +504,7 @@ def serialize_table_csv(
     *,
     field: str = "csv",
     verify_trait_cols: Optional[Iterable[str]] = None,
+    verify_roles: Optional[Mapping[str, Optional[str]]] = None,
 ) -> str:
     """Serialize *df* to CSV text for an opt-in inline table return (#582).
 
@@ -470,9 +541,17 @@ def serialize_table_csv(
     on re-parse changes what ``resolve_columns`` detects, which a check against
     the in-memory frame would miss entirely.
 
+    ``verify_roles`` extends the same check to the resolved genotype / sample-id
+    / replicate columns, which the trait set alone does not cover. An explicit
+    ``genotype_column`` override is exactly the case that breaks quietly: the
+    producer reports the overridden column, the consumer re-detects from scratch
+    and picks a different one, and the content digest still matches because the
+    bytes are identical — so the caller's own integrity check confirms the wrong
+    thing.
+
     The extra parse is paid only on the opt-in table-return path, where the
     caller has explicitly asked for bytes they intend to hand to another tool,
-    and is bounded by ``MAX_INLINE_CSV_BYTES``.
+    and is bounded by ``MAX_INLINE_CSV_BYTES``. Both checks share it.
     """
     text = df.to_csv(index=False, lineterminator="\n")
     size = len(text.encode("utf-8"))
@@ -490,9 +569,18 @@ def serialize_table_csv(
             ),
         )
 
+    if verify_trait_cols is not None or verify_roles is not None:
+        round_tripped = resolve_columns(
+            pd.read_csv(io.StringIO(text), float_precision="round_trip")
+        )
+        remedy = (
+            f"Omit {field} and use the summary, or register the data as "
+            "an experiment so the next tool resolves a committed cleaned "
+            "version instead of re-detecting roles from text."
+        )
+
     if verify_trait_cols is not None:
         expected = set(verify_trait_cols)
-        round_tripped = resolve_columns(pd.read_csv(io.StringIO(text)))
         actual = set(round_tripped.trait_cols)
         if actual != expected:
             raise BloomMCPError(
@@ -505,10 +593,48 @@ def serialize_table_csv(
                     f"it would hand the next call a different analysis than the "
                     f"one just reported."
                 ),
+                remedy=remedy,
+            )
+
+    if verify_roles is not None:
+        # Traits alone are not the whole analysis shape. A caller who passed
+        # `genotype_column="Line"` gets a result naming `Line`, and the consumer
+        # that receives this text re-detects roles from scratch — landing on
+        # whatever auto-detection prefers, which for a table carrying both `Line`
+        # and `geno` is `geno`. The next call then groups by a different column
+        # than the one just reported, and `cleaned_csv_sha256` *matches*, because
+        # the bytes really are identical: the caller's own integrity check
+        # confirms the wrong thing. Checking roles is what makes an explicit
+        # override survive the hop, or fail loudly instead of silently.
+        resolved_roles = {
+            "genotype": round_tripped.genotype,
+            "sample_id": round_tripped.sample_id,
+            "replicate": round_tripped.replicate,
+        }
+        drifted = {
+            role: (want, resolved_roles.get(role))
+            for role, want in verify_roles.items()
+            if resolved_roles.get(role) != want
+        }
+        if drifted:
+            detail = "; ".join(
+                f"{role} was {want!r} and would re-resolve to {got!r}"
+                for role, (want, got) in sorted(drifted.items())
+            )
+            raise BloomMCPError(
+                code="assumption_violated",
+                message=(
+                    f"The table returned via {field} does not re-resolve to the "
+                    f"column roles it was cleaned with: {detail}. The next call "
+                    f"would group by a different column than the one just "
+                    f"reported, and the content digest would still match."
+                ),
                 remedy=(
-                    f"Omit {field} and use the summary, or register the data as "
-                    "an experiment so the next tool resolves a committed cleaned "
-                    "version instead of re-detecting roles from text."
+                    "Rename the column in your CSV so it is detected without an "
+                    f"override, or omit {field} and use the summary, or register "
+                    "the data as an experiment so the next tool resolves a "
+                    "committed cleaned version instead of re-detecting roles "
+                    "from text."
                 ),
             )
     return text
@@ -639,7 +765,15 @@ def reject_registered_only_params(
     )
 
 
-REGISTERED_ONLY = "registered_only"
+# Namespaced with the `x-` vendor-extension convention rather than a bare
+# "registered_only". This key is emitted into the published JSON Schema that
+# `tools/list` shows the agent — three parameters today, roughly thirty once the
+# remaining consumer tools adopt this path — so an unqualified generic name
+# risks colliding with a future JSON Schema keyword or another producer's
+# convention. The leak itself is deliberate and kept: an agent reading
+# `x-bloom-registered-only: true` on `version` learns the same thing the field
+# description says, in a form it can act on without parsing prose.
+REGISTERED_ONLY = "x-bloom-registered-only"
 
 
 def registered_only_fields(params: Any) -> dict[str, Any]:
@@ -664,9 +798,40 @@ def registered_only_fields(params: Any) -> dict[str, Any]:
     marked: dict[str, Any] = {}
     for name, field in type(params).model_fields.items():
         extra = field.json_schema_extra
-        if isinstance(extra, dict) and extra.get(REGISTERED_ONLY):
-            marked[name] = getattr(params, name)
+        if not (isinstance(extra, dict) and extra.get(REGISTERED_ONLY)):
+            continue
+        value = getattr(params, name)
+        # Only report a field the caller actually *supplied*. Comparing against
+        # the field's own default rather than against None is what makes this
+        # safe for a non-Optional flag: `include_plots: bool = False` exists on
+        # five of the tools still to adopt this path, and `False is not None`,
+        # so a None-based filter would have made every inline call die with
+        # "include_plots cannot be used with csv_content" the moment that field
+        # was marked — the marker net forcing the very configuration that breaks
+        # the path it protects.
+        if _is_default(field, value):
+            continue
+        marked[name] = value
     return marked
+
+
+def _is_default(field: Any, value: Any) -> bool:
+    """Whether *value* is indistinguishable from *field*'s declared default.
+
+    Equality, not identity: Pydantic hands back the default object itself for a
+    simple default, but a caller can also pass an equal-but-distinct value
+    (``include_plots=False`` explicitly), and that is not a request either —
+    there is nothing to reject about asking for the behaviour that was already
+    going to happen.
+    """
+    try:
+        default = field.get_default(call_default_factory=True)
+    except TypeError:  # pragma: no cover - older pydantic signatures
+        default = field.get_default()
+    try:
+        return bool(value == default)
+    except Exception:  # pragma: no cover - exotic __eq__
+        return value is default
 
 
 def resolve_inline_or_experiment(

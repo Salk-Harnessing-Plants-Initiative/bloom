@@ -73,6 +73,8 @@ from __future__ import annotations
 import json
 from typing import Optional
 
+import numpy as np
+import pandas as pd
 from pydantic import BaseModel, Field
 from sleap_roots_analyze import clean_traits_for_analysis
 
@@ -99,6 +101,52 @@ _VALIDATION_MODE = "warn"
 # Default cleanup thresholds mirror the **canonical QC pipeline** defaults, shared with
 # qc_inspect and single-sourced in ``_qc_shared`` (``_CANONICAL_*``) so the two tools
 # cannot silently desync — see that module for the full rationale.
+
+
+# pandas' default `na_values`: strings it converts to NaN even when the cell is
+# populated. Kept as a literal set rather than imported from pandas internals —
+# `pandas._libs.parsers.STR_NA_VALUES` is private and has moved between releases.
+_PANDAS_NA_SENTINELS = frozenset(
+    {
+        "",
+        "#N/A",
+        "#N/A N/A",
+        "#NA",
+        "-1.#IND",
+        "-1.#QNAN",
+        "-NaN",
+        "-nan",
+        "1.#IND",
+        "1.#QNAN",
+        "<NA>",
+        "N/A",
+        "NA",
+        "NULL",
+        "NaN",
+        "None",
+        "n/a",
+        "nan",
+        "null",
+    }
+)
+
+
+def _na_sentinels_present(csv_content: Optional[str]) -> list[str]:
+    """Which pandas NA sentinels appear as whole fields in ``csv_content``.
+
+    Returns them sorted, so an error can name the one the caller actually wrote
+    rather than describing the behaviour in the abstract. Empty when the content
+    is absent or carries none.
+    """
+    if not csv_content:
+        return []
+    found = set()
+    for line in csv_content.splitlines():
+        for cell in line.split(","):
+            stripped = cell.strip().strip('"')
+            if stripped and stripped in _PANDAS_NA_SENTINELS:
+                found.add(stripped)
+    return sorted(found)
 
 
 class QCCleanParams(BaseModel):
@@ -308,11 +356,16 @@ class QCCleanResult(BaseModel):
     source_note: Optional[str] = Field(
         default=None,
         description=(
-            "Advisory populated only when the experiment has more than one known "
-            "raw source and neither source_id nor run_id was given: names the "
-            "source actually used and points to core_list_experiment_sources to "
-            "choose a different one. None when a pin was given, when the "
-            "experiment has zero or one source, or on the csv_content path."
+            "Advisory about where this result's input came from. On the "
+            "csv_content path it always states that the content was not "
+            "registered and no run was recorded, and carries the input_sha256 — "
+            "so a reader of the result alone can tell an ephemeral analysis from "
+            "a persisted one without inspecting which fields happen to be null. "
+            "On the experiment path it is populated only when the experiment has "
+            "more than one known raw source and neither source_id nor run_id was "
+            "given: it names the source actually used and points to "
+            "core_list_experiment_sources to choose a different one, and is None "
+            "when a pin was given or the experiment has zero or one source."
         ),
     )
 
@@ -590,14 +643,32 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
             mode=_VALIDATION_MODE,
         )
     except ValueError as exc:
+        remedy = (
+            "Fix the flagged structural issue (e.g. ensure the genotype column "
+            "has no blank/NaN values and at least one numeric trait is present), "
+            "then retry."
+        )
+        # On the inline path the caller is usually looking at hand-made CSV text,
+        # where "no blank/NaN values" is advice they cannot act on: pandas parses
+        # a set of literal strings as missing, so an accession genuinely named NA
+        # (or N/A, NULL, NaN, None) becomes NaN in a file with zero blank cells.
+        # Naming the sentinel actually present turns a contradictory-looking
+        # error into a fixable one. Checked only here, on the failure path, and
+        # only against content already bounded by MAX_INLINE_CSV_BYTES.
+        if is_inline and "missing values" in str(exc):
+            found = _na_sentinels_present(params.csv_content)
+            if found:
+                remedy = (
+                    f"Your content contains the literal value(s) {found}, which "
+                    f"are parsed as missing data even though the cell is not "
+                    f"blank — an accession genuinely named 'NA' becomes NaN. "
+                    f"Rename the affected value(s) in your CSV, then retry. "
+                    f"Otherwise: {remedy}"
+                )
         raise BloomMCPError(
             code="assumption_violated",
             message=f"Input failed the analysis contract: {exc}",
-            remedy=(
-                "Fix the flagged structural issue (e.g. ensure the genotype column "
-                "has no blank/NaN values and at least one numeric trait is present), "
-                "then retry."
-            ),
+            remedy=remedy,
         ) from None
     # BLOCK-4: absorbed_warnings (role-absorbed exclusions) prepended so they appear
     # first; contract_warnings follow.
@@ -680,6 +751,43 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
             ),
         )
 
+    # ±inf is not NaN, and `isna()` does not see it — so a table carrying an
+    # infinity passed the guarantee above with cleaned_nan_cells_remaining == 0
+    # and no warning, was certified clean, and then failed downstream with
+    # "Input X contains infinity". That closed a loop the spec itself opens: a
+    # non-finite consumer's remedy directs the caller to
+    # qc_clean(csv_content=..., return_cleaned_csv=true), qc_clean certifies the
+    # inf-bearing table, and the consumer rejects it again.
+    #
+    # Deliberately applied to BOTH paths, not scoped to csv_content, even though
+    # this PR otherwise promises byte-identical registered behaviour. Certifying
+    # an infinity as analysis-ready is the exact thing the no-NaN guarantee
+    # exists to prevent, and a cleaned run containing one was never usable —
+    # pca_analysis already rejects it, just later and less legibly. Called out
+    # explicitly rather than quietly narrowed to inline to preserve a promise.
+    if kept_cols:
+        numeric = cleaned_df[kept_cols].apply(pd.to_numeric, errors="coerce")
+        nonfinite_by_col = (~np.isfinite(numeric.to_numpy(dtype=float))).sum(axis=0)
+        infinite_cols = [
+            col for col, n in zip(kept_cols, nonfinite_by_col) if int(n) > 0
+        ]
+        if infinite_cols:
+            raise BloomMCPError(
+                code="assumption_violated",
+                message=(
+                    f"Cleanup produced no analysis-ready table — it left "
+                    f"non-finite values (±inf) in {sorted(infinite_cols)}. "
+                    f"These are not NaN, so the cleanup thresholds do not remove "
+                    f"them, and every downstream analysis rejects them."
+                ),
+                remedy=(
+                    "Non-finite values usually come from a divide-by-zero in an "
+                    "upstream trait computation (a ratio or angle). Drop or "
+                    "recompute the affected columns in your source data, or "
+                    "exclude them with exclude_columns, then retry."
+                ),
+            )
+
     removed_traits = [c for c in trait_cols if c not in kept_cols]
     nan_mask = frame.df[trait_cols].isna()
     input_nan_summary = {
@@ -700,6 +808,20 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         output_links: dict[str, OutputLink] = {}
         input_sha256 = resolved_input.input_sha256
         next_step = None
+        # Say so in the payload, not only by omission. Everything that marks this
+        # result as ephemeral is currently a *null* — run_ref, version_dir,
+        # manifest_path — and a client that drops null fields renders it as an
+        # ordinary complete qc_clean summary. These numbers get pasted into
+        # notebooks and methods sections, so the result has to carry its own
+        # disclaimer. The spec already requires exactly this of
+        # load_experiment_data; the structured tools whose output actually gets
+        # cited should not be the ones that omit it.
+        source_note = (
+            "Ephemeral analysis: this content was supplied inline and was not "
+            "registered — no run was recorded, nothing is retrievable later, and "
+            "there is no version to cite. Input SHA-256: "
+            f"{input_sha256}."
+        )
         if params.return_cleaned_csv:
             # Not persistence: the text goes into the response and nowhere else. It
             # exists so a caller can chain client-side — pass it as the next tool's
@@ -716,6 +838,16 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
                 # resolve_columns' detection heuristic, and PR 2 puts five
                 # consumers on top of it. Verified, not assumed.
                 verify_trait_cols=kept_cols,
+                # Roles too, not just traits. An explicit genotype_column /
+                # sample_id_column override is reported in this very result, so
+                # a consumer that re-detects a different column would group by
+                # something other than what was just reported — with a matching
+                # content digest, because the bytes are identical.
+                verify_roles={
+                    "genotype": resolved.genotype,
+                    "sample_id": resolved.sample_id,
+                    "replicate": resolved.replicate,
+                },
             )
             cleaned_csv_sha256 = _inline_input.compute_input_sha256(cleaned_csv)
         else:
@@ -754,7 +886,15 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
             source_csv=_ports.raw_source_for(params.experiment),
             source=frame.resolved_source,
         )
-        cleaned_df.to_csv(run.staging_dir / CLEANED_CSV_NAME, index=False)
+        # lineterminator pinned for the same reason the ephemeral path pins it —
+        # with more force, not less. This file is content-hashed into the
+        # manifest, so an unpinned os.linesep would make the recorded digest
+        # depend on which platform produced the run. Benign in a Linux container
+        # today; the argument for pinning the response copy applies at least as
+        # strongly to the persisted one.
+        cleaned_df.to_csv(
+            run.staging_dir / CLEANED_CSV_NAME, index=False, lineterminator="\n"
+        )
         (run.staging_dir / _LOG_NAME).write_text(
             json.dumps(convert_to_json_serializable(log), indent=2)
         )

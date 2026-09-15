@@ -15,6 +15,21 @@ approximately 7.7 seconds of CPU) — a real, reproducible denial-of-service vec
 shared container, which has no rate limiting in front of this path and no persistence step to
 create natural backpressure.
 
+**The scan SHALL skip exactly the rows `pandas.read_csv` skips, and no others.** `csv.reader`
+yields `[]` for a blank line and `['   ']` for a whitespace-only one; `read_csv` runs with
+`skip_blank_lines=True` and discards both. Taking literally the second row the reader yields made
+the scanner and the parser disagree about which row is the first data row — and the disagreement
+failed *open*, because a reported width of 0 is never greater than the header's. Reproduced: a
+blank line between a 3-field header and 480,000-field rows was accepted after 13.56 seconds,
+producing a frame whose real data had been hoisted into a 479,997-level phantom index that
+`resolve_columns` then ran over. Two further consequences: the byte bound never engaged (the scan
+stopped after seven bytes), and the width guard was silently inert for any ordinary CSV with a
+blank line after its header — a common spreadsheet export. Skipping SHALL NOT extend beyond
+blank and whitespace-only rows: a `#note` row and a lone `x` each become real, NaN-padded data
+rows in `read_csv`, so skipping them would recreate the same disagreement in the other direction.
+Skipping SHALL remain subject to the byte bound, so many blank lines cannot walk the scan through
+the whole body.
+
 **Measuring the header row alone is not sufficient, and left the guard fully bypassable.**
 Reproduced: a 3-field header paired with 480,000-field *data* rows — 1.92 MB, under every
 declared cap — was accepted after 16.03 seconds in `pandas.read_csv`, and accepted *silently*,
@@ -90,6 +105,28 @@ the bypass above showed, in the implicit-index case it does not fire at all.
 - **THEN** it raises `BloomMCPError(code="invalid_input")`, `pandas.read_csv` is never called,
   and rejection happens in well under one second — where the header-only guard accepted this
   same payload after approximately 16 seconds and returned a 3-column frame
+
+#### Scenario: A row the parser skips cannot hide wide data behind it
+
+- **WHEN** `parse_inline_csv_frame` is called with content whose header is followed by a blank
+  line, two blank lines, a CRLF blank line, a whitespace-only row, or a tab-only row, and then
+  by data rows exceeding `MAX_INLINE_CSV_COLUMNS`
+- **THEN** each is rejected with `BloomMCPError(code="invalid_input")`, `pandas.read_csv` is never
+  called, and rejection happens in well under one second
+
+#### Scenario: An ordinary CSV with a skipped row after its header still parses
+
+- **WHEN** `parse_inline_csv_frame` is called with a well-formed small table whose header is
+  followed by a blank, CRLF-blank or whitespace-only row
+- **THEN** the content is accepted, every value appears under its own column name, and the frame
+  carries a plain single-level index — the guard must not become a refusal of a common
+  spreadsheet export
+
+#### Scenario: Rows the parser does not skip are not skipped by the scan
+
+- **WHEN** the scan encounters a `#note` row or a lone `x` row after the header
+- **THEN** it reports that row's width as the first data row's, matching what `read_csv` will
+  treat as data
 
 #### Scenario: A wide data row that fits inside the scan bound is still rejected
 
@@ -616,6 +653,76 @@ all three.
   widest existing fixture
 - **THEN** all pass unchanged — none of the three guards fires on a registered read
 
+### Requirement: A Returned Table Re-Resolves to the Same Analysis Shape and the Same Values
+
+Where a tool returns a produced table for client-side chaining, it SHALL verify before returning
+that the serialized text re-resolves to the analysis shape it was produced with — **both** the
+certified trait set **and** the resolved genotype, sample-id and replicate roles.
+
+Roles are not covered by the trait set and fail differently. A caller who passes
+`genotype_column="Line"` receives a result naming `Line`; a consumer handed the same text
+re-detects roles from scratch and may land on a different column, then groups by something other
+than what was just reported — while the content digest still matches, because the bytes really
+are identical. The caller's own integrity check therefore confirms the wrong thing. A role that
+would re-resolve differently SHALL raise `BloomMCPError` (`assumption_violated`) naming the role,
+the value produced, and the value that would be re-detected.
+
+Values SHALL survive the hop exactly. `pandas.read_csv`'s default float parser is not
+correctly-rounded: measured over 5,000 draws, 90.4% of values around 1e-3 changed on a single
+serialize/parse hop, by up to 7,270 ULPs (35.4% around 1e0; 10.1% around 1e6), and the drift
+compounds across chained calls. The magnitudes affected are exactly where root traits live —
+curvature, radian angles, ratios, solidity. The drift is far below measurement noise and changes
+no scientific conclusion, but a content digest documented as proving that a later call analyzed
+*this* table would otherwise prove only that the text matched, not the values. Both the
+serializer's verification read and the inline parse SHALL therefore use correctly-rounded float
+parsing.
+
+#### Scenario: A role that would re-resolve differently is rejected
+
+- **WHEN** a table is returned whose resolved genotype column was an explicit override, and
+  re-resolving the serialized text would detect a different column
+- **THEN** it raises `BloomMCPError(code="assumption_violated")` naming the role and both values,
+  with a remedy that includes renaming the column so it is detected without an override
+
+#### Scenario: Roles that survive the hop are accepted
+
+- **WHEN** a table is returned whose resolved roles match what re-resolution detects
+- **THEN** the text is returned normally
+
+#### Scenario: Float values are unchanged across the hop
+
+- **WHEN** a table of floating-point trait values spanning magnitudes from 1e-3 to 1e6 is
+  serialized and parsed back through the inline path
+- **THEN** every value is bit-identical to the one serialized, and re-serializing the parsed frame
+  reproduces byte-identical text
+
+### Requirement: An Inline Result Says That Nothing Was Recorded
+
+A tool's inline result SHALL state in its payload that the content was not registered and no run
+was recorded, rather than leaving that to be inferred from which fields are null.
+
+Everything that distinguishes an ephemeral result today is an *absence* — `run_ref`,
+`version_dir` and `manifest_path` are `None`, `outputs` is empty — and a client that omits null
+fields renders it as an ordinary, complete result. These numbers are read into notebooks and
+methods sections. The disclaimer SHALL carry the `input_sha256`, so the statement and the thing
+it describes travel together, and SHALL NOT be confused with the multi-source advisory the same
+field carries on the registered path, which has no meaning without a registered experiment.
+
+This requirement already applies to `load_experiment_data`, whose spec requires an explicit
+statement that the content was not registered; extending it to the structured tools closes the
+gap where the string-returning outlier is the only one that says so.
+
+#### Scenario: The inline result carries its own disclaimer
+
+- **WHEN** a tool completes successfully with `csv_content`
+- **THEN** the result carries an advisory stating the content was not registered and no run was
+  recorded, including the `input_sha256`, and naming no source-selection tool
+
+#### Scenario: The registered path's advisory is unchanged
+
+- **WHEN** a tool completes successfully with a registered `experiment` that has one known source
+- **THEN** that advisory field is `None`, exactly as before
+
 ### Requirement: The Inline Path Has a Runtime Kill Switch
 
 The system SHALL read an environment variable (`BLOOMMCP_INLINE_CSV_ENABLED`, default enabled)
@@ -627,6 +734,18 @@ This exists because bloommcp has no feature flags today and the deploy pipeline'
 rollback covers only a *failed* deploy — a successfully deployed but misbehaving build is
 reverted only by a new commit through a full multi-image rebuild. This change enables ten tools
 at once; one variable and a container restart is a proportionate off switch.
+
+The variable SHALL be declared explicitly in the deployment configuration (the compose services
+that run bloommcp and the environment defaults files) rather than left to the code default. An
+undeclared switch is not an operable one: the compose files enumerate each service's environment
+explicitly, so a variable absent from them never reaches the container, and an operator has no way
+to discover the switch exists without reading source.
+
+#### Scenario: The switch is declared in the deployment configuration
+
+- **WHEN** the compose files and environment defaults are inspected
+- **THEN** `BLOOMMCP_INLINE_CSV_ENABLED` appears in the bloommcp service's environment and in the
+  environment defaults, with its default value stated
 
 #### Scenario: Disabling the flag rejects every inline call
 
