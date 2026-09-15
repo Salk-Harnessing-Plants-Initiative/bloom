@@ -628,6 +628,9 @@ class _FakeSbStorageClient:
 
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
+        # Every (prefix, options) pair `list` was called with, so a test can
+        # assert the request shape and the number of round-trips (#396).
+        self.calls: list[tuple] = []
 
     def upload(self, *, path, file, file_options=None):
         del file_options
@@ -638,13 +641,31 @@ class _FakeSbStorageClient:
             raise KeyError(f"object not found: {path}")
         return self.objects[path]
 
-    def list(self, prefix):
+    def list(self, prefix, options=None):
+        """Slice the sorted immediate children by `limit`/`offset` (#396).
+
+        Models the real endpoint's paging rather than returning everything:
+        when `options` is absent it falls back to storage3's own
+        `DEFAULT_SEARCH_OPTIONS` (`offset=0, limit=100`), so an unpaginated
+        caller sees the same truncation the deployed backend gives it.
+        """
+        self.calls.append((prefix, options))
+        # A regressed page cap would otherwise spin forever here; pytest-timeout
+        # isn't in the `test` extra, so the fake bounds itself. +2 leaves room
+        # for the terminating short page and the cap's own final request.
+        assert len(self.calls) <= sb._SUPABASE_LIST_MAX_PAGES + 2, (
+            "list() called past the page cap — the pagination bound regressed"
+        )
+        opts = options or {}
+        offset = opts.get("offset", 0)
+        limit = opts.get("limit", 100)
         norm = (prefix.rstrip("/") + "/") if prefix else ""
         names: set[str] = set()
         for key in self.objects:
             if key.startswith(norm):
                 names.add(key[len(norm) :].split("/", 1)[0])
-        return [{"name": n} for n in sorted(names) if n]
+        ordered = [n for n in sorted(names) if n]
+        return [{"name": n} for n in ordered[offset : offset + limit]]
 
     def remove(self, paths):
         for p in paths:
@@ -934,6 +955,348 @@ def test_resolve_versioned_cleaned_via_local_list_prefix_fallback(
     assert path is not None
     assert path.read_bytes() == b"trait,value\n1,2\n"
     assert label == "v1_cleaned"
+
+
+# ─── 5e. Supabase list_prefix pagination (#396) ───────────────────────────────
+#
+# `SupabaseStorageBackend.list_prefix` used to call `client.list(prefix)` with no
+# options, inheriting storage3's DEFAULT_SEARCH_OPTIONS (limit=100) and silently
+# truncating any prefix with more immediate children than that. These are the
+# first direct tests of that method: `_FakeSbStorageClient` honors limit/offset,
+# so an unpaginated implementation fails them rather than passing behind a fake
+# with no page limit (which is exactly what the local/in-memory parity tests are).
+
+
+def _seed_children(client, prefix: str, count: int, *, start: int = 1) -> list[str]:
+    """Seed `count` sibling version dirs under `prefix`, returning their names.
+
+    Zero-padded so lexicographic and numeric order agree — these tests are about
+    paging, and unpadded `v1/v10/v2` scatter would obscure which page an entry
+    lands on (the real-world scatter is covered in design.md, not here).
+    """
+    names = [f"v{i:04d}_2026-07-06" for i in range(start, start + count)]
+    for n in names:
+        client.objects[f"{prefix}{n}/_cleaned.csv"] = b"x"
+    return names
+
+
+def _patch_client(monkeypatch, client) -> dict:
+    """Point `get_storage_client` at `client`, counting its constructions."""
+    counter = {"n": 0}
+
+    def _get(**_kwargs):
+        counter["n"] += 1
+        return client
+
+    monkeypatch.setattr("bloom_mcp.supabase_client.get_storage_client", _get)
+    return counter
+
+
+def test_supabase_list_prefix_pages_past_the_default_limit(monkeypatch):
+    """250 children come back whole, via advancing offsets — not truncated at 100."""
+    client = _FakeSbStorageClient()
+    prefix = "bloommcp_output/qc_x/"
+    expected = _seed_children(client, prefix, 250)
+    counter = _patch_client(monkeypatch, client)
+
+    names = sb.SupabaseStorageBackend().list_prefix(prefix)
+
+    assert names == expected  # all 250, in order, no gap at the page seam
+    assert [opts["offset"] for _p, opts in client.calls] == [0, 100, 200]
+    # The client is stateless; constructing one per page would be pure waste.
+    assert counter["n"] == 1
+
+
+def test_supabase_list_prefix_single_page_costs_one_request(monkeypatch):
+    """A prefix inside one page still costs exactly one round-trip.
+
+    GREEN before the pagination fix too — it guards the hot `read_manifest`
+    existence check against a future terminate-on-empty-page rewrite that would
+    silently add a second request to every listing.
+    """
+    client = _FakeSbStorageClient()
+    prefix = "bloommcp_output/qc_x/"
+    expected = _seed_children(client, prefix, 7)
+    counter = _patch_client(monkeypatch, client)
+
+    assert sb.SupabaseStorageBackend().list_prefix(prefix) == expected
+    assert len(client.calls) == 1
+    assert counter["n"] == 1
+
+
+def test_supabase_list_prefix_empty_listing_returns_empty_list(monkeypatch):
+    """An empty listing is a normal state, not an error (one request)."""
+    client = _FakeSbStorageClient()
+    _patch_client(monkeypatch, client)
+
+    assert sb.SupabaseStorageBackend().list_prefix("bloommcp_output/qc_none/") == []
+    assert len(client.calls) == 1
+
+
+def test_supabase_list_prefix_exact_page_multiple_is_not_truncated(monkeypatch):
+    """Exactly one full page: the next (empty) page is what proves the end.
+
+    The boundary case a short-page rule must not get wrong — a full final page
+    is indistinguishable from a continuing listing, so it costs one extra request.
+    """
+    client = _FakeSbStorageClient()
+    prefix = "bloommcp_output/qc_x/"
+    expected = _seed_children(client, prefix, 100)
+    _patch_client(monkeypatch, client)
+
+    names = sb.SupabaseStorageBackend().list_prefix(prefix)
+
+    assert names == expected
+    assert len(names) == 100
+    assert [opts["offset"] for _p, opts in client.calls] == [0, 100]
+
+
+@pytest.mark.parametrize(
+    "prefix", ["", "bloommcp_output", "bloommcp_output/", "bloommcp_output/qc_x/"]
+)
+def test_supabase_list_prefix_request_pins_page_size_and_sort_order(
+    monkeypatch, prefix
+):
+    """Options carry limit/offset/sortBy, and the prefix is forwarded verbatim.
+
+    The adapter passes the prefix straight through (the local backend strips
+    slashes instead), so prefix normalization is where a >1-page cross-backend
+    divergence would hide.
+    """
+    client = _FakeSbStorageClient()
+    _patch_client(monkeypatch, client)
+
+    sb.SupabaseStorageBackend().list_prefix(prefix)
+
+    called_prefix, opts = client.calls[0]
+    assert called_prefix == prefix  # byte-identical, no normalization
+    assert opts == {
+        "limit": sb._SUPABASE_LIST_PAGE_SIZE,
+        "offset": 0,
+        "sortBy": {"column": "name", "order": "asc"},
+    }
+
+
+def test_supabase_list_page_size_matches_client_default():
+    """Tie the page size to storage3's own default, not to itself.
+
+    The end-of-listing rule ("a short page means the end") is only safe for a
+    limit the server already accepts unmodified — which is exactly the value
+    every unconfigured `.list()` call sends. storage3 is a *transitive* lock
+    resolution (pyproject declares only `supabase>=2.0.0,<3`), so without this
+    assertion a lockfile bump could change that default and leave the suite green.
+    """
+    from storage3.constants import DEFAULT_SEARCH_OPTIONS
+
+    assert sb._SUPABASE_LIST_PAGE_SIZE == DEFAULT_SEARCH_OPTIONS["limit"]
+    assert {"column": "name", "order": "asc"} == DEFAULT_SEARCH_OPTIONS["sortBy"]
+
+
+def test_supabase_list_prefix_sort_by_is_not_shared_mutable_state(monkeypatch):
+    """Each request gets its own sortBy dict.
+
+    storage3 shallow-merges the options into the request body, so a shared
+    module-level dict would travel by reference and one mutation would corrupt
+    every later listing in the process.
+    """
+    client = _FakeSbStorageClient()
+    prefix = "bloommcp_output/qc_x/"
+    _seed_children(client, prefix, 150)
+    _patch_client(monkeypatch, client)
+
+    sb.SupabaseStorageBackend().list_prefix(prefix)
+
+    sort_bys = [opts["sortBy"] for _p, opts in client.calls]
+    assert len(sort_bys) >= 2
+    assert all(s == {"column": "name", "order": "asc"} for s in sort_bys)
+    # Distinct objects, so mutating one request's sortBy can't affect another.
+    assert len({id(s) for s in sort_bys}) == len(sort_bys)
+
+
+def test_supabase_list_prefix_raises_when_server_ignores_offset(monkeypatch):
+    """A server that disregards `offset` is caught on request two, not at the cap.
+
+    A page contributing no new names is the direct observation of "no progress",
+    so it fires immediately instead of after the backstop's 50 requests — and it
+    can never mislabel a legitimately large prefix as a broken server.
+    """
+    import re
+
+    prefix = "bloommcp_output/qc_x/"
+
+    class _OffsetIgnoringClient(_FakeSbStorageClient):
+        def list(self, prefix, options=None):  # noqa: A002 - mirrors the real name
+            opts = dict(options or {})
+            opts["offset"] = 0  # pretend offset has no effect
+            return super().list(prefix, opts)
+
+    client = _OffsetIgnoringClient()
+    names = _seed_children(client, prefix, 250)
+    _patch_client(monkeypatch, client)
+
+    with pytest.raises(sb.StorageBackendError, match=re.escape(prefix)) as exc:
+        sb.SupabaseStorageBackend().list_prefix(prefix)
+
+    assert len(client.calls) == 2  # stopped on no-progress, not at the cap
+    # The message must not dump the accumulated listing into an agent-facing string.
+    assert names[0] not in str(exc.value)
+
+
+def test_supabase_list_prefix_over_long_page_is_not_skipped_past(monkeypatch):
+    """Advancing by len(page) means an over-long page can't skip entries.
+
+    The mirror image of the ignored-`offset` case: a client or server that
+    disregards `limit` returns more than requested, and advancing by the
+    *requested* limit would silently drop everything past it.
+    """
+    client = _FakeSbStorageClient()
+    prefix = "bloommcp_output/qc_x/"
+    expected = _seed_children(client, prefix, 250)
+
+    class _OverLongPageClient(_FakeSbStorageClient):
+        def list(self, prefix, options=None):  # noqa: A002 - mirrors the real name
+            opts = dict(options or {})
+            opts["limit"] = 150  # ignore the requested 100, return more
+            return super().list(prefix, opts)
+
+    over = _OverLongPageClient()
+    over.objects = client.objects
+    _patch_client(monkeypatch, over)
+
+    names = sb.SupabaseStorageBackend().list_prefix(prefix)
+
+    assert names == expected  # nothing between 100 and 150 was skipped
+    assert len(names) == 250
+
+
+def test_supabase_list_prefix_deduplicates_across_page_boundary(monkeypatch):
+    """A child shifted across a page seam by a concurrent write is not double-counted.
+
+    Names are unique within a prefix, so a repeat can only come from a race.
+    `experiments_scanned` in a persisted audit report is exactly the integrity
+    counter that would otherwise absorb the double-count.
+    """
+    prefix = "bloommcp_output/qc_x/"
+
+    class _RepeatingClient(_FakeSbStorageClient):
+        """Re-emits the previous page's last name at the head of the next page."""
+
+        def list(self, prefix, options=None):  # noqa: A002 - mirrors the real name
+            page = super().list(prefix, options)
+            opts = options or {}
+            if opts.get("offset", 0) and page:
+                return [{"name": self._last}] + page[:-1]
+            if page:
+                self._last = page[-1]["name"]
+            return page
+
+    client = _RepeatingClient()
+    _seed_children(client, prefix, 150)
+    _patch_client(monkeypatch, client)
+
+    names = sb.SupabaseStorageBackend().list_prefix(prefix)
+
+    assert len(names) == len(set(names))  # no duplicate survives
+
+
+def test_list_prefix_parity_paginated_supabase_vs_local(monkeypatch, tmp_path):
+    """Cross-backend parity at >1 page — the gap #396 names.
+
+    `test_list_prefix_parity_fake_vs_local` can't catch truncation: neither
+    `Path.iterdir()` nor the dict-backed in-memory fake has a page limit. This
+    sweeps the same prefix table with 150 children, where the Supabase side
+    genuinely pages.
+
+    Compares sorted name lists, never exact order: Python `sorted()` is codepoint
+    order while the server orders by the `name` column under the database
+    collation, so an exact-order assertion would be false and eventually flaky.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    local = sb.LocalStorageBackend(root)
+    client = _FakeSbStorageClient()
+    prefix = "bloommcp_output/qc_x/"
+
+    src = tmp_path / "seed.csv"
+    src.write_bytes(b"x")
+    for n in _seed_children(client, prefix, 150):
+        local.upload_file(f"{prefix}{n}/_cleaned.csv", src)
+    client.objects[f"{prefix}manifest.json"] = b"{}"
+    local.write_json(f"{prefix}manifest.json", {})
+
+    _patch_client(monkeypatch, client)
+    supa = sb.SupabaseStorageBackend()
+
+    for p in [
+        "",
+        "bloommcp_output",
+        "bloommcp_output/",
+        "bloommcp_output/qc_x",
+        prefix,
+        "bloommcp_output/qc_missing/",
+    ]:
+        assert sorted(supa.list_prefix(p)) == sorted(local.list_prefix(p)), (
+            f"list_prefix mismatch for {p!r}"
+        )
+
+
+def test_resolve_versioned_cleaned_resolves_version_dir_beyond_first_page(
+    monkeypatch, tmp_path
+):
+    """The Supabase analogue of the local version_dir='' fallback, at >1 page.
+
+    This is the caller-level wrong answer #396 produces: with more than a page of
+    sibling version dirs, the pre-fix listing omits the one the manifest names and
+    `_resolve_versioned_cleaned` reports "its directory was not found" for a
+    directory that exists. Legacy manifests (empty `version_dir`) are precisely
+    the low-numbered ones that need this fallback.
+    """
+    from bloom_mcp import experiment_utils as eu
+    from bloom_mcp.manifest import (
+        ExperimentBlock,
+        Manifest,
+        VersionEntry,
+        get_code_versions,
+    )
+
+    client = _FakeSbStorageClient()
+    stem = "exp"
+    prefix = f"bloommcp_output/qc_{stem}/"
+    # 150 siblings; the target sorts onto page 2 (v0140 > the 100th name).
+    _seed_children(client, prefix, 150)
+    target = "v0140_2026-07-06"
+    client.objects[f"{prefix}{target}/_cleaned.csv"] = b"trait,value\n1,2\n"
+
+    entry = VersionEntry(
+        id="v0140",
+        created_at="2026-07-06T00:00:00Z",
+        tool="qc_clean",
+        params={},
+        based_on_version="raw",
+        code_versions=get_code_versions(),
+        outputs={"_cleaned.csv": "_cleaned.csv"},
+        version_dir="",  # empty → forces the list_prefix sibling lookup
+    )
+    manifest = Manifest(
+        experiment=ExperimentBlock(
+            filename=f"{stem}.csv", source_path="", input_sha256=""
+        ),
+        versions=[entry],
+        latest="v0140",
+    )
+    client.objects[f"{prefix}manifest.json"] = json.dumps(
+        manifest.model_dump(mode="json"), indent=2, sort_keys=True
+    ).encode("utf-8")
+
+    monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
+    sb.reset_backend_for_tests()
+    _patch_client(monkeypatch, client)
+
+    path, label, err = eu._resolve_versioned_cleaned(eu.OUTPUT_DIR, stem, "latest")
+
+    assert err is None
+    assert path is not None
+    assert path.read_bytes() == b"trait,value\n1,2\n"
 
 
 # ─── 5b. #420 — outliers-preferring "latest" vs qc-only "latest_qc" ────────────
