@@ -47,3 +47,18 @@
 
 GRANT USAGE ON SCHEMA storage TO bloom_user, bloom_admin, bloom_agent, bloom_writer, bloom_workflows;
 GRANT USAGE ON SCHEMA auth TO bloom_writer;
+
+-- pgmq USAGE for the cyl-video queue's definer role (20260817010000). Only the schema
+-- grant lives here — the queue's table grants are in that migration, transactional with
+-- the pgmq.create that makes the tables. Guarded on the role: this file is applied on
+-- every deploy under ON_ERROR_STOP=1, so a raise here would abort the grants above and
+-- fail unrelated deploys on any database where the migration has not run (or was rolled
+-- back, or restored from a dump, which does not carry roles).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bloom_video_queue_owner')
+     AND to_regnamespace('pgmq') IS NOT NULL THEN
+    GRANT USAGE ON SCHEMA pgmq TO bloom_video_queue_owner;
+  END IF;
+END
+$$;
