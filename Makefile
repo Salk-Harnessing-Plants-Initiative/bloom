@@ -8,7 +8,7 @@ POSTGRES_PORT     ?= 5432
 POSTGRES_DB       ?= postgres
 
 # tbls draws _WIKI/SUPABASE/erd.md; pr-checks.yml pins the same image.
-TBLS_IMAGE ?= ghcr.io/k1low/tbls:v1.96.0@sha256:35e29e5c2e2d8a4555b36eacfdac9d78d8af5aee5c73cc68219cac9cf3723ee1
+TBLS_IMAGE ?= ghcr.io/salk-harnessing-plants-initiative/k1low-tbls:v1.96.0@sha256:35e29e5c2e2d8a4555b36eacfdac9d78d8af5aee5c73cc68219cac9cf3723ee1
 
 # Default target when you just run `make`
 .PHONY: help
