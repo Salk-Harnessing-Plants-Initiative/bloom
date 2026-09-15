@@ -2,7 +2,7 @@
 
 Split out from backup_objects.py so the retry, progress, and verification
 behaviour can be tested against a fake daemon without going near argument
-parsing, Docker, or the workflow that schedules it.
+parsing or the workflow that schedules it.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import heapq
 import logging
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -51,6 +52,7 @@ def copy_all(
     failures: list[str] | None = None,
     gone: list[str] | None = None,
     succeeded: "VerifyReservoir | None" = None,
+    alive: Callable[[], bool] | None = None,
 ) -> tuple[int, int, int]:
     """Copy every planned object, N at a time, recording each success.
 
@@ -61,6 +63,9 @@ def copy_all(
     verification samples objects that actually landed. Sampling the *plan*
     instead re-reports failed objects as "missing on Box", double-counting
     errors already logged.
+
+    `alive`, when given, says whether the rclone daemon is still running. Once
+    it is not, queued objects are not started and nothing in flight is retried.
     """
     src_fs = minio.fs()
     lock = threading.Lock()
@@ -72,12 +77,18 @@ def copy_all(
         # the objects still queued while those already in flight finish and are
         # recorded — so nothing is left half-copied, and a restart neither
         # repeats them nor misses them.
-        if stopping.stopping():
+        if stopping.stopping() or (alive is not None and not alive()):
             return
         dst = lib.box_path(obj, box_root)
         try:
             copy_one(
-                client, src_fs, lib.source_remote(obj, minio.prefix), box_fs, dst, obj
+                client,
+                src_fs,
+                lib.source_remote(obj, minio.prefix),
+                box_fs,
+                dst,
+                obj,
+                alive=alive,
             )
         except RcloneError as exc:
             # Ask MinIO whether the object is there at all before calling this
@@ -241,6 +252,7 @@ def copy_one(
     box_fs: str,
     dst_remote: str,
     obj: lib.StorageObject,
+    alive: Callable[[], bool] | None = None,
 ) -> None:
     """Copy one object, backing off on the throttling Box does under load."""
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -248,7 +260,9 @@ def copy_one(
             client.copy_file(src_fs, src_remote, box_fs, dst_remote)
             return
         except RcloneError as exc:
-            if not exc.retryable or attempt == MAX_ATTEMPTS:
+            # A daemon that has exited refuses every retry, so stop at once.
+            gone = alive is not None and not alive()
+            if not exc.retryable or attempt == MAX_ATTEMPTS or gone:
                 raise
             delay = RETRY_BASE_SECONDS * (2 ** (attempt - 1))
             logger.warning(

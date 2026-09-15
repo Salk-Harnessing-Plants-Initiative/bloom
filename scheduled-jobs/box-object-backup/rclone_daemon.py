@@ -58,20 +58,33 @@ class Daemon:
         return redact("\n".join(text.splitlines()[-lines:]))
 
     def stop(self, timeout: float = STOP_TIMEOUT_SECONDS) -> None:
-        """Terminate, wait, and kill after the bound. Never raises."""
-        if self.process.poll() is not None:
-            return
-        try:
-            self.process.terminate()
-            self.process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
+        """Terminate, wait, kill after the bound, then remove the log. Never raises."""
+        if self.process.poll() is None:
             try:
+                self.process.terminate()
                 self.process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
+                self.process.kill()
+                try:
+                    self.process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    pass
+            except OSError:
                 pass
+        # Any failure has already quoted the log's tail.
+        try:
+            self.log_path.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def ensure_running(daemon: Daemon, when: str) -> None:
+    """Raise DaemonError, with the end of its log, if the daemon has exited."""
+    code = daemon.exit_code()
+    if code is not None:
+        raise DaemonError(
+            f"rclone daemon exited ({code}) {when}. Its log:\n{daemon.log_tail()}"
+        )
 
 
 def start(
@@ -107,9 +120,10 @@ def start(
         "HOME": os.environ.get("HOME", tempfile.gettempdir()),
         "PATH": os.environ.get("PATH", os.defpath),
     }
-    fd, log_name = tempfile.mkstemp(prefix="rclone-rcd-", suffix=".log")
     try:
-        with os.fdopen(fd, "w") as log:
+        fd, log_name = tempfile.mkstemp(prefix="rclone-rcd-", suffix=".log")
+        os.close(fd)
+        with open(log_name, "w") as log:
             process = subprocess.Popen(
                 argv,
                 env=env,

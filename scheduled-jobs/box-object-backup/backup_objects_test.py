@@ -236,6 +236,44 @@ def test_one_object_failing_does_not_abort_the_rest(ledger):
 # ---------- verification pass ----------
 
 
+def test_a_dead_daemon_is_not_retried():
+    """A refused connection from a daemon that has exited will not clear."""
+    calls = []
+
+    class Refused:
+        def copy_file(self, *args):
+            calls.append(args)
+            raise RcloneError("connection refused", retryable=True)
+
+    with pytest.raises(RcloneError):
+        copier.copy_one(Refused(), "s:", "a", BOX_FS, "b", obj(), alive=lambda: False)
+    assert len(calls) == 1
+
+
+def test_queued_objects_do_not_start_once_the_daemon_is_gone(ledger):
+    alive = {"yes": True}
+    copies = []
+
+    class DiesAfterOne:
+        def copy_file(self, src_fs, src_remote, dst_fs, dst_remote):
+            copies.append(src_remote)
+            alive["yes"] = False
+
+    objects = [obj(f"exp/{i}.png") for i in range(3)]
+    result = copier.copy_all(
+        DiesAfterOne(),
+        make_plan(objects),
+        MINIO,
+        BOX_FS,
+        "root",
+        ledger,
+        1,
+        alive=lambda: alive["yes"],
+    )
+    assert result == (1, 0, 0)
+    assert len(copies) == 1
+
+
 def make_plan(objects):
     return build_plan(objects, {})
 
@@ -999,10 +1037,10 @@ class TestRunLockedWiresItsPartsTogether:
                 state["daemon_stopped"] = True
 
             def exit_code(self):
-                return None
+                return state.get("exit_code")
 
             def log_tail(self, lines=40):
-                return ""
+                return state.get("log", "")
 
         def query_to_file(conn, sql, destination):
             destination.write_text(TestRunLockedWiresItsPartsTogether.MANIFEST)
@@ -1011,6 +1049,9 @@ class TestRunLockedWiresItsPartsTogether:
         class FakeClient:
             def copy_file(self, src_fs, src_remote, dst_fs, dst_remote):
                 state["copied"].append((src_fs, src_remote, dst_remote))
+                # The daemon dies once this many copies have gone through.
+                if len(state["copied"]) == state.get("die_after"):
+                    state["exit_code"] = 137
 
             def stat(self, fs, remote):
                 # Sizes must match the manifest or real verification correctly
@@ -1124,6 +1165,46 @@ class TestRunLockedWiresItsPartsTogether:
         uploads = [c for c in state["copied"] if "ledger" in c[1] or "ledger" in c[2]]
         assert uploads == [], uploads
         assert any(c[2].endswith(".json") for c in state["copied"]), "no report went up"
+
+    def test_a_daemon_that_dies_mid_run_ends_it_at_once(self, harness):
+        """Not four retries with back-off for every object left in the manifest."""
+        state, tmp_path = harness
+        state.update(die_after=1, log="CRITICAL: signal: killed")
+        with pytest.raises(
+            job.rclone_daemon.DaemonError, match="during the run"
+        ) as caught:
+            job.run_locked(self.args(tmp_path, workers=1), tmp_path)
+        assert "signal: killed" in str(caught.value), "the daemon's log is missing"
+        assert len(self.object_copies(state)) == 1, "it kept copying without a daemon"
+        uploads = [c for c in state["copied"] if c[2].endswith(".json")]
+        assert uploads == [], "it uploaded the report to a dead daemon"
+        outcome = (
+            sqlite3.connect(tmp_path / "ledger.db")
+            .execute("SELECT outcome FROM runs ORDER BY id DESC LIMIT 1")
+            .fetchone()[0]
+        )
+        assert outcome == "error"
+        assert list((tmp_path / "_runs").glob("*.json")), "no report kept on the host"
+
+    def test_a_daemon_that_cannot_start_still_leaves_a_record(
+        self, harness, monkeypatch
+    ):
+        state, tmp_path = harness
+
+        def refuse(**kwargs):
+            raise job.rclone_daemon.DaemonError("could not start rclone: read-only")
+
+        monkeypatch.setattr(job.rclone_daemon, "start", refuse)
+        with pytest.raises(job.rclone_daemon.DaemonError):
+            job.run_locked(self.args(tmp_path), tmp_path)
+        finished_at, outcome = (
+            sqlite3.connect(tmp_path / "ledger.db")
+            .execute("SELECT finished_at, outcome FROM runs ORDER BY id DESC LIMIT 1")
+            .fetchone()
+        )
+        assert finished_at is not None and outcome == "error", (finished_at, outcome)
+        assert list((tmp_path / "_runs").glob("*.json")), "no report was written"
+        assert state["copied"] == [], "something was uploaded without a daemon"
 
     def test_the_report_is_uploaded_from_the_state_dir(self, harness):
         # rclone runs beside the job, so it reads the state dir itself.
@@ -2877,8 +2958,11 @@ class TestADaemonThatNeverAnswersIsASetupError:
     def test_one_that_never_answers_fails_with_its_log(self, monkeypatch):
         polled = []
         self.refusing_client(monkeypatch, polled)
-        with pytest.raises(job.rclone_daemon.DaemonError, match="never became ready"):
+        with pytest.raises(
+            job.rclone_daemon.DaemonError, match="never became ready"
+        ) as caught:
             job.wait_for_daemon(self.daemon(), attempts=3)
+        assert "address already in use" in str(caught.value), "its log is missing"
         assert len(polled) == 3
 
     def test_either_one_exits_two(self):
