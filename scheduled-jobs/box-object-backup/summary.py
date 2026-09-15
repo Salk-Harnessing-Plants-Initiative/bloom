@@ -150,25 +150,6 @@ def counts_phrase(verdict: Verdict, dry_run: bool) -> str:
 # One entry per additive notice: a condition that can occur on a night that
 # otherwise succeeded, so none of them can be a branch of the headline.
 _NOTICES = {
-    "ledger_stale": (
-        "**The ledger on Box was NOT updated.** Objects still copied fine — "
-        "this is about the record of WHICH objects are already mirrored, which "
-        "is what makes a re-seed unnecessary. It now exists only on the deploy "
-        "host, the machine this job exists to survive losing. Every later "
-        "night can still report success while that copy falls further behind, "
-        "so fix it now: the job log says why the upload failed, and 'If the "
-        "deploy host itself is gone' in the wiki says what losing it costs."
-    ),
-    "ledger_ahead": (
-        "**The ledger on Box is newer than this host's — the upload was "
-        "refused on purpose.** Box holds the record of what is already "
-        "mirrored and this host holds a smaller one, which means this is not "
-        "the machine that built the mirror: a rebuilt host, or a wiped state "
-        "directory. **Restore the Box copy onto this host. Do NOT upload over "
-        "it** — that would replace the record of millions of objects with this "
-        "run's, and cost a full re-seed. See 'If the deploy host itself is "
-        "gone' in the wiki."
-    ),
     "source_gone": (
         "**Some rows in the database have no image behind them.** Postgres "
         "lists the object but MinIO does not hold the bytes, so there is "
@@ -284,8 +265,9 @@ def _headline(
         )
         if verdict.from_report:
             out.append(
-                "Check the job log for the ledger upload: the verdict came "
-                "from the run report, which is written before it."
+                "Check the job log for how the run ended: the verdict came "
+                "from the run report, which is written before the ledger is "
+                "committed."
             )
         elif not verdict.flags:
             # Only when the night raised nothing. Every flag below prints a
@@ -346,8 +328,6 @@ def _notices(verdict: Verdict, said: set[str]) -> list[str]:
             "needs a person — see 'What verification does, and does not, "
             "prove' in the wiki."
         )
-    if verdict.has("ledger_stale"):
-        note(_NOTICES["ledger_stale"])
     if verdict.has("skipped_names") and "dry" not in said:
         text = (
             "**Some images were not backed up because of their filenames.** "
@@ -372,9 +352,6 @@ def _notices(verdict: Verdict, said: set[str]) -> list[str]:
         note(text)
     if verdict.has("source_gone") and "dry" not in said:
         note(_NOTICES["source_gone"])
-    # Never merged with ledger_stale: there Box is behind, here Box is ahead.
-    if verdict.has("ledger_ahead"):
-        note(_NOTICES["ledger_ahead"])
     if verdict.has("verify_incomplete"):
         note(_NOTICES["verify_incomplete"])
     return out
