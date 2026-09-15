@@ -10,6 +10,16 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Added
 
+- `scrna upload` and `scrna download`: a single-cell dataset's whole AnnData file
+  (`.h5ad`) goes into the `scrna` bucket's `h5ad/` folder gzipped as it is, named
+  by the SHA-256 of the uncompressed file, and comes back out checked against it.
+  `upload` needs a writer or admin login, checks the file's structure before
+  sending anything (unique cell and gene IDs, a finite `X`, a UMAP array, a
+  `uns['normalization']` block saying how `X` was made), and resumes an
+  interrupted transfer when run again. `download` takes a dataset's name or id,
+  or `--checksum`, and writes the file only once its fingerprint matches. The
+  structure check needs the new optional extra: `pip install 'bloomctl[scrna]'`.
+
 - `cyl ingest-result`/`cyl batch-ingest-result` now link write-back to the
   originating pipeline run when the `ARGO_WORKFLOW_NAME` environment
   variable is set (Argo sets it automatically inside the write-back
