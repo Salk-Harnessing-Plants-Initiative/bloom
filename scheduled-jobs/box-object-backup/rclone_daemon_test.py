@@ -82,6 +82,10 @@ class TestNothingOutsideTheContainerCanReachIt:
         daemon, _, _ = started()
         assert daemon.url == "http://127.0.0.1:5572"
 
+    def test_the_client_signs_in_as_the_user_rclone_was_given(self, started):
+        daemon, argv, _ = started()
+        assert f"--rc-user={daemon.user}" in argv
+
     def test_docker_is_nowhere_in_the_command(self, started):
         _, argv, _ = started()
         assert argv[:2] == ["/usr/bin/rclone", "rcd"]
@@ -156,6 +160,7 @@ class TestHowItRuns:
         assert kwargs["stdout"] is not subprocess.PIPE
         assert kwargs["stderr"] == subprocess.STDOUT
         assert daemon.log_path.exists()
+        assert kwargs["stdout"].name == str(daemon.log_path)
 
 
 class TestStopping:
@@ -183,9 +188,36 @@ class TestStopping:
         self.daemon(process, tmp_path).stop()
         assert process.calls == []
 
+    def test_it_removes_its_log(self, tmp_path):
+        (tmp_path / "rcd.log").write_text("NOTICE: done\n")
+        self.daemon(FakeProcess(), tmp_path).stop()
+        assert not (tmp_path / "rcd.log").exists()
+
+    def test_it_never_raises(self, tmp_path):
+        class Refuses(FakeProcess):
+            def terminate(self):
+                raise OSError("no such process")
+
+        self.daemon(Refuses(), tmp_path).stop()
+
     def test_its_exit_code_is_visible(self, tmp_path):
         assert self.daemon(FakeProcess(), tmp_path).exit_code() is None
         assert self.daemon(FakeProcess(returncode=2), tmp_path).exit_code() == 2
+
+
+class TestEnsureRunning:
+    def test_a_running_daemon_passes(self, tmp_path):
+        daemon = TestStopping().daemon(FakeProcess(), tmp_path)
+        rclone_daemon.ensure_running(daemon, "mid-copy")
+
+    def test_an_exited_daemon_raises_with_its_log(self, tmp_path):
+        (tmp_path / "rcd.log").write_text("CRITICAL: signal: killed\n")
+        daemon = TestStopping().daemon(FakeProcess(returncode=137), tmp_path)
+        with pytest.raises(
+            rclone_daemon.DaemonError, match=r"exited \(137\) mid-copy"
+        ) as caught:
+            rclone_daemon.ensure_running(daemon, "mid-copy")
+        assert "signal: killed" in str(caught.value)
 
 
 class TestItsLogTail:
@@ -227,4 +259,15 @@ class TestEveryFailureIsASetupError:
         monkeypatch.setattr(rclone_daemon.subprocess, "Popen", refuse)
         monkeypatch.setattr(rclone_daemon.tempfile, "tempdir", str(tmp_path))
         with pytest.raises(rclone_daemon.DaemonError, match="permission denied"):
+            rclone_daemon.start(rclone_config="/c", port=5572, transfers=8)
+
+    def test_a_log_file_that_cannot_be_made_raises_it(self, monkeypatch):
+        def refuse(**kwargs):
+            raise OSError(30, "Read-only file system")
+
+        monkeypatch.setattr(
+            rclone_daemon.shutil, "which", lambda name: "/usr/bin/rclone"
+        )
+        monkeypatch.setattr(rclone_daemon.tempfile, "mkstemp", refuse)
+        with pytest.raises(rclone_daemon.DaemonError, match="Read-only file system"):
             rclone_daemon.start(rclone_config="/c", port=5572, transfers=8)

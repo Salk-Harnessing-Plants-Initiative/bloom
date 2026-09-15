@@ -102,7 +102,7 @@ class TestTheClockComesFromTheDatabase:
 
     def test_only_the_first_line_is_taken(self, ran):
         _, scripted = ran
-        scripted["stdout"] = "2026-08-31T02:17:03+00\n\n"
+        scripted["stdout"] = "2026-08-31T02:17:03+00\nnot-a-time\n"
         assert postgres.database_now(CONN) == "2026-08-31T02:17:03+00"
 
     def test_an_empty_answer_is_an_error_not_an_empty_watermark(self, ran):
@@ -262,3 +262,111 @@ class TestEveryFailureIsASetupError:
             postgres.database_now(CONN)
         with pytest.raises(postgres.PostgresError):
             postgres.query_to_file(CONN, "SELECT 1", tmp_path / "m.tsv")
+
+
+class TestTheExactCommand:
+    """Each flag shapes what is read back: without `--quiet`, psql prints the
+    `SET` tag first and the clock read would return it as the watermark."""
+
+    START = [
+        "/usr/bin/psql",
+        "-h",
+        "db-prod",
+        "-p",
+        "5432",
+        "-U",
+        "supabase_admin",
+        "-d",
+        "postgres",
+        "--no-password",
+        "--no-align",
+        "--tuples-only",
+    ]
+    SESSION = ["--quiet", "--no-psqlrc", "-v", "ON_ERROR_STOP=1"]
+
+    def test_the_clock_read(self, ran):
+        seen, _ = ran
+        postgres.database_now(CONN)
+        assert seen["argv"][0] == self.START + self.SESSION + ["-f", "-"]
+
+    def test_the_manifest_read(self, piped, tmp_path):
+        seen, _ = piped
+        postgres.query_to_file(CONN, "SELECT 1", tmp_path / "m.tsv")
+        fetch = ["-v", f"FETCH_COUNT={postgres.FETCH_COUNT}"]
+        separator = ["--field-separator", "\t"]
+        assert seen["argv"] == self.START + separator + self.SESSION + fetch + [
+            "-f",
+            "-",
+        ]
+
+    def test_the_manifest_read_has_a_statement_timeout(self, piped, tmp_path):
+        seen, _ = piped
+        postgres.query_to_file(CONN, "SELECT 1", tmp_path / "m.tsv")
+        expected = f"SET statement_timeout = '{postgres.STATEMENT_TIMEOUT}';"
+        assert expected in seen["stdin"]
+
+
+class TestPsqlGetsOnlyWhatItNeeds:
+    """A stray `PGOPTIONS` could switch the read-only session off; a stray
+    secret has no business in psql's environment at all."""
+
+    ALLOWED = {"PATH", "HOME", "LANG", "LC_ALL", "PGPASSWORD", "PGCONNECT_TIMEOUT"}
+
+    def plant(self, monkeypatch):
+        monkeypatch.setenv("PGOPTIONS", "-c default_transaction_read_only=off")
+        monkeypatch.setenv("PGSERVICE", "somewhere-else")
+        monkeypatch.setenv("MINIO_ROOT_PASSWORD", "leaked")
+
+    def test_the_clock_read_gets_an_allow_list(self, ran, monkeypatch):
+        self.plant(monkeypatch)
+        seen, _ = ran
+        postgres.database_now(CONN)
+        assert set(seen["env"][0]) <= self.ALLOWED, set(seen["env"][0]) - self.ALLOWED
+
+    def test_the_manifest_read_gets_an_allow_list(self, piped, monkeypatch, tmp_path):
+        self.plant(monkeypatch)
+        seen, _ = piped
+        postgres.query_to_file(CONN, "SELECT 1", tmp_path / "m.tsv")
+        assert set(seen["env"]) <= self.ALLOWED, set(seen["env"]) - self.ALLOWED
+
+
+class TestTheConnectionComesFromTheSettings:
+    KEYS = ("POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_USER", "POSTGRES_DB")
+
+    def test_the_defaults_are_production_s_database(self, monkeypatch):
+        for key in self.KEYS:
+            monkeypatch.delenv(key, raising=False)
+        conn = postgres.connection_from_env("pw")
+        assert (conn.host, conn.port, conn.user, conn.database) == (
+            "db-prod",
+            5432,
+            "supabase_admin",
+            "postgres",
+        )
+
+    def test_the_settings_win(self, monkeypatch):
+        for key, value in zip(self.KEYS, ("db-other", "6543", "reader", "bloom")):
+            monkeypatch.setenv(key, value)
+        conn = postgres.connection_from_env("pw")
+        assert (conn.host, conn.port, conn.user, conn.database) == (
+            "db-other",
+            6543,
+            "reader",
+            "bloom",
+        )
+
+    def test_a_blank_setting_falls_back_to_the_default(self, monkeypatch):
+        monkeypatch.setenv("POSTGRES_HOST", "")
+        assert postgres.connection_from_env("pw").host == "db-prod"
+
+    def test_a_malformed_port_is_a_setup_error(self, monkeypatch):
+        monkeypatch.setenv("POSTGRES_PORT", "54x")
+        with pytest.raises(postgres.PostgresError, match="POSTGRES_PORT"):
+            postgres.connection_from_env("pw")
+
+    def test_a_missing_password_is_refused_naming_the_host(self, monkeypatch):
+        monkeypatch.delenv("POSTGRES_HOST", raising=False)
+        with pytest.raises(
+            postgres.PostgresError, match="POSTGRES_PASSWORD is not set"
+        ):
+            postgres.connection_from_env("")
