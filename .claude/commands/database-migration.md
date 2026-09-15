@@ -106,10 +106,97 @@ make gen-types
 # Verify the migration worked
 PGPASSWORD=postgres psql -h localhost -p 5432 -U supabase_admin -d postgres -c "\dt public.*"
 
-# Commit the migration and generated types
-git add supabase/migrations/ packages/*/src/types/database.types.ts web/lib/database.types.ts
+# Commit the migration, the generated types and the redrawn ER diagram
+git add supabase/migrations/ packages/*/src/types/database.types.ts \
+  packages/bloom-nextjs-auth/src/lib/database.types.ts web/lib/database.types.ts \
+  _WIKI/SUPABASE/erd.md
 git commit -m "feat: add experiments table with RLS policies"
 ```
+
+## Migration PRs
+
+A PR that changes `supabase/migrations/` ships on its own. Alongside the migration it may
+change only:
+
+- `supabase/rollbacks/` and `supabase/grants/`
+- tests under `tests/integration/` and `tests/unit/`
+- the generated database types (`make gen-types` writes four copies; `web/types/database.types.ts` is kept by hand)
+- `_WIKI/` pages and any Markdown file
+
+CI's "Lint migration changes are isolated" check flags anything else.
+
+- **Additive changes** (new tables, columns, constraints) land migration first. The code
+  that uses them follows in its own PR.
+- **Renames, drops and RPC signature changes** use expand/contract:
+
+  1. add the new shape in a migration PR;
+  2. move the callers in a separate PR;
+  3. drop the old shape in a later migration PR.
+
+  The migration PR cannot carry the caller changes, and its regenerated types would break
+  `tsc` for any caller of the old shape.
+
+Before opening the PR:
+
+```bash
+make gen-types                            # regenerate the database types
+make erd                                  # redraw _WIKI/SUPABASE/erd.md (dev DB must match the checkout)
+make erd-snapshot CHANGED=origin/staging  # the mermaid block for the PR body
+make pr-body-check BODY=pr_body.md        # check the PR body's Schema changes section
+```
+
+If `make erd` refuses because the dev database doesn't match the checkout, push the branch
+and commit the `erd` artifact from CI's "Check the ER diagram is current" step instead.
+
+## Adding constraints and indexes
+
+Name every constraint, and add it so the migration can run again, as the newest migration,
+without error:
+
+| Kind                           | Required form                                                                                                         | Why                                                                                                                                                     |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CHECK                          | `DROP CONSTRAINT IF EXISTS` then `ADD CONSTRAINT`, on the same table                                                  | A CHECK owns nothing, so dropping it is always free                                                                                                     |
+| FOREIGN KEY                    | `ADD CONSTRAINT` inside a `DO` block guarded on `pg_constraint` by name and table                                     | Dropping and re-adding takes an exclusive lock on the referencing table (and on a re-run the referenced table too) and re-checks every row              |
+| UNIQUE / PRIMARY KEY / EXCLUDE | A `DO` block that adds the key when missing, skips it when `pg_get_constraintdef` matches, and raises when it differs | The key owns an index a foreign key may depend on, so it cannot be dropped on a re-run; a guard on the name alone would silently keep an old definition |
+| Index                          | `CREATE [UNIQUE] INDEX IF NOT EXISTS`                                                                                 | A second run errors otherwise                                                                                                                           |
+
+A guarded UNIQUE key:
+
+```sql
+DO $$
+DECLARE
+  existing text;
+BEGIN
+  SELECT pg_get_constraintdef(oid) INTO existing
+    FROM pg_constraint
+   WHERE conname = 'scrna_genes_dataset_gene_key'
+     AND conrelid = 'public.scrna_genes'::regclass;
+  IF existing IS NULL THEN
+    ALTER TABLE public.scrna_genes
+      ADD CONSTRAINT scrna_genes_dataset_gene_key UNIQUE (dataset_id, id);
+  ELSIF existing <> 'UNIQUE (dataset_id, id)' THEN
+    RAISE EXCEPTION 'scrna_genes_dataset_gene_key is %, expected UNIQUE (dataset_id, id)', existing;
+  END IF;
+END $$;
+```
+
+To redefine a key on purpose, drop and re-add it with a comment saying no foreign key
+depends on it. If one does, the drop fails on the first apply to an existing database, so
+the mistake cannot slip through.
+
+**`NOT VALID`** skips checking existing rows, and means different things per kind:
+
+- A `NOT VALID` CHECK still refuses any update to a row that violates it, even one that
+  changes nothing.
+- A `NOT VALID` foreign key checks only changes to the key itself.
+- Validating in the same migration saves nothing, because each migration runs in one
+  transaction. For a large table, run `VALIDATE CONSTRAINT` in a later migration.
+
+**Unnamed constraints** (`ADD CHECK (…)`, `ADD UNIQUE (…)`) duplicate on a re-run and cannot
+be listed in the PR's constraints table, so the PR body check rejects them.
+
+"Re-runnable" means re-runnable as the newest migration: re-running an older migration can
+undo a later one's work.
 
 ## Common SQL Patterns
 

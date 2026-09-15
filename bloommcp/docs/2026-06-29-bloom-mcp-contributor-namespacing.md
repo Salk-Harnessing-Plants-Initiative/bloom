@@ -38,7 +38,7 @@ of unrelated tools. `devendor-bloommcp-analysis` introduces one deliberate excep
 **`sleap_roots` as a family umbrella**, not a single-package section:
 
 - The granular tools that delegate to `sleap-roots-analyze` (`pca_analysis`, `qc_clean`,
-  `qc_inspect`, `remove_outliers`, `clustering`, and the 5 surviving plotting tools) all wrap
+  `qc_inspect`, `remove_outliers`, `clustering`, and the 3 surviving plotting tools) all wrap
   the same upstream package, which would normally argue for a `sleap_roots_analyze` section
   name. But the user's mental model is the root-phenotyping *pipeline* as a whole — extraction
   via `sleap-roots` feeding analysis via `sleap-roots-analyze` — so the section is named
@@ -49,7 +49,7 @@ of unrelated tools. `devendor-bloommcp-analysis` introduces one deliberate excep
   ├── __init__.py            # section sub-server + register()
   ├── analysis/              # wraps sleap-roots-analyze (populated now)
   │   ├── pca_analysis.py  qc_clean.py  qc_inspect.py  remove_outliers.py  clustering.py
-  │   └── plot_*.py         # 5 surviving plotting tools, one file each
+  │   └── plot_*.py         # 3 surviving plotting tools, one file each
   └── extraction/            # reserved for future sleap-roots trait-extraction tools (empty)
   ```
 

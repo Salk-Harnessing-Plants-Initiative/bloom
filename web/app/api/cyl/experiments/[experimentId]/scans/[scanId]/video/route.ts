@@ -18,7 +18,8 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/supabase/server";
 import { getStoredScanVideo } from "@/lib/supabase/scan-video";
-import { isScanVideoResult, parseId } from "@/components/scan-video.helpers";
+import { isScanVideoResult } from "@/components/scan-video.helpers";
+import { parseId } from "@/lib/route-params";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

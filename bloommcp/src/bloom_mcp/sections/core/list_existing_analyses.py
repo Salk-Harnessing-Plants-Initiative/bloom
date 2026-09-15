@@ -56,6 +56,17 @@ TOOL_CLASSES = (
     "pca",
     "umap",
     "qc_inspect",
+    # #466: plot_trait_histograms/_boxplots/plot_correlation_matrix converged onto
+    # @as_mcp_tool + ResultStore persistence, each under its own tool class (not the
+    # shared, still-unclaimed "viz" above) — see
+    # openspec/changes/converge-bloommcp-viz-tools/design.md.
+    "trait_histograms",
+    "trait_boxplots",
+    "correlation_matrix",
+    # bloom#462: reserved in manifest.CANONICAL_TOOL_CLASSES since before any tool wrote
+    # to it — `heritability_analysis` is the first, so without this entry its runs would
+    # persist correctly but be structurally undiscoverable here, exactly the bloom#669 gap.
+    "heritability",
 )
 
 # Public MCP tool name for each tool_class this loop iterates that maps to a
@@ -73,6 +84,14 @@ _TOOL_CLASS_TO_PUBLIC_NAME: dict[str, str] = {
     "pca": "pca_analysis",
     "umap": "umap_analysis",
     "qc_inspect": "qc_inspect",
+    # #466 — same rationale as pca/umap/qc_inspect above: without an entry here a
+    # list_runs failure for one of these 3 would leak the raw tool_class string
+    # instead of the public tool name (test_every_non_legacy_tool_class_has_a_public_
+    # name_mapping, added by #671, guards this for every future TOOL_CLASSES addition).
+    "trait_histograms": "plot_trait_histograms",
+    "trait_boxplots": "plot_trait_boxplots",
+    "correlation_matrix": "plot_correlation_matrix",
+    "heritability": "heritability_analysis",
 }
 
 # Tiny per-experiment response cache. Each list_existing_analyses call walks

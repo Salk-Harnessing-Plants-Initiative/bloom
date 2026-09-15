@@ -1,10 +1,18 @@
 # =============================================================================
 # Bloom v2 Production Stack
 #
-# Minimum Resource Requirements:
+# Minimum Resource Requirements — what this stack needs to run at all:
 #   CPU:     8 vCPU
 #   RAM:     16 GB
 #   Disk:    100 GB SSD
+#
+# The Bloom server it actually runs on (bloom-dev, measured 2026-09-08):
+#   RAM:     754 GB, of which ~620 GB free
+#   Swap:    8 GB
+#   Note:    the production and staging stacks both run here, so the per-
+#            container limits below are set against this machine, not against
+#            the minimum above — and they exceed it. Do not size a limit from
+#            that number, and do not read the minimum as covering them.
 #
 # Services: ~15 containers (caddy, bloom-web, langchain-agent, bloommcp,
 #   kong, auth, rest, realtime, minio, minio-init, storage, imgproxy,
@@ -198,9 +206,19 @@ services:
       context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
+    # Bounds a runaway render to this container, so the OOM killer takes the
+    # uvicorn worker rather than choosing by resident size across the stack.
+    # Generous on purpose: a real plate does not fit the ~1.4 GB that
+    # tests/unit/test_workflows_single_worker.py derives from the frame
+    # ceilings and the tmpfs, and 8g is about 1% of this host.
+    mem_limit: 8g
+    # Without this Docker allows twice mem_limit in swap, so a runaway render
+    # would grind against disk indefinitely instead of being killed. Equal
+    # values mean no swap: hit the ceiling and stop.
+    memswap_limit: 8g
     tmpfs:
-      # Size-capped so the temp MP4 can't exhaust host RAM (sized for concurrent encodes
-      # in the one worker, with headroom).
+      # RAM-backed, so this counts against mem_limit and is budgeted with the
+      # frames. One plate video is 3-12 MB depending on how the run compresses.
       - /tmp:mode=1777,size=512m
     security_opt:
       - no-new-privileges:true
@@ -228,10 +246,13 @@ services:
       - kong
       - db-prod
     restart: unless-stopped
-    # One worker: the per-scan lock in video.py holds only within a single process, so raising
-    # this reopens the overwrite race it closes. Start here and watch — raise it when this one
-    # is actually saturated, or once the encode moves to a worker container and the database
-    # enforces the serialisation instead, whichever comes first.
+    # One worker: the per-scan lock in video.py and the per-plate lock in
+    # plate_encode.py both hold only within a single process, so raising this reopens the
+    # overwrite race they close — the object keys are deterministic and unversioned, so two
+    # workers would race to write the same one. The encode semaphore bounds concurrency but
+    # not that. Start here and watch — raise it when this one is actually saturated, or once
+    # the encode moves to a worker container and the database enforces the serialisation
+    # instead, whichever comes first.
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "1"]
 
   # Consumes the cyl_pipeline_dispatch pgmq queue (bloom #11/#404 Phase 2) and
@@ -414,7 +435,7 @@ services:
   #  Kong Gateway
   # -------------------
   kong:
-    image: kong:2.8.1
+    image: ghcr.io/salk-harnessing-plants-initiative/kong:2.8.1@sha256:1b53405d8680a09d6f44494b7990bf7da2ea43f84a258c59717d4539abf09f6d
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -451,7 +472,7 @@ services:
   # Auth (GoTrue)
   # -------------------
   auth:
-    image: supabase/gotrue:v2.188.1@sha256:87db8c737af49a64236c461882ed3925f8b1e5c2c47176c64694dedc65153573
+    image: ghcr.io/salk-harnessing-plants-initiative/supabase-gotrue:v2.188.1@sha256:87db8c737af49a64236c461882ed3925f8b1e5c2c47176c64694dedc65153573
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -513,7 +534,7 @@ services:
   # PostgREST
   # -------------------
   rest:
-    image: postgrest/postgrest:v12.2.12@sha256:5f4ce744539bbba786b4e24dbbd95bdb2a956dcf568c5374995a0ff4a68f5bd2
+    image: ghcr.io/salk-harnessing-plants-initiative/postgrest:v12.2.12@sha256:5f4ce744539bbba786b4e24dbbd95bdb2a956dcf568c5374995a0ff4a68f5bd2
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -542,7 +563,7 @@ services:
   # Realtime Analytics
   # -------------------
   realtime:
-    image: supabase/realtime:v2.34.47
+    image: ghcr.io/salk-harnessing-plants-initiative/supabase-realtime:v2.34.47@sha256:4d2460cb6eb081b7cfec0e6b0af57f547497f60cf897621555303992d299f6e8
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -591,7 +612,7 @@ services:
     # Digest-pinned: the edge security headers reach this console, and the
     # standing precondition is to re-measure its assets whenever the image
     # moves. A tag can be re-pushed without this file changing; a digest cannot.
-    image: minio/minio:RELEASE.2025-01-20T14-49-07Z@sha256:ed9be66eb5f2636c18289c34c3b725ddf57815f2777c77b5938543b78a44f144
+    image: ghcr.io/salk-harnessing-plants-initiative/minio:RELEASE.2025-01-20T14-49-07Z@sha256:ed9be66eb5f2636c18289c34c3b725ddf57815f2777c77b5938543b78a44f144
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -617,7 +638,7 @@ services:
       start_period: 10s
 
   minio-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    image: ghcr.io/salk-harnessing-plants-initiative/minio-mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     depends_on:
       supabase-minio:
         condition: service_healthy
@@ -635,7 +656,7 @@ services:
   # Supabase Storage
   # -------------------
   storage:
-    image: supabase/storage-api:v1.48.14
+    image: ghcr.io/salk-harnessing-plants-initiative/supabase-storage-api:v1.48.14@sha256:14a7e837e44a5f1d59c4af0a7fb0066a6ab3b9146690a48f8e018dd60f3bf91f
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -683,7 +704,7 @@ services:
   # Database (Postgres)
   # -------------------
   db-prod:
-    image: supabase/postgres:15.14.1.104
+    image: ghcr.io/salk-harnessing-plants-initiative/supabase-postgres:15.14.1.104@sha256:bc49dde9849c1f8ee5c48f08600b49e2b0911f17c1b055a696d610cea48b6ba1
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -742,7 +763,7 @@ services:
   # Supavisor (Connection Pooler)
   # -------------------
   supavisor:
-    image: supabase/supavisor:2.7.4
+    image: ghcr.io/salk-harnessing-plants-initiative/supabase-supavisor:2.7.4@sha256:466297ba00956e2d1cbd56a4362fbd5dbc9c2a47ad83e8ca9bdb877f743315ee
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -795,7 +816,7 @@ services:
   # -------------------
   studio:
     # Digest-pinned for the same reason as supabase-minio above.
-    image: supabase/studio:2026.03.30-sha-12a43e5@sha256:d73df17a81b897bb61326b3160b29558ca4c2cdbe32d25b7bb11e15a2cd13488
+    image: ghcr.io/salk-harnessing-plants-initiative/supabase-studio:2026.03.30-sha-12a43e5@sha256:d73df17a81b897bb61326b3160b29558ca4c2cdbe32d25b7bb11e15a2cd13488
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -810,6 +831,8 @@ services:
       STUDIO_PG_META_URL: http://meta:8080
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       EDGE_FUNCTIONS_MANAGEMENT_FOLDER: /tmp/edge-functions
+      # SQL editor saved queries; unset, the editor errors on every load.
+      SNIPPETS_MANAGEMENT_FOLDER: /app/snippets
       DEFAULT_ORGANIZATION_NAME: ${STUDIO_DEFAULT_ORGANIZATION}
       DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
@@ -818,6 +841,8 @@ services:
       SUPABASE_PUBLIC_URL: ${STUDIO_SUPABASE_PUBLIC_URL}
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+    volumes:
+      - ./volumes/snippets:/app/snippets:z
     # supabase/studio:2026.03.30-sha-12a43e5 ships Node but NOT wget or curl
     # (verified: `docker exec <container> which wget` returns empty). Use
     # node's built-in fetch against /api/platform/profile — matches both
@@ -838,7 +863,7 @@ services:
   # ImgProxy
   # -------------------
   imgproxy:
-    image: darthsim/imgproxy:v3.31.1
+    image: ghcr.io/salk-harnessing-plants-initiative/darthsim-imgproxy:v3.31.1@sha256:2b7a56dbf9c8a8e12e7109a5bdd27d31a8c1aa49f2116c927c6aedc37e18db98
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -859,7 +884,7 @@ services:
       start_period: 20s
 
   meta:
-    image: supabase/postgres-meta:v0.96.2
+    image: ghcr.io/salk-harnessing-plants-initiative/supabase-postgres-meta:v0.96.2@sha256:4ed8f7c5d3b2e25aa4aa29794605b49799b66da4b36a3c70894cd5241af63f97
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

@@ -34,9 +34,11 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   "latest" they were pointed at — now fail closed with a message naming both
   backends (clamped for unrecognized sentinel values; case-insensitive
   comparison; checked before full model validation so malformed foreign
-  backups are still identified). The plain string tools (the viz plotters,
-  `load_experiment_data`, `summarize_trait`) surface the same typed message
-  instead of a generic "could not be read" / `invalid_input` flatten.
+  backups are still identified). `load_experiment_data` and
+  `summarize_trait` surface the same typed message instead of a generic
+  "could not be read" / `invalid_input` flatten (the #462 envelope tools,
+  including `heritability_analysis`, get it via their `errors=`
+  declarations).
   Single-backend usage (the documented contract since #395) is unaffected.
 
 ## [0.1.0a1] - 2026-09-02

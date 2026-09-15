@@ -11,6 +11,10 @@ export type ClusterMarker = {
   q: number;
   pct_1: number;
   pct_2: number;
+  /** The gene's symbol, e.g. PELPK1, where it has one. */
+  symbol?: string | null;
+  /** The atlas the marker's cell-type label came from, e.g. "nuclei", where known. */
+  source?: string | null;
 };
 
 export type ClusterMarkers = {
@@ -47,6 +51,8 @@ export function parseMarkers(raw: unknown): ClusterMarkers | null {
       q: typeof r.q === "number" ? r.q : 1,
       pct_1: typeof r.pct_1 === "number" ? r.pct_1 : 0,
       pct_2: typeof r.pct_2 === "number" ? r.pct_2 : 0,
+      symbol: typeof r.symbol === "string" && r.symbol ? r.symbol : null,
+      source: typeof r.source === "string" && r.source ? r.source : null,
     });
   }
   const n_significant =
@@ -80,20 +86,16 @@ export async function fetchClusterStats(
   };
 }
 
-/**
- * Fetch whether this cluster has a DE CSV file to export.
- * Returns null when no scrna_de row exists for this (dataset, cluster).
- */
-export async function fetchDeFilePath(
+/** Every cluster's markers in a dataset, by cluster id; a cluster with no stats
+ *  row is absent. */
+export async function fetchClusterMarkers(
   datasetId: number,
-  clusterId: string,
-): Promise<string | null> {
+): Promise<Map<string, ClusterMarkers | null>> {
   const supabase = createClientSupabaseClient();
-  const { data } = await supabase
-    .from("scrna_de")
-    .select("file_path")
-    .eq("dataset_id", datasetId)
-    .eq("cluster_id", clusterId)
-    .maybeSingle();
-  return data?.file_path ?? null;
+  const { data, error } = await supabase
+    .from("scrna_cluster_stats")
+    .select("cluster_id, markers")
+    .eq("dataset_id", datasetId);
+  if (error) throw new Error(`fetchClusterMarkers failed: ${error.message}`);
+  return new Map((data ?? []).map((row) => [row.cluster_id, parseMarkers(row.markers)]));
 }

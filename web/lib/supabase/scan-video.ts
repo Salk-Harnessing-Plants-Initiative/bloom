@@ -5,6 +5,7 @@
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { toPublicStorageUrl } from "@/lib/supabase/storage-url";
 import { VIDEOS_BUCKET, scanVideoPath } from "@/lib/supabase/scan-video-path";
+import { isNotFound } from "@/lib/supabase/storage-errors";
 
 const VIDEO_URL_TTL = 3600;
 
@@ -16,22 +17,6 @@ export type StoredScanVideo =
   | { status: "present"; url: string }
   | { status: "absent" }
   | { status: "unknown"; reason: string };
-
-// Storage reports a missing object as an error, so only a genuine not-found
-// counts as "absent" — anything else (permissions, gateway, timeout) is unknown.
-//
-// `statusCode` is the service's own code and is a *string*; `status` is the HTTP
-// status, and Storage answers a missing object with 400, not 404. Checking only
-// `status === 404` therefore never matched, leaving the wording regex as the sole
-// guard on an irreversible overwrite.
-export function isNotFound(error: {
-  message?: string;
-  status?: number;
-  statusCode?: string;
-}): boolean {
-  if (error.statusCode === "404" || error.status === 404) return true;
-  return /not[_ ]?found|does not exist|no such/i.test(error.message ?? "");
-}
 
 // Whether this scan has a stored video, and its browser-usable URL if so.
 // Signed against the internal host, so it is rewritten for the browser.

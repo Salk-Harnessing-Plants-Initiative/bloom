@@ -39,6 +39,7 @@ _env = _load_env(".env.prod") or _load_env(".env.ci") or _load_env(".env.dev")
 BASE_URL = os.environ.get("TEST_BASE_URL", "http://localhost")
 ANON_KEY = os.environ.get("ANON_KEY", _env.get("ANON_KEY", ""))
 SERVICE_ROLE_KEY = os.environ.get("SERVICE_ROLE_KEY", _env.get("SERVICE_ROLE_KEY", ""))
+BLOOMMCP_API_KEY = os.environ.get("BLOOMMCP_API_KEY", _env.get("BLOOMMCP_API_KEY", ""))
 # `null` and `[]` are the compose defaults for an unprovisioned stack, not a JWKS.
 JWT_JWKS = os.environ.get("JWT_JWKS", _env.get("JWT_JWKS", "")).strip()
 
@@ -68,6 +69,11 @@ def base_url():
 @pytest.fixture
 def anon_key():
     return ANON_KEY
+
+
+@pytest.fixture
+def bloommcp_api_key():
+    return BLOOMMCP_API_KEY
 
 
 @pytest.fixture
@@ -230,6 +236,21 @@ def pg_conn(pg_conninfo):
         yield conn
     finally:
         conn.close()
+
+
+@pytest.fixture
+def authenticator_conninfo() -> str:
+    """Connect as `authenticator` -- the login role PostgREST/Supavisor use for every live RPC
+    call before `SET ROLE`-ing to `service_role`/`anon`/`authenticated` per the caller's JWT.
+    Uses the same `POSTGRES_PASSWORD` `authenticator` is already provisioned with (its own
+    `ALTER USER ... WITH PASSWORD` is fed from the same value PostgREST's `PGRST_DB_URI` uses) --
+    no separate secret needed. `authenticator` alone carries
+    `session_preload_libraries=safeupdate` (bloom#806); `pg_conninfo`'s `supabase_admin` never
+    loads it, which is why tests using only that connection can't exercise that guard."""
+    return (
+        f"host=127.0.0.1 port={POSTGRES_HOST_PORT} "
+        f"dbname={POSTGRES_DB} user=authenticator password={POSTGRES_PASSWORD}"
+    )
 
 
 @pytest.fixture

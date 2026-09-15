@@ -25,6 +25,7 @@ import { describe, expect, it } from "vitest";
 
 import * as routeModule from "@/app/api/config/route";
 import { makeAnonKey } from "@/lib/config/__fixtures__/jwt";
+import { setNodeEnv } from "@/lib/config/__fixtures__/node-env";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -40,7 +41,7 @@ const PUBLIC_CONFIG_KEYS = [
 ] as const;
 
 function setHappyPathEnv(): void {
-  process.env.NODE_ENV = "production";
+  setNodeEnv("production");
   process.env.SUPABASE_URL = "http://kong:8000";
   process.env.SUPABASE_URL_HOSTS_ALLOWED = "kong:8000=bloom-dev.salk.edu";
   process.env.NEXT_PUBLIC_SUPABASE_URL = "https://bloom-dev.salk.edu/api";
@@ -248,7 +249,7 @@ describe("/api/config — missing required envs (production)", () => {
 
 describe("/api/config — dev-mode early-return", () => {
   function setDevModeEnv(): void {
-    process.env.NODE_ENV = "development";
+    setNodeEnv("development");
     process.env.NEXT_PUBLIC_SUPABASE_URL = "http://localhost:54321";
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "dev-anon-key-not-a-real-jwt";
     process.env.NEXT_PUBLIC_SUPABASE_COOKIE_NAME = "sb-localhost-auth-token";
@@ -283,14 +284,14 @@ describe("/api/config — dev-mode early-return", () => {
 
   it("returns 200 in dev mode for NODE_ENV='test'", async () => {
     setDevModeEnv();
-    process.env.NODE_ENV = "test";
+    setNodeEnv("test");
     const response = await call();
     expect(response.status).toBe(200);
   });
 
   it("returns 200 in dev mode for undefined NODE_ENV", async () => {
     setDevModeEnv();
-    delete process.env.NODE_ENV;
+    setNodeEnv(undefined);
     const response = await call();
     expect(response.status).toBe(200);
   });

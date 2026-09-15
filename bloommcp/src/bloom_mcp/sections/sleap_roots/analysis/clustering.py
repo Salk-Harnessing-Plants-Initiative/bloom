@@ -340,13 +340,59 @@ def _gmm_selected_scores(
     return bic, aic
 
 
+def _compute_scatter_pca(
+    frame: ExperimentFrame, trait_cols: list[str], *, standardize: bool
+) -> dict:
+    """Run the internal, non-persisted PCA projection ``create_cluster_scatter_pca``
+    needs, over the exact same certified-clean trait selection already used for
+    clustering — sidestepping the raw ``result_dict``'s ``data_processed`` key, which
+    ``hierarchical_cluster_labels`` does not return (unlike
+    ``perform_kmeans_clustering``/``perform_gmm_clustering``). This keeps the catalog key
+    usable identically for all three methods. ``standardize`` is forwarded from
+    ``params.standardize`` so the plotted projection is computed in the same coordinate
+    space actually clustered — passing the delegate's own default here instead would
+    silently re-standardize (or fail to) a selection the caller explicitly asked to
+    cluster on raw (or standardized) values, making the plot geometry disagree with the
+    real fit.
+
+    Called by the tool body *before* ``generate_figures`` runs (#721 PR review — same
+    fix as ``umap_analysis._compute_top_traits_pca``) — not lazily from inside the plot
+    callable itself — specifically so this real PCA fit executes outside
+    ``FIGURE_REGISTRY_LOCK``'s held window. That lock only needs to cover the actual
+    matplotlib rendering call; holding it for an unrelated PCA fit too would needlessly
+    block every other concurrent plot-generating call for longer than the rendering
+    itself takes.
+    """
+    from sleap_roots_analyze import perform_pca_analysis
+
+    try:
+        return perform_pca_analysis(frame.df[trait_cols], standardize=standardize)
+    except (ValueError, np.linalg.LinAlgError) as exc:
+        logger.debug(
+            "internal perform_pca_analysis call for create_cluster_scatter_pca "
+            "failed, translating to assumption_violated: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        raise BloomMCPError(
+            code="assumption_violated",
+            message=(
+                "Could not compute the PCA projection for "
+                "create_cluster_scatter_pca — the certified-clean trait selection "
+                "is degenerate for PCA."
+            ),
+            remedy=(
+                "Select a broader set of numeric trait columns, or omit "
+                "create_cluster_scatter_pca from plots, then retry."
+            ),
+        ) from None
+
+
 def _clustering_plot_calls(
     result_dict: dict,
     result: ClusterResult,
-    frame: ExperimentFrame,
-    trait_cols: list[str],
     *,
-    standardize: bool,
+    scatter_pca_result_dict: dict | None,
 ) -> dict:
     """Return zero-arg callables for each catalog plot key, lazily importing plotters.
 
@@ -354,52 +400,21 @@ def _clustering_plot_calls(
     on the ``include_plots=True`` path — this does NOT keep matplotlib out of
     ``sys.modules`` on the default path (see the module docstring).
 
-    ``create_cluster_scatter_pca`` always receives an explicit ``pca_result`` computed via
-    an internal, non-persisted ``perform_pca_analysis`` call over the exact same
-    certified-clean trait selection already used for clustering — sidestepping the raw
-    ``result_dict``'s ``data_processed`` key, which ``hierarchical_cluster_labels`` does
-    not return (unlike ``perform_kmeans_clustering``/``perform_gmm_clustering``). This
-    keeps the catalog key usable identically for all three methods. ``standardize`` is
-    forwarded from ``params.standardize`` so the plotted projection is computed in the
-    same coordinate space actually clustered — passing the delegate's own default here
-    instead would silently re-standardize (or fail to) a selection the caller explicitly
-    asked to cluster on raw (or standardized) values, making the plot geometry disagree
-    with the real fit.
+    ``scatter_pca_result_dict`` must already be the *computed* result of
+    ``_compute_scatter_pca`` (or ``None`` if the caller knows
+    ``create_cluster_scatter_pca`` won't be generated) — this function no longer runs
+    that PCA fit itself, so the callable it returns for that key only ever does
+    matplotlib rendering, never a fit (see ``_compute_scatter_pca``'s docstring).
     """
     from sleap_roots_analyze import (
         create_cluster_scatter_pca,
         create_cluster_size_barplot,
-        perform_pca_analysis,
     )
 
-    def _scatter_pca():
-        try:
-            pca_result_dict = perform_pca_analysis(
-                frame.df[trait_cols], standardize=standardize
-            )
-        except (ValueError, np.linalg.LinAlgError) as exc:
-            logger.debug(
-                "internal perform_pca_analysis call for create_cluster_scatter_pca "
-                "failed, translating to assumption_violated: %s: %s",
-                type(exc).__name__,
-                exc,
-            )
-            raise BloomMCPError(
-                code="assumption_violated",
-                message=(
-                    "Could not compute the PCA projection for "
-                    "create_cluster_scatter_pca — the certified-clean trait selection "
-                    "is degenerate for PCA."
-                ),
-                remedy=(
-                    "Select a broader set of numeric trait columns, or omit "
-                    "create_cluster_scatter_pca from plots, then retry."
-                ),
-            ) from None
-        return create_cluster_scatter_pca(result_dict, pca_result=pca_result_dict)
-
     return {
-        "create_cluster_scatter_pca": _scatter_pca,
+        "create_cluster_scatter_pca": lambda: create_cluster_scatter_pca(
+            result_dict, pca_result=scatter_pca_result_dict
+        ),
         "create_cluster_size_barplot": lambda: create_cluster_size_barplot(
             np.asarray(result_dict["cluster_labels"]), int(result.n_clusters)
         ),
@@ -623,17 +638,24 @@ def clustering(
 
             matplotlib.use("Agg")
             validate_plot_keys(params.plots, _CLUSTERING_CATALOG_KEYS)
-            calls = _clustering_plot_calls(
-                result_dict,
-                result,
-                frame,
-                trait_cols,
-                standardize=params.standardize,
-            )
             keys_to_generate = (
                 list(params.plots)
                 if params.plots is not None
                 else sorted(_CLUSTERING_CATALOG_KEYS)
+            )
+            # Computed here, before _clustering_plot_calls/generate_figures, and only
+            # when actually needed — not lazily inside the plot callable itself — so
+            # this real PCA fit runs outside FIGURE_REGISTRY_LOCK's held window (#721 PR
+            # review; see _compute_scatter_pca's docstring).
+            scatter_pca_result_dict = (
+                _compute_scatter_pca(frame, trait_cols, standardize=params.standardize)
+                if "create_cluster_scatter_pca" in keys_to_generate
+                else None
+            )
+            calls = _clustering_plot_calls(
+                result_dict,
+                result,
+                scatter_pca_result_dict=scatter_pca_result_dict,
             )
             generate_figures({k: calls[k] for k in keys_to_generate}, figures)
 

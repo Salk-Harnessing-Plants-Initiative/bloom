@@ -46,6 +46,17 @@ jobs:
     runs-on: ${{ github.event.inputs.runner == 'ubuntu-latest' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "salk-network"]') }}
     timeout-minutes: 30
     environment: production
+    # Explicit, least-privilege grant for the "Reopen deploy-gated issues on
+    # migration failure" step below (bloom#780) -- contents:read is this
+    # job's existing implicit default; issues:write + pull-requests:read are
+    # new, needed to resolve the triggering PR and reopen/comment on an
+    # issue it auto-closed. Declared explicitly rather than relying on the
+    # repo's default_workflow_permissions (currently "write", which happens
+    # to already cover this, but implicitly and fragilely).
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
     concurrency:
       # Shared group for both prod and staging — only one deploy runs at a
       # time across the whole repo (single Salk server, single docker daemon).
@@ -684,6 +695,140 @@ jobs:
             bash scripts/deploy_run_supabase.sh prod 'migration list --debug'
           " || echo '::warning::Could not fetch migration status'
 
+      # auto-close-issues-on-staging.yml closes an issue at PR-merge time --
+      # well before this push-triggered job even starts. If the migration
+      # step it depended on then fails, the issue stays wrongly closed
+      # (bloom#780; first seen as bloom#410, then bloom#685). Resolve the
+      # merged PR from this commit, re-extract its closing-keyword refs the
+      # same way that workflow does, and reopen+comment on any that look
+      # auto-closed by it specifically (never a human's own close).
+      - name: Reopen deploy-gated issues on migration failure (production)
+        if: failure() && steps.migrate_prod.outcome == 'failure'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7.1.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = context.sha;
+            // context.job is the real running job's id ("deploy-staging" /
+            // "deploy-production") -- deriving the environment label from it
+            // at runtime keeps this script byte-identical between both jobs
+            // while still letting the posted comment name which one failed.
+            const env = context.job.replace(/^deploy-/, '');
+
+            // A stalled connection (this runner's class has a documented history
+            // of silently dropping outbound traffic rather than refusing it --
+            // see bloom#616) must fail fast, not hang for the job's full
+            // 30-minute timeout while holding the shared deploy-bloom lock.
+            const withTimeout = (promise, ms, label) => Promise.race([
+              promise,
+              new Promise((_, reject) => setTimeout(
+                () => reject(new Error(`${label} timed out after ${ms}ms`)), ms,
+              )),
+            ]);
+
+            try {
+              const { data: associatedPrs } = await withTimeout(
+                github.rest.repos.listPullRequestsAssociatedWithCommit({ owner, repo, commit_sha: sha }),
+                15000, 'commits/pulls lookup',
+              );
+
+              if (associatedPrs.length !== 1) {
+                core.info(`Found ${associatedPrs.length} PR(s) associated with ${sha} — expected exactly 1, skipping.`);
+                return;
+              }
+
+              const pr = associatedPrs[0];
+              const text = `${pr.title}\n\n${pr.body || ''}`;
+
+              // Mirror auto-close-issues-on-staging.yml's own closing-keyword regex
+              // exactly -- the two workflows must always agree on what counts as a
+              // closing reference.
+              const re = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+#(\d+)/gi;
+
+              const numbers = new Set();
+              for (const m of text.matchAll(re)) {
+                numbers.add(Number(m[1]));
+              }
+
+              if (numbers.size === 0) {
+                core.info('No same-repo closing keywords found in the triggering PR title/body.');
+                return;
+              }
+              core.info(`Found closing refs: ${[...numbers].join(', ')}`);
+
+              const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+
+              // auto-close-issues-on-staging.yml's own comment reads
+              // "Closed by #<N> (merged into `staging`)..." -- reading it back
+              // tells us WHICH PR actually closed a given issue, so an
+              // unrelated later PR that happens to reference the same issue
+              // number (and whose own, unrelated deploy then fails) can't
+              // wrongly reopen an issue whose real fix already deployed fine.
+              const closedByRe = /Closed by #(\d+)/;
+
+              for (const issue_number of numbers) {
+                try {
+                  const { data: issue } = await withTimeout(
+                    github.rest.issues.get({ owner, repo, issue_number }),
+                    15000, `issues.get(#${issue_number})`,
+                  );
+
+                  if (issue.pull_request) {
+                    core.info(`#${issue_number} is a PR, skipping.`);
+                    continue;
+                  }
+
+                  const looksAutoClosed = issue.state === 'closed'
+                    && issue.state_reason === 'completed'
+                    && issue.closed_by?.login === 'github-actions[bot]';
+                  if (!looksAutoClosed) {
+                    core.info(`#${issue_number} does not look auto-closed (state=${issue.state}, state_reason=${issue.state_reason}, closed_by=${issue.closed_by?.login}), skipping.`);
+                    continue;
+                  }
+
+                  // github.paginate walks every page rather than stopping at the
+                  // first -- listComments defaults to oldest-first, and the bot's
+                  // own closing comment is posted at merge time (i.e. among the
+                  // NEWEST), so a single per_page:100 fetch would systematically
+                  // miss it on any issue with a long enough comment history.
+                  const comments = await withTimeout(
+                    github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 }),
+                    15000, `issues.listComments(#${issue_number})`,
+                  );
+                  const closingComment = [...comments].reverse().find(
+                    (c) => c.user?.login === 'github-actions[bot]' && closedByRe.test(c.body || ''),
+                  );
+                  const closedByPrNumber = closingComment ? Number(closingComment.body.match(closedByRe)[1]) : null;
+                  if (closedByPrNumber !== pr.number) {
+                    core.info(`#${issue_number} was auto-closed by #${closedByPrNumber ?? '<unknown>'}, not this run's PR #${pr.number} -- skipping to avoid misattributing an unrelated failure.`);
+                    continue;
+                  }
+
+                  await withTimeout(
+                    github.rest.issues.update({ owner, repo, issue_number, state: 'open' }),
+                    15000, `issues.update(#${issue_number})`,
+                  );
+                  await withTimeout(
+                    github.rest.issues.createComment({
+                      owner, repo, issue_number,
+                      body: `Reopening -- this issue was auto-closed when this PR merged, but the `
+                        + `deploy that was supposed to make the fix real then failed in **${env}** `
+                        + `at the "Apply database migrations" step: ${runUrl}\n\n`
+                        + `Automatic close-on-merge outran deploy verification (see bloom#780). `
+                        + `This does not necessarily mean the fix itself is wrong -- check the `
+                        + `linked run before re-closing.`,
+                    }),
+                    15000, `issues.createComment(#${issue_number})`,
+                  );
+                  core.info(`Reopened #${issue_number}.`);
+                } catch (err) {
+                  core.warning(`Could not process #${issue_number}: ${err.message}`);
+                }
+              }
+            } catch (err) {
+              core.warning(`Reopen-on-migration-failure step failed: ${err.message}`);
+            }
+
       # Layer C: migration state as a fenced code block in the run summary.
       # Uses CLI's native text output (the `-o json` flag does NOT exist on
       # `migration list` in the pinned CLI version — see env.SUPABASE_VERSION).
@@ -818,6 +963,11 @@ jobs:
     runs-on: ${{ github.event.inputs.runner == 'ubuntu-latest' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "salk-network"]') }}
     timeout-minutes: 30
     environment: staging
+    # See the matching comment on deploy-production's permissions block above.
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
     concurrency:
       # Shared group for both prod and staging — only one deploy runs at a
       # time across the whole repo (single Salk server, single docker daemon).
@@ -1363,6 +1513,136 @@ jobs:
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
             bash scripts/deploy_run_supabase.sh staging 'migration list --debug'
           " || echo '::warning::Could not fetch migration status'
+
+      # See the matching comment on deploy-production's equivalent step above
+      # (bloom#780; first seen as bloom#410, then bloom#685 -- the incident
+      # that motivated this fix).
+      - name: Reopen deploy-gated issues on migration failure (staging)
+        if: failure() && steps.migrate_staging.outcome == 'failure'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7.1.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = context.sha;
+            // context.job is the real running job's id ("deploy-staging" /
+            // "deploy-production") -- deriving the environment label from it
+            // at runtime keeps this script byte-identical between both jobs
+            // while still letting the posted comment name which one failed.
+            const env = context.job.replace(/^deploy-/, '');
+
+            // A stalled connection (this runner's class has a documented history
+            // of silently dropping outbound traffic rather than refusing it --
+            // see bloom#616) must fail fast, not hang for the job's full
+            // 30-minute timeout while holding the shared deploy-bloom lock.
+            const withTimeout = (promise, ms, label) => Promise.race([
+              promise,
+              new Promise((_, reject) => setTimeout(
+                () => reject(new Error(`${label} timed out after ${ms}ms`)), ms,
+              )),
+            ]);
+
+            try {
+              const { data: associatedPrs } = await withTimeout(
+                github.rest.repos.listPullRequestsAssociatedWithCommit({ owner, repo, commit_sha: sha }),
+                15000, 'commits/pulls lookup',
+              );
+
+              if (associatedPrs.length !== 1) {
+                core.info(`Found ${associatedPrs.length} PR(s) associated with ${sha} — expected exactly 1, skipping.`);
+                return;
+              }
+
+              const pr = associatedPrs[0];
+              const text = `${pr.title}\n\n${pr.body || ''}`;
+
+              // Mirror auto-close-issues-on-staging.yml's own closing-keyword regex
+              // exactly -- the two workflows must always agree on what counts as a
+              // closing reference.
+              const re = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+#(\d+)/gi;
+
+              const numbers = new Set();
+              for (const m of text.matchAll(re)) {
+                numbers.add(Number(m[1]));
+              }
+
+              if (numbers.size === 0) {
+                core.info('No same-repo closing keywords found in the triggering PR title/body.');
+                return;
+              }
+              core.info(`Found closing refs: ${[...numbers].join(', ')}`);
+
+              const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+
+              // auto-close-issues-on-staging.yml's own comment reads
+              // "Closed by #<N> (merged into `staging`)..." -- reading it back
+              // tells us WHICH PR actually closed a given issue, so an
+              // unrelated later PR that happens to reference the same issue
+              // number (and whose own, unrelated deploy then fails) can't
+              // wrongly reopen an issue whose real fix already deployed fine.
+              const closedByRe = /Closed by #(\d+)/;
+
+              for (const issue_number of numbers) {
+                try {
+                  const { data: issue } = await withTimeout(
+                    github.rest.issues.get({ owner, repo, issue_number }),
+                    15000, `issues.get(#${issue_number})`,
+                  );
+
+                  if (issue.pull_request) {
+                    core.info(`#${issue_number} is a PR, skipping.`);
+                    continue;
+                  }
+
+                  const looksAutoClosed = issue.state === 'closed'
+                    && issue.state_reason === 'completed'
+                    && issue.closed_by?.login === 'github-actions[bot]';
+                  if (!looksAutoClosed) {
+                    core.info(`#${issue_number} does not look auto-closed (state=${issue.state}, state_reason=${issue.state_reason}, closed_by=${issue.closed_by?.login}), skipping.`);
+                    continue;
+                  }
+
+                  // github.paginate walks every page rather than stopping at the
+                  // first -- listComments defaults to oldest-first, and the bot's
+                  // own closing comment is posted at merge time (i.e. among the
+                  // NEWEST), so a single per_page:100 fetch would systematically
+                  // miss it on any issue with a long enough comment history.
+                  const comments = await withTimeout(
+                    github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 }),
+                    15000, `issues.listComments(#${issue_number})`,
+                  );
+                  const closingComment = [...comments].reverse().find(
+                    (c) => c.user?.login === 'github-actions[bot]' && closedByRe.test(c.body || ''),
+                  );
+                  const closedByPrNumber = closingComment ? Number(closingComment.body.match(closedByRe)[1]) : null;
+                  if (closedByPrNumber !== pr.number) {
+                    core.info(`#${issue_number} was auto-closed by #${closedByPrNumber ?? '<unknown>'}, not this run's PR #${pr.number} -- skipping to avoid misattributing an unrelated failure.`);
+                    continue;
+                  }
+
+                  await withTimeout(
+                    github.rest.issues.update({ owner, repo, issue_number, state: 'open' }),
+                    15000, `issues.update(#${issue_number})`,
+                  );
+                  await withTimeout(
+                    github.rest.issues.createComment({
+                      owner, repo, issue_number,
+                      body: `Reopening -- this issue was auto-closed when this PR merged, but the `
+                        + `deploy that was supposed to make the fix real then failed in **${env}** `
+                        + `at the "Apply database migrations" step: ${runUrl}\n\n`
+                        + `Automatic close-on-merge outran deploy verification (see bloom#780). `
+                        + `This does not necessarily mean the fix itself is wrong -- check the `
+                        + `linked run before re-closing.`,
+                    }),
+                    15000, `issues.createComment(#${issue_number})`,
+                  );
+                  core.info(`Reopened #${issue_number}.`);
+                } catch (err) {
+                  core.warning(`Could not process #${issue_number}: ${err.message}`);
+                }
+              }
+            } catch (err) {
+              core.warning(`Reopen-on-migration-failure step failed: ${err.message}`);
+            }
 
       - name: Migration summary (staging)
         if: always()

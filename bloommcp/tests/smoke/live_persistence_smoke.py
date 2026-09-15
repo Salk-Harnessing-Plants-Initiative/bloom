@@ -101,6 +101,18 @@ A fifth, **``descriptive_stats``** leg (#488) *consumes* the same latest cleaned
     — the smoke's cleaned input uses the ``qc_clean`` leg's own threshold, which may differ from
     the unit golden's canonical-default clean.
 
+A sixth, **``heritability_analysis``** leg (#462) *consumes* the same latest cleaned version:
+
+  * ``heritability_analysis(experiment="turface_raw.csv")`` resolves the latest cleaned version
+    via ``require_clean=True`` and commits a versioned ``heritability`` run whose outputs are
+    ``heritability.csv`` + ``heritability_result.json``, with a schema-v5 manifest recording
+    ``seed=None`` (the delegate has no RNG), ``tool == "heritability_analysis"``, and matching
+    ``output_sha256`` for both artifacts. Asserted **structurally** — the counts reconcile
+    (``requested == reported + failed``) and no trait was routed out for a non-finite or missing
+    delegate key. Deliberately **not** ``n_failed == 0``: this leg runs live in ``dev-stack-smoke``
+    on every PR against thin synthetic seed data, where a mixed model failing to fit a given trait
+    is a legitimate outcome, not a regression. Exact numbers are the unit golden's job.
+
 Every failure mode (tool error, hash mismatch, read-after-write timeout, import leak)
 routes through the per-check summary and a non-zero exit — never an unlabelled traceback.
 
@@ -176,6 +188,15 @@ CL_RESULT_NAME = "cluster_result.json"  # logical key for the serialized typed r
 STATS_TOOL_CLASS = "stats"
 STATS_CSV_NAME = "stats.csv"  # logical key for the full per-trait table
 
+# --- heritability_analysis leg constants (#462) -------------------------------
+# The granular heritability_analysis tool (#462) *consumes* the same latest cleaned
+# version, persisting under the ``heritability`` tool class — reserved in
+# CANONICAL_TOOL_CLASSES long before any tool wrote to it, and first written here.
+# The delegate (statsmodels MixedLM, REML) has no RNG, so it records seed=None.
+H2_TOOL_CLASS = "heritability"
+H2_CSV_NAME = "heritability.csv"  # logical key for the full per-trait table
+H2_RESULT_NAME = "heritability_result.json"  # serialized typed HeritabilityResult
+
 # Read-after-write can lag the storage-api; bound the wait so a real regression
 # still fails fast (5 attempts, 1s apart, ≤5s ceiling) rather than hanging.
 RETRY_ATTEMPTS = 5
@@ -206,9 +227,10 @@ def summarize(checks: list[Check]) -> tuple[str, int]:
     lines.append(
         "SMOKE PASSED ✅ — the qc_clean cleaned run, remove_outliers trimmed run "
         "(incl. the generic v5-provenance + version-advance guarantee), AND the granular "
-        "clustering(kmeans), clustering(hierarchical), and descriptive_stats consumers "
-        "all persist full provenance through the real ports; the qc_clean → "
-        "remove_outliers → {clustering,descriptive_stats}(require_clean=True) "
+        "clustering(kmeans), clustering(hierarchical), descriptive_stats, and "
+        "heritability_analysis consumers all persist full provenance through the real "
+        "ports; the qc_clean → remove_outliers → "
+        "{clustering,descriptive_stats,heritability_analysis}(require_clean=True) "
         "composition resolves and summarizes the trimmed table."
     )
     return "\n".join(lines), 0
@@ -596,6 +618,102 @@ def stats_result_checks(n_traits_reported: object, n_failed: object) -> list[Che
             "descriptive_stats: n_failed == 0",
             n_failed == 0,
             f"n_failed={n_failed!r}",
+        ),
+    ]
+
+
+def heritability_persist_checks(
+    *,
+    schema_version: object,
+    seed: object,
+    tool: object,
+    source: object,
+    output_keys: dict,
+    output_sha256: dict,
+    expected_outputs: set,
+) -> list[Check]:
+    """Assert the persisted ``heritability_analysis`` run: v5 manifest, seed=None, lineage.
+
+    The #462 analogue of :func:`stats_persist_checks`. A pure **consumer**: it produces no
+    new cleaned version, so the payoff is that it resolved the committed cleaned source
+    (``v<N>_cleaned``, not ``raw``) via ``require_clean=True`` — the guard neither retired
+    plot tool had — and persisted a versioned ``heritability`` run.
+    """
+    return [
+        Check(
+            "heritability_analysis: manifest schema == 5",
+            schema_version == 5,
+            f"schema_version={schema_version!r}",
+        ),
+        Check(
+            "heritability_analysis: seed == None (deterministic)",
+            seed is None,
+            f"seed={seed!r}",
+        ),
+        Check(
+            "heritability_analysis: run tool == 'heritability_analysis'",
+            tool == "heritability_analysis",
+            f"tool={tool!r}",
+        ),
+        Check(
+            "heritability_analysis: consumed a cleaned source (require_clean, not raw)",
+            isinstance(source, str) and source != "raw" and source.endswith("_cleaned"),
+            f"source={source!r}",
+        ),
+        Check(
+            "heritability_analysis: committed outputs include both artifacts",
+            expected_outputs <= set(output_keys),
+            f"output_keys={sorted(output_keys)}",
+        ),
+        Check(
+            "heritability_analysis: output_keys / output_sha256 share one key-set",
+            set(output_keys) == set(output_sha256),
+            f"keys={sorted(output_keys)} sha={sorted(output_sha256)}",
+        ),
+    ]
+
+
+def heritability_result_checks(
+    n_traits_requested: object,
+    n_traits_reported: object,
+    n_failed: object,
+    nonfinite_traits: object,
+    zero_variance_traits: object = None,
+) -> list[Check]:
+    """Assert the tool's own result is structurally sound.
+
+    Structural, NOT ``n_failed == 0``: this leg runs live on every PR against the thin
+    synthetic seed experiments, where a mixed model failing to fit a given trait is a
+    legitimate outcome. What must always hold is that the counts reconcile and that no
+    trait was routed out because the delegate returned a non-finite value or dropped a
+    key — either of those is a real contract regression, not seed-data thinness.
+    """
+    return [
+        Check(
+            "heritability_analysis: n_traits_reported > 0",
+            isinstance(n_traits_reported, int) and n_traits_reported > 0,
+            f"n_traits_reported={n_traits_reported!r}",
+        ),
+        Check(
+            "heritability_analysis: counts reconcile (requested == reported + failed)",
+            n_traits_requested == (n_traits_reported or 0) + (n_failed or 0),
+            f"requested={n_traits_requested!r} reported={n_traits_reported!r} "
+            f"failed={n_failed!r}",
+        ),
+        Check(
+            "heritability_analysis: no non-finite/dropped-key trait routing",
+            nonfinite_traits == [],
+            f"nonfinite_traits={nonfinite_traits!r}",
+        ),
+        # Reported, not asserted-empty: the seeded smoke experiments are synthetic, so a
+        # trait with no variance to partition is plausible there and is not a regression.
+        # What matters is that the tool NAMES it rather than folding a non-measurement
+        # silently into mean_h2 — so this check only fails if the field is missing
+        # entirely (a contract regression), never for being non-empty.
+        Check(
+            "heritability_analysis: zero-variance traits are reported as a list",
+            isinstance(zero_variance_traits, list),
+            f"zero_variance_traits={zero_variance_traits!r}",
         ),
     ]
 
@@ -1081,6 +1199,81 @@ def main() -> int:
             )
             checks.extend(
                 hash_checks(ds_stored.output_keys, ds_stored.output_sha256, read_bytes)
+            )
+
+        # === heritability_analysis leg (#462) =================================
+        # Consume the same latest cleaned version through the SAME real ports,
+        # persisting a versioned `heritability` run — the first write ever made to
+        # that reserved tool class, and the require_clean guard neither retired plot
+        # tool had.
+        from bloom_mcp.sections.sleap_roots.analysis.heritability_analysis import (  # noqa: E402
+            HeritabilityAnalysisParams,
+            heritability_analysis,
+        )
+
+        print(
+            f">>> running heritability_analysis on {QC_EXPERIMENT} through real ports ..."
+        )
+        h2_committed = False
+        h2_source: object = None
+        h2_requested: object = None
+        h2_reported: object = None
+        h2_failed: object = None
+        h2_nonfinite: object = None
+        h2_zero_variance: object = None
+        try:
+            h2_result = heritability_analysis(
+                HeritabilityAnalysisParams(experiment=QC_EXPERIMENT)
+            )
+            h2_committed = True
+            h2_source = h2_result.source
+            h2_requested = h2_result.n_traits_requested
+            h2_reported = h2_result.n_traits_reported
+            h2_failed = h2_result.n_failed
+            h2_nonfinite = h2_result.nonfinite_traits
+            h2_zero_variance = h2_result.zero_variance_traits
+            checks.append(Check("heritability_analysis commits a run", True))
+        except BloomMCPError as exc:
+            checks.append(
+                Check("heritability_analysis commits a run", False, f"error={exc!r}")
+            )
+        except Exception as exc:  # noqa: BLE001 — see below
+            # Deliberately broader than the sibling legs' `except BloomMCPError`: this
+            # delegate is statsmodels/numpy, which can raise LinAlgError or a
+            # ConvergenceWarning-turned-error on degenerate seed data. Letting that
+            # escape would kill main() with a traceback and print no summary at all,
+            # losing every other leg's result — record it as a failed check instead.
+            checks.append(
+                Check("heritability_analysis commits a run", False, f"error={exc!r}")
+            )
+
+        if h2_committed:
+            checks.extend(
+                heritability_result_checks(
+                    h2_requested,
+                    h2_reported,
+                    h2_failed,
+                    h2_nonfinite,
+                    h2_zero_variance,
+                )
+            )
+            h2_stored = retry(
+                lambda: _ports.store().get_run(QC_EXPERIMENT, H2_TOOL_CLASS, "latest")
+            )
+            h2_manifest = retry(lambda: sc.read_json(h2_stored.manifest_path))
+            checks.extend(
+                heritability_persist_checks(
+                    schema_version=h2_manifest.get("manifest_schema_version"),
+                    seed=h2_stored.seed,
+                    tool=h2_stored.tool,
+                    source=h2_source,
+                    output_keys=h2_stored.output_keys,
+                    output_sha256=h2_stored.output_sha256,
+                    expected_outputs={H2_CSV_NAME, H2_RESULT_NAME},
+                )
+            )
+            checks.extend(
+                hash_checks(h2_stored.output_keys, h2_stored.output_sha256, read_bytes)
             )
 
     text, code = summarize(checks)

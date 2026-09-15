@@ -24,12 +24,14 @@ remedy does not invite a retry (the type carries its own `agent_remedy` —
 see the `bloommcp-tool-contract` delta); `summarize_trait` declares the type
 (its `load_frame` seam no longer flattens the mismatch into the error-string
 channel, which used to become `invalid_input` with a
-pick-another-experiment remedy); and the plain string-returning consumers —
-the five viz plotters and the core `load_experiment_data` discovery tool,
-whose bare `except Exception` fallbacks would otherwise flatten the typed
-message into an unactionable "could not be read" — SHALL catch
-`ForeignCatalogError` explicitly and return its message (leak-safe by
-construction).
+pick-another-experiment remedy); and the plain string-returning core
+`load_experiment_data` discovery tool — whose bare fall-through would
+otherwise flatten the typed message into an unactionable "could not be
+read" — SHALL catch `ForeignCatalogError` explicitly and return its message
+(leak-safe by construction). (The legacy string-returning plotters were
+retired/converged onto the envelope by #462 mid-review, so the envelope
+declarations cover their successors, including `heritability_analysis` — the
+newest `require_clean=True` consumer, covered by test.)
 
 The mismatch SHALL NOT be treated as a soft miss: resolution SHALL NOT fall
 through to a lower-priority cleaned tool class, the legacy un-versioned
@@ -80,8 +82,8 @@ manifest).
 
 #### Scenario: A plain string-returning tool returns the typed message
 
-- **WHEN** one of the five viz plotters or the core `load_experiment_data`
-  discovery tool loads an experiment whose catalog is foreign
+- **WHEN** the core `load_experiment_data` discovery tool loads an experiment
+  whose catalog is foreign
 - **THEN** the returned string carries the mismatch message (both backends
   named), not the generic "the experiment data could not be read" flatten,
   and not the escape-hatch variable name

@@ -94,9 +94,8 @@ def _ensure_subfolder(path: Path, label: str) -> None:
     """Auto-create a ``BLOOM_LOCAL_ROOT``-derived subfolder, failing clearly if blocked.
 
     Only the top-level ``BLOOM_LOCAL_ROOT`` folder must pre-exist (validated by
-    ``_validate_local_root_dir``); its subfolders auto-create here, mirroring the
-    ``PLOTS_DIR.mkdir(parents=True, exist_ok=True)`` idiom ``_viz_shared.save_plot``
-    already uses, just run at boot instead of at first write. ``label`` names the
+    ``_validate_local_root_dir``); its subfolders auto-create here with the
+    ``mkdir(parents=True, exist_ok=True)`` idiom, run at boot instead of at first write. ``label`` names the
     subfolder in the raised error (e.g. "input root") without leaking the
     absolute host path.
     """
@@ -220,9 +219,10 @@ def _validate_dirs() -> None:
                 # Post-create writability recheck — mirrors the fall-through
                 # checks validate_experiment_local_root (readable) and
                 # validate_storage_backend (writable) both perform after their
-                # own _ensure_subfolder call; plots are a write destination
-                # (_viz_shared.save_plot), so a raw PermissionError there
-                # should surface at boot, not mid-analysis.
+                # own _ensure_subfolder call. Nothing in bloom_mcp writes to the
+                # plots root any more (#466/#462 moved every plot onto
+                # ResultStore), but it is still provisioned and served; keep the
+                # boot-time writability check until PLOTS_DIR's own retirement.
                 if not os.access(path, os.W_OK):
                     raise RuntimeError("BLOOM_LOCAL_ROOT's plots root is not writable.")
                 continue
@@ -495,11 +495,11 @@ def _resolve_one_class(
         # present-but-foreign catalog as absent). Raised as the reader-port
         # type here, at the shared resolution helper, so every consumer
         # surfaces the same typed error: the envelope-wrapped analysis tools
-        # through their `errors=(ExperimentReadError, …)` declarations, and
-        # the plain string-returning tools (the five viz plotters and
-        # `sections.core.load_experiment_data`) through their own explicit
-        # `except ForeignCatalogError` branches — their bare `except
-        # Exception` fallbacks would otherwise flatten this into an
+        # (including the #462 plotters and heritability_analysis) through
+        # their `errors=(ExperimentReadError, …)` declarations, and the
+        # plain string-returning `sections.core.load_experiment_data`
+        # discovery tool through its explicit `except ForeignCatalogError`
+        # branch — its bare fall-through would otherwise flatten this into an
         # unactionable "could not be read" (#573 review, finding 2a). The
         # import is lazy (like AnalysisDir's above): `bloom_mcp.data_access`
         # imports this module at package-import time, so a top-level import

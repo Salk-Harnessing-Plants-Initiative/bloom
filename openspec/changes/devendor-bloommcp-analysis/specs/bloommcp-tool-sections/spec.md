@@ -29,9 +29,14 @@ subgroup (wrapping `sleap-roots-analyze`) and a reserved `extraction/` subgroup 
 `qc_clean`, `qc_inspect`, `remove_outliers`, `clustering` (the polymorphic kmeans/GMM/
 hierarchical tool, #309/#422 — landed on `staging` after this change was first proposed; it
 already delegates to `sleap_roots_analyze` with no vendored import, so only the Phase-2 move
-applies to it), and the **five surviving plotting tools** (`plot_trait_histograms`,
-`plot_trait_boxplots`, `plot_correlation_matrix`, `plot_heritability_bar`,
-`plot_variance_decomposition`), each tool in its own file. The former `plot_dendrogram` and
+applies to it), and the **three surviving plotting tools** (`plot_trait_histograms`,
+`plot_trait_boxplots`, `plot_correlation_matrix`), each tool in its own file. It was
+**five** when this change was written; `add-bloommcp-heritability-analysis-tool` (#462)
+subsequently retired `plot_heritability_bar` and `plot_variance_decomposition` into the
+`heritability_analysis` consumer, whose optional plots render those two figures from the
+same computation that returns the numbers. Amended here rather than left to contradict
+that change at archive time — whichever of the two archives second would otherwise
+publish a requirement mandating deleted modules. The former `plot_dendrogram` and
 `plot_outlier_comparison` tools SHALL NOT be carried over (`plot_dendrogram` computes
 hierarchical clustering internally rather than consuming the `clustering` tool's persisted
 output, and `plot_outlier_comparison` reads the retired outlier workflow's output); each may
@@ -77,15 +82,15 @@ analysis or plotting logic of its own; each SHALL delegate to `sleap_roots_analy
 
 #### Scenario: Plotting tools reject unsafe filenames and never leak raw exception text
 
-- **WHEN** any of the 5 plotting tools is called with a `filename` containing a path
+- **WHEN** any of the surviving plotting tools is called with a `filename` containing a path
   traversal (`..`) or an absolute path, or the delegate call fails internally
 - **THEN** the tool rejects the traversal/absolute filename before any file read (no content
   from outside `TRAITS_DIR` is read or returned), and any internal failure returns a
   sanitized string containing no raw exception text — while a normal, valid-but-nonexistent
   filename still returns the tool's pre-existing not-found message unchanged (Phase 3 / P3.3;
   an intentional, minimal stopgap — the full `@as_mcp_tool`/Pydantic convergence is deferred
-  to #462 for `plot_heritability_bar`/`plot_variance_decomposition` and #466 for the
-  remaining 3 tools)
+  to #466 for these 3 tools; #462 already completed it for `plot_heritability_bar`/
+  `plot_variance_decomposition` by retiring both into `heritability_analysis`)
 
 ### Requirement: Core Section for Cross-Cutting Discovery Tools
 

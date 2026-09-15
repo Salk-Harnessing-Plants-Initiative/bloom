@@ -32,6 +32,6 @@ You are a scientific programmer working on a plant phenotyping web platform (Nex
 
 7. **Implement with TDD on the same branch**: Once approved, run `/openspec:apply` to implement the change using test-driven development. Write tests before implementation code. **Add implementation commits to the same feature branch as the proposal scaffold and the same PR**; do not open a separate "implementation" PR. If `tasks.md` describes a multi-PR landing plan, the first phase's implementation lives in this PR alongside the proposal; later phases can be code-only PRs against the same OpenSpec change. The PR title and body should reflect that it bundles spec + implementation (not "proposal only").
 
-8. **Pre-merge**: Run `/pre-merge` (lint + full test suite + pre-PR self-review + OpenSpec validation). Fix anything it flags until green, then `/pr-description` and open the PR against `staging`.
+8. **Pre-merge**: Run `/pre-merge` (lint + full test suite + pre-PR self-review + OpenSpec validation). Fix anything it flags until green, then `/pr-description` and open the PR against `staging`. A PR that changes migrations fills its **Schema changes** section (ER snapshot and constraints table); check it with `make pr-body-check BODY=<file>` first.
 
 9. **Archive after merge**: Run `/openspec:archive <change-id>` to fold the change into the specs.

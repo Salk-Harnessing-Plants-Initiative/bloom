@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { formatScannerTime } from "@/components/recent-phenotypes-by-plate-scanner/plate-times";
 
 export function capitalizeFirstLetter(s: string) {
   return s.charAt(0).toUpperCase() + s.slice(1);
@@ -69,9 +70,7 @@ function formatDate(
     day: "numeric",
   },
 ): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString(undefined, opts);
+  return formatScannerTime(iso, opts) ?? "—";
 }
 
 // "Scanned May 5, 2026" for a single day, "May 1 – May 8, 2026" for a range

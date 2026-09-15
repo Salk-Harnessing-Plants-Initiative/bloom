@@ -56,7 +56,7 @@ dependencies = [
     # sleap_roots_analyze. scikit-learn moves to the `test` extra below (its only
     # remaining use is test_oracle.py's UMAP-trustworthiness metric); scipy/seaborn
     # have no importer left at all. matplotlib is retained — the sleap_roots
-    # section's 5 plotting tools import it directly for rendering. Runtime
+    # section's 3 plotting tools import it directly for rendering. Runtime
     # resolution is unaffected: the sleap-roots-analyze pin pulls scikit-learn/
     # scipy/seaborn transitively.
     "pandas>=2.0.0",

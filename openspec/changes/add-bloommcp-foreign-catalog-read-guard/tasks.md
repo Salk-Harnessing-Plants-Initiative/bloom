@@ -229,8 +229,11 @@ live_smoke"` (matching `python-audit`), with the pre-existing
       test asserting cleanup); delta wording states both windows honestly.
 - [x] 6.6 (finding 3) `agent_remedy` on the two error types, honored by the
       envelope for declared errors only; new `bloommcp-tool-contract` delta.
-- [x] 6.7 (finding 2a) Viz tools, `load_frame`/`summarize_trait`, core
-      `load_experiment_data` surface the typed message;
+- [x] 6.7 (finding 2a) `load_frame`/`summarize_trait` and core
+      `load_experiment_data` surface the typed message (the legacy viz tools
+      were patched too, then retired/converged onto the envelope by #462's
+      merge — their successors, incl. `heritability_analysis`, are covered by
+      the `errors=` declarations and a dedicated test);
       `trim_staleness` wraps instead of leaking the manifest-layer type;
       experiment_utils comment corrected.
 - [x] 6.8 (finding 2b) "Tampered sentinel" struck/qualified in all six

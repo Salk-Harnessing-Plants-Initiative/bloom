@@ -33,6 +33,9 @@
 #   Accepts: KEY=realvalue  |  KEY=tls internal  |  KEY=p@ss#w0rd
 # =============================================================================
 
+# Read by scheduled-jobs/weekly-backup/backup.py, which compose never starts.
+SCHEDULED_JOB_KEYS="BACKUP_RCLONE_REMOTE BACKUP_RCLONE_DEST_DIR BACKUP_STATE_DIR BACKUP_MIN_FREE_BYTES"
+
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -70,6 +73,11 @@ required=$(grep -oE '\$\{[A-Z_][A-Z0-9_]*' "$compose_file" \
   | sed 's/^\${//' \
   | sort -u \
   | grep -v -E '^(COMPOSE_PROJECT_NAME|NEXT_PUBLIC_SUPABASE_COOKIE_NAME)$')
+
+# Keys read by scheduled jobs rather than by compose. Nothing references these
+# in the compose file, so the derivation above cannot see them, and a blank one
+# would reach the job as an empty string rather than as its default.
+required="$required $SCHEDULED_JOB_KEYS"
 
 missing=()
 for k in $required; do

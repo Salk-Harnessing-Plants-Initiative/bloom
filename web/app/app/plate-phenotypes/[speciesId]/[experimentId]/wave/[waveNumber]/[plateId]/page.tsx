@@ -5,6 +5,7 @@ import {
 } from "@/lib/supabase/server";
 import Mixpanel from "mixpanel";
 import { PlateVideo } from "@/components/recent-phenotypes-by-plate-scanner/PlateVideo";
+import { encodableFrameCount } from "@/components/recent-phenotypes-by-plate-scanner/plate-frames";
 import {
   PlateTimeSeries,
   type TimePoint,
@@ -36,6 +37,14 @@ interface ScanRow {
   cycle_number: number | null;
   capture_date: string;
   gravi_images: { object_path: string } | null;
+}
+
+// frame_count is nullable: rows written before it existed have none, and the
+// service treats a null count as a reason to re-render rather than keep.
+interface PlateVideoRow {
+  object_path: string;
+  generated_at: string | null;
+  frame_count: number | null;
 }
 
 interface ExperimentRow {
@@ -178,7 +187,14 @@ export default async function WavePlateDetail({
         <h2 className="mb-2 text-sm uppercase tracking-widest text-stone-500">
           Growth time-lapse
         </h2>
-        <PlateVideo objectPath={video?.object_path ?? null} />
+        <PlateVideo
+          experimentId={Number(experimentId)}
+          plateId={decodedPlateId}
+          waveNumber={wave}
+          objectPath={video?.object_path ?? null}
+          storedFrames={video?.frame_count ?? null}
+          availableFrames={encodableFrameCount(scans)}
+        />
       </div>
     </div>
   );
@@ -229,11 +245,11 @@ async function getPlateVideo(
   experimentId: number,
   plateId: string,
   wave: number | null,
-): Promise<{ object_path: string } | null> {
+): Promise<PlateVideoRow | null> {
   const supabase = await createServerSupabaseClient();
   let query = (supabase as unknown as SupabaseClient<unknown>)
     .from("gravi_plate_videos")
-    .select("object_path, generated_at")
+    .select("object_path, generated_at, frame_count")
     .eq("experiment_id", experimentId)
     .eq("plate_id", plateId);
   query = wave === null ? query.is("wave_number", null) : query.eq("wave_number", wave);
@@ -245,7 +261,7 @@ async function getPlateVideo(
   if (error) {
     console.error("[wave plate detail] video fetch error:", error);
   }
-  return (data as { object_path: string } | null) ?? null;
+  return (data as PlateVideoRow | null) ?? null;
 }
 
 // Scans for one plate IN ONE WAVE — filtered by wave_number so timepoints are

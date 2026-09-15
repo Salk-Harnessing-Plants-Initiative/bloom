@@ -95,12 +95,13 @@ make prod-down
 Drives a workflow end-to-end through the **real** `SupabaseReader`/`SupabaseResultStore`
 against the dev stack and asserts the committed run is a v3 manifest whose
 `output_sha256` matches the bytes actually stored (issue #326). Same `make bloommcp-smoke`
-target CI runs, so local and CI never drift. `make bloommcp-plot-smoke` similarly calls a
-real plotting tool through the container's actual MCP transport (issue #472) — CI already
-runs both; do the same locally.
+target CI runs, so local and CI never drift. (`make bloommcp-plot-smoke`, which called a
+bare-`mcp.tool()` plotting tool to exercise the bind-mounted `PLOTS_DIR` write path — issue
+#472 — was retired with the last such tool in #462; every plotting tool now persists through
+`ResultStore`, which this smoke already covers.)
 
 ```bash
-make dev-up && make migrate-local && make check && make bloommcp-smoke && make bloommcp-plot-smoke
+make dev-up && make migrate-local && make check && make bloommcp-smoke
 make dev-down
 ```
 
@@ -108,8 +109,11 @@ make dev-down
 
 Runs every `live_smoke`-marked test under `bloommcp/tests/smoke/` — the CI-safe subset
 `dev-stack-smoke` already runs, **plus** the `live_smoke_slow` cases CI skips
-(mahalanobis/gmm on cylinder, the per-trait MixedLM heritability/variance-decomposition
-plots, correlation-matrix-on-cylinder). Requires `BLOOMMCP_PORT` / `BLOOMMCP_API_KEY`
+(mahalanobis/gmm on cylinder, correlation-matrix / histograms / boxplots on cylinder).
+The per-trait MixedLM heritability and variance-decomposition plot tools used to be in
+this list; bloom#462 retired both into `heritability_analysis`, whose smoke runs in the
+CI-safe subset — it reads the DB-seeded smoke experiments rather than the 846-trait
+cylinder CSV those tools loaded, so the cost that made them slow no longer applies. Requires `BLOOMMCP_PORT` / `BLOOMMCP_API_KEY`
 from `.env.dev` (same as the Makefile targets above).
 
 ```bash

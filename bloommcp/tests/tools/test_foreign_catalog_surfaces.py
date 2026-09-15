@@ -2,11 +2,13 @@
 consumer surfaces the typed foreign-catalog error, not a flattened generic.
 
 The envelope-declaring analysis tools are covered end-to-end in
-`test_local_mode.py`; these are the previously uncovered surfaces — the plain
-string-returning viz tools (bare `except Exception` used to swallow the typed
-message), the `summarize_trait` envelope tool (used to answer `invalid_input`
-with a pick-another-experiment remedy), and the core `load_experiment_data`
-discovery tool.
+`test_local_mode.py`; these are the previously uncovered surfaces — the
+`summarize_trait` envelope tool (used to answer `invalid_input` with a
+pick-another-experiment remedy), the core `load_experiment_data` discovery
+tool (the one remaining plain string-returning reader after #462 retired the
+legacy plotters and converged the survivors onto the envelope, where the
+existing `errors=(ExperimentReadError, …)` declarations cover them), and
+`heritability_analysis` as the newest `require_clean=True` consumer.
 """
 
 from __future__ import annotations
@@ -51,18 +53,27 @@ def foreign_qc_catalog(fake_supabase_storage, monkeypatch):
     return fake_supabase_storage
 
 
-def test_viz_tool_returns_the_typed_message_not_the_generic_flatten(
+def test_heritability_analysis_surfaces_the_mismatch_not_run_qc_clean_first(
     foreign_qc_catalog,
 ):
-    from bloom_mcp.sections.sleap_roots.analysis.plot_trait_histograms import (
-        plot_trait_histograms,
+    """#462's heritability_analysis is a require_clean=True consumer added
+    after this change's e2e tests were written — prove the guard surfaces
+    through it too: its explicit CleanedVersionRequiredError branch (the
+    "run qc_clean first" remedy) must not swallow the sibling type."""
+    from bloom_mcp.sections.sleap_roots.analysis.heritability_analysis import (
+        HeritabilityAnalysisParams,
+        heritability_analysis,
     )
 
-    out = plot_trait_histograms(_EXPERIMENT)
+    with pytest.raises(BloomMCPError) as exc:
+        heritability_analysis(HeritabilityAnalysisParams(experiment=_EXPERIMENT))
 
-    assert "'local'" in out and "'supabase'" in out
-    assert "could not be read" not in out
-    assert "ALLOW_FOREIGN_MANIFEST" not in out  # no bypass advertisement
+    err = exc.value
+    assert err.code == "tool_error"
+    assert "'local'" in err.message and "'supabase'" in err.message
+    assert "qc_clean" not in err.message
+    assert "retry" not in err.remedy.lower()
+    assert "ALLOW_FOREIGN_MANIFEST" not in err.message  # no bypass advertisement
 
 
 def test_summarize_trait_surfaces_tool_error_with_do_not_retry_remedy(

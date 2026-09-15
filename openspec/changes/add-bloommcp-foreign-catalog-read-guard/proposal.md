@@ -49,10 +49,12 @@ one-time log line has scrolled away, and a consumer tool (`pca_analysis` gating 
   tools' existing `errors=(ExperimentReadError, CommitFailedError,
 ManifestReadError)` declarations surface the message structurally with a
   do-not-retry `agent_remedy` (a small, opt-in contract-envelope addition —
-  see the `bloommcp-tool-contract` delta); the plain string tools (the five
-  viz plotters, core `load_experiment_data`) catch the type explicitly
-  instead of flattening it, and `summarize_trait` declares it (PR #782
-  review, findings 2a and 3).
+  see the `bloommcp-tool-contract` delta); the plain string-returning core
+  `load_experiment_data` discovery tool catches the type explicitly instead
+  of flattening it, and `summarize_trait` declares it (PR #782 review,
+  findings 2a and 3; #462's plotter retirement/convergence landed mid-review,
+  so the surviving plotters and `heritability_analysis` ride the envelope
+  declarations).
 - Add an opt-out for the deliberate case (inspecting an offline copy of a bucket):
   `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1` downgrades the **read** failure to a
   warning-level log per guarded read. The hatch is inspection-only — the write
@@ -146,11 +148,11 @@ CommitFailedError, ManifestReadError)`, and the new errors subclass those —
     error instead of demoting it
   - `bloommcp/src/bloom_mcp/contract/errors.py` — opt-in `agent_remedy` for
     declared exceptions (PR #782 review)
-  - `bloommcp/src/bloom_mcp/tools/_ports.py`, the five viz plotters under
-    `sections/sleap_roots/analysis/plot_*.py`,
+  - `bloommcp/src/bloom_mcp/tools/_ports.py`,
     `sections/phenotyping_segmentation/summarize_trait.py`,
     `sections/core/load_experiment_data.py` — typed-error surfacing for every
-    direct consumer (PR #782 review, finding 2a)
+    direct consumer (PR #782 review, finding 2a; the legacy plotters this
+    round also patched were retired/converged onto the envelope by #462)
   - `bloommcp/scripts/audit_backend_sentinels.py` (new; task 5.6's runnable
     form) + hatch notes in the two existing audit scripts
   - `docker-compose.dev.yml`, `.env.dev.example` (repo root) — dev passthrough +

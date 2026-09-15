@@ -47,7 +47,7 @@ bloommcp/
     │                            # list_existing_analyses (not sleap-roots-analyze wrappers)
     ├── sleap_roots/             # umbrella for the sleap-roots pipeline family
     │   ├── analysis/             # pca_analysis, qc_clean, qc_inspect, remove_outliers,
-    │   │                         # clustering, + 5 plot_*.py — one file per tool,
+    │   │                         # clustering, + 3 plot_*.py — one file per tool,
     │   │                         # each delegating to sleap_roots_analyze
     │   └── extraction/           # reserved for future sleap-roots tools (empty)
     └── phenotyping_segmentation/ # Lin's segmentation tools
@@ -190,11 +190,13 @@ automatically on a daily `on: schedule` cron** (bloom#708) while **staging remai
 via manual `workflow_dispatch` (`environment: staging|production`; staging doesn't need frequent
 automatic refreshes — see `design.md` D8's addendum for the full reasoning, including why the
 scheduled path resolves to a second, ungated GitHub Environment rather than `production` itself).
-Staleness is therefore bounded to roughly one refresh interval on production, once bloom#736
-(`fix-cyl-scan-traits-latest-rollup` Section 15) confirms an actual successful refresh —
-unbounded until then, identically to staging today, since the refresh workflow's `runs-on:
-ubuntu-latest` had no network route to either host and every RPC delivery had failed. A pinned
-call is fully live for both counts.
+Staleness is therefore bounded to roughly one refresh interval on production, once bloom#736 AND
+bloom#806 (`fix-cyl-scan-traits-latest-rollup` Sections 15 and 16) both confirm an actual
+successful refresh — unbounded until then, identically to staging today. bloom#736's network fix
+(`runs-on: ubuntu-latest` had no route to either host) was necessary but not sufficient: the very
+first live run it enabled reached Postgres and hit a second, independent bug (bloom#806 — an
+unqualified `DELETE` rejected by the database's own `safeupdate` guard), so every RPC delivery has
+still failed to date. A pinned call is fully live for both counts.
 
 See [`_WIKI/SUPABASE/README.md`](../SUPABASE/README.md) for the full
 role / RLS picture.

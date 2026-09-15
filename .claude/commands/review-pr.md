@@ -175,6 +175,9 @@ description: "Review scientific rigor, data integrity, and UX"
 > 8. If the PR changes data schemas, is there a migration path for existing records?
 > 9. Are error messages meaningful to scientists (not just developers)?
 > 10. QR code / plant ID uniqueness: could the PR introduce duplicate identifiers?
+> 11. Migration PRs: does each row's "How it is added" in the Schema changes table match
+>     the documented form for its kind (see `/database-migration`)? Is the PR limited to
+>     the migration surface, and was `_WIKI/SUPABASE/erd.md` redrawn?
 >
 > Return: BLOCKING, IMPORTANT, SUGGESTIONS.
 
@@ -258,6 +261,7 @@ suspiciously short (< 100 words), flag it for re-run.
    - No subagent result was empty or suspiciously short
    - All 5 subagents returned successfully
 4. **Determine verdict**:
+
    - `APPROVE` — no blocking issues
    - `COMMENT` — no blocking issues but important items
    - `REQUEST_CHANGES` — any blocking issues

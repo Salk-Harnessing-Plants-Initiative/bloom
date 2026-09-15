@@ -24,6 +24,8 @@
 
 import { describe, expect, it } from "vitest";
 
+import { setNodeEnv } from "@/lib/config/__fixtures__/node-env";
+
 import {
   MalformedHostsAllowedError,
   parseHostsAllowed,
@@ -119,7 +121,7 @@ describe("parseHostsAllowed", () => {
 
 describe("validateOnBoot — production mode", () => {
   function setProdEnv(overrides: Record<string, string | undefined> = {}): void {
-    process.env.NODE_ENV = "production";
+    setNodeEnv("production");
     process.env.NEXT_PUBLIC_SUPABASE_URL = "https://bloom-dev.salk.edu/api";
     process.env.SUPABASE_URL = "http://kong:8000";
     process.env.SUPABASE_URL_HOSTS_ALLOWED = "kong:8000=bloom-dev.salk.edu";
@@ -170,7 +172,7 @@ describe("validateOnBoot — production mode", () => {
 
 describe("validateOnBoot — dev mode early-exit", () => {
   it("does NOT throw when NODE_ENV is undefined", () => {
-    delete process.env.NODE_ENV;
+    setNodeEnv(undefined);
     delete process.env.SUPABASE_URL_HOSTS_ALLOWED;
     delete process.env.NEXT_PUBLIC_SUPABASE_URL;
     delete process.env.SUPABASE_URL;
@@ -178,7 +180,7 @@ describe("validateOnBoot — dev mode early-exit", () => {
   });
 
   it("does NOT throw when NODE_ENV is 'development'", () => {
-    process.env.NODE_ENV = "development";
+    setNodeEnv("development");
     delete process.env.SUPABASE_URL_HOSTS_ALLOWED;
     delete process.env.NEXT_PUBLIC_SUPABASE_URL;
     delete process.env.SUPABASE_URL;
@@ -186,7 +188,7 @@ describe("validateOnBoot — dev mode early-exit", () => {
   });
 
   it("does NOT throw when NODE_ENV is 'test'", () => {
-    process.env.NODE_ENV = "test";
+    setNodeEnv("test");
     delete process.env.SUPABASE_URL_HOSTS_ALLOWED;
     delete process.env.NEXT_PUBLIC_SUPABASE_URL;
     delete process.env.SUPABASE_URL;
