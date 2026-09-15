@@ -26,15 +26,22 @@ new outputs there, which is why it stays empty.
 
 Two env vars look like they'd control this and don't:
 
-- **`BLOOM_OUTPUT_DIR`** — post-migration this only feeds a startup dir-existence
-  check. Nothing writes new outputs there, and nothing reads from it either: the
-  versioned-cleaned resolver still accepts it as a parameter but ignores it
-  outright, because the storage prefix is fixed at `bloommcp_output` in the bucket
-  (see `_resolve_versioned_cleaned`'s own docstring). (It _is_ reused as a fallback
-  local root — but only when you opt into the `local` backend below, and only as
-  the last-resort tier; see the precedence table there.)
-- **`BLOOM_USE_LOCAL`** — dead/commented-out, and it was only ever about CLI login
-  credentials, never about outputs.
+- **`BLOOM_OUTPUT_DIR`** — no `sleap_roots` analysis output is written there, and
+  nothing on the **experiment-trait read path** reads it: the versioned-cleaned
+  resolver still accepts it as a parameter but ignores it outright, because the
+  storage prefix is fixed at `bloommcp_output` in the bucket (see
+  `_resolve_versioned_cleaned`'s own docstring). It is **not** unused, though. It
+  still feeds a startup dir-existence check, and the three
+  `phenotyping_segmentation` demo tools (`compute_min` / `compute_median` /
+  `compute_mode`) both read it and write a `.txt` result file under
+  `<BLOOM_OUTPUT_DIR>/results/` — on **every** backend, the default one included,
+  since sections are mounted in one unconditional loop with no backend branch. So
+  "no local CSVs" is the accurate claim here, not "nothing touches it". (It _is_
+  also reused as a fallback local root — but only when you opt into the `local`
+  backend below, and only as the last-resort tier; see the precedence table there.)
+- **`BLOOM_USE_LOCAL`** — gone: it appears in no code anywhere in the repo, only in
+  this doc and in OpenSpec artifacts. It was only ever about CLI login credentials,
+  never about outputs.
 
 ### How to reach outputs on the default path (local dev)
 
@@ -46,27 +53,40 @@ Two env vars look like they'd control this and don't:
 
 ## Where experiment data is read from (`supabase` mode)
 
-This doc is mostly about where outputs land, but the default path's **input** side
-moved too, and no longer touches a CSV on local disk at all. Two tiers, both remote:
+This doc is mostly about where outputs land, but the default path's
+**experiment-data input** side moved too, and no longer touches a CSV on local disk
+at all. (Scoped to experiment data on purpose: the `phenotyping_segmentation` demo
+tools still read local files on every backend — see `BLOOM_TRAITS_DIR` above.) Two
+tiers, both remote:
 
 - **Raw tier — read directly from Postgres.** Since Tier 2 (#551),
   `SupabaseReader.load_experiment` parses the `experiment` argument as
-  `str(experiment_id)`, resolves and pins exactly one concrete trait source, and
-  fetches rows through the `get_experiment_traits` RPC, pivoting them wide in
-  memory. There is **no `BLOOM_TRAITS_DIR` CSV read and no local-disk fallback**
-  here: a non-numeric identifier raises `ExperimentNotFoundError` rather than
-  falling through to a file. This is why every tool documents its `experiment`
-  parameter as an _experiment identifier_ rather than a CSV filename (#552).
+  `str(experiment_id)` and fetches rows through the `get_experiment_traits` RPC,
+  pivoting them wide in memory. It pins **at most one** concrete trait source:
+  exactly one whenever the experiment's trait rows carry a `source_id`, and none
+  for legacy-only data where every row's `source_id` is `NULL` — a normal state,
+  not an error, which falls back to an unpinned fetch recording no source
+  identity. There is **no `BLOOM_TRAITS_DIR` CSV read and no local-disk fallback**
+  on this path: a non-numeric identifier raises `ExperimentNotFoundError` rather
+  than falling through to a file. This is why the `sleap_roots` tools describe
+  their `experiment` parameter as an _experiment identifier_ rather than a CSV
+  filename (#552) — under this backend it is the numeric experiment id, and
+  `list_available_experiments` is what hands you valid values.
 - **Cleaned tier — read back out of the bucket.** Any `version` other than
   `"raw"` resolves `bloommcp_output/<tool_class>_<stem>/manifest.json` in the
   `bloommcp-data` bucket and downloads that version's cleaned CSV to a temp file,
   so callers can `pd.read_csv` it unchanged. That is object storage — the same
   place outputs are written — not the database, and not `BLOOM_OUTPUT_DIR`.
 
-`BLOOM_TRAITS_DIR` is still listed in the boot-time `_REQUIRED_DIRS` gate even
-though nothing on the `supabase` path reads it any more; retiring it from boot
-validation, compose, and the Dockerfile is tracked separately in #476. Under the
-`local` backend it stays live and supported, as the last-resort tier of the
+`BLOOM_TRAITS_DIR` is still listed in the boot-time `_REQUIRED_DIRS` gate. Nothing
+on the **experiment-trait read path** reads it any more, but it is not inert
+either: those same three `phenotyping_segmentation` demo tools resolve their input
+through `resolve_experiment_local_root()`, whose last tier is `BLOOM_TRAITS_DIR`,
+on every backend — `tests/unit/test_bloommcp_data_mount_rename.py` documents
+exactly this, that the three prod/staging data mounts still back reachable code
+paths. Retiring it from boot validation, compose, and the Dockerfile is tracked
+separately in #476, which is still open. Under the `local` backend it stays live
+and supported for `sleap_roots` reads too, as the last-resort tier of the
 input-root precedence table below.
 
 ## Reaching outputs: signed URLs and direct paths (`output_links`)
@@ -250,9 +270,18 @@ output root):
   open) — acceptable for this dev-only backend, but don't rely on crash-atomicity
   there. (Crash-atomic, not power-loss-durable beyond a best-effort dir `fsync`.)
 - **Inputs via `LocalReader`.** `LocalReader` implements the same
-  `ExperimentReader` contract as the Supabase path (same declared roles, same
-  `pd.read_csv` config, same resolution order), reaches no Supabase, and
-  rejects any experiment name that escapes its input root.
+  `ExperimentReader` **contract** as the Supabase path (same declared roles, same
+  returned `ExperimentFrame` shape), reaches no Supabase, and rejects any
+  experiment name that escapes its input root. Its **mechanism** is not the same,
+  and post-Tier-2 (#551) is no longer comparable: it reads CSVs from the local
+  input root through the shared loader, whereas `SupabaseReader`'s raw tier has no
+  CSV tier at all and never calls `pd.read_csv` — it issues the
+  `get_experiment_traits` RPC (see "Where experiment data is read from" above).
+  `LocalReader` also passes `allow_legacy_cleaned=False`, so the un-versioned
+  legacy cleaned tier is disabled for it — see the `require_clean` bullet below.
+  It additionally rejects `source_id`/`run_id` pins outright
+  (`SourcePinningUnsupportedError`), having no source-versioned substrate to pin
+  against.
 - **Backend-aware boot.** In `local` mode `server.main()` skips
   `validate_supabase_env()` and validates the local input root instead.
   `BLOOM_TRAITS_DIR` / `BLOOM_OUTPUT_DIR` / `BLOOM_PLOTS_DIR` / `BLOOM_PLOTS_URL`
@@ -332,15 +361,23 @@ since Tier 2 (#551) they _are_ the `supabase` reader's raw experiment-read sourc
 so the older framing of "the database, not the experiment-read port" no longer
 holds on that path. What keeps the two halves consistent is the reader/store
 coupling described above: `LocalReader` is wired only when the object-storage
-backend is also `local`, so a fully-local run never reaches Postgres, while a
-`supabase` run reads traits from it by design. The fully-local
+backend is also `local`, so a fully-local run never reaches Postgres **for
+experiment data**, while a `supabase` run reads traits from it by design. (Scoped
+deliberately: usage telemetry is gated behind `not is_local_backend()` rather than
+being structurally absent, so an unqualified "never contacts Postgres" is the kind
+of claim a future telemetry addition would quietly falsify — cf. #641.) The
+fully-local
 `qc_clean → pca_analysis` path therefore stays Supabase-free end to end (its store
 commit path uses only object-storage helpers routed through the active backend).
 Production and staging stay on Supabase; `local` is opt-in for local/dev.
 
 `read_input_csv` in `supabase_client.py` is a pre-Tier-2 leftover — an
-object-storage CSV read (not a table read) with no remaining call sites. It is not
-part of any current read path.
+object-storage CSV read (not a table read) with no remaining call sites repo-wide.
+It sits awkwardly across both boundaries: it takes its storage handle from
+`get_postgrest_client()`, which is why `storage_backend.py` describes it as
+"riding that client", and unlike every other storage helper it does not route
+through `active_backend()`, so it bypasses the `local` backend entirely. It is not
+part of any current read path, and new tools should not reach for it.
 
 Related: this reshapes the same `supabase_client.py` storage boundary #388
 (user-facing upload/download of bloommcp files) is scoped against. Its
