@@ -1,21 +1,20 @@
 """Stop a run on request, after the object in flight, leaving it resumable.
 
 The seed moves eight million objects over several nights, and during those
-nights the backup and a deploy want the same machine. `daemon.stop()` sits in a
-`finally`, and `finally` does not run when a process is killed — so killing a
-run strands the rclone container on the RC port and the next run refuses to
-start until someone removes it by hand.
+nights the backup and a deploy want the same machine. `finally` does not run
+when a process is killed, so a killed run neither commits its ledger nor
+writes its report.
 
 A signal asks the run to stop instead. The object in flight finishes and is
 recorded, nothing new starts, and the run returns through its normal path,
-which removes the container, commits the ledger and writes the report.
+which stops the rclone daemon, commits the ledger and writes the report.
 Restarting carries on from there, because the ledger knows what was copied.
 
 This is the shape `services/workflows/dispatch_worker.py` and `status_poller.py`
 use: a flag the handler flips, read at a loop boundary, never an interrupt of
 work in progress. SIGHUP is handled as well as SIGTERM and SIGINT because a
 dropped SSH connection sends it, and Python's default action for SIGHUP is to
-die without unwinding — which is the leak this exists to prevent.
+die without unwinding.
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ logger = logging.getLogger("bloom_box_object_backup")
 
 # The signals that mean "stop", and where each comes from:
 #   SIGINT   Ctrl-C at a terminal, and GitHub's first cancellation signal
-#   SIGTERM  `kill`, a reboot, a systemd stop, an Actions timeout
+#   SIGTERM  `docker stop` (forwarded by the container's init), `kill`, a reboot
 #   SIGHUP   the SSH connection dropping, which is how a cancelled workflow
 #            reaches a run started over SSH
 STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
