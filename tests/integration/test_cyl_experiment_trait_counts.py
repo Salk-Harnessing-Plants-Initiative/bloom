@@ -13,6 +13,7 @@ LOCAL ONLY: the `pg_conn` fixture connects to 127.0.0.1 on POSTGRES_HOST_PORT as
 import re
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,9 @@ import pytest
 psycopg = pytest.importorskip("psycopg")
 
 from tests.integration.test_cyl_read_path import (  # noqa: E402
+    _call,
     _deliver,
+    _envelope,
     _seed_experiment_scan,
     _trait,
 )
@@ -719,3 +722,346 @@ def test_safeupdate_fix_rollback_restores_prior_unqualified_delete_behavior(
 
     # Confirm the guard-passing behavior is restored.
     _refresh_over_authenticator_service_role(authenticator_conninfo)
+
+
+# --------------------------------------------------------------------------- #
+# Incremental refresh: change log + pg_cron job (20260915120000)
+# --------------------------------------------------------------------------- #
+
+_INCR_TS = "20260915120000_refresh_cyl_experiment_trait_counts_incremental"
+INCR_MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_INCR_TS}.sql"
+INCR_ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_INCR_TS}_rollback.sql"
+JOB_NAME = "refresh-cyl-experiment-trait-counts"
+APP_ROLES = [
+    "anon",
+    "authenticated",
+    "service_role",
+    "bloom_admin",
+    "bloom_agent",
+    "bloom_user",
+    "bloom_writer",
+]
+
+
+def _refresh_changed(cur):
+    cur.execute("SELECT public.refresh_changed_cyl_experiment_trait_counts()")
+
+
+def _pending_changes(cur, experiment_id):
+    cur.execute(
+        "SELECT count(*) FROM cyl_experiment_trait_count_changes WHERE experiment_id=%s",
+        (experiment_id,),
+    )
+    return cur.fetchone()[0]
+
+
+def _stamped_since_2000(cur, experiment_id):
+    cur.execute(
+        "SELECT updated_at > '2000-01-02' FROM cyl_experiment_trait_counts WHERE experiment_id=%s",
+        (experiment_id,),
+    )
+    return cur.fetchone()[0]
+
+
+def test_one_delivery_marks_its_experiment_once(pg_conn):
+    with pg_conn.cursor() as cur:
+        exp, _scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(
+            cur,
+            imgs,
+            "orig",
+            traits=[_trait("length", 1.0), _trait("width", 2.0), _trait("height", 3.0)],
+        )
+        assert _pending_changes(cur, exp) == 1
+
+        _deliver(cur, imgs, "rerun", traits=[_trait("length", 1.5)])
+        assert _pending_changes(cur, exp) == 2
+    pg_conn.rollback()
+
+
+def test_idempotent_redelivery_marks_nothing(pg_conn):
+    with pg_conn.cursor() as cur:
+        exp, _scan_id, imgs = _seed_experiment_scan(cur)
+        envelope = _envelope(
+            imgs,
+            idempotency_key=f"dup-{uuid.uuid4().hex}",
+            traits=[_trait("length", 1.0)],
+        )
+        _call(cur, envelope)
+        assert _pending_changes(cur, exp) == 1
+
+        assert _call(cur, envelope)["was_noop"] is True
+        assert _pending_changes(cur, exp) == 1
+    pg_conn.rollback()
+
+
+def test_deleting_a_scans_traits_marks_its_experiment(pg_conn):
+    with pg_conn.cursor() as cur:
+        exp, scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "orig", traits=[_trait("length", 1.0)])
+        _refresh_changed(cur)
+        assert _pending_changes(cur, exp) == 0
+
+        cur.execute("DELETE FROM cyl_scan_traits WHERE scan_id=%s", (scan_id,))
+        assert _pending_changes(cur, exp) == 1
+    pg_conn.rollback()
+
+
+def test_incremental_refresh_recounts_only_marked_experiments(pg_conn):
+    with pg_conn.cursor() as cur:
+        exp_a, _scan_a, imgs_a = _seed_experiment_scan(cur)
+        exp_b, _scan_b, imgs_b = _seed_experiment_scan(cur)
+        _deliver(cur, imgs_a, "a", traits=[_trait("length", 1.0)])
+        _deliver(cur, imgs_b, "b", traits=[_trait("length", 1.0)])
+        _refresh_changed(cur)
+
+        # Sentinel on B, which has no new data, so a recount would overwrite it.
+        cur.execute(
+            "UPDATE cyl_experiment_trait_counts SET n_traits = 999, updated_at = '2000-01-01' "
+            "WHERE experiment_id=%s",
+            (exp_b,),
+        )
+        _deliver(
+            cur, imgs_a, "a2", traits=[_trait("length", 1.0), _trait("width", 2.0)]
+        )
+        _refresh_changed(cur)
+
+        assert _n_traits(cur, exp_a) == 2 == _live_n_traits(cur, exp_a)
+        assert _n_traits(cur, exp_b) == 999
+        assert _stamped_since_2000(cur, exp_b) is True
+    pg_conn.rollback()
+
+
+def test_incremental_refresh_matches_full_refresh(pg_conn):
+    with pg_conn.cursor() as cur:
+        exp_a, _scan_a, imgs_a = _seed_experiment_scan(cur)
+        exp_b, _scan_b, imgs_b = _seed_experiment_scan(cur)
+        _deliver(cur, imgs_a, "a", traits=[_trait("length", 1.0), _trait("width", 2.0)])
+        _deliver(cur, imgs_b, "b", traits=[_trait("length", 1.0)])
+
+        _refresh_changed(cur)
+        incremental = {e: _n_traits(cur, e) for e in (exp_a, exp_b)}
+        _refresh(cur)
+        full = {e: _n_traits(cur, e) for e in (exp_a, exp_b)}
+        assert incremental == full == {exp_a: 2, exp_b: 1}
+    pg_conn.rollback()
+
+
+def test_experiment_losing_all_data_is_removed_by_incremental_refresh(pg_conn):
+    with pg_conn.cursor() as cur:
+        exp, scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "orig", traits=[_trait("length", 1.0)])
+        _refresh_changed(cur)
+        assert _n_traits(cur, exp) == 1
+
+        cur.execute("DELETE FROM cyl_scan_traits WHERE scan_id=%s", (scan_id,))
+        _refresh_changed(cur)
+        assert _n_traits(cur, exp) is None
+    pg_conn.rollback()
+
+
+def test_empty_change_log_run_only_stamps_updated_at(pg_conn):
+    with pg_conn.cursor() as cur:
+        exp, _scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "orig", traits=[_trait("length", 1.0)])
+        _refresh_changed(cur)
+        cur.execute("SELECT count(*) FROM cyl_experiment_trait_count_changes")
+        assert cur.fetchone()[0] == 0
+
+        cur.execute(
+            "UPDATE cyl_experiment_trait_counts SET updated_at = '2000-01-01' WHERE experiment_id=%s",
+            (exp,),
+        )
+        _refresh_changed(cur)
+        assert _n_traits(cur, exp) == 1
+        assert _stamped_since_2000(cur, exp) is True
+    pg_conn.rollback()
+
+
+def test_uncommitted_change_survives_a_run_and_is_counted_next_time(
+    pg_conninfo, pg_conn
+):
+    """A delivery still open while a run commits keeps its change-log row for the next run."""
+    with pg_conn.cursor() as cur:
+        exp, _scan_id, imgs = _seed_experiment_scan(cur)
+    pg_conn.commit()
+
+    writer = psycopg.connect(pg_conninfo)
+    try:
+        with writer.cursor() as wcur:
+            _deliver(wcur, imgs, "late", traits=[_trait("length", 1.0)])
+
+        with pg_conn.cursor() as cur:
+            _refresh_changed(cur)
+        pg_conn.commit()
+        writer.commit()
+
+        with pg_conn.cursor() as cur:
+            assert _pending_changes(cur, exp) == 1
+            assert _n_traits(cur, exp) is None
+            _refresh_changed(cur)
+            assert _n_traits(cur, exp) == 1 == _live_n_traits(cur, exp)
+        pg_conn.commit()
+    finally:
+        try:
+            writer.rollback()
+        finally:
+            try:
+                writer.close()
+            finally:
+                try:
+                    with pg_conn.cursor() as cur:
+                        _cleanup_seeded_experiment(cur, exp)
+                finally:
+                    pg_conn.commit()
+
+
+def test_change_log_has_only_a_primary_key_and_rls(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT contype FROM pg_constraint "
+            "WHERE conrelid = 'public.cyl_experiment_trait_count_changes'::regclass "
+            "AND contype IN ('p', 'u', 'x')"
+        )
+        assert sorted(r[0] for r in cur.fetchall()) == ["p"]
+        cur.execute(
+            "SELECT relrowsecurity FROM pg_class "
+            "WHERE oid = 'public.cyl_experiment_trait_count_changes'::regclass"
+        )
+        assert cur.fetchone()[0] is True
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize("role", APP_ROLES)
+def test_app_roles_cannot_touch_change_log_or_run_incremental_refresh(pg_conn, role):
+    with pg_conn.cursor() as cur:
+        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE"):
+            cur.execute(
+                "SELECT has_table_privilege(%s, 'public.cyl_experiment_trait_count_changes', %s)",
+                (role, privilege),
+            )
+            granted = cur.fetchone()[0]
+            assert granted is False, f"{role} has {privilege} on the change log"
+        cur.execute(
+            "SELECT has_function_privilege("
+            "%s, 'public.refresh_changed_cyl_experiment_trait_counts()', 'EXECUTE')",
+            (role,),
+        )
+        assert cur.fetchone()[0] is False
+    pg_conn.rollback()
+
+
+def test_postgres_can_run_incremental_refresh(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT has_function_privilege("
+            "'postgres', 'public.refresh_changed_cyl_experiment_trait_counts()', 'EXECUTE')"
+        )
+        assert cur.fetchone()[0] is True
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize(
+    "function_name",
+    [
+        "refresh_changed_cyl_experiment_trait_counts",
+        "mark_cyl_experiment_trait_count_change",
+    ],
+)
+def test_new_functions_are_security_definer_with_pinned_search_path(
+    pg_conn, function_name
+):
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT prosecdef, proconfig FROM pg_proc "
+            "WHERE proname = %s AND pronamespace = 'public'::regnamespace",
+            (function_name,),
+        )
+        prosecdef, proconfig = cur.fetchone()
+        assert prosecdef is True
+        assert any(c.startswith("search_path=") for c in (proconfig or []))
+    pg_conn.rollback()
+
+
+def test_cron_job_runs_incremental_refresh_nightly_as_postgres(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT schedule, command, username, database FROM cron.job WHERE jobname = %s",
+            (JOB_NAME,),
+        )
+        rows = cur.fetchall()
+        assert len(rows) == 1
+        schedule, command, username, database = rows[0]
+        assert schedule == "0 6 * * *"
+        assert "SET statement_timeout" in command
+        assert "refresh_changed_cyl_experiment_trait_counts()" in command
+        assert username == "postgres"
+        cur.execute("SELECT current_database()")
+        assert database == cur.fetchone()[0]
+    pg_conn.rollback()
+
+
+def test_migration_seed_lets_the_first_run_fill_every_experiment(pg_conn):
+    with pg_conn.cursor() as cur:
+        exp, _scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(
+            cur, imgs, "orig", traits=[_trait("length", 1.0), _trait("width", 2.0)]
+        )
+        _refresh_changed(cur)
+        cur.execute(
+            "DELETE FROM cyl_experiment_trait_counts WHERE experiment_id=%s", (exp,)
+        )
+        assert _pending_changes(cur, exp) == 0
+
+        cur.execute(_sql_body(INCR_MIGRATION))
+        assert _pending_changes(cur, exp) == 1
+        _refresh_changed(cur)
+        assert _n_traits(cur, exp) == 2 == _live_n_traits(cur, exp)
+    pg_conn.rollback()
+
+
+def test_incremental_migration_body_is_idempotent(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(INCR_MIGRATION))
+        cur.execute(_sql_body(INCR_MIGRATION))
+        cur.execute("SELECT count(*) FROM cron.job WHERE jobname = %s", (JOB_NAME,))
+        assert cur.fetchone()[0] == 1
+        cur.execute(
+            "SELECT count(*) FROM pg_trigger "
+            "WHERE tgrelid = 'public.cyl_scan_latest_source'::regclass "
+            "AND tgname LIKE 'mark_cyl_experiment_trait_count_change%'"
+        )
+        assert cur.fetchone()[0] == 2
+        cur.execute(
+            "SELECT count(*) FROM pg_proc "
+            "WHERE proname = 'refresh_changed_cyl_experiment_trait_counts'"
+        )
+        assert cur.fetchone()[0] == 1
+    pg_conn.rollback()
+
+
+def test_incremental_rollback_removes_its_objects_and_can_be_reapplied(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(INCR_ROLLBACK))
+        cur.execute("SELECT count(*) FROM cron.job WHERE jobname = %s", (JOB_NAME,))
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT to_regclass('public.cyl_experiment_trait_count_changes')")
+        assert cur.fetchone()[0] is None
+        cur.execute(
+            "SELECT count(*) FROM pg_proc WHERE proname IN "
+            "('refresh_changed_cyl_experiment_trait_counts', 'mark_cyl_experiment_trait_count_change')"
+        )
+        assert cur.fetchone()[0] == 0
+        # The cache and the full refresh are untouched.
+        cur.execute("SELECT to_regclass('public.cyl_experiment_trait_counts')")
+        assert cur.fetchone()[0] is not None
+        cur.execute(
+            "SELECT count(*) FROM pg_proc WHERE proname = 'refresh_cyl_experiment_trait_counts'"
+        )
+        assert cur.fetchone()[0] == 1
+
+        cur.execute(_sql_body(INCR_MIGRATION))
+        exp, _scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "orig", traits=[_trait("length", 1.0)])
+        assert _pending_changes(cur, exp) == 1
+    pg_conn.rollback()

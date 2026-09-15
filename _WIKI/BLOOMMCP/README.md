@@ -184,19 +184,14 @@ sources = client.rpc("list_experiment_trait_sources", {"experiment_id_": 42}).ex
 via one aggregate call; with all three arguments `NULL` it covers every experiment in a single round
 trip, same latest/`source_id`/`run_id` selection as `get_experiment_traits` — see the `cyl-trait-read`
 spec for the definition (not restated here). With no `source_id_`/`run_id_` pin, `n_plants` is always
-live but `n_traits` is read from a cache (not per write — bloom#637/bloom#656), refreshed by a
-GitHub Action (`.github/workflows/refresh-cyl-experiment-trait-counts.yml`) that **production runs
-automatically on a daily `on: schedule` cron** (bloom#708) while **staging remains on-demand only**
-via manual `workflow_dispatch` (`environment: staging|production`; staging doesn't need frequent
-automatic refreshes — see `design.md` D8's addendum for the full reasoning, including why the
-scheduled path resolves to a second, ungated GitHub Environment rather than `production` itself).
-Staleness is therefore bounded to roughly one refresh interval on production, once bloom#736 AND
-bloom#806 (`fix-cyl-scan-traits-latest-rollup` Sections 15 and 16) both confirm an actual
-successful refresh — unbounded until then, identically to staging today. bloom#736's network fix
-(`runs-on: ubuntu-latest` had no route to either host) was necessary but not sufficient: the very
-first live run it enabled reached Postgres and hit a second, independent bug (bloom#806 — an
-unqualified `DELETE` rejected by the database's own `safeupdate` guard), so every RPC delivery has
-still failed to date. A pinned call is fully live for both counts.
+live but `n_traits` is read from a cache (not per write — bloom#637/bloom#656). A pg_cron job
+inside Postgres refreshes it nightly at 06:00 UTC, in every environment:
+`refresh_changed_cyl_experiment_trait_counts()` recounts only the experiments whose latest-source
+trait data changed since the previous run, then stamps every row's `updated_at` as of that run. The
+job runs as `postgres` over pg_cron's own connection, not through PostgREST, so the API role's 8 s
+statement timeout (bloom#831) doesn't apply. `refresh_cyl_experiment_trait_counts()` remains the
+manual full refresh. Staleness is therefore bounded to about a day. A pinned call is fully live for
+both counts.
 
 See [`_WIKI/SUPABASE/README.md`](../SUPABASE/README.md) for the full
 role / RLS picture.
