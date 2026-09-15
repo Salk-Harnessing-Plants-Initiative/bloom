@@ -2,7 +2,8 @@
 # Its own project, so a deploy, `--remove-orphans` or the stack's `ps` never sees it.
 #
 # Run from a deploy tree (the staging tree until the main promotion):
-#   docker compose -f scheduled-jobs/box-object-backup/compose.yml --env-file .env.prod \
+#   docker compose -f scheduled-jobs/box-object-backup/compose.yml \
+#     --env-file /data/bloom/production/.env.prod \
 #     run --rm -T --name box-object-backup-<tag> --user "$(id -u):$(id -g)" \
 #     box-object-backup --env prod --state-dir /data/bloom/box-object-backup --verify 50
 name: bloom-box-object-backup

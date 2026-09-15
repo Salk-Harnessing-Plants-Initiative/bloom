@@ -20,6 +20,7 @@ import logging
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -333,11 +334,27 @@ class TestTheRemoteRunGetsItsConfiguration:
         assert guard in script, "the container name is built from an unchecked tag"
         assert script.index(guard) < script.index(LAUNCH)
 
-    def test_only_the_run_name_is_passed_in_with_e(self, parsed: dict):
-        """Anything else from the host environment would bypass compose.yml's allow-list."""
-        script = _strip_comments(self.run_step(parsed))
-        assert re.findall(r"(?:^|\s)-e\s+([A-Za-z_]+)=", script, re.M) == [
-            runlock.ACTIONS_RUN_ENV
+    def test_the_run_command_is_exactly_the_reviewed_one(self, parsed: dict):
+        """Every option, not a pattern.
+
+        `-e NAME` alone copies NAME in from .env.prod, and `-v`, `--cap-add`
+        or `--entrypoint` here would bypass compose.yml's own checks.
+        """
+        script = _strip_comments(self.run_step(parsed)).replace("\\\n", " ")
+        line = next(ln for ln in script.splitlines() if ln.strip().startswith(LAUNCH))
+        words = shlex.split(line)
+        run = words.index("run")
+        service = words.index("box-object-backup")
+        assert words[:run] == shlex.split(LAUNCH) + ["--env-file", ".env.$env_name"]
+        assert words[run + 1 : service] == [
+            "--rm",
+            "-T",
+            "--name",
+            "box-object-backup-$run_tag",
+            "--user",
+            "$(id -u):$(id -g)",
+            "-e",
+            f"{runlock.ACTIONS_RUN_ENV}=$run_tag",
         ]
 
     def test_the_container_runs_as_the_deploy_user(self, parsed: dict):

@@ -30,9 +30,19 @@ neither is a complete restore on its own. See "Restoring" below.
    interactive; nothing automates it. The job keeps its own rclone config
    folder rather than sharing the one the weekly Postgres backup uses: Box
    refresh tokens are single-use, so two jobs refreshing one login would
-   invalidate each other's token.
+   invalidate each other's token. Three rules for this step:
+   - **Log in fresh.** Never copy the weekly backup's `rclone.conf` into this
+     folder: the copy carries the same single-use refresh token, and the two
+     jobs would keep spending each other's.
+   - **Use the same Box account** the weekly Postgres backup logs in as.
+     `lsd box:` below works for any account, and nothing later checks which.
+   - **The server has no browser.** When `rclone config` asks whether to use a
+     web browser to authenticate, answer **n**. It then prints an
+     `rclone authorize "box"` command: run that on a computer with a browser
+     and rclone installed, log in there, and paste the token it prints back
+     into the server's prompt.
    ```bash
-   sudo -u bloom-deploy mkdir -m 700 /home/bloom-deploy/.config/rclone-box-object-backup
+   sudo -u bloom-deploy mkdir -p -m 700 /home/bloom-deploy/.config/rclone-box-object-backup
    sudo -u bloom-deploy rclone --config /home/bloom-deploy/.config/rclone-box-object-backup/rclone.conf config
    #   n) new remote → name: box → Box
    sudo -u bloom-deploy rclone --config /home/bloom-deploy/.config/rclone-box-object-backup/rclone.conf lsd box:
@@ -195,7 +205,7 @@ empty. Three ways out, cheapest first:
 - **The rclone remote was recreated under a different name.** The recorded
   value is `<remote>:<root>`, so `box2:...` does not match `box:...` even
   though it is the same Box account and the same folder. Name the remote `box`
-  again in `rclone config`, or set `OBJECT_BACKUP_BOX_REMOTE` to whatever it is now
+  again in the job's own config (prerequisite 1), or set `OBJECT_BACKUP_BOX_REMOTE` to whatever it is now
   and move the folder to match. This is the likeliest trip on a rebuilt host.
 - **The root was mistyped.** Correct `OBJECT_BACKUP_BOX_ROOT`.
 - **The mirror genuinely has to move.** Move the folder on Box and keep the
@@ -226,11 +236,21 @@ The name matters. The nightly workflow names its containers after its run,
 cancelled, so cancelling a nightly can never stop the seed.
 
 **Before leaving the seed running, prove the lock holds between containers.**
-While it copies, run the dry run from step 1 again. It must end at once with
-`SKIPPED` and name the container holding the lock. That is the one guarantee
-that two runs never write the same ledger. The lock is an `flock` on a file in
-the state folder, which a local filesystem such as ext4 or xfs honours; record
-which one it is:
+While it copies, try to take its lock from a second container. The probe only
+tries the lock and writes nothing, so it cannot disturb the seed:
+
+```bash
+docker compose -f scheduled-jobs/box-object-backup/compose.yml \
+    --env-file "$PROD/.env.prod" run --rm -T --user "$(id -u):$(id -g)" \
+    --entrypoint python3 box-object-backup -c 'import fcntl, os; fcntl.flock(os.open("/data/bloom/box-object-backup/backup.lock", os.O_RDWR), fcntl.LOCK_EX | fcntl.LOCK_NB)'
+```
+
+It must fail with `BlockingIOError`. That is the one guarantee that a nightly
+and the seed never write the same ledger. If it exits cleanly instead, the lock
+does not hold between containers on this host: leave the seed running, but do
+not promote to `main` until that is solved. The lock is an `flock`, which local
+filesystems such as ext4 (reported as `ext2/ext3`) and xfs honour; record which
+one the state folder is on:
 
 ```bash
 stat -f -c %T /data/bloom/box-object-backup
@@ -396,6 +416,10 @@ durable check — a journal rotates and an Actions log expires:
 ```bash
 rclone cat "box:$OBJECT_BACKUP_BOX_ROOT/_runs/<latest>.json" | jq '.stats.skipped, .skips'
 ```
+
+Run as `bloom-deploy`, this uses its default rclone config, the weekly backup's
+login. That reaches the same Box account (prerequisite 1), and reading through
+it cannot disturb the job's own login.
 
 ### Rows with no image behind them
 
