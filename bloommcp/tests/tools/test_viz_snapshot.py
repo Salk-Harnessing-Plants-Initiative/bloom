@@ -80,6 +80,16 @@ unaffected pixel, and *how much* it's diluted depends on both the perturbed area
   `_TOL=15`) that a smaller real element is very likely still caught, but this is not
   asserted by a dedicated test the way `correlation_matrix` is (see the comment on
   `_SNAPSHOT_TOOLS`/`_LOCALIZED_REGRESSION_CASES` below).
+  **`boxplots`' figure changed after that probe was measured** (#748 added per-box `(n=…)`
+  tick labels, a sample-size note below the axes, and a `tight_layout` call on the unbatched
+  path, growing the committed canvas 1912x2757 -> 2234x3408), so its 21.7-22.1 figure is
+  stale and is left as the record of what was actually measured rather than restated for a
+  render it no longer describes. The added area is mostly white, which *dilutes* a uniform
+  probe's RMS -- i.e. the direction that erodes headroom -- so treat that number as an upper
+  bound until someone re-measures. Note also that a whole-canvas resize does not reach `_TOL`
+  at all: `compare_images` raises `ImageComparisonFailure` on a dimension mismatch rather than
+  scoring it, which is why a deliberate layout change means regenerating the baseline, not
+  widening the tolerance.
 
 `test_tolerance_catches_a_localized_regression` proves `_TOL` catches a **several-cells-
 worth** regression in `correlation_matrix` (~3% area, ~6-7 real cells) -- a plausible
