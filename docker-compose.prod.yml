@@ -658,6 +658,10 @@ services:
   storage:
     image: ghcr.io/salk-harnessing-plants-initiative/supabase-storage-api:v1.48.14@sha256:14a7e837e44a5f1d59c4af0a7fb0066a6ab3b9146690a48f8e018dd60f3bf91f
     restart: unless-stopped
+    # Waits for the buckets; otherwise `up --wait` fails once the one-shot minio-init exits.
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
     security_opt:
       - no-new-privileges:true
     cap_drop:
