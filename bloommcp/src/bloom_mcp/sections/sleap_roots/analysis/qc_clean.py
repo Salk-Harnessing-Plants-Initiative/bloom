@@ -38,12 +38,18 @@ role columns. For a registered ``experiment`` it then persists a versioned run v
 provenance (including an additive ``input_validation`` manifest block) — under tool class
 ``qc``. That filename is what the reader resolves as a *cleaned version*, so a later
 ``pca_analysis`` (``require_clean=True``) consumes this run. The result returns a small
-in/out summary + the resolved roles + validation warnings + links — never the table inline.
+in/out summary + the resolved roles + validation warnings + links — never the table inline
+on that path.
 For ``csv_content``, **no run is ever persisted** — no ``ResultStore.create_run``/``commit``,
 no manifest entry, no ``list_existing_analyses`` visibility — and the result carries
 ``experiment=None``, ``source="inline"``, and an ``input_sha256`` of the exact bytes supplied
 so the caller has their own record of what was analyzed. There is no versioned history and no
-``based_on_version`` chaining into a later tool for this path (#582).
+``based_on_version`` chaining into a later tool for this path (#582). Opting into
+``return_cleaned_csv`` additionally returns the cleaned table as CSV text in ``cleaned_csv``
+(capped by ``MAX_INLINE_CSV_BYTES``) — the only way to carry an inline clean forward, since
+there is no persisted run to link to. That chaining is the *caller's*: they hold the bytes and
+choose to pass them as the next tool's ``csv_content``; the server keeps no copy and records no
+lineage between the two calls.
 
 **No-NaN guarantee.** Before persisting, the tool asserts the cleaned table has
 no NaNs in its kept trait columns and at least one surviving sample/trait — the
@@ -67,6 +73,8 @@ from __future__ import annotations
 import json
 from typing import Optional
 
+import numpy as np
+import pandas as pd
 from pydantic import BaseModel, Field
 from sleap_roots_analyze import clean_traits_for_analysis
 
@@ -77,7 +85,7 @@ from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.experiment_utils import CLEANED_CSV_NAME, QC_TOOL_CLASS
 from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools._inline_input import compute_input_sha256, parse_inline_csv_frame
+from bloom_mcp.tools import _inline_input
 from bloom_mcp.tools._qc_shared import (
     _CANONICAL_MAX_NANS_PER_SAMPLE,
     _CANONICAL_MAX_NANS_PER_TRAIT,
@@ -86,14 +94,6 @@ from bloom_mcp.tools._qc_shared import (
     _validate_trait_subset,
 )
 
-# Placeholder used in error messages on the csv_content path, where there is no
-# experiment name to interpolate (see QC Clean Enforces Mutually Exclusive Input
-# Selection / the next_step-suppression scenario in the #582 spec delta). Kept
-# short and free of embedded punctuation since it is always interpolated with
-# `!r` alongside a real experiment name in the same f-strings — "csv_content"
-# reads cleanly as 'csv_content'; a full sentence would read awkwardly quoted.
-_INLINE_EXPERIMENT_LABEL = "csv_content"
-
 _TOOL_CLASS = QC_TOOL_CLASS
 _LOG_NAME = "cleanup_log.json"
 _VALIDATION_MODE = "warn"
@@ -101,6 +101,52 @@ _VALIDATION_MODE = "warn"
 # Default cleanup thresholds mirror the **canonical QC pipeline** defaults, shared with
 # qc_inspect and single-sourced in ``_qc_shared`` (``_CANONICAL_*``) so the two tools
 # cannot silently desync — see that module for the full rationale.
+
+
+# pandas' default `na_values`: strings it converts to NaN even when the cell is
+# populated. Kept as a literal set rather than imported from pandas internals —
+# `pandas._libs.parsers.STR_NA_VALUES` is private and has moved between releases.
+_PANDAS_NA_SENTINELS = frozenset(
+    {
+        "",
+        "#N/A",
+        "#N/A N/A",
+        "#NA",
+        "-1.#IND",
+        "-1.#QNAN",
+        "-NaN",
+        "-nan",
+        "1.#IND",
+        "1.#QNAN",
+        "<NA>",
+        "N/A",
+        "NA",
+        "NULL",
+        "NaN",
+        "None",
+        "n/a",
+        "nan",
+        "null",
+    }
+)
+
+
+def _na_sentinels_present(csv_content: Optional[str]) -> list[str]:
+    """Which pandas NA sentinels appear as whole fields in ``csv_content``.
+
+    Returns them sorted, so an error can name the one the caller actually wrote
+    rather than describing the behaviour in the abstract. Empty when the content
+    is absent or carries none.
+    """
+    if not csv_content:
+        return []
+    found = set()
+    for line in csv_content.splitlines():
+        for cell in line.split(","):
+            stripped = cell.strip().strip('"')
+            if stripped and stripped in _PANDAS_NA_SENTINELS:
+                found.add(stripped)
+    return sorted(found)
 
 
 class QCCleanParams(BaseModel):
@@ -183,18 +229,35 @@ class QCCleanParams(BaseModel):
         description="Min valid samples required to keep a trait. "
         "Default mirrors the canonical QC pipeline (CleanupConfig.min_samples_per_trait=10).",
     )
+    return_cleaned_csv: bool = Field(
+        default=False,
+        description="csv_content only: also return the cleaned table as CSV text in "
+        "cleaned_csv, so it can be passed as the csv_content of a later "
+        "pca_analysis/clustering/umap_analysis/descriptive_stats/remove_outliers call. "
+        "Nothing is persisted and no lineage is recorded — the chaining is yours. "
+        "Rejected with experiment (that path already persists the table as a "
+        "downloadable artifact). Off by default: the table can be large.",
+    )
     user_label: Optional[str] = Field(
         default=None,
-        description="Optional slug appended to the version directory name.",
+        # Names the version directory a committed run is written into; the inline
+        # path creates none, so accepting it would leave the caller believing they
+        # had labelled something. The marker is what makes that rejection happen —
+        # see _inline_input.registered_only_fields.
+        json_schema_extra={_inline_input.REGISTERED_ONLY: True},
+        description="Optional slug appended to the version directory name. Not "
+        "applicable to csv_content, which creates no version directory.",
     )
     source_id: Optional[int] = Field(
         default=None,
+        json_schema_extra={_inline_input.REGISTERED_ONLY: True},
         description="Pin cleaning to a specific raw DB source (see "
         "core_list_experiment_sources). Omit to use the latest source, same as "
         "today. Mutually exclusive with run_id. Not applicable to csv_content.",
     )
     run_id: Optional[str] = Field(
         default=None,
+        json_schema_extra={_inline_input.REGISTERED_ONLY: True},
         description="Pin cleaning to a specific raw DB source by its pipeline "
         "run id (see core_list_experiment_sources). Omit to use the latest "
         "source, same as today. Mutually exclusive with source_id. Not "
@@ -213,7 +276,12 @@ class QCCleanParams(BaseModel):
 
 
 class QCCleanResult(BaseModel):
-    """A small in/out summary + resolved roles + validation findings + links."""
+    """A small in/out summary + resolved roles + validation findings + links.
+
+    Plus the cleaned table itself (``cleaned_csv``) when ``return_cleaned_csv`` was
+    set on the ``csv_content`` path — the one case where this tool returns a table
+    rather than a link to one, because there is no persisted run to link to.
+    """
 
     experiment: Optional[str]
     source: str
@@ -253,6 +321,28 @@ class QCCleanResult(BaseModel):
             "server-side to check it against later."
         ),
     )
+    cleaned_csv: Optional[str] = Field(
+        default=None,
+        description=(
+            "The cleaned table as CSV text. Only set when return_cleaned_csv was "
+            "requested on the csv_content path. Pass it as the csv_content of a "
+            "later tool call to chain client-side; the server keeps no copy and "
+            "records no lineage between the two calls. Cell values are echoed "
+            "back verbatim from what you supplied — including any that a "
+            "spreadsheet would treat as a formula — so treat this as your own "
+            "data returned, not as sanitized output. The no-NaN guarantee this "
+            "tool reports covers kept_trait_columns, not the whole table: "
+            "identifier and metadata columns can still be blank, so an empty "
+            "cell outside the kept traits is not a cleaning failure."
+        ),
+    )
+    cleaned_csv_sha256: Optional[str] = Field(
+        default=None,
+        description=(
+            "SHA-256 of cleaned_csv, so you can prove a later call analyzed this "
+            "exact table. Only set alongside cleaned_csv."
+        ),
+    )
     next_step: Optional[str] = Field(
         default=None,
         description=(
@@ -266,11 +356,16 @@ class QCCleanResult(BaseModel):
     source_note: Optional[str] = Field(
         default=None,
         description=(
-            "Advisory populated only when the experiment has more than one known "
-            "raw source and neither source_id nor run_id was given: names the "
-            "source actually used and points to core_list_experiment_sources to "
-            "choose a different one. None when a pin was given, when the "
-            "experiment has zero or one source, or on the csv_content path."
+            "Advisory about where this result's input came from. On the "
+            "csv_content path it always states that the content was not "
+            "registered and no run was recorded, and carries the input_sha256 — "
+            "so a reader of the result alone can tell an ephemeral analysis from "
+            "a persisted one without inspecting which fields happen to be null. "
+            "On the experiment path it is populated only when the experiment has "
+            "more than one known raw source and neither source_id nor run_id was "
+            "given: it names the source actually used and points to "
+            "core_list_experiment_sources to choose a different one, and is None "
+            "when a pin was given or the experiment has zero or one source."
         ),
     )
 
@@ -284,68 +379,81 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     """Clean ``experiment`` (or inline ``csv_content``) via analyze's
     ``clean_traits_for_analysis``. A registered ``experiment`` persists the result as a
     versioned run; inline ``csv_content`` never persists anything (#582) — a one-off
-    check, not a registered experiment.
+    check, not a registered experiment. On the inline path ``return_cleaned_csv=true``
+    also returns the cleaned table as text, so you can pass it as the ``csv_content``
+    of a later analysis call.
     """
-    # Exactly one of experiment / csv_content — checked first, before touching the
-    # reader or the parser, so a bad call fails immediately with a specific message
-    # (see the NOTE on QCCleanParams for why this lives here and not in a validator).
-    if (params.experiment is None) == (params.csv_content is None):
-        raise BloomMCPError(
-            code="invalid_input",
-            message=(
-                "Exactly one of experiment or csv_content must be provided "
-                "(both or neither is not a valid call)."
-            ),
-            remedy=(
-                "Supply exactly one of experiment (a registered experiment "
-                "identifier) or csv_content (raw CSV text for a one-off analysis)."
-            ),
-        )
-
-    is_inline = params.csv_content is not None
-    # Used in error messages where an experiment name would normally be interpolated —
-    # there is no experiment identity on the inline path.
-    experiment_label = _INLINE_EXPERIMENT_LABEL if is_inline else params.experiment
-
-    # A source/run pin only ever means anything against the DB-backed raw tier —
-    # csv_content bypasses the reader port entirely, so there is no source to pin.
-    # Reject rather than silently drop (the same "reject, don't silently ignore"
-    # principle the exactly-one-of-experiment/csv_content check above applies) —
-    # checked here, not via a @model_validator, for the same reason documented in
-    # the NOTE on QCCleanParams: a validator's raised ValueError loses this specific
-    # message to the contract layer's generic "(<root>: value_error)" text.
-    if is_inline and (params.source_id is not None or params.run_id is not None):
-        raise BloomMCPError(
-            code="invalid_input",
-            message=(
-                "source_id/run_id cannot be used with csv_content: a source pin "
-                "only applies to a registered experiment's raw DB-backed read, "
-                "and csv_content bypasses that read entirely."
-            ),
-            remedy=(
-                "Omit source_id/run_id when using csv_content, or supply "
-                "experiment instead of csv_content to pin a source."
-            ),
-        )
-
     source_note: Optional[str] = None
-    if is_inline:
-        # Inline content bypasses the ExperimentReader port entirely — parsed directly
-        # into an in-memory frame by the shared helper, never touching Storage/DB.
-        frame = parse_inline_csv_frame(params.csv_content)
-    else:
-        reader = _ports.reader()
-        store = _ports.store()
+    store = None
+
+    def _read_raw():
         # qc_clean is the producer of cleaned data, so it must always clean from the
         # RAW input — never re-clean a prior cleaned artifact. Force version="raw" so a
         # re-run (after a cleaned version already exists) still reads raw rather than
         # the default "latest" resolution, which would resolve the newest _cleaned.csv.
-        frame = reader.load_experiment(
+        nonlocal store
+        store = _ports.store()
+        return _ports.reader().load_experiment(
             params.experiment,
             version="raw",
             source_id=params.source_id,
             run_id=params.run_id,
         )
+
+    # Checked before the resolver, because the resolver's registered branch performs
+    # the actual storage read — no point paying a full raw-frame read only to reject
+    # the call on a parameter combination we can rule out from the params alone.
+    #
+    # Deliberately narrow: this fires only when the call is *unambiguously* the
+    # registered path (experiment supplied, csv_content not). Testing
+    # `experiment is not None` alone would pre-empt the resolver on a call that is
+    # invalid two ways — both inputs supplied *and* return_cleaned_csv — reporting
+    # the narrower conflict and contradicting `resolve_inline_or_experiment`'s own
+    # documented rule that the exactly-one-of check comes first. Leaving the
+    # ambiguous case to the resolver keeps one ordering story across every tool.
+    if (
+        params.experiment is not None
+        and params.csv_content is None
+        and params.return_cleaned_csv
+    ):
+        raise BloomMCPError(
+            code="invalid_input",
+            message=(
+                "return_cleaned_csv cannot be used with experiment: the registered "
+                "path already persists the cleaned table as a run artifact."
+            ),
+            remedy=(
+                f"Omit return_cleaned_csv and read the cleaned CSV from the run's "
+                f"output links ({CLEANED_CSV_NAME}), or supply csv_content instead "
+                "of experiment for a one-off analysis."
+            ),
+        )
+
+    # Exactly one of experiment / csv_content, plus the rejection of pins that only
+    # mean something against the DB-backed raw tier — both owned by the shared
+    # resolver so this tool speaks the same vocabulary as every other one (#582).
+    # It checks before touching the reader or the parser, so a bad call fails
+    # immediately with a specific message; and it raises BloomMCPError from the body
+    # rather than a @model_validator for the reason documented in the NOTE on
+    # QCCleanParams (a validator's ValueError loses its text to the contract layer's
+    # generic "(<root>: value_error)").
+    resolved_input = _inline_input.resolve_inline_or_experiment(
+        experiment=params.experiment,
+        csv_content=params.csv_content,
+        reader_call=_read_raw,
+        # Derived from the fields' own schema markers, not restated here — a
+        # field this tool declares registered-only cannot be forgotten at the
+        # call site, which is the failure mode nine more consumers would each
+        # get a fresh chance at.
+        registered_only=_inline_input.registered_only_fields(params),
+    )
+    is_inline = resolved_input.is_inline
+    frame = resolved_input.frame
+    # Used in error messages where an experiment name would normally be interpolated —
+    # there is no experiment identity on the inline path.
+    experiment_label = resolved_input.label
+
+    if not is_inline:
         # #626: when neither source_id nor run_id was given and the experiment has
         # more than one known source, say so explicitly rather than silently
         # resolving "latest" — an agent that hasn't already discovered the sources
@@ -535,14 +643,32 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
             mode=_VALIDATION_MODE,
         )
     except ValueError as exc:
+        remedy = (
+            "Fix the flagged structural issue (e.g. ensure the genotype column "
+            "has no blank/NaN values and at least one numeric trait is present), "
+            "then retry."
+        )
+        # On the inline path the caller is usually looking at hand-made CSV text,
+        # where "no blank/NaN values" is advice they cannot act on: pandas parses
+        # a set of literal strings as missing, so an accession genuinely named NA
+        # (or N/A, NULL, NaN, None) becomes NaN in a file with zero blank cells.
+        # Naming the sentinel actually present turns a contradictory-looking
+        # error into a fixable one. Checked only here, on the failure path, and
+        # only against content already bounded by MAX_INLINE_CSV_BYTES.
+        if is_inline and "missing values" in str(exc):
+            found = _na_sentinels_present(params.csv_content)
+            if found:
+                remedy = (
+                    f"Your content contains the literal value(s) {found}, which "
+                    f"are parsed as missing data even though the cell is not "
+                    f"blank — an accession genuinely named 'NA' becomes NaN. "
+                    f"Rename the affected value(s) in your CSV, then retry. "
+                    f"Otherwise: {remedy}"
+                )
         raise BloomMCPError(
             code="assumption_violated",
             message=f"Input failed the analysis contract: {exc}",
-            remedy=(
-                "Fix the flagged structural issue (e.g. ensure the genotype column "
-                "has no blank/NaN values and at least one numeric trait is present), "
-                "then retry."
-            ),
+            remedy=remedy,
         ) from None
     # BLOCK-4: absorbed_warnings (role-absorbed exclusions) prepended so they appear
     # first; contract_warnings follow.
@@ -625,6 +751,43 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
             ),
         )
 
+    # ±inf is not NaN, and `isna()` does not see it — so a table carrying an
+    # infinity passed the guarantee above with cleaned_nan_cells_remaining == 0
+    # and no warning, was certified clean, and then failed downstream with
+    # "Input X contains infinity". That closed a loop the spec itself opens: a
+    # non-finite consumer's remedy directs the caller to
+    # qc_clean(csv_content=..., return_cleaned_csv=true), qc_clean certifies the
+    # inf-bearing table, and the consumer rejects it again.
+    #
+    # Deliberately applied to BOTH paths, not scoped to csv_content, even though
+    # this PR otherwise promises byte-identical registered behaviour. Certifying
+    # an infinity as analysis-ready is the exact thing the no-NaN guarantee
+    # exists to prevent, and a cleaned run containing one was never usable —
+    # pca_analysis already rejects it, just later and less legibly. Called out
+    # explicitly rather than quietly narrowed to inline to preserve a promise.
+    if kept_cols:
+        numeric = cleaned_df[kept_cols].apply(pd.to_numeric, errors="coerce")
+        nonfinite_by_col = (~np.isfinite(numeric.to_numpy(dtype=float))).sum(axis=0)
+        infinite_cols = [
+            col for col, n in zip(kept_cols, nonfinite_by_col) if int(n) > 0
+        ]
+        if infinite_cols:
+            raise BloomMCPError(
+                code="assumption_violated",
+                message=(
+                    f"Cleanup produced no analysis-ready table — it left "
+                    f"non-finite values (±inf) in {sorted(infinite_cols)}. "
+                    f"These are not NaN, so the cleanup thresholds do not remove "
+                    f"them, and every downstream analysis rejects them."
+                ),
+                remedy=(
+                    "Non-finite values usually come from a divide-by-zero in an "
+                    "upstream trait computation (a ratio or angle). Drop or "
+                    "recompute the affected columns in your source data, or "
+                    "exclude them with exclude_columns, then retry."
+                ),
+            )
+
     removed_traits = [c for c in trait_cols if c not in kept_cols]
     nan_mask = frame.df[trait_cols].isna()
     input_nan_summary = {
@@ -643,13 +806,58 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         run_ref = version_dir = manifest_path = None
         outputs: dict[str, str] = {}
         output_links: dict[str, OutputLink] = {}
-        input_sha256 = compute_input_sha256(params.csv_content)
+        input_sha256 = resolved_input.input_sha256
         next_step = None
+        # Say so in the payload, not only by omission. Everything that marks this
+        # result as ephemeral is currently a *null* — run_ref, version_dir,
+        # manifest_path — and a client that drops null fields renders it as an
+        # ordinary complete qc_clean summary. These numbers get pasted into
+        # notebooks and methods sections, so the result has to carry its own
+        # disclaimer. The spec already requires exactly this of
+        # load_experiment_data; the structured tools whose output actually gets
+        # cited should not be the ones that omit it.
+        source_note = (
+            "Ephemeral analysis: this content was supplied inline and was not "
+            "registered — no run was recorded, nothing is retrievable later, and "
+            "there is no version to cite. Input SHA-256: "
+            f"{input_sha256}."
+        )
+        if params.return_cleaned_csv:
+            # Not persistence: the text goes into the response and nowhere else. It
+            # exists so a caller can chain client-side — pass it as the next tool's
+            # csv_content — since #582 forecloses server-side based_on_version
+            # lineage for this path. Serialized through the shared helper so the
+            # size cap and the pinned line terminator are the same everywhere.
+            cleaned_csv = _inline_input.serialize_table_csv(
+                cleaned_df,
+                field="cleaned_csv",
+                # The certified set, checked against what a consumer would
+                # re-detect from this very text. Upstream physically drops the
+                # removed traits, so today the two agree — but that is a
+                # coincidence between upstream's removal criteria and
+                # resolve_columns' detection heuristic, and PR 2 puts five
+                # consumers on top of it. Verified, not assumed.
+                verify_trait_cols=kept_cols,
+                # Roles too, not just traits. An explicit genotype_column /
+                # sample_id_column override is reported in this very result, so
+                # a consumer that re-detects a different column would group by
+                # something other than what was just reported — with a matching
+                # content digest, because the bytes are identical.
+                verify_roles={
+                    "genotype": resolved.genotype,
+                    "sample_id": resolved.sample_id,
+                    "replicate": resolved.replicate,
+                },
+            )
+            cleaned_csv_sha256 = _inline_input.compute_input_sha256(cleaned_csv)
+        else:
+            cleaned_csv = cleaned_csv_sha256 = None
     else:
         # Additive manifest block: the resolved roles, excluded metadata, and warn-mode
         # findings, stamped onto the provenance so it lands in the version entry. The
         # contract_version is the provenance-recorded sleap-roots-contracts version (not
         # a live read) so the record is reproducible.
+        cleaned_csv = cleaned_csv_sha256 = None
         input_validation_block = {
             "mode": _VALIDATION_MODE,
             "contract_version": provenance.code_versions.sleap_roots_contracts,
@@ -678,7 +886,15 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
             source_csv=_ports.raw_source_for(params.experiment),
             source=frame.resolved_source,
         )
-        cleaned_df.to_csv(run.staging_dir / CLEANED_CSV_NAME, index=False)
+        # lineterminator pinned for the same reason the ephemeral path pins it —
+        # with more force, not less. This file is content-hashed into the
+        # manifest, so an unpinned os.linesep would make the recorded digest
+        # depend on which platform produced the run. Benign in a Linux container
+        # today; the argument for pinning the response copy applies at least as
+        # strongly to the persisted one.
+        cleaned_df.to_csv(
+            run.staging_dir / CLEANED_CSV_NAME, index=False, lineterminator="\n"
+        )
         (run.staging_dir / _LOG_NAME).write_text(
             json.dumps(convert_to_json_serializable(log), indent=2)
         )
@@ -734,6 +950,8 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
         outputs=outputs,
         output_links=output_links,
         input_sha256=input_sha256,
+        cleaned_csv=cleaned_csv,
+        cleaned_csv_sha256=cleaned_csv_sha256,
         next_step=next_step,
         source_note=source_note,
     )

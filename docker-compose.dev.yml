@@ -238,6 +238,15 @@ services:
       BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR
       BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
       BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY}
+      # #582's inline csv_content path: callers may hand a tool raw CSV text
+      # instead of a registered experiment. Content is parsed in memory and
+      # never persisted. Set to "false" to refuse every inline call and force
+      # the registered-experiment path — the one switch that turns the feature
+      # off with a container restart rather than a rebuild, since bloommcp has
+      # no other feature flags and the deploy rollback only covers a failed
+      # deploy job. Declared here rather than left to the code default so it is
+      # discoverable and operable without reading source.
+      BLOOMMCP_INLINE_CSV_ENABLED: ${BLOOMMCP_INLINE_CSV_ENABLED:-true}
       # Verifies an optional X-Bloom-Identity header for usage tracking (#406)
       # — never used as DB/Storage authority. Same secret GoTrue/PostgREST/
       # langchain-agent already use; validated lazily (only if/when a request
