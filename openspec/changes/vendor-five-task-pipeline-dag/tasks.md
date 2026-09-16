@@ -16,10 +16,14 @@
          "consumers SHALL treat `failed_count`/`done_count` as the authoritative signal" — is only
          *true* because that sibling's poller work exists.
       Confirm before archiving (task 8.7) that both have already been archived; if either has not,
-      archive it first. Related but not colliding: `fix-cyl-batch-download-partial-exit-code` (2
-      open) is what specifies `images-downloader`'s exit `3` at all — the live
-      `cyl-batch-download-for-predict` spec still says only "exit non-zero". Archive the three
-      pipeline changes as a coherent set.
+      archive it first.
+      *Update 2026-09-16: the third pipeline change, `fix-cyl-batch-download-partial-exit-code`,
+      **was archived** on `staging` in #855 (`7eeeeb2c`), so
+      `openspec/specs/cyl-batch-download-for-predict/spec.md:71` now normatively says the command
+      "SHALL exit `3` if any scan in the batch failed". That removes the gap this note used to flag
+      — the exit code the vendored gate's `{0,3}` allowlist depends on is specified in the live
+      spec, not only in an unarchived delta. The two colliding siblings above are unaffected and
+      still gate archiving.*
 
 ## 1. Pre-flight (cluster state this change depends on)
 
