@@ -2,38 +2,61 @@
 
 ## 0. Change-coordination pre-flight
 
-- [ ] 0.1 **Archive-ordering hazard.** `openspec/changes/fix-argo-workflow-vendoring/` is complete
-      (28/28) but unarchived, and its delta MODIFIES the same `cyl-pipeline-dispatch` requirement
-      this change does. This change's MODIFIED block already carries that sibling's text forward
-      (the `spec.volumes`/`entrypoint`/`serviceAccountName` paragraph and its volumes scenario), so
-      nothing is lost if the sibling archives first — but if **this** change archives first, the
-      sibling's block will silently revert "five" to "four" and drop the exit-gate scenario.
-      `openspec validate --strict` cannot detect this. Confirm before archiving (task 8.4) that
-      `fix-argo-workflow-vendoring` has already been archived; if it has not, archive it first.
+- [ ] 0.1 **Archive-ordering hazard — TWO unarchived siblings MODIFY requirements this change also
+      MODIFIES.** OpenSpec's MODIFIED replaces the whole requirement block, so whichever archives
+      second silently destroys the other's edits, and `openspec validate --strict` cannot see it.
+      1. `fix-argo-workflow-vendoring` (28/28, unarchived) — same `cyl-pipeline-dispatch`
+         requirement. This change's MODIFIED block already carries its text forward (the
+         `spec.volumes`/`entrypoint`/`serviceAccountName` paragraph and its volumes scenario).
+      2. `fix-cyl-pipeline-run-scan-status` (56/64, unarchived, **but its migrations are already on
+         `staging`**) — same `cyl_pipeline_runs table` requirement. This change's MODIFIED block now
+         carries its text forward too (the poller-maintained `done_count`/`failed_count` prose and
+         its `done_count and failed_count reflect real per-scan outcomes` scenario). This one has a
+         **semantic** dependency, not just a textual one: this change's central instruction —
+         "consumers SHALL treat `failed_count`/`done_count` as the authoritative signal" — is only
+         *true* because that sibling's poller work exists.
+      Confirm before archiving (task 8.7) that both have already been archived; if either has not,
+      archive it first. Related but not colliding: `fix-cyl-batch-download-partial-exit-code` (2
+      open) is what specifies `images-downloader`'s exit `3` at all — the live
+      `cyl-batch-download-for-predict` spec still says only "exit non-zero". Archive the three
+      pipeline changes as a coherent set.
 
 ## 1. Pre-flight (cluster state this change depends on)
 
-- [ ] 1.1 Confirm the five `WorkflowTemplate`s are registered in `runai-busch-lab`, **and that the
-      registered gate declares the inputs this DAG supplies**. A name-only `kubectl get` is not
-      sufficient: Argo rejects a submission whose arguments do not satisfy the registered
-      template's declared `inputs.parameters`, so a name-only check can pass while every dispatch
-      fails at submit. Diff the registered object's `inputs.parameters` against the pinned upstream
-      template. RunAI/`kubectl`/`argo` live in **WSL**, not Windows:
+- [ ] 1.1 **Verify the registered templates by diffing them against the pin — this is the only guard
+      that exists.** A bad `templateRef` does **not** fail at submit: measured 2026-09-16 by
+      server-side dry-run, the K8s API server *accepts* a Workflow naming a nonexistent
+      `WorkflowTemplate` (`created (server dry run)`, exit 0), because resolution is the Argo
+      controller's job and this worker POSTs to the raw K8s API, not the Argo Server. So nothing
+      downstream catches a registration defect until the run has already failed.
+      For **each of the five** templates, diff the registered object against the pinned upstream
+      file (task 5.4 already downloads all five):
       ```
-      wsl -e bash -c 'export PATH=$HOME/bin:/usr/local/bin:$PATH; export KUBECONFIG=~/.kube/kubeconfig-runai-busch-lab-argo-user.yaml; kubectl get workflowtemplate sleap-roots-exit-gate-template -n runai-busch-lab -o jsonpath="{.spec.templates[*].inputs.parameters[*].name}"'
+      wsl -e bash -c 'export PATH=$HOME/bin:/usr/local/bin:$PATH; export KUBECONFIG=~/.kube/kubeconfig-runai-busch-lab-argo-user.yaml; kubectl get workflowtemplate <name> -n runai-busch-lab -o yaml'
       ```
-      Expect `images-downloader-code predictor-code trait-extractor-code`. **Re-run immediately
-      before merge** (task 7.5) — merging is the deploy, and cluster state can change in between.
-      Record the actual output in the PR, not the word "verified".
+      A full-YAML diff — not a `jsonpath` on `inputs.parameters` — because it covers in one command
+      the things that actually break dispatch or defeat the gate: the **inner `template:` name**
+      (the vendored DAG resolves `templateRef: {name: …-exit-gate-template, template: exit-gate}`,
+      and a wrong inner name is the single most likely registered-object defect — an
+      `inputs.parameters` check passes straight through it), the declared inputs, the gate's
+      `timeout: 600s`, its `retryStrategy`, its `resources`, and the image pins.
+      **Record all three bloomctl image references** (gate, images-downloader, write-back). The gate
+      is pinned to `bloomctl:sha-0614889` (PR #774); `images-downloader` must be running a bloomctl
+      containing **PR #830** or exit `3` is never emitted at all — in which case every check in this
+      change passes, the deploy looks clean, and partial failures still fail whole runs.
+      **Re-run immediately before merge** (task 7.5). Record actual output, not the word "verified".
       *Observed 2026-09-16T17:19Z: all five present; gate `creationTimestamp` 2026-09-16T02:39:01Z.*
 - [ ] 1.2 **Upstream PR #75 (`record-section7-results`, OPEN) records the §7 results this proposal
-      cites** — 7.2 applied, 7.4a run, 7.5 passed, 7.6 and 7.8 measured. They are **not on
-      upstream `main`**, where 7.2/7.5/7.6 still read unchecked, so a reviewer checking `main`
-      alone will not find them. Track #75; if it changes materially before this merges, re-check
-      the claims in `proposal.md`'s Why and Non-Goals against it.
-      Still outstanding upstream even after #75: the roadmap's
-      "`argo template list -n runai-busch-lab` returns four as of 2026-09-16" (#75 touches only
-      `tasks.md`), and upstream tasks 9.1-9.4. Not blockers for this PR.
+      cites** — 7.2 applied, 7.4a run, 7.5 passed, and **7.6, 7.7 and 7.8 measured**. None of it is
+      on upstream `main`, where **7.2, 7.4, 7.5, 7.6, 7.7, 7.8, 8.1, 8.2 and 9.1-9.4 all read
+      unchecked**, so a reviewer checking `main` alone will not find any of it. **7.7
+      (`srp-t77-redeliver-t82vr`) matters most**: it is the sole evidence for the "#76 does not
+      endanger §8" argument, and it exists only in #75.
+      #75 changes `docs/bloom-integration/roadmap.md` as well as `tasks.md`, and on that branch the
+      roadmap's "`argo template list` returns four as of 2026-09-16" is already corrected to five,
+      and upstream 9.1-9.4 are already `[x]`. Those are stale on `main` only — nothing for this PR
+      to chase. Track #75; if it changes materially before this merges, re-check `proposal.md`'s
+      Why and Non-Goals against it.
 
 ## 2. TDD red — prove the tests fail against the current four-task DAG
 
@@ -42,14 +65,21 @@ demonstrated, by running it, to miss a real mutation.
 
 - [ ] 2.1 Add a `_dag_tasks(body)` helper that resolves the DAG **through `spec.entrypoint`**, not
       `spec.templates[0]`: assert `entrypoint == "pipeline"`, assert exactly one template carries a
-      `dag`, and return its tasks. Indexing `[0]` passes even when a second, gateless template is
-      appended and the entrypoint repointed at it.
+      `dag`, **assert that template's own `name` equals the entrypoint**, and return its tasks.
+      Indexing `[0]` passes even when a second, gateless template is appended and the entrypoint
+      repointed at it; and without the name check, renaming the `pipeline` template while leaving
+      `spec.entrypoint: pipeline` passes too — a mutation that makes Argo reject **every** dispatch
+      with "entrypoint pipeline not found".
 - [ ] 2.2 Rename `test_build_workflow_body_dag_references_all_four_templates_in_order` to
-      `..._all_five_templates_in_order`. Assert the `(templateRef.name, templateRef.template)`
-      **pairs** as an exact ordered list for all five tasks — asserting only `name` lets a task
-      invoke the wrong inner template out of the right `WorkflowTemplate`. Assert the dependency
-      chain, and assert the task-name set equals the five expected names (the existing chain check
-      compares the file against its own task names, so nothing pins them).
+      `..._all_five_templates_in_order`. Assert an exact ordered list of
+      **`(task name, templateRef.name, templateRef.template)` triples** — all three together, not
+      the pair plus a separate name-set. A pair-only assertion lets `templateRef.template` invoke
+      the wrong inner template; a name-*set* assertion lets two task names be swapped while the
+      `templateRef` order stays put, which silently re-attributes `predictor-code` to
+      trait-extraction's exit code. Also assert `set(templateRef) == {"name", "template"}` per task,
+      so a missing `template:` key is an `AssertionError` rather than a `KeyError`. Keep the
+      dependency-chain assertion (`deps[0] is None or deps[0] == []` is correct — Argo treats an
+      empty list and an absent key identically).
 - [ ] 2.3 Add `test_build_workflow_body_exit_gate_is_the_only_leaf`. Express the property as
       **"exactly one task is depended on by no other, and it is `exit-gate`"**
       (`names - depended_on == {"exit-gate"}`). Do **not** write "no task lists `exit-gate` in its
@@ -64,24 +94,56 @@ demonstrated, by running it, to miss a real mutation.
       not catch `continueOn` on `exit-gate`, which makes the terminal leaf continuable and restores
       the original defect at the last hop.
 - [ ] 2.5 Add `test_build_workflow_body_exit_gate_receives_producer_exit_codes`. Look the gate up
-      non-optionally (`next(t for t in tasks if t["name"] == "exit-gate")`, not an
-      iterate-and-skip loop, which would pass vacuously). Assert the three parameter names and
-      their `{{tasks.<name>.exitCode}}` values, **and** cross-check that every referenced task name
-      exists in the DAG — renaming a producer while updating only the dependency chain otherwise
-      leaves a dangling reference that `dag.go` substitutes with `allowUnresolved=true`.
-- [ ] 2.6 Extract the shape assertions into a shared `_assert_five_task_gate_dag(body)` helper, and
-      add `test_the_dag_shape_assertions_reject_a_gateless_vendored_file`: build a gateless copy of
-      the vendored file in `tmp_path`, point `_VENDORED_WORKFLOW_PATH` at it, and assert the helper
-      raises. This makes the guard itself guarded — otherwise the ADDED requirement's
-      "consistent-but-wrongly-shaped pair is still caught" property has no standing test, only the
-      one-time red at 2.7, which evaporates the moment §3 lands. Add a sibling case stripping
-      `continueOn` from the producers.
-- [ ] 2.7 Run `cd services/workflows && uv run --frozen --extra test pytest tests/test_k8s_client.py -v`.
+      **as an assertion, not an exception**:
+      ```python
+      gates = [t for t in tasks if t.get("name") == "exit-gate"]
+      assert len(gates) == 1, f"exit-gate tasks found: {len(gates)}"
+      ```
+      Not `next(...)` — that raises `StopIteration` on the four-task file, which 2.9 explicitly
+      forbids, and it would also miss a *duplicated* `exit-gate` task. Assert the three parameter
+      names and their `{{tasks.<name>.exitCode}}` values, **and** cross-check that every referenced
+      task name exists in the DAG — renaming a producer while updating only the dependency chain
+      otherwise leaves a dangling reference that `dag.go` substitutes with `allowUnresolved=true`.
+- [ ] 2.6 Add the assertions §2 currently makes about **nothing**, pinned to **literals** rather
+      than to the vendored file — comparing the built body against the file it was built from is
+      what makes the four existing "preserves…" tests tautological.
+      (a) `spec.serviceAccountName == "bloom-workflow"` (a change to `default` makes every step fail
+      with `workflowtaskresults.argoproj.io is forbidden`) and
+      `metadata.generateName == "sleap-roots-pipeline-"`.
+      (b) The whole `spec.volumes` list as a literal, including each `hostPath.type == "Directory"`
+      and the `bloom-credentials` `secretName`. This is bloom#737's exact blast radius and §2
+      asserts nothing about it today; `DirectoryOrCreate` is the mutation the vendored file's own
+      comment calls out by name — a down NFS mount then writes to node-local disk and the pipeline
+      reports success with vanished output.
+      (c) No task carries a key outside `{name, templateRef, dependencies, continueOn, arguments}`,
+      and `arguments` appears on `exit-gate` only. Without this, adding `when:` to the gate makes it
+      `Omitted` — which `assessDAGPhase` treats as `Succeeded` — reintroducing the exact defect the
+      gate exists to prevent while every other assertion stays green.
+      (d) No unexpected top-level `spec` keys (guards `shutdown`, `onExit`, `parallelism`,
+      `nodeSelector`, `activeDeadlineSeconds`).
+- [ ] 2.7 Extract the shape assertions into a shared `_assert_five_task_gate_dag(body)` helper and
+      add `test_the_dag_shape_assertions_reject_a_gateless_vendored_file`: build a mutated copy in
+      `tmp_path`, point `_VENDORED_WORKFLOW_PATH` at it, and assert the helper raises.
+      **Use `pytest.raises(AssertionError, match=...)`, not a bare `pytest.raises`.** A bare one is
+      satisfied by whichever assertion fires first — on a gateless file that is 2.2's triple-list
+      check, never the leaf check — so the test passes even if the leaf assertion is deleted
+      entirely. Three sibling cases, each `match`-anchored to the assertion it targets:
+      (i) gateless (four tasks); (ii) `continueOn` stripped from the producers; (iii) **five tasks
+      with the gate re-pointed at `trait-extractor`**, so `write-back` and `exit-gate` are both
+      leaves — this is the only one that actually exercises the only-leaf assertion.
+- [ ] 2.8 Fix the locale-decode divergence while re-vendoring this file:
+      `k8s_client.py:153` calls `_VENDORED_WORKFLOW_PATH.read_text()` with no `encoding=`, so it
+      decodes with the platform locale (`cp1252` on Windows, UTF-8 in the container). Measured: 42
+      non-ASCII bytes in the file, `read_text() != raw.decode("utf-8")` locally. Harmless today only
+      because all non-ASCII is in comments that `safe_load` drops. Pass `encoding="utf-8"` there and
+      in the `vendored_workflow` fixture (`test_k8s_client.py:26`).
+- [ ] 2.9 Run `cd services/workflows && uv run --frozen --extra test pytest tests/test_k8s_client.py -v`.
       Confirm each new test fails **with an `AssertionError` naming the missing invariant, not a
-      `KeyError`/`IndexError` from a lookup line** — an erroring test proves the DAG lacks a task,
-      not that the invariant is checked, and can mask a bug in the test itself. Paste the assertion
-      line for each, alongside the current baseline (48 passed, 1 skipped — the symlink test skips
-      on Windows, runs on CI Linux).
+      `KeyError`/`IndexError`/`StopIteration` from a lookup line** — an erroring test proves the DAG
+      lacks a task, not that the invariant is checked, and can mask a bug in the test itself. Paste
+      the assertion line for each, alongside the current baseline (48 passed, 1 skipped for
+      `tests/test_k8s_client.py`; 648 passed, 1 skipped for the full `tests/` — the symlink test
+      skips on Windows and runs on CI Linux).
 
 ## 3. TDD green — vendor the merged Workflow
 
@@ -98,8 +160,8 @@ demonstrated, by running it, to miss a real mutation.
       the drift script `.strip()`s it). Note this file has no extension so it falls through to
       `* text=auto`, not the `*.yaml` rule — harmless, since the script strips and regex-validates.
 - [ ] 3.3 Verify byte count and absence of a trailing newline (`wc -c`, `tail -c1 | xxd`).
-- [ ] 3.4 Re-run 2.7's command; confirm every test now passes.
-- [ ] 3.5 **Commit §2 and §3 together as one commit.** 2.7's deliverable is pasted output in the PR
+- [ ] 3.4 Re-run 2.9's command; confirm every test now passes.
+- [ ] 3.5 **Commit §2 and §3 together as one commit.** 2.9's deliverable is pasted output in the PR
       body, not a committed red state, so there is no reason to leave a red commit on the branch.
       3.1 and 3.2 must be in the same commit regardless — the drift job is gated on
       `services/workflows/vendored` changing and fails on any commit where the YAML and the REF
@@ -124,9 +186,20 @@ its grep was `--include=*.py` and missed the README.)
       dispatch-added label keys"), `conftest.py:10`, every `test_plate_*` hit, and the
       `openspec/changes/fix-argo-workflow-vendoring/` copies (historical, non-normative).
       `vendored/sleap-roots-pipeline.yaml:37` is fixed by the vendoring itself.
+      `openspec/changes/archive/2026-08-17-add-cyl-pipeline-dispatch/` (2 hits, archived history).
       `docs/issues/issue-2-pipeline-trigger.md:235-292` holds a wholly obsolete inline DAG (still
       has `models-downloader`) — out of scope, noted so it is not mistaken for a missed site.
-- [ ] 4.4 The spec deltas already carry the normative prose corrections; they land at archive time.
+- [ ] 4.4 **Decide what to do with the two tautological DAG tests, and record the decision.**
+      `test_build_workflow_body_preserves_dag_structure_from_vendored_file` and
+      `..._only_changes_the_four_documented_overrides` compare `build_workflow_body`'s output
+      against the *same file it was built from*, so they cannot fail on any vendored-file mutation —
+      measured: of 58 mutations the existing suite caught 5, every one by a `KeyError` on the
+      fixture side rather than an assertion. They read like DAG guards and contribute no mutation
+      coverage. Either delete them or rebase them onto the new `_dag_tasks` helper. Note one of them
+      is currently the only thing catching a nested-`steps` template, by `KeyError` on
+      `templates[0]` — 2.1's entrypoint resolution replaces that accidental coverage with a real
+      assertion, so deleting is safe once 2.1 lands.
+- [ ] 4.5 The spec deltas already carry the normative prose corrections; they land at archive time.
 
 ## 5. Verification
 
@@ -168,6 +241,20 @@ its grep was `--include=*.py` and missed the README.)
       error. A small migration (`nullif` on the existing `coalesce`, falling back to
       `p_argo_workflow_name`) would close it. File; needed before `staging → main`, not before this
       merge. Related: bloom#703.
+- [ ] 6.3 **The per-scan status machinery is staging-only — this is a hard `staging → main`
+      blocker.** `20260912110000_add_cyl_writeback_run_scan_status.sql` and
+      `20260912111000_add_cyl_pipeline_run_scan_counts.sql` are on `origin/staging` and **not** on
+      `origin/main`. Until they promote, this change's central contract — "read `failed_count`, not
+      `status`" — is **unsatisfiable in production**: nothing maintains those counters and nothing
+      marks per-scan rows, so a prod run would read `complete` with `failed_count = 0` while scans
+      silently failed. That is the exact trap the spec deltas exist to prevent, with the
+      counter-signal absent. Record it as an explicit promotion blocker, not an implicit
+      consequence of merging this branch.
+- [ ] 6.4 **Production is already exposed, now, independent of this PR.** The new producer image
+      pins are live on the shared `runai-busch-lab` templates while prod still dispatches the
+      four-task DAG with no `continueOn`. If those images moved partial success from exit 0 to exit
+      3, prod batches that used to go green now go red. Check whether prod has dispatched since
+      2026-09-16 and record the answer; if the window stays open, say who is watching it.
 
 ## 7. PR
 
@@ -189,11 +276,25 @@ its grep was `--include=*.py` and missed the README.)
       trait-extraction), and **task 6.1's credential issue**.
 - [ ] 7.4 Run `/review-pr`.
 - [ ] 7.5 Re-run task 1.1 immediately before merge and paste the output.
-- [ ] 7.6 **Rollback plan, in the PR body.** If dispatch begins failing after merge, revert this PR
-      on `staging` (restoring the four-task file and the old pin) and redeploy — then reconcile the
-      affected batches by hand. A failed submission marks every scan row in the batch `failed` and
-      dead-letters the queue message, with requeue out of scope, so those rows do **not** recover on
-      their own once the cluster is healthy.
+- [ ] 7.6 **Rollback plan, in the PR body — and it restores a known-BROKEN state, not a known-good
+      one.** If dispatch begins failing after merge, revert this PR on `staging` (restoring the
+      four-task file and the old pin) and redeploy. Three things an operator must know:
+      - **In-flight Workflows are unaffected.** The submitted CRD embeds the whole DAG, and
+        `templateRef`s resolve against cluster objects the revert does not touch. Five-task
+        Workflows already running complete normally, gate included.
+      - **Queued batches change shape mid-run.** pgmq messages carry only
+        `(run_id, batch_index, scan_ids)`, so a batch enqueued before the revert dispatches
+        afterwards as a **four-task** DAG. One run can end up with batch 0 five-task and batch 1
+        four-task — different failure semantics inside a single run, rolling up as an ordinary
+        `'partial'` with nothing recording why.
+      - **The revert does not undo what actually changed on the cluster.** The three producer
+        templates got new image pins on 2026-09-16. Reverting gives the four-task DAG (no
+        `continueOn`, no gate) driving the **new** producer images — a combination that has never
+        run anywhere, and one that re-arms #56's data-loss bug exactly: a partial producer kills the
+        DAG and strands the good scans.
+      Affected scan rows do **not** self-recover: they are marked `failed` with no requeue, and per
+      the Impact section the failure arrives via the poller seeing an `Error` Workflow, not via a
+      dead-lettered message — so there is no queue artifact to find. Reconcile by hand.
 
 ## 8. Post-merge — blocks archiving
 
@@ -214,7 +315,15 @@ record it after the run rather than at merge (bloom#708 task 14.9 precedent).
       and the RPC short-circuits to a no-op — "`cyl_trait_sources` reflects the two good scans" is
       otherwise satisfiable entirely by rows a *previous* run wrote.
       (c) Copy `run_manifest.json` from all three `a4_poc` directories, so an already-armed latch is
-      distinguishable from a failure this run caused.
+      distinguishable from a failure this run caused. Also assert `scan_12894751`'s key is **not
+      already in** `a4_poc/input/run_manifest.json`: the manifest unions and never prunes, and per
+      §7.6 predict *scopes to the leftover manifest* rather than discovering, so a stale poison key
+      would be picked up, failed, and carried to write-back — turning 8.5's expected `complete` into
+      `failed` for a reason unrelated to this change.
+      (d) Assert the `a4_poc/predictions` artifacts for the good scans are **present**. This is the
+      one condition under which sleap-roots-pipeline#76 is not a hazard: artifacts present → predict
+      skips → no new bytes → write-back succeeds. If they have been cleared, predict recomputes at
+      an unchanged key and collides.
 - [ ] 8.2 Dispatch through Bloom on staging over the shared `a4_poc` paths: poison scan `12894751`
       (verified to fail: `bloomctl cyl download-for-predict 12894751 <tmp> -p pipeline-staging`
       → "1 of 1 frames failed to download … no sidecar written") plus `12894745` and `12894746`.
@@ -244,6 +353,11 @@ record it after the run rather than at merge (bloom#708 task 14.9 precedent).
       `scan-ids=not-an-int`, which Bloom's trigger route may reject before dispatch — if no such
       case can be constructed from the dispatch path, record *why* here rather than leaving it
       unsaid.
+      ⚠️ **Contain this one.** A crash *after* a manifest write leaves `scan_key`s with no result,
+      which is exactly how the write-back latch arms — and on the shared `a4_poc` tree that would
+      then fail every subsequent run over those paths, **including production's**. Either run it
+      against a scratch tree (as upstream §7.5 did, accepting the reduced fidelity), or snapshot and
+      restore all three `run_manifest.json` files around it.
 - [ ] 8.5 Record the observed run status. Expect **`complete` with `failed_count > 0`** — that is
       the documented bloom#857 behaviour, now written into the `cyl-pipeline-runs` and
       `cyl-pipeline-status-polling` deltas, not a failure of this change. If it reads `failed`,

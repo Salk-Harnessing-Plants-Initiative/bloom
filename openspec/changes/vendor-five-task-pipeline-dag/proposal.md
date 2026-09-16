@@ -5,10 +5,13 @@
 [sleap-roots-pipeline#56](https://github.com/talmolab/sleap-roots-pipeline/issues/56): the three
 producer stages (`images-downloader`, `predictor`, `trait-extractor`) emit exit code **3** for
 partial success — "the batch ran to completion; some scans isolated-failed" — and no Argo template
-reacted to it. `retryPolicy: Always` retried one genuinely-failing scan to budget exhaustion and
-then killed the whole DAG, discarding the scans that had already succeeded. Demonstrated live on
+reacted to it. `retryPolicy: Always` retried the whole failing *step* to budget exhaustion (the
+poison scan failing identically every attempt) and then killed the DAG. Demonstrated live on
 2026-09-01 (workflow `sleap-roots-pipeline-jqsf9`: `Failed` at 0/3, with two confirmed-good scans
-stranded — recorded in both #56 and bloom#772, not only in the since-expired Workflow object).
+fully staged but never reaching the predictor — recorded in both #56 and bloom#772, not only in the
+since-expired Workflow object). Note `images-downloader` did not yet emit `3` on that date; it
+gained the convention in PR #830 on 2026-09-15, which is why the run failed rather than partially
+succeeding.
 
 That exit-3 convention is the salk-bloom side of the same fix — `bloomctl`'s
 `batch-download-for-predict` gained it in `fix-cyl-batch-download-partial-exit-code`
@@ -40,16 +43,20 @@ to real values, not empty strings, which is also the first live confirmation tha
 the Workflow correctly.
 
 **These results are recorded in upstream PR #75, which is OPEN.** They are not yet on
-`sleap-roots-pipeline`'s `main`, where tasks 7.2/7.5/7.6 still read unchecked. Anyone verifying
-this proposal's claims against `main` alone will not find them; see `tasks.md` 1.2.
+`sleap-roots-pipeline`'s `main`, where 7.2, 7.4, 7.5, 7.6, 7.7, 7.8, 8.1, 8.2 and 9.1-9.4 all still
+read unchecked. Anyone verifying this proposal's claims against `main` alone will not find them;
+see `tasks.md` 1.2.
 
 salk-bloom still vendors the **four-task** DAG, so every Bloom-dispatched run today gets none of
 this. Upstream's own §8.1 is "open the companion `salk-bloom` PR: copy the merged file byte-exact"
 — this change is that step. Vendoring is also what unblocks the remaining half of #56's live
 verification. Upstream split its poison-scan task in PR #75: **§7.4a ran 2026-09-16**
-(`srp-t74a-poison-gfzp6`) and passed every artifact criterion — `images-downloader` exited **3** and
-`continueOn` let the DAG advance past a `Failed` producer, where on 2026-09-01 the identical
-scenario ended `Failed` at 0/3 with both good scans stranded and the predictor never running.
+(`srp-t74a-poison-gfzp6`) and passed every *artifact* criterion — `images-downloader` exited **3**
+and `continueOn` let the DAG advance past a `Failed` producer, where on 2026-09-01 the identical
+scenario ended `Failed` at 0/3 with both good scans stranded and the predictor never running. **That
+run's Workflow nonetheless ended `Failed`**, at write-back (exit 1, three attempts, gate `Omitted`)
+— that failure is sleap-roots-pipeline#76 under Non-Goals, not #56, and upstream task 7.4 remains
+unchecked for exactly that reason.
 **§7.4b — the Bloom-side half — is blocked on this change**: `cyl_pipeline_runs`/
 `cyl_pipeline_run_scans` rows are written by Bloom's `POST /workflows/pipeline` route at enumerate
 time, so a hand `argo submit` creates nothing for `done_count`/`failed_count` to attach to, while
@@ -71,19 +78,27 @@ decision — deploy sequencing into a production-shared namespace — is covered
 - **The five WorkflowTemplates are NOT vendored** and are untouched by this change. They resolve
   via `templateRef` against the cluster at runtime. All five are registered in `runai-busch-lab`:
   operator-observed 2026-09-16T17:19Z, with `sleap-roots-exit-gate-template` created
-  2026-09-16T02:39:01Z — 18 minutes after PR #60 merged. **Note two upstream records still say
-  otherwise** (task 7.2 unchecked; the roadmap's "returns four as of 2026-09-16"); both predate the
-  02:39Z registration and are stale. Reconciling them is tracked in `tasks.md` 1.2.
+  2026-09-16T02:39:01Z — 18 minutes after PR #60 merged. Upstream **`main`** still says otherwise
+  (task 7.2 unchecked; the roadmap's "returns four as of 2026-09-16"), because both predate the
+  02:39Z registration; PR #75 already corrects both on its branch. See `tasks.md` 1.2.
 - **Update the DAG-shape tests.**
   `services/workflows/tests/test_k8s_client.py::test_build_workflow_body_dag_references_all_four_templates_in_order`
   hardcodes four `templateRef` names and a four-long dependency chain. It is renamed to
-  `..._all_five_templates_in_order` and extended, and **three new tests** are added alongside it
+  `..._all_five_templates_in_order` and extended, and **four new tests** are added alongside it
   covering the invariants that make the design work (see below).
 - **Correct the four-template claim everywhere it is stated as fact.** Three sites, found by
   grepping the *claim* repo-wide rather than one file: `k8s_client.py:182`,
   `services/workflows/README.md:131-134` (the same four-name arrow chain), and the
   `cyl-pipeline-dispatch` spec's normative prose. Each → five.
-- **No production code changes.** Verified by execution against the real upstream file, not
+- **One one-word production change**, plus no others. `_load_vendored_workflow` calls
+  `Path.read_text()` with no `encoding=`, so it decodes the vendored file with the platform locale
+  — `cp1252` on a Windows dev box, UTF-8 in the Linux container. Measured: the file has 42
+  non-ASCII bytes and `read_text() != raw.decode("utf-8")` locally. It is harmless *today* only
+  because every non-ASCII character sits in a comment that `yaml.safe_load` discards, which is why
+  nothing has ever failed. It becomes a real cross-platform divergence the moment upstream puts a
+  non-ASCII character in a *value*, and this change is precisely one that re-vendors that file. Fix:
+  `read_text(encoding="utf-8")`, in `k8s_client.py` and in the test fixture that mirrors it.
+- **No other production code changes.** Verified by execution against the real upstream file, not
   argued: `build_workflow_body` passes the five-task DAG through unmodified and JSON-serializable.
   It applies its four overrides to `spec.arguments.parameters[0]` (still `scan-ids`, still the only
   workflow-level parameter), `metadata.labels` (still only `project: busch-lab` upstream, so no
@@ -148,22 +163,27 @@ so vendoring fixes it completely.
   `ON CONFLICT (idempotency_key) DO NOTHING`, which would have made the re-delivery a harmless
   no-op. `Ingested 0/2` confirms nothing reaches the RPC.
 
-  **The precise condition is narrow, and #60's pin bump is not what triggers it.** Re-delivery is
+  **The discriminator is changed-key vs unchanged-key, not post-bump vs pre-bump.** Re-delivery is
   idempotent on the **skip** path and broken on the **recompute** path — demonstrated by a pair of
-  runs rather than argued. A *post-bump* recompute cannot collide at all, because the bump changes
-  the idempotency key and the blob address embeds that key, so the new bytes land at a new address
-  (`srp-t76-zero-shared-hrrkz` recomputed all 8 scans after the bump; write-back succeeded). The
-  collision requires a recompute at an **unchanged** key, which happens only when predict's local
-  artifacts are absent or unreadable while Bloom already holds blobs for that key — exactly 7.4a's
-  fresh scratch directory against scans ingested an hour earlier. When the artifacts persist,
-  predict skips, no new bytes are produced, and write-back succeeds (`srp-t77-redeliver-t82vr`: 12
-  `result.json` mtimes frozen, 24 `.slp` blobs byte-identical, Workflow `Succeeded`).
+  runs rather than argued. Precisely:
+  - *unchanged key, artifacts present* → predict skips, no new bytes, write-back succeeds
+    (`srp-t77-redeliver-t82vr`: 12 `result.json` mtimes frozen, 24 `.slp` blobs byte-identical,
+    Workflow `Succeeded`);
+  - *unchanged key, artifacts absent* → predict recomputes and writes different bytes to the same
+    address → **collision** (7.4a's fresh scratch tree, against scans ingested an hour earlier);
+  - *changed key* (e.g. a predictor pin bump) → the recompute lands at a **new** address and cannot
+    collide (`srp-t76-zero-shared-hrrkz` recomputed all 8 scans post-bump; write-back succeeded).
+
+  Note #60's pin bump did not *cause* a collision — it is the changed-key case, which is safe. What
+  it did was create the **precondition**, by populating blobs at a fresh address set that a later
+  unchanged-key recompute can then collide with. `srp-t74a-poison-gfzp6` was itself post-bump and
+  still collided, so "post-bump recomputes are safe" would be false.
 
   **Operational hazard to carry forward:** if a `predictions/` directory is ever cleared or lost
-  while Bloom still holds the blobs for those keys, the next run over those scans fails at
-  write-back. It also means the A4 batch oracle only ever held on the skip path. This does **not**
-  constrain this change's post-merge verification, which runs over the persistent shared `a4_poc`
-  paths.
+  while Bloom still holds blobs for those keys, the next run over those scans fails at write-back.
+  It also means the A4 batch oracle only ever held on the skip path. For this change's post-merge
+  verification the relevant guard is therefore narrow and checkable: the shared `a4_poc/predictions`
+  artifacts must still be present at dispatch time, so predict skips (`tasks.md` 8.1(d)).
 - **[sleap-roots-predict#44](https://github.com/talmolab/sleap-roots-predict/issues/44) — narrow
   the forwarded `run_manifest.json` to `ok ∪ skipped`.** OPEN. Forwarding the manifest unchanged is
   safe only because of the behaviour this change alters: once the templates discriminate exit codes
@@ -205,10 +225,13 @@ so vendoring fixes it completely.
   (previously a partial producer killed the DAG so write-back never ran) — a known consequence of
   shipping this, not a regression introduced by it.
 - **Run attribution in artifacts ([bloom#703](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/703)).**
-  `provenance.pipeline_run_id`, `argo_workflow_uid`, `argo_node_id` and `worker_request_id` are
-  reported empty in live `result.json` envelopes — the `Provenance` contract defines them and
-  nothing populates any of them, so both sides of the intended cross-run cross-check are blank.
-  (Corroborated independently by sleap-roots-pipeline#70's 2026-09-15 envelope reading.)
+  #703 is specifically that `batch-ingest-result` does not cross-check
+  `RunManifest.pipeline_run_id` against envelope provenance, so results from one run can be ingested
+  under another's manifest. Separately observed, and making that cross-check moot rather than merely
+  absent: `provenance.pipeline_run_id`, `argo_workflow_uid`, `argo_node_id` and `worker_request_id`
+  are empty in live `result.json` envelopes (sleap-roots-pipeline#70's 2026-09-15 envelope reading)
+  — the `Provenance` contract defines them and nothing populates them, so both sides of the intended
+  cross-check are blank.
 - **Shared-path manifest scoping
   ([sleap-roots-pipeline#71](https://github.com/talmolab/sleap-roots-pipeline/issues/71)).**
   Confirmed structurally from this repo: the vendored Workflow hardcodes the three `a4_poc` paths
@@ -217,7 +240,7 @@ so vendoring fixes it completely.
   is explicitly ruled out** by both #71 and #37 (it would break the skip-if-done dedup and the
   batch oracle); the fix shape is per-run *manifest identity* with shared artifacts. Cross-repo.
 - **Adding `argo lint` to salk-bloom CI.** The offline lint recipe is used here as a manual
-  verification step (`tasks.md` 5.3). Wiring it into CI would mean installing `argo` and fetching
+  verification step (`tasks.md` 5.4). Wiring it into CI would mean installing `argo` and fetching
   five upstream files per run — real scope creep on a vendoring change. Possible follow-up.
 
 ## Impact
@@ -241,22 +264,36 @@ so vendoring fixes it completely.
   production cutover for this DAG; until it happens production keeps dispatching the four-task DAG
   and gets none of #56's fix, while already running the three new image pins applied to the
   templates on 2026-09-16.
-- **Ordering constraint and its true blast radius.** The gate template must be registered before
-  any vendored five-task DAG ships. If it is not, submission fails — and per this capability's
-  existing "Submission outcome is recorded before the message is settled" requirement, a failed
-  submission marks **every scan row in the batch `failed` and dead-letters the queue message**,
-  with requeue explicitly out of scope. So the failure mode is not a transient error but the
-  **permanent, unrecoverable failure of every batch dispatched in the window**, across prod and
-  staging simultaneously, with no automatic recovery once the template is restored. Verified
-  satisfied 2026-09-16 (`tasks.md` 1.1 re-checks at merge; 6.6 is the rollback).
+- **Ordering constraint and its true blast radius — and it does NOT surface at submit.** The gate
+  template must be registered before any vendored five-task DAG ships. It is tempting to assume an
+  unresolvable `templateRef` fails the submission; **it does not.** Measured 2026-09-16 with a
+  server-side dry-run against `runai-busch-lab`: a `Workflow` naming a nonexistent
+  `WorkflowTemplate` is **accepted** by the Kubernetes API server (`created (server dry run)`, exit
+  0). Template resolution is the Argo *controller's* job, and this worker deliberately POSTs to the
+  raw K8s API rather than the Argo Server, which is what would validate at submit time.
+
+  So the real failure path is: `submit_workflow` succeeds → `complete_batch` records the name and
+  **deletes** the queue message → the controller errors the Workflow → the poller's rollup sees
+  `Error` and concludes `'failed'` → `_reconcile_unresolved_scans` marks every still-`queued` scan
+  `failed`. Every batch dispatched in the window is still **permanently and unrecoverably failed**
+  across prod and staging simultaneously, with no requeue. But three things differ from the
+  "fails at submit" story, and they change the runbook: there is **no dead-lettered message** to
+  find, `error_message` never carries the cause, and the only diagnostic — the controller's message
+  on the Workflow object — is TTL-GC'd after `WORKFLOWS_K8S_TTL_SECONDS` (default 3600). The
+  failure also surfaces a poll cycle later rather than immediately.
+
+  **This makes `tasks.md` 1.1 the only real guard**, since submission cannot catch it. Verified
+  satisfied 2026-09-16; 1.1 re-checks at merge and 7.6 is the rollback.
 - **Risk: the change's fail-safe behaviour lives in an object this repo neither vendors nor
   drift-checks.** The gate template carries `timeout: 600s` — which converts "gate pod stuck
   `Pending` ⇒ Workflow hangs forever ⇒ Bloom's poller never resolves the run" into a bounded
   failure — plus a `retryStrategy` and explicit `resources` to avoid BestEffort eviction. After
   this change the DAG has a mandatory fifth pod *between "all work committed" and "Workflow
-  terminal"*, and salk-bloom has no mechanism to confirm those guards are present in the registered
-  copy. `tasks.md` 1.1 verifies the registered template's `inputs.parameters` for this reason;
-  see also sleap-roots-pipeline#72 under Non-Goals.
+  terminal"*. There **is** a mechanism to confirm those guards: `tasks.md` 1.1 diffs the registered
+  object's own YAML against the pinned upstream template, which covers the inner template name, the
+  declared inputs, the timeout, the retryStrategy, the resources and the image pin in one command.
+  See also sleap-roots-pipeline#72 under Non-Goals, which this diff does *not* fix — it is about the
+  tag-pinning policy, not drift from the pin.
 - **Pre-existing defect this change's promotion step would activate: prod-dispatched Workflows
   mount *staging* credentials.** The vendored file hardcodes
   `secretName: genericsecret-bloom-staging-pipeline-credentials`, and `build_workflow_body`'s four
