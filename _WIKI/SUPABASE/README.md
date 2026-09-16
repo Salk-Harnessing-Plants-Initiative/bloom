@@ -119,10 +119,11 @@ Phase 1 of the A4 pipeline-trigger route (`POST /workflows/pipeline`, bloom #11/
 
 `cyl_experiment_trait_counts` caches each experiment's count of distinct latest-source traits.
 
-- **How changes are tracked.** Whenever a scan's newest source changes, a trigger on `cyl_scan_latest_source` appends that scan's experiment to `cyl_experiment_trait_count_changes`, an insert-only log.
+- **How changes are tracked.** Whenever a scan's newest source changes, a trigger on `cyl_scan_latest_source` appends that scan's experiment to `cyl_experiment_trait_count_changes`, an insert-only log. That includes a scan's trait rows being deleted, which has to happen before the scan itself can be. Scans in a wave with no experiment aren't logged, since they can't be counted.
 - **How the cache is refreshed.** The pg_cron job `refresh-cyl-experiment-trait-counts` runs nightly at 06:00 UTC as `postgres` and calls `refresh_changed_cyl_experiment_trait_counts()`. That function recounts only the logged experiments, then stamps every cache row's `updated_at`.
-- **Access.** Both functions are `SECURITY DEFINER`. `EXECUTE` on the incremental refresh is granted to `postgres` only. No API role can read or write the change log.
-- **Manual repair.** `refresh_cyl_experiment_trait_counts()` recounts every experiment. Use it after deleting scans or plants, which the trigger can't attribute to an experiment.
+- **The weekly re-check.** The trigger can't see a plant's accession changing, a scan, plant or wave moving, or trait rows edited within a scan's current result. So a second job, `mark-all-cyl-experiments-for-trait-recount`, calls `mark_all_cyl_experiment_trait_count_changes()` on Sundays at 05:00 UTC, which puts every experiment on the log, and that night's run recounts them all. A count is at most a day old after a new result, and at most a week old after those other edits.
+- **Access.** The trigger function and both job functions are `SECURITY DEFINER`. Only `postgres` can execute the two job functions. No API role can read or write the change log.
+- **Manual repair.** To correct a count straight away, run `refresh_cyl_experiment_trait_counts()`, which recounts every experiment.
 
 ## pgmq queues
 

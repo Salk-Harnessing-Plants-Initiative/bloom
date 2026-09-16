@@ -6,9 +6,13 @@
 --   2. adds cyl_experiment_trait_count_changes, an insert-only log of experiments whose
 --      latest-source trait data changed, appended by triggers on cyl_scan_latest_source;
 --   3. adds refresh_changed_cyl_experiment_trait_counts(), which recounts only logged experiments;
---   4. seeds the log with every experiment, so the first scheduled run does the full fill;
---   5. schedules that function nightly at 06:00 UTC, run as `postgres` (not a superuser) over
---      pg_cron's own connection, so no API timeout applies.
+--   4. adds mark_all_cyl_experiment_trait_count_changes(), which puts every experiment on the log;
+--      the migration calls it once, so the first run is a full fill;
+--   5. schedules two pg_cron jobs, both run as `postgres` (not a superuser) over pg_cron's own
+--      connection, so no API timeout applies: the nightly recount at 06:00 UTC, and a weekly
+--      re-queue of every experiment on Sundays at 05:00 UTC, so that night's run also catches
+--      edits the trigger can't see (a plant's accession, a moved scan, plant or wave, or trait
+--      rows edited within a scan's current result).
 -- refresh_cyl_experiment_trait_counts() is unchanged and remains the manual full refresh.
 --
 -- Manual rollback: supabase/rollbacks/20260915120000_refresh_cyl_experiment_trait_counts_incremental_rollback.sql
@@ -117,27 +121,49 @@ REVOKE EXECUTE ON FUNCTION public.refresh_changed_cyl_experiment_trait_counts()
     FROM PUBLIC, anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.refresh_changed_cyl_experiment_trait_counts() TO postgres;
 
--- The first scheduled run recounts every experiment.
-INSERT INTO public.cyl_experiment_trait_count_changes (experiment_id)
-SELECT id FROM public.cyl_experiments;
+CREATE OR REPLACE FUNCTION public.mark_all_cyl_experiment_trait_count_changes()
+RETURNS void
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+    INSERT INTO public.cyl_experiment_trait_count_changes (experiment_id)
+    SELECT id FROM public.cyl_experiments;
+$$;
 
--- The job runs as postgres. `supabase db push` applies migrations as postgres, where cron.schedule
--- already owns the job as postgres; a superuser apply has to name postgres explicitly. Scheduling
--- the same job name for the same user updates the job, so re-applying keeps one.
+REVOKE EXECUTE ON FUNCTION public.mark_all_cyl_experiment_trait_count_changes()
+    FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.mark_all_cyl_experiment_trait_count_changes() TO postgres;
+
+-- The first scheduled run recounts every experiment.
+SELECT public.mark_all_cyl_experiment_trait_count_changes();
+
+-- Both jobs run as postgres. `supabase db push` applies migrations as postgres, where cron.schedule
+-- already owns a job as postgres; a superuser apply has to name postgres explicitly. Scheduling an
+-- existing job name for the same user updates the job, so re-applying keeps one of each.
 DO $$
 DECLARE
-    v_command constant text :=
-        $cmd$SET statement_timeout = '5min'; SELECT public.refresh_changed_cyl_experiment_trait_counts()$cmd$;
+    v_job record;
 BEGIN
-    IF (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
-        PERFORM cron.schedule_in_database(
-            'refresh-cyl-experiment-trait-counts', '0 6 * * *', v_command, current_database(), 'postgres'
-        );
-    ELSIF current_user = 'postgres' THEN
-        PERFORM cron.schedule('refresh-cyl-experiment-trait-counts', '0 6 * * *', v_command);
-    ELSE
-        RAISE EXCEPTION 'apply this migration as postgres or a superuser, not %', current_user;
-    END IF;
+    FOR v_job IN
+        SELECT *
+        FROM (VALUES
+            ('refresh-cyl-experiment-trait-counts', '0 6 * * *',
+             $cmd$SET statement_timeout = '5min'; SELECT public.refresh_changed_cyl_experiment_trait_counts()$cmd$),
+            ('mark-all-cyl-experiments-for-trait-recount', '0 5 * * 0',
+             $cmd$SELECT public.mark_all_cyl_experiment_trait_count_changes()$cmd$)
+        ) AS jobs (name, schedule, command)
+    LOOP
+        IF (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
+            PERFORM cron.schedule_in_database(
+                v_job.name, v_job.schedule, v_job.command, current_database(), 'postgres'
+            );
+        ELSIF current_user = 'postgres' THEN
+            PERFORM cron.schedule(v_job.name, v_job.schedule, v_job.command);
+        ELSE
+            RAISE EXCEPTION 'apply this migration as postgres or a superuser, not %', current_user;
+        END IF;
+    END LOOP;
 END;
 $$;
 

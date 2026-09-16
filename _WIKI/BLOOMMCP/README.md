@@ -190,8 +190,11 @@ inside Postgres refreshes it nightly at 06:00 UTC, in every environment:
 trait data changed since the previous run, then stamps every row's `updated_at` as of that run. The
 job runs as `postgres` over pg_cron's own connection, not through PostgREST, so the API role's 8 s
 statement timeout (bloom#831) doesn't apply. `refresh_cyl_experiment_trait_counts()` remains the
-manual full refresh. Staleness is therefore bounded to about a day. A pinned call is fully live for
-both counts.
+manual full refresh. Every Sunday a second job puts every experiment back on the list, so that
+night's run also picks up edits the change log can't see: a plant's accession changing, a scan,
+plant or wave moving, or trait rows edited within a scan's current result. A count is therefore at
+most a day old after a new result, and at most a week old after those edits. A pinned call is fully
+live for both counts.
 
 See [`_WIKI/SUPABASE/README.md`](../SUPABASE/README.md) for the full
 role / RLS picture.
