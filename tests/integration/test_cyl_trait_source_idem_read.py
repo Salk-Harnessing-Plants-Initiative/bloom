@@ -80,14 +80,41 @@ def test_an_absent_key_returns_no_rows_rather_than_raising(pg_conn):
     pg_conn.rollback()
 
 
-@pytest.mark.parametrize("column", ["name", "created_at"])
-def test_other_columns_remain_ungranted(pg_conn, column):
-    """Only id, metadata and idempotency_key are granted. A column-less GRANT SELECT would
-    quietly reach everything while still reading like a tightening in review."""
+def test_other_columns_remain_ungranted(pg_conn):
+    """`name` is the only column on this table the role is not granted, and it must stay that
+    way. A column-less GRANT SELECT would quietly reach everything while still reading like a
+    tightening in review."""
     with pg_conn.cursor() as cur:
         cur.execute(f"SET LOCAL ROLE {ROLE}")
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            cur.execute(f"SELECT {column} FROM cyl_trait_sources LIMIT 1")
+            cur.execute("SELECT name FROM cyl_trait_sources LIMIT 1")
+    pg_conn.rollback()
+
+
+def test_the_granted_column_set_is_exactly_the_three_expected(pg_conn):
+    """Pins the whole grant surface rather than one column at a time, so a future widening --
+    or a new column quietly added to the grant -- fails here instead of going unnoticed.
+
+    Deliberately compares the full set: asserting only that `idempotency_key` is present would
+    pass just as happily under a column-less `GRANT SELECT`, which is the thing worth catching.
+    """
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.column_privileges
+            WHERE table_schema = 'public'
+              AND table_name = 'cyl_trait_sources'
+              AND grantee = %s
+              AND privilege_type = 'SELECT'
+            """,
+            (ROLE,),
+        )
+        granted = {row[0] for row in cur.fetchall()}
+
+    assert granted == {"id", "metadata", "idempotency_key"}, (
+        f"{ROLE}'s SELECT grant on cyl_trait_sources changed shape: {sorted(granted)}"
+    )
     pg_conn.rollback()
 
 
