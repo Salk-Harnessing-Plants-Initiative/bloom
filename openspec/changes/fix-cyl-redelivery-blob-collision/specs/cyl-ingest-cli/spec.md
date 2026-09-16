@@ -50,7 +50,7 @@ gate is reached (sleap-roots-pipeline#76).
   `status_update_matched=false`, which a re-delivery dispatched under a *different*
   `ARGO_WORKFLOW_NAME` currently always does; that case is reported `failed` with
   `retriable=false` by the `cyl-pipeline-run-scan-status` contract, and reconciling the two
-  contracts is tracked as a follow-up (see `design.md` Risks)
+  contracts is tracked as bloom#875 (see `design.md` Risks)
 
 #### Scenario: A first delivery is unaffected
 

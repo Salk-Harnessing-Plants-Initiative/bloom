@@ -200,10 +200,12 @@ worktree alone is a one-command undo.
       are already a `~/.bloom/credentials.<name>.txt` profile; a `make bloomctl-it` target that
       reads a profile and seeds a writer would make the suite routinely runnable.
 
-- [ ] 6.11 File the follow-ups this review surfaced, needing authorization (see §7): the
-      `was_noop` / `status_update_matched` intersection that makes a fresh-workflow re-delivery
-      report `failed` (design.md Risks), and the lost end-to-end coverage of `upload_blob`'s
-      same-checksum skip (5.5).
+- [x] 6.11 Filed bloom#875 for the `was_noop` / `status_update_matched` intersection that
+      makes a fresh-workflow re-delivery report `failed` while the Workflow goes green
+      (design.md Risks). Needs a decision spanning this change and
+      `fix-cyl-pipeline-run-scan-status`, so it is deliberately not fixed here.
+- [ ] 6.12 Still unfiled, needs authorization: the lost end-to-end coverage of `upload_blob`'s
+      same-checksum skip (see 5.5 — the integration leg is now vacuous; unit coverage survives).
 
 ## 7. Follow-up issues — needs explicit authorization before posting
 

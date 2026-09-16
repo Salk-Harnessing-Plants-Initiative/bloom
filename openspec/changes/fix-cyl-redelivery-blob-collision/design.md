@@ -150,8 +150,8 @@ overturn it.
   `was_noop=true`, and **neither spec addresses the intersection**. Reordering the two checks
   here would silently override that sibling's requirement. The durable fix is RPC-side — fall
   back to a `scan_id`-scoped UPDATE within `argo_workflow_name` when the `source_id` join matches
-  nothing — which belongs with the capability that owns the status contract. Filed as a
-  follow-up; until then the spec claim of "exits zero" holds for the manual shape and for
+  nothing — which belongs with the capability that owns the status contract. Filed as
+  bloom#875; until then the spec claim of "exits zero" holds for the manual shape and for
   intra-workflow Argo retries, not for a re-run from a fresh pipeline run.
 
 - **The orphan-blob wedge stays open.** A delivery that uploads and then dies before the RPC
