@@ -114,6 +114,7 @@ benefit.
 - [x] 6.3 One commit: `docs(openspec): scope fix-cyl-batch-download-partial-exit-code` — the
       `openspec/changes/fix-cyl-batch-download-partial-exit-code/` scaffold itself (proposal.md,
       design.md, tasks.md, specs/), landing in the same PR per this repo's bundled-PR convention.
-- [ ] 6.4 Single PR targeting `staging`, branch `eberrigan/fix-bloomctl-batch-download-partial-exit-772`.
+- [x] 6.4 Single PR targeting `staging`, branch `eberrigan/fix-bloomctl-batch-download-partial-exit-772`.
       PR body: reference `Related to #772` (not `Fixes #772` — see 5.4's note on why the issue
-      stays open post-merge).
+      stays open post-merge). PR #830 merged to staging 2026-09-15T16:38:00Z (623414f7);
+      bloom#772 confirmed still OPEN post-merge, as intended.
