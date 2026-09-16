@@ -26,32 +26,36 @@ neither is a complete restore on its own. See "Restoring" below.
 
 ## Prerequisites (one time, on the server)
 
-1. **A Box login for this job alone, as `bloom-deploy`.** Box auth is
-   interactive; nothing automates it. The job keeps its own rclone config
-   folder rather than sharing the one the weekly Postgres backup uses: Box
-   refresh tokens are single-use, so two jobs refreshing one login would
-   invalidate each other's token. Three rules for this step:
-   - **Log in fresh.** Never copy the weekly backup's `rclone.conf` into this
-     folder: the copy carries the same single-use refresh token, and the two
-     jobs would keep spending each other's.
-   - **Use the same Box account** the weekly Postgres backup logs in as.
-     `lsd box:` below works for any account, and nothing later checks which.
-   - **The server has no browser.** When `rclone config` asks whether to use a
-     web browser to authenticate, answer **n**. It then prints an
-     `rclone authorize "box"` command: run that on a computer with a browser
-     and rclone installed, log in there, and paste the token it prints back
-     into the server's prompt.
+1. **The job's own Box login, as `bloom-deploy`.** It keeps its own rclone
+   config folder rather than sharing the one the weekly Postgres backup uses:
+   Box refresh tokens are single-use, so two jobs refreshing one login would
+   spend each other's token. Log in fresh — never copy the weekly backup's
+   `rclone.conf` here — and use the same Box account it uses, because `lsd`
+   below succeeds for any account and nothing later checks which.
+
+   The server has no browser, so the login is done in two places. On the
+   server:
    ```bash
    sudo -u bloom-deploy mkdir -p -m 700 /home/bloom-deploy/.config/rclone-box-object-backup
    sudo -u bloom-deploy rclone --config /home/bloom-deploy/.config/rclone-box-object-backup/rclone.conf config
-   #   n) new remote → name: box → Box
+   #   n) new remote → name: box → storage: box
+   #   client_id, client_secret, box_config_file, access_token: blank
+   #   box_sub_type: 1 (user) → advanced config: n
+   #   "Use web browser to automatically authenticate?": n
+   ```
+   It stops at `config_token>`. On a computer with a browser and rclone:
+   ```bash
+   rclone authorize "box"      # log in to Box, then copy the token it prints
+   ```
+   Paste that token into the server's `config_token>` prompt, answer **y** to
+   keep the remote, and **q** to quit. Then check it:
+   ```bash
    sudo -u bloom-deploy rclone --config /home/bloom-deploy/.config/rclone-box-object-backup/rclone.conf lsd box:
-   #   must list your Box root
    ```
    The job's container mounts that folder **read-write**, so rclone can save
    each refreshed token, and it never creates the folder. If the login is ever
-   lost, reconnect it by hand:
-   `sudo -u bloom-deploy rclone --config /home/bloom-deploy/.config/rclone-box-object-backup/rclone.conf config reconnect box:`.
+   lost, repeat the same two steps with
+   `rclone --config /home/bloom-deploy/.config/rclone-box-object-backup/rclone.conf config reconnect box:`.
 
 2. **Create the destination folder** in Box matching `OBJECT_BACKUP_BOX_ROOT`
    (`Bloom-Backups/BloomV2-Data-Backup/prod/storage` by default).
@@ -294,6 +298,7 @@ Every run is a container, so stopping one is `docker stop`:
 |---|---|
 | the seed | `docker stop box-object-backup-seed` |
 | a run the scheduled workflow started | cancel it in the Actions tab |
+| a run you started in this terminal | Ctrl-C — it finishes the file in flight and exits 3 |
 | any other run | `docker ps --filter label=com.docker.compose.project=bloom-box-object-backup` shows its name; `docker stop <name>` |
 
 `docker stop` sends the job SIGTERM, then waits up to the grace period set in
@@ -443,6 +448,12 @@ watermark past an object that was never copied.
 **It is not recorded as backed up.** No ledger row is written, so nothing later
 claims it is on Box. Someone has to decide whether the database row should
 still exist; this job will not.
+
+**Production's oldest rows are like this.** Under `images/`, MinIO holds only
+`bloom-desktop-cyl-scans`, `cyl-images` and `test`, while `storage.objects`
+still lists `scans/`, `exp-progress-logs/`, `plate-images/` and
+`plates-images/`. A smoke test with a small `--limit` meets those first and
+copies nothing, which is expected rather than a fault.
 
 ## Monitoring
 
@@ -753,7 +764,7 @@ keys and a test enforces that.
 | `OBJECT_BACKUP_MINIO_PREFIX` | `storage-single-tenant` | Tenant prefix storage-api files objects under. Config rather than a constant because nothing in the stack declares it — storage-api chooses it. To see the path on a host: `docker exec <minio-container> ls /data/bloom-storage/` |
 | `OBJECT_BACKUP_BOX_REMOTE` | `box` | Name of the rclone remote |
 | `OBJECT_BACKUP_BOX_ROOT` | `Bloom-Backups/BloomV2-Data-Backup/prod/storage` | Folder on Box to mirror into |
-| `OBJECT_BACKUP_WORKERS` | `8` | Concurrent copies; lower it if Box throttles hard |
+| `OBJECT_BACKUP_WORKERS` | `4` | Concurrent copies. Box refuses concurrent creation of the same new folder (`name_temporarily_reserved`), which 8 workers hit repeatedly on a fresh tree; lower it further if Box throttles hard. |
 | `OBJECT_BACKUP_BWLIMIT` | *(unset)* | rclone bandwidth cap, e.g. `20M` |
 | `OBJECT_BACKUP_STATE_DIR` | `/data/bloom/box-object-backup` | Ledger location, fixed: `compose.yml` mounts exactly this path and the workflow passes it to the run. Not in the env file; if `.env.prod.defaults` sets it to anything else, the run **refuses to start** (exit 2) rather than let the summary watch an empty directory. The comparison is exact, so a trailing slash counts as different. |
 | `OBJECT_BACKUP_RC_PORT` | `5572` | Port for the rclone daemon, on the container's own loopback, so nothing outside the container can reach it. Not in the env file — a code default. |
