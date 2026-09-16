@@ -128,11 +128,11 @@ and for each claimed batch:
    instead — this override is dispatch-only, deliberately never added to the
    shared file); and `metadata.namespace`, forced to the configured
    `WORKFLOWS_K8S_NAMESPACE` (see below). Everything else — the DAG (which
-   references the four already-registered `WorkflowTemplate`s:
+   references the five already-registered `WorkflowTemplate`s:
    `sleap-roots-images-downloader-template` → `sleap-roots-predictor-template`
-   → `sleap-roots-trait-extractor-template` → `sleap-roots-write-back-template`),
-   `spec.volumes`, `spec.entrypoint`, `spec.serviceAccountName` — passes through
-   from the vendored file unmodified.
+   → `sleap-roots-trait-extractor-template` → `sleap-roots-write-back-template`
+   → `sleap-roots-exit-gate-template`), `spec.volumes`, `spec.entrypoint`,
+   `spec.serviceAccountName` — passes through from the vendored file unmodified.
 2. POSTs it directly to the K8s API server
    (`{WORKFLOWS_K8S_API_URL}/apis/argoproj.io/v1alpha1/namespaces/{WORKFLOWS_K8S_NAMESPACE}/workflows`)
    with a Bearer token + CA cert — not the `argo` CLI, not the Argo Server.
