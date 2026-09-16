@@ -228,7 +228,7 @@ its grep was `--include=*.py` and missed the README.)
 
 ## 6. Follow-up issues to file (not fixed here)
 
-- [ ] 6.1 **Prod-dispatched Workflows mount staging credentials.** The vendored file hardcodes
+- [x] 6.1 **FILED as bloom#863.** Prod-dispatched Workflows mount staging credentials. The vendored file hardcodes
       `secretName: genericsecret-bloom-staging-pipeline-credentials`, and `build_workflow_body`'s
       four overrides do not include it — prod and staging share `runai-busch-lab`, separated only
       by a metadata label. So a production-dispatched run's write-back pod would authenticate
@@ -236,20 +236,21 @@ its grep was `--include=*.py` and missed the README.)
       envelopes would resolve `image_ids` against staging's `cyl_images`. Pre-existing and not
       triggered by this change, but `staging → main` promotion is what makes prod runs execute
       through to write-back. **File before merge; it must block that promotion.**
-- [ ] 6.2 **Run identity is absent from every scientist-facing read path.** `pipeline_run_id` is
+- [x] 6.2 **FILED as bloom#864.** Run identity is absent from every scientist-facing read path. `pipeline_run_id` is
       NULL on pipeline-written sources, so run-pinned reads resolve to an empty set rather than an
       error. A small migration (`nullif` on the existing `coalesce`, falling back to
       `p_argo_workflow_name`) would close it. File; needed before `staging → main`, not before this
       merge. Related: bloom#703.
-- [ ] 6.3 **The per-scan status machinery is staging-only — this is a hard `staging → main`
-      blocker.** `20260912110000_add_cyl_writeback_run_scan_status.sql` and
-      `20260912111000_add_cyl_pipeline_run_scan_counts.sql` are on `origin/staging` and **not** on
-      `origin/main`. Until they promote, this change's central contract — "read `failed_count`, not
-      `status`" — is **unsatisfiable in production**: nothing maintains those counters and nothing
-      marks per-scan rows, so a prod run would read `complete` with `failed_count = 0` while scans
-      silently failed. That is the exact trap the spec deltas exist to prevent, with the
-      counter-signal absent. Record it as an explicit promotion blocker, not an implicit
-      consequence of merging this branch.
+- [ ] 6.3 **Note, not a blocker: the per-scan status machinery is staging-only until promotion, and
+      promotes with this change.** `20260912110000_add_cyl_writeback_run_scan_status.sql` and
+      `20260912111000_add_cyl_pipeline_run_scan_counts.sql` are on `origin/staging` and not on
+      `origin/main` (verified — `main` carries no September 2026 migrations at all). Until they
+      promote, this change's central contract — "read `failed_count`, not `status`" — is
+      unsatisfiable in production, because nothing maintains those counters. But they sit on the
+      same branch as this change, so a `staging → main` promotion carries them together; there is no
+      ordering in which the DAG reaches production without them. **Do not file this as a separate
+      blocker.** What it does mean: the promotion is large (`main` is many migrations behind), so
+      treat migration ordering as part of that cutover's own review, not this PR's.
 - [ ] 6.4 **Production is already exposed, now, independent of this PR.** The new producer image
       pins are live on the shared `runai-busch-lab` templates while prod still dispatches the
       four-task DAG with no `continueOn`. If those images moved partial success from exit 0 to exit

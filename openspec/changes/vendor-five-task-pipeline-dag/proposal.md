@@ -302,7 +302,7 @@ so vendoring fixes it completely.
   against **staging** Supabase: its `cyl_pipeline_run_scans` rows never match, and its envelopes
   resolve `image_ids` against staging's `cyl_images`. Nothing here causes this and it does not
   affect the staging merge, but `staging → main` is exactly what makes prod runs execute through to
-  write-back. Filed as a follow-up (`tasks.md` 6.1) and **must block that promotion**. Note the
+  write-back. Filed as a follow-up (bloom#863) and **must block that promotion**. Note the
   vendored file's own comment anticipates it: the `-staging` suffix exists "so a later production
   credential gets its own distinct name".
 - **Coupling: the gate runs a salk-bloom-published image.** Upstream's gate template pins
