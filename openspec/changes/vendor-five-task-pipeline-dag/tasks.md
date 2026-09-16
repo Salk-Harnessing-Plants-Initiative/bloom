@@ -63,14 +63,14 @@
 Write every assertion as an **exact set or exact sequence**. Each weaker form below was
 demonstrated, by running it, to miss a real mutation.
 
-- [ ] 2.1 Add a `_dag_tasks(body)` helper that resolves the DAG **through `spec.entrypoint`**, not
+- [x] 2.1 Add a `_dag_tasks(body)` helper that resolves the DAG **through `spec.entrypoint`**, not
       `spec.templates[0]`: assert `entrypoint == "pipeline"`, assert exactly one template carries a
       `dag`, **assert that template's own `name` equals the entrypoint**, and return its tasks.
       Indexing `[0]` passes even when a second, gateless template is appended and the entrypoint
       repointed at it; and without the name check, renaming the `pipeline` template while leaving
       `spec.entrypoint: pipeline` passes too — a mutation that makes Argo reject **every** dispatch
       with "entrypoint pipeline not found".
-- [ ] 2.2 Rename `test_build_workflow_body_dag_references_all_four_templates_in_order` to
+- [x] 2.2 Rename `test_build_workflow_body_dag_references_all_four_templates_in_order` to
       `..._all_five_templates_in_order`. Assert an exact ordered list of
       **`(task name, templateRef.name, templateRef.template)` triples** — all three together, not
       the pair plus a separate name-set. A pair-only assertion lets `templateRef.template` invoke
@@ -80,20 +80,20 @@ demonstrated, by running it, to miss a real mutation.
       so a missing `template:` key is an `AssertionError` rather than a `KeyError`. Keep the
       dependency-chain assertion (`deps[0] is None or deps[0] == []` is correct — Argo treats an
       empty list and an absent key identically).
-- [ ] 2.3 Add `test_build_workflow_body_exit_gate_is_the_only_leaf`. Express the property as
+- [x] 2.3 Add `test_build_workflow_body_exit_gate_is_the_only_leaf`. Express the property as
       **"exactly one task is depended on by no other, and it is `exit-gate`"**
       (`names - depended_on == {"exit-gate"}`). Do **not** write "no task lists `exit-gate` in its
       dependencies" — that passes vacuously on the four-task file and also passes when a second
       leaf is added. Also assert exactly one root, and that no task uses `depends` (the expression
       form silently overrides `dependencies`). Docstring must say why: `assessDAGPhase` derives the
       Workflow phase from the leaf.
-- [ ] 2.4 Add `test_build_workflow_body_continue_on_is_on_producers_only`. Assert as a **set
+- [x] 2.4 Add `test_build_workflow_body_continue_on_is_on_producers_only`. Assert as a **set
       equality**: `{n for n, t in by_name.items() if "continueOn" in t}` equals exactly the three
       producers, and each value `== {"failed": True}` (not `.get()` — `{failed, error}` is a
       different contract the vendored file's own note deliberately rejects). A per-task check does
       not catch `continueOn` on `exit-gate`, which makes the terminal leaf continuable and restores
       the original defect at the last hop.
-- [ ] 2.5 Add `test_build_workflow_body_exit_gate_receives_producer_exit_codes`. Look the gate up
+- [x] 2.5 Add `test_build_workflow_body_exit_gate_receives_producer_exit_codes`. Look the gate up
       **as an assertion, not an exception**:
       ```python
       gates = [t for t in tasks if t.get("name") == "exit-gate"]
@@ -104,7 +104,7 @@ demonstrated, by running it, to miss a real mutation.
       names and their `{{tasks.<name>.exitCode}}` values, **and** cross-check that every referenced
       task name exists in the DAG — renaming a producer while updating only the dependency chain
       otherwise leaves a dangling reference that `dag.go` substitutes with `allowUnresolved=true`.
-- [ ] 2.6 Add the assertions §2 currently makes about **nothing**, pinned to **literals** rather
+- [x] 2.6 Add the assertions §2 currently makes about **nothing**, pinned to **literals** rather
       than to the vendored file — comparing the built body against the file it was built from is
       what makes the four existing "preserves…" tests tautological.
       (a) `spec.serviceAccountName == "bloom-workflow"` (a change to `default` makes every step fail
@@ -121,7 +121,7 @@ demonstrated, by running it, to miss a real mutation.
       gate exists to prevent while every other assertion stays green.
       (d) No unexpected top-level `spec` keys (guards `shutdown`, `onExit`, `parallelism`,
       `nodeSelector`, `activeDeadlineSeconds`).
-- [ ] 2.7 Extract the shape assertions into a shared `_assert_five_task_gate_dag(body)` helper and
+- [x] 2.7 Extract the shape assertions into a shared `_assert_five_task_gate_dag(body)` helper and
       add `test_the_dag_shape_assertions_reject_a_gateless_vendored_file`: build a mutated copy in
       `tmp_path`, point `_VENDORED_WORKFLOW_PATH` at it, and assert the helper raises.
       **Use `pytest.raises(AssertionError, match=...)`, not a bare `pytest.raises`.** A bare one is
@@ -131,13 +131,13 @@ demonstrated, by running it, to miss a real mutation.
       (i) gateless (four tasks); (ii) `continueOn` stripped from the producers; (iii) **five tasks
       with the gate re-pointed at `trait-extractor`**, so `write-back` and `exit-gate` are both
       leaves — this is the only one that actually exercises the only-leaf assertion.
-- [ ] 2.8 Fix the locale-decode divergence while re-vendoring this file:
+- [x] 2.8 Fix the locale-decode divergence while re-vendoring this file:
       `k8s_client.py:153` calls `_VENDORED_WORKFLOW_PATH.read_text()` with no `encoding=`, so it
       decodes with the platform locale (`cp1252` on Windows, UTF-8 in the container). Measured: 42
       non-ASCII bytes in the file, `read_text() != raw.decode("utf-8")` locally. Harmless today only
       because all non-ASCII is in comments that `safe_load` drops. Pass `encoding="utf-8"` there and
       in the `vendored_workflow` fixture (`test_k8s_client.py:26`).
-- [ ] 2.9 Run `cd services/workflows && uv run --frozen --extra test pytest tests/test_k8s_client.py -v`.
+- [x] 2.9 Run `cd services/workflows && uv run --frozen --extra test pytest tests/test_k8s_client.py -v`.
       Confirm each new test fails **with an `AssertionError` naming the missing invariant, not a
       `KeyError`/`IndexError`/`StopIteration` from a lookup line** — an erroring test proves the DAG
       lacks a task, not that the invariant is checked, and can mask a bug in the test itself. Paste
@@ -147,7 +147,7 @@ demonstrated, by running it, to miss a real mutation.
 
 ## 3. TDD green — vendor the merged Workflow
 
-- [ ] 3.1 Replace `services/workflows/vendored/sleap-roots-pipeline.yaml` with upstream's file at
+- [x] 3.1 Replace `services/workflows/vendored/sleap-roots-pipeline.yaml` with upstream's file at
       `310aae63c4db4cc1eb608a4d7801031f0061106d`, from
       `https://raw.githubusercontent.com/talmolab/sleap-roots-pipeline/<sha>/sleap-roots-pipeline.yaml`.
       **Byte-exact** — no reformatting, re-indenting, or comment stripping. Use `curl -sSL -o` or
@@ -155,13 +155,13 @@ demonstrated, by running it, to miss a real mutation.
       add a UTF-8 BOM, CRLF **and** a trailing newline — three simultaneous ways to break the byte
       check. Expect 10,833 bytes, LF, **no trailing newline** (`.gitattributes` forces
       `*.yaml text eol=lf`, so this is reproducible on Windows and in CI).
-- [ ] 3.2 Bump `SLEAP_ROOTS_PIPELINE_REF` from `9df1e52dafb565763de279e9f07e8b52804a1ac3` to
+- [x] 3.2 Bump `SLEAP_ROOTS_PIPELINE_REF` from `9df1e52dafb565763de279e9f07e8b52804a1ac3` to
       `310aae63c4db4cc1eb608a4d7801031f0061106d`. **Keep its trailing newline** (it has one today;
       the drift script `.strip()`s it). Note this file has no extension so it falls through to
       `* text=auto`, not the `*.yaml` rule — harmless, since the script strips and regex-validates.
-- [ ] 3.3 Verify byte count and absence of a trailing newline (`wc -c`, `tail -c1 | xxd`).
-- [ ] 3.4 Re-run 2.9's command; confirm every test now passes.
-- [ ] 3.5 **Commit §2 and §3 together as one commit.** 2.9's deliverable is pasted output in the PR
+- [x] 3.3 Verify byte count and absence of a trailing newline (`wc -c`, `tail -c1 | xxd`).
+- [x] 3.4 Re-run 2.9's command; confirm every test now passes.
+- [x] 3.5 **Commit §2 and §3 together as one commit.** 2.9's deliverable is pasted output in the PR
       body, not a committed red state, so there is no reason to leave a red commit on the branch.
       3.1 and 3.2 must be in the same commit regardless — the drift job is gated on
       `services/workflows/vendored` changing and fails on any commit where the YAML and the REF
@@ -173,14 +173,14 @@ Grep the **claim**, not the file. sleap-roots-pipeline#62 and #67 each shipped a
 left the same statement standing elsewhere. (The first draft of this change made the same mistake:
 its grep was `--include=*.py` and missed the README.)
 
-- [ ] 4.1 `services/workflows/k8s_client.py:182` — "the four already-registered WorkflowTemplates"
+- [x] 4.1 `services/workflows/k8s_client.py:182` — "the four already-registered WorkflowTemplates"
       → "five". **Change only this one** in that file: `:23` and `:180` say "applies exactly four
       **overrides**" — a different four, which stays four.
-- [ ] 4.2 `services/workflows/README.md:131-134` — "references the four already-registered
+- [x] 4.2 `services/workflows/README.md:131-134` — "references the four already-registered
       `WorkflowTemplate`s:" followed by the four-name arrow chain. Append `exit-gate` to the chain
       and change "four" → "five". `README.md:122` ("four overrides") is the legitimate other four
       and stays.
-- [ ] 4.3 Re-grep **repo-wide**, not just `services/workflows/`, and record the decision for every
+- [x] 4.3 Re-grep **repo-wide**, not just `services/workflows/`, and record the decision for every
       hit. Known non-matches to leave alone: `test_k8s_client.py:425`
       (`..._only_changes_the_four_documented_overrides`), `test_k8s_client.py:614` ("the four
       dispatch-added label keys"), `conftest.py:10`, every `test_plate_*` hit, and the
@@ -189,7 +189,15 @@ its grep was `--include=*.py` and missed the README.)
       `openspec/changes/archive/2026-08-17-add-cyl-pipeline-dispatch/` (2 hits, archived history).
       `docs/issues/issue-2-pipeline-trigger.md:235-292` holds a wholly obsolete inline DAG (still
       has `models-downloader`) — out of scope, noted so it is not mistaken for a missed site.
-- [ ] 4.4 **Decide what to do with the two tautological DAG tests, and record the decision.**
+- [x] 4.4 **DECIDED: delete `..._preserves_dag_structure_from_vendored_file`, keep
+      `..._only_changes_the_four_documented_overrides`.** The first compared the built body's DAG
+      against the same file it was built from — 0 of 58 mutations caught — and its content is
+      strictly subsumed by the second's whole-body deepcopy diff. The second is *not* tautological
+      for its actual purpose: it tests a property of the **code** (that `build_workflow_body`
+      modifies nothing beyond its four overrides), not of the file. A comment at the deletion site
+      records the reasoning and notes that the nested-`steps` coverage it provided by accident (a
+      `KeyError` on `templates[0]`) is now a deliberate assertion in `_dag_tasks`.
+      Original task text: **Decide what to do with the two tautological DAG tests, and record it.**
       `test_build_workflow_body_preserves_dag_structure_from_vendored_file` and
       `..._only_changes_the_four_documented_overrides` compare `build_workflow_body`'s output
       against the *same file it was built from*, so they cannot fail on any vendored-file mutation —
@@ -199,18 +207,18 @@ its grep was `--include=*.py` and missed the README.)
       is currently the only thing catching a nested-`steps` template, by `KeyError` on
       `templates[0]` — 2.1's entrypoint resolution replaces that accidental coverage with a real
       assertion, so deleting is safe once 2.1 lands.
-- [ ] 4.5 The spec deltas already carry the normative prose corrections; they land at archive time.
+- [x] 4.5 The spec deltas already carry the normative prose corrections; they land at archive time.
 
 ## 5. Verification
 
-- [ ] 5.1 `cd services/workflows && uv run --frozen --extra test pytest tests/ -v --tb=short`
+- [x] 5.1 `cd services/workflows && uv run --frozen --extra test pytest tests/ -v --tb=short`
       (`pr-checks.yml:191`). Expect the suite green.
-- [ ] 5.2 Also run the drift-check unit tests, since this is the PR that moves the pin:
+- [x] 5.2 Also run the drift-check unit tests, since this is the PR that moves the pin:
       `uv run --extra test pytest tests/unit/test_check_vendored_workflow_drift.py tests/unit/test_pr_checks_workflow_drift_check.py`.
-- [ ] 5.3 `python3 scripts/check_vendored_workflow_drift.py` exits 0. **This proves provenance, not
+- [x] 5.3 `python3 scripts/check_vendored_workflow_drift.py` exits 0. **This proves provenance, not
       DAG shape** — it goes green the moment the file and the pin agree, including on a wrongly
       shaped DAG. Do not report it as "the vendoring is done".
-- [ ] 5.4 Offline `argo lint` — the shape gate that needs no cluster and no VPN:
+- [x] 5.4 Offline `argo lint` — the shape gate that needs no cluster and no VPN:
       ```
       SHA=310aae63c4db4cc1eb608a4d7801031f0061106d; T=$(mktemp -d)
       for f in sleap-roots-pipeline sleap-roots-{images-downloader,predictor,trait-extractor,write-back,exit-gate}-template; do
@@ -223,7 +231,7 @@ its grep was `--include=*.py` and missed the README.)
       It does **not** evaluate the gate's `{0,3}` allowlist — that lives in the un-vendored template
       and is only ever exercised live. `argo` is WSL-only; see
       `sleap-roots-pipeline/.claude/skills/runai/SKILL.md` §1a and §8.
-- [ ] 5.5 `openspec validate vendor-five-task-pipeline-dag --strict` passes.
+- [x] 5.5 `openspec validate vendor-five-task-pipeline-dag --strict` passes.
 - [ ] 5.6 `/pre-merge` clean.
 
 ## 6. Follow-up issues to file (not fixed here)

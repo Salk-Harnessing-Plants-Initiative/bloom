@@ -661,17 +661,16 @@ def test_build_workflow_body_preserves_entrypoint_and_service_account_from_vendo
     )
 
 
-def test_build_workflow_body_preserves_dag_structure_from_vendored_file(
-    vendored_workflow,
-):
-    """The DAG-shape equivalent of the entrypoint/serviceAccountName check
-    above — a standing regression guard, not just a one-time design.md
-    inspection, that the vendored file's DAG still matches what this module
-    submits."""
-    body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
-    actual_tasks = body["spec"]["templates"][0]["dag"]["tasks"]
-    expected_tasks = vendored_workflow["spec"]["templates"][0]["dag"]["tasks"]
-    assert actual_tasks == expected_tasks
+# `test_build_workflow_body_preserves_dag_structure_from_vendored_file` was deleted
+# here (#56's vendoring). It compared the built body's DAG against the same file
+# the body was built from, so it could not fail on any mutation of the vendored
+# file — mutation testing caught 0 of 58 with it. Its real content (build_workflow_body
+# modifies nothing outside its four overrides) is already covered, strictly more
+# tightly, by `..._only_changes_the_four_documented_overrides`'s whole-body diff
+# below, and the DAG's actual shape is now asserted against literals in the
+# five-template/leaf/continueOn/gate-params tests above. It did incidentally catch a
+# `steps` template nested ahead of the `dag` — by KeyError on `templates[0]` — and
+# `_dag_tasks`'s entrypoint resolution now catches that deliberately.
 
 
 def test_build_workflow_body_only_changes_the_four_documented_overrides(
