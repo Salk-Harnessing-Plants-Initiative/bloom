@@ -23,7 +23,7 @@
 
 ## 1. Pre-flight (cluster state this change depends on)
 
-- [ ] 1.1 **Verify the registered templates by diffing them against the pin — this is the only guard
+- [x] 1.1 **Verify the registered templates by diffing them against the pin — this is the only guard
       that exists.** A bad `templateRef` does **not** fail at submit: measured 2026-09-16 by
       server-side dry-run, the K8s API server *accepts* a Workflow naming a nonexistent
       `WorkflowTemplate` (`created (server dry run)`, exit 0), because resolution is the Argo
@@ -44,8 +44,30 @@
       is pinned to `bloomctl:sha-0614889` (PR #774); `images-downloader` must be running a bloomctl
       containing **PR #830** or exit `3` is never emitted at all — in which case every check in this
       change passes, the deploy looks clean, and partial failures still fail whole runs.
+      ⚠️ **Normalize before comparing, or every template reports a false DRIFT.** The API server
+      defaults empty keys onto every stored object — `spec.arguments: {}`, `container.name: ""`,
+      `metadata: {}`, `outputs: {}` — none of which are in the pinned source. A naive
+      `pinned["spec"] == live["spec"]` reports DRIFT on all five. Ignore those four keys, or compare
+      only the fields listed above.
+
+      **RUN 2026-09-16T17:19Z–17:5xZ. All five IN SYNC with the pin, modulo the server defaults
+      above. No real drift.** Recorded because "verified" is not a result:
+      | template | image | notable |
+      |---|---|---|
+      | `images-downloader` | `bloomctl:sha-0614889` | `retryStrategy{limit:2, Always}` |
+      | `predictor` | `sleap-roots-predict:sha-e025e309…` | `retryStrategy{limit:3, backoff 2m×2}` |
+      | `trait-extractor` | `sleap-roots-trait-extractor:sha-689cffb` | `retryStrategy{limit:2, Always}` |
+      | `write-back` | `bloomctl:sha-0614889` | `retryStrategy{limit:2, Always}` |
+      | `exit-gate` | `bloomctl:sha-0614889` | inputs exactly `images-downloader-code`, `predictor-code`, `trait-extractor-code`; `timeout: 600s`; `retryStrategy{limit:2, backoff 30s×2}` |
+
+      **The exit-3 precondition holds.** `images-downloader` runs `bloomctl:sha-0614889` =
+      `06148896` (PR #774, merged 2026-09-15T17:16:54Z). PR #830's merge commit `623414f7`
+      (2026-09-15T16:38:00Z) **is an ancestor** of it — confirmed by `git merge-base --is-ancestor`
+      and by reading the file at that commit, where `download_for_predict.py:646` is
+      `ctx.exit(0 if result.ok else 3)`. So the deployed image really does emit `3`, and this change
+      is not inert.
+
       **Re-run immediately before merge** (task 7.5). Record actual output, not the word "verified".
-      *Observed 2026-09-16T17:19Z: all five present; gate `creationTimestamp` 2026-09-16T02:39:01Z.*
 - [ ] 1.2 **Upstream PR #75 (`record-section7-results`, OPEN) records the §7 results this proposal
       cites** — 7.2 applied, 7.4a run, 7.5 passed, and **7.6, 7.7 and 7.8 measured**. None of it is
       on upstream `main`, where **7.2, 7.4, 7.5, 7.6, 7.7, 7.8, 8.1, 8.2 and 9.1-9.4 all read
