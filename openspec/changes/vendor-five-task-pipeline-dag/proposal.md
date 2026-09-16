@@ -146,14 +146,24 @@ so vendoring fixes it completely.
   recompute writes different bytes to the same address and bloomctl refuses to overwrite — correct
   on its own. The flaw is the ordering: the strict blob upload runs *before* the RPC's
   `ON CONFLICT (idempotency_key) DO NOTHING`, which would have made the re-delivery a harmless
-  no-op. `Ingested 0/2` confirms nothing reaches the RPC. **This is newly reachable as a direct
-  consequence of #60**, whose predictor pin bump invalidated every accumulated idempotency key and
-  forced exactly one legitimate recompute cycle; the first recompute uploads cleanly, any second at
-  the same key now collides. It also means the A4 batch oracle only ever held on the *skip* path —
-  it says nothing about the recompute path, which is now known to fail. **This directly constrains
-  this change's own post-merge verification**: see `tasks.md` 8.2, which must select scans whose
-  idempotency keys have never been ingested, or the run fails at write-back for reasons unrelated
-  to #56.
+  no-op. `Ingested 0/2` confirms nothing reaches the RPC.
+
+  **The precise condition is narrow, and #60's pin bump is not what triggers it.** Re-delivery is
+  idempotent on the **skip** path and broken on the **recompute** path — demonstrated by a pair of
+  runs rather than argued. A *post-bump* recompute cannot collide at all, because the bump changes
+  the idempotency key and the blob address embeds that key, so the new bytes land at a new address
+  (`srp-t76-zero-shared-hrrkz` recomputed all 8 scans after the bump; write-back succeeded). The
+  collision requires a recompute at an **unchanged** key, which happens only when predict's local
+  artifacts are absent or unreadable while Bloom already holds blobs for that key — exactly 7.4a's
+  fresh scratch directory against scans ingested an hour earlier. When the artifacts persist,
+  predict skips, no new bytes are produced, and write-back succeeds (`srp-t77-redeliver-t82vr`: 12
+  `result.json` mtimes frozen, 24 `.slp` blobs byte-identical, Workflow `Succeeded`).
+
+  **Operational hazard to carry forward:** if a `predictions/` directory is ever cleared or lost
+  while Bloom still holds the blobs for those keys, the next run over those scans fails at
+  write-back. It also means the A4 batch oracle only ever held on the skip path. This does **not**
+  constrain this change's post-merge verification, which runs over the persistent shared `a4_poc`
+  paths.
 - **[sleap-roots-predict#44](https://github.com/talmolab/sleap-roots-predict/issues/44) — narrow
   the forwarded `run_manifest.json` to `ok ∪ skipped`.** OPEN. Forwarding the manifest unchanged is
   safe only because of the behaviour this change alters: once the templates discriminate exit codes

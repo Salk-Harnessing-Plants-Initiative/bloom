@@ -179,9 +179,10 @@ its grep was `--include=*.py` and missed the README.)
       a regression caused by it: bloom#857 (`complete` with `failed_count > 0`), bloom#859 +
       sleap-roots-pipeline#71/#63 (the manifest latch — note it can also produce a **`failed` run
       that wrote correct data**, the more dangerous direction for an automated consumer that
-      re-dispatches on `failed`), **sleap-roots-pipeline#76** (re-delivering an already-ingested
-      idempotency key fails write-back, newly reachable because #60's own predictor pin bump forced
-      a recompute cycle), bloom#703 (run attribution), sleap-roots-pipeline#70,
+      re-dispatches on `failed`), **sleap-roots-pipeline#76** (re-delivery is idempotent on the
+      skip path but fails at write-back on the recompute path — so clearing or losing a
+      `predictions/` directory while Bloom still holds blobs for those keys breaks the next run
+      over those scans), bloom#703 (run attribution), sleap-roots-pipeline#70,
       **sleap-roots-pipeline#72** (the gate image is tag-pinned with `IfNotPresent`, and the gate is
       the only leaf, so anything stopping that pod fails or hangs *every* workflow),
       **sleap-roots-predict#44** (a raw-forwarded manifest misattributes predict failures to
@@ -214,22 +215,19 @@ record it after the run rather than at merge (bloom#708 task 14.9 precedent).
       otherwise satisfiable entirely by rows a *previous* run wrote.
       (c) Copy `run_manifest.json` from all three `a4_poc` directories, so an already-armed latch is
       distinguishable from a failure this run caused.
-- [ ] 8.2 **Choose the good scans against sleap-roots-pipeline#76 before dispatching.** predict's
-      `.slp` output is not byte-reproducible, and the strict blob upload runs *before* the RPC's
-      `ON CONFLICT (idempotency_key) DO NOTHING` — so **re-delivering an already-ingested
-      idempotency key fails write-back outright** (`Ingested 0/2`, "refusing to overwrite"), rather
-      than no-op'ing. This is exactly what blocked upstream's §7.4a Workflow-phase criterion, and
-      `12894745`/`12894746` have already been ingested (by 7.4a and by `srp-t76-zero-shared-hrrkz`).
-      Dispatching them again would fail this task for a reason unrelated to #56.
-      Per upstream 7.4a's own note, either #76 lands first, or pick good scans whose idempotency
-      keys have **never** been ingested — confirm by checking `cyl_trait_sources` for the
-      candidates' keys, and record which scans were chosen and why. Keep the poison scan
-      `12894751` (verified to fail: `bloomctl cyl download-for-predict 12894751 <tmp> -p pipeline-staging`
-      → "1 of 1 frames failed to download … no sidecar written"); it has no result to collide with.
-- [ ] 8.2b Dispatch through Bloom on staging: the poison scan plus the two chosen good scans.
+- [ ] 8.2 Dispatch through Bloom on staging over the shared `a4_poc` paths: poison scan `12894751`
+      (verified to fail: `bloomctl cyl download-for-predict 12894751 <tmp> -p pipeline-staging`
+      → "1 of 1 frames failed to download … no sidecar written") plus `12894745` and `12894746`.
       **Record the scan ids and workflow name here** — the dispatch path stamps a `ttlStrategy`, so
       the Workflow object is garbage-collected and is not a durable record of its own inputs. That
       is exactly how the 2026-09-01 run's inputs were lost.
+      *On sleap-roots-pipeline#76:* not a hazard for this run. Re-delivery is idempotent on the
+      **skip** path and broken only on the **recompute** path, and on the persistent `a4_poc` paths
+      predict skips — `srp-t77-redeliver-t82vr` re-delivered this exact shared batch with all 24
+      `.slp` blobs byte-identical and write-back `Succeeded`. #76 needs local artifacts to have gone
+      missing while Bloom still holds blobs for the same key. If this run *does* fail at write-back
+      with "refusing to overwrite", that is #76 and not a #56 regression — 8.1(c)'s pre-state is
+      what tells the two apart.
 - [ ] 8.3 **Capture the exit codes, not only the DB state.** Before TTL GC, record each producer
       node's `exitCode` and the gate's decision
       (`kubectl get wf <name> -n runai-busch-lab -o jsonpath=...`). Expect `{3,0,0}`. For a change
