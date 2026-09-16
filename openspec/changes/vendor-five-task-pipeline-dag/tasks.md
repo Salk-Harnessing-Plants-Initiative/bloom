@@ -26,13 +26,14 @@
       before merge** (task 7.5) — merging is the deploy, and cluster state can change in between.
       Record the actual output in the PR, not the word "verified".
       *Observed 2026-09-16T17:19Z: all five present; gate `creationTimestamp` 2026-09-16T02:39:01Z.*
-- [ ] 1.2 **Reconcile the stale upstream records.** Two documents in `talmolab/sleap-roots-pipeline`
-      still assert the gate is unregistered, both written before the 02:39:01Z registration:
-      `add-partial-success-exit-gate/tasks.md` task 7.2 (unchecked), and
-      `docs/bloom-integration/roadmap.md`'s "`argo template list -n runai-busch-lab` returns four as
-      of 2026-09-16". Leaving them standing is the documentation-drift failure this program keeps
-      hitting. Tick 7.2 with its real `kubectl`/`argo template get` output and correct the roadmap
-      sentence. Upstream repo, so a separate PR there — not a blocker for this one, but do it.
+- [ ] 1.2 **Upstream PR #75 (`record-section7-results`, OPEN) records the §7 results this proposal
+      cites** — 7.2 applied, 7.4a run, 7.5 passed, 7.6 and 7.8 measured. They are **not on
+      upstream `main`**, where 7.2/7.5/7.6 still read unchecked, so a reviewer checking `main`
+      alone will not find them. Track #75; if it changes materially before this merges, re-check
+      the claims in `proposal.md`'s Why and Non-Goals against it.
+      Still outstanding upstream even after #75: the roadmap's
+      "`argo template list -n runai-busch-lab` returns four as of 2026-09-16" (#75 touches only
+      `tasks.md`), and upstream tasks 9.1-9.4. Not blockers for this PR.
 
 ## 2. TDD red — prove the tests fail against the current four-task DAG
 
@@ -178,7 +179,9 @@ its grep was `--include=*.py` and missed the README.)
       a regression caused by it: bloom#857 (`complete` with `failed_count > 0`), bloom#859 +
       sleap-roots-pipeline#71/#63 (the manifest latch — note it can also produce a **`failed` run
       that wrote correct data**, the more dangerous direction for an automated consumer that
-      re-dispatches on `failed`), bloom#703 (run attribution), sleap-roots-pipeline#70,
+      re-dispatches on `failed`), **sleap-roots-pipeline#76** (re-delivering an already-ingested
+      idempotency key fails write-back, newly reachable because #60's own predictor pin bump forced
+      a recompute cycle), bloom#703 (run attribution), sleap-roots-pipeline#70,
       **sleap-roots-pipeline#72** (the gate image is tag-pinned with `IfNotPresent`, and the gate is
       the only leaf, so anything stopping that pod fails or hangs *every* workflow),
       **sleap-roots-predict#44** (a raw-forwarded manifest misattributes predict failures to
@@ -211,12 +214,22 @@ record it after the run rather than at merge (bloom#708 task 14.9 precedent).
       otherwise satisfiable entirely by rows a *previous* run wrote.
       (c) Copy `run_manifest.json` from all three `a4_poc` directories, so an already-armed latch is
       distinguishable from a failure this run caused.
-- [ ] 8.2 Dispatch through Bloom on staging: poison scan `12894751` (verified to fail:
-      `bloomctl cyl download-for-predict 12894751 <tmp> -p pipeline-staging` → "1 of 1 frames failed
-      to download … no sidecar written") plus `12894745` and `12894746`. **Record the scan ids and
-      workflow name here** — the dispatch path stamps a `ttlStrategy`, so the Workflow object is
-      garbage-collected and is not a durable record of its own inputs. That is exactly how the
-      2026-09-01 run's inputs were lost.
+- [ ] 8.2 **Choose the good scans against sleap-roots-pipeline#76 before dispatching.** predict's
+      `.slp` output is not byte-reproducible, and the strict blob upload runs *before* the RPC's
+      `ON CONFLICT (idempotency_key) DO NOTHING` — so **re-delivering an already-ingested
+      idempotency key fails write-back outright** (`Ingested 0/2`, "refusing to overwrite"), rather
+      than no-op'ing. This is exactly what blocked upstream's §7.4a Workflow-phase criterion, and
+      `12894745`/`12894746` have already been ingested (by 7.4a and by `srp-t76-zero-shared-hrrkz`).
+      Dispatching them again would fail this task for a reason unrelated to #56.
+      Per upstream 7.4a's own note, either #76 lands first, or pick good scans whose idempotency
+      keys have **never** been ingested — confirm by checking `cyl_trait_sources` for the
+      candidates' keys, and record which scans were chosen and why. Keep the poison scan
+      `12894751` (verified to fail: `bloomctl cyl download-for-predict 12894751 <tmp> -p pipeline-staging`
+      → "1 of 1 frames failed to download … no sidecar written"); it has no result to collide with.
+- [ ] 8.2b Dispatch through Bloom on staging: the poison scan plus the two chosen good scans.
+      **Record the scan ids and workflow name here** — the dispatch path stamps a `ttlStrategy`, so
+      the Workflow object is garbage-collected and is not a durable record of its own inputs. That
+      is exactly how the 2026-09-01 run's inputs were lost.
 - [ ] 8.3 **Capture the exit codes, not only the DB state.** Before TTL GC, record each producer
       node's `exitCode` and the gate's decision
       (`kubectl get wf <name> -n runai-busch-lab -o jsonpath=...`). Expect `{3,0,0}`. For a change
@@ -226,10 +239,13 @@ record it after the run rather than at merge (bloom#708 task 14.9 precedent).
       per-scan status (possible only because PR #774 landed), a per-scan `failed` row for the poison
       scan, and **changed** `source_id`/`created_at` for the good scans versus 8.1(b).
 - [ ] 8.4 **Negative control.** Dispatch a second batch through Bloom that drives a producer to an
-      exit code outside `{0,3}` (a crash, not per-scan isolation) — upstream §7.5's scenario, which
-      has never been run through Bloom's dispatch route. Assert Workflow `Failed` and run status
-      `failed`. Without this, a gate that always exits `0` passes everything above. If such a case
-      cannot be constructed from the dispatch path, record *why* here rather than leaving it unsaid.
+      exit code outside `{0,3}` (a crash, not per-scan isolation). Upstream §7.5 proved this
+      hand-submitted (`srp-t75-crash-4qd66`, gate `{1,1,1}` → `Failed`), but it has never run
+      through Bloom's dispatch route. Assert Workflow `Failed` and run status `failed`. Without it,
+      a gate that always exits `0` passes everything above. Note §7.5 used
+      `scan-ids=not-an-int`, which Bloom's trigger route may reject before dispatch — if no such
+      case can be constructed from the dispatch path, record *why* here rather than leaving it
+      unsaid.
 - [ ] 8.5 Record the observed run status. Expect **`complete` with `failed_count > 0`** — that is
       the documented bloom#857 behaviour, now written into the `cyl-pipeline-runs` and
       `cyl-pipeline-status-polling` deltas, not a failure of this change. If it reads `failed`,

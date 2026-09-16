@@ -28,21 +28,32 @@ code ([argo-workflows#6396](https://github.com/argoproj/argo-workflows/issues/63
 replaces. Without the gate, `write-back` would be the DAG's only leaf, and a run in which every
 producer crashed and zero scans were processed would report `Succeeded`.
 
-The gate's own semantics are verified upstream and recorded: **§7.3, the gate truth-table probe,
-is complete** — 7/7 exit-code vectors run 2026-09-15 in `runai-talmo-lab`. The end-to-end
-crash-injection scenario (**§7.5, upstream's "load-bearing test"**) is **still unchecked upstream
-and is not recorded in the roadmap or on PR #60**; an operator-reported probe exists but has no
-durable record, so this proposal does not rest on it. §7.5 remains outstanding upstream and is
-mirrored here as a post-merge task (7.1b), because the crash path has never been exercised through
-Bloom's dispatch route at all.
+This is a measurement, not an argument from Argo semantics. Upstream **§7.5 ran 2026-09-16**
+(`srp-t75-crash-4qd66`, `scan-ids=not-an-int`, against a scratch path tree): all three producers
+ended `Failed` with `exitCode 1`, and **`write-back` Succeeded with exit 0** — because the scratch
+`traits/` dir was empty and the crash preceded `write_run_manifest`, so `discover_envelopes` fell
+back to unscoped discovery, found nothing, and reported success. Without the gate, write-back would
+have been the DAG's only leaf and `assessDAGPhase` would have reported **`Succeeded`** for a run in
+which every producer crashed and zero scans were processed. The gate received `{1,1,1}` — resolved
+to real values, not empty strings, which is also the first live confirmation that
+`{{tasks.X.exitCode}}` resolves *through* Retry nodes on this controller — rejected it, and failed
+the Workflow correctly.
+
+**These results are recorded in upstream PR #75, which is OPEN.** They are not yet on
+`sleap-roots-pipeline`'s `main`, where tasks 7.2/7.5/7.6 still read unchecked. Anyone verifying
+this proposal's claims against `main` alone will not find them; see `tasks.md` 1.2.
 
 salk-bloom still vendors the **four-task** DAG, so every Bloom-dispatched run today gets none of
 this. Upstream's own §8.1 is "open the companion `salk-bloom` PR: copy the merged file byte-exact"
-— this change is that step. Vendoring is also what unblocks #56's remaining live verification
-(**§7.4**, the poison-scan scenario): a hand `argo submit` creates no
-`cyl_pipeline_runs`/`cyl_pipeline_run_scans` rows — those are written by Bloom's
-`POST /workflows/pipeline` route at enumerate time — so the `done_count`/`failed_count` assertions
-have nothing to attach to until a *Bloom-dispatched* run exercises the five-task DAG.
+— this change is that step. Vendoring is also what unblocks the remaining half of #56's live
+verification. Upstream split its poison-scan task in PR #75: **§7.4a ran 2026-09-16**
+(`srp-t74a-poison-gfzp6`) and passed every artifact criterion — `images-downloader` exited **3** and
+`continueOn` let the DAG advance past a `Failed` producer, where on 2026-09-01 the identical
+scenario ended `Failed` at 0/3 with both good scans stranded and the predictor never running.
+**§7.4b — the Bloom-side half — is blocked on this change**: `cyl_pipeline_runs`/
+`cyl_pipeline_run_scans` rows are written by Bloom's `POST /workflows/pipeline` route at enumerate
+time, so a hand `argo submit` creates nothing for `done_count`/`failed_count` to attach to, while
+dispatching through Bloom today would exercise the old four-task DAG and prove nothing.
 
 The exit-gate-vs-alternatives design rationale was decided and recorded upstream in
 `sleap-roots-pipeline`'s `add-partial-success-exit-gate`; no local `design.md` is needed, because
@@ -127,6 +138,22 @@ so vendoring fixes it completely.
   that stops the gate pod from running fails or hangs **every** workflow, including fully
   successful ones. It is invisible to every check this change relies on — `argo lint`, the drift
   check, and the new shape tests all pass with it present.
+- **[sleap-roots-pipeline#76](https://github.com/talmolab/sleap-roots-pipeline/issues/76) —
+  re-delivery fails at write-back, because predict's `.slp` output is not byte-reproducible and the
+  blob upload precedes the idempotency gate.** OPEN, found while running §7.4a. Two runs of the
+  same scan with identical inputs produce an **identical** `idempotency_key` but **different**
+  `.slp` bytes (identical file sizes, different digests). The blob address embeds that key, so a
+  recompute writes different bytes to the same address and bloomctl refuses to overwrite — correct
+  on its own. The flaw is the ordering: the strict blob upload runs *before* the RPC's
+  `ON CONFLICT (idempotency_key) DO NOTHING`, which would have made the re-delivery a harmless
+  no-op. `Ingested 0/2` confirms nothing reaches the RPC. **This is newly reachable as a direct
+  consequence of #60**, whose predictor pin bump invalidated every accumulated idempotency key and
+  forced exactly one legitimate recompute cycle; the first recompute uploads cleanly, any second at
+  the same key now collides. It also means the A4 batch oracle only ever held on the *skip* path —
+  it says nothing about the recompute path, which is now known to fail. **This directly constrains
+  this change's own post-merge verification**: see `tasks.md` 8.2, which must select scans whose
+  idempotency keys have never been ingested, or the run fails at write-back for reasons unrelated
+  to #56.
 - **[sleap-roots-predict#44](https://github.com/talmolab/sleap-roots-predict/issues/44) — narrow
   the forwarded `run_manifest.json` to `ok ∪ skipped`.** OPEN. Forwarding the manifest unchanged is
   safe only because of the behaviour this change alters: once the templates discriminate exit codes
@@ -143,11 +170,17 @@ so vendoring fixes it completely.
   multi-batch run; "unreachable at any batch size" would be too strong.) After this change a run
   can read `complete` with `failed_count > 0`. **A green Workflow does not mean no scans failed.**
   This is now stated normatively in the `cyl-pipeline-runs` and `cyl-pipeline-status-polling`
-  deltas rather than left to a GitHub issue. (The zero-scan case is *unmeasured* and is
-  input-directory-state-dependent — on a fresh directory predict discovers nothing and exits 1, so
-  the gate rejects and the Workflow fails; on the shared directory it skips everything and exits 0,
-  so the Workflow is green. Upstream §7.6 exists to characterise this and explicitly forbids
-  asserting either branch as fact until run.)
+  deltas rather than left to a GitHub issue.
+- **The zero-scan outcome — now measured, and worse than "green".** Upstream §7.6 ran it both ways
+  on 2026-09-16, same submission, opposite verdict. On a **fresh** directory the stages disagree
+  about what "empty" means — `images-downloader` treats zero *requested* as success (exit 0) while
+  predict and traits treat zero *discovered* as failure (exit 1) — and the gate converts that
+  disagreement into a definite `Failed` on a **mixed** `{0,1,1}` vector, which also proves the gate
+  evaluates each producer independently rather than keying off the last or worst. On the **shared**
+  `a4_poc` directory, predict scopes to the leftover `run_manifest.json` (8 keys) instead of
+  discovering nothing, recomputes all 8, and the Workflow reports a fully green `Succeeded` — so
+  **a zero-scan submission does substantial real work on someone else's scan set**. That is
+  #37/#71, measured rather than theorised. Not fixed here.
 - **The write-back manifest latch
   ([sleap-roots-pipeline#71](https://github.com/talmolab/sleap-roots-pipeline/issues/71) symptom 2,
   with [#63](https://github.com/talmolab/sleap-roots-pipeline/issues/63) as the mechanism).** A
