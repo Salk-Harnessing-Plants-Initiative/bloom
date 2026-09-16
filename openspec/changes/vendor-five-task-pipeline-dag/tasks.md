@@ -299,14 +299,14 @@ its grep was `--include=*.py` and missed the README.)
       failures (NFS down, revoked credential) fail every scan identically and now go green. Either
       widen bloom#857's text or add a floor. Not a merge blocker — the failure is visible in
       `failed_count` — but it is the sharpest edge of the new semantics.
-- [ ] 6.6 **File: an all-`Succeeded` run with a TTL-GC'd sibling never gets its counters written.**
+- [x] 6.6 **FILED as bloom#872.** An all-`Succeeded` run with a TTL-GC'd sibling never gets its counters written.
       `status_poller.py:346-353` withholds `'complete'` when any workflow 404'd this cycle and
       `continue`s, skipping reconciliation *and* the status write. A GC'd workflow 404s forever, so
       the run stalls permanently with `done_count`/`failed_count` unwritten — which is exactly the
       signal this change's specs tell consumers to trust. Pre-existing (accepted in
       `fix-cyl-pipeline-run-scan-status`'s design), but this change routes far more runs into it:
       batches that used to end `Failed` and settle now end `Succeeded`.
-- [ ] 6.7 **Add the shared-path and `scan_key` collision to bloom#863's scope.** Giving prod its own
+- [x] 6.7 **DONE — posted to bloom#863** as a scope correction with acceptance criteria. The shared-path and `scan_key` collision: Giving prod its own
       credential is necessary but not sufficient: `scan_key_for()` is `f"scan_{scan_id}"`, a
       DB-local integer with independent sequences per environment, and `scan_is_already_staged`
       compares only `scan_key`. Once prod has real credentials, a staging run that already staged
