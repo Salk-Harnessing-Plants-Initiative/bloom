@@ -33,20 +33,29 @@ Workflow phase is `Succeeded` — so a run all of whose batches do that reads `'
 a result; `status = 'complete'` means only "every batch's Workflow reached a terminal success
 phase". A run enumerating zero scans is also `'complete'`.
 
-Two bounds on that statement, both load-bearing:
+Four bounds on that statement, all load-bearing:
 
 - **It holds for an `images-downloader`-stage isolation, not for every stage.** A scan that
-  `images-downloader` fails is excluded from the `RunManifest` it writes (only `ok`/`skipped` keys
-  are recorded), so nothing downstream expects a result for it. A scan isolated later, by
-  `predictor` or `trait-extractor`, is already in that manifest, so write-back finds a declared
-  `scan_key` with no result, reports a batch failure, and exits non-zero — and because `write-back`
-  carries no `continueOn`, the gate is omitted and the Workflow ends `Failed`. Such a run reads
-  `'failed'`, not `'complete'`.
+  `images-downloader` fails is left out of the scan_keys *that invocation contributes* to the
+  `RunManifest` (only `ok`/`skipped` are recorded). A scan isolated later, by `predictor` or
+  `trait-extractor`, is already in that manifest, so write-back finds a declared `scan_key` with no
+  result, reports a batch failure, and exits non-zero — and because `write-back` carries no
+  `continueOn`, the gate is omitted and the Workflow ends `Failed`.
+- **And only when the manifest does not already carry that scan_key.** `write_run_manifest` writes
+  the **union** of its own usable keys with whatever manifest is already on disk, and never prunes,
+  over a directory shared by every run. So a deterministically-failing scan is excluded only on its
+  *first* occurrence; on every later run over those paths its key is still present from before,
+  write-back again finds a declared key with no result, and the run reads `'failed'`.
 - **`'failed'` does not imply nothing was written.** Each envelope's per-scan `'written'` update is
   committed in that envelope's own transaction, so a write-back that ingests some envelopes and
   then exits non-zero leaves `done_count > 0` on a `'failed'` run. This is not new — it was already
   reachable whenever write-back ran and partially failed — but the exit gate adds a second route to
   it, by rejecting a producer exit code outside `{0,3}` after write-back has already committed.
+- **`'complete'` does not imply that *any* scan succeeded.** The producers' partial-success exit
+  code carries no floor: a batch in which one scan failed and a batch in which *every* scan failed
+  both exit `3`, the gate accepts both, and both read `'complete'`. A totally-failed batch therefore
+  reports `'complete'` with `done_count = 0`. This matters most for common-mode failures — an
+  unavailable NFS mount, a revoked credential — which fail every scan identically.
 
 Pipeline-level `'partial'` consequently no longer arises from partial failure *within* a batch — the
 case it was originally introduced for — and now arises only when whole batch Workflows differ in
@@ -81,11 +90,22 @@ outcome across a multi-batch run.
 - **AND** a consumer deciding whether the run produced a result for every requested scan reads
   `failed_count`/`done_count` or the per-scan `cyl_pipeline_run_scans` rows, never `status` alone
 
-#### Scenario: A later-stage isolation fails the run rather than completing it
+#### Scenario: A later-stage isolation fails a single-batch run rather than completing it
 
-- **WHEN** a scan passes `images-downloader` — so it is recorded in the `RunManifest` — and is then
-  isolated as failed by `predictor` or `trait-extractor`
+- **WHEN** a **single-batch** run has a scan pass `images-downloader` — so it is recorded in the
+  `RunManifest` — and that scan is then isolated as failed by `predictor` or `trait-extractor`
 - **THEN** write-back finds a manifest `scan_key` with no result, reports a batch failure and exits
   non-zero, the exit gate is omitted, and the run's `status` is `'failed'`
 - **AND** `done_count` may still be greater than zero, because the scans that did produce results
   were committed by their own envelope transactions before write-back exited
+- **AND** in a *multi-batch* run whose other batches succeeded, the same isolation yields
+  `'partial'` rather than `'failed'`, since the rollup sees a mix of terminal phases
+
+#### Scenario: A batch in which every scan failed still reads complete
+
+- **WHEN** every scan in a single-batch run fails at `images-downloader` — a shared mount being
+  unavailable, say — so the producer exits `3` with no scan staged
+- **THEN** the exit gate accepts `3`, the Workflow phase is `Succeeded`, and the run's `status` is
+  `'complete'`
+- **AND** `done_count` is `0` and `failed_count` equals `scan_count`, which is the only signal that
+  the run produced nothing

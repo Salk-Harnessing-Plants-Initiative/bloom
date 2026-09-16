@@ -211,6 +211,14 @@ its grep was `--include=*.py` and missed the README.)
       `openspec/changes/archive/2026-08-17-add-cyl-pipeline-dispatch/` (2 hits, archived history).
       `docs/issues/issue-2-pipeline-trigger.md:235-292` holds a wholly obsolete inline DAG (still
       has `models-downloader`) — out of scope, noted so it is not mistaken for a missed site.
+- [x] 4.6 **Add tests for the two rollup-side ADDED scenarios.** The `cyl-pipeline-runs` and
+      `cyl-pipeline-status-polling` deltas add four scenarios and this PR touches only
+      `test_k8s_client.py`. The two rollup halves are unit-testable today against `sweep_once` in
+      `tests/test_status_poller.py`: `Succeeded` phase with a `failed` scan row → `'complete'` with
+      `failed_count > 0`, and `Failed` phase with `written` scan rows → `'failed'` with
+      `done_count > 0`. The nearest existing test reaches `'partial'` via a *dispatch*-failed scan,
+      which does not exercise either. The other two scenarios are cross-repo and stay live-only
+      (§8) — record that explicitly rather than leaving them silently unasserted.
 - [x] 4.4 **DECIDED: delete `..._preserves_dag_structure_from_vendored_file`, keep
       `..._only_changes_the_four_documented_overrides`.** The first compared the built body's DAG
       against the same file it was built from — 0 of 58 mutations caught — and its content is
@@ -281,6 +289,26 @@ its grep was `--include=*.py` and missed the README.)
       ordering in which the DAG reaches production without them. **Do not file this as a separate
       blocker.** What it does mean: the promotion is large (`main` is many migrations behind), so
       treat migration ordering as part of that cutover's own review, not this PR's.
+- [ ] 6.5 **File: `'complete'` has no floor — a totally-failed batch reports success.** `BatchResult.ok`
+      is `all(status in ("ok","skipped"))`, so 1-of-100 failed and 100-of-100 failed both exit `3`;
+      the gate accepts both and the run reads `'complete'` with `done_count = 0`. Common-mode
+      failures (NFS down, revoked credential) fail every scan identically and now go green. Either
+      widen bloom#857's text or add a floor. Not a merge blocker — the failure is visible in
+      `failed_count` — but it is the sharpest edge of the new semantics.
+- [ ] 6.6 **File: an all-`Succeeded` run with a TTL-GC'd sibling never gets its counters written.**
+      `status_poller.py:346-353` withholds `'complete'` when any workflow 404'd this cycle and
+      `continue`s, skipping reconciliation *and* the status write. A GC'd workflow 404s forever, so
+      the run stalls permanently with `done_count`/`failed_count` unwritten — which is exactly the
+      signal this change's specs tell consumers to trust. Pre-existing (accepted in
+      `fix-cyl-pipeline-run-scan-status`'s design), but this change routes far more runs into it:
+      batches that used to end `Failed` and settle now end `Succeeded`.
+- [ ] 6.7 **Add the shared-path and `scan_key` collision to bloom#863's scope.** Giving prod its own
+      credential is necessary but not sufficient: `scan_key_for()` is `f"scan_{scan_id}"`, a
+      DB-local integer with independent sequences per environment, and `scan_is_already_staged`
+      compares only `scan_key`. Once prod has real credentials, a staging run that already staged
+      `scan_42` makes the prod run for prod's scan 42 **skip**, and prod ingests traits computed
+      from staging's images. Fixing #863 alone converts a dormant misdirection into live
+      cross-environment data corruption.
 - [ ] 6.4 **Production is already exposed, now, independent of this PR.** The new producer image
       pins are live on the shared `runai-busch-lab` templates while prod still dispatches the
       four-task DAG with no `continueOn`. If those images moved partial success from exit 0 to exit

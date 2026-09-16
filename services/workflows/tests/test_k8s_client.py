@@ -413,6 +413,12 @@ def _dag_tasks(body):
     spec = body["spec"]
     entrypoint = spec.get("entrypoint")
     assert entrypoint == "pipeline", f"entrypoint is {entrypoint!r}"
+    # The exact template list, not just "one of them has a dag". A `steps`
+    # template inserted ahead of the dag, or any extra template, otherwise
+    # passes every assertion here while changing what actually executes.
+    assert [t.get("name") for t in spec["templates"]] == ["pipeline"], (
+        f"unexpected templates: {[t.get('name') for t in spec['templates']]}"
+    )
     dag_templates = [t for t in spec["templates"] if "dag" in t]
     assert len(dag_templates) == 1, [t.get("name") for t in dag_templates]
     assert dag_templates[0].get("name") == entrypoint, (
@@ -458,11 +464,10 @@ def test_build_workflow_body_exit_gate_is_the_only_leaf():
     second leaf is bolted on.
     """
     body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
-    tasks = _dag_tasks(body)
-    names = {t["name"] for t in tasks}
-    depended_on = {d for t in tasks for d in (t.get("dependencies") or [])}
+    # The leaf property itself lives in _assert_gate_invariants, so the mutation
+    # cases at the bottom of this file guard THIS assertion rather than a copy.
+    tasks = _assert_gate_invariants(body)
 
-    assert names - depended_on == {"exit-gate"}, "exit-gate is not the only leaf"
     assert {t["name"] for t in tasks if not t.get("dependencies")} == {
         "images-downloader"
     }
@@ -479,10 +484,10 @@ def test_build_workflow_body_continue_on_is_on_producers_only():
     none: its failure omits the gate, which inherits `Failed`.
     """
     body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
-    tasks = _dag_tasks(body)
+    # The set-equality itself lives in _assert_gate_invariants — see its docstring.
+    tasks = _assert_gate_invariants(body)
     by_name = {t["name"]: t for t in tasks}
 
-    assert {n for n, t in by_name.items() if "continueOn" in t} == _PRODUCERS
     for name in _PRODUCERS:
         # `==` not `.get()`: {failed: true, error: true} is a different contract,
         # deliberately rejected by the vendored file's own Error-vs-Failed note.
@@ -491,13 +496,11 @@ def test_build_workflow_body_continue_on_is_on_producers_only():
 
 def test_build_workflow_body_exit_gate_receives_producer_exit_codes():
     body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
-    tasks = _dag_tasks(body)
-
-    # Looked up as an assertion, not `next(...)`: that raises StopIteration on a
-    # gateless DAG rather than failing, and it would not catch a *duplicated*
-    # exit-gate task either.
+    # The exactly-one-gate check lives in _assert_gate_invariants. It is an
+    # assertion rather than `next(...)`, which would raise StopIteration on a
+    # gateless DAG instead of failing, and would miss a *duplicated* exit-gate.
+    tasks = _assert_gate_invariants(body)
     gates = [t for t in tasks if t.get("name") == "exit-gate"]
-    assert len(gates) == 1, f"exit-gate tasks found: {len(gates)}"
 
     params = {p["name"]: p["value"] for p in gates[0]["arguments"]["parameters"]}
     assert params == {
@@ -533,17 +536,38 @@ def test_build_workflow_body_pins_the_fields_no_other_dag_assertion_covers():
     """
     body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
     spec = body["spec"]
+    tasks = _dag_tasks(body)
 
     assert spec.get("serviceAccountName") == "bloom-workflow"
     assert body["metadata"].get("generateName") == "sleap-roots-pipeline-"
+    assert body["metadata"]["labels"]["project"] == "busch-lab"
 
+    # The whole workflow-level parameter list, not just parameters[0]. An
+    # appended parameter otherwise ships with its upstream default — live risk,
+    # since bloom#864 is about run identity that a future `run-id` parameter
+    # would carry.
+    assert [p["name"] for p in spec["arguments"]["parameters"]] == ["scan-ids"]
+
+    # Assert volumes exist before indexing them, so dropping spec.volumes
+    # entirely — the exact bloom#737 regression this vendoring exists to
+    # prevent — fails as an AssertionError rather than a KeyError.
+    assert isinstance(spec.get("volumes"), list) and spec["volumes"], (
+        "spec.volumes is missing or empty"
+    )
+    # Paths pinned as literals too, not just names and types: the cluster-side
+    # skip-if-done dedup depends on these exact shared paths (the vendored
+    # file's own comment says so), and an upstream re-pin that moved them would
+    # otherwise reach production unchallenged.
+    _A4 = "/hpi/hpi_dev/users/eberrigan/pipeline_orchestration_tests/a4_poc"
     host_paths = {v["name"]: v["hostPath"] for v in spec["volumes"] if "hostPath" in v}
-    assert set(host_paths) == {
-        "images-input-dir",
-        "predictions-output-dir",
-        "traits-output-dir",
+    assert host_paths == {
+        "images-input-dir": {"path": f"{_A4}/input", "type": "Directory"},
+        "predictions-output-dir": {
+            "path": f"{_A4}/predictions",
+            "type": "Directory",
+        },
+        "traits-output-dir": {"path": f"{_A4}/traits", "type": "Directory"},
     }
-    assert all(h["type"] == "Directory" for h in host_paths.values())
     secrets = {v["name"]: v["secret"] for v in spec["volumes"] if "secret" in v}
     assert secrets == {
         "bloom-credentials": {
@@ -552,13 +576,15 @@ def test_build_workflow_body_pins_the_fields_no_other_dag_assertion_covers():
     }
 
     allowed = {"name", "templateRef", "dependencies", "continueOn", "arguments"}
-    for t in _dag_tasks(body):
+    for t in tasks:
         assert not set(t) - allowed, (
             f"task {t['name']!r} has unexpected keys {sorted(set(t) - allowed)}"
         )
-    assert {t["name"] for t in _dag_tasks(body) if "arguments" in t} == {"exit-gate"}
+    assert {t["name"] for t in tasks if "arguments" in t} == {"exit-gate"}
 
-    assert not set(spec) - {
+    # Equality, not a subset check: `not set(spec) - {...}` permits any key to
+    # vanish, which is the direction that matters for volumes/entrypoint.
+    assert set(spec) == {
         "entrypoint",
         "serviceAccountName",
         "arguments",
@@ -568,25 +594,49 @@ def test_build_workflow_body_pins_the_fields_no_other_dag_assertion_covers():
     }
 
 
-def _assert_five_task_gate_dag(body):
-    """The three gate invariants, as one callable, so the guard is itself guarded
-    by the mutation cases below."""
+def _assert_gate_invariants(body):
+    """The three gate invariants, as ONE implementation.
+
+    The real tests above call this, and so do the mutation cases below. That is
+    the whole point: an earlier version of this file had the real tests
+    re-implement these assertions inline and only the mutation cases call the
+    helper, so the mutation suite guarded a *copy*. Deleting the real leaf
+    assertion then left all 54 tests green — the exact false confidence this
+    helper exists to prevent. One implementation, one place to drift.
+    """
     tasks = _dag_tasks(body)
     names = {t["name"] for t in tasks}
     depended_on = {d for t in tasks for d in (t.get("dependencies") or [])}
+    # Leaf identity BEFORE the count, deliberately: with the count first, a
+    # gateless DAG fails on "got 4" and the `gateless` mutation case stops
+    # pinning the leaf assertion at all. The count still earns its place — it
+    # catches a sixth task inserted mid-chain, which leaves exit-gate the sole
+    # leaf and passes the check above.
     assert names - depended_on == {"exit-gate"}, "exit-gate is not the only leaf"
+    assert len(tasks) == 5, f"expected 5 DAG tasks, got {len(tasks)}"
     with_continue_on = {t["name"] for t in tasks if "continueOn" in t}
     assert with_continue_on == _PRODUCERS, (
         "continueOn is not on exactly the three producers"
     )
     gates = [t for t in tasks if t.get("name") == "exit-gate"]
     assert len(gates) == 1, f"exit-gate tasks found: {len(gates)}"
+    return tasks
 
 
 def _vendored_variant(tmp_path, vendored_workflow, mutate):
-    """Write a mutated copy of the vendored file and point the module at it."""
+    """Write a mutated copy of the vendored file and point the module at it.
+
+    Resolves the DAG through `spec.entrypoint` rather than `templates[0]` — the
+    same reason `_dag_tasks` does. Indexing `[0]` here was how the deleted
+    structure test "caught" a nested `steps` template: by `KeyError`, not by an
+    assertion, which is not coverage.
+    """
     variant = copy.deepcopy(vendored_workflow)
-    mutate(variant["spec"]["templates"][0]["dag"])
+    entrypoint = variant["spec"]["entrypoint"]
+    dag_template = next(
+        t for t in variant["spec"]["templates"] if t.get("name") == entrypoint
+    )
+    mutate(dag_template["dag"])
     path = tmp_path / "variant.yaml"
     path.write_text(yaml.safe_dump(variant), encoding="utf-8")
     return path
@@ -608,14 +658,23 @@ def _gate_beside_write_back(dag):
             t["dependencies"] = ["trait-extractor"]
 
 
+def _continue_on_the_gate(dag):
+    """Make the terminal leaf continuable — the mutation the set-equality exists
+    for, and the direction `_strip_continue_on` does not exercise."""
+    for t in dag["tasks"]:
+        if t["name"] == "exit-gate":
+            t["continueOn"] = {"failed": True}
+
+
 @pytest.mark.parametrize(
     ("mutate", "expected"),
     [
         (_drop_gate, "only leaf"),
         (_strip_continue_on, "three producers"),
         (_gate_beside_write_back, "only leaf"),
+        (_continue_on_the_gate, "three producers"),
     ],
-    ids=["gateless", "continue_on_stripped", "two_leaves"],
+    ids=["gateless", "continue_on_stripped", "two_leaves", "continue_on_gate"],
 )
 def test_the_dag_shape_assertions_reject_a_wrongly_shaped_vendored_file(
     monkeypatch, tmp_path, vendored_workflow, mutate, expected
@@ -627,17 +686,26 @@ def test_the_dag_shape_assertions_reject_a_wrongly_shaped_vendored_file(
     `check_vendored_workflow_drift.py` cleanly, so these assertions are the only
     thing between that and production.
 
-    `match=` is load-bearing: a bare `pytest.raises(AssertionError)` is satisfied
-    by whichever assertion fires first, which for the gateless case is the
-    templateRef-triple check — so the test would still pass with the leaf
-    assertion deleted outright. The `two_leaves` case is the only one that
-    actually exercises the leaf assertion, since it keeps all five tasks.
+    `match=` is load-bearing, and the reason is stated from a measurement rather
+    than from reading the code — an earlier version of this docstring described
+    the wrong assertion twice. Deleting the leaf assertion from
+    `_assert_gate_invariants` and re-running gives:
+
+      gateless   -> still raises, but from the task-count assertion
+                    ("expected 5 DAG tasks, got 4"), so a bare
+                    pytest.raises(AssertionError) would pass; match="only leaf"
+                    is what detects the deletion.
+      two_leaves -> "DID NOT RAISE AssertionError" — it keeps all five tasks, so
+                    nothing else fires.
+
+    So `two_leaves` pins the leaf invariant's *existence* and `gateless` pins its
+    *identity*. Both are needed; neither alone is sufficient.
     """
     path = _vendored_variant(tmp_path, vendored_workflow, mutate)
     monkeypatch.setattr(k8s_client, "_VENDORED_WORKFLOW_PATH", path)
     body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
     with pytest.raises(AssertionError, match=expected):
-        _assert_five_task_gate_dag(body)
+        _assert_gate_invariants(body)
 
 
 # --- build_workflow_body: loaded from the vendored canonical source (bloom #737) --
