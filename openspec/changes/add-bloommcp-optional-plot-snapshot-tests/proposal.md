@@ -36,7 +36,7 @@ against the real stack.
   `add_cleaned_version` (they are `require_clean=True` consumers) where the existing 3 use
   `add_experiment` — the one seeding difference.
 - **EXTEND** `bloommcp/tests/tools/test_viz_snapshot.py` with a second parametrized
-  comparison over the 8 keys at the **same** `_TOL = 15`, re-validated by measurement
+  comparison over the baselined keys at the **same** `_TOL = 15`, re-validated by measurement
   (design.md Decision 1) rather than assumed to carry over.
 - **ADD** two negative-control tests pinning measured blind spots (design.md Decision 2),
   following the precedent `test_realistic_single_cell_defect_in_correlation_matrix_is_not_caught`
@@ -71,12 +71,13 @@ against the real stack.
   documented and pinned, not fixed — closing them needs per-region or numeric comparison,
   the same heavier-weight machinery design.md Decision 7 of #713 already argued against, and
   the same structural limit #768 tracks.
-- Not fixing the unrelated `outputs`-ordering non-determinism found while surveying these
-  tools: `pca_analysis.py:422` and `umap_analysis.py:649` iterate `list(frozenset)` where
-  `clustering.py:644` and `heritability_analysis.py:594` use `sorted(...)` — a 2-of-4
-  divergence across the plot-emitting family, not a two-tool outlier. It cannot affect pixel
-  content (the tests address figures by filename, never by `outputs` order), so it is out of
-  scope for a testing change. **No issue exists for it yet; one should be filed.**
+- ~~Not fixing the `outputs`-ordering non-determinism~~ — **now fixed in review**, at the
+  reviewer's suggestion: `pca_analysis.py:422` and `umap_analysis.py:649` now `sorted(...)`
+  like `clustering.py:644` and `heritability_analysis.py:594`, so all four agree. Two words,
+  cheaper than the follow-up issue it would otherwise need. **Note this is the only change
+  in this PR that touches `bloommcp/src/`**, so the "tests and fixtures only" property no
+  longer strictly holds; it cannot affect pixel content, since the tests address figures by
+  filename, never by `outputs` order.
 - Not restoring pixel coverage for `heritability_analysis`'s two folded-in figures (the
   other gap `tests/fixtures/README.md` records — it promises this is "a follow-up, not a
   silent loss"). Different fixture shape, and outside what #723 asks for. **No issue exists
@@ -88,8 +89,10 @@ against the real stack.
   in-flight under #713 and not yet in `openspec/specs/`, so these are additive requirements
   alongside its three, not modifications to them).
 - **Affected code**:
-  - `bloommcp/tests/fixtures/plot_baselines/` — 8 new PNGs (~581 KB total, largest 214 KB;
-    each under the 500 KB `check-added-large-files` pre-commit limit).
+  - `bloommcp/tests/fixtures/plot_baselines/` — **6** new PNGs (327,710 B total, largest
+    99 KB; each well under the 500 KB `check-added-large-files` pre-commit limit). 8 were
+    generated; the 2 UMAP ones were dropped after CI measured their canvas as
+    platform-dependent (design.md Decision 3).
   - `bloommcp/tests/fixtures/plot_baselines/MANIFEST.json` — **extended**. It currently
     records only matplotlib/Pillow/sleap-roots-analyze/platform/python, which omits most of
     what these 8 renders actually depend on: `umap-learn`, `numba`, `llvmlite` (both UMAP

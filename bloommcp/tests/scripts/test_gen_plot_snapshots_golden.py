@@ -104,8 +104,8 @@ _REAL_BASELINES_DIR = _A_BASELINE.parent
 
 
 def _all_baseline_names() -> list[str]:
-    """Every baseline the generator writes: the 3 dedicated tools plus the 8 optional
-    plot keys (#723). Kept as one helper so a new table cannot be silently left out of
+    """Every baseline the generator writes: 3 from the dedicated tools plus 6 from the
+    baselined optional plot keys (#723; the 2 UMAP keys are deliberately unbaselined). Kept as one helper so a new table cannot be silently left out of
     the tests that assert over "every baseline"."""
     return [name for name, *_ in gen._TOOLS] + [
         name for name, *_ in gen._OPTIONAL_TOOLS
@@ -120,9 +120,11 @@ def _dimension_matched_markers() -> dict[str, bytes]:
     different content, so it's distinguishable from a fresh, correct re-render.
     """
     markers = {}
-    # The two tables are iterated SEPARATELY, not concatenated: `_TOOLS` entries are
-    # 4-tuples and `_OPTIONAL_TOOLS` entries are 3-tuples (#723), so a single destructuring
-    # loop over `_TOOLS + _OPTIONAL_TOOLS` raises ValueError.
+    # Both tables, via `_all_baseline_names()`. (An earlier comment here claimed a single
+    # loop over `_TOOLS + _OPTIONAL_TOOLS` would raise ValueError on the differing arity --
+    # it does not: `for name, *_ in` star-unpacks 4- and 3-tuples alike, which is exactly
+    # what that helper does. The two tables stay separate because they carry different
+    # information, not because concatenating them breaks.)
     for baseline_name in _all_baseline_names():
         real = _REAL_BASELINES_DIR / baseline_name
         dimmed = ImageEnhance.Brightness(Image.open(real)).enhance(0.5)

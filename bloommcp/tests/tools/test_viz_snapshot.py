@@ -497,32 +497,27 @@ def test_missing_baseline_fails_with_an_actionable_message(monkeypatch, viz_env)
 # records one such known defect in `create_feature_contribution_heatmap`'s title. Two
 # measured blind spots are pinned below rather than presented as coverage.
 
+from bloom_mcp.sections.sleap_roots.analysis.clustering import (  # noqa: E402
+    _CLUSTERING_CATALOG_KEYS,
+)
+from bloom_mcp.sections.sleap_roots.analysis.pca_analysis import (  # noqa: E402
+    _PCA_CATALOG_KEYS,
+)
+from bloom_mcp.sections.sleap_roots.analysis.umap_analysis import (  # noqa: E402
+    _UMAP_CATALOG_KEYS,
+)
+
 _OPTIONAL_EXPERIMENT = "turface_19.csv"
 
 # (label, params factory, catalog keys) -- one render per tool, memoized, so `pca_analysis`
 # is not re-fitted once per parametrized key (measured: a naive per-key render costs ~7.7s
 # against ~3.6s memoized, almost all of it umap-learn's numba JIT).
+# Derived from the production catalogs rather than retyped, so a new catalog key cannot
+# appear in the tools while this table silently keeps testing the old set.
 _OPTIONAL_TOOLS = [
-    (
-        "pca",
-        "pca_analysis",
-        (
-            "create_pca_scree_plot",
-            "create_pca_biplot",
-            "create_feature_contribution_plot",
-            "create_feature_contribution_heatmap",
-        ),
-    ),
-    (
-        "umap",
-        "umap_analysis",
-        ("create_umap_single_trait", "create_umap_colored_by_top_traits"),
-    ),
-    (
-        "clustering",
-        "clustering",
-        ("create_cluster_scatter_pca", "create_cluster_size_barplot"),
-    ),
+    ("pca", "pca_analysis", tuple(sorted(_PCA_CATALOG_KEYS))),
+    ("umap", "umap_analysis", tuple(sorted(_UMAP_CATALOG_KEYS))),
+    ("clustering", "clustering", tuple(sorted(_CLUSTERING_CATALOG_KEYS))),
 ]
 
 # The 2 UMAP keys are rendered and commit-checked like the rest, but have NO committed
@@ -550,6 +545,19 @@ _OPTIONAL_KEYS = [
     if key not in _CROSS_PLATFORM_UNSTABLE_KEYS
 ]
 _OPTIONAL_IDS = [key for _label, key in _OPTIONAL_KEYS]
+
+# Pin the exclusion exactly, and pin how many keys survive it. Without this, adding a key to
+# the exclusion set and `git rm`-ing its baseline keeps every assertion in this file green
+# while one parametrized case quietly disappears -- at the limit, excluding all 8 and
+# deleting all 6 baselines leaves an empty parametrization comparing set() to set(), and the
+# suite still exits 0. Dropping pixel coverage must be a deliberate, reviewed edit.
+assert _CROSS_PLATFORM_UNSTABLE_KEYS == frozenset(
+    {"create_umap_single_trait", "create_umap_colored_by_top_traits"}
+), "adding a key here REMOVES pixel coverage -- justify it in design.md Decision 3 first"
+assert len(_OPTIONAL_KEYS) == 6, (
+    f"expected 6 baselined optional keys, found {len(_OPTIONAL_KEYS)} -- a catalog key was "
+    "added or excluded without updating this guard"
+)
 
 # Memo for the per-tool render. Deliberately a module-level dict rather than a
 # `@pytest.fixture(scope="module")`: the natural dependency `viz_env` is function-scoped
@@ -654,12 +662,6 @@ def test_baseline_set_matches_the_tool_catalogs():
     table: a table-vs-table check would pass while an orphaned baseline sat in the fixtures
     directory after its catalog key was removed.
     """
-    from bloom_mcp.sections.sleap_roots.analysis.clustering import (
-        _CLUSTERING_CATALOG_KEYS,
-    )
-    from bloom_mcp.sections.sleap_roots.analysis.pca_analysis import _PCA_CATALOG_KEYS
-    from bloom_mcp.sections.sleap_roots.analysis.umap_analysis import _UMAP_CATALOG_KEYS
-
     catalog = (
         set(_PCA_CATALOG_KEYS) | set(_UMAP_CATALOG_KEYS) | set(_CLUSTERING_CATALOG_KEYS)
     )
@@ -684,7 +686,7 @@ def test_baseline_set_matches_the_tool_catalogs():
 
 @pytest.mark.parametrize("_label,key", _OPTIONAL_KEYS, ids=_OPTIONAL_IDS)
 def test_optional_plot_matches_baseline_within_tolerance(_label, key, tmp_path_factory):
-    """3.1 -- the production comparison for all 8 optional keys."""
+    """3.1 -- the production comparison for the 6 baselined optional keys."""
     produced = _rendered(_label, tmp_path_factory)
     actual = produced / f"{key}.png"
     baseline = _optional_baseline(key)
@@ -721,7 +723,15 @@ def test_missing_optional_baseline_fails_with_an_actionable_message(
 _REAL_REGRESSION_CASES = [
     ("pca", {"standardize": False}, "create_pca_scree_plot", 110.2),
     ("pca", {"standardize": False}, "create_feature_contribution_plot", 100.6),
+    # The two keys whose detection is via canvas size rather than RMS -- including the
+    # biplot, which design.md calls the most layout-fragile of the set, and the heatmap,
+    # whose only other control renders the delegate directly.
+    ("pca", {"standardize": False}, "create_pca_biplot", None),
+    ("pca", {"standardize": False}, "create_feature_contribution_heatmap", None),
     ("clustering", {"n_clusters": 5}, "create_cluster_size_barplot", 67.1),
+    # No entry for `create_cluster_scatter_pca`: a cluster-count change is exactly what
+    # that plot provably cannot see (blind spot A), so a positive control for it would
+    # contradict its own pin. It is covered by the negative control instead.
 ]
 
 
@@ -739,17 +749,26 @@ def test_tolerance_catches_a_real_parameter_regression(
     produced = _render_optional_to_dir(fn_name, capture, **overrides)
     baseline = _optional_baseline(key)
 
+    actual = produced / f"{key}.png"
     try:
-        diff = compare_images(str(baseline), str(produced / f"{key}.png"), tol=_TOL)
+        diff = compare_images(str(baseline), str(actual), tol=_TOL)
+        detected_by = "rms" if diff is not None else None
     except ImageComparisonFailure:
-        # A canvas-size change is also a caught regression -- it is how 4 of the 8 keys
-        # surface a real parameter change (design.md Decision 2's "what is caught" table).
-        return
-    assert diff is not None, (
+        # A canvas-size change is a caught regression too -- it is how several keys surface
+        # a real parameter change (design.md Decision 2). Recorded explicitly rather than
+        # `return`ed, so this control cannot degrade into a silent no-op.
+        detected_by = "canvas"
+
+    assert detected_by is not None, (
         f"{key}: {overrides} no longer produces a difference over _TOL={_TOL} "
         f"(was RMS~{recorded_rms}). Either the parameter stopped affecting the figure or "
         "the baseline was regenerated from the perturbed render -- both are real problems."
     )
+    if recorded_rms is not None:
+        assert detected_by == "rms", (
+            f"{key} was recorded as detected by RMS~{recorded_rms}, but is now detected by "
+            f"a {detected_by} difference -- the measurement in design.md is stale"
+        )
 
 
 def test_single_cell_loadings_defect_is_caught(tmp_path_factory):
@@ -806,7 +825,7 @@ def test_single_cell_loadings_defect_is_caught(tmp_path_factory):
     )
 
 
-def _rms_or_skip_on_canvas_change(baseline: Path, actual: Path) -> float:
+def _rms_or_fail_on_canvas_change(baseline: Path, actual: Path) -> float:
     """RMS between two images, failing loudly (with the pointer) on a canvas-size change.
 
     The blind-spot pins below compare a LIVE re-render against a committed baseline, so on
@@ -819,6 +838,24 @@ def _rms_or_skip_on_canvas_change(baseline: Path, actual: Path) -> float:
     except (ImageComparisonFailure, OSError) as exc:
         pytest.fail(f"{exc}{_CROSS_PLATFORM_POINTER}")
     return diff["rms"] if diff else 0.0
+
+
+def _auto_k(method: str) -> int:
+    """The cluster count `clustering` selects for `method` on the fixture, via the tool."""
+    from bloom_mcp.data_access import FakeReader, SupabaseReader
+    from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+    from bloom_mcp.sections.sleap_roots.analysis.clustering import clustering
+    from bloom_mcp.tools import _ports
+
+    reader = FakeReader()
+    reader.add_cleaned_version(
+        _OPTIONAL_EXPERIMENT, "v1", pd.read_csv(_RAW_FIXTURE), make_latest=True
+    )
+    _ports.configure(reader=reader, store=FakeResultStore())
+    try:
+        return int(clustering(_optional_params("clustering", method=method)).n_clusters)
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
 
 def test_cluster_scatter_pca_does_not_catch_a_cluster_count_change(tmp_path_factory):
@@ -839,7 +876,7 @@ def test_cluster_scatter_pca_does_not_catch_a_cluster_count_change(tmp_path_fact
     baseline = _optional_baseline("create_cluster_scatter_pca")
     actual = produced / "create_cluster_scatter_pca.png"
 
-    rms = _rms_or_skip_on_canvas_change(baseline, actual)
+    rms = _rms_or_fail_on_canvas_change(baseline, actual)
     # Two-sided: a bare "not caught" assertion would also pass if the re-render were
     # byte-identical (e.g. a refactor that silently ignored `n_clusters`), making the test
     # vacuous while reading as coverage.
@@ -874,7 +911,18 @@ def test_cluster_size_barplot_does_not_catch_a_same_k_membership_change(
     baseline = _optional_baseline("create_cluster_size_barplot")
     actual = produced / "create_cluster_size_barplot.png"
 
-    rms = _rms_or_skip_on_canvas_change(baseline, actual)
+    # The whole premise is "same k, different membership". Assert it rather than assume it:
+    # the baseline's k is auto-selected, and if hierarchical ever returned a different k
+    # this would silently become a k-change test -- which the barplot *does* catch, making
+    # the pin mean the opposite of what its name says.
+    baseline_k, hierarchical_k = _auto_k("kmeans"), _auto_k("hierarchical")
+    assert baseline_k == hierarchical_k, (
+        f"this pin assumes hierarchical returns the baseline's k, but kmeans gave "
+        f"{baseline_k} and hierarchical gave {hierarchical_k} -- it is now a k-change test, "
+        "which is a different (and caught) regression shape"
+    )
+
+    rms = _rms_or_fail_on_canvas_change(baseline, actual)
     assert rms > 3.0, (
         f"method='hierarchical' changed the image by only RMS={rms:.2f} -- the perturbation "
         "is not taking effect, so this test proves nothing"
@@ -882,6 +930,11 @@ def test_cluster_size_barplot_does_not_catch_a_same_k_membership_change(
     assert rms < _TOL, (
         f"a same-k membership change is NOW caught at _TOL={_TOL} (RMS={rms:.2f}) -- an "
         "IMPROVEMENT; update design.md Decision 2 and this pin"
+    )
+    # The tightest margin in this change (13.5 against _TOL=15), so drift matters most here.
+    assert 11.0 < rms < 14.5, (
+        f"RMS={rms:.2f} has drifted outside the measured ~13.5 band -- re-measure before "
+        "trusting either this pin or design.md's table"
     )
 
 
@@ -915,3 +968,43 @@ def test_compare_or_fail_attaches_pointer_on_truncated_baseline(tmp_path):
     a.write_bytes(b.read_bytes()[: len(b.read_bytes()) // 2])
     with pytest.raises(pytest.fail.Exception, match="design.md Decision 3"):
         _compare_or_fail(a, b)
+
+
+def test_compare_or_fail_attaches_pointer_on_rms_over_tolerance(tmp_path):
+    """The RMS branch of `_compare_or_fail` -- same size, content over `_TOL`.
+
+    The three boundary tests above all land in the `except (ImageComparisonFailure, OSError)`
+    clause; none drives `if diff is not None`. That is precisely the branch #713's review
+    found the cross-platform pointer dead for, and it is the branch `_TOL` is calibrated
+    against, so leaving it uncovered while the spec claims "both failure paths are
+    exercised" would be an overclaim.
+    """
+    a, b = tmp_path / "a.png", tmp_path / "b.png"
+    Image.new("RGB", (80, 80), (255, 255, 255)).save(a)
+    Image.new("RGB", (80, 80), (0, 0, 0)).save(b)  # same dimensions, maximal RMS
+    with pytest.raises(pytest.fail.Exception, match="design.md Decision 3"):
+        _compare_or_fail(a, b)
+
+
+def test_fixture_sha256_in_manifest_matches_the_committed_fixture():
+    """`MANIFEST.json` records the fixture's hash; nothing read it back until now.
+
+    The README claims the hash means "a fixture edit is attributable rather than appearing
+    as unexplained pixel drift". That is only true if something compares them: otherwise a
+    changed CSV surfaces as a pixel-diff failure whose message (`_CROSS_PLATFORM_POINTER`)
+    actively steers the developer toward regenerating the baseline -- i.e. laundering the
+    data change into the reference. No render needed.
+    """
+    import hashlib
+    import json
+
+    manifest = json.loads((_BASELINES / "MANIFEST.json").read_text(encoding="utf-8"))
+    recorded = manifest.get("fixture_sha256")
+    assert recorded, "MANIFEST.json is missing fixture_sha256"
+    actual = hashlib.sha256(_RAW_FIXTURE.read_bytes()).hexdigest()
+    assert actual == recorded, (
+        f"{_RAW_FIXTURE.name} has changed since the baselines were generated "
+        f"(recorded {recorded[:12]}..., actual {actual[:12]}...). The baselines describe a "
+        "different dataset: regenerate them deliberately and say so, rather than treating "
+        "the resulting pixel diff as cross-platform noise."
+    )

@@ -189,17 +189,22 @@
 ## 9. Follow-ups to file (none of these issues exist today — verified via `gh issue list`)
 
 - [ ] 9.0 Restore pixel coverage for the 2 `umap_analysis` keys, dropped in this change after
-  CI measured their canvas size as platform-dependent (design.md Decision 3). The fix is a
-  rendering change — an explicit `dpi=` and fixed figsize at the tools' `savefig` — which is
-  production behaviour and out of scope for a testing change.
+  CI measured their canvas size as platform-dependent (design.md Decision 3). The remedy is
+  **dropping `bbox_inches="tight"` or passing a fixed `Bbox`** at the tools' `savefig` — not
+  the "explicit `dpi=` + fixed figsize" an earlier draft said, which review showed would not
+  work (tight-bbox inches x dpi still tracks text extents). All 8 upstream plotters already
+  take a fixed default `figsize`. Production behaviour, so out of scope for a testing change.
 
-- [ ] 9.1 `create_cluster_scatter_pca`'s semantic blind spot — a sibling to #768 and measured
+- [ ] 9.1 `create_cluster_scatter_pca`'s semantic blind spot — and note for whoever picks it
+  up: design.md Decision 2 originally called this a structural limit and was **corrected**;
+  a per-key `_TOL` of ~1 likely closes it, since real cross-platform variance is ~0.00-0.01
+  RMS (measured on a third platform during review), not the 12.9 synthetic figure the
+  "won't fix" argument rested on. It must NOT inherit #768's framing — a sibling to #768 and measured
   more severe (#768's single-cell case at least requires the defect to be small; here the
   plot's entire cluster assignment can change undetected). #768's precedent was measure +
   pin + **file**; this change does the first two, so the third is owed.
-- [ ] 9.2 `outputs` key-order non-determinism: `list(frozenset)` in `pca_analysis.py:422` and
-  `umap_analysis.py:649` vs `sorted(...)` in `clustering.py:644` and
-  `heritability_analysis.py:594`.
+- [x] 9.2 ~~`outputs` key-order non-determinism~~ — fixed directly in review rather than
+  filed: both now `sorted(...)`, matching `clustering.py` and `heritability_analysis.py`.
 - [ ] 9.3 Restore pixel coverage for `heritability_analysis`'s two `ResultStore`-persisted
   figures, lost in #462 — `tests/fixtures/README.md` already promises this is "a follow-up,
   not a silent loss".

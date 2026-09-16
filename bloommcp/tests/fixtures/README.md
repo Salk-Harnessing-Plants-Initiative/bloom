@@ -269,7 +269,7 @@ asserted `.is_file()` on the generated PNG.
   invert the failure for macOS developers. Those two are still rendered and commit-checked,
   just not pixel-compared. Named after the catalog key the tool commits (`create_pca_biplot.png`
   → `create_pca_biplot_turface_19_baseline.png`), so no name-mapping table is needed, unlike
-  the three above. `_TOL = 15` was re-derived for these 8 rather than assumed to carry over
+  the three above. `_TOL = 15` was re-derived for these rather than assumed to carry over
   (see `openspec/changes/add-bloommcp-optional-plot-snapshot-tests/design.md` Decision 1).
 
   **What these pin, and what they do not.** Like every golden in this file, they are a
@@ -289,14 +289,19 @@ asserted `.is_file()` on the generated PNG.
   direction across the columns a reader compares. The baseline pins this figure as it
   currently renders; fixing the label belongs upstream in `sleap-roots-analyze`.
 
-  **Implicit parameters.** These 8 pin the tools' *defaults*: `standardize=True`,
+  **Implicit parameters.** These 6 pin the tools' *defaults*: `standardize=True`,
   `explained_variance_threshold=0.95`, `seed=42`, `method="kmeans"` (auto-selecting k=2),
   and the `n_neighbors`/`min_dist` defaults — and the **11 certified trait columns** the
-  reader resolves, not the 8-trait selection `turface_19_pca_golden.json` records. Also
-  note `create_umap_single_trait` colors by `trait_cols[0]` (`Maximum.Width.mm`), so
-  reordering the CSV's columns surfaces as a rendering regression. `MANIFEST.json` now
-  records the fixture's SHA-256, so a fixture edit is attributable rather than appearing as
-  unexplained pixel drift.
+  reader resolves, not the 8-trait selection `turface_19_pca_golden.json` records.
+  `MANIFEST.json` records the fixture's SHA-256 and
+  `test_fixture_sha256_in_manifest_matches_the_committed_fixture` asserts it, so editing the
+  CSV fails with a message naming the fixture rather than surfacing as unexplained pixel
+  drift that the cross-platform pointer would steer you into regenerating away.
+
+  (`create_umap_single_trait` colors by the first requested trait column, but since it is
+  unbaselined that ordering is **not** pixel-covered — it is pinned numerically instead by
+  `test_create_umap_single_trait_is_coloured_by_the_first_trait_column` in
+  `tests/tools/test_umap_analysis_tool.py`.)
 - Regenerate all 9 + the manifest via
   `cd bloommcp && uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py --yes`
   after any intentional rendering change (matplotlib bump, plot-style-kwargs default change,

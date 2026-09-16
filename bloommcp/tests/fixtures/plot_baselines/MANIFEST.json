@@ -1,5 +1,5 @@
 {
-  "_comment": "Rendering-environment provenance for the baseline PNGs in this directory -- NOT asserted by any test (pixel content is compared via matplotlib.testing.compare.compare_images, not this file). Regenerate on Linux (matching the python-audit ubuntu-latest runner) via scripts/gen_plot_snapshots_golden.py after any intentional rendering change (matplotlib bump, plot-style-kwargs default change, delegate upgrade).",
+  "_comment": "Rendering-environment provenance for the baseline PNGs in this directory -- NOT asserted by any test (pixel content is compared via matplotlib.testing.compare.compare_images, not this file). Regenerate via scripts/gen_plot_snapshots_golden.py --yes after any intentional rendering change (matplotlib bump, plot-style-kwargs default change, delegate upgrade), from whatever platform you are on -- do NOT regenerate from Linux to 'match CI', which would only invert the platform asymmetry (see the script docstring).",
   "matplotlib_version": "3.10.8",
   "pillow_version": "12.3.0",
   "sleap_roots_analyze_version": "0.1.0a5",
@@ -17,8 +17,12 @@
   "fixture": "turface_19_final_data.csv",
   "fixture_sha256": "db80269d24829d39b58b5d180d4155bd6da34d9dccd049e8a375f541193b3c52",
   "seeds": {
-    "umap_analysis": 42,
     "clustering": 42,
+    "umap_analysis": 42,
     "pca_analysis": null
-  }
+  },
+  "unbaselined_keys": [
+    "create_umap_colored_by_top_traits",
+    "create_umap_single_trait"
+  ]
 }

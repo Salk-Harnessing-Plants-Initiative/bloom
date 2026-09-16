@@ -101,11 +101,24 @@ and the comparison passes. The cause is dilution: ~153 small markers on a mostly
 canvas, so recoloring all of them moves few pixels. This is **more severe than #768's
 single-cell case**, which at least requires the defect to be small.
 
-No tolerance fixes it. The signal range (3.8-11.6) sits **entirely below that same plot's
-own 5%-dim noise floor of 12.9** — the identical structural argument #713's Decision 7 made
-for `correlation_matrix`, reproduced here with this plot's own numbers rather than assumed
-by analogy. A `_TOL` low enough to catch a k-change would fire on ordinary cross-platform
-hinting noise.
+**A per-key tolerance probably *would* fix it — this section's original argument was
+wrong, and is corrected here rather than left to freeze into `openspec/specs/`.** The first
+version said "no tolerance fixes it", because the 3.8-11.6 signal sits below this plot's
+5%-dim RMS of 12.9. That reasoning conflated two different quantities: 12.9 is a *synthetic
+uniform-dimming* score, not measured cross-platform variance. The real cross-platform
+variance is far smaller — matplotlib vendors its own FreeType (2.6.1 in `MANIFEST.json`),
+so text rasterization does not vary by OS the way #713's Decision 2 assumed, and PR #841's
+review independently re-rendered all 8 keys on a **third** platform (Windows) and measured
+**RMS 0.00-0.01** against the macOS baselines, the `adjustText` biplot included.
+
+Against a true noise floor near zero, a per-key `_TOL` of ~1 for the two clustering keys
+would separate the entire blind-spot band by roughly two orders of magnitude. So blind spot
+A is **not** the structural limit this document first claimed; it is a consequence of using
+one global tolerance sized for a noise source that largely does not exist. It is still not
+closed *here* — changing `_TOL`'s shape is a change to the shared harness #713 owns, and
+doing it properly needs the real Linux-vs-macOS RMS at `tol=0.5` (one CI run) rather than
+another argument from synthetic probes. But it is filed as a tractable follow-up, not
+written off, and follow-up 1 must not inherit #768's "won't fix" framing.
 
 The baseline still earns its place: it catches what the tolerance *can* see, and the
 "caught" table above shows those regressions surface as hard dimension mismatches. It is
@@ -172,11 +185,16 @@ unavailable in this environment to produce a Linux render locally — the same c
 #713 hit and recorded in its Decision 3, where the accepted risk **passed on the first CI
 run**. Three reasons the risk is nonetheless larger for these 8:
 
-1. **No explicit dpi.** All three tools call `fig.savefig(..., bbox_inches="tight")` with no
-   `dpi=` (the covered 3 pin `dpi=150`), so the canvas is derived from rendered text extents
-   at the ambient dpi of 100. A cross-platform font-metric difference therefore changes the
-   *canvas size*, which fails as an `ImageComparisonFailure` — a hard error, not an RMS miss
-   `_TOL` can absorb. The "caught" table above shows how readily this path triggers.
+1. **`bbox_inches="tight"`, not the missing dpi.** All three tools call
+   `fig.savefig(..., bbox_inches="tight")` with no `dpi=`, and an earlier version of this
+   document blamed the missing `dpi=` (the covered 3 pin `dpi=150`). That was a
+   misdiagnosis, corrected after review: output pixels = tight-bbox inches x dpi, and the
+   bbox itself comes from rendered text extents, so pinning dpi fixes only the scale factor
+   — if anything making a given sub-pixel delta cross *more* pixel boundaries. The covered 3
+   pass `bbox_inches="tight"` too and are not structurally immune either. The real lever is
+   dropping `bbox_inches="tight"` or passing a fixed `Bbox`; all 8 upstream plotters already
+   take a fixed default `figsize`. This matters for follow-up 5, whose remedy was originally
+   written as "explicit dpi= + fixed figsize" and would not have worked.
 2. **`create_pca_biplot` runs `adjustText`** (`visualization.py:2510-2526`, when ≥5 feature
    arrows) — an iterative label-repulsion solver whose output is a function of rendered text
    extents. The most layout-fragile of the 8.
@@ -240,8 +258,8 @@ are left alone; renaming them would churn committed binaries for cosmetics.
 ## Measured cost
 
 Full bloommcp sweep (`pytest tests/ -m "not integration and not live_smoke"`), the exact
-invocation `python-audit` runs: **1709 → 1729 tests, 175.7s**, against a 20-minute job cap.
-The 20 added tests cost roughly 6-7s, nearly all of it umap-learn's numba JIT — paid once
+invocation `python-audit` runs: **1709 → 1727 tests, ~175s**, against a 20-minute job cap.
+The added tests cost roughly 6-7s, nearly all of it umap-learn's numba JIT — paid once
 per process, and `test_umap_analysis_tool.py` already pays it. The per-tool render is
 memoized so `pca_analysis` is fitted once rather than once per its 4 parametrized keys
 (~3.6s rather than ~7.7s).
