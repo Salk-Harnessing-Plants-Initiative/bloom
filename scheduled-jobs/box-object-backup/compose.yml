@@ -41,9 +41,11 @@ services:
         bind:
           create_host_path: false
       # Writable, because Box refresh tokens are single-use and rclone must save each new one.
-      # A folder of the job's own: rclone saves by renaming a temp file over rclone.conf.
+      # The folder, not the file: rclone saves by renaming a temp file over rclone.conf.
+      # The deploy user's login, shared with the weekly Postgres backup until Salk's admins
+      # approve an OAuth app for a login of this job's own.
       - type: bind
-        source: /home/bloom-deploy/.config/rclone-box-object-backup
+        source: /home/bloom-deploy/.config/rclone
         target: /config/rclone
         bind:
           create_host_path: false
