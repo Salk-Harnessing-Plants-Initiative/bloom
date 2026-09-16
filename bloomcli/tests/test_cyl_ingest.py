@@ -307,7 +307,85 @@ def test_ingest_one_envelope_omits_argo_workflow_name_when_env_unset(tmp_path, m
     assert captured == {"argo_workflow_name": None}
 
 
-def _patch_authed(monkeypatch):
+class _FakeQuery:
+    """Records the postgrest builder chain so a test can pin the exact query shape."""
+
+    def __init__(self, record, rows, raises):
+        self._record = record
+        self._rows = rows
+        self._raises = raises
+
+    def select(self, cols):
+        self._record["select"] = cols
+        return self
+
+    def eq(self, col, val):
+        self._record.setdefault("eq", []).append((col, val))
+        return self
+
+    def limit(self, n):
+        self._record["limit"] = n
+        return self
+
+    def execute(self):
+        if self._raises is not None:
+            raise self._raises
+        rows = self._rows
+        if callable(rows):
+            # Per-key resolver, for batches where only some envelopes are already ingested (or
+            # only some raise). Receives the key that was filtered on.
+            rows = rows(dict(self._record.get("eq", [])).get("idempotency_key"))
+        return type("_Resp", (), {"data": rows})()
+
+
+class _Storage:
+    def __init__(self, bucket):
+        self.bucket = bucket
+
+    def from_(self, name):
+        assert name == "cyl-intermediates"
+        return self.bucket
+
+
+class _RecordingClient:
+    """Fake Supabase client that records every `.table(...)` query it is asked for.
+
+    `rows=[]` (the default) is the "not already ingested" answer — postgrest returns an empty
+    list, never None, for a filter matching nothing. Tests needing the opposite pass
+    `rows=[{"id": 1}]`.
+    """
+
+    def __init__(self, *, rows=None, raises=None, bucket=None):
+        self.queries = []
+        self._rows = [] if rows is None else rows
+        self._raises = raises
+        self.bucket = bucket
+        self.storage = _Storage(bucket) if bucket is not None else None
+
+    def table(self, name):
+        record = {"table": name}
+        self.queries.append(record)
+        return _FakeQuery(record, self._rows, self._raises)
+
+
+def _patch_authed(monkeypatch, client=None):
+    """Patch `_authed_client` to a fake that can observe the idempotency-gate lookup.
+
+    Defaults to a `_RecordingClient` answering "not already ingested". This used to be a bare
+    `object()`, which meant `object().table(...)` raised AttributeError, `source_already_ingested`
+    swallowed it via its fail-open catch, and every `--predictions-dir` test silently exercised
+    the degraded branch instead of the real one — making the gate's mutants undetectable.
+    """
+    fake = _RecordingClient() if client is None else client
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: fake)
+    return fake
+
+
+def _patch_authed_no_db(monkeypatch):
+    """The historical `object()` client — no `.table()`, so the gate's lookup raises.
+
+    Kept deliberately for the fail-open test; everything else should use `_patch_authed`.
+    """
     monkeypatch.setattr(climod, "_authed_client", lambda profile: object())
 
 
@@ -1600,9 +1678,11 @@ def test_ingest_one_envelope_predictions_dir_upload_failure(tmp_path, monkeypatc
 # --- batch: command wiring -----------------------------------------------------
 
 
-def _patch_batch_authed(monkeypatch):
-    monkeypatch.setattr(climod, "_authed_client", lambda profile: object())
+def _patch_batch_authed(monkeypatch, client=None):
+    fake = _RecordingClient() if client is None else client
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: fake)
     _skip_contract_validation(monkeypatch)
+    return fake
 
 
 def test_batch_ingest_cli_happy_path(monkeypatch, tmp_path):
@@ -2410,3 +2490,257 @@ def test_batch_ingest_cli_profile_option_passed_through(monkeypatch, tmp_path):
 def test_batch_ingest_cli_registration_shows_in_help():
     result = CliRunner().invoke(cli, ["cyl", "--help"])
     assert "batch-ingest-result" in result.output
+
+
+# --- the idempotency gate (sleap-roots-pipeline #76) -------------------------
+#
+# predict's .slp output is not byte-reproducible: the same scan, images, models and code SHAs
+# yield the SAME idempotency_key but DIFFERENT bytes. The object path embeds that key, so a
+# recompute writes different bytes to an occupied address and upload_blob refuses to overwrite.
+# The RPC would have made the re-delivery a benign no-op, but the strict upload ran first and
+# execution never reached it. These tests pin the gate that fixes the ordering.
+
+IDEM = ENVELOPE["provenance"]["idempotency_key"]
+
+
+class _PopulatedBucket:
+    """Objects already exist at every derived path, holding DIFFERENT bytes.
+
+    The #76 shape: predict recomputed at an unchanged idempotency_key, so the address is the
+    same but the bytes are not. `_ExistingBucket` holds only one path; the fixture manifest has
+    two artifacts, so a faithful reproduction needs both occupied.
+    """
+
+    def __init__(self, object_paths, existing_bytes=b"run A's bytes, not run B's"):
+        self.objects = dict.fromkeys(object_paths, existing_bytes)
+        self.downloads = []
+        self.uploads = []
+
+    def download(self, object_path):
+        self.downloads.append(object_path)
+        if object_path in self.objects:
+            return self.objects[object_path]
+        from storage3.exceptions import StorageApiError
+
+        raise StorageApiError("Object not found", "404", 404)
+
+    def upload(self, object_path, data):
+        self.uploads.append(object_path)
+        self.objects[object_path] = data
+
+
+def _occupied_paths(scan_key=SCAN_KEY, idem=IDEM):
+    return [
+        ing.blob_object_path(scan_key, idem, "predictions_slp", rt) for rt in ("primary", "crown")
+    ]
+
+
+def test_source_already_ingested_query_shape_and_true():
+    """Pins the literal query. Nothing else can: the fail-open catch turns a typo'd table or
+    column name into a silent False, which restores the bug in production with a green suite."""
+    client = _RecordingClient(rows=[{"id": 42}])
+    assert ing.source_already_ingested(client, IDEM) is True
+    assert client.queries == [
+        {"table": "cyl_trait_sources", "select": "id", "eq": [("idempotency_key", IDEM)], "limit": 1}
+    ]
+
+
+def test_source_already_ingested_empty_list_is_false():
+    """postgrest returns [] — never None — for a filter matching nothing. An implementation
+    written as `data is not None` would make EVERY first delivery a silent skip: no blobs
+    uploaded, no intermediates rows, exit 0 reporting success. Worse than the bug being fixed."""
+    client = _RecordingClient(rows=[])
+    assert ing.source_already_ingested(client, IDEM) is False
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        RuntimeError("boom"),
+        AttributeError("'object' object has no attribute 'table'"),
+        ConnectionError("transport died"),
+    ],
+)
+def test_source_already_ingested_fails_open_and_warns(exc, caplog):
+    """Fail open, but never silently: a swallowed 42501 on a column grant is exactly how
+    production came to hold zero rows against 84,748 stored videos
+    (tests/unit/test_cyl_scan_videos_grants.py). bloomctl configures no logging handler, so the
+    warning must be WARNING-level to reach logging.lastResort at all."""
+    client = _RecordingClient(raises=exc)
+    with caplog.at_level("WARNING"):
+        assert ing.source_already_ingested(client, IDEM) is False
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+    assert "grant" in caplog.text.lower()
+
+
+def test_ingest_one_envelope_skips_upload_when_already_ingested(tmp_path, monkeypatch):
+    """The #76 regression. Uses the REAL upload_pending_blobs against a bucket already holding
+    divergent bytes -- monkeypatching the upload is what let this bug ship in the first place."""
+    captured = {}
+    path = tmp_path / f"{SCAN_KEY}.result.json"
+    path.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+    predictions_root = tmp_path / "predictions"
+    _nested_predictions_dir(predictions_root, SCAN_KEY)
+
+    bucket = _PopulatedBucket(_occupied_paths())
+    client = _RecordingClient(rows=[{"id": 42}], bucket=bucket)
+
+    def cap(client, env, **_kw):
+        captured["env"] = env
+        return RESULT_NOOP
+
+    monkeypatch.setattr(ing, "call_insert_envelope", cap)
+
+    result = ing.ingest_one_envelope(client, path, predictions_dir=predictions_root)
+
+    assert result.status == "skipped"
+    assert bucket.uploads == []
+    assert bucket.downloads == []  # the gate short-circuits before upload_blob's existence probe
+    assert captured["env"]["blobs"] == []  # original array, unmerged
+
+
+def test_ingest_one_envelope_still_reads_manifest_when_already_ingested(tmp_path, monkeypatch):
+    """The gate deliberately sits AFTER manifest load and blob construction, so every existing
+    fail-fast guarantee still applies to a re-delivery. A mutant hoisting it earlier turns this
+    green -> red."""
+    path = tmp_path / f"{SCAN_KEY}.result.json"
+    path.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+    empty_predictions_root = tmp_path / "predictions"
+    (empty_predictions_root / SCAN_KEY).mkdir(parents=True)
+
+    client = _RecordingClient(rows=[{"id": 42}])
+    monkeypatch.setattr(
+        ing, "call_insert_envelope", lambda *a, **k: pytest.fail("RPC must not be reached")
+    )
+
+    result = ing.ingest_one_envelope(client, path, predictions_dir=empty_predictions_root)
+
+    assert result.status == "failed"
+    assert "predictions manifest not found" in result.error
+
+
+def test_cli_skips_upload_when_already_ingested(monkeypatch):
+    """Single-envelope command: same gate, and the CLI surface a caller actually sees."""
+    bucket = _PopulatedBucket(_occupied_paths())
+    client = _RecordingClient(rows=[{"id": 42}], bucket=bucket)
+    _patch_authed(monkeypatch, client)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda *a, **k: RESULT_NOOP)
+
+    res = CliRunner().invoke(
+        cli,
+        ["cyl", "ingest-result", str(FIXTURE), "--predictions-dir", str(PREDICTIONS_DIR), "--json"],
+    )
+
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.output)["was_noop"] is True
+    assert bucket.uploads == []
+
+
+def test_no_lookup_when_predictions_dir_is_omitted(monkeypatch):
+    """Pass-through mode must not gain a DB round-trip, nor a new fail-open surface."""
+    client = _patch_authed(monkeypatch)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda *a, **k: RESULT_OK)
+
+    res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
+
+    assert res.exit_code == 0, res.output
+    assert client.queries == []
+
+
+def test_no_lookup_when_idempotency_key_is_empty(monkeypatch, tmp_path):
+    """The empty-key guard must still fire first; `.eq("idempotency_key", "")` could otherwise
+    match a legacy row and turn a hard failure into a silent skip."""
+    envelope = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    envelope["provenance"]["idempotency_key"] = ""
+    path = tmp_path / f"{SCAN_KEY}.result.json"
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    client = _RecordingClient(rows=[{"id": 42}])
+    result = ing.ingest_one_envelope(client, path, predictions_dir=PREDICTIONS_DIR.parent)
+
+    assert result.status == "failed"
+    assert "idempotency_key" in result.error
+    assert client.queries == []
+
+
+def test_batch_skips_already_ingested_and_still_uploads_the_new_one(monkeypatch, tmp_path):
+    """A mixed batch: the already-ingested envelope must skip its upload without suppressing
+    the genuinely-new envelope's."""
+    ingested = "idem-scan_done"
+    uploaded = []
+
+    def resolver(key):
+        return [{"id": 1}] if key == ingested else []
+
+    def fake_upload(client, pending, *, scan_key, idempotency_key):
+        uploaded.append(scan_key)
+        for p in pending:
+            p.blob["s3_location"] = f"s3://x/{p.blob['root_type']}.slp"
+        return ing.BlobUploadReport(
+            [ing.BlobUploadOutcome(root_type=p.blob["root_type"], ok=True) for p in pending]
+        )
+
+    _patch_batch_authed(monkeypatch, _RecordingClient(rows=resolver))
+    monkeypatch.setattr(ing, "upload_pending_blobs", fake_upload)
+    monkeypatch.setattr(
+        ing,
+        "call_insert_envelope",
+        lambda client, env, **_kw: (
+            RESULT_NOOP if env["provenance"]["idempotency_key"] == ingested else RESULT_OK
+        ),
+    )
+
+    envelopes_dir = tmp_path / "envelopes"
+    envelopes_dir.mkdir()
+    _write_envelope(envelopes_dir, "scan_done")
+    _write_envelope(envelopes_dir, "scan_new")
+    predictions_root = tmp_path / "predictions"
+    _nested_predictions_dir(predictions_root, "scan_done")
+    _nested_predictions_dir(predictions_root, "scan_new")
+
+    result = CliRunner().invoke(
+        cli,
+        ["cyl", "batch-ingest-result", str(envelopes_dir), "--predictions-dir", str(predictions_root)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert uploaded == ["scan_new"]  # the already-ingested scan never reached the upload
+
+
+def test_batch_check_failure_is_isolated_and_does_not_fail_the_envelope(monkeypatch, tmp_path):
+    """Fail-open, per envelope: one lookup raising must not fail that envelope, nor leak into
+    the others. The envelope falls through to construct-and-upload exactly as without the gate."""
+    uploaded = []
+
+    def resolver(key):
+        if key == "idem-scan_broken":
+            raise RuntimeError("transport died")
+        return []
+
+    def fake_upload(client, pending, *, scan_key, idempotency_key):
+        uploaded.append(scan_key)
+        for p in pending:
+            p.blob["s3_location"] = f"s3://x/{p.blob['root_type']}.slp"
+        return ing.BlobUploadReport(
+            [ing.BlobUploadOutcome(root_type=p.blob["root_type"], ok=True) for p in pending]
+        )
+
+    _patch_batch_authed(monkeypatch, _RecordingClient(rows=resolver))
+    monkeypatch.setattr(ing, "upload_pending_blobs", fake_upload)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+
+    envelopes_dir = tmp_path / "envelopes"
+    envelopes_dir.mkdir()
+    _write_envelope(envelopes_dir, "scan_broken")
+    _write_envelope(envelopes_dir, "scan_fine")
+    predictions_root = tmp_path / "predictions"
+    _nested_predictions_dir(predictions_root, "scan_broken")
+    _nested_predictions_dir(predictions_root, "scan_fine")
+
+    result = CliRunner().invoke(
+        cli,
+        ["cyl", "batch-ingest-result", str(envelopes_dir), "--predictions-dir", str(predictions_root)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert sorted(uploaded) == ["scan_broken", "scan_fine"]

@@ -290,6 +290,51 @@ def blob_object_path(scan_key: str, idempotency_key: str, kind: str, root_type: 
     return "/".join([scan_key, idempotency_key, f"{kind}.{root_type}.slp"])
 
 
+def source_already_ingested(client: Any, idempotency_key: str) -> bool:
+    """True when ``cyl_trait_sources`` already holds ``idempotency_key``.
+
+    When it does, the RPC's ``ON CONFLICT (idempotency_key) DO NOTHING`` gate will discard this
+    delivery's ``blobs`` array without writing it, so uploading those blobs is pointless work
+    that can only fail: predict's ``.slp`` output is not byte-reproducible, so a recompute at an
+    unchanged key writes *different* bytes to the *same* address and ``upload_blob`` refuses to
+    overwrite (sleap-roots-pipeline#76).
+
+    Fails open — every exception yields ``False``, falling through to the existing
+    upload-then-RPC path, so behaviour is never worse than without the check. That matters
+    because the bloomctl image and the ``SELECT (idempotency_key)`` grant deploy independently;
+    a 42501 here simply means the grant has not landed yet. The catch is deliberately broad
+    rather than ``APIError``-only: a column-permission denial does arrive as ``APIError``, but a
+    transport fault (``httpx.ConnectError``, a read timeout) or an unexpected response body does
+    not, and none of them should fail an envelope.
+
+    Failing open *silently* is not acceptable, so this warns. A swallowed 42501 on a column
+    grant is precisely how ``_record_video`` left production holding zero rows against 84,748
+    stored videos (``tests/unit/test_cyl_scan_videos_grants.py``). ``warning``, not ``debug``:
+    bloomctl installs no logging handler, so only WARNING+ reaches ``logging.lastResort``.
+    """
+    try:
+        rows = (
+            client.table("cyl_trait_sources")
+            .select("id")
+            .eq("idempotency_key", idempotency_key)
+            .limit(1)
+            .execute()
+            .data
+            # postgrest returns [] (never None) for a filter matching nothing; `or []` keeps a
+            # None-ish body from reading as "already ingested", which would silently turn every
+            # FIRST delivery into a no-op that uploads nothing and still exits zero.
+            or []
+        )
+    except Exception as exc:  # noqa: BLE001 — see the docstring; every failure must fall open
+        logger.warning(
+            "idempotency-gate check failed (%s); falling back to upload-then-RPC — the "
+            "cyl_trait_sources.idempotency_key grant may be missing on this deployment",
+            exc,
+        )
+        return False
+    return bool(rows)
+
+
 def upload_blob(
     client: Any, local_path: str | Path, object_path: str, expected_checksum: str
 ) -> tuple[str, bool]:
@@ -652,18 +697,26 @@ def ingest_one_envelope(
             except BlobConstructionError as exc:
                 return ScanResult(scan_key, "failed", str(exc))
 
-            report = upload_pending_blobs(
-                client, pending, scan_key=scan_key, idempotency_key=idempotency_key
-            )
-            if not report.all_ok:
-                details = "; ".join(f"{o.root_type}: {o.error}" for o in report.failed)
-                return ScanResult(
-                    scan_key,
-                    "failed",
-                    f"blob upload failed for {len(report.failed)} of {len(report.outcomes)} "
-                    f"blob(s): {details}",
+            # The idempotency gate, deliberately HERE: after manifest load and
+            # build_pending_blobs (so a missing/malformed manifest, a missing .slp, an
+            # slp_path escaping predictions_dir, and a conflicting pre-existing blobs entry
+            # all still fail fast on a re-delivery exactly as on a first delivery) and before
+            # any bucket access. An already-ingested key means the RPC will discard this
+            # envelope's blobs anyway, so uploading them is work that can only fail once
+            # predict has recomputed them (sleap-roots-pipeline#76).
+            if not source_already_ingested(client, idempotency_key):
+                report = upload_pending_blobs(
+                    client, pending, scan_key=scan_key, idempotency_key=idempotency_key
                 )
-            data["blobs"] = [*(data.get("blobs") or []), *(p.blob for p in pending)]
+                if not report.all_ok:
+                    details = "; ".join(f"{o.root_type}: {o.error}" for o in report.failed)
+                    return ScanResult(
+                        scan_key,
+                        "failed",
+                        f"blob upload failed for {len(report.failed)} of {len(report.outcomes)} "
+                        f"blob(s): {details}",
+                    )
+                data["blobs"] = [*(data.get("blobs") or []), *(p.blob for p in pending)]
 
         from postgrest import APIError
 
@@ -815,7 +868,12 @@ def ingest_result(
 
     client = _authed_client(profile)
 
-    if predictions_dir is not None:
+    # The gate sits here, after _authed_client, rather than beside the manifest read above:
+    # it needs the client, and putting it earlier would force authentication ahead of blob
+    # construction, inverting the fail-fast-before-any-network-call discipline the comment
+    # above records. See ingest_one_envelope for why "after construction" is also the right
+    # place on its own merits.
+    if predictions_dir is not None and not source_already_ingested(client, idempotency_key):
         report = upload_pending_blobs(
             client, pending, scan_key=scan_key, idempotency_key=idempotency_key
         )
