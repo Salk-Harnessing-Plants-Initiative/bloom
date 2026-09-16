@@ -239,6 +239,13 @@ def build_pending_blobs(
                 f"artifact slp_path {artifact.slp_path!r} resolves outside "
                 f"predictions_dir ({predictions_dir}) — refusing to read it"
             )
+        # Existence is checked HERE, at construction, not only in verify_blob_checksum.
+        # verify_blob_checksum runs inside upload_pending_blobs, which the already-ingested
+        # gate skips — so without this a re-delivery whose .slp files are missing entirely
+        # would be reported as a benign no-op. One stat per artifact buys the guarantee that
+        # a manifest naming files that are not there always fails, re-delivery or not.
+        if not local_path.is_file():
+            raise BlobConstructionError(f"blob file not found: {local_path}")
         blob = {
             "kind": artifact.kind,
             "root_type": artifact.root_type,
@@ -290,7 +297,26 @@ def blob_object_path(scan_key: str, idempotency_key: str, kind: str, root_type: 
     return "/".join([scan_key, idempotency_key, f"{kind}.{root_type}.slp"])
 
 
-def source_already_ingested(client: Any, idempotency_key: str) -> bool:
+@dataclass(frozen=True)
+class GateResult:
+    """Outcome of the idempotency-gate check.
+
+    ``degraded_reason`` is non-empty when the check could not be answered and the caller fell
+    back to the unguarded path. That distinction is load-bearing twice over: it is what the
+    batch report surfaces so a missing grant cannot degrade silently, and it is what stops the
+    path-collision error from asserting "these bytes belong to no ingested result" when the
+    truth is only "we could not find out".
+    """
+
+    ingested: bool
+    degraded_reason: str = ""
+
+    @property
+    def degraded(self) -> bool:
+        return bool(self.degraded_reason)
+
+
+def source_already_ingested(client: Any, idempotency_key: str) -> GateResult:
     """True when ``cyl_trait_sources`` already holds ``idempotency_key``.
 
     When it does, the RPC's ``ON CONFLICT (idempotency_key) DO NOTHING`` gate will discard this
@@ -325,14 +351,22 @@ def source_already_ingested(client: Any, idempotency_key: str) -> bool:
             # FIRST delivery into a no-op that uploads nothing and still exits zero.
             or []
         )
-    except Exception as exc:  # noqa: BLE001 — see the docstring; every failure must fall open
-        logger.warning(
-            "idempotency-gate check failed (%s); falling back to upload-then-RPC — the "
-            "cyl_trait_sources.idempotency_key grant may be missing on this deployment",
-            exc,
+    except Exception as exc:  # every failure must fall open; see the docstring
+        reason = (
+            f"idempotency-gate check failed ({type(exc).__name__}: {exc}); fell back to "
+            "upload-then-RPC — the cyl_trait_sources.idempotency_key grant may be missing on "
+            "this deployment, in which case re-delivery of a recomputed scan still fails"
         )
-        return False
-    return bool(rows)
+        logger.warning("%s", reason)
+        return GateResult(ingested=False, degraded_reason=reason)
+    # `.data` is a list for every postgrest response shape we expect; anything else is treated
+    # as "cannot tell" rather than coerced, because a truthy non-list would read as "ingested"
+    # and silently suppress the upload.
+    if not isinstance(rows, list):
+        reason = f"idempotency-gate check returned an unexpected response shape ({type(rows).__name__})"
+        logger.warning("%s", reason)
+        return GateResult(ingested=False, degraded_reason=reason)
+    return GateResult(ingested=bool(rows))
 
 
 def upload_blob(
@@ -347,14 +381,13 @@ def upload_blob(
     with a *different* checksum, raises :class:`BlobConstructionError` rather
     than overwriting it.
 
-    Since ``source_already_ingested`` gates the upload, a divergent-checksum
-    collision no longer means "two different runs' bytes" in the ordinary
-    sense: an already-ingested key never reaches here. What remains reachable
-    is bytes belonging to no ingested source — a delivery that uploaded and
-    then died before the RPC, whose artifacts the producer has since recomputed
-    at the same key. Those cannot be distinguished from a referenced blob, so
-    they are never overwritten; recovery needs a DELETE on the bucket, which
-    ``bloom_workflows`` does not hold (see the raised message).
+    Since ``source_already_ingested`` gates the upload, a divergent-checksum collision is
+    reachable in four ways, not one: bytes orphaned by a delivery that died before the RPC;
+    bytes orphaned by a *partial* upload (this function's caller records per-blob failures and
+    continues); two concurrent deliveries at the same key; and — the likeliest in a deployment
+    whose grant has not landed — the gate failing open, in which case the key *is* ingested and
+    the bytes *are* referenced. Because the caller cannot tell those apart, nothing is ever
+    overwritten, and the raised message states the cause as inference rather than fact.
     """
     from storage3.exceptions import StorageApiError
 
@@ -377,11 +410,15 @@ def upload_blob(
         raise BlobConstructionError(
             f"object already exists at {object_path} with a different checksum "
             f"(existing={existing_checksum}, new={expected_checksum}) — refusing to overwrite. "
-            "The envelope's idempotency_key is not in cyl_trait_sources, so these bytes belong "
-            "to no ingested result — most likely a delivery that uploaded and then failed before "
-            "the RPC, whose predictions have since been recomputed. Recovery: have someone with "
-            "DELETE on the cyl-intermediates bucket (bloom_admin/service_role, or an operator via "
-            "Studio) remove that object, then re-run — bloom_workflows holds no DELETE there."
+            "Reaching this means the idempotency-gate check reported the key as absent — which "
+            "is also what it reports when it could not run at all (it fails open; look for a "
+            "preceding WARNING). So these bytes MAY belong to no ingested result — e.g. a "
+            "delivery that uploaded then failed before the RPC, whose predictions were later "
+            "recomputed — or they may be live bytes a cyl_scan_intermediates row still points "
+            "at. Confirm no row references this path before removing anything; deleting a "
+            "referenced object leaves that row resolving to a 404. Removal needs DELETE on the "
+            "cyl-intermediates bucket (bloom_admin, or an operator via Studio) — bloom_workflows "
+            "holds none."
         )
 
     data = Path(local_path).read_bytes()
@@ -681,6 +718,7 @@ def ingest_one_envelope(
 
         pending: list[PendingBlob] = []
         idempotency_key = ""
+        gate_warning = ""
         if predictions_dir is not None:
             idempotency_key = data["provenance"].get("idempotency_key") or ""
             if not idempotency_key:
@@ -719,7 +757,9 @@ def ingest_one_envelope(
             # any bucket access. An already-ingested key means the RPC will discard this
             # envelope's blobs anyway, so uploading them is work that can only fail once
             # predict has recomputed them (sleap-roots-pipeline#76).
-            if not source_already_ingested(client, idempotency_key):
+            gate = source_already_ingested(client, idempotency_key)
+            gate_warning = gate.degraded_reason
+            if not gate.ingested:
                 report = upload_pending_blobs(
                     client, pending, scan_key=scan_key, idempotency_key=idempotency_key
                 )
@@ -789,8 +829,8 @@ def ingest_one_envelope(
             )
 
         if result.get("was_noop"):
-            return ScanResult(scan_key, "skipped")
-        return ScanResult(scan_key, "ok")
+            return ScanResult(scan_key, "skipped", warning=gate_warning)
+        return ScanResult(scan_key, "ok", warning=gate_warning)
     except Exception as exc:  # batch isolation: any failure at any stage (an unreadable/corrupt
         # file, a contract-validation error, a blob problem, a transient network/auth error) must
         # never abort the rest of the batch. Deliberately covers the whole read->validate->blob->RPC
@@ -892,7 +932,17 @@ def ingest_result(
     # construction, inverting the fail-fast-before-any-network-call discipline the comment
     # above records. See ingest_one_envelope for why "after construction" is also the right
     # place on its own merits.
-    if predictions_dir is not None and not source_already_ingested(client, idempotency_key):
+    gate = (
+        source_already_ingested(client, idempotency_key)
+        if predictions_dir is not None
+        else GateResult(ingested=False)
+    )
+    if gate.degraded:
+        # stderr, not the logger: bloomctl installs no handler, so a logger.warning reaches
+        # only logging.lastResort with no formatter. The batch path surfaces this on the
+        # per-scan result instead; this command has no such envelope to hang it on.
+        click.echo(f"WARNING: {gate.degraded_reason}", err=True)
+    if predictions_dir is not None and not gate.ingested:
         report = upload_pending_blobs(
             client, pending, scan_key=scan_key, idempotency_key=idempotency_key
         )

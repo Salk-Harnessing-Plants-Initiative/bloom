@@ -384,7 +384,8 @@ def _patch_authed(monkeypatch, client=None):
 def _patch_authed_no_db(monkeypatch):
     """The historical `object()` client — no `.table()`, so the gate's lookup raises.
 
-    Kept deliberately for the fail-open test; everything else should use `_patch_authed`.
+    Used by the command-level fail-open test, which needs a client that cannot answer the
+    gate at all. Everything else should use `_patch_authed`.
     """
     monkeypatch.setattr(climod, "_authed_client", lambda profile: object())
 
@@ -878,8 +879,12 @@ def test_upload_blob_raises_on_path_collision():
     # SELECT/INSERT/UPDATE on cyl-intermediates and no DELETE, so "delete the object" is not
     # self-service. An actionable error that names an impossible action is not actionable.
     message = str(excinfo.value).lower()
-    assert "delete" in message
-    assert "bloom_admin" in message or "service_role" in message
+    assert "bloom_admin" in message
+    # The premise must be stated as inference, not fact: the gate fails open, so "key absent"
+    # and "could not check" are indistinguishable here. An operator who deletes a referenced
+    # object on the strength of a false premise leaves its row resolving to a 404.
+    assert "may belong" in message
+    assert "confirm no row references this path" in message
 
 
 def test_upload_pending_blobs_all_succeed():
@@ -1577,13 +1582,25 @@ def test_ingest_one_envelope_predictions_dir_missing_idempotency_key(monkeypatch
 
 def _nested_predictions_dir(base_dir, scan_key):
     """Copy the flat PREDICTIONS_DIR fixture into base_dir/{scan_key}/ (predict's own nested
-    batch-output layout)."""
+    batch-output layout).
+
+    The manifest's `slp_path` entries are rewritten alongside the filenames. They used to be
+    left pointing at the original scan_key's filenames, so for any scan_key != SCAN_KEY the
+    fixture described files that did not exist — invisible while `build_pending_blobs` never
+    touched the disk and the tests stubbed `upload_pending_blobs`.
+    """
     import shutil
 
     nested = base_dir / scan_key
     nested.mkdir(parents=True)
     for f in PREDICTIONS_DIR.iterdir():
-        shutil.copy(f, nested / f.name.replace(SCAN_KEY, scan_key))
+        target = nested / f.name.replace(SCAN_KEY, scan_key)
+        if f.suffix == ".json":
+            target.write_text(
+                f.read_text(encoding="utf-8").replace(SCAN_KEY, scan_key), encoding="utf-8"
+            )
+        else:
+            shutil.copy(f, target)
     return base_dir
 
 
@@ -2545,7 +2562,9 @@ def test_source_already_ingested_query_shape_and_true():
     """Pins the literal query. Nothing else can: the fail-open catch turns a typo'd table or
     column name into a silent False, which restores the bug in production with a green suite."""
     client = _RecordingClient(rows=[{"id": 42}])
-    assert ing.source_already_ingested(client, IDEM) is True
+    gate = ing.source_already_ingested(client, IDEM)
+    assert gate.ingested is True
+    assert gate.degraded is False
     assert client.queries == [
         {"table": "cyl_trait_sources", "select": "id", "eq": [("idempotency_key", IDEM)], "limit": 1}
     ]
@@ -2556,14 +2575,22 @@ def test_source_already_ingested_empty_list_is_false():
     written as `data is not None` would make EVERY first delivery a silent skip: no blobs
     uploaded, no intermediates rows, exit 0 reporting success. Worse than the bug being fixed."""
     client = _RecordingClient(rows=[])
-    assert ing.source_already_ingested(client, IDEM) is False
+    gate = ing.source_already_ingested(client, IDEM)
+    assert gate.ingested is False
+    assert gate.degraded is False, "an empty result is a real answer, not a degradation"
 
 
 @pytest.mark.parametrize(
     "exc",
     [
+        # The actual production trigger: a column-permission denial arrives through PostgREST
+        # as an APIError carrying 42501. This is the case the migration header, the rollback's
+        # safety note and the spec all name, and it was the one with no test.
+        _api_error("permission denied for column idempotency_key", code="42501"),
         RuntimeError("boom"),
         AttributeError("'object' object has no attribute 'table'"),
+        # A transport fault is NOT an APIError — this is what justifies the broad except, and
+        # what goes red if someone narrows it to APIError alone.
         ConnectionError("transport died"),
     ],
 )
@@ -2574,9 +2601,11 @@ def test_source_already_ingested_fails_open_and_warns(exc, caplog):
     warning must be WARNING-level to reach logging.lastResort at all."""
     client = _RecordingClient(raises=exc)
     with caplog.at_level("WARNING"):
-        assert ing.source_already_ingested(client, IDEM) is False
+        gate = ing.source_already_ingested(client, IDEM)
+    assert gate.ingested is False
+    assert gate.degraded is True, "a swallowed failure must be reportable, not just logged"
+    assert "grant" in gate.degraded_reason.lower()
     assert any(r.levelname == "WARNING" for r in caplog.records)
-    assert "grant" in caplog.text.lower()
 
 
 def test_ingest_one_envelope_skips_upload_when_already_ingested(tmp_path, monkeypatch):
@@ -2630,7 +2659,13 @@ def test_cli_skips_upload_when_already_ingested(monkeypatch):
     bucket = _PopulatedBucket(_occupied_paths())
     client = _RecordingClient(rows=[{"id": 42}], bucket=bucket)
     _patch_authed(monkeypatch, client)
-    monkeypatch.setattr(ing, "call_insert_envelope", lambda *a, **k: RESULT_NOOP)
+    captured = {}
+
+    def cap(client, env, **_kw):
+        captured["env"] = env
+        return RESULT_NOOP
+
+    monkeypatch.setattr(ing, "call_insert_envelope", cap)
 
     res = CliRunner().invoke(
         cli,
@@ -2640,6 +2675,9 @@ def test_cli_skips_upload_when_already_ingested(monkeypatch):
     assert res.exit_code == 0, res.output
     assert json.loads(res.output)["was_noop"] is True
     assert bucket.uploads == []
+    # Pins "SHALL NOT merge the constructed blobs" on THIS path too. Without it, moving the
+    # merge outside the gate survives the whole suite -- it was only pinned on the helper path.
+    assert captured["env"]["blobs"] == []
 
 
 def test_no_lookup_when_predictions_dir_is_omitted(monkeypatch):
@@ -2750,3 +2788,103 @@ def test_batch_check_failure_is_isolated_and_does_not_fail_the_envelope(monkeypa
 
     assert result.exit_code == 0, result.output
     assert sorted(uploaded) == ["scan_broken", "scan_fine"]
+
+
+def test_a_missing_slp_still_fails_when_already_ingested(tmp_path, monkeypatch):
+    """The gate sits after build_pending_blobs precisely so construction-time guarantees keep
+    applying to a re-delivery. A missing .slp was claimed as one of them but was not: the only
+    existence check lived in verify_blob_checksum, inside the skipped upload. This pins it."""
+    path = tmp_path / f"{SCAN_KEY}.result.json"
+    path.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+    predictions_root = tmp_path / "predictions"
+    _nested_predictions_dir(predictions_root, SCAN_KEY)
+    for slp in (predictions_root / SCAN_KEY).glob("*.slp"):
+        slp.unlink()
+
+    client = _RecordingClient(rows=[{"id": 42}])
+    monkeypatch.setattr(
+        ing, "call_insert_envelope", lambda *a, **k: pytest.fail("RPC must not be reached")
+    )
+
+    result = ing.ingest_one_envelope(client, path, predictions_dir=predictions_root)
+
+    assert result.status == "failed"
+    assert "blob file not found" in result.error
+
+
+def test_a_degraded_gate_is_surfaced_on_the_result_not_only_logged(monkeypatch, tmp_path):
+    """cyl-batch-ingest-result requires the fail-open to be "surfaced as a warning on that
+    envelope's reported result rather than only in a log". The log sink is unreadable in the
+    Argo deployment, which is the whole reason the requirement exists — so a logger.warning
+    alone does not satisfy it."""
+
+    def resolver(key):
+        raise RuntimeError("transport died")
+
+    def fake_upload(client, pending, *, scan_key, idempotency_key):
+        for p in pending:
+            p.blob["s3_location"] = f"s3://x/{p.blob['root_type']}.slp"
+        return ing.BlobUploadReport(
+            [ing.BlobUploadOutcome(root_type=p.blob["root_type"], ok=True) for p in pending]
+        )
+
+    _patch_batch_authed(monkeypatch, _RecordingClient(rows=resolver))
+    monkeypatch.setattr(ing, "upload_pending_blobs", fake_upload)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
+
+    envelopes_dir = tmp_path / "envelopes"
+    envelopes_dir.mkdir()
+    _write_envelope(envelopes_dir, "scan_degraded")
+    predictions_root = tmp_path / "predictions"
+    _nested_predictions_dir(predictions_root, "scan_degraded")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "cyl",
+            "batch-ingest-result",
+            str(envelopes_dir),
+            "--predictions-dir",
+            str(predictions_root),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload[0]["status"] == "ok"
+    assert "idempotency" in payload[0]["warning"].lower()
+    assert "grant" in payload[0]["warning"].lower()
+
+
+def test_cli_fails_open_and_warns_on_stderr_when_the_gate_cannot_answer(monkeypatch):
+    """The single-envelope command's "check itself fails" scenario had no command-level test.
+
+    A client with no `.table()` at all is the historical shape (and what a pre-grant deployment
+    effectively produces): the gate must fall through to the normal upload path, the envelope
+    must not be failed on account of the check, and the degradation must reach stderr —
+    bloomctl installs no logging handler, so a logger.warning alone is not visible.
+    """
+    uploaded = []
+
+    def fake_upload(client, pending, *, scan_key, idempotency_key):
+        uploaded.append(scan_key)
+        for p in pending:
+            p.blob["s3_location"] = f"s3://x/{p.blob['root_type']}.slp"
+        return ing.BlobUploadReport(
+            [ing.BlobUploadOutcome(root_type=p.blob["root_type"], ok=True) for p in pending]
+        )
+
+    _patch_authed_no_db(monkeypatch)
+    monkeypatch.setattr(ing, "upload_pending_blobs", fake_upload)
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda *a, **k: RESULT_OK)
+
+    res = CliRunner().invoke(
+        cli,
+        ["cyl", "ingest-result", str(FIXTURE), "--predictions-dir", str(PREDICTIONS_DIR)],
+    )
+
+    assert res.exit_code == 0, res.output
+    assert uploaded == [SCAN_KEY], "the gate must fall through to the real upload path"
+    assert "idempotency-gate check failed" in res.stderr
+    assert "grant" in res.stderr.lower()

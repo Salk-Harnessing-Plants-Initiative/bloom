@@ -168,8 +168,12 @@ def test_ingest_uploads_blobs_idempotently_and_rejects_checksum_mismatch(
     # inside the upload step, so on an already-ingested key the gate skips it and this leg would
     # exit 0 -- testing nothing. A never-ingested key is the only state in which client-side
     # verification is reachable at all.
-    fresh = json.loads(json.dumps(envelope))
-    fresh["provenance"]["idempotency_key"] = idem + "-corrupt-leg"
+    # A second envelope over the same seeded images. envelope_for gives inputs.images_checksum
+    # a fresh value per call, so the model DERIVES a different idempotency_key -- which is the
+    # only way to get a never-ingested key here. Hand-editing the key instead would be rejected:
+    # Provenance._fill_idempotency_key raises when a supplied key disagrees with the derived one,
+    # so the leg would die in validation without ever reaching checksum verification.
+    fresh, _fresh_idem = envelope_for(FIXTURE, envelope["provenance"]["inputs"]["image_ids"])
     fresh_path = tmp_path / "env_fresh.json"
     fresh_path.write_text(json.dumps(fresh), encoding="utf-8")
 
@@ -221,13 +225,24 @@ def test_ingest_rejects_a_genuine_storage_path_collision(seeded, authed_cli, tmp
     def die(*_a, **_kw):
         raise APIError({"message": "simulated write-back crash after upload"})
 
-    monkeypatch.setattr(ing, "call_insert_envelope", die)
-    r1 = CliRunner().invoke(
-        cli,
-        ["cyl", "ingest-result", str(path), "--predictions-dir", str(PREDICTIONS_DIR), "--json"],
-    )
-    assert r1.exit_code != 0, "the RPC was supposed to fail, leaving orphaned blobs"
-    monkeypatch.undo()
+    # Scoped context, NOT monkeypatch.undo(): `authed_cli` requests the same function-scoped
+    # monkeypatch fixture, so undo() would revert ITS patch of climod._authed_client too. The
+    # next invoke passes no -p, so it would fall back to DEFAULT_PROFILE ("prod") and run the
+    # upload and RPC against whatever ~/.bloom/credentials.txt points at.
+    with monkeypatch.context() as m:
+        m.setattr(ing, "call_insert_envelope", die)
+        r1 = CliRunner().invoke(
+            cli,
+            [
+                "cyl",
+                "ingest-result",
+                str(path),
+                "--predictions-dir",
+                str(PREDICTIONS_DIR),
+                "--json",
+            ],
+        )
+        assert r1.exit_code != 0, "the RPC was supposed to fail, leaving orphaned blobs"
 
     orphan_paths = [
         ing.blob_object_path(envelope["provenance"]["scan_key"], idem, "predictions_slp", rt)
