@@ -60,7 +60,7 @@ from runlock import ACTIONS_RUN_ENV, SKIP_MARKER, LockHeld, RunLock  # noqa: E40
 logger = logging.getLogger("bloom_box_object_backup")
 
 DEFAULT_STATE_DIR = "/data/bloom/box-object-backup"
-DEFAULT_WORKERS = 8
+DEFAULT_WORKERS = 4
 
 # Objects planned per pass. Big enough that the per-batch ledger lookup is
 # amortized, small enough that a seed run's memory stays flat.
@@ -333,10 +333,10 @@ def env_file_for(argv: list[str] | None) -> tuple[Path, bool]:
 def check_state_dir(args: argparse.Namespace, configured: str) -> None:
     """Refuse when the env file and the caller name different directories.
 
-    The workflow's cancel step and its summary both read this directory over
-    separate ssh connections that see no env file. Pointed elsewhere here, the
-    job would work while those two silently watched an empty one — a cancel
-    that stops nothing and a verdict that is never recovered.
+    The workflow's summary reads this directory over a separate ssh connection
+    that sees no env file. Pointed elsewhere here, the job would work while the
+    summary silently watched an empty one, and a lost verdict would never be
+    recovered.
     """
     if configured and str(args.state_dir) != configured:
         raise lib.BackupError(

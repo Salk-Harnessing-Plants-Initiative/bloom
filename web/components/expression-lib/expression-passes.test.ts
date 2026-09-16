@@ -54,9 +54,35 @@ describe("expressionPasses", () => {
   });
 });
 
+/** The shader's own inValuePass, run as JS: its body is plain arithmetic and ternaries. */
+function shaderInValuePass(): (expression: number, valuePass: number) => number {
+  const found = EXPRESSION_VERT.match(
+    /float inValuePass\(float expression, float valuePass\) \{([\s\S]*?)\n\s*\}/,
+  );
+  if (!found) throw new Error("the expression shader has no inValuePass");
+  return new Function("expression", "valuePass", found[1].replace(/\bfloat\s+/g, "")) as (
+    expression: number,
+    valuePass: number,
+  ) => number;
+}
+
 describe("the expression shader", () => {
-  it("takes the pass as a uniform and applies it to the raw value", () => {
+  it("takes the pass as a uniform", () => {
     expect(EXPRESSION_VERT).toContain("uniform float valuePass;");
-    expect(EXPRESSION_VERT).toContain("inValuePass(expression, valuePass)");
+  });
+
+  it("applies the same rule as inValuePass, for every pass and awkward values", () => {
+    const rule = shaderInValuePass();
+    for (const pass of Object.values(VALUE_PASS)) {
+      for (const value of [-1, 0, 1e-6, 0.5, 3, Number.NaN]) {
+        expect(rule(value, pass) === 1, `value ${value}, pass ${pass}`).toBe(inValuePass(value, pass));
+      }
+    }
+  });
+
+  it("keeps a cell only when it is in both the focus pass and the value pass", () => {
+    expect(EXPRESSION_VERT).toMatch(
+      /v_inPass = inFocusPass\(focus, focusMode\) \* inValuePass\(expression, valuePass\);/,
+    );
   });
 });

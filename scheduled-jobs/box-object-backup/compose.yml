@@ -1,0 +1,63 @@
+# The Box object backup: one container per run, removed by Docker when the run ends.
+# Its own project, so a deploy, `--remove-orphans` or the stack's `ps` never sees it.
+#
+# Run from a deploy tree (the staging tree until the main promotion):
+#   docker compose -f scheduled-jobs/box-object-backup/compose.yml \
+#     --env-file /data/bloom/production/.env.prod \
+#     run --rm -T --name box-object-backup-<tag> --user "$(id -u):$(id -g)" \
+#     box-object-backup --env prod --state-dir /data/bloom/box-object-backup --verify 50
+name: bloom-box-object-backup
+
+services:
+  box-object-backup:
+    # Pinned by digest, so production runs the image that was reviewed.
+    image: ghcr.io/salk-harnessing-plants-initiative/box-object-backup:sha-5a86d42@sha256:0bf6f3bf71ae816e4e9113bc2c8c32fcb93f41cf22bc9324a3e445e23ff8c167
+    init: true
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 1g
+    memswap_limit: 1g
+    # Room for the copies in flight, rclone's own stop and the report; a kill after it is survivable.
+    stop_grace_period: 120s
+    networks:
+      - prod
+    environment:
+      HOME: /tmp
+      OBJECT_BACKUP_RCLONE_CONFIG: /config/rclone/rclone.conf
+      # The same values db-prod and supabase-minio get, from the deploy's env file.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set, pass --env-file .env.prod}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is not set, pass --env-file .env.prod}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is not set, pass --env-file .env.prod}
+    volumes:
+      - type: bind
+        source: /data/bloom/box-object-backup
+        target: /data/bloom/box-object-backup
+        bind:
+          create_host_path: false
+      # Writable, because Box refresh tokens are single-use and rclone must save each new one.
+      # A folder of the job's own: rclone saves by renaming a temp file over rclone.conf.
+      - type: bind
+        source: /home/bloom-deploy/.config/rclone-box-object-backup
+        target: /config/rclone
+        bind:
+          create_host_path: false
+      # Settings come from the committed defaults, not the deploy env file, which holds the signing keys.
+      - type: bind
+        source: ../../.env.prod.defaults
+        target: /etc/box-object-backup/settings.env
+        read_only: true
+        bind:
+          create_host_path: false
+    entrypoint:
+      ["python3", "/app/backup_objects.py", "--env-file", "/etc/box-object-backup/settings.env"]
+
+networks:
+  prod:
+    external: true
+    name: bloom_v2_prod_supanet
