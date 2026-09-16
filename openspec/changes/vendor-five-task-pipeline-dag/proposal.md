@@ -42,10 +42,9 @@ to real values, not empty strings, which is also the first live confirmation tha
 `{{tasks.X.exitCode}}` resolves *through* Retry nodes on this controller — rejected it, and failed
 the Workflow correctly.
 
-**These results are recorded in upstream PR #75, which is OPEN.** They are not yet on
-`sleap-roots-pipeline`'s `main`, where 7.2, 7.4, 7.5, 7.6, 7.7, 7.8, 8.1, 8.2 and 9.1-9.4 all still
-read unchecked. Anyone verifying this proposal's claims against `main` alone will not find them;
-see `tasks.md` 1.2.
+**These results are recorded upstream in PR #75, merged 2026-09-16T18:50:18Z (`561d0571`).** On
+`sleap-roots-pipeline`'s `main` today 7.2, 7.3, 7.5, 7.6, 7.7, 7.8 and 9.1-9.4 all read `[x]`; only
+7.4 (split, its Bloom-side half blocked on this change), 8.1 (this PR) and 8.2 remain open.
 
 salk-bloom still vendors the **four-task** DAG, so every Bloom-dispatched run today gets none of
 this. Upstream's own §8.1 is "open the companion `salk-bloom` PR: copy the merged file byte-exact"
@@ -77,10 +76,10 @@ decision — deploy sequencing into a production-shared namespace — is covered
   at the pinned SHA, so the copy must not be reformatted, re-indented, or stripped of comments.
 - **The five WorkflowTemplates are NOT vendored** and are untouched by this change. They resolve
   via `templateRef` against the cluster at runtime. All five are registered in `runai-busch-lab`:
-  operator-observed 2026-09-16T17:19Z, with `sleap-roots-exit-gate-template` created
-  2026-09-16T02:39:01Z — 18 minutes after PR #60 merged. Upstream **`main`** still says otherwise
-  (task 7.2 unchecked; the roadmap's "returns four as of 2026-09-16"), because both predate the
-  02:39Z registration; PR #75 already corrects both on its branch. See `tasks.md` 1.2.
+  operator-observed 2026-09-16, with `sleap-roots-exit-gate-template` created
+  2026-09-16T02:39:01Z — 18 minutes after PR #60 merged — and all five confirmed **in sync with the
+  pin** by `scripts/check_registered_templates.py`. Upstream `main` agrees since PR #75 merged
+  (task 7.2 `[x]`, roadmap "five DAG tasks live as of 2026-09-16").
 - **Update the DAG-shape tests.**
   `services/workflows/tests/test_k8s_client.py::test_build_workflow_body_dag_references_all_four_templates_in_order`
   hardcodes four `templateRef` names and a four-long dependency chain. It is renamed to
@@ -92,12 +91,20 @@ decision — deploy sequencing into a production-shared namespace — is covered
   `cyl-pipeline-dispatch` spec's normative prose. Each → five.
 - **One one-word production change**, plus no others. `_load_vendored_workflow` calls
   `Path.read_text()` with no `encoding=`, so it decodes the vendored file with the platform locale
-  — `cp1252` on a Windows dev box, UTF-8 in the Linux container. Measured: the file has 42
-  non-ASCII bytes and `read_text() != raw.decode("utf-8")` locally. It is harmless *today* only
-  because every non-ASCII character sits in a comment that `yaml.safe_load` discards, which is why
-  nothing has ever failed. It becomes a real cross-platform divergence the moment upstream puts a
-  non-ASCII character in a *value*, and this change is precisely one that re-vendors that file. Fix:
-  `read_text(encoding="utf-8")`, in `k8s_client.py` and in the test fixture that mirrors it.
+  — `cp1252` on a Windows dev box, UTF-8 in the Linux container. Measured: the file holds **63
+  non-ASCII bytes / 21 characters** (only `—` and `→`), and `read_text() != raw.decode("utf-8")`
+  locally.
+
+  Today this is genuinely harmless, and for a more specific reason than "they're in comments":
+  cp1252 maps every byte the file actually contains, so the decode **silently mojibakes rather than
+  raising**, and since all 21 characters are in comments that `yaml.safe_load` discards, the parsed
+  result is identical either way. The real argument for fixing it is the failure that is one
+  upstream edit away: cp1252 leaves five bytes undefined (`0x81 0x8D 0x8F 0x90 0x9D`), none of which
+  appear here today. Were one to appear, `read_text()` would raise `UnicodeDecodeError` — which is
+  **not** an `OSError`, so it would escape `_load_vendored_workflow`'s `K8sConfigError` contract as
+  a raw traceback rather than the fail-fast misconfiguration error every other structural defect in
+  that file produces. Fix: `read_text(encoding="utf-8")`, in `k8s_client.py`, the test fixture that
+  mirrors it, and `scripts/check_vendored_workflow_drift.py`'s pin read.
 - **No other production code changes.** Verified by execution against the real upstream file, not
   argued: `build_workflow_body` passes the five-task DAG through unmodified and JSON-serializable.
   It applies its four overrides to `spec.arguments.parameters[0]` (still `scan-ids`, still the only
@@ -121,9 +128,10 @@ weaker form was demonstrated to miss a real mutation.
    three individual checks. `continueOn` on `exit-gate` makes the terminal leaf continuable and
    restores the original defect at the last hop; a per-task check does not catch it.
 3. **The gate's three exit-code parameters**, plus a cross-check that each `{{tasks.<name>}}`
-   reference names a task that actually exists. Renaming a producer while updating only the
-   dependency chain otherwise leaves a dangling reference that `dag.go` substitutes with
-   `allowUnresolved=true`.
+   reference names a task that actually exists. `argo lint` does reject a dangling reference
+   (measured, v3.6.5: `failed to resolve`, exit 1) — but this repo does not run it in CI, and the
+   raw Kubernetes API accepts the submission either way, so the unit assertion is the only
+   automatic guard.
 4. **The DAG is resolved through `spec.entrypoint`**, not `spec.templates[0]`, and exactly one
    template carries a `dag`. Indexing `[0]` passes even when a second, gateless template is
    appended and the entrypoint repointed at it.
@@ -224,6 +232,16 @@ so vendoring fixes it completely.
   re-process any manifest key lacking a result. This change is what makes the latch reachable
   (previously a partial producer killed the DAG so write-back never ran) — a known consequence of
   shipping this, not a regression introduced by it.
+
+  ⚠️ **The latch crosses environments: a *staging* run can latch *production*.** The three `a4_poc`
+  paths are hardcoded with no path parameter and are identical in the four- and five-task DAGs, so
+  prod and staging write-back read the same `run_manifest.json`. `continueOn` is precisely what
+  newly lets a staging partial producer reach write-back at all. Once a staging run leaves a
+  `scan_key` with no result there, **production's four-task write-back fails over the same tree**,
+  including prod runs whose own scans all succeeded. Checked 2026-09-16: the latch is **not armed**
+  — `a4_poc/input/run_manifest.json` holds 8 keys, all with results, mtime 2026-09-10, and the
+  poison scan is not among them. Upstream's §7.4a ran against a scratch tree, so it left nothing
+  behind.
 - **Run attribution in artifacts ([bloom#703](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/703)).**
   #703 is specifically that `batch-ingest-result` does not cross-check
   `RunManifest.pipeline_run_id` against envelope provenance, so results from one run can be ingested
@@ -253,10 +271,18 @@ so vendoring fixes it completely.
   string a dashboard, a downstream consumer, or a future agent branches on to decide whether an
   experiment's traits are whole, so the redefinition is written into the specs rather than left in
   a GitHub issue and a Non-Goals bullet.
-- **Affected code:** `services/workflows/vendored/sleap-roots-pipeline.yaml`,
-  `services/workflows/vendored/SLEAP_ROOTS_PIPELINE_REF`,
-  `services/workflows/tests/test_k8s_client.py`, `services/workflows/k8s_client.py` (docstring
-  only), `services/workflows/README.md` (docs only).
+- **Affected code:** `services/workflows/vendored/sleap-roots-pipeline.yaml` and
+  `SLEAP_ROOTS_PIPELINE_REF` (the vendoring); `services/workflows/k8s_client.py` (the docstring
+  correction **and** this change's one production edit, `read_text(encoding="utf-8")`);
+  `scripts/check_vendored_workflow_drift.py` (the same encoding fix on the pin read — so the fix
+  lands in **three** places, not two); `scripts/check_registered_templates.py` (new — makes
+  `tasks.md` 1.1's pre-merge gate reproducible instead of prose);
+  `services/workflows/tests/test_k8s_client.py` and `tests/test_status_poller.py` (tests);
+  `services/workflows/README.md` (consumer guidance, docs only); **`.pre-commit-config.yaml`**.
+  That last one is easy to miss when reverting and has teeth: it excludes the vendored directory
+  from `end-of-file-fixer`, which otherwise appends a newline (10,833 → 10,834 bytes, measured) and
+  flips the blocking drift check to "the vendored copy was hand-edited without bumping the pin" on
+  a file nobody edited. A revert that drops it re-arms that trap.
 - **Deploy semantics — the risky part of this change, not the diff.** Merging to `staging` **is**
   the deploy; there is no separate release step for the dispatch path. prod and staging
   deliberately share the `runai-busch-lab` namespace, disambiguated only by the

@@ -18,8 +18,9 @@ for that batch, not retried within the same claim.
 The constructed `spec` SHALL include every field the canonical vendored `sleap-roots-pipeline.yaml`
 defines — including `spec.volumes`, `spec.entrypoint`, and `spec.serviceAccountName` — not only the DAG
 task/`templateRef` structure. The worker SHALL NOT hand-build the `Workflow` body field-by-field in
-Python; it SHALL derive it from the vendored canonical source, per the loading-and-override mechanism
-defined in the `cyl-pipeline-dispatch` requirement covering the vendored canonical source.
+Python; it SHALL derive it from the vendored canonical source at
+`services/workflows/vendored/sleap-roots-pipeline.yaml`, whose pin is recorded in the sibling
+`SLEAP_ROOTS_PIPELINE_REF`, applying only the documented dispatch overrides on top of it.
 
 #### Scenario: A successful submission returns the generated Workflow name
 
@@ -123,6 +124,9 @@ therefore not evidence that any of the properties above hold.
 - **AND** each is valued `{{tasks.<task-name>.exitCode}}` for its corresponding producer, so a
   dropped or miswired parameter cannot reach the gate as an unresolved literal
 - **AND** every producer the gate references is a task that exists in the DAG and is an ancestor of
-  `exit-gate`, which is what makes the reference resolvable at submit time — Argo's
-  `validateDAGTaskArgumentDependency` rejects a non-ancestor reference, but cannot see a reference
-  to a task that was renamed out from under it
+  `exit-gate`, which is what makes the reference resolvable. `argo lint` rejects both a
+  non-ancestor reference and a reference to a task that does not exist (measured with v3.6.5:
+  renaming a producer while leaving the gate's `{{tasks.<old>.exitCode}}` stale gives
+  `failed to resolve`, exit 1) — but this repository does not run `argo lint` in CI, and the raw
+  Kubernetes API accepts the submission regardless, so the assertion is this pipeline's only
+  automatic guard against it

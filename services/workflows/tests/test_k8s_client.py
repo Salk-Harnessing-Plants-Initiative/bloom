@@ -508,9 +508,10 @@ def test_build_workflow_body_exit_gate_receives_producer_exit_codes():
         "predictor-code": "{{tasks.predictor.exitCode}}",
         "trait-extractor-code": "{{tasks.trait-extractor.exitCode}}",
     }
-    # Every referenced task must actually exist: renaming a producer while
-    # updating only the dependency chain leaves a dangling reference that dag.go
-    # substitutes with allowUnresolved=true, so it reaches the gate as a literal.
+    # Every referenced task must actually exist. `argo lint` does catch a
+    # dangling reference (v3.6.5: "failed to resolve", exit 1) — but this repo
+    # does not run it in CI, and the raw Kubernetes API accepts the submission
+    # either way, so this assertion is the only automatic guard.
     referenced = {
         v.removeprefix("{{tasks.").removesuffix(".exitCode}}") for v in params.values()
     }

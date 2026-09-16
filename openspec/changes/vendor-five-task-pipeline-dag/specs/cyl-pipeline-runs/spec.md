@@ -24,6 +24,10 @@ dispatched, set by `update_cyl_pipeline_run_status` (the `cyl-pipeline-status-po
 `'partial'` and `'failed'` are each reused across both dispatch-level and pipeline-level meaning
 rather than given separate values.
 
+*(The clause that used to end this paragraph — "since both describe 'some or all scans got no useful
+pipeline result' regardless of which stage produced that outcome" — is deliberately removed, not
+lost. The exit gate falsifies it: `'complete'` now describes that outcome too. Do not restore it.)*
+
 **`status` is a batch-level outcome and SHALL NOT be read as a per-scan completeness guarantee.**
 Since the pipeline DAG gained its terminal exit gate, a batch in which `images-downloader` isolated
 some scans' failures and staged the rest exits `3`, the gate accepts that code, and the batch's

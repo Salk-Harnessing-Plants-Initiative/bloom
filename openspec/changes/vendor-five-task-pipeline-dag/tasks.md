@@ -8,7 +8,7 @@
       1. `fix-argo-workflow-vendoring` (28/28, unarchived) — same `cyl-pipeline-dispatch`
          requirement. This change's MODIFIED block already carries its text forward (the
          `spec.volumes`/`entrypoint`/`serviceAccountName` paragraph and its volumes scenario).
-      2. `fix-cyl-pipeline-run-scan-status` (56/64, unarchived, **but its migrations are already on
+      2. `fix-cyl-pipeline-run-scan-status` (64/72, unarchived, **but its migrations are already on
          `staging`**) — same `cyl_pipeline_runs table` requirement. This change's MODIFIED block now
          carries its text forward too (the poller-maintained `done_count`/`failed_count` prose and
          its `done_count and failed_count reflect real per-scan outcomes` scenario). This one has a
@@ -29,29 +29,29 @@
       `WorkflowTemplate` (`created (server dry run)`, exit 0), because resolution is the Argo
       controller's job and this worker POSTs to the raw K8s API, not the Argo Server. So nothing
       downstream catches a registration defect until the run has already failed.
-      For **each of the five** templates, diff the registered object against the pinned upstream
-      file (task 5.4 already downloads all five):
+      **Run the committed comparator, do not eyeball a `kubectl` diff:**
       ```
-      wsl -e bash -c 'export PATH=$HOME/bin:/usr/local/bin:$PATH; export KUBECONFIG=~/.kube/kubeconfig-runai-busch-lab-argo-user.yaml; kubectl get workflowtemplate <name> -n runai-busch-lab -o yaml'
+      wsl -e bash -c 'export PATH=$HOME/bin:/usr/local/bin:$PATH; export KUBECONFIG=~/.kube/kubeconfig-runai-busch-lab-argo-user.yaml; cd /mnt/c/repos/salk-bloom && python3 scripts/check_registered_templates.py'
       ```
-      A full-YAML diff — not a `jsonpath` on `inputs.parameters` — because it covers in one command
-      the things that actually break dispatch or defeat the gate: the **inner `template:` name**
-      (the vendored DAG resolves `templateRef: {name: …-exit-gate-template, template: exit-gate}`,
-      and a wrong inner name is the single most likely registered-object defect — an
-      `inputs.parameters` check passes straight through it), the declared inputs, the gate's
-      `timeout: 600s`, its `retryStrategy`, its `resources`, and the image pins.
-      **Record all three bloomctl image references** (gate, images-downloader, write-back). The gate
-      is pinned to `bloomctl:sha-0614889` (PR #774); `images-downloader` must be running a bloomctl
-      containing **PR #830** or exit `3` is never emitted at all — in which case every check in this
-      change passes, the deploy looks clean, and partial failures still fail whole runs.
-      ⚠️ **Normalize before comparing, or every template reports a false DRIFT.** The API server
-      defaults empty keys onto every stored object — `spec.arguments: {}`, `container.name: ""`,
-      `metadata: {}`, `outputs: {}` — none of which are in the pinned source. A naive
-      `pinned["spec"] == live["spec"]` reports DRIFT on all five. Ignore those four keys, or compare
-      only the fields listed above.
+      It compares all five registered objects against the pinned upstream and prints each image pin.
+      It exists because prose is not a reproducible gate: the API server defaults empty keys onto
+      every stored object **and canonicalises CPU quantities**, so a naive
+      `pinned["spec"] == live["spec"]` reports DRIFT on templates that are perfectly in sync.
+      Measured, the normalisations needed at `spec` level are **six**, not the four an earlier draft
+      of this task listed: `arguments`/`inputs`/`outputs`/`metadata` when empty, `container.name`
+      when `""`, and `cpu: "0.5"` → `"500m"` (on `images-downloader` and `write-back`). `exit-gate`
+      escapes the `inputs` default only because it declares three parameters — which is exactly why
+      it was the one template an under-normalised check made look clean. An operator who learns to
+      wave four false DRIFTs through will wave a real one through with them, and the defect that
+      matters most here — a wrong inner `template:` name — cannot fail at submit.
+      **Record all three bloomctl image references** (gate, images-downloader, write-back); the
+      script prints them. The gate is pinned to `bloomctl:sha-0614889` (PR #774);
+      `images-downloader` must be running a bloomctl containing **PR #830** or exit `3` is never
+      emitted at all — in which case every check in this change passes, the deploy looks clean, and
+      partial failures still fail whole runs.
 
-      **RUN 2026-09-16T17:19Z–17:5xZ. All five IN SYNC with the pin, modulo the server defaults
-      above. No real drift.** Recorded because "verified" is not a result:
+      **RUN 2026-09-16. All five IN SYNC with the pin, exit 0. No real drift.** Recorded because
+      "verified" is not a result:
       | template | image | notable |
       |---|---|---|
       | `images-downloader` | `bloomctl:sha-0614889` | `retryStrategy{limit:2, Always}` |
@@ -68,17 +68,14 @@
       is not inert.
 
       **Re-run immediately before merge** (task 7.5). Record actual output, not the word "verified".
-- [ ] 1.2 **Upstream PR #75 (`record-section7-results`, OPEN) records the §7 results this proposal
-      cites** — 7.2 applied, 7.4a run, 7.5 passed, and **7.6, 7.7 and 7.8 measured**. None of it is
-      on upstream `main`, where **7.2, 7.4, 7.5, 7.6, 7.7, 7.8, 8.1, 8.2 and 9.1-9.4 all read
-      unchecked**, so a reviewer checking `main` alone will not find any of it. **7.7
-      (`srp-t77-redeliver-t82vr`) matters most**: it is the sole evidence for the "#76 does not
-      endanger §8" argument, and it exists only in #75.
-      #75 changes `docs/bloom-integration/roadmap.md` as well as `tasks.md`, and on that branch the
-      roadmap's "`argo template list` returns four as of 2026-09-16" is already corrected to five,
-      and upstream 9.1-9.4 are already `[x]`. Those are stale on `main` only — nothing for this PR
-      to chase. Track #75; if it changes materially before this merges, re-check `proposal.md`'s
-      Why and Non-Goals against it.
+- [x] 1.2 **RESOLVED: upstream PR #75 merged 2026-09-16T18:50:18Z (`561d0571`).** It records the §7
+      results this change cites — 7.2 applied, 7.4a run, 7.5 passed, 7.6/7.7/7.8 measured — plus the
+      §9 roadmap closeouts, and it also corrected the roadmap's "`argo template list` returns four".
+      On upstream `main` today 7.2, 7.3, 7.5, 7.6, 7.7, 7.8 and 9.1-9.4 all read `[x]`; only 7.4
+      (split, its Bloom-side half blocked on this PR), 8.1 (this PR) and 8.2 remain open. So the
+      earlier advice — "check #75's branch, not `main`" — has inverted: `main` is now the source of
+      truth, and `proposal.md` has been updated accordingly. This is the case this task anticipated
+      ("if it changes materially before this merges, re-check") actually firing.
 
 ## 2. TDD red — prove the tests fail against the current four-task DAG
 
@@ -124,8 +121,10 @@ demonstrated, by running it, to miss a real mutation.
       Not `next(...)` — that raises `StopIteration` on the four-task file, which 2.9 explicitly
       forbids, and it would also miss a *duplicated* `exit-gate` task. Assert the three parameter
       names and their `{{tasks.<name>.exitCode}}` values, **and** cross-check that every referenced
-      task name exists in the DAG — renaming a producer while updating only the dependency chain
-      otherwise leaves a dangling reference that `dag.go` substitutes with `allowUnresolved=true`.
+      task name exists in the DAG. `argo lint` does reject a dangling reference (measured, v3.6.5:
+      renaming a producer and leaving the gate's reference stale gives `failed to resolve`, exit 1)
+      — but this repo does not run it in CI and the raw Kubernetes API accepts the submission
+      regardless, so this assertion is the only automatic guard.
 - [x] 2.6 Add the assertions §2 currently makes about **nothing**, pinned to **literals** rather
       than to the vendored file — comparing the built body against the file it was built from is
       what makes the four existing "preserves…" tests tautological.
