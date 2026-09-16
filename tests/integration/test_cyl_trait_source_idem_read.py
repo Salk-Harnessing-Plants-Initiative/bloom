@@ -131,12 +131,37 @@ def test_the_granted_column_set_is_exactly_the_three_expected(pg_conn):
         "DELETE FROM cyl_trait_sources",
     ],
 )
-def test_the_grant_confers_no_write_access(pg_conn, statement):
-    """insert_cyl_result_envelope stays the sole writer of the trait tables."""
+def test_a_write_as_the_role_is_refused(pg_conn, statement):
+    """insert_cyl_result_envelope stays the sole writer of the trait tables.
+
+    Note what this does NOT prove on its own: an RLS denial and a missing-grant denial are both
+    SQLSTATE 42501, and this table's only INSERT policy is `TO authenticated`, which this role
+    is not. So this would keep passing even if someone granted INSERT outright. The privilege
+    assertion below is the one that actually pins it; this one pins the observable behaviour.
+    """
     with pg_conn.cursor() as cur:
         cur.execute(f"SET LOCAL ROLE {ROLE}")
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             cur.execute(statement)
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize(
+    "privilege", ["INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"]
+)
+def test_the_role_holds_no_write_privilege_at_the_acl_layer(pg_conn, privilege):
+    """The check the behavioural test above cannot make.
+
+    `has_table_privilege` answers from the ACL regardless of RLS, of who is connected, and of
+    how the privilege was acquired — so it catches a table-level grant, a grant via PUBLIC, and
+    a grant inherited through role membership, which a statement-level 42501 cannot distinguish
+    from an RLS refusal.
+    """
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT has_table_privilege(%s, 'public.cyl_trait_sources', %s)", (ROLE, privilege)
+        )
+        assert cur.fetchone()[0] is False, f"{ROLE} gained {privilege} on cyl_trait_sources"
     pg_conn.rollback()
 
 
