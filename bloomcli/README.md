@@ -503,7 +503,8 @@ file's structure:
   be the index); the same for genes, in whatever form the species' annotation
   writes them
 - `X` holds only finite values
-- one `obsm` array has two columns and a row per cell (the UMAP)
+- `obsm['X_umap']` has two columns and a row per cell, holds only finite coordinates, and does
+  not put every cell on one point — the same rules the loader applies
 - `layers['counts']`, when present, matches `X`'s shape and holds no negative value
 - `uns['normalization']` says how `X` was made:
   `transform` (`log1p`, `log2p`, `none`), `scaling` (`library_size`, `none`,
@@ -511,10 +512,12 @@ file's structure:
   optionally `counts_layer`. A file a dataset was loaded from before this existed
   is accepted without the block when that dataset records it.
 
-It then gzips the file and sends it through storage's resumable upload. If the
-connection drops, run the same command again: the gzipped copy and the upload's
-address wait in `~/.bloom/scrna-uploads/` and the transfer continues from the
-last byte storage received. A file already stored is reported and not sent again.
+It then gzips the file and sends it through storage's resumable upload, and reports success
+only once storage confirms the object is stored. If the connection drops, run the same
+command again: the gzipped copy and what identifies the upload wait in
+`~/.bloom/scrna-uploads/`, and the transfer continues from the last byte storage received.
+An upload recorded for another server, or for a gzipped copy that has since been rewritten,
+is started afresh rather than resumed. A file already stored is reported and not sent again.
 
 **Download** needs any login. It streams the object, decompresses it and checks
 its SHA-256 as it goes, and moves the file into place only when the fingerprint

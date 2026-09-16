@@ -114,12 +114,69 @@ def test_an_index_shorter_than_x_is_refused(tmp_path):
     _refused(write_h5ad(tmp_path / "f.h5ad", obs_ids=["a", "b"]), "2 cell IDs for 3 rows of X")
 
 
-def test_a_file_without_a_two_column_obsm_array_is_refused(tmp_path):
-    _refused(write_h5ad(tmp_path / "f.h5ad", obsm={"X_pca": (3, 5)}), "no obsm array")
+def test_a_file_whose_umap_is_not_named_x_umap_is_refused(tmp_path):
+    """The loader reads obsm['X_umap'] by name; another two-column array is not it."""
+    _refused(write_h5ad(tmp_path / "f.h5ad", obsm={"spatial": (3, 2)}), r"obsm\['X_umap'\]")
 
 
-def test_an_obsm_array_with_the_wrong_row_count_does_not_count(tmp_path):
-    _refused(write_h5ad(tmp_path / "f.h5ad", obsm={"X_umap": (2, 2)}), "no obsm array")
+def test_an_obsm_array_with_the_wrong_row_count_is_refused(tmp_path):
+    _refused(write_h5ad(tmp_path / "f.h5ad", obsm={"X_umap": (2, 2)}), r"obsm\['X_umap'\]")
+
+
+def test_a_umap_with_more_than_two_columns_is_refused(tmp_path):
+    _refused(write_h5ad(tmp_path / "f.h5ad", obsm={"X_umap": (3, 3)}), r"obsm\['X_umap'\]")
+
+
+def test_a_umap_holding_a_non_finite_coordinate_is_refused(tmp_path):
+    coordinates = np.array([[0.0, 1.0], [2.0, np.nan], [4.0, 5.0]], dtype=np.float32)
+    _refused(write_h5ad(tmp_path / "f.h5ad", umap=coordinates), "not finite")
+
+
+def test_a_umap_that_puts_every_cell_on_one_point_is_refused(tmp_path):
+    """An embedding that was never filled in; the loader refuses it too."""
+    _refused(write_h5ad(tmp_path / "f.h5ad", umap=np.zeros((3, 2), dtype=np.float32)),
+             "same point")
+
+
+# --- malformed files say so, rather than raising ------------------------------
+
+
+def _break(path, edit):
+    import h5py
+
+    with h5py.File(path, "r+") as f:
+        edit(f)
+    return path
+
+
+def test_a_matrix_without_its_shape_says_so(tmp_path):
+    path = _break(write_h5ad(tmp_path / "f.h5ad"), lambda f: f["X"].attrs.__delitem__("shape"))
+    _refused(path, "X")
+
+
+def test_a_matrix_without_its_values_says_so(tmp_path):
+    path = _break(write_h5ad(tmp_path / "f.h5ad"), lambda f: f["X"].__delitem__("data"))
+    _refused(path, "X")
+
+
+def test_an_index_stored_another_way_says_so(tmp_path):
+    def as_categorical(f):
+        del f["obs"]["_index"]
+        group = f["obs"].create_group("_index")
+        group.attrs["encoding-type"] = "categorical"
+        group.create_dataset("categories", data=np.array(["a", "b"], dtype=object),
+                             dtype=__import__("h5py").string_dtype())
+        group.create_dataset("codes", data=np.array([0, 1, 0], dtype=np.int8))
+
+    _refused(_break(write_h5ad(tmp_path / "f.h5ad"), as_categorical), "obs")
+
+
+def test_a_normalization_field_holding_many_values_says_so(tmp_path):
+    def many(f):
+        del f["uns"]["normalization"]["target_sum"]
+        f["uns"]["normalization"].create_dataset("target_sum", data=np.array([1, 2, 3]))
+
+    _refused(_break(write_h5ad(tmp_path / "f.h5ad"), many), "normalization")
 
 
 def test_a_counts_layer_of_another_shape_is_refused(tmp_path):

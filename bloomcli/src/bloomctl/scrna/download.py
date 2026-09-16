@@ -89,6 +89,10 @@ def download(dataset: str | None, fingerprint: str | None, out: Path | None, pro
             f"the download stopped: {str(exc) or type(exc).__name__}. Nothing was saved; run it "
             "again."
         ) from exc
+    except OSError as exc:
+        raise click.ClickException(
+            f"could not write {dest}: {exc.strerror or exc}. Nothing was saved."
+        ) from exc
     finally:
         tmp.unlink(missing_ok=True)
     click.echo(f"Downloaded {dest}\n  fingerprint  {fingerprint}")

@@ -33,6 +33,10 @@ class NotStored(TransferError):
     """No object with this name is stored."""
 
 
+class SessionExpired(TransferError):
+    """Storage refused the request because this session is no longer valid."""
+
+
 class Endpoint(NamedTuple):
     api_url: str
     anon_key: str
@@ -66,11 +70,27 @@ def _duplicate(response: httpx.Response) -> bool:
     )
 
 
+def _session_expired(response: httpx.Response) -> bool:
+    """Storage answers a caller whose session is no longer valid much as it answers a missing
+    object, so the message is the only signal — the same trap `_storage.py` documents."""
+    from .._storage import looks_like_expired_session
+
+    return looks_like_expired_session(RuntimeError(response.text))
+
+
+def _refuse_if_expired(response: httpx.Response) -> None:
+    if _session_expired(response):
+        raise SessionExpired(
+            "your session is no longer valid — log in again (`bloomctl login`) and retry"
+        )
+
+
 def object_exists(http: httpx.Client, ep: Endpoint, bucket: str, path: str) -> bool:
     response = http.head(ep.url(f"object/authenticated/{bucket}/{path}"), headers=ep.headers())
     if response.status_code == 200:
         return True
     if response.status_code in (400, 404):
+        _refuse_if_expired(response)
         return False
     raise TransferError(f"storage answered {response.status_code} when looking for {bucket}/{path}")
 
@@ -99,14 +119,35 @@ def create_upload(http: httpx.Client, ep: Endpoint, bucket: str, path: str, size
     return ep.url("upload/resumable/" + location.rstrip("/").rsplit("/", 1)[-1])
 
 
+def upload_id_of(url: str) -> str:
+    """The upload's id inside its address."""
+    return url.rstrip("/").rsplit("/", 1)[-1]
+
+
+def resumable_url(ep: Endpoint, upload_id: str) -> str:
+    return ep.url(f"upload/resumable/{upload_id}")
+
+
+def _offset_header(response: httpx.Response) -> int:
+    try:
+        return int(response.headers["upload-offset"])
+    except (KeyError, ValueError) as exc:
+        raise TransferError("storage did not say how many bytes it holds (upload-offset)") from exc
+
+
 def upload_offset(http: httpx.Client, ep: Endpoint, url: str) -> int | None:
-    """Bytes the server holds for an upload, or None when it no longer knows the upload."""
+    """Bytes the server holds for an upload, or None when this session cannot resume it.
+
+    Anything but a plain answer means starting a new upload: an upload the server has forgotten
+    (404/410) and one this session may not ask about (401/403) both leave nothing to resume, and
+    failing instead would wedge every later run on a record the user cannot see.
+    """
     response = http.head(url, headers=ep.headers({"Tus-Resumable": TUS_VERSION}))
-    if response.status_code in (404, 410):
+    if response.status_code in (401, 403, 404, 410):
         return None
-    if response.status_code != 200 or "upload-offset" not in response.headers:
+    if response.status_code != 200:
         raise TransferError(f"storage answered {response.status_code} for the upload's progress")
-    return int(response.headers["upload-offset"])
+    return _offset_header(response)
 
 
 def send(
@@ -117,11 +158,16 @@ def send(
     offset: int,
     size: int,
     on_progress: Callable[[int, int], None] | None = None,
-) -> None:
-    """Send ``source`` from ``offset`` to the end, one chunk per request."""
+) -> int:
+    """Send ``source`` from ``offset`` to the end, one chunk per request.
+
+    Returns the bytes storage acknowledged. Each chunk starts where storage says it is, not
+    where the last read finished: it may keep fewer bytes than were sent, and continuing from
+    the wrong place would store an object that is not the file its name claims.
+    """
     with source.open("rb") as fh:
-        fh.seek(offset)
         while offset < size:
+            fh.seek(offset)
             chunk = fh.read(CHUNK_BYTES)
             if not chunk:
                 raise TransferError(f"{source} is shorter than the upload it belongs to")
@@ -141,9 +187,16 @@ def send(
                     f"storage refused bytes {offset:,} to {offset + len(chunk):,} "
                     f"({response.status_code}): {response.text[:200]}"
                 )
-            offset = int(response.headers.get("upload-offset", offset + len(chunk)))
+            acknowledged = _offset_header(response)
+            if acknowledged <= offset or acknowledged > size:
+                raise TransferError(
+                    f"storage acknowledged {acknowledged:,} bytes of {size:,} after "
+                    f"{offset:,} were already sent"
+                )
+            offset = acknowledged
             if on_progress:
                 on_progress(offset, size)
+    return offset
 
 
 def download_to(http: httpx.Client, ep: Endpoint, bucket: str, path: str, dest: Path) -> str:
@@ -154,6 +207,8 @@ def download_to(http: httpx.Client, ep: Endpoint, bucket: str, path: str, dest: 
         "GET", ep.url(f"object/authenticated/{bucket}/{path}"), headers=ep.headers()
     ) as response:
         if response.status_code in (400, 404):
+            response.read()  # a streamed response holds nothing until it is read
+            _refuse_if_expired(response)
             raise NotStored(f"{bucket}/{path}")
         if response.status_code != 200:
             raise TransferError(f"storage answered {response.status_code} for {bucket}/{path}")
