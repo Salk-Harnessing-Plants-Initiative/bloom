@@ -117,8 +117,9 @@ and for each claimed batch:
 1. Constructs a `Workflow` CRD (`k8s_client.build_workflow_body`) by loading a
    vendored, CI-drift-checked copy of `sleap-roots-pipeline`'s canonical
    `sleap-roots-pipeline.yaml` (`vendored/sleap-roots-pipeline.yaml`, pin
-   recorded in the sibling `SLEAP_ROOTS_PIPELINE_REF` — kept in sync with
-   upstream by a CI job, not hand-copied; see bloom #737) and applying exactly
+   recorded in the sibling `SLEAP_ROOTS_PIPELINE_REF` — a CI job checks the copy
+   against the *pinned commit*, which catches "the copy and the pin disagree",
+   not "upstream has moved on"; see bloom #737) and applying exactly
    four overrides on top of it: the batch's own `scan-ids`; attribution
    labels — `submitted-by: bloom-pipeline`/`pipeline-run-id`/`batch-index`/
    `environment`, **merged** into the vendored file's own labels rather than
@@ -233,6 +234,45 @@ specified normatively in the `cyl-pipeline-status-polling` OpenSpec capability
 spec's "Rollup rule..." requirement — not restated here. See that change's
 `design.md` for why the computation happens in Python rather than SQL (a
 deliberate departure from Phase 2's own "aggregate in SQL" precedent).
+
+### Reading a run's outcome: use the counts, not `status`
+
+**If you are building a UI or any other consumer over `cyl_pipeline_runs`, read
+this section first.** `status` is a *batch-level* outcome. It answers "did the
+Argo Workflows reach a terminal success phase", not "did every requested scan
+produce a result", and the two diverged when the pipeline DAG gained its
+terminal exit gate (`sleap-roots-pipeline#56`). Branch on
+`done_count`/`failed_count`, or on the per-scan `cyl_pipeline_run_scans` rows.
+Concretely:
+
+- **`'complete'` does not imply `failed_count == 0`.** A producer that isolates
+  some scans' failures and completes the rest exits `3`; the gate accepts that
+  code, so the Workflow is `Succeeded` and the run is `'complete'` — with real
+  failures in `failed_count`.
+- **`'complete'` does not even imply that *any* scan succeeded.** The exit code
+  has no floor: one scan failing and every scan failing both exit `3`. A
+  totally-failed batch therefore reads `'complete'` with `done_count = 0`. This
+  is the case most likely to mislead a UI, because it is exactly what a shared
+  mount being unavailable or a credential being revoked looks like.
+- **`'failed'` does not imply nothing was written.** Each envelope's per-scan
+  `'written'` update commits in its own transaction, so a write-back that
+  ingested some scans and then exited non-zero leaves `done_count > 0` on a
+  `'failed'` run. An automated consumer that re-dispatches on `'failed'` will
+  re-dispatch work that already succeeded.
+- **`'partial'` no longer means what its name suggests.** It no longer arises
+  from partial failure *within* a batch — only from terminal phases differing
+  across a multi-batch run. Do not treat its absence as "nothing was partial".
+- **The counts can be absent, not just zero.** When any of a run's workflows
+  404s (normally because it was TTL-GC'd), the poller withholds a `'complete'`
+  conclusion and skips the run's status write entirely rather than concluding
+  from incomplete information. A GC'd workflow 404s permanently, so a run whose
+  batches finished more than `WORKFLOWS_K8S_TTL_SECONDS` apart can sit at its
+  previous status with the counts never updated. **Render that as "unknown",
+  not as zero** — it is the one case where "read the counts" is not by itself
+  sufficient advice.
+
+A zero-scan run is set to `'complete'` at enumerate time by the trigger route
+and never dispatched, so it never reaches the rollup at all.
 
 ```bash
 cd services/workflows

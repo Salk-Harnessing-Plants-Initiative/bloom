@@ -289,7 +289,12 @@ its grep was `--include=*.py` and missed the README.)
       ordering in which the DAG reaches production without them. **Do not file this as a separate
       blocker.** What it does mean: the promotion is large (`main` is many migrations behind), so
       treat migration ordering as part of that cutover's own review, not this PR's.
-- [ ] 6.5 **File: `'complete'` has no floor — a totally-failed batch reports success.** `BatchResult.ok`
+- [x] 6.5 **FILED as bloom#867.** `'complete'` has no floor — a totally-failed batch reports success.
+      Note a code fix alone does not reach the cluster: `images-downloader` runs
+      `bloomctl:sha-0614889`, so it needs a new image plus an upstream template re-pin. Consumer
+      guidance is therefore the near-term mitigation, and it is now in
+      `services/workflows/README.md` ("Reading a run's outcome: use the counts, not `status`")
+      because a run-status UI is being built this week. `BatchResult.ok`
       is `all(status in ("ok","skipped"))`, so 1-of-100 failed and 100-of-100 failed both exit `3`;
       the gate accepts both and the run reads `'complete'` with `done_count = 0`. Common-mode
       failures (NFS down, revoked credential) fail every scan identically and now go green. Either
