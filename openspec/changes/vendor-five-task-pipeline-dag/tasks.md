@@ -68,6 +68,8 @@
       is not inert.
 
       **Re-run immediately before merge** (task 7.5). Record actual output, not the word "verified".
+      *Pre-merge re-run 2026-09-16T23:00:00Z: all five IN SYNC, exit 0, image pins unchanged from
+      the 17:19Z run. No cluster drift in between.*
 - [x] 1.2 **RESOLVED: upstream PR #75 merged 2026-09-16T18:50:18Z (`561d0571`).** It records the §7
       results this change cites — 7.2 applied, 7.4a run, 7.5 passed, 7.6/7.7/7.8 measured — plus the
       §9 roadmap closeouts, and it also corrected the roadmap's "`argo template list` returns four".
@@ -338,7 +340,7 @@ its grep was `--include=*.py` and missed the README.)
       **sleap-roots-predict#44** (a raw-forwarded manifest misattributes predict failures to
       trait-extraction), and **task 6.1's credential issue**.
 - [ ] 7.4 Run `/review-pr`.
-- [ ] 7.5 Re-run task 1.1 immediately before merge and paste the output.
+- [x] 7.5 Re-run task 1.1 immediately before merge and paste the output. **DONE 2026-09-16T23:00:00Z — all five IN SYNC, exit 0** (see 1.1).
 - [ ] 7.6 **Rollback plan, in the PR body — and it restores a known-BROKEN state, not a known-good
       one.** If dispatch begins failing after merge, revert this PR on `staging` (restoring the
       four-task file and the old pin) and redeploy. Three things an operator must know:
