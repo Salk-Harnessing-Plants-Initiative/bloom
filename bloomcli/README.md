@@ -517,6 +517,16 @@ bloomctl cyl ingest-result <envelope.json | ->   [-p/--profile PROFILE] [--json]
   RPC call — on a missing/malformed manifest, a missing `.slp` file, a
   checksum mismatch, or a blob already present in the envelope. Omit to
   forward `blobs` unchanged, exactly as before this flag existed.
+
+  If the envelope's `idempotency_key` is already in `cyl_trait_sources`, the
+  upload is skipped and the constructed blobs are not merged: the RPC discards
+  them anyway, and re-uploading is the one step that can fail once the producer
+  has recomputed its artifacts, since `.slp` output is not byte-reproducible
+  and the object path embeds the key (talmolab/sleap-roots-pipeline#76).
+  Checksum verification is part of the upload, so it is skipped on that path
+  too — the local bytes are never stored, so their integrity is not something
+  the delivery can affect. Every other guarantee above still applies to a
+  re-delivery, because the check runs after the manifest is read.
 - When the `ARGO_WORKFLOW_NAME` environment variable is set (Argo sets it
   automatically inside the write-back container — see
   `sleap-roots-write-back-template.yaml`), also links the matching

@@ -5,118 +5,118 @@ repo triggers on a feature-branch push and the squash erases intermediate trees,
 red commit proves nothing and risks leaving a failing tree at the branch tip. Capture the red
 output to the scratchpad and paste it into the PR body instead.
 
-- [ ] 1.1 Replace the `object()` client in `bloomcli/tests/test_cyl_ingest.py`'s `_patch_authed`
+- [x] 1.1 Replace the `object()` client in `bloomcli/tests/test_cyl_ingest.py`'s `_patch_authed`
       (`:311`) with a recording fake whose `cyl_trait_sources` lookup returns `[]` by default,
       keeping an `object()`-based variant for the fail-open test. Without this every existing
       `--predictions-dir` test silently exercises the fail-open branch (`object().table(...)`
       raises `AttributeError`, which the fallback swallows), and section 3's mutants become
       undetectable.
-- [ ] 1.2 Add a direct unit test for `source_already_ingested` against that recording fake.
+- [x] 1.2 Add a direct unit test for `source_already_ingested` against that recording fake.
       Assert the recorded call is exactly
       `table("cyl_trait_sources").select("id").eq("idempotency_key", <key>).limit(1)`, that a
       one-row response returns `True`, and — separately — that an **empty-list** response returns
       `False`. Mirror `bloomctl/cyl/datasets.py:222-228`'s `… .execute().data or []` idiom. This
       is the only assertion standing between a typo'd table or column name and a fail-open that
       silently restores the bug in production.
-- [ ] 1.3 `ingest_one_envelope` with `--predictions-dir`, key already present, local `.slp` bytes
+- [x] 1.3 `ingest_one_envelope` with `--predictions-dir`, key already present, local `.slp` bytes
       differing from the stored object. Assert `ScanResult.status == "skipped"`; that
       `upload_pending_blobs` was never called; that the storage bucket recorded zero `download()`
       and zero `upload()` calls; that `call_insert_envelope` was called exactly once; and that
       the envelope handed to the RPC carries its **original** `blobs` array, unmerged. Use the
       real `upload_pending_blobs` — monkeypatching it is what let this bug ship.
-- [ ] 1.4 Add a multi-path fake storage client that pre-seeds divergent bytes at **both** paths
+- [x] 1.4 Add a multi-path fake storage client that pre-seeds divergent bytes at **both** paths
       `blob_object_path` produces for the fixture (the existing `_ExistingBucket` at `:761` holds
       only one), records every `download()`/`upload()`, and raises `StorageApiError(status=404)`
       elsewhere. Run 1.3 against it and confirm it fails with
       `object already exists … refusing to overwrite` — not a fixture error.
-- [ ] 1.5 Same for the single-envelope `ingest_result` path, asserting the CLI surface: exit 0,
+- [x] 1.5 Same for the single-envelope `ingest_result` path, asserting the CLI surface: exit 0,
       `summarize_result`'s already-ingested line, and `--json` emitting `was_noop: true`.
-- [ ] 1.6 Assert the manifest **is** still read on the skip path, and that a missing manifest for
+- [x] 1.6 Assert the manifest **is** still read on the skip path, and that a missing manifest for
       an already-ingested envelope still fails — the check follows construction deliberately.
       This pins the placement decision; a mutant that moves the check earlier must go red here.
-- [ ] 1.7 Batch: one already-ingested envelope with divergent bytes plus one genuinely new
+- [x] 1.7 Batch: one already-ingested envelope with divergent bytes plus one genuinely new
       envelope. Assert `skipped` + `ok`, exit zero, and that the new envelope's blobs were still
       uploaded.
-- [ ] 1.8 Fail-open test, parametrized over `postgrest.APIError`, `httpx.ConnectError`,
+- [x] 1.8 Fail-open test, parametrized over `postgrest.APIError`, `httpx.ConnectError`,
       `RuntimeError` and `AttributeError`. Assert the command proceeds to upload exactly as
       without the check, is **not** reported failed on account of the check, **and** emits a
       warning naming the degraded check. (A 42501 arrives *as* `APIError`, so an APIError-only
       test cannot justify the broad `except` — the transport cases are what justify it.)
-- [ ] 1.9 Assert `source_already_ingested` is never invoked when `provenance.idempotency_key` is
+- [x] 1.9 Assert `source_already_ingested` is never invoked when `provenance.idempotency_key` is
       empty or absent (existing empty-key tests still fail; recording fake shows zero queries),
       and never invoked when `--predictions-dir` is omitted.
-- [ ] 1.10 Batch mixed-failure case: envelope A's key present (skipped, no upload), envelope B's
+- [x] 1.10 Batch mixed-failure case: envelope A's key present (skipped, no upload), envelope B's
       check raises (fails open, blobs uploaded, `ok`, warning on its result), envelope C absent
       key (`ok`). Assert exit zero and that B's blobs really were uploaded.
 
 ## 2. Green — the check
 
-- [ ] 2.1 Add `source_already_ingested(client, idempotency_key) -> bool` to
+- [x] 2.1 Add `source_already_ingested(client, idempotency_key) -> bool` to
       `bloomcli/src/bloomctl/cyl/ingest.py`: one
       `select("id").eq("idempotency_key", …).limit(1)`, reading `.execute().data or []`. Catch
       every exception, emit
       `logger.warning("idempotency-gate check failed (%s); falling back to upload-then-RPC — the cyl_trait_sources.idempotency_key grant may be missing on this deployment", exc)`,
       and return `False`. `warning`, not `debug`/`info`: bloomctl configures no logging handler,
       so only WARNING+ reaches `logging.lastResort`.
-- [ ] 2.2 Guard the upload in `ingest_one_envelope`: insert the call immediately before
+- [x] 2.2 Guard the upload in `ingest_one_envelope`: insert the call immediately before
       `upload_pending_blobs` (`ingest.py:655`), inside the existing
       `if predictions_dir is not None:` block and after `build_pending_blobs`. On `True`, skip
       both the upload and the `data["blobs"]` merge at `:666`.
-- [ ] 2.3 Guard the upload in `ingest_result`: insert the call after
+- [x] 2.3 Guard the upload in `ingest_result`: insert the call after
       `client = _authed_client(profile)` (`ingest.py:816`) and before `upload_pending_blobs`
       (`:819`), skipping the merge at `:828`. **Do not move `_authed_client`** — the late
       placement exists precisely so the construct-before-authenticate discipline recorded at
       `:787-791` stays intact.
-- [ ] 2.4 Surface the fail-open degradation on the batch path's per-scan result, not only in the
+- [x] 2.4 Surface the fail-open degradation on the batch path's per-scan result, not only in the
       log — `pods/log` is unreadable with the `argo-user` ServiceAccount.
-- [ ] 2.5 Run sections 1.1–1.10; confirm green.
+- [x] 2.5 Run sections 1.1–1.10; confirm green.
 
 ## 3. Verify the tests actually guard the behaviour
 
 Run these only **after** section 2 is committed, so `git checkout -- bloomcli/src/` in this
 worktree alone is a one-command undo.
 
-- [ ] 3.1 Mutant: edit the source so `source_already_ingested` returns `False` unconditionally.
+- [x] 3.1 Mutant: edit the source so `source_already_ingested` returns `False` unconditionally.
       1.3 and 1.7 must go red.
-- [ ] 3.2 Mutant: return `True` unconditionally. A first-delivery test must go red —
+- [x] 3.2 Mutant: return `True` unconditionally. A first-delivery test must go red —
       `test_ingest_one_envelope_predictions_dir_uploads_blobs` asserts
       `len(env["blobs"]) == 2`, which drops to 0.
-- [ ] 3.3 Mutant: `client.table("cyl_trait_source")` (typo'd table) and, separately,
+- [x] 3.3 Mutant: `client.table("cyl_trait_source")` (typo'd table) and, separately,
       `.eq("id", key)`. Both must go red on 1.2. Without 1.2 both are invisible in production.
-- [ ] 3.4 Mutant: `return res.data is not None` instead of `or []`. Must go red on 1.2's
+- [x] 3.4 Mutant: `return res.data is not None` instead of `or []`. Must go red on 1.2's
       empty-list case — this mutant would otherwise make **every first delivery** a silent no-op
       that exits zero while writing nothing.
-- [ ] 3.5 Mutant: narrow the `except` to `postgrest.APIError`. 1.8's `httpx.ConnectError` case
+- [x] 3.5 Mutant: narrow the `except` to `postgrest.APIError`. 1.8's `httpx.ConnectError` case
       must go red.
-- [ ] 3.6 Mutant: move the check above `load_predictions_manifest`. 1.6 must go red.
-- [ ] 3.7 Confirm `git diff --stat bloomcli/` is empty before continuing. Never `git add -A`
+- [x] 3.6 Mutant: move the check above `load_predictions_manifest`. 1.6 must go red.
+- [x] 3.7 Confirm `git diff --stat bloomcli/` is empty before continuing. Never `git add -A`
       while a mutant is in the tree.
 
 ## 4. Migration
 
-- [ ] 4.1 Add `supabase/migrations/<ts>_grant_workflows_read_cyl_trait_source_idem.sql` with a
+- [x] 4.1 Add `supabase/migrations/<ts>_grant_workflows_read_cyl_trait_source_idem.sql` with a
       single `GRANT SELECT (idempotency_key) ON public.cyl_trait_sources TO bloom_workflows;`,
       plus `NOTIFY pgrst, 'reload schema';` (precedent: `20240904033106…:52`) — `deploy.yml`
       restarts caddy and kong by name but never the `rest` container, and this repo defines no
       `pgrst_ddl_watch` trigger, so the reload otherwise rests on the base image alone. Header
       records why this does not widen the least-privilege posture `20260720000000` documents.
-- [ ] 4.2 **Timestamp must exceed `20260915120000`**, already claimed by the in-flight
+- [x] 4.2 **Timestamp must exceed `20260915120000`**, already claimed by the in-flight
       `feat/cyl-trait-count-pgcron` branch. `scripts/lint_migrations.sh` compares against
       `origin/staging` only, so it cannot catch a collision with an unmerged sibling — re-check
       immediately before requesting review and again before merge.
-- [ ] 4.3 Add the paired
+- [x] 4.3 Add the paired
       `supabase/rollbacks/<ts>_grant_workflows_read_cyl_trait_source_idem_rollback.sql` with
       `REVOKE SELECT (idempotency_key) …` **only** — never a bare `REVOKE SELECT`, which would
       strip the pre-existing `(id, metadata)` grant. Header notes that the rollback's safety
       depends on `source_already_ingested`'s broad `except`. Every migration since
       `20260730120000` has a 1:1 rollback partner.
-- [ ] 4.4 Run `uv run --extra test pytest tests/unit/test_schema_usage_grants.py -v` — the real
+- [x] 4.4 Run `uv run --extra test pytest tests/unit/test_schema_usage_grants.py -v` — the real
       guard (regex `\b(?:GRANT|REVOKE)\b[^;]*?\bON\s+SCHEMA\s+(?:auth|storage)\b`), not a
       "`database-role-grants` CI guard", which is a spec, not a job.
-- [ ] 4.5 Run `./scripts/lint_migrations.sh origin/staging` — pass `origin/staging`, since that
+- [x] 4.5 Run `./scripts/lint_migrations.sh origin/staging` — pass `origin/staging`, since that
       is the PR base and CI passes `origin/$GITHUB_BASE_REF`. No `--unshallow` step is needed;
       the script stopped shallow-fetching in #818.
-- [ ] 4.6 Add `tests/unit/test_cyl_trait_sources_grants.py` (static, over migration text,
+- [x] 4.6 Add `tests/unit/test_cyl_trait_sources_grants.py` (static, over migration text,
       following `tests/unit/test_cyl_scan_videos_grants.py`): no migration grants
       `INSERT|UPDATE|DELETE|ALL` on `public.cyl_trait_sources` to `bloom_workflows`, and no grant
       on that table is column-less.
@@ -130,28 +130,28 @@ worktree alone is a one-command undo.
       before 4.1. This runs in CI (`pr-checks.yml` `compose-health-check` applies migrations then
       runs `tests/integration/`), unlike section 5.2 — and it is the only thing that proves the
       grant works *as the role* rather than merely existing as an ACL row.
-- [ ] 5.2 Do **not** assert an `EXPLAIN` plan for index usage: CI's table is empty and the
+- [x] 5.2 Do **not** assert an `EXPLAIN` plan for index usage: CI's table is empty and the
       planner will seq-scan regardless. Assert the query succeeds; keep the index as a design
       note.
-- [ ] 5.3 Add the divergent-bytes regression to `bloomcli/tests/test_cyl_ingest_integration.py`,
+- [x] 5.3 Add the divergent-bytes regression to `bloomcli/tests/test_cyl_ingest_integration.py`,
       reusing the existing `collision_dir` recipe (bytes changed *and* checksums recomputed).
       Assert exit zero, `was_noop=true`, and — the load-bearing assertion — that downloading the
       object still returns run A's bytes.
-- [ ] 5.4 **Rewrite `test_ingest_rejects_a_genuine_storage_path_collision` (`:185-238`), which
+- [x] 5.4 **Rewrite `test_ingest_rejects_a_genuine_storage_path_collision` (`:185-238`), which
       inverts under this change.** It currently ingests (writing the source row) and then asserts
       the re-delivery fails. Re-aim it at the orphan path, which is the only route to
       `upload_blob`'s collision branch after this change: monkeypatch `call_insert_envelope` to
       raise after `upload_pending_blobs` returns, so bytes land with no source row, then deliver
       `collision_dir`'s divergent bytes and assert exit != 0. Restate its docstring. `cleanup()`
       already deletes storage objects by the idem prefix, so teardown needs no change.
-- [ ] 5.5 **Restructure `test_ingest_uploads_blobs_idempotently_and_rejects_checksum_mismatch`
+- [x] 5.5 **Restructure `test_ingest_uploads_blobs_idempotently_and_rejects_checksum_mismatch`
       (`:115-183`).** Its r3 leg (corrupt fixture) now short-circuits and exits zero, and its r2
       leg becomes vacuous. Move both onto a second, never-ingested envelope so client-side
       checksum rejection and same-checksum upload-skip keep end-to-end coverage.
-- [ ] 5.6 Delete the stale comment at `test_cyl_ingest_integration.py:150-153` claiming the
+- [x] 5.6 Delete the stale comment at `test_cyl_ingest_integration.py:150-153` claiming the
       upload step "would skip re-uploading … even if the RPC weren't a no-op" — true only for
       identical bytes, and exactly the blind spot that hid this bug.
-- [ ] 5.7 Grep the repo for that claim's siblings before considering 5.6 done — correct the
+- [x] 5.7 Grep the repo for that claim's siblings before considering 5.6 done — correct the
       claim, not the file.
 - [ ] 5.8 Record in `tasks.md` and the PR body that `bloomcli/tests/test_cyl_ingest_integration.py`
       is `-m "not integration"`-excluded in CI and needs six `BLOOMCTL_IT_*` env vars, so 5.3's
@@ -160,31 +160,31 @@ worktree alone is a one-command undo.
 
 ## 6. Documentation
 
-- [ ] 6.1 `ingest_one_envelope` (`:593`) and `ingest_result` (`:772`) docstrings: state the real
+- [x] 6.1 `ingest_one_envelope` (`:593`) and `ingest_result` (`:772`) docstrings: state the real
       ordering.
-- [ ] 6.2 `upload_blob`'s docstring (`:293`): the parenthetical "a path collision between two
+- [x] 6.2 `upload_blob`'s docstring (`:293`): the parenthetical "a path collision between two
       different runs' bytes" becomes wrong — after this change the only reachable cause is bytes
       belonging to no ingested source.
-- [ ] 6.3 The comment at `:787-791` — confirm it still holds (it does, given 2.3) and leave it;
+- [x] 6.3 The comment at `:787-791` — confirm it still holds (it does, given 2.3) and leave it;
       note in the PR body that the late placement was chosen to preserve it.
-- [ ] 6.4 `--predictions-dir` help text at `:761-763` ("merges them into the envelope's `blobs`
+- [x] 6.4 `--predictions-dir` help text at `:761-763` ("merges them into the envelope's `blobs`
       before ingesting") and `batch_ingest_result`'s at `:904`. Both user-facing.
-- [ ] 6.5 Collision error text: name the recovery **and who can perform it**.
+- [x] 6.5 Collision error text: name the recovery **and who can perform it**.
       `20260722000200_create_cyl_intermediates_bucket.sql` gives `bloom_workflows`
       SELECT/INSERT/UPDATE and **no DELETE**, so "delete the object" is not self-service —
       direct the operator to `bloom_admin`/`service_role` or Studio. Extend the assertions at
       `test_cyl_ingest_integration.py:227` and the `upload_blob` unit test to pin the new
       wording.
-- [ ] 6.6 `bloomcli/README.md:510-519`: states both the invalidated ordering and an unconditional
+- [x] 6.6 `bloomcli/README.md:510-519`: states both the invalidated ordering and an unconditional
       "fails fast — before any upload or RPC call — on … a checksum mismatch". `:506-507` and
       `:566-567` state the idempotency guarantee and become *more* true — leave them.
-- [ ] 6.7 `_WIKI/SUPABASE/README.md:114`: update the enumerated column grants on
+- [x] 6.7 `_WIKI/SUPABASE/README.md:114`: update the enumerated column grants on
       `cyl_trait_sources`, which the spec delta now asserts as normative. Leaving it stale is
       exactly the two-files-one-claim failure this program has been bitten by.
-- [ ] 6.8 `bloomcli/CHANGELOG.md` `[Unreleased]` → `### Fixed`. `RELEASE_PROCESS.md:50-59` makes
+- [x] 6.8 `bloomcli/CHANGELOG.md` `[Unreleased]` → `### Fixed`. `RELEASE_PROCESS.md:50-59` makes
       a changelog entry a hard release gate. Do **not** edit the released entry at `:397`, which
       accurately records `0.1.0a3` behaviour.
-- [ ] 6.9 Grep for any operator runbook covering a blob-collision failure. There is none today;
+- [x] 6.9 Grep for any operator runbook covering a blob-collision failure. There is none today;
       note that in the follow-up issue rather than inventing one here.
 
 ## 7. Follow-up issues — needs explicit authorization before posting
@@ -205,13 +205,13 @@ worktree alone is a one-command undo.
 
 ## 8. Pre-merge
 
-- [ ] 8.1 `openspec validate fix-cyl-redelivery-blob-collision --strict`.
+- [x] 8.1 `openspec validate fix-cyl-redelivery-blob-collision --strict`.
 - [ ] 8.2 `cd bloomcli && uv run --extra test pytest tests/ -m "not integration" -v`.
 - [ ] 8.3 `uv run --extra test pytest tests/unit/ -v` and, for 5.1, `make prod-up` +
       `uv run --extra test pytest tests/integration/ -v`.
 - [ ] 8.4 `uvx ruff@0.9.9 check bloomcli/` and `pre-commit run --all-files`. Do **not** run
       `ruff-format` on `bloomcli/` — `.pre-commit-config.yaml` excludes it there.
-- [ ] 8.5 `python scripts/check-uv-locks.py`. `bloomcli/uv.lock` must not change; no dependency
+- [x] 8.5 `python scripts/check-uv-locks.py`. `bloomcli/uv.lock` must not change; no dependency
       is added.
 - [ ] 8.6 Open the PR against `staging`. Body must contain: the literal line
       `No schema changes.` (`lint_migration_pr_body.py` requires it or an erDiagram for a

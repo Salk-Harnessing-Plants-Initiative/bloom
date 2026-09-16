@@ -345,7 +345,16 @@ def upload_blob(
     ``object_path`` with a matching checksum, the upload is skipped
     (idempotent no-op) and ``skipped`` is ``True``. If an object exists there
     with a *different* checksum, raises :class:`BlobConstructionError` rather
-    than overwriting it (a path collision between two different runs' bytes).
+    than overwriting it.
+
+    Since ``source_already_ingested`` gates the upload, a divergent-checksum
+    collision no longer means "two different runs' bytes" in the ordinary
+    sense: an already-ingested key never reaches here. What remains reachable
+    is bytes belonging to no ingested source — a delivery that uploaded and
+    then died before the RPC, whose artifacts the producer has since recomputed
+    at the same key. Those cannot be distinguished from a referenced blob, so
+    they are never overwritten; recovery needs a DELETE on the bucket, which
+    ``bloom_workflows`` does not hold (see the raised message).
     """
     from storage3.exceptions import StorageApiError
 
@@ -367,7 +376,12 @@ def upload_blob(
             return object_path, True
         raise BlobConstructionError(
             f"object already exists at {object_path} with a different checksum "
-            f"(existing={existing_checksum}, new={expected_checksum}) — refusing to overwrite"
+            f"(existing={existing_checksum}, new={expected_checksum}) — refusing to overwrite. "
+            "The envelope's idempotency_key is not in cyl_trait_sources, so these bytes belong "
+            "to no ingested result — most likely a delivery that uploaded and then failed before "
+            "the RPC, whose predictions have since been recomputed. Recovery: have someone with "
+            "DELETE on the cyl-intermediates bucket (bloom_admin/service_role, or an operator via "
+            "Studio) remove that object, then re-run — bloom_workflows holds no DELETE there."
         )
 
     data = Path(local_path).read_bytes()
@@ -647,7 +661,8 @@ def ingest_one_envelope(
     Sequences the same steps `ingest_result` (the single-envelope command) does — read/parse via
     the existing `load_envelope` (so an unreadable or malformed file is isolated the same way a
     bad path/stdin input already is for the single command), validate, optionally construct +
-    upload blobs, call the RPC — but never raises. When `predictions_dir` is given, it is expected
+    upload blobs (skipped when the key is already ingested), call the RPC — but never
+    raises. When `predictions_dir` is given, it is expected
     to be predict's own nested batch output root; this looks up
     `predictions_dir/{scan_key}/{scan_key}.predictions.json` per envelope (reusing
     `load_predictions_manifest`/`build_pending_blobs`/`upload_pending_blobs` unchanged).
@@ -813,7 +828,9 @@ def ingest_one_envelope(
         "Directory containing predict's {scan_key}.predictions.json + .slp files. "
         "When given, constructs BlobRef entries from the manifest, uploads the .slp "
         "bytes to the cyl-intermediates bucket, and merges them into the envelope's "
-        "blobs before ingesting. Omit to forward blobs unchanged (no upload)."
+        "blobs before ingesting — unless the envelope was already ingested, in which "
+        "case the upload is skipped (the RPC discards those blobs anyway). Omit to "
+        "forward blobs unchanged (no upload)."
     ),
 )
 def ingest_result(
@@ -841,7 +858,9 @@ def ingest_result(
     # authentication, matching the envelope gate's "fail fast before any
     # network call" discipline. Upload needs the authed client, so it happens
     # after — but before the RPC call, since a single-shot RPC must never see
-    # a partially-populated blobs array.
+    # a partially-populated blobs array. The idempotency gate lives with the upload
+    # for the same reason: it needs the client, and hoisting it up here would drag
+    # authentication ahead of construction and void this very property.
     pending: list[PendingBlob] = []
     if predictions_dir is not None:
         # scan_key has no contract-level default (Provenance requires it), so

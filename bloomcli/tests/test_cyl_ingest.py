@@ -874,6 +874,12 @@ def test_upload_blob_raises_on_path_collision():
         ing.upload_blob(client, PREDICTIONS_DIR / "scan0K9E8BI.modelrice-primary.rootprimary.slp", "some/path.slp", "expectedchecksum")
     assert "some/path.slp" in str(excinfo.value)
     assert bucket.upload_called is False
+    # The recovery must name an identity that can actually perform it: bloom_workflows holds
+    # SELECT/INSERT/UPDATE on cyl-intermediates and no DELETE, so "delete the object" is not
+    # self-service. An actionable error that names an impossible action is not actionable.
+    message = str(excinfo.value).lower()
+    assert "delete" in message
+    assert "bloom_admin" in message or "service_role" in message
 
 
 def test_upload_pending_blobs_all_succeed():
