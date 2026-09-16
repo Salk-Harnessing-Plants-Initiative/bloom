@@ -89,17 +89,24 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
   // Cells per cluster from scrna_cluster_stats, by cluster id. Read alongside the
   // map's own fetch, so its first paint does not wait on them.
   const [statsCounts, setStatsCounts] = useState<Record<string, number> | null>(null);
+  const [statsError, setStatsError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setStatsCounts(null);
+    setStatsError(null);
     (async () => {
       const supabase = createClientSupabaseClient();
       const { data, error } = await supabase
         .from("scrna_cluster_stats")
         .select("cluster_id,cell_count")
         .eq("dataset_id", datasetId);
-      if (cancelled || error || !data) return;
+      if (cancelled) return;
+      if (error) {
+        setStatsError(error.message);
+        return;
+      }
+      if (!data) return;
       const byClusterId: Record<string, number> = {};
       for (const row of data) byClusterId[row.cluster_id] = row.cell_count;
       setStatsCounts(byClusterId);
@@ -174,7 +181,8 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
 
   const anyValueHidden = [...hiddenValues.values()].some((s) => s.size > 0);
   const focusSet = focusIsSet(focusedValues);
-  const focusedCount = meta && focusSet ? countFocused(meta.cells, focusedValues, hiddenValues) : 0;
+  const focusedCount =
+    meta && focusSet ? countFocused(meta.cells, focusedValues, hiddenValues, hidden) : 0;
 
   // Transgene-positive cells per cluster, over the whole dataset, and whether
   // the map shows them.
@@ -275,8 +283,18 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
             <span className="text-xs text-stone-500">
               Cells are coloured by {geneName}; clear the search to see cell types again.
             </span>
+          ) : geneName ? (
+            <span className="text-xs text-stone-500" role="status">
+              Loading {geneName}…
+            </span>
           ) : null}
         </div>
+
+        {statsError && (
+          <span role="alert" className="text-xs text-rose-700">
+            Could not load the cell counts: {statsError}
+          </span>
+        )}
 
         {(() => {
           const clusters = meta?.clusters ?? [];
@@ -315,7 +333,9 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
               <TransgeneSummary
                 positive={transgeneTotal}
                 total={meta.cellCount}
-                totalNoun="cells"
+                totalNoun={
+                  anyValueHidden || hidden.size > 0 ? "cells in the whole dataset" : "cells"
+                }
                 top={topGroups(
                   meta.clusters.map((c) => ({
                     name: c.name || c.cluster_id,
@@ -334,7 +354,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
                 key={filter}
                 label={filter === SAMPLE_FILTER ? "Samples" : filter}
                 noun={filter === SAMPLE_FILTER ? "sample" : `${filter} value`}
-                samples={countsFor(meta.cells, hiddenValues, filter)}
+                samples={countsFor(meta.cells, hiddenValues, filter, hidden)}
                 hidden={hiddenValues.get(filter) ?? NOTHING_HIDDEN}
                 unlabelledCount={meta.unlabelled[filter] ?? 0}
                 onToggle={(value) => handleFilterToggle(filter, value)}

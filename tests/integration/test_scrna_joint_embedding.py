@@ -1,11 +1,13 @@
-"""Integration tests for 20260911082453_scrna_joint_embedding.sql.
+"""Integration tests for 20260911082453_scrna_joint_embedding.sql and its
+follow-up 20260912100000_scrna_embedding_reads.sql.
 
 A joint embedding (a SATURN integration, say) is stored as its datasets, its
 labels and its points. What is pinned here is what keeps such a map honest:
 a reference dataset holds no cells, a point belongs to a member dataset and
 links only to that dataset's own cell, a map is finished only when every point
-it counts is stored, readers never see a half-loaded map, and each role can do
-exactly what it needs and nothing more.
+it counts is stored, readers never see a half-loaded map (in the tables as well
+as through the read functions), colouring by a label answers without ranking
+every point, and each role can do exactly what it needs and nothing more.
 
 Each rejection names the constraint it expects. Every test rolls back.
 """
@@ -586,4 +588,224 @@ def test_the_rollback_refuses_while_an_embedding_or_reference_exists(pg_conn):
         with _refused(cur, message=r"refusing to roll back",
                       error=psycopg.errors.RaiseException):
             cur.execute(_script("rollbacks", f"*_{NAME}_rollback.sql"))
+    pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# What each constraint refuses
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("cols, constraint", [
+    ({"name": " \t "}, "scrna_embeddings_text_not_blank"),
+    ({"title": "t" * 201}, "scrna_embeddings_lengths"),
+    ({"n_points": 0}, "scrna_embeddings_points_positive"),
+    ({"params": psycopg.types.json.Jsonb([])}, "scrna_embeddings_params_is_object"),
+])
+def test_an_embedding_that_breaks_a_rule_is_refused(pg_conn, cols, constraint):
+    with pg_conn.cursor() as cur, _refused(cur, constraint):
+        _embedding(cur, **cols)
+    pg_conn.rollback()
+
+
+def test_a_member_ordinal_is_never_negative(pg_conn):
+    with pg_conn.cursor() as cur:
+        emb, ds = _embedding(cur), _dataset(cur, kind="reference")
+        with _refused(cur, "scrna_embedding_dataset_members_ordinal_range"):
+            _member(cur, emb, ds, "reference", -1, 1)
+    pg_conn.rollback()
+
+
+def test_a_dataset_in_a_map_cannot_be_permanently_deleted(pg_conn):
+    with pg_conn.cursor() as cur:
+        emb, ds = _embedding(cur, n_points=1), _dataset(cur, kind="reference")
+        _member(cur, emb, ds, "reference", 0, 1)
+        with _refused(cur, "scrna_embedding_dataset_members_dataset_fkey"):
+            cur.execute("DELETE FROM scrna_datasets WHERE id = %s", (ds,))
+    pg_conn.rollback()
+
+
+def test_removing_a_dataset_from_a_map_removes_its_points_and_labels(pg_conn):
+    with pg_conn.cursor() as cur:
+        m = _joint_map(cur)
+        cur.execute("INSERT INTO scrna_embedding_labels (embedding_id, key, source_column, "
+                    "native_dataset_id) VALUES (%s, 'shahan_cell_type', 'celltype', %s)",
+                    (m["embedding"], m["reference"]))
+        cur.execute("DELETE FROM scrna_embedding_dataset_members "
+                    "WHERE embedding_id = %s AND dataset_id = %s",
+                    (m["embedding"], m["reference"]))
+        cur.execute("SELECT dataset_id, count(*) FROM scrna_embedding_points "
+                    "WHERE embedding_id = %s GROUP BY dataset_id", (m["embedding"],))
+        assert cur.fetchall() == [(m["query"], 2)]
+        cur.execute("SELECT count(*) FROM scrna_embedding_labels WHERE embedding_id = %s",
+                    (m["embedding"],))
+        assert cur.fetchone()[0] == 0
+    pg_conn.rollback()
+
+
+def test_a_label_key_is_used_once_per_embedding(pg_conn):
+    with pg_conn.cursor() as cur:
+        emb = _embedding(cur)
+        insert = ("INSERT INTO scrna_embedding_labels (embedding_id, key, source_column) "
+                  "VALUES (%s, 'k', 'column')")
+        cur.execute(insert, (emb,))
+        with _refused(cur, "scrna_embedding_labels_pkey"):
+            cur.execute(insert, (emb,))
+    pg_conn.rollback()
+
+
+def test_a_label_names_the_column_it_came_from(pg_conn):
+    with pg_conn.cursor() as cur:
+        emb = _embedding(cur)
+        with _refused(cur, "scrna_embedding_labels_lengths"):
+            cur.execute("INSERT INTO scrna_embedding_labels (embedding_id, key, source_column) "
+                        "VALUES (%s, 'k', '')", (emb,))
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize("ordinal, barcode, constraint", [
+    (-1, "b", "scrna_embedding_points_ordinal_range"),
+    (0, "b" * 201, "scrna_embedding_points_barcode_length"),
+])
+def test_a_point_that_breaks_a_rule_is_refused(pg_conn, ordinal, barcode, constraint):
+    with pg_conn.cursor() as cur:
+        emb, ds = _embedding(cur, n_points=1), _dataset(cur, kind="reference")
+        _member(cur, emb, ds, "reference", 0, 1)
+        with _refused(cur, constraint):
+            _point(cur, emb, ds, ordinal, barcode)
+    pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# 20260912100000_scrna_embedding_reads.sql: the label lookup
+# --------------------------------------------------------------------------- #
+
+READS = "scrna_embedding_reads"
+
+
+def _label_codes_source(cur) -> str:
+    cur.execute("SELECT prosrc FROM pg_proc "
+                "WHERE oid = 'public.scrna_embedding_label_codes(bigint, text)'::regprocedure")
+    return cur.fetchone()[0]
+
+
+def test_the_label_lookup_does_not_rank_every_point(pg_conn):
+    """Ranking all of a map's points on every call is what made colouring by a
+    label take seconds; the lookup numbers the few distinct values instead."""
+    with pg_conn.cursor() as cur:
+        assert "dense_rank" not in _label_codes_source(cur)
+
+
+def test_label_values_keep_byte_order_whatever_their_case(pg_conn):
+    """The distinct values and the per-point lookup are built separately, so
+    this pins that both use the order the map has always used: capitals first."""
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur, kind="reference")
+        emb = _embedding(cur, n_points=4)
+        _member(cur, emb, ds, "reference", 0, 4)
+        for ordinal, value in enumerate(["b", "B", "a", None]):
+            _point(cur, emb, ds, ordinal, facets={"k": value} if value else None)
+        _finish(cur, emb)
+        cur.execute("SELECT * FROM scrna_embedding_label_codes(%s, 'k')", (emb,))
+        assert cur.fetchone() == (["B", "a", "b"], [2, 0, 1, -1])
+    pg_conn.rollback()
+
+
+def test_a_label_with_more_values_than_a_map_can_colour_is_refused(pg_conn):
+    n = 32768
+    with pg_conn.cursor() as cur:
+        ds = _dataset(cur, kind="reference")
+        emb = _embedding(cur, n_points=n)
+        _member(cur, emb, ds, "reference", 0, n)
+        cur.execute(
+            "INSERT INTO scrna_embedding_points (embedding_id, ordinal, dataset_id, barcode, "
+            "x, y, facets) SELECT %s, g, %s, 'b-' || g, 0, 0, jsonb_build_object('k', 'v' || g) "
+            "FROM generate_series(0, %s) g", (emb, ds, n - 1),
+        )
+        _finish(cur, emb)
+        with _refused(cur, message=r"more than a map can colour",
+                      error=psycopg.errors.ProgramLimitExceeded):
+            cur.execute("SELECT * FROM scrna_embedding_label_codes(%s, 'k')", (emb,))
+    pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# 20260912100000_scrna_embedding_reads.sql: who reads an unfinished map
+# --------------------------------------------------------------------------- #
+
+
+def _unfinished_map(cur) -> int:
+    """An embedding still loading, with one row in each of the four tables."""
+    ds = _dataset(cur, kind="reference")
+    emb = _embedding(cur, n_points=1)
+    _member(cur, emb, ds, "reference", 0, 1)
+    cur.execute("INSERT INTO scrna_embedding_labels (embedding_id, key, source_column, "
+                "native_dataset_id) VALUES (%s, 'shahan_cell_type', 'celltype', %s)", (emb, ds))
+    _point(cur, emb, ds, 0, facets={"shahan_cell_type": "Xylem"})
+    return emb
+
+
+def _rows_per_table(cur, emb) -> dict[str, int]:
+    counts = {}
+    for table in TABLES:
+        column = "id" if table == "scrna_embeddings" else "embedding_id"
+        cur.execute(f"SELECT count(*) FROM {table} WHERE {column} = %s", (emb,))
+        counts[table] = cur.fetchone()[0]
+    return counts
+
+
+@pytest.mark.parametrize("role", ["bloom_user", "bloom_agent"])
+def test_a_reader_sees_no_row_of_a_map_still_loading(pg_conn, role):
+    with pg_conn.cursor() as cur:
+        emb = _unfinished_map(cur)
+        with _as_role(cur, role):
+            assert _rows_per_table(cur, emb) == dict.fromkeys(TABLES, 0)
+        _finish(cur, emb)
+        with _as_role(cur, role):
+            assert _rows_per_table(cur, emb) == dict.fromkeys(TABLES, 1)
+    pg_conn.rollback()
+
+
+def test_the_writer_reads_the_map_it_is_loading(pg_conn):
+    with pg_conn.cursor() as cur:
+        emb = _unfinished_map(cur)
+        with _as_role(cur, "bloom_writer"):
+            assert _rows_per_table(cur, emb) == dict.fromkeys(TABLES, 1)
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize("table", TABLES)
+def test_the_writer_reads_through_its_own_policy(pg_conn, table):
+    """Its reads used to come only through bloom_user, so limiting readers to
+    finished maps would have stopped every load."""
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM pg_policies WHERE schemaname = 'public' "
+                    "AND tablename = %s AND cmd = 'SELECT' AND 'bloom_writer' = ANY (roles)",
+                    (table,))
+        assert cur.fetchone()[0] == 1, table
+
+
+# --------------------------------------------------------------------------- #
+# 20260912100000_scrna_embedding_reads.sql and its rollback
+# --------------------------------------------------------------------------- #
+
+
+def test_the_reads_migration_runs_again_without_error(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute(_script("migrations", f"*_{READS}.sql"))
+    pg_conn.rollback()
+
+
+def test_the_reads_rollback_restores_the_earlier_rules_and_the_migration_reapplies(pg_conn):
+    with pg_conn.cursor() as cur:
+        emb = _unfinished_map(cur)
+        cur.execute(_script("rollbacks", f"*_{READS}_rollback.sql"))
+        with _as_role(cur, "bloom_user"):
+            assert _rows_per_table(cur, emb) == dict.fromkeys(TABLES, 1)
+        assert "dense_rank" in _label_codes_source(cur)
+
+        cur.execute(_script("migrations", f"*_{READS}.sql"))
+        with _as_role(cur, "bloom_user"):
+            assert _rows_per_table(cur, emb) == dict.fromkeys(TABLES, 0)
+        assert "dense_rank" not in _label_codes_source(cur)
     pg_conn.rollback()
