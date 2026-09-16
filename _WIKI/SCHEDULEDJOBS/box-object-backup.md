@@ -26,24 +26,36 @@ neither is a complete restore on its own. See "Restoring" below.
 
 ## Prerequisites (one time, on the server)
 
-1. **Box login, as `bloom-deploy`.** The job uses the deploy user's rclone
-   config, `~/.config/rclone/rclone.conf` — the same login the weekly Postgres
-   backup uses.
-   - **Why shared:** Box refresh tokens are single-use, so a login of the job's
-     own would keep the two token chains apart. Salk requires an admin to
-     approve rclone's OAuth app, so `rclone authorize "box"` fails and no new
-     Box login can be made. Ask IT for that approval, or for a Box app's client
-     id and secret, and the two jobs can be separated again.
-   - **Why it is workable:** rclone re-reads the config before it refreshes, so
-     neither job reuses a token the other has spent.
-   - **If the login is lost,** `sudo -u bloom-deploy rclone config reconnect box:`
-     needs the same browser authorisation, and both backups stay down until it
-     is done.
+1. **The job's own Box login, as `bloom-deploy`.** It keeps its own rclone
+   config folder rather than sharing the one the weekly Postgres backup uses:
+   Box refresh tokens are single-use, so two jobs refreshing one login would
+   spend each other's token. Log in fresh — never copy the weekly backup's
+   `rclone.conf` here — and use the same Box account it uses, because `lsd`
+   below succeeds for any account and nothing later checks which.
+
+   The server has no browser, so the login is done in two places. On the
+   server:
    ```bash
-   sudo -u bloom-deploy rclone lsd box:   # must list your Box root
+   sudo -u bloom-deploy mkdir -p -m 700 /home/bloom-deploy/.config/rclone-box-object-backup
+   sudo -u bloom-deploy rclone --config /home/bloom-deploy/.config/rclone-box-object-backup/rclone.conf config
+   #   n) new remote → name: box → storage: box
+   #   client_id, client_secret, box_config_file, access_token: blank
+   #   box_sub_type: 1 (user) → advanced config: n
+   #   "Use web browser to automatically authenticate?": n
+   ```
+   It stops at `config_token>`. On a computer with a browser and rclone:
+   ```bash
+   rclone authorize "box"      # log in to Box, then copy the token it prints
+   ```
+   Paste that token into the server's `config_token>` prompt, answer **y** to
+   keep the remote, and **q** to quit. Then check it:
+   ```bash
+   sudo -u bloom-deploy rclone --config /home/bloom-deploy/.config/rclone-box-object-backup/rclone.conf lsd box:
    ```
    The job's container mounts that folder **read-write**, so rclone can save
-   each refreshed token, and it never creates the folder.
+   each refreshed token, and it never creates the folder. If the login is ever
+   lost, repeat the same two steps with
+   `rclone --config /home/bloom-deploy/.config/rclone-box-object-backup/rclone.conf config reconnect box:`.
 
 2. **Create the destination folder** in Box matching `OBJECT_BACKUP_BOX_ROOT`
    (`Bloom-Backups/BloomV2-Data-Backup/prod/storage` by default).
@@ -756,7 +768,7 @@ keys and a test enforces that.
 | `OBJECT_BACKUP_BWLIMIT` | *(unset)* | rclone bandwidth cap, e.g. `20M` |
 | `OBJECT_BACKUP_STATE_DIR` | `/data/bloom/box-object-backup` | Ledger location, fixed: `compose.yml` mounts exactly this path and the workflow passes it to the run. Not in the env file; if `.env.prod.defaults` sets it to anything else, the run **refuses to start** (exit 2) rather than let the summary watch an empty directory. The comparison is exact, so a trailing slash counts as different. |
 | `OBJECT_BACKUP_RC_PORT` | `5572` | Port for the rclone daemon, on the container's own loopback, so nothing outside the container can reach it. Not in the env file — a code default. |
-| `OBJECT_BACKUP_RCLONE_CONFIG` | `/config/rclone/rclone.conf` | Where the job reads the rclone config. Set by `compose.yml`, which mounts the deploy user's rclone folder, `/home/bloom-deploy/.config/rclone`, there read-write so a refreshed Box token is saved. |
+| `OBJECT_BACKUP_RCLONE_CONFIG` | `/config/rclone/rclone.conf` | Where the job reads the rclone config. Set by `compose.yml`, which mounts the job's own rclone folder, `/home/bloom-deploy/.config/rclone-box-object-backup`, there read-write so a refreshed Box token is saved. |
 
 The three credentials — `POSTGRES_PASSWORD`, `MINIO_ROOT_USER` and
 `MINIO_ROOT_PASSWORD` — come from the deploy's `.env.prod`, which compose reads

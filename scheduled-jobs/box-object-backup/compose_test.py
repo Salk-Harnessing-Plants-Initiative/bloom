@@ -29,8 +29,8 @@ SERVICE = "box-object-backup"
 PROJECT = "bloom-box-object-backup"
 CREDENTIALS = {"POSTGRES_PASSWORD", "MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD"}
 ALLOWED_ENVIRONMENT = {"HOME", "OBJECT_BACKUP_RCLONE_CONFIG", *CREDENTIALS}
-RCLONE_FOLDER = "/home/bloom-deploy/.config/rclone"
-# (source, target) of every mount: the state, the rclone folder, the settings.
+RCLONE_FOLDER = "/home/bloom-deploy/.config/rclone-box-object-backup"
+# (source, target) of every mount: the state, the job's own rclone folder, the settings.
 MOUNTS = {
     (job.DEFAULT_STATE_DIR, job.DEFAULT_STATE_DIR),
     (RCLONE_FOLDER, "/config/rclone"),
@@ -200,14 +200,8 @@ class TestSettingsAndCredentials:
         assert not folder.get("read_only")
         assert folder["bind"]["create_host_path"] is False
 
-    def test_the_rclone_folder_is_the_deploy_users_login(self, service: dict):
-        """Shared with the weekly Postgres backup, which uses the same folder.
-
-        A login of this job's own would keep the two token chains apart, but
-        Salk requires an admin to approve rclone's OAuth app, so a new Box
-        login cannot be made. rclone re-reads the config before it refreshes,
-        so neither job reuses a token the other has spent.
-        """
+    def test_the_rclone_folder_is_this_jobs_own(self, service: dict):
+        """The weekly Postgres backup refreshes its own login in ~/.config/rclone."""
         assert _bind(service, "/config/rclone")["source"] == RCLONE_FOLDER
 
     def test_the_settings_are_the_committed_defaults(self, service: dict):
