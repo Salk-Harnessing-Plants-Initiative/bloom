@@ -123,7 +123,7 @@ worktree alone is a one-command undo.
 
 ## 5. Integration tests
 
-- [ ] 5.1 Add a `tests/integration/` test for the grant, following
+- [x] 5.1 Add a `tests/integration/` test for the grant, following
       `tests/integration/test_gravi_workflows_read.py`'s `SET LOCAL ROLE bloom_workflows`
       pattern: the filtered select succeeds for a seeded key and returns zero rows for an absent
       one; `SELECT name` raises 42501; `INSERT`/`UPDATE`/`DELETE` still raise. Write it red
@@ -153,10 +153,13 @@ worktree alone is a one-command undo.
       identical bytes, and exactly the blind spot that hid this bug.
 - [x] 5.7 Grep the repo for that claim's siblings before considering 5.6 done — correct the
       claim, not the file.
-- [ ] 5.8 Record in `tasks.md` and the PR body that `bloomcli/tests/test_cyl_ingest_integration.py`
-      is `-m "not integration"`-excluded in CI and needs six `BLOOMCTL_IT_*` env vars, so 5.3's
-      assertion is local-only; note where it was actually run. Consider mirroring it into
-      `bloomcli/tests/test_dev_stack_smoke.py`.
+- [x] 5.8 Recorded in the PR body: `bloomcli/tests/test_cyl_ingest_integration.py` is
+      `-m "not integration"`-excluded and needs six `BLOOMCTL_IT_*` env vars, so 5.3-5.5 are
+      **unexecuted**. Attempted locally and blocked: the compose dev stack has zero
+      `auth.users` rows, no make target or seed script creates one, and the `dev1`/`dev2`
+      profiles point at a Supabase-CLI instance on `127.0.0.1:54321` that is not this stack.
+      The grant half (5.1) is covered by CI instead. The missing dev-user path is why this file
+      has not run since 2026-07-22 — see 6.10.
 
 ## 6. Documentation
 
@@ -186,6 +189,11 @@ worktree alone is a one-command undo.
       accurately records `0.1.0a3` behaviour.
 - [x] 6.9 Grep for any operator runbook covering a blob-collision failure. There is none today;
       note that in the follow-up issue rather than inventing one here.
+- [ ] 6.10 File the dev-user gap (needs authorization): there is no supported way to obtain
+      `BLOOMCTL_IT_EMAIL`/`PASSWORD` for the compose dev stack, so the env-gated bloomctl
+      integration suite is unrunnable without hand-building an auth user. Four of the six vars
+      are already a `~/.bloom/credentials.<name>.txt` profile; a `make bloomctl-it` target that
+      reads a profile and seeds a writer would make the suite routinely runnable.
 
 ## 7. Follow-up issues — needs explicit authorization before posting
 
