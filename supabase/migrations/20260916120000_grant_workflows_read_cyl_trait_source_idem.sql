@@ -12,8 +12,8 @@
 --
 -- THIS DOES NOT WIDEN THE LEAST-PRIVILEGE POSTURE that 20260720000000 documents
 -- ("bloom_workflows stays least-privilege: read for stage-in, execute-only for write-back").
--- 20260730120000_create_cyl_pipeline_runs.sql already grants SELECT (id, metadata) on this
--- table and adds the workflows_read_cyl_trait_sources RLS policy (:167-169, :172). The RPC
+-- 20260730120000_create_cyl_pipeline_runs.sql already adds the workflows_read_cyl_trait_sources
+-- RLS policy (:167-169) and grants SELECT (id, metadata) on this table (:172). The RPC
 -- stores metadata = prov, and v_idem := prov ->> 'idempotency_key', so the value is ALREADY
 -- readable by this role through metadata->>'idempotency_key'. This grant adds an indexed access
 -- path -- via the existing cyl_trait_sources_idempotency_key_key UNIQUE constraint
@@ -44,5 +44,6 @@ COMMIT;
 -- 20260609000000 -- but deploy.yml restarts caddy and kong by name and never the `rest`
 -- container, and this repo defines no pgrst_ddl_watch event trigger, so the reload would
 -- otherwise rest entirely on the base image's own watcher. One line removes the uncertainty.
--- Precedent: 20240904033106_create_fix_create_cyl_dataset_function_again.sql:52.
+-- Precedent for NOTIFY pgrst in a migration: 20240904033106_...sql:52 — note that line
+-- sends the 'reload config' payload; 'reload schema' is new to this repo.
 NOTIFY pgrst, 'reload schema';

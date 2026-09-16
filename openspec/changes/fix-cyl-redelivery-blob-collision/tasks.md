@@ -37,8 +37,9 @@ output to the scratchpad and paste it into the PR body instead.
 - [x] 1.7 Batch: one already-ingested envelope with divergent bytes plus one genuinely new
       envelope. Assert `skipped` + `ok`, exit zero, and that the new envelope's blobs were still
       uploaded.
-- [x] 1.8 Fail-open test, parametrized over `postgrest.APIError`, `httpx.ConnectError`,
-      `RuntimeError` and `AttributeError`. Assert the command proceeds to upload exactly as
+- [x] 1.8 Fail-open test, parametrized over `postgrest.APIError` (42501 — the production
+      trigger), `RuntimeError`, `AttributeError` and `ConnectionError` (a non-APIError transport
+      fault, which is what justifies the broad `except`). Assert the command proceeds to upload exactly as
       without the check, is **not** reported failed on account of the check, **and** emits a
       warning naming the degraded check. (A 42501 arrives *as* `APIError`, so an APIError-only
       test cannot justify the broad `except` — the transport cases are what justify it.)
@@ -86,8 +87,9 @@ worktree alone is a one-command undo.
 - [x] 3.4 Mutant: `return res.data is not None` instead of `or []`. Must go red on 1.2's
       empty-list case — this mutant would otherwise make **every first delivery** a silent no-op
       that exits zero while writing nothing.
-- [x] 3.5 Mutant: narrow the `except` to `postgrest.APIError`. 1.8's `httpx.ConnectError` case
-      must go red.
+- [x] 3.5 Mutant: narrow the `except` to `postgrest.APIError`. 1.8's non-APIError cases must go
+      red (a 42501 arrives *as* `APIError`, so only the transport/programming-error cases can
+      distinguish the two catches).
 - [x] 3.6 Mutant: move the check above `load_predictions_manifest`. 1.6 must go red.
 - [x] 3.7 Confirm `git diff --stat bloomcli/` is empty before continuing. Never `git add -A`
       while a mutant is in the tree.
@@ -144,10 +146,13 @@ worktree alone is a one-command undo.
       raise after `upload_pending_blobs` returns, so bytes land with no source row, then deliver
       `collision_dir`'s divergent bytes and assert exit != 0. Restate its docstring. `cleanup()`
       already deletes storage objects by the idem prefix, so teardown needs no change.
-- [x] 5.5 **Restructure `test_ingest_uploads_blobs_idempotently_and_rejects_checksum_mismatch`
-      (`:115-183`).** Its r3 leg (corrupt fixture) now short-circuits and exits zero, and its r2
-      leg becomes vacuous. Move both onto a second, never-ingested envelope so client-side
-      checksum rejection and same-checksum upload-skip keep end-to-end coverage.
+- [x] 5.5 **Restructure `test_ingest_uploads_blobs_idempotently_and_rejects_checksum_mismatch`.**
+      The r3 (corrupt-fixture) leg moved onto a second, never-ingested envelope — via a second
+      `envelope_for` call, since the contract model *derives* the key and rejects a hand-edited
+      one. The r2 (same-bytes re-delivery) leg was **left in place and is now vacuous**: the gate
+      skips the upload, so `upload_blob`'s same-checksum skip is no longer exercised end to end.
+      Unit coverage survives (`test_upload_blob_skips_when_existing_checksum_matches`). Recorded
+      rather than silently dropped; restoring it needs a third envelope and is tracked in 6.11.
 - [x] 5.6 Delete the stale comment at `test_cyl_ingest_integration.py:150-153` claiming the
       upload step "would skip re-uploading … even if the RPC weren't a no-op" — true only for
       identical bytes, and exactly the blind spot that hid this bug.
@@ -194,6 +199,11 @@ worktree alone is a one-command undo.
       integration suite is unrunnable without hand-building an auth user. Four of the six vars
       are already a `~/.bloom/credentials.<name>.txt` profile; a `make bloomctl-it` target that
       reads a profile and seeds a writer would make the suite routinely runnable.
+
+- [ ] 6.11 File the follow-ups this review surfaced, needing authorization (see §7): the
+      `was_noop` / `status_update_matched` intersection that makes a fresh-workflow re-delivery
+      report `failed` (design.md Risks), and the lost end-to-end coverage of `upload_blob`'s
+      same-checksum skip (5.5).
 
 ## 7. Follow-up issues — needs explicit authorization before posting
 
@@ -248,13 +258,15 @@ worktree alone is a one-command undo.
       previous one**, for rollback. Nothing is built by hand.
 - [ ] 9.4 `bash scripts/check_cluster_drift.sh` in `sleap-roots-pipeline`; record the before
       state.
-- [ ] 9.5 Bump the pin in `sleap-roots-write-back-template.yaml` **and**
-      `sleap-roots-images-downloader-template.yaml` to the immutable `sha-…` tag, never the
-      mutable `staging` tag — `runai-busch-lab` is shared with production, so a mutable tag there
+- [ ] 9.5 Bump the pin in **all three** templates that carry it —
+      `sleap-roots-write-back-template.yaml`, `sleap-roots-images-downloader-template.yaml`
+      **and `sleap-roots-exit-gate-template.yaml`** (added by sleap-roots-pipeline PR #75,
+      whose own comment says "bump all three together") — to the immutable `sha-…` tag, never
+      the mutable `staging` tag — `runai-busch-lab` is shared with production, so a mutable tag there
       means the next unrelated bloomcli merge silently redeploys production.
 - [ ] 9.6 `argo template update` in `runai-busch-lab`; re-run `check_cluster_drift.sh`.
 - [ ] 9.7 Record explicitly that production now runs the new image **without** the grant (this PR
-      targets `staging`; `origin/main` is seven migrations behind), so production behaviour is
+      targets `staging`; `origin/main` is 22 migrations / 241 commits behind), so production behaviour is
       today's behaviour, not the fix.
 - [ ] 9.8 Reproduce the original failure against staging; confirm exit zero.
 - [ ] 9.9 After the staging→main promotion merges, re-run 9.1 against the production DB and 9.8
@@ -262,5 +274,7 @@ worktree alone is a one-command undo.
 - [ ] 9.10 Only once 9.1–9.9 are ticked: close sleap-roots-pipeline#76, then open the
       `chore(openspec): archive fix-cyl-redelivery-blob-collision` PR. Do not archive earlier —
       bloom#708 and bloom#806 both still carry unfinished deploy-verification tails.
-- [ ] 9.11 Do not edit `sleap-roots-pipeline`'s `docs/bloom-integration/roadmap.md` or
-      `openspec/changes/add-partial-success-exit-gate/tasks.md` while its PR #75 is open.
+- [ ] 9.11 sleap-roots-pipeline PR #75 has **merged**, so the earlier hold on editing its
+      `docs/bloom-integration/roadmap.md` and `add-partial-success-exit-gate/tasks.md` is
+      lifted. That merge is what introduced the third pin site in 9.5 — re-read it before
+      bumping.

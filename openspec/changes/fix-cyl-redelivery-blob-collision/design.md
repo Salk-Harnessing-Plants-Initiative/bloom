@@ -11,17 +11,18 @@ Three behaviours, each correct in isolation, combine into a failure:
    bytes at identical file sizes (measured: `8776cdd8…` vs `e8535461…` for the same lateral
    artifact).
 2. The object path embeds the key — `{scan_key}/{idempotency_key}/{kind}.{root_type}.slp`
-   (`ingest.py:290`) — so recomputed bytes target an already-occupied address.
-3. `upload_blob` refuses to overwrite an object whose checksum differs (`ingest.py:319-326`).
+   (`ingest.py:281-296`) — so recomputed bytes target an already-occupied address.
+3. `upload_blob` refuses to overwrite an object whose checksum differs (`ingest.py:403-415`).
    This is right on its own: silently replacing bytes that other rows reference would be worse
    than failing.
 
 The RPC already implements the lenient counterpart — `ON CONFLICT (idempotency_key) DO NOTHING`,
 then an early return with `was_noop: true` that writes nothing to the trait or blob tables
 (`20260912110000_add_cyl_writeback_run_scan_status.sql:149-194`). It is not a *total* no-op: on
-that same branch, and only when `p_argo_workflow_name` is non-null, it still stamps
-`cyl_pipeline_run_scans` to `'written'` (`:179-186`) — which is why the call must survive the
-skip. The defect is purely that the strict step is sequenced ahead of the lenient one.
+that same branch, and only when `p_argo_workflow_name` is non-null, it also touches
+`cyl_pipeline_run_scans` (`:179-186`) — though see the Decisions section, since that UPDATE can
+only re-touch an already-written row. The defect is purely that the strict step is sequenced
+ahead of the lenient one.
 
 A pin bump cannot cause this: when the key changes, the address changes with it. The trigger is
 specifically a recompute at an **unchanged** key, which requires predict's local artifacts to be
@@ -61,10 +62,10 @@ read.** This is the decision that keeps the change small. An earlier placement w
 separate enforcement points that are each the sole implementation of a currently-specced
 requirement — missing/malformed manifest, missing `.slp` on disk, the `slp_path` traversal guard
 (`ingest.py:236-241`), and the conflicting pre-existing `blobs` entry check
-(`ingest.py:225-229`) — and would additionally require hoisting `_authed_client(profile)` above
+(`ingest.py:227-233`) — and would additionally require hoisting `_authed_client(profile)` above
 blob construction in `ingest_result`, inverting the deliberate discipline recorded at
-`ingest.py:787-791` ("Blob construction is pure … so it stays before authentication"). At the
-late position the client already exists (`ingest.py:815`), nothing reorders, and only the upload
+`ingest.py:893-901` ("Blob construction is pure … so it stays before authentication"). At the
+late position the client already exists (`ingest.py:928`), nothing reorders, and only the upload
 and the `blobs` merge are skipped. Cost: on the skip path the manifest is read and blobs are
 constructed for nothing. That is local disk I/O against a GPU pipeline — the right trade.
 
@@ -87,18 +88,23 @@ Alternatives considered:
 - *No migration at all, filtering on `metadata->>'idempotency_key'`.* Works today, but
   sequentially scans `cyl_trait_sources` once per envelope.
 - *Content-addressed object paths.* Collisions become impossible, and #76's "orphans existing
-  blobs" objection is overstated — `blob_object_path` has one production caller (`ingest.py:380`,
+  blobs" objection is overstated — `blob_object_path` has one production caller (`ingest.py:476`,
   plus three direct unit tests), and no code in this repo reads `cyl_scan_intermediates` blobs at
   all today, so existing rows keep resolving. The real cost is different: on a re-delivery the
   RPC discards the blobs array, so the freshly uploaded object ends up referenced by nothing. It
   leaks an orphan on every recompute.
 
-**Decision: still call the RPC on the skip path.** When `p_argo_workflow_name` is non-null the
-`was_noop` branch updates `cyl_pipeline_run_scans` to `'written'` by joining on `source_id`
-(`20260912110000:179-186`). Skipping the call to save a round-trip would silently leave
-dispatched scans at `queued` and desynchronise `done_count`. With `ARGO_WORKFLOW_NAME` unset —
-the manual invocation shape — that branch touches zero rows, so the argument is specific to the
-cluster path, but the cluster path is the one that fails today.
+**Decision: still call the RPC on the skip path.** The gate's read is non-transactional and
+advisory; the RPC is the only component that can detect a same-key-different-scan delivery and
+the only authority on whether anything is written.
+
+An earlier draft justified this differently — that the `was_noop` branch rescues a
+`cyl_pipeline_run_scans` row from `queued`. That is structurally impossible and the draft was
+wrong: `source_id` is written only by the non-no-op path (`20260912110000:289-296`), in the same
+statement that sets `status = 'written'`, so `source_id IS NOT NULL` implies the row is already
+written. The no-op branch's `source_id`-keyed UPDATE can only ever re-touch a row that needs no
+rescue; the rows actually stranded at `queued` it cannot match. See the Risks entry on the
+re-delivery exit code.
 
 **Decision: the check fails open, and says so out loud.** Any error — `APIError` (which is how a
 42501 column-permission denial arrives through PostgREST), `httpx.ConnectError`/`ReadTimeout`, or
@@ -127,6 +133,26 @@ the strength of that outcome, not on the claim that it cannot happen. Recorded h
 overturn it.
 
 ## Risks / Trade-offs
+
+- **A re-delivery from a NEW pipeline run is still reported `failed`, not `skipped`.** This is
+  the biggest remaining gap and it is not closed here. `ingest_one_envelope` checks
+  `status_update_matched is False` *before* it checks `was_noop`, and the RPC's no-op branch
+  keys its `cyl_pipeline_run_scans` UPDATE on `(argo_workflow_name, source_id)` — but a new
+  workflow's dispatched rows have `source_id IS NULL`, so the UPDATE matches zero rows and the
+  envelope is reported failed with `retriable=False`. Because `retriable=False` suppresses the
+  non-zero exit, the batch prints `0/N … N failed` while the Argo Workflow reports **Succeeded**
+  — quieter than the pre-fix behaviour, which at least went red. The scan then stays `queued`
+  and end-of-batch reconciliation closes it `failed`, so `failed_count` counts a scan whose
+  traits and blobs are complete.
+
+  Not fixed in this change because the fix is not ours alone to make: `fix-cyl-pipeline-run-scan-status`
+  legislates a non-zero exit on `status_update_matched=false`, this change legislates zero on
+  `was_noop=true`, and **neither spec addresses the intersection**. Reordering the two checks
+  here would silently override that sibling's requirement. The durable fix is RPC-side — fall
+  back to a `scan_id`-scoped UPDATE within `argo_workflow_name` when the `source_id` join matches
+  nothing — which belongs with the capability that owns the status contract. Filed as a
+  follow-up; until then the spec claim of "exits zero" holds for the manual shape and for
+  intra-workflow Argo retries, not for a re-run from a fresh pipeline run.
 
 - **The orphan-blob wedge stays open.** A delivery that uploads and then dies before the RPC
   leaves bytes with no source row; a later recompute checks correctly ("not ingested") and still
@@ -174,7 +200,7 @@ falls back to upload-then-RPC. A future cleanup narrowing that `except` to `APIE
 silently convert the documented rollback from "degrade" into "every re-delivery raises", so the
 dependency is recorded here and repeated in the rollback file's own header.
 
-Deploy order is unconstrained, by construction. Post-merge the tail still runs: `tasks.md` §8.
+Deploy order is unconstrained, by construction. Post-merge the tail still runs: `tasks.md` §9.
 
 ## Open Questions
 

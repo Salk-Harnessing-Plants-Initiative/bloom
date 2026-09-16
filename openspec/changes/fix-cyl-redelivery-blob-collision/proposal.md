@@ -19,10 +19,10 @@ is not the cause.
   blob construction, not before them. Every existing fail-fast guarantee (missing or malformed
   manifest, missing `.slp` on disk, `slp_path` traversal, conflicting pre-existing `blobs`
   entry) therefore still runs unchanged, and `ingest_result`'s deliberate
-  construct-before-authenticate ordering (`ingest.py:787-791`) is untouched.
-- Keep calling the RPC unconditionally. When `ARGO_WORKFLOW_NAME` is set, its `was_noop` branch
-  still stamps `cyl_pipeline_run_scans`, so short-circuiting the call would leave dispatched
-  scans at `queued`.
+  construct-before-authenticate ordering (`ingest.py:893-901`) is untouched.
+- Keep calling the RPC unconditionally — the gate's read is advisory and non-transactional, and
+  the RPC is the only authority on whether a delivery writes anything. (It does **not** rescue a
+  scan stranded at `queued`; an earlier draft said so and was wrong — see `design.md`.)
 - Degrade loudly, not silently: any failure of the check itself is treated as "not already
   ingested" and falls through to today's behaviour, **and** emits a warning naming the likely
   missing grant. A silent swallow of exactly this failure shape already cost this project
@@ -42,8 +42,8 @@ byte-determinism (different repo, and a GPU-cost event to schedule deliberately)
 
 - **Affected specs:** `cyl-ingest-cli`, `cyl-batch-ingest-result`, `cyl-trait-writeback`
 - **Affected code:** `bloomcli/src/bloomctl/cyl/ingest.py` (`source_already_ingested` +
-  guards in `ingest_one_envelope` and `ingest_result`; docstrings at `:593`, `:772`, `:293`;
-  help text at `:761-763` and `:904`; the comment at `:787-791`; the collision error text)
+  guards in `ingest_one_envelope` and `ingest_result`; docstrings, help text on both commands, the construct-before-authenticate comment, and
+  the collision error text; plus `ScanResult.warning` in `_batch.py`)
 - **Affected tests:** `bloomcli/tests/test_cyl_ingest.py`,
   `bloomcli/tests/test_cyl_ingest_integration.py` (two tests invert and must be re-aimed at the
   orphan path), new `tests/integration/` grant test, new `tests/unit/` static grant guard
@@ -59,8 +59,8 @@ byte-determinism (different repo, and a GPU-cost event to schedule deliberately)
   provenance object, which already contains `idempotency_key`. The grant adds an indexed access
   path to a value the role can already read.
 - **Not done at merge, and production is not covered by it.** This PR targets `staging`, so the
-  grant reaches the staging DB only; `origin/main` is seven migrations behind. Production
+  grant reaches the staging DB only; `origin/main` is 22 migrations behind (241 commits). Production
   write-back pods will run the new image *without* the grant until a staging→main promotion
-  lands, where the check fails open and behaves exactly as today. `tasks.md` §8 tracks the
+  lands, where the check fails open and behaves exactly as today. `tasks.md` §9 tracks the
   staging verification, the Argo pin (in `runai-busch-lab`, shared by staging **and**
   production), and the separate production verification.

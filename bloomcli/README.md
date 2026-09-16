@@ -578,11 +578,17 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
 - `--predictions-dir DIR`: predict's own nested batch output root
   (`DIR/{scan_key}/{scan_key}.predictions.json` + `.slp` files per scan).
   Constructs, verifies, and uploads blobs per envelope from its own scan_key's
-  subdirectory, reusing `ingest-result --predictions-dir`'s logic unchanged. A
-  missing manifest or upload failure isolates that envelope without aborting
-  the others.
-- `--json` prints one entry per envelope (`scan_key`, `status`, `error`) as a
-  JSON array; without it, a human-readable summary plus one line per failure.
+  subdirectory, reusing `ingest-result --predictions-dir`'s logic unchanged — so
+  an envelope whose `idempotency_key` is already in `cyl_trait_sources` has its
+  upload and merge skipped, exactly as for the single-envelope command. Blob
+  construction still runs either way, so a missing manifest or a missing `.slp`
+  fails that envelope whether or not it was already ingested. A missing manifest
+  or upload failure isolates that envelope without aborting the others.
+- `--json` prints one entry per envelope (`scan_key`, `status`, `error`,
+  `retriable`, `warning`) as a JSON array; without it, a human-readable summary
+  plus one line per failure and one `WARNING` line per degraded item. `warning`
+  is non-empty when the idempotency-gate check could not run and the command
+  fell back to uploading — most likely a missing column grant.
 - **Exit code:** non-zero if any envelope in the batch failed; zero if every
   envelope succeeded, was a no-op re-delivery, or the directory was empty
   (a directory containing only a manifest with no matching files is not the

@@ -1028,8 +1028,9 @@ def ingest_result(
     help=(
         "Predict's own nested batch output root, containing "
         "{scan_key}/{scan_key}.predictions.json + .slp files per scan. When given, constructs + "
-        "uploads blobs for each envelope from its own scan_key's subdirectory. Omit to forward "
-        "blobs unchanged (no upload)."
+        "uploads blobs for each envelope from its own scan_key's subdirectory — except for an "
+        "envelope already ingested, whose upload is skipped (the RPC discards those blobs "
+        "anyway). Omit to forward blobs unchanged (no upload)."
     ),
 )
 @click.pass_context

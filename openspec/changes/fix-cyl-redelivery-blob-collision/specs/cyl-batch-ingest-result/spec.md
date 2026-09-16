@@ -7,7 +7,9 @@ batch output root. When given, for each envelope the command SHALL look up
 `predictions_dir/{scan_key}/{scan_key}.predictions.json` (the envelope's own `scan_key`) and, if
 present, construct + verify + upload its blobs via the same `load_predictions_manifest`/
 `build_pending_blobs`/`upload_pending_blobs` helpers `cyl ingest-result --predictions-dir` uses,
-merging the resulting blobs into that envelope before the RPC call. A missing manifest or a blob
+merging the resulting blobs into that envelope before the RPC call — unless that envelope's
+`idempotency_key` is already present in `cyl_trait_sources`, in which case the upload and the
+merge are both skipped (see below). A missing manifest or a blob
 upload failure for one envelope SHALL be recorded as that envelope's failure (no RPC call for
 it) and SHALL NOT prevent other envelopes in the batch from being processed.
 

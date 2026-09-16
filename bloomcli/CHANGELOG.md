@@ -37,9 +37,22 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   the local bytes are never stored. If the check itself fails — most likely
   because the new `SELECT (idempotency_key)` grant has not reached that
   deployment yet — the command warns and falls back to its previous behaviour
-  rather than failing the envelope. The path-collision error now also names who
-  can clear a conflicting object, which the write-back identity cannot do
-  itself.
+  rather than failing the envelope. That degradation is reported, not just
+  logged: `batch-ingest-result` gains a `warning` field on each item in
+  `--json` and a `WARNING` line in the summary, and `ingest-result` echoes it
+  to stderr, because the log sink is unreadable in the Argo deployment.
+
+- `cyl ingest-result`/`cyl batch-ingest-result`: a manifest naming a `.slp`
+  file that does not exist now fails during blob construction rather than only
+  during upload, so the failure is reported whether or not the envelope was
+  already ingested.
+
+- The path-collision error no longer asserts that the conflicting bytes belong
+  to no ingested result — the check that would establish that fails open, so
+  the message states it as inference and tells the operator to confirm no
+  `cyl_scan_intermediates` row references the object before removing it. It
+  also names an identity that can actually remove it; the write-back identity
+  holds no DELETE on that bucket.
 
 - `cyl batch-ingest-result`: an envelope file that can't be read as UTF-8
   (e.g. one truncated mid-write by an OOM-killed producer) is now isolated to

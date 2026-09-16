@@ -14,9 +14,17 @@ fail-fast guarantee those steps provide — a missing or malformed manifest, a m
 an `slp_path` resolving outside the predictions directory, a conflicting pre-existing `blobs`
 entry — continues to apply unchanged on every delivery, whether or not it is a re-delivery.
 
-The command SHALL still call `insert_cyl_result_envelope` on the skip path: when
-`ARGO_WORKFLOW_NAME` is set, the RPC's `was_noop` branch stamps the matching
-`cyl_pipeline_run_scans` row, so skipping the call would leave dispatched scans at `queued`.
+The command SHALL still call `insert_cyl_result_envelope` on the skip path. The RPC is the
+only component that can detect a same-key-different-scan delivery, and the gate's read is
+non-transactional, so its answer is advisory: the RPC remains the authority on whether this
+delivery writes anything.
+
+Note for future readers: this call does **not** rescue a `cyl_pipeline_run_scans` row stranded
+at `queued`. `source_id` is written only by the RPC's non-no-op path, in the same statement
+that sets `status = 'written'`, so `source_id IS NOT NULL` implies the row is already written;
+the no-op branch's `source_id`-keyed UPDATE can therefore only re-touch a row that needs no
+rescue. An earlier draft of this requirement justified the call on that basis, which was
+wrong. The call is still required, for the reason above.
 
 The check SHALL fail open rather than fail the envelope: any error reading `cyl_trait_sources` —
 including a permission error when the column grant has not yet been applied, and including
@@ -36,8 +44,13 @@ gate is reached (sleap-roots-pipeline#76).
   delivered with `--predictions-dir` holding `.slp` files whose bytes differ from those already
   stored at the derived object path
 - **THEN** no upload is attempted, the constructed blobs are not merged into the envelope, the
-  RPC is still called and returns `was_noop=true`, the command exits zero, and the previously
-  stored bytes are left untouched
+  RPC is still called and returns `was_noop=true`, and the previously stored bytes are left
+  untouched
+- **AND** the delivery is reported `skipped`, exiting zero — except where the RPC also reports
+  `status_update_matched=false`, which a re-delivery dispatched under a *different*
+  `ARGO_WORKFLOW_NAME` currently always does; that case is reported `failed` with
+  `retriable=false` by the `cyl-pipeline-run-scan-status` contract, and reconciling the two
+  contracts is tracked as a follow-up (see `design.md` Risks)
 
 #### Scenario: A first delivery is unaffected
 
