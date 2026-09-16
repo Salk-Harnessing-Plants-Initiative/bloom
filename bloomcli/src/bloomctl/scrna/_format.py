@@ -9,12 +9,16 @@ h5py and numpy come from the optional `scrna` extra and are imported only when a
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 TRANSFORMS = ("log1p", "log2p", "none")
 SCALINGS = ("library_size", "none", "other")
+
+# Where the loader reads the UMAP coordinates from, by name.
+UMAP_KEY = "X_umap"
 
 # Values read at a time when scanning a matrix, so a large file is never read whole.
 SCAN_VALUES = 4 * 1024 * 1024
@@ -74,27 +78,48 @@ def check_structure(path: Path) -> Summary:
             )
         if "X" not in f:
             raise FormatError("no X: the file holds no expression matrix")
-        n_cells, n_genes = _shape(h5py, f["X"], "X")
-        if not n_cells or not n_genes:
-            raise FormatError(f"X is empty ({n_cells} x {n_genes})")
-        _scan(h5py, np, f["X"], "X")
-        _ids(h5py, f, "obs", "cell", n_cells, "rows")
-        _ids(h5py, f, "var", "gene", n_genes, "columns")
+        with _reading("X"):
+            n_cells, n_genes = _shape(h5py, f["X"], "X")
+            if not n_cells or not n_genes:
+                raise FormatError(f"X is empty ({n_cells} x {n_genes})")
+            _scan(h5py, np, f["X"], "X")
+        with _reading("obs"):
+            _ids(h5py, f, "obs", "cell", n_cells, "rows")
+        with _reading("var"):
+            _ids(h5py, f, "var", "gene", n_genes, "columns")
         layers = frozenset(f["layers"].keys()) if "layers" in f else frozenset()
-        normalization = _fields(h5py, f, "uns/normalization")
-        if normalization is not None:
-            problem = normalization_problem(normalization, layers=layers)
-            if problem:
-                raise FormatError(problem)
-        _umap(h5py, f, n_cells)
+        with _reading("uns['normalization']"):
+            normalization = _fields(h5py, f, "uns/normalization")
+            if normalization is not None:
+                problem = normalization_problem(normalization, layers=layers)
+                if problem:
+                    raise FormatError(problem)
+        with _reading(f"obsm['{UMAP_KEY}']"):
+            _umap(h5py, np, f, n_cells)
         if "counts" in layers:
-            shape = _shape(h5py, f["layers/counts"], "layers['counts']")
-            if shape != (n_cells, n_genes):
-                raise FormatError(
-                    f"layers['counts'] is {shape[0]} x {shape[1]}; X is {n_cells} x {n_genes}"
-                )
-            _scan(h5py, np, f["layers/counts"], "layers['counts']", non_negative=True)
+            with _reading("layers['counts']"):
+                shape = _shape(h5py, f["layers/counts"], "layers['counts']")
+                if shape != (n_cells, n_genes):
+                    raise FormatError(
+                        f"layers['counts'] is {shape[0]} x {shape[1]}; X is {n_cells} x {n_genes}"
+                    )
+                _scan(h5py, np, f["layers/counts"], "layers['counts']", non_negative=True)
     return Summary(n_cells, n_genes, normalization, layers)
+
+
+@contextmanager
+def _reading(what: str):
+    """Anything h5py raises while reading ``what`` becomes a FormatError naming it.
+
+    A file this command refuses is one it was handed to check; a KeyError from a missing
+    member is a fact about the file, not a bug to report as a traceback.
+    """
+    try:
+        yield
+    except FormatError:
+        raise
+    except Exception as exc:
+        raise FormatError(f"{what} could not be read: {exc}") from exc
 
 
 def normalization_problem(block: dict[str, Any], *, layers) -> str | None:
@@ -197,12 +222,20 @@ def _fields(h5py, f, path: str) -> dict[str, Any] | None:
     return out
 
 
-def _umap(h5py, f, n_cells: int) -> None:
-    arrays = f["obsm"].values() if "obsm" in f else ()
-    for node in arrays:
-        if isinstance(node, h5py.Dataset) and node.ndim == 2 and node.shape == (n_cells, 2):
-            return
-    raise FormatError(
-        f"no obsm array has two columns and one row per cell ({n_cells}); the UMAP "
-        "coordinates belong there"
-    )
+def _umap(h5py, np, f, n_cells: int) -> None:
+    """The coordinates the explorer plots, read by name and checked as the loader checks them."""
+    arrays = f["obsm"] if "obsm" in f else None
+    node = arrays.get(UMAP_KEY) if arrays is not None else None
+    if not isinstance(node, h5py.Dataset) or node.ndim != 2 or tuple(node.shape) != (n_cells, 2):
+        found = ", ".join(sorted(arrays)) if arrays is not None and len(arrays) else "nothing"
+        raise FormatError(
+            f"no obsm['{UMAP_KEY}'] with two columns and one row per cell ({n_cells}), which is "
+            f"where the UMAP coordinates are read from; obsm holds: {found}"
+        )
+    coordinates = node[:]
+    if not np.isfinite(coordinates).all():
+        raise FormatError(f"obsm['{UMAP_KEY}'] holds a coordinate that is not finite")
+    if n_cells > 1 and bool(np.all(coordinates == coordinates[0])):
+        raise FormatError(
+            f"obsm['{UMAP_KEY}'] puts every cell on the same point; the embedding is empty"
+        )

@@ -208,6 +208,62 @@ def test_storage_refusing_to_start_says_nothing_was_sent(tmp_path, env, storage,
     assert "already sent" not in result.output
 
 
+def test_bytes_taken_but_no_object_stored_is_not_success(tmp_path, env, storage):
+    """Storage can accept every byte and still fail to finalise the object."""
+    storage.finalise = False
+    path = write_h5ad(tmp_path / "data.h5ad")
+    result = _run("upload", str(path))
+    assert result.exit_code != 0
+    assert "not stored" in result.output
+    assert "Uploaded" not in result.output
+    assert list((tmp_path / "stage").glob("*.h5ad.gz")), "the only resumable copy was deleted"
+
+
+def test_an_upload_already_at_full_length_is_confirmed_not_assumed(tmp_path, env, storage):
+    """A resumed upload the server already holds in full, with no object behind it."""
+    storage.finalise = False
+    path = write_h5ad(tmp_path / "data.h5ad")
+    assert _run("upload", str(path)).exit_code != 0   # leaves a full-length upload behind
+    second = _run("upload", str(path))
+    assert second.exit_code != 0
+    assert "Uploaded" not in second.output
+
+
+def test_an_upload_recorded_for_other_bytes_is_not_resumed(tmp_path, env, storage):
+    path = write_h5ad(tmp_path / "data.h5ad")
+    fingerprint = hashlib.sha256(path.read_bytes()).hexdigest()
+    stage = tmp_path / "stage"
+    _object.stage(path, stage)
+    _object.save_upload(stage, fingerprint, "u-stale", 999_999, "http://api.test")
+    result = _run("upload", str(path))
+    assert result.exit_code == 0, result.output
+    assert not any("u-stale" in str(r.url) for r in storage.requests)
+    assert _stored(storage, path) == path.read_bytes()
+
+
+def test_an_upload_recorded_for_another_server_is_not_resumed(tmp_path, env, storage):
+    """Resuming it would send this session's token to the other server."""
+    path = write_h5ad(tmp_path / "data.h5ad")
+    fingerprint = hashlib.sha256(path.read_bytes()).hexdigest()
+    stage = tmp_path / "stage"
+    staged = _object.stage(path, stage)
+    _object.save_upload(stage, fingerprint, "u-elsewhere", staged.size, "http://other.test")
+    result = _run("upload", str(path))
+    assert result.exit_code == 0, result.output
+    assert not any("u-elsewhere" in str(r.url) for r in storage.requests)
+
+
+def test_a_staged_copy_that_is_not_the_file_is_rebuilt(tmp_path, env, storage):
+    """Its name asserts a fingerprint; storing other bytes under it could never be undone."""
+    path = write_h5ad(tmp_path / "data.h5ad")
+    stage = tmp_path / "stage"
+    staged = _object.stage(path, stage)
+    staged.gz_path.write_bytes(gzipped(b"not the file at all"))
+    result = _run("upload", str(path))
+    assert result.exit_code == 0, result.output
+    assert _stored(storage, path) == path.read_bytes()
+
+
 # --- download -----------------------------------------------------------------
 
 
@@ -307,6 +363,40 @@ def test_an_unknown_dataset_is_a_clear_error(env):
     result = _run("download", "nope")
     assert result.exit_code != 0
     assert "nope" in result.output
+
+
+def test_an_expired_session_is_not_reported_as_a_missing_file(tmp_path, env, storage):
+    """Storage answers an unauthenticated caller the same way it answers a missing object."""
+    _, _, row = _dataset(storage)
+    env["client"] = FakeClient([row])
+    storage.expired = True
+    result = _run("download", "14", "--out", str(tmp_path / "x.h5ad"))
+    assert result.exit_code != 0
+    assert "log in" in result.output or "sign in" in result.output
+    assert "no stored file" not in result.output
+
+
+def test_a_destination_that_cannot_be_written_is_a_clear_error(tmp_path, env, storage):
+    data, _, row = _dataset(storage)
+    env["client"] = FakeClient([row])
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o500)
+    try:
+        result = _run("download", "14", "--out", str(locked / "x.h5ad"))
+    finally:
+        locked.chmod(0o700)
+    assert result.exit_code != 0
+    assert "x.h5ad" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_an_expired_session_does_not_start_a_second_upload(tmp_path, env, storage):
+    storage.expired = True
+    result = _run("upload", str(write_h5ad(tmp_path / "data.h5ad")))
+    assert result.exit_code != 0
+    assert "log in" in result.output or "sign in" in result.output
+    assert not storage.uploads
 
 
 def test_download_needs_a_dataset_or_a_fingerprint(env):

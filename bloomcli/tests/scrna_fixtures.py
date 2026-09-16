@@ -99,6 +99,7 @@ def write_h5ad(
     var_blanks=(),
     normalization=DEFAULT,
     obsm=DEFAULT,
+    umap=None,
     sparse: bool = True,
     anndata: bool = True,
     with_x: bool = True,
@@ -124,7 +125,11 @@ def write_h5ad(
         _frame(f, "var", var_ids, index_style, var_blanks)
         arrays = _dict(f, "obsm")
         for name, shape in obsm.items():
-            _attrs(arrays.create_dataset(name, data=np.zeros(shape, dtype=np.float32)), "array")
+            # Spread, not zeros: coordinates that put every cell on one point are refused,
+            # as the loader refuses them.
+            rows, columns = shape
+            spread = np.arange(rows * columns, dtype=np.float32).reshape(rows, columns)
+            _attrs(arrays.create_dataset(name, data=umap if umap is not None else spread), "array")
         layers = _dict(f, "layers")
         if counts is not None:
             _matrix(layers, "counts", counts, sparse)

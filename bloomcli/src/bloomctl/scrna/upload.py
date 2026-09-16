@@ -97,14 +97,28 @@ def _send(http, ep, stage: Path, staged: _object.Staged, name: str) -> None:
     try:
         if _transfer.object_exists(http, ep, bucket, path):
             raise _transfer.AlreadyStored(path)
-        url = _object.load_upload_url(stage, staged.fingerprint)
+        # Only an upload for these bytes, on this server, is worth resuming.
+        saved = _object.load_upload(
+            stage, staged.fingerprint, api_url=ep.api_url, size=staged.size
+        )
+        url = _transfer.resumable_url(ep, saved["id"]) if saved else None
         offset = _transfer.upload_offset(http, ep, url) if url else None
         if offset is None:
             url = _transfer.create_upload(http, ep, bucket, path, staged.size)
-            _object.save_upload_url(stage, staged.fingerprint, url)
+            _object.save_upload(
+                stage, staged.fingerprint, _transfer.upload_id_of(url), staged.size, ep.api_url
+            )
             offset = 0
         held = offset
-        _transfer.send(http, ep, url, staged.gz_path, offset, staged.size, on_progress=acknowledged)
+        final = _transfer.send(
+            http, ep, url, staged.gz_path, offset, staged.size, on_progress=acknowledged
+        )
+        # Sending every byte is not the same as storage having stored the object.
+        if final != staged.size or not _transfer.object_exists(http, ep, bucket, path):
+            raise click.ClickException(
+                f"storage took {final:,} of {staged.size:,} bytes but has not stored {name} "
+                "yet. Nothing was lost — run the same command again to finish it."
+            )
     except _transfer.AlreadyStored:
         # The name is the content's fingerprint, so what is stored is this file.
         _object.clear(stage, staged.fingerprint)

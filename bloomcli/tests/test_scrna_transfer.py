@@ -24,6 +24,15 @@ class FakeStorage:
         self.drop_after: int | None = None
         self.patches = 0
         self.hide_objects = False
+        # Storage takes the bytes but never creates the object (a finalisation failure).
+        self.finalise = True
+        # Acknowledge fewer bytes than the next chunk sends, once, as the protocol permits.
+        self.ack_short_by = 0
+        self.short_acks = 1
+        self.offset_header: str | None = None
+        self.offset_status: int | None = None
+        # Storage answers an unauthenticated caller much as it answers a missing object.
+        self.expired = False
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -44,20 +53,31 @@ class FakeStorage:
             if upload is None:
                 return httpx.Response(404)
             if request.method == "HEAD":
+                if self.offset_status is not None:
+                    return httpx.Response(self.offset_status)
                 return httpx.Response(200, headers={"Upload-Offset": str(len(upload["data"]))})
             if int(request.headers["upload-offset"]) != len(upload["data"]):
                 return httpx.Response(409, text="offset does not match")
             if self.drop_after is not None and self.patches >= self.drop_after:
                 raise httpx.ConnectError("connection dropped")
             self.patches += 1
-            upload["data"] += request.content
-            if len(upload["data"]) == upload["length"]:
+            short = self.ack_short_by if self.short_acks > 0 else 0
+            if short:
+                self.short_acks -= 1
+            kept = request.content[: len(request.content) - short]
+            upload["data"] += kept
+            if len(upload["data"]) == upload["length"] and self.finalise:
                 if upload["name"] in self.objects:
                     return httpx.Response(409, json=DUPLICATE)
                 self.objects[upload["name"]] = bytes(upload["data"])
-            return httpx.Response(204, headers={"Upload-Offset": str(len(upload["data"]))})
+            offset = self.offset_header or str(len(upload["data"]))
+            return httpx.Response(204, headers={"Upload-Offset": offset})
         prefix = "/storage/v1/object/authenticated/"
         if path.startswith(prefix):
+            if self.expired:
+                return httpx.Response(400, json={
+                    "statusCode": "400", "error": "InvalidJWT", "message": "jwt expired",
+                })
             data = None if self.hide_objects else self.objects.get(path[len(prefix):])
             if data is None:
                 return httpx.Response(400, json={"statusCode": "404", "error": "not_found"})
@@ -175,3 +195,53 @@ def test_a_truncated_download_is_refused(tmp_path, http, storage):
     storage.objects["scrna/h5ad/f.h5ad.gz"] = gzipped(b"x" * 10000)[:-12]
     with pytest.raises(tr.TransferError, match="ended before"):
         tr.download_to(http, EP, "scrna", "h5ad/f.h5ad.gz", tmp_path / "out.tmp")
+
+
+# --- what the sender reports back ---------------------------------------------
+
+
+def test_sending_reports_the_bytes_storage_acknowledged(tmp_path, http, small_chunks):
+    path, data = _source(tmp_path)
+    url = tr.create_upload(http, EP, "scrna", "h5ad/f.h5ad.gz", len(data))
+    assert tr.send(http, EP, url, path, 0, len(data)) == len(data)
+
+
+def test_a_short_acknowledgement_resends_from_where_storage_actually_is(tmp_path, http, storage, small_chunks):
+    """Storage may keep fewer bytes than were sent; the next chunk has to start there."""
+    path, data = _source(tmp_path)
+    url = tr.create_upload(http, EP, "scrna", "h5ad/f.h5ad.gz", len(data))
+    storage.ack_short_by = 4
+    assert tr.send(http, EP, url, path, 0, len(data)) == len(data)
+    assert storage.objects["scrna/h5ad/f.h5ad.gz"] == data
+
+
+def test_a_server_that_never_keeps_the_last_bytes_is_refused_rather_than_looping(tmp_path, http, storage, small_chunks):
+    path, data = _source(tmp_path)
+    url = tr.create_upload(http, EP, "scrna", "h5ad/f.h5ad.gz", len(data))
+    storage.ack_short_by, storage.short_acks = 4, 99
+    with pytest.raises(tr.TransferError, match="acknowledged"):
+        tr.send(http, EP, url, path, 0, len(data))
+
+
+def test_an_acknowledgement_that_goes_backwards_or_past_the_end_is_refused(tmp_path, http, storage, small_chunks):
+    path, data = _source(tmp_path)
+    url = tr.create_upload(http, EP, "scrna", "h5ad/f.h5ad.gz", len(data))
+    storage.offset_header = str(len(data) + 99)
+    with pytest.raises(tr.TransferError, match="acknowledged"):
+        tr.send(http, EP, url, path, 0, len(data))
+
+
+def test_an_unreadable_offset_is_refused(tmp_path, http, storage, small_chunks):
+    path, data = _source(tmp_path)
+    url = tr.create_upload(http, EP, "scrna", "h5ad/f.h5ad.gz", len(data))
+    storage.offset_header = "not-a-number"
+    with pytest.raises(tr.TransferError, match="offset"):
+        tr.send(http, EP, url, path, 0, len(data))
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 410])
+def test_an_upload_this_session_cannot_ask_about_is_forgotten(http, storage, status):
+    """Whatever the reason, the answer is to start a new upload, not to fail forever."""
+    storage.uploads["u0"] = {"name": "scrna/h5ad/f.h5ad.gz", "length": 10, "data": bytearray()}
+    storage.offset_status = status
+    assert tr.upload_offset(http, EP, f"{API}/storage/v1/upload/resumable/u0") is None

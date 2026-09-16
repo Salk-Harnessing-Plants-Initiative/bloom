@@ -67,17 +67,46 @@ def test_staging_leaves_no_temporary_file(tmp_path):
     assert not list((tmp_path / "stage").glob("*.tmp"))
 
 
-def test_the_upload_address_is_kept_and_cleared_with_the_staged_form(tmp_path):
+def test_the_upload_is_kept_with_what_identifies_it_and_cleared_with_the_staged_form(tmp_path):
     path, _ = _file(tmp_path)
     stage = tmp_path / "stage"
     staged = obj.stage(path, stage)
-    obj.save_upload_url(stage, staged.fingerprint, "http://api/storage/v1/upload/resumable/u0")
-    assert obj.load_upload_url(stage, staged.fingerprint) == (
-        "http://api/storage/v1/upload/resumable/u0"
-    )
+    obj.save_upload(stage, staged.fingerprint, "u0", staged.size, "http://api.test")
+    assert obj.load_upload(stage, staged.fingerprint) == {
+        "id": "u0", "size": staged.size, "api_url": "http://api.test",
+    }
     obj.clear(stage, staged.fingerprint)
-    assert obj.load_upload_url(stage, staged.fingerprint) is None
+    assert obj.load_upload(stage, staged.fingerprint) is None
     assert not staged.gz_path.exists()
+
+
+def test_an_upload_kept_for_another_server_is_not_offered(tmp_path):
+    """Resuming it would send this session's token to the other server."""
+    path, _ = _file(tmp_path)
+    stage = tmp_path / "stage"
+    staged = obj.stage(path, stage)
+    obj.save_upload(stage, staged.fingerprint, "u0", staged.size, "http://staging.test")
+    assert obj.load_upload(stage, staged.fingerprint, api_url="http://prod.test") is None
+    assert obj.load_upload(stage, staged.fingerprint, api_url="http://staging.test") is not None
+
+
+def test_an_upload_kept_for_a_different_length_is_not_offered(tmp_path):
+    """The gzipped form was rewritten, so the server's upload is for other bytes."""
+    path, _ = _file(tmp_path)
+    stage = tmp_path / "stage"
+    staged = obj.stage(path, stage)
+    obj.save_upload(stage, staged.fingerprint, "u0", staged.size + 17, "http://api.test")
+    assert obj.load_upload(stage, staged.fingerprint, size=staged.size) is None
+    assert obj.load_upload(stage, staged.fingerprint, size=staged.size + 17) is not None
+
+
+def test_an_unreadable_upload_record_is_ignored(tmp_path):
+    path, _ = _file(tmp_path)
+    stage = tmp_path / "stage"
+    staged = obj.stage(path, stage)
+    obj.save_upload(stage, staged.fingerprint, "u0", staged.size, "http://api.test")
+    (stage / f"{staged.fingerprint}.upload").write_text("{ this is not json")
+    assert obj.load_upload(stage, staged.fingerprint) is None
 
 
 def test_the_size_limit_is_the_storage_limit():
