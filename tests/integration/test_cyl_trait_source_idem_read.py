@@ -99,14 +99,19 @@ def test_the_granted_column_set_is_exactly_the_three_expected(pg_conn):
     pass just as happily under a column-less `GRANT SELECT`, which is the thing worth catching.
     """
     with pg_conn.cursor() as cur:
+        # has_column_privilege(), not information_schema.column_privileges: that view only
+        # surfaces privileges granted to or by a *currently enabled* role, so the same grant is
+        # visible connected as supabase_admin and invisible connected as postgres. Verified
+        # against a live dev stack, where the view returned nothing while the privileges were
+        # demonstrably present. has_column_privilege() answers authoritatively regardless of
+        # who is connected.
         cur.execute(
             """
             SELECT column_name
-            FROM information_schema.column_privileges
+            FROM information_schema.columns
             WHERE table_schema = 'public'
               AND table_name = 'cyl_trait_sources'
-              AND grantee = %s
-              AND privilege_type = 'SELECT'
+              AND has_column_privilege(%s, 'public.cyl_trait_sources', column_name, 'SELECT')
             """,
             (ROLE,),
         )
