@@ -41,7 +41,7 @@ output to the scratchpad and paste it into the PR body instead.
       trigger), `RuntimeError`, `AttributeError` and `ConnectionError` (a non-APIError transport
       fault, which is what justifies the broad `except`). Assert the command proceeds to upload exactly as
       without the check, is **not** reported failed on account of the check, **and** emits a
-      warning naming the degraded check. (A 42501 arrives *as* `APIError`, so an APIError-only
+      warning naming the degraded check. (A 42501 arrives _as_ `APIError`, so an APIError-only
       test cannot justify the broad `except` — the transport cases are what justify it.)
 - [x] 1.9 Assert `source_already_ingested` is never invoked when `provenance.idempotency_key` is
       empty or absent (existing empty-key tests still fail; recording fake shows zero queries),
@@ -88,7 +88,7 @@ worktree alone is a one-command undo.
       empty-list case — this mutant would otherwise make **every first delivery** a silent no-op
       that exits zero while writing nothing.
 - [x] 3.5 Mutant: narrow the `except` to `postgrest.APIError`. 1.8's non-APIError cases must go
-      red (a 42501 arrives *as* `APIError`, so only the transport/programming-error cases can
+      red (a 42501 arrives _as_ `APIError`, so only the transport/programming-error cases can
       distinguish the two catches).
 - [x] 3.6 Mutant: move the check above `load_predictions_manifest`. 1.6 must go red.
 - [x] 3.7 Confirm `git diff --stat bloomcli/` is empty before continuing. Never `git add -A`
@@ -131,12 +131,12 @@ worktree alone is a one-command undo.
       one; `SELECT name` raises 42501; `INSERT`/`UPDATE`/`DELETE` still raise. Write it red
       before 4.1. This runs in CI (`pr-checks.yml` `compose-health-check` applies migrations then
       runs `tests/integration/`), unlike section 5.2 — and it is the only thing that proves the
-      grant works *as the role* rather than merely existing as an ACL row.
+      grant works _as the role_ rather than merely existing as an ACL row.
 - [x] 5.2 Do **not** assert an `EXPLAIN` plan for index usage: CI's table is empty and the
       planner will seq-scan regardless. Assert the query succeeds; keep the index as a design
       note.
 - [x] 5.3 Add the divergent-bytes regression to `bloomcli/tests/test_cyl_ingest_integration.py`,
-      reusing the existing `collision_dir` recipe (bytes changed *and* checksums recomputed).
+      reusing the existing `collision_dir` recipe (bytes changed _and_ checksums recomputed).
       Assert exit zero, `was_noop=true`, and — the load-bearing assertion — that downloading the
       object still returns run A's bytes.
 - [x] 5.4 **Rewrite `test_ingest_rejects_a_genuine_storage_path_collision` (`:185-238`), which
@@ -148,11 +148,11 @@ worktree alone is a one-command undo.
       already deletes storage objects by the idem prefix, so teardown needs no change.
 - [x] 5.5 **Restructure `test_ingest_uploads_blobs_idempotently_and_rejects_checksum_mismatch`.**
       The r3 (corrupt-fixture) leg moved onto a second, never-ingested envelope — via a second
-      `envelope_for` call, since the contract model *derives* the key and rejects a hand-edited
+      `envelope_for` call, since the contract model _derives_ the key and rejects a hand-edited
       one. The r2 (same-bytes re-delivery) leg was **left in place and is now vacuous**: the gate
       skips the upload, so `upload_blob`'s same-checksum skip is no longer exercised end to end.
       Unit coverage survives (`test_upload_blob_skips_when_existing_checksum_matches`). Recorded
-      rather than silently dropped; restoring it needs a third envelope and is tracked in 6.11.
+      rather than silently dropped; restoring it is tracked as bloom#876.
 - [x] 5.6 Delete the stale comment at `test_cyl_ingest_integration.py:150-153` claiming the
       upload step "would skip re-uploading … even if the RPC weren't a no-op" — true only for
       identical bytes, and exactly the blind spot that hid this bug.
@@ -185,7 +185,7 @@ worktree alone is a one-command undo.
       wording.
 - [x] 6.6 `bloomcli/README.md:510-519`: states both the invalidated ordering and an unconditional
       "fails fast — before any upload or RPC call — on … a checksum mismatch". `:506-507` and
-      `:566-567` state the idempotency guarantee and become *more* true — leave them.
+      `:566-567` state the idempotency guarantee and become _more_ true — leave them.
 - [x] 6.7 `_WIKI/SUPABASE/README.md:114`: update the enumerated column grants on
       `cyl_trait_sources`, which the spec delta now asserts as normative. Leaving it stale is
       exactly the two-files-one-claim failure this program has been bitten by.
@@ -194,7 +194,8 @@ worktree alone is a one-command undo.
       accurately records `0.1.0a3` behaviour.
 - [x] 6.9 Grep for any operator runbook covering a blob-collision failure. There is none today;
       note that in the follow-up issue rather than inventing one here.
-- [ ] 6.10 File the dev-user gap (needs authorization): there is no supported way to obtain
+- [ ] 6.10 NOT FILED (needs authorization). The dev-user gap: there is no supported way to
+      obtain
       `BLOOMCTL_IT_EMAIL`/`PASSWORD` for the compose dev stack, so the env-gated bloomctl
       integration suite is unrunnable without hand-building an auth user. Four of the six vars
       are already a `~/.bloom/credentials.<name>.txt` profile; a `make bloomctl-it` target that
@@ -204,52 +205,60 @@ worktree alone is a one-command undo.
       makes a fresh-workflow re-delivery report `failed` while the Workflow goes green
       (design.md Risks). Needs a decision spanning this change and
       `fix-cyl-pipeline-run-scan-status`, so it is deliberately not fixed here.
-- [ ] 6.12 Still unfiled, needs authorization: the lost end-to-end coverage of `upload_blob`'s
-      same-checksum skip (see 5.5 — the integration leg is now vacuous; unit coverage survives).
+- [x] 6.12 Filed bloom#876 for the lost end-to-end coverage of `upload_blob`'s same-checksum
+      skip (see 5.5). The behaviour is unchanged and still reachable via the orphan path;
+      `test_upload_blob_skips_when_existing_checksum_matches` still covers the function in
+      isolation, so it is the chain that lost coverage, not the logic.
 
 ## 7. Follow-up issues — needs explicit authorization before posting
 
-- [ ] 7.1 Ask for authorization before any GitHub write. Filing issues and commenting on #859
+- [x] 7.1 Ask for authorization before any GitHub write. Filing issues and commenting on #859
       are all posts.
-- [ ] 7.2 File the orphan-blob-wedge issue: bytes with no source row, permanently wedged, and
+- [x] 7.2 Filed bloom#868 — the orphan-blob-wedge issue: bytes with no source row, permanently wedged, and
       recovery needs an identity write-back does not have. Blocked on diffing the two `.slp`
       files' actual predictions. Cross-reference sleap-roots-pipeline#76.
-- [ ] 7.3 File the blob-re-healing issue (a recorded `s3_location` that 404s), referencing the
+- [x] 7.3 Filed bloom#869 — the blob-re-healing issue (a recorded `s3_location` that 404s), referencing the
       known staging storage gap.
-- [ ] 7.4 File the `upload_blob`-downloads-whole-objects-to-compare-checksums inefficiency.
-- [ ] 7.5 Note on bloom#859 that this change does **not** alter the missing-manifest outcome
+- [x] 7.4 Filed bloom#870 — the `upload_blob`-downloads-whole-objects-to-compare-checksums
+      inefficiency. Two further issues came out of review: bloom#875 (the was_noop /
+      status_update_matched intersection) and bloom#876 (lost same-checksum-skip coverage).
+- [ ] 7.5 NOT POSTED (needs authorization). Note on bloom#859 that this change does **not**
+      alter the missing-manifest outcome
       (the late placement preserves it) — recording the non-interaction, since an earlier draft
       of this change would have altered it.
-- [ ] 7.6 File the issues before writing the PR body, so its "filed separately" paragraph carries
+- [x] 7.6 File the issues before writing the PR body, so its "filed separately" paragraph carries
       real numbers.
 
 ## 8. Pre-merge
 
 - [x] 8.1 `openspec validate fix-cyl-redelivery-blob-collision --strict`.
-- [ ] 8.2 `cd bloomcli && uv run --extra test pytest tests/ -m "not integration" -v`.
-- [ ] 8.3 `uv run --extra test pytest tests/unit/ -v` and, for 5.1, `make prod-up` +
+- [x] 8.2 `cd bloomcli && uv run --extra test pytest tests/ -m "not integration" -v`.
+- [ ] 8.3 DONE: `tests/unit/` (1111 passed; the 49 failures are pre-existing Windows/POSIX
+      shell-shape tests in files this branch does not touch). NOT DONE, needs a live stack:
+      `make prod-up` +
       `uv run --extra test pytest tests/integration/ -v`.
-- [ ] 8.4 `uvx ruff@0.9.9 check bloomcli/` and `pre-commit run --all-files`. Do **not** run
+- [ ] 8.4 DONE: `uvx ruff@0.9.9 check` clean on every changed file. `pre-commit run
+    --all-files` still to confirm. Do **not** run
       `ruff-format` on `bloomcli/` — `.pre-commit-config.yaml` excludes it there.
 - [x] 8.5 `python scripts/check-uv-locks.py`. `bloomcli/uv.lock` must not change; no dependency
       is added.
-- [ ] 8.6 Open the PR against `staging`. Body must contain: the literal line
+- [x] 8.6 Open the PR against `staging`. Body must contain: the literal line
       `No schema changes.` (`lint_migration_pr_body.py` requires it or an erDiagram for a
       GRANT-only migration); a justification for the `lint-migration-isolation` warning
       (`bloomcli/**` sits outside the migration surface — the grant is meaningless without its
       caller, and the fail-open makes them independently revertible); the captured red-test
       output from section 1; and an explicit "not verified by CI" note for 5.3.
-- [ ] 8.7 **No closing keywords** in the PR title, body, or any commit subject.
+- [x] 8.7 **No closing keywords** in the PR title, body, or any commit subject.
       `.github/workflows/auto-close-issues-on-staging.yml` closes same-repo issues on merge to
       `staging`, which would fire before any of section 9. Use `Refs #NNN` /
       `Addresses talmolab/sleap-roots-pipeline#76`, and the `fix(#NNN):` parenthesised subject
       form this team already uses.
-- [ ] 8.8 `/review-pr` after the PR exists.
+- [x] 8.8 `/review-pr` after the PR exists.
 
 ## 9. Post-merge — the deployment tail (NOT done at merge)
 
 - [ ] 9.1 Verify the grant on **staging**, two ways: query `information_schema.column_privileges`
-      *and* issue a real `GET /rest/v1/cyl_trait_sources?select=id&idempotency_key=eq.<known>&limit=1`
+      _and_ issue a real `GET /rest/v1/cyl_trait_sources?select=id&idempotency_key=eq.<known>&limit=1`
       with a `bloom_workflows` token. The ACL row and the served request are different claims, and
       the gap between them is what cost 84,748 video rows. CI's DB is always empty, so the merge
       proves nothing — bloom#780's root cause.
