@@ -646,7 +646,7 @@ def umap_analysis(
             keys_to_generate = (
                 list(params.plots)
                 if params.plots is not None
-                else list(_UMAP_CATALOG_KEYS)
+                else sorted(_UMAP_CATALOG_KEYS)
             )
             # Computed here, before _umap_plot_calls/generate_figures, and only when
             # actually needed — not lazily inside the plot callable itself — so this

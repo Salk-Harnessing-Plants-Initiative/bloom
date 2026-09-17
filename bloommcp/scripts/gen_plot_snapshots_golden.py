@@ -1,5 +1,8 @@
-"""Regenerate the 3 plotting-tool baseline PNGs under
-``tests/fixtures/plot_baselines/`` (#713).
+"""Regenerate the 9 baseline PNGs under ``tests/fixtures/plot_baselines/`` (#713, #723).
+
+3 come from the dedicated plotting tools; 6 from the ``include_plots=True`` optional plot
+keys of ``pca_analysis``/``clustering``. The 2 ``umap_analysis`` keys are rendered by the
+test suite but deliberately carry no baseline -- see ``_CROSS_PLATFORM_UNSTABLE_KEYS``.
 
 Unlike every other ``gen_*_golden.py`` script in this directory, this one's output is a
 **rendering** golden, not a numeric one -- the artifact under test is pixel content, not
@@ -8,13 +11,19 @@ never need to worry about: matplotlib rasterizes text via FreeType, and FreeType
 differs across OS/font-stack combinations. ``tests/tools/test_viz_snapshot.py`` compares
 against these baselines with ``matplotlib.testing.compare.compare_images`` at a tolerance
 wide enough to absorb that cross-platform noise (see that file's module docstring for the
-tolerance rationale) -- but the baselines themselves should still be (re)generated on
-Linux via ``uv run --frozen --extra test python scripts/gen_plot_snapshots_golden.py``,
-matching the ``ubuntu-latest`` runner ``python-audit`` actually asserts against, so the
-*starting* comparison point is the canonical one rather than an already-off-tolerance
-macOS render.
+tolerance rationale).
 
-Calls the 3 MCP tool functions directly (not just their delegates) against
+**Do NOT "regenerate on Linux to match CI".** An earlier version of this docstring said to,
+and it was wrong: the committed baselines are macOS-rendered and CI's ``ubuntu-latest`` run
+compares against them successfully (PR #841 verified every one). Regenerating from Linux
+would not make the reference more canonical -- it would invert the platform asymmetry and
+break the suite for every developer running it on macOS. matplotlib vendors its own
+FreeType, so text rasterization does not in fact vary by OS the way this docstring once
+assumed; the one measured cross-platform difference was UMAP's embedding (numba/LLVM),
+which is why those 2 keys are unbaselined rather than regenerated. Regenerate from whatever
+platform you are on, and read the printed old-vs-new RMS.
+
+Calls the MCP tool functions directly (not just their delegates) against
 ``turface_19_final_data.csv`` -- the same fixture and tool entrypoints
 ``tests/tools/test_viz_snapshot.py`` exercises through the shared ``viz_env`` fixture -- and
 captures the bytes each tool *commits* to its ``ResultStore`` run (via a ``commit`` spy, the
@@ -48,6 +57,8 @@ review convention. An RMS of 0 (or near it) confirms nothing visually changed --
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.metadata
 import json
 import platform
 import shutil
@@ -55,13 +66,20 @@ import tempfile
 from pathlib import Path
 
 import matplotlib
+import matplotlib.ft2font
 import PIL
 import sleap_roots_analyze as sra
 from matplotlib.testing.compare import compare_images
+from matplotlib.testing.exceptions import ImageComparisonFailure
 
 import bloom_mcp.manifest.manifest as _manifest
 import bloom_mcp.supabase_client as _sc
 from bloom_mcp import experiment_utils as eu
+from bloom_mcp.sections.sleap_roots.analysis.clustering import (
+    _CLUSTERING_CATALOG_KEYS,
+)
+from bloom_mcp.sections.sleap_roots.analysis.pca_analysis import _PCA_CATALOG_KEYS
+from bloom_mcp.sections.sleap_roots.analysis.umap_analysis import _UMAP_CATALOG_KEYS
 from bloom_mcp.sections.sleap_roots.analysis import (
     plot_correlation_matrix as plot_correlation_matrix_mod,
     plot_trait_boxplots as plot_trait_boxplots_mod,
@@ -101,6 +119,38 @@ _TOOLS = [
     ),
 ]
 
+# (baseline basename, tool MODULE name, the PNG filename the tool commits) for the
+# `include_plots=True` optional keys
+# (#723). A separate table from `_TOOLS` rather than more rows in it: these tools take a
+# Pydantic params model, are `require_clean=True` consumers (seeded via
+# `add_cleaned_version`, not `add_experiment`), and emit N figures per call rather than one.
+# Concatenating the two would also break `tests/scripts/`'s 4-tuple destructuring.
+# Derived from the production catalogs, never retyped: a hardcoded copy here would let a
+# new catalog key fail `test_baseline_set_matches_the_tool_catalogs` while this script --
+# the very thing that failure tells you to run -- silently knew nothing about it (red test,
+# wrong remedy). Sorted so the render order, and therefore the printed report, is stable.
+_OPTIONAL_CATALOG = {
+    "pca_analysis": tuple(sorted(_PCA_CATALOG_KEYS)),
+    "umap_analysis": tuple(sorted(_UMAP_CATALOG_KEYS)),
+    "clustering": tuple(sorted(_CLUSTERING_CATALOG_KEYS)),
+}
+# No committed baseline: UMAP's embedding is not bit-reproducible across numba/LLVM, which
+# moves an axis tick label's width and therefore the `bbox_inches="tight"` canvas. PR #841's
+# first ubuntu-latest run measured a 2px width difference (769 -> 771) against the
+# macOS-generated baseline while all 6 other keys passed. `compare_images` raises on a
+# dimension mismatch rather than returning an RMS, so no tolerance can absorb it, and a
+# Linux-generated baseline would merely invert the failure for macOS developers. These keys
+# are still rendered and commit-checked by `test_viz_snapshot.py`, just not pixel-compared.
+_CROSS_PLATFORM_UNSTABLE_KEYS = frozenset(
+    {"create_umap_single_trait", "create_umap_colored_by_top_traits"}
+)
+_OPTIONAL_TOOLS = [
+    (f"{key}_turface_19_baseline.png", fn_name, f"{key}.png")
+    for fn_name, keys in _OPTIONAL_CATALOG.items()
+    for key in keys
+    if key not in _CROSS_PLATFORM_UNSTABLE_KEYS
+]
+
 
 def _report_regeneration(target: Path, produced: Path, rel: Path) -> str:
     """Return the print-worthy message for overwriting (or first-writing) one baseline.
@@ -110,7 +160,20 @@ def _report_regeneration(target: Path, produced: Path, rel: Path) -> str:
     """
     if not target.is_file():
         return f"wrote {rel} (new baseline, no prior version to diff against)"
-    diff = compare_images(str(target), str(produced), tol=0, in_decorator=True)
+    try:
+        diff = compare_images(str(target), str(produced), tol=0, in_decorator=True)
+    except ImageComparisonFailure as exc:
+        # `compare_images` RAISES on a pixel-dimension mismatch rather than returning an
+        # RMS. That cannot happen for the dpi-pinned tools, but the #723 optional keys save
+        # with `bbox_inches="tight"` and no dpi, so their canvas is derived from rendered
+        # text extents -- and a platform whose font metrics or data labels differ by a pixel
+        # or two produces a different-sized PNG. Report it as the regeneration-worthy event
+        # it is instead of taking the whole `build()` down with an exception.
+        return (
+            f"REGENERATED {rel}: CANVAS SIZE CHANGED ({exc}) -- no RMS is computable "
+            "across different dimensions. This is the expected shape of a cross-platform "
+            "regeneration; confirm the content is otherwise unchanged before accepting it."
+        )
     rms = diff["rms"] if diff else 0.0
     return (
         f"REGENERATED {rel}: old-vs-new RMS={rms:.1f} -- if this is not ~0, "
@@ -158,6 +221,58 @@ def _render_converged(tool_fn, produced_name: str, capture_root: Path) -> Path:
     return produced
 
 
+def _render_optional(fn_name: str, capture_root: Path) -> Path:
+    """Render one `include_plots=True` tool's figures and return the capture dir.
+
+    Same `commit`-spy technique as `_render_converged` (the staging dir is deleted on
+    commit, so that is the last moment the bytes exist), differing only in seeding a
+    *cleaned* version -- these tools reject a raw frame with `require_clean=True` -- and in
+    taking a params model with `include_plots=True` rather than a bare experiment string.
+    """
+    import importlib
+
+    import pandas as pd
+    from bloom_mcp.data_access import FakeReader, SupabaseReader
+    from bloom_mcp.result_store import FakeResultStore, SupabaseResultStore
+    from bloom_mcp.tools import _ports
+
+    # Imported lazily, by name, for the ONE tool being rendered. Importing all three
+    # eagerly made every regeneration pay umap-learn's numba JIT even though no UMAP
+    # baseline is written any more.
+    module = importlib.import_module(
+        f"bloom_mcp.sections.sleap_roots.analysis.{fn_name}"
+    )
+    tool_fn = getattr(module, fn_name)
+    model = getattr(
+        module,
+        {
+            "pca_analysis": "PCAAnalysisParams",
+            "umap_analysis": "UMAPAnalysisParams",
+            "clustering": "ClusteringParams",
+        }[fn_name],
+    )
+
+    capture_root.mkdir(parents=True, exist_ok=True)
+    reader = FakeReader()
+    reader.add_cleaned_version(_EXPERIMENT, "v1", pd.read_csv(_RAW), make_latest=True)
+    store = FakeResultStore()
+    real_commit = store.commit
+
+    def _spy_commit(run, outputs):
+        for name in outputs:
+            if name.endswith(".png"):
+                shutil.copy(run.staging_dir / name, capture_root / name)
+        return real_commit(run, outputs)
+
+    store.commit = _spy_commit
+    _ports.configure(reader=reader, store=store)
+    try:
+        tool_fn(model(experiment=_EXPERIMENT, include_plots=True))
+    finally:
+        _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
+    return capture_root
+
+
 def build(tmp_path: Path, *, confirmed: bool) -> bool:
     """Render all 3 tools and print each baseline's old-vs-new RMS. Only actually writes
     the PNGs if `confirmed` is True, or none of them already exist (a first-time run has
@@ -193,6 +308,21 @@ def build(tmp_path: Path, *, confirmed: bool) -> bool:
         any_existing = any_existing or target.is_file()
         copies.append((target, produced))
 
+    # The optional `include_plots=True` keys (#723). Rendered once per tool -- each call
+    # emits every key in that tool's catalog -- then matched to baselines by filename.
+    optional_capture = tmp_path / "committed_optional"
+    for fn_name in sorted({fn for _b, fn, _p in _OPTIONAL_TOOLS}):
+        _render_optional(fn_name, optional_capture)
+    for baseline_name, _fn_name, produced_name in _OPTIONAL_TOOLS:
+        produced = optional_capture / produced_name
+        if not produced.is_file():
+            raise RuntimeError(f"expected {produced} to exist after commit")
+        target = _BASELINES / baseline_name
+        rel = target.relative_to(_FIXTURES.parents[1])
+        print(_report_regeneration(target, produced, rel))
+        any_existing = any_existing or target.is_file()
+        copies.append((target, produced))
+
     if any_existing and not confirmed:
         return False
     for target, produced in copies:
@@ -200,21 +330,64 @@ def build(tmp_path: Path, *, confirmed: bool) -> bool:
     return True
 
 
+def _version(module_name: str) -> str:  # noqa: D401
+    """Best-effort installed version, so a missing optional dep is recorded, not fatal."""
+    try:
+        return importlib.metadata.version(module_name)
+    except importlib.metadata.PackageNotFoundError:  # pragma: no cover - env-dependent
+        return "not installed"
+
+
 def write_manifest() -> None:
+    from bloom_mcp.sections.sleap_roots.analysis.clustering import ClusteringParams
+    from bloom_mcp.sections.sleap_roots.analysis.umap_analysis import UMAPAnalysisParams
+
     manifest = {
         "_comment": (
             "Rendering-environment provenance for the baseline PNGs in this directory -- "
             "NOT asserted by any test (pixel content is compared via "
-            "matplotlib.testing.compare.compare_images, not this file). Regenerate "
-            "on Linux (matching the python-audit ubuntu-latest runner) via "
-            "scripts/gen_plot_snapshots_golden.py after any intentional rendering change "
-            "(matplotlib bump, plot-style-kwargs default change, delegate upgrade)."
+            "matplotlib.testing.compare.compare_images, not this file). Regenerate via "
+            "scripts/gen_plot_snapshots_golden.py --yes after any intentional rendering "
+            "change (matplotlib bump, plot-style-kwargs default change, delegate upgrade), "
+            "from whatever platform you are on -- do NOT regenerate from Linux to 'match "
+            "CI', which would only invert the platform asymmetry (see the script docstring)."
         ),
         "matplotlib_version": matplotlib.__version__,
         "pillow_version": PIL.__version__,
         "sleap_roots_analyze_version": sra.__version__,
         "platform": platform.platform(),
         "python_version": platform.python_version(),
+        # Everything below was added with the #723 optional-key baselines. Without it a
+        # cross-platform failure is undiagnosable: a scikit-learn `svd_flip` change alone
+        # mirrors the biplot for a scientifically meaningless reason, adjustText's absence
+        # is swallowed by a bare `except ImportError` and silently changes the biplot's
+        # layout, and FreeType is the single biggest driver of the text-extent differences
+        # that move a `bbox_inches="tight"` canvas.
+        "_optional_key_comment": (
+            "Libraries below back the pca_analysis/umap_analysis/clustering optional plot "
+            "keys; fixture_sha256 ties these baselines to the CSV that produced them, and "
+            "seeds record the stochastic tools' resolved defaults."
+        ),
+        "umap_learn_version": _version("umap-learn"),
+        "numba_version": _version("numba"),
+        "llvmlite_version": _version("llvmlite"),
+        "scikit_learn_version": _version("scikit-learn"),
+        "seaborn_version": _version("seaborn"),
+        "adjusttext_version": _version("adjustText"),
+        "numpy_version": _version("numpy"),
+        "freetype_version": matplotlib.ft2font.__freetype_version__,
+        "fixture": _RAW.name,
+        "fixture_sha256": hashlib.sha256(_RAW.read_bytes()).hexdigest(),
+        # Read off the params models, not retyped: a changed default would otherwise
+        # misattribute every baseline rendered after it.
+        "seeds": {
+            "clustering": ClusteringParams.model_fields["seed"].default,
+            "umap_analysis": UMAPAnalysisParams.model_fields["seed"].default,
+            "pca_analysis": None,  # deterministic; the tool declares no seed
+        },
+        # Named so the manifest cannot imply coverage it does not have: these keys are
+        # rendered and commit-checked by the suite but have no committed baseline.
+        "unbaselined_keys": sorted(_CROSS_PLATFORM_UNSTABLE_KEYS),
     }
     out = _BASELINES / "MANIFEST.json"
     out.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")

@@ -419,7 +419,7 @@ def pca_analysis(
             keys_to_generate = (
                 list(params.plots)
                 if params.plots is not None
-                else list(_PCA_CATALOG_KEYS)
+                else sorted(_PCA_CATALOG_KEYS)
             )
             generate_figures(
                 {k: calls[k] for k in keys_to_generate},

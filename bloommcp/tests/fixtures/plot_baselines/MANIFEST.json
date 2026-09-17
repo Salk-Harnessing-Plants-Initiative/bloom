@@ -1,8 +1,28 @@
 {
-  "_comment": "Rendering-environment provenance for the baseline PNGs in this directory -- NOT asserted by any test (pixel content is compared via matplotlib.testing.compare.compare_images, not this file). Regenerate on Linux (matching the python-audit ubuntu-latest runner) via scripts/gen_plot_snapshots_golden.py after any intentional rendering change (matplotlib bump, plot-style-kwargs default change, delegate upgrade).",
+  "_comment": "Rendering-environment provenance for the baseline PNGs in this directory -- NOT asserted by any test (pixel content is compared via matplotlib.testing.compare.compare_images, not this file). Regenerate via scripts/gen_plot_snapshots_golden.py --yes after any intentional rendering change (matplotlib bump, plot-style-kwargs default change, delegate upgrade), from whatever platform you are on -- do NOT regenerate from Linux to 'match CI', which would only invert the platform asymmetry (see the script docstring).",
   "matplotlib_version": "3.10.8",
   "pillow_version": "12.3.0",
   "sleap_roots_analyze_version": "0.1.0a5",
-  "platform": "macOS-26.5.1-arm64-arm-64bit",
-  "python_version": "3.11.15"
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "python_version": "3.11.15",
+  "_optional_key_comment": "Libraries below back the pca_analysis/umap_analysis/clustering optional plot keys; fixture_sha256 ties these baselines to the CSV that produced them, and seeds record the stochastic tools' resolved defaults.",
+  "umap_learn_version": "0.5.12",
+  "numba_version": "0.65.0",
+  "llvmlite_version": "0.47.0",
+  "scikit_learn_version": "1.8.0",
+  "seaborn_version": "0.13.2",
+  "adjusttext_version": "1.4.0",
+  "numpy_version": "2.4.4",
+  "freetype_version": "2.6.1",
+  "fixture": "turface_19_final_data.csv",
+  "fixture_sha256": "db80269d24829d39b58b5d180d4155bd6da34d9dccd049e8a375f541193b3c52",
+  "seeds": {
+    "clustering": 42,
+    "umap_analysis": 42,
+    "pca_analysis": null
+  },
+  "unbaselined_keys": [
+    "create_umap_colored_by_top_traits",
+    "create_umap_single_trait"
+  ]
 }
