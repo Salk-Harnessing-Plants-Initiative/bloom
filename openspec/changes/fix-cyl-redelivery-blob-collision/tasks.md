@@ -194,7 +194,7 @@ worktree alone is a one-command undo.
       accurately records `0.1.0a3` behaviour.
 - [x] 6.9 Grep for any operator runbook covering a blob-collision failure. There is none today;
       note that in the follow-up issue rather than inventing one here.
-- [ ] 6.10 NOT FILED (needs authorization). The dev-user gap: there is no supported way to
+- [x] 6.10 Filed bloom#877 — the dev-user gap: there is no supported way to
       obtain
       `BLOOMCTL_IT_EMAIL`/`PASSWORD` for the compose dev stack, so the env-gated bloomctl
       integration suite is unrunnable without hand-building an auth user. Four of the six vars
@@ -222,7 +222,7 @@ worktree alone is a one-command undo.
 - [x] 7.4 Filed bloom#870 — the `upload_blob`-downloads-whole-objects-to-compare-checksums
       inefficiency. Two further issues came out of review: bloom#875 (the was_noop /
       status_update_matched intersection) and bloom#876 (lost same-checksum-skip coverage).
-- [ ] 7.5 NOT POSTED (needs authorization). Note on bloom#859 that this change does **not**
+- [x] 7.5 Posted on bloom#859: this change does **not**
       alter the missing-manifest outcome
       (the late placement preserves it) — recording the non-interaction, since an earlier draft
       of this change would have altered it.
