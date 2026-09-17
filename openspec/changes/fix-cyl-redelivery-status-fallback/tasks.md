@@ -174,10 +174,14 @@ broken.
   bloommcp-oracle-test triggers apply, and a full `make prod-up` stack build/smoke would be
   testing services this change never touches. The two checks that DO apply — migration lint
   (5.3) and the affected integration suite (3.7) — are already green.
-- [ ] 5.5 `/pr-description`, then open the PR against `staging`. Body must state plainly that
-  this change makes **no** `bloomctl`/application code changes — RPC migration + tests + specs
-  only — and must reference bloom#875 without a closing keyword (issues close on verified
-  deploy, per this program's `deploy-verification-gap` convention, not on merge).
+- [x] 5.5 `/pr-description` drafted to `.pr_body_875.md`; `make pr-body-check
+  BODY=.pr_body_875.md` (invoked via `python`, not the shimmed `python3`) → "PR body check
+  passed (schema section complete)." States plainly no `bloomctl`/application code changes;
+  references bloom#875 with `Ref bloom#875` (no closing keyword, confirmed via
+  `grep -inE '\b(closes?|fixe?s|resolves?)\b'` — the only hit is descriptive prose, not adjacent
+  to `#875`). Caught and fixed the same mistake in the commit message itself (originally wrote
+  "Closes bloom#875" — amended before push, unpushed local commit). PR not yet opened — needs
+  your go-ahead to push and open (a visible, externally-reviewed action).
 - [ ] 5.6 `/review-pr`.
 
 ## 6. Post-merge (do not archive until these clear)
