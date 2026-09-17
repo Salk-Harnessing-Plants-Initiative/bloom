@@ -21,6 +21,39 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Fixed
 
+- `cyl ingest-result`/`cyl batch-ingest-result` with `--predictions-dir`:
+  re-delivering an already-ingested envelope no longer fails when the producer
+  regenerated its `.slp` files. `predict`'s output is not byte-reproducible, so
+  the same inputs yield the same `idempotency_key` but different bytes; because
+  the object path embeds that key, the upload hit its own refuse-to-overwrite
+  guard before reaching the RPC's first-writer-wins gate, and the whole
+  delivery failed. The `idempotency_key` is now checked against
+  `cyl_trait_sources` before uploading, so such a re-delivery is the benign
+  `skipped` no-op it was always documented to be
+  (talmolab/sleap-roots-pipeline#76). The check runs after the manifest is
+  read, so a missing or malformed manifest, a missing `.slp`, and a conflicting
+  pre-existing `blobs` entry still fail fast exactly as before; checksum
+  verification is part of the upload and so is skipped on the no-op path, where
+  the local bytes are never stored. If the check itself fails — most likely
+  because the new `SELECT (idempotency_key)` grant has not reached that
+  deployment yet — the command warns and falls back to its previous behaviour
+  rather than failing the envelope. That degradation is reported, not just
+  logged: `batch-ingest-result` gains a `warning` field on each item in
+  `--json` and a `WARNING` line in the summary, and `ingest-result` echoes it
+  to stderr, because the log sink is unreadable in the Argo deployment.
+
+- `cyl ingest-result`/`cyl batch-ingest-result`: a manifest naming a `.slp`
+  file that does not exist now fails during blob construction rather than only
+  during upload, so the failure is reported whether or not the envelope was
+  already ingested.
+
+- The path-collision error no longer asserts that the conflicting bytes belong
+  to no ingested result — the check that would establish that fails open, so
+  the message states it as inference and tells the operator to confirm no
+  `cyl_scan_intermediates` row references the object before removing it. It
+  also names an identity that can actually remove it; the write-back identity
+  holds no DELETE on that bucket.
+
 - `cyl batch-ingest-result`: an envelope file that can't be read as UTF-8
   (e.g. one truncated mid-write by an OOM-killed producer) is now isolated to
   its own failed entry, instead of aborting the rest of the batch and
