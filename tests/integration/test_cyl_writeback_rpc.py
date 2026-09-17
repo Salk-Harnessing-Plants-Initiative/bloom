@@ -919,6 +919,60 @@ def test_fallback_respects_the_failed_guard_on_its_own_target_row(pg_conn):
     pg_conn.rollback()
 
 
+def test_fallback_chains_across_a_third_workflow_redelivery(pg_conn):
+    """/review-pr behavioral-correctness finding: after wf-b's fallback succeeds,
+    TWO cyl_pipeline_run_scans rows now carry this source_id (wf-a's and wf-b's).
+    A THIRD re-delivery under yet another new workflow name must still resolve
+    correctly -- the fallback's un-ordered `LIMIT 1` is safe here only because
+    every row ever stamped with this source_id is guaranteed to share the same
+    scan_id (the no-op branch never re-derives scan_id from a redelivery's own
+    image_ids), so which of the two candidate rows it picks cannot matter."""
+    with pg_conn.cursor() as cur:
+        scan_id, imgs = _seed_scan(cur)
+        _seed_run_scan_for_writeback(cur, scan_id, "wf-chain-a")
+        env = _envelope(imgs, idempotency_key="redeliver-875-chain")
+        first = _call(cur, env, argo_workflow_name="wf-chain-a")
+        assert first["was_noop"] is False
+
+        _seed_run_scan_for_writeback(cur, scan_id, "wf-chain-b")
+        second = _call(cur, env, argo_workflow_name="wf-chain-b")
+        assert second["was_noop"] is True and second["status_update_matched"] is True
+
+        _seed_run_scan_for_writeback(cur, scan_id, "wf-chain-c")
+        third = _call(cur, env, argo_workflow_name="wf-chain-c")
+        assert third["was_noop"] is True
+        assert third["status_update_matched"] is True
+        status, source_id = _run_scan_status(cur, "wf-chain-c", scan_id)
+        assert status == "written"
+        assert source_id == first["source_id"]
+    pg_conn.rollback()
+
+
+def test_fallback_finds_nothing_for_a_never_dispatched_workflow(pg_conn):
+    """/review-pr behavioral-correctness finding: distinct from
+    test_noop_redelivery_under_never_dispatched_workflow_reports_no_match (where
+    the ORIGINAL delivery never had a workflow name at all, so v_scan_id never
+    resolves and the fallback UPDATE never even runs). Here the original delivery
+    DID have a workflow name (so the fallback's scan_id lookup succeeds), but the
+    NEW workflow's own cyl_pipeline_run_scans row was never seeded at all -- not
+    just source_id NULL, but no row for (new workflow, scan) exists at all. The
+    fallback UPDATE must still degrade cleanly: it matches zero rows, not an
+    error, and status_update_matched reports False."""
+    with pg_conn.cursor() as cur:
+        scan_id, imgs = _seed_scan(cur)
+        _seed_run_scan_for_writeback(cur, scan_id, "wf-real-a")
+        env = _envelope(imgs, idempotency_key="redeliver-875-unseeded")
+        first = _call(cur, env, argo_workflow_name="wf-real-a")
+        assert first["was_noop"] is False
+
+        # "wf-never-dispatched" has no cyl_pipeline_run_scans row for this scan at all.
+        second = _call(cur, env, argo_workflow_name="wf-never-dispatched")
+        assert second["was_noop"] is True
+        assert second["status_update_matched"] is False
+        assert _run_scan_status(cur, "wf-never-dispatched", scan_id) is None
+    pg_conn.rollback()
+
+
 def test_scan_already_written_is_left_untouched_by_a_second_batch(pg_conn):
     # Mirror scenario for fail_cyl_pipeline_run_scans_without_result's own
     # "already written" idempotency, from the write-back side: a row this RPC

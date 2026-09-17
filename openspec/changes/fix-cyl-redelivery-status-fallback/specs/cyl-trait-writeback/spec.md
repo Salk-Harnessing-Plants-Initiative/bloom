@@ -140,6 +140,27 @@ status update actually affected a row: `true`/`false` when `p_argo_workflow_name
   unchanged from behavior before this change, since there was never a row for either update to
   find
 
+#### Scenario: A no-op re-delivery under a workflow that never dispatched THIS scan finds no match
+
+- **WHEN** an already-ingested envelope's source has an existing `cyl_pipeline_run_scans` row
+  stamped with its `source_id` (its original delivery did supply a workflow name), and it is
+  re-delivered with a `p_argo_workflow_name` for which no `cyl_pipeline_run_scans` row exists at
+  all for this scan (distinct from the previous scenario: here the fallback's scan-id lookup
+  succeeds, but its own targeted update finds no row to update under the new workflow name)
+- **THEN** the call still reports `was_noop: true`, the fallback resolves a scan id from the
+  existing row but its own update affects zero rows, and the returned summary's
+  `status_update_matched` is `false` — a clean degrade, not an error
+
+#### Scenario: The fallback chains correctly across a third re-delivery
+
+- **WHEN** a scan is delivered successfully under `"wf-a"`, re-delivered as a no-op under a new
+  `"wf-b"` (triggering the fallback, which stamps `"wf-b"`'s row with this source's id), and then
+  re-delivered again as a no-op under a third new `"wf-c"`
+- **THEN** `"wf-c"`'s fallback resolves a scan id from either of the two existing rows that now
+  carry this source's id (both are guaranteed to name the same scan, since the fallback never
+  re-derives scan id from a redelivery's own `image_ids`), and `"wf-c"`'s row is set to
+  `'written'` with the correct `source_id`, exactly as `"wf-b"`'s was
+
 #### Scenario: Omitting argo_workflow_name leaves cyl_pipeline_run_scans untouched
 
 - **WHEN** the RPC is called without `p_argo_workflow_name` (the existing manual/ad-hoc `cyl
@@ -172,7 +193,7 @@ status update actually affected a row: `true`/`false` when `p_argo_workflow_name
   unaffected), but the `cyl_pipeline_run_scans` row's `status` remains `'failed'` — it is not
   overwritten to `'written'` — and the returned summary's `status_update_matched` is `false`
 
-#### Scenario: The failed-status guard also blocks the fallback, under either workflow name
+#### Scenario: A failed row under the ORIGINAL workflow does not block the fallback's own target
 
 - **WHEN** a scan is delivered successfully under `"wf-a"`, that row is then marked `'failed'`,
   and the same envelope is re-delivered as a no-op under a **new** `argo_workflow_name = "wf-b"`
@@ -182,6 +203,17 @@ status update actually affected a row: `true`/`false` when `p_argo_workflow_name
   different row, matched on `argo_workflow_name = "wf-b"`) and still sets `"wf-b"`'s row to
   `'written'`; the guard only ever blocks resurrecting the row the update's own
   `argo_workflow_name` names, never a different workflow's row for the same scan
+
+#### Scenario: A failed row under the NEW workflow is not resurrected by the fallback
+
+- **WHEN** a scan is delivered successfully under `"wf-a"`, a second `cyl_pipeline_run_scans` row
+  is dispatched for the same scan under a **new** `argo_workflow_name = "wf-b"`, that `"wf-b"`
+  row is itself marked `'failed'` (not `"wf-a"`'s), and the same envelope is then re-delivered as
+  a no-op under `"wf-b"`
+- **THEN** the fallback still resolves the scan id from `"wf-a"`'s row, but its update — scoped
+  to `"wf-b"`'s row by `scan_id` — matches zero rows because `"wf-b"`'s own row is `'failed'`;
+  `"wf-b"`'s row stays `'failed'` with `source_id` unset, and the returned summary's
+  `status_update_matched` is `false`
 
 ### Requirement: Write-back is idempotent and provenance-immutable
 

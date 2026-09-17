@@ -183,6 +183,18 @@ invariant `insert_cyl_result_envelope` already maintains (a `source_id` is stamp
   span multiple scans, this silently returns an arbitrary one. Not re-litigated here; flag it if
   that invariant ever changes.
 
+- **Pre-existing, not introduced here: `(argo_workflow_name, scan_id)` has no DB-level
+  uniqueness.** Both the fallback's targeted update and step 9's non-no-op update key on this
+  pair, but the only real constraint on `cyl_pipeline_run_scans` is `UNIQUE (run_id, scan_id)`
+  (`20260730120000_create_cyl_pipeline_runs.sql:106`) — `argo_workflow_name` is a bare nullable
+  `text` column with nothing tying it 1:1 to a `run_id`. If a workflow name were ever reused
+  across two `run_id`s for the same scan (not DB-enforced), either update could silently touch 2
+  rows instead of 1. `/review-pr`'s behavioral-correctness pass found this while tracing the
+  fallback and confirmed it is inherited, not introduced — step 9's identical `WHERE` shape has
+  carried it since `fix-cyl-pipeline-run-scan-status`. Recorded here since this change is the one
+  that added a second instance of the same pattern; not fixed, as it is out of scope for a change
+  whose only job is closing bloom#875.
+
 - **Verification cannot be closed with a fresh live Argo run today.** See the Verification
   section below.
 

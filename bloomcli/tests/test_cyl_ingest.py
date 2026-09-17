@@ -1446,6 +1446,26 @@ def test_ingest_one_envelope_status_update_matched_true_is_unaffected(monkeypatc
     assert result.status == "ok"
 
 
+def test_ingest_one_envelope_noop_redelivery_under_new_workflow_reports_skipped(
+    monkeypatch, tmp_path
+):
+    """bloom#875's own named test gap ("Any fix should add the Argo shape"): the
+    RPC now returns was_noop=True AND status_update_matched=True for a no-op
+    re-delivery under a NEW ARGO_WORKFLOW_NAME (fix-cyl-redelivery-status-fallback's
+    RPC-side fallback). Pins that this combination -- previously unexercised, since
+    RESULT_NOOP never carried status_update_matched and no existing test set
+    ARGO_WORKFLOW_NAME on a noop result -- falls through the
+    status_update_matched-is-False check (it's True, not False) to the was_noop
+    branch and is reported skipped, not failed."""
+    _skip_contract_validation(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-new-875")
+    path = _write_envelope(tmp_path, "scan_875_noop")
+    matched_noop = {**RESULT_NOOP, "status_update_matched": True}
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: matched_noop)
+    result = ing.ingest_one_envelope(object(), path)
+    assert result.status == "skipped"
+
+
 def test_ingest_one_envelope_status_update_matched_false_ignored_without_workflow_name(
     monkeypatch, tmp_path
 ):

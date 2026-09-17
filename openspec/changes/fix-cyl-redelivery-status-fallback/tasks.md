@@ -182,21 +182,66 @@ broken.
   to `#875`). Caught and fixed the same mistake in the commit message itself (originally wrote
   "Closes bloom#875" — amended before push, unpushed local commit). PR not yet opened — needs
   your go-ahead to push and open (a visible, externally-reviewed action).
-- [ ] 5.6 `/review-pr`.
+- [x] 5.6 `/review-pr` on PR #880 (5 parallel subagents: code quality, testing strategy, data
+  integrity, security, behavioral correctness). No BLOCKING correctness bugs in the shipped SQL
+  itself — every adversarial scenario traced by hand against the actual code (three+ workflow
+  chaining, concurrent re-delivery, empty-string workflow name, the bloom#875 repro end-to-end)
+  held up. Real findings, all fixed (see Section 7): a genuine test gap the issue itself named,
+  a fidelity gap between the PR's "byte-identical" claim and the actual retyped files, a
+  spec-scenario/test mismatch, and a documentation gap for a pre-existing (not introduced here)
+  constraint ambiguity.
 
-## 6. Post-merge (do not archive until these clear)
+## 6. Review findings applied (post `/review-pr`)
 
-- [ ] 6.1 Verify the migration applied on staging: re-run bloom#875's own reproduction query
+- [x] 7.1 **Fixed (testing, flagged BLOCKING):** bloom#875's own "Test gap" section explicitly
+  asks for a `bloomcli`-level test combining `was_noop=True` + `status_update_matched=True`
+  under `ARGO_WORKFLOW_NAME` — no existing test did (confirmed: `RESULT_NOOP` never carried
+  `status_update_matched`, no test set the env var on a noop result). Added
+  `test_ingest_one_envelope_noop_redelivery_under_new_workflow_reports_skipped` to
+  `bloomcli/tests/test_cyl_ingest.py`; passes.
+- [x] 7.2 **Fixed (code quality, IMPORTANT):** the new migration's and rollback's copied sections
+  were retyped by hand rather than copied, silently flattening every em-dash to `--` and (in the
+  rollback) dropping all 9 step-comments and rationale blocks. Rebuilt both files by literally
+  extracting the exact prior-migration text (`sed`) and splicing in only the new fallback block —
+  verified byte-identical to the extracted reference via `diff`. Re-applied to the local dev
+  Postgres and re-ran the full suite: unchanged (105→107 passed after 7.3/7.4 below, same 2
+  pre-existing unrelated failures).
+- [x] 7.3 **Fixed (testing + behavioral-correctness, IMPORTANT/SUGGESTION):** added
+  `test_fallback_finds_nothing_for_a_never_dispatched_workflow` (the new workflow's own row was
+  never seeded at all, distinct from the existing "original had no workflow name" negative
+  control) and `test_fallback_chains_across_a_third_workflow_redelivery` (a third re-delivery
+  after the fallback has already run once, confirming the `LIMIT 1` over two now-existing
+  same-source rows is safe by the single-scan-per-source invariant, not just by assertion).
+- [x] 7.4 **Fixed (testing, IMPORTANT):** `cyl-trait-writeback/spec.md`'s "under either workflow
+  name" scenario only ever described the *unblocked* half (2.3's shape). Split into two
+  scenarios — one per half — plus two new scenarios matching 7.3's tests, keeping spec
+  scenarios and tests 1:1.
+- [x] 7.5 **Documented, not fixed — pre-existing, out of scope (behavioral-correctness,
+  IMPORTANT):** `(argo_workflow_name, scan_id)` has no DB-level uniqueness (only
+  `UNIQUE (run_id, scan_id)` exists); both the fallback's and step 9's identical `WHERE` shape
+  inherit this. Not introduced by this change — step 9 has carried it since
+  `fix-cyl-pipeline-run-scan-status`. Added a `design.md` Risks bullet recording it.
+- [x] 7.6 Re-ran the full affected suites after all of the above: `tests/integration/
+  test_cyl_writeback_rpc.py` (107 passed, same 2 pre-existing unrelated failures) and
+  `bloomcli` `not integration` (909 passed, up from 908, same 13 pre-existing unrelated
+  failures). Re-ran `openspec validate --strict` and `scripts/lint_migrations.sh
+  origin/staging` (freshly fetched) — both clean.
+- [x] 7.7 Push the fixes as a new commit (the first commit is already pushed to the open PR;
+  per this session's git conventions, amend only unpushed local history).
+
+## 7. Post-merge (do not archive until these clear)
+
+- [ ] 7.1 Verify the migration applied on staging: re-run bloom#875's own reproduction query
   (`SELECT count(*) FROM cyl_pipeline_run_scans WHERE source_id IS NOT NULL AND status =
   'queued'` — still expected `0`, unaffected by this change) plus a direct check that the new
   function body (via `pg_get_functiondef`) contains the fallback block.
   This change has no cluster/Argo-image dependency (pure RPC), so — unlike #871 — there is no
   pin-bump or image-rebuild step blocking a staging verification.
-- [ ] 6.2 Note in bloom#875 that a full live Argo re-test (dispatch, observe `failed_count`) is
+- [ ] 7.2 Note in bloom#875 that a full live Argo re-test (dispatch, observe `failed_count`) is
   still blocked on minting fresh synthetic scan_ids (design.md's Verification section) — do not
   claim the live symptom is fixed until that separate work closes it; the SQL-level fix and its
   tests are what this change can honestly claim.
-- [ ] 6.2a Once 6.1 confirms the migration is live on staging, add a short "RESOLVED — see
+- [ ] 7.2a Once 7.1 confirms the migration is live on staging, add a short "RESOLVED — see
   fix-cyl-redelivery-status-fallback" pointer next to the two now-stale, time-bound sentences in
   `fix-cyl-redelivery-blob-collision`'s own files —
   `specs/cyl-ingest-cli/spec.md:49-53` ("...currently always does... tracked as bloom#875") and
@@ -204,9 +249,9 @@ broken.
   sentence's normative text (that text is properly superseded whenever `fix-cyl-redelivery-blob-collision`
   is itself next revisited or archived — see this change's own `design.md` Risks section for why
   editing it from here would be a blind cross-change edit).
-- [ ] 6.3 Do **not** archive `fix-cyl-pipeline-run-scan-status` or `fix-cyl-redelivery-blob-collision`
+- [ ] 7.3 Do **not** archive `fix-cyl-pipeline-run-scan-status` or `fix-cyl-redelivery-blob-collision`
   as part of this change — both remain blocked on unrelated tasks in their own `tasks.md` (roadmap/
   issue-closing housekeeping; staging-grant + Argo-pin verification, respectively). When either
   is eventually archived, re-read this change's `design.md` Risks section first and apply the
   archive-ordering guidance there.
-- [ ] 6.4 `/openspec:archive fix-cyl-redelivery-status-fallback` once 6.1 is confirmed.
+- [ ] 7.4 `/openspec:archive fix-cyl-redelivery-status-fallback` once 7.1 is confirmed.

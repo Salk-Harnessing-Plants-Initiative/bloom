@@ -2,13 +2,17 @@
 -- Manual break-glass only.
 --
 -- Restores insert_cyl_result_envelope's no-op branch to its pre-fallback body
--- (the primary (argo_workflow_name, source_id)-keyed UPDATE only -- no
+-- (the primary (argo_workflow_name, source_id)-keyed UPDATE only — no
 -- scan_id-scoped fallback). Same 2-arg signature throughout, so this is a
--- CREATE OR REPLACE, not a DROP FUNCTION -- rollback is safe unconditionally:
+-- CREATE OR REPLACE, not a DROP FUNCTION — rollback is safe unconditionally:
 -- it only removes the fallback's extra chance to match a row on a
 -- cross-workflow re-delivery (bloom#875 reopens), it never removes a
 -- guarantee anything else depends on. Leaves every table, every other
 -- function, and both functions' grants untouched.
+--
+-- The function body below is copied verbatim, including its comments, from
+-- 20260912110000_add_cyl_writeback_run_scan_status.sql — the exact body this
+-- migration's own CREATE OR REPLACE modified.
 
 BEGIN;
 
@@ -42,6 +46,7 @@ DECLARE
     v_was_noop     boolean;
     v_status_rows  int;
 BEGIN
+    -- 1. Structural validation -------------------------------------------------
     IF envelope IS NULL OR jsonb_typeof(envelope) <> 'object' THEN
         RAISE EXCEPTION 'invalid envelope: expected a JSON object';
     END IF;
@@ -52,6 +57,8 @@ BEGIN
     IF prov -> 'inputs' IS NULL OR jsonb_typeof(prov -> 'inputs') <> 'object' THEN
         RAISE EXCEPTION 'invalid envelope: missing provenance.inputs object';
     END IF;
+    -- traits/blobs, when present, MUST be arrays — reject cleanly rather than let
+    -- jsonb_array_elements() leak a raw "cannot extract elements from an object".
     IF envelope ? 'traits' AND jsonb_typeof(envelope -> 'traits') NOT IN ('array', 'null') THEN
         RAISE EXCEPTION 'invalid envelope: traits must be an array';
     END IF;
@@ -59,17 +66,20 @@ BEGIN
         RAISE EXCEPTION 'invalid envelope: blobs must be an array';
     END IF;
 
+    -- 2. Contract version ------------------------------------------------------
     IF regexp_replace(coalesce(prov ->> 'contract_version', ''), '^v', '')
        IS DISTINCT FROM regexp_replace(pinned_version, '^v', '') THEN
         RAISE EXCEPTION 'contract_version mismatch: got %, pinned % (single leading v ignored)',
             coalesce(prov ->> 'contract_version', '<null>'), pinned_version;
     END IF;
 
+    -- 3. Idempotency key (opaque; never recomputed) ----------------------------
     v_idem := prov ->> 'idempotency_key';
     IF v_idem IS NULL OR length(v_idem) = 0 THEN
         RAISE EXCEPTION 'empty or absent idempotency_key';
     END IF;
 
+    -- 4. Envelope self-consistency: one scan_key across the envelope ------------
     v_scan_key := prov ->> 'scan_key';
     IF v_scan_key IS NULL THEN
         RAISE EXCEPTION 'invalid envelope: missing provenance.scan_key';
@@ -87,6 +97,7 @@ BEGIN
         RAISE EXCEPTION 'blob scan_key disagrees with provenance.scan_key';
     END IF;
 
+    -- 5. Source gate: first-writer-wins, BEFORE scan resolution.
     v_name := coalesce(prov ->> 'pipeline_run_id', 'sleap-roots:' || v_idem);
     INSERT INTO public.cyl_trait_sources (name, metadata, idempotency_key)
     VALUES (v_name, prov, v_idem)
@@ -102,6 +113,20 @@ BEGIN
     END IF;
 
     IF v_was_noop THEN
+        -- Pure no-op: no scan is resolved (scan_id null) for the RETURN value,
+        -- nothing further written to the trait tables. The write-back RPC's own
+        -- idempotent re-delivery still needs to (re-)confirm the per-scan status
+        -- if p_argo_workflow_name is supplied — e.g. a retried write-back pod
+        -- calling this a second time for a scan the FIRST call already recorded.
+        -- Rather than re-deriving scan_id from this delivery's own image_ids
+        -- (which the "same key, different scan" short-circuit rule says must NOT
+        -- govern a no-op — the run of record's own scan does), join on
+        -- source_id instead: the original successful call already stamped
+        -- source_id = v_source_id onto its matching cyl_pipeline_run_scans row
+        -- in step 9 below, so this is the same row, found without re-resolving
+        -- anything. If the original call never supplied a workflow name (or
+        -- this one names a different, non-matching workflow), this affects zero
+        -- rows — not an error.
         IF p_argo_workflow_name IS NOT NULL THEN
             UPDATE public.cyl_pipeline_run_scans
             SET status = 'written',
@@ -119,6 +144,7 @@ BEGIN
         );
     END IF;
 
+    -- 6. Scan resolution via inputs.image_ids (no scan_id in the contract) ------
     SELECT array_agg(DISTINCT elem)
       INTO v_req_ids
       FROM jsonb_array_elements_text(coalesce(prov -> 'inputs' -> 'image_ids', '[]'::jsonb)) elem;
@@ -145,6 +171,7 @@ BEGIN
         RAISE EXCEPTION 'image_ids resolve to % scans, expected exactly 1', v_n_scans;
     END IF;
 
+    -- 7. Trait rows via the cyl_traits registry (auto-register) -----------------
     FOR v_trait IN
         SELECT * FROM jsonb_array_elements(coalesce(envelope -> 'traits', '[]'::jsonb))
     LOOP
@@ -174,6 +201,7 @@ BEGIN
         v_trait_count := v_trait_count + 1;
     END LOOP;
 
+    -- 8. Blob rows -------------------------------------------------------------
     FOR v_blob IN
         SELECT * FROM jsonb_array_elements(coalesce(envelope -> 'blobs', '[]'::jsonb))
     LOOP
@@ -192,6 +220,23 @@ BEGIN
         v_blob_count := v_blob_count + 1;
     END LOOP;
 
+    -- 9. Per-scan write-back status (bloom #696) --------------------------------
+    -- Only when the caller supplied a workflow name (the write-back pod's
+    -- ARGO_WORKFLOW_NAME) — manual/ad-hoc invocation with no pipeline-run
+    -- context omits it and this UPDATE affects nothing. "status != 'failed'"
+    -- guards against a late/out-of-order delivery resurrecting a scan the
+    -- reconciliation RPC already closed out, mirroring
+    -- complete_cyl_pipeline_batch's own identical guard for the identical
+    -- reason. Rolls back with everything else on any earlier validation
+    -- failure in this same transaction.
+    --
+    -- Found during /review-pr round 4: without status_update_matched below, a
+    -- delivery that genuinely writes trait/blob data (was_noop=false) but whose
+    -- status UPDATE is silently skipped by the guard above (the scan was already
+    -- 'failed' — a real, reachable outcome of an ordinary Argo retry racing this
+    -- RPC's own reconciliation call, not an exotic one) had zero caller-visible
+    -- signal: the write "succeeded" and nothing said the run-level counts would
+    -- now permanently disagree with the real data just written.
     IF p_argo_workflow_name IS NOT NULL THEN
         UPDATE public.cyl_pipeline_run_scans
         SET status = 'written',

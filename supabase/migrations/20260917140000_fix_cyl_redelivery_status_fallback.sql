@@ -5,7 +5,7 @@
 --   'written' by joining on (argo_workflow_name, source_id). A NEW pipeline run
 --   re-dispatching an already-ingested scan gets a fresh row with source_id IS
 --   NULL (source_id is written only by the non-no-op path, in the same statement
---   that sets status = 'written' -- see 20260912110000:289-296). That join
+--   that sets status = 'written' — see 20260912110000:289-296). That join
 --   therefore matches zero rows, status_update_matched comes back false,
 --   ingest_one_envelope reports the delivery failed (retriable=False), and
 --   end-of-batch reconciliation closes the scan out as 'failed' even though its
@@ -17,7 +17,7 @@
 --   no-op branch affects zero rows, fall back to a scan_id-scoped UPDATE within
 --   the same argo_workflow_name, where scan_id is looked up from an existing
 --   cyl_pipeline_run_scans row that already carries this source's id (stamped by
---   that source's original successful delivery) -- never re-derived from this
+--   that source's original successful delivery) — never re-derived from this
 --   delivery's own image_ids, which the "same key, different scan" short-circuit
 --   rule (see the RPC's step on scan resolution) reserves for the run of record
 --   alone. The fallback carries the identical "AND status != 'failed'" guard as
@@ -26,12 +26,17 @@
 --   new join path either.
 --
 -- Same signature as today (envelope jsonb, p_argo_workflow_name text DEFAULT
--- NULL) -- CREATE OR REPLACE only, no DROP FUNCTION, no PGRST202 window. Owner
+-- NULL) — CREATE OR REPLACE only, no DROP FUNCTION, no PGRST202 window. Owner
 -- and EXECUTE grants are unaffected by a same-signature CREATE OR REPLACE, but
 -- are re-asserted anyway, matching this file's own established convention.
 --
 -- No table/column changes. Forward-only.
 -- Manual rollback: supabase/rollbacks/20260917140000_fix_cyl_redelivery_status_fallback_rollback.sql
+--
+-- Steps 1-4 and 6-9 of the function body below are unchanged from
+-- 20260912110000_add_cyl_writeback_run_scan_status.sql (copied verbatim,
+-- including its comments) — only step 5's no-op branch gains the fallback
+-- block, marked "bloom#875 fallback" below.
 
 BEGIN;
 
@@ -76,7 +81,7 @@ BEGIN
     IF prov -> 'inputs' IS NULL OR jsonb_typeof(prov -> 'inputs') <> 'object' THEN
         RAISE EXCEPTION 'invalid envelope: missing provenance.inputs object';
     END IF;
-    -- traits/blobs, when present, MUST be arrays -- reject cleanly rather than let
+    -- traits/blobs, when present, MUST be arrays — reject cleanly rather than let
     -- jsonb_array_elements() leak a raw "cannot extract elements from an object".
     IF envelope ? 'traits' AND jsonb_typeof(envelope -> 'traits') NOT IN ('array', 'null') THEN
         RAISE EXCEPTION 'invalid envelope: traits must be an array';
@@ -135,17 +140,17 @@ BEGIN
         -- Pure no-op: no scan is resolved (scan_id null) for the RETURN value,
         -- nothing further written to the trait tables. The write-back RPC's own
         -- idempotent re-delivery still needs to (re-)confirm the per-scan status
-        -- if p_argo_workflow_name is supplied -- e.g. a retried write-back pod
+        -- if p_argo_workflow_name is supplied — e.g. a retried write-back pod
         -- calling this a second time for a scan the FIRST call already recorded.
         -- Rather than re-deriving scan_id from this delivery's own image_ids
         -- (which the "same key, different scan" short-circuit rule says must NOT
-        -- govern a no-op -- the run of record's own scan does), join on
+        -- govern a no-op — the run of record's own scan does), join on
         -- source_id instead: the original successful call already stamped
         -- source_id = v_source_id onto its matching cyl_pipeline_run_scans row
         -- in step 9 below, so this is the same row, found without re-resolving
         -- anything. If the original call never supplied a workflow name (or
         -- this one names a different, non-matching workflow), this affects zero
-        -- rows -- not an error.
+        -- rows — not an error.
         IF p_argo_workflow_name IS NOT NULL THEN
             UPDATE public.cyl_pipeline_run_scans
             SET status = 'written',
@@ -160,9 +165,9 @@ BEGIN
             -- row (source_id is written only by the non-no-op path below, in the
             -- same statement as status = 'written'), so the primary UPDATE above
             -- can never match it. Resolve the run-of-record's own scan_id from an
-            -- EXISTING row already carrying this source's id -- never from this
+            -- EXISTING row already carrying this source's id — never from this
             -- delivery's own image_ids, preserving the same "same key, different
-            -- scan" rule the primary UPDATE's source_id join already honors --
+            -- scan" rule the primary UPDATE's source_id join already honors —
             -- and retry the status update scoped to that scan_id within the new
             -- workflow name. If this source was never delivered under any
             -- workflow name at all, no such row exists to resolve from, and the
@@ -272,7 +277,7 @@ BEGIN
 
     -- 9. Per-scan write-back status (bloom #696) --------------------------------
     -- Only when the caller supplied a workflow name (the write-back pod's
-    -- ARGO_WORKFLOW_NAME) -- manual/ad-hoc invocation with no pipeline-run
+    -- ARGO_WORKFLOW_NAME) — manual/ad-hoc invocation with no pipeline-run
     -- context omits it and this UPDATE affects nothing. "status != 'failed'"
     -- guards against a late/out-of-order delivery resurrecting a scan the
     -- reconciliation RPC already closed out, mirroring
@@ -283,7 +288,7 @@ BEGIN
     -- Found during /review-pr round 4: without status_update_matched below, a
     -- delivery that genuinely writes trait/blob data (was_noop=false) but whose
     -- status UPDATE is silently skipped by the guard above (the scan was already
-    -- 'failed' -- a real, reachable outcome of an ordinary Argo retry racing this
+    -- 'failed' — a real, reachable outcome of an ordinary Argo retry racing this
     -- RPC's own reconciliation call, not an exotic one) had zero caller-visible
     -- signal: the write "succeeded" and nothing said the run-level counts would
     -- now permanently disagree with the real data just written.
