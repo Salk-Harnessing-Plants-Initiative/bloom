@@ -25,11 +25,16 @@ experiment does not exist, or its name does not match, the command SHALL raise a
 ### Requirement: Invocations are serialized with a same-machine file lock
 
 Before selecting a QR-code suffix or calling `insert_image_v2_0`, the command SHALL acquire an
-exclusive lock via `bloomctl.cyl._locks.acquire_lock` at a fixed, well-known path shared by every
-invocation of this command (e.g. `~/.bloom/.locks/cyl-create-test-scan-12880747.lock`), and SHALL
-hold it until the scan's creation (RPC call, upload, and row update) has fully completed or
-failed. If the lock is already held by another live invocation, the command SHALL exit non-zero
-immediately with a readable error, performing no RPC call, rather than blocking or retrying.
+exclusive lock via `bloomctl.cyl._locks.acquire_lock`, with `staleness_seconds =
+DEFAULT_LOCK_STALENESS_SECONDS` (900), at a fixed, well-known path shared by every invocation of
+this command (`~/.bloom/.locks/cyl-create-test-scan-12880747.lock`), and SHALL hold it in one
+single `with` block until the scan's creation (every frame's RPC call, frame-count check,
+upload, and row update) has fully completed or failed. If the lock is already held by another
+live invocation, the command SHALL exit non-zero immediately with a readable error, performing no
+RPC call, rather than blocking or retrying. This guarantee holds only while a live invocation's
+actual runtime stays under the configured staleness threshold; an invocation exceeding it can
+have its lock reclaimed by a peer, which the frame-count check (below) is the last line of
+defense against.
 
 #### Scenario: A concurrent invocation is refused, not merged
 
@@ -70,16 +75,18 @@ The command SHALL support a `--poison` flag. When set, the command SHALL call
 The command SHALL support a `--good` flag paired with a required `--frames-dir <path>` option.
 `--frames-dir` SHALL NOT be accepted together with `--poison`. For each frame file found directly
 in `<path>` (image files only, in ascending filename order, numbered `frame_number_ = 1, 2, 3,
-...` in that order), the command SHALL: reject the file if it is smaller than 1 KiB (a mechanical
-guard against blank/placeholder frames, not a content classifier — a real root-scan photograph is
-expected to exceed this trivially); otherwise call `insert_image_v2_0` to obtain a `cyl_images`
-row id; upload the frame's bytes to the `images` storage bucket at object path
-`cyl-images/cyl-image_{id}_{uuid4()}.png`, where `{id}` is the row id returned by the RPC and
-`{uuid4()}` is freshly generated per upload; and then update that `cyl_images` row's
-`object_path` to the uploaded path and `status` to `'SUCCESS'`. Before uploading, the command
-SHALL confirm the target scan's current frame count matches the number of frames processed so
-far in this invocation, aborting loudly on a mismatch rather than uploading against an unexpected
-existing scan.
+...` in that order), processed one at a time and stopping at the first failure (no further
+frames are attempted once one fails), the command SHALL: reject the file if it is smaller than 1
+KiB (a mechanical guard against blank/placeholder frames, not a content classifier — a real
+root-scan photograph is expected to exceed this trivially); otherwise call `insert_image_v2_0` to
+obtain a `cyl_images` row id; confirm the target scan's frame count (resolved from the returned
+id) equals the number of frames processed so far in this invocation, aborting loudly on a
+mismatch rather than uploading against an unexpected existing scan; upload the frame's bytes to
+the `images` storage bucket at object path `cyl-images/cyl-image_{id}_{uuid4()}.png`, where `{id}`
+is the row id returned by the RPC and `{uuid4()}` is freshly generated per upload, retrying once
+on a transient (429/5xx) storage error and raising immediately on any other upload error; and
+then update that `cyl_images` row's `object_path` to the uploaded path and `status` to
+`'SUCCESS'`.
 
 #### Scenario: Good scan is fully downloadable after creation
 
@@ -100,6 +107,13 @@ existing scan.
 - **WHEN** `--frames-dir` points to a path that does not exist or contains no image files
 - **THEN** the command exits non-zero with a readable error and makes no `insert_image_v2_0`
   call
+
+#### Scenario: A row-update failure after a successful upload is reported, not silently swallowed
+
+- **WHEN** a frame's bytes upload successfully but the subsequent `cyl_images` row update
+  (`object_path`/`status`) raises
+- **THEN** the command exits non-zero with an error identifying the frame and noting the object
+  was uploaded but the row was not updated, and processes no further frames
 
 #### Scenario: Non-image files in the directory are ignored, not counted as frames
 

@@ -135,7 +135,38 @@ Non-Goals:
   still slow, or a non-`bloomctl` caller), the command also verifies the RPC's returned image id
   is genuinely new via the `NULL`-return check above, and — for `--good` — the scan is confirmed
   to have exactly the frame count expected immediately before uploading, aborting loudly on a
-  mismatch rather than silently overwriting/attaching to an unexpected existing scan.
+  mismatch rather than silently overwriting/attaching to an unexpected existing scan. This
+  guarantee is bounded by the staleness threshold below, not absolute: while a live invocation's
+  actual runtime stays under it, a second invocation is refused outright; if a live invocation
+  somehow runs longer than the threshold, its lock becomes reclaimable and a peer could proceed
+  concurrently, which is exactly the residual window the frame-count check exists to catch.
+
+  **Concrete lock parameters** (an OpenSpec review of an earlier draft found this decision named
+  no actual value, which is required — `acquire_lock`'s `staleness_seconds` has no default and
+  rejects non-positive/NaN values): use `bloomctl.cyl._locks.DEFAULT_LOCK_STALENESS_SECONDS`
+  (900 seconds), imported rather than re-literaled, at lock path
+  `~/.bloom/.locks/cyl-create-test-scan-12880747.lock`. This command's workload (one scan,
+  sequential frames, no concurrent workers) is strictly lighter than
+  `download_for_predict.py`'s batch-download workload that constant was already sized for, so it
+  comfortably covers even a slow multi-frame `--good` invocation with retries, while still
+  bounding a genuinely crashed/killed process to 15 minutes before a peer can reclaim. No CLI
+  override is exposed (unlike `download_for_predict --lock-staleness-seconds`) — this command has
+  no legitimate reason to run long enough to need one.
+
+  **Concrete frame-count-check mechanism**: `insert_image_v2_0` returns only the new/existing
+  `cyl_images.id`, not its `scan_id` — so after a non-`NULL` RPC result, the command SHALL first
+  resolve `scan_id` with `client.table("cyl_images").select("scan_id").eq("id", image_id)
+  .single().execute()`, then count sibling rows with `client.table("cyl_images")
+  .select("id", count="exact").eq("scan_id", scan_id).execute()`. The expected count for the Nth
+  frame processed in this invocation (1-indexed) is exactly `N`; any other observed count aborts
+  the command before the upload call for that frame.
+
+  The entire critical section — QR-suffix resolution through every frame's RPC call, frame-count
+  check, upload, and row update — SHALL be wrapped in one single `with acquire_lock(...)` block
+  for the whole invocation. Every abort inside that section (`NULL`-return, frame-count mismatch,
+  upload failure, update failure, size-floor rejection for frame 2+) SHALL raise from inside the
+  block, never via a caller that has already exited it, so the lock is always released via the
+  primitive's own `try/finally`.
 
 - **Decision: identity fields (`phenotyper_name`/`email`, `scientist_name`/`email`,
   `accession_name`) use fixed, dedicated synthetic sentinel values, never copied from an
@@ -155,7 +186,7 @@ Non-Goals:
   collide with a real address). Fields that describe the *wave/plant batch itself* rather than
   a person or accession — `species_common_name`, `wave_number`, `germ_day`, `germ_day_color`,
   `plant_age_days`, `date_scanned_` — are still sourced from an existing `TEST-E2E-*` scan's
-  real values (task 1.2), since those legitimately describe the shared experiment/wave context
+  real values (task 1.1), since those legitimately describe the shared experiment/wave context
   and have no cross-attachment risk (they're plain columns on the upserted wave/plant row, not
   natural-key lookups into a global table).
 
@@ -239,3 +270,19 @@ verifications:
 - **The frame-size floor is a heuristic, not a guarantee of real imagery** — a caller could still
   defeat it with a large-but-still-trivial file. Accepted: the goal is raising the bar against
   the *specific* accidental failure already observed twice, not building a content classifier.
+- **Every scan this tool ever creates shares one fixed synthetic accession/phenotyper/scientist
+  identity.** Confirmed (OpenSpec review) this has no cross-experiment blast radius — Bloom's
+  heritability/cross-experiment tooling scopes its queries to one named experiment, so a global
+  shared identity can't leak into unrelated real experiments' analyses. The one real effect is
+  local to experiment `12880747` itself: running a genotype/accession-based tool (e.g.
+  `heritability_analysis`) against `12880747` would see all synthetic scans collapse into one
+  genotype bucket with zero within-group variance. `12880747` is explicitly "synthetic -- safe to
+  break/delete" and not used for real accession-based science, so this is accepted as-is — never
+  point genotype/heritability tooling at experiment `12880747`.
+- **Every RPC call burns one identity-sequence value per upserted table** (`phenotypers.id`,
+  `cyl_scientists.id`, `accessions.id`, and similarly for the plant/scan/image chain), even on a
+  call whose `ON CONFLICT DO NOTHING` branch fires, because Postgres advances
+  `GENERATED BY DEFAULT AS IDENTITY` sequences during `VALUES` evaluation before the conflict is
+  checked. Harmless at `bigint` range for a tool run at most a few dozen times; noted so a future
+  reader isn't surprised the persisted row's id is higher than the number of scans actually
+  created.

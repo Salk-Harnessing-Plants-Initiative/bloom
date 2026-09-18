@@ -1,5 +1,11 @@
 ## 1. Pre-implementation verification
 
+Tasks 1.1 and 1.3 must be completed, with results recorded in `design.md`, before any test in
+section 2 is written — section 2's tests assert against their output. Task 1.2 is informational
+and non-blocking; it may happen at any time. The lock's `staleness_seconds` value and the
+pre-upload frame-count query's exact shape are already fixed in `design.md`'s Decisions section
+(no separate investigation task needed for either).
+
 - [ ] 1.1 Query one existing `TEST-E2E-*` scan's full metadata (species, wave_number, germ_day,
       germ_day_color, plant_age_days, date_scanned, device_name) via a throwaway read-only script
       under the `pipeline-staging` profile (deleted after use) to source the exact default values
@@ -34,21 +40,29 @@ outcomes.
       allows the command to proceed. Pin the exact guard query shape.
 - [ ] 2.2 Lock contention: with `acquire_lock` monkeypatched to raise `LockContendedError`, the
       command exits non-zero immediately with a message identifying the lock as held, and makes
-      zero RPC calls. Confirm the lock is acquired (path, staleness argument) via a recording
-      fake before any QR-suffix query.
+      zero RPC calls. Confirm, via a recording fake, that the lock is acquired before any
+      QR-suffix query with the exact path `~/.bloom/.locks/cyl-create-test-scan-12880747.lock`
+      and `staleness_seconds = DEFAULT_LOCK_STALENESS_SECONDS` (imported from `_locks`, not
+      re-literaled as `900`).
 - [ ] 2.3 QR-code auto-increment: a fake client whose experiment query returns existing suffixes
       up to `009` results in the RPC being called with `plant_qr_code = 'TEST-E2E-010'`. Pin the
       exact suffix-lookup query shape.
 - [ ] 2.4 Sentinel identity values: assert every `insert_image_v2_0` call (poison and good) uses
       the fixed synthetic `phenotyper_name`/`email`, `scientist_name`/`email`, `accession_name`,
-      `device_name` from `design.md`, never a value read from any fake "existing scan" response.
+      `device_name` — each re-typed directly from `design.md`'s Decisions section into the test
+      (not copy-pasted from `create_test_scan.py`), so a shared transcription typo between the
+      implementation and this test cannot pass silently. Assert none of these values are ever
+      read from any fake "existing scan" response.
 - [ ] 2.5 `--poison`: assert `insert_image_v2_0` is called exactly once with `frame_number_ = 1`
       and the expected metadata defaults (from 1.1); assert zero storage calls (`upload`,
       `download`) occur; assert no `cyl_images` update call occurs.
-- [ ] 2.6 `insert_image_v2_0` returns `NULL` (poison mode): assert the command exits non-zero,
-      names the QR code, and makes zero storage calls.
-- [ ] 2.7 `--good` with one frame file (>= 1 KiB): assert the RPC call, a pre-upload frame-count
-      confirmation query, then exactly one `upload()` call against the `images` bucket at
+- [ ] 2.6 `insert_image_v2_0` returns `NULL` (poison mode): assert the command exits non-zero and
+      names both the QR code and the frame number (`1`) in its error, and makes zero storage
+      calls.
+- [ ] 2.7 `--good` with one frame file (>= 1 KiB): assert the RPC call, then the exact pre-upload
+      frame-count query pair from `design.md` (`.table("cyl_images").select("scan_id")
+      .eq("id", image_id).single()`, then `.select("id", count="exact").eq("scan_id", scan_id)`,
+      expecting count `1`), then exactly one `upload()` call against the `images` bucket at
       `cyl-images/cyl-image_{id}_{uuid}.png` (assert the prefix and suffix shape with a regex,
       not a fixed UUID), then exactly one update call setting `object_path` to that same path and
       `status` to `'SUCCESS'`.
@@ -61,9 +75,10 @@ outcomes.
       partial-then-continue behavior).
 - [ ] 2.10 `--good`, upload succeeds but the row-update call raises: assert non-zero exit and a
       message identifying the frame/row left inconsistent (uploaded object, unset `object_path`).
-- [ ] 2.11 `--good`, pre-upload frame-count confirmation finds an unexpected count (simulating a
-      residual race past the lock): assert non-zero exit before any upload call, with a message
-      describing the mismatch.
+- [ ] 2.11 `--good`, pre-upload frame-count confirmation (the exact query pair from 2.7) returns
+      a count other than the expected `N` for the Nth frame (simulating a residual race past the
+      lock): assert non-zero exit before any upload call, with a message describing the
+      mismatch.
 - [ ] 2.12 `--good` with a frame file smaller than 1 KiB: assert non-zero exit naming the file and
       the size floor, and zero `insert_image_v2_0` calls.
 - [ ] 2.13 `--good` with a missing or empty `--frames-dir`, or one containing only non-image
@@ -106,8 +121,12 @@ outcomes.
       live server" convention (`cyl/download.py`'s module docstring). Define the sentinel
       identity constants here.
 - [ ] 3.3 Implement the experiment guard as the first live call the command makes.
-- [ ] 3.4 Wrap QR-suffix resolution through the end of scan creation in
-      `bloomctl.cyl._locks.acquire_lock` at the fixed lock path.
+- [ ] 3.4 Wrap the entire `--good`/`--poison` critical section — QR-suffix resolution through
+      every frame's RPC call, frame-count check, upload, and row update — in one single
+      `with bloomctl.cyl._locks.acquire_lock(path, staleness_seconds=DEFAULT_LOCK_STALENESS_SECONDS)`
+      block for the whole invocation, at the fixed lock path from `design.md`. Every abort inside
+      this section must raise from inside the block (never via a caller that has already exited
+      it), so the lock is always released via the primitive's own `try`/`finally`.
 - [ ] 3.5 Implement `--poison` and `--good --frames-dir` per the spec deltas, including the
       `NULL`-return check and the pre-upload frame-count confirmation.
 - [ ] 3.6 Implement `--json`/stdout-stderr output per the spec deltas.
