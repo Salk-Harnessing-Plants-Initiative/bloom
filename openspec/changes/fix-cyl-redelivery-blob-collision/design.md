@@ -154,6 +154,13 @@ overturn it.
   bloom#875; until then the spec claim of "exits zero" holds for the manual shape and for
   intra-workflow Argo retries, not for a re-run from a fresh pipeline run.
 
+  > **RESOLVED — see `fix-cyl-redelivery-status-fallback`.** The "until then" above has passed:
+  > that change shipped exactly the RPC-side fallback this bullet describes as the durable fix
+  > (bloom#875, PR #880, migration `20260917140000`, live on staging 2026-09-18), so "exits zero"
+  > now also holds for a re-run from a fresh pipeline run. Annotation only — the paragraph above
+  > is left as written, since it is this change's own design record and rewriting it from another
+  > change would be the blind cross-change edit that change's Risks section warns against.
+
 - **The orphan-blob wedge stays open.** A delivery that uploads and then dies before the RPC
   leaves bytes with no source row; a later recompute checks correctly ("not ingested") and still
   collides, permanently. bloomctl cannot distinguish an orphan from a referenced blob —
