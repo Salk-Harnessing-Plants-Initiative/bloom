@@ -1,50 +1,93 @@
 ## 1. Pre-implementation verification
 
-- [ ] 1.1 Query the `cyl_scans`/plant schema (via a throwaway read-only script under the
-      `pipeline-staging` profile, deleted after use) to confirm whether `plant_qr_code` carries a
-      database-level uniqueness constraint. This determines whether the race-window decision in
-      `design.md` ("fails loudly on conflict") is actually backed by the database, or needs an
-      explicit application-level check instead. Record the finding in `design.md` if it changes
-      the decision.
-- [ ] 1.2 Query one existing `TEST-E2E-*` scan's full metadata (species, wave_number, germ_day,
-      germ_day_color, plant_age_days, date_scanned, device_name, accession_name, phenotyper
-      name/email, scientist name/email) to source the exact default values `create-test-scan`
-      will pass to `insert_image_v2_0` for every parameter other than `plant_qr_code` and
-      `frame_number_`.
-- [ ] 1.3 Confirm the exact frame-file ordering `--good` should use when a directory has more
-      than one file (e.g. sorted by filename) and document it in the command's `--help` text.
+- [ ] 1.1 Query one existing `TEST-E2E-*` scan's full metadata (species, wave_number, germ_day,
+      germ_day_color, plant_age_days, date_scanned, device_name) via a throwaway read-only script
+      under the `pipeline-staging` profile (deleted after use) to source the exact default values
+      `create-test-scan` will pass to `insert_image_v2_0` for the wave/plant-batch parameters
+      only. Identity fields (`phenotyper_name`/`email`, `scientist_name`/`email`,
+      `accession_name`, `device_name`) are NOT sourced this way — they use the fixed synthetic
+      sentinel values from `design.md`, regardless of what any existing scan carries. Record the
+      chosen source scan id and the exact values in `design.md`.
+- [ ] 1.2 (Informational, non-blocking) Check whether `cyl_plants` / `cyl_scans` carry the
+      unique constraints `design.md`'s Context section describes
+      (`(wave_id, qr_code)` / `(plant_id, date_scanned)`). This no longer gates the QR-race
+      mitigation (the file lock does, see `design.md`), but confirms the plant/scan isolation
+      reasoning the sentinel-values decision depends on. Record the finding as a one-line note in
+      `design.md`'s Context section.
+- [ ] 1.3 Confirm the image-file extension allowlist `--good` will use to distinguish frame files
+      from non-image files in `--frames-dir` (e.g. `.png`, `.jpg`, `.jpeg`, `.tif`, `.tiff` —
+      check what `bloomctl cyl download` itself writes, so a directory populated by that command
+      is recognized without extra steps) and document it in the command's `--help` text.
 
 ## 2. Red — tests first (`bloomcli/tests/test_cyl_create_test_scan.py`)
 
 Follow this codebase's existing convention: no `unittest.mock`; small hand-written fake
 `_Client`/`_RPC`/storage-bucket classes (see `tests/test_cyl_ingest.py`), plus a
-`_patch_authed`-style monkeypatch of `_authed_client` for command-level tests.
+`_patch_authed`-style monkeypatch of `_authed_client` for command-level tests. Pin exact query
+shapes (`.table()`/`.select()`/`.eq()`) for the experiment guard and QR-suffix lookup, matching
+`test_cyl_datasets.py`'s convention (e.g. `test_fetch_datasets_builds_joined_query`), not just
+outcomes.
 
-- [ ] 2.1 Experiment guard: a fake client returning a non-matching (or missing) experiment `12880747`
-      causes the command to exit non-zero and make zero RPC/storage calls of any kind. A fake
-      client returning a matching experiment allows the command to proceed.
-- [ ] 2.2 `--poison`: assert `insert_image_v2_0` is called exactly once with `frame_number_ = 1`
-      and the expected metadata defaults (from 1.2); assert zero storage calls (`upload`,
+- [ ] 2.1 Experiment guard: a fake client returning a non-matching (or missing) experiment
+      `12880747` causes the command to exit non-zero and make zero RPC/storage/lock calls. A
+      fake client returning a matching experiment (name starting with `A4-PIPELINE-E2E-TEST`)
+      allows the command to proceed. Pin the exact guard query shape.
+- [ ] 2.2 Lock contention: with `acquire_lock` monkeypatched to raise `LockContendedError`, the
+      command exits non-zero immediately with a message identifying the lock as held, and makes
+      zero RPC calls. Confirm the lock is acquired (path, staleness argument) via a recording
+      fake before any QR-suffix query.
+- [ ] 2.3 QR-code auto-increment: a fake client whose experiment query returns existing suffixes
+      up to `009` results in the RPC being called with `plant_qr_code = 'TEST-E2E-010'`. Pin the
+      exact suffix-lookup query shape.
+- [ ] 2.4 Sentinel identity values: assert every `insert_image_v2_0` call (poison and good) uses
+      the fixed synthetic `phenotyper_name`/`email`, `scientist_name`/`email`, `accession_name`,
+      `device_name` from `design.md`, never a value read from any fake "existing scan" response.
+- [ ] 2.5 `--poison`: assert `insert_image_v2_0` is called exactly once with `frame_number_ = 1`
+      and the expected metadata defaults (from 1.1); assert zero storage calls (`upload`,
       `download`) occur; assert no `cyl_images` update call occurs.
-- [ ] 2.3 `--good` with one frame file: assert the RPC call, then exactly one `upload()` call
-      against the `images` bucket at `cyl-images/cyl-image_{id}_{uuid}.png` (assert the prefix
-      and suffix shape with a regex, not a fixed UUID), then exactly one update call setting
-      `object_path` to that same path and `status` to `'SUCCESS'`.
-- [ ] 2.4 `--good` with multiple frame files: assert one RPC call and one upload+update pair per
-      file, each with a distinct `frame_number_` and a distinct generated path.
-- [ ] 2.5 `--good` with a missing or empty `--frames-dir`: assert non-zero exit and zero RPC
-      calls.
-- [ ] 2.6 Mutual exclusivity: both `--poison` and `--good` given → non-zero exit, zero RPC calls.
-      Neither given → non-zero exit, zero RPC calls.
-- [ ] 2.7 QR-code auto-increment: a fake client whose experiment query returns existing suffixes
-      up to `009` results in the RPC being called with `plant_qr_code = 'TEST-E2E-010'`.
-- [ ] 2.8 QR-code conflict: a fake client whose insert raises a uniqueness-violation error (shape
-      confirmed in 1.1) on the chosen QR code results in a non-zero exit with a readable error
-      identifying the conflict, and no retry/loop.
-- [ ] 2.9 `--json` / stdout-stderr convention: on success, stdout parses as exactly one JSON
+- [ ] 2.6 `insert_image_v2_0` returns `NULL` (poison mode): assert the command exits non-zero,
+      names the QR code, and makes zero storage calls.
+- [ ] 2.7 `--good` with one frame file (>= 1 KiB): assert the RPC call, a pre-upload frame-count
+      confirmation query, then exactly one `upload()` call against the `images` bucket at
+      `cyl-images/cyl-image_{id}_{uuid}.png` (assert the prefix and suffix shape with a regex,
+      not a fixed UUID), then exactly one update call setting `object_path` to that same path and
+      `status` to `'SUCCESS'`.
+- [ ] 2.8 `--good` with multiple frame files: assert one RPC call and one upload+update pair per
+      file, with `frame_number_` assigned `1, 2, 3, ...` in ascending filename order, each with a
+      distinct generated path.
+- [ ] 2.9 `--good`, `insert_image_v2_0` returns `NULL` on the second of two frames: assert
+      non-zero exit, an error naming that frame, exactly one successful upload+update for the
+      first frame, and no RPC/storage call for any frame after the failing one (fail-fast, no
+      partial-then-continue behavior).
+- [ ] 2.10 `--good`, upload succeeds but the row-update call raises: assert non-zero exit and a
+      message identifying the frame/row left inconsistent (uploaded object, unset `object_path`).
+- [ ] 2.11 `--good`, pre-upload frame-count confirmation finds an unexpected count (simulating a
+      residual race past the lock): assert non-zero exit before any upload call, with a message
+      describing the mismatch.
+- [ ] 2.12 `--good` with a frame file smaller than 1 KiB: assert non-zero exit naming the file and
+      the size floor, and zero `insert_image_v2_0` calls.
+- [ ] 2.13 `--good` with a missing or empty `--frames-dir`, or one containing only non-image
+      files: assert non-zero exit and zero RPC calls.
+- [ ] 2.14 `--good` with a mix of image and non-image files in `--frames-dir`: assert only the
+      image files are processed, in ascending filename order, and non-image files are neither
+      uploaded nor counted.
+- [ ] 2.15 Mutual exclusivity: `--poison` + `--good` together → non-zero exit, zero RPC calls.
+      Neither given → non-zero exit, zero RPC calls. `--poison --frames-dir <dir>` → non-zero
+      exit, zero RPC calls.
+- [ ] 2.16 New upload helper (module added in 3.1): retries once on a transient (429/5xx) storage
+      error and succeeds on the second attempt; does not retry a non-transient error (e.g. 403)
+      and raises immediately.
+- [ ] 2.17 Default `-p/--profile` matches other `cyl` commands and is forwarded to
+      `_authed_client`.
+- [ ] 2.18 CLI registration: `create-test-scan` appears under `bloomctl cyl --help`, matching
+      `test_cyl_ingest.py`'s `test_cli_registration_in_help` pattern.
+- [ ] 2.19 `--json` / stdout-stderr convention: on success, stdout parses as exactly one JSON
       object containing the scan id and `plant_qr_code`; any progress text appears only on
-      stderr — mirror `test_cyl_datasets.py::test_list_experiment_menu_stderr_clean_stdout_json`.
-- [ ] 2.10 Confirm all of 2.1-2.9 fail for the expected reason (missing implementation) before
+      stderr; the fake credentials' secret values never appear in stdout or stderr — mirror
+      `test_cyl_datasets.py::test_list_experiment_menu_stderr_clean_stdout_json`.
+- [ ] 2.20 Without `--json`: stdout contains a human-readable line naming the created scan's id
+      and `plant_qr_code`.
+- [ ] 2.21 Confirm all of 2.1-2.20 fail for the expected reason (missing implementation) before
       writing any implementation code. Capture the failing output to the scratchpad for the PR
       description; do not create an isolated "red" commit (no CI runs on feature-branch pushes in
       this repo, and squash merges erase intermediate trees — see prior art in
@@ -54,17 +97,22 @@ Follow this codebase's existing convention: no `unittest.mock`; small hand-writt
 
 - [ ] 3.1 Add a generic upload-object helper (new function in `src/bloomctl/_storage.py` or a
       new sibling module) mirroring `_storage.py::download_object`'s error-shaping conventions
-      (`is_retryable`, `describe_storage_error`) but for `bucket.upload(...)`, with no
-      pre-existence/checksum check (see `design.md`).
-- [ ] 3.2 Add `src/bloomctl/cyl/create_test_scan.py`: pure helper functions
-      (`resolve_next_qr_code`, `call_insert_image`, the per-frame good-mode orchestration) kept
-      separate from the `@click.command`, matching this codebase's "unit-testable without a live
-      server" convention (`cyl/download.py`'s module docstring).
+      (`is_retryable`, `describe_storage_error`) but for `bucket.upload(...)`: retry once on a
+      transient error, raise immediately otherwise, no pre-existence/checksum check.
+- [ ] 3.2 Add `src/bloomctl/cyl/create_test_scan.py`: pure helper functions (experiment guard
+      query, `resolve_next_qr_code`, `call_insert_image`, frame-file discovery/ordering/size-floor
+      filtering, the per-frame good-mode orchestration with fail-fast on any frame's failure)
+      kept separate from the `@click.command`, matching this codebase's "unit-testable without a
+      live server" convention (`cyl/download.py`'s module docstring). Define the sentinel
+      identity constants here.
 - [ ] 3.3 Implement the experiment guard as the first live call the command makes.
-- [ ] 3.4 Implement `--poison` and `--good --frames-dir` per the spec deltas.
-- [ ] 3.5 Implement `--json`/stdout-stderr output per the spec deltas.
-- [ ] 3.6 Register the command in `src/bloomctl/cyl/__init__.py`.
-- [ ] 3.7 Run the full test file; confirm every test from section 2 now passes for the right
+- [ ] 3.4 Wrap QR-suffix resolution through the end of scan creation in
+      `bloomctl.cyl._locks.acquire_lock` at the fixed lock path.
+- [ ] 3.5 Implement `--poison` and `--good --frames-dir` per the spec deltas, including the
+      `NULL`-return check and the pre-upload frame-count confirmation.
+- [ ] 3.6 Implement `--json`/stdout-stderr output per the spec deltas.
+- [ ] 3.7 Register the command in `src/bloomctl/cyl/__init__.py`.
+- [ ] 3.8 Run the full test file; confirm every test from section 2 now passes for the right
       reason (not vacuously).
 
 ## 4. Validation
@@ -72,11 +120,14 @@ Follow this codebase's existing convention: no `unittest.mock`; small hand-writt
 - [ ] 4.1 `openspec validate add-cyl-test-scan-cli --strict` passes.
 - [ ] 4.2 Run `/pre-merge` (lint, full `bloomcli` test suite, self-review, OpenSpec validation);
       fix anything flagged.
-- [ ] 4.3 Manually exercise both modes once against the real `pipeline-staging` profile (not in
-      CI): create one poison scan and one good scan (frames sourced via `bloomctl cyl download`
-      against scan `12894745`), and confirm via a read-only query that the resulting rows match
-      the spec (poison: `object_path IS NULL`; good: `status = 'SUCCESS'` with a resolvable
-      object). Record the created scan ids in the PR description so reviewers/verifiers know
-      which `TEST-E2E-NNN` scans exist for #76/#78/#56 to use.
+- [ ] 4.3 Manually exercise the command once against the real `pipeline-staging` profile (not in
+      CI), after 4.2 is clean: create the scans actually needed per `design.md`'s "Which
+      verification each created scan is for" (one `--good` scan for #76, one `--good` scan for
+      #78, and a `--good`×2 + `--poison`×1 set for the 7.4b run), invoked **serially**. Confirm
+      via a read-only query that each resulting row matches the spec (poison: `object_path IS
+      NULL`; good: `status = 'SUCCESS'` with a resolvable object). Record each created scan's id,
+      its intended verification, and the commit SHA the scans were created against in the PR
+      description. If the command's write shape changes after this point due to review feedback,
+      re-verify (not necessarily recreate) these rows before merge.
 - [ ] 4.4 Open the PR (proposal + implementation bundled, per this project's convention) against
       `staging`.

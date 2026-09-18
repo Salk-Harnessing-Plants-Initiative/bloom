@@ -22,6 +22,35 @@ experiment does not exist, or its name does not match, the command SHALL raise a
 - **THEN** the command exits non-zero with a readable error and performs no `insert_image_v2_0`
   call, no storage upload, and no `cyl_images` update
 
+### Requirement: Invocations are serialized with a same-machine file lock
+
+Before selecting a QR-code suffix or calling `insert_image_v2_0`, the command SHALL acquire an
+exclusive lock via `bloomctl.cyl._locks.acquire_lock` at a fixed, well-known path shared by every
+invocation of this command (e.g. `~/.bloom/.locks/cyl-create-test-scan-12880747.lock`), and SHALL
+hold it until the scan's creation (RPC call, upload, and row update) has fully completed or
+failed. If the lock is already held by another live invocation, the command SHALL exit non-zero
+immediately with a readable error, performing no RPC call, rather than blocking or retrying.
+
+#### Scenario: A concurrent invocation is refused, not merged
+
+- **WHEN** a second `create-test-scan` invocation starts while a first one still holds the lock
+- **THEN** the second invocation exits non-zero immediately with a message identifying the lock
+  as held, and makes no `insert_image_v2_0` call
+
+### Requirement: An RPC result indicating a pre-existing SUCCESS row is a hard failure
+
+The command SHALL treat an `insert_image_v2_0` result of `NULL` (indicating the resolved
+`cyl_images` row is already `status = 'SUCCESS'`) as an unexpected failure, not a benign no-op.
+It SHALL abort before any storage call, for both `--poison` and `--good`, and for every frame
+within a multi-frame `--good` scan, reporting the QR code and frame number that produced the
+`NULL` result.
+
+#### Scenario: NULL from the RPC aborts before upload
+
+- **WHEN** `insert_image_v2_0` returns `NULL` for a frame
+- **THEN** the command exits non-zero, names the QR code and frame number in its error, and makes
+  no storage upload or `cyl_images` update for that frame
+
 ### Requirement: --poison mode creates an undownloadable scan
 
 The command SHALL support a `--poison` flag. When set, the command SHALL call
@@ -39,25 +68,60 @@ The command SHALL support a `--poison` flag. When set, the command SHALL call
 ### Requirement: --good mode creates a scan with real, downloadable imagery
 
 The command SHALL support a `--good` flag paired with a required `--frames-dir <path>` option.
-When set, for each frame file found in `<path>` (in a stable, deterministic order), the command
-SHALL: call `insert_image_v2_0` to obtain a `cyl_images` row id; upload the frame's bytes to the
-`images` storage bucket at object path `cyl-images/cyl-image_{id}_{uuid4()}.png`, where `{id}`
-is the row id returned by the RPC and `{uuid4()}` is freshly generated per upload; and then
-update that `cyl_images` row's `object_path` to the uploaded path and `status` to `'SUCCESS'`.
+`--frames-dir` SHALL NOT be accepted together with `--poison`. For each frame file found directly
+in `<path>` (image files only, in ascending filename order, numbered `frame_number_ = 1, 2, 3,
+...` in that order), the command SHALL: reject the file if it is smaller than 1 KiB (a mechanical
+guard against blank/placeholder frames, not a content classifier — a real root-scan photograph is
+expected to exceed this trivially); otherwise call `insert_image_v2_0` to obtain a `cyl_images`
+row id; upload the frame's bytes to the `images` storage bucket at object path
+`cyl-images/cyl-image_{id}_{uuid4()}.png`, where `{id}` is the row id returned by the RPC and
+`{uuid4()}` is freshly generated per upload; and then update that `cyl_images` row's
+`object_path` to the uploaded path and `status` to `'SUCCESS'`. Before uploading, the command
+SHALL confirm the target scan's current frame count matches the number of frames processed so
+far in this invocation, aborting loudly on a mismatch rather than uploading against an unexpected
+existing scan.
 
 #### Scenario: Good scan is fully downloadable after creation
 
-- **WHEN** the user runs `bloomctl cyl create-test-scan --good --frames-dir <dir>` with one frame
-  file in `<dir>`
+- **WHEN** the user runs `bloomctl cyl create-test-scan --good --frames-dir <dir>` with one
+  frame file at least 1 KiB in `<dir>`
 - **THEN** the command calls `insert_image_v2_0` once, uploads the frame's bytes to the `images`
   bucket at `cyl-images/cyl-image_{id}_{uuid}.png`, and updates the row to
   `object_path = cyl-images/cyl-image_{id}_{uuid}.png`, `status = 'SUCCESS'`
 
+#### Scenario: A frame below the size floor is rejected before any RPC call
+
+- **WHEN** a file in `--frames-dir` is smaller than 1 KiB
+- **THEN** the command exits non-zero with an error naming the file and explaining the size
+  floor, and makes no `insert_image_v2_0` call for that file
+
 #### Scenario: Missing or empty frames directory fails before any RPC call
 
-- **WHEN** `--frames-dir` points to a path that does not exist or contains no frame files
+- **WHEN** `--frames-dir` points to a path that does not exist or contains no image files
 - **THEN** the command exits non-zero with a readable error and makes no `insert_image_v2_0`
   call
+
+#### Scenario: Non-image files in the directory are ignored, not counted as frames
+
+- **WHEN** `--frames-dir` contains both image files and non-image files (e.g. a stray `.txt`)
+- **THEN** only the image files are processed as frames, in ascending filename order, and the
+  non-image files are neither uploaded nor counted
+
+### Requirement: Identity fields use fixed synthetic sentinel values, never real staff or accession data
+
+The command SHALL pass fixed, dedicated sentinel values for `phenotyper_name`,
+`phenotyper_email`, `scientist_name`, `scientist_email`, `accession_name`, and `device_name` on
+every call to `insert_image_v2_0` — never values copied from an existing scan's row — because
+`phenotypers`, `cyl_scientists`, and `accessions` are upserted by the RPC on a global natural key
+with no experiment scoping, and copying forward an existing value risks silently attaching a
+synthetic scan to a real staff member's or real accession's row.
+
+#### Scenario: Sentinel identity values are used regardless of profile or prior scans
+
+- **WHEN** the command creates any scan (poison or good)
+- **THEN** the RPC call's `phenotyper_email` and `scientist_email` end in `.invalid`, and
+  `accession_name` and `device_name` are the fixed synthetic sentinel strings, regardless of
+  what values any existing `TEST-E2E-*` scan carries
 
 ### Requirement: --poison and --good are mutually exclusive and one is required
 
@@ -74,36 +138,39 @@ at most one scan per invocation.
 - **WHEN** the user runs the command with neither `--poison` nor `--good`
 - **THEN** the command exits non-zero with a readable error before any RPC call
 
+#### Scenario: --frames-dir with --poison is rejected
+
+- **WHEN** the user runs the command with `--poison --frames-dir <dir>`
+- **THEN** the command exits non-zero with a readable error before any RPC call
+
 ### Requirement: The scan's QR code is chosen automatically from existing suffixes
 
-The command SHALL NOT accept a caller-supplied QR code. It SHALL query experiment `12880747`
-for the current highest numeric suffix among existing `TEST-E2E-NNN`-style `plant_qr_code`
-values, and SHALL use the next integer, zero-padded to match the existing 3-digit width, as the
-new scan's `plant_qr_code`. If the insert fails due to a uniqueness conflict on the chosen QR
-code (e.g. a concurrent invocation claimed it first), the command SHALL surface a readable,
-non-zero-exit error identifying the conflict rather than silently retrying or overwriting.
+The command SHALL NOT accept a caller-supplied QR code. While holding the lock described above,
+it SHALL query experiment `12880747` for the current highest numeric suffix among existing
+`TEST-E2E-NNN`-style `plant_qr_code` values, and SHALL use the next integer, zero-padded to
+match the existing 3-digit width, as the new scan's `plant_qr_code`.
 
 #### Scenario: Next suffix is chosen
 
 - **WHEN** experiment `12880747`'s highest existing QR code suffix is `009`
 - **THEN** the new scan is created with `plant_qr_code = TEST-E2E-010`
 
-#### Scenario: Concurrent claim on the same suffix fails loudly
-
-- **WHEN** two invocations compute the same next suffix and one has already inserted it by the
-  time the second attempts its insert
-- **THEN** the second invocation's command exits non-zero with a readable conflict error and
-  creates no partial state
-
 ### Requirement: Output follows the CLI's stdout/stderr and --json conventions
 
-The command SHALL accept `-p/--profile` (defaulting like other `cyl` commands) and `--json`.
-Progress and informational text SHALL be written to stderr. With `--json`, a single JSON object
-describing the created (or attempted) scan SHALL be written to stdout with no other content on
-stdout. Without `--json`, a human-readable summary SHALL be written to stdout.
+The command SHALL accept `-p/--profile` (defaulting like other `cyl` commands, forwarded to
+`_authed_client`) and `--json`. Progress and informational text SHALL be written to stderr. With
+`--json`, a single JSON object describing the created scan SHALL be written to stdout with no
+other content on stdout. Without `--json`, a human-readable summary naming the scan id and
+`plant_qr_code` SHALL be written to stdout.
 
 #### Scenario: --json output is clean on stdout
 
 - **WHEN** the user runs the command with `--json` and it succeeds
 - **THEN** stdout contains exactly one parseable JSON object (including at least the created
   scan id and `plant_qr_code`) and any progress messages appear only on stderr
+
+#### Scenario: Human-readable summary without --json
+
+- **WHEN** the user runs the command without `--json` and it succeeds
+- **THEN** stdout contains a human-readable line naming the created scan's id and
+  `plant_qr_code`

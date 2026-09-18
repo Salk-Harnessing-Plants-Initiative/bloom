@@ -8,7 +8,9 @@ staging test experiment `A4-PIPELINE-E2E-TEST` (`experiment_id 12880747`) with n
   idempotency key) to check whether bloom#871's blob-collision fix (commit `28034f6d`) actually
   prevents the collision in a live run, not just in unit tests.
 - **sleap-roots-pipeline#78** needs a recompute to check whether container digests reach
-  `result.json` — a skipped scan keeps empty digests by design, so it can't exercise this.
+  `result.json` — a skipped scan keeps empty digests by design, so it can't exercise this. This
+  proposal supplies the input precondition only (a fresh scan); producing the digest evidence
+  itself still requires a separate, out-of-scope pipeline run.
 - **sleap-roots-pipeline#56 task 7.4b** needs scans with no prior envelope to produce a clean
   `done_count=2/failed_count=1`. bloom#875/PR#880 (merged, applied at `ab779039`) does not
   rescue this: its fallback (`supabase/migrations/20260917140000_fix_cyl_redelivery_status_fallback.sql:163-192`)
@@ -41,17 +43,31 @@ query). Nothing has been committed. This change commits it once, as a `bloomctl`
     (the same convention `packages/bloom-fs`'s real `uploadImage` uses for every actual Bloom
     Desktop upload), then updates each `cyl_images` row's `object_path` and sets
     `status = 'SUCCESS'`.
-- One scan created per invocation; run the command multiple times for multiple scans (suggested
-  starting set: 3 good + 1 poison, leaving room for future poison-testing without re-deriving
-  this tool).
+- One scan created per invocation, run **serially**. See `design.md`'s "Which verification each
+  created scan is for" for how many scans and which allocation each of #76/#78/#56-7.4b actually
+  needs — it is not one shared batch.
 - The scan's `plant_qr_code` (`TEST-E2E-NNN`) is chosen automatically: the command queries
-  experiment `12880747` for the current highest suffix and uses the next one.
+  experiment `12880747` for the current highest suffix and uses the next one, while holding a
+  same-machine file lock (see below) across the suffix selection and the RPC call.
 - A live guard verifies the target experiment is actually `12880747` /
   `'A4-PIPELINE-E2E-TEST'` before any mutation, and refuses (no partial writes) if that lookup
   doesn't match expectations.
+- Concurrent invocations on the same machine are serialized via `bloomctl.cyl._locks.acquire_lock`
+  (the existing file-lock primitive), failing fast rather than silently merging two scans into
+  one row — see `design.md` for why the RPC's own `ON CONFLICT ... DO NOTHING` upserts cannot be
+  relied on to reject a race.
+- An `insert_image_v2_0` result of `NULL` (the row already exists as `SUCCESS`) is treated as a
+  hard failure, never a silent proceed, for every frame in every mode.
+- Identity fields (`phenotyper_name`/`email`, `scientist_name`/`email`, `accession_name`,
+  `device_name`) use fixed synthetic sentinel values, never values copied from an existing scan
+  — those tables are upserted globally with no experiment scoping, so copying forward risks
+  attaching a synthetic scan to a real staff member's or real accession's row.
+- `--good` frame files below 1 KiB are rejected before any RPC call, as a cheap guard against the
+  already-observed failure mode of accidentally using blank/placeholder imagery, which would
+  defeat sleap-roots-pipeline#76's entire purpose.
 - New unit tests following this codebase's existing hand-written-fake convention (no
-  `unittest.mock`), covering both modes, the experiment guard, and the QR-code
-  auto-increment/race behavior.
+  `unittest.mock`), covering both modes, the experiment guard, the lock, the `NULL`-return case,
+  the sentinel identity values, the size floor, and the QR-code auto-increment.
 
 **Not changed**: no schema/migration changes; no changes to `packages/bloom-fs` or
 `packages/bloom-js`; no changes to any experiment other than `12880747`; sleap-roots-pipeline#71
@@ -67,3 +83,5 @@ fixed by this change.
   - Modified: `bloomcli/src/bloomctl/cyl/__init__.py` (register the new command)
   - Modified: `bloomcli/src/bloomctl/_storage.py` (or a new sibling module) to add a generic
     upload-object helper — bloomctl currently has download-only storage helpers
+  - Reused, unmodified: `bloomcli/src/bloomctl/cyl/_locks.py::acquire_lock` (existing file-lock
+    primitive, reused to serialize same-machine invocations)
