@@ -68,6 +68,13 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   `sleap_roots_predict`/`trait_extractor`'s existing `0`/`3` convention. Full success, an
   all-skipped batch, or empty input still exit `0`; check the written `RunManifest` or
   `--json` output for which scans, if any, actually staged (#772).
+- `cyl ingest-result`/`cyl batch-ingest-result`: re-delivering an already-ingested envelope
+  under a **new** `ARGO_WORKFLOW_NAME` (a fresh pipeline run over an already-ingested scan) no
+  longer reports failure. The write-back RPC's own idempotency check is server-side — no
+  `bloomctl` code changed — so this is a behavior change observable only from the command's
+  exit code and reported outcome: it is now the same benign `skipped` no-op an intra-workflow
+  retry already was, instead of a `failed`, non-retriable result that a run's `failed_count`
+  would count against real, correctly-written data (bloom #875).
 
 ## [0.1.0a6] - 2026-08-25 — plate download on the PyPI page
 
