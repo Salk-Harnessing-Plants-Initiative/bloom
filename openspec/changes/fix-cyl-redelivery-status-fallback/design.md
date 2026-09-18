@@ -230,6 +230,18 @@ invariant `insert_cyl_result_envelope` already maintains (a `source_id` is stamp
   that added a second instance of the same pattern; not fixed, as it is out of scope for a change
   whose only job is closing bloom#875.
 
+  **PR #880 review (blm3886) confirms the same gap independently and proposes a concrete fix**:
+  a partial `UNIQUE (argo_workflow_name, scan_id)` index would close it, and — since
+  `cyl_pipeline_run_scans` currently has no index beyond the PK and `UNIQUE (run_id, scan_id)`
+  — would also turn the fallback's `WHERE source_id = ...` lookup from a sequential scan into an
+  index scan if paired with a plain index on `source_id`. Not implemented here: it is a schema
+  change (new migration, index-build behavior, a real constraint rather than a lookup
+  optimization) beyond this change's minimal-footprint scope, and a partial-unique constraint on
+  `(argo_workflow_name, scan_id)` deserves its own review of whether any legitimate path could
+  ever want two rows sharing that pair (none is known today, but that's exactly the kind of claim
+  this program's review process exists to verify independently, not assume). Filed as a
+  follow-up rather than folded in.
+
 - **Verification cannot be closed with a fresh live Argo run today.** See the Verification
   section below.
 

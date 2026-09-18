@@ -1055,6 +1055,68 @@ def test_writeback_and_rollup_connect_end_to_end(pg_conn):
     pg_conn.rollback()
 
 
+def test_redelivery_fallback_fixes_the_batch_level_counts_bloom875_measured(pg_conn):
+    """/review-pr finding (blm3886): the new tests all assert a single row's
+    status_update_matched, but bloom#875's symptom was measured as
+    done_count=0, failed_count=3 across a 3-scan batch. This pins the fix at
+    that same granularity: 2 already-ingested (Bloom-dispatched-original)
+    scans plus 1 genuine failure, re-dispatched together under a NEW
+    argo_workflow_name, must roll up to (done_count, failed_count) == (2, 1)
+    — not (0, 3) — after fail_cyl_pipeline_run_scans_without_result closes
+    out the poison scan. Mirrors test_writeback_and_rollup_connect_end_to_end's
+    shape and status_poller.py's own count query."""
+    with pg_conn.cursor() as cur:
+        scan_ok1, imgs_ok1 = _seed_scan(cur)
+        scan_ok2, imgs_ok2 = _seed_scan(cur)
+        scan_poison, _imgs_poison = _seed_scan(cur)
+
+        # Original deliveries: each already-ingested scan was itself
+        # Bloom-dispatched under its own earlier, unrelated workflow/run.
+        _seed_run_scan_for_writeback(cur, scan_ok1, "wf-e2e-orig-1")
+        _seed_run_scan_for_writeback(cur, scan_ok2, "wf-e2e-orig-2")
+        env_ok1 = _envelope(imgs_ok1, idempotency_key="e2e-875-1")
+        env_ok2 = _envelope(imgs_ok2, idempotency_key="e2e-875-2")
+        first1 = _call(cur, env_ok1, argo_workflow_name="wf-e2e-orig-1")
+        first2 = _call(cur, env_ok2, argo_workflow_name="wf-e2e-orig-2")
+        assert first1["was_noop"] is False and first2["was_noop"] is False
+
+        # The batch bloom#875 measured: all three scans re-dispatched together
+        # under one NEW workflow name, sharing one run.
+        wf = "wf-e2e-875-new"
+        run_id = _seed_run_scan_for_writeback(cur, scan_ok1, wf)
+        cur.execute(
+            "INSERT INTO cyl_pipeline_run_scans (run_id, scan_id, argo_workflow_name, status) "
+            "VALUES (%s, %s, %s, 'queued')",
+            (run_id, scan_ok2, wf),
+        )
+        cur.execute(
+            "INSERT INTO cyl_pipeline_run_scans (run_id, scan_id, argo_workflow_name, status) "
+            "VALUES (%s, %s, %s, 'queued')",
+            (run_id, scan_poison, wf),
+        )
+        cur.execute("UPDATE cyl_pipeline_runs SET status = 'submitted' WHERE id = %s", (run_id,))
+
+        second1 = _call(cur, env_ok1, argo_workflow_name=wf)
+        second2 = _call(cur, env_ok2, argo_workflow_name=wf)
+        assert second1["was_noop"] is True and second1["status_update_matched"] is True
+        assert second2["was_noop"] is True and second2["status_update_matched"] is True
+        cur.execute(f"SELECT {FAIL_RPC}(%s, %s)", (wf, "no envelope produced"))
+
+        cur.execute(
+            "SELECT "
+            "  count(*) FILTER (WHERE status IN ('written', 'reused')), "
+            "  count(*) FILTER (WHERE status = 'failed') "
+            "FROM cyl_pipeline_run_scans WHERE run_id = %s",
+            (run_id,),
+        )
+        done_count, failed_count = cur.fetchone()
+        assert (done_count, failed_count) == (2, 1), (
+            "before this fix, both no-op re-deliveries would have failed to update "
+            "their new-workflow rows, leaving this at (0, 3) exactly as bloom#875 measured"
+        )
+    pg_conn.rollback()
+
+
 # --------------------------------------------------------------------------- #
 # fix-cyl-pipeline-run-scan-status — fail_cyl_pipeline_run_scans_without_result
 # --------------------------------------------------------------------------- #

@@ -304,3 +304,33 @@ overclaims what the fix covers.
   files changed (no migration/rollback SQL touched by this round).
 - [x] 8.8 Pushed as commit `71c81f61`; replied on PR #880 acknowledging the finding and
   summarizing the fix.
+
+## 9. Third review — blm3886 (Benfica), PR #880 comment + APPROVED, 2026-09-17
+
+Approved. Independently re-verified the migration/rollback diffs (byte-identical outside the
+fallback block) and the dispatch-side premise (the `bloom_workflows` `INSERT` grant excludes
+`source_id`, confirmed via `20260730120000_create_cyl_pipeline_runs.sql:131-136`). Two
+"suggestive follow ups," not blocking.
+
+- [x] 9.1 **Added:** `test_redelivery_fallback_fixes_the_batch_level_counts_bloom875_measured` —
+  the existing new tests each assert a single row's `status_update_matched`, but bloom#875's
+  symptom was measured as `done_count=0, failed_count=3` across a 3-scan batch. This mirrors
+  `test_writeback_and_rollup_connect_end_to_end`'s shape (two Bloom-dispatched-original scans
+  re-delivered under a new workflow, plus one genuine failure) and pins `(done_count,
+  failed_count) == (2, 1)` at the RPC level — the batch-count-level assurance the still-blocked
+  live Argo re-test can't currently give.
+- [x] 9.2 **Documented, not implemented (schema-change scope decision):** an index on
+  `source_id` plus a partial `UNIQUE (argo_workflow_name, scan_id)` would speed up the
+  fallback's lookup (currently a sequential scan — `cyl_pipeline_run_scans` has no index beyond
+  the PK and `UNIQUE (run_id, scan_id)`) and would also close the `(argo_workflow_name,
+  scan_id)` uniqueness gap already documented in `design.md`'s Risks as pre-existing/out of
+  scope. Not added here — it's a real schema change (new migration, a genuine constraint change
+  needing its own review of whether any legitimate path could ever want two rows sharing that
+  pair, not just a perf tweak) beyond this PR's minimal-footprint scope. Recorded in `design.md`
+  with Benfica's proposed shape, for whoever picks up the follow-up.
+- [x] 9.3 Re-ran the full affected suite: `tests/integration/test_cyl_writeback_rpc.py` — 108
+  passed (up from 107), same 2 pre-existing unrelated failures. `openspec validate --strict`
+  and `uvx ruff@0.9.9 check`/`format --diff` on the changed test file — both clean.
+- [ ] 9.4 Push as a new commit; consider filing the index/uniqueness follow-up as a separate
+  GitHub issue (ask before posting, per this session's standing GitHub-write convention) rather
+  than only leaving it in `design.md`.
