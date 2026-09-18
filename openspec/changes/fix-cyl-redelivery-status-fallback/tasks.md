@@ -302,5 +302,5 @@ overclaims what the fix covers.
 - [x] 8.7 Re-validated after all of the above: `openspec validate --strict` passes;
   `git diff --stat` confirms only `.md` files under this change's directory plus the two test
   files changed (no migration/rollback SQL touched by this round).
-- [ ] 8.8 Push as a new commit and reply on PR #880 acknowledging the finding, referencing the
-  fix.
+- [x] 8.8 Pushed as commit `71c81f61`; replied on PR #880 acknowledging the finding and
+  summarizing the fix.
