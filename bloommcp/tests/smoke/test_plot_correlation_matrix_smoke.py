@@ -14,6 +14,8 @@ unstable, just slower -- see design.md).
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 pytestmark = pytest.mark.live_smoke
@@ -44,3 +46,23 @@ def test_plot_correlation_matrix_smoke(call_tool, db_experiment_id: str) -> None
         assert result["heatmap_caveat"] is not None
     else:
         assert result["heatmap_caveat"] is None
+
+    # #784/#785: cylinder's ~846 traits are exactly the scale the two caps exist for, so this
+    # is the only place the capped-list/uncapped-scalar contract is exercised end to end.
+    assert isinstance(result["locally_constant_trait_pairs"], list)
+    assert result["locally_constant_pair_count"] >= len(
+        result["locally_constant_trait_pairs"]
+    )
+    pairs = result["strong_correlation_pairs"]
+    assert isinstance(pairs, list)
+    assert [p["overlap_n"] for p in pairs] == sorted(p["overlap_n"] for p in pairs)
+    for pair in pairs:
+        # A null CI is legitimate (|r| == 1); a non-finite one is not — it would have made
+        # the manifest invalid JSON.
+        for bound in (pair["ci_low"], pair["ci_high"]):
+            assert bound is None or math.isfinite(bound)
+    if pairs:
+        assert result["strong_pair_overlap_min"] == pairs[0]["overlap_n"]
+        assert result["strong_pair_overlap_min"] <= result["strong_pair_overlap_max"]
+    else:
+        assert result["strong_pair_overlap_min"] is None
