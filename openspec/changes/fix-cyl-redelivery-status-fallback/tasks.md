@@ -331,6 +331,5 @@ fallback block) and the dispatch-side premise (the `bloom_workflows` `INSERT` gr
 - [x] 9.3 Re-ran the full affected suite: `tests/integration/test_cyl_writeback_rpc.py` — 108
   passed (up from 107), same 2 pre-existing unrelated failures. `openspec validate --strict`
   and `uvx ruff@0.9.9 check`/`format --diff` on the changed test file — both clean.
-- [ ] 9.4 Push as a new commit; consider filing the index/uniqueness follow-up as a separate
-  GitHub issue (ask before posting, per this session's standing GitHub-write convention) rather
-  than only leaving it in `design.md`.
+- [x] 9.4 Filed bloom#881 for the index/uniqueness follow-up; cross-referenced in `design.md`.
+  Pushed as a new commit and replied on PR #880.

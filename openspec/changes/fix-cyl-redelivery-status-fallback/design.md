@@ -239,8 +239,8 @@ invariant `insert_cyl_result_envelope` already maintains (a `source_id` is stamp
   optimization) beyond this change's minimal-footprint scope, and a partial-unique constraint on
   `(argo_workflow_name, scan_id)` deserves its own review of whether any legitimate path could
   ever want two rows sharing that pair (none is known today, but that's exactly the kind of claim
-  this program's review process exists to verify independently, not assume). Filed as a
-  follow-up rather than folded in.
+  this program's review process exists to verify independently, not assume). Filed as bloom#881
+  rather than folded in.
 
 - **Verification cannot be closed with a fresh live Argo run today.** See the Verification
   section below.
