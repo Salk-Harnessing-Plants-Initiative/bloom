@@ -21,9 +21,11 @@
   `_seed_run_scan_for_writeback`, and re-deliver the *same* envelope with
   `argo_workflow_name="wf-b"`. Assert `was_noop is True`, `status_update_matched is True`, and —
   via `_run_scan_status(cur, "wf-b", scan_id)` — that `"wf-b"`'s row is now `("written",
-  <the original source_id>)`. This is the exact bloom#875 repro and must fail (red) against
-  today's migration, since the no-op branch's `source_id`-keyed update can never match `"wf-b"`'s
-  row (its `source_id` is `NULL`).
+  <the original source_id>)`. This is the Bloom-dispatched-original shape of the bloom#875
+  symptom (NOT the exact hand-submitted-original shape the issue's own live reproduction
+  measured — see design.md's Verification section, corrected during `/review-pr`) and must fail
+  (red) against today's migration, since the no-op branch's `source_id`-keyed update can never
+  match `"wf-b"`'s row (its `source_id` is `NULL`).
 - [x] 2.2 Add `test_noop_redelivery_under_never_dispatched_workflow_reports_no_match`:
   same setup as `test_status_update_matched_false_when_no_matching_row_at_all` but on the no-op
   path — deliver once with no `argo_workflow_name` (so no `cyl_pipeline_run_scans` row is ever
@@ -193,40 +195,40 @@ broken.
 
 ## 6. Review findings applied (post `/review-pr`)
 
-- [x] 7.1 **Fixed (testing, flagged BLOCKING):** bloom#875's own "Test gap" section explicitly
+- [x] 6.1 **Fixed (testing, flagged BLOCKING):** bloom#875's own "Test gap" section explicitly
   asks for a `bloomcli`-level test combining `was_noop=True` + `status_update_matched=True`
   under `ARGO_WORKFLOW_NAME` — no existing test did (confirmed: `RESULT_NOOP` never carried
   `status_update_matched`, no test set the env var on a noop result). Added
   `test_ingest_one_envelope_noop_redelivery_under_new_workflow_reports_skipped` to
   `bloomcli/tests/test_cyl_ingest.py`; passes.
-- [x] 7.2 **Fixed (code quality, IMPORTANT):** the new migration's and rollback's copied sections
+- [x] 6.2 **Fixed (code quality, IMPORTANT):** the new migration's and rollback's copied sections
   were retyped by hand rather than copied, silently flattening every em-dash to `--` and (in the
   rollback) dropping all 9 step-comments and rationale blocks. Rebuilt both files by literally
   extracting the exact prior-migration text (`sed`) and splicing in only the new fallback block —
   verified byte-identical to the extracted reference via `diff`. Re-applied to the local dev
-  Postgres and re-ran the full suite: unchanged (105→107 passed after 7.3/7.4 below, same 2
+  Postgres and re-ran the full suite: unchanged (105→107 passed after 6.3/6.4 below, same 2
   pre-existing unrelated failures).
-- [x] 7.3 **Fixed (testing + behavioral-correctness, IMPORTANT/SUGGESTION):** added
+- [x] 6.3 **Fixed (testing + behavioral-correctness, IMPORTANT/SUGGESTION):** added
   `test_fallback_finds_nothing_for_a_never_dispatched_workflow` (the new workflow's own row was
   never seeded at all, distinct from the existing "original had no workflow name" negative
   control) and `test_fallback_chains_across_a_third_workflow_redelivery` (a third re-delivery
   after the fallback has already run once, confirming the `LIMIT 1` over two now-existing
   same-source rows is safe by the single-scan-per-source invariant, not just by assertion).
-- [x] 7.4 **Fixed (testing, IMPORTANT):** `cyl-trait-writeback/spec.md`'s "under either workflow
+- [x] 6.4 **Fixed (testing, IMPORTANT):** `cyl-trait-writeback/spec.md`'s "under either workflow
   name" scenario only ever described the *unblocked* half (2.3's shape). Split into two
-  scenarios — one per half — plus two new scenarios matching 7.3's tests, keeping spec
+  scenarios — one per half — plus two new scenarios matching 6.3's tests, keeping spec
   scenarios and tests 1:1.
-- [x] 7.5 **Documented, not fixed — pre-existing, out of scope (behavioral-correctness,
+- [x] 6.5 **Documented, not fixed — pre-existing, out of scope (behavioral-correctness,
   IMPORTANT):** `(argo_workflow_name, scan_id)` has no DB-level uniqueness (only
   `UNIQUE (run_id, scan_id)` exists); both the fallback's and step 9's identical `WHERE` shape
   inherit this. Not introduced by this change — step 9 has carried it since
   `fix-cyl-pipeline-run-scan-status`. Added a `design.md` Risks bullet recording it.
-- [x] 7.6 Re-ran the full affected suites after all of the above: `tests/integration/
+- [x] 6.6 Re-ran the full affected suites after all of the above: `tests/integration/
   test_cyl_writeback_rpc.py` (107 passed, same 2 pre-existing unrelated failures) and
   `bloomcli` `not integration` (909 passed, up from 908, same 13 pre-existing unrelated
   failures). Re-ran `openspec validate --strict` and `scripts/lint_migrations.sh
   origin/staging` (freshly fetched) — both clean.
-- [x] 7.7 Push the fixes as a new commit (the first commit is already pushed to the open PR;
+- [x] 6.7 Push the fixes as a new commit (the first commit is already pushed to the open PR;
   per this session's git conventions, amend only unpushed local history).
 
 ## 7. Post-merge (do not archive until these clear)
@@ -255,3 +257,50 @@ broken.
   is eventually archived, re-read this change's `design.md` Risks section first and apply the
   archive-ordering guidance there.
 - [ ] 7.4 `/openspec:archive fix-cyl-redelivery-status-fallback` once 7.1 is confirmed.
+
+## 8. Second review — scope-limit finding (eberrigan, PR #880 comment, 2026-09-17)
+
+A human/peer-session review on the open PR independently re-verified the SQL diff and spec
+coverage (both confirmed clean), then found that this change's own cited live evidence
+overclaims what the fix covers.
+
+- [x] 8.1 **Verified independently before acting**, per this project's "verify every claim"
+  convention: read bloom#875's full issue comment ("the two good scans had been ingested
+  earlier the same day by two hand-submitted runs"), then traced `services/workflows/
+  pipeline.py:322` (the sole inserter of `cyl_pipeline_run_scans` rows) and
+  `complete_cyl_pipeline_batch` (`20260817120000_add_cyl_pipeline_dispatch_functions.sql:194-207`,
+  which only ever UPDATEs `argo_workflow_name` on an already-inserted row, never inserts one).
+  Confirmed: a hand-submitted `argo submit` run's scan never gets a `cyl_pipeline_run_scans` row
+  at all, so `source_id` is never stamped for a source whose original delivery was hand-submitted
+  — this change's fallback has nothing to resolve `scan_id` from for that source, on any later
+  re-delivery, no matter how many times retried. The reviewer's finding holds.
+- [x] 8.2 **Fixed:** `proposal.md`'s "Why" section and `design.md`'s Context/Goals-Non-Goals/
+  Verification sections all reworded — the live-measured case is now framed as evidence of the
+  symptom's severity, not as the case this fallback closes. Added an explicit scope-limit
+  statement (closes: re-delivery when the original was Bloom-dispatched; does not close:
+  re-delivery when the original was hand-submitted) in three places (Context, a new Non-Goals
+  bullet correcting an inaccurate earlier claim, and Verification).
+- [x] 8.3 **Fixed, incidentally:** while correcting the above, caught and fixed a second,
+  narrower inaccuracy of my own — design.md's Context claimed `cyl_pipeline_run_scans` rows are
+  "inserted by `complete_cyl_pipeline_batch`"; they are inserted by `pipeline.py` at run-creation
+  time, and only *updated* (their `argo_workflow_name`) by `complete_cyl_pipeline_batch` later.
+  Corrected with the exact line references.
+- [x] 8.4 **Fixed:** reworded `test_noop_redelivery_under_new_workflow_name_falls_back_to_scan_id`'s
+  docstring (was: "The exact bloom#875 repro") and task 2.1's description to state plainly this
+  test covers the Bloom-dispatched-original shape, not the hand-submitted-original shape the
+  issue's live reproduction actually measured — and points at
+  `test_fallback_finds_nothing_for_a_never_dispatched_workflow` for the shape that isn't fixed.
+- [x] 8.5 **Added:** an operational-consequence note in `design.md`'s Verification section —
+  `sleap-roots-pipeline#56`'s task 7.4b will still fail on the existing `A4-PIPELINE-E2E-TEST`
+  scans after this merges, since sources 83-90 there all originated from hand-submitted runs;
+  that task needs fresh synthetic scans regardless, but anyone expecting 7.4b to go green
+  *because of this merge* would be surprised for the wrong reason otherwise.
+- [x] 8.6 Not changed: no code change was needed or suggested by this review — the reviewer's
+  own verdict was "non-blocking for the code," and independently confirmed the SQL diff
+  (0 removed lines outside the fallback block) and the spec-scenario coverage (13→18 scenarios,
+  three renamed not deleted) were both clean. This section is documentation-only.
+- [x] 8.7 Re-validated after all of the above: `openspec validate --strict` passes;
+  `git diff --stat` confirms only `.md` files under this change's directory plus the two test
+  files changed (no migration/rollback SQL touched by this round).
+- [ ] 8.8 Push as a new commit and reply on PR #880 acknowledging the finding, referencing the
+  fix.

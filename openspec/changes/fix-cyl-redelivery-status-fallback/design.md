@@ -19,8 +19,15 @@ branches in the migration currently at
 Both branches share the guard `AND status != 'failed'`, so a late/out-of-order delivery can never
 resurrect a scan already closed out by `fail_cyl_pipeline_run_scans_without_result`.
 
-`cyl_pipeline_run_scans` rows are inserted by `complete_cyl_pipeline_batch` at dispatch time with
-`source_id` always `NULL` — the `bloom_workflows` `INSERT` grant is scoped to
+`cyl_pipeline_run_scans` rows are **inserted** by `services/workflows/pipeline.py`'s dispatch
+path (`client.table("cyl_pipeline_run_scans").insert(scan_rows)`, `pipeline.py:322`) at run
+*creation* time, with `argo_workflow_name` and `source_id` both `NULL` — the insert dict carries
+only `(run_id, scan_id, batch_index, status)`. `argo_workflow_name` is filled in **later**, once
+Argo actually claims and runs the batch, by `complete_cyl_pipeline_batch`'s `UPDATE ... SET
+argo_workflow_name = p_argo_workflow_name ... WHERE argo_workflow_name IS NULL`
+(`20260817120000_add_cyl_pipeline_dispatch_functions.sql:194-207`) — that function never inserts
+a row, only ever updates one already inserted by `pipeline.py`. `source_id` is never touched by
+either; the `bloom_workflows` `INSERT` grant on `cyl_pipeline_run_scans` is scoped to
 `(run_id, scan_id, batch_index, status)` and deliberately excludes `source_id`
 (`20260730120000_create_cyl_pipeline_runs.sql:131-136`). Combined with the point above
 (`source_id IS NOT NULL` implies `status = 'written'`), this means: **a freshly dispatched row
@@ -29,14 +36,28 @@ it.** `idempotency_key` is deliberately run-independent — the sole business id
 `(images_checksum, models, param_hash, predict_code_sha, sleap_roots_predict_code_sha)`, not the
 Argo workflow — so *any* pipeline re-run over already-ingested scans (a manual re-run, a nightly
 sweep, a re-triggered batch after fixing an unrelated poison scan) reaches this case, not only an
-adversarial or exotic retry.
+adversarial or exotic retry — **provided** the scan's *original* delivery was itself dispatched
+through this same `pipeline.py` path (see the Verification section's scope-limit note: a source
+whose original delivery was a hand-submitted `argo submit`, bypassing `pipeline.py` entirely,
+never gets a row inserted at all, so no row anywhere is ever available for this change's fallback
+to resolve `scan_id` from).
 
 Confirmed live on staging, 2026-09-17 (bloom#875): a 3-scan batch —
 `sleap-roots-pipeline-fkfkz`, `pipeline_run_id=9` — where 2 scans were genuine re-deliveries
 (their envelopes' idempotency keys already existed) and 1 was a real prediction failure (the
 "poison" scan) produced `done_count=0, failed_count=3` on a Workflow that reported `Succeeded`.
 Both re-delivered scans' `cyl_scan_traits`/`cyl_scan_intermediates` rows were present and correct
-under their original `source_id`s the whole time.
+under their original `source_id`s the whole time. **This measurement demonstrates the symptom
+bloom#875 is about, not the exact case this change's fallback closes**: per the issue's own
+comment, "the two good scans had been ingested earlier the same day by two hand-submitted runs"
+— i.e. their *original* delivery never went through `pipeline.py`, so no `cyl_pipeline_run_scans`
+row anywhere ever had their `source_id` stamped, and this change's fallback (which requires an
+existing stamped row to resolve `scan_id` from) has nothing to find. Re-running that exact
+scenario after this change merges still produces `failed_count=3` — verified against the RPC
+directly, not asserted; see the Verification section. Independently caught and verified during
+`/review-pr` (PR #880 review comments): the fix is still correct and still has real value for the
+case it does cover (below), but the live measurement is evidence of the general symptom's
+severity, not evidence that this specific case is now fixed.
 
 ## Goals / Non-Goals
 
@@ -64,9 +85,23 @@ Non-Goals:
   `ARGO_WORKFLOW_NAME` at all (a manual `cyl ingest-result` run with no pipeline-run context).
   No `cyl_pipeline_run_scans` row is ever stamped with that source's `source_id` in that case, so
   there is nothing for the fallback to look up. This is not a regression — today's behavior for
-  that case is identically `status_update_matched: false` — and it is not the shape bloom#875
-  measured (every real dispatch goes through `complete_cyl_pipeline_batch`, which always sets
-  `ARGO_WORKFLOW_NAME`).
+  that case is identically `status_update_matched: false`.
+- **Correction to an earlier draft of this section, caught during `/review-pr`: rescuing a source
+  whose original delivery WAS dispatched via Argo but never through `pipeline.py`.** A
+  hand-submitted `argo submit` run has `ARGO_WORKFLOW_NAME` set (Argo injects it into every pod
+  regardless of how the Workflow was submitted), but its scan was never inserted into
+  `cyl_pipeline_run_scans` at all — that only happens in `pipeline.py`'s own dispatch path, which
+  a bare `argo submit` bypasses entirely. So the RPC's step 9 (on that original, non-no-op
+  delivery) finds no row to `UPDATE`, `source_id` is never stamped anywhere for that source, and
+  this change's fallback — which only ever reads an *existing* stamped row — has nothing to
+  resolve `scan_id` from on any later re-delivery. **This earlier draft claimed this was "not the
+  shape bloom#875 measured." That was wrong: it is exactly the shape bloom#875's own live
+  reproduction measured** — both re-delivered scans there were originally ingested by
+  hand-submitted runs. The fix therefore does not close the live-measured case; it closes the
+  case reachable without that precondition (an ordinary re-run of a previously Bloom-dispatched
+  batch under a fresh `pipeline_run_id`), which the issue's own text separately confirms is
+  reachable and is the production-relevant path (retries, batch re-runs). See Context and
+  Verification for the corrected framing.
 - Fixing `sleap-roots-pipeline`#56's exit gate or #71's manifest-union behavior. Orthogonal;
   referenced only for context.
 
@@ -240,8 +275,25 @@ surviving implicitly.
 
 ## Verification
 
+**Scope limit, stated plainly (caught during `/review-pr`, PR #880):** this fix closes a
+re-delivery under a new workflow name **only when the source's original delivery was itself
+dispatched through `pipeline.py`** (an ordinary retry, or a re-run of a previously
+Bloom-dispatched batch under a fresh `pipeline_run_id`). It does **not** close the case where
+the original delivery was a hand-submitted `argo submit` — no `cyl_pipeline_run_scans` row was
+ever inserted for that delivery, so `source_id` was never stamped anywhere, and the fallback has
+no row to resolve `scan_id` from regardless of how many times it's retried. This is
+`test_noop_redelivery_under_never_dispatched_workflow_reports_no_match`'s and
+`test_fallback_finds_nothing_for_a_never_dispatched_workflow`'s shape, not
+`test_noop_redelivery_under_new_workflow_name_falls_back_to_scan_id`'s.
+
+**Operational consequence:** `sleap-roots-pipeline#56`'s task 7.4b will still fail on the
+existing `A4-PIPELINE-E2E-TEST` scans after this change merges — sources 83-90 there all
+originated from hand-submitted runs. That task needs fresh synthetic scans regardless (see
+below), which independently makes this a non-issue for 7.4b specifically, but anyone expecting
+7.4b to go green *because of this merge* will be surprised for the wrong reason otherwise.
+
 A full live re-test (dispatch a real Argo batch, observe `done_count`/`failed_count` after a
-re-delivery under a fresh workflow name) cannot pass today, independent of this fix:
+re-delivery under a fresh workflow name) cannot pass today, independent of the scope limit above:
 
 - It needs `scan_id`s with no prior envelope. Every scan in `A4-PIPELINE-E2E-TEST`
   (`experiment_id=12880747`) is now either already ingested or is the poison scan
@@ -249,6 +301,9 @@ re-delivery under a fresh workflow name) cannot pass today, independent of this 
 - Minting new synthetic scans means re-deriving an uploader that writes through `bloom-fs`'s own
   `insert_image_v2_0` + storage-upload path — the prior one-off version of this was never
   committed (roadmap note, 2026-09-01).
+- Even with fresh scans, the re-test must dispatch the *original* delivery through `pipeline.py`
+  (not a hand-submitted `argo submit`) to exercise the case this fix actually covers — see the
+  scope limit above.
 
 So this change's proof lives in `tests/integration/test_cyl_writeback_rpc.py`, which already
 seeds `cyl_scans`/`cyl_images`/`cyl_pipeline_runs`/`cyl_pipeline_run_scans` directly against a

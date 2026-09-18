@@ -18,6 +18,17 @@ Workflow's own color and `cyl_pipeline_runs.failed_count` — disagree with the 
 re-delivered scans' traits and blobs are correct in `cyl_trait_sources`/`cyl_scan_intermediates`.
 Production is dormant, which is the only reason this isn't biting there yet.
 
+**That measurement demonstrates the symptom, not the exact case this fix closes.** The two
+re-delivered scans in that run were *originally* ingested by hand-submitted `argo submit` runs,
+which never go through Bloom's own `/workflows/pipeline` dispatch (`services/workflows/
+pipeline.py:322`, the only writer of `cyl_pipeline_run_scans` rows) — so no row anywhere ever
+had `source_id` stamped for those sources, and this change's fallback (which resolves `scan_id`
+from an *existing* stamped row) has nothing to find. Re-running that exact scenario after this
+merges still produces `failed_count=3`; see `design.md`'s Decisions/Verification sections for
+the case this fix does close (a re-delivery whose original was itself Bloom-dispatched — an
+ordinary retry or batch re-run) and the one it does not (a source whose original delivery was
+hand-submitted). Caught by `eberrigan`'s independent PR review — see PR #880's review comments.
+
 This is not fixable by reordering `ingest_one_envelope`'s two checks (`status_update_matched`
 before `was_noop`): `fix-cyl-pipeline-run-scan-status` legislates a non-zero exit on
 `status_update_matched=false`, and `fix-cyl-redelivery-blob-collision` (#871) legislates zero on

@@ -825,12 +825,22 @@ def test_status_update_matched_false_on_noop_redelivery_after_already_failed(pg_
 
 
 def test_noop_redelivery_under_new_workflow_name_falls_back_to_scan_id(pg_conn):
-    """The exact bloom#875 repro: a scan is delivered successfully under one
-    workflow, then re-dispatched (a fresh pipeline run) and re-delivered as a
-    no-op under a DIFFERENT workflow name. The new workflow's own
-    cyl_pipeline_run_scans row has source_id IS NULL until write-back runs, so
-    the primary source_id-keyed UPDATE can never match it — only a fallback
-    keyed on the scan_id already recorded against this source can."""
+    """The Bloom-dispatched-original shape of the bloom#875 symptom: a scan is
+    delivered successfully under one workflow (itself Bloom-dispatched, so its
+    row gets source_id stamped), then re-dispatched (a fresh pipeline run) and
+    re-delivered as a no-op under a DIFFERENT workflow name. The new workflow's
+    own cyl_pipeline_run_scans row has source_id IS NULL until write-back runs,
+    so the primary source_id-keyed UPDATE can never match it — only a fallback
+    keyed on the scan_id already recorded against this source can.
+
+    NOT the exact shape bloom#875's own live reproduction measured (caught
+    during /review-pr, PR #880): there, both re-delivered scans' ORIGINAL
+    delivery was a hand-submitted `argo submit`, which never inserts a
+    cyl_pipeline_run_scans row at all (only services/workflows/pipeline.py's
+    dispatch path does) — so source_id was never stamped anywhere for those
+    sources, and this fallback has nothing to resolve scan_id from. See
+    design.md's Verification section for that scope limit;
+    test_fallback_finds_nothing_for_a_never_dispatched_workflow pins it."""
     with pg_conn.cursor() as cur:
         scan_id, imgs = _seed_scan(cur)
         _seed_run_scan_for_writeback(cur, scan_id, "wf-a")
