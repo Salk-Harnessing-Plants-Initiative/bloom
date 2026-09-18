@@ -3,9 +3,12 @@
 Single-sourced here (mirrors ``tools/_qc_shared.py``'s rationale) so the plot files can't
 silently desync on how a trait selection gets resolved or where the batching boundary sits.
 
-Only two things live here now: ``TRAIT_BATCH_THRESHOLD`` and :func:`resolve_trait_columns`,
-shared by the 3 tools #466 converged onto ``@as_mcp_tool`` (``plot_trait_histograms``,
-``plot_trait_boxplots``, ``plot_correlation_matrix``). The pre-#466 generation of helpers —
+``TRAIT_BATCH_THRESHOLD`` and :func:`resolve_trait_columns` are shared by the 3 tools #466
+converged onto ``@as_mcp_tool`` (``plot_trait_histograms``, ``plot_trait_boxplots``,
+``plot_correlation_matrix``). #748 added the sample-size disclosure helpers the two trait-plot
+tools share — ``MIN_PLOTTED_SAMPLES``, the two reporting caps, :func:`native`, and the two
+count tables — single-sourced for the same reason: the two tools must not drift on what counts
+as a plotted observation. The pre-#466 generation of helpers —
 ``save_plot``/``save_plot_or_plots`` (write a PNG to ``PLOTS_DIR`` and return a URL),
 ``parse_traits``, ``validate_filename`` — served only the bare-``mcp.tool()`` plot tools, and
 #462 deleted them together with the last two of those (``plot_heritability_bar``,
@@ -14,7 +17,11 @@ shared by the 3 tools #466 converged onto ``@as_mcp_tool`` (``plot_trait_histogr
 (static mount, env validation, compose bind-mount) is a separate retirement.
 """
 
+import math
 from collections import Counter
+
+import numpy as np
+import pandas as pd
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.tools._qc_shared import _validate_trait_subset
@@ -99,3 +106,180 @@ def resolve_trait_columns(
             "explicitly.",
         )
     return trait_cols
+
+
+# Minimum observations below which a rendered box is flagged as too thin to describe a
+# distribution (#748). OWNED HERE, deliberately not an alias for
+# _qc_shared._CANONICAL_MIN_SAMPLES_PER_TRAIT (10) -- the same decoupling #784 makes for
+# plot_correlation_matrix's _MIN_CORR_OVERLAP, applied at birth rather than walked back later.
+# That constant answers "enough samples to KEEP A TRAIT during cleaning", a per-column
+# completeness convention; this one answers "enough points for a BOX to be made of data".
+# Aliasing would let a QC-side retune silently move which boxes these tools flag and what
+# their rendered note says.
+#
+# WHY 5. A box plot's five-number summary needs enough observations for its quartiles to BE
+# observations rather than interpolations. Below n=5, matplotlib's default linear-interpolation
+# quartiles are weighted blends of adjacent order statistics matching no measured plant: at n=2
+# on [1, 2] the box spans [1.25, 1.75], containing neither datum. n=5 is the smallest n>1 at
+# which Q1, the median and Q3 all land exactly on order statistics (x2, x3, x4) -- the first n
+# at which the drawn box is made of data. Pinned as a property by
+# test_five_is_the_first_sample_size_whose_quartiles_are_order_statistics.
+#
+# WHAT IT DOES NOT BUY YOU. It is a DEGENERACY floor, not a sufficiency threshold, and says
+# nothing about the whiskers or the flier dots. Measured (60k replicates per n, clean standard
+# normal, matplotlib's whis=1.5): no flier can be drawn at all below n=4, and at n=5 -- on the
+# CLEARING side of this floor -- a sample shows at least one spurious "outlier" dot 33% of the
+# time with 8.6% of its points flagged, against the ~0.7% asymptotic rate. The flagged fraction
+# falls with n (4.0% at 10, 1.8% at 30) but the probability of at least one spurious flier does
+# not: it sits between 27% and 34% at every n from 4 to 30. A flier on a thin box is an
+# arithmetic artifact whether or not the box clears this floor.
+#
+# WHY NOT 10. Measured on tests/fixtures/turface_19_final_data.csv (19 genotypes, 7-9
+# replicates, 11 detected traits, no nulls): a floor of 10 flags 209 of 209 (trait, genotype)
+# cells; a floor of 5 flags none. A warning that fires on 100% of a healthy, complete
+# experiment is one callers learn to ignore.
+#
+# For plot_trait_histograms the same constant carries NO distributional claim -- a histogram
+# has no quartiles. There it is a bare "too few points for a shape to exist" floor.
+MIN_PLOTTED_SAMPLES = 5
+
+# Caps on the flagged-cell lists reported inline (#748). At cylinder scale (846 traits x ~19
+# genotypes = 16,074 cells) an uncapped list is a denial of service against the caller's
+# context, not a disclosure. Each list is ordered worst-first so the cap truncates the
+# best-supported end, and each carries an uncapped count; the complete table always ships as a
+# committed CSV output. 20 matches the sibling correlation tool's own per-pair caps.
+MAX_FLAGGED_REPORTED = 20
+# Names shown in the note drawn on the figure before it degrades to "+N more". Smaller than the
+# list cap because the note has to stay readable on the image itself.
+MAX_NOTE_NAMES = 10
+
+# Column order of group_sample_size_table's output. Also the committed CSV's header, so it is
+# named once rather than restated at each call site.
+GROUP_TABLE_COLUMNS = [
+    "trait",
+    "genotype",
+    "n_rows_in_group",
+    "n_plotted",
+    "n_finite",
+    "n_non_finite",
+    "n_missing",
+    "nan_fraction",
+]
+TRAIT_TABLE_COLUMNS = [
+    "trait",
+    "n_plotted",
+    "n_finite",
+    "n_non_finite",
+    "n_missing",
+    "nan_fraction",
+]
+
+
+def native(value):
+    """Coerce a numpy/pandas scalar to a JSON-safe native Python value (``None`` if not finite).
+
+    Not belt-and-braces (#748): every count here comes out of ``groupby().count()``,
+    ``np.median`` or ``isinf().sum()`` as ``np.int64``/``np.float64``, and ``manifest.py``'s
+    ``stamped.model_dump(mode="json")`` raises ``PydanticSerializationError: Unable to serialize
+    unknown type: <class 'numpy.int64'>`` on those — verified, not anticipated. These are the
+    first tools in the family to stamp numeric aggregates into a run's ``params``
+    (``plot_correlation_matrix`` stamps only strings and lists of strings; ``qc_inspect`` routes
+    its numerics through ``convert_to_json_serializable`` first).
+
+    Non-finite values become ``None`` rather than ``NaN``/``Infinity``: manifests are serialized
+    by ``storage_backend._json_bytes`` via ``json.dumps`` with the default ``allow_nan=True``,
+    which would emit a bare token strict JSON readers reject.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) else None
+
+
+def _non_finite_mask(df, trait_cols):
+    """Boolean (rows x traits) mask of ``+inf``/``-inf``.
+
+    ``na_value=np.nan`` is free insurance against a future nullable dtype (``Float64`` with
+    ``pd.NA``), on which a bare ``to_numpy(dtype="float64")`` raises — the same call shape
+    ``qc_inspect`` already uses.
+    """
+    return np.isinf(df[trait_cols].to_numpy(dtype="float64", na_value=np.nan))
+
+
+def trait_sample_size_table(df, trait_cols):
+    """Per-trait plotted/missing counts for ``plot_trait_histograms`` (#748).
+
+    ``n_plotted`` is ``pandas`` ``count()`` — non-null values, which **includes** ``+/-inf``,
+    matching ``isna``'s convention and the caveat ``qc_inspect`` documents for its own
+    missingness fields. ``n_non_finite`` is a SUBSET of it, not an addition, so
+    ``n_finite = n_plotted - n_non_finite``. Every flag is computed on ``n_finite``.
+    """
+    n_rows = len(df)
+    counts = df[trait_cols].count()
+    inf_counts = _non_finite_mask(df, trait_cols).sum(axis=0)
+    table = pd.DataFrame(
+        {
+            "trait": list(trait_cols),
+            "n_plotted": [int(counts[c]) for c in trait_cols],
+            "n_non_finite": [int(n) for n in inf_counts],
+        }
+    )
+    table["n_finite"] = table["n_plotted"] - table["n_non_finite"]
+    table["n_missing"] = n_rows - table["n_plotted"]
+    # A zero-row frame has no missingness to report rather than an undefined fraction.
+    table["nan_fraction"] = table["n_missing"] / n_rows if n_rows else 0.0
+    return table[TRAIT_TABLE_COLUMNS]
+
+
+def group_sample_size_table(df, trait_cols, genotype_col):
+    """Per-(trait, genotype) counts for ``plot_trait_boxplots`` (#748).
+
+    One row per (resolved trait x observed genotype) cell, including cells with **no** data —
+    those are the boxes the delegate draws no tick for at all, and naming them is half the point
+    of the disclosure. Rows whose genotype value is null are excluded from every cell, matching
+    the delegate's own ``df[[trait, genotype_col]].dropna()`` (``groupby``'s default
+    ``dropna=True`` agrees with it cell-for-cell — verified).
+
+    Vectorized end to end: one ``groupby().count()`` plus one grouped ``isinf`` sum. A Python
+    loop over the (trait x genotype) grid is prohibitive at cylinder width; only the flagged
+    tail is ever materialized by the caller. Measured at 3,000 rows x 846 traits x 60
+    genotypes: 5 ms and 4 ms respectively.
+
+    Returns an EMPTY frame (with the full column set) when no genotype group survives — an
+    all-null genotype column is reachable today and renders successfully, so this must not raise
+    (see the tools' Optional summaries).
+    """
+    grouper = df[genotype_col]
+    counts = df.groupby(grouper, sort=True)[trait_cols].count()
+    if counts.empty:
+        return pd.DataFrame(columns=GROUP_TABLE_COLUMNS)
+
+    counts.index.name = "genotype"
+    counts.columns.name = "trait"
+    inf_counts = (
+        pd.DataFrame(
+            _non_finite_mask(df, trait_cols), columns=trait_cols, index=df.index
+        )
+        .groupby(grouper, sort=True)
+        .sum()
+    )
+    inf_counts.index.name = "genotype"
+    inf_counts.columns.name = "trait"
+
+    table = counts.stack().rename("n_plotted").reset_index()
+    table["n_non_finite"] = (
+        inf_counts.stack().rename("n_non_finite").reset_index()["n_non_finite"]
+    )
+    table["n_finite"] = table["n_plotted"] - table["n_non_finite"]
+    table["n_rows_in_group"] = table["genotype"].map(grouper.value_counts()).astype(int)
+    table["n_missing"] = table["n_rows_in_group"] - table["n_plotted"]
+    table["nan_fraction"] = table["n_missing"] / table["n_rows_in_group"]
+    # Deterministic order: the committed CSV and every derived list read the same way twice.
+    table = table.sort_values(["trait", "genotype"], kind="stable").reset_index(
+        drop=True
+    )
+    return table[GROUP_TABLE_COLUMNS]

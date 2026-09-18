@@ -36,3 +36,16 @@ def test_plot_trait_histograms_smoke(call_tool, db_experiment_id: str) -> None:
     assert result["outputs"]
     assert result["run_ref"]
     assert result["manifest_path"]
+
+    # #748 per-trait disclosure, through the real server. Note this is deliberately a
+    # SHAPE assertion: on cylinder the disclosure is a no-op (every trait has n_plotted ==
+    # n_rows_read, zero NaN, nothing below the floor), so asserting a non-trivial flag here
+    # would only pass by accident of the fixture.
+    assert "trait_sample_sizes.csv" in result["outputs"]
+    assert "trait_sample_sizes.csv" not in result["page_traits"]
+    assert len(result["outputs"]) == result["n_pages"] + 1
+    assert result["n_rows_read"] > 0
+    assert result["trait_n_min"] <= result["trait_n_median"] <= result["trait_n_max"]
+    assert result["trait_n_max"] <= result["n_rows_read"]
+    assert len(result["low_sample_traits"]) <= result["low_sample_trait_count"]
+    assert 0.0 <= result["max_nan_fraction"] <= 1.0
