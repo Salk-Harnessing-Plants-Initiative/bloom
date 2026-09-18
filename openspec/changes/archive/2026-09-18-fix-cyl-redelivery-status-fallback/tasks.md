@@ -233,17 +233,30 @@ broken.
 
 ## 7. Post-merge (do not archive until these clear)
 
-- [ ] 7.1 Verify the migration applied on staging: re-run bloom#875's own reproduction query
+- [x] 7.1 **CONFIRMED 2026-09-18.** PR #880 merged to `staging` at
+  `ab7790395d6697e31560a868ef76e891c572e791` (15:20:01Z); the staging deploy
+  ([run 35361774157](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/actions/runs/35361774157))
+  logged `Applying migration 20260917140000_fix_cyl_redelivery_status_fallback.sql...` and its
+  "Apply database migrations (staging)" step concluded **success**, with the failure-path steps
+  ("Show migration status on failure", "Reopen deploy-gated issues on migration failure") both
+  **skipped** — i.e. no failure path was taken. Recorded rather than asserted, per bloom#780's
+  pattern of treating a merge as a deploy.
+  Original task: Verify the migration applied on staging: re-run bloom#875's own reproduction query
   (`SELECT count(*) FROM cyl_pipeline_run_scans WHERE source_id IS NOT NULL AND status =
   'queued'` — still expected `0`, unaffected by this change) plus a direct check that the new
   function body (via `pg_get_functiondef`) contains the fallback block.
   This change has no cluster/Argo-image dependency (pure RPC), so — unlike #871 — there is no
   pin-bump or image-rebuild step blocking a staging verification.
-- [ ] 7.2 Note in bloom#875 that a full live Argo re-test (dispatch, observe `failed_count`) is
+- [ ] 7.2 **STILL OPEN — deliberately, not overlooked.** This is a write to a GitHub issue, and
+  this repo's convention is no unauthorized GitHub writes, so it was not posted during the
+  archival pass. It is independent of the archive and can be posted at any time. Draft content:
+  the SQL-level fix and its tests are what this change can honestly claim; a full live Argo
+  re-test (dispatch, observe `failed_count`) remains blocked on minting fresh synthetic scan_ids.
+  Original task: Note in bloom#875 that a full live Argo re-test (dispatch, observe `failed_count`) is
   still blocked on minting fresh synthetic scan_ids (design.md's Verification section) — do not
   claim the live symptom is fixed until that separate work closes it; the SQL-level fix and its
   tests are what this change can honestly claim.
-- [ ] 7.2a Once 7.1 confirms the migration is live on staging, add a short "RESOLVED — see
+- [x] 7.2a **DONE.** Once 7.1 confirms the migration is live on staging, add a short "RESOLVED — see
   fix-cyl-redelivery-status-fallback" pointer next to the two now-stale, time-bound sentences in
   `fix-cyl-redelivery-blob-collision`'s own files —
   `specs/cyl-ingest-cli/spec.md:49-53` ("...currently always does... tracked as bloom#875") and
@@ -251,12 +264,23 @@ broken.
   sentence's normative text (that text is properly superseded whenever `fix-cyl-redelivery-blob-collision`
   is itself next revisited or archived — see this change's own `design.md` Risks section for why
   editing it from here would be a blind cross-change edit).
-- [ ] 7.3 Do **not** archive `fix-cyl-pipeline-run-scan-status` or `fix-cyl-redelivery-blob-collision`
+- [x] 7.3 **Observed — no action taken.** Do **not** archive `fix-cyl-pipeline-run-scan-status` or `fix-cyl-redelivery-blob-collision`
   as part of this change — both remain blocked on unrelated tasks in their own `tasks.md` (roadmap/
   issue-closing housekeeping; staging-grant + Argo-pin verification, respectively). When either
   is eventually archived, re-read this change's `design.md` Risks section first and apply the
   archive-ordering guidance there.
-- [ ] 7.4 `/openspec:archive fix-cyl-redelivery-status-fallback` once 7.1 is confirmed.
+- [x] 7.4 **DONE 2026-09-18** — archived as `2026-09-18-fix-cyl-redelivery-status-fallback`.
+  Applied 3 MODIFIED requirements (1 in `cyl-ingest-cli`, 2 in `cyl-trait-writeback`); the
+  archive-ordering reasoning in `design.md`'s Risks section was re-read first, as that task
+  requires.
+  ⚠️ **The hazard is now live in the other direction, and this is the note for whoever hits it.**
+  This change archived *first*, so `openspec/specs/cyl-ingest-cli/spec.md`'s "Re-ingest is a
+  benign, distinctly-reported no-op" now carries this change's version — the sibling's body plus
+  this change's new scenario. `fix-cyl-redelivery-blob-collision` still holds an unarchived
+  `MODIFIED` on that *same* requirement whose text predates this change. Archiving it as-is would
+  replace the whole block and **silently drop this change's scenario**. Its delta must be brought
+  up to this change's superset text before it archives. `openspec validate --strict` cannot detect
+  this; nothing in CI can.
 
 ## 8. Second review — scope-limit finding (eberrigan, PR #880 comment, 2026-09-17)
 
