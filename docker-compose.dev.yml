@@ -238,6 +238,10 @@ services:
       BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR
       BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
       BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY}
+      # Local dev only: lets bloommcp start with no auth configured at all.
+      # Staging and prod never set this — there, a missing key and missing
+      # OAuth config fails the boot instead of serving every tool openly.
+      BLOOMMCP_ALLOW_NO_AUTH: ${BLOOMMCP_ALLOW_NO_AUTH:-1}
       # Verifies an optional X-Bloom-Identity header for usage tracking (#406)
       # — never used as DB/Storage authority. Same secret GoTrue/PostgREST/
       # langchain-agent already use; validated lazily (only if/when a request

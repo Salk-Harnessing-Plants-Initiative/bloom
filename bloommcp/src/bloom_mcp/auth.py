@@ -52,6 +52,22 @@ OAUTH_JWKS_URI = os.getenv("BLOOMMCP_OAUTH_JWKS_URI")
 # The audience Supabase stamps on every token it issues for this project.
 _AUDIENCE = "authenticated"
 
+# Explicit opt-out for running with no authentication at all. Required because
+# an unset BLOOMMCP_API_KEY used to mean "no auth" silently, so a deploy that
+# lost the secret served every tool to anyone who could reach the port.
+ALLOW_NO_AUTH = os.getenv("BLOOMMCP_ALLOW_NO_AUTH", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+
+class DenyEveryone(TokenVerifier):
+    """Rejects every token, for when no credential is configured."""
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        return None
+
 
 class ApiKeyVerifier(TokenVerifier):
     """Validates a bearer token against the shared ``BLOOMMCP_API_KEY``.
@@ -213,8 +229,9 @@ def build_auth_provider():
       accepts an OAuth access token or the API key, and serves the
       ``/.well-known/oauth-protected-resource`` document an MCP client reads to
       discover where to log in.
-    * OAuth not configured, API key set — today's behavior, unchanged.
-    * Neither — ``None`` (dev mode, no authentication), unchanged.
+    * OAuth not configured, API key set — an ``ApiKeyVerifier``.
+    * Neither — a ``DenyEveryone`` that rejects every token, or ``None`` only when
+      ``BLOOMMCP_ALLOW_NO_AUTH`` says so. ``None`` leaves FastMCP with no gate at all.
     """
     if PUBLIC_URL and AUTHORIZATION_SERVER:
         from fastmcp.server.auth import MultiAuth, RemoteAuthProvider
@@ -233,7 +250,38 @@ def build_auth_provider():
     if API_KEY:
         return ApiKeyVerifier(API_KEY)
 
+    # Deny rather than None. `auth=None` gives FastMCP no gate at all, so anything
+    # holding one of these instances — `server.mcp` is built at import — would answer
+    # an unauthenticated caller. validate_auth() stops a *boot*; this stops a serve.
+    return None if ALLOW_NO_AUTH else DenyEveryone()
+
+
+def _unverifiable_reason() -> str | None:
+    """Why the configured auth cannot check a caller, or None if it can."""
+    if not API_KEY and not (PUBLIC_URL and AUTHORIZATION_SERVER):
+        return "nothing is configured (no BLOOMMCP_API_KEY, no OAuth pair)"
+    # A provider that cannot check a signature rejects every caller: an outage that
+    # reports itself healthy.
+    if PUBLIC_URL and AUTHORIZATION_SERVER and not API_KEY:
+        if not OAUTH_JWKS_URI and not os.getenv("JWT_SECRET"):
+            return "OAuth has no key material (no BLOOMMCP_OAUTH_JWKS_URI, no JWT_SECRET)"
     return None
+
+
+def validate_auth() -> None:
+    """Refuse to serve unless something can actually authenticate a caller.
+
+    Called from ``build_app()`` as well as ``main()``, so an ASGI launch cannot skip it.
+    """
+    reason = _unverifiable_reason()
+    if reason is None:
+        return
+    if not ALLOW_NO_AUTH:
+        raise RuntimeError(
+            f"Refusing to start: {reason}. Set BLOOMMCP_API_KEY, finish the OAuth "
+            f"configuration, or opt out with BLOOMMCP_ALLOW_NO_AUTH=1 (local dev only)."
+        )
+    logger.warning("Serving with no working authentication: %s", reason)
 
 
 # One provider shared by the combined server and all section sub-servers.
