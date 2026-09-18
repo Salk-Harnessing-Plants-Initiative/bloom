@@ -247,7 +247,7 @@ broken.
   function body (via `pg_get_functiondef`) contains the fallback block.
   This change has no cluster/Argo-image dependency (pure RPC), so — unlike #871 — there is no
   pin-bump or image-rebuild step blocking a staging verification.
-- [ ] 7.2 **STILL OPEN — deliberately, not overlooked.** This is a write to a GitHub issue, and
+- [x] 7.2 **POSTED 2026-09-18** — bloom#875 comment 5732314755. Records that the SQL fix is live on staging, the scope limit (hand-submitted originals are NOT covered, which is the shape this issue itself reproduced), that the live re-test is still blocked on fresh synthetic scan_ids, and that srp#56 task 7.4b will still fail on the existing A4 scans. Issue deliberately left OPEN. Original note: this is a write to a GitHub issue, and
   this repo's convention is no unauthorized GitHub writes, so it was not posted during the
   archival pass. It is independent of the archive and can be posted at any time. Draft content:
   the SQL-level fix and its tests are what this change can honestly claim; a full live Argo
