@@ -41,7 +41,7 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 ## Commands
 
 `login` is flat; assay-specific commands are grouped by data type (`cyl`,
-`plate`). Each command is tagged **[read]** or **[write]** — see
+`plate`, `scrna`). Each command is tagged **[read]** or **[write]** — see
 [Access & roles](#access--roles).
 
 - `bloomctl login` — bootstrap client config from the Bloom server and store
@@ -92,6 +92,11 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 - **[read]** `bloomctl cyl qc list-sets` — list cylinder QC sets (name, species,
   experiment, number of QC codes). Prints a table by default; `--output csv|json`
   for machine-readable output.
+- **[write]** `bloomctl scrna upload <file.h5ad>` — store a single-cell dataset's
+  AnnData file, gzipped and named by its SHA-256, after checking its structure
+  (see below).
+- **[read]** `bloomctl scrna download <dataset>` — fetch a dataset's AnnData file,
+  by name, id or `--checksum`, checked against its fingerprint (see below).
 
 Run `bloomctl <command> --help` for the full option list of any command.
 
@@ -474,6 +479,51 @@ Example:
 bloomctl cyl batch-download-for-predict ./staged --scan-ids-file scan_ids.json
 ```
 
+## `bloomctl scrna upload` / `bloomctl scrna download`
+
+A single-cell dataset's whole AnnData file (`.h5ad`) is kept in the `scrna`
+bucket's `h5ad/` folder, gzipped as it is and named by the SHA-256 of the
+uncompressed file. That SHA-256 is the dataset's `source_checksum`, so a dataset
+finds its file with no lookup table, and the same file uploaded twice is one
+object.
+
+```bash
+pip install 'bloomctl[scrna]'                   # upload's structure check needs h5py
+
+bloomctl scrna upload myb41_transgene_load.h5ad -p staging
+bloomctl scrna download "MYB41 transgene" -p staging            # → MYB41_transgene.h5ad
+bloomctl scrna download 14 --out myb41.h5ad -p staging          # by id
+bloomctl scrna download --checksum 82278a…a54f -p staging       # by fingerprint
+```
+
+**Upload** needs a writer or admin login. Before sending anything it checks the
+file's structure:
+
+- every cell has an ID and none repeats (a barcode shared across samples cannot
+  be the index); the same for genes, in whatever form the species' annotation
+  writes them
+- `X` holds only finite values
+- `obsm['X_umap']` has two columns and a row per cell, holds only finite coordinates, and does
+  not put every cell on one point — the same rules the loader applies
+- `layers['counts']`, when present, matches `X`'s shape and holds no negative value
+- `uns['normalization']` says how `X` was made:
+  `transform` (`log1p`, `log2p`, `none`), `scaling` (`library_size`, `none`,
+  `other`), `target_sum` for `library_size`, a `description` for `other`, and
+  optionally `counts_layer`. A file a dataset was loaded from before this existed
+  is accepted without the block when that dataset records it.
+
+It then gzips the file and sends it through storage's resumable upload, and reports success
+only once storage confirms the object is stored. If the connection drops, run the same
+command again: the gzipped copy and what identifies the upload wait in
+`~/.bloom/scrna-uploads/`, and the transfer continues from the last byte storage received.
+An upload recorded for another server, or for a gzipped copy that has since been rewritten,
+is started afresh rather than resumed. A file already stored is reported and not sent again.
+
+**Download** needs any login. It streams the object, decompresses it and checks
+its SHA-256 as it goes, and moves the file into place only when the fingerprint
+matches; a mismatch leaves nothing behind. A file already at the destination with
+the right fingerprint is left alone, and a different one is never overwritten.
+
 ## Access & roles
 
 Commands run **as the logged-in user** — every query and mutation is RLS-enforced
@@ -482,8 +532,8 @@ profile maps to determines what works:
 
 | Command tag                                                                                    | Required role                         | Intended user                                                                             |
 | ---------------------------------------------------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------- |
-| **[read]** (`download`, `download-for-predict`, `batch-download-for-predict`, `datasets list`) | `bloom_user` (any authenticated user) | anyone with a Bloom account                                                               |
-| **[write]** (`ingest-result`, `batch-ingest-result`, `datasets create`)                        | `bloom_writer` / `bloom_admin`        | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
+| **[read]** (`download`, `download-for-predict`, `batch-download-for-predict`, `datasets list`, `scrna download`) | `bloom_user` (any authenticated user) | anyone with a Bloom account                                                               |
+| **[write]** (`ingest-result`, `batch-ingest-result`, `datasets create`, `scrna upload`)                        | `bloom_writer` / `bloom_admin`        | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
 
 A read-only `bloom_user` can `list` datasets but **cannot** `create` one — the
 write path (the `create_cyl_dataset` / `insert_cyl_result_envelope` RPCs and the
