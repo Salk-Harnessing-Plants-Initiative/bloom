@@ -51,6 +51,13 @@ gate is reached (sleap-roots-pipeline#76).
   `ARGO_WORKFLOW_NAME` currently always does; that case is reported `failed` with
   `retriable=false` by the `cyl-pipeline-run-scan-status` contract, and reconciling the two
   contracts is tracked as bloom#875 (see `design.md` Risks)
+  <!-- RESOLVED — see fix-cyl-redelivery-status-fallback (bloom#875, PR #880, migration
+  20260917140000, live on staging 2026-09-18). "currently always does" is no longer true: the RPC
+  now falls back to a scan_id-keyed UPDATE when the source_id join matches nothing, so a
+  cross-workflow re-delivery reports status_update_matched=true. The normative text above is left
+  as written deliberately — it belongs to this change, not that one, and rewriting another
+  unarchived change's delta blind is the archive-ordering hazard that change's design.md warns
+  against. Supersede it properly when this change is next revisited or archived. -->
 
 #### Scenario: A first delivery is unaffected
 
