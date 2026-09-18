@@ -11,7 +11,10 @@ from .analysis_dir import AnalysisDir
 from .code_versions import get_code_versions
 from .manifest import (
     KNOWN_SCHEMA_VERSION,
+    ManifestBackendMismatchError,
     ManifestSchemaError,
+    foreign_read_served,
+    foreign_sentinel,
     read_manifest,
     validate_schema,
     write_manifest,
@@ -71,8 +74,11 @@ __all__ = [
     "ExperimentBlock",
     "KNOWN_SCHEMA_VERSION",
     "Manifest",
+    "ManifestBackendMismatchError",
     "ManifestSchemaError",
     "VersionEntry",
+    "foreign_read_served",
+    "foreign_sentinel",
     "get_code_versions",
     "next_version_id",
     "read_manifest",
