@@ -156,20 +156,112 @@ Fixture shape verified against the pinned pandas — `a = [0..14] + [NaN]*15`,
 - [x] 4.1 `cd bloommcp && uv run --extra test pytest tests/tools/test_plot_correlation_matrix_tool.py -q`
       — all green, including every pre-existing test unchanged.
 - [x] 4.2 `cd bloommcp && uv run --extra test pytest tests/tools/ -q` — no sibling regression, in
-      particular `test_viz_snapshot.py` (the rendered PNG must stay byte-identical: nothing here
-      touches rendering) and `test_devendor_invariants.py`.
+      particular `test_viz_snapshot.py` and `test_devendor_invariants.py`. NB (#784 review): the
+      snapshot test is an RMS compare at `_TOL = 15`, and its own docstring records that it
+      cannot catch a single-cell `correlation_matrix` defect (#768) — so "byte-identical" was an
+      overstatement. The real evidence the render is untouched is that the diff does not touch
+      the render path and `test_locally_constant_does_not_populate_heatmap_caveat` asserts
+      `fig.texts == []`.
 - [x] 4.3 `cd bloommcp && uv run black --check src tests && uv run ruff check src tests`.
 - [x] 4.4 `openspec validate add-bloommcp-corr-pair-disclosure --strict`.
 - [x] 4.5 Re-run `benchmarks/corr_pair_disclosure_bench.py` and confirm `design.md`'s tables
-      still match (it exits non-zero if the taxonomy fuzz finds an unexplained cell).
-- [x] 4.6 Re-read the diff against `design.md` — confirm no existing field's value changed and
-      `heatmap_caveat` is untouched.
+      still match. The `--fuzz` section is gone (see §6.3); the bench no longer has an exit-code
+      contract, because the taxonomy property is now a pytest test rather than a script.
+- [x] 4.6 Re-read the diff against `design.md` — `heatmap_caveat` is untouched. **The "no
+      existing field's value changed" half of this check was wrong and is withdrawn**: see
+      §6.1. Three existing fields change value on frames carrying non-finite or
+      variance-overflowing traits, from wrong to right.
 
 ## 5. Archive ordering (post-merge, not part of this PR)
 
-- [ ] 5.1 Archive `converge-bloommcp-viz-tools` **first**. This change's deltas MODIFY three
+- [x] 5.1 Archive `converge-bloommcp-viz-tools` **first**. This change's deltas MODIFY three
       requirements that still live in that pending change, and `openspec validate --strict`
       passes without checking that a MODIFIED target exists — so archiving in the wrong order
       would silently drop the requirements this change builds on, with no error.
-- [ ] 5.2 Mirror that ordering note into `openspec/changes/converge-bloommcp-viz-tools/tasks.md`
-      so whoever archives that change sees the dependency from its side too.
+- [x] 5.2 Mirror that ordering note into `openspec/changes/converge-bloommcp-viz-tools/tasks.md`
+      so whoever archives that change sees the dependency from its side too. Landed there as a
+      blockquote, NOT a checkbox: an unchecked box would have left a fully-implemented change
+      reading as incomplete in `openspec list` forever (#784 review).
+
+## 6. #784/#785 review round 1 (PR #833) — applied
+
+Three blocking findings, seven "important", and the suggestion set. Every claim below was
+reproduced locally against the pinned pandas 3.0.2 / numpy 2.4.4 before being acted on.
+
+- [x] 6.1 **B1 — a single `+inf` made the tool file a trait as uncorrelatable and publish a
+      strong correlation for it.** pandas' `nancorr` masks with `isfinite`, not `notna`, so it
+      drops the inf row and returns a real coefficient. Reproduced exactly as reported
+      (`r = 1.0`, `strong_positive_correlations: 1`, the trait in `strong_correlation_pairs`).
+      Fixed by masking both per-sign count masks and the pair list with `~zero_variance_mask`
+      at a single site. See design.md Decision 9, including the two claims it forces this PR to
+      withdraw.
+- [x] 6.2 **B2 — `overlap_n` over-reported, so the CI was computed at the wrong `n`.** Overlap
+      now counted with `isfinite`. Honest scope, established by exhaustive check rather than
+      assertion: with 6.1 in place **no** non-finite-carrying column has `0 < std < inf`, so the
+      difference is unobservable through the public API. Kept as defense-in-depth with
+      `test_no_non_finite_column_escapes_the_variance_guard` as the tripwire; not claimed as a
+      live fix, and no test pretends to cover it.
+- [x] 6.3 **B3 — the 400-frame fuzz was a tautology, and production source cited it as the
+      guard.** Confirmed by reading: it partitioned as *A*, *¬A∧B*, *¬A∧¬B*, which sums to 1 by
+      construction. Deleted, not repaired. Replaced by
+      `test_locally_constant_pairs_are_really_locally_constant` (re-derives the label via
+      `nunique()` over each pair's shared finite rows — the only check that can catch
+      mislabelling) and `test_taxonomy_totality_over_randomly_degenerate_frames` (12 seeds,
+      buckets read from the tool's own response). Both live in `tests/tools/`, which CI runs;
+      the old fuzz lived under `openspec/changes/.../benchmarks/`, which pytest never collected.
+      The module docstring sentence citing it is rewritten.
+- [x] 6.4 **Important 1 — the `0.7` cutoff was inline at three sites.** Now `_STRONG_R`, and
+      the pair list is the *union of the two per-sign count masks* rather than a separate `|r|`
+      comparison — so counts and list cannot disagree by construction. The `>` vs `>=` boundary
+      itself stays untested and the code says why: it is observable only for a coefficient
+      bit-exactly equal to the cutoff, which is not constructible in float64 (a search over
+      perturbed integer vectors bottoms out at `0.7000000000000001`).
+- [x] 6.5 **Important 2 — the residual bucket mislabelled traits whose variance overflows.**
+      Reproduced (`std == inf`, `inf > 0` is `True`, pair filed as locally constant while the
+      two traits are `b` and `2b`). Guard is now `not (0 < std < inf)`. The symmetric underflow
+      case is disclosed rather than claimed fixed. design.md Decision 8.
+- [x] 6.6 **Important 3 — the locally-constant cap was arbitrary and untested.** Order pinned by
+      `test_locally_constant_cap_order_is_pinned`; the field description now says the slice is
+      arbitrary, explicitly contrasting it with the sibling's ascending-overlap safety argument.
+- [x] 6.7 **Important 4 — `assumption_violated` misdescribed the set it reports.** Message and
+      the module docstring now name every case the guard files.
+- [x] 6.8 **Important 5 — the new lists inverted this file's own manifest precedent.**
+      `locally_constant_trait_pairs` is stamped uncapped like its two name-list siblings.
+      `strong_correlation_pairs` stays capped — structured records, not names — but
+      `strong_pair_count` and both counts are now stamped beside it so truncation is detectable
+      from the manifest alone. The asymmetry is deliberate, documented, and tested.
+- [x] 6.9 **Important 6 — nothing stamped the parameters the numbers depend on.** The floor,
+      cutoff, CI level and both caps now reach `provenance.params`.
+- [x] 6.10 **Important 7 — the smoke assertions didn't gate the PR and passed on empty data.**
+      Assertions made non-vacuous (`assert pairs`, the ordered overlap summaries); the comment
+      claiming cylinder exercises the cap contract "end to end" is corrected to say that CI runs
+      `-m "live_smoke and not live_smoke_slow"`, so only turface_19 gates a PR and the unit
+      tests are the real gate.
+- [x] 6.11 **"Worth a decision" — the CI is labelled 95% but assumes independent rows.** Both
+      effects now named in `ci_low`'s description and mirrored as a `SHALL`. The selection
+      effect reproduced almost exactly (0/499 coverage among pairs clearing the cutoff, 94.7%
+      over all pairs). The clustering figures did **not** reproduce at the reported values
+      (77.3% vs 58.7% for 19×8) because they depend on an intra-class correlation the report
+      did not state — so the field cites a measured *range* over ICC 0.2/0.5/0.9 and says the
+      direction is what is robust, rather than a single number whose generating assumption is
+      invisible.
+- [x] 6.12 **Suggestions applied**: `se` → `half_width`; `_Z_95` literal →
+      `NormalDist().inv_cdf` with `_CI_LEVEL` as a real value and a note that scipy was pruned
+      in #305; `_fisher_ci`'s docstring no longer misattributes the invalid-JSON guard to
+      `_finite_or_none`; `strong_pair_overlap_median`'s stale "50" now interpolates the cap;
+      `traits` gets `min_length`/`max_length`; `strong_pair_count` added for symmetry with
+      `locally_constant_pair_count`; `n=4` CI tested; the `hasattr` assertion in
+      `test_min_corr_overlap_is_owned_not_aliased` replaced (it was a name-binding check that
+      would fail on a legitimate import); description assertions added so deleting a documented
+      caveat fails the suite; the "a Python loop is prohibitive" comment corrected (the loop
+      runs over the *sliced* order); `heatmap_caveat`'s exclusion rationale replaced with the
+      one that survives its own statement.
+- [x] 6.13 **Not adopted, with reasons.** `r` gets no `ge=-1, le=1` validator: a float-epsilon
+      overshoot would turn a cosmetic artifact into a tool crash on real data, and the bound is
+      documented instead (20k near-collinear trials max out at exactly 1.0, so the risk is
+      small but the downside is asymmetric). `locally_constant_trait_pairs` stays
+      `list[list[str]]` rather than becoming a typed model — it is a pair of *names*, so it
+      matches its sibling `low_overlap_trait_pairs`; `StrongCorrelationPair` is a model because
+      it carries four fields. Capping `low_overlap_trait_pairs` (uncapped, up to ~357k entries)
+      is a behaviour change to an existing field and is left to #837, with the misleading
+      "typically small" comment corrected in place.

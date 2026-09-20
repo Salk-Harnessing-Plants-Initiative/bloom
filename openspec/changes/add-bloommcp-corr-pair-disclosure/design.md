@@ -80,21 +80,35 @@ Why elimination beats recomputing:
   (variance near zero) and would need an arbitrary tolerance to call "constant". Pandas has
   already made that determination internally, consistently with the coefficient it returned.
 
-**Verified, not assumed.** A 400-frame fuzz (`benchmarks/corr_pair_disclosure_bench.py
---fuzz`) over randomly degenerate 40×6 frames — mixing globally-constant, all-NaN,
-single-non-null, non-finite, and locally-constant columns at random missingness rates — found
-**0 unexplained and 0 double-counted `NaN` cells** across every frame, with 117 cells landing in
-the residual bucket. The exhaustiveness claim is measured, not argued.
+**How the claim is actually checked — corrected in review.** An earlier draft cited a 400-frame
+fuzz here and called the exhaustiveness claim "measured, not argued". **It was neither.** That
+fuzz partitioned each `NaN` cell as *A*, *not-A and B*, *not-A and not-B*, which sums to exactly
+one for every cell no matter what the buckets contain; deleting the zero-variance detection
+entirely still printed 0 unexplained and 0 double-counted. It also never called the tool. It has
+been deleted rather than repaired, because a check that cannot fail is worse than no check — it
+was cited in the shipped module docstring as the guard on this bucket.
+
+What checks it now, in `tests/tools/test_plot_correlation_matrix_tool.py`:
+
+* `test_every_nan_cell_has_exactly_one_reason` and
+  `test_taxonomy_totality_over_randomly_degenerate_frames` (12 seeded shapes) — totality, with
+  the buckets read from the **tool's response** and the `NaN` cells from an independent pandas
+  call, so sabotaging a bucket fails the test instead of silently re-partitioning.
+* `test_locally_constant_pairs_are_really_locally_constant` — the **label**, re-derived via
+  `nunique()` over each reported pair's shared finite rows. No partition check can catch
+  mislabelling; this is the only test here that can.
 
 **Alternative considered:** three extra matmuls for within-overlap mean/second-moment. Measured
 at 846 traits × 500 rows: 0.005 s — so this was **not** rejected on cost. It was rejected on
 robustness and exhaustiveness.
 
 **Residual risk, stated plainly:** the bucket is named for its dominant cause but is defined as
-a remainder, so any *future* pandas `NaN` cause would be silently absorbed under a name
-asserting local constancy. The fuzz above is the guard against that; it is a regression test,
-not a proof. An earlier draft of this design claimed a non-finite overlap was a second known
-inhabitant of this bucket — **that was wrong**, see Decision 7.
+a remainder, so any `NaN` cause not covered by the other two buckets is absorbed under a name
+asserting local constancy. The label is therefore the most likely explanation, not a verified
+one, and the field description now says so in those words. The property test above is the
+guard; it is a regression test, not a proof. Two earlier drafts were wrong about this bucket's
+membership — a non-finite overlap (Decision 7) and a variance-overflowing trait (Decision 8) —
+which is itself evidence that a remainder bucket attracts wrong claims.
 
 ### Decision 2 — `strong_correlation_pairs` is ordered by ascending `overlap_n`, capped, and paired with uncapped summaries
 
@@ -255,11 +269,15 @@ pd.Series([1.0, 2.0, 3.0, np.inf, 5.0]).std(skipna=True)  ->  nan
 not (nan > 0)                                             ->  True
 ```
 
-A column containing an infinity has a `NaN` standard deviation, so the existing guard at
-`plot_correlation_matrix.py:260-262` already classifies it as zero-variance. Such a trait can
-never satisfy "globally non-constant" and therefore can never reach the residual bucket — the
-draft's clause was unsatisfiable, and it would have shipped as a normative `SHALL` with no test
-behind it.
+A column containing an infinity has a `NaN` standard deviation, so the guard already classifies
+it as zero-variance. Such a trait can never satisfy "globally non-constant" and therefore can
+never reach the residual bucket — the draft's clause was unsatisfiable, and it would have
+shipped as a normative `SHALL` with no test behind it.
+
+**This decision was itself incomplete, and the #784 review found both halves of the gap.** See
+Decision 8 (a variance that *overflows* does reach the residual bucket, because `inf > 0` is
+true) and Decision 9 (filing the trait here was necessary but not sufficient — pandas still
+published a strong correlation for it).
 
 The real defect it was pointing at is one level over: `zero_variance_traits`' field description
 enumerates exactly three cases it considers ("constant (std 0), entirely NaN (std NaN), and …
@@ -322,3 +340,94 @@ Neither is blocking; both are recorded so they are not rediscovered as novel.
   invalidates comparisons against persisted runs — so it wants its own proposal and issue.
 - **Should the ±0.7 magnitude cutoff become configurable** now that its evidential basis is
   reported per pair? Out of scope for the same reason: it would change existing counts.
+
+### Decision 8 — The variance guard needs an upper bound, not just a lower one
+
+Decision 7 established that a trait carrying an infinity is filed under `zero_variance_traits`
+because its std is `NaN`. The #784 review found the mirror case that the same guard misses:
+
+```python
+b = rng.normal(size=20)
+df = pd.DataFrame({"huge_a": b * 1e200, "huge_b": b * 2e200, "ok": rng.normal(size=20)})
+# every value finite;  std -> [inf, inf, 0.71];  `inf > 0` is True  -> NOT filed
+# corr(huge_a, huge_b) -> nan   (sum-of-squares overflow)
+```
+
+`huge_a` and `huge_b` are `b` and `2b` — **perfectly correlated**. Under the old
+`not (std > 0)` guard they passed as healthy traits, pandas returned `NaN` for their
+coefficients, and the pair landed in `locally_constant_trait_pairs`, telling the scientist
+there is no variance within the shared overlap about two columns whose actual problem is the
+exact opposite. Exhaustiveness survived; correct labelling did not.
+
+The guard is now `not (0 < std < inf)`. The threshold is `|x| >~ 1e154`, which is rare for
+mm-scale root traits — but this tool reads **raw, uncleaned** data, where a sentinel value or a
+unit-conversion blowup is exactly the thing a caller would want flagged rather than mislabelled.
+
+**The symmetric case is not fixable this way and is disclosed instead.** A genuinely varying
+trait whose values are small enough (`|x| <~ 1e-160`) that its variance underflows to exactly
+`0.0` is indistinguishable from a true constant by any test of the std alone — verified:
+`N(0,1) * 1e-200` has 20 distinct values and `std == 0.0`. It is reported as a constant, and
+`zero_variance_traits`' description now names that limit rather than claiming all cases it
+files are "genuinely uncorrelatable". That absolutism was the residue of Decision 7 and is gone.
+
+### Decision 9 — Filing a trait as uncorrelatable must also *exclude* it, not merely name it
+
+The most consequential finding of the #784 review, and a defect this change introduced rather
+than inherited.
+
+`zero_variance_traits` has always rested on an argument, stated in the module docstring: pandas
+returns `NaN` for such a trait, and `NaN > 0.7` is `False`, so it cannot be counted.
+**That argument does not hold for a trait carrying an infinity.** pandas' `nancorr` masks each
+pair with `np.isfinite`, so it drops the offending row and returns an ordinary coefficient over
+the rows that remain. Reproduced against the pinned pandas 3.0.2 using this change's own test
+fixture:
+
+```
+zero_variance_traits:          ['has_inf']
+df.corr(min_periods=10):       r(has_inf, dense_a) = 1.0
+strong_positive_correlations:  1
+strong_correlation_pairs:      [{traits: ['has_inf','dense_a'], r: 1.0, overlap_n: 20, …}]
+```
+
+The tool filed a trait as uncorrelatable and published a strong correlation for it **in the
+same response**. Pre-existing for the counts; newly extended by this change to
+`strong_correlation_pairs`, which made a bare count into a named, quantified claim about a
+column the same response called unusable.
+
+Fixed at one site: both per-sign count masks and the pair list now carry `& ~zero_variance_mask`
+explicitly, so the documented contract is the implemented one. Two consequences worth stating:
+
+1. **This changes existing field values** — `strong_positive_correlations`,
+   `strong_negative_correlations` and `low_overlap_trait_pairs` can all differ from `staging`
+   on frames containing non-finite or variance-overflowing traits. The change is from wrong to
+   right, and it is confined to those frames, but the PR's earlier "no existing field changes
+   value" claim is amended rather than defended.
+2. **It makes the `isfinite` overlap fix unobservable.** The review's B2 — `overlap_n` counted
+   with `notna` over-reports by one per inf-carrying row, and feeds an inflated `n` to the
+   Fisher interval — reached a caller only through a pair that is now excluded outright.
+   Verified exhaustively: no non-finite-carrying column has `0 < std < inf`, so for every
+   surviving pair `notna` and `isfinite` agree. The overlap is still counted with `isfinite`,
+   because `overlap_counts` should mean what its name says independently of what upstream
+   happens to drop — but it is defense-in-depth, not a live fix, and
+   `test_no_non_finite_column_escapes_the_variance_guard` is the tripwire that will say so if
+   the guard is ever relaxed. Claiming a test covers an unobservable difference would have been
+   the same error as the fuzz in Decision 1.
+
+### Decision 10 — Measured figures are restated after the review found the measurement wrong
+
+`bench_cost` drew iid normals, which produce **zero** strong pairs — so the new sort-and-cap
+step was timed doing nothing, and its `_residual` omitted the zero-variance mask writes the
+shipped code performs. Rebuilt on the 5-latent-factor frame `bench_payload` already argues is
+realistic (43,375 strong pairs at 846 traits):
+
+| step | kind | seconds |
+| --- | --- | --- |
+| `.corr(min_periods=…)` | existing | 0.284 |
+| `finite.T @ finite` | existing | 0.103 |
+| residual-NaN bucket | new | 0.005 |
+| strong-pair sort + cap | new | 0.010 |
+
+**+0.015 s on 0.387 s = 3.9%**, against the +0.006 s / 1.4% an earlier draft reported. Still
+negligible, and still the right call; the number is simply the honest one. Absolute seconds are
+machine-specific — they do not reproduce across machines and the benchmark now says so — but the
+ratio does.

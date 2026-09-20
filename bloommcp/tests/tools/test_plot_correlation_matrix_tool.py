@@ -978,6 +978,9 @@ def _run_with_frame(df: pd.DataFrame, store=None) -> PlotCorrelationMatrixResult
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
 
+_META_COLS = ("Barcode", "geno")
+
+
 def _meta(n: int) -> dict:
     """The metadata columns every fixture frame in this file carries."""
     return {"Barcode": [f"b{i}" for i in range(n)], "geno": ["g1", "g2"] * (n // 2)}
@@ -1414,6 +1417,107 @@ def test_non_finite_trait_is_reported_as_zero_variance(injected_ports):
     assert "has_inf" in result.zero_variance_traits
     for pair in result.low_overlap_trait_pairs + result.locally_constant_trait_pairs:
         assert "has_inf" not in pair
+    # The half this test used to be missing (#784 review). Filing the trait under
+    # zero_variance_traits is not sufficient on its own: pandas' nancorr masks with
+    # np.isfinite, so it DROPS the inf row and returns an ordinary coefficient over the
+    # remaining 19 — r = 1.0 here, which cleared the magnitude cutoff and was published as a
+    # strong correlation for a trait the same response called uncorrelatable.
+    for pair in result.strong_correlation_pairs:
+        assert "has_inf" not in pair.traits
+    assert result.strong_positive_correlations == _independent_strong_counts(df)[0]
+    assert result.strong_negative_correlations == _independent_strong_counts(df)[1]
+
+
+def _independent_strong_counts(df: pd.DataFrame) -> tuple[int, int]:
+    """Strong counts re-derived from pandas directly, excluding degenerate traits.
+
+    Deliberately not a call into the module's own masks — an oracle that shares the
+    implementation's arithmetic cannot contradict it.
+    """
+    traits = [c for c in df.columns if c not in _META_COLS]
+    std = df[traits].std(skipna=True)
+    usable = [c for c in traits if 0 < std[c] < np.inf]
+    corr = df[usable].corr(min_periods=plot_correlation_matrix_tool._MIN_CORR_OVERLAP)
+    values = corr.to_numpy()
+    upper = np.triu(np.ones(values.shape, dtype=bool), k=1)
+    cutoff = plot_correlation_matrix_tool._STRONG_R
+    return (
+        int(((values > cutoff) & upper).sum()),
+        int(((values < -cutoff) & upper).sum()),
+    )
+
+
+def test_no_non_finite_column_escapes_the_variance_guard(injected_ports):
+    """The invariant that makes overlap_counts' isfinite/notna choice unobservable TODAY.
+
+    pandas masks each pair with np.isfinite, so an overlap counted with notna over-reports
+    the sample a coefficient rests on and feeds an inflated n to the Fisher interval
+    (#784 review, B2). The implementation counts with isfinite for that reason — but with
+    the zero-variance guard in place that fix is currently defense-in-depth, not an
+    observable behaviour change, because EVERY non-finite-carrying column has a NaN or
+    infinite std and is therefore excluded from the counts, the pair list and the
+    locally-constant bucket alike. For any surviving pair, notna and isfinite agree.
+
+    This test pins that reasoning rather than the unobservable difference. If it ever fails,
+    the guard has been relaxed to let a non-finite column through — at which point
+    overlap_counts' mask choice becomes load-bearing and needs its own direct coverage.
+    """
+    n = 20
+    shapes = {
+        "one_pos_inf": [float(i) for i in range(n - 1)] + [np.inf],
+        "one_neg_inf": [float(i) for i in range(n - 1)] + [-np.inf],
+        "both_infs": [float(i) for i in range(n - 2)] + [np.inf, -np.inf],
+        "inf_and_nan": [float(i) for i in range(n - 2)] + [np.inf, None],
+    }
+    for name, values in shapes.items():
+        df = pd.DataFrame(
+            {
+                **_meta(n),
+                name: values,
+                "anchor_a": [float(i) for i in range(n)],
+                "anchor_b": [float(i) * 1.7 + (i % 3) for i in range(n)],
+            }
+        )
+        result = _run_with_frame(df)
+        assert name in result.zero_variance_traits, (
+            f"{name} carries a non-finite value but escaped the guard; overlap_counts' "
+            f"isfinite mask is now observable and needs direct coverage"
+        )
+        for pair in result.strong_correlation_pairs:
+            assert name not in pair.traits
+        for pair in (
+            result.low_overlap_trait_pairs + result.locally_constant_trait_pairs
+        ):
+            assert name not in pair
+
+
+def test_overflowing_variance_is_not_called_locally_constant(injected_ports):
+    """#784 review (Important 2): a column of finite-but-enormous values overflows its sum of
+    squares, so std is +inf and `inf > 0` waved it through as healthy. pandas then returned
+    NaN for its coefficients and the pair was filed as 'locally constant' — which asserts the
+    opposite of the actual problem, about two traits that are in fact perfectly correlated.
+    """
+    rng = np.random.default_rng(3)
+    n = 20
+    base = rng.normal(size=n)
+    df = pd.DataFrame(
+        {
+            **_meta(n),
+            "huge_a": base * 1e200,
+            "huge_b": base * 2e200,  # exactly collinear with huge_a
+            "ok_a": rng.normal(size=n),
+            "ok_b": rng.normal(size=n),
+        }
+    )
+    # Precondition: every value is finite, so this is NOT the inf-carrying case.
+    traits = ["huge_a", "huge_b", "ok_a", "ok_b"]
+    assert np.isfinite(df[traits].to_numpy()).all()
+
+    result = _run_with_frame(df)
+
+    assert set(result.zero_variance_traits) == {"huge_a", "huge_b"}
+    for pair in result.locally_constant_trait_pairs:
+        assert "huge_a" not in pair and "huge_b" not in pair
 
 
 def test_min_corr_overlap_is_owned_not_aliased():
@@ -1426,7 +1530,11 @@ def test_min_corr_overlap_is_owned_not_aliased():
     a test failure whose cheapest fix is to re-alias (design.md Decision 5).
     """
     assert plot_correlation_matrix_tool._MIN_CORR_OVERLAP == 10
-    assert not hasattr(plot_correlation_matrix_tool, "_CANONICAL_MIN_SAMPLES_PER_TRAIT")
+    # Deliberately NOT `assert not hasattr(module, "_CANONICAL_MIN_SAMPLES_PER_TRAIT")`
+    # (#784 review): that is a name-binding check, not a behaviour one. It passes anyway
+    # under `from bloom_mcp.tools import _qc_shared`, and it would FAIL if someone imported
+    # the symbol for a legitimate reason — e.g. to warn when the two constants diverge.
+    # The value assertion above is what actually pins the decoupling.
 
 
 def test_new_disclosure_fields_stamped_into_manifest_params(injected_ports):
@@ -1457,3 +1565,338 @@ def test_new_disclosure_fields_stamped_into_manifest_params(injected_ports):
     assert params["strong_correlation_pairs"] == [
         p.model_dump() for p in result.strong_correlation_pairs
     ]
+
+
+def test_locally_constant_pairs_are_really_locally_constant(injected_ports):
+    """#784 review (B3): the label must be checked, not just the partition.
+
+    ``locally_constant_trait_pairs`` is derived by ELIMINATION, so a test that re-derives it
+    the same way cannot fail. This one calls the tool and then establishes the label
+    independently: for every reported pair, restrict both traits to the rows where BOTH are
+    finite (pandas' own mask) and assert at least one of them really does take a single
+    distinct value there. ``nunique()`` shares no arithmetic with the implementation's
+    ``isnan``-on-the-guarded-matrix derivation.
+    """
+    n = 30
+    half = n // 2
+    df = pd.DataFrame(
+        {
+            **_meta(n),
+            "ok_a": [float(i) for i in range(n)],
+            "ok_b": [float((i * 3) % 11) for i in range(n)],
+            "lc_a": [float(i) for i in range(half)] + [None] * (n - half),
+            "lc_b": [7.0] * half + [float(i) for i in range(n - half)],
+        }
+    )
+    result = _run_with_frame(df)
+    assert result.locally_constant_trait_pairs, "fixture must produce the bucket"
+
+    for a, b in result.locally_constant_trait_pairs:
+        shared = df[[a, b]][np.isfinite(df[a]) & np.isfinite(df[b])]
+        assert len(shared) >= plot_correlation_matrix_tool._MIN_CORR_OVERLAP, (
+            f"{a}x{b} is below the overlap floor, so it belongs in "
+            f"low_overlap_trait_pairs, not this bucket"
+        )
+        assert shared[a].nunique() == 1 or shared[b].nunique() == 1, (
+            f"{a}x{b} was labelled locally constant, but both traits vary across their "
+            f"{len(shared)} shared finite rows "
+            f"(nunique: {shared[a].nunique()}, {shared[b].nunique()})"
+        )
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_taxonomy_totality_over_randomly_degenerate_frames(injected_ports, seed):
+    """Totality (#785) over frames built to be degenerate in randomly-varied ways.
+
+    Unlike the fuzz this replaces, the buckets come from the TOOL's response, and the NaN
+    cells come from an independent pandas call on the same frame — so sabotaging any bucket
+    makes this fail rather than silently re-partitioning.
+    """
+    rng = np.random.default_rng(seed)
+    n = 30
+    cols: dict[str, list] = {}
+    for k in range(rng.integers(4, 8)):
+        kind = rng.integers(0, 4)
+        if kind == 0:  # dense
+            cols[f"t{k}"] = [float(rng.normal()) for _ in range(n)]
+        elif kind == 1:  # constant -> zero variance
+            cols[f"t{k}"] = [3.0] * n
+        elif kind == 2:  # sparse -> low overlap against other sparse columns
+            start = int(rng.integers(0, n - 6))
+            cols[f"t{k}"] = [
+                float(rng.normal()) if start <= i < start + 6 else None
+                for i in range(n)
+            ]
+        else:  # constant where observed -> locally constant
+            half = int(rng.integers(8, n - 4))
+            cols[f"t{k}"] = [5.0] * half + [None] * (n - half)
+    # Two dense anchors guarantee the >=2-usable-trait precondition.
+    cols["anchor_a"] = [float(i) for i in range(n)]
+    cols["anchor_b"] = [float(i) * 1.7 + (i % 3) for i in range(n)]
+    df = pd.DataFrame({**_meta(n), **cols})
+
+    result = _run_with_frame(df)
+    traits = result.resolved_trait_columns
+    corr = (
+        df[traits]
+        .corr(min_periods=plot_correlation_matrix_tool._MIN_CORR_OVERLAP)
+        .to_numpy()
+    )
+    zero_variance = set(result.zero_variance_traits)
+    low = {tuple(p) for p in result.low_overlap_trait_pairs}
+    locally_constant = {tuple(p) for p in result.locally_constant_trait_pairs}
+
+    unexplained, double_counted = [], []
+    for i in range(len(traits)):
+        for j in range(i + 1, len(traits)):
+            if not np.isnan(corr[i, j]):
+                continue
+            pair = (traits[i], traits[j])
+            claims = sum(
+                (
+                    traits[i] in zero_variance or traits[j] in zero_variance,
+                    pair in low,
+                    pair in locally_constant,
+                )
+            )
+            if claims == 0:
+                unexplained.append(pair)
+            elif claims > 1:
+                double_counted.append(pair)
+    assert not unexplained, f"NaN cells in no bucket: {unexplained}"
+    assert not double_counted, f"NaN cells in >1 bucket: {double_counted}"
+
+
+def test_counts_and_pair_list_share_one_cutoff(injected_ports):
+    """#784 review (Important 1): the cutoff was written inline at three sites, so the counts
+    and the list that claims to explain them could drift apart under an edit to one of them.
+
+    Pins the relationship, not the literal: strong_pair_count must equal the two counts
+    summed, and every reported pair must clear the module's own constant. A `>` -> `>=`
+    slip in the pair mask alone now fails here.
+    """
+    n = 40
+    rng = np.random.default_rng(11)
+    base = rng.normal(size=n)
+    df = pd.DataFrame(
+        {
+            **_meta(n),
+            "a": base,
+            "b": base * 2 + rng.normal(size=n) * 0.05,  # strongly positive
+            "c": -base * 3 + rng.normal(size=n) * 0.05,  # strongly negative
+            "d": rng.normal(size=n),  # unrelated
+        }
+    )
+    result = _run_with_frame(df)
+    cutoff = plot_correlation_matrix_tool._STRONG_R
+
+    assert result.strong_pair_count == (
+        result.strong_positive_correlations + result.strong_negative_correlations
+    )
+    assert result.strong_pair_count == len(_strong_pairs_oracle(df))
+    for pair in result.strong_correlation_pairs:
+        assert abs(pair.r) > cutoff
+
+
+def test_locally_constant_cap_order_is_pinned(injected_ports):
+    """#784 review (Important 3): the cap slices np.where output, and nothing pinned which 20
+    survived — taking the LAST 20 instead of the first passed the whole suite.
+
+    The order is resolved_trait_columns order (row-major over the upper triangle). It is
+    deterministic but arbitrary, which the field description says; this pins that it is at
+    least the documented one.
+    """
+    n = 30
+    half = n // 2
+    cap = plot_correlation_matrix_tool._MAX_LOCALLY_CONSTANT_PAIRS_REPORTED
+    # One trait constant wherever observed is locally constant against EVERY partner, so
+    # this yields far more than the cap.
+    # Each t-column is observed only in the first half; "saturating" is constant (7.0)
+    # exactly there and varies afterwards, so it is globally non-constant, clears the
+    # overlap floor against every t-column, and is locally constant against all of them.
+    cols = {
+        f"t{k:02d}": [float((i * (k + 1)) % 17) if i < half else None for i in range(n)]
+        for k in range(cap + 8)
+    }
+    cols["saturating"] = [7.0] * half + [float(i) for i in range(n - half)]
+    df = pd.DataFrame({**_meta(n), **cols})
+
+    result = _run_with_frame(df)
+    assert result.locally_constant_pair_count > cap
+    assert len(result.locally_constant_trait_pairs) == cap
+
+    traits = result.resolved_trait_columns
+    corr = (
+        df[traits]
+        .corr(min_periods=plot_correlation_matrix_tool._MIN_CORR_OVERLAP)
+        .to_numpy()
+    )
+    zero_variance = set(result.zero_variance_traits)
+    low = {tuple(p) for p in result.low_overlap_trait_pairs}
+    expected = []
+    for i in range(len(traits)):
+        for j in range(i + 1, len(traits)):
+            pair = (traits[i], traits[j])
+            if (
+                np.isnan(corr[i, j])
+                and traits[i] not in zero_variance
+                and traits[j] not in zero_variance
+                and pair not in low
+            ):
+                expected.append([traits[i], traits[j]])
+    assert result.locally_constant_trait_pairs == expected[:cap]
+
+
+def test_assumption_violated_names_every_case_it_files(injected_ports):
+    """#784 review (Important 4): the error said 'constant or entirely NaN' about a set that
+    also contains inf-carrying and variance-overflowing traits — neither of which is either.
+    """
+    n = 20
+    df = pd.DataFrame(
+        {
+            **_meta(n),
+            "has_inf": [np.inf] + [float(i) for i in range(1, n)],
+            "constant": [4.0] * n,
+            "ok": [float(i) for i in range(n)],
+        }
+    )
+    with pytest.raises(BloomMCPError) as excinfo:
+        _run_with_frame(df)
+    message = str(excinfo.value)
+    assert "has_inf" in message
+    # The message must not assert the two things that are false of has_inf.
+    assert "are constant or entirely NaN" not in message
+    for phrase in ("non-finite", "overflow"):
+        assert phrase in message
+
+
+def test_run_parameters_are_stamped_for_later_comparability(injected_ports):
+    """#784 review (Important 6): the constants block argues that owning _MIN_CORR_OVERLAP
+    matters because a retune would move the counts and break comparability with persisted
+    manifests — which only holds if the manifest records what it ran under. Two manifests
+    produced under different floors were previously indistinguishable.
+    """
+    _reader, store = injected_ports
+    n = 30
+    df = pd.DataFrame(
+        {
+            **_meta(n),
+            "a": [float(i) for i in range(n)],
+            "b": [float(i) * 2 + (i % 3) for i in range(n)],
+        }
+    )
+    _run_with_frame(df, store=store)
+    params = store.get_run(_EXPERIMENT, "correlation_matrix", "latest").params
+
+    assert params["min_corr_overlap"] == plot_correlation_matrix_tool._MIN_CORR_OVERLAP
+    assert params["strong_r_cutoff"] == plot_correlation_matrix_tool._STRONG_R
+    assert params["ci_level"] == plot_correlation_matrix_tool._CI_LEVEL
+    assert (
+        params["max_strong_pairs_reported"]
+        == plot_correlation_matrix_tool._MAX_STRONG_PAIRS_REPORTED
+    )
+    assert (
+        params["max_locally_constant_pairs_reported"]
+        == plot_correlation_matrix_tool._MAX_LOCALLY_CONSTANT_PAIRS_REPORTED
+    )
+
+
+def test_manifest_keeps_locally_constant_uncapped_and_flags_strong_truncation(
+    injected_ports,
+):
+    """#784 review (Important 5): the new lists were stamped CAPPED, inverting this file's
+    own test-enforced precedent (test_full_uncapped_disclosure_lists_are_recoverable_from_
+    the_manifest) and leaving pairs 21..N recoverable from nowhere.
+
+    locally_constant_trait_pairs is a name list, so it is restored to uncapped like its two
+    siblings. strong_correlation_pairs stays capped — each entry is a four-field record, not
+    a name — but its uncapped MAGNITUDES are now stamped beside it, so a manifest-only reader
+    can tell the list is truncated and by how much. That asymmetry is the deliberate part.
+    """
+    _reader, store = injected_ports
+    n = 30
+    half = n // 2
+    cap = plot_correlation_matrix_tool._MAX_LOCALLY_CONSTANT_PAIRS_REPORTED
+    # Each t-column is observed only in the first half; "saturating" is constant (7.0)
+    # exactly there and varies afterwards, so it is globally non-constant, clears the
+    # overlap floor against every t-column, and is locally constant against all of them.
+    cols = {
+        f"t{k:02d}": [float((i * (k + 1)) % 17) if i < half else None for i in range(n)]
+        for k in range(cap + 8)
+    }
+    cols["saturating"] = [7.0] * half + [float(i) for i in range(n - half)]
+    df = pd.DataFrame({**_meta(n), **cols})
+
+    result = _run_with_frame(df, store=store)
+    params = store.get_run(_EXPERIMENT, "correlation_matrix", "latest").params
+
+    assert result.locally_constant_pair_count > cap
+    assert len(result.locally_constant_trait_pairs) == cap
+    stamped = params["locally_constant_trait_pairs"]
+    assert len(stamped) == result.locally_constant_pair_count
+    assert [list(p) for p in result.locally_constant_trait_pairs] == [
+        list(p) for p in stamped[:cap]
+    ]
+
+    # The strong side: capped list, but truncation is detectable from the manifest alone.
+    assert params["strong_pair_count"] == result.strong_pair_count
+    assert params["strong_positive_correlations"] == result.strong_positive_correlations
+    assert params["strong_negative_correlations"] == result.strong_negative_correlations
+    assert len(params["strong_correlation_pairs"]) == min(
+        result.strong_pair_count,
+        plot_correlation_matrix_tool._MAX_STRONG_PAIRS_REPORTED,
+    )
+
+
+def test_fisher_ci_oracle_is_independent_of_the_module_constant(injected_ports):
+    """Suggestion (#784 review): the existing closed-form test re-types the module's own
+    critical value, so a typo in both places is invisible. NormalDist().inv_cdf is an
+    independent source for the same quantity.
+    """
+    from statistics import NormalDist
+
+    z_independent = NormalDist().inv_cdf(0.975)
+    assert plot_correlation_matrix_tool._Z_CRIT == pytest.approx(
+        z_independent, abs=1e-15
+    )
+    assert plot_correlation_matrix_tool._CI_LEVEL == 0.95
+
+    r, n_overlap = 0.7, 10
+    lo, hi = plot_correlation_matrix_tool._fisher_ci(r, n_overlap)
+    z = np.arctanh(r)
+    half = z_independent / np.sqrt(n_overlap - 3)
+    assert lo == pytest.approx(float(np.tanh(z - half)), rel=1e-12)
+    assert hi == pytest.approx(float(np.tanh(z + half)), rel=1e-12)
+
+
+def test_fisher_ci_at_the_smallest_defined_overlap():
+    """Suggestion (#784 review): n=4 is the first overlap with a defined interval and by far
+    the widest, and it was untested — the existing sub-floor test only covered n=3."""
+    lo, hi = plot_correlation_matrix_tool._fisher_ci(0.7, 4)
+    assert lo is not None and hi is not None
+    assert lo < -0.7 and hi > 0.98  # essentially uninformative, as it should be
+    assert plot_correlation_matrix_tool._fisher_ci(0.7, 3) == (None, None)
+
+
+def test_field_descriptions_record_the_taxonomy_they_promise():
+    """Suggestion (#784 review): the spec requires these descriptions to name specific cases,
+    but only the behaviour was asserted — a future edit deleting the sentences kept the suite
+    green.
+    """
+    fields = PlotCorrelationMatrixResult.model_fields
+    zero_variance = fields["zero_variance_traits"].description
+    for phrase in ("inf", "overflow", "underflow"):
+        assert phrase in zero_variance, f"{phrase!r} missing from zero_variance_traits"
+
+    ci_low = (
+        fields["strong_correlation_pairs"]
+        .annotation.__args__[0]
+        .model_fields["ci_low"]
+        .description
+    )
+    # The two limits a scientist would otherwise act on unknowingly.
+    assert "independent" in ci_low.lower()
+    assert "selected" in ci_low.lower()
+
+    locally_constant = fields["locally_constant_trait_pairs"].description
+    assert "arbitrary" in locally_constant.lower()

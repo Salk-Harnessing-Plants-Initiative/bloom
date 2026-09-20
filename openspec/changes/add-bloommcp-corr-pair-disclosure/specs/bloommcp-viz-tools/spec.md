@@ -11,6 +11,11 @@ A bare count therefore cannot tell a caller whether it rests on n=10 (where r=0.
 of roughly [0.13, 0.92]) or on n=1000, and the per-pair overlap needed to tell them apart is
 already computed internally.
 
+The cutoff that selects these pairs SHALL be a single constant shared by the pair list and by
+`strong_positive_correlations`/`strong_negative_correlations`, and the list SHALL be derived as
+the union of the two per-sign count masks, so that no edit can make the counts and the list
+that explains them disagree.
+
 The list SHALL be ordered by **ascending** overlap `n` — weakest evidence first — and SHALL be
 capped at a documented maximum, because at cylinder scale (~846 traits) an uncapped list can
 exceed 100,000 entries. The ascending order is what makes the cap safe: it truncates the
@@ -21,6 +26,18 @@ additionally report **uncapped scalar summaries** over *every* strong pair — t
 median, and maximum overlap `n` — so a caller can tell whether the reported low-`n` pairs are
 representative or exceptional. The two existing counts remain the authoritative totals and
 SHALL NOT change value.
+
+The confidence interval's description SHALL disclose the assumptions that make it weaker than
+its "95%" label implies, because that label is the most calibrated-sounding value this tool
+emits. Beyond not being a significance test and not being corrected for multiplicity, it SHALL
+name two limits specific to how it is used here:
+
+* **Selection.** The interval is not valid for a pair selected *because* `|r|` cleared the
+  tool's own cutoff, since the selection uses the same data as the interval. Every pair in
+  `strong_correlation_pairs` is selected that way by construction.
+* **Independence.** Rows are treated as independent observations, and `overlap_n` counts rows,
+  not independent units. Root-trait data is typically clustered (replicates within a genotype,
+  scans within a plant), which makes the true interval wider than the reported one.
 
 The confidence interval SHALL be well-defined in JSON for every reported pair. Where the Fisher
 transform is undefined — a coefficient of exactly ±1.0, or an overlap too small for its standard
@@ -122,18 +139,31 @@ This bucket SHALL NOT populate `heatmap_caveat` — see that field's own require
 
 ### Requirement: Zero-Variance Traits Disclosed In Correlation Counts
 
-`plot_correlation_matrix`'s result SHALL report `zero_variance_traits`: the selected traits that
-are constant or entirely NaN in the raw data. Such a trait's Pearson correlation against every
-other trait is `NaN`, which counts toward neither `strong_positive_correlations` nor
-`strong_negative_correlations` — this field discloses which traits are silently excluded rather
-than leaving the counts to look complete.
+`plot_correlation_matrix`'s result SHALL report `zero_variance_traits`: the selected traits
+whose own standard deviation is not a usable positive finite number, and for which the tool
+therefore reports no correlation at all. This field discloses which traits are silently
+excluded rather than leaving the counts to look complete.
 
-A trait carrying a **non-finite value** (`+inf`/`-inf`) SHALL also be reported here, and the
-field SHALL disclose that case rather than leaving it unnamed. The guard is
-`not (std(skipna=True) > 0)`, and a column containing an infinity has a `NaN` standard
-deviation, so such a trait already lands in this bucket — it is genuinely uncorrelatable, so
-the grouping is correct, but calling it "zero variance" without qualification misdescribes the
-caller's data.
+The guard SHALL be `not (0 < std(skipna=True) < inf)`, and the field's description SHALL
+enumerate every case it files, because "zero variance" names only the commonest one:
+
+* constant (std `0`), entirely NaN (std `NaN`), and exactly one non-null value (std `NaN`
+  because `ddof=1` needs two observations);
+* a trait carrying a **non-finite value** (`+inf`/`-inf`), whose std is `NaN` for that reason
+  rather than for lack of variation;
+* a trait of finite but enormous values whose sum of squares **overflows**, making std `+inf`.
+  The upper bound is required: `inf > 0` is true, so a `std > 0` test admits such a trait as
+  healthy, after which pandas returns `NaN` for its coefficients and the pair is filed as
+  locally constant — asserting the opposite of the actual defect.
+
+The field's description SHALL also name the case this guard **cannot** distinguish: a
+genuinely varying trait whose variance underflows to exactly `0.0` is reported as a constant.
+
+Traits reported here SHALL be excluded from `strong_positive_correlations`,
+`strong_negative_correlations` and `strong_correlation_pairs` by an explicit mask. Exclusion
+SHALL NOT be left to rest on "pandas returns `NaN` and `NaN > cutoff` is false": that
+reasoning does not hold for a trait carrying an infinity, because pandas masks each pair with
+`isfinite` and returns an ordinary coefficient over the remaining rows.
 
 #### Scenario: A constant trait is named, not silently excluded
 
@@ -142,11 +172,19 @@ caller's data.
   `strong_positive_correlations` nor `strong_negative_correlations` includes any pair involving
   it
 
-#### Scenario: A non-finite trait is named here, not left to another bucket
+#### Scenario: A non-finite trait is named here and counted nowhere
 
 - **WHEN** a selected trait is otherwise varying but contains `+inf` or `-inf`
 - **THEN** it appears in the result's `zero_variance_traits`, whose description names the
-  non-finite case explicitly, and it appears in no other disclosure list
+  non-finite case explicitly; it appears in no other disclosure list; and it appears in
+  neither `strong_correlation_pairs` nor either strong-correlation count
+
+#### Scenario: A trait whose variance overflows is not mislabelled as locally constant
+
+- **WHEN** two selected traits are perfectly correlated but carry finite values large enough
+  that their variance overflows to `+inf`
+- **THEN** both appear in `zero_variance_traits`, and neither appears in
+  `locally_constant_trait_pairs`
 
 ### Requirement: Low-Overlap Trait Pairs Excluded And Disclosed
 
@@ -233,3 +271,51 @@ disappears with it.
 
 - **WHEN** `heatmap_caveat` is populated for a call
 - **THEN** the persisted run's `params["heatmap_caveat"]` equals the result's `heatmap_caveat`
+
+### Requirement: Disclosure Caps Are Honest About What They Drop
+
+Where `plot_correlation_matrix` caps a disclosure list in its response, the cap SHALL be
+accompanied by enough uncapped information for the caller to know what was dropped, and the
+field's description SHALL state whether the surviving entries were selected on merit or
+arbitrarily.
+
+`strong_correlation_pairs` is ordered by ascending overlap, so its cap truncates the
+best-supported end and the surviving entries are the least-supported ones; its description
+SHALL say so. `locally_constant_trait_pairs` has no evidence gradient to order by — every pair
+in it is equally `NaN` — so its cap is a deterministic but **arbitrary** slice in
+`resolved_trait_columns` order, and its description SHALL say *that*, rather than leaving a
+reader who has just read the sibling's rationale to assume the same safety argument applies.
+
+#### Scenario: An arbitrary cap is documented as arbitrary
+
+- **WHEN** more locally-constant pairs are found than the cap reports
+- **THEN** the field's description identifies the slice as arbitrary, and
+  `locally_constant_pair_count` carries the uncapped total
+
+### Requirement: Persisted Runs Record The Parameters Their Numbers Depend On
+
+`plot_correlation_matrix`'s persisted run SHALL stamp the parameter values its reported numbers
+were produced under — the minimum pairwise overlap, the strong-correlation magnitude cutoff,
+the confidence level, and both disclosure caps. Without them, two manifests produced under
+different thresholds are indistinguishable after the fact, which defeats the comparability the
+tool's own owned-constant rationale rests on.
+
+A capped list SHALL be recoverable from the persisted run wherever the payload cost permits:
+name-only lists (`zero_variance_traits`, `low_overlap_trait_pairs`,
+`locally_constant_trait_pairs`) SHALL be stamped **uncapped**. Where a list is stamped capped
+because its entries are structured records rather than names, the run SHALL stamp that list's
+**uncapped magnitudes** alongside it, so a manifest-only reader can still determine that the
+list is truncated and by how much.
+
+#### Scenario: A manifest reader can tell a stamped list was truncated
+
+- **WHEN** more strong pairs are found than `strong_correlation_pairs` reports
+- **THEN** the persisted run stamps the capped list together with the uncapped
+  `strong_pair_count` and the two strong-correlation counts, from which the truncation is
+  evident without the live response
+
+#### Scenario: A later reader can tell which thresholds produced a stored result
+
+- **WHEN** a run is persisted
+- **THEN** its params carry the minimum overlap, the magnitude cutoff, the confidence level
+  and both caps in force at the time
