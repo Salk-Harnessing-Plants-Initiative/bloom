@@ -117,8 +117,9 @@ and for each claimed batch:
 1. Constructs a `Workflow` CRD (`k8s_client.build_workflow_body`) by loading a
    vendored, CI-drift-checked copy of `sleap-roots-pipeline`'s canonical
    `sleap-roots-pipeline.yaml` (`vendored/sleap-roots-pipeline.yaml`, pin
-   recorded in the sibling `SLEAP_ROOTS_PIPELINE_REF` — kept in sync with
-   upstream by a CI job, not hand-copied; see bloom #737) and applying exactly
+   recorded in the sibling `SLEAP_ROOTS_PIPELINE_REF` — a CI job checks the copy
+   against the *pinned commit*, which catches "the copy and the pin disagree",
+   not "upstream has moved on"; see bloom #737) and applying exactly
    four overrides on top of it: the batch's own `scan-ids`; attribution
    labels — `submitted-by: bloom-pipeline`/`pipeline-run-id`/`batch-index`/
    `environment`, **merged** into the vendored file's own labels rather than
@@ -128,11 +129,11 @@ and for each claimed batch:
    instead — this override is dispatch-only, deliberately never added to the
    shared file); and `metadata.namespace`, forced to the configured
    `WORKFLOWS_K8S_NAMESPACE` (see below). Everything else — the DAG (which
-   references the four already-registered `WorkflowTemplate`s:
+   references the five already-registered `WorkflowTemplate`s:
    `sleap-roots-images-downloader-template` → `sleap-roots-predictor-template`
-   → `sleap-roots-trait-extractor-template` → `sleap-roots-write-back-template`),
-   `spec.volumes`, `spec.entrypoint`, `spec.serviceAccountName` — passes through
-   from the vendored file unmodified.
+   → `sleap-roots-trait-extractor-template` → `sleap-roots-write-back-template`
+   → `sleap-roots-exit-gate-template`), `spec.volumes`, `spec.entrypoint`,
+   `spec.serviceAccountName` — passes through from the vendored file unmodified.
 2. POSTs it directly to the K8s API server
    (`{WORKFLOWS_K8S_API_URL}/apis/argoproj.io/v1alpha1/namespaces/{WORKFLOWS_K8S_NAMESPACE}/workflows`)
    with a Bearer token + CA cert — not the `argo` CLI, not the Argo Server.
@@ -178,30 +179,100 @@ batches whose real Argo outcome hasn't been checked yet — it is not excluded
 merely because Phase 2 already settled its dispatch outcome). For each such
 run it fetches the real Argo phase of every distinct `argo_workflow_name`
 among that run's scans (`k8s_client.get_workflow_status` — a read-only `GET`,
-not the `create` `dispatch_worker.py` does) and, once it has enough evidence
-to conclude something that differs from the run's already-known status,
-writes the result via `update_cyl_pipeline_run_status`, progressing the run
-to `'running'`/`'complete'` (or a real-outcome `'failed'`/`'partial'`) —
-values `claim`/`complete`/`fail_cyl_pipeline_batch` (Phase 2) never reach,
-since those only ever describe dispatch outcome. A computed conclusion of
-`'running'` that merely reconfirms a run already known to be `'running'` is a
-no-op (no write) — `'running'` is the only status value this poller ever
-writes itself, so a known status of `'running'` unambiguously means a prior
-sweep already confirmed it. This same-value skip does **not** apply to
-`'partial'`: Phase 2's own dispatch-settle can *also* produce `'partial'` as a
-pre-poll guess this poller hasn't yet checked, so a `'partial'`-sourced
-candidate always writes its computed conclusion — even when that conclusion
-happens to be `'partial'` again — to avoid silently discarding a run's first
-real confirmation. A `'partial'` run whose dispatched batches are all already
-resolved does keep satisfying this candidate query and gets re-written
-identically forever (a documented, cosmetic trade-off — see `design.md`), but
-that's a strictly better failure mode than losing the first real write.
+not the `create` `dispatch_worker.py` does), computes `done_count`/`failed_count`
+from the same fetch (a plain count of that run's `cyl_pipeline_run_scans` rows
+by `status` — `'written'`/`'reused'` vs. `'failed'`; see the `cyl-trait-writeback`
+capability for what actually writes those per-scan values now), and writes the
+status plus both counts via `update_cyl_pipeline_run_status`, progressing the
+run to `'running'`/`'complete'` (or a real-outcome `'failed'`/`'partial'`) —
+values `claim`/`complete`/`fail_cyl_pipeline_batch` (Phase 2) never reach, since
+those only ever describe dispatch outcome. This write happens **every cycle a
+candidate run reaches this point, whether or not its overall status has
+changed** (`fix-cyl-pipeline-run-scan-status` removed an earlier same-value
+skip for a reconfirmed `'running'` status): `done_count`/`failed_count` can
+advance between cycles even while the run stays `'running'`, so skipping the
+write on an unchanged status would freeze the UI's "N/M scans done" display at
+whatever it read on the run's first `'running'` cycle. `update_cyl_pipeline_run_status`
+remains cheap and idempotent, so writing every cycle is not a scaling concern
+at this program's poll interval and run volume.
+
+Before writing a run's status whenever the computed conclusion is anything
+other than `'running'`, the poller also reconciles that run's leftover
+`'queued'` scan rows: since a terminal status write drops the run from this
+poller's candidate set for good, a scan still `'queued'` at that point can
+only mean write-back never ran for it at all (its workflow failed before
+reaching write-back, or the write-back container never started), and this is
+the last chance to close it out. It does so via
+`fail_cyl_pipeline_run_scans_without_result` (one call per distinct
+`argo_workflow_name` with a leftover `'queued'` row), then re-deriving
+`done_count`/`failed_count` from a fresh read of that run's scan rows before
+the status write — not by incrementing the counts `_fetch_effective_phases`
+already returned, since that snapshot was taken before this cycle's K8s
+lookups and the reconciliation call itself even ran, and can go stale if a
+scan's write-back genuinely resolved in that window. If the reconciliation
+call itself fails, the status write is skipped entirely for that run this
+cycle — it remains a candidate and is retried next cycle, the same isolation
+already given to every other per-run failure — rather than writing a
+terminal status while leaving those rows permanently unresolved. This
+reconciliation is deliberately **not** gated on whether some other workflow
+in the run is unresolved (404'd) this cycle: `get_workflow_status` returns
+`None` only on a clean 404, which is normally a permanent condition (the
+Workflow object no longer exists), not a transient one — a genuine transient
+K8s failure raises `K8sStatusError` instead, an entirely separate path this
+loop already isolates per-run. A prior attempt to add such a gate was
+reverted after two review passes traced it letting an ordinary, expected
+TTL-GC'd sibling workflow stall a run's reconciliation and status write
+forever (see `openspec/changes/fix-cyl-pipeline-run-scan-status/design.md`'s
+Decision 6 addendum 8). Like `update_cyl_pipeline_run_status` below, the
+reconciliation RPC call also treats a `PGRST202` (function-signature-not-found)
+response as an expected, transient condition during the brief window between
+this deploy's app code going live and its migration actually applying —
+logged quietly, without marking the poll cycle unclean.
 
 The rollup rule that maps a run's per-workflow phases to one status is
 specified normatively in the `cyl-pipeline-status-polling` OpenSpec capability
 spec's "Rollup rule..." requirement — not restated here. See that change's
 `design.md` for why the computation happens in Python rather than SQL (a
 deliberate departure from Phase 2's own "aggregate in SQL" precedent).
+
+### Reading a run's outcome: use the counts, not `status`
+
+**If you are building a UI or any other consumer over `cyl_pipeline_runs`, read
+this section first.** `status` is a *batch-level* outcome. It answers "did the
+Argo Workflows reach a terminal success phase", not "did every requested scan
+produce a result", and the two diverged when the pipeline DAG gained its
+terminal exit gate (`sleap-roots-pipeline#56`). Branch on
+`done_count`/`failed_count`, or on the per-scan `cyl_pipeline_run_scans` rows.
+Concretely:
+
+- **`'complete'` does not imply `failed_count == 0`.** A producer that isolates
+  some scans' failures and completes the rest exits `3`; the gate accepts that
+  code, so the Workflow is `Succeeded` and the run is `'complete'` — with real
+  failures in `failed_count`.
+- **`'complete'` does not even imply that *any* scan succeeded.** The exit code
+  has no floor: one scan failing and every scan failing both exit `3`. A
+  totally-failed batch therefore reads `'complete'` with `done_count = 0`. This
+  is the case most likely to mislead a UI, because it is exactly what a shared
+  mount being unavailable or a credential being revoked looks like.
+- **`'failed'` does not imply nothing was written.** Each envelope's per-scan
+  `'written'` update commits in its own transaction, so a write-back that
+  ingested some scans and then exited non-zero leaves `done_count > 0` on a
+  `'failed'` run. An automated consumer that re-dispatches on `'failed'` will
+  re-dispatch work that already succeeded.
+- **`'partial'` no longer means what its name suggests.** It no longer arises
+  from partial failure *within* a batch — only from terminal phases differing
+  across a multi-batch run. Do not treat its absence as "nothing was partial".
+- **The counts can be absent, not just zero.** When any of a run's workflows
+  404s (normally because it was TTL-GC'd), the poller withholds a `'complete'`
+  conclusion and skips the run's status write entirely rather than concluding
+  from incomplete information. A GC'd workflow 404s permanently, so a run whose
+  batches finished more than `WORKFLOWS_K8S_TTL_SECONDS` apart can sit at its
+  previous status with the counts never updated. **Render that as "unknown",
+  not as zero** — it is the one case where "read the counts" is not by itself
+  sufficient advice.
+
+A zero-scan run is set to `'complete'` at enumerate time by the trigger route
+and never dispatched, so it never reaches the rollup at all.
 
 ```bash
 cd services/workflows

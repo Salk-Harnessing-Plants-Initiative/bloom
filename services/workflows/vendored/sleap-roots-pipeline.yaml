@@ -34,7 +34,7 @@ spec:
   # step fails with "workflowtaskresults.argoproj.io is forbidden". bloom-workflow is the
   # dedicated ServiceAccount for this (separate from bloom-pipeline, which Bloom's backend
   # authenticates as to submit Workflows) — confirmed present in both runai-talmo-lab and
-  # runai-busch-lab, 2026-08-06. None of the four stage templates override serviceAccountName, so
+  # runai-busch-lab, 2026-08-06. None of the five stage templates override serviceAccountName, so
   # this single value applies to every step.
   serviceAccountName: bloom-workflow
 
@@ -53,7 +53,9 @@ spec:
     # type: Directory (not DirectoryOrCreate), per cluster-admin guidance 2026-08-06: if the NFS
     # mount is down on whichever node a step lands on, DirectoryOrCreate silently creates a local
     # directory on that node's root disk instead — output vanishes, with a successful-looking
-    # pipeline result on top. Directory fails loudly instead. All three paths have existed
+    # pipeline result on top. Directory prevents that — but note it does NOT fail loudly: the pod
+    # sits Pending (see the retryStrategy notes below), so the Workflow hangs rather than failing.
+    # Preventing silent data loss is the reason to keep it; expect a hang, not an error. All three paths have existed
     # continuously since this program's PoC and aren't going away, so there's no cold-start case
     # left that DirectoryOrCreate was protecting (the permission-on-a-truly-fresh-path risk this
     # comment used to flag was separately live-tested for the predictor's own output path in
@@ -96,21 +98,77 @@ spec:
             templateRef:
               name: sleap-roots-images-downloader-template
               template: images-downloader
+            # #56: a producer that completes its batch while isolating per-scan failures exits 3.
+            # continueOn lets the DAG proceed past that instead of discarding the scans that
+            # succeeded. It goes on the task that FAILS (Argo appends `|| <dep>.Failed` to each
+            # dependent's compiled depends) — never on a downstream task, which does nothing useful
+            # and trips argoproj/argo-workflows#13498.
+            # `failed` only, deliberately not `error`. A Failed node means the container ran and
+            # exited non-zero — exit 3, or a graceful SIGTERM-to-143. An Error node means the stage
+            # never produced a verdict: `markNodeError("pod deleted")` when a pod is deleted out
+            # from under Argo, which is how scheduler-driven preemption typically surfaces here
+            # (see sleap-roots-images-downloader-template.yaml's own note). The DAG should stop on
+            # Error rather than continue on data that was never produced — and both routes still
+            # end red, since an Error stops the DAG, the gate is Omitted, and it inherits Failed.
+            # Note this does NOT cover a pod that never gets scheduled: at v3.6.7 `assessNodeStatus`
+            # maps PodPending unconditionally to NodePending, so an ImagePullBackOff or a failed
+            # hostPath mount sits Pending, where neither retryStrategy nor continueOn applies.
+            continueOn:
+              failed: true
           - name: predictor
             templateRef:
               name: sleap-roots-predictor-template
               template: predictor
             dependencies:
               - images-downloader
+            # See images-downloader's continueOn comment.
+            continueOn:
+              failed: true
           - name: trait-extractor
             templateRef:
               name: sleap-roots-trait-extractor-template
               template: trait-extractor
             dependencies:
               - predictor
+            # See images-downloader's continueOn comment.
+            continueOn:
+              failed: true
           - name: write-back
             templateRef:
               name: sleap-roots-write-back-template
               template: write-back
             dependencies:
               - trait-extractor
+            # Deliberately NO continueOn. bloomctl's batch-ingest-result has no partial-success
+            # code (both its exits are ctx.exit(1), gated on needs_retry), so there is nothing to
+            # let through. If it fails, exit-gate is Omitted, inherits Failed, and the Workflow
+            # fails — correct without extra wiring.
+          # #56: terminal gate. See sleap-roots-exit-gate-template.yaml for why this task exists
+          # and why its 0|3 allowlist is load-bearing. It is the DAG's ONLY leaf, so the Workflow's
+          # phase is determined here rather than by any producer's own node phase — without it,
+          # continueOn would report an exhausted-retry crash as Succeeded.
+          # It reads producers it does not depend on, which resolves only because this DAG is
+          # LINEAR and they are all its ancestors. If you restructure this DAG, keep every
+          # referenced producer an ancestor of exit-gate — but that mistake is caught early and
+          # loudly, not silently: Argo's validateDAGTaskArgumentDependency rejects a non-ancestor
+          # reference at BOTH `argo lint` and submission with
+          # `missing dependency '<task>' for parameter '<name>'` (verified live against this
+          # cluster: argo v3.6.5 CLI, v3.6.7 controller). What the gate's allowlist covers is a
+          # different case the validator cannot see: a task that IS a valid ancestor but produced
+          # no outputs.exitCode, where an empty or literal `{{tasks.<name>.exitCode}}` reaches the
+          # gate because dag.go substitutes with allowUnresolved=true. See the exit-gate template's
+          # header for the full reasoning.
+          - name: exit-gate
+            templateRef:
+              name: sleap-roots-exit-gate-template
+              template: exit-gate
+            dependencies:
+              - write-back
+            arguments:
+              parameters:
+                - name: images-downloader-code
+                  value: "{{tasks.images-downloader.exitCode}}"
+                - name: predictor-code
+                  value: "{{tasks.predictor.exitCode}}"
+                - name: trait-extractor-code
+                  value: "{{tasks.trait-extractor.exitCode}}"

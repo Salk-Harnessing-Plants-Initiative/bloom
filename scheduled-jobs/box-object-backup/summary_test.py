@@ -103,14 +103,18 @@ class TestTheVerdictFallsBackToTheHostsReport:
     verdict. The report the run wrote on the host is then the only copy."""
 
     def report(self, **over):
-        body = {"status": "stopped", "flags": ["ledger_stale"], "stats": {"copied": 5}}
+        body = {
+            "status": "stopped",
+            "flags": ["verify_incomplete"],
+            "stats": {"copied": 5},
+        }
         body.update(over)
         return json.dumps(body)
 
     def test_it_is_used_when_the_log_has_no_verdict(self):
         found = summary.verdict_for("", self.report(), "failure")
         assert found.status == "stopped"
-        assert found.flags == ("ledger_stale",)
+        assert found.flags == ("verify_incomplete",)
         assert found.count("copied") == 5
         assert found.from_report
 
@@ -242,16 +246,6 @@ class TestTheHeadlineMatchesTheWorstThingThatHappened:
     def test_copies_that_really_failed_still_headline_as_failed(self):
         assert "Result: **FAILED** — see the job log" in render("failed", copied=0)
 
-    def test_a_ledger_upload_failure_is_a_night_that_worked(self):
-        out = render("ok", ["ledger_stale"], copied=3)
-        assert "Result: **succeeded**" in out
-        assert "The ledger on Box was NOT updated" in out
-
-    def test_a_ledger_that_is_ahead_is_never_merged_with_one_behind(self):
-        out = render("ok", ["ledger_ahead"], copied=0)
-        assert "Do NOT upload over it" in out
-        assert "was NOT updated" not in out
-
 
 class TestAStoodDownNightIsNotASuccessOrAFailure:
     """Standing down against the seed's lock exits 0, exactly as a successful
@@ -289,22 +283,17 @@ class TestAStoppedRunIsNotAFailedOne:
         assert "Nothing needs doing." in render("stopped", copied=1)
 
     def test_a_recovered_night_does_not_promise_that(self):
-        # The report is written before the ledger upload, so the verdict
+        # The report is written before the ledger is committed, so the verdict
         # recovered from it cannot speak for what came after.
         out = render("stopped", copied=1, from_report=True)
         assert "Nothing needs doing." not in out
-        assert "Check the job log for the ledger upload" in out
+        assert "How the run ended is recorded in" in out
 
     def test_a_stop_does_not_hide_a_permanent_non_backup(self):
         # The collision takes the headline, so the stop is the notice.
         out = render("stopped", ["collisions"], copied=1)
         assert "OBJECTS NOT BACKED UP" in out
         assert "asked to stop before it finished the table" in out
-
-    def test_a_stopped_night_with_a_stale_ledger_still_reads_stopped(self):
-        out = render("stopped", ["ledger_stale"], copied=1)
-        assert "Result: **stopped, progress kept**" in out
-        assert "The ledger on Box was NOT updated" in out
 
     def test_a_stop_reached_under_another_headline_is_still_said(self):
         out = render("stopped", ["verify_mismatch"], copied=1)
@@ -449,8 +438,6 @@ class TestANoticeIsNeverSwallowedByAHeadline:
         "skipped_names": "only renaming them in Supabase can",
         "verify_mismatch": "not on Box",
         "verify_incomplete": "did not cover its whole sample",
-        "ledger_stale": "The ledger on Box was NOT updated",
-        "ledger_ahead": "Do NOT upload over it",
         "source_gone": "have no image behind them",
     }
 
@@ -541,7 +528,7 @@ class TestTheHeadlineNeverContradictsANotice:
     def test_a_recovered_night_says_where_to_look_instead(self):
         page = render("stopped", copied=5, from_report=True)
         assert "Nothing needs doing." not in page
-        assert "Check the job log for the ledger upload" in page
+        assert "How the run ended is recorded in" in page
 
 
 class TestTheCountsQualifyTheRightThing:

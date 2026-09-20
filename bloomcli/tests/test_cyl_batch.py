@@ -33,6 +33,11 @@ def test_scan_result_carries_error_message():
     assert r.error == "boom"
 
 
+def test_scan_result_retriable_defaults_to_true():
+    r = batch.ScanResult("scan_1", "failed", "boom")
+    assert r.retriable is True
+
+
 def test_batch_result_ok_true_when_no_failures():
     result = batch.BatchResult(
         [batch.ScanResult("scan_1", "ok"), batch.ScanResult("scan_2", "skipped")]
@@ -49,6 +54,54 @@ def test_batch_result_ok_false_when_any_failure():
 
 def test_batch_result_ok_true_for_empty_scans():
     assert batch.BatchResult([]).ok is True
+
+
+def test_batch_result_ok_false_regardless_of_retriable():
+    """`.ok` reflects the real, unfiltered outcome — a non-retriable failure is still a
+    failure for anyone checking `.ok` or reading the printed summary/JSON."""
+    result = batch.BatchResult(
+        [batch.ScanResult("scan_1", "failed", "boom", retriable=False)]
+    )
+    assert result.ok is False
+
+
+def test_needs_retry_false_for_empty_scans():
+    assert batch.BatchResult([]).needs_retry is False
+
+
+def test_needs_retry_false_when_no_failures():
+    result = batch.BatchResult(
+        [batch.ScanResult("scan_1", "ok"), batch.ScanResult("scan_2", "skipped")]
+    )
+    assert result.needs_retry is False
+
+
+def test_needs_retry_true_for_a_retriable_failure():
+    result = batch.BatchResult([batch.ScanResult("scan_1", "failed", "boom")])
+    assert result.needs_retry is True
+
+
+def test_needs_retry_false_when_every_failure_is_non_retriable():
+    result = batch.BatchResult(
+        [
+            batch.ScanResult("scan_1", "ok"),
+            batch.ScanResult("scan_2", "failed", "boom", retriable=False),
+        ]
+    )
+    assert result.ok is False  # still a real, reportable failure
+    assert result.needs_retry is False  # but nothing a re-run could fix
+
+
+def test_needs_retry_true_when_mixed_with_at_least_one_retriable_failure():
+    """A genuinely retriable failure alongside a non-retriable one still warrants a retry —
+    the retry might fix the retriable one, even though it can never fix the other."""
+    result = batch.BatchResult(
+        [
+            batch.ScanResult("scan_1", "failed", "boom", retriable=False),
+            batch.ScanResult("scan_2", "failed", "transient network error"),
+        ]
+    )
+    assert result.needs_retry is True
 
 
 def test_batch_result_defaults_to_empty_scans_list():
@@ -96,14 +149,53 @@ def test_format_json_round_trips_every_field():
             batch.ScanResult("scan_1", "ok"),
             batch.ScanResult("scan_2", "failed", "boom"),
             batch.ScanResult("scan_3", "skipped"),
+            batch.ScanResult("scan_4", "failed", "unfixable", retriable=False),
+            batch.ScanResult("scan_5", "ok", warning="gate degraded"),
         ]
     )
     data = json.loads(batch.format_json(result))
     assert data == [
-        {"scan_key": "scan_1", "status": "ok", "error": ""},
-        {"scan_key": "scan_2", "status": "failed", "error": "boom"},
-        {"scan_key": "scan_3", "status": "skipped", "error": ""},
+        {"scan_key": "scan_1", "status": "ok", "error": "", "retriable": True, "warning": ""},
+        {
+            "scan_key": "scan_2",
+            "status": "failed",
+            "error": "boom",
+            "retriable": True,
+            "warning": "",
+        },
+        {"scan_key": "scan_3", "status": "skipped", "error": "", "retriable": True, "warning": ""},
+        {
+            "scan_key": "scan_4",
+            "status": "failed",
+            "error": "unfixable",
+            "retriable": False,
+            "warning": "",
+        },
+        # A warning rides alongside a NORMAL outcome -- it is not an error, and it must not
+        # change the status. This is how a fail-open idempotency-gate check reaches an operator
+        # whose pod logs are unreadable.
+        {
+            "scan_key": "scan_5",
+            "status": "ok",
+            "error": "",
+            "retriable": True,
+            "warning": "gate degraded",
+        },
     ]
+
+
+def test_format_summary_reports_a_warning_on_an_otherwise_successful_item():
+    """A degraded item still counts as ok in the header, but must not pass silently."""
+    result = batch.BatchResult(
+        [
+            batch.ScanResult("scan_1", "ok"),
+            batch.ScanResult("scan_2", "ok", warning="idempotency-gate check failed"),
+        ]
+    )
+    summary = batch.format_summary(result, verb="Ingested", noun="envelope", destination="/out")
+    assert "Ingested 2/2 envelopes" in summary
+    assert "WARNING scan_2: idempotency-gate check failed" in summary
+    assert "scan_1" not in summary
 
 
 def test_format_json_empty_batch_is_empty_array():

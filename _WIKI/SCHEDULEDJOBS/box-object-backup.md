@@ -26,45 +26,71 @@ neither is a complete restore on its own. See "Restoring" below.
 
 ## Prerequisites (one time, on the server)
 
-1. **Box remote for `bloom-deploy`.** Box auth is interactive; nothing
-   automates it.
+1. **The job's own Box login, as `bloom-deploy`.** It keeps its own rclone
+   config folder rather than sharing the one the weekly Postgres backup uses:
+   Box refresh tokens are single-use, so two jobs refreshing one login would
+   spend each other's token. Log in fresh — never copy the weekly backup's
+   `rclone.conf` here — and use the same Box account it uses, because `lsd`
+   below succeeds for any account and nothing later checks which.
+
+   The server has no browser, so the login is done in two places. On the
+   server:
    ```bash
-   sudo -u bloom-deploy rclone config    # n) new remote → name: box → Box
-   sudo -u bloom-deploy rclone lsd box:  # must list your Box root
+   sudo -u bloom-deploy mkdir -p -m 700 /home/bloom-deploy/.config/rclone-box-object-backup
+   sudo -u bloom-deploy rclone --config /home/bloom-deploy/.config/rclone-box-object-backup/rclone.conf config
+   #   n) new remote → name: box → storage: box
+   #   client_id, client_secret, box_config_file, access_token: blank
+   #   box_sub_type: 1 (user) → advanced config: n
+   #   "Use web browser to automatically authenticate?": n
    ```
-   The token lands in `/home/bloom-deploy/.config/rclone/rclone.conf`. The
-   job mounts that file **read-only** into the rclone container, so if the
-   token ever expires, refresh it by hand:
-   `sudo -u bloom-deploy rclone config reconnect box:`.
+   It stops at `config_token>`. On a computer with a browser and rclone:
+   ```bash
+   rclone authorize "box"      # log in to Box, then copy the token it prints
+   ```
+   Paste that token into the server's `config_token>` prompt, answer **y** to
+   keep the remote, and **q** to quit. Then check it:
+   ```bash
+   sudo -u bloom-deploy rclone --config /home/bloom-deploy/.config/rclone-box-object-backup/rclone.conf lsd box:
+   ```
+   The job's container mounts that folder **read-write**, so rclone can save
+   each refreshed token, and it never creates the folder. If the login is ever
+   lost, repeat the same two steps with
+   `rclone --config /home/bloom-deploy/.config/rclone-box-object-backup/rclone.conf config reconnect box:`.
 
 2. **Create the destination folder** in Box matching `OBJECT_BACKUP_BOX_ROOT`
    (`Bloom-Backups/BloomV2-Data-Backup/prod/storage` by default).
 
-3. **State directory**, once, as root. The ledger lives here and it is what
-   makes the seed resumable:
+3. **State directory**, once, as `bloom-deploy`. The ledger lives here and it
+   is what makes the seed resumable. It sits on `/data`, outside both deploy
+   trees, so a deploy that resets a tree cannot touch it:
    ```bash
-   sudo install -d -m 0700 -o bloom-deploy -g bloom-deploy \
-       /var/lib/bloom-box-object-backup
+   mkdir -m 700 /data/bloom/box-object-backup
    ```
+   The container mounts it and never creates it: if it is missing, the run
+   fails before it starts, rather than Docker creating it owned by root.
 
-4. **`bloom-deploy` must be in the `docker` group** — the job reaches Postgres
-   and MinIO through the deploy's containers.
+4. **`bloom-deploy` must be in the `docker` group** — it starts the job's
+   container.
    ```bash
    id -nG bloom-deploy | tr ' ' '\n' | grep -qw docker || \
        sudo usermod -aG docker bloom-deploy
    ```
 
-5. `rclone` is **not** needed on the host — the job runs it in a container on
-   the deploy's `supanet`, because MinIO's S3 port is never published beyond
-   that network. (A host `rclone` is still handy for step 1 and for spot
-   checks.)
+5. **Nothing else is installed on the host.** The job runs in a container of
+   its own, defined in `scheduled-jobs/box-object-backup/compose.yml`, from an
+   image pinned by digest that carries Python, `psql` and `rclone`. The
+   container joins production's `supanet` to reach Postgres and MinIO, whose
+   ports are never published, and runs rclone inside itself, so nothing listens
+   on the host. The image is public on GHCR, so the host pulls it without
+   logging in. (A host `rclone` is still handy for step 1 and for spot checks.)
 
 ## Scheduling
 
 `.github/workflows/box-object-backup.yml` runs it: GitHub Actions triggers on
-a schedule, SSHes to the deploy host, and the work happens there — the same
-shape as `deploy.yml`. There is nothing to install on the server beyond the
-prerequisites above.
+a schedule, SSHes to the deploy host — the same shape as `deploy.yml` — and
+starts the job's container there with `docker compose run`. The container
+exists only while the run does; Docker removes it when the job exits. There is
+nothing to install on the server beyond the prerequisites above.
 
 Every night at 02:17 UTC, so at most a day's scans exist only in MinIO rather
 than up to a week's.
@@ -101,8 +127,8 @@ promote to `main` → **approve the production deploy** → first scheduled nigh
 **The production deploy is a step, not a formality.** Promoting to `main` arms
 the 02:17 schedule immediately, but the prod tree is only updated inside the
 deploy job, which waits for an approval. Leave that approval pending and the
-first scheduled night SSHes to a prod tree holding neither this script nor the
-`OBJECT_BACKUP_*` keys in `.env.prod`, and fails at the first config lookup.
+first scheduled night SSHes to a prod tree that has no `compose.yml` for the
+job, and fails before anything starts.
 
 **The workflow cannot fire until this file reaches `main`.** GitHub honours
 `schedule:` and `workflow_dispatch` only from the default branch, so merging
@@ -123,66 +149,55 @@ millions of objects. Box throttles per-user API calls and every file costs at
 least one call, so the seed is measured in days, not hours. **Run it by
 hand in a detached session**, then let the schedule handle the nightly delta:
 
-The deploy tree is whatever `PROD_DEPLOY_PATH` points at; `$DEPLOY` below
-stands in for it.
-
-The job reads its own settings out of `.env.prod`, so there is nothing to
-export. It takes only the keys it needs — an allow-list, `ENV_KEYS` in
-`backup_objects.py` — and reads the file as data rather than as shell, so a
-password containing a quote, a backtick or a `$` arrives intact. Run it from
-the deploy tree and it finds the file beside it:
+Everything below runs on the host as `bloom-deploy`. `$PROD` is the production
+tree and `$DEPLOY` is the tree the job's files come from. **Until the `main`
+promotion, `$DEPLOY` is the staging tree**, the only one with `compose.yml`:
 
 ```bash
 sudo -i -u bloom-deploy
-export DEPLOY=/path/to/deploy/tree   # exported: the seed runs inside tmux
+export PROD=/data/bloom/production   # PROD_DEPLOY_PATH
+export DEPLOY=/data/bloom/staging    # after the main promotion: DEPLOY="$PROD"
 cd "$DEPLOY"
 ```
 
-A real environment variable still wins over the file, so a single `export`
-overrides one setting for one run without editing anything.
+The credentials always come from production's `.env.prod`, and the compose file
+names only production's network, so a run started from the staging tree still
+reads production's database and MinIO.
 
-**Before the `main` promotion, `$DEPLOY` is the staging tree** — that is where
-the script lives until prod is redeployed, and the prod tree is reset to `main`
-on every deploy. `.env.prod` is not in the staging tree, and the prod one does
-not carry the `OBJECT_BACKUP_*` keys yet, so point the job at prod's file for
-the credentials and supply the missing settings by hand:
+Each run is one container from the job's compose file. Compose reads the three
+credentials out of `$PROD/.env.prod` and passes them in. Every other setting
+comes from `.env.prod.defaults` in `$DEPLOY`, mounted read-only, so a setting
+changed only in the server's `.env.prod` has no effect on the job. To change
+one for a single run, pass it after `run` with `-e`, for example
+`-e OBJECT_BACKUP_WORKERS=4`.
 
-```bash
-export PROD=/path/to/prod/deploy/tree   # $PROD_DEPLOY_PATH
-export OBJECT_BACKUP_MINIO_BUCKET=bloom-storage
-export OBJECT_BACKUP_MINIO_PREFIX=storage-single-tenant
-export OBJECT_BACKUP_BOX_REMOTE=box
-export OBJECT_BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/prod/storage
-export OBJECT_BACKUP_WORKERS=8
-```
-
-Then add `--env-file "$PROD/.env.prod"` to each command below.
-
-`--env prod` selects the production containers, not a path, so running the
-script out of the staging tree still mirrors production.
-
-Prove the path end to end before committing to days of transfer:
+Prove the path end to end before committing to days of transfer. In a second
+shell, `docker stats` shows the container's memory while each one runs; note
+the peak, because `mem_limit` in `compose.yml` is set from it:
 
 ```bash
-# 1. copies nothing. Checks every setting above, the rclone config and the
-#    Box root BEFORE reading the table, then lists what a real run would do.
-python3 scheduled-jobs/box-object-backup/backup_objects.py \
-    --env prod --dry-run
+# 1. copies nothing. Checks every setting, the rclone config and the Box root
+#    BEFORE reading the table, then lists what a real run would do.
+docker compose -f scheduled-jobs/box-object-backup/compose.yml \
+    --env-file "$PROD/.env.prod" run --rm -T --user "$(id -u):$(id -g)" \
+    box-object-backup --env prod --dry-run
 
 # 2. first real bytes — preflight checks the MinIO layout, verify checks Box
-python3 scheduled-jobs/box-object-backup/backup_objects.py \
-    --env prod --buckets images --limit 20 --verify 20
+docker compose -f scheduled-jobs/box-object-backup/compose.yml \
+    --env-file "$PROD/.env.prod" run --rm -T --user "$(id -u):$(id -g)" \
+    box-object-backup --env prod --buckets images --limit 20 --verify 20
 ```
 
 Then open the Box folder and confirm the images preview.
 
 **3. Run step 2 again, more than an hour later, before starting the seed.**
-Box access tokens last about an hour. The rclone config is mounted read-only,
-so a refresh lives in the daemon's memory and is never written back — which is
-fine within one run and unproven across two. If Box rotates the refresh token,
-the copy on disk is spent and this second run is where that shows up, in
-minutes, instead of on night three of a seed. If it fails to authenticate, run
-`rclone config reconnect box:` and start the pair again.
+Box access tokens last about an hour, and each refresh token works once: every
+refresh replaces it, and rclone saves the new one into the job's config folder.
+This second run proves the save works, because it can only log in with the
+token the first run saved. (Start step 2 itself more than an hour after
+logging in, so that it refreshes too.) If it fails to authenticate, check that
+`bloom-deploy` can write the folder, run the `config reconnect` command from
+the prerequisites, and start the pair again.
 
 **The ledger remembers where it mirrored to.** The first real run records
 `<OBJECT_BACKUP_BOX_REMOTE>:<OBJECT_BACKUP_BOX_ROOT>`, and any later run pointed somewhere
@@ -194,41 +209,55 @@ empty. Three ways out, cheapest first:
 - **The rclone remote was recreated under a different name.** The recorded
   value is `<remote>:<root>`, so `box2:...` does not match `box:...` even
   though it is the same Box account and the same folder. Name the remote `box`
-  again in `rclone config`, or set `OBJECT_BACKUP_BOX_REMOTE` to whatever it is now
+  again in the job's own config (prerequisite 1), or set `OBJECT_BACKUP_BOX_REMOTE` to whatever it is now
   and move the folder to match. This is the likeliest trip on a rebuilt host.
 - **The root was mistyped.** Correct `OBJECT_BACKUP_BOX_ROOT`.
 - **The mirror genuinely has to move.** Move the folder on Box and keep the
-  recorded value, or point `OBJECT_BACKUP_STATE_DIR` at a new directory and seed the
-  new location from scratch — that is a full re-seed, so only do this when the
+  recorded value, or move the old `ledger.db` aside and seed the new location
+  from scratch — that is a full re-seed, so only do this when the
   destination really is new.
 
-**On a rebuilt host, restore the ledger before step 2.** Step 1 is a dry run
-and copies nothing, but step 2 copies twenty objects, and a run that copies
-something uploads its ledger. That upload refuses to replace a larger copy, so
-what you would actually see is `ledger NOT uploaded: the ledger on Box is AHEAD
-of this host` in the log, and **The ledger on Box is newer than this host's** in
-the summary — the Box copy is safe, and stays safe precisely because the upload
-was refused, but it stops being updated until the local ledger is whole again.
-Restore it first and both problems go away. See *If the deploy host itself is
-gone* below.
-
 The seed itself runs detached, in nightly chunks so it never runs through
-working hours:
+working hours. It is a container named `box-object-backup-seed`, started
+without `--rm` so that its log outlives it:
 
 ```bash
-tmux new -s box-seed
-# Re-run the export block above INSIDE the session before this command.
-# When a tmux server is already running, a new session's shell inherits the
-# SERVER's environment, not the one you just set up — so OBJECT_BACKUP_*,
-# and $DEPLOY may all be missing in here. Every one of them fails loudly, and
-# before the eight-million-row read, so a wrong value costs seconds.
-#
-# `cd` first: the job looks for `.env.<env>` in the working directory, so an
-# absolute path to the script is not enough. Add --env-file before the main
-# promotion, when the settings are not in prod's file yet.
 cd "$DEPLOY"
-python3 scheduled-jobs/box-object-backup/backup_objects.py \
-    --env prod --full --limit 500000 --verify 50
+docker compose -f scheduled-jobs/box-object-backup/compose.yml \
+    --env-file "$PROD/.env.prod" run -d --name box-object-backup-seed \
+    --user "$(id -u):$(id -g)" \
+    box-object-backup --env prod --full --limit 500000 --verify 50
+
+docker logs -f box-object-backup-seed   # follow it; Ctrl-C leaves it running
+docker wait box-object-backup-seed      # prints its exit code once it ends
+```
+
+Nothing is needed from the shell once it has started: the container carries its
+own settings, and closing the session does not stop it.
+
+The name matters. The nightly workflow names its containers after its run,
+`box-object-backup-<run id>-<attempt>`, and stops only that name when it is
+cancelled, so cancelling a nightly can never stop the seed.
+
+**Before leaving the seed running, prove the lock holds between containers.**
+While it copies, try to take its lock from a second container. The probe only
+tries the lock and writes nothing, so it cannot disturb the seed:
+
+```bash
+docker compose -f scheduled-jobs/box-object-backup/compose.yml \
+    --env-file "$PROD/.env.prod" run --rm -T --user "$(id -u):$(id -g)" \
+    --entrypoint python3 box-object-backup -c 'import fcntl, os; fcntl.flock(os.open("/data/bloom/box-object-backup/backup.lock", os.O_RDWR), fcntl.LOCK_EX | fcntl.LOCK_NB)'
+```
+
+It must fail with `BlockingIOError`. That is the one guarantee that a nightly
+and the seed never write the same ledger. If it exits cleanly instead, the lock
+does not hold between containers on this host: leave the seed running, but do
+not promote to `main` until that is solved. The lock is an `flock`, which local
+filesystems such as ext4 (reported as `ext2/ext3`) and xfs honour; record which
+one the state folder is on:
+
+```bash
+stat -f -c %T /data/bloom/box-object-backup
 ```
 
 **Seed until a chunk records `ok`.** Every `--limit`-truncated run is recorded
@@ -246,7 +275,7 @@ While the seed holds the lock, the scheduled workflow stands down and reports
 **skipped** rather than succeeded.
 
 The run is **resumable**: every successful copy is recorded in the SQLite
-ledger at `/var/lib/bloom-box-object-backup/ledger.db`, so an interrupted
+ledger at `/data/bloom/box-object-backup/ledger.db`, so an interrupted
 seed picks up where it stopped. Re-running costs one query, not one Box call
 per already-copied object — the ledger, not the Box listing, is what the plan
 is built against.
@@ -254,8 +283,8 @@ is built against.
 ## Stopping and resuming
 
 A run can be stopped at any point and started again later. It carries on from
-where it stopped — the ledger records every object as it is copied, so nothing
-is done twice and nothing is missed.
+where it stopped — the ledger records copies as it goes, so a re-run skips
+what is recorded and nothing is missed.
 
 This is what makes it safe to deploy during the seed. **Stop the backup, confirm
 it has stopped, deploy, start the backup again.** No coordination, no waiting
@@ -263,31 +292,38 @@ for a multi-hour run to finish.
 
 ### Stopping it
 
-Whichever of these you use, the effect is the same:
+Every run is a container, so stopping one is `docker stop`:
 
-| where it is running | how to stop it |
+| what is running | how to stop it |
 |---|---|
-| by hand in tmux | `Ctrl-C`, or `kill <pid>` from another shell |
-| detached, or you are not attached to it | `kill $(python3 -c 'import json;print(json.load(open("/var/lib/bloom-box-object-backup/backup.lock"))["pid"])')` |
-| started by the scheduled workflow | cancel the run in the Actions tab |
+| the seed | `docker stop box-object-backup-seed` |
+| a run the scheduled workflow started | cancel it in the Actions tab |
+| a run you started in this terminal | Ctrl-C — it finishes the file in flight and exits 3 |
+| any other run | `docker ps --filter label=com.docker.compose.project=bloom-box-object-backup` shows its name; `docker stop <name>` |
 
-The lock file records the pid of whatever is running, so you never have to hunt
-for it in `ps`.
+`docker stop` sends the job SIGTERM, then waits up to the grace period set in
+`compose.yml` (two minutes) before killing it. A stop normally takes seconds.
 
-Cancelling in the Actions tab stops **only a run that job started**. If a
-nightly found the seed already going and stood down, cancelling that nightly
-leaves the seed alone — which is what you want, and also means it is not a way
-to stop a seed you started by hand. Use `kill` for that.
+Cancelling in the Actions tab stops **only the container that job started**,
+`box-object-backup-<run id>-<attempt>`. If a nightly found the seed already
+going and stood down, cancelling that nightly leaves the seed alone — which is
+what you want, and also means it is not a way to stop the seed. Use
+`docker stop box-object-backup-seed` for that.
 
-**Do not use `kill -9`.** That is the one thing it cannot survive tidily: it
-skips the cleanup, leaves the rclone container holding the RC port, and the next
-run then refuses to start until you remove it (it will tell you the command).
+**A run that is killed leaves little to clean up** — `docker kill`, the grace
+period running out, the host rebooting. The rclone daemon lived inside the
+container and went with it, and Docker removes a nightly's container. A killed
+seed's container stays, stopped: `docker rm` it before the next chunk. The
+ledger saves its progress every 200 copies, so up to that many finished copies
+can be copied again next time, which is harmless. The run is never recorded
+`ok` — its row in `runs` has no outcome at all — so the watermark does not
+move. What is lost is that run's report.
 
 ### What it does when asked
 
-- finishes copying the object already in flight, and records it
+- finishes copying the objects already in flight, and records them
 - starts nothing further
-- removes its rclone container, commits the ledger, writes the run report
+- stops its rclone daemon, commits the ledger, writes the run report
 - exits **3** — "interrupted; progress is in the ledger and the next run resumes"
 
 While it is copying, it stops within seconds — it does not wait out the rest of
@@ -297,12 +333,12 @@ the 20,000-object batch it was working through, nor plan another one.
 Postgres for the object list, and on a full run that query reads every row of
 `storage.objects` and can take many minutes. A stop that arrives during it is
 not noticed until the query returns; the run then stops immediately, before
-copying anything. So a stop is quick during the copying and can be slow at the
-very start.
+copying anything. If that takes longer than the grace period, Docker kills it,
+which costs nothing because it had copied nothing yet.
 
 If you are stopping it in order to deploy, confirm it has actually stopped —
-see below — rather than assuming. A cancelled workflow that gave up waiting
-says so on the run, as a warning reading `pid N has not stopped yet`.
+see below — rather than assuming. A cancelled workflow whose `docker stop`
+failed says so on the run, as a warning.
 
 A stopped run is recorded **partial**, never `ok`. That matters: `ok` is what
 "everything up to here is backed up" points at, and a stopped run has not
@@ -312,24 +348,27 @@ objects it never looked at.
 ### Confirming it stopped cleanly
 
 ```bash
-docker ps -a --filter name=bloom-box-backup-rclone     # expect: nothing
-sqlite3 /var/lib/bloom-box-object-backup/ledger.db \
+docker ps --filter label=com.docker.compose.project=bloom-box-object-backup   # expect: nothing
+sqlite3 /data/bloom/box-object-backup/ledger.db \
   "SELECT started_at, outcome FROM runs ORDER BY id DESC LIMIT 3;"
 ```
 
-An empty container list means the cleanup ran. A `partial` outcome on the last
-row is what a stopped run looks like.
+An empty list means no run is going. A `partial` outcome on the last row is
+what a stopped run looks like; an empty outcome is a run that was killed. For the seed, `docker wait box-object-backup-seed`
+prints `3` after a clean stop.
 
 ### Resuming
 
-Run the same command again — the same one, in the same shape. There is no
-separate resume step, but there is also no shortcut: the `cd` and, before the
-main promotion, the `--env-file` are needed on every night of the seed.
+Run the same command again; there is no separate resume step. The seed's
+stopped container keeps its name until it is removed, so remove it first:
 
 ```bash
 cd "$DEPLOY"
-python3 scheduled-jobs/box-object-backup/backup_objects.py \
-    --env prod --full --limit 500000 --verify 50
+docker rm box-object-backup-seed
+docker compose -f scheduled-jobs/box-object-backup/compose.yml \
+    --env-file "$PROD/.env.prod" run -d --name box-object-backup-seed \
+    --user "$(id -u):$(id -g)" \
+    box-object-backup --env prod --full --limit 500000 --verify 50
 ```
 
 It re-reads the object list, skips everything the ledger already holds, and
@@ -383,6 +422,10 @@ durable check — a journal rotates and an Actions log expires:
 rclone cat "box:$OBJECT_BACKUP_BOX_ROOT/_runs/<latest>.json" | jq '.stats.skipped, .skips'
 ```
 
+Run as `bloom-deploy`, this uses its default rclone config, the weekly backup's
+login. That reaches the same Box account (prerequisite 1), and reading through
+it cannot disturb the job's own login.
+
 ### Rows with no image behind them
 
 Postgres can list an object whose bytes are not in MinIO — usually a delete
@@ -406,6 +449,12 @@ watermark past an object that was never copied.
 claims it is on Box. Someone has to decide whether the database row should
 still exist; this job will not.
 
+**Production's oldest rows are like this.** Under `images/`, MinIO holds only
+`bloom-desktop-cyl-scans`, `cyl-images` and `test`, while `storage.objects`
+still lists `scans/`, `exp-progress-logs/`, `plate-images/` and
+`plates-images/`. A smoke test with a small `--limit` meets those first and
+copies nothing, which is expected rather than a fault.
+
 ## Monitoring
 
 The run summary in the Actions tab is the first place to look — it says
@@ -417,18 +466,15 @@ gh run list --workflow box-object-backup.yml --limit 10
 gh run view <run-id> --log
 ```
 
-Exit codes: `0` clean, `1` some objects failed after retries, `2`
-configuration or preflight error, `3` interrupted (progress kept), `4`
-verification found objects missing or the wrong size on Box, `5` objects were
-refused because two names collide on one Box path, `6` every object copied but
-the ledger's Box copy is stale or ahead of this host.
+Progress lines report objects/second and a projected finish. Failures are
+retried with backoff — Box's 429s and 5xx are treated as transient; a 404 on
+the MinIO side is not, and is reported.
 
-**Exit 6 is a green night with a red tick, on purpose.** Every object reached
-Box; what did not is the record of *which* objects are already there, and that
-record is what makes a re-seed unnecessary. Every other route to a person is a
-notice inside a run that GitHub considers successful, and GitHub notifies
-nobody about those — so this one condition fails the run to raise an email. The
-watermark is unaffected: the exit code and the watermark are separate.
+Exit codes: `0` clean, `1` some objects failed after retries, `2`
+configuration or preflight error, or the rclone daemon stopped working, `3`
+interrupted (progress kept), `4` verification found objects missing or the
+wrong size on Box, `5` objects were refused because two names collide on one
+Box path.
 
 **A verification mismatch (exit 4) does NOT hold the watermark.** It used to
 claim it did, and that claim was never true beyond one night: the next run finds
@@ -457,9 +503,11 @@ seed started by hand carries no job id at all, so it can never hand over its
 verdict to a nightly. If neither route produces one, the step's own outcome
 decides.
 
-The same id answers the cancel step. Cancelling a job that stood down against
-the seed's lock must not stop the seed — days of copying, halted silently —
-so the step signals a process only when the lock says this job started it.
+The cancel step goes by name instead. It stops only the container named for
+its own run, `box-object-backup-<run id>-<attempt>`, and only if Docker labels
+it as the backup job's. The seed is named `box-object-backup-seed`, so
+cancelling a nightly that stood down against the seed cannot stop it — days of
+copying, halted silently.
 
 **The summary reads a status line, not the log's prose.** The job prints
 `BOX_BACKUP_STATUS=`, `BOX_BACKUP_FLAGS=` and `BOX_BACKUP_STATS=` (the counts,
@@ -518,38 +566,11 @@ There are none in production today: every name is already in the normalized
 form, so nothing can collide. This exists for the day something uploads one
 that is not.
 
-### The ledger on Box stopped being updated
-
-Neither of these has an exit code — they cannot fail the run, because the
-objects did reach Box and the mirror is fine. What did not reach Box is the
-**record of which objects are already mirrored**, the thing that makes a
-re-seed unnecessary. Both notices appear beside the night's result rather than
-instead of it, so they show up on nights that otherwise succeeded — which is
-every night either actually happens.
-
-They are opposites, and so are their remedies. Check which one you have.
-
-**The ledger on Box was NOT updated** — the upload failed, or the local ledger
-could not be read. This host has the good copy; Box is behind and falling
-further behind every night. Fix the upload.
-
-**The ledger on Box is newer than this host's** — the upload was refused on
-purpose, because this host's ledger is smaller. Box has the good copy and this
-host has a stub, so this is not the machine that built the mirror. **Restore
-from Box; do not upload over it.** Uploading here replaces millions of rows
-with this run's and costs a full re-seed.
-
-*If the deploy host itself is gone* below covers both, and how to restore.
-
-Progress lines report objects/second and a projected finish. Failures are
-retried with backoff — Box's 429s and 5xx are treated as transient; a 404 on
-the MinIO side is not, and is reported.
-
 ### Run reports on Box
 
-Two things sit beside the mirror on Box rather than in it: dated run reports
-under `_runs/`, and a copy of the ledger under `_state/`. Neither is a
-backed-up object, and a restore that walks the mirror should skip both.
+One thing sits beside the mirror on Box rather than in it: dated run reports
+under `_runs/`. They are not backed-up objects, and a restore that walks the
+mirror should skip them.
 
 Every run drops a dated JSON report in `<OBJECT_BACKUP_BOX_ROOT>/_runs/`, named
 `2026-08-31T021703Z-prod-run00042.json`. This is the only view of the
@@ -559,7 +580,7 @@ a gap in a Box folder listing.
 That matters because neither of the other two records answers the question on
 its own. The mirror holds current state, so a week where nothing changed looks
 exactly like a week where nothing ran. The ledger's `runs` table does know the
-difference, but it lives in `/var/lib` behind SSH and SQLite.
+difference, but it lives on the deploy host behind SSH and SQLite.
 
 Each report carries the run's outcome (`ok`, `partial`, `error`), its
 duration, the counts (`listed`, `copied`, `failed`, `skipped`,
@@ -670,7 +691,7 @@ upload does not fail the run. A copy is always kept on the host under
 The same history, locally:
 
 ```bash
-sqlite3 /var/lib/bloom-box-object-backup/ledger.db \
+sqlite3 /data/bloom/box-object-backup/ledger.db \
   "SELECT started_at, finished_at, outcome, stats FROM runs ORDER BY id DESC LIMIT 10;"
 ```
 
@@ -718,73 +739,24 @@ survives MinIO → Box → MinIO and is still served by storage-api.
 
 ### If the deploy host itself is gone
 
-The ledger is what makes the mirror resumable, and it lives on that host. A
-copy is kept on Box at `<OBJECT_BACKUP_BOX_ROOT>/_state/ledger.db`, uploaded after any
-run that copied something — unless the copy already there is larger, which
-means the run's own ledger knows less than the copy does. Put it back before running the job on a rebuilt
-host:
+The ledger lives only on that host, under `/data/bloom/box-object-backup`; it
+is not copied to Box. On a rebuilt host the job starts from an empty ledger,
+concludes nothing has been copied, and copies every object again, overwriting
+what is already on Box with the same bytes. That takes as long as the original
+seed — days — and loses nothing.
 
-```bash
-sudo -i -u bloom-deploy
-export OBJECT_BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/prod/storage
-rclone copyto "box:$OBJECT_BACKUP_BOX_ROOT/_state/ledger.db" \
-    /var/lib/bloom-box-object-backup/ledger.db
-```
-
-As `bloom-deploy`, because the Box token lives in that user's home. If you
-restore it as root, `chown bloom-deploy:bloom-deploy` the file afterwards or
-the next run dies with a read-only-database error.
-
-Two things to check before running anything against it:
-
-```bash
-# no stale write-ahead log beside the restored file
-ls /var/lib/bloom-box-object-backup/ledger.db-wal 2>/dev/null && \
-    echo "REMOVE THIS — it belongs to the old file"
-
-# and it is the ledger you expect: ~8.0M rows, not a smoke test's twenty
-sqlite3 /var/lib/bloom-box-object-backup/ledger.db \
-    "SELECT count(*) FROM copied;"
-```
-
-Without it the job starts from an empty ledger, concludes nothing has ever been
-copied, and re-transfers all eight million objects — weeks of work, and the Box
-API load that comes with it. Listing Box cannot rebuild it: the ledger is keyed
-on each object's `version`, and a listing shows only that a path exists.
-
-Normally the copy is one run behind at most, so restoring it may mean a few
-objects are copied again. That is harmless — the copy simply overwrites what
-is already there.
-
-The copy can also stop being updated, and there are **two opposite reasons**.
-Neither fails the run — the objects reach Box either way — so each has its own
-summary notice, printed alongside the night's result rather than instead of it.
-Read which one you got before acting: the remedies are the reverse of each
-other.
-
-**The ledger on Box was NOT updated.** The upload was attempted and failed, or
-the local ledger could not be read. This host has the good copy and Box is
-behind. Every later night keeps reporting success while it falls further
-behind, so act on the night it appears. The job log carries the reason:
-`ledger stayed on the host only` for a failed upload, `cannot read` for an
-unreadable one. Once it works again, `ledger on Box:` in the next run's log
-confirms the copy is current.
-
-**The ledger on Box is newer than this host's — the upload was refused on
-purpose.** Box holds the record of what is already mirrored and this host holds
-a smaller one, which means this is not the machine that built the mirror: a
-rebuilt host, or a wiped state directory. **Restore the Box copy onto this
-host, and do not upload over it.** Uploading would replace the record of
-millions of objects with this run's and cost a full re-seed — this refusal is
-the guard that prevents exactly that, not a fault to be worked around. The job
-log reads `ledger NOT uploaded: the ledger on Box is AHEAD of this host`.
-Restoring is the section you are reading; do that first, then re-run.
+Set up the prerequisites again, then seed exactly as on a new host. Listing Box
+cannot rebuild the ledger: it is keyed on each object's `version`, and a
+listing shows only that a path exists.
 
 ## Configuration
 
-Set in `.env.prod` (defaults in `.env.prod.defaults`). Production is the only
-environment mirrored, so `.env.staging.defaults` deliberately carries no
-`OBJECT_BACKUP_*` keys and a test enforces that.
+The job's settings come from `.env.prod.defaults` in the deploy tree the run
+is started from, mounted read-only into its container. **Editing the server's
+`.env.prod` has no effect on them**: change the defaults file in the repository,
+or pass `-e KEY=value` to a single run. Production is the only environment
+mirrored, so `.env.staging.defaults` deliberately carries no `OBJECT_BACKUP_*`
+keys and a test enforces that.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -792,14 +764,19 @@ environment mirrored, so `.env.staging.defaults` deliberately carries no
 | `OBJECT_BACKUP_MINIO_PREFIX` | `storage-single-tenant` | Tenant prefix storage-api files objects under. Config rather than a constant because nothing in the stack declares it — storage-api chooses it. To see the path on a host: `docker exec <minio-container> ls /data/bloom-storage/` |
 | `OBJECT_BACKUP_BOX_REMOTE` | `box` | Name of the rclone remote |
 | `OBJECT_BACKUP_BOX_ROOT` | `Bloom-Backups/BloomV2-Data-Backup/prod/storage` | Folder on Box to mirror into |
-| `OBJECT_BACKUP_WORKERS` | `8` | Concurrent copies; lower it if Box throttles hard |
+| `OBJECT_BACKUP_WORKERS` | `4` | Concurrent copies. Box refuses concurrent creation of the same new folder (`name_temporarily_reserved`), which 8 workers hit repeatedly on a fresh tree; lower it further if Box throttles hard. |
 | `OBJECT_BACKUP_BWLIMIT` | *(unset)* | rclone bandwidth cap, e.g. `20M` |
-| `OBJECT_BACKUP_STATE_DIR` | `/var/lib/bloom-box-object-backup` | Ledger location. Not in the env file — a code default. The workflow declares the same path once and passes it to all three of its ssh sessions; if `.env.prod` sets this to anything else the run **refuses to start** (exit 2) rather than let the cancel step and the summary watch an empty directory. The comparison is exact, so a trailing slash counts as different. |
-| `OBJECT_BACKUP_RC_PORT` | `5572` | Loopback port for the rclone daemon. Not in the env file — a code default. |
+| `OBJECT_BACKUP_STATE_DIR` | `/data/bloom/box-object-backup` | Ledger location, fixed: `compose.yml` mounts exactly this path and the workflow passes it to the run. Not in the env file; if `.env.prod.defaults` sets it to anything else, the run **refuses to start** (exit 2) rather than let the summary watch an empty directory. The comparison is exact, so a trailing slash counts as different. |
+| `OBJECT_BACKUP_RC_PORT` | `5572` | Port for the rclone daemon, on the container's own loopback, so nothing outside the container can reach it. Not in the env file — a code default. |
+| `OBJECT_BACKUP_RCLONE_CONFIG` | `/config/rclone/rclone.conf` | Where the job reads the rclone config. Set by `compose.yml`, which mounts the job's own rclone folder, `/home/bloom-deploy/.config/rclone-box-object-backup`, there read-write so a refreshed Box token is saved. |
 
-`MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` / `POSTGRES_USER` / `POSTGRES_DB`
-come from the same `.env` file; the job passes MinIO's credentials to rclone
-inline so they never land in a config file on disk.
+The three credentials — `POSTGRES_PASSWORD`, `MINIO_ROOT_USER` and
+`MINIO_ROOT_PASSWORD` — come from the deploy's `.env.prod`, which compose reads
+through `--env-file` and passes into the container: the same values the
+database and MinIO get. Without `--env-file`, compose refuses to start the run.
+The job hands MinIO's credentials to rclone inside each remote-control call, so
+they never land in a config file on disk. `POSTGRES_HOST`, `POSTGRES_PORT`,
+`POSTGRES_USER` and `POSTGRES_DB` come from the defaults file.
 
 `OBJECT_BACKUP_MINIO_BUCKET` and `OBJECT_BACKUP_MINIO_PREFIX` are checked against a real
 object before any copying starts: the run stats one object the manifest names

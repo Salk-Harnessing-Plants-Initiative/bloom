@@ -457,8 +457,14 @@ bloomctl cyl batch-download-for-predict <out_dir>
   rather than treated as still held.
 - `--json` prints one entry per scan_id (`scan_key`, `status`, `error`) as a
   JSON array; without it, a human-readable summary plus one line per failure.
-- **Exit code:** non-zero if any scan in the batch failed; zero if every scan
-  succeeded, was skipped, or the input was empty.
+- **Exit code:** `0` if every scan succeeded, was skipped, or the input was
+  empty; `3` if at least one scan failed — whether that's one scan out of many
+  or every scan in the batch, since `3` only means "not every scan succeeded,"
+  never "some scan did" (mirrors `sleap_roots_predict`/`trait_extractor`'s own
+  `0`/`3` convention, bloom #772). Check `run_manifest.json` or `--json`
+  output to see which scans, if any, actually staged. A usage error or
+  manifest-lock/write failure still exits `2`/`1` respectively, independent
+  of any scan's outcome.
 
 Auth: same saved login profile as other `cyl` commands.
 
@@ -512,6 +518,22 @@ bloomctl cyl ingest-result <envelope.json | ->   [-p/--profile PROFILE] [--json]
   checksum mismatch, or a blob already present in the envelope. Omit to
   forward `blobs` unchanged, exactly as before this flag existed.
 
+  If the envelope's `idempotency_key` is already in `cyl_trait_sources`, the
+  upload is skipped and the constructed blobs are not merged: the RPC discards
+  them anyway, and re-uploading is the one step that can fail once the producer
+  has recomputed its artifacts, since `.slp` output is not byte-reproducible
+  and the object path embeds the key (talmolab/sleap-roots-pipeline#76).
+  Checksum verification is part of the upload, so it is skipped on that path
+  too — the local bytes are never stored, so their integrity is not something
+  the delivery can affect. Every other guarantee above still applies to a
+  re-delivery, because the check runs after the manifest is read.
+- When the `ARGO_WORKFLOW_NAME` environment variable is set (Argo sets it
+  automatically inside the write-back container — see
+  `sleap-roots-write-back-template.yaml`), also links the matching
+  `cyl_pipeline_run_scans` row to this write-back (`'written'`), so the
+  pipeline run's `done_count`/`failed_count` can reflect it. Omit or unset it
+  for the existing manual/ad-hoc invocation shape, which is unaffected.
+
 The most common real-world error is `inputs.image_ids` not resolving to exactly
 one scan on the target server — the command explains that the scan's images must
 already exist in `cyl_images` on the Bloom you're pointed at.
@@ -556,15 +578,34 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
 - `--predictions-dir DIR`: predict's own nested batch output root
   (`DIR/{scan_key}/{scan_key}.predictions.json` + `.slp` files per scan).
   Constructs, verifies, and uploads blobs per envelope from its own scan_key's
-  subdirectory, reusing `ingest-result --predictions-dir`'s logic unchanged. A
-  missing manifest or upload failure isolates that envelope without aborting
-  the others.
-- `--json` prints one entry per envelope (`scan_key`, `status`, `error`) as a
-  JSON array; without it, a human-readable summary plus one line per failure.
+  subdirectory, reusing `ingest-result --predictions-dir`'s logic unchanged — so
+  an envelope whose `idempotency_key` is already in `cyl_trait_sources` has its
+  upload and merge skipped, exactly as for the single-envelope command. Blob
+  construction still runs either way, so a missing manifest or a missing `.slp`
+  fails that envelope whether or not it was already ingested. A missing manifest
+  or upload failure isolates that envelope without aborting the others.
+- `--json` prints one entry per envelope (`scan_key`, `status`, `error`,
+  `retriable`, `warning`) as a JSON array; without it, a human-readable summary
+  plus one line per failure and one `WARNING` line per degraded item. `warning`
+  is non-empty when the idempotency-gate check could not run and the command
+  fell back to uploading — most likely a missing column grant.
 - **Exit code:** non-zero if any envelope in the batch failed; zero if every
   envelope succeeded, was a no-op re-delivery, or the directory was empty
   (a directory containing only a manifest with no matching files is not the
   empty case — it exits non-zero).
+- When `ARGO_WORKFLOW_NAME` is set, after every discovered envelope has been
+  processed, marks every scan dispatched under that workflow name that never
+  produced a result as `'failed'` (one call, regardless of batch size —
+  including a batch of zero envelopes, since every scan under that workflow
+  name having failed prediction before producing any file is exactly the
+  case this closes out). Skipped entirely when the env var is unset (manual/
+  local runs, unaffected). A failure of this call is isolated, not a crash —
+  it's reported as its own failed entry (`scan_key="<reconciliation>"`) in the
+  batch's summary/`--json` output and reflected in the exit code, alongside
+  every real envelope's own outcome; a successful call logs how many scans it
+  closed out. An unreadable envelope file at any earlier stage (e.g. a
+  truncated file left by an OOM-killed producer) is isolated the same way and
+  never prevents this call from running.
 
 Auth: same saved login profile as `ingest-result` (must have write access).
 

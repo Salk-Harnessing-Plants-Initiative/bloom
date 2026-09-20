@@ -136,14 +136,28 @@ export function packFocus(
   return out;
 }
 
-/** How many cells meet the focus, among those the filter rows leave on the map. */
+/** A cell as the counters read it; the cell type is optional for callers with none. */
+type CountedCell = Pick<CellArraysRow, "replicate" | "facets"> & { cluster_ordinal?: number };
+
+const NO_HIDDEN_TYPES: ReadonlySet<number> = new Set();
+
+/** Whether a cell sits in a cell type the map is not showing. */
+function inHiddenType(cell: CountedCell, hiddenClusters: ReadonlySet<number>): boolean {
+  return cell.cluster_ordinal !== undefined && hiddenClusters.has(cell.cluster_ordinal);
+}
+
+/** How many cells meet the focus, among those the filter rows and the hidden
+ *  cell types leave on the map. */
 export function countFocused(
-  cells: Pick<CellArraysRow, "replicate" | "facets">[],
+  cells: CountedCell[],
   focused: FocusedValues,
   hidden: HiddenValues,
+  hiddenClusters: ReadonlySet<number> = NO_HIDDEN_TYPES,
 ): number {
   let n = 0;
-  for (const cell of cells) if (meetsFocus(cell, focused) && !ruledOut(cell, hidden)) n++;
+  for (const cell of cells) {
+    if (meetsFocus(cell, focused) && !ruledOut(cell, hidden) && !inHiddenType(cell, hiddenClusters)) n++;
+  }
   return n;
 }
 
@@ -159,19 +173,21 @@ export function describeFocus(focused: FocusedValues): string {
     .join(" and ");
 }
 
-/** Each value of one row, counting only the cells the other rows leave on the
- *  map, in first-seen order. A value no cell can reach shows 0 rather than
- *  disappearing. */
+/** Each value of one row, counting only the cells the other rows and the hidden
+ *  cell types leave on the map, in first-seen order. A value no cell can reach
+ *  shows 0 rather than disappearing. */
 export function countsFor(
-  cells: Pick<CellArraysRow, "replicate" | "facets">[],
+  cells: CountedCell[],
   hidden: HiddenValues,
   filter: string,
+  hiddenClusters: ReadonlySet<number> = NO_HIDDEN_TYPES,
 ): { name: string; count: number }[] {
   const counts = new Map<string, number>();
   for (const cell of cells) {
     const value = filterValue(cell, filter);
     if (value === null) continue;
-    counts.set(value, (counts.get(value) ?? 0) + (ruledOut(cell, hidden, filter) ? 0 : 1));
+    const shown = !ruledOut(cell, hidden, filter) && !inHiddenType(cell, hiddenClusters);
+    counts.set(value, (counts.get(value) ?? 0) + (shown ? 1 : 0));
   }
   return [...counts].map(([name, count]) => ({ name, count }));
 }
