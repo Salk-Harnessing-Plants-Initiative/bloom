@@ -150,15 +150,52 @@ def test_format_json_round_trips_every_field():
             batch.ScanResult("scan_2", "failed", "boom"),
             batch.ScanResult("scan_3", "skipped"),
             batch.ScanResult("scan_4", "failed", "unfixable", retriable=False),
+            batch.ScanResult("scan_5", "ok", warning="gate degraded"),
         ]
     )
     data = json.loads(batch.format_json(result))
     assert data == [
-        {"scan_key": "scan_1", "status": "ok", "error": "", "retriable": True},
-        {"scan_key": "scan_2", "status": "failed", "error": "boom", "retriable": True},
-        {"scan_key": "scan_3", "status": "skipped", "error": "", "retriable": True},
-        {"scan_key": "scan_4", "status": "failed", "error": "unfixable", "retriable": False},
+        {"scan_key": "scan_1", "status": "ok", "error": "", "retriable": True, "warning": ""},
+        {
+            "scan_key": "scan_2",
+            "status": "failed",
+            "error": "boom",
+            "retriable": True,
+            "warning": "",
+        },
+        {"scan_key": "scan_3", "status": "skipped", "error": "", "retriable": True, "warning": ""},
+        {
+            "scan_key": "scan_4",
+            "status": "failed",
+            "error": "unfixable",
+            "retriable": False,
+            "warning": "",
+        },
+        # A warning rides alongside a NORMAL outcome -- it is not an error, and it must not
+        # change the status. This is how a fail-open idempotency-gate check reaches an operator
+        # whose pod logs are unreadable.
+        {
+            "scan_key": "scan_5",
+            "status": "ok",
+            "error": "",
+            "retriable": True,
+            "warning": "gate degraded",
+        },
     ]
+
+
+def test_format_summary_reports_a_warning_on_an_otherwise_successful_item():
+    """A degraded item still counts as ok in the header, but must not pass silently."""
+    result = batch.BatchResult(
+        [
+            batch.ScanResult("scan_1", "ok"),
+            batch.ScanResult("scan_2", "ok", warning="idempotency-gate check failed"),
+        ]
+    )
+    summary = batch.format_summary(result, verb="Ingested", noun="envelope", destination="/out")
+    assert "Ingested 2/2 envelopes" in summary
+    assert "WARNING scan_2: idempotency-gate check failed" in summary
+    assert "scan_1" not in summary
 
 
 def test_format_json_empty_batch_is_empty_array():

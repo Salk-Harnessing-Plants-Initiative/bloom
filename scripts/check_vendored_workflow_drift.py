@@ -123,7 +123,7 @@ def check_drift(vendored_path: Path = VENDORED_FILE, ref_path: Path = REF_FILE) 
         return EXIT_PIN_FILE_INVALID
 
     try:
-        sha = ref_path.read_text().strip()
+        sha = ref_path.read_text(encoding="utf-8").strip()
     except OSError as exc:
         print(f"PIN FILE MISSING OR UNREADABLE: {ref_path} ({exc})", file=sys.stderr)
         return EXIT_PIN_FILE_INVALID
