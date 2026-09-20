@@ -51,6 +51,22 @@ package's ``cluster_visualization`` submodule) — the same as ``pca_analysis``/
 *second*, redundant import on the ``include_plots=True`` path, but does not itself keep
 matplotlib out of ``sys.modules`` on the default path; no Tier-0 import-clean guarantee is
 claimed here.
+
+**Optional font-style override (#680).** ``plot_font_family``/``plot_font_size`` are forwarded
+into the ``_plots.generate_figures`` call above — the same shared helper, reused with no
+change — which applies them uniformly to every generated figure's title, axis labels, tick
+labels, standalone annotation text (e.g. ``create_cluster_size_barplot``'s per-bar sample
+counts), figure-level text, and legend text/title before it is persisted. Both default to
+``None`` (no override, identical to pre-#680 styling) and are ignored when
+``include_plots=False``. An unresolvable family is not rejected: matplotlib falls back at
+render, so provenance records the family *requested*, not the one drawn.
+
+``plot_cmap``/``plot_point_size``/``plot_alpha`` (#662, on ``pca_analysis``/``umap_analysis``)
+are deliberately **not** offered here — the omission is not an oversight. The upstream
+plotters expose no such kwargs: ``create_cluster_scatter_pca(cluster_result, pca_result,
+highlight_indices, figsize, title)`` and ``create_cluster_size_barplot(cluster_labels,
+n_clusters, figsize)`` hardcode ``plt.cm.tab10``, ``alpha=0.6, s=50`` and ``alpha=0.7``
+internally. Exposing them needs an upstream ``sleap-roots-analyze`` change, not a bloommcp one.
 """
 
 from __future__ import annotations
@@ -80,7 +96,13 @@ from bloom_mcp.data_access import (
 )
 from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools._plots import close_figures, generate_figures, validate_plot_keys
+from bloom_mcp.tools._plots import (
+    MAX_PLOT_FONT_SIZE,
+    check_plot_style_ceiling,
+    close_figures,
+    generate_figures,
+    validate_plot_keys,
+)
 from bloom_mcp.tools._qc_shared import _finite_or_none, _validate_trait_subset
 
 logger = logging.getLogger(__name__)
@@ -202,6 +224,31 @@ class ClusteringParams(BaseModel):
         "available plots when include_plots=True. Ignored when include_plots=False. "
         "Valid keys: create_cluster_scatter_pca, create_cluster_size_barplot. Both work "
         "identically regardless of method.",
+    )
+    # plot_font_size's ceiling (#721) lives in bloom_mcp.tools._plots as MAX_PLOT_FONT_SIZE —
+    # shared with pca_analysis.py/umap_analysis.py so the three tools can't silently desync
+    # on the same value.
+    plot_font_family: str | None = Field(
+        default=None,
+        description="Font family override (e.g. 'serif', 'DejaVu Sans') applied to every "
+        "text element (title, axis labels, tick labels, annotations, legend text/title) "
+        "on each generated plot. Omit for each plot's default matplotlib styling. Ignored "
+        "when include_plots=False. An unrecognized family name is not rejected — it "
+        "silently falls back to matplotlib's default font rather than erroring, so a "
+        "typo won't surface as invalid_input. Provenance records the family you "
+        "requested, not the one matplotlib resolved it to.",
+    )
+    plot_font_size: float | None = Field(
+        default=None,
+        json_schema_extra={"exclusiveMinimum": 0, "maximum": MAX_PLOT_FONT_SIZE},
+        description=f"Font size (points) override applied to every text element on each "
+        f"generated plot (0-{MAX_PLOT_FONT_SIZE}, exclusive of 0). The upper bound is a "
+        f"sanity ceiling on this LLM-driven input surface, not a design limit (#721). "
+        f"Checked in the tool body — not a Pydantic Field constraint, so the rejection "
+        f"message names the value you submitted and the ceiling, not just a field name. "
+        f"A valid value has no effect when include_plots=False (nothing is rendered to "
+        f"style); an out-of-range value is rejected as invalid_input regardless of "
+        f"include_plots.",
     )
 
 
@@ -438,6 +485,25 @@ def clustering(
     # Supabase read.
     _reject_wrong_method_controls(params)
 
+    # plot_font_size ceiling (#721): checked here, before any I/O — the field is derived
+    # entirely from the request, not from the loaded experiment, so there's no reason to pay
+    # for reader.load_experiment before rejecting a bad one. Not a Pydantic
+    # Field(gt=0, le=...) constraint: a Field violation is mapped by the contract layer's
+    # BloomMCPError.from_input_validation into a generic message naming only the field and
+    # error type, never the submitted value or the ceiling — see check_plot_style_ceiling's
+    # own docstring.
+    #
+    # Placement differs from pca_analysis/umap_analysis, which put this first in the body
+    # (#680). Here it is second, after the method-control guard above, with two deliberate
+    # error-precedence consequences: a request wrong on both axes reports the cross-method
+    # control (the more structural error, and the one this file's existing tests pin), and
+    # this check now precedes validate_plot_keys — which runs on the plots path below,
+    # *after* the experiment read — so a request carrying both a bad plot key and an
+    # out-of-range font size reports the font size, without paying for the read.
+    check_plot_style_ceiling(
+        params.plot_font_size, field_name="plot_font_size", max_value=MAX_PLOT_FONT_SIZE
+    )
+
     # Consumer: require a cleaned version. A missing one is a precondition failure with a
     # concrete remedy — caught here so it carries "run qc_clean first" rather than the
     # contract's generic tool_error message for the declared read error.
@@ -657,7 +723,12 @@ def clustering(
                 result,
                 scatter_pca_result_dict=scatter_pca_result_dict,
             )
-            generate_figures({k: calls[k] for k in keys_to_generate}, figures)
+            generate_figures(
+                {k: calls[k] for k in keys_to_generate},
+                figures,
+                font_family=params.plot_font_family,
+                font_size=params.plot_font_size,
+            )
 
         with tempfile.TemporaryDirectory(prefix="clustering_input_") as _tmp:
             source_snapshot = Path(_tmp) / _INPUT_SNAPSHOT_NAME
