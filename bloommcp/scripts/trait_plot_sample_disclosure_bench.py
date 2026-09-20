@@ -1,8 +1,11 @@
-"""Reproduce every measured number in this change's ``design.md`` (#748).
+"""Reproduce every measured number behind the #748 sample-size disclosure.
 
-Run:  cd bloommcp && uv run --extra test python \\
-          ../openspec/changes/add-bloommcp-trait-plot-sample-disclosure/benchmarks/\\
-trait_plot_sample_disclosure_bench.py
+Run:  cd bloommcp && uv run --extra test python scripts/trait_plot_sample_disclosure_bench.py
+
+Lives in ``bloommcp/scripts/`` rather than beside the OpenSpec change it documents so that
+``.pre-commit-config.yaml``'s black/ruff hooks — scoped to the service directories — actually
+reach it. A benchmark nothing lints and nothing runs rots at the next ``sleap-roots-analyze``
+bump, which is exactly when its numbers stop being true.
 
 Exits non-zero if a *claim* fails (the quartile property, the flier-rate ordering, the floor
 comparison) rather than only printing timings — a design doc whose arguments are re-checkable is
@@ -15,6 +18,7 @@ decisions rest on, not the absolute seconds.
 
 from __future__ import annotations
 
+import io
 import sys
 import time
 from pathlib import Path
@@ -33,7 +37,7 @@ from bloom_mcp.sections.sleap_roots.analysis._viz_shared import (
     group_sample_size_table,
 )
 
-_FIXTURES = Path(__file__).resolve().parents[4] / "bloommcp" / "tests" / "fixtures"
+_FIXTURES = Path(__file__).resolve().parents[1] / "tests" / "fixtures"
 _failures: list[str] = []
 
 
@@ -170,7 +174,8 @@ def render_cost_per_page() -> None:
                         )
         if tight:
             fig.tight_layout(rect=[0, 0.03, 1, 1])
-        fig.savefig("/dev/null", format="png", dpi=150, bbox_inches="tight")
+        # io.BytesIO, not "/dev/null": the latter is a directory path on Windows.
+        fig.savefig(io.BytesIO(), format="png", dpi=150, bbox_inches="tight")
         timings[label] = time.perf_counter() - start
         plt.close(fig)
         print(f"  {label:22s} {timings[label]:.2f}s")

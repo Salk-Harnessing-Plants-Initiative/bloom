@@ -45,6 +45,7 @@ def test_plot_trait_histograms_smoke(call_tool, db_experiment_id: str) -> None:
     assert "trait_sample_sizes.csv" not in result["page_traits"]
     assert len(result["outputs"]) == result["n_pages"] + 1
     assert result["n_rows_read"] > 0
+    assert result["trait_n_min"] is not None, "a resolved selection always has traits"
     assert result["trait_n_min"] <= result["trait_n_median"] <= result["trait_n_max"]
     assert result["trait_n_max"] <= result["n_rows_read"]
     assert len(result["low_sample_traits"]) <= result["low_sample_trait_count"]

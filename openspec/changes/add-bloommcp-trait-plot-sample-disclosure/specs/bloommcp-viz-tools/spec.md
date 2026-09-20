@@ -36,17 +36,29 @@ The result SHALL report:
   - `small_sample_groups` — `0 < n_finite <` the documented minimum.
 - **The denominators** — rows read, distinct genotype groups, and rows excluded from every box
   because the row's own genotype value is null.
-- **A missingness scalar** — the largest missing fraction across all cells and the cell carrying
-  it, so a trait that is 99% missing but still clears the count floor is named in the response
-  rather than only in the committed table.
+- **A missingness scalar** — the largest missing fraction across cells **that have finite data**,
+  and the cell carrying it, so a box that is 99% missing but still clears the count floor is
+  named in the response rather than only in the committed table. Absent cells SHALL be excluded
+  from it: they sit at a missing fraction of 1.0 by construction, so including them would hand
+  the field to a cell already fully reported as absent and mask the case it exists for.
+- **A bucket-independent count of thin boxes.** Because the buckets are mutually exclusive, a
+  box that is both thin and `inf`-bearing is reported only as non-finite — so the small-sample
+  count is not the count of thin boxes, and a caller gating on it would read "no thin boxes"
+  while the reported minimum sits below the floor. The result SHALL therefore also report every
+  drawn box below the floor, whatever else is wrong with it.
 
-Every (trait, genotype) pair SHALL fall into exactly one of those buckets or be unflagged, and
-`n_boxes_drawn` + the absent count SHALL equal the number of resolved traits times the number of
-genotype groups.
+Every (trait, genotype) pair SHALL fall into exactly one of those buckets or be unflagged. The
+totality identity is three-termed, because the absent count deliberately excludes the cells of a
+wholly-dead trait (those collapse into `no_data_traits`): `n_boxes_drawn` + the absent count +
+(the no-data trait count x the genotype-group count) SHALL equal the number of resolved traits
+times the number of genotype groups.
 
-**Ordering SHALL be fully determined.** Each capped list SHALL be ordered by ascending count, then
-by `(trait, genotype)` lexicographically; `absent_genotype_groups`, where every entry ties at
-zero, SHALL be ordered by `(trait, genotype)` alone. Ties are the normal case in a replicated
+**Ordering SHALL be fully determined, and worst-first in each bucket's own terms.**
+`small_sample_groups` SHALL be ordered by ascending finite count, then `(trait, genotype)`;
+`non_finite_groups` SHALL be ordered by **descending** non-finite count, then `(trait, genotype)`
+— severity there is how many values are non-finite, so ascending order would let a cell with one
+`inf` survive the cap while one with hundreds is truncated away; `absent_genotype_groups`, where
+every entry ties at zero by construction, SHALL be ordered by `(trait, genotype)` alone. Ties are the normal case in a replicated
 design, so an unspecified tie-break would make which entries survive the cap — and therefore the
 persisted manifest — irreproducible between runs over the same data. The ascending order is also
 what makes the cap safe: it truncates the best-supported end.
@@ -145,12 +157,14 @@ note SHALL escalate to a visibly marked warning that names the affected groups (
 calibrate severity rather than only presence, and points at the committed sample-size table.
 
 On a paginated render the note SHALL be **page-scoped** and SHALL say so in its own text: its
-statistics and named groups SHALL cover only the traits rendered on that page. The text drawn on
-each page SHALL be stamped into the persisted run's `params` — its content, the line wrapping
-applied for rendering aside — and the result SHALL report the run-wide note as a field. A
-run-wide string matches no page of a paginated render, so stamping only that would leave a
-manifest reader re-deriving each page's note from the floor, the cap, the ordering rule and the
-phrasing.
+statistics and named groups SHALL cover only the traits rendered on that page. The result SHALL report the
+run-wide note as a field and that value SHALL be stamped into the persisted run's `params`.
+
+The per-page strings SHALL **not** be stamped. Each is a pure function of that page's entry in
+`page_traits`, the committed sample-size table, and the documented floor and caps — all of which
+the manifest or its outputs already carry — so stamping them duplicates recoverable data, and at
+cylinder width it appends tens of pages' worth of prose to a `manifest.json` that is re-validated
+in full on every subsequent run for that tool and experiment.
 
 `plot_trait_histograms` SHALL NOT gain an equivalent note: its delegate already titles every
 panel with that trait's own `(n=…)`.
@@ -187,7 +201,8 @@ panel with that trait's own `(n=…)`.
   page only
 - **THEN** that group is named on its own page's note and on no other page's note, each page's
   statistics cover only that page's traits, the note's own text identifies itself as page-scoped,
-  and the persisted run's `params` carries each page's note
+  and the persisted run's `params` carries the run-wide note (not the per-page strings, which
+  are reconstructible from `page_traits` and the committed table)
 
 #### Scenario: The histogram render is unchanged
 
@@ -283,10 +298,10 @@ what `qc_inspect` reports for the same frame.
   proceeds
 - **THEN** the frame passed to the rendering delegate still contains those values unchanged
 
-### Requirement: The Sample-Size Floor Is Owned By The Visualization Tools
+### Requirement: The Sample-Size Floor Is Owned By The Trait-Plot Tools
 
-The minimum observation count these tools flag against SHALL be a constant owned by the
-visualization module itself, NOT an alias for the QC per-trait completeness convention
+The minimum observation count SHALL be a constant owned by the shared visualization module
+itself — the floor `plot_trait_histograms` and `plot_trait_boxplots` flag against — NOT an alias for the QC per-trait completeness convention
 (`_qc_shared._CANONICAL_MIN_SAMPLES_PER_TRAIT`). The two answer different questions — "enough
 samples to keep a trait during cleaning" versus "enough points for a box to be made of data" — and
 aliasing would let a QC-side retune silently move which boxes these tools flag and what their

@@ -219,9 +219,13 @@ class PlotTraitHistogramsResult(RunLinks):
         "order — recorded even when trait_columns was omitted (auto-detected).",
     )
     page_traits: dict[str, list[str]] = Field(
-        description="Maps each committed output filename to the trait columns rendered on "
+        description="Maps each committed FIGURE filename to the trait columns rendered on "
         "that page (a single entry, covering every resolved_trait_columns, when not batched) "
-        "— otherwise only discoverable by opening the image and reading its axis labels.",
+        "— otherwise only discoverable by opening the image and reading its axis labels. "
+        "This is NOT a mapping over every key of `outputs`: a run also commits "
+        "trait_sample_sizes.csv, which is a table rather than a page and deliberately has no "
+        "entry here, so iterating `outputs` and indexing this field raises KeyError. Iterate "
+        "this field directly when you want the pages.",
     )
 
 

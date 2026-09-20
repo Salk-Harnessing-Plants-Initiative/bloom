@@ -55,7 +55,12 @@ def test_plot_trait_boxplots_smoke(call_tool, db_experiment_id: str) -> None:
         + result["no_data_trait_count"] * result["n_genotype_groups"]
         == result["n_traits_plotted"] * result["n_genotype_groups"]
     )
+    # Guarded rather than chained bare: on an empty population these are null by design, and
+    # a bare comparison would raise TypeError instead of failing with a readable message.
+    assert (
+        result["n_boxes_summarized"] > 0
+    ), "cylinder/turface always draw at least one box"
     assert result["box_n_min"] <= result["box_n_median"] <= result["box_n_max"]
     assert len(result["small_sample_groups"]) <= result["small_sample_group_count"]
     # The note is the only signal a caller who opens just the PNG gets.
-    assert "n per box" in result["sample_size_note"]
+    assert "rows per box" in result["sample_size_note"]

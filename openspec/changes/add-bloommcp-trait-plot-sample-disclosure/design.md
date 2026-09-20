@@ -112,7 +112,11 @@ weighted blends of adjacent order statistics that correspond to no measured plan
 `[1, 2]` the box spans `[1.25, 1.75]`, a range containing neither datum. **n=5 is the smallest
 sample size above 1 at which Q1, the median and Q3 all land exactly on order statistics**
 (x₍₂₎, x₍₃₎, x₍₄₎) — the first n at which the drawn box is made of data rather than of the
-interpolation rule.
+interpolation rule. The property is **non-monotone**: it holds at n ≡ 1 (mod 4), so at 5, 9 and
+13 but *not* at 6, 7 or 8, where most `turface_19` boxes sit. 5 is therefore defensible as the
+smallest such n, not as a threshold above which the property holds — what is monotone is only
+the cruder fact that more observations make the interpolation matter less. A future maintainer
+should not reason from this criterion to "n=7 is worse than n=5".
 
 **This floor says nothing about the whiskers or the flier dots, and clearing it does not make
 them trustworthy.** Measured here (60k replicates per n, clean standard-normal data, matplotlib's
@@ -120,8 +124,9 @@ them trustworthy.** Measured here (60k replicates per n, clean standard-normal d
 side of this floor — a sample carries at least one spurious "outlier" dot 33% of the time, and
 8.6% of its points are flagged**, against the ~0.7% asymptotic rate for normal data. The
 *fraction* of points flagged falls with n (8.6% at 5, 4.0% at 10, 1.8% at 30) but the probability
-that a box shows at least one spurious flier does **not** — it sits between 27% and 34% at every
-n measured from 4 to 30. A flier dot is an arithmetic artifact whether or not the box clears this
+that a box shows at least one spurious flier does **not**: it is 21% at n=4, then sits between
+27% and 34% at every n measured from 5 to 30 — it does not decay with sample size the way the
+flagged fraction does. A flier dot is an arithmetic artifact whether or not the box clears this
 floor, and nothing in this change should be read as certifying otherwise.
 
 **Owned by `_viz_shared`, not aliased to `_qc_shared._CANONICAL_MIN_SAMPLES_PER_TRAIT` (10)** —

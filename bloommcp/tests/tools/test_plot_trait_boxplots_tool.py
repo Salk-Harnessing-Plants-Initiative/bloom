@@ -878,7 +878,37 @@ def _many_thin_groups(reader, name="manythin.csv"):
     return n_geno
 
 
-def test_small_sample_groups_ordered_capped_and_deterministic(injected_ports):
+def test_small_sample_groups_are_ordered_by_ascending_count(injected_ports):
+    """The cap's whole safety argument is that ascending order truncates the BEST-supported
+    end. `_many_thin_groups` ties every cell at n=1, so an implementation that sorted
+    descending — inverting that argument and truncating the worst-supported end — satisfied a
+    sorted() assertion vacuously. This uses mixed counts and pins that the single worst cell
+    survives truncation.
+    """
+    reader, _store = injected_ports
+    n_over_cap = _viz_shared.MAX_FLAGGED_REPORTED + 2
+    rows = {"geno": [], "t": []}
+    for i in range(n_over_cap):
+        # One cell at n=1; every other flagged cell at n=4. Descending order would truncate
+        # the n=1 cell away entirely.
+        n_obs = 1 if i == n_over_cap - 1 else 4
+        rows["geno"].extend([f"G{i:02d}"] * 6)
+        rows["t"].extend(
+            [float(j) for j in range(n_obs)] + [float("nan")] * (6 - n_obs)
+        )
+    reader.add_experiment("mixed_thin.csv", pd.DataFrame(rows))
+    result = plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="mixed_thin.csv"))
+
+    counts = [g.n for g in result.small_sample_groups]
+    assert len(counts) == _viz_shared.MAX_FLAGGED_REPORTED
+    assert result.small_sample_group_count == n_over_cap
+    assert counts == sorted(counts)
+    assert counts[0] == 1, "the worst-supported box must survive the cap"
+    assert result.small_sample_groups[0].genotype == f"G{n_over_cap - 1:02d}"
+    assert result.box_n_min == 1
+
+
+def test_small_sample_groups_capped_and_deterministic_on_ties(injected_ports):
     reader, _store = injected_ports
     n_geno = _many_thin_groups(reader)
     first = plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="manythin.csv"))
@@ -925,13 +955,32 @@ def test_rows_with_null_genotype_are_counted_and_excluded(injected_ports):
     assert result.box_n_max == 6
 
 
-def test_max_nan_fraction_names_a_heavily_missing_cell(injected_ports):
+def test_max_nan_fraction_excludes_absent_cells_and_breaks_ties_by_name(injected_ports):
+    """An absent cell sits at nan_fraction 1.0 by construction, so including absent cells hands
+    this field to a cell already fully reported in absent_genotype_groups — masking the case the
+    field exists for: a box that CLEARS the count floor while most of its column is missing.
+    """
     reader, _store = injected_ports
     _disclosure_experiment(reader)
     result = _run_disclosure(reader)
-    assert result.max_nan_fraction == pytest.approx(1.0)
-    assert result.max_nan_fraction_group is not None
-    assert len(result.max_nan_fraction_group) == 2
+
+    # t_thin x A keeps 1 of 6 rows -> 0.833; t_absent x A is 1.0 but absent, so excluded.
+    assert result.max_nan_fraction == pytest.approx(5 / 6, abs=1e-4)
+    assert result.max_nan_fraction_group == ["t_thin", "A"]
+
+    # Tie-break: two cells at the same fraction resolve by (trait, genotype).
+    reader.add_experiment(
+        "tied.csv",
+        pd.DataFrame(
+            {
+                "geno": ["A"] * 6 + ["B"] * 6,
+                "z_trait": [1.0] + [float("nan")] * 5 + [1.0] + [float("nan")] * 5,
+                "a_trait": [1.0] + [float("nan")] * 5 + [1.0] + [float("nan")] * 5,
+            }
+        ),
+    )
+    tied = plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="tied.csv"))
+    assert tied.max_nan_fraction_group == ["a_trait", "A"]
 
 
 def test_group_sample_sizes_csv_is_committed_and_complete(injected_ports, monkeypatch):
@@ -1077,7 +1126,7 @@ def _note_texts(fig):
     """Figure-level texts that are OUR note. Filters rather than counts: the delegate already
     puts a suptitle in fig.texts on the vertical unbatched path and on every batched page.
     """
-    return [t.get_text() for t in fig.texts if "n per box" in t.get_text()]
+    return [t.get_text() for t in fig.texts if "rows per box" in t.get_text()]
 
 
 @pytest.mark.parametrize("n_geno", [2, 10])
@@ -1085,14 +1134,23 @@ def test_each_genotype_tick_label_carries_its_own_n(
     injected_ports, monkeypatch, n_geno
 ):
     """The delegate switches to a horizontal orientation above 8 genotypes, moving the group
-    labels from the x-axis to the y-axis. Selecting the axis by title (not by assuming x)
-    is what keeps this from silently comparing against the numeric scale and passing for the
-    wrong reason."""
+    labels from the x-axis to the y-axis, so both paths are exercised.
+
+    Every genotype gets a DISTINCT count: an earlier version of this test gave every cell the
+    same n, so an implementation that paired G00's label with G05's count — the exact
+    mislabelling the by-text matching exists to rule out — passed it unchanged.
+    """
     reader, _store = injected_ports
+    expected = {}
     rows = {"geno": [], "t": []}
     for i in range(n_geno):
-        rows["geno"].extend([f"G{i:02d}"] * 6)
-        rows["t"].extend([float(j) for j in range(6)])
+        # 3, 7, 9, 3, 7, 9, ... distinct within any pair, and never all equal.
+        n_obs = (3, 7, 9)[i % 3]
+        expected[f"G{i:02d}"] = n_obs
+        rows["geno"].extend([f"G{i:02d}"] * 9)
+        rows["t"].extend(
+            [float(j) for j in range(n_obs)] + [float("nan")] * (9 - n_obs)
+        )
     reader.add_experiment(f"ticks_{n_geno}.csv", pd.DataFrame(rows))
     captured = _captured_figure(monkeypatch)
     result = plot_trait_boxplots(
@@ -1109,7 +1167,93 @@ def test_each_genotype_tick_label_carries_its_own_n(
         if t.get_text().startswith("G")
     ]
     assert len(labels) == n_geno
-    assert all(label.endswith(" (n=6)") for label in labels), labels
+    # Assert the PAIRING, not just the suffix shape.
+    assert {
+        label.split(" (n=")[0]: int(label.split("(n=")[1].rstrip(")"))
+        for label in labels
+    } == expected
+
+
+def test_a_dead_trait_does_not_abandon_annotation_of_the_other_panels(
+    injected_ports, monkeypatch
+):
+    """The delegate's "No data" panel has a real trait title over default numeric ticks. An
+    earlier version returned at the first such panel, which (a) left every panel after it
+    unannotated, (b) left panels before it annotated while reporting False, and (c) made the
+    outcome depend on trait ordering. Both orderings must now annotate the live trait fully.
+
+    At cylinder width the old behavior also made the flag useless: one dead trait anywhere in
+    an 846-trait run reported False for all 53 pages while ~52 were correctly annotated.
+    """
+    reader, _store = injected_ports
+    for order in (["a_live", "z_dead"], ["z_dead", "a_live"]):
+        cols = {
+            "a_live": [float(i % 6) for i in range(18)],
+            "z_dead": [float("nan")] * 18,
+        }
+        df = pd.DataFrame(
+            {"geno": [f"G{i % 3}" for i in range(18)], **{c: cols[c] for c in order}}
+        )
+        name = f"dead_{order[0]}.csv"
+        reader.add_experiment(name, df)
+        captured = _captured_figure(monkeypatch)
+        result = plot_trait_boxplots(PlotTraitBoxplotsParams(experiment=name))
+
+        assert result.no_data_traits == ["z_dead"]
+        # A dead trait is not an annotation failure: there is no box there to label.
+        assert result.box_labels_annotated is True, order
+        fig = captured["figs"][0]
+        live = next(
+            a for a in fig.axes if a.get_visible() and a.get_title() == "a_live"
+        )
+        labels = [t.get_text() for t in live.xaxis.get_ticklabels()]
+        assert labels == ["G0 (n=6)", "G1 (n=6)", "G2 (n=6)"], (order, labels)
+        dead = next(
+            a for a in fig.axes if a.get_visible() and a.get_title() == "z_dead"
+        )
+        assert not any(
+            "(n=" in t.get_text() for t in dead.xaxis.get_ticklabels()
+        ), "the No-data panel's numeric ticks must be left alone"
+
+
+def test_numeric_genotypes_do_not_put_sample_sizes_on_the_value_axis(
+    injected_ports, monkeypatch
+):
+    """GENOTYPE_PATTERNS matches on column NAME with no dtype check and includes "accession",
+    so an integer accession column is ordinary real data. With a loose subset match and no
+    locator check, the trait VALUE axis' own ticks passed and the sample sizes were stamped
+    onto the value scale — while reporting success. That is the "annotating the wrong box"
+    outcome the by-text design exists to prevent.
+    """
+    reader, _store = injected_ports
+    reader.add_experiment(
+        "numeric_geno.csv",
+        pd.DataFrame(
+            {
+                "accession": [i % 10 for i in range(60)],
+                "t": [float(1 + i % 5) for i in range(60)],
+            }
+        ),
+    )
+    captured = _captured_figure(monkeypatch)
+    result = plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="numeric_geno.csv"))
+
+    assert result.genotype_column == "accession"
+    assert result.box_labels_annotated is True
+    ax = next(
+        a for a in captured["figs"][0].axes if a.get_visible() and a.get_title() == "t"
+    )
+    from matplotlib.ticker import FixedLocator
+
+    for axis in (ax.xaxis, ax.yaxis):
+        labels = [t.get_text() for t in axis.get_ticklabels()]
+        annotated = [label for label in labels if "(n=" in label]
+        if isinstance(axis.get_major_locator(), FixedLocator):
+            # The categorical axis: all ten genotypes, each annotated.
+            assert len(annotated) == 10, labels
+        else:
+            # The continuous trait-value scale must be untouched.
+            assert not annotated, labels
 
 
 def test_unmatched_tick_labels_are_left_alone_and_reported(injected_ports, monkeypatch):
@@ -1155,7 +1299,9 @@ def test_note_is_drawn_on_every_render_including_unflagged(injected_ports, monke
     assert len(drawn) == 1
     assert "⚠" not in drawn[0]
     assert "min=8" in drawn[0] and "max=8" in drawn[0]
-    assert "2 box(es)" in drawn[0]
+    assert "2 box(es) with finite data" in drawn[0]
+    # The unconditional tail: without it, "no warning" reads as "sample sizes adequate".
+    assert "not thereby reliable" in drawn[0]
     assert result.sample_size_note == _unwrapped(drawn[0])
 
 
@@ -1184,10 +1330,18 @@ def test_flagged_note_names_groups_and_reports_the_fraction(
     captured = _captured_figure(monkeypatch)
     _run_disclosure(reader)
 
-    drawn = _note_texts(captured["figs"][0])[0]
+    drawn = _unwrapped(_note_texts(captured["figs"][0])[0])
     assert "⚠" in drawn
-    assert "t_thin" in drawn  # the thin group is named
-    assert "of" in drawn and "box(es)" in drawn  # reported as a fraction
+    assert "t_thin x A (n=1)" in drawn  # the thin group is named, with its count
+    assert (
+        "1 of 5 drawn box(es) below n=5" in drawn
+    )  # a fraction, with its population named
+    # The head's population and the clause's population differ whenever a cell holds only
+    # inf, so each must name its own denominator rather than leaving two bare "box(es)".
+    assert "box(es) with finite data" in drawn
+    assert "drawn box(es)" in drawn
+    # Rows excluded from every box are part of the accounting.
+    assert "1 row(s) excluded from every box (null genotype)" in drawn
     assert _CSV_NAME in drawn  # points at the complete table
 
 
@@ -1224,11 +1378,13 @@ def test_paginated_notes_are_page_scoped(injected_ports, monkeypatch):
     assert len(flagged_pages) == 1, notes
     assert "trait_17" in notes[flagged_pages[0]]
     assert all("this page" in note for note in notes)
-    # Every page's note is recoverable from the manifest, not just the run-wide summary.
+    # The per-page strings are deliberately NOT stamped into params (53 pages x ~2.5 KB on
+    # every cylinder version, in a manifest re-validated on every subsequent run), and each is
+    # reconstructible from page_traits + the committed CSV. Only the run-wide note is stamped.
     params = store.get_run("paged.csv", "trait_boxplots", "latest").params
-    assert list(params["page_sample_size_notes"].values()) == [
-        _unwrapped(note) for note in notes
-    ]
+    assert "page_sample_size_notes" not in params
+    assert params["sample_size_note"] == result.sample_size_note
+    assert "this page" not in result.sample_size_note
 
 
 def test_tight_layout_called_only_when_unbatched(injected_ports, monkeypatch):
@@ -1301,7 +1457,9 @@ def test_boxplot_over_non_finite_trait_renders_and_discloses(
     assert result.non_finite_traits == ["t_inf"]
     assert ("t_inf", "A") in {(g.trait, g.genotype) for g in result.non_finite_groups}
     assert result.non_finite_group_count == 1
-    assert "t_inf" in _note_texts(captured["figs"][0])[0]
+    # The non-finite clause carries the FINITE n, because such a cell is excluded from the
+    # "below n=5" clause and its thinness would otherwise go unstated on the image.
+    assert "t_inf x A (1 inf, n=5)" in _unwrapped(_note_texts(captured["figs"][0])[0])
 
 
 def test_non_finite_values_are_not_stripped_before_rendering(
@@ -1360,3 +1518,196 @@ def test_delegate_draws_fliers_on_both_orientation_paths(n_geno):
         assert fliers, "no flier drawn — outlier points may now be hidden"
     finally:
         plt.close(fig)
+
+
+def _maximal_note_experiment(reader, name="maximal.csv", n_traits=9, n_geno=19):
+    """A frame that populates all four buckets with long, cylinder-length trait names — the
+    worst realistic case for note height, which is what the reservation has to survive.
+    """
+    rng = np.random.default_rng(0)
+    rows = {"geno": [f"GH_{7000 + i % n_geno}" for i in range(n_geno * 8)]}
+    for t in range(n_traits):
+        rows[f"Total.Root.Length.Trait.Number.{t}.mm"] = rng.normal(size=n_geno * 8)
+    df = pd.DataFrame(rows)
+    cols = [c for c in df.columns if c != "geno"]
+    for i, c in enumerate(cols[:3]):
+        df.loc[df["geno"].eq(f"GH_{7000 + i}"), c] = np.nan  # absent
+    for i, c in enumerate(cols[3:6]):
+        idx = df.index[df["geno"].eq(f"GH_{7010 + i}")][:-2]
+        df.loc[idx, c] = np.nan  # small
+    for c in cols[6:8]:
+        df.loc[df.index[:3], c] = np.inf  # non-finite
+    df[cols[8]] = np.nan  # no-data trait
+    reader.add_experiment(name, df)
+    return df
+
+
+def _note_overlap_px(fig):
+    """Pixels by which the drawn note intrudes into the lowest axes (<=0 means clear).
+
+    Measured against ``get_tightbbox()``, not ``get_window_extent()``: the latter is the axes
+    rectangle alone, and each axes' tick labels and x-label hang BELOW it — a note can clear
+    the rectangle and still land on the bottom row's axis labels, which is what an earlier
+    fix did.
+    """
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    note = next(t for t in fig.texts if "rows per box" in t.get_text())
+    box = note.get_window_extent(renderer)
+    lowest = min(
+        a.get_tightbbox(renderer).y0
+        for a in fig.axes
+        if a.get_visible() and a.get_title()
+    )
+    return box.y1 - lowest
+
+
+def test_note_never_overlaps_the_axes(injected_ports, monkeypatch):
+    """The note is unbounded in height (up to four clauses x MAX_NOTE_NAMES names, wrapped), so
+    a fixed reservation cannot hold it. Drawn at a fixed offset it sat ON the bottom row of
+    boxes: bbox_inches="tight" grew the canvas so nothing was clipped, but the axes never moved.
+
+    The committed snapshot baseline cannot catch this — turface_19 is unflagged by design, so
+    its note is one line — which is why this asserts geometry directly.
+    """
+    reader, _store = injected_ports
+    _maximal_note_experiment(reader)
+    captured = _captured_figure(monkeypatch)
+    result = plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="maximal.csv"))
+
+    drawn = _note_texts(captured["figs"][0])[0]
+    assert drawn.count("\n") + 1 >= 5, "fixture must produce a genuinely tall note"
+    assert "⚠" in result.sample_size_note
+    assert _note_overlap_px(captured["figs"][0]) <= 0
+
+
+def test_note_never_overlaps_the_axes_when_batched(injected_ports, monkeypatch):
+    """The batched path skips tight_layout (the delegate already ran it), so nothing there
+    reserved space at all — and cylinder, at 846 traits, always takes this path."""
+    reader, _store = injected_ports
+    _maximal_note_experiment(reader, "maximal_wide.csv", n_traits=20, n_geno=19)
+    monkeypatch.setattr(_viz_shared, "TRAIT_BATCH_THRESHOLD", 8)
+    monkeypatch.setattr(plot_trait_boxplots_tool, "TRAIT_BATCH_THRESHOLD", 8)
+    captured = _captured_figure(monkeypatch, batched=True)
+    result = plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="maximal_wide.csv"))
+
+    assert result.batched is True
+    for i, fig in enumerate(captured["figs"]):
+        assert _note_overlap_px(fig) <= 0, f"page {i + 1}"
+
+
+def test_note_is_not_parsed_as_mathtext(injected_ports, monkeypatch):
+    """This is the first place the codebase concatenates up to 40 data-derived names into one
+    Text object, so two names each carrying a "$" pair up: matplotlib renders the disclosure as
+    italicised mathtext, or — with a brace or backslash between them — raises
+    ParseFatalException and fails the run after create_run. The delegate's own tick labels are
+    separate Text objects and never had this exposure.
+    """
+    reader, _store = injected_ports
+    reader.add_experiment(
+        "mathtext.csv",
+        pd.DataFrame(
+            {
+                "geno": ["A"] * 6 + ["B"] * 6,
+                # Two "$" and a brace between them: mathtext would fail to parse this.
+                "cost_$_per_{unit}": [1.0] + [float("nan")] * 5 + [1.0, 2, 3, 4, 5, 6],
+                "yield_$_ok": [1.0] + [float("nan")] * 5 + [1.0, 2, 3, 4, 5, 6],
+            }
+        ),
+    )
+    captured = _captured_figure(monkeypatch)
+    result = plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="mathtext.csv"))
+
+    assert "cost_$_per_{unit}" in result.sample_size_note
+    note = next(t for t in captured["figs"][0].texts if "rows per box" in t.get_text())
+    assert note.get_parse_math() is False
+    # The real proof: rendering must not raise.
+    captured["figs"][0].canvas.draw()
+
+
+def test_thin_box_count_covers_inf_carrying_boxes_the_buckets_exclude(injected_ports):
+    """small_sample_groups excludes inf-carrying cells to keep the buckets mutually exclusive,
+    so a box on 4 finite values plus 2 infs is reported only as non-finite. A caller gating on
+    small_sample_group_count == 0 would conclude "no thin boxes" while box_n_min reads 4.
+    """
+    reader, _store = injected_ports
+    reader.add_experiment(
+        "thin_inf.csv",
+        pd.DataFrame(
+            {
+                "geno": ["A"] * 6 + ["B"] * 6,
+                "t": [1.0, 2.0, 3.0, 4.0, np.inf, np.inf] + [1.0, 2, 3, 4, 5, 6],
+            }
+        ),
+    )
+    result = plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="thin_inf.csv"))
+
+    assert result.box_n_min == 4
+    assert result.small_sample_group_count == 0  # excluded, by design
+    assert result.non_finite_group_count == 1
+    assert result.thin_box_count == 1  # ...but the thinness is still reported
+    assert "n=4" in result.sample_size_note  # and named on the image
+
+
+def test_non_finite_groups_are_ordered_worst_first(injected_ports):
+    """Ordering by name would let a cell with one inf survive the cap while one with many is
+    truncated away — inverting the same worst-first argument every other bucket rests on.
+    """
+    reader, _store = injected_ports
+    n_over_cap = _viz_shared.MAX_FLAGGED_REPORTED + 2
+    rows = {"geno": [], "t": []}
+    for i in range(n_over_cap):
+        # a_00 gets 1 inf; the LAST genotype by name gets the most.
+        n_inf = 1 if i < n_over_cap - 1 else 5
+        rows["geno"].extend([f"g{i:02d}"] * 8)
+        rows["t"].extend([np.inf] * n_inf + [float(j) for j in range(8 - n_inf)])
+    reader.add_experiment("many_inf.csv", pd.DataFrame(rows))
+    result = plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="many_inf.csv"))
+
+    counts = [g.n_non_finite for g in result.non_finite_groups]
+    assert len(counts) == _viz_shared.MAX_FLAGGED_REPORTED
+    assert counts == sorted(counts, reverse=True)
+    assert counts[0] == 5, "the worst-affected cell must survive the cap"
+    assert result.non_finite_group_count == n_over_cap
+
+
+def test_non_finite_traits_reports_an_uncapped_count(injected_ports):
+    """Every other capped list carries an uncapped count; this one did not, so a run with 500
+    inf-carrying traits reported 20 and nothing said more existed."""
+    reader, _store = injected_ports
+    n_traits = _viz_shared.MAX_FLAGGED_REPORTED + 3
+    rows = {"geno": ["A"] * 8 + ["B"] * 8}
+    for t in range(n_traits):
+        rows[f"t{t:02d}"] = (
+            [np.inf] + [float(j) for j in range(7)] + [float(j) for j in range(8)]
+        )
+    reader.add_experiment("many_inf_traits.csv", pd.DataFrame(rows))
+    result = plot_trait_boxplots(
+        PlotTraitBoxplotsParams(experiment="many_inf_traits.csv")
+    )
+    assert len(result.non_finite_traits) == _viz_shared.MAX_FLAGGED_REPORTED
+    assert result.non_finite_trait_count == n_traits
+
+
+def test_high_cardinality_genotype_column_is_rejected_before_building_the_table(
+    injected_ports,
+):
+    """GENOTYPE_PATTERNS matches on column NAME with no dtype or cardinality check and includes
+    "accession", so a per-plant accession column auto-detects as the grouper. The caps in this
+    change bound what reaches the caller's context; this bounds what the SERVER builds — at 846
+    traits x 5,000 values the table is 4.2M rows / ~660 MB, which result_store then reads whole
+    to hash it.
+    """
+    reader, store = injected_ports
+    n_rows = 2000
+    rows = {"accession": [f"plant_{i}" for i in range(n_rows)]}
+    for t in range(200):
+        rows[f"t{t:03d}"] = [float(i % 7) for i in range(n_rows)]
+    reader.add_experiment("high_card.csv", pd.DataFrame(rows))
+
+    with pytest.raises(BloomMCPError) as exc:
+        plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="high_card.csv"))
+    assert exc.value.code == "assumption_violated"
+    assert "accession" in exc.value.message
+    assert exc.value.remedy
+    assert store.list_runs("high_card.csv", "trait_boxplots") == []

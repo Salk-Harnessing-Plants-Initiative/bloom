@@ -147,7 +147,10 @@ MIN_PLOTTED_SAMPLES = 5
 # genotypes = 16,074 cells) an uncapped list is a denial of service against the caller's
 # context, not a disclosure. Each list is ordered worst-first so the cap truncates the
 # best-supported end, and each carries an uncapped count; the complete table always ships as a
-# committed CSV output. 20 matches the sibling correlation tool's own per-pair caps.
+# committed CSV output. 20 is chosen to match the per-pair caps arriving with #833 for
+# plot_correlation_matrix, so the family ends up with one number rather than two -- note that
+# on staging today that tool has no per-pair cap at all (only its own 10-name caveat cap), so
+# this is a forward-looking alignment, not a precedent already set.
 MAX_FLAGGED_REPORTED = 20
 # Names shown in the note drawn on the figure before it degrades to "+N more". Smaller than the
 # list cap because the note has to stay readable on the image itself.
@@ -235,6 +238,18 @@ def trait_sample_size_table(df, trait_cols):
     return table[TRAIT_TABLE_COLUMNS]
 
 
+# Upper bound on the (trait x genotype) grid this table may materialize. The caps elsewhere in
+# this change bound what reaches the CALLER's context; this one bounds what the SERVER builds.
+# Reachable without malice: GENOTYPE_PATTERNS matches on column NAME with no dtype or
+# cardinality check and includes "accession", so a per-plant accession column auto-detects as
+# the grouper. At 846 traits x 5,000 such values the table is 4.2M rows / ~660 MB, which
+# result_store then read_bytes() in full to hash -- and there is no rate limiting in front of
+# the MCP surface. Cylinder's real shape (846 x 19 = 16,074) sits three orders of magnitude
+# below this, and a genotype column with more than a few hundred levels is not a genotype
+# column; the error says so rather than silently grinding.
+MAX_GROUP_TABLE_CELLS = 250_000
+
+
 def group_sample_size_table(df, trait_cols, genotype_col):
     """Per-(trait, genotype) counts for ``plot_trait_boxplots`` (#748).
 
@@ -254,6 +269,20 @@ def group_sample_size_table(df, trait_cols, genotype_col):
     (see the tools' Optional summaries).
     """
     grouper = df[genotype_col]
+    # Guard BEFORE building anything: nunique() is one pass over a single column, whereas the
+    # groupby below allocates the whole (genotype x trait) grid.
+    n_groups = int(grouper.nunique(dropna=True))
+    n_cells = n_groups * len(trait_cols)
+    if n_cells > MAX_GROUP_TABLE_CELLS:
+        raise BloomMCPError(
+            code="assumption_violated",
+            message=f"Grouping {len(trait_cols)} trait(s) by {genotype_col!r} would produce "
+            f"{n_cells:,} (trait, genotype) cells across {n_groups:,} distinct values, above "
+            f"this tool's limit of {MAX_GROUP_TABLE_CELLS:,}.",
+            remedy=f"{genotype_col!r} looks like a per-sample identifier rather than a "
+            "genotype label. Narrow the selection with trait_columns, or use an experiment "
+            "whose genotype column has fewer distinct values.",
+        )
     counts = df.groupby(grouper, sort=True)[trait_cols].count()
     if counts.empty:
         return pd.DataFrame(columns=GROUP_TABLE_COLUMNS)

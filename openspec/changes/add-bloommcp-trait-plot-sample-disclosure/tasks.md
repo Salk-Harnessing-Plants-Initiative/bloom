@@ -261,21 +261,55 @@ Listed separately because they do **not** fail against today's code; §1.0's gat
       delegate call's arguments changed, the histogram render is byte-identical, and every
       `±inf`-sensitive comparison uses the finite count.
 
-## 6. Follow-up issues to file (not fixed here)
+## 6. PR #839 review round 1 (@eberrigan) — applied
 
-- [x] 6.1 Filed as **#837**: `resolved_trait_columns`/`page_traits` exceed the family's 5,000-char
+- [x] 6.0.1 **B1** `_annotate_genotype_ticks` returned at the first unmatched panel, after
+      mutating earlier ones: the reported flag depended on trait ordering, figures came back
+      half-annotated while claiming otherwise, and one dead trait in an 846-trait run reported
+      False for all 53 pages. Now per-panel, with the delegate's "No data" panel skipped rather
+      than counted as a failure.
+- [x] 6.0.2 **B2** A numeric genotype column (``accession`` matches on name, no dtype check) put
+      the sample sizes on the trait VALUE axis and reported success. Three guards now: a
+      ``FixedLocator`` on the axis, set EQUALITY with that trait's plotted genotypes, and
+      exactly one matching axis.
+- [x] 6.0.3 **B3** The note is unbounded in height and was drawn at a fixed offset, so a flagged
+      render put it on the bottom row of boxes (reproduced: 21px into the axes, and the review
+      measured ~145px on a longer note). The figure now grows and its axes translate up by the
+      measured strip. Asserted as geometry against ``get_tightbbox()`` — the first fix cleared
+      the axes rectangle but still landed on the bottom row's x-axis labels.
+- [x] 6.0.4 **B4** Two tests were vacuous: the per-box label test gave every cell n=6 (so a
+      label/count mispairing passed), and the ordering test tied every cell at n=1 (so a
+      descending sort passed). Both now use distinct counts.
+- [x] 6.0.5 Findings 1-10: ``page_traits`` descriptions no longer promise a total mapping over
+      ``outputs``; the reconciliation identity is stated in its true three-term form in both
+      spec and design; ``non_finite_groups`` is ordered worst-first; ``non_finite_trait_count``
+      added; ``thin_box_count`` added so the exclusive buckets do not lose the thinness signal;
+      the note's two "box(es)" populations are named separately; a cardinality guard bounds the
+      (trait x genotype) table the server builds; ``max_nan_fraction`` excludes absent cells;
+      per-page notes are no longer stamped into the manifest; the note is drawn with
+      ``parse_math=False``.
+- [x] 6.0.6 Suggestions applied: cap-precedent comment corrected (#833 is unmerged), requirement
+      retitled to "Trait-Plot Tools", ``page_notes`` indexed rather than silently falling back,
+      ``rows_missing_genotype`` and the flier caveat added to the note, "n rows per box" names
+      its unit, dead ``use_finite`` parameter dropped, n=5's non-monotonicity recorded, the
+      21%/1.95MB measurement disagreements reconciled, the benchmark moved to
+      ``bloommcp/scripts/`` (lint scope) and made Windows-safe, smoke assertions made None-safe.
+
+## 7. Follow-up issues to file (not fixed here)
+
+- [x] 7.1 Filed as **#837**: `resolved_trait_columns`/`page_traits` exceed the family's 5,000-char
       "links, not blobs" convention at cylinder width (~24,862 chars for 846 real trait names) —
       pre-existing, inherited by these tools, and not something this change should silently adopt
       as acceptable.
-- [x] 6.2 Filed as **#838**: the residual on-image gaps this change leaves — a zero-variance trait still renders
+- [x] 7.2 Filed as **#838**: the residual on-image gaps this change leaves — a zero-variance trait still renders
       a degenerate box with no flag, and a `box_labels_annotated=False` render falls back to the
       note alone. Filing follows the precedent that made #785 exist: #466's review singled out the
       one disclosed gap that lacked a tracking issue.
 
-## 7. Archive ordering (post-merge, not part of this PR)
+## 8. Archive ordering (post-merge, not part of this PR)
 
-- [ ] 7.1 Archive `converge-bloommcp-viz-tools` **first**. This change MODIFIES a requirement that
+- [ ] 8.1 Archive `converge-bloommcp-viz-tools` **first**. This change MODIFIES a requirement that
       still lives in that pending change, and `openspec validate --strict` passes without checking
       that a MODIFIED target exists.
-- [ ] 7.2 Coordinate with `add-bloommcp-corr-pair-disclosure` (PR #833): disjoint requirements, so
+- [ ] 8.2 Coordinate with `add-bloommcp-corr-pair-disclosure` (PR #833): disjoint requirements, so
       either order works between the two, but both must follow `converge-bloommcp-viz-tools`.

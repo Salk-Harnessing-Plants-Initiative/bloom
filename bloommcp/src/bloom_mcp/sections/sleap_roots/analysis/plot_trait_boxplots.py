@@ -31,24 +31,32 @@ sample-size signal — one built from 2 points is pixel-identical to one built f
 delegate titles each subplot with the trait name alone, unlike ``create_trait_histograms``, which
 titles each panel ``f"{trait}\n(n={count})"``. Three surfaces close that:
 
-* **On the image, per box.** Each genotype tick label gains its own ``(n=…)``. The delegate
-  labels those ticks with the genotype *values* in both orientations (vertical x-ticks below 9
-  genotypes; horizontal y-ticks above, via an explicit ``tick_labels=``), so labels are matched
-  **by text** against the computed counts — never by assuming an axis, a subplot's identity, or
-  where the orientation switch sits, any of which would risk annotating the wrong box. A tick
-  that is not a recognizable genotype is left alone and ``box_labels_annotated`` reports
-  ``False``, so the result never claims the image carries counts it does not.
+* **On the image, per box.** Each genotype tick label gains its own ``(n=…)``, matched **by
+  text** against the computed counts — never by assuming an axis, a subplot's identity, or where
+  the orientation switch sits. Three guards have to agree before any tick is rewritten (a
+  ``FixedLocator`` on the axis, a label set exactly equal to that trait's plotted genotypes, and
+  exactly one matching axis); see :func:`_annotate_genotype_ticks` for what each one rules out.
+  Failure is per-panel and reported: every panel that can be matched is annotated, and
+  ``box_labels_annotated`` says whether the figure is *fully* labelled.
 * **On the image, per figure.** ``sample_size_note`` is drawn below the axes on **every** render,
   not only flagged ones — a note that appeared only when something tripped a threshold would
   leave every other image as uninformative as before, and would make its own absence carry a
-  sufficiency claim the floor explicitly disclaims. It names every denominator (boxes, genotype
-  groups, traits — three different numbers), identifies itself as page-scoped on a paginated
-  render, and escalates to a ``⚠`` clause naming the flagged cells **as a fraction** of the
-  total, so a reader can calibrate severity rather than just presence.
+  sufficiency claim the floor explicitly disclaims (which is also why it carries an
+  unconditional tail saying what clearing the floor does *not* establish). It names every
+  denominator — and names them separately, since the boxes-with-finite-data population and the
+  boxes-drawn population diverge as soon as a cell holds only ``inf`` — identifies itself as
+  page-scoped on a paginated render, and escalates to a ``⚠`` clause naming the flagged cells
+  **as a fraction** of the total, so a reader can calibrate severity rather than just presence.
+  The figure is grown and its axes translated up to make room: the note is unbounded in height,
+  and drawn at a fixed offset it landed on the bottom row of boxes.
 * **In the result and the manifest.** Four mutually exclusive buckets — ``no_data_traits``,
-  ``absent_genotype_groups``, ``non_finite_groups``, ``small_sample_groups`` — each capped and
-  worst-first with an uncapped count, plus the uncapped ``box_n_min``/``_median``/``_max`` and
-  the complete ``group_sample_sizes.csv``.
+  ``absent_genotype_groups``, ``non_finite_groups``, ``small_sample_groups`` — each capped
+  worst-first in its own terms (ascending finite count for thin boxes, *descending* inf count
+  for non-finite ones) with an uncapped count, plus the uncapped
+  ``box_n_min``/``_median``/``_max`` and the complete ``group_sample_sizes.csv``. Because the
+  buckets are exclusive, ``thin_box_count`` is reported separately: a box that is both thin and
+  ``inf``-bearing appears only under non-finite, so the small-sample count is not the count of
+  thin boxes.
 
 **Counting is on the FINITE count, deliberately.** ``pandas`` ``count()`` treats ``+/-inf`` as
 present (the trap ``qc_inspect`` documents for its own missingness fields), so a cell of 12
@@ -72,7 +80,7 @@ one absent entry per genotype: at 19 genotypes a single dead trait would otherwi
 20-slot cap by itself and evict every genuinely informative absence in the run.
 
 **``tight_layout`` is called on unbatched renders only.** The batched delegate already calls it;
-paying for it again on each of cylinder's 53 pages costs ~25% per page (measured) and would push
+paying for it again on each of cylinder's 53 pages costs +21% per page (measured) and would push
 the cylinder smoke run past its client timeout. On the unbatched path the delegate deliberately
 leaves it to the caller, and skipping it both collides the lengthened rotated tick labels with
 the next row's subplot titles and leaves a large dead bottom margin.
@@ -93,6 +101,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FixedLocator
 from pydantic import BaseModel, ConfigDict, Field
 from sleap_roots_analyze.visualization import (
     create_trait_boxplots_by_genotype,
@@ -120,13 +129,20 @@ _TOOL_CLASS = "trait_boxplots"
 _PNG_STEM = "trait_boxplots"
 # The complete per-(trait, genotype) sample-size table, committed as its own output (#748).
 # A download, not a response field: at cylinder width (846 traits x ~19 genotypes = 16,074
-# cells) an inline table is ~0.6 MB. Mirrors qc_inspect's nan_samples.csv.
+# cells) the table is ~3 MB. Mirrors qc_inspect's nan_samples.csv.
 _SAMPLE_SIZES_CSV = "group_sample_sizes.csv"
 # Character width the drawn note is wrapped to. Fixed rather than matplotlib's own
 # wrap=True, whose wrapping depends on the figure width at draw time and interacts badly
 # with bbox_inches="tight". Every boxplot figure the delegate builds is at least 15in wide,
 # so this always fits without widening the canvas (measured).
 _NOTE_WRAP_CHARS = 110
+# Geometry of the drawn note. The reserved strip is computed from these rather than from a
+# rendered text extent, which would cost a full canvas.draw() on each of cylinder's 53 pages.
+_NOTE_FONTSIZE = 8
+# Matplotlib's default line spacing is 1.2x the font size; 1.4 leaves a little slack so a
+# descender on the last line cannot reach the axes.
+_NOTE_LINE_SPACING = 1.4
+_NOTE_PAD_INCHES = 0.2
 # create_trait_boxplots_by_genotype_batched's own internal page size — independent of
 # TRAIT_BATCH_THRESHOLD (which only decides WHETHER to batch). Not overridden by this
 # tool's call, so it is safe to use for computing which trait landed on which page;
@@ -143,38 +159,57 @@ def _flagged_names(entries, formatter):
 
 
 def _sample_size_note(
-    page_table, page_no_data_traits, n_page_traits, n_total_traits, n_groups, scoped
+    page_table,
+    page_no_data_traits,
+    n_page_traits,
+    n_total_traits,
+    n_groups,
+    rows_missing_genotype,
+    scoped,
 ):
     """Build the sample-size note drawn below the axes (#748).
 
     Always produced, not only when something is flagged: a note that appeared only on flagged
     runs would leave every other image exactly as uninformative as it is today, and would make
     its own absence carry a sufficiency claim ``MIN_PLOTTED_SAMPLES`` explicitly disclaims.
+    For the same reason the note carries an unconditional tail about what the floor does NOT
+    establish — without it a reader can still take "no warning" for "sample sizes adequate".
 
-    **Every denominator is named.** "min=2, median=8, max=10" is meaningless unless the reader
-    knows what population it ranges over — boxes, genotype groups and traits are three
-    different counts (209, 19 and 11 on the turface_19 fixture), and an unqualified "across 57"
-    invites reading the wrong one.
+    **Every denominator is named, and the two populations are never conflated.** The head
+    summarizes boxes with finite data; the warning clause counts against boxes actually drawn.
+    Those differ whenever a cell holds only ``+/-inf``, so both are labelled in the text rather
+    than left as two bare "box(es)" counts a reader would assume share a denominator.
 
     **Page-scoped renders say so in the text.** Restricting a batched page's statistics to its
     own traits while leaving the sentence unqualified just moves the same misreading from the
     numbers to the label: a reader of page 37 of 53 would take it for the whole run.
+
+    **"n rows per box", not "n".** For cylinder data one plant contributes several scans and a
+    scan several images, so an unqualified n=8 invites being read as 8 plants. The unit is the
+    frame's own rows; ``n_rows_read``/``rows_missing_genotype`` in the result do the rest of the
+    reconciliation.
     """
     scope = " (this page)" if scoped else ""
     summarized = page_table[page_table["n_finite"] > 0]
     n_drawn = int((page_table["n_plotted"] > 0).sum())
 
     if summarized.empty:
+        # Distinguish "nothing was drawn" from "boxes were drawn but none rests on a finite
+        # value" -- an all-inf selection draws boxes, so claiming none were drawn would be
+        # false exactly where the disclosure matters.
+        drew = f"{n_drawn} box(es) were drawn but none rests on a finite value"
         head = (
-            f"n per box{scope}: no box was drawn — no genotype group has a finite "
-            f"observation for the selected trait(s)."
+            f"n rows per box{scope}: no summary available — "
+            + (drew if n_drawn else "no box was drawn")
+            + f" ({n_groups} genotype group(s) x {n_page_traits} of {n_total_traits} trait(s))."
         )
     else:
         head = (
-            f"n per box{scope}: min={int(summarized['n_finite'].min())}, "
+            f"n rows per box{scope}: min={int(summarized['n_finite'].min())}, "
             f"median={float(summarized['n_finite'].median()):g}, "
-            f"max={int(summarized['n_finite'].max())} across {len(summarized)} box(es) "
-            f"— {n_groups} genotype group(s) x {n_page_traits} of {n_total_traits} trait(s)."
+            f"max={int(summarized['n_finite'].max())} across {len(summarized)} box(es) with "
+            f"finite data — {n_groups} genotype group(s) x {n_page_traits} of "
+            f"{n_total_traits} trait(s)."
         )
 
     absent = page_table[
@@ -197,7 +232,7 @@ def _sample_size_note(
         # always carry a thin box, so a bare marker stops carrying information. "846 of
         # 16,074" lets a reader calibrate severity; a warning symbol alone does not.
         clauses.append(
-            f"{len(small)} of {n_drawn} box(es) below n={MIN_PLOTTED_SAMPLES}: "
+            f"{len(small)} of {n_drawn} drawn box(es) below n={MIN_PLOTTED_SAMPLES}: "
             + _flagged_names(
                 rows,
                 lambda r: f"{r['trait']} x {r['genotype']} (n={int(r['n_finite'])})",
@@ -217,25 +252,50 @@ def _sample_size_note(
             + _flagged_names(list(page_no_data_traits), lambda t: str(t))
         )
     if not non_finite.empty:
-        rows = non_finite.sort_values(["trait", "genotype"], kind="stable").to_dict(
-            "records"
-        )
+        # Worst-first by non-finite count, matching the bucket's own ordering, and each name
+        # carries its FINITE n: such a cell is excluded from the "below n=5" clause above (the
+        # buckets are mutually exclusive), so without the n here a box resting on 4 finite
+        # values would be flagged only as "non-finite" and its thinness would go unstated.
+        rows = non_finite.sort_values(
+            ["n_non_finite", "trait", "genotype"],
+            ascending=[False, True, True],
+            kind="stable",
+        ).to_dict("records")
         clauses.append(
             f"{len(non_finite)} box(es) carry non-finite values (their quartiles are NaN): "
-            + _flagged_names(rows, lambda r: f"{r['trait']} x {r['genotype']}")
+            + _flagged_names(
+                rows,
+                lambda r: (
+                    f"{r['trait']} x {r['genotype']} "
+                    f"({int(r['n_non_finite'])} inf, n={int(r['n_finite'])})"
+                ),
+            )
+        )
+    if rows_missing_genotype:
+        # These rows are in no box at all. Without them the note reads as a complete
+        # accounting of the frame, which is the same class of hidden exclusion this
+        # disclosure exists to close.
+        clauses.append(
+            f"{rows_missing_genotype} row(s) excluded from every box (null genotype)"
         )
 
+    tail = (
+        f" A box at or above n={MIN_PLOTTED_SAMPLES} is not thereby reliable: the floor only "
+        "means its quartiles are observations rather than interpolations, and flier dots stay "
+        "artifact-prone well above it."
+    )
     if not clauses:
-        return head
+        return head + tail
     return (
         f"{head} ⚠ "
         + "; ".join(clauses)
         + f". See {_SAMPLE_SIZES_CSV} for every group."
+        + tail
     )
 
 
 def _draw_sample_size_note(fig, note, flagged):
-    """Draw the note below the axes of an already-rendered figure.
+    """Draw the note below the axes, growing the figure so it cannot land on top of them.
 
     A figure-level footnote, not a per-box annotation — the same choice
     ``plot_correlation_matrix``'s ``heatmap_caveat`` makes, and for the same reason: anything
@@ -243,62 +303,135 @@ def _draw_sample_size_note(fig, note, flagged):
     it got that geometry wrong. Per-box counts ride on the tick labels instead (see
     :func:`_annotate_genotype_ticks`), which needs no geometry at all.
 
+    **The note is unbounded in height** — up to four clauses of ``MAX_NOTE_NAMES`` names each,
+    wrapped — so a fixed reservation cannot hold it. A flagged cylinder-scale note runs to ten
+    or more wrapped lines and, drawn at a fixed offset, overwrote the bottom row of boxes: the
+    figure grew under ``bbox_inches="tight"`` so nothing was *clipped*, but the axes did not
+    move, so the text sat on the data. That is why the space is measured and reserved here
+    rather than assumed, and why ``test_note_never_overlaps_the_axes`` asserts it as geometry
+    against a deliberately maximal note instead of eyeballing a baseline (the committed
+    snapshot fixture is unflagged by design, so its note is one line and could never catch it).
+
+    The reservation is computed from the wrapped line count rather than from a rendered extent:
+    a ``canvas.draw()`` per page is a full rasterization, and this runs on each of cylinder's 53
+    pages. Line height is the only quantity needed and it follows from the font size.
+
     ``textwrap.fill`` rather than matplotlib's ``wrap=True``: the latter wraps against the
     figure width at draw time and interacts badly with ``bbox_inches="tight"``.
     """
+    wrapped = textwrap.fill(note, _NOTE_WRAP_CHARS)
+    n_lines = wrapped.count("\n") + 1
+    needed_inches = (
+        n_lines * _NOTE_FONTSIZE * _NOTE_LINE_SPACING / 72.0 + _NOTE_PAD_INCHES
+    )
+    width, height = fig.get_size_inches()
+    new_height = height + needed_inches
+    # Grow the canvas and TRANSLATE every axes upward by exactly the added strip, rather than
+    # squeezing the axes with subplots_adjust(bottom=...). Two reasons:
+    #   * the boxes keep the height the delegate sized for them (for the horizontal
+    #     orientation that scales with the genotype count and is already the minimum readable);
+    #   * subplots_adjust positions the AXES box, and each axes' tick labels and x-label hang
+    #     BELOW that box -- so reserving the strip that way still let the bottom row's axis
+    #     labels land on the note. Translating preserves each axes' absolute geometry, and its
+    #     decorations move with it.
+    fig.set_size_inches(width, new_height, forward=True)
+    scale = height / new_height
+    offset = needed_inches / new_height
+    for ax in fig.axes:
+        pos = ax.get_position()
+        ax.set_position(
+            [pos.x0, pos.y0 * scale + offset, pos.width, pos.height * scale]
+        )
     fig.text(
         0.5,
-        0.005,
-        textwrap.fill(note, _NOTE_WRAP_CHARS),
+        _NOTE_PAD_INCHES / (2 * (height + needed_inches)),
+        wrapped,
         ha="center",
         va="bottom",
-        fontsize=8,
+        fontsize=_NOTE_FONTSIZE,
         color="darkred" if flagged else "#444444",
         transform=fig.transFigure,
+        # parse_math=False: this is the first place the codebase concatenates up to 40
+        # data-derived trait/genotype names into ONE Text object, so two names each carrying a
+        # "$" pair up and matplotlib renders the disclosure as italicised mathtext -- or, with a
+        # "{" or backslash between them, raises ParseFatalException and fails the run after
+        # create_run. The delegate's own tick labels are separate Text objects and never had
+        # this exposure. (usetex is never enabled in this package, so a parse failure is the
+        # whole risk -- there is no shell-escape path.)
+        parse_math=False,
     )
 
 
-def _annotate_genotype_ticks(fig, finite_counts, known_genotypes):
+def _annotate_genotype_ticks(fig, finite_counts, plotted_genotypes, no_data_traits):
     """Append each box's own ``(n=…)`` to its genotype tick label; report whether it worked.
 
     The delegate labels these ticks with the genotype **values themselves** in both
     orientations (vertical: x-ticks via ``df_plot.boxplot(by=...)``; horizontal above 8
-    genotypes: y-ticks via an explicit ``tick_labels=genotype_order``). So the labels are
-    matched **by text** against the computed counts — never by assuming which axis carries
-    them, which subplot holds which trait, or where the orientation switch sits. That makes
-    this self-checking: a tick whose text is not a known genotype is left alone, and the caller
-    reports ``box_labels_annotated=False`` rather than claiming the image carries counts it
-    does not.
+    genotypes: y-ticks via an explicit ``tick_labels=genotype_order``), so the genotype axis is
+    identified from the figure rather than assumed. Three conditions have to hold together
+    before a tick is rewritten, and each rules out a specific way of annotating the WRONG box —
+    which is worse than not annotating at all:
 
-    The count shown is the **finite** one, so an all-``inf`` group reads ``(n=0)`` next to a
-    box matplotlib still drew — which is the honest signal, since its quartiles are ``NaN``.
+    1. **The axis must carry a ``FixedLocator``.** Matplotlib uses one for a categorical axis
+       and an ``AutoLocator`` for a continuous value scale. Without this check a numeric
+       genotype column (``GENOTYPE_PATTERNS`` matches on column *name*, with no dtype check, so
+       an integer accession column is ordinary real data) lets the value axis' own tick text
+       pass a loose match and the sample sizes land on the trait scale. Matplotlib hands you
+       this guard for free — it is the source of the "set_ticklabels() should only be used with
+       a fixed number of ticks" warning.
+    2. **The label set must EQUAL the genotypes actually plotted for that trait**, not merely be
+       a subset of every known genotype. A subset test passes for any axis whose ticks happen to
+       be a handful of the genotype names — including, with integer genotypes, the value scale.
+    3. **Exactly one axis may match.** If both do, which one carries the genotypes is genuinely
+       ambiguous, so neither is touched.
+
+    A panel the delegate rendered as "No data" (a real trait title over default numeric ticks,
+    because the trait is null for every genotype) is **skipped**, not counted as a failure: there
+    is no box there to label. Without that exemption one dead trait anywhere in a run would
+    report the whole figure as unannotated.
+
+    Failure is per-figure and never partial-and-silent: a panel that cannot be matched leaves
+    ``all_matched`` False, but every panel that CAN be matched is still annotated, and the
+    caller's ``box_labels_annotated`` reports whether the figure is fully labelled. An earlier
+    version returned at the first unmatched panel, which both abandoned later panels and left
+    already-rewritten earlier ones in place — so the reported flag depended on trait ordering
+    and a half-annotated figure claimed to be unannotated.
+
+    The count shown is the **finite** one, so an all-``inf`` group reads ``(n=0)`` next to a box
+    matplotlib still drew — the honest signal, since its quartiles are ``NaN``.
     """
-    known = {str(g) for g in known_genotypes}
-    if not known:
-        return False
     annotated_any = False
+    all_matched = True
     for ax in fig.axes:
         if not ax.get_visible():
             continue
-        trait = ax.get_title().split("\n")[0]
-        if not trait:
+        title = ax.get_title().split("\n")[0]
+        if not title:
             continue
-        matched = False
+        if title in no_data_traits:
+            continue
+        expected = plotted_genotypes.get(title)
+        if not expected:
+            # A titled, non-dead panel whose trait we have no counts for: the delegate's title
+            # is not the trait name we think it is. Annotating would put every box at (n=0).
+            all_matched = False
+            continue
+        candidates = []
         for axis in (ax.xaxis, ax.yaxis):
-            labels = [t.get_text() for t in axis.get_ticklabels()]
-            if not labels or not set(labels) <= known:
+            if not isinstance(axis.get_major_locator(), FixedLocator):
                 continue
-            axis.set_ticklabels(
-                [
-                    f"{label} (n={finite_counts.get((trait, label), 0)})"
-                    for label in labels
-                ]
-            )
-            matched = True
-        if not matched:
-            return False
+            labels = [t.get_text() for t in axis.get_ticklabels()]
+            if labels and set(labels) == expected:
+                candidates.append((axis, labels))
+        if len(candidates) != 1:
+            all_matched = False
+            continue
+        axis, labels = candidates[0]
+        axis.set_ticklabels(
+            [f"{label} (n={finite_counts[(title, label)]})" for label in labels]
+        )
         annotated_any = True
-    return annotated_any
+    return annotated_any and all_matched
 
 
 class PlotTraitBoxplotsParams(BaseModel):
@@ -425,9 +558,25 @@ class PlotTraitBoxplotsResult(RunLinks):
     non_finite_group_count: int = Field(
         default=0, description="Uncapped non-finite-cell total."
     )
+    non_finite_trait_count: int = Field(
+        default=0,
+        description="Uncapped number of traits carrying any +/-inf — the true size of "
+        "non_finite_traits before truncation.",
+    )
+    thin_box_count: int = Field(
+        default=0,
+        description="Every drawn box below the floor, whatever ELSE is wrong with it — "
+        "including the inf-carrying boxes small_sample_groups excludes to keep the buckets "
+        "mutually exclusive. Reported because that exclusion otherwise loses the thinness "
+        "signal: a cell with 4 finite values and 2 infs appears only in non_finite_groups, so "
+        "a caller gating on small_sample_group_count == 0 would conclude 'no thin boxes' while "
+        "box_n_min reads 4. Gate on this field for that question; use the buckets to find out "
+        "WHY a given box is flagged.",
+    )
     non_finite_traits: list[str] = Field(
         default_factory=list,
-        description="Traits carrying any +/-inf, at trait granularity. Unlike "
+        description="Traits carrying any +/-inf, at trait granularity (capped; see "
+        "non_finite_trait_count). Unlike "
         "plot_trait_histograms — whose delegate cannot bin a non-finite range and which "
         "therefore rejects such a selection outright — this tool renders and discloses: the "
         "figure stays useful for every unaffected group.",
@@ -435,7 +584,10 @@ class PlotTraitBoxplotsResult(RunLinks):
     small_sample_groups: list[GroupSampleSize] = Field(
         default_factory=list,
         description="Boxes with fewer finite observations than _viz_shared."
-        "MIN_PLOTTED_SAMPLES but more than zero — the core of #748: a box built from 2 points "
+        "MIN_PLOTTED_SAMPLES, more than zero, AND carrying no +/-inf — an inf-bearing cell is "
+        "reported in non_finite_groups instead, so that every cell lands in exactly one "
+        "bucket. That exclusion means this is NOT the count of thin boxes: use thin_box_count "
+        "for that. The core of #748: a box built from 2 points "
         "is pixel-identical to one built from 200. Ordered ASCENDING by count, then by "
         "(trait, genotype): ascending order is what makes the cap safe, since it truncates "
         "the best-supported end, and the tie-break is explicit because ties are the normal "
@@ -485,9 +637,13 @@ class PlotTraitBoxplotsResult(RunLinks):
         "order — recorded even when trait_columns was omitted (auto-detected).",
     )
     page_traits: dict[str, list[str]] = Field(
-        description="Maps each committed output filename to the trait columns rendered on "
+        description="Maps each committed FIGURE filename to the trait columns rendered on "
         "that page (a single entry, covering every resolved_trait_columns, when not batched) "
-        "— otherwise only discoverable by opening the image and reading its axis labels.",
+        "— otherwise only discoverable by opening the image and reading its axis labels. "
+        "This is NOT a mapping over every key of `outputs`: a run also commits "
+        "group_sample_sizes.csv, which is a table rather than a page and deliberately has no "
+        "entry here, so iterating `outputs` and indexing this field raises KeyError. Iterate "
+        "this field directly when you want the pages.",
     )
 
 
@@ -554,8 +710,12 @@ def plot_trait_boxplots(
         absent = live[live["n_plotted"] == 0].sort_values(
             ["trait", "genotype"], kind="stable"
         )
+        # Worst-first, like every other capped bucket: sorting by name would let a cell with
+        # one inf survive the cap while one with 900 is truncated away.
         non_finite = live[live["n_non_finite"] > 0].sort_values(
-            ["trait", "genotype"], kind="stable"
+            ["n_non_finite", "trait", "genotype"],
+            ascending=[False, True, True],
+            kind="stable",
         )
         small = live[
             (live["n_plotted"] > 0)
@@ -564,12 +724,12 @@ def plot_trait_boxplots(
         ].sort_values(["n_finite", "trait", "genotype"], kind="stable")
         summarized = sample_sizes[sample_sizes["n_finite"] > 0]
 
-    def _entries(table, use_finite=True):
+    def _entries(table):
         return [
             GroupSampleSize(
                 trait=str(row["trait"]),
                 genotype=str(row["genotype"]),
-                n=int(row["n_finite"]) if use_finite else 0,
+                n=int(row["n_finite"]),
                 n_non_finite=int(row["n_non_finite"]),
             )
             for row in table.head(MAX_FLAGGED_REPORTED).to_dict("records")
@@ -578,8 +738,14 @@ def plot_trait_boxplots(
     non_finite_traits = (
         sorted({str(t) for t in non_finite["trait"]}) if len(non_finite) else []
     )
-    if len(sample_sizes):
-        worst = sample_sizes.sort_values(
+    # Computed over cells that actually have finite data, the same exclusion Decision 7
+    # applies to the scalars. An absent cell sits at nan_fraction 1.0 by construction, so
+    # including them hands this field to a cell already fully reported in
+    # absent_genotype_groups -- masking exactly the case the field exists for: a box that
+    # CLEARS the count floor while most of its column is missing.
+    with_data = summarized
+    if len(with_data):
+        worst = with_data.sort_values(
             ["nan_fraction", "trait", "genotype"],
             ascending=[False, True, True],
             kind="stable",
@@ -607,6 +773,22 @@ def plot_trait_boxplots(
         ),
         "box_n_max": native(summarized["n_finite"].max()) if len(summarized) else None,
         "no_data_trait_count": len(no_data_traits),
+        "non_finite_trait_count": len(non_finite_traits),
+        # Deliberately NOT bucket-derived: small_sample_groups excludes inf-carrying cells to
+        # keep the buckets mutually exclusive, so a cell with 4 finite values and 2 infs is
+        # reported only as non-finite and a caller gating on small_sample_group_count == 0
+        # would conclude "no thin boxes" while box_n_min reads 4. This counts every drawn box
+        # below the floor whatever else is wrong with it.
+        "thin_box_count": (
+            int(
+                (
+                    (sample_sizes["n_plotted"] > 0)
+                    & (sample_sizes["n_finite"] < MIN_PLOTTED_SAMPLES)
+                ).sum()
+            )
+            if len(sample_sizes)
+            else 0
+        ),
         "absent_genotype_group_count": int(len(absent)),
         "non_finite_group_count": int(len(non_finite)),
         "small_sample_group_count": int(len(small)),
@@ -641,6 +823,7 @@ def plot_trait_boxplots(
             len(page_cols),
             len(trait_cols),
             n_genotype_groups,
+            rows_missing_genotype,
             scoped,
         )
 
@@ -660,7 +843,15 @@ def plot_trait_boxplots(
         if len(sample_sizes)
         else {}
     )
-    genotypes = sorted(set(sample_sizes["genotype"])) if len(sample_sizes) else []
+    # Per trait, the genotypes the delegate actually draws a box for -- it drops empty groups
+    # before taking its tick labels, so this is the exact label set the annotator matches
+    # against (set EQUALITY, not a subset test -- see _annotate_genotype_ticks).
+    plotted_genotypes: dict[str, set[str]] = {}
+    if len(sample_sizes):
+        for row in sample_sizes[sample_sizes["n_plotted"] > 0].to_dict("records"):
+            plotted_genotypes.setdefault(str(row["trait"]), set()).add(
+                str(row["genotype"])
+            )
 
     prov = provenance.model_copy(
         update={
@@ -682,10 +873,15 @@ def plot_trait_boxplots(
                     for key, value in buckets.items()
                 },
                 "sample_size_note": sample_size_note,
-                # The run-wide note matches no page of a batched render, so the exact text
-                # drawn on each page is stamped rather than left to be re-derived from the
-                # cap, the ordering rule and the phrasing.
-                "page_sample_size_notes": page_notes,
+                # The PER-PAGE notes are deliberately NOT stamped, reversing an earlier
+                # decision in this change on measured grounds: at cylinder width that is 53
+                # pages x ~2.5 KB of text appended to `params` on every version, in a
+                # manifest.json that create_run re-validates in full on every subsequent run
+                # for this tool+experiment -- a cost that compounds with run count. Each page's
+                # note is a pure function of page_traits[page], the committed CSV,
+                # MIN_PLOTTED_SAMPLES and MAX_NOTE_NAMES, all of which the manifest or its
+                # outputs already carry, so stamping the rendered strings duplicates recoverable
+                # data rather than preserving anything.
             },
         }
     )
@@ -723,6 +919,18 @@ def plot_trait_boxplots(
             ]
 
         figures = call_with_figure_cleanup(_render)
+        if len(figures) != n_expected_pages:
+            # The per-page notes and page_traits are both derived from the same slicing
+            # formula BEFORE rendering (they have to be: params are stamped at create_run).
+            # If the delegate's page count ever drifts from _DELEGATE_BATCH_SIZE, fail here
+            # rather than draw a note whose statistics describe a different set of traits.
+            raise BloomMCPError(
+                code="internal_error",
+                message=f"Renderer returned {len(figures)} page(s) for "
+                f"{len(trait_cols)} trait(s); expected {n_expected_pages}.",
+                remedy="The rendering delegate's batch size appears to have changed. "
+                "Report this as a bug.",
+            )
 
         outputs: dict[str, str] = {}
         page_traits: dict[str, list[str]] = {}
@@ -733,19 +941,26 @@ def plot_trait_boxplots(
             # #748, in order: per-box counts onto the tick labels, then lay the figure out,
             # then the note underneath. tight_layout is called ONLY when unbatched -- the
             # batched delegate already calls it itself (visualization.py), and paying for it
-            # again on each of cylinder's 53 pages costs ~25% per page (measured), which is
+            # again on each of cylinder's 53 pages costs +21% per page (measured), which is
             # what would push the cylinder smoke run past its client timeout. On the
             # unbatched path the delegate deliberately leaves it to the caller, and skipping
             # it both collides the lengthened rotated tick labels with the next row's titles
             # and leaves ~2.7in of dead margin the note would then sit below.
             annotated = (
-                _annotate_genotype_ticks(fig, finite_counts, genotypes) and annotated
+                _annotate_genotype_ticks(
+                    fig, finite_counts, plotted_genotypes, no_data_traits
+                )
+                and annotated
             )
             if not batched:
                 # rect reserves the bottom strip for the note, mirroring how the batched
                 # delegate reserves its own top strip for a suptitle.
                 fig.tight_layout(rect=[0, 0.03, 1, 1])
-            note = page_notes.get(name, sample_size_note)
+            # Indexed, not .get(...)-with-a-fallback: falling back to the run-wide note would
+            # draw statistics over all 846 traits onto a 16-trait page without the
+            # "(this page)" qualifier -- exactly the misreading the page scoping exists to
+            # prevent. The page count is asserted above, so a missing key is a real bug.
+            note = page_notes[name]
             _draw_sample_size_note(fig, note, flagged="⚠" in note)
             fig.savefig(run.staging_dir / name, dpi=150, bbox_inches="tight")
             outputs[name] = name
