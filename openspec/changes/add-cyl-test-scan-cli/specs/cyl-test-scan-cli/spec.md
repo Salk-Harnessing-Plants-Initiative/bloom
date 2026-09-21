@@ -124,18 +124,36 @@ then update that `cyl_images` row's `object_path` to the uploaded path and `stat
 ### Requirement: Identity fields use fixed synthetic sentinel values, never real staff or accession data
 
 The command SHALL pass fixed, dedicated sentinel values for `phenotyper_name`,
-`phenotyper_email`, `scientist_name`, `scientist_email`, `accession_name`, and `device_name` on
-every call to `insert_image_v2_0` — never values copied from an existing scan's row — because
-`phenotypers`, `cyl_scientists`, and `accessions` are upserted by the RPC on a global natural key
-with no experiment scoping, and copying forward an existing value risks silently attaching a
-synthetic scan to a real staff member's or real accession's row.
+`phenotyper_email`, `scientist_name`, `scientist_email`, and `accession_name` on every call to
+`insert_image_v2_0` — never values copied from an existing scan's row — because `phenotypers`,
+`cyl_scientists`, and `accessions` are upserted by the RPC on a global natural key with no
+experiment scoping, and copying forward an existing value risks silently attaching a synthetic
+scan to a real staff member's or real accession's row. `device_name` is explicitly excluded from
+this requirement: it is not upserted by the RPC (a non-existent scanner name makes the call
+raise), so the command SHALL instead pass the real, existing scanner name sourced per the
+following requirement.
 
 #### Scenario: Sentinel identity values are used regardless of profile or prior scans
 
 - **WHEN** the command creates any scan (poison or good)
 - **THEN** the RPC call's `phenotyper_email` and `scientist_email` end in `.invalid`, and
-  `accession_name` and `device_name` are the fixed synthetic sentinel strings, regardless of
-  what values any existing `TEST-E2E-*` scan carries
+  `accession_name` is the fixed synthetic sentinel string, regardless of what values any
+  existing `TEST-E2E-*` scan carries
+
+### Requirement: Wave/plant-batch metadata, including device_name, is sourced from an existing scan
+
+The command SHALL pass fixed values for `species_common_name`, `wave_number`, `germ_day`,
+`germ_day_color`, `plant_age_days`, `date_scanned_`, and `device_name` on every call to
+`insert_image_v2_0`, sourced from an existing `TEST-E2E-*` scan's real values and recorded in
+`design.md`. `device_name` SHALL be a real, currently-existing `cyl_scanners.name` value — never
+a synthetic/invented string — because the RPC treats a non-matching `device_name` as a hard
+error, not an upsertable field.
+
+#### Scenario: device_name matches a real scanner
+
+- **WHEN** the command creates any scan (poison or good)
+- **THEN** the RPC call's `device_name` equals an existing `cyl_scanners.name` value, and the
+  call does not raise a "Scanner does not exist" error
 
 ### Requirement: --poison and --good are mutually exclusive and one is required
 

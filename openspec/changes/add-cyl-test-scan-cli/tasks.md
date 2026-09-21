@@ -6,14 +6,22 @@ and non-blocking; it may happen at any time. The lock's `staleness_seconds` valu
 pre-upload frame-count query's exact shape are already fixed in `design.md`'s Decisions section
 (no separate investigation task needed for either).
 
-- [ ] 1.1 Query one existing `TEST-E2E-*` scan's full metadata (species, wave_number, germ_day,
+- [x] 1.1 Query one existing `TEST-E2E-*` scan's full metadata (species, wave_number, germ_day,
       germ_day_color, plant_age_days, date_scanned, device_name) via a throwaway read-only script
-      under the `pipeline-staging` profile (deleted after use) to source the exact default values
-      `create-test-scan` will pass to `insert_image_v2_0` for the wave/plant-batch parameters
-      only. Identity fields (`phenotyper_name`/`email`, `scientist_name`/`email`,
-      `accession_name`, `device_name`) are NOT sourced this way — they use the fixed synthetic
-      sentinel values from `design.md`, regardless of what any existing scan carries. Record the
-      chosen source scan id and the exact values in `design.md`.
+      (deleted after use) to source the exact default values `create-test-scan` will pass to
+      `insert_image_v2_0` for the wave/plant-batch parameters. Done: source scan `12894745`
+      (`TEST-E2E-001`), queried via `cyl_scans_extended` under the `staging-writer` profile (not
+      `pipeline-staging` — see `design.md`'s Profile note; `pipeline-staging` cannot read
+      `cyl_scanners`, which this same lookup revealed the RPC needs). Values recorded in
+      `design.md`: `species_common_name="Canola"`, `wave_number=9999`, `germ_day=1`,
+      `germ_day_color="TestGray"`, `plant_age_days=2`, `date_scanned_="2026-08-24"`,
+      `device_name="FastScanner"`. Also discovered `device_name` is NOT one of the sentinel
+      identity fields (the RPC requires it to already exist in `cyl_scanners`, unlike
+      phenotyper/scientist/accession) — `design.md` and `specs/cyl-test-scan-cli/spec.md` were
+      updated accordingly (a new requirement covers it separately from the sentinel-identity
+      one). Identity fields (`phenotyper_name`/`email`, `scientist_name`/`email`,
+      `accession_name`) are NOT sourced this way — they use the fixed synthetic sentinel values
+      from `design.md`, regardless of what any existing scan carries.
 - [ ] 1.2 (Informational, non-blocking) Check whether `cyl_plants` / `cyl_scans` carry the
       unique constraints `design.md`'s Context section describes
       (`(wave_id, qr_code)` / `(plant_id, date_scanned)`). This no longer gates the QR-race
@@ -48,11 +56,13 @@ outcomes.
       up to `009` results in the RPC being called with `plant_qr_code = 'TEST-E2E-010'`. Pin the
       exact suffix-lookup query shape.
 - [ ] 2.4 Sentinel identity values: assert every `insert_image_v2_0` call (poison and good) uses
-      the fixed synthetic `phenotyper_name`/`email`, `scientist_name`/`email`, `accession_name`,
-      `device_name` — each re-typed directly from `design.md`'s Decisions section into the test
-      (not copy-pasted from `create_test_scan.py`), so a shared transcription typo between the
-      implementation and this test cannot pass silently. Assert none of these values are ever
-      read from any fake "existing scan" response.
+      the fixed synthetic `phenotyper_name`/`email`, `scientist_name`/`email`, `accession_name`
+      — each re-typed directly from `design.md`'s Decisions section into the test (not
+      copy-pasted from `create_test_scan.py`), so a shared transcription typo between the
+      implementation and this test cannot pass silently. Assert none of these three are ever
+      read from any fake "existing scan" response. Separately assert `device_name` equals the
+      sourced real value (`"FastScanner"`) from task 1.1, NOT a sentinel — this is the opposite
+      assertion from the other three fields and is easy to get backwards.
 - [ ] 2.5 `--poison`: assert `insert_image_v2_0` is called exactly once with `frame_number_ = 1`
       and the expected metadata defaults (from 1.1); assert zero storage calls (`upload`,
       `download`) occur; assert no `cyl_images` update call occurs.
@@ -139,8 +149,9 @@ outcomes.
 - [ ] 4.1 `openspec validate add-cyl-test-scan-cli --strict` passes.
 - [ ] 4.2 Run `/pre-merge` (lint, full `bloomcli` test suite, self-review, OpenSpec validation);
       fix anything flagged.
-- [ ] 4.3 Manually exercise the command once against the real `pipeline-staging` profile (not in
-      CI), after 4.2 is clean: create the scans actually needed per `design.md`'s "Which
+- [ ] 4.3 Manually exercise the command once against the real `staging-writer` profile (not
+      `pipeline-staging` — see `design.md`'s Profile note; not in CI), after 4.2 is clean: create
+      the scans actually needed per `design.md`'s "Which
       verification each created scan is for" (one `--good` scan for #76, one `--good` scan for
       #78, and a `--good`×2 + `--poison`×1 set for the 7.4b run), invoked **serially**. Confirm
       via a read-only query that each resulting row matches the spec (poison: `object_path IS

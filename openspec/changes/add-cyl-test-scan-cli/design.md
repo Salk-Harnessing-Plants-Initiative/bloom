@@ -181,14 +181,46 @@ Non-Goals:
   `phenotyper_email = "synthetic-test-phenotyper@bloom.invalid"`,
   `scientist_name = "Synthetic Test Scientist"`,
   `scientist_email = "synthetic-test-scientist@bloom.invalid"`,
-  `accession_name = "SYNTHETIC-TEST-ACCESSION"`, `device_name = "synthetic-test-scan-cli"`
+  `accession_name = "SYNTHETIC-TEST-ACCESSION"`
   (`.invalid` is the reserved TLD for exactly this purpose, per RFC 2606, so it can never
-  collide with a real address). Fields that describe the *wave/plant batch itself* rather than
-  a person or accession — `species_common_name`, `wave_number`, `germ_day`, `germ_day_color`,
-  `plant_age_days`, `date_scanned_` — are still sourced from an existing `TEST-E2E-*` scan's
-  real values (task 1.1), since those legitimately describe the shared experiment/wave context
-  and have no cross-attachment risk (they're plain columns on the upserted wave/plant row, not
-  natural-key lookups into a global table).
+  collide with a real address).
+
+  **`device_name` is NOT one of these sentinel fields — verified during implementation
+  (task 1.1) that treating it as one would break the command.** Unlike phenotyper/scientist/
+  accession, `device_name` is never upserted: the RPC does
+  `SELECT id INTO scanner_id_var FROM cyl_scanners WHERE name = device_name` and
+  `RAISE EXCEPTION 'Scanner % does not exist', device_name` if no row matches (`:41-43`). A
+  made-up sentinel scanner name would make every single invocation fail. `cyl_scanners` holds
+  hardware scanner identifiers, not personal/accession data, so there is no cross-attachment
+  risk in reusing a real one — this field moves to the "sourced from an existing scan" bucket
+  below. Confirmed value: `device_name = "FastScanner"` (id `1`, the scanner every existing
+  `TEST-E2E-*` scan already uses).
+
+  Fields that describe the *wave/plant batch itself* rather than a person, accession, or piece
+  of hardware — `species_common_name`, `wave_number`, `germ_day`, `germ_day_color`,
+  `plant_age_days`, `date_scanned_`, and now `device_name` — are sourced from an existing
+  `TEST-E2E-*` scan's real values (task 1.1), since those legitimately describe the shared
+  experiment/wave context and have no cross-attachment risk (they're plain columns or a shared
+  hardware reference, not natural-key lookups into a global table of people/organizations).
+  Confirmed values, read from scan `12894745` (`TEST-E2E-001`) via the `cyl_scans_extended`
+  view under the `staging-writer` profile on 2026-09-21: `species_common_name = "Canola"`,
+  `wave_number = 9999`, `germ_day = 1`, `germ_day_color = "TestGray"`, `plant_age_days = 2`,
+  `date_scanned_ = "2026-08-24"` (reused verbatim — `cyl_scans`'s uniqueness is on
+  `(plant_id, date_scanned)`, and `plant_id` is always new per this tool's fresh `qr_code`, so
+  reusing the same date creates no collision), `device_name = "FastScanner"`.
+
+  **Profile note**: this lookup also revealed that `pipeline-staging` (the profile named in the
+  original handoff) cannot itself read `cyl_scanners` — it returns `permission denied for table
+  cyl_scanners` (`42501`), because `insert_image_v2_0` has no `SECURITY DEFINER` clause and so
+  runs with the *caller's* privileges, and `pipeline-staging`'s role lacks the table-level grant
+  `bloom_user` has. (The earlier successful read via the `cyl_scans_extended` *view* is not
+  evidence otherwise — that view has no `WITH (security_invoker = true)` clause, so it silently
+  runs as the view owner and bypasses the caller's own grants entirely.) This matches how the
+  original synthetic scans were actually created: a prior task note (PR #774) describes them as
+  made "via `insert_image_v2_0` under the `staging-writer` profile." **This command must be
+  exercised with `-p staging-writer` (or an equivalently write-capable profile), not
+  `-p pipeline-staging`** — noted here and in the command's `--help` text so a future caller
+  doesn't waste time on a permission error that looks like a bug in this tool.
 
 - **Decision: QR-code suffix is auto-incremented.** The command queries experiment `12880747`
   for the current highest `TEST-E2E-NNN` suffix and uses the next integer, zero-padded to 3
