@@ -41,20 +41,20 @@ shapes (`.table()`/`.select()`/`.eq()`) for the experiment guard and QR-suffix l
 `test_cyl_datasets.py`'s convention (e.g. `test_fetch_datasets_builds_joined_query`), not just
 outcomes.
 
-- [ ] 2.1 Experiment guard: a fake client returning a non-matching (or missing) experiment
+- [x] 2.1 Experiment guard: a fake client returning a non-matching (or missing) experiment
       `12880747` causes the command to exit non-zero and make zero RPC/storage/lock calls. A
       fake client returning a matching experiment (name starting with `A4-PIPELINE-E2E-TEST`)
       allows the command to proceed. Pin the exact guard query shape.
-- [ ] 2.2 Lock contention: with `acquire_lock` monkeypatched to raise `LockContendedError`, the
+- [x] 2.2 Lock contention: with `acquire_lock` monkeypatched to raise `LockContendedError`, the
       command exits non-zero immediately with a message identifying the lock as held, and makes
       zero RPC calls. Confirm, via a recording fake, that the lock is acquired before any
       QR-suffix query with the exact path `~/.bloom/.locks/cyl-create-test-scan-12880747.lock`
       and `staleness_seconds = DEFAULT_LOCK_STALENESS_SECONDS` (imported from `_locks`, not
       re-literaled as `900`).
-- [ ] 2.3 QR-code auto-increment: a fake client whose experiment query returns existing suffixes
+- [x] 2.3 QR-code auto-increment: a fake client whose experiment query returns existing suffixes
       up to `009` results in the RPC being called with `plant_qr_code = 'TEST-E2E-010'`. Pin the
       exact suffix-lookup query shape.
-- [ ] 2.4 Sentinel identity values: assert every `insert_image_v2_0` call (poison and good) uses
+- [x] 2.4 Sentinel identity values: assert every `insert_image_v2_0` call (poison and good) uses
       the fixed synthetic `phenotyper_name`/`email`, `scientist_name`/`email`, `accession_name`
       — each re-typed directly from `design.md`'s Decisions section into the test (not
       copy-pasted from `create_test_scan.py`), so a shared transcription typo between the
@@ -62,86 +62,93 @@ outcomes.
       read from any fake "existing scan" response. Separately assert `device_name` equals the
       sourced real value (`"FastScanner"`) from task 1.1, NOT a sentinel — this is the opposite
       assertion from the other three fields and is easy to get backwards.
-- [ ] 2.5 `--poison`: assert `insert_image_v2_0` is called exactly once with `frame_number_ = 1`
+- [x] 2.5 `--poison`: assert `insert_image_v2_0` is called exactly once with `frame_number_ = 1`
       and the expected metadata defaults (from 1.1); assert zero storage calls (`upload`,
       `download`) occur; assert no `cyl_images` update call occurs.
-- [ ] 2.6 `insert_image_v2_0` returns `NULL` (poison mode): assert the command exits non-zero and
+- [x] 2.6 `insert_image_v2_0` returns `NULL` (poison mode): assert the command exits non-zero and
       names both the QR code and the frame number (`1`) in its error, and makes zero storage
       calls.
-- [ ] 2.7 `--good` with one frame file (>= 1 KiB): assert the RPC call, then the exact pre-upload
+- [x] 2.7 `--good` with one frame file (>= 1 KiB): assert the RPC call, then the exact pre-upload
       frame-count query pair from `design.md` (`.table("cyl_images").select("scan_id")
       .eq("id", image_id).single()`, then `.select("id", count="exact").eq("scan_id", scan_id)`,
       expecting count `1`), then exactly one `upload()` call against the `images` bucket at
       `cyl-images/cyl-image_{id}_{uuid}.png` (assert the prefix and suffix shape with a regex,
       not a fixed UUID), then exactly one update call setting `object_path` to that same path and
       `status` to `'SUCCESS'`.
-- [ ] 2.8 `--good` with multiple frame files: assert one RPC call and one upload+update pair per
+- [x] 2.8 `--good` with multiple frame files: assert one RPC call and one upload+update pair per
       file, with `frame_number_` assigned `1, 2, 3, ...` in ascending filename order, each with a
       distinct generated path.
-- [ ] 2.9 `--good`, `insert_image_v2_0` returns `NULL` on the second of two frames: assert
+- [x] 2.9 `--good`, `insert_image_v2_0` returns `NULL` on the second of two frames: assert
       non-zero exit, an error naming that frame, exactly one successful upload+update for the
       first frame, and no RPC/storage call for any frame after the failing one (fail-fast, no
       partial-then-continue behavior).
-- [ ] 2.10 `--good`, upload succeeds but the row-update call raises: assert non-zero exit and a
+- [x] 2.10 `--good`, upload succeeds but the row-update call raises: assert non-zero exit and a
       message identifying the frame/row left inconsistent (uploaded object, unset `object_path`).
-- [ ] 2.11 `--good`, pre-upload frame-count confirmation (the exact query pair from 2.7) returns
+- [x] 2.11 `--good`, pre-upload frame-count confirmation (the exact query pair from 2.7) returns
       a count other than the expected `N` for the Nth frame (simulating a residual race past the
       lock): assert non-zero exit before any upload call, with a message describing the
       mismatch.
-- [ ] 2.12 `--good` with a frame file smaller than 1 KiB: assert non-zero exit naming the file and
+- [x] 2.12 `--good` with a frame file smaller than 1 KiB: assert non-zero exit naming the file and
       the size floor, and zero `insert_image_v2_0` calls.
-- [ ] 2.13 `--good` with a missing or empty `--frames-dir`, or one containing only non-image
+- [x] 2.13 `--good` with a missing or empty `--frames-dir`, or one containing only non-image
       files: assert non-zero exit and zero RPC calls.
-- [ ] 2.14 `--good` with a mix of image and non-image files in `--frames-dir`: assert only the
+- [x] 2.14 `--good` with a mix of image and non-image files in `--frames-dir`: assert only the
       image files are processed, in ascending filename order, and non-image files are neither
       uploaded nor counted.
-- [ ] 2.15 Mutual exclusivity: `--poison` + `--good` together → non-zero exit, zero RPC calls.
+- [x] 2.15 Mutual exclusivity: `--poison` + `--good` together → non-zero exit, zero RPC calls.
       Neither given → non-zero exit, zero RPC calls. `--poison --frames-dir <dir>` → non-zero
       exit, zero RPC calls.
-- [ ] 2.16 New upload helper (module added in 3.1): retries once on a transient (429/5xx) storage
+- [x] 2.16 New upload helper (module added in 3.1): retries once on a transient (429/5xx) storage
       error and succeeds on the second attempt; does not retry a non-transient error (e.g. 403)
       and raises immediately.
-- [ ] 2.17 Default `-p/--profile` matches other `cyl` commands and is forwarded to
+- [x] 2.17 Default `-p/--profile` matches other `cyl` commands and is forwarded to
       `_authed_client`.
-- [ ] 2.18 CLI registration: `create-test-scan` appears under `bloomctl cyl --help`, matching
+- [x] 2.18 CLI registration: `create-test-scan` appears under `bloomctl cyl --help`, matching
       `test_cyl_ingest.py`'s `test_cli_registration_in_help` pattern.
-- [ ] 2.19 `--json` / stdout-stderr convention: on success, stdout parses as exactly one JSON
+- [x] 2.19 `--json` / stdout-stderr convention: on success, stdout parses as exactly one JSON
       object containing the scan id and `plant_qr_code`; any progress text appears only on
-      stderr; the fake credentials' secret values never appear in stdout or stderr — mirror
+      stderr. (Command-level tests monkeypatch `_authed_client` to return the fake client
+      directly, never constructing a real `Credentials` object, so there is no secret value in
+      scope to leak here — credential non-leak is instead guaranteed structurally by
+      `Credentials.anon_key`/`password` being `field(repr=False)`.) Mirrors
       `test_cyl_datasets.py::test_list_experiment_menu_stderr_clean_stdout_json`.
-- [ ] 2.20 Without `--json`: stdout contains a human-readable line naming the created scan's id
+- [x] 2.20 Without `--json`: stdout contains a human-readable line naming the created scan's id
       and `plant_qr_code`.
-- [ ] 2.21 Confirm all of 2.1-2.20 fail for the expected reason (missing implementation) before
-      writing any implementation code. Capture the failing output to the scratchpad for the PR
-      description; do not create an isolated "red" commit (no CI runs on feature-branch pushes in
-      this repo, and squash merges erase intermediate trees — see prior art in
+- [x] 2.21 Confirmed all of 2.1-2.20 failed for the expected reason before writing any
+      implementation code: `ModuleNotFoundError: No module named 'bloomctl.cyl.create_test_scan'`
+      at collection time. No isolated "red" commit was created (no CI runs on feature-branch
+      pushes in this repo, and squash merges erase intermediate trees — see prior art in
       `fix-cyl-redelivery-blob-collision/tasks.md`).
 
 ## 3. Green — implementation
 
-- [ ] 3.1 Add a generic upload-object helper (new function in `src/bloomctl/_storage.py` or a
+- [x] 3.1 Add a generic upload-object helper (new function in `src/bloomctl/_storage.py` or a
       new sibling module) mirroring `_storage.py::download_object`'s error-shaping conventions
       (`is_retryable`, `describe_storage_error`) but for `bucket.upload(...)`: retry once on a
       transient error, raise immediately otherwise, no pre-existence/checksum check.
-- [ ] 3.2 Add `src/bloomctl/cyl/create_test_scan.py`: pure helper functions (experiment guard
+- [x] 3.2 Add `src/bloomctl/cyl/create_test_scan.py`: pure helper functions (experiment guard
       query, `resolve_next_qr_code`, `call_insert_image`, frame-file discovery/ordering/size-floor
       filtering, the per-frame good-mode orchestration with fail-fast on any frame's failure)
       kept separate from the `@click.command`, matching this codebase's "unit-testable without a
       live server" convention (`cyl/download.py`'s module docstring). Define the sentinel
       identity constants here.
-- [ ] 3.3 Implement the experiment guard as the first live call the command makes.
-- [ ] 3.4 Wrap the entire `--good`/`--poison` critical section — QR-suffix resolution through
+- [x] 3.3 Implement the experiment guard as the first live call the command makes.
+- [x] 3.4 Wrap the entire `--good`/`--poison` critical section — QR-suffix resolution through
       every frame's RPC call, frame-count check, upload, and row update — in one single
       `with bloomctl.cyl._locks.acquire_lock(path, staleness_seconds=DEFAULT_LOCK_STALENESS_SECONDS)`
       block for the whole invocation, at the fixed lock path from `design.md`. Every abort inside
       this section must raise from inside the block (never via a caller that has already exited
       it), so the lock is always released via the primitive's own `try`/`finally`.
-- [ ] 3.5 Implement `--poison` and `--good --frames-dir` per the spec deltas, including the
+- [x] 3.5 Implement `--poison` and `--good --frames-dir` per the spec deltas, including the
       `NULL`-return check and the pre-upload frame-count confirmation.
-- [ ] 3.6 Implement `--json`/stdout-stderr output per the spec deltas.
-- [ ] 3.7 Register the command in `src/bloomctl/cyl/__init__.py`.
-- [ ] 3.8 Run the full test file; confirm every test from section 2 now passes for the right
-      reason (not vacuously).
+- [x] 3.6 Implement `--json`/stdout-stderr output per the spec deltas.
+- [x] 3.7 Register the command in `src/bloomctl/cyl/__init__.py`.
+- [x] 3.8 Run the full test file; confirm every test from section 2 now passes for the right
+      reason (not vacuously). Done: 29/29 new tests pass; full `bloomcli` suite is 938 passed
+      (909 baseline + 29 new), 13 failed (pre-existing, Windows-platform-specific — file
+      permission bits, symlinks, console-script subprocess spawning; unrelated to this change),
+      7 skipped — identical failure set to the pre-change baseline. `ruff check` (pinned v0.9.9,
+      matching `.pre-commit-config.yaml`) passes on all changed files.
 
 ## 4. Validation
 

@@ -1,0 +1,617 @@
+"""bloomctl cyl create-test-scan — synthetic scan creation in A4-PIPELINE-E2E-TEST (mocked client)."""
+
+import json
+
+import pytest
+from click.testing import CliRunner
+
+import bloomctl.cli as climod
+import bloomctl.cyl.create_test_scan as cts
+from bloomctl.cli import cli
+from bloomctl.cyl._locks import LockContendedError
+
+EXPERIMENT_ROW = {"id": cts.EXPERIMENT_ID, "name": "A4-PIPELINE-E2E-TEST (synthetic -- safe to break/delete)"}
+
+
+def _patch_authed(monkeypatch):
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: object())
+
+
+def _patch_lock(monkeypatch, calls=None):
+    """No-op lock by default; records (path, staleness_seconds) into `calls` if given."""
+
+    class _NullLock:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *exc):
+            return False
+
+    def _acquire(path, *, staleness_seconds):
+        if calls is not None:
+            calls.append((path, staleness_seconds))
+        return _NullLock()
+
+    monkeypatch.setattr(cts, "acquire_lock", _acquire)
+
+
+class _RPC:
+    def __init__(self, result):
+        self._result = result
+
+    def execute(self):
+        return type("R", (), {"data": self._result})()
+
+
+class _SelectQuery:
+    def __init__(self, rows, *, count=None):
+        self._rows = rows
+        self._count = count
+
+    def select(self, *_a, **_kw):
+        return self
+
+    def eq(self, *_a, **_kw):
+        return self
+
+    def single(self):
+        return self
+
+    def execute(self):
+        data = self._rows[0] if (self._rows and self._single) else self._rows
+        return type("R", (), {"data": data, "count": self._count})()
+
+    _single = False
+
+
+class _Table:
+    """Records every call; returns a canned response for `select`, records `update` payloads."""
+
+    def __init__(self, name, responses, updates, update_errors=None):
+        self.name = name
+        self._responses = responses
+        self._updates = updates
+        self._update_errors = update_errors or {}
+        self._eq_filters = {}
+        self._is_single = False
+
+    def select(self, *_a, count=None):
+        self._count_mode = count
+        return self
+
+    def eq(self, col, val):
+        self._eq_filters[col] = val
+        return self
+
+    def single(self):
+        self._is_single = True
+        return self
+
+    def update(self, fields):
+        self._pending_update = fields
+        return self
+
+    def execute(self):
+        if hasattr(self, "_pending_update"):
+            key = (self.name, self._eq_filters.get("id"))
+            self._updates.append((self.name, dict(self._eq_filters), dict(self._pending_update)))
+            if key in self._update_errors:
+                raise self._update_errors[key]
+            return type("R", (), {"data": [self._pending_update]})()
+        resp = self._responses.get(self.name)
+        if resp is None:
+            return type("R", (), {"data": [], "count": 0})()
+        rows, count = resp if isinstance(resp, tuple) else (resp, None)
+        data = rows[0] if (rows and self._is_single) else rows
+        return type("R", (), {"data": data, "count": count})()
+
+
+class _Bucket:
+    def __init__(self, uploads, error=None):
+        self._uploads = uploads
+        self._error = error
+
+    def upload(self, path, data):
+        if self._error is not None:
+            raise self._error
+        self._uploads.append((path, data))
+
+
+class _Storage:
+    def __init__(self, bucket):
+        self._bucket = bucket
+
+    def from_(self, name):
+        assert name == cts.IMAGES_BUCKET
+        return self._bucket
+
+
+class _Client:
+    """Hand-rolled fake Supabase client: table()/rpc()/storage, all call-recording."""
+
+    def __init__(self, *, table_responses=None, rpc_result=None, rpc_results=None,
+                 uploads=None, upload_error=None, update_errors=None):
+        self.table_responses = table_responses or {}
+        self.rpc_result = rpc_result
+        self.rpc_results = list(rpc_results) if rpc_results is not None else None
+        self.rpc_calls = []
+        self.updates = []
+        self.uploads = uploads if uploads is not None else []
+        self.storage = _Storage(_Bucket(self.uploads, error=upload_error))
+        self._update_errors = update_errors or {}
+
+    def table(self, name):
+        return _Table(name, self.table_responses, self.updates, self._update_errors)
+
+    def rpc(self, name, params):
+        self.rpc_calls.append((name, params))
+        if self.rpc_results is not None:
+            result = self.rpc_results[len(self.rpc_calls) - 1]
+        else:
+            result = self.rpc_result
+        return _RPC(result)
+
+
+def _default_table_responses(qr_suffixes=("001", "002", "009"), image_id=42, scan_id=777, frame_count=1):
+    return {
+        "cyl_experiments": ([EXPERIMENT_ROW], None),
+        "cyl_plants_extended": ([{"qr_code": f"TEST-E2E-{s}"} for s in qr_suffixes], None),
+        "cyl_images": ([{"scan_id": scan_id}], frame_count),
+    }
+
+
+# --- experiment guard --------------------------------------------------------
+
+
+def test_experiment_guard_passes_on_matching_name():
+    client = _Client(table_responses=_default_table_responses())
+    cts.check_experiment_guard(client)  # must not raise
+
+
+def test_experiment_guard_rejects_missing_experiment():
+    client = _Client(table_responses={"cyl_experiments": ([], None)})
+    with pytest.raises(cts.CreateTestScanError):
+        cts.check_experiment_guard(client)
+
+
+def test_experiment_guard_rejects_mismatched_name():
+    client = _Client(table_responses={"cyl_experiments": ([{"id": cts.EXPERIMENT_ID, "name": "Something Else"}], None)})
+    with pytest.raises(cts.CreateTestScanError):
+        cts.check_experiment_guard(client)
+
+
+def test_cli_guard_failure_makes_no_rpc_call(monkeypatch, tmp_path):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    client = _Client(table_responses={"cyl_experiments": ([], None)})
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
+    assert res.exit_code != 0
+    assert client.rpc_calls == []
+
+
+# --- lock ---------------------------------------------------------------------
+
+
+def test_lock_contention_exits_nonzero_with_no_rpc_call(monkeypatch):
+    _patch_authed(monkeypatch)
+    client = _Client(table_responses=_default_table_responses())
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+
+    def _raise(*_a, **_kw):
+        raise LockContendedError("locked by pid 123")
+
+    monkeypatch.setattr(cts, "acquire_lock", _raise)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
+    assert res.exit_code != 0
+    assert "locked" in res.output.lower() or "lock" in res.output.lower()
+    assert client.rpc_calls == []
+
+
+def test_lock_acquired_with_expected_path_and_staleness(monkeypatch):
+    _patch_authed(monkeypatch)
+    calls = []
+    _patch_lock(monkeypatch, calls)
+    client = _Client(table_responses=_default_table_responses(qr_suffixes=("009",)), rpc_result=101)
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
+    assert res.exit_code == 0, res.output
+    assert len(calls) == 1
+    path, staleness = calls[0]
+    assert str(path).replace("\\", "/").endswith(".bloom/.locks/cyl-create-test-scan-12880747.lock")
+    from bloomctl.cyl._locks import DEFAULT_LOCK_STALENESS_SECONDS
+
+    assert staleness == DEFAULT_LOCK_STALENESS_SECONDS
+
+
+# --- QR-code auto-increment ---------------------------------------------------
+
+
+def test_resolve_next_qr_code_increments_past_highest_suffix():
+    client = _Client(table_responses=_default_table_responses(qr_suffixes=("001", "002", "009")))
+    assert cts.resolve_next_qr_code(client) == "TEST-E2E-010"
+
+
+def test_resolve_next_qr_code_with_no_existing_scans():
+    client = _Client(table_responses={"cyl_plants_extended": ([], None)})
+    assert cts.resolve_next_qr_code(client) == "TEST-E2E-001"
+
+
+# --- sentinel identity + sourced wave/device values --------------------------
+
+
+def test_poison_rpc_call_uses_expected_params(monkeypatch):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    client = _Client(table_responses=_default_table_responses(qr_suffixes=("009",)), rpc_result=55)
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
+    assert res.exit_code == 0, res.output
+
+    assert len(client.rpc_calls) == 1
+    name, params = client.rpc_calls[0]
+    assert name == "insert_image_v2_0"
+    assert params["plant_qr_code"] == "TEST-E2E-010"
+    assert params["frame_number_"] == 1
+
+    # Sentinel identity fields — re-typed here from design.md, not copied from create_test_scan.py.
+    assert params["phenotyper_name"] == "Synthetic Test Phenotyper"
+    assert params["phenotyper_email"] == "synthetic-test-phenotyper@bloom.invalid"
+    assert params["scientist_name"] == "Synthetic Test Scientist"
+    assert params["scientist_email"] == "synthetic-test-scientist@bloom.invalid"
+    assert params["accession_name"] == "SYNTHETIC-TEST-ACCESSION"
+    for value in (params["phenotyper_email"], params["scientist_email"]):
+        assert value.endswith(".invalid")
+
+    # device_name is NOT a sentinel — it must be a real, existing scanner name.
+    assert params["device_name"] == "FastScanner"
+
+    # Wave/plant-batch metadata sourced from an existing scan (task 1.1).
+    assert params["species_common_name"] == "Canola"
+    assert params["wave_number"] == 9999
+    assert params["germ_day"] == 1
+    assert params["germ_day_color"] == "TestGray"
+    assert params["plant_age_days"] == 2
+    assert params["date_scanned_"] == "2026-08-24"
+
+
+# --- poison mode ---------------------------------------------------------------
+
+
+def test_poison_mode_makes_no_storage_calls(monkeypatch):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    client = _Client(table_responses=_default_table_responses(qr_suffixes=("009",)), rpc_result=55)
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
+    assert res.exit_code == 0, res.output
+    assert client.uploads == []
+    assert client.updates == []
+
+
+def test_poison_null_rpc_result_aborts_before_storage(monkeypatch):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    client = _Client(table_responses=_default_table_responses(qr_suffixes=("009",)), rpc_result=None)
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
+    assert res.exit_code != 0
+    assert "TEST-E2E-010" in res.output
+    assert "1" in res.output  # frame number named
+    assert client.uploads == []
+    assert client.updates == []
+
+
+# --- good mode -----------------------------------------------------------------
+
+
+def _write_frame(tmp_path, name="frame1.png", size=2048):
+    path = tmp_path / name
+    path.write_bytes(b"\x00" * size)
+    return path
+
+
+def test_good_mode_single_frame_full_flow(monkeypatch, tmp_path):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    _write_frame(tmp_path)
+    client = _Client(
+        table_responses=_default_table_responses(qr_suffixes=("009",), image_id=42, scan_id=777, frame_count=1),
+        rpc_result=42,
+    )
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(
+        cli, ["cyl", "create-test-scan", "--good", "--frames-dir", str(tmp_path)]
+    )
+    assert res.exit_code == 0, res.output
+
+    assert len(client.uploads) == 1
+    object_path, data = client.uploads[0]
+    assert object_path.startswith("cyl-images/cyl-image_42_")
+    assert object_path.endswith(".png")
+
+    assert len(client.updates) == 1
+    table_name, eq_filters, fields = client.updates[0]
+    assert table_name == "cyl_images"
+    assert eq_filters == {"id": 42}
+    assert fields["object_path"] == object_path
+    assert fields["status"] == "SUCCESS"
+
+
+def test_good_mode_multiple_frames_sequential_numbers(monkeypatch, tmp_path):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    _write_frame(tmp_path, "a.png")
+    _write_frame(tmp_path, "b.png")
+    _write_frame(tmp_path, "c.png")
+    client = _Client(
+        table_responses={
+            "cyl_experiments": ([EXPERIMENT_ROW], None),
+            "cyl_plants_extended": ([{"qr_code": "TEST-E2E-009"}], None),
+        },
+        rpc_results=[1, 2, 3],
+    )
+
+    # frame-count check must track each frame's own scan/count pair. Three separate
+    # client.table("cyl_images") calls happen per frame (resolve_scan_id, count_frames_for_scan,
+    # then the update in update_image_row — which ignores this response but still consumes one
+    # from the iterator since the fake intercepts every table("cyl_images") call uniformly), so
+    # each pair below is consumed three times.
+    responses_by_call = iter(
+        pair
+        for count in (1, 2, 3)
+        for pair in (({"scan_id": 777}, count),) * 3
+    )
+
+    real_table = client.table
+
+    def _table(name):
+        t = real_table(name)
+        if name == "cyl_images":
+            row, count = next(responses_by_call)
+            t._responses = {**t._responses, "cyl_images": ([row], count)}
+        return t
+
+    monkeypatch.setattr(client, "table", _table)
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(
+        cli, ["cyl", "create-test-scan", "--good", "--frames-dir", str(tmp_path)]
+    )
+    assert res.exit_code == 0, res.output
+    assert [p for p, _d in client.uploads].__len__() == 3
+    assert [call[1]["frame_number_"] for call in client.rpc_calls] == [1, 2, 3]
+    assert len(client.updates) == 3
+
+
+def test_good_mode_null_on_second_frame_stops_processing(monkeypatch, tmp_path):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    _write_frame(tmp_path, "a.png")
+    _write_frame(tmp_path, "b.png")
+    client = _Client(
+        table_responses=_default_table_responses(qr_suffixes=("009",), scan_id=777, frame_count=1),
+        rpc_results=[1, None],
+    )
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(
+        cli, ["cyl", "create-test-scan", "--good", "--frames-dir", str(tmp_path)]
+    )
+    assert res.exit_code != 0
+    assert "2" in res.output  # names the failing frame
+    assert len(client.rpc_calls) == 2  # frame 1 succeeded, frame 2's RPC ran and returned NULL
+    assert len(client.uploads) == 1  # only frame 1 uploaded
+    assert len(client.updates) == 1  # only frame 1 updated
+
+
+def test_good_mode_update_failure_after_successful_upload(monkeypatch, tmp_path):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    _write_frame(tmp_path)
+    client = _Client(
+        table_responses=_default_table_responses(qr_suffixes=("009",), image_id=42, scan_id=777, frame_count=1),
+        rpc_result=42,
+        update_errors={("cyl_images", 42): RuntimeError("boom")},
+    )
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(
+        cli, ["cyl", "create-test-scan", "--good", "--frames-dir", str(tmp_path)]
+    )
+    assert res.exit_code != 0
+    assert len(client.uploads) == 1
+    assert "42" in res.output
+
+
+def test_good_mode_frame_count_mismatch_aborts_before_upload(monkeypatch, tmp_path):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    _write_frame(tmp_path)
+    client = _Client(
+        table_responses=_default_table_responses(qr_suffixes=("009",), image_id=42, scan_id=777, frame_count=2),
+        rpc_result=42,
+    )
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(
+        cli, ["cyl", "create-test-scan", "--good", "--frames-dir", str(tmp_path)]
+    )
+    assert res.exit_code != 0
+    assert client.uploads == []
+
+
+def test_good_mode_frame_below_size_floor_rejected(monkeypatch, tmp_path):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    _write_frame(tmp_path, size=100)
+    client = _Client(table_responses=_default_table_responses(qr_suffixes=("009",)))
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(
+        cli, ["cyl", "create-test-scan", "--good", "--frames-dir", str(tmp_path)]
+    )
+    assert res.exit_code != 0
+    assert "1024" in res.output or "KiB" in res.output
+    assert client.rpc_calls == []
+
+
+def test_good_mode_missing_frames_dir(monkeypatch, tmp_path):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    client = _Client(table_responses=_default_table_responses(qr_suffixes=("009",)))
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(
+        cli, ["cyl", "create-test-scan", "--good", "--frames-dir", str(tmp_path / "nope")]
+    )
+    assert res.exit_code != 0
+    assert client.rpc_calls == []
+
+
+def test_good_mode_empty_frames_dir(monkeypatch, tmp_path):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    client = _Client(table_responses=_default_table_responses(qr_suffixes=("009",)))
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(
+        cli, ["cyl", "create-test-scan", "--good", "--frames-dir", str(tmp_path)]
+    )
+    assert res.exit_code != 0
+    assert client.rpc_calls == []
+
+
+def test_good_mode_non_image_files_ignored(monkeypatch, tmp_path):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    (tmp_path / "readme.txt").write_text("not a frame")
+    _write_frame(tmp_path, "frame.png")
+    client = _Client(
+        table_responses=_default_table_responses(qr_suffixes=("009",), image_id=42, scan_id=777, frame_count=1),
+        rpc_result=42,
+    )
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(
+        cli, ["cyl", "create-test-scan", "--good", "--frames-dir", str(tmp_path)]
+    )
+    assert res.exit_code == 0, res.output
+    assert len(client.rpc_calls) == 1
+    assert len(client.uploads) == 1
+
+
+# --- mutual exclusivity -------------------------------------------------------
+
+
+def test_both_flags_rejected(monkeypatch, tmp_path):
+    _patch_authed(monkeypatch)
+    client = _Client(table_responses=_default_table_responses())
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(
+        cli, ["cyl", "create-test-scan", "--poison", "--good", "--frames-dir", str(tmp_path)]
+    )
+    assert res.exit_code != 0
+    assert client.rpc_calls == []
+
+
+def test_neither_flag_rejected(monkeypatch):
+    _patch_authed(monkeypatch)
+    client = _Client(table_responses=_default_table_responses())
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan"])
+    assert res.exit_code != 0
+    assert client.rpc_calls == []
+
+
+def test_poison_with_frames_dir_rejected(monkeypatch, tmp_path):
+    _patch_authed(monkeypatch)
+    client = _Client(table_responses=_default_table_responses())
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(
+        cli, ["cyl", "create-test-scan", "--poison", "--frames-dir", str(tmp_path)]
+    )
+    assert res.exit_code != 0
+    assert client.rpc_calls == []
+
+
+# --- upload helper retry behavior --------------------------------------------
+
+
+def test_upload_object_retries_once_on_transient_error(monkeypatch):
+    import bloomctl._storage as storage
+
+    attempts = {"n": 0}
+
+    class _RetryBucket:
+        def upload(self, path, data):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                err = RuntimeError("rate limited")
+                err.status = 429
+                raise err
+
+    class _Storage2:
+        def from_(self, name):
+            return _RetryBucket()
+
+    class _C:
+        storage = _Storage2()
+
+    monkeypatch.setattr(storage, "time", type("T", (), {"sleep": staticmethod(lambda *_: None)}))
+    storage.upload_object(_C(), b"data", "some/path.png", bucket="images")
+    assert attempts["n"] == 2
+
+
+def test_upload_object_does_not_retry_non_transient_error():
+    import bloomctl._storage as storage
+
+    class _FailBucket:
+        def upload(self, path, data):
+            err = RuntimeError("forbidden")
+            err.status = 403
+            raise err
+
+    class _Storage2:
+        def from_(self, name):
+            return _FailBucket()
+
+    class _C:
+        storage = _Storage2()
+
+    with pytest.raises(storage.StorageError):
+        storage.upload_object(_C(), b"data", "some/path.png", bucket="images")
+
+
+# --- profile / registration ---------------------------------------------------
+
+
+def test_default_profile_forwarded_to_authed_client(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: seen.setdefault("profile", profile) or _Client(table_responses={"cyl_experiments": ([], None)}))
+    CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
+    from bloomctl.credentials import DEFAULT_PROFILE
+
+    assert seen["profile"] == DEFAULT_PROFILE
+
+
+def test_cli_registration_in_help():
+    res = CliRunner().invoke(cli, ["cyl", "--help"])
+    assert "create-test-scan" in res.output
+
+
+# --- output conventions -------------------------------------------------------
+
+
+def test_json_output_clean_on_stdout(monkeypatch):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    client = _Client(table_responses=_default_table_responses(qr_suffixes=("009",)), rpc_result=55)
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison", "--json"])
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.stdout)
+    assert payload["plant_qr_code"] == "TEST-E2E-010"
+    assert "cyl_images_ids" in payload
+
+
+def test_human_summary_without_json(monkeypatch):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    client = _Client(table_responses=_default_table_responses(qr_suffixes=("009",)), rpc_result=55)
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
+    assert res.exit_code == 0, res.output
+    assert "TEST-E2E-010" in res.stdout
