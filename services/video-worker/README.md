@@ -1,8 +1,9 @@
 # Video Generation Worker — retired
 
-**This service no longer runs.** Cyl video rendering moved to the `cyl-video-worker`
-container in `services/workflows`. The entry point and the unit's `ExecStart` are
-commented out, so following the setup below starts nothing. On a host where the unit
+**This service no longer runs.** Cyl videos are rendered by the `workflows` service, on
+the request the button makes; a render queue and its worker are being built. The entry
+point and the unit's `ExecStart` are commented out, so following the setup below starts
+nothing. On a host where the unit
 was ever installed, `systemctl disable --now video-worker` clears it — without an
 `ExecStart` systemd reports it as a bad unit on the next `daemon-reload`.
 

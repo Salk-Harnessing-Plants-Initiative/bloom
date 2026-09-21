@@ -2,8 +2,8 @@
 """
 Video Generation Listener Service — RETIRED, does not run.
 
-Cyl video rendering moved to the worker containers in services/workflows. This
-module's entry point is commented out, so running it does nothing and exits 0.
+Cyl videos are rendered by the workflows service, on the request the button makes.
+This module's entry point is commented out, so running it does nothing and exits 0.
 
 Listens for PostgreSQL notifications and processes video generation jobs.
 Connects directly to PostgreSQL and uses pg_notify for real-time job processing.
@@ -320,7 +320,7 @@ def listen_for_jobs():
     logger.info("Listener stopped")
 
 
-# Retired: video rendering moved to the pgmq workers in the workflows image.
-# Uncomment to run this pg_notify listener again.
+# Retired: the workflows service renders cyl videos. Reviving this would put a
+# third unlocked writer on the same object keys, fed by an anon-writable table.
 # if __name__ == "__main__":
 #     listen_for_jobs()

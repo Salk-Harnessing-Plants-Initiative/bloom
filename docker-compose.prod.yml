@@ -254,7 +254,7 @@ services:
     # the encode moves to a worker container and the database enforces the serialisation
     # instead, whichever comes first.
     # The worker containers now exist; the database half does not, so they are profiled
-    # off and must not render an item this service can.
+    # off and dev-only until it does.
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "1"]
 
   # Consumes the cyl_pipeline_dispatch pgmq queue (bloom #11/#404 Phase 2) and
@@ -270,12 +270,12 @@ services:
       context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
-    # Submits and polls; no encoding, so 1g clears the 512m tmpfs
-    # that is charged to this same cgroup.
-    mem_limit: 2g
-    memswap_limit: 2g
+    # Submits and polls, and writes nothing to /tmp, so a small RAM disk
+    # well inside the limit — tmpfs pages are charged to this same cgroup.
+    mem_limit: 1g
+    memswap_limit: 1g
     tmpfs:
-      - /tmp:mode=1777,size=512m
+      - /tmp:mode=1777,size=128m
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -335,12 +335,12 @@ services:
       context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
-    # Submits and polls; no encoding, so 1g clears the 512m tmpfs
-    # that is charged to this same cgroup.
-    mem_limit: 2g
-    memswap_limit: 2g
+    # Submits and polls, and writes nothing to /tmp, so a small RAM disk
+    # well inside the limit — tmpfs pages are charged to this same cgroup.
+    mem_limit: 1g
+    memswap_limit: 1g
     tmpfs:
-      - /tmp:mode=1777,size=512m
+      - /tmp:mode=1777,size=128m
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -369,6 +369,7 @@ services:
     stop_grace_period: 60s
 
   # Renders one plate on command. Behind a profile, so `up -d` never starts it.
+  # Dev-only until the render queue lands; see services/workflows/README.md.
   plate-video-worker:
     build:
       context: ./services/workflows
@@ -403,6 +404,7 @@ services:
       - --help
 
   # Renders one cyl scan on command. Behind a profile, so `up -d` never starts it.
+  # Dev-only until the render queue lands; see services/workflows/README.md.
   cyl-video-worker:
     build:
       context: ./services/workflows

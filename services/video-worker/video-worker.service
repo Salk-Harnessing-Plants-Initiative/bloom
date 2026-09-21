@@ -7,8 +7,8 @@ Type=simple
 User=bloom
 Group=bloom
 WorkingDirectory=/opt/bloom/services/video-worker
-# Retired: video rendering moved to the pgmq workers in the workflows image.
-# Uncomment to run this listener again; without ExecStart the unit cannot start.
+# Retired: the workflows service renders cyl videos. Without ExecStart the unit
+# cannot start; `systemctl disable --now video-worker` clears it from a host.
 #ExecStart=/opt/bloom/venv/bin/python video_listener.py
 Restart=always
 RestartSec=5

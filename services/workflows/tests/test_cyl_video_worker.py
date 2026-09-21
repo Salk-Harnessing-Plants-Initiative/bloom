@@ -77,22 +77,32 @@ def test_frames_that_could_not_be_read_are_reported(monkeypatch, stub_client, ca
     success, and the missing angle is invisible in the finished video."""
     _stub_render(monkeypatch, result=_rendered(frames=60))
     assert worker.main(_argv()) == worker.EXIT_OK
-    assert "12 of 72 could not be read" in capsys.readouterr().out
+    assert (
+        "rendered 60 frames (12 of 72 could not be read) to cyl-videos/5.mp4"
+        in capsys.readouterr().out
+    )
 
 
 def test_a_kept_scan_does_not_claim_the_count_describes_the_file(
     monkeypatch, stub_client, capsys
 ):
-    """On the keep path `frames` is the rows recorded now, not a measurement of
-    the stored video — a video recorded without a count reports today's rows."""
+    """`frames` is the image rows on one keep branch and the video record's own
+    count on the others, and the result does not say which — so the line reports
+    it as what the service said, not as a fact about the stored file."""
     _stub_render(monkeypatch, result=_rendered(regenerated=False))
     assert worker.main(_argv()) == worker.EXIT_OK
     out = capsys.readouterr().out
-    assert "kept" in out and "now recorded" in out and "cyl-videos/5.mp4" in out
+    assert "kept" in out and "was not remade" in out and "cyl-videos/5.mp4" in out
+    assert "is current" not in out
 
 
-def test_a_truncated_scan_says_it_was_truncated(monkeypatch, stub_client, capsys):
-    _stub_render(monkeypatch, result=_rendered(truncated=True))
+@pytest.mark.parametrize("regenerated", [True, False])
+def test_a_truncated_scan_says_so_whether_it_was_remade_or_kept(
+    monkeypatch, stub_client, capsys, regenerated
+):
+    """A kept truncated scan is the case that hides: the video covers the cap
+    and the rest of the scan is not in it and never will be."""
+    _stub_render(monkeypatch, result=_rendered(truncated=True, regenerated=regenerated))
     assert worker.main(_argv()) == worker.EXIT_OK
     assert "more frames than the encoder's cap" in capsys.readouterr().out
 
@@ -151,3 +161,58 @@ def test_the_two_workers_agree_on_their_exit_codes():
 def test_an_unexpected_failure_exits_failed(monkeypatch, stub_client):
     _stub_render(monkeypatch, raises=RuntimeError("ffmpeg exited -9"))
     assert worker.main(_argv()) == worker.EXIT_FAILED
+
+
+def test_a_complete_render_says_nothing_about_unread_frames(
+    monkeypatch, stub_client, capsys
+):
+    """Widening the condition to `<=` would make every clean render claim 0 of
+    72 could not be read."""
+    _stub_render(monkeypatch, result=_rendered())
+    worker.main(_argv())
+    assert "could not be read" not in capsys.readouterr().out
+
+
+def test_a_result_without_regenerated_is_treated_as_a_render(
+    monkeypatch, stub_client, capsys
+):
+    """The default must not report a fresh render as kept."""
+    result = _rendered()
+    del result["regenerated"]
+    _stub_render(monkeypatch, result=result)
+    assert worker.main(_argv()) == worker.EXIT_OK
+    assert "rendered" in capsys.readouterr().out
+
+
+def test_the_refusal_names_the_status(monkeypatch, stub_client, capsys):
+    _stub_render(
+        monkeypatch, raises=HTTPException(status_code=404, detail="No images found")
+    )
+    worker.main(_argv())
+    assert "refused (404)" in capsys.readouterr().out
+
+
+def test_a_failure_after_the_upload_warns_that_the_record_may_disagree(
+    monkeypatch, stub_client, capsys
+):
+    """Signing the URL is the last step before the row is written, so a 5xx can
+    leave the object stored and the record stale."""
+    _stub_render(
+        monkeypatch,
+        raises=HTTPException(status_code=500, detail="Could not create a download URL"),
+    )
+    assert worker.main(_argv()) == worker.EXIT_FAILED
+    assert "check the stored video against its record" in capsys.readouterr().out
+
+
+def test_help_exits_zero_and_carries_the_hold():
+    with pytest.raises(SystemExit) as exit_info:
+        worker.parse_args(["--help"])
+    assert exit_info.value.code == 0
+    assert "until the render queue lands" in worker.build_parser().epilog
+
+
+def test_an_oversized_id_is_accepted_because_the_columns_are_bigint():
+    """The cyl id columns are BIGINT and the route bounds nothing, so a bound
+    here would refuse ids the database accepts. It finds no row and is refused."""
+    assert worker.identifier("99999999999999999999") == 99999999999999999999

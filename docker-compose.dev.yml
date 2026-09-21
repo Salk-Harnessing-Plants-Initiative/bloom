@@ -130,12 +130,12 @@ services:
       context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
-    # Submits and polls; no encoding, so 1g clears the 512m tmpfs
-    # that is charged to this same cgroup.
-    mem_limit: 2g
-    memswap_limit: 2g
+    # Submits and polls, and writes nothing to /tmp, so a small RAM disk
+    # well inside the limit — tmpfs pages are charged to this same cgroup.
+    mem_limit: 1g
+    memswap_limit: 1g
     tmpfs:
-      - /tmp:mode=1777,size=512m
+      - /tmp:mode=1777,size=128m
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -189,12 +189,12 @@ services:
       context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
-    # Submits and polls; no encoding, so 1g clears the 512m tmpfs
-    # that is charged to this same cgroup.
-    mem_limit: 2g
-    memswap_limit: 2g
+    # Submits and polls, and writes nothing to /tmp, so a small RAM disk
+    # well inside the limit — tmpfs pages are charged to this same cgroup.
+    mem_limit: 1g
+    memswap_limit: 1g
     tmpfs:
-      - /tmp:mode=1777,size=512m
+      - /tmp:mode=1777,size=128m
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -225,6 +225,7 @@ services:
     restart: unless-stopped
 
   # Renders one plate on command. Behind a profile, so `up -d` never starts it.
+  # Dev-only until the render queue lands; see services/workflows/README.md.
   plate-video-worker:
     build:
       context: ./services/workflows
@@ -259,6 +260,7 @@ services:
       - --help
 
   # Renders one cyl scan on command. Behind a profile, so `up -d` never starts it.
+  # Dev-only until the render queue lands; see services/workflows/README.md.
   cyl-video-worker:
     build:
       context: ./services/workflows

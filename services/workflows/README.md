@@ -88,37 +88,52 @@ same code these routes call, from a container built on this image. Both sit behi
 compose profile, so `docker compose up -d` never starts them — and never builds them
 either, which is why the commands below pass `--build`.
 
-> **Not to be run against staging or production until the render queue lands.** The
-> per-plate and per-scan locks that keep two renders off one object key live in the
-> service's own process, so they do not hold against a second container. Until the
-> queue enforces one active job per item, a container render alongside a click on the
-> same item can leave the recorded frame count describing the other render's file, and
-> the page then treats that video as current and never offers to remake it.
+> **Dev only until the render queue lands.** These commands are not approved to run
+> against staging or production before then — not even for an item nobody appears to be
+> using. The per-plate and per-scan locks that keep two renders off one object key live
+> in the service's own process and do not hold against a second container, so a container
+> render alongside a click on the same item can leave the recorded frame count describing
+> the other render's file, and the page then treats that video as current and never offers
+> to remake it. Nobody can see the collision coming either: the plate page's progress
+> endpoint reads a record held in the service's process, so it shows nothing while a
+> container render runs, and a scientist seeing no progress is being invited to click.
 
 ```bash
-# Production — run from /data/bloom/production.
-docker compose -p bloom_v2_prod -f docker-compose.prod.yml --env-file .env.prod \
+# Dev — the only environment these are approved for until the queue lands.
+docker compose -f docker-compose.dev.yml --env-file .env.dev \
   run --rm --no-deps --build plate-video-worker \
   python plate_video_worker.py render --experiment 1886 --plate Plate_19 --wave 13
 
-# Staging — run from /data/bloom/staging. Only the project name and env file differ.
-docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
+docker compose -f docker-compose.dev.yml --env-file .env.dev \
   run --rm --no-deps --build cyl-video-worker \
   python cyl_video_worker.py render --experiment 1 --scan 456
 ```
 
-Each flag earns its place. `-p` because the compose file pins the production project
-name, so omitting it on staging reaches the production stack instead. `--no-deps`
-because the stack is already up, and `run` would otherwise start — and can recreate —
-Kong and Postgres. `--build` because a deploy never builds a profiled service, so
-without it a render uses whatever image the first run happened to bake.
+Once the queue lands and the hold is lifted, the same commands take the stack's own
+project name and env file — `-p bloom_v2_prod … --env-file .env.prod` from
+`/data/bloom/production`, `-p bloom_v2_staging … --env-file .env.staging` from
+`/data/bloom/staging`, both against `-f docker-compose.prod.yml`. The project name is
+not optional there: the compose file pins the production name, so a staging run without
+`-p` reaches the production stack. A render outlives an SSH session, so run it under
+`tmux` or `nohup`.
+
+Each flag earns its place. `--no-deps` because the stack is already up, and `run` would
+otherwise start — and can recreate — Kong and Postgres. `--build` because a deploy never
+builds a profiled service, so without it a render uses whatever image the first run
+happened to bake. With the stack down, the render fails at its first request; bring the
+stack up rather than retrying.
 
 Use `--wave none` for a plate with no wave; omitting `--wave` means the same thing.
 
-**Exit codes.** `0` rendered or kept, `1` failed, `3` refused — the renderer declined
-and retrying will not change that. `2` is argparse's own usage error, which is why
-refusal is not 2. A cylinder failure raised after the upload but before the row is
-recorded leaves the object in place and the record stale; the message says so.
+**Exit codes.** `0` rendered or kept, `1` failed — this service, storage or the database
+did not answer, or something else holds the item, so a retry may help — and `3` refused,
+meaning the renderer declined and retrying will not change that. `2` is argparse's own
+usage error, which is why refusal is not 2. Both commands take the classification from
+the route, so the word they print and the code they exit with always agree.
+
+A cylinder 5xx can be raised after the object was uploaded — signing its URL is the last
+step before the row is written — so the command prints a line telling you to check the
+stored video against its record before retrying.
 
 While a container render runs, the plate page's progress endpoint shows nothing: it
 reads a record held in the service's own process.

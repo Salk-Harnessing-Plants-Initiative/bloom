@@ -4,7 +4,17 @@ seam — no DB, storage or ffmpeg), matching test_dispatch_worker.py's conventio
 import pytest
 
 import plate_video_worker as worker
-from plate_encode import EncoderBusy, PlateBusy
+from plate_encode import (
+    EncoderBusy,
+    FrameDepthUnsupported,
+    FrameSizeMismatch,
+    FrameTooLarge,
+    NotRecorded,
+    PlateBusy,
+    PlateMismatch,
+    VideoNotStored,
+)
+from plate_request import MAX_EXPERIMENT_ID, MAX_WAVE_NUMBER
 
 
 def _argv(*extra):
@@ -98,12 +108,12 @@ def test_a_kept_plate_exits_ok_and_reports_the_stored_count(
         outcome={
             "action": "keep",
             "stored_frames": 86,
-            "reason": "the stored video already covers all 86 frames",
+            # No digits in the reason: the count has to come from `frames_in`.
+            "reason": "the stored video already covers every frame",
         },
     )
     assert worker.main(_argv("--wave", "13")) == worker.EXIT_OK
-    out = capsys.readouterr().out
-    assert "kept" in out and "86" in out
+    assert "kept (86 frames)" in capsys.readouterr().out
 
 
 def test_a_kept_plate_says_why_it_was_kept(monkeypatch, stub_client, capsys):
@@ -179,3 +189,94 @@ def test_a_rendered_plate_with_no_recorded_count_falls_back_to_its_frames(
     )
     worker.main(_argv("--wave", "13"))
     assert "rendered 2 frames" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("code", ["storage_unavailable", "database_unavailable"])
+def test_a_transient_refusal_tells_the_caller_to_retry(
+    monkeypatch, stub_client, capsys, code
+):
+    """The route answers 503 for these two. Exit 3 would tell a batch loop to
+    stop retrying while the message on the same line says try again."""
+    _stub_render(
+        monkeypatch,
+        outcome={
+            "action": "refuse",
+            "code": code,
+            "reason": "this video cannot be made right now. Try again shortly",
+        },
+    )
+    assert worker.main(_argv("--wave", "13")) == worker.EXIT_FAILED
+    out = capsys.readouterr().out
+    assert out.startswith("failed"), "the word must agree with the exit code"
+    assert code in out
+
+
+@pytest.mark.parametrize("code", ["no_frames", "unusable_plate", "too_large"])
+def test_a_permanent_refusal_says_do_not_retry(monkeypatch, stub_client, capsys, code):
+    _stub_render(
+        monkeypatch, outcome={"action": "refuse", "code": code, "reason": "no"}
+    )
+    assert worker.main(_argv("--wave", "13")) == worker.EXIT_REFUSED
+    assert capsys.readouterr().out.startswith("refused")
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        FrameTooLarge("this plate scanned past the limit"),
+        FrameDepthUnsupported("a frame carries no fixed full scale"),
+        FrameSizeMismatch("does not match the rest of the plate"),
+    ],
+)
+def test_a_permanent_frame_problem_is_refused_not_retried(
+    monkeypatch, stub_client, exc
+):
+    """These are permanent properties of the plate's own images; the route
+    answers 413/422. A loop that retries re-downloads and re-encodes forever."""
+    _stub_render(monkeypatch, raises=exc)
+    assert worker.main(_argv("--wave", "13")) == worker.EXIT_REFUSED
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        VideoNotStored("storage did not answer"),
+        PlateMismatch("refusing to store a crossed identity"),
+    ],
+)
+def test_this_service_failing_is_retryable(monkeypatch, stub_client, exc):
+    _stub_render(monkeypatch, raises=exc)
+    assert worker.main(_argv("--wave", "13")) == worker.EXIT_FAILED
+
+
+def test_a_stored_but_unrecorded_video_says_so(monkeypatch, stub_client, capsys):
+    """The object exists and the row does not: re-rendering is not the fix, and
+    an operator needs to know which half landed."""
+    _stub_render(monkeypatch, raises=NotRecorded("1886/wave-13/Plate_1.mp4"))
+    assert worker.main(_argv("--wave", "13")) == worker.EXIT_FAILED
+    assert "stored but not recorded" in capsys.readouterr().out
+
+
+def test_the_legal_maximum_wave_and_experiment_are_accepted():
+    """The off-by-one the "way too big" cases cannot see."""
+    assert worker.wave(str(MAX_WAVE_NUMBER)) == MAX_WAVE_NUMBER
+    args = worker.parse_args(
+        ["render", "--experiment", str(MAX_EXPERIMENT_ID), "--plate", "P1"]
+    )
+    assert args.experiment == MAX_EXPERIMENT_ID
+
+
+def test_help_exits_zero_and_carries_the_hold():
+    """`--help` is the container's default command, so it is the one surface an
+    operator meets by default."""
+    with pytest.raises(SystemExit) as exit_info:
+        worker.parse_args(["--help"])
+    assert exit_info.value.code == 0
+
+
+def test_the_hold_is_stated_where_help_will_print_it():
+    """The module docstring is not what argparse shows; the epilog is."""
+    epilog = worker.build_parser().epilog
+
+    assert "until the render queue lands" in epilog
+    assert "3 refused" in epilog
