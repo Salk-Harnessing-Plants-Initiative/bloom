@@ -1,10 +1,8 @@
 """The docs describing how `n_traits` is refreshed must describe the mechanism that actually runs.
 
-- `_WIKI/BLOOMMCP/README.md` describes the nightly pg_cron job
-  (`refresh_changed_cyl_experiment_trait_counts()`), not the GitHub Action.
-- `list_available_experiments.py` still describes the GitHub Action until that Action is removed,
-  so its staleness claim must stay conditioned on bloom#736 and bloom#806, the two fixes that had to
-  land before the Action could succeed.
+Both files describe the nightly pg_cron job. Neither may describe the GitHub Action that used to
+do this: it is deleted, and its `on: schedule` / `workflow_dispatch` split no longer makes staging
+and production differ in how fresh a cache row is.
 
 Whitespace (including newlines) is normalized before matching, since both files hard-wrap prose.
 """
@@ -29,12 +27,16 @@ BANNED_PHRASES = {
     ),
     LIST_EXPERIMENTS_MODULE: (
         "bounded to roughly one refresh interval, but a missed or delayed scheduled run",
+        "`on: schedule`",
+        "workflow_dispatch",
+        "on a schedule or on demand",
+        "the environment's own refresh cadence",
     ),
 }
 
 REQUIRED_PHRASES = {
     WIKI_README: ("pg_cron", "refresh_changed_cyl_experiment_trait_counts()"),
-    LIST_EXPERIMENTS_MODULE: ("bloom#736", "bloom#806"),
+    LIST_EXPERIMENTS_MODULE: ("pg_cron", "nightly"),
 }
 
 
