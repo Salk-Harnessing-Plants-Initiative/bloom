@@ -29,6 +29,8 @@ BANNED_PHRASES = {
         "bounded to roughly one refresh interval, but a missed or delayed scheduled run",
         "`on: schedule`",
         "workflow_dispatch",
+        "on a schedule or on demand",
+        "the environment's own refresh cadence",
     ),
 }
 

@@ -39,8 +39,8 @@ def _traits_note(updated_at: Optional[str], *, now: Optional[datetime] = None) -
     if elapsed > _STALE_AFTER:
         return (
             f" (as of {updated_at}, {elapsed.days}d ago -- "
-            f"trait counts refresh on a schedule or on demand, not on every write; "
-            f"this count may be older than the environment's own refresh cadence)"
+            f"trait counts refresh nightly, not on every write; "
+            f"a timestamp older than a day means a scheduled run did not complete)"
         )
     return f" (as of {updated_at})"
 
