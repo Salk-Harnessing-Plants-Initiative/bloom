@@ -6,12 +6,10 @@ one-time migration-time population. This locks in that an elapsed time past
 `_STALE_AFTER` gets an explicit staleness flag instead of reading like
 ordinary bounded lag.
 
-bloom#708: production now refreshes automatically on a daily schedule while
-staging remains on-demand (dispatch) only -- `_traits_note` has no way to
-tell which environment a given row came from (design.md D8's addendum), so
-its flag wording is deliberately environment-neutral rather than asserting
-"not automatically" unconditionally, which would be false for a production
-row.
+bloom#831: every environment refreshes nightly from a pg_cron job, which stamps
+every cache row each run. A timestamp older than a day therefore means a run did
+not complete, and the flag says so rather than hedging about which environment
+the row came from.
 """
 
 from __future__ import annotations
@@ -36,7 +34,7 @@ def test_just_under_the_stale_threshold_shows_plain_timestamp():
     ts = (_NOW - timedelta(days=2) + timedelta(minutes=1)).isoformat()
     note = _traits_note(ts, now=_NOW)
     assert note == f" (as of {ts})"
-    assert "may be older than the environment's own refresh cadence" not in note
+    assert "a timestamp older than a day means a scheduled run did not complete" not in note
 
 
 def test_past_the_stale_threshold_flags_it():
@@ -44,10 +42,7 @@ def test_past_the_stale_threshold_flags_it():
     note = _traits_note(ts, now=_NOW)
     assert ts in note
     assert "5d ago" in note
-    # bloom#708: must NOT unconditionally claim "not automatically" -- that's
-    # false for a production row, which now refreshes on a daily schedule.
-    assert "not automatically" not in note
-    assert "may be older than the environment's own refresh cadence" in note
+    assert "a timestamp older than a day means a scheduled run did not complete" in note
 
 
 def test_postgrest_z_suffix_is_handled():
@@ -56,7 +51,7 @@ def test_postgrest_z_suffix_is_handled():
     ts = "2026-08-17T06:00:00Z"
     note = _traits_note(ts, now=_NOW)
     assert "2d ago" in note or "3d ago" in note
-    assert "may be older than the environment's own refresh cadence" in note
+    assert "a timestamp older than a day means a scheduled run did not complete" in note
 
 
 def test_unparseable_timestamp_falls_back_without_raising():
