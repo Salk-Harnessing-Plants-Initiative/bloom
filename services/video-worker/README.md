@@ -1,4 +1,12 @@
-# Video Generation Worker
+# Video Generation Worker — retired
+
+**This service no longer runs.** Cyl video rendering moved to the `cyl-video-worker`
+container in `services/workflows`. The entry point and the unit's `ExecStart` are
+commented out, so following the setup below starts nothing. On a host where the unit
+was ever installed, `systemctl disable --now video-worker` clears it — without an
+`ExecStart` systemd reports it as a bad unit on the next `daemon-reload`.
+
+The rest of this page describes how it worked, for whoever revives it.
 
 A lightweight Python service that listens for PostgreSQL notifications and generates videos from cylindrical scan images.
 
@@ -100,6 +108,7 @@ curl "http://localhost:8000/rest/v1/video_jobs" \
 ```
 
 Response:
+
 ```json
 {
   "id": 1,
@@ -122,26 +131,30 @@ curl "http://localhost:8000/rest/v1/video_jobs?id=eq.1" \
 ```javascript
 const channel = supabase
   .channel('video_jobs')
-  .on('postgres_changes', {
-    event: 'UPDATE',
-    schema: 'public',
-    table: 'video_jobs',
-    filter: 'id=eq.1'
-  }, (payload) => {
-    console.log('Job update:', payload.new);
-    // payload.new.progress, payload.new.status, payload.new.download_url
-  })
-  .subscribe();
+  .on(
+    'postgres_changes',
+    {
+      event: 'UPDATE',
+      schema: 'public',
+      table: 'video_jobs',
+      filter: 'id=eq.1',
+    },
+    (payload) => {
+      console.log('Job update:', payload.new)
+      // payload.new.progress, payload.new.status, payload.new.download_url
+    }
+  )
+  .subscribe()
 ```
 
 ## Job Statuses
 
-| Status | Description |
-|--------|-------------|
-| `pending` | Job queued, waiting for worker |
-| `processing` | Worker is generating video |
-| `complete` | Video ready, `download_url` populated |
-| `failed` | Error occurred, check `error_message` |
+| Status       | Description                           |
+| ------------ | ------------------------------------- |
+| `pending`    | Job queued, waiting for worker        |
+| `processing` | Worker is generating video            |
+| `complete`   | Video ready, `download_url` populated |
+| `failed`     | Error occurred, check `error_message` |
 
 ## Troubleshooting
 
@@ -160,6 +173,7 @@ const channel = supabase
 ### Jobs stuck in "pending"
 
 The worker processes pending jobs on startup. Restart the worker:
+
 ```bash
 sudo systemctl restart video-worker
 ```

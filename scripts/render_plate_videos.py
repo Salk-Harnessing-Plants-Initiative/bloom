@@ -11,6 +11,10 @@
 """
 render_plate_videos.py — backfill time-lapse MP4s for plate-scanner experiments.
 
+Superseded: services/workflows renders plate videos, and `plate-video-worker`
+renders one from a container. This script writes the same object keys with a
+different encoder, so running it alongside either replaces their videos.
+
 Reads gravi_scans + gravi_images for each (experiment_id, plate_id, wave_number)
 group, pulls the TIFFs out of the graviscan-images bucket, encodes a
 sorted-by-capture_date MP4 with ffmpeg, uploads the result to the

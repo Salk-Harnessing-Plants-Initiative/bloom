@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tests.unit.test_workflows_single_worker import _bytes, _mount_options
+from tests.unit._compose_helpers import _bytes, _mount_options
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILES = ("docker-compose.prod.yml", "docker-compose.dev.yml")
@@ -124,16 +124,78 @@ def test_the_dev_worker_runs_its_built_image_not_the_mounted_source(worker):
 
 
 @pytest.mark.parametrize("compose_file", COMPOSE_FILES)
-@pytest.mark.parametrize("worker", ("cyl-pipeline-worker", "cyl-status-poller"))
-def test_the_pipeline_containers_are_capped_above_their_tmpfs(compose_file, worker):
-    """Carried from the closed memory-limits PR. tmpfs pages are charged to the
-    container's own cgroup, so a ceiling at or below the mount turns a full /tmp
-    into an OOM kill instead of the write error the size cap is meant to give."""
+@pytest.mark.parametrize("worker", VIDEO_WORKERS + ("cyl-pipeline-worker", "cyl-status-poller"))
+def test_the_ram_backed_tmpfs_fits_well_inside_the_memory_limit(compose_file, worker):
+    """The same rule the workflows service is held to. tmpfs pages are charged to
+    the container's own cgroup, so a limit that merely exceeds the mount turns a
+    full /tmp into an OOM kill instead of the write error the size cap gives."""
     service = _services(compose_file)[worker]
 
     assert "mem_limit" in service, f"{worker} is uncapped in {compose_file}"
     tmpfs_bytes = _bytes(_mount_options(service["tmpfs"][0])["size"])
-    assert _bytes(service["mem_limit"]) > tmpfs_bytes, (
-        f"{worker}'s limit in {compose_file} does not clear its own /tmp"
+    assert tmpfs_bytes < _bytes(service["mem_limit"]) / 2, (
+        f"{worker}'s /tmp is {service['tmpfs'][0]!r} against a "
+        f"{service['mem_limit']!r} limit in {compose_file}; a full /tmp then "
+        "leaves too little for the process itself"
     )
     assert _bytes(service["memswap_limit"]) == _bytes(service["mem_limit"])
+
+
+@pytest.mark.parametrize("compose_file", COMPOSE_FILES)
+@pytest.mark.parametrize("worker", VIDEO_WORKERS)
+def test_the_worker_carries_the_services_own_credentials(compose_file, worker):
+    """Without these the render cannot log in, and nothing else in the suite
+    notices: the failure appears only when someone runs the command."""
+    services = _services(compose_file)
+    expected = dict(services["workflows"]["environment"])
+    # The workers serve no HTTP, so the one variable they legitimately drop.
+    expected.pop("WORKFLOWS_CORS_ORIGINS", None)
+
+    assert services[worker]["environment"] == expected, (
+        f"{worker}'s environment in {compose_file} has drifted from the "
+        "workflows service's; the render reads the same variables"
+    )
+
+
+@pytest.mark.parametrize("compose_file", COMPOSE_FILES)
+@pytest.mark.parametrize("worker", VIDEO_WORKERS)
+def test_the_worker_is_on_the_services_network(compose_file, worker):
+    """Off supanet the container cannot reach Kong at all, and every render
+    fails at the first request."""
+    services = _services(compose_file)
+
+    assert services[worker].get("networks") == services["workflows"].get("networks"), (
+        f"{worker} is not on the workflows service's network in {compose_file}"
+    )
+
+
+@pytest.mark.parametrize("compose_file", COMPOSE_FILES)
+@pytest.mark.parametrize(
+    "worker,script",
+    (
+        ("plate-video-worker", "plate_video_worker.py"),
+        ("cyl-video-worker", "cyl_video_worker.py"),
+    ),
+)
+def test_the_default_command_prints_usage_rather_than_rendering(
+    compose_file, worker, script
+):
+    """Rendering takes arguments, so there is no safe default render. A usage
+    message exits 0 immediately; anything long-running would make a profiled
+    start look like a working service."""
+    command = _services(compose_file)[worker]["command"]
+
+    assert script in command, f"{worker} runs {command!r} in {compose_file}"
+    assert command[-1] == "--help", (
+        f"{worker}'s default command is {command!r}; it must not render or idle"
+    )
+
+
+@pytest.mark.parametrize("compose_file", COMPOSE_FILES)
+@pytest.mark.parametrize("worker", VIDEO_WORKERS)
+def test_the_worker_does_not_restart(compose_file, worker):
+    """With a usage message as the default command, a restart policy would turn
+    a profiled start into a tight exit-0 loop."""
+    assert "restart" not in _services(compose_file)[worker], (
+        f"{worker} has a restart policy in {compose_file}"
+    )

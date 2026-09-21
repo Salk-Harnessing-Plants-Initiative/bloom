@@ -29,6 +29,19 @@ def _stub_render(monkeypatch, result=None, raises=None, seen=None):
     monkeypatch.setattr(worker, "generate_experiment_scan_video", fake)
 
 
+def _rendered(**overrides):
+    """The shape `video._result` returns, so a stub cannot drift from it."""
+    result = {
+        "frames": 72,
+        "frames_expected": 72,
+        "truncated": False,
+        "regenerated": True,
+        "path": "cyl-videos/5.mp4",
+        "download_url": "https://example.test/5.mp4",
+    }
+    return {**result, **overrides}
+
+
 def test_parses_the_experiment_and_scan():
     args = worker.parse_args(_argv())
     assert (args.experiment, args.scan) == (1, 5)
@@ -39,59 +52,102 @@ def test_a_scan_is_required():
         worker.parse_args(["render", "--experiment", "1"])
 
 
+@pytest.mark.parametrize("bad", ["0", "-1", "abc"])
+def test_an_impossible_id_is_refused_before_any_render(bad):
+    with pytest.raises(SystemExit):
+        worker.parse_args(["render", "--experiment", "1", "--scan", bad])
+
+
 def test_the_arguments_and_client_reach_the_renderer(monkeypatch, stub_client):
     seen = {}
-    _stub_render(monkeypatch, result={"regenerated": True, "frames": 72}, seen=seen)
+    _stub_render(monkeypatch, result=_rendered(), seen=seen)
     worker.main(_argv())
     assert seen == {"experiment_id": 1, "scan_id": 5, "client": stub_client}
 
 
-def test_a_rendered_scan_exits_zero_and_says_so(monkeypatch, stub_client, capsys):
-    _stub_render(
-        monkeypatch,
-        result={"regenerated": True, "frames": 72, "truncated": False},
-    )
-    assert worker.main(_argv()) == 0
+def test_a_rendered_scan_exits_ok_and_says_so(monkeypatch, stub_client, capsys):
+    _stub_render(monkeypatch, result=_rendered())
+    assert worker.main(_argv()) == worker.EXIT_OK == 0
     out = capsys.readouterr().out
-    assert "rendered" in out and "72" in out
+    assert "rendered" in out and "72" in out and "cyl-videos/5.mp4" in out
 
 
-def test_a_kept_scan_exits_zero_and_says_kept(monkeypatch, stub_client, capsys):
-    _stub_render(
-        monkeypatch,
-        result={"regenerated": False, "frames": 72, "truncated": False},
-    )
-    assert worker.main(_argv()) == 0
-    assert "kept" in capsys.readouterr().out
+def test_frames_that_could_not_be_read_are_reported(monkeypatch, stub_client, capsys):
+    """An unreadable frame is skipped, not fatal. 60 of 72 angles is not a clean
+    success, and the missing angle is invisible in the finished video."""
+    _stub_render(monkeypatch, result=_rendered(frames=60))
+    assert worker.main(_argv()) == worker.EXIT_OK
+    assert "12 of 72 could not be read" in capsys.readouterr().out
+
+
+def test_a_kept_scan_does_not_claim_the_count_describes_the_file(
+    monkeypatch, stub_client, capsys
+):
+    """On the keep path `frames` is the rows recorded now, not a measurement of
+    the stored video — a video recorded without a count reports today's rows."""
+    _stub_render(monkeypatch, result=_rendered(regenerated=False))
+    assert worker.main(_argv()) == worker.EXIT_OK
+    out = capsys.readouterr().out
+    assert "kept" in out and "now recorded" in out and "cyl-videos/5.mp4" in out
 
 
 def test_a_truncated_scan_says_it_was_truncated(monkeypatch, stub_client, capsys):
-    """A scan past the frame cap renders its capped set; silence would hide that."""
-    _stub_render(
-        monkeypatch,
-        result={
-            "regenerated": True,
-            "frames": 72,
-            "frames_expected": 72,
-            "truncated": True,
-        },
+    _stub_render(monkeypatch, result=_rendered(truncated=True))
+    assert worker.main(_argv()) == worker.EXIT_OK
+    assert "more frames than the encoder's cap" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "status,detail",
+    [
+        (404, "Scan 5 not found in experiment 1"),
+        (404, "No images found for scan 5"),
+    ],
+)
+def test_the_renderer_declining_exits_refused(
+    monkeypatch, stub_client, capsys, status, detail
+):
+    _stub_render(monkeypatch, raises=HTTPException(status_code=status, detail=detail))
+    assert worker.main(_argv()) == worker.EXIT_REFUSED
+    assert detail in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "status,detail",
+    [
+        (500, "Video encoding failed for scan 5"),
+        (500, "Could not create a download URL for scan 5"),
+        (503, "Could not check the recorded video for scan 5."),
+    ],
+)
+def test_this_service_failing_exits_failed_not_refused(
+    monkeypatch, stub_client, capsys, status, detail
+):
+    """ "Refused" means nothing happened. The download-URL failure is raised after
+    the object was uploaded, so calling it a refusal tells the operator the
+    opposite of what occurred."""
+    _stub_render(monkeypatch, raises=HTTPException(status_code=status, detail=detail))
+    assert worker.main(_argv()) == worker.EXIT_FAILED
+    out = capsys.readouterr().out
+    assert "failed" in out and detail in out
+
+
+def test_refused_is_not_argparse_s_own_exit_code():
+    assert worker.EXIT_REFUSED != 2
+    assert worker.EXIT_OK == 0 and worker.EXIT_FAILED == 1
+
+
+def test_the_two_workers_agree_on_their_exit_codes():
+    """PR 3's claim loops read these codes to decide retry from dead-letter."""
+    import plate_video_worker as plate
+
+    assert (worker.EXIT_OK, worker.EXIT_FAILED, worker.EXIT_REFUSED) == (
+        plate.EXIT_OK,
+        plate.EXIT_FAILED,
+        plate.EXIT_REFUSED,
     )
-    assert worker.main(_argv()) == 0
-    assert "truncated" in capsys.readouterr().out
 
 
-def test_a_scan_outside_the_experiment_exits_non_zero(monkeypatch, stub_client, capsys):
-    _stub_render(
-        monkeypatch,
-        raises=HTTPException(
-            status_code=404, detail="Scan 5 not found in experiment 1"
-        ),
-    )
-    code = worker.main(_argv())
-    assert code != 0
-    assert "not found" in capsys.readouterr().out
-
-
-def test_an_encoder_failure_exits_non_zero(monkeypatch, stub_client):
+def test_an_unexpected_failure_exits_failed(monkeypatch, stub_client):
     _stub_render(monkeypatch, raises=RuntimeError("ffmpeg exited -9"))
-    assert worker.main(_argv()) != 0
+    assert worker.main(_argv()) == worker.EXIT_FAILED

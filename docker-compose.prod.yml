@@ -253,6 +253,8 @@ services:
     # not that. Start here and watch — raise it when this one is actually saturated, or once
     # the encode moves to a worker container and the database enforces the serialisation
     # instead, whichever comes first.
+    # The worker containers now exist; the database half does not, so they are profiled
+    # off and must not render an item this service can.
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "1"]
 
   # Consumes the cyl_pipeline_dispatch pgmq queue (bloom #11/#404 Phase 2) and
@@ -263,6 +265,109 @@ services:
   # POST /workflows/pipeline is already live (real triggers enqueuing real
   # batches) until WORKFLOWS_K8S_TOKEN/_CA_CERT/_API_URL are genuinely set —
   # see openspec/changes/add-cyl-pipeline-dispatch/design.md's Risks.
+  cyl-pipeline-worker:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    # Submits and polls; no encoding, so 1g clears the 512m tmpfs
+    # that is charged to this same cgroup.
+    mem_limit: 2g
+    memswap_limit: 2g
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      # Real credentials for the bloom-pipeline ServiceAccount. TOKEN/CA_CERT/
+      # API_URL are true secrets (SENSITIVE_INVENTORY); NAMESPACE/TTL_SECONDS
+      # are plain config values with safe code defaults, sourced from the
+      # committed .env.*.defaults files instead.
+      WORKFLOWS_K8S_TOKEN: ${WORKFLOWS_K8S_TOKEN}
+      WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
+      WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
+      WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE}
+      WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS}
+      # Disambiguates which environment's DB a pipeline-run-id belongs to —
+      # prod and staging share the runai-busch-lab namespace above and both
+      # run_id sequences start at 1 (see k8s_client.py's ENV_LABEL).
+      WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL}
+    networks:
+      - supanet
+    depends_on:
+      - kong
+      - db-prod
+    restart: unless-stopped
+    # _stop() (dispatch_worker.py) deliberately lets an in-flight batch finish
+    # before exiting — the K8s submission POST alone has a 15s httpx timeout
+    # (k8s_client.py), plus the claim/complete/fail RPC round trips. Docker's
+    # 10s default would routinely SIGKILL mid-submission on an ordinary
+    # `compose down`/redeploy, defeating that design and risking exactly the
+    # "successful-submission-recorded-as-failed" case design.md's Risks
+    # section already flags for crashes.
+    stop_grace_period: 30s
+    command: ["python", "dispatch_worker.py"]
+
+  # Periodically polls Argo for each in-flight run's real Workflow phase(s)
+  # and progresses cyl_pipeline_runs.status past dispatch outcome (bloom #11
+  # Phase 3) — a separate process from cyl-pipeline-worker above (event-driven
+  # dispatch vs. this poller's fixed wall-clock sweep). Same image; read-only
+  # use of the K8s API (get, not create), so only four of the five
+  # WORKFLOWS_K8S_* vars are needed — TTL_SECONDS/ENV_LABEL are
+  # submission-only (build_workflow_body), never read by this poller.
+  # WORKFLOWS_STATUS_POLL_SECONDS is deliberately NOT referenced here — its
+  # Python-side default (15s) governs it; adding it here without a real
+  # default-file entry would make compose inject an empty string and
+  # silently override that default.
+  # Also safe to scale by replicas, for a different reason than cyl-pipeline-
+  # worker above: each sweep is an idempotent recompute from Argo's current
+  # state (see design.md's "rollup computation happens in Python" decision),
+  # not a claimed, exactly-once event — redundant concurrent sweeps just
+  # mean harmless, wasted-work overlap, not a correctness risk.
+  cyl-status-poller:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    # Submits and polls; no encoding, so 1g clears the 512m tmpfs
+    # that is charged to this same cgroup.
+    mem_limit: 2g
+    memswap_limit: 2g
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      WORKFLOWS_K8S_TOKEN: ${WORKFLOWS_K8S_TOKEN}
+      WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
+      WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
+      WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE}
+    networks:
+      - supanet
+    depends_on:
+      - kong
+      - db-prod
+    restart: unless-stopped
+    command: ["python", "status_poller.py"]
+    # Larger than cyl-pipeline-worker's 30s (found during /review-pr round 1,
+    # not a blind copy): one sweep can issue one get_workflow_status GET per
+    # distinct workflow name across EVERY candidate run this cycle, not a
+    # single call per claim, so 30s isn't necessarily enough headroom for
+    # _stop()'s documented "let the in-flight sweep finish" guarantee.
+    stop_grace_period: 60s
+
   # Renders one plate on command. Behind a profile, so `up -d` never starts it.
   plate-video-worker:
     build:
@@ -330,110 +435,6 @@ services:
       - python
       - cyl_video_worker.py
       - --help
-
-
-  cyl-pipeline-worker:
-    build:
-      context: ./services/workflows
-      dockerfile: Dockerfile
-    read_only: true
-    # Submits and polls; no encoding, so 1g clears the 512m tmpfs
-    # that is charged to this same cgroup.
-    mem_limit: 1g
-    memswap_limit: 1g
-    tmpfs:
-      - /tmp:mode=1777,size=512m
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    environment:
-      SUPABASE_URL: ${SUPABASE_URL}
-      SUPABASE_ANON_KEY: ${ANON_KEY}
-      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
-      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
-      # Real credentials for the bloom-pipeline ServiceAccount. TOKEN/CA_CERT/
-      # API_URL are true secrets (SENSITIVE_INVENTORY); NAMESPACE/TTL_SECONDS
-      # are plain config values with safe code defaults, sourced from the
-      # committed .env.*.defaults files instead.
-      WORKFLOWS_K8S_TOKEN: ${WORKFLOWS_K8S_TOKEN}
-      WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
-      WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
-      WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE}
-      WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS}
-      # Disambiguates which environment's DB a pipeline-run-id belongs to —
-      # prod and staging share the runai-busch-lab namespace above and both
-      # run_id sequences start at 1 (see k8s_client.py's ENV_LABEL).
-      WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL}
-    networks:
-      - supanet
-    depends_on:
-      - kong
-      - db-prod
-    restart: unless-stopped
-    # _stop() (dispatch_worker.py) deliberately lets an in-flight batch finish
-    # before exiting — the K8s submission POST alone has a 15s httpx timeout
-    # (k8s_client.py), plus the claim/complete/fail RPC round trips. Docker's
-    # 10s default would routinely SIGKILL mid-submission on an ordinary
-    # `compose down`/redeploy, defeating that design and risking exactly the
-    # "successful-submission-recorded-as-failed" case design.md's Risks
-    # section already flags for crashes.
-    stop_grace_period: 30s
-    command: ["python", "dispatch_worker.py"]
-
-  # Periodically polls Argo for each in-flight run's real Workflow phase(s)
-  # and progresses cyl_pipeline_runs.status past dispatch outcome (bloom #11
-  # Phase 3) — a separate process from cyl-pipeline-worker above (event-driven
-  # dispatch vs. this poller's fixed wall-clock sweep). Same image; read-only
-  # use of the K8s API (get, not create), so only four of the five
-  # WORKFLOWS_K8S_* vars are needed — TTL_SECONDS/ENV_LABEL are
-  # submission-only (build_workflow_body), never read by this poller.
-  # WORKFLOWS_STATUS_POLL_SECONDS is deliberately NOT referenced here — its
-  # Python-side default (15s) governs it; adding it here without a real
-  # default-file entry would make compose inject an empty string and
-  # silently override that default.
-  # Also safe to scale by replicas, for a different reason than cyl-pipeline-
-  # worker above: each sweep is an idempotent recompute from Argo's current
-  # state (see design.md's "rollup computation happens in Python" decision),
-  # not a claimed, exactly-once event — redundant concurrent sweeps just
-  # mean harmless, wasted-work overlap, not a correctness risk.
-  cyl-status-poller:
-    build:
-      context: ./services/workflows
-      dockerfile: Dockerfile
-    read_only: true
-    # Submits and polls; no encoding, so 1g clears the 512m tmpfs
-    # that is charged to this same cgroup.
-    mem_limit: 1g
-    memswap_limit: 1g
-    tmpfs:
-      - /tmp:mode=1777,size=512m
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    environment:
-      SUPABASE_URL: ${SUPABASE_URL}
-      SUPABASE_ANON_KEY: ${ANON_KEY}
-      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
-      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
-      WORKFLOWS_K8S_TOKEN: ${WORKFLOWS_K8S_TOKEN}
-      WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
-      WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
-      WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE}
-    networks:
-      - supanet
-    depends_on:
-      - kong
-      - db-prod
-    restart: unless-stopped
-    command: ["python", "status_poller.py"]
-    # Larger than cyl-pipeline-worker's 30s (found during /review-pr round 1,
-    # not a blind copy): one sweep can issue one get_workflow_status GET per
-    # distinct workflow name across EVERY candidate run this cycle, not a
-    # single call per claim, so 30s isn't necessarily enough headroom for
-    # _stop()'s documented "let the in-flight sweep finish" guarantee.
-    stop_grace_period: 60s
 
   # -------------------
   # Bloom MCP Server
@@ -727,7 +728,6 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-
 
   # -------------------
   # Supabase Storage
