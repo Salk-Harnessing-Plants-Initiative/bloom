@@ -74,7 +74,8 @@ The command SHALL support a `--poison` flag. When set, the command SHALL call
 
 The command SHALL support a `--good` flag paired with a required `--frames-dir <path>` option.
 `--frames-dir` SHALL NOT be accepted together with `--poison`. For each frame file found directly
-in `<path>` (image files only, in ascending filename order, numbered `frame_number_ = 1, 2, 3,
+in `<path>` (image files only, in numeric filename order — not plain lexicographic string
+order, so `2.png` sorts before `10.png` — numbered `frame_number_ = 1, 2, 3,
 ...` in that order), processed one at a time and stopping at the first failure (no further
 frames are attempted once one fails), the command SHALL: reject the file if it is smaller than 1
 KiB (a mechanical guard against blank/placeholder frames, not a content classifier — a real
@@ -118,8 +119,15 @@ then update that `cyl_images` row's `object_path` to the uploaded path and `stat
 #### Scenario: Non-image files in the directory are ignored, not counted as frames
 
 - **WHEN** `--frames-dir` contains both image files and non-image files (e.g. a stray `.txt`)
-- **THEN** only the image files are processed as frames, in ascending filename order, and the
+- **THEN** only the image files are processed as frames, in numeric filename order, and the
   non-image files are neither uploaded nor counted
+
+#### Scenario: Double-digit frame numbers sort correctly
+
+- **WHEN** `--frames-dir` contains `1.png` through `10.png` (unpadded, matching
+  `download_for_predict.py`'s own naming convention)
+- **THEN** the frames are processed in the order `1.png, 2.png, ..., 9.png, 10.png` — not the
+  lexicographic order a plain string sort would produce (`1.png, 10.png, 2.png, ...`)
 
 ### Requirement: Identity fields use fixed synthetic sentinel values, never real staff or accession data
 

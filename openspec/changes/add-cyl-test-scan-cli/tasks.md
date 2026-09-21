@@ -76,8 +76,12 @@ outcomes.
       not a fixed UUID), then exactly one update call setting `object_path` to that same path and
       `status` to `'SUCCESS'`.
 - [x] 2.8 `--good` with multiple frame files: assert one RPC call and one upload+update pair per
-      file, with `frame_number_` assigned `1, 2, 3, ...` in ascending filename order, each with a
-      distinct generated path.
+      file, with `frame_number_` assigned `1, 2, 3, ...` in numeric filename order (not plain
+      lexicographic sort — see 2.8b), each with a distinct generated path.
+- [x] 2.8b (Added: PR review, Benfica) `--good` with unpadded double-digit filenames
+      (`1.png`..`10.png`, matching `download_for_predict.py`'s own naming convention): assert
+      frames are processed `1, 2, ..., 9, 10` — a plain `sorted()` on filenames would produce
+      `1, 10, 2, 3, ...`, silently mis-numbering every scan with 10+ frames.
 - [x] 2.9 `--good`, `insert_image_v2_0` returns `NULL` on the second of two frames: assert
       non-zero exit, an error naming that frame, exactly one successful upload+update for the
       first frame, and no RPC/storage call for any frame after the failing one (fail-fast, no
@@ -93,7 +97,7 @@ outcomes.
 - [x] 2.13 `--good` with a missing or empty `--frames-dir`, or one containing only non-image
       files: assert non-zero exit and zero RPC calls.
 - [x] 2.14 `--good` with a mix of image and non-image files in `--frames-dir`: assert only the
-      image files are processed, in ascending filename order, and non-image files are neither
+      image files are processed, in numeric filename order, and non-image files are neither
       uploaded nor counted.
 - [x] 2.15 Mutual exclusivity: `--poison` + `--good` together → non-zero exit, zero RPC calls.
       Neither given → non-zero exit, zero RPC calls. `--poison --frames-dir <dir>` → non-zero
@@ -179,6 +183,18 @@ outcomes.
       Current state: 41/41 tests in the file pass; full `bloomcli` suite is 950 passed (909
       baseline + 41 new), same 13 pre-existing/unrelated failures, 7 skipped. `ruff check`
       (pinned v0.9.9) passes.
+- [x] 3.11 (Addressed real PR review comments, Benfica — `blm3886`) Two findings on the merged
+      PR: (1) `discover_frame_files` used a plain `sorted()`, which compares filenames as
+      strings — for the unpadded `f"{frame_number}{ext}"` naming `download_for_predict.py` uses,
+      this puts `10.png` before `2.png`, silently mis-numbering any scan with 10+ frames. Fixed
+      with a natural-sort key (`_natural_sort_key`, zero-pads digit runs before comparing); one
+      new test (`test_discover_frame_files_sorts_numerically_not_lexicographically`), verified
+      non-vacuous by reverting and confirming failure. spec.md's frame-ordering language and a
+      new dedicated scenario were updated to state "numeric filename order" explicitly, not
+      "ascending filename order." (2) Documented `create-test-scan` in `bloomcli/README.md`'s
+      Commands list as a **[write]** developer tool, per her review's request — it had no README
+      entry at all. Current state: 42/42 tests in the file pass; full `bloomcli` suite is 951
+      passed, same 13 pre-existing/unrelated failures, 7 skipped.
 
 ## 4. Validation
 

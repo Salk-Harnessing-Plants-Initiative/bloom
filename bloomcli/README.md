@@ -67,6 +67,13 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 - **[write]** `bloomctl cyl batch-ingest-result <envelopes_dir>` — write back a
   batch of per-scan `ResultEnvelope`s in one invocation (see below); the batch
   sibling of `ingest-result`, for the A4 per-batch pipeline.
+- **[write]** `bloomctl cyl create-test-scan --poison | --good --frames-dir <dir>` —
+  developer tool: create one synthetic cylinder scan in the staging test
+  experiment `A4-PIPELINE-E2E-TEST` (`experiment_id 12880747`) only. `--poison`
+  makes a scan that will fail to download; `--good` makes a real, downloadable
+  one from frame images you supply (e.g. via `cyl download`). One scan per
+  invocation — run it again for another. Requires a write-capable profile (e.g.
+  `staging-writer`); `pipeline-staging` lacks the grants it needs.
 - **[read]** `bloomctl cyl datasets list` — list cylinder trait datasets (all by
   default). Scope to one experiment with `--experiment-id N` (scriptable) or
   `--experiment` to **pick one from a menu** (needs a terminal). `--output csv|json`

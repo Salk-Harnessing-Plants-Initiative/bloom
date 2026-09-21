@@ -458,6 +458,16 @@ def _write_frame(tmp_path, name="frame1.png", size=2048):
     return path
 
 
+def test_discover_frame_files_sorts_numerically_not_lexicographically(tmp_path):
+    """PR review (Benfica): plain sorted() would put '10.png' before '2.png'. discover_frame_files
+    must match the numeric ordering the rest of this CLI uses (download_for_predict.py names
+    staged frames exactly f"{frame_number}{ext}", unpadded)."""
+    for name in ("1.png", "2.png", "10.png", "3.png", "9.png"):
+        _write_frame(tmp_path, name)
+    files = cts.discover_frame_files(tmp_path)
+    assert [p.name for p in files] == ["1.png", "2.png", "3.png", "9.png", "10.png"]
+
+
 def test_good_mode_single_frame_full_flow(monkeypatch, tmp_path):
     _patch_authed(monkeypatch)
     _patch_lock(monkeypatch)

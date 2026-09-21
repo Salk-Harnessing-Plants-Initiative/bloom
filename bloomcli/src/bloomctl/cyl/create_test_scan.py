@@ -137,8 +137,23 @@ def resolve_next_qr_code(client: Any) -> str:
     return f"{QR_PREFIX}{highest + 1:0{QR_SUFFIX_WIDTH}d}"
 
 
+_NATURAL_SORT_DIGITS_RE = re.compile(r"(\d+)")
+
+
+def _natural_sort_key(path: Path) -> str:
+    """Zero-pad every run of digits in the filename so a plain string sort orders them
+    numerically (`2.png` before `10.png`). Plain `sorted()` compares filenames as ordinary
+    strings, which puts `10.png` before `2.png` for any scan with 10+ frames — this matters
+    because `download_for_predict.py` names staged frames exactly `f"{frame_number}{ext}"`,
+    with no zero-padding, so a `--frames-dir` populated that way (e.g. via `bloomctl cyl
+    download`) would otherwise be silently misordered. Found in PR review.
+    """
+    return _NATURAL_SORT_DIGITS_RE.sub(lambda m: m.group().zfill(20), path.name)
+
+
 def discover_frame_files(frames_dir: Path) -> list[Path]:
-    """Image files directly under `frames_dir`, sorted by filename ascending.
+    """Image files directly under `frames_dir`, in numeric filename order (see
+    `_natural_sort_key`).
 
     Raises :class:`CreateTestScanError` if the directory doesn't exist or holds no image files.
     """
@@ -146,7 +161,8 @@ def discover_frame_files(frames_dir: Path) -> list[Path]:
     if not frames_dir.is_dir():
         raise CreateTestScanError(f"--frames-dir does not exist or is not a directory: {frames_dir}")
     files = sorted(
-        p for p in frames_dir.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
+        (p for p in frames_dir.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS),
+        key=_natural_sort_key,
     )
     if not files:
         raise CreateTestScanError(
