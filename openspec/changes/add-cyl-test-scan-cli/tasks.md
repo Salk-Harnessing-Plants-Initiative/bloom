@@ -22,16 +22,15 @@ pre-upload frame-count query's exact shape are already fixed in `design.md`'s De
       one). Identity fields (`phenotyper_name`/`email`, `scientist_name`/`email`,
       `accession_name`) are NOT sourced this way — they use the fixed synthetic sentinel values
       from `design.md`, regardless of what any existing scan carries.
-- [ ] 1.2 (Informational, non-blocking) Check whether `cyl_plants` / `cyl_scans` carry the
+- [x] 1.2 (Informational, non-blocking) Check whether `cyl_plants` / `cyl_scans` carry the
       unique constraints `design.md`'s Context section describes
-      (`(wave_id, qr_code)` / `(plant_id, date_scanned)`). This no longer gates the QR-race
-      mitigation (the file lock does, see `design.md`), but confirms the plant/scan isolation
-      reasoning the sentinel-values decision depends on. Record the finding as a one-line note in
-      `design.md`'s Context section.
-- [ ] 1.3 Confirm the image-file extension allowlist `--good` will use to distinguish frame files
-      from non-image files in `--frames-dir` (e.g. `.png`, `.jpg`, `.jpeg`, `.tif`, `.tiff` —
-      check what `bloomctl cyl download` itself writes, so a directory populated by that command
-      is recognized without extra steps) and document it in the command's `--help` text.
+      (`(wave_id, qr_code)` / `(plant_id, date_scanned)`). Done: confirmed directly against
+      `supabase/migrations/20230724171639_add_uniqueness_contraints.sql` — all three constraints
+      (plus `cyl_scanners UNIQUE (name)`) exist exactly as described.
+- [x] 1.3 Confirm the image-file extension allowlist `--good` will use to distinguish frame files
+      from non-image files in `--frames-dir`. Done: `.png`, `.jpg`, `.jpeg`, `.tif`, `.tiff`
+      (case-insensitive), matching `cyl/download.py::image_dest`'s convention. Document this in
+      the command's `--help` text during implementation (task 3.2/3.6).
 
 ## 2. Red — tests first (`bloomcli/tests/test_cyl_create_test_scan.py`)
 

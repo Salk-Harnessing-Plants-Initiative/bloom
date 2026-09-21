@@ -30,7 +30,10 @@ apply here since every path this command writes is a freshly generated UUID).
 **Every upsert inside `insert_image_v2_0` is `ON CONFLICT ... DO NOTHING` followed by a fallback
 `SELECT` of whatever row already exists** — this includes `cyl_plants` (unique on
 `(wave_id, qr_code)`), `cyl_scans` (unique on `(plant_id, date_scanned)`), and `cyl_images`
-(unique on `(scan_id, frame_number)`). This pattern **never raises a uniqueness-violation error**
+(unique on `(scan_id, frame_number)`). Confirmed directly against
+`supabase/migrations/20230724171639_add_uniqueness_contraints.sql`: all three constraints exist
+exactly as described (plus `cyl_scanners UNIQUE (name)`, consistent with the RPC's strict
+existence check on `device_name` below). This pattern **never raises a uniqueness-violation error**
 — an OpenSpec review of this proposal's first draft caught this and correctly flagged the
 original design (below, in "Superseded decision") as factually wrong. It matters because it is
 also what makes the plant/scan/image lineage safe from cross-attaching to *unrelated* real data:
@@ -237,7 +240,10 @@ Non-Goals:
   no built-in "pull frames from another scan" convenience. Keeps this command's responsibility
   narrow (create a scan from given bytes) and composable with the existing `bloomctl cyl
   download` command, which callers use first to populate that directory from a known-good source
-  scan (e.g. `12894745` / `TEST-E2E-001`).
+  scan (e.g. `12894745` / `TEST-E2E-001`). Image-file allowlist: `.png`, `.jpg`, `.jpeg`, `.tif`,
+  `.tiff` (case-insensitive) — matches what `cyl/download.py::image_dest` produces (it preserves
+  the source object's real suffix, defaulting to `.png`), so a directory populated by
+  `bloomctl cyl download` is recognized with no extra steps.
 
 - **Decision: guard against the two already-observed ways `--good` can be misused into
   producing scans that don't actually exercise a real recompute.** The original scope note
