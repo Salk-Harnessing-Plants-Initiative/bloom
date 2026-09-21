@@ -1,4 +1,4 @@
--- Manual rollback for 20260915120000_refresh_cyl_experiment_trait_counts_incremental.sql
+-- Manual rollback for 20260921120000_refresh_cyl_experiment_trait_counts_incremental.sql
 --
 -- Unschedules both jobs and drops the change log, its triggers, the incremental refresh and the
 -- weekly re-queue function.

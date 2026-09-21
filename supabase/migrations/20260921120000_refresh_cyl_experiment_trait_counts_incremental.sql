@@ -15,7 +15,7 @@
 --      rows edited within a scan's current result).
 -- refresh_cyl_experiment_trait_counts() is unchanged and remains the manual full refresh.
 --
--- Manual rollback: supabase/rollbacks/20260915120000_refresh_cyl_experiment_trait_counts_incremental_rollback.sql
+-- Manual rollback: supabase/rollbacks/20260921120000_refresh_cyl_experiment_trait_counts_incremental_rollback.sql
 
 BEGIN;
 

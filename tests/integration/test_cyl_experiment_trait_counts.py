@@ -726,10 +726,10 @@ def test_safeupdate_fix_rollback_restores_prior_unqualified_delete_behavior(
 
 
 # --------------------------------------------------------------------------- #
-# Incremental refresh: change log + pg_cron job (20260915120000)
+# Incremental refresh: change log + pg_cron job (20260921120000)
 # --------------------------------------------------------------------------- #
 
-_INCR_TS = "20260915120000_refresh_cyl_experiment_trait_counts_incremental"
+_INCR_TS = "20260921120000_refresh_cyl_experiment_trait_counts_incremental"
 INCR_MIGRATION = REPO_ROOT / "supabase" / "migrations" / f"{_INCR_TS}.sql"
 INCR_ROLLBACK = REPO_ROOT / "supabase" / "rollbacks" / f"{_INCR_TS}_rollback.sql"
 NIGHTLY_JOB = "refresh-cyl-experiment-trait-counts"
