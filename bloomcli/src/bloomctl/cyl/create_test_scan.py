@@ -27,6 +27,7 @@ from ._locks import DEFAULT_LOCK_STALENESS_SECONDS, LockContendedError, acquire_
 EXPERIMENT_ID = 12880747
 EXPERIMENT_NAME_PREFIX = "A4-PIPELINE-E2E-TEST"
 IMAGES_BUCKET = "images"
+IMAGES_OBJECT_PREFIX = "cyl-images"
 QR_PREFIX = "TEST-E2E-"
 QR_SUFFIX_WIDTH = 3
 MIN_FRAME_SIZE_BYTES = 1024
@@ -76,7 +77,18 @@ def check_experiment_guard(client: Any) -> str:
     to prevent. Found live during this change's own staging validation (task 4.3): passing the
     prefix constant created a stray experiment id 12880756.
     """
-    rows = client.table("cyl_experiments").select("id, name").eq("id", EXPERIMENT_ID).execute().data or []
+    from postgrest import APIError
+
+    try:
+        rows = (
+            client.table("cyl_experiments").select("id, name").eq("id", EXPERIMENT_ID).execute().data
+            or []
+        )
+    except APIError as exc:
+        raise CreateTestScanError(
+            f"could not query experiment {EXPERIMENT_ID}: {getattr(exc, 'message', None) or exc} — "
+            "check the profile has read access (e.g. staging-writer, not pipeline-staging)"
+        ) from exc
     if not rows:
         raise CreateTestScanError(
             f"experiment {EXPERIMENT_ID} does not exist on this server — refusing to proceed "
@@ -94,14 +106,21 @@ def check_experiment_guard(client: Any) -> str:
 
 def resolve_next_qr_code(client: Any) -> str:
     """Next `TEST-E2E-NNN` suffix after the highest one currently used in experiment 12880747."""
-    rows = (
-        client.table("cyl_plants_extended")
-        .select("qr_code")
-        .eq("experiment_id", EXPERIMENT_ID)
-        .execute()
-        .data
-        or []
-    )
+    from postgrest import APIError
+
+    try:
+        rows = (
+            client.table("cyl_plants_extended")
+            .select("qr_code")
+            .eq("experiment_id", EXPERIMENT_ID)
+            .execute()
+            .data
+            or []
+        )
+    except APIError as exc:
+        raise CreateTestScanError(
+            f"could not resolve the next QR code: {getattr(exc, 'message', None) or exc}"
+        ) from exc
     highest = 0
     for row in rows:
         match = _QR_SUFFIX_RE.match(row.get("qr_code") or "")
@@ -155,21 +174,45 @@ def call_insert_image(
         "scientist_name": SCIENTIST_NAME,
         "scientist_email": SCIENTIST_EMAIL,
     }
-    return client.rpc("insert_image_v2_0", params).execute().data
+    from postgrest import APIError
+
+    try:
+        return client.rpc("insert_image_v2_0", params).execute().data
+    except APIError as exc:
+        raise CreateTestScanError(
+            f"insert_image_v2_0 failed for {plant_qr_code} frame {frame_number}: "
+            f"{getattr(exc, 'message', None) or exc} — check the profile has write access "
+            "(e.g. staging-writer, not pipeline-staging)"
+        ) from exc
 
 
 def resolve_scan_id(client: Any, image_id: int) -> int:
-    row = client.table("cyl_images").select("scan_id").eq("id", image_id).single().execute().data
+    from postgrest import APIError
+
+    try:
+        row = client.table("cyl_images").select("scan_id").eq("id", image_id).single().execute().data
+    except APIError as exc:
+        raise CreateTestScanError(
+            f"could not resolve scan_id for cyl_images id={image_id}: "
+            f"{getattr(exc, 'message', None) or exc}"
+        ) from exc
     return row["scan_id"]
 
 
 def count_frames_for_scan(client: Any, scan_id: int) -> int:
-    resp = client.table("cyl_images").select("id", count="exact").eq("scan_id", scan_id).execute()
+    from postgrest import APIError
+
+    try:
+        resp = client.table("cyl_images").select("id", count="exact").eq("scan_id", scan_id).execute()
+    except APIError as exc:
+        raise CreateTestScanError(
+            f"could not count frames for scan_id={scan_id}: {getattr(exc, 'message', None) or exc}"
+        ) from exc
     return resp.count
 
 
 def build_object_path(image_id: int) -> str:
-    return f"cyl-images/cyl-image_{image_id}_{uuid4()}.png"
+    return f"{IMAGES_OBJECT_PREFIX}/cyl-image_{image_id}_{uuid4()}.png"
 
 
 def update_image_row(client: Any, image_id: int, object_path: str) -> None:

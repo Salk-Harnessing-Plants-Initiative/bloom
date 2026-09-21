@@ -13,6 +13,12 @@ from bloomctl.cyl._locks import LockContendedError
 EXPERIMENT_ROW = {"id": cts.EXPERIMENT_ID, "name": "A4-PIPELINE-E2E-TEST (synthetic -- safe to break/delete)"}
 
 
+def _api_error(message, code="P0001"):
+    from postgrest import APIError
+
+    return APIError({"message": message, "code": code, "details": None, "hint": None})
+
+
 def _patch_authed(monkeypatch):
     monkeypatch.setattr(climod, "_authed_client", lambda profile: object())
 
@@ -36,10 +42,13 @@ def _patch_lock(monkeypatch, calls=None):
 
 
 class _RPC:
-    def __init__(self, result):
+    def __init__(self, result, error=None):
         self._result = result
+        self._error = error
 
     def execute(self):
+        if self._error is not None:
+            raise self._error
         return type("R", (), {"data": self._result})()
 
 
@@ -65,13 +74,23 @@ class _SelectQuery:
 
 
 class _Table:
-    """Records every call; returns a canned response for `select`, records `update` payloads."""
+    """Records every call; returns a canned response for `select`, records `update` payloads.
 
-    def __init__(self, name, responses, updates, update_errors=None):
+    Read-side calls (select/eq/single) are recorded into `queries` — (table, eq_filters,
+    is_single) — so tests can pin the exact query shape a function used, not just the outcome.
+    An earlier version of these fakes only recorded `update()` calls this way; a wrong `.eq()`
+    column on a read (e.g. filtering by `id` instead of `experiment_id`) would have passed every
+    existing test silently — the same class of gap as the real experiment-name bug this command
+    hit live on staging (see design.md).
+    """
+
+    def __init__(self, name, responses, updates, queries, update_errors=None, query_errors=None):
         self.name = name
         self._responses = responses
         self._updates = updates
+        self._queries = queries
         self._update_errors = update_errors or {}
+        self._query_errors = query_errors or {}
         self._eq_filters = {}
         self._is_single = False
 
@@ -98,6 +117,9 @@ class _Table:
             if key in self._update_errors:
                 raise self._update_errors[key]
             return type("R", (), {"data": [self._pending_update]})()
+        self._queries.append((self.name, dict(self._eq_filters), self._is_single))
+        if self.name in self._query_errors:
+            raise self._query_errors[self.name]
         resp = self._responses.get(self.name)
         if resp is None:
             return type("R", (), {"data": [], "count": 0})()
@@ -130,18 +152,25 @@ class _Client:
     """Hand-rolled fake Supabase client: table()/rpc()/storage, all call-recording."""
 
     def __init__(self, *, table_responses=None, rpc_result=None, rpc_results=None,
-                 uploads=None, upload_error=None, update_errors=None):
+                 uploads=None, upload_error=None, update_errors=None, query_errors=None,
+                 rpc_error=None):
         self.table_responses = table_responses or {}
         self.rpc_result = rpc_result
         self.rpc_results = list(rpc_results) if rpc_results is not None else None
+        self.rpc_error = rpc_error
         self.rpc_calls = []
         self.updates = []
+        self.queries = []
         self.uploads = uploads if uploads is not None else []
         self.storage = _Storage(_Bucket(self.uploads, error=upload_error))
         self._update_errors = update_errors or {}
+        self._query_errors = query_errors or {}
 
     def table(self, name):
-        return _Table(name, self.table_responses, self.updates, self._update_errors)
+        return _Table(
+            name, self.table_responses, self.updates, self.queries,
+            self._update_errors, self._query_errors,
+        )
 
     def rpc(self, name, params):
         self.rpc_calls.append((name, params))
@@ -149,7 +178,7 @@ class _Client:
             result = self.rpc_results[len(self.rpc_calls) - 1]
         else:
             result = self.rpc_result
-        return _RPC(result)
+        return _RPC(result, error=self.rpc_error)
 
 
 def _default_table_responses(qr_suffixes=("001", "002", "009"), image_id=42, scan_id=777, frame_count=1):
@@ -166,6 +195,7 @@ def _default_table_responses(qr_suffixes=("001", "002", "009"), image_id=42, sca
 def test_experiment_guard_passes_on_matching_name():
     client = _Client(table_responses=_default_table_responses())
     cts.check_experiment_guard(client)  # must not raise
+    assert ("cyl_experiments", {"id": cts.EXPERIMENT_ID}, False) in client.queries
 
 
 def test_experiment_guard_rejects_missing_experiment():
@@ -178,6 +208,41 @@ def test_experiment_guard_rejects_mismatched_name():
     client = _Client(table_responses={"cyl_experiments": ([{"id": cts.EXPERIMENT_ID, "name": "Something Else"}], None)})
     with pytest.raises(cts.CreateTestScanError):
         cts.check_experiment_guard(client)
+
+
+def test_experiment_guard_apierror_is_wrapped_cleanly():
+    client = _Client(query_errors={"cyl_experiments": _api_error("permission denied", "42501")})
+    with pytest.raises(cts.CreateTestScanError, match="permission denied"):
+        cts.check_experiment_guard(client)
+
+
+def test_resolve_next_qr_code_apierror_is_wrapped_cleanly():
+    client = _Client(query_errors={"cyl_plants_extended": _api_error("boom")})
+    with pytest.raises(cts.CreateTestScanError, match="boom"):
+        cts.resolve_next_qr_code(client)
+
+
+def test_call_insert_image_apierror_is_wrapped_cleanly():
+    client = _Client(rpc_error=_api_error("permission denied for function insert_image_v2_0", "42501"))
+    with pytest.raises(cts.CreateTestScanError, match="permission denied"):
+        cts.call_insert_image(
+            client, experiment_name=EXPERIMENT_ROW["name"], plant_qr_code="TEST-E2E-010", frame_number=1
+        )
+
+
+def test_cli_rpc_apierror_exits_cleanly_not_a_traceback(monkeypatch):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    client = _Client(
+        table_responses=_default_table_responses(qr_suffixes=("009",)),
+        rpc_error=_api_error("permission denied for function insert_image_v2_0", "42501"),
+    )
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
+    assert res.exit_code != 0
+    assert res.exception is None or isinstance(res.exception, SystemExit)
+    assert "permission denied" in res.output
+    assert "Traceback" not in res.output
 
 
 def test_cli_guard_failure_makes_no_rpc_call(monkeypatch, tmp_path):
@@ -230,11 +295,24 @@ def test_lock_acquired_with_expected_path_and_staleness(monkeypatch):
 def test_resolve_next_qr_code_increments_past_highest_suffix():
     client = _Client(table_responses=_default_table_responses(qr_suffixes=("001", "002", "009")))
     assert cts.resolve_next_qr_code(client) == "TEST-E2E-010"
+    assert ("cyl_plants_extended", {"experiment_id": cts.EXPERIMENT_ID}, False) in client.queries
 
 
 def test_resolve_next_qr_code_with_no_existing_scans():
     client = _Client(table_responses={"cyl_plants_extended": ([], None)})
     assert cts.resolve_next_qr_code(client) == "TEST-E2E-001"
+
+
+def test_resolve_scan_id_query_shape():
+    client = _Client(table_responses={"cyl_images": ([{"scan_id": 777}], None)})
+    assert cts.resolve_scan_id(client, 42) == 777
+    assert ("cyl_images", {"id": 42}, True) in client.queries
+
+
+def test_count_frames_for_scan_query_shape():
+    client = _Client(table_responses={"cyl_images": ([{"scan_id": 777}], 3)})
+    assert cts.count_frames_for_scan(client, 777) == 3
+    assert ("cyl_images", {"scan_id": 777}, False) in client.queries
 
 
 # --- sentinel identity + sourced wave/device values --------------------------

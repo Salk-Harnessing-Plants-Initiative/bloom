@@ -136,12 +136,18 @@ Non-Goals:
   that constructs the RPC call without going through this command — see Non-Goals.
   As defense in depth against the residual window (e.g. a stale lock reclaimed while a peer is
   still slow, or a non-`bloomctl` caller), the command also verifies the RPC's returned image id
-  is genuinely new via the `NULL`-return check above, and — for `--good` — the scan is confirmed
-  to have exactly the frame count expected immediately before uploading, aborting loudly on a
-  mismatch rather than silently overwriting/attaching to an unexpected existing scan. This
-  guarantee is bounded by the staleness threshold below, not absolute: while a live invocation's
-  actual runtime stays under it, a second invocation is refused outright; if a live invocation
-  somehow runs longer than the threshold, its lock becomes reclaimable and a peer could proceed
+  is genuinely new via the `NULL`-return check above, and — for `--good` — the scan's frame
+  count is confirmed before uploading, aborting loudly on a mismatch rather than silently
+  overwriting/attaching to an unexpected existing scan. **This is not a complete guarantee even
+  within its intended residual window**: two racers colliding on the exact same *first* frame of
+  a QR code both get the same `image_id` back (`insert_image_v2_0`'s row is `PENDING`, not
+  `SUCCESS`, so the `NULL`-check doesn't fire either) and both see the same count — the
+  frame-count check can only detect a race once one side has progressed to a later frame before
+  the other checks, which is timing-dependent, not assured. Caught by an OpenSpec review;
+  recorded here rather than implied as closed. This is bounded by the staleness threshold below,
+  not absolute: while a live invocation's actual runtime stays under it, a second invocation is
+  refused outright; if a live invocation somehow runs longer than the threshold, its lock becomes
+  reclaimable and a peer could proceed
   concurrently, which is exactly the residual window the frame-count check exists to catch.
 
   **Concrete lock parameters** (an OpenSpec review of an earlier draft found this decision named
@@ -297,7 +303,17 @@ verifications:
 
 - **Concurrent invocations on the same machine** → mitigated by the file lock (fail-fast, not
   blocking); **not** mitigated across machines or non-`bloomctl` callers (see Non-Goals). Defense
-  in depth via the `NULL`-return check and a pre-upload frame-count confirmation.
+  in depth via the `NULL`-return check and a pre-upload frame-count confirmation — though that
+  confirmation has its own blind spot for a same-first-frame collision, see the Decisions
+  section's "same-machine concurrent invocations" note.
+- **A `--good` scan whose Nth frame fails leaves frames 1..N-1 as ordinary `SUCCESS` rows on a
+  real `cyl_scans`/`cyl_plants` chain, with nothing marking the scan itself as incomplete.**
+  A later query against `cyl_images` for that `scan_id` cannot distinguish an aborted
+  multi-frame attempt from an intentionally-shorter scan — the failure is only visible to
+  whoever ran the CLI at that moment (stderr + non-zero exit), not persisted anywhere. Accepted
+  as the direct consequence of the fail-fast decision above (Risk, not a defect): anyone later
+  querying experiment `12880747`'s data should be aware a partial scan is indistinguishable from
+  a deliberate one at the row level.
 - **Duplication with `bloom-fs`/`bloom-js`'s TypeScript implementation of the same flow** → same
   trade-off already accepted elsewhere in `bloomctl`; mitigated by keeping the new code small and
   by this design doc recording the mirrored convention so future drift is detectable by diffing
