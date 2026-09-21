@@ -8,7 +8,10 @@ delegate to the *active* backend selected here. Two backends exist:
 * :class:`SupabaseStorageBackend` — the deployed default (Supabase Storage in the
   ``bloommcp-data`` bucket). Its method bodies are the pre-backend
   ``supabase_client`` helpers verbatim, so the default path is byte-for-byte
-  unchanged.
+  unchanged — with one deliberate exception: ``list_prefix`` now pages (#396),
+  because the single unpaginated call it used to make truncated any prefix with
+  more than 100 immediate children. The bytes read and written per artifact are
+  unaffected; only the number of list requests changed.
 * :class:`LocalStorageBackend` — opt-in; writes/reads real files under a root
   dir, mapping each ``/``-separated storage key to ``<root>/<key>``. It preserves
   the object store's implicit guarantees on a POSIX filesystem: atomic writes
@@ -46,6 +49,33 @@ _DEFAULT_BACKEND = "supabase"
 # creates `<dir>/.tmp-*`) and list_prefix (which filters it out for cross-backend
 # parity), so the two never drift.
 _TMP_PREFIX = ".tmp-"
+
+# Paging for `SupabaseStorageBackend.list_prefix` (#396). Without an explicit
+# `limit`, storage3 applies its own `DEFAULT_SEARCH_OPTIONS` (limit=100) and the
+# listing is silently truncated -- no error, just a short answer that reads as
+# complete.
+#
+# The page size deliberately *equals* storage3's own default: that is the value
+# every unconfigured `.list()` call already sends, so it is one the server is
+# known to accept unmodified. That matters because the loop reads a page shorter
+# than the requested limit as end-of-listing -- an assumption which holds only if
+# the server honors the limit rather than clamping it below what was asked. A
+# larger page would cut round-trips but risk a server-side maximum, and a
+# deployment that clamped rather than rejected would make "short page" mean
+# "clamped", reintroducing the very truncation this fixes.
+# `test_supabase_list_page_size_matches_client_default` pins this equality, since
+# storage3 is a transitive lock resolution (pyproject declares only
+# `supabase>=2.0.0,<3`) and a bump could otherwise void it silently.
+_SUPABASE_LIST_PAGE_SIZE = 100
+
+# Hard backstop on requests per listing, *not* the primary guard -- a server that
+# disregards `offset` is caught on the second request by the no-progress check
+# below. Exact ceiling: a listing ends when a page comes back short, so up to
+# 4,999 children enumerate fully and a 5,000-child prefix raises rather than
+# returning a silently truncated list. Sized well above any real prefix while
+# still bounding the worst-case stall, since `list_prefix` builds its client
+# without a `timeout_seconds` deadline.
+_SUPABASE_LIST_MAX_PAGES = 50
 
 
 @runtime_checkable
@@ -115,13 +145,20 @@ class StorageKeyNotFound(FileNotFoundError):
 
 
 class StorageBackendError(OSError):
-    """A local-backend filesystem failure (permission/OS error), redacted.
+    """A storage-backend failure the adapter itself raises, redacted.
 
-    Subclasses ``OSError`` so the read path's broad ``except`` gates keep working,
-    while the agent-facing message names only the logical storage key — never an
+    Most often a local-backend filesystem failure (permission/OS error) via
+    :func:`_redacted_io_error`, but the Supabase adapter raises it too — for an
+    unextractable signed URL or byte size, and for a listing that cannot be
+    enumerated safely (``list_prefix``, #396).
+
+    Subclasses ``OSError`` so the read path's broad ``except`` gates keep working.
+    That preserves those gates' existing contract; it is *not* a claim that the
+    failure reaches an agent verbatim — some callers relabel it (e.g.
+    ``_guarded_manifest_read``), which is why the adapter also logs. The
+    agent-facing message names only the logical storage key or prefix — never an
     absolute host path (which would reveal the server's local root layout). The
-    raw error (errno + path) is logged server-side only. See
-    :func:`_redacted_io_error`.
+    raw error (errno + path) is logged server-side only.
     """
 
 
@@ -150,6 +187,7 @@ class SupabaseStorageBackend:
     """Supabase Storage in the ``bloommcp-data`` bucket — the deployed default.
 
     Method bodies are the pre-backend ``supabase_client`` helpers verbatim
+    (except ``list_prefix``, which pages — see its docstring and #396)
     (they re-use ``get_storage_client`` / ``_guess_content_type`` from that
     module), so selecting ``supabase`` is byte-for-byte the prior behavior.
     Stateless — each call builds a fresh client via ``get_storage_client``.
@@ -196,11 +234,80 @@ class SupabaseStorageBackend:
         return json.loads(payload.decode("utf-8"))
 
     def list_prefix(self, prefix: str) -> list[str]:
+        """Return every immediate child of ``prefix``, paging as needed (#396).
+
+        Without an explicit ``limit`` the Supabase client applies its own
+        ``DEFAULT_SEARCH_OPTIONS`` (100 items) and truncates silently, so this
+        repeats the listing with an advancing ``offset`` until a page comes back
+        shorter than the requested limit. A prefix that fits in one page still
+        costs exactly one request.
+
+        ``sortBy`` is pinned explicitly so page boundaries are stable across the
+        requests of one sweep rather than inherited from the client's default.
+        That buys *request-stability*, not a global name-ascending order: the
+        endpoint may return folder and file entries as separate groups, so no
+        caller should read the result as fully sorted.
+
+        The offset advances by the number of entries actually received, so a page
+        longer than requested cannot skip the entries past the requested limit.
+        Names are de-duplicated order-preservingly, so a child shifted across a
+        page seam by a concurrent write is reported once.
+
+        Raises :class:`StorageBackendError` rather than ever returning a
+        partially-enumerated list, which would read as complete: a page that
+        contributes no new names means the server disregarded ``offset``, and
+        ``_SUPABASE_LIST_MAX_PAGES`` backstops a sweep that never ends.
+        """
         from bloom_mcp.supabase_client import get_storage_client
 
+        # Built once: the client is stateless but constructs a fresh
+        # httpx-backed stack per call, so per-page construction is pure waste.
         client = get_storage_client()
-        items = client.list(prefix)
-        return [item["name"] for item in items]
+        names: list[str] = []
+        seen: set[str] = set()
+        offset = 0
+        for _ in range(_SUPABASE_LIST_MAX_PAGES):
+            page = client.list(
+                prefix,
+                {
+                    "limit": _SUPABASE_LIST_PAGE_SIZE,
+                    "offset": offset,
+                    # Built inline, not a shared module constant: storage3
+                    # shallow-merges these options into the request body, so a
+                    # module-level dict would travel by reference and a single
+                    # mutation would corrupt every later listing.
+                    "sortBy": {"column": "name", "order": "asc"},
+                },
+            )
+            fresh = [item["name"] for item in page if item["name"] not in seen]
+            seen.update(fresh)
+            names.extend(fresh)
+            if len(page) < _SUPABASE_LIST_PAGE_SIZE:
+                return names
+            if not fresh:
+                # Every name on a full page was already seen: `offset` had no
+                # effect, so continuing would loop without progress. Caught on
+                # the second request rather than at the cap, and never confused
+                # with a legitimately large prefix.
+                logger.error(
+                    "supabase listing made no progress: prefix=%s offset=%s",
+                    prefix,
+                    offset,
+                )
+                raise StorageBackendError(
+                    f"listing for prefix {prefix} made no progress at offset "
+                    f"{offset}; the storage backend appears to ignore pagination"
+                )
+            offset += len(page)
+        logger.error(
+            "supabase listing did not terminate: prefix=%s pages=%s",
+            prefix,
+            _SUPABASE_LIST_MAX_PAGES,
+        )
+        raise StorageBackendError(
+            f"listing for prefix {prefix} did not terminate within "
+            f"{_SUPABASE_LIST_MAX_PAGES} requests"
+        )
 
     def delete_files(
         self, keys: list[str], *, timeout_seconds: Optional[float] = None
