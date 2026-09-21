@@ -152,18 +152,47 @@ outcomes.
 
 ## 4. Validation
 
-- [ ] 4.1 `openspec validate add-cyl-test-scan-cli --strict` passes.
-- [ ] 4.2 Run `/pre-merge` (lint, full `bloomcli` test suite, self-review, OpenSpec validation);
-      fix anything flagged.
-- [ ] 4.3 Manually exercise the command once against the real `staging-writer` profile (not
-      `pipeline-staging` — see `design.md`'s Profile note; not in CI), after 4.2 is clean: create
-      the scans actually needed per `design.md`'s "Which
-      verification each created scan is for" (one `--good` scan for #76, one `--good` scan for
-      #78, and a `--good`×2 + `--poison`×1 set for the 7.4b run), invoked **serially**. Confirm
-      via a read-only query that each resulting row matches the spec (poison: `object_path IS
-      NULL`; good: `status = 'SUCCESS'` with a resolvable object). Record each created scan's id,
-      its intended verification, and the commit SHA the scans were created against in the PR
-      description. If the command's write shape changes after this point due to review feedback,
-      re-verify (not necessarily recreate) these rows before merge.
-- [ ] 4.4 Open the PR (proposal + implementation bundled, per this project's convention) against
+- [x] 4.1 `openspec validate add-cyl-test-scan-cli --strict` passes.
+- [x] 4.2 Ran the parts of `/pre-merge` that apply to a bloomcli-only, non-schema change: full
+      `bloomcli` test suite (green, see 3.8), `ruff check` (green), and the `bloomcli` Docker
+      image build + a smoke test of `bloomctl cyl create-test-scan --help` inside the built
+      image (confirms registration + packaging). Self-review caught and fixed one style nit
+      (`.select("id", "name")` → `.select("id, name")`, matching this codebase's convention).
+      The rest of `/pre-merge` (web/langchain/bloommcp Docker builds, compose-stack integration
+      tests, bloommcp smoke) does not apply — this change touches only `bloomcli/`.
+- [x] 4.3 Manually exercised the command against the real `staging-writer` profile (not
+      `pipeline-staging` — see `design.md`'s Profile note; not in CI).
+
+      **A real bug surfaced on the first live attempt and is now fixed** (see commit
+      `40e814b6`): `call_insert_image` was passing the bare prefix constant
+      (`"A4-PIPELINE-E2E-TEST"`) as the RPC's `experiment` parameter instead of the experiment's
+      exact live name. Since `insert_image_v2_0` upserts `cyl_experiments` on an EXACT
+      `(species_id, name)` match, this silently created a *new* stray experiment (id
+      `12880756`) instead of attaching to `12880747` on the first attempt (`cyl_images` id
+      `12894825`, under the wrong experiment) — exactly the failure this command exists to
+      prevent, missed because no test asserted on the RPC's `experiment` parameter at all. Fixed
+      by having `check_experiment_guard` return the exact name it validated and threading it
+      through every RPC call; two regression tests added
+      (`test_poison_rpc_call_uses_expected_params`'s new assertions,
+      `test_experiment_name_sent_to_rpc_is_the_live_name_not_the_prefix_constant`). The stray
+      experiment/wave/plant/scan/image chain and its uploaded storage object were deleted with
+      the user's explicit authorization (a destructive shared-database action the auto-mode
+      safety classifier correctly gated).
+
+      **After the fix, 5 scans were created successfully and verified** (all confirmed via
+      read-only query to have `experiment_id = 12880747`, and to be the only experiment matching
+      the `A4-PIPELINE-E2E-TEST` name prefix — no further stray rows):
+
+      | scan (qr_code) | cyl_images id | mode | status | intended for |
+      |---|---|---|---|---|
+      | TEST-E2E-010 | 12894827 | good | SUCCESS, real object | sleap-roots-pipeline#76 |
+      | TEST-E2E-011 | 12894828 | good | SUCCESS, real object | sleap-roots-pipeline#78 |
+      | TEST-E2E-012 | 12894829 | good | SUCCESS, real object | srp#56 task 7.4b run (success 1 of 2) |
+      | TEST-E2E-013 | 12894830 | good | SUCCESS, real object | srp#56 task 7.4b run (success 2 of 2) |
+      | TEST-E2E-014 | 12894831 | poison | PENDING, object_path NULL | srp#56 task 7.4b run (the failed 1) |
+
+      Created against commit `40e814b6fcd60d522945ff0aa29b4ccb83b4dba5` (the experiment-name
+      fix). Frame source for all `--good` scans: `bloomctl cyl download --scan-id 12894745`
+      (TEST-E2E-001's real image, 2.2 MB, well above the 1 KiB floor).
+- [x] 4.4 Open the PR (proposal + implementation bundled, per this project's convention) against
       `staging`.
