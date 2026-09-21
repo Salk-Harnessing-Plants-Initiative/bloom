@@ -1521,3 +1521,36 @@ def test_discoverable_via_list_existing_analyses(injected_ports):
         list_existing_analyses_mod._RESPONSE_CACHE.clear()
 
     assert "umap" in response["analyses"]
+
+
+def test_create_umap_single_trait_is_coloured_by_the_first_trait_column(
+    injected_ports, monkeypatch
+):
+    """Which trait the single-trait UMAP colours by had no coverage at all.
+
+    ``_umap_plot_calls`` passes ``trait_cols[0]`` **positionally**
+    (``umap_analysis.py``), and every existing spy in this file captures only ``**kwargs``
+    — so a change to the selection or its ordering would not fail anything here. It is not
+    covered pixel-side either: bloom#841 left both UMAP keys unbaselined because their
+    canvas size is platform-dependent, which removed the only check that would have noticed
+    the colour mapping changing. This closes that gap numerically, independent of rendering.
+    """
+    captured: dict = {}
+    real = sleap_roots_analyze.create_umap_single_trait
+
+    def _spy(*args, **kwargs):
+        # args = (umap_results, df, trait_col)
+        captured["trait_col"] = args[2] if len(args) > 2 else kwargs.get("trait_col")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sleap_roots_analyze, "create_umap_single_trait", _spy)
+    # `_run` passes an explicit `trait_columns=_TRAITS`, so the expected colour trait is
+    # that list's first element -- the ordering dependency this test exists to pin.
+    expected = _TRAITS[0]
+
+    _run(include_plots=True, plots=["create_umap_single_trait"])
+
+    assert captured["trait_col"] == expected, (
+        f"single-trait UMAP coloured by {captured['trait_col']!r}, expected the first "
+        f"requested trait column {expected!r} -- the selection or its order has changed"
+    )

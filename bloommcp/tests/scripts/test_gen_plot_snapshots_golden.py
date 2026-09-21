@@ -103,6 +103,15 @@ def test_visually_changed_regeneration_reports_a_nonzero_rms(tmp_path):
 _REAL_BASELINES_DIR = _A_BASELINE.parent
 
 
+def _all_baseline_names() -> list[str]:
+    """Every baseline the generator writes: 3 from the dedicated tools plus 6 from the
+    baselined optional plot keys (#723; the 2 UMAP keys are deliberately unbaselined). Kept as one helper so a new table cannot be silently left out of
+    the tests that assert over "every baseline"."""
+    return [name for name, *_ in gen._TOOLS] + [
+        name for name, *_ in gen._OPTIONAL_TOOLS
+    ]
+
+
 def _dimension_matched_markers() -> dict[str, bytes]:
     """One marker PNG per real baseline name, each a 50%-dimmed copy of THAT specific
     baseline -- same pixel dimensions as what the corresponding tool will actually
@@ -111,7 +120,12 @@ def _dimension_matched_markers() -> dict[str, bytes]:
     different content, so it's distinguishable from a fresh, correct re-render.
     """
     markers = {}
-    for baseline_name, _tool_fn, _produced_name, _converged in gen._TOOLS:
+    # Both tables, via `_all_baseline_names()`. (An earlier comment here claimed a single
+    # loop over `_TOOLS + _OPTIONAL_TOOLS` would raise ValueError on the differing arity --
+    # it does not: `for name, *_ in` star-unpacks 4- and 3-tuples alike, which is exactly
+    # what that helper does. The two tables stay separate because they carry different
+    # information, not because concatenating them breaks.)
+    for baseline_name in _all_baseline_names():
         real = _REAL_BASELINES_DIR / baseline_name
         dimmed = ImageEnhance.Brightness(Image.open(real)).enhance(0.5)
         buf = io.BytesIO()
@@ -158,5 +172,5 @@ def test_build_writes_new_baselines_without_needing_yes(tmp_path, monkeypatch):
         wrote = gen.build(Path(scratch), confirmed=False)
 
     assert wrote is True
-    for baseline_name, _tool_fn, _produced_name, _converged in gen._TOOLS:
+    for baseline_name in _all_baseline_names():
         assert (fake_baselines / baseline_name).is_file()
