@@ -122,9 +122,8 @@ one, in the same change.
 The same shared runner is also why the Box credential's blast radius is wider
 than this job: the rclone token lives in `~/.config/rclone/rclone.conf` on the
 deploy host and is readable by anything that host runs as that user, and any
-job scheduled onto the runner — `deploy.yml`,
-`refresh-cyl-experiment-trait-counts.yml`, or a future one — reaches the same
-host by the same key. This job is not isolated from the runner, and the token is
+job scheduled onto the runner — `deploy.yml` or a
+future one — reaches the same host by the same key. This job is not isolated from the runner, and the token is
 not isolated from other jobs.
 
 ## Nothing is ever deleted on Box

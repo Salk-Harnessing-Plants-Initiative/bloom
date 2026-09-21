@@ -10,19 +10,11 @@ from typing import Optional
 
 from bloom_mcp.tools import _ports
 
-# design.md D8 addendum (bloom#637/#708): production now refreshes on an automatic daily
-# `on: schedule` cron; staging remains on-demand (`workflow_dispatch`) only -- it doesn't
-# need frequent automatic refreshes. So a STAGING cache row can still go quiet
-# indefinitely with no signal beyond a timestamp that keeps looking like ordinary bounded
-# lag; a PRODUCTION row's lag is bounded to roughly one refresh interval ONCE bloom#736 AND
-# bloom#806 (Sections 15 and 16) both confirm an actual successful refresh -- until then it
-# is unbounded, identically to staging. bloom#736's network fix was necessary but not
-# sufficient: the first live run it enabled reached Postgres and hit a second, independent
-# bug (bloom#806 -- an unqualified DELETE rejected by the database's own safeupdate guard),
-# so every RPC delivery has still failed to date. Either way, a missed or delayed scheduled
-# run would otherwise look identical to ordinary lag too. Elapsed time past a couple of
-# days is flagged explicitly rather than printed as a plain "as of" timestamp either way,
-# since this tool has no way to tell which environment a given row came from.
+# bloom#831: a pg_cron job inside Postgres refreshes this cache nightly at 06:00 UTC, in every
+# environment, and a weekly job re-queues every experiment. A row is therefore at most a day
+# behind a new result, and at most a week behind an edit the change log can't see. A missed or
+# delayed run still looks identical to ordinary lag, so elapsed time past a couple of days is
+# flagged explicitly rather than printed as a plain "as of" timestamp.
 _STALE_AFTER = timedelta(days=2)
 
 
