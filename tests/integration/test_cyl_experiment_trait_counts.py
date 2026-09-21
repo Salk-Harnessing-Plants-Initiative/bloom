@@ -2,12 +2,13 @@
 Integration tests for `cyl_experiment_trait_counts` (bloom#637 / bloom#656).
 
 Caches `n_traits` per experiment (distinct latest-source trait ids among plants with a non-null
-accession), refreshed by `refresh_cyl_experiment_trait_counts()` on an external schedule -- not a
-per-write trigger, since one write-back upload inserts hundreds of trait rows in a loop and a
-per-row trigger would fire that many full-experiment recomputes for one upload (design.md D5).
+accession), refreshed by two pg_cron jobs inside the database -- not a per-write trigger, since one
+write-back upload inserts hundreds of trait rows in a loop and a per-row trigger would fire that
+many full-experiment recomputes for one upload.
 
 LOCAL ONLY: the `pg_conn` fixture connects to 127.0.0.1 on POSTGRES_HOST_PORT as `supabase_admin`
-(BYPASSRLS); every test rolls back.
+(BYPASSRLS). Tests roll back, except the two that need a committed row to be visible to a second
+connection, which clean up after themselves.
 """
 
 import re
@@ -738,6 +739,7 @@ NEW_FUNCTIONS = [
     "refresh_changed_cyl_experiment_trait_counts",
     "mark_all_cyl_experiment_trait_count_changes",
 ]
+CHANGE_LOG_SEQUENCE = "public.cyl_experiment_trait_count_changes_id_seq"
 APP_ROLES = [
     "anon",
     "authenticated",
@@ -1149,6 +1151,13 @@ def test_app_roles_cannot_touch_change_log_or_run_incremental_refresh(pg_conn, r
             )
             granted = cur.fetchone()[0]
             assert granted is False, f"{role} has {privilege} on the change log"
+        for privilege in ("USAGE", "SELECT", "UPDATE"):
+            cur.execute(
+                "SELECT has_sequence_privilege(%s, %s, %s)",
+                (role, CHANGE_LOG_SEQUENCE, privilege),
+            )
+            granted = cur.fetchone()[0]
+            assert granted is False, f"{role} has {privilege} on the change log's sequence"
         for function_name in NEW_FUNCTIONS:
             cur.execute(
                 "SELECT has_function_privilege(%s, %s, 'EXECUTE')",
@@ -1223,6 +1232,24 @@ def test_nightly_job_sets_its_time_limit_before_the_recount(pg_conn):
         assert command.index("SET statement_timeout") < command.index(
             "refresh_changed_cyl_experiment_trait_counts()"
         )
+        # The value, not just its presence: the whole point of the job is that the recount gets
+        # longer than the API role's 8 s, and a shorter limit here reintroduces the cancellation.
+        assert re.search(r"SET\s+statement_timeout\s*=\s*'5min'", command), command
+    pg_conn.rollback()
+
+
+def test_nightly_job_command_runs_as_written(pg_conn):
+    """Bad quoting inside a job command only shows up in the job history, hours later."""
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT command FROM cron.job WHERE jobname = %s", (NIGHTLY_JOB,))
+        cur.execute(cur.fetchone()[0])
+    pg_conn.rollback()
+
+
+def test_weekly_job_command_runs_as_written(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT command FROM cron.job WHERE jobname = %s", (WEEKLY_JOB,))
+        cur.execute(cur.fetchone()[0])
     pg_conn.rollback()
 
 
