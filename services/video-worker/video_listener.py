@@ -61,7 +61,7 @@ if not AWS_SECRET_ACCESS_KEY:
 AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
 
 # Video processing settings
-DECIMATE_FACTOR = 4 
+DECIMATE_FACTOR = 4
 
 
 def get_db_connection():
