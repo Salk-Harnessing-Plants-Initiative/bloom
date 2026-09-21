@@ -240,5 +240,50 @@ outcomes.
       Created against commit `40e814b6fcd60d522945ff0aa29b4ccb83b4dba5` (the experiment-name
       fix). Frame source for all `--good` scans: `bloomctl cyl download --scan-id 12894745`
       (TEST-E2E-001's real image, 2.2 MB, well above the 1 KiB floor).
+
+      **`cyl_images.id` → real `cyl_scans.id` mapping** (recorded here after a downstream
+      reviewer, working only from the table above, tried to feed a `cyl_images.id` into
+      `download-for-predict` — which needs a `cyl_scans.id`, a different primary key — got
+      `Scan not found`, and initially suspected a join failure. Verified by walking the actual
+      `cyl_scans -> cyl_plants -> cyl_waves -> cyl_experiments` chain for all 5: every one
+      resolves correctly to `12880747`; the original table was simply never resolved to the id
+      the pipeline actually needs. This exact confusion is why task 4.5 below adds `scan_id` to
+      the command's own output):
+
+      | cyl_images id | real scan_id (cyl_scans.id) |
+      |---|---|
+      | 12894827 | 12894756 |
+      | 12894828 | 12894757 |
+      | 12894829 | 12894758 |
+      | 12894830 | 12894759 |
+      | 12894831 | 12894760 |
+
+      `download-for-predict 12894756` (good) staged 1/1 frames; `download-for-predict 12894760`
+      (poison) failed with "1 of 1 frames failed to download" — the exact pair of signatures
+      srp#56 task 7.4b needs, confirming all 5 scans are correctly attached and fit for purpose.
 - [x] 4.4 Open the PR (proposal + implementation bundled, per this project's convention) against
       `staging`.
+- [x] 4.5 (PR review round 4) Two IMPORTANT findings on `warn_about_abandoned_scans` (added in
+      round 3, task 3.10) from a completely fresh, independent adversarial pass — the function
+      had never had one of its own before, only the review that originally suggested it: (1) it
+      ran *before* `acquire_lock`, so one invocation's sweep could observe a second,
+      concurrently-running invocation's own healthy, transiently-mixed-status scan mid-loop and
+      flag it as a false-positive "abandoned" scan — moved inside the lock, since the lock
+      guarantees at most one invocation is ever mid-scan at a time. (2) its `except
+      CreateTestScanError` was narrower than spec.md's "a failure of the check itself SHALL be
+      reported as a stderr warning without aborting scan creation" — a malformed response shape
+      from a real client (not an `APIError`) would have propagated uncaught, before the lock is
+      even acquired. Broadened to `except Exception`. Both verified non-vacuous (reverted each,
+      confirmed the corresponding new test fails, restored). Also: added `scan_id` (the real
+      `cyl_scans.id`, not any `cyl_images.id`) to both the `--json` payload and the
+      human-readable summary, in both `--poison` and `--good` — a separate reviewer traced the
+      exact confusion incident recorded above and found this codebase already has a convention
+      for it (`ingest.py`'s `scan_id=` in its own human-readable output) that this command was
+      the one outlier in not following; costs one new query only on the (rare) `--poison` path,
+      free on `--good` (already computed for the frame-count check). Added a one-line comment on
+      `_natural_sort_key`'s fixed 20-digit pad-width assumption (a separate fresh review of the
+      natural-sort fix itself found no blocking issues, only this documentation nit). Also
+      updated the PR body, which a drift audit found was one full round stale (wrong test/suite
+      counts, missing the natural-sort and README fixes from the prior commit). Current state:
+      46/46 tests in the file pass; full `bloomcli` suite is 955 passed, same 13 pre-existing/
+      unrelated failures, 7 skipped.

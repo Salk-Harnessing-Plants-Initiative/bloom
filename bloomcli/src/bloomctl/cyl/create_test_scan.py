@@ -147,6 +147,11 @@ def _natural_sort_key(path: Path) -> str:
     because `download_for_predict.py` names staged frames exactly `f"{frame_number}{ext}"`,
     with no zero-padding, so a `--frames-dir` populated that way (e.g. via `bloomctl cyl
     download`) would otherwise be silently misordered. Found in PR review.
+
+    The `20`-digit pad width is a fixed constant, not derived from the actual data: two digit
+    runs both >=20 digits long would still compare as plain strings and could sort incorrectly.
+    Not reachable for a frame number in practice (frame counts are nowhere near 10**20), so this
+    is accepted rather than computed dynamically.
     """
     return _NATURAL_SORT_DIGITS_RE.sub(lambda m: m.group().zfill(20), path.name)
 
@@ -230,8 +235,18 @@ def warn_about_abandoned_scans(client: Any) -> None:
     already accepts that a caught mid-scan failure is indistinguishable from a deliberately
     shorter scan at the row level; a killed run is worse still, since it leaves no signal at
     all once the terminal that ran it is gone. This surfaces that signal on every subsequent
-    invocation instead. Never blocks scan creation — any failure here is itself only warned
-    about, not raised, since it is advisory, not part of this command's actual job.
+    invocation instead. Never blocks scan creation — ANY failure here (not just an `APIError`
+    wrapped by `_run_query` — a malformed response shape from a real client must not escape
+    either) is only warned about, not raised, since this check is advisory, not part of this
+    command's actual job.
+
+    Must be called only while `default_lock_path()`'s lock is held (see the call site in
+    `create_test_scan_core`) — an OpenSpec review caught that running this unlocked let one
+    invocation's sweep observe a SECOND, concurrently-running invocation's own healthy,
+    in-progress scan (an ordinary transient PENDING+SUCCESS mix between frames) and flag it as
+    abandoned. While the lock is held, no other invocation can be mid-scan at the same time, so
+    the only mixed-status scans this can observe are genuinely stale ones left by a past,
+    no-longer-running invocation.
     """
     try:
         scans = _run_query(
@@ -259,7 +274,7 @@ def warn_about_abandoned_scans(client: Any) -> None:
                     "by this run; investigate/clean up manually if it's stale.",
                     err=True,
                 )
-    except CreateTestScanError as exc:
+    except Exception as exc:  # advisory-only: never let this block scan creation (spec.md)
         click.echo(f"WARNING: abandoned-scan sweep failed (non-fatal): {exc}", err=True)
 
 
@@ -280,9 +295,13 @@ def create_test_scan_core(
     QR-suffix resolution through the last frame's row update runs inside one lock acquisition.
     """
     experiment_name = check_experiment_guard(client)
-    warn_about_abandoned_scans(client)
 
     with acquire_lock(default_lock_path(), staleness_seconds=DEFAULT_LOCK_STALENESS_SECONDS):
+        # Must run inside the lock — see warn_about_abandoned_scans' docstring for why running
+        # it unlocked let one invocation flag a second, concurrently-running invocation's own
+        # healthy in-progress scan as abandoned.
+        warn_about_abandoned_scans(client)
+
         qr_code = resolve_next_qr_code(client)
 
         if poison:
@@ -295,7 +314,13 @@ def create_test_scan_core(
                     "cyl_images row is already SUCCESS (a QR-suffix bug, or a race the lock "
                     "failed to prevent)"
                 )
-            return {"plant_qr_code": qr_code, "mode": "poison", "cyl_images_ids": [image_id]}
+            scan_id = resolve_scan_id(client, image_id)
+            return {
+                "plant_qr_code": qr_code,
+                "mode": "poison",
+                "scan_id": scan_id,
+                "cyl_images_ids": [image_id],
+            }
 
         frame_paths = discover_frame_files(frames_dir)
         image_ids: list[int] = []
@@ -350,7 +375,12 @@ def create_test_scan_core(
 
             image_ids.append(image_id)
 
-        return {"plant_qr_code": qr_code, "mode": "good", "cyl_images_ids": image_ids}
+        return {
+            "plant_qr_code": qr_code,
+            "mode": "good",
+            "scan_id": scan_id,
+            "cyl_images_ids": image_ids,
+        }
 
 
 @click.command(name="create-test-scan")
@@ -423,5 +453,6 @@ def create_test_scan(
         click.echo(json.dumps(result))
     else:
         click.echo(
-            f"Created scan {result['plant_qr_code']} (cyl_images id(s): {result['cyl_images_ids']})"
+            f"Created scan {result['plant_qr_code']} (scan_id={result['scan_id']}, "
+            f"cyl_images id(s): {result['cyl_images_ids']})"
         )

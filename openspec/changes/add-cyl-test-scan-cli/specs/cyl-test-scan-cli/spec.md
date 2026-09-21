@@ -198,22 +198,32 @@ match the existing 3-digit width, as the new scan's `plant_qr_code`.
 ### Requirement: Output follows the CLI's stdout/stderr and --json conventions
 
 The command SHALL accept `-p/--profile` (defaulting like other `cyl` commands, forwarded to
-`_authed_client`) and `--json`. Progress and informational text SHALL be written to stderr. With
-`--json`, a single JSON object describing the created scan SHALL be written to stdout with no
-other content on stdout. Without `--json`, a human-readable summary naming the scan id and
-`plant_qr_code` SHALL be written to stdout.
+`_authed_client`) and `--json`. Progress and informational text SHALL be written to stderr. The
+created scan's real `cyl_scans.id` — the id a downstream `bloomctl cyl download-for-predict`
+call actually needs, distinct from the `cyl_images.id` values the command also reports — SHALL
+be included, under the key/label `scan_id`, in both the `--json` payload and the human-readable
+summary, matching `ingest.py`'s existing `scan_id=` convention. With `--json`, a single JSON
+object describing the created scan SHALL be written to stdout with no other content on stdout.
+Without `--json`, a human-readable summary naming `scan_id`, `plant_qr_code`, and the created
+`cyl_images` id(s) SHALL be written to stdout.
 
 #### Scenario: --json output is clean on stdout
 
 - **WHEN** the user runs the command with `--json` and it succeeds
-- **THEN** stdout contains exactly one parseable JSON object (including at least the created
-  scan id and `plant_qr_code`) and any progress messages appear only on stderr
+- **THEN** stdout contains exactly one parseable JSON object (including at least `scan_id`,
+  `plant_qr_code`, and `cyl_images_ids`) and any progress messages appear only on stderr
 
 #### Scenario: Human-readable summary without --json
 
 - **WHEN** the user runs the command without `--json` and it succeeds
-- **THEN** stdout contains a human-readable line naming the created scan's id and
-  `plant_qr_code`
+- **THEN** stdout contains a human-readable line naming `scan_id`, the created scan's
+  `plant_qr_code`, and its `cyl_images` id(s)
+
+#### Scenario: scan_id is present for both --poison and --good
+
+- **WHEN** the command succeeds in either mode
+- **THEN** the result includes the real `cyl_scans.id`, resolved via a lookup keyed on the
+  `cyl_images.id` the RPC returned — not assumed to equal any `cyl_images.id` value
 
 ### Requirement: Abandoned scans are surfaced on every invocation, never silently left undetected
 

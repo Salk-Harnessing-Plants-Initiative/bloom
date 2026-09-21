@@ -361,6 +361,7 @@ def test_experiment_name_sent_to_rpc_is_the_live_name_not_the_prefix_constant(mo
         table_responses={
             "cyl_experiments": ([{"id": cts.EXPERIMENT_ID, "name": live_name}], None),
             "cyl_plants_extended": ([{"qr_code": "TEST-E2E-009"}], None),
+            "cyl_images": ([{"scan_id": 777}], None),
         },
         rpc_result=999,
     )
@@ -384,10 +385,28 @@ def test_warns_about_scan_with_mixed_success_and_pending_frames(monkeypatch):
             "cyl_experiments": ([EXPERIMENT_ROW], None),
             "cyl_plants_extended": ([{"qr_code": "TEST-E2E-009"}], None),
             "cyl_scans_extended": ([{"scan_id": 555, "qr_code": "TEST-E2E-005"}], None),
-            "cyl_images": ([{"status": "SUCCESS"}, {"status": "PENDING"}], None),
         },
         rpc_result=100,
     )
+
+    # "cyl_images" is queried two different ways in this flow: the sweep's per-scan status
+    # check (no .single(), filtered by scan_id) and --poison's own resolve_scan_id call (with
+    # .single(), filtered by id) — the simple name-keyed fake can't tell them apart, so this
+    # test overrides execute() per-instance to route by whether .single() was called.
+    real_table = client.table
+
+    def _table(name):
+        t = real_table(name)
+        if name == "cyl_images":
+            def _execute():
+                if t._is_single:
+                    return type("R", (), {"data": {"scan_id": 777}, "count": None})()
+                return type("R", (), {"data": [{"status": "SUCCESS"}, {"status": "PENDING"}], "count": None})()
+
+            t.execute = _execute
+        return t
+
+    monkeypatch.setattr(client, "table", _table)
     monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
     res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
     assert res.exit_code == 0, res.output
@@ -423,6 +442,58 @@ def test_abandoned_scan_sweep_failure_does_not_block_scan_creation(monkeypatch):
     res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
     assert res.exit_code == 0, res.output
     assert "abandoned-scan sweep failed" in res.stderr
+
+
+def test_abandoned_scan_sweep_survives_a_non_apierror_failure(monkeypatch):
+    """Regression: the sweep's except clause used to only catch CreateTestScanError (from
+    _run_query's APIError wrapping), so a malformed response shape from a real client — not
+    modeled by _api_error — would have propagated uncaught, before the lock is even acquired,
+    contradicting spec.md's "SHALL... without aborting scan creation"."""
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    client = _Client(
+        table_responses={
+            **_default_table_responses(qr_suffixes=("009",)),
+            "cyl_scans_extended": (["not-a-dict"], None),
+        },
+        rpc_result=100,
+    )
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
+    assert res.exit_code == 0, res.output
+    assert "abandoned-scan sweep failed" in res.stderr
+
+
+def test_abandoned_scan_sweep_runs_inside_the_lock_not_before(monkeypatch):
+    """Regression: running the sweep before acquire_lock let one invocation's sweep observe a
+    second, concurrently-running invocation's own healthy in-progress scan and flag it as
+    abandoned. It must run only once the lock is actually held."""
+    _patch_authed(monkeypatch)
+    order = []
+
+    class _NullLock:
+        def __enter__(self):
+            order.append("lock_acquired")
+            return None
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(cts, "acquire_lock", lambda path, *, staleness_seconds: _NullLock())
+
+    client = _Client(table_responses=_default_table_responses(qr_suffixes=("009",)), rpc_result=100)
+    real_table = client.table
+
+    def _table(name):
+        if name == "cyl_scans_extended":
+            order.append("sweep_query")
+        return real_table(name)
+
+    monkeypatch.setattr(client, "table", _table)
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
+    assert res.exit_code == 0, res.output
+    assert order == ["lock_acquired", "sweep_query"]
 
 
 def test_poison_mode_makes_no_storage_calls(monkeypatch):
@@ -493,6 +564,23 @@ def test_good_mode_single_frame_full_flow(monkeypatch, tmp_path):
     assert eq_filters == {"id": 42}
     assert fields["object_path"] == object_path
     assert fields["status"] == "SUCCESS"
+
+
+def test_good_mode_json_output_includes_scan_id(monkeypatch, tmp_path):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    _write_frame(tmp_path)
+    client = _Client(
+        table_responses=_default_table_responses(qr_suffixes=("009",), image_id=42, scan_id=777, frame_count=1),
+        rpc_result=42,
+    )
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(
+        cli, ["cyl", "create-test-scan", "--good", "--frames-dir", str(tmp_path), "--json"]
+    )
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.stdout)
+    assert payload["scan_id"] == 777
 
 
 def test_good_mode_multiple_frames_sequential_numbers(monkeypatch, tmp_path):
@@ -771,11 +859,30 @@ def test_json_output_clean_on_stdout(monkeypatch):
     assert "cyl_images_ids" in payload
 
 
+def test_json_output_includes_scan_id(monkeypatch):
+    """Regression: the tool's own cyl_images_ids field was mistaken for a scan_id by a
+    downstream reviewer, since download-for-predict actually needs a real scan_id. Surface it
+    explicitly, in both --poison and --good, matching ingest.py's scan_id= convention."""
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    client = _Client(
+        table_responses=_default_table_responses(qr_suffixes=("009",), scan_id=888), rpc_result=55
+    )
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison", "--json"])
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.stdout)
+    assert payload["scan_id"] == 888
+
+
 def test_human_summary_without_json(monkeypatch):
     _patch_authed(monkeypatch)
     _patch_lock(monkeypatch)
-    client = _Client(table_responses=_default_table_responses(qr_suffixes=("009",)), rpc_result=55)
+    client = _Client(
+        table_responses=_default_table_responses(qr_suffixes=("009",), scan_id=888), rpc_result=55
+    )
     monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
     res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
     assert res.exit_code == 0, res.output
     assert "TEST-E2E-010" in res.stdout
+    assert "scan_id=888" in res.stdout

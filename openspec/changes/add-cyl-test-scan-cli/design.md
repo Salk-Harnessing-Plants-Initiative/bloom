@@ -317,17 +317,27 @@ verifications:
   `scan_id` with no status filter" (see Context above), so a naive consumer enumerating
   SUCCESS-status rows in `12880747`, or reusing a `scan_id` pasted into an old note, could treat
   an abandoned 1-frame remnant as a legitimate scan.
-  **Decision: `warn_about_abandoned_scans`** (in `create_test_scan.py`, called right after the
-  experiment guard, unlocked and read-only) restores a persistent-enough signal without adding
-  any new destructive scope to this tool: on every invocation, it lists experiment `12880747`'s
-  scans and warns on stderr about any whose frames mix `SUCCESS` and `PENDING` — the signature
-  of an interrupted `--good` run. It never deletes or modifies anything (the experiment being
-  "synthetic -- safe to break/delete" would make deletion low-risk too, but that's a bigger,
-  separately-reviewable behavior change this fix doesn't take on); a query failure inside the
-  sweep is itself only warned about, never allowed to block scan creation. This does not remove
-  the underlying row-level ambiguity — a fresh reader of `cyl_images` alone still can't tell a
-  partial scan from a deliberate one — it only ensures a caller of *this tool* is told about it
-  going forward, on every run, not just at the moment of the original failure.
+  **Decision: `warn_about_abandoned_scans`** (in `create_test_scan.py`) restores a
+  persistent-enough signal without adding any new destructive scope to this tool: on every
+  invocation, it lists experiment `12880747`'s scans and warns on stderr about any whose frames
+  mix `SUCCESS` and `PENDING` — the signature of an interrupted `--good` run. It never deletes
+  or modifies anything (the experiment being "synthetic -- safe to break/delete" would make
+  deletion low-risk too, but that's a bigger, separately-reviewable behavior change this fix
+  doesn't take on); ANY failure inside the sweep — an `APIError` or otherwise (a malformed
+  response shape from a real client must not escape either) — is itself only warned about,
+  never allowed to block scan creation. This does not remove the underlying row-level ambiguity
+  — a fresh reader of `cyl_images` alone still can't tell a partial scan from a deliberate one —
+  it only ensures a caller of *this tool* is told about it going forward, on every run, not just
+  at the moment of the original failure.
+
+  **Called only once the lock is held**, read-only, not right after the guard as the original
+  version of this decision had it. An OpenSpec review caught that running it unlocked let one
+  invocation's sweep observe a *second*, concurrently-running invocation's own healthy,
+  in-progress scan — the per-frame loop legitimately produces a transient `PENDING`+`SUCCESS`
+  mix between frames, entirely inside the lock — and flag it as a false-positive "abandoned"
+  scan. Since the lock guarantees at most one invocation is ever mid-scan at a time, running the
+  sweep only while holding it means the only mixed-status scans it can observe are genuinely
+  stale ones left by a past, no-longer-running invocation.
 - **Duplication with `bloom-fs`/`bloom-js`'s TypeScript implementation of the same flow** → same
   trade-off already accepted elsewhere in `bloomctl`; mitigated by keeping the new code small and
   by this design doc recording the mirrored convention so future drift is detectable by diffing
