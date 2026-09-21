@@ -17,8 +17,16 @@ from typing import Any
 TRANSFORMS = ("log1p", "log2p", "none")
 SCALINGS = ("library_size", "none", "other")
 
-# Where the loader reads the UMAP coordinates from, by name.
+# Where the loader reads the UMAP coordinates from, by name; --umap-key names another.
 UMAP_KEY = "X_umap"
+
+# scrna_cell_arrays casts x and y to REAL on the way out, so a coordinate above this stores
+# fine and then fails for every reader of the dataset. The loader's own limit.
+FLOAT32_MAX = 3.4028235e38
+
+# A real embedding gives essentially every cell its own point, so cells stacked on one mean
+# the obsm was allocated and never filled. The loader's own share.
+MAX_DUPLICATE_POINT_SHARE = 0.001
 
 # Values read at a time when scanning a matrix, so a large file is never read whole.
 SCAN_VALUES = 4 * 1024 * 1024
@@ -59,7 +67,7 @@ def _text(value: Any) -> str | None:
     return str(value)
 
 
-def check_structure(path: Path) -> Summary:
+def check_structure(path: Path, *, umap_key: str = UMAP_KEY) -> Summary:
     """Check ``path`` against the format; raise :class:`FormatError` naming the first problem.
 
     A missing `uns['normalization']` is reported, not refused: whether it is allowed depends
@@ -71,11 +79,15 @@ def check_structure(path: Path) -> Summary:
     except OSError as exc:
         raise FormatError("not an HDF5 file") from exc
     with f:
-        if _text(f.attrs.get("encoding-type")) != "anndata":
+        with _reading("the file's encoding"):
+            encoding = _text(f.attrs.get("encoding-type"))
+        if encoding != "anndata":
             raise FormatError(
                 "not an AnnData file: it carries no AnnData encoding; save it with anndata 0.8 "
                 "or later"
             )
+        with _reading("the file's structure"):
+            _refuse_links(h5py, f)
         if "X" not in f:
             raise FormatError("no X: the file holds no expression matrix")
         with _reading("X"):
@@ -87,15 +99,16 @@ def check_structure(path: Path) -> Summary:
             _ids(h5py, f, "obs", "cell", n_cells, "rows")
         with _reading("var"):
             _ids(h5py, f, "var", "gene", n_genes, "columns")
-        layers = frozenset(f["layers"].keys()) if "layers" in f else frozenset()
+        with _reading("layers"):
+            layers = frozenset(f["layers"].keys()) if "layers" in f else frozenset()
         with _reading("uns['normalization']"):
             normalization = _fields(h5py, f, "uns/normalization")
             if normalization is not None:
                 problem = normalization_problem(normalization, layers=layers)
                 if problem:
                     raise FormatError(problem)
-        with _reading(f"obsm['{UMAP_KEY}']"):
-            _umap(h5py, np, f, n_cells)
+        with _reading(f"obsm['{umap_key}']"):
+            _umap(h5py, np, f, n_cells, umap_key)
         if "counts" in layers:
             with _reading("layers['counts']"):
                 shape = _shape(h5py, f["layers/counts"], "layers['counts']")
@@ -107,19 +120,25 @@ def check_structure(path: Path) -> Summary:
     return Summary(n_cells, n_genes, normalization, layers)
 
 
+# What a malformed file makes h5py and numpy raise. Anything else -- MemoryError, a bug in
+# this module -- is not a fact about the file and must not be reported as one.
+READ_FAILURES = (OSError, KeyError, IndexError, TypeError, ValueError, AttributeError)
+
+
 @contextmanager
 def _reading(what: str):
-    """Anything h5py raises while reading ``what`` becomes a FormatError naming it.
+    """What h5py raises while reading ``what`` becomes a FormatError naming it.
 
     A file this command refuses is one it was handed to check; a KeyError from a missing
-    member is a fact about the file, not a bug to report as a traceback.
+    member is a fact about the file, not a bug to report as a traceback. The exception's type
+    stands in for an empty message, so a refusal never ends in a bare colon.
     """
     try:
         yield
     except FormatError:
         raise
-    except Exception as exc:
-        raise FormatError(f"{what} could not be read: {exc}") from exc
+    except READ_FAILURES as exc:
+        raise FormatError(f"{what} could not be read: {str(exc) or type(exc).__name__}") from exc
 
 
 def normalization_problem(block: dict[str, Any], *, layers) -> str | None:
@@ -147,6 +166,27 @@ def normalization_problem(block: dict[str, Any], *, layers) -> str | None:
     return None
 
 
+def _refuse_links(h5py, group, depth: int = 0) -> None:
+    """Refuse a file that points outside itself.
+
+    h5py follows an external link without saying so, so a crafted file turns this check into a
+    reader of whatever else is on the machine, and the refusal quotes what it found.
+    """
+    if depth > 8:
+        return
+    for name in group:
+        link = group.get(name, getlink=True)
+        if isinstance(link, (h5py.ExternalLink, h5py.SoftLink)):
+            kind = "another file" if isinstance(link, h5py.ExternalLink) else "elsewhere"
+            raise FormatError(
+                f"{group.name.strip('/') + '/' if group.name != '/' else ''}{name} points "
+                f"outside itself, to {kind}; a dataset has to hold its own data"
+            )
+        member = group.get(name)
+        if isinstance(member, h5py.Group):
+            _refuse_links(h5py, member, depth + 1)
+
+
 def _shape(h5py, node, what: str) -> tuple[int, int]:
     if isinstance(node, h5py.Group):
         kind = _text(node.attrs.get("encoding-type"))
@@ -167,7 +207,10 @@ def _scan(h5py, np, node, what: str, *, non_negative: bool = False) -> None:
     per_slice = SCAN_VALUES if values.ndim == 1 else max(1, SCAN_VALUES // max(1, values.shape[1]))
     for start in range(0, rows, per_slice):
         block = values[start:start + per_slice]
-        if not np.isfinite(block).all():
+        # isfinite is only defined for numbers; a text matrix is a fact about the file.
+        if block.dtype.kind not in "fiub":
+            raise FormatError(f"{what} holds {block.dtype} values, not numbers")
+        if block.dtype.kind in "fc" and not np.isfinite(block).all():
             raise FormatError(f"{what} holds a value that is not finite")
         if non_negative and (block < 0).any():
             raise FormatError(f"{what} holds a negative value")
@@ -222,20 +265,30 @@ def _fields(h5py, f, path: str) -> dict[str, Any] | None:
     return out
 
 
-def _umap(h5py, np, f, n_cells: int) -> None:
+def _umap(h5py, np, f, n_cells: int, umap_key: str = UMAP_KEY) -> None:
     """The coordinates the explorer plots, read by name and checked as the loader checks them."""
     arrays = f["obsm"] if "obsm" in f else None
-    node = arrays.get(UMAP_KEY) if arrays is not None else None
+    node = arrays.get(umap_key) if arrays is not None else None
     if not isinstance(node, h5py.Dataset) or node.ndim != 2 or tuple(node.shape) != (n_cells, 2):
         found = ", ".join(sorted(arrays)) if arrays is not None and len(arrays) else "nothing"
         raise FormatError(
-            f"no obsm['{UMAP_KEY}'] with two columns and one row per cell ({n_cells}), which is "
+            f"no obsm['{umap_key}'] with two columns and one row per cell ({n_cells}), which is "
             f"where the UMAP coordinates are read from; obsm holds: {found}"
         )
     coordinates = node[:]
     if not np.isfinite(coordinates).all():
-        raise FormatError(f"obsm['{UMAP_KEY}'] holds a coordinate that is not finite")
-    if n_cells > 1 and bool(np.all(coordinates == coordinates[0])):
+        raise FormatError(f"obsm['{umap_key}'] holds a coordinate that is not finite")
+    largest = float(np.abs(coordinates).max()) if n_cells else 0.0
+    if largest > FLOAT32_MAX:
         raise FormatError(
-            f"obsm['{UMAP_KEY}'] puts every cell on the same point; the embedding is empty"
+            f"obsm['{umap_key}'] holds coordinates too large to store; the largest is "
+            f"{largest:.3g}"
+        )
+    _, piles = np.unique(coordinates, axis=0, return_counts=True)
+    most = int(piles.max()) if len(piles) else 0
+    if most > max(1, n_cells * MAX_DUPLICATE_POINT_SHARE):
+        raise FormatError(
+            f"obsm['{umap_key}'] puts {most} of {n_cells} cells on a single point. Real "
+            f"coordinates give essentially every cell its own; this array is unfilled, partly "
+            f"unfilled, or rounded so coarsely that cells collide"
         )

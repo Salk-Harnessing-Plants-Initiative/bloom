@@ -100,6 +100,7 @@ def write_h5ad(
     normalization=DEFAULT,
     obsm=DEFAULT,
     umap=None,
+    umap_key: str = "X_umap",
     sparse: bool = True,
     anndata: bool = True,
     with_x: bool = True,
@@ -115,7 +116,7 @@ def write_h5ad(
     var_ids = [f"gene{j}" for j in range(n_genes)] if var_ids is None else var_ids
     counts = np.round(np.expm1(x) * 3, 2) if counts is DEFAULT else counts
     normalization = dict(NORMALIZATION) if normalization is DEFAULT else normalization
-    obsm = {"X_umap": (n_cells, 2)} if obsm is DEFAULT else obsm
+    obsm = {umap_key: (n_cells, 2)} if obsm is DEFAULT else obsm
     with h5py.File(path, "w") as f:
         if anndata:
             _attrs(f, "anndata", "0.1.0")

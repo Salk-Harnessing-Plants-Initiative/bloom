@@ -62,14 +62,21 @@ def download(dataset: str | None, fingerprint: str | None, out: Path | None, pro
         raise click.ClickException(str(exc)) from exc
 
     dest = out or Path(default_name)
-    if dest.exists():
-        if _object.fingerprint_of(dest) == fingerprint:
-            click.echo(f"{dest} is already this file (fingerprint {fingerprint}).")
-            return
+    try:
+        if dest.exists():
+            if dest.is_dir():
+                raise click.ClickException(f"{dest} is a directory; pass --out to name a file.")
+            if _object.fingerprint_of(dest) == fingerprint:
+                click.echo(f"{dest} is already this file (fingerprint {fingerprint}).")
+                return
+            raise click.ClickException(
+                f"{dest} already exists and holds a different file; pass --out to write elsewhere."
+            )
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
         raise click.ClickException(
-            f"{dest} already exists and holds a different file; pass --out to write elsewhere."
-        )
-    dest.parent.mkdir(parents=True, exist_ok=True)
+            f"cannot write to {dest}: {exc.strerror or exc}. Nothing was downloaded."
+        ) from exc
     tmp = dest.with_name(f".{dest.name}.{uuid4().hex}.tmp")
     try:
         with _transfer.open_client() as http:
@@ -84,6 +91,8 @@ def download(dataset: str | None, fingerprint: str | None, out: Path | None, pro
         raise click.ClickException(
             f"{label} has no stored file yet: expected {_object.BUCKET}/{path}."
         ) from exc
+    except _transfer.SessionExpired as exc:
+        raise click.ClickException(f"{exc} Nothing was saved.") from exc
     except (_transfer.TransferError, httpx.HTTPError) as exc:
         raise click.ClickException(
             f"the download stopped: {str(exc) or type(exc).__name__}. Nothing was saved; run it "

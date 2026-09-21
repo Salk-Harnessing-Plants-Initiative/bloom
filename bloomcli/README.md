@@ -510,8 +510,13 @@ file's structure:
   be the index); the same for genes, in whatever form the species' annotation
   writes them
 - `X` holds only finite values
-- `obsm['X_umap']` has two columns and a row per cell, holds only finite coordinates, and does
-  not put every cell on one point — the same rules the loader applies
+- `obsm['X_umap']` has two columns and a row per cell, holds only finite coordinates small
+  enough for the explorer to store, and does not pile more than a thousandth of the cells on
+  a single point — an array allocated and never filled passes every other check and draws the
+  whole dataset as one dot. These are the loader's own thresholds, so a file this accepts is
+  one the loader accepts
+- nothing in the file points outside it: an external link would make the check read whatever
+  else is on the machine, and name it in the refusal
 - `layers['counts']`, when present, matches `X`'s shape and holds no negative value
 - `uns['normalization']` says how `X` was made:
   `transform` (`log1p`, `log2p`, `none`), `scaling` (`library_size`, `none`,
@@ -520,11 +525,18 @@ file's structure:
   is accepted without the block when that dataset records it.
 
 It then gzips the file and sends it through storage's resumable upload, and reports success
-only once storage confirms the object is stored. If the connection drops, run the same
-command again: the gzipped copy and what identifies the upload wait in
-`~/.bloom/scrna-uploads/`, and the transfer continues from the last byte storage received.
-An upload recorded for another server, or for a gzipped copy that has since been rewritten,
-is started afresh rather than resumed. A file already stored is reported and not sent again.
+only once storage confirms the object is stored — on every path, including "already
+uploaded", since the name being taken is not the same as the object being readable. If the
+connection drops, run the same command again: the gzipped copy and what identifies the
+upload wait in `~/.bloom/scrna-uploads/`, and the transfer continues from the last byte
+storage received. An upload recorded for another server, or for a gzipped copy that has
+since been rewritten, is started afresh rather than resumed.
+
+Where storage takes every byte and still stores nothing, the command says so and forgets the
+server's upload while keeping the gzipped copy: the protocol will not finish an upload that
+is already at full length, so the next run sends a fresh one rather than repeating the same
+failure. A session that expires mid-transfer is named as such, and asked to log in again,
+rather than reported as bytes refused.
 
 **Download** needs any login. It streams the object, decompresses it and checks
 its SHA-256 as it goes, and moves the file into place only when the fingerprint

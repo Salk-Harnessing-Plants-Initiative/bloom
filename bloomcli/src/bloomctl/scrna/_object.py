@@ -180,6 +180,15 @@ def load_upload(
     return record
 
 
+def forget_upload(directory: Path, fingerprint: str) -> None:
+    """Forget the server's upload but keep the gzipped form: the next run starts a fresh one.
+
+    An upload the server holds in full but never turned into an object cannot be finished --
+    the protocol will not re-finalise it -- so keeping its record repeats that failure forever.
+    """
+    _upload_path(directory, fingerprint).unlink(missing_ok=True)
+
+
 def clear(directory: Path, fingerprint: str) -> None:
     """Forget an upload: its gzipped form, what identified it, and its address."""
     for path in (

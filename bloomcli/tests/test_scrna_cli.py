@@ -131,7 +131,6 @@ def test_the_same_file_twice_is_one_object(tmp_path, env, storage):
 def test_a_file_that_landed_first_from_another_upload_is_reported_stored(tmp_path, env, storage):
     path = write_h5ad(tmp_path / "data.h5ad")
     assert _run("upload", str(path)).exit_code == 0
-    storage.hide_objects = True  # the check misses it, as a race would
     result = _run("upload", str(path))
     assert result.exit_code == 0, result.output
     assert "Already uploaded" in result.output
@@ -403,3 +402,50 @@ def test_download_needs_a_dataset_or_a_fingerprint(env):
     result = _run("download")
     assert result.exit_code != 0
     assert "DATASET" in result.output or "--checksum" in result.output
+
+
+def test_a_finalisation_failure_does_not_wedge_the_file(tmp_path, env, storage):
+    """B1: the record used to survive at full length, so every later run repeated the failure."""
+    storage.finalise = False
+    path = write_h5ad(tmp_path / "data.h5ad")
+    assert _run("upload", str(path)).exit_code != 0
+    assert not list((tmp_path / "stage").glob("*.upload")), "the stuck upload was kept"
+    assert list((tmp_path / "stage").glob("*.h5ad.gz")), "the resumable copy was thrown away"
+
+    storage.finalise = True
+    again = _run("upload", str(path))
+    assert again.exit_code == 0, again.output
+    assert "Uploaded" in again.output
+
+
+def test_a_duplicate_that_cannot_be_read_back_is_not_called_uploaded(tmp_path, env, storage):
+    """B2: this branch trusted a 409 body; it reported success with nothing in the bucket."""
+    path = write_h5ad(tmp_path / "data.h5ad")
+    storage.hide_objects = True          # nothing is readable
+    storage.duplicate_creates = True     # but storage says the name is taken
+    result = _run("upload", str(path))
+    assert result.exit_code != 0, result.output
+    assert "Already uploaded" not in result.output and "Uploaded" not in result.output
+    assert list((tmp_path / "stage").glob("*.h5ad.gz")), "the only copy was deleted"
+
+
+def test_a_blip_confirming_the_object_is_retried(tmp_path, env, storage):
+    """I6: one failed confirmation reported a stored object as an upload that had stopped."""
+    storage.fail_reads = 1
+    path = write_h5ad(tmp_path / "data.h5ad")
+    result = _run("upload", str(path))
+    assert result.exit_code == 0, result.output
+    assert "Uploaded" in result.output
+
+
+def test_a_destination_that_is_a_directory_is_refused_cleanly(tmp_path, env, storage):
+    """I7: this sat above the try, so it surfaced as a raw IsADirectoryError."""
+    path = write_h5ad(tmp_path / "data.h5ad")
+    assert _run("upload", str(path)).exit_code == 0
+    fingerprint = _object.fingerprint_of(path)
+    somewhere = tmp_path / "a-directory"
+    somewhere.mkdir()
+    result = _run("download", fingerprint, "--out", str(somewhere))
+    assert result.exit_code != 0
+    assert "directory" in result.output
+    assert "Traceback" not in result.output
