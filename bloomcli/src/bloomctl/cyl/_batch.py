@@ -43,6 +43,15 @@ class ScanResult:
     status: Status
     error: str = ""
     retriable: bool = True
+    warning: str = ""
+    """A non-fatal degradation to report alongside an otherwise-normal outcome.
+
+    Distinct from ``error``, which belongs to a ``failed`` item. This carries things the
+    caller must see even though the item succeeded -- e.g. the idempotency gate failing open
+    because its grant is missing, which silently restores the bug the gate exists to fix. It
+    is surfaced in both the summary and the JSON report because the log sink it would
+    otherwise go to is unreadable in the Argo deployment.
+    """
 
     def __post_init__(self) -> None:
         if self.status not in _VALID_STATUSES:
@@ -90,6 +99,9 @@ def format_summary(result: BatchResult, *, verb: str, noun: str, destination: st
     lines = [header]
     for s in failed:
         lines.append(f"FAILED {s.scan_key}: {s.error}")
+    for s in result.scans:
+        if s.warning:
+            lines.append(f"WARNING {s.scan_key}: {s.warning}")
     return "\n".join(lines)
 
 
@@ -102,6 +114,7 @@ def format_json(result: BatchResult) -> str:
                 "status": s.status,
                 "error": s.error,
                 "retriable": s.retriable,
+                "warning": s.warning,
             }
             for s in result.scans
         ]

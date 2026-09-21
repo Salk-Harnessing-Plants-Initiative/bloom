@@ -517,6 +517,16 @@ bloomctl cyl ingest-result <envelope.json | ->   [-p/--profile PROFILE] [--json]
   RPC call — on a missing/malformed manifest, a missing `.slp` file, a
   checksum mismatch, or a blob already present in the envelope. Omit to
   forward `blobs` unchanged, exactly as before this flag existed.
+
+  If the envelope's `idempotency_key` is already in `cyl_trait_sources`, the
+  upload is skipped and the constructed blobs are not merged: the RPC discards
+  them anyway, and re-uploading is the one step that can fail once the producer
+  has recomputed its artifacts, since `.slp` output is not byte-reproducible
+  and the object path embeds the key (talmolab/sleap-roots-pipeline#76).
+  Checksum verification is part of the upload, so it is skipped on that path
+  too — the local bytes are never stored, so their integrity is not something
+  the delivery can affect. Every other guarantee above still applies to a
+  re-delivery, because the check runs after the manifest is read.
 - When the `ARGO_WORKFLOW_NAME` environment variable is set (Argo sets it
   automatically inside the write-back container — see
   `sleap-roots-write-back-template.yaml`), also links the matching
@@ -568,11 +578,17 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
 - `--predictions-dir DIR`: predict's own nested batch output root
   (`DIR/{scan_key}/{scan_key}.predictions.json` + `.slp` files per scan).
   Constructs, verifies, and uploads blobs per envelope from its own scan_key's
-  subdirectory, reusing `ingest-result --predictions-dir`'s logic unchanged. A
-  missing manifest or upload failure isolates that envelope without aborting
-  the others.
-- `--json` prints one entry per envelope (`scan_key`, `status`, `error`) as a
-  JSON array; without it, a human-readable summary plus one line per failure.
+  subdirectory, reusing `ingest-result --predictions-dir`'s logic unchanged — so
+  an envelope whose `idempotency_key` is already in `cyl_trait_sources` has its
+  upload and merge skipped, exactly as for the single-envelope command. Blob
+  construction still runs either way, so a missing manifest or a missing `.slp`
+  fails that envelope whether or not it was already ingested. A missing manifest
+  or upload failure isolates that envelope without aborting the others.
+- `--json` prints one entry per envelope (`scan_key`, `status`, `error`,
+  `retriable`, `warning`) as a JSON array; without it, a human-readable summary
+  plus one line per failure and one `WARNING` line per degraded item. `warning`
+  is non-empty when the idempotency-gate check could not run and the command
+  fell back to uploading — most likely a missing column grant.
 - **Exit code:** non-zero if any envelope in the batch failed; zero if every
   envelope succeeded, was a no-op re-delivery, or the directory was empty
   (a directory containing only a manifest with no matching files is not the

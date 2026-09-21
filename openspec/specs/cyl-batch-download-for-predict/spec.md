@@ -68,20 +68,33 @@ The command SHALL stage every scan independently: a scan that fails (not found, 
 invalid frame_numbers, metadata-resolution failure, a partial frame-download failure, or lock
 contention with another live invocation) SHALL be recorded as `failed` with a per-scan error
 message, and SHALL NOT prevent the remaining scans in the batch from being staged. The command
-SHALL exit non-zero if any scan in the batch failed, and SHALL exit zero if every scan succeeded,
-was skipped, or the input was empty.
+SHALL exit `3` if any scan in the batch failed — distinct from Click's own reserved exit codes
+`1` (an uncaught exception or `ClickException`, e.g. a manifest-lock/write failure) and `2`
+(`UsageError`) — and SHALL exit `0` if every scan succeeded, was skipped, or the input was empty.
 
 #### Scenario: One bad scan among several does not abort the batch
 
 - **WHEN** a batch of 3 scan_ids includes one scan with zero `cyl_images` rows
 - **THEN** the other 2 scans are staged successfully (frames + sidecar present,
   `sleap_roots_predict.discover_scans` accepts both), the bad scan is reported `failed` by name
-  with its reason, and the command exits non-zero
+  with its reason, and the command exits `3`
 
 #### Scenario: Empty scan_ids input is a no-op, not an error
 
 - **WHEN** `--scan-ids-file`'s content is an empty JSON array (`[]`)
-- **THEN** the command creates no output directories, reports zero scans, and exits zero
+- **THEN** the command creates no output directories, reports zero scans, and exits `0`
+
+#### Scenario: A usage error or manifest-lock failure never exits 3
+
+- **WHEN** the command fails before or independently of any per-scan result — e.g.
+  `--scan-ids-file`/`--scan-ids` are both given or both omitted (a `click.UsageError`, exit `2`),
+  `--scan-ids-file`'s content isn't a valid JSON array of integers (a `click.ClickException`,
+  exit `1`), or the `out_dir/.locks/manifest.lock` write-lock is contended (also a
+  `click.ClickException`, exit `1`) — regardless of whether any scan in the batch would otherwise
+  have succeeded
+- **THEN** the command exits `2` or `1` respectively, never `3` — the exit code `3` is reserved
+  exclusively for "the batch ran to completion and at least one scan's `ScanResult` was `failed`,"
+  not for a failure that prevented per-scan staging from running at all
 
 ### Requirement: A scan whose stage directory already has a valid sidecar is skipped
 
@@ -208,9 +221,8 @@ entirely rather than raise an unhandled error from constructing a `RunManifest` 
 
 - **GIVEN** `out_dir` has no pre-existing manifest file
 - **WHEN** every scan in the batch fails this run
-- **THEN** the command exits non-zero (the existing all-failed behavior), no manifest file is
-  created, and no unhandled error is raised from constructing a `RunManifest` with empty
-  `scan_keys`
+- **THEN** the command exits `3` (the existing all-failed behavior), no manifest file is created,
+  and no unhandled error is raised from constructing a `RunManifest` with empty `scan_keys`
 
 ### Requirement: A per-scan lock prevents two invocations from racing on the same scan
 

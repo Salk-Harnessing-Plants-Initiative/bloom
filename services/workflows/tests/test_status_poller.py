@@ -320,6 +320,61 @@ def test_sweep_once_computes_a_genuine_full_success_from_real_scan_rows(monkeypa
     assert calls == [(1, "complete", 3, 0)]
 
 
+def test_a_downloader_stage_isolation_rolls_up_to_complete_with_failures(monkeypatch):
+    """The `cyl-pipeline-runs` / `cyl-pipeline-status-polling` deltas' headline
+    new combination, asserted rather than left to the post-merge live run.
+
+    Since the DAG gained its exit gate, a producer that isolates some scans and
+    completes the rest exits 3, the gate accepts it, and the batch's Workflow
+    phase is `Succeeded` — so the run reads 'complete' WITH failed_count > 0.
+    The mixed-case test above reaches 'partial' via a *dispatch*-failed scan
+    (argo_workflow_name IS NULL), which is a different route entirely and does
+    not exercise this one: here every scan was genuinely dispatched."""
+    calls = []
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
+    client = _FakeClient(
+        cyl_pipeline_run_scans=[
+            {"run_id": 1, "argo_workflow_name": "wf-a", "status": "written"},
+            {"run_id": 1, "argo_workflow_name": "wf-a", "status": "written"},
+            {"run_id": 1, "argo_workflow_name": "wf-a", "status": "failed"},
+        ]
+    )
+    monkeypatch.setattr(worker, "get_workflow_status", lambda name: "Succeeded")
+    monkeypatch.setattr(
+        worker,
+        "update_run_status",
+        lambda c, r, s, d=None, f=None: calls.append((r, s, d, f)),
+    )
+    worker.sweep_once(client)
+    assert calls == [(1, "complete", 2, 1)]
+
+
+def test_a_failed_run_may_still_have_written_results(monkeypatch):
+    """The converse combination, and the one whose "previously impossible"
+    framing was wrong: each envelope's per-scan 'written' update commits in its
+    own transaction, so a write-back that ingested some envelopes and then
+    exited non-zero leaves done_count > 0 on a 'failed' run. The exit gate adds
+    a second route to it (rejecting a producer code after write-back committed)
+    but did not create it. A consumer must not read 'failed' as "nothing was
+    written"."""
+    calls = []
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
+    client = _FakeClient(
+        cyl_pipeline_run_scans=[
+            {"run_id": 1, "argo_workflow_name": "wf-a", "status": "written"},
+            {"run_id": 1, "argo_workflow_name": "wf-a", "status": "failed"},
+        ]
+    )
+    monkeypatch.setattr(worker, "get_workflow_status", lambda name: "Failed")
+    monkeypatch.setattr(
+        worker,
+        "update_run_status",
+        lambda c, r, s, d=None, f=None: calls.append((r, s, d, f)),
+    )
+    worker.sweep_once(client)
+    assert calls == [(1, "failed", 1, 1)]
+
+
 def test_sweep_once_computes_a_genuine_total_failure_from_real_scan_rows(monkeypatch):
     """Round 6 /review-pr finding: the other most common real-world outcome the
     mixed-case test above doesn't cover — every scan in the run fails, with no
