@@ -24,6 +24,13 @@ os.environ.setdefault("BLOOM_OUTPUT_DIR", _TMP)
 os.environ.setdefault("BLOOM_PLOTS_DIR", _TMP)
 os.environ.setdefault("BLOOM_PLOTS_URL", "http://localhost/plots")
 
+# --- Let the server start without credentials ---
+#
+# The server refuses to boot when no API key and no OAuth config are present,
+# so a deploy that lost its secret cannot serve every tool openly. This suite
+# sets no credentials, so tests that start the server need that opt-out.
+os.environ.setdefault("BLOOMMCP_ALLOW_NO_AUTH", "1")
+
 
 # --- In-memory Supabase Storage boundary (Tier 2 adapter tests) ---------------
 #
