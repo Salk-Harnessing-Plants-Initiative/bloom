@@ -1238,6 +1238,37 @@ def test_nightly_job_sets_its_time_limit_before_the_recount(pg_conn):
     pg_conn.rollback()
 
 
+def test_a_writer_roles_save_still_enqueues_without_the_sequence(pg_conn):
+    """The revoke must not break the path it sits on. Write-back reaches the change log through
+    the envelope RPC, which is SECURITY DEFINER owned by postgres, so the enqueue runs with the
+    owner's rights and not the caller's however little the caller holds. Pinned end to end here
+    rather than argued from the ACLs."""
+    with pg_conn.cursor() as cur:
+        exp, _scan_id, imgs = _seed_experiment_scan(cur)
+        _deliver(cur, imgs, "orig", traits=[_trait("length", 1.0)])
+        _refresh_changed(cur)
+        assert _pending_changes(cur, exp) == 0
+
+        cur.execute(
+            "SELECT has_sequence_privilege('bloom_writer', %s, 'USAGE')", (CHANGE_LOG_SEQUENCE,)
+        )
+        assert cur.fetchone()[0] is False, "precondition: the writer must not hold the sequence"
+
+        cur.execute("SET LOCAL ROLE bloom_writer")
+        _call(
+            cur,
+            _envelope(
+                imgs,
+                idempotency_key=f"writer-path-{uuid.uuid4().hex}",
+                traits=[_trait("length", 2.0), _trait("width", 3.0)],
+            ),
+        )
+        cur.execute("RESET ROLE")
+
+        assert _pending_changes(cur, exp) == 1, "the writer's save was not logged"
+    pg_conn.rollback()
+
+
 def test_nightly_job_command_runs_as_written(pg_conn):
     """Bad quoting inside a job command only shows up in the job history, hours later."""
     with pg_conn.cursor() as cur:
