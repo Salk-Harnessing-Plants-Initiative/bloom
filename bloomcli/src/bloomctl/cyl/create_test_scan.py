@@ -65,7 +65,7 @@ def default_lock_path() -> Path:
 
 def check_experiment_guard(client: Any) -> None:
     """Raise :class:`CreateTestScanError` unless experiment 12880747 exists with the expected name."""
-    rows = client.table("cyl_experiments").select("id", "name").eq("id", EXPERIMENT_ID).execute().data or []
+    rows = client.table("cyl_experiments").select("id, name").eq("id", EXPERIMENT_ID).execute().data or []
     if not rows:
         raise CreateTestScanError(
             f"experiment {EXPERIMENT_ID} does not exist on this server — refusing to proceed "
