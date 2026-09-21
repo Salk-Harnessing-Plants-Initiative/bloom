@@ -144,11 +144,41 @@ outcomes.
 - [x] 3.6 Implement `--json`/stdout-stderr output per the spec deltas.
 - [x] 3.7 Register the command in `src/bloomctl/cyl/__init__.py`.
 - [x] 3.8 Run the full test file; confirm every test from section 2 now passes for the right
-      reason (not vacuously). Done: 29/29 new tests pass; full `bloomcli` suite is 938 passed
-      (909 baseline + 29 new), 13 failed (pre-existing, Windows-platform-specific — file
-      permission bits, symlinks, console-script subprocess spawning; unrelated to this change),
-      7 skipped — identical failure set to the pre-change baseline. `ruff check` (pinned v0.9.9,
-      matching `.pre-commit-config.yaml`) passes on all changed files.
+      reason (not vacuously). Done at original scope: 29/29 new tests pass; full `bloomcli`
+      suite is 938 passed (909 baseline + 29 new), 13 failed (pre-existing, Windows-platform-
+      specific — file permission bits, symlinks, console-script subprocess spawning; unrelated
+      to this change), 7 skipped — identical failure set to the pre-change baseline. `ruff
+      check` (pinned v0.9.9, matching `.pre-commit-config.yaml`) passes on all changed files.
+      **Superseded by two later PR-review rounds** (see 3.9/3.10 below) — the test file now has
+      41 tests, not 29; this entry is kept as-is for the historical record rather than edited in
+      place, since editing it would misrepresent what was actually true at 3.8's own checkpoint.
+- [x] 3.9 (Added in PR review round 1) Wrap every `postgrest.APIError`-raising call
+      (`check_experiment_guard`, `resolve_next_qr_code`, `call_insert_image`, `resolve_scan_id`,
+      `count_frames_for_scan`) in a readable `CreateTestScanError`, matching every sibling file
+      in `cyl/` — the original implementation left all five uncaught, so a permission-denied
+      call surfaced as a raw traceback. Added 6 tests (4 APIError-wrapping tests at the time;
+      2 more in 3.10 below closed a gap the review caught in a follow-up verification pass:
+      `resolve_scan_id`/`count_frames_for_scan`'s except-branches had zero test coverage even
+      after this task). Also added a `queries` recorder to the test fakes and real assertions on
+      the exact `.eq()` filter used by the guard/QR-lookup/`resolve_scan_id`/
+      `count_frames_for_scan` reads — tasks.md previously claimed this pinning existed when it
+      did not (no test ever inspected `.eq()` arguments for a read, only for the final
+      `update()`).
+- [x] 3.10 (Added in PR review round 2) A follow-up verification pass on round 1's fix found the
+      "verified non-vacuous" claim was true for only 3 of 5 wrapped functions — `resolve_scan_id`
+      and `count_frames_for_scan` had zero tests exercising their `except` branch (proven by
+      deleting one's try/except entirely and confirming the suite still passed unchanged). Added
+      `test_resolve_scan_id_apierror_is_wrapped_cleanly` and
+      `test_count_frames_for_scan_apierror_is_wrapped_cleanly`; both independently verified
+      non-vacuous (temporarily reverted each fix, confirmed the corresponding test fails, then
+      restored the fix and reran clean). Also added `warn_about_abandoned_scans` (see design.md's
+      Risks section and the new spec.md requirement) with 3 tests, refactored the five
+      near-duplicated `except APIError` blocks into a shared `_run_query` helper (fixing an
+      inconsistent-hint-text finding from the same review round), and deleted a dead
+      `_SelectQuery` test-fake class left over from before the `queries` recorder existed.
+      Current state: 41/41 tests in the file pass; full `bloomcli` suite is 950 passed (909
+      baseline + 41 new), same 13 pre-existing/unrelated failures, 7 skipped. `ruff check`
+      (pinned v0.9.9) passes.
 
 ## 4. Validation
 

@@ -64,6 +64,25 @@ def default_lock_path() -> Path:
     return credentials.default_config_dir() / ".locks" / f"cyl-create-test-scan-{EXPERIMENT_ID}.lock"
 
 
+_PROFILE_HINT = " — check the profile has {access} access (e.g. staging-writer, not pipeline-staging)"
+
+
+def _run_query(description: str, fn: Any, *, hint: str = "") -> Any:
+    """Run one Supabase/postgrest call chain's `fn()`, wrapping any `postgrest.APIError` into a
+    readable :class:`CreateTestScanError` instead of letting a raw traceback reach the user —
+    a permission-denied call is the exact scenario this command's own `--profile` help text
+    warns about. Centralized so every call site gets the same message shape and profile hint
+    (an earlier version duplicated this try/except five times with drifting wording).
+    """
+    from postgrest import APIError
+
+    try:
+        return fn()
+    except APIError as exc:
+        message = getattr(exc, "message", None) or str(exc)
+        raise CreateTestScanError(f"{description}: {message}{hint}") from exc
+
+
 def check_experiment_guard(client: Any) -> str:
     """Raise :class:`CreateTestScanError` unless experiment 12880747 exists with the expected
     name; otherwise return its exact, live name.
@@ -77,18 +96,12 @@ def check_experiment_guard(client: Any) -> str:
     to prevent. Found live during this change's own staging validation (task 4.3): passing the
     prefix constant created a stray experiment id 12880756.
     """
-    from postgrest import APIError
-
-    try:
-        rows = (
-            client.table("cyl_experiments").select("id, name").eq("id", EXPERIMENT_ID).execute().data
-            or []
-        )
-    except APIError as exc:
-        raise CreateTestScanError(
-            f"could not query experiment {EXPERIMENT_ID}: {getattr(exc, 'message', None) or exc} — "
-            "check the profile has read access (e.g. staging-writer, not pipeline-staging)"
-        ) from exc
+    rows = _run_query(
+        f"could not query experiment {EXPERIMENT_ID}",
+        lambda: client.table("cyl_experiments").select("id, name").eq("id", EXPERIMENT_ID).execute().data
+        or [],
+        hint=_PROFILE_HINT.format(access="read"),
+    )
     if not rows:
         raise CreateTestScanError(
             f"experiment {EXPERIMENT_ID} does not exist on this server — refusing to proceed "
@@ -106,21 +119,16 @@ def check_experiment_guard(client: Any) -> str:
 
 def resolve_next_qr_code(client: Any) -> str:
     """Next `TEST-E2E-NNN` suffix after the highest one currently used in experiment 12880747."""
-    from postgrest import APIError
-
-    try:
-        rows = (
-            client.table("cyl_plants_extended")
-            .select("qr_code")
-            .eq("experiment_id", EXPERIMENT_ID)
-            .execute()
-            .data
-            or []
-        )
-    except APIError as exc:
-        raise CreateTestScanError(
-            f"could not resolve the next QR code: {getattr(exc, 'message', None) or exc}"
-        ) from exc
+    rows = _run_query(
+        "could not resolve the next QR code",
+        lambda: client.table("cyl_plants_extended")
+        .select("qr_code")
+        .eq("experiment_id", EXPERIMENT_ID)
+        .execute()
+        .data
+        or [],
+        hint=_PROFILE_HINT.format(access="read"),
+    )
     highest = 0
     for row in rows:
         match = _QR_SUFFIX_RE.match(row.get("qr_code") or "")
@@ -174,41 +182,69 @@ def call_insert_image(
         "scientist_name": SCIENTIST_NAME,
         "scientist_email": SCIENTIST_EMAIL,
     }
-    from postgrest import APIError
-
-    try:
-        return client.rpc("insert_image_v2_0", params).execute().data
-    except APIError as exc:
-        raise CreateTestScanError(
-            f"insert_image_v2_0 failed for {plant_qr_code} frame {frame_number}: "
-            f"{getattr(exc, 'message', None) or exc} — check the profile has write access "
-            "(e.g. staging-writer, not pipeline-staging)"
-        ) from exc
+    return _run_query(
+        f"insert_image_v2_0 failed for {plant_qr_code} frame {frame_number}",
+        lambda: client.rpc("insert_image_v2_0", params).execute().data,
+        hint=_PROFILE_HINT.format(access="write"),
+    )
 
 
 def resolve_scan_id(client: Any, image_id: int) -> int:
-    from postgrest import APIError
-
-    try:
-        row = client.table("cyl_images").select("scan_id").eq("id", image_id).single().execute().data
-    except APIError as exc:
-        raise CreateTestScanError(
-            f"could not resolve scan_id for cyl_images id={image_id}: "
-            f"{getattr(exc, 'message', None) or exc}"
-        ) from exc
+    row = _run_query(
+        f"could not resolve scan_id for cyl_images id={image_id}",
+        lambda: client.table("cyl_images").select("scan_id").eq("id", image_id).single().execute().data,
+        hint=_PROFILE_HINT.format(access="read"),
+    )
     return row["scan_id"]
 
 
 def count_frames_for_scan(client: Any, scan_id: int) -> int:
-    from postgrest import APIError
-
-    try:
-        resp = client.table("cyl_images").select("id", count="exact").eq("scan_id", scan_id).execute()
-    except APIError as exc:
-        raise CreateTestScanError(
-            f"could not count frames for scan_id={scan_id}: {getattr(exc, 'message', None) or exc}"
-        ) from exc
+    resp = _run_query(
+        f"could not count frames for scan_id={scan_id}",
+        lambda: client.table("cyl_images").select("id", count="exact").eq("scan_id", scan_id).execute(),
+        hint=_PROFILE_HINT.format(access="read"),
+    )
     return resp.count
+
+
+def warn_about_abandoned_scans(client: Any) -> None:
+    """Best-effort, read-only warning for any scan in experiment 12880747 with a mix of
+    `SUCCESS` and `PENDING` frames — the signature of an interrupted `--good` invocation (e.g.
+    a hard kill mid-upload) that never got to finish or fail cleanly. design.md's Risks section
+    already accepts that a caught mid-scan failure is indistinguishable from a deliberately
+    shorter scan at the row level; a killed run is worse still, since it leaves no signal at
+    all once the terminal that ran it is gone. This surfaces that signal on every subsequent
+    invocation instead. Never blocks scan creation — any failure here is itself only warned
+    about, not raised, since it is advisory, not part of this command's actual job.
+    """
+    try:
+        scans = _run_query(
+            f"could not list scans for experiment {EXPERIMENT_ID}",
+            lambda: client.table("cyl_scans_extended")
+            .select("scan_id, qr_code")
+            .eq("experiment_id", EXPERIMENT_ID)
+            .execute()
+            .data
+            or [],
+        )
+        for scan in scans:
+            scan_id = scan.get("scan_id")
+            statuses = _run_query(
+                f"could not list frame statuses for scan_id={scan_id}",
+                lambda sid=scan_id: client.table("cyl_images").select("status").eq("scan_id", sid).execute().data
+                or [],
+            )
+            status_set = {s.get("status") for s in statuses}
+            if "SUCCESS" in status_set and "PENDING" in status_set:
+                click.echo(
+                    f"WARNING: scan {scan.get('qr_code')} (scan_id={scan_id}) in experiment "
+                    f"{EXPERIMENT_ID} has a mix of SUCCESS and PENDING frames — likely an "
+                    "interrupted --good invocation (e.g. a hard kill mid-upload). Not touched "
+                    "by this run; investigate/clean up manually if it's stale.",
+                    err=True,
+                )
+    except CreateTestScanError as exc:
+        click.echo(f"WARNING: abandoned-scan sweep failed (non-fatal): {exc}", err=True)
 
 
 def build_object_path(image_id: int) -> str:
@@ -228,6 +264,7 @@ def create_test_scan_core(
     QR-suffix resolution through the last frame's row update runs inside one lock acquisition.
     """
     experiment_name = check_experiment_guard(client)
+    warn_about_abandoned_scans(client)
 
     with acquire_lock(default_lock_path(), staleness_seconds=DEFAULT_LOCK_STALENESS_SECONDS):
         qr_code = resolve_next_qr_code(client)
@@ -278,6 +315,8 @@ def create_test_scan_core(
 
             object_path = build_object_path(image_id)
             data = frame_path.read_bytes()
+            # Broad `except Exception`, not `APIError` — upload_object raises `StorageError`
+            # (storage failures), not a postgrest error, unlike every other call in this file.
             try:
                 upload_object(client, data, object_path, bucket=IMAGES_BUCKET)
             except Exception as exc:

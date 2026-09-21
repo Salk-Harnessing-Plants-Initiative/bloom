@@ -52,27 +52,6 @@ class _RPC:
         return type("R", (), {"data": self._result})()
 
 
-class _SelectQuery:
-    def __init__(self, rows, *, count=None):
-        self._rows = rows
-        self._count = count
-
-    def select(self, *_a, **_kw):
-        return self
-
-    def eq(self, *_a, **_kw):
-        return self
-
-    def single(self):
-        return self
-
-    def execute(self):
-        data = self._rows[0] if (self._rows and self._single) else self._rows
-        return type("R", (), {"data": data, "count": self._count})()
-
-    _single = False
-
-
 class _Table:
     """Records every call; returns a canned response for `select`, records `update` payloads.
 
@@ -230,6 +209,18 @@ def test_call_insert_image_apierror_is_wrapped_cleanly():
         )
 
 
+def test_resolve_scan_id_apierror_is_wrapped_cleanly():
+    client = _Client(query_errors={"cyl_images": _api_error("permission denied", "42501")})
+    with pytest.raises(cts.CreateTestScanError, match="permission denied"):
+        cts.resolve_scan_id(client, 42)
+
+
+def test_count_frames_for_scan_apierror_is_wrapped_cleanly():
+    client = _Client(query_errors={"cyl_images": _api_error("permission denied", "42501")})
+    with pytest.raises(cts.CreateTestScanError, match="permission denied"):
+        cts.count_frames_for_scan(client, 777)
+
+
 def test_cli_rpc_apierror_exits_cleanly_not_a_traceback(monkeypatch):
     _patch_authed(monkeypatch)
     _patch_lock(monkeypatch)
@@ -382,6 +373,58 @@ def test_experiment_name_sent_to_rpc_is_the_live_name_not_the_prefix_constant(mo
 # --- poison mode ---------------------------------------------------------------
 
 
+# --- abandoned-scan warning sweep --------------------------------------------
+
+
+def test_warns_about_scan_with_mixed_success_and_pending_frames(monkeypatch):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    client = _Client(
+        table_responses={
+            "cyl_experiments": ([EXPERIMENT_ROW], None),
+            "cyl_plants_extended": ([{"qr_code": "TEST-E2E-009"}], None),
+            "cyl_scans_extended": ([{"scan_id": 555, "qr_code": "TEST-E2E-005"}], None),
+            "cyl_images": ([{"status": "SUCCESS"}, {"status": "PENDING"}], None),
+        },
+        rpc_result=100,
+    )
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
+    assert res.exit_code == 0, res.output
+    assert "TEST-E2E-005" in res.stderr
+    assert "mix of SUCCESS and PENDING" in res.stderr
+
+
+def test_no_warning_when_no_scan_has_mixed_status(monkeypatch):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    client = _Client(
+        table_responses={
+            **_default_table_responses(qr_suffixes=("009",)),
+            "cyl_scans_extended": ([{"scan_id": 1, "qr_code": "TEST-E2E-001"}], None),
+        },
+        rpc_result=100,
+    )
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
+    assert res.exit_code == 0, res.output
+    assert "mix of SUCCESS and PENDING" not in res.stderr
+
+
+def test_abandoned_scan_sweep_failure_does_not_block_scan_creation(monkeypatch):
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    client = _Client(
+        table_responses=_default_table_responses(qr_suffixes=("009",)),
+        rpc_result=100,
+        query_errors={"cyl_scans_extended": _api_error("boom")},
+    )
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
+    assert res.exit_code == 0, res.output
+    assert "abandoned-scan sweep failed" in res.stderr
+
+
 def test_poison_mode_makes_no_storage_calls(monkeypatch):
     _patch_authed(monkeypatch)
     _patch_lock(monkeypatch)
@@ -443,6 +486,13 @@ def test_good_mode_single_frame_full_flow(monkeypatch, tmp_path):
 
 
 def test_good_mode_multiple_frames_sequential_numbers(monkeypatch, tmp_path):
+    # NOTE: the fake table() override below assumes exactly 3 client.table("cyl_images") calls
+    # per frame (resolve_scan_id, count_frames_for_scan, update_image_row's own call — the
+    # update ignores the injected response but still consumes one slot from the iterator,
+    # since the override intercepts every "cyl_images" table() call uniformly). If a future
+    # change to create_test_scan_core adds or removes a "cyl_images" access per frame, this
+    # test will fail with an unhelpful StopIteration/leftover-items error rather than a clear
+    # message — update the `* 3` below to match the new per-frame call count.
     _patch_authed(monkeypatch)
     _patch_lock(monkeypatch)
     _write_frame(tmp_path, "a.png")

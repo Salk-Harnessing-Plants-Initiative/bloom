@@ -309,11 +309,25 @@ verifications:
 - **A `--good` scan whose Nth frame fails leaves frames 1..N-1 as ordinary `SUCCESS` rows on a
   real `cyl_scans`/`cyl_plants` chain, with nothing marking the scan itself as incomplete.**
   A later query against `cyl_images` for that `scan_id` cannot distinguish an aborted
-  multi-frame attempt from an intentionally-shorter scan — the failure is only visible to
-  whoever ran the CLI at that moment (stderr + non-zero exit), not persisted anywhere. Accepted
-  as the direct consequence of the fail-fast decision above (Risk, not a defect): anyone later
-  querying experiment `12880747`'s data should be aware a partial scan is indistinguishable from
-  a deliberate one at the row level.
+  multi-frame attempt from an intentionally-shorter scan. For an ordinary caught failure, the
+  operator still sees a stderr message and a non-zero exit at the time — a transient signal, not
+  a persisted one. A hard kill (SIGKILL) removes even that: the failure leaves *zero* signal
+  anywhere, forever, once the terminal that ran it is gone. An OpenSpec review traced a concrete
+  misuse case for exactly this — `download.py`/`download_for_predict.py` read `cyl_images` "by
+  `scan_id` with no status filter" (see Context above), so a naive consumer enumerating
+  SUCCESS-status rows in `12880747`, or reusing a `scan_id` pasted into an old note, could treat
+  an abandoned 1-frame remnant as a legitimate scan.
+  **Decision: `warn_about_abandoned_scans`** (in `create_test_scan.py`, called right after the
+  experiment guard, unlocked and read-only) restores a persistent-enough signal without adding
+  any new destructive scope to this tool: on every invocation, it lists experiment `12880747`'s
+  scans and warns on stderr about any whose frames mix `SUCCESS` and `PENDING` — the signature
+  of an interrupted `--good` run. It never deletes or modifies anything (the experiment being
+  "synthetic -- safe to break/delete" would make deletion low-risk too, but that's a bigger,
+  separately-reviewable behavior change this fix doesn't take on); a query failure inside the
+  sweep is itself only warned about, never allowed to block scan creation. This does not remove
+  the underlying row-level ambiguity — a fresh reader of `cyl_images` alone still can't tell a
+  partial scan from a deliberate one — it only ensures a caller of *this tool* is told about it
+  going forward, on every run, not just at the moment of the original failure.
 - **Duplication with `bloom-fs`/`bloom-js`'s TypeScript implementation of the same flow** → same
   trade-off already accepted elsewhere in `bloomctl`; mitigated by keeping the new code small and
   by this design doc recording the mirrored convention so future drift is detectable by diffing

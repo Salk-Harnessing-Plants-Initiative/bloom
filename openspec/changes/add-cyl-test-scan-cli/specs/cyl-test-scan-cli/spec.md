@@ -206,3 +206,31 @@ other content on stdout. Without `--json`, a human-readable summary naming the s
 - **WHEN** the user runs the command without `--json` and it succeeds
 - **THEN** stdout contains a human-readable line naming the created scan's id and
   `plant_qr_code`
+
+### Requirement: Abandoned scans are surfaced on every invocation, never silently left undetected
+
+The command SHALL, after the experiment guard and before creating any new scan, check
+experiment `12880747` for any scan whose frames mix `SUCCESS` and `PENDING` status — the
+signature of a `--good` invocation interrupted before it could finish or fail cleanly (e.g. a
+hard kill) — and SHALL emit a stderr warning naming each such scan's `plant_qr_code` and
+`scan_id`. This check SHALL be read-only: it SHALL NOT modify, delete, or otherwise touch any
+existing row, and a failure of the check itself SHALL be reported as a stderr warning without
+aborting scan creation.
+
+#### Scenario: A mixed-status scan is warned about
+
+- **WHEN** experiment `12880747` contains a scan with at least one `SUCCESS` frame and at least
+  one `PENDING` frame
+- **THEN** the command emits a stderr warning naming that scan's `plant_qr_code` and `scan_id`,
+  and still proceeds to create the requested new scan
+
+#### Scenario: No warning when nothing is abandoned
+
+- **WHEN** no scan in experiment `12880747` has a mix of `SUCCESS` and `PENDING` frames
+- **THEN** the command emits no such warning
+
+#### Scenario: A failure in the check itself does not block scan creation
+
+- **WHEN** the abandoned-scan check's own query fails
+- **THEN** the command emits a stderr warning describing that failure and still proceeds to
+  create the requested new scan
