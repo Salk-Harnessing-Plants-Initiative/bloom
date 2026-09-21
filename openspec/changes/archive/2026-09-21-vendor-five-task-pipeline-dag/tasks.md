@@ -496,10 +496,10 @@ record it after the run rather than at merge (bloom#708 task 14.9 precedent).
       `cyl-pipeline-status-polling` deltas, not a failure of this change. If it reads `failed`,
       check 8.1(c) first: an already-armed manifest latch produces a `failed` run that nonetheless
       wrote correct data.
-- [ ] 8.6 Close **bloom#772** with the observed evidence. PR #830 deliberately used "Related to",
+- [x] 8.6 **DONE 2026-09-21.** bloom#772 closed with the 7.4b evidence attached (comment 5768207410) — not a bare close; the comment lays out why it stayed open through #830 and what finally closed it, and names the two limitations it does NOT close (bloom#857, bloom#867). srp#56 commented (comment 5768212630) with the full §7 record, framed as a retroactive verification note since it auto-closed 2s after PR #60 merged — a live bloom#780 instance — and pointing at the archived path `openspec/changes/archive/2026-09-21-add-partial-success-exit-gate/`, the old one having gone. Original: Close **bloom#772** with the observed evidence. PR #830 deliberately used "Related to",
       not "Fixes", because the CLI change alone did not fix the live symptom; 8.2's poison-scan run
       is that symptom's actual fix. Comment on **sleap-roots-pipeline#56** with the result too — it
       auto-closed on PR #60's merge with its own §7 acceptance criteria unrun, a live instance of
       the bloom#780 pattern.
-- [ ] 8.7 Only then: confirm task 0.1's archive ordering, verify every item above is `- [x]`, and
+- [x] 8.7 **DONE 2026-09-21** — archived as `2026-09-21-vendor-five-task-pipeline-dag` in PR #878, after confirming 0.1's ordering (see 0.1: `fix-argo-workflow-vendoring` archived first in the same PR; the remaining sibling is recorded there as a live hazard). The only item left unticked is 8.4, deliberately and with its reasoning written out. Original: Only then: confirm task 0.1's archive ordering, verify every item above is `- [x]`, and
       run `/cleanup-merged` → `openspec archive vendor-five-task-pipeline-dag --yes`.
