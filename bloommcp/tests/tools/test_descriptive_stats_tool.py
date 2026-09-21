@@ -194,6 +194,10 @@ def test_provenance_and_persisted_run(injected_ports, monkeypatch):
     assert captured["based_on_version"] == "v1_cleaned" == result.source
     assert "stats.csv" in stored.output_keys
     assert result.outputs == dict(stored.output_keys)
+    # #582 widened RunLinks' run-link fields to Optional, so Pydantic no longer
+    # rejects a persisting tool that leaves them unset. `==` alone would pass
+    # vacuously if a regression made BOTH sides None, so pin non-null explicitly.
+    assert result.run_ref is not None
     assert result.run_ref == stored.run_ref
     assert result.manifest_path == stored.manifest_path
 
