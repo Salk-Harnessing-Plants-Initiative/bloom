@@ -274,6 +274,32 @@ def test_poison_rpc_call_uses_expected_params(monkeypatch):
     assert params["plant_age_days"] == 2
     assert params["date_scanned_"] == "2026-08-24"
 
+    # Regression (found live during staging validation): the RPC upserts cyl_experiments on an
+    # EXACT (species_id, name) match. Passing anything other than the experiment's real,
+    # currently-live name (which carries a descriptive suffix beyond the bare prefix) silently
+    # creates a brand-new experiment instead of attaching to 12880747.
+    assert params["experiment"] == EXPERIMENT_ROW["name"]
+    assert params["experiment"] != cts.EXPERIMENT_NAME_PREFIX
+
+
+def test_experiment_name_sent_to_rpc_is_the_live_name_not_the_prefix_constant(monkeypatch):
+    """Same regression as above, isolated: a differently-suffixed live name must be threaded
+    through verbatim, proving the code reads it from the guard rather than hardcoding it."""
+    _patch_authed(monkeypatch)
+    _patch_lock(monkeypatch)
+    live_name = "A4-PIPELINE-E2E-TEST (a totally different suffix)"
+    client = _Client(
+        table_responses={
+            "cyl_experiments": ([{"id": cts.EXPERIMENT_ID, "name": live_name}], None),
+            "cyl_plants_extended": ([{"qr_code": "TEST-E2E-009"}], None),
+        },
+        rpc_result=999,
+    )
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: client)
+    res = CliRunner().invoke(cli, ["cyl", "create-test-scan", "--poison"])
+    assert res.exit_code == 0, res.output
+    assert client.rpc_calls[0][1]["experiment"] == live_name
+
 
 # --- poison mode ---------------------------------------------------------------
 

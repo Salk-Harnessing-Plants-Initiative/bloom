@@ -63,8 +63,19 @@ def default_lock_path() -> Path:
     return credentials.default_config_dir() / ".locks" / f"cyl-create-test-scan-{EXPERIMENT_ID}.lock"
 
 
-def check_experiment_guard(client: Any) -> None:
-    """Raise :class:`CreateTestScanError` unless experiment 12880747 exists with the expected name."""
+def check_experiment_guard(client: Any) -> str:
+    """Raise :class:`CreateTestScanError` unless experiment 12880747 exists with the expected
+    name; otherwise return its exact, live name.
+
+    The exact name matters beyond the guard itself: `insert_image_v2_0`'s `experiment` parameter
+    upserts `cyl_experiments` on `ON CONFLICT (species_id, name) DO NOTHING` — an exact-string
+    match, not a prefix match. Passing anything other than this experiment's real current name
+    (which carries a descriptive suffix beyond `EXPERIMENT_NAME_PREFIX`, e.g.
+    `"A4-PIPELINE-E2E-TEST (synthetic -- safe to break/delete)"`) makes the RPC silently create a
+    *new* experiment instead of attaching to 12880747 — the exact violation this command exists
+    to prevent. Found live during this change's own staging validation (task 4.3): passing the
+    prefix constant created a stray experiment id 12880756.
+    """
     rows = client.table("cyl_experiments").select("id, name").eq("id", EXPERIMENT_ID).execute().data or []
     if not rows:
         raise CreateTestScanError(
@@ -78,6 +89,7 @@ def check_experiment_guard(client: Any) -> None:
             f"{EXPERIMENT_NAME_PREFIX!r} — refusing to proceed (wrong profile, or the test "
             "experiment was renamed)"
         )
+    return name
 
 
 def resolve_next_qr_code(client: Any) -> str:
@@ -117,11 +129,18 @@ def discover_frame_files(frames_dir: Path) -> list[Path]:
     return files
 
 
-def call_insert_image(client: Any, *, plant_qr_code: str, frame_number: int) -> int | None:
-    """Call `insert_image_v2_0`; returns the new/existing `cyl_images.id`, or None if already SUCCESS."""
+def call_insert_image(
+    client: Any, *, experiment_name: str, plant_qr_code: str, frame_number: int
+) -> int | None:
+    """Call `insert_image_v2_0`; returns the new/existing `cyl_images.id`, or None if already SUCCESS.
+
+    `experiment_name` must be experiment 12880747's exact, live name (from
+    `check_experiment_guard`'s return value) — see that function's docstring for why a mere
+    prefix match is not good enough here.
+    """
     params = {
         "species_common_name": SPECIES_COMMON_NAME,
-        "experiment": EXPERIMENT_NAME_PREFIX,
+        "experiment": experiment_name,
         "wave_number": WAVE_NUMBER,
         "germ_day": GERM_DAY,
         "germ_day_color": GERM_DAY_COLOR,
@@ -165,13 +184,15 @@ def create_test_scan_core(
     """Create one scan (poison or good). Guard runs unlocked (read-only); everything from
     QR-suffix resolution through the last frame's row update runs inside one lock acquisition.
     """
-    check_experiment_guard(client)
+    experiment_name = check_experiment_guard(client)
 
     with acquire_lock(default_lock_path(), staleness_seconds=DEFAULT_LOCK_STALENESS_SECONDS):
         qr_code = resolve_next_qr_code(client)
 
         if poison:
-            image_id = call_insert_image(client, plant_qr_code=qr_code, frame_number=1)
+            image_id = call_insert_image(
+                client, experiment_name=experiment_name, plant_qr_code=qr_code, frame_number=1
+            )
             if image_id is None:
                 raise CreateTestScanError(
                     f"insert_image_v2_0 returned NULL for {qr_code} frame 1 — the resolved "
@@ -193,7 +214,9 @@ def create_test_scan_core(
                     "12894745 / TEST-E2E-001)"
                 )
 
-            image_id = call_insert_image(client, plant_qr_code=qr_code, frame_number=index)
+            image_id = call_insert_image(
+                client, experiment_name=experiment_name, plant_qr_code=qr_code, frame_number=index
+            )
             if image_id is None:
                 raise CreateTestScanError(
                     f"insert_image_v2_0 returned NULL for {qr_code} frame {index} — the "
