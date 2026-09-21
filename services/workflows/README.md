@@ -12,8 +12,9 @@ returned right away. Best for a single scan a user is looking at now.
 **Batch / workflow-driven** generation (cyl scan, graviscan, or any pipeline
 producing many videos) is a separate, **job-queue-based** mechanism (submit a
 job → a worker processes it → poll/subscribe for the result), not this route.
-That async path is intentionally kept out of this endpoint; see
-`services/video-worker` and the `video_jobs` queue.
+That async path is intentionally kept out of this endpoint. `services/video-worker`
+and its `video_jobs` queue were the first attempt at it and are retired, commented
+out in place.
 
 This service also hosts a **third**, distinct dispatch path: `POST /pipeline`
 (the A4 sleap-roots pipeline trigger, bloom #11/#404 — see below) enumerates
@@ -79,6 +80,37 @@ curl -X POST http://localhost:5100/cyl/experiments/123/scans/456/video \
 # Response:
 # {"experiment_id": 123, "scan_id": 456, "frames": 72, "path": "cyl-videos/456.mp4", "download_url": "https://.../456.mp4?..."}
 ```
+
+### Rendering one video from a container
+
+`plate_video_worker.py` and `cyl_video_worker.py` render a single item through the
+same code these routes call, from a container built on this image. Both sit behind a
+compose profile, so `docker compose up -d` never starts them.
+
+```bash
+# One plate. Use `--wave none` for a plate with no wave.
+docker compose -f docker-compose.prod.yml --env-file .env.prod \
+  run --rm plate-video-worker python plate_video_worker.py render \
+  --experiment 1886 --plate Plate_19 --wave 13
+
+# One cyl scan.
+docker compose -f docker-compose.prod.yml --env-file .env.prod \
+  run --rm cyl-video-worker python cyl_video_worker.py render \
+  --experiment 1 --scan 456
+```
+
+Each prints what it did — rendered, kept, or the refusal and its code — and exits
+non-zero when a render is refused or fails, so a shell loop over many items stops
+at the first bad one rather than reporting success.
+
+#### Where the frame ceilings come from
+
+Every bound in `plate_encode.py` is derived from the scanner's own configuration,
+not chosen as a round number. The scanner fixes its regions in millimetres and its
+resolutions to a fixed set, so there are eighteen possible images, and the largest
+is 519 MB decoded and 124 MB on the wire. Read that arithmetic before changing any
+of those numbers: a ceiling below 124 MB refuses frames a scanner really produces,
+and one above the decoded size stops bounding the render's memory.
 
 ### Pipeline trigger
 

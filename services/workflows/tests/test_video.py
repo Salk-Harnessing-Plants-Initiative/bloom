@@ -1024,3 +1024,21 @@ def test_an_rgba_frame_is_piped_at_the_wrong_byte_count(ffmpeg):
     assert ffmpeg[0].cmd[ffmpeg[0].cmd.index("-s") + 1] == "8x8"
     assert len(ffmpeg[0].stdin.chunks[0]) == 8 * 8 * 4, "four channels, not three"
     assert client.uploads == 0, "a sheared encode must not reach the videos bucket"
+
+
+def test_a_caller_can_pass_its_own_client(monkeypatch):
+    """The worker renders with the client it built; app_client() is only the default."""
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    monkeypatch.setattr(video, "scan_in_experiment", lambda *a, **k: True)
+    images = [{"object_path": "o0", "frame_number": 0}]
+    client = _GenClient(images, recorded_frames=72, stored=True)
+
+    def _refuse():
+        raise AssertionError("app_client() must not be called when a client is given")
+
+    monkeypatch.setattr(video, "app_client", _refuse)
+    monkeypatch.setattr(video, "_record_video", lambda c, s, r: None)
+
+    result = video.generate_experiment_scan_video(1, 5, client=client)
+
+    assert result["regenerated"] is False

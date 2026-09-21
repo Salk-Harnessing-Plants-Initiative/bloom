@@ -7,7 +7,9 @@ Type=simple
 User=bloom
 Group=bloom
 WorkingDirectory=/opt/bloom/services/video-worker
-ExecStart=/opt/bloom/venv/bin/python video_listener.py
+# Retired: video rendering moved to the pgmq workers in the workflows image.
+# Uncomment to run this listener again; without ExecStart the unit cannot start.
+#ExecStart=/opt/bloom/venv/bin/python video_listener.py
 Restart=always
 RestartSec=5
 

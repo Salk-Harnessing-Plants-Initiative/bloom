@@ -263,11 +263,84 @@ services:
   # POST /workflows/pipeline is already live (real triggers enqueuing real
   # batches) until WORKFLOWS_K8S_TOKEN/_CA_CERT/_API_URL are genuinely set —
   # see openspec/changes/add-cyl-pipeline-dispatch/design.md's Risks.
+  # Renders one plate on command. Behind a profile, so `up -d` never starts it.
+  plate-video-worker:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    profiles:
+      - plate-video-worker
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # The workflows service's own limit, until a render here is measured.
+    mem_limit: 8g
+    memswap_limit: 8g
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      WORKFLOWS_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+    networks:
+      - supanet
+    depends_on:
+      - kong
+      - db-prod
+    # Rendering takes its arguments, so the default command only says how.
+    command:
+      - python
+      - plate_video_worker.py
+      - --help
+
+  # Renders one cyl scan on command. Behind a profile, so `up -d` never starts it.
+  cyl-video-worker:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    profiles:
+      - cyl-video-worker
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # A scan is capped at MAX_IMAGES decimated frames, far under a plate; this
+    # stays at the plate's limit until a render here is measured.
+    mem_limit: 8g
+    memswap_limit: 8g
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      WORKFLOWS_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+    networks:
+      - supanet
+    depends_on:
+      - kong
+      - db-prod
+    command:
+      - python
+      - cyl_video_worker.py
+      - --help
+
+
   cyl-pipeline-worker:
     build:
       context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
+    # Submits and polls; no encoding, so 1g clears the 512m tmpfs
+    # that is charged to this same cgroup.
+    mem_limit: 1g
+    memswap_limit: 1g
     tmpfs:
       - /tmp:mode=1777,size=512m
     security_opt:
@@ -329,6 +402,10 @@ services:
       context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
+    # Submits and polls; no encoding, so 1g clears the 512m tmpfs
+    # that is charged to this same cgroup.
+    mem_limit: 1g
+    memswap_limit: 1g
     tmpfs:
       - /tmp:mode=1777,size=512m
     security_opt:

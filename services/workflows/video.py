@@ -433,9 +433,12 @@ def _record_video(client, scan_id: int, result: dict):
         )
 
 
-def generate_experiment_scan_video(experiment_id: int, scan_id: int) -> dict:
+def generate_experiment_scan_video(
+    experiment_id: int, scan_id: int, client=None
+) -> dict:
     """Validate the scan belongs to the experiment, then generate its video."""
-    client = app_client()
+    # The worker renders with the client it built; the route lets this default.
+    client = client or app_client()
     if not scan_in_experiment(client, experiment_id, scan_id):
         raise HTTPException(
             status_code=404,

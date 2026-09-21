@@ -317,5 +317,7 @@ def listen_for_jobs():
     logger.info("Listener stopped")
 
 
-if __name__ == "__main__":
-    listen_for_jobs()
+# Retired: video rendering moved to the pgmq workers in the workflows image.
+# Uncomment to run this pg_notify listener again.
+# if __name__ == "__main__":
+#     listen_for_jobs()
