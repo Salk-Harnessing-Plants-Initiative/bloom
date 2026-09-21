@@ -31,8 +31,8 @@ name: Weekly Postgres backup
 # protection is gone with nothing failing to say so — add a shared concurrency
 # group, or a deploy-in-progress check here, at the same time.
 #
-# Three things to know, all of which refresh-cyl-experiment-trait-counts.yml
-# documents at length and was bitten by first:
+# Three things to know, all of which an earlier scheduled workflow in this repo
+# was bitten by first:
 #
 #   1. BOTH `schedule:` and `workflow_dispatch` require this file to be present
 #      on the repo's DEFAULT branch (`main`) before either can fire at all --

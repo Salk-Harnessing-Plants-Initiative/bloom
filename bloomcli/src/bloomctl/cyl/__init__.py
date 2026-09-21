@@ -10,6 +10,7 @@ One file per entity (grouped by entity; verbs live inside each entity):
   - experiments.py          `cyl experiments`                  list cylinder experiments
   - accessions.py           `cyl accessions`                   list accessions per experiment; sample counts
   - qc.py                   `cyl qc`                           list cylinder QC sets
+  - create_test_scan.py     `cyl create-test-scan`             create a synthetic scan in A4-PIPELINE-E2E-TEST (12880747)
   - _batch.py               shared ScanResult/BatchResult reporting for the batch-* commands (no CLI of its own)
   - _locks.py               shared file-based lock/lease primitive (acquire_lock, LockContendedError) — used by download_for_predict.py, no CLI of its own
 
@@ -22,6 +23,7 @@ import click
 
 # Alias so the command objects don't shadow the same-named submodules.
 from .accessions import accessions as accessions_cmd
+from .create_test_scan import create_test_scan as create_test_scan_cmd
 from .datasets import datasets as datasets_cmd
 from .download import download as download_cmd
 from .download_for_predict import batch_download_for_predict as batch_download_for_predict_cmd
@@ -46,3 +48,4 @@ cyl.add_command(datasets_cmd)
 cyl.add_command(experiments_cmd)
 cyl.add_command(accessions_cmd)
 cyl.add_command(qc_cmd)
+cyl.add_command(create_test_scan_cmd)
