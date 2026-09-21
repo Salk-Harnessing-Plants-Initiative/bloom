@@ -109,6 +109,7 @@ erDiagram
 "public.scrna_embedding_labels" }o--|| "public.scrna_embedding_dataset_members" : "FOREIGN KEY (embedding_id, native_dataset_id) REFERENCES scrna_embedding_dataset_members(embedding_id, dataset_id) ON DELETE CASCADE"
 "public.scrna_embedding_points" }o--|| "public.scrna_cells" : "FOREIGN KEY (dataset_id, cell_id) REFERENCES scrna_cells(dataset_id, id) ON DELETE RESTRICT"
 "public.scrna_embedding_points" }o--|| "public.scrna_embedding_dataset_members" : "FOREIGN KEY (embedding_id, dataset_id) REFERENCES scrna_embedding_dataset_members(embedding_id, dataset_id) ON DELETE CASCADE"
+"public.cyl_experiment_trait_count_changes" }o--|| "public.cyl_experiments" : "FOREIGN KEY (experiment_id) REFERENCES cyl_experiments(id) ON DELETE CASCADE"
 
 "public.species" {
   bigint id
@@ -1046,5 +1047,10 @@ erDiagram
   real x
   real y
   jsonb facets
+}
+"public.cyl_experiment_trait_count_changes" {
+  bigint id
+  bigint experiment_id FK
+  timestamp_with_time_zone created_at
 }
 ```
