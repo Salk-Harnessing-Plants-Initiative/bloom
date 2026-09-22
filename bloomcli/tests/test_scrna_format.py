@@ -219,7 +219,7 @@ def test_the_check_says_how_to_install_its_extra(tmp_path, monkeypatch):
 
 
 def test_a_file_whose_layers_is_not_a_group_is_refused_not_crashed(tmp_path):
-    """I4: this read sat outside the wrapping, so a bad file produced a raw AttributeError."""
+    """this read sat outside the wrapping, so a bad file produced a raw AttributeError."""
     import h5py
 
     path = write_h5ad(tmp_path / "x.h5ad")
@@ -230,7 +230,7 @@ def test_a_file_whose_layers_is_not_a_group_is_refused_not_crashed(tmp_path):
 
 
 def test_a_refusal_never_ends_in_a_bare_colon():
-    """I5: an exception whose str() is empty left the message dangling after 'could not be read:'."""
+    """an exception whose str() is empty left the message dangling after 'could not be read:'."""
     with pytest.raises(fmt.FormatError) as caught:
         with fmt._reading("obs"):
             raise KeyError()
@@ -239,14 +239,14 @@ def test_a_refusal_never_ends_in_a_bare_colon():
 
 
 def test_a_fault_here_is_not_reported_as_a_fact_about_the_file():
-    """I5: bare `except Exception` swallowed MemoryError and our own bugs alike."""
+    """bare `except Exception` swallowed MemoryError and our own bugs alike."""
     with pytest.raises(MemoryError):
         with fmt._reading("X"):
             raise MemoryError()
 
 
 def test_coordinates_too_large_to_store_are_refused(tmp_path):
-    """I2: the column is double precision but the explorer casts to REAL when reading."""
+    """the column is double precision but the explorer casts to REAL when reading."""
     cells = np.arange(24, dtype=float).reshape(6, 4)
     coords = np.zeros((6, 2), dtype="float64")
     coords[:, 0] = np.arange(6) * 1.0
@@ -255,7 +255,7 @@ def test_coordinates_too_large_to_store_are_refused(tmp_path):
 
 
 def test_cells_piled_on_one_point_are_refused(tmp_path):
-    """I2: an obsm allocated and never filled is finite, two-dimensional and the right length."""
+    """an obsm allocated and never filled is finite, two-dimensional and the right length."""
     cells = np.arange(500 * 4, dtype=float).reshape(500, 4)
     coords = np.zeros((500, 2), dtype="float64")
     coords[:, 0] = np.arange(500) * 1.0
@@ -265,14 +265,14 @@ def test_cells_piled_on_one_point_are_refused(tmp_path):
 
 
 def test_the_umap_can_be_named(tmp_path):
-    """I2: the loader takes --umap-key, so a file it loads was refused here for its name."""
+    """the loader takes --umap-key, so a file it loads was refused here for its name."""
     path = write_h5ad(tmp_path / "x.h5ad", umap_key="umap")
     _refused(path, "no obsm")
     assert fmt.check_structure(path, umap_key="umap").n_cells > 0
 
 
 def test_a_file_that_points_outside_itself_is_refused(tmp_path):
-    """I9: h5py follows an external link, and the refusal echoes what it found."""
+    """h5py follows an external link, and the refusal echoes what it found."""
     import h5py
 
     secret = tmp_path / "secret.h5"
@@ -282,3 +282,83 @@ def test_a_file_that_points_outside_itself_is_refused(tmp_path):
     with h5py.File(path, "a") as f:
         f["uns"]["elsewhere"] = h5py.ExternalLink(str(secret), "/value")
     _refused(path, "outside itself")
+
+
+def test_a_file_whose_data_lives_in_another_file_is_refused(tmp_path):
+    """A virtual dataset reads as ordinary data here and as nothing on any other machine."""
+    import h5py
+
+    elsewhere = tmp_path / "elsewhere.h5"
+    with h5py.File(elsewhere, "w") as e:
+        e.create_dataset("coords", data=np.zeros((3, 2)) + np.arange(3).reshape(3, 1))
+    path = write_h5ad(tmp_path / "x.h5ad")
+    layout = h5py.VirtualLayout(shape=(3, 2), dtype="f8")
+    layout[:] = h5py.VirtualSource(str(elsewhere), "coords", shape=(3, 2))
+    with h5py.File(path, "a") as f:
+        del f["obsm"]["X_umap"]
+        f["obsm"].create_virtual_dataset("X_umap", layout)
+        f["obsm"]["X_umap"].attrs["encoding-type"] = "array"
+        f["obsm"]["X_umap"].attrs["encoding-version"] = "0.2.0"
+    _refused(path, "outside itself")
+
+
+def test_a_link_inside_the_same_file_is_accepted(tmp_path):
+    """A soft link resolves within the file; anndata reads it, and so should this."""
+    import h5py
+
+    path = write_h5ad(tmp_path / "x.h5ad")
+    with h5py.File(path, "a") as f:
+        f["obsm"]["X_umap_copy"] = h5py.SoftLink("/obsm/X_umap")
+    assert fmt.check_structure(path).n_cells == 3
+
+
+def test_a_link_out_of_the_file_is_refused_however_deep(tmp_path):
+    """The walk used to stop at eight levels and accept whatever was below."""
+    import h5py
+
+    secret = tmp_path / "secret.h5"
+    with h5py.File(secret, "w") as s:
+        s.create_dataset("value", data=[1])
+    path = write_h5ad(tmp_path / "x.h5ad")
+    with h5py.File(path, "a") as f:
+        group = f["uns"]
+        for level in range(10):
+            group = group.create_group(f"n{level}")
+        group["deep"] = h5py.ExternalLink(str(secret), "/value")
+    _refused(path, "outside itself")
+
+
+def test_a_file_that_links_back_to_itself_does_not_hang(tmp_path):
+    """Hard links can make the walk cyclic; it has to notice rather than recurse forever."""
+    import h5py
+
+    path = write_h5ad(tmp_path / "x.h5ad")
+    with h5py.File(path, "a") as f:
+        loop = f["uns"].create_group("loop")
+        loop["self"] = loop
+    assert fmt.check_structure(path).n_cells == 3
+
+
+def test_a_umap_of_text_says_so_rather_than_quoting_numpy(tmp_path):
+    """isfinite on strings raises a ufunc message no scientist can act on."""
+    import h5py
+
+    path = write_h5ad(tmp_path / "x.h5ad")
+    with h5py.File(path, "a") as f:
+        del f["obsm"]["X_umap"]
+        d = f["obsm"].create_dataset("X_umap", data=np.array([["a", "b"]] * 3, dtype="S4"))
+        d.attrs["encoding-type"] = "array"
+        d.attrs["encoding-version"] = "0.2.0"
+    with pytest.raises(fmt.FormatError) as caught:
+        fmt.check_structure(path)
+    assert "ufunc" not in str(caught.value)
+
+
+def test_a_shape_that_is_not_a_number_is_refused(tmp_path):
+    """int(inf) raises OverflowError, which is not a ValueError and escaped the wrapping."""
+    import h5py
+
+    path = write_h5ad(tmp_path / "x.h5ad")
+    with h5py.File(path, "a") as f:
+        f["X"].attrs["shape"] = np.array([np.inf, 3.0])
+    _refused(path, "X")

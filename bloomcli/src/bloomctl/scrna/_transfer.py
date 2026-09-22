@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+import time
 import zlib
 from pathlib import Path
 from typing import Callable, NamedTuple
@@ -20,6 +21,9 @@ TUS_VERSION = "1.0.0"
 
 # The storage service's resumable chunk size; every chunk but the last must be this long.
 CHUNK_BYTES = 6 * 1024 * 1024
+
+# A moment before asking a server again, so one that is overloaded is not asked twice at once.
+RETRY_PAUSE_SECONDS = 0.5
 
 
 class TransferError(RuntimeError):
@@ -79,38 +83,55 @@ def _session_expired(response: httpx.Response) -> bool:
     return looks_like_expired_session(RuntimeError(response.text))
 
 
-EXPIRED_HINT = "your session is no longer valid — log in again (`bloomctl login`) and retry"
+EXPIRED_HINT = "your session is no longer valid — log in again with `bloomctl login`."
 
 # An upload's id, as it may appear in a URL: no separators, no dot segments, nothing to escape.
-_UPLOAD_ID = re.compile(r"^[A-Za-z0-9._~-]{1,200}$")
+_UPLOAD_ID = re.compile(r"\A[A-Za-z0-9._~-]{1,200}\Z")
 
 
 def _checked_id(upload_id: str) -> str:
-    if not _UPLOAD_ID.match(upload_id) or upload_id.strip(".") == "":
-        raise TransferError(f"storage named an upload this cannot address: {upload_id[:60]!r}")
+    if not isinstance(upload_id, str) or not _UPLOAD_ID.match(upload_id) \
+            or upload_id.strip(".") == "":
+        raise TransferError(f"storage named an upload this cannot address: {str(upload_id)[:60]!r}")
     return upload_id
 
 
 def _refuse_if_expired(response: httpx.Response) -> None:
-    if _session_expired(response):
+    """Storage says so in the status on some endpoints and only in the body on others."""
+    if response.status_code in (401, 403) or _session_expired(response):
         raise SessionExpired(EXPIRED_HINT)
 
 
 def object_exists(http: httpx.Client, ep: Endpoint, bucket: str, path: str) -> bool:
     """Whether the object is stored. Asked with a one-byte GET, not a HEAD: storage names an
     expired session only in the body, and HTTP forbids a body on a HEAD response."""
-    response = http.get(
+    with http.stream(
+        "GET",
         ep.url(f"object/authenticated/{bucket}/{path}"),
         headers=ep.headers({"Range": "bytes=0-0"}),
-    )
-    if response.status_code in (200, 206, 416):
-        return True
-    if response.status_code in (400, 404):
+    ) as response:
+        # 416 is the answer to a ranged read of an object holding nothing: the name is taken
+        # and the file is not there, which is the failure this question exists to catch.
+        if response.status_code == 416:
+            return False
+        if response.status_code in (200, 206):
+            return _holds_bytes(response)
+        response.read()
         _refuse_if_expired(response)
-        return False
-    if response.status_code in (401, 403):
-        raise SessionExpired(EXPIRED_HINT)
-    raise TransferError(f"storage answered {response.status_code} when looking for {bucket}/{path}")
+        if response.status_code in (400, 404):
+            return False
+        raise TransferError(
+            f"storage answered {response.status_code} when looking for {bucket}/{path}"
+        )
+
+
+def _holds_bytes(response: httpx.Response) -> bool:
+    """Whether the ranged answer describes an object with anything in it."""
+    total = response.headers.get("content-range", "").rpartition("/")[2]
+    if total.isdigit():
+        return int(total) > 0
+    length = response.headers.get("content-length", "")
+    return int(length) > 0 if length.isdigit() else True
 
 
 def create_upload(http: httpx.Client, ep: Endpoint, bucket: str, path: str, size: int) -> str:
@@ -153,22 +174,40 @@ def _offset_header(response: httpx.Response) -> int:
         raise TransferError("storage did not say how many bytes it holds (upload-offset)") from exc
 
 
-def upload_offset(http: httpx.Client, ep: Endpoint, url: str) -> int | None:
+def upload_offset(
+    http: httpx.Client, ep: Endpoint, url: str, size: int | None = None
+) -> int | None:
     """Bytes the server holds for an upload, or None when this session cannot resume it.
 
     Anything but a plain answer means starting a new upload: an upload the server has forgotten
     (404/410) and one this session may not ask about (401/403) both leave nothing to resume, and
     failing instead would wedge every later run on a record the user cannot see.
     """
+    for attempt in (1, 2):
+        try:
+            response = http.head(url, headers=ep.headers({"Tus-Resumable": TUS_VERSION}))
+        except httpx.HTTPError:
+            if attempt == 2:
+                return None
+            time.sleep(RETRY_PAUSE_SECONDS)
+            continue
+        _refuse_if_expired(response)
+        if response.status_code == 200:
+            break
+        # A server that cannot answer right now may answer the next time; one that says the
+        # upload is gone never will, and re-asking only delays starting again.
+        if attempt == 2 or response.status_code < 500:
+            return None
+        time.sleep(RETRY_PAUSE_SECONDS)
     try:
-        response = http.head(url, headers=ep.headers({"Tus-Resumable": TUS_VERSION}))
-    except httpx.HTTPError:
+        offset = int(response.headers["upload-offset"])
+    except (KeyError, ValueError):
         return None
-    if response.status_code in (401, 403):
-        raise SessionExpired(EXPIRED_HINT)
-    if response.status_code == 200:
-        return _offset_header(response)
-    return None
+    # An offset this file cannot continue from is not a resume point: seeking behind it raises,
+    # and seeking past the end sends nothing and fails at the same place on every later run.
+    if offset < 0 or (size is not None and offset > size):
+        return None
+    return offset
 
 
 def send(
@@ -203,8 +242,7 @@ def send(
             )
             if _duplicate(response):
                 raise AlreadyStored(url)
-            if response.status_code in (401, 403) or _session_expired(response):
-                raise SessionExpired(EXPIRED_HINT)
+            _refuse_if_expired(response)
             if response.status_code != 204:
                 raise TransferError(
                     f"storage refused bytes {offset:,} to {offset + len(chunk):,} "

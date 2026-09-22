@@ -17,7 +17,8 @@ from typing import Any
 TRANSFORMS = ("log1p", "log2p", "none")
 SCALINGS = ("library_size", "none", "other")
 
-# Where the loader reads the UMAP coordinates from, by name; --umap-key names another.
+# Where the coordinates are read from, by name; the loader's --umap-key can name
+# another, so the check takes one too.
 UMAP_KEY = "X_umap"
 
 # scrna_cell_arrays casts x and y to REAL on the way out, so a coordinate above this stores
@@ -122,7 +123,8 @@ def check_structure(path: Path, *, umap_key: str = UMAP_KEY) -> Summary:
 
 # What a malformed file makes h5py and numpy raise. Anything else -- MemoryError, a bug in
 # this module -- is not a fact about the file and must not be reported as one.
-READ_FAILURES = (OSError, KeyError, IndexError, TypeError, ValueError, AttributeError)
+READ_FAILURES = (OSError, KeyError, IndexError, TypeError, ValueError, AttributeError,
+                 ArithmeticError)
 
 
 @contextmanager
@@ -166,25 +168,36 @@ def normalization_problem(block: dict[str, Any], *, layers) -> str | None:
     return None
 
 
-def _refuse_links(h5py, group, depth: int = 0) -> None:
-    """Refuse a file that points outside itself.
+def _refuse_links(h5py, group, seen: set | None = None) -> None:
+    """Refuse a file whose data lives in another file.
 
-    h5py follows an external link without saying so, so a crafted file turns this check into a
-    reader of whatever else is on the machine, and the refusal quotes what it found.
+    Two shapes do that, and only one announces itself: an external link, and a virtual dataset,
+    which reads as ordinary data here and as nothing on any other machine. Both make the stored
+    object depend on the uploader's disk, and both let a refusal quote a file nobody handed in.
+    A soft link points within this same file, which anndata reads and this accepts.
+
+    Hard links can make the walk cyclic, so each group is visited once, by address.
     """
-    if depth > 8:
-        return
+    seen = set() if seen is None else seen
     for name in group:
-        link = group.get(name, getlink=True)
-        if isinstance(link, (h5py.ExternalLink, h5py.SoftLink)):
-            kind = "another file" if isinstance(link, h5py.ExternalLink) else "elsewhere"
+        where = name if group.name == "/" else f"{group.name.strip('/')}/{name}"
+        if isinstance(group.get(name, getlink=True), h5py.ExternalLink):
             raise FormatError(
-                f"{group.name.strip('/') + '/' if group.name != '/' else ''}{name} points "
-                f"outside itself, to {kind}; a dataset has to hold its own data"
+                f"{where} points outside itself, to another file; a dataset has to hold its "
+                f"own data"
             )
         member = group.get(name)
+        if isinstance(member, h5py.Dataset) and member.is_virtual:
+            raise FormatError(
+                f"{where} reads its values from outside itself; it is a virtual dataset, so "
+                f"the file holds only a pointer. Re-save it so the values travel with it"
+            )
         if isinstance(member, h5py.Group):
-            _refuse_links(h5py, member, depth + 1)
+            address = h5py.h5o.get_info(member.id).addr
+            if address in seen:
+                continue
+            seen.add(address)
+            _refuse_links(h5py, member, seen)
 
 
 def _shape(h5py, node, what: str) -> tuple[int, int]:
@@ -210,7 +223,7 @@ def _scan(h5py, np, node, what: str, *, non_negative: bool = False) -> None:
         # isfinite is only defined for numbers; a text matrix is a fact about the file.
         if block.dtype.kind not in "fiub":
             raise FormatError(f"{what} holds {block.dtype} values, not numbers")
-        if block.dtype.kind in "fc" and not np.isfinite(block).all():
+        if block.dtype.kind == "f" and not np.isfinite(block).all():
             raise FormatError(f"{what} holds a value that is not finite")
         if non_negative and (block < 0).any():
             raise FormatError(f"{what} holds a negative value")
@@ -276,6 +289,9 @@ def _umap(h5py, np, f, n_cells: int, umap_key: str = UMAP_KEY) -> None:
             f"where the UMAP coordinates are read from; obsm holds: {found}"
         )
     coordinates = node[:]
+    # isfinite is only defined for numbers.
+    if coordinates.dtype.kind not in "fiub":
+        raise FormatError(f"obsm['{umap_key}'] holds {coordinates.dtype} values, not numbers")
     if not np.isfinite(coordinates).all():
         raise FormatError(f"obsm['{umap_key}'] holds a coordinate that is not finite")
     largest = float(np.abs(coordinates).max()) if n_cells else 0.0

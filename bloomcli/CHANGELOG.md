@@ -16,11 +16,11 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   `upload` needs a writer or admin login, checks the file's structure before
   sending anything (unique cell and gene IDs, a finite `X`, an `obsm['X_umap']`
   held to the loader's own limits on coordinate size and on cells piled at one
-  point, a `uns['normalization']` block saying how `X` was made, and nothing
-  linking out to another file on the machine), resumes an interrupted transfer
-  when run again, and reports success only once storage confirms the object is
-  readable — on every path, since a name being taken is not the same as an
-  object being there. `download` takes a dataset's name or
+  point, a `uns['normalization']` block saying how `X` was made, and no external
+  link or virtual dataset reaching out to another file), resumes an interrupted
+  transfer when run again, and reports success only once storage shows an object
+  with bytes in it — on every path, since a name being taken is not the same as
+  a file being there. `download` takes a dataset's name or
   id, or `--checksum`, and writes the file only once its fingerprint matches.
   The structure check needs the new optional extra: `pip install
   'bloomctl[scrna]'`, which the published image now carries.

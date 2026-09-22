@@ -513,10 +513,13 @@ file's structure:
 - `obsm['X_umap']` has two columns and a row per cell, holds only finite coordinates small
   enough for the explorer to store, and does not pile more than a thousandth of the cells on
   a single point — an array allocated and never filled passes every other check and draws the
-  whole dataset as one dot. These are the loader's own thresholds, so a file this accepts is
-  one the loader accepts
-- nothing in the file points outside it: an external link would make the check read whatever
-  else is on the machine, and name it in the refusal
+  whole dataset as one dot. These two limits are the loader's own, so a UMAP this accepts is a
+  UMAP the loader accepts; the loader checks more besides, so passing here is not a promise
+  that the load will succeed
+- the file's data is in the file: an external link, or a virtual dataset whose values live in
+  another file, is refused — either would store an object that reads differently on every
+  machine, and would let a refusal quote a file nobody handed in. A link within the same file
+  is fine
 - `layers['counts']`, when present, matches `X`'s shape and holds no negative value
 - `uns['normalization']` says how `X` was made:
   `transform` (`log1p`, `log2p`, `none`), `scaling` (`library_size`, `none`,

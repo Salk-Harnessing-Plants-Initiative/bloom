@@ -24,12 +24,16 @@ class FakeStorage:
         self.drop_after: int | None = None
         self.patches = 0
         self.hide_objects = False
+        # Hide the object for this many reads, then show it: a race the pre-flight loses.
+        self.hide_reads = 0
         # Storage takes the bytes but never creates the object (a finalisation failure).
         self.finalise = True
         # Acknowledge fewer bytes than the next chunk sends, once, as the protocol permits.
         self.ack_short_by = 0
         self.short_acks = 1
         self.offset_header: str | None = None
+        # What the resume probe reports it holds; "" leaves the header out entirely.
+        self.offset_header_head: str | None = None
         self.offset_status: int | None = None
         # Storage answers an unauthenticated caller much as it answers a missing object.
         self.expired = False
@@ -38,6 +42,12 @@ class FakeStorage:
         # Fail this many object reads once bytes are flowing, as a blip on the confirming
         # read would; the check made before anything is sent is left alone.
         self.fail_reads = 0
+        # Answer every object read with this status, whatever else is true.
+        self.object_status: int | None = None
+        # Answer a ranged read with the whole object, as a backend that drops Range would.
+        self.ignore_range = False
+        # Store this name as an object of no bytes: a finalisation that kept nothing.
+        self.empty_objects: set[str] = set()
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -64,7 +74,10 @@ class FakeStorage:
             if request.method == "HEAD":
                 if self.offset_status is not None:
                     return httpx.Response(self.offset_status)
-                return httpx.Response(200, headers={"Upload-Offset": str(len(upload["data"]))})
+                if self.offset_header_head == "":
+                    return httpx.Response(200)
+                held = self.offset_header_head or str(len(upload["data"]))
+                return httpx.Response(200, headers={"Upload-Offset": held})
             if int(request.headers["upload-offset"]) != len(upload["data"]):
                 return httpx.Response(409, text="offset does not match")
             if self.drop_after is not None and self.patches >= self.drop_after:
@@ -86,19 +99,34 @@ class FakeStorage:
             # HTTP forbids a body on a HEAD response, so the fake withholds one too: a
             # caller that reads the body to tell expiry from absence must fail here.
             head = request.method == "HEAD"
+            name = path[len(prefix):]
+            if self.object_status is not None:
+                return httpx.Response(self.object_status, content=b"")
             if self.fail_reads > 0 and self.patches > 0:
                 self.fail_reads -= 1
                 return httpx.Response(503, content=b"" if head else b"try again")
             if self.expired:
                 body = {"statusCode": "400", "error": "InvalidJWT", "message": "jwt expired"}
                 return httpx.Response(400, content=b"") if head else httpx.Response(400, json=body)
-            data = None if self.hide_objects else self.objects.get(path[len(prefix):])
+            if name in self.empty_objects:
+                # What S3 answers a ranged read of an object with nothing in it.
+                return httpx.Response(416, headers={"Content-Range": "bytes */0"}, content=b"")
+            hidden = self.hide_objects or self.hide_reads > 0
+            if self.hide_reads > 0:
+                self.hide_reads -= 1
+            data = None if hidden else self.objects.get(name)
             if data is None:
                 body = {"statusCode": "404", "error": "not_found"}
                 return httpx.Response(400, content=b"") if head else httpx.Response(400, json=body)
-            if request.headers.get("range"):
-                return httpx.Response(206, content=b"" if head else data[:1])
-            return httpx.Response(200, content=b"" if head else data)
+            if request.headers.get("range") and not self.ignore_range:
+                return httpx.Response(
+                    206,
+                    headers={"Content-Range": f"bytes 0-0/{len(data)}"},
+                    content=b"" if head else data[:1],
+                )
+            return httpx.Response(
+                200, headers={"Content-Length": str(len(data))}, content=b"" if head else data
+            )
         return httpx.Response(500)
 
 
@@ -274,21 +302,21 @@ def test_an_upload_this_session_may_not_ask_about_says_so(http, storage, status)
 
 
 def test_an_expired_session_is_seen_even_though_the_check_carries_no_body(http, storage):
-    """B3: storage names an expired session only in the body, so the check has to ask for one."""
+    """storage names an expired session only in the body, so the check has to ask for one."""
     storage.expired = True
     with pytest.raises(tr.SessionExpired):
         tr.object_exists(http, EP, "scrna", "h5ad/a.h5ad.gz")
 
 
 def test_an_expired_session_stops_a_resume_instead_of_starting_a_second_upload(http, storage):
-    """B3: returning None here sent every byte again and failed with storage's raw JSON."""
+    """returning None here sent every byte again and failed with storage's raw JSON."""
     storage.expired = True
     with pytest.raises(tr.SessionExpired):
         tr.upload_offset(http, EP, tr.resumable_url(EP, "u0"))
 
 
 def test_an_expired_session_stops_the_send(tmp_path, http, storage, small_chunks):
-    """B3: a token that dies mid-upload has to say so, not read as a refusal of the bytes."""
+    """a token that dies mid-upload has to say so, not read as a refusal of the bytes."""
     source, data = _source(tmp_path)
     url = tr.create_upload(http, EP, "scrna", "h5ad/a.h5ad.gz", len(data))
     storage.expired = True
@@ -297,7 +325,7 @@ def test_an_expired_session_stops_the_send(tmp_path, http, storage, small_chunks
 
 
 def test_an_acknowledgement_ahead_of_what_was_sent_is_refused(tmp_path, http, storage, small_chunks):
-    """I1: accepting it skips the bytes between, storing an object its name does not describe."""
+    """accepting it skips the bytes between, storing an object its name does not describe."""
     source, data = _source(tmp_path)
     url = tr.create_upload(http, EP, "scrna", "h5ad/a.h5ad.gz", len(data))
     storage.offset_header = "20"  # claims 20 held after a 10-byte chunk
@@ -306,13 +334,80 @@ def test_an_acknowledgement_ahead_of_what_was_sent_is_refused(tmp_path, http, st
 
 
 def test_an_upload_id_that_is_not_one_is_refused(http):
-    """I3: dot segments collapse, so a crafted id would send the token to another path."""
+    """dot segments collapse, so a crafted id would send the token to another path."""
     for crafted in ("../../auth/v1/token", "u0/../../object", "u 0", "u\n0", ""):
         with pytest.raises(tr.TransferError):
             tr.resumable_url(EP, crafted)
 
 
 def test_an_upload_that_cannot_be_interrogated_is_forgotten(http, storage):
-    """I3: raising here wedged every later run on a record the user cannot see."""
+    """raising here wedged every later run on a record the user cannot see."""
     storage.offset_status = 500
     assert tr.upload_offset(http, EP, tr.resumable_url(EP, "u0")) is None
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_an_expired_session_on_the_object_read_says_so(http, storage, status):
+    """Storage answers an unauthorised read this way; reading it as 'absent' loses the file."""
+    storage.object_status = status
+    with pytest.raises(tr.SessionExpired):
+        tr.object_exists(http, EP, "scrna", "h5ad/a.h5ad.gz")
+
+
+@pytest.mark.parametrize("status", [404, 500, 503])
+def test_an_object_read_that_is_not_an_answer_is_not_a_yes(http, storage, status):
+    """Counting any of these as stored deletes the only local copy of a file nobody has."""
+    storage.object_status = status
+    try:
+        assert tr.object_exists(http, EP, "scrna", "h5ad/a.h5ad.gz") is False
+    except tr.TransferError:
+        pass  # refusing outright is also correct; claiming it is stored is not
+
+
+def test_an_object_of_no_bytes_is_not_stored(http, storage):
+    """A finalisation that keeps nothing leaves the name taken and the object empty."""
+    storage.empty_objects.add("scrna/h5ad/a.h5ad.gz")
+    assert tr.object_exists(http, EP, "scrna", "h5ad/a.h5ad.gz") is False
+
+
+def test_asking_whether_an_object_exists_does_not_download_it(tmp_path, http, storage):
+    """A backend that drops Range would otherwise pull a whole dataset in to answer yes or no."""
+    storage.objects["scrna/h5ad/a.h5ad.gz"] = b"x" * 2_000_000
+    storage.ignore_range = True
+    assert tr.object_exists(http, EP, "scrna", "h5ad/a.h5ad.gz") is True
+    sent = [r for r in storage.requests if "object/authenticated" in r.url.path]
+    assert sent and sent[-1].headers.get("range") == "bytes=0-0", "the read asked for one byte"
+
+
+def test_an_offset_past_the_end_of_the_file_is_not_resumed(http, storage):
+    """Trusting it wedges the run: send has nothing to do, and the record survives."""
+    storage.uploads["u0"] = {"name": "scrna/h5ad/f.h5ad.gz", "length": 10, "data": bytearray()}
+    storage.offset_header_head = "99"
+    assert tr.upload_offset(http, EP, f"{API}/storage/v1/upload/resumable/u0", size=10) is None
+
+
+def test_a_negative_offset_is_not_resumed(http, storage):
+    """seek() on it raises OSError, which nothing above catches."""
+    storage.uploads["u0"] = {"name": "scrna/h5ad/f.h5ad.gz", "length": 10, "data": bytearray()}
+    storage.offset_header_head = "-5"
+    assert tr.upload_offset(http, EP, f"{API}/storage/v1/upload/resumable/u0", size=10) is None
+
+
+def test_an_offset_that_cannot_be_read_is_not_resumed(http, storage):
+    """The header is missing or not a number: the upload cannot be continued, so forget it."""
+    storage.uploads["u0"] = {"name": "scrna/h5ad/f.h5ad.gz", "length": 10, "data": bytearray()}
+    storage.offset_header_head = "not-a-number"
+    assert tr.upload_offset(http, EP, f"{API}/storage/v1/upload/resumable/u0", size=10) is None
+
+
+@pytest.mark.parametrize("crafted", [".", "..", "...", "..\n", ".\n", "a\n", 123, None, ["a"]])
+def test_an_upload_id_that_is_not_one_is_refused_including_dot_segments(crafted):
+    """`$` matches before a trailing newline, so the dot-segment guard needs \\Z and a type check."""
+    with pytest.raises(tr.TransferError):
+        tr.resumable_url(EP, crafted)
+
+
+def test_an_object_stored_with_no_bytes_is_not_stored(http, storage):
+    """Storage answers normally and says the length is zero; the file is still not there."""
+    storage.objects["scrna/h5ad/a.h5ad.gz"] = b""
+    assert tr.object_exists(http, EP, "scrna", "h5ad/a.h5ad.gz") is False

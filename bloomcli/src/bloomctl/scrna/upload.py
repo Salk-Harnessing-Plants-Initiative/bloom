@@ -86,11 +86,22 @@ def _normalization_on_record(client: Any, fingerprint: str, layers) -> bool:
     return False
 
 
+def _resumable(ep, saved) -> str | None:
+    """The address of the upload a record names, or None when the record cannot name one."""
+    if not saved:
+        return None
+    try:
+        return _transfer.resumable_url(ep, saved["id"])
+    except _transfer.TransferError:
+        # A record this cannot use is a record to forget, not one to fail on every run.
+        return None
+
+
 def _stored(http, ep, bucket: str, path: str) -> bool | None:
     """Whether storage holds the object: True, False, or None when it could not be asked.
 
-    Asked twice: one blip on this question used to turn a stored object into a failure that
-    told the user to send every byte again.
+    Asked twice, because one blip on this question must not report a stored object as an
+    upload to send again.
     """
     for attempt in (1, 2):
         try:
@@ -103,30 +114,39 @@ def _stored(http, ep, bucket: str, path: str) -> bool | None:
     return None
 
 
-def _settle(http, ep, stage: Path, staged: _object.Staged, name: str, already: bool) -> None:
-    """Report only what storage confirms, and leave behind only what a rerun needs."""
+def _settle(http, ep, stage: Path, staged: _object.Staged, name: str, *, sent: int) -> None:
+    """Report only what storage confirms, and leave behind only what a rerun needs.
+
+    ``sent`` is how many bytes this run gave storage, which is what tells a finished upload
+    that was never stored apart from a name taken by something this login cannot read.
+    """
     bucket, path = _object.BUCKET, _object.object_path(staged.fingerprint)
     stored = _stored(http, ep, bucket, path)
     if stored:
         _object.clear(stage, staged.fingerprint)
-        if already:
-            click.echo(f"Already uploaded: {bucket}/{path}")
-        else:
-            click.echo(
-                f"Uploaded {name}\n  fingerprint  {staged.fingerprint}\n"
-                f"  stored at    {bucket}/{path}"
-            )
-        return
-    # The server's upload cannot be finished, but the gzipped form can start a new one.
-    _object.forget_upload(stage, staged.fingerprint)
-    if stored is False:
-        raise click.ClickException(
-            f"storage took every byte of {name} but has not stored it. The prepared copy is "
-            f"kept in {stage}; run the same command again to send it as a new upload."
+        click.echo(
+            f"Already uploaded: {bucket}/{path}" if sent == 0 else
+            f"Uploaded {name}\n  fingerprint  {staged.fingerprint}\n"
+            f"  stored at    {bucket}/{path}"
         )
+        return
+    if stored is None:
+        raise click.ClickException(
+            f"{name} may be stored — storage could not be asked. Nothing was lost: the prepared "
+            f"copy and this upload are both kept in {stage}. Run the same command again."
+        )
+    if sent == 0:
+        raise click.ClickException(
+            f"storage says {bucket}/{path} is taken but will not show it to this login. Nothing "
+            f"was sent. Ask an admin whether the object is there, or whether this login may "
+            f"read it; the prepared copy is kept in {stage}."
+        )
+    # Storage holds every byte and made nothing of them. The protocol will not finish an upload
+    # that is already at full length, so the record goes and the gzipped form starts a new one.
+    _object.forget_upload(stage, staged.fingerprint)
     raise click.ClickException(
-        f"{name} may be stored — storage could not be asked. The prepared copy is kept in "
-        f"{stage}; run the same command again to find out."
+        f"storage took every byte of {name} but has not stored it. The prepared copy is kept "
+        f"in {stage}; run the same command again to send it as a new upload."
     )
 
 
@@ -140,13 +160,16 @@ def _send(http, ep, stage: Path, staged: _object.Staged, name: str) -> None:
 
     try:
         if _transfer.object_exists(http, ep, bucket, path):
-            raise _transfer.AlreadyStored(path)
+            # Asked and answered; the name is the content's fingerprint, so this is the file.
+            _object.clear(stage, staged.fingerprint)
+            click.echo(f"Already uploaded: {bucket}/{path}")
+            return
         # Only an upload for these bytes, on this server, is worth resuming.
         saved = _object.load_upload(
             stage, staged.fingerprint, api_url=ep.api_url, size=staged.size
         )
-        url = _transfer.resumable_url(ep, saved["id"]) if saved else None
-        offset = _transfer.upload_offset(http, ep, url) if url else None
+        url = _resumable(ep, saved)
+        offset = _transfer.upload_offset(http, ep, url, staged.size) if url else None
         if offset is None:
             url = _transfer.create_upload(http, ep, bucket, path, staged.size)
             _object.save_upload(
@@ -158,10 +181,14 @@ def _send(http, ep, stage: Path, staged: _object.Staged, name: str) -> None:
             http, ep, url, staged.gz_path, offset, staged.size, on_progress=acknowledged
         )
     except _transfer.AlreadyStored:
-        # A name that is the content's fingerprint is taken only by this same content --
-        # but say so only once storage shows it.
-        _settle(http, ep, stage, staged, name, already=True)
+        # Storage refused the name. Whether that means the file is there is its answer to give.
+        _settle(http, ep, stage, staged, name, sent=held)
         return
+    except _transfer.SessionExpired as exc:
+        raise click.ClickException(
+            f"{exc} Nothing was lost: what has been sent of {name} is kept in {stage}, and the "
+            "same command continues it once you are logged in."
+        ) from exc
     except (_transfer.TransferError, httpx.HTTPError) as exc:
         reason = str(exc) or type(exc).__name__
         if held:
@@ -179,4 +206,4 @@ def _send(http, ep, stage: Path, staged: _object.Staged, name: str) -> None:
             "run the same command again to finish it."
         )
     # Sending every byte is not the same as storage having stored the object.
-    _settle(http, ep, stage, staged, name, already=False)
+    _settle(http, ep, stage, staged, name, sent=final)
