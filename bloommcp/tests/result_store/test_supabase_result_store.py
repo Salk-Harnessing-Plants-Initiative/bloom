@@ -910,3 +910,101 @@ def test_commit_mismatch_logs_one_warning_no_traceback(
         if r.levelno == logging.WARNING and "refused" in r.getMessage()
     ]
     assert len(warnings_) == 1
+
+
+def test_sticky_flag_set_on_one_thread_refuses_commits_on_every_other(
+    fake_supabase_storage, monkeypatch
+):
+    """PR #782 review: bloommcp fields concurrent tool calls, so the sticky
+    read-only flag must be process-global, not per-thread. A foreign read
+    served on a worker thread has to disable commits everywhere — if the flag
+    were ever thread-local (or re-read per thread), the very laundering it
+    prevents would still slip through on a sibling thread."""
+    import threading
+
+    monkeypatch.setenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", "1")
+    store = SupabaseResultStore()
+    _commit_one(store)
+    _foreignize_manifest(fake_supabase_storage)
+
+    reader = threading.Thread(
+        target=lambda: AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+    )
+    reader.start()
+    reader.join()
+
+    outcomes: dict[int, str] = {}
+
+    def _try_commit(i: int) -> None:
+        try:
+            store.create_run(
+                experiment=f"native{i}.csv", tool_class="pca", provenance=_prov()
+            )
+            outcomes[i] = "ALLOWED"
+        except CatalogBackendMismatchError:
+            outcomes[i] = "refused"
+
+    threads = [threading.Thread(target=_try_commit, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(outcomes) == 8
+    assert set(outcomes.values()) == {"refused"}, outcomes
+
+
+def test_interleaved_foreign_reads_and_commits_leave_the_process_read_only(
+    fake_supabase_storage, monkeypatch
+):
+    """Same mechanism under genuine interleaving: readers serving a foreign
+    catalog race committers writing native ones. Whatever order they land in,
+    nothing unexpected escapes, every commit that did succeed is intact, and
+    the process is read-only once the dust settles."""
+    import threading
+
+    monkeypatch.setenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", "1")
+    store = SupabaseResultStore()
+    _commit_one(store)
+    _foreignize_manifest(fake_supabase_storage)
+
+    barrier = threading.Barrier(8)
+    committed: list[str] = []
+    unexpected: list[BaseException] = []
+
+    def _reader() -> None:
+        barrier.wait()
+        try:
+            AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+        except BaseException as exc:  # noqa: BLE001 - recorded, asserted below
+            unexpected.append(exc)
+
+    def _committer(i: int) -> None:
+        barrier.wait()
+        try:
+            run = store.create_run(
+                experiment=f"race{i}.csv", tool_class="pca", provenance=_prov()
+            )
+            (run.staging_dir / "o.csv").write_bytes(b"x")
+            store.commit(run, {"o": "o.csv"})
+            committed.append(f"race{i}.csv")
+        except CatalogBackendMismatchError:
+            pass  # lost the race to the flag — the expected outcome
+        except BaseException as exc:  # noqa: BLE001 - recorded, asserted below
+            unexpected.append(exc)
+
+    threads = [threading.Thread(target=_reader) for _ in range(4)]
+    threads += [threading.Thread(target=_committer, args=(i,)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not unexpected, f"unexpected escapes: {unexpected!r}"
+    # Every commit that won its race is a real, resolvable run — the flag
+    # never left a half-written catalog behind.
+    for experiment in committed:
+        assert store.get_run(experiment, "pca", "latest").run_ref == "v1"
+    # And the process is read-only now, regardless of how the race resolved.
+    with pytest.raises(CatalogBackendMismatchError):
+        store.create_run(experiment="after.csv", tool_class="pca", provenance=_prov())

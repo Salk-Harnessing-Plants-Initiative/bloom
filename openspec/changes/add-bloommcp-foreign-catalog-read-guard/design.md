@@ -197,7 +197,13 @@ flip-and-read.
   `safe_error_text`'s 300-char cap intact. Sentinel values outside
   `VALID_BACKENDS` (including non-strings, oversized values, control
   characters — unvalidated storage bytes writable by any `bloom_agent`-key
-  holder) are clamped to a placeholder before interpolation (finding 7), the
+  holder) are clamped to a placeholder before interpolation (finding 7). The
+  backend names lead the message and the catalog identity follows, itself
+  clamped, so the whole string stays inside `safe_error_text`'s 300-char cap
+  for any experiment name: the identity is the only variable-length part, and
+  putting it first let a long stem truncate away the two backend names — the
+  one thing the feature exists to surface (PR #782 review). One shared
+  `foreign_catalog_message` builder emits it for both layers, the
   comparison is stripped + lower-cased so a hand-edited `"LOCAL"` doesn't
   brick the catalog (suggestion), and one shared `foreign_sentinel` predicate
   serves both layers so read guard and write re-check cannot drift
@@ -228,12 +234,34 @@ flip-and-read.
   must `monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST",
 raising=False)` so an ambient export can't flip it. The new var joins
   `test_package_baseline.py`'s env scrub list.
+- **The sticky flag is a real operational trap, accepted deliberately.** A
+  developer who sets `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1` to inspect one
+  stale catalog silently loses the ability to commit *anything*, on any
+  experiment, for the life of that process — the refusal names the cause and
+  the remedy (restart without the variable), but nothing warns them at the
+  moment they enable the hatch. Accepted rather than softened: the narrower
+  alternatives (refuse only commits to experiments whose catalogs were read
+  foreign; or track foreign-ness per frame) all require lineage plumbing that
+  does not exist — provenance has no input-backend field — and each leaves a
+  path where foreign-derived output lands in a native catalog with clean
+  provenance. Blunt-and-loud beats subtle-and-leaky for a data-integrity
+  control, and the hatch's stated purpose is inspection, not mixed
+  read/write. Mitigation is documentation: the per-read warning says commits
+  are disabled for the rest of the process, and storage-backends.md says it
+  where the hatch is introduced (PR #782 review).
 - **Pre-v5 manifests pass silently.** Accepted (see Decisions); the alternative
   bricks all history written before #572. Window closes on first re-commit —
   and that re-commit now logs the adoption at info level (PR #782 review, 2b:
   stamping over an unstamped catalog was previously forensically invisible),
   and the 5.6 audit script reports the unstamped count per environment, since
-  it is the measure of how live the guard actually is on day one.
+  it is the measure of how live the guard actually is on day one. Two further
+  additions from the PR #782 review: each unstamped read leaves a debug-level
+  trace naming the catalog (so the blind spot is observable per-read, not only
+  in aggregate — debug, because on a pre-#572 environment it fires on every
+  read and describes an absent check rather than a fault), and the audit exits
+  3 rather than 0 when any catalog is unstamped, so "clean" and "clean but
+  blind" cannot be confused and someone has to acknowledge the difference
+  (`--allow-unstamped`).
 - **The commit-path guarantee has two windows.** The allocation check fails
   before any object write; the pre-write re-check (for a catalog that turns
   foreign mid-commit) fires after uploads — those objects are best-effort

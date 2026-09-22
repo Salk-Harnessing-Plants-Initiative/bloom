@@ -24,6 +24,7 @@ from bloom_mcp.manifest import (
     Manifest,
     ManifestBackendMismatchError,
     ManifestSchemaError,
+    foreign_catalog_message,
     foreign_read_served,
     foreign_sentinel,
     next_version_id,
@@ -174,14 +175,12 @@ def _guarded_manifest_read(adir: AnalysisDir, read: Callable[[], T]) -> T:
 def _reject_foreign_manifest(adir: AnalysisDir, manifest: Optional[Manifest]) -> None:
     """Hatch-independent write-path sentinel check (#573).
 
-    `read_manifest`'s own guard fails closed by default, but under
-    `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1` it downgrades to a warning and
-    returns the manifest — acceptable for reads, never for the write path:
-    extending the catalog and re-stamping its sentinel via `write_manifest`
-    would silently take over a foreign catalog. So `create_run` and `commit`
-    re-check the manifest they just read, unconditionally, through the same
-    `foreign_sentinel` predicate the read guard uses (one definition — the two
-    layers cannot drift apart).
+    The read guard fails closed by default, but under the escape hatch it
+    downgrades to a warning and returns the manifest — acceptable for reads,
+    never for writes: extending the catalog would re-stamp its sentinel and
+    silently take it over. So `create_run`/`commit` re-check unconditionally,
+    through the same `foreign_sentinel` predicate and message template the
+    read guard uses (one definition each — the layers cannot drift).
     """
     if manifest is None:
         return
@@ -189,24 +188,23 @@ def _reject_foreign_manifest(adir: AnalysisDir, manifest: Optional[Manifest]) ->
     if recorded is None:
         return
     raise CatalogBackendMismatchError(
-        f"catalog for {adir.tool_class}/{adir.stem} was written by storage "
-        f"backend {recorded!r} but the active backend is "
-        f"{active_backend_name()!r} — refusing to extend or re-stamp a foreign "
-        f"catalog. This condition is permanent until the catalogs are "
-        f"untangled; see bloommcp/docs/storage-backends.md."
+        foreign_catalog_message(
+            f"{adir.tool_class}/{adir.stem}",
+            recorded,
+            active_backend_name(),
+            "extend or re-stamp a foreign catalog (permanent until untangled)",
+        )
     )
 
 
 def _refuse_commits_after_foreign_read(adir: AnalysisDir) -> None:
     """Refuse every write in a process that has served foreign data (#573).
 
-    The escape hatch is an inspection mode. Once a foreign catalog has been
-    read in this process, a subsequent commit — even into a different, native
-    catalog — could persist foreign-derived outputs with clean provenance
-    (and, for `remove_outliers`, a `based_on_version` that exists only in the
-    foreign catalog: an affirmatively false lineage pointer). Provenance has
-    no field recording the input's storage backend, so the only safe posture
-    is to keep an inspection process read-only from the first foreign read on.
+    The hatch is an inspection mode: provenance has no field recording an
+    input's storage backend, so a commit after a foreign read could persist
+    foreign-derived output with clean provenance (and, for `remove_outliers`,
+    a `based_on_version` existing only in the foreign catalog). Blunt by
+    design — see design.md, which also records the operational trade-off.
     """
     if not foreign_read_served():
         return

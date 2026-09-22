@@ -285,8 +285,13 @@ and one is now **enforced** at read time (#573):
   every consumer passes through — `get_run`/`list_runs`, `require_clean`
   resolution, `create_run`/`commit`, download links. Manifests written before
   the sentinel existed (pre-v5) pass unguarded until their next commit
-  re-stamps them (that adoption is logged at info level, so it is
-  forensically visible). For a **deliberate** foreign read — e.g. inspecting
+  re-stamps them (that adoption is logged at info level, and each unstamped
+  read leaves a debug-level trace, so the blind spot is visible rather than
+  merely documented). To size it for an environment, run
+  `make bloommcp-audit-sentinels` with that environment's `SUPABASE_URL` /
+  `BLOOM_AGENT_KEY`: it classifies every catalog as matching / foreign /
+  unstamped / unrecognized, writes nothing, and exits non-zero on either a
+  catalog the guard would refuse (2) or a remaining blind spot (3). For a **deliberate** foreign read — e.g. inspecting
   an offline copy of a prod bucket via the `local` backend — set
   `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1`: each guarded read then succeeds
   and logs a warning naming both backends (a per-read audit trail, not a
@@ -295,7 +300,11 @@ and one is now **enforced** at read time (#573):
   silently re-stamped — and once any foreign catalog has been served, the
   process is read-only (every commit is refused, even into a native catalog,
   until the process restarts without the variable), so foreign-derived
-  outputs can never land in native catalogs with clean provenance. Accepted
+  outputs can never land in native catalogs with clean provenance.
+  **Plan for that before you enable it:** one foreign read disables commits
+  for every experiment in that process, not just the one you were inspecting,
+  so use the hatch in a throwaway process (or `make dev-up-local` session) you
+  are happy to restart — not the one you are mid-analysis in. Accepted
   values: unset/empty (guard active, the
   default), `0`, `1`; anything else fails boot validation. In dev the variable
   passes through `docker-compose.dev.yml` (set it in your `.env.dev`);

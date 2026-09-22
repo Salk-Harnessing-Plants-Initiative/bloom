@@ -27,7 +27,11 @@ closed by raising `ManifestBackendMismatchError` (defined beside
 `ManifestSchemaError` in `bloom_mcp.manifest`) instead of returning the
 manifest. The error message SHALL name both backends (clamped as above) and
 the logical catalog identity (the manifest's storage prefix, e.g.
-`bloommcp_output/qc_<stem>`), SHALL point at the storage documentation,
+`bloommcp_output/qc_<stem>`) — with the backend names placed **before** the
+identity, and the identity itself clamped, so the whole message stays within
+`safe_error_text`'s truncation limit for any experiment name (the identity is
+the only variable-length part, and leading with it let a long stem truncate
+away the backend names) — SHALL point at the storage documentation,
 SHALL NOT contain any absolute host filesystem path, and SHALL NOT name the
 escape-hatch environment variable: bloommcp is LLM-driven, and a failure
 response that advertises its own bypass invites the agent to disable a
@@ -46,7 +50,9 @@ SHALL still be identified as foreign rather than falling into the generic
 validation-error path, whose reader routing would demote it to the forbidden
 "run `qc_clean` first". A manifest whose `storage_backend` field is absent,
 `None`, or empty (written before manifest schema v5, or stripped) SHALL pass
-unguarded — failing it would brick every pre-#572 catalog — and this
+unguarded, leaving a debug-level trace naming the catalog (the blind spot is
+observable per read, not only in aggregate; debug because on a pre-v5
+environment it fires on every read and reports an absent check, not a fault), — failing it would brick every pre-#572 catalog — and this
 limitation SHALL be documented (the window closes when the catalog's next
 commit re-stamps the manifest, and that adoption is logged — see the
 `bloommcp-result-store` delta). This also bounds what the guard is: an
@@ -130,6 +136,21 @@ see the pass-through bound above).
 - **THEN** it raises `ManifestBackendMismatchError` (the sentinel is checked
   on the raw document before model validation), not a generic validation
   error that downstream routing would demote to "run the QC workflow first"
+
+#### Scenario: A long experiment name never truncates the backend names
+
+- **WHEN** a foreign catalog whose experiment name is long enough to exceed
+  the consumer-facing truncation limit on its own is read, and the resulting
+  message is passed through `safe_error_text`
+- **THEN** both backend names and the documentation pointer survive in the
+  truncated text, and the untruncated message is itself within the limit —
+  the catalog identity is clamped rather than the backend names being lost
+
+#### Scenario: An unstamped read is traceable
+
+- **WHEN** a catalog with no usable sentinel is read
+- **THEN** the manifest is returned and a debug-level record names the
+  catalog, while a stamped-and-matching read emits no record at any level
 
 #### Scenario: An unrecognized sentinel value is clamped, never interpolated
 

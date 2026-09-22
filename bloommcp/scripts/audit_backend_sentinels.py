@@ -30,9 +30,10 @@ sweep itself could not run (enumeration failed — nothing to report).
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
-from typing import Any
+from typing import Any, Optional
 
 from bloom_mcp.experiment_utils import safe_error_text
 from bloom_mcp.storage_backend import VALID_BACKENDS, active_backend_name
@@ -100,7 +101,39 @@ def scan_backend_sentinels() -> dict[str, Any]:
     }
 
 
-def run() -> int:
+def run(argv: Optional[list[str]] = None) -> int:
+    """Scan, print the report, and return the exit code that gates task 5.6.
+
+    Exit codes are three-valued on purpose (PR #782 review): a sweep that
+    finds nothing foreign is not the same as a sweep that verified anything.
+
+    * ``0`` — every catalog carries a sentinel and it matches: fully verified.
+    * ``2`` — at least one catalog the guard would refuse on deploy. Blocker;
+      staging/prod have no escape-hatch passthrough, so a foreign catalog
+      there fails every read until an operator untangles it.
+    * ``3`` — nothing foreign, but some catalogs are unstamped (pre-#572), so
+      the guard is inert for them until their next commit re-stamps them.
+      Not a deploy risk, but it is the guard's day-one blind spot and must be
+      acknowledged rather than silently passed: re-run with
+      ``--allow-unstamped`` to accept it and exit 0.
+    * ``1`` — the sweep could not run (enumeration failed); nothing verified.
+    """
+    parser = argparse.ArgumentParser(
+        description=(
+            "Classify every bloommcp_output catalog's storage_backend sentinel "
+            "for the #573 read guard (read-only; writes nothing)."
+        )
+    )
+    parser.add_argument(
+        "--allow-unstamped",
+        action="store_true",
+        help=(
+            "Treat unstamped (pre-#572) catalogs as acceptable: report the "
+            "count but exit 0 instead of 3."
+        ),
+    )
+    args = parser.parse_args(argv)
+
     try:
         report = scan_backend_sentinels()
     except Exception as exc:  # noqa: BLE001 - top-level failure, then non-zero
@@ -121,7 +154,25 @@ def run() -> int:
         f"{counts['unstamped']} unstamped (the guard's blind spot until each "
         f"is re-stamped by its next commit), {len(report['errors'])} errors"
     )
-    return 2 if refused else 0
+    print(
+        "RECORD BOTH NUMBERS in the PR before merging (task 5.6): "
+        f"foreign+unrecognized={refused}, unstamped={counts['unstamped']}"
+    )
+    if refused:
+        print(
+            f"FAIL: {refused} catalog(s) would fail every read on deploy.",
+            file=sys.stderr,
+        )
+        return 2
+    if counts["unstamped"] and not args.allow_unstamped:
+        print(
+            f"BLIND SPOT: {counts['unstamped']} unstamped catalog(s) — the "
+            "guard cannot verify these. Re-run with --allow-unstamped to "
+            "accept and exit 0.",
+            file=sys.stderr,
+        )
+        return 3
+    return 0
 
 
 def main() -> None:

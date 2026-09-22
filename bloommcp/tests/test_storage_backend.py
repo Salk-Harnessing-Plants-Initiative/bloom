@@ -2453,3 +2453,64 @@ def test_hatch_value_one_with_surrounding_whitespace_enables(monkeypatch):
         monkeypatch.setenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", value)
         assert sb.allow_foreign_manifest(), repr(value)
         sb.validate_storage_backend()  # accepted at boot too
+
+
+def test_long_experiment_name_never_truncates_the_backend_names(
+    monkeypatch, local_manifest_backend, tmp_path
+):
+    """PR #782 review: `safe_error_text` caps consumer-facing error text at 300
+    chars, and two discovery paths run this message through it. The catalog
+    identity is the only variable-length part, so it must sit AFTER the backend
+    names and be clamped — otherwise a long experiment name pushes the one
+    piece of information this feature exists to surface past the cut."""
+    from bloom_mcp.experiment_utils import safe_error_text
+    from bloom_mcp.manifest import AnalysisDir, ManifestBackendMismatchError
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    stem = "turface_" + "x" * 200  # far past the cap on its own
+    write_cleaned_manifest(tmp_path, stem, "qc", "v1", "2026-07-06", b"t\n1\n")
+    _patch_sentinel(tmp_path / "root", stem, "qc", "supabase")
+
+    with pytest.raises(ManifestBackendMismatchError) as exc_info:
+        AnalysisDir("bloommcp_output", f"{stem}.csv", "qc").read_manifest()
+
+    raw = str(exc_info.value)
+    truncated = safe_error_text(exc_info.value)
+    for text, label in ((raw, "raw"), (truncated, "truncated")):
+        assert "'supabase'" in text, f"recorded backend lost in {label} message"
+        assert "'local'" in text, f"active backend lost in {label} message"
+        assert "storage-backends.md" in text, f"doc pointer lost in {label}"
+    assert len(raw) <= 300, f"message must self-limit, got {len(raw)}"
+    assert "x" * 100 not in raw  # the identity itself is clamped
+
+
+def test_unstamped_catalog_read_leaves_a_debug_trace(
+    monkeypatch, local_manifest_backend, tmp_path, caplog
+):
+    """PR #782 review: a pre-v5 catalog passes the guard completely unguarded.
+    That blind spot now leaves a debug-level trace naming the catalog — debug,
+    not info/warning, because on a pre-#572 environment it fires on every read
+    of every catalog and describes the absence of a check, not a fault."""
+    import logging
+
+    from bloom_mcp.manifest import AnalysisDir
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+    _patch_sentinel(tmp_path / "root", "exp", "qc", _SENTINEL_ABSENT)
+
+    with caplog.at_level(logging.DEBUG, logger="bloom_mcp.manifest.manifest"):
+        caplog.clear()
+        manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    assert manifest is not None and manifest.latest == "v1"  # still served
+    traces = [r for r in caplog.records if "no storage_backend sentinel" in r.getMessage()]
+    assert len(traces) == 1 and traces[0].levelno == logging.DEBUG
+    assert "qc_exp" in traces[0].getMessage()
+
+    # And a *stamped, matching* catalog stays silent at every level.
+    _patch_sentinel(tmp_path / "root", "exp", "qc", "local")
+    with caplog.at_level(logging.DEBUG, logger="bloom_mcp.manifest.manifest"):
+        caplog.clear()
+        AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+    assert caplog.records == []

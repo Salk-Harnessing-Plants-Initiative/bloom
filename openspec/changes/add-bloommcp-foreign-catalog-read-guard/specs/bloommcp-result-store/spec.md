@@ -107,6 +107,15 @@ flip-and-read across the physically disjoint stores can never produce one).
   neither advanced nor re-stamped, and the staging directory is torn down —
   removing the pre-write re-check must fail this scenario
 
+#### Scenario: The read-only latch holds across threads
+
+- **WHEN** a foreign catalog is served on one thread and other threads
+  concurrently attempt commits into different, native catalogs
+- **THEN** every one of those commits is refused — the latch is process-wide,
+  never per-thread, so concurrent tool calls cannot slip a commit past it —
+  and any commit that did win its race before the latch was set remains a
+  complete, resolvable run
+
 #### Scenario: After a foreign read, the whole process is read-only
 
 - **WHEN** a foreign catalog has been served under

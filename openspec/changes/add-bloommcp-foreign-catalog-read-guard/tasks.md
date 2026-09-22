@@ -199,53 +199,48 @@ live_smoke"` (matching `python-audit`), with the pre-existing
       stamps from the same `active_backend_name()` the guard reads).
 - [ ] 5.6 One-time pre-merge audit (operator step, staging + prod, **gates
       merge** — CI's database is empty, so only this can verify the real
-      buckets): run `scripts/audit_backend_sentinels.py` with each
-      environment's storage env and record BOTH numbers in the PR body — the
-      foreign/unrecognized count (must be 0: those reads fail closed on
-      deploy, and prod compose has no escape-hatch passthrough) AND the
-      unstamped count (pre-#572 catalogs the guard silently passes until
-      their next commit re-stamps them — the guard's actual day-one blind
-      spot, per the PR #782 review's amendment). Exit 0 = clean gate; exit 2 =
-      resolve before merging.
+      buckets): run `make bloommcp-audit-sentinels` with each environment's
+      `SUPABASE_URL` / `BLOOM_AGENT_KEY` (read-only; writes nothing) and
+      record BOTH numbers it prints in the PR body — the foreign/unrecognized
+      count (must be 0: those reads fail closed on deploy, and prod compose
+      has no escape-hatch passthrough) AND the unstamped count (pre-#572
+      catalogs the guard silently passes until their next commit re-stamps
+      them — the guard's day-one blind spot). Exit 0 = verified clean; 2 =
+      a catalog the guard would refuse, resolve before merging; 3 = blind
+      spot present, acknowledge with `ALLOW_UNSTAMPED=1` after recording the
+      number; 1 = the sweep could not run.
 
 ## Status notes
 
-- 5.6 is the one remaining gate: an operator step needing staging/prod bucket
-  access. `scripts/audit_backend_sentinels.py` (added in the review round) is
-  the runnable form; paste its summary lines into the PR body.
+- 5.6 is the one remaining gate and needs staging/prod credentials, which the
+  implementing environment does not have (no `.env.prod`/`.env.staging`
+  locally — only the secret-free `*.defaults`). `make bloommcp-audit-sentinels`
+  is the runnable form; paste its two summary lines into the PR body.
 
-## 6. PR #782 review round (@eberrigan, 2026-09-15)
+## 7. PR #782 review round 2 (@eberrigan, 2026-09-23)
 
-- [x] 6.1 (finding 8) Sentinel checked on the raw document before model
-      validation; precedence pinned both ways.
-- [x] 6.2 (finding 7 + suggestions) Shared `foreign_sentinel` predicate;
-      unrecognized/non-string values clamped, `!r` kept; case-insensitive
-      compare; whitespace-tolerant hatch value pinned.
-- [x] 6.3 (finding 6) Raised messages no longer advertise the escape hatch;
-      under safe_error_text's cap; docs/warning keep the hatch.
-- [x] 6.4 (finding 5) Hatch is inspection-only: sticky process flag; all
-      commits refused after a foreign read; staging torn down.
-- [x] 6.5 (finding 4) Post-upload re-check pinned (foreignize-via-upload
-      test asserting cleanup); delta wording states both windows honestly.
-- [x] 6.6 (finding 3) `agent_remedy` on the two error types, honored by the
-      envelope for declared errors only; new `bloommcp-tool-contract` delta.
-- [x] 6.7 (finding 2a) `load_frame`/`summarize_trait` and core
-      `load_experiment_data` surface the typed message (the legacy viz tools
-      were patched too, then retired/converged onto the envelope by #462's
-      merge — their successors, incl. `heritability_analysis`, are covered by
-      the `errors=` declarations and a dedicated test);
-      `trim_staleness` wraps instead of leaking the manifest-layer type;
-      experiment_utils comment corrected.
-- [x] 6.8 (finding 2b) "Tampered sentinel" struck/qualified in all six
-      places; unstamped-catalog adoption logged at INFO and pinned.
-- [x] 6.9 (finding 2c) The new var joined the hardcoded tuples in
-      `tests/unit/test_compose_dev_env_files.py` and
-      `tests/unit/test_init_dev.py` — deleting the compose or
-      `.env.dev.example` line now fails the root suite.
-- [x] 6.10 (finding 1) `scripts/audit_backend_sentinels.py` + tests; task
-      5.6 reworded to gate merge and report the unstamped count.
-- [x] 6.11 (suggestions) Double-traceback logging downgraded to one warning;
-      audit scripts document the offline-sweep hatch requirement;
-      `data_access` exports alphabetized; `load_experiment_data` docstring
-      records the raise; explicit-version sibling-class fail-closed trade-off
-      recorded in design.md.
+- [x] 7.1 Backend names now lead the foreign-catalog message and the catalog
+      identity trails it, clamped, so `safe_error_text`'s 300-char cap can
+      never strip the two backend names; pinned by a long-stem test through
+      the real truncation helper.
+- [x] 7.2 The sticky read-only latch's operational trap (one foreign read
+      disables commits for every experiment in the process) is recorded in
+      design.md's Risks with the rejected narrower alternatives, and called
+      out where storage-backends.md introduces the hatch.
+- [x] 7.3 Unstamped (pre-v5) reads leave a debug-level trace naming the
+      catalog, and `audit_backend_sentinels.py` now exits 3 (not 0) when any
+      catalog is unstamped, so "clean" and "clean but blind" are different
+      outcomes and someone must acknowledge the blind spot
+      (`--allow-unstamped`).
+- [x] 7.4 Concurrency coverage for the latch: a foreign read served on one
+      thread refuses commits on eight others, plus an interleaved
+      readers/committers race asserting nothing unexpected escapes and every
+      winning commit stayed intact.
+- [x] 7.5 One shared `foreign_catalog_message` builder replaces the message
+      template duplicated across `manifest.py` and `supabase_store.py`.
+- [x] 7.6 Trimmed the longest new docstrings, leaving the constraints a
+      future editor could break and pointing rationale at design.md.
+- [x] 7.7 `make bloommcp-audit-sentinels` added (read-only, refuses to run
+      without an explicit `SUPABASE_URL`/`BLOOM_AGENT_KEY` so a staging/prod
+      audit can never silently hit the local stack) and the PR body's stale
+      test numbers regenerated.

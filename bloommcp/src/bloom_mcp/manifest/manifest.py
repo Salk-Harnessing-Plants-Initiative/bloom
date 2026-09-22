@@ -31,22 +31,60 @@ _MANIFEST_BASENAME = "manifest.json"
 # cap — so an unrecognized value is clamped rather than interpolated verbatim.
 _UNRECOGNIZED_SENTINEL = "<unrecognized backend name>"
 
+# The catalog identity is the only variable-length part of a foreign-catalog
+# message, so it is clamped here and placed AFTER the backend names: consumer
+# paths run these messages through `safe_error_text(limit=300)`, and a long
+# experiment stem must never push the two backend names — the one thing this
+# feature exists to surface — past the truncation point (PR #782 review).
+_IDENTITY_CAP = 60
+
+
+def _clamp_identity(identity: str) -> str:
+    """Bound a catalog identity so the message around it stays under the cap."""
+    identity = identity.rstrip("/")
+    if len(identity) <= _IDENTITY_CAP:
+        return identity
+    return identity[: _IDENTITY_CAP - 1] + "\u2026"
+
+
+def foreign_catalog_message(identity: str, recorded: str, active: str, action: str) -> str:
+    """The single foreign-catalog message template (#573).
+
+    Shared by the read guard here and the write-path re-check in
+    `result_store.supabase_store` so a wording change is one edit, not two.
+    Backend names lead; the clamped identity follows, keeping the whole
+    message inside `safe_error_text`'s limit for any experiment name.
+    Deliberately never names the escape-hatch variable: bloommcp is
+    LLM-driven, and a failure response must direct investigation rather than
+    advertise its own bypass.
+    """
+    return (
+        f"foreign catalog: written by storage backend {recorded!r}, active "
+        f"backend is {active!r} \u2014 refusing to {action}. Catalog: "
+        f"{_clamp_identity(identity)}. Do not mix storage backends for one "
+        f"experiment; see bloommcp/docs/storage-backends.md."
+    )
+
+
+def _is_unstamped(value: object) -> bool:
+    """Whether a sentinel is absent/blank — a pre-v5 catalog the guard can't check."""
+    return value is None or (isinstance(value, str) and not value.strip())
+
 
 class ManifestSchemaError(Exception):
     """Raised when a manifest's schema version is newer than this code understands."""
 
 
 class ManifestBackendMismatchError(Exception):
-    """Raised when a manifest's `storage_backend` sentinel names a backend other
-    than the one now serving the read — a *foreign catalog* (#573): a bucket
-    copied to a local root, a restored backup, or a shared/overlapping root.
-    Never raised for a manifest with no usable sentinel (absent/empty — written
-    before schema v5), and never for the disjoint A→B→A flip, where each
-    catalog's own sentinel always matches the backend serving it (the
-    #395/#572 locally-undetectable non-goal). This is an accident-detection
-    control, not a tamper-proof one: whoever can edit the manifest controls
-    the compared value, and deleting/blanking the sentinel takes the pre-v5
-    pass-through."""
+    """A manifest's `storage_backend` sentinel names a backend other than the
+    one now serving the read — a *foreign catalog* (#573).
+
+    Not raised for an absent/blank sentinel (pre-v5 pass-through), nor for the
+    disjoint A→B→A flip, where each catalog's sentinel always matches its own
+    server. An accident-detection control, not a tamper-proof one: whoever can
+    edit a manifest controls the compared value. See the change's design.md
+    for the full trigger analysis.
+    """
 
 
 def validate_schema(manifest: dict) -> None:
@@ -65,25 +103,16 @@ def validate_schema(manifest: dict) -> None:
 
 def foreign_sentinel(value: object) -> Optional[str]:
     """The single #573 sentinel predicate, shared by the read guard here and
-    the write-path re-check in `result_store.supabase_store` so the two can
-    never drift apart.
+    the write-path re-check in `result_store.supabase_store`.
 
-    `value` is the raw `storage_backend` field — possibly unvalidated storage
-    bytes. Returns a display-safe recorded-backend name when the manifest is
-    foreign (written by a backend other than the active one), else None.
-    Rules:
-
-    - absent (`None`) or empty/whitespace string → not foreign (pre-v5
-      pass-through — failing it would brick every catalog written before
-      #572; the window closes when the catalog's next commit re-stamps it);
-    - comparison is stripped + lower-cased, mirroring
-      `_selected_backend_name`'s treatment of `BLOOM_STORAGE_BACKEND`, so a
-      hand-edited ``"LOCAL"`` matches rather than bricking the catalog;
-    - a present value that is not a string, or a string outside
-      `VALID_BACKENDS`, is foreign with the clamped display placeholder —
-      never interpolated verbatim into caller-facing text (interpolation
-      sites additionally keep ``%r``/``!r`` so control characters could not
-      render even if this clamp were bypassed — keep both).
+    Returns a display-safe recorded-backend name when `value` (the raw, and
+    therefore untrusted, `storage_backend` field) is foreign, else None.
+    Absent/blank is not foreign (pre-v5 pass-through). Comparison strips and
+    lower-cases, mirroring `_selected_backend_name`, so a hand-edited
+    ``"LOCAL"`` matches instead of bricking the catalog. A non-string, or a
+    string outside `VALID_BACKENDS`, is foreign but reported through the
+    clamped placeholder — keep that clamp AND the ``!r`` at interpolation
+    sites; they guard different failure modes.
     """
     if value is None:
         return None
@@ -97,13 +126,12 @@ def foreign_sentinel(value: object) -> Optional[str]:
     return recorded
 
 
-# Sticky, process-lifetime flag: has this process served at least one foreign
-# catalog under the escape hatch? Consulted by the ResultStore write path to
-# refuse ALL commits afterwards — the hatch is an inspection mode, and a
-# commit derived from foreign-read data would land in a native catalog with
-# clean provenance (and, for remove_outliers, a based_on_version that exists
-# only in the foreign catalog) — an affirmatively false lineage. Reset only
-# via storage_backend.reset_backend_for_tests().
+# Sticky, process-lifetime flag: has this process served a foreign catalog
+# under the escape hatch? The ResultStore write path then refuses ALL commits
+# (see design.md — the hatch is an inspection mode, and foreign-derived output
+# would otherwise land in a native catalog with clean provenance). Plain bool
+# assignment, so the GIL makes set/read atomic without a lock. Reset only via
+# storage_backend.reset_backend_for_tests().
 _foreign_read_served = False
 
 
@@ -143,25 +171,31 @@ def _check_backend_sentinel(prefix: str, raw_sentinel: object) -> None:
     """Fail closed when the manifest was written by a different backend (#573).
 
     Runs after `validate_schema` (so `ManifestSchemaError` keeps precedence)
-    and compares — via the shared `foreign_sentinel` predicate — against
-    `active_backend_name()`, the same function `write_manifest` stamps from,
-    so stamp and check cannot disagree. The message carries only the logical
-    storage prefix and clamped backend names — never an absolute host path,
-    and never the escape-hatch variable: bloommcp is LLM-driven, and the
-    failure response must direct investigation, not advertise its own bypass
-    (the hatch is documented in docs/storage-backends.md and named in the
-    server-side warning below, the right audiences for it).
+    and compares against `active_backend_name()` — the same function
+    `write_manifest` stamps from, so stamp and check cannot disagree.
     """
+    if _is_unstamped(raw_sentinel):
+        # Pre-v5 catalog: nothing to compare, so the guard is inert here. Logged
+        # at debug (not info/warning): on an environment that predates #572 this
+        # fires on every read of every catalog, and it describes the absence of
+        # a check rather than a problem — but without it the guard's blind spot
+        # leaves no trace at all (PR #782 review). `audit_backend_sentinels.py`
+        # reports the population-level count.
+        logger.debug(
+            "no storage_backend sentinel on catalog %s (pre-v5): the "
+            "foreign-catalog guard cannot verify it until its next commit "
+            "stamps it for the active backend",
+            _clamp_identity(prefix),
+        )
+        return
     recorded = foreign_sentinel(raw_sentinel)
     if recorded is None:
         return
     active = active_backend_name()
     if allow_foreign_manifest():
-        # Deliberate foreign inspection (BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1):
-        # warn per guarded read — never once-per-process, the one-time-signal
-        # failure mode of #572's fresh-catalog log that #573 exists to avoid —
-        # and remember it: the write path refuses all commits in a process
-        # that has served foreign data (see foreign_read_served).
+        # Deliberate foreign inspection: warn per guarded read — never
+        # once-per-process, the one-time-signal failure mode #573 exists to
+        # avoid — and latch the flag that makes this process read-only.
         global _foreign_read_served
         _foreign_read_served = True
         logger.warning(
@@ -174,11 +208,9 @@ def _check_backend_sentinel(prefix: str, raw_sentinel: object) -> None:
         )
         return
     raise ManifestBackendMismatchError(
-        f"manifest at {prefix.rstrip('/')} was written by storage backend "
-        f"{recorded!r} but the active backend is {active!r} — refusing to "
-        f"serve a catalog another backend wrote. Do not mix storage backends "
-        f"for one experiment; see bloommcp/docs/storage-backends.md "
-        f"('Do not mix backends') before proceeding."
+        foreign_catalog_message(
+            prefix, recorded, active, "serve a catalog another backend wrote"
+        )
     )
 
 
