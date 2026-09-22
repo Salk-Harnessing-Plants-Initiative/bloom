@@ -134,7 +134,13 @@ the task explicitly forbids.
   merged, which is the evidence that it discriminates; cited rather than assumed.
 - **Post-change blind spots, listed so none is discovered later:** a stale template (by design); a
   conforming template with a wrong `command`/`args`; wrong `timeout`/`retryStrategy`/`resources`; a
-  `bloomctl` tag that does not resolve to a commit carrying the exit-3 contract (filed as a follow-up);
+  `bloomctl` tag that does not resolve to a commit carrying the exit-3 contract (to be filed, task
+  6.6 — and the deeper version is that `Provenance` has no bloomctl field at all, so those three
+  stages' code identity is recorded nowhere); a registered template whose inner shape this
+  comparator cannot inspect at all — now exit 2 rather than a silent pass, but still unverified;
+  a **rogue or orphaned registered object**, since this comparator fetches only the five it expects
+  and upstream's loops over its own *files*, so neither side enumerates the namespace; a gate whose
+  `0|3` allowlist has been widened, which upstream's `check_manifests.py` checks and bloom cannot;
   a template pointed at the wrong image *repository* whose own image and env digests still agree —
   upstream's `check_manifests.py` asserts against that, bloom will not; and a re-pushed tag, which
   neither the old nor the new comparator can see.

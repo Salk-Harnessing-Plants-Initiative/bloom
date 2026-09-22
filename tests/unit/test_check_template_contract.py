@@ -267,7 +267,10 @@ def test_wrong_inner_template_name_is_a_violation(tmp_path, cluster, capsys):
     _register(cluster, _tmpl("predict", obj_name="sleap-roots-predictor-template"))
     assert _run(tmp_path, wf, cluster) == mod.EXIT_VIOLATION
     err = capsys.readouterr().err
-    assert "predictor" in err and "sleap-roots-predictor-template" in err
+    # Asserting the whole phrase, not `"predictor" in err`: that is a substring of
+    # "sleap-roots-predictor-template" and so could never fail independently.
+    assert "declares no template named 'predictor'" in err
+    assert "sleap-roots-predictor-template" in err
 
 
 def test_passed_parameter_not_declared_by_the_template_is_a_violation(tmp_path, cluster, capsys):
@@ -291,17 +294,33 @@ def test_required_template_input_not_supplied_is_a_violation(tmp_path, cluster, 
     assert "predictor-code" in capsys.readouterr().err
 
 
-def test_required_input_may_be_supplied_by_a_workflow_level_argument(tmp_path, cluster):
+def test_a_workflow_level_global_does_not_satisfy_a_required_template_input(tmp_path, cluster):
+    """Argo binds `spec.arguments.parameters` to the ENTRYPOINT template's inputs.
+
+    A template invoked through a DAG task's `templateRef` must have its non-defaulted inputs
+    supplied by that task, or the controller fails with `inputs.parameters.X was not
+    supplied`. An earlier draft subtracted the workflow globals here, which would have
+    exempted any required input whose name merely collided with a global — silently
+    disabling the assertion the design argues matters most.
+    """
     wf = _wf([_task("write-back")], globals_=["scan-ids"])
     _register(cluster, _tmpl("write-back", inputs=[{"name": "scan-ids"}]))
-    assert _run(tmp_path, wf, cluster) == mod.EXIT_OK
+    assert _run(tmp_path, wf, cluster) == mod.EXIT_VIOLATION
 
 
-def test_declared_input_with_a_default_need_not_be_passed(tmp_path, cluster):
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"name": "verbosity", "default": "info"},
+        {"name": "verbosity", "value": "info"},
+        {"name": "verbosity", "valueFrom": {"configMapKeyRef": {"name": "c", "key": "k"}}},
+    ],
+    ids=["default", "value", "valueFrom"],
+)
+def test_a_declared_input_that_supplies_itself_need_not_be_passed(tmp_path, cluster, entry):
+    """Argo treats an input as unsatisfied only when Value and ValueFrom are both nil."""
     wf = _wf([_task("write-back")])
-    _register(
-        cluster, _tmpl("write-back", inputs=[{"name": "verbosity", "default": "info"}])
-    )
+    _register(cluster, _tmpl("write-back", inputs=[entry]))
     assert _run(tmp_path, wf, cluster) == mod.EXIT_OK
 
 
@@ -424,12 +443,18 @@ def test_a_kubectl_failure_other_than_notfound_does_not_report_missing(tmp_path,
 
 def test_unavailable_outranks_a_violation_in_the_same_run(tmp_path, cluster, capsys):
     """A partial check must never be reportable as a complete verdict."""
-    wf = _wf([_task("predictor", template="predict"), _task("write-back")])
-    _register(cluster, _tmpl("predictor"))
+    # Both faults are cluster-side, so the expected-set guard passes and the run reaches the
+    # per-template checks. Perturbing the vendored Workflow instead would trip that guard
+    # first and this would silently stop testing precedence at all.
+    wf = _wf([_task("predictor"), _task("write-back")])
+    _register(cluster, _tmpl("predict", obj_name="sleap-roots-predictor-template"))
     cluster["objects"]["sleap-roots-write-back-template"] = mod.CheckUnavailable("boom")
     assert _run(tmp_path, wf, cluster) == mod.EXIT_UNAVAILABLE
     err = capsys.readouterr().err
-    assert "predict" in err, "the violation must still be reported, not swallowed"
+    # `"predict" in err` would be satisfied by the object name alone; assert the label,
+    # which appears nowhere on the could-not-check path.
+    assert "WRONG INNER TEMPLATE" in err, "the violation must still be reported, not swallowed"
+    assert "CHECK FAILED" in err
 
 
 def test_kubectl_returning_success_with_non_workflowtemplate_output_is_unavailable(
@@ -522,15 +547,19 @@ def test_fetch_live_invokes_kubectl_with_the_expected_argv(monkeypatch):
 
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
     mod._fetch_live("sleap-roots-predictor-template", "runai-busch-lab")
+    # Flags BEFORE `--`, positionals after. Verified against real kubectl 2026-09-22:
+    # `get workflowtemplate -- <obj> -n ns -o yaml` silently ignores `-o yaml` and returns
+    # the table form, because `--` terminates parsing for the later flags too.
     assert seen["argv"] == [
         "kubectl",
         "get",
-        "workflowtemplate",
-        "sleap-roots-predictor-template",
         "-n",
         "runai-busch-lab",
         "-o",
         "yaml",
+        "--",
+        "workflowtemplate",
+        "sleap-roots-predictor-template",
     ]
     assert seen["timeout"], "a wedged VPN must not hang the gate indefinitely"
 
@@ -574,6 +603,194 @@ def test_fetch_live_raises_for_a_non_notfound_kubectl_error(monkeypatch):
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
     with pytest.raises(mod.CheckUnavailable):
         mod._fetch_live("x", "ns")
+
+
+def _probe_stub(monkeypatch, *, returncode, stdout="", stderr=""):
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["timeout"] = kwargs.get("timeout")
+        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    return seen
+
+
+def test_probe_cluster_invokes_kubectl_with_the_expected_argv(monkeypatch):
+    """Every check_contract test patches _probe_cluster away, so a typo here would ship."""
+    seen = _probe_stub(monkeypatch, returncode=0, stdout="workflowtemplate.argoproj.io/x\n")
+    mod._probe_cluster("runai-busch-lab")
+    assert seen["argv"] == [
+        "kubectl",
+        "get",
+        "workflowtemplates",
+        "-n",
+        "runai-busch-lab",
+        "-o",
+        "name",
+    ]
+    assert seen["timeout"]
+
+
+def test_probe_cluster_treats_forbidden_as_reachable(monkeypatch):
+    """A kubeconfig may hold `get` without `list`; that is a checkable cluster."""
+    _probe_stub(monkeypatch, returncode=1, stderr='workflowtemplates is Forbidden for user "x"')
+    mod._probe_cluster("ns")  # must not raise
+
+
+def test_probe_cluster_raises_when_the_cluster_is_unreachable(monkeypatch):
+    _probe_stub(monkeypatch, returncode=1, stderr="Unable to connect to the server")
+    with pytest.raises(mod.CheckUnavailable):
+        mod._probe_cluster("ns")
+
+
+def test_probe_cluster_rejects_a_namespace_holding_no_templates(monkeypatch):
+    """A typo'd --namespace exits 0 with no output, and every get then NotFounds.
+
+    Without this the operator's likeliest mistake produces five fabricated NOT REGISTERED
+    violations and exit 1 on a perfectly healthy cluster.
+    """
+    _probe_stub(monkeypatch, returncode=0, stdout="   \n")
+    with pytest.raises(mod.CheckUnavailable, match="wrong namespace"):
+        mod._probe_cluster("runai-typo-lab")
+
+
+def test_default_namespace_is_the_configured_dispatch_namespace():
+    assert mod.DEFAULT_NAMESPACE == "runai-busch-lab"
+
+
+def test_fetch_live_treats_success_with_an_empty_body_as_unavailable(monkeypatch):
+    """`yaml.safe_load("")` is None — the same sentinel as NotFound, before this fix."""
+
+    def fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    with pytest.raises(mod.CheckUnavailable):
+        mod._fetch_live("sleap-roots-predictor-template", "ns")
+
+
+def test_an_inline_dag_task_is_unavailable_not_a_violation(tmp_path, cluster, capsys):
+    """A task with no templateRef is invisible to the expected-set guard.
+
+    Before the fix it reached `_fetch_live(None, ...)`, and `subprocess.run` rejects a None
+    argv element with an uncaught TypeError — process exit 1, the violation code.
+    """
+    wf = _wf([_task("predictor"), {"name": "notify", "template": "local-notify"}])
+    _register(cluster, _tmpl("predictor"))
+    result = _run(tmp_path, wf, cluster, expected=_refs("predictor"))
+    assert result == mod.EXIT_UNAVAILABLE
+    err = capsys.readouterr().err
+    assert "notify" in err
+    assert "NOT REGISTERED" not in err
+
+
+@pytest.mark.parametrize(
+    "bad_name",
+    ["--server=http://127.0.0.1:9/", "--kubeconfig=/tmp/evil.yaml", "-n"],
+)
+def test_a_templateref_name_that_looks_like_a_flag_is_refused(tmp_path, cluster, bad_name):
+    """Verified live 2026-09-22: kubectl honours `--server=...` as a flag and dials it.
+
+    The vendored Workflow is copied from another GitHub org, so its object names are not
+    automatically trustworthy. A name without a `template` is invisible to the expected-set
+    guard, which is why this is checked at the point of use rather than only at discovery.
+    """
+    task = {"name": "evil", "templateRef": {"name": bad_name}}
+    wf = _wf([_task("predictor"), task])
+    _register(cluster, _tmpl("predictor"))
+    assert _run(tmp_path, wf, cluster, expected=_refs("predictor")) == mod.EXIT_UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        {"script": {"image": "img:1", "volumeMounts": [{"name": "nope"}]}},
+        {"initContainers": [{"image": "img:1", "volumeMounts": [{"name": "nope"}]}]},
+        {"sidecars": [{"image": "img:1", "volumeMounts": [{"name": "nope"}]}]},
+    ],
+    ids=["script", "initContainers", "sidecars"],
+)
+def test_non_container_template_shapes_are_still_inspected(tmp_path, cluster, shape):
+    """Reaching only into `container` made three assertions vacuous on these shapes."""
+    wf = _wf([_task("predictor")], volumes=["declared-only"])
+    doc = _tmpl("predictor")
+    doc["spec"]["templates"][0].pop("container")
+    doc["spec"]["templates"][0].update(shape)
+    _register(cluster, doc)
+    assert _run(tmp_path, wf, cluster, expected=_refs("predictor")) == mod.EXIT_VIOLATION
+
+
+def test_a_template_with_no_inspectable_container_is_unavailable(tmp_path, cluster, capsys):
+    """An unrecognised shape must fail loud, not pass vacuously."""
+    wf = _wf([_task("predictor")])
+    doc = _tmpl("predictor")
+    doc["spec"]["templates"][0].pop("container")
+    _register(cluster, doc)
+    assert _run(tmp_path, wf, cluster, expected=_refs("predictor")) == mod.EXIT_UNAVAILABLE
+    assert "cannot verify" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "env,image",
+    [
+        (
+            {"SRP_PREDICT_CONTAINER_DIGEST": None},
+            "ghcr.io/x/predict:sha-1@sha256:aaaa",
+        ),
+        (
+            {"SRP_PREDICT_CONTAINER_DIGEST": "sha256:bbbb"},
+            "ghcr.io/x/bloomctl:sha-1",
+        ),
+    ],
+    ids=["valueFrom-not-value", "image-not-digest-pinned"],
+)
+def test_digest_assertion_skips_what_it_cannot_justify(tmp_path, cluster, env, image):
+    """Each of these was a false violation on a correct cluster before the narrowing."""
+    wf = _wf([_task("predictor")])
+    doc = _tmpl("predictor", image=image)
+    entries = []
+    for name, value in env.items():
+        entry = {"name": name}
+        if value is None:
+            entry["valueFrom"] = {"configMapKeyRef": {"name": "c", "key": "k"}}
+        else:
+            entry["value"] = value
+        entries.append(entry)
+    doc["spec"]["templates"][0]["container"]["env"] = entries
+    _register(cluster, doc)
+    assert _run(tmp_path, wf, cluster, expected=_refs("predictor")) == mod.EXIT_OK
+
+
+def test_two_digest_env_vars_are_not_a_violation(tmp_path, cluster):
+    """Recording another image's digest for provenance chaining is legitimate."""
+    wf = _wf([_task("write-back")])
+    doc = _tmpl("write-back", image="ghcr.io/x/bloomctl:sha-1@sha256:cccc")
+    doc["spec"]["templates"][0]["container"]["env"] = [
+        {"name": "SRP_PREDICT_CONTAINER_DIGEST", "value": "sha256:aaaa"},
+        {"name": "SRT_TRAITS_CONTAINER_DIGEST", "value": "sha256:bbbb"},
+    ]
+    _register(cluster, doc)
+    assert _run(tmp_path, wf, cluster, expected=_refs("write-back")) == mod.EXIT_OK
+
+
+@pytest.mark.parametrize(
+    "mutate,ids",
+    [
+        (lambda wf: wf["spec"].update(volumes={"not": "a list"}), "volumes-mapping"),
+        (
+            lambda wf: wf["spec"].update(arguments={"parameters": [{"no": "name"}]}),
+            "param-without-name",
+        ),
+    ],
+)
+def test_a_structurally_invalid_vendored_workflow_is_unavailable(tmp_path, cluster, mutate, ids):
+    """A configuration error in this repo is not nine cluster contract violations."""
+    wf = _wf([_task("predictor")], volumes=["v"])
+    mutate(wf)
+    _register(cluster, _tmpl("predictor"))
+    assert _run(tmp_path, wf, cluster, expected=_refs("predictor")) == mod.EXIT_UNAVAILABLE
 
 
 def test_the_module_makes_no_network_request_at_all():

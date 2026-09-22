@@ -117,8 +117,15 @@ write-back, exit-gate). Nothing verifies that such a tag resolves to a bloom com
 behaviour bloom depends on — archived task 1.1 records that images-downloader must run a `bloomctl`
 containing PR #830 or exit `3` is never emitted at all, in which case every check passes and partial
 failures still fail whole runs. Spot-checked at authoring: `28034f6` does contain #830's
-`ctx.exit(0 if result.ok else 3)`. Not asserted here, and filed as a follow-up rather than left
-implicit. Note also that the upstream invariant this proposal leans on for image provenance is enforced
+`ctx.exit(0 if result.ok else 3)`. Not asserted here, and **to be filed as a follow-up before
+merge (task 6.6)** — written in the future tense deliberately, because this PR says `Closes #879`
+and an unfiled follow-up described in the past tense is buried the moment the issue auto-closes.
+The sharper framing, which the review surfaced: this is not merely an unverified precondition but
+a **structural hole in the recorded provenance**. `Provenance` carries only
+`predict_container_digest` and `traits_container_digest`, so the stages that select the inputs,
+commit the rows and decide the run's verdict have their code identity recorded nowhere in the
+envelope. No bloom-side check can close that; it needs a contracts field. What still pins the
+science is `predict_code_sha`/`traits_code_sha` — `bloomctl` computes no trait values. Note also that the upstream invariant this proposal leans on for image provenance is enforced
 by `sleap-roots-pipeline/scripts/check_manifests.py`, **manually** — that repo has no `.github/` and no
 CI at all — so "upstream checks it" means "a human runs a second script", not "a job enforces it".
 

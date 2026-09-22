@@ -79,8 +79,10 @@
       > time so they can advance independently of that pin. From 2026-09-17 the comparator reported
       > DRIFT on all five correct templates. The script is now
       > `scripts/check_template_contract.py`, derives its expectations from the vendored `Workflow`
-      > instead, and asserts no drift at all; the invocation below is superseded by
-      > `python3 scripts/check_template_contract.py`.
+      > instead, and asserts no drift at all; the invocation **above** (the `wsl -e bash -c …`
+      > block naming `scripts/check_registered_templates.py`) is superseded by
+      > `python3 scripts/check_template_contract.py`. Task 7.5's pre-merge re-run of this task,
+      > further down this file, is governed by this annotation too.
       > **The 2026-09-16 result recorded here was sound at the time** — nothing changed in the
       > templates between the pin and 2026-09-17 — so it should not be retro-corrected. Its
       > instruction to record all three `bloomctl` image references also remains live: nothing yet

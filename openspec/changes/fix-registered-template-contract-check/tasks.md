@@ -169,15 +169,36 @@ one test asserts the real `kubectl` argv and timeout because every other test mo
       EXITCODE=0
       ```
       Same cluster and same commit that reported DRIFT ×5 exit 1 in 0.1.
-- [x] 4.2 **Negative controls against the real cluster — all five exit 1**, via broken *copies* of the
-      vendored `Workflow` (never the vendored file, never mutating the cluster):
-      | case | observed |
-      |---|---|
-      | nonexistent `templateRef.name` | `NOT REGISTERED sleap-roots-nonexistent-template (referenced by task 'predictor')` |
-      | wrong inner `template:` | `WRONG INNER TEMPLATE … declares no template named 'predict-typo' (it declares ['predictor'])` |
-      | volume removed from `spec.volumes` | `UNDECLARED VOLUME … mounts 'traits-output-dir'` ×2 (trait-extractor, write-back) |
-      | global removed from `spec.arguments` | `UNRESOLVABLE REF … references {{workflow.parameters.scan-ids}}` |
-      | exit-gate params truncated | `MISSING PARAMETER … requires 'predictor-code' (no default)` ×2 |
+- [x] 4.2 **Negative controls against the real cluster**, via broken *copies* of the vendored
+      `Workflow` (never the vendored file, never mutating the cluster).
+
+      **An earlier version of this task recorded all five as exit 1, and two of those rows were
+      not reproducible.** They were produced by a harness that injected a matching
+      `expected_refs`, so the discovery guard could not pre-empt the case under test — and the
+      record did not say so. Anyone re-running the CLI as shipped would have got a different
+      answer. That is the same defect this change retracts in task 9.6 of
+      `fix-cyl-redelivery-blob-collision`, committed by this change's own author, and caught by
+      the PR review rather than by me. Re-run 2026-09-22 through the **production path**
+      (`--workflow <copy> --namespace runai-busch-lab`, no injection), recording what happened:
+
+      | case | observed | exit |
+      |---|---|---|
+      | volume removed from `spec.volumes` | `UNDECLARED VOLUME … mounts 'traits-output-dir'` ×2 (trait-extractor, write-back) | **1** |
+      | global removed from `spec.arguments` | `UNRESOLVABLE REF … references {{workflow.parameters.scan-ids}}` | **1** |
+      | exit-gate params truncated | `MISSING PARAMETER … requires 'predictor-code' (no default)` ×2 | **1** |
+      | nonexistent `templateRef.name` | `CHECK FAILED the vendored Workflow's templateRefs are not the expected set` | **2** |
+      | wrong inner `template:` | `CHECK FAILED the vendored Workflow's templateRefs are not the expected set` | **2** |
+      | inline task with no `templateRef` | `CHECK FAILED task 'notify' has no resolvable templateRef` | **2** |
+
+      The last three are **correct behaviour, not a regression**: all three edit the vendored
+      side, and a vendored-side ref change is a repo configuration fault the expected-set guard
+      is there to catch, not a cluster contract violation. The cluster-side equivalents — a
+      genuinely absent object and a genuinely wrong inner name — are covered by 4.3 and by
+      `test_missing_workflow_template_is_a_violation` /
+      `test_wrong_inner_template_name_is_a_violation`, which perturb the cluster rather than the
+      repo. So three of the six contract assertions are live-proven end to end through the
+      production path; the other three are proven against real `kubectl` only at the
+      classification step (4.3) plus unit tests. Stated precisely rather than rounded up.
 - [x] 4.3 The `NotFound` classification confirmed against real `kubectl`, which is the one assumption
       unit tests cannot reach: `kubectl get workflowtemplate sleap-roots-does-not-exist` emits
       `Error from server (NotFound): workflowtemplates.argoproj.io "…" not found`, so the classifier
@@ -217,9 +238,48 @@ one test asserts the real `kubectl` argv and timeout because every other test mo
       unarchived change touches `cyl-pipeline-dispatch` at all. Both deltas are ADDED, not MODIFIED,
       so the archive-ordering hazard does not apply. **Re-check immediately before merge**, since
       other changes land meanwhile.
-- [ ] 6.3 `/review-pr` (5-lens adversarial). Fix what it finds, including in this change's own
-      reasoning — the proposal review already corrected three of its author's claims and two of its
-      own test designs.
+- [x] 6.3 **`/review-pr` run 2026-09-22 on PR #892; scores 7.5 / 7.5 / 8 / 7 / 6.** It found nine
+      real defects, every one of them an instance of a fault this change was written to abolish —
+      either a non-violation reported with the violation code, or an assertion whose failure mode
+      was a silent pass. All fixed in this PR, with live re-verification:
+      1. **A DAG task with no `templateRef`** (an ordinary inline step) was invisible to the
+         expected-set guard, reached `_fetch_live(None, …)`, and died on an uncaught `TypeError` —
+         process exit 1, the violation code. Now exit 2, naming the task.
+      2. **`required_inputs(...) - passed - globals_` was unsound.** Argo binds
+         `spec.arguments.parameters` to the *entrypoint* template's inputs; a `templateRef`'d DAG
+         task must supply its callee's non-defaulted inputs itself. Subtracting the globals
+         exempted any required input whose name merely collided with a global — silently disabling
+         the assertion the design argues matters most. Inert today, removed anyway; the test that
+         pinned the wrong behaviour is inverted.
+      3. **`kubectl` exit 0 with an empty body** parsed to `None`, the same sentinel as `NotFound`,
+         so it reported `NOT REGISTERED` + exit 1. Now exit 2.
+      4. **A typo'd `--namespace`** passed the probe (a list against a nonexistent namespace exits
+         0) and then produced five fabricated `NOT REGISTERED` violations. The probe now keeps its
+         listing and refuses an empty one. Verified live: `--namespace runai-typo-lab` → exit 2.
+      5. **argv injection.** A `templateRef.name` beginning with `-` reached `kubectl` as a flag,
+         and a name without a `template` was invisible to the discovery guard. **Verified live**:
+         `kubectl get workflowtemplate --server=http://127.0.0.1:9/ …` was honoured and dialled,
+         so `--kubeconfig=`/`--token=` could exfiltrate the operator's bearer token from a file
+         vendored out of another GitHub org. Fixed with a `--` terminator and a DNS-1123 check.
+         Also measured: `get workflowtemplate -- <obj> -n ns -o yaml` silently *ignores* `-o yaml`,
+         so the flags must precede the terminator — the first fix attempt was wrong and the live
+         check caught it.
+      6. **`script:` / `initContainers` / `sidecars` templates** made the volume, image and digest
+         assertions vacuous, reporting OK on a template with an undeclared mount. All accessors now
+         cover them, and a template with no inspectable container is exit 2, not a silent pass.
+      7. **`required_inputs` ignored `valueFrom`**, so an input drawing from a `configMapKeyRef`
+         was a false `MISSING PARAMETER`.
+      8. **`digest_disagreements` had three false-positive paths** — a `valueFrom` digest read as
+         `""`, a tag-pinned image carrying another component's digest, and two digest vars on one
+         container. Narrowed to the case it can actually justify.
+      9. **A malformed `spec.volumes`/`spec.arguments`** in the vendored file produced up to nine
+         cluster contract violations instead of exit 2.
+      Two test defects also fixed: `assert "predictor" in err` is subsumed by the object name it
+      appears in and could never fail independently, and
+      `test_unavailable_outranks_a_violation_in_the_same_run` perturbed the vendored side, so the
+      guard fired first and the assertion was satisfied by the guard's own output — it was not
+      testing precedence at all. Strengthening the assertion is what exposed it.
+      Test count 53 → 74.
 - [ ] 6.4 `/pre-merge` green: lint + full suite + OpenSpec validation.
 - [ ] 6.5 PR into **`staging`**, bundling proposal + implementation, closing bloom#879.
 - [ ] 6.6 File the two follow-up issues named in the proposal's Impact: the `bloomctl`

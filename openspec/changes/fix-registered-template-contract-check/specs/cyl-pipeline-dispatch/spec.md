@@ -19,10 +19,16 @@ any failure as a contract violation naming the specific template and field:
 - that template declares an inner template whose `name` equals the referenced `templateRef.template`;
 - every parameter the task passes in `arguments.parameters` is declared in that inner template's
   `inputs.parameters`;
-- every entry in that inner template's `inputs.parameters` that carries neither a `default` nor a
-  `value` is supplied, by the task's `arguments.parameters` or by the `Workflow`'s own
-  `spec.arguments.parameters`;
-- every `volumeMounts[].name` on that inner template is declared in the `Workflow`'s `spec.volumes`;
+- every entry in that inner template's `inputs.parameters` that carries none of `default`, `value`
+  or `valueFrom` is supplied by that task's own `arguments.parameters`. A workflow-level
+  `spec.arguments.parameters` entry SHALL NOT be treated as supplying it: those bind to the
+  entrypoint template's inputs and are otherwise available only for `{{workflow.parameters.*}}`
+  substitution, so a template reached by `templateRef` whose required input merely shares a name
+  with a global is still unresolvable at run time;
+- every `volumeMounts[].name` on that inner template is declared in the `Workflow`'s `spec.volumes`,
+  counting every container-shaped member of the template — `container`, `script`, `initContainers`
+  and `sidecars` alike, since reaching only into `container` would make this assertion and the
+  image assertions vacuous on an equally valid template shape;
 - every `{{workflow.parameters.<name>}}` the inner template references is declared in the `Workflow`'s
   `spec.arguments.parameters`.
 
@@ -46,11 +52,22 @@ contract violation through with it.
 
 The comparator SHALL nonetheless assert image-reference self-consistency, which requires no recorded
 pin and cannot be disturbed by a legitimate upstream bump because both sides of the comparison move
-together: where an inner template declares a container-digest environment variable naming its own
-image, that variable's value SHALL equal the digest on that container's `image`. Those values are
-recorded as the provenance of the trait rows the pipeline writes, so a disagreement durably attributes
-trait data to an image that did not produce it. Image references that the comparator does not assert
-SHALL still be printed, on every path including the violation path, for the operator's record.
+together: where a container declares exactly one container-digest environment variable with a literal
+`value`, and that container's `image` is digest-pinned, that variable's value SHALL equal the image's
+digest. Those values are recorded as the provenance of the trait rows the pipeline writes, so a
+disagreement durably attributes trait data to an image that did not produce it. The three
+qualifications are load-bearing and SHALL NOT be dropped: a `valueFrom` digest is not knowable here,
+an image without a digest offers nothing to compare against, and two such variables on one container
+mean it is recording some other image's digest for provenance chaining — each would otherwise report
+a violation that no change to this repository could clear. Image references that the comparator does
+not assert SHALL still be printed, on every path including the violation path, for the operator's
+record.
+
+This assertion is conditional on the environment variable being present, and its **absence is not
+checked**. A template that is digest-pinned but declares no digest variable, or that drops both,
+SHALL therefore pass — which is the shape of the defect that produced empty provenance in every
+result envelope before it was fixed upstream. Recorded as a known limit of this requirement rather
+than left for a reader to infer from the wording.
 
 The comparator SHALL use exit code `0` for a satisfied contract, `1` for a contract violation, and `2`
 for a check that could not be completed, and SHALL NOT report any one of those three as another. It
@@ -169,11 +186,12 @@ cluster and therefore cannot run there.
 - **THEN** the comparator exits `2`, not `1`
 - **AND** its output reports both, so the operator sees the violation as well as the incomplete check
 
-#### Scenario: The comparator makes no network request on any path
+#### Scenario: The comparator fetches no upstream content on any path
 
 - **WHEN** the comparator runs to completion on any path — satisfied, violated, or could-not-check
-- **THEN** it issues no outbound network request, because every expectation is derived from the
-  vendored `Workflow` in this repository
+- **THEN** it issues no outbound request other than the `kubectl` calls to the configured cluster,
+  and in particular fetches nothing from the upstream repository and reads no pinned commit,
+  because every expectation is derived from the vendored `Workflow` in this repository
 
 ### Requirement: A recorded verification of the registered templates names what was run and observed
 

@@ -108,6 +108,15 @@ EXPECTED_TEMPLATE_REFS = frozenset(
 _WORKFLOW_PARAM_REF = re.compile(r"\{\{\s*workflow\.parameters\.([A-Za-z0-9_.-]+)\s*\}\}")
 _DIGEST_ENV_SUFFIX = "_CONTAINER_DIGEST"
 
+# Kubernetes object names are DNS-1123 subdomains. Enforced before a name reaches `kubectl`
+# as a positional argument: the `--` terminator already stops a leading dash being read as a
+# flag, and this refuses the malformed name outright rather than asking the cluster about it.
+_DNS1123 = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$")
+
+
+def _is_dns1123(value: object) -> bool:
+    return isinstance(value, str) and bool(_DNS1123.match(value))
+
 
 class CheckUnavailable(Exception):
     """The check could not be completed — never reported as a contract violation.
@@ -134,6 +143,23 @@ def load_workflow(path: Path) -> dict:
         raise CheckUnavailable(f"cannot parse {path}: {exc}") from exc
     if not isinstance(doc, dict) or not isinstance(doc.get("spec"), dict):
         raise CheckUnavailable(f"{path} is not a Workflow mapping with a `spec`")
+
+    # A structurally invalid vendored file is "could not check", not "the cluster is broken".
+    # Without this, `spec.volumes` written as a mapping silently yields an empty set and every
+    # mount in every template is reported as an undeclared volume — a configuration error in
+    # this repo, dressed up as nine cluster contract violations.
+    spec = doc["spec"]
+    for key, container in (
+        ("spec.volumes", spec.get("volumes")),
+        ("spec.arguments.parameters", (spec.get("arguments") or {}).get("parameters")),
+    ):
+        if container is None:
+            continue
+        if not isinstance(container, list):
+            raise CheckUnavailable(f"{path}: {key} is {type(container).__name__}, not a list")
+        for entry in container:
+            if not isinstance(entry, dict) or not entry.get("name"):
+                raise CheckUnavailable(f"{path}: an entry in {key} has no `name`")
     return doc
 
 
@@ -214,11 +240,17 @@ def declared_inputs(template: dict) -> set[str]:
 
 
 def required_inputs(template: dict) -> set[str]:
-    """Declared inputs with neither a `default` nor a `value` — the caller must supply them.
+    """Declared inputs the caller must supply: no `default`, no `value`, no `valueFrom`.
 
     All three of `exit-gate`'s are of this kind, so an upstream template gaining a fourth is
     an accepted submission that the controller then fails to resolve, at the DAG's only leaf,
     after `write-back` has already committed trait rows.
+
+    `valueFrom` counts as supplied. Argo's own resolution treats an input as unsatisfied only
+    when `Value == nil && ValueFrom == nil`, so an input drawing from a `configMapKeyRef` (or
+    `supplied`, on a suspend template) needs no argument from the caller. Omitting that check
+    would raise `MISSING PARAMETER` on a correct cluster — a false alarm in a gate whose whole
+    thesis is that false alarms train an operator to wave real ones through.
     """
     entries = (template.get("inputs") or {}).get("parameters")
     if not isinstance(entries, list):
@@ -230,11 +262,30 @@ def required_inputs(template: dict) -> set[str]:
         and e.get("name")
         and "default" not in e
         and "value" not in e
+        and "valueFrom" not in e
     }
 
 
+def _containers(template: dict) -> list[dict]:
+    """Every container-shaped member of an inner template.
+
+    `script:` is a Container plus `source`, and `initContainers`/`sidecars` carry their own
+    `volumeMounts` and `image`. Reaching only into `template["container"]` would make the
+    volume, image and digest assertions silently vacuous the moment upstream converts a stage
+    to a `script:` template — three checks turning into no-ops while the comparator still
+    prints OK. `_assert_inspectable` refuses that outcome outright.
+    """
+    found = [template.get("container"), template.get("script")]
+    for key in ("initContainers", "sidecars"):
+        found.extend(template.get(key) or [])
+    return [c for c in found if isinstance(c, dict)]
+
+
 def mount_names(template: dict) -> set[str]:
-    return _named((template.get("container") or {}).get("volumeMounts"))
+    names: set[str] = set()
+    for container in _containers(template):
+        names |= _named(container.get("volumeMounts"))
+    return names
 
 
 def workflow_parameter_refs(template: dict) -> set[str]:
@@ -247,31 +298,63 @@ def container_images(document: dict) -> list[tuple[str, str]]:
     for template in (document.get("spec") or {}).get("templates") or []:
         if not isinstance(template, dict):
             continue
-        image = (template.get("container") or {}).get("image")
-        if image:
-            found.append((template.get("name", "?"), image))
+        for container in _containers(template):
+            image = container.get("image")
+            if image:
+                found.append((template.get("name", "?"), image))
     return found
+
+
+def _assert_inspectable(template: dict, label: str) -> None:
+    """Refuse to pass an inner template whose shape this comparator cannot read.
+
+    An unrecognised shape must not read as a clean pass — that is the "failure mode is
+    everything is fine" this whole module exists to outlaw, and it would be especially
+    galling here because the template would not even appear in the printed image list.
+    """
+    if not _containers(template):
+        raise CheckUnavailable(
+            f"{label} declares no container, script, initContainers or sidecars — "
+            "this comparator cannot verify its volumes or images"
+        )
 
 
 def digest_disagreements(template: dict) -> list[tuple[str, str, str]]:
     """`*_CONTAINER_DIGEST` env vars that disagree with their own container's image digest.
 
     Self-referential on purpose: both sides move together on a legitimate upstream bump, so
-    this can never reproduce bloom #879, unlike comparing against a recorded pin.
+    this cannot reproduce bloom #879, unlike comparing against a recorded pin.
+
+    Deliberately narrow, because every broadening of it is a way to cry wolf on a correct
+    cluster. A container is compared only when all three hold:
+
+    * the env entry carries a literal `value` — a `valueFrom` digest is unknowable here, and
+      reading it as the empty string would report a mismatch against a correct pin;
+    * its `image` is digest-pinned — with no `@sha256:` there is nothing to compare against,
+      and three of the five templates run a tag-pinned `bloomctl` today;
+    * exactly one such variable is present — two means the template is recording some *other*
+      image's digest for provenance chaining, which is a legitimate thing for a write-back
+      stage to do and which no bloom-side change could ever satisfy.
+
+    Anything skipped is reported by the caller as an advisory, never as a violation.
     """
-    container = template.get("container") or {}
-    image = container.get("image") or ""
-    image_digest = image.partition("@")[2]
     problems = []
-    for entry in container.get("env") or []:
-        if not isinstance(entry, dict):
+    for container in _containers(template):
+        image = container.get("image") or ""
+        image_digest = image.partition("@")[2]
+        digest_vars = [
+            e
+            for e in container.get("env") or []
+            if isinstance(e, dict) and (e.get("name") or "").endswith(_DIGEST_ENV_SUFFIX)
+        ]
+        if len(digest_vars) != 1 or not image_digest:
             continue
-        name = entry.get("name") or ""
-        if not name.endswith(_DIGEST_ENV_SUFFIX):
+        entry = digest_vars[0]
+        if "value" not in entry:
             continue
         declared = str(entry.get("value") or "")
         if declared != image_digest:
-            problems.append((name, declared, image_digest or "<image is not digest-pinned>"))
+            problems.append((entry["name"], declared, image_digest))
     return problems
 
 
@@ -299,18 +382,31 @@ def _kubectl(args: list[str]) -> subprocess.CompletedProcess:
 
 
 def _probe_cluster(namespace: str) -> None:
-    """Fail fast and unambiguously when the cluster is simply not reachable.
+    """Fail fast and unambiguously when the cluster is not reachable, or is the wrong one.
 
     A `Forbidden` is treated as reachable: a kubeconfig may hold `get` without `list`, and
     reporting could-not-check on a perfectly checkable cluster is its own false alarm.
+
+    The listing is *kept*, not discarded. `kubectl get` against a namespace that does not
+    exist — or the wrong one — exits 0 with no output, so a mistyped `--namespace` would
+    otherwise sail past this probe and turn every subsequent `NotFound` into a fabricated
+    `NOT REGISTERED`: five contract violations, exit 1, on a perfectly healthy cluster. That
+    is the same fabrication this comparator was rewritten to eliminate, one layer out, and
+    it is the operator's single most likely mistake.
     """
     proc = _kubectl(["get", "workflowtemplates", "-n", namespace, "-o", "name"])
-    if proc.returncode == 0 or "Forbidden" in proc.stderr:
+    if "Forbidden" in proc.stderr:
         return
-    raise CheckUnavailable(
-        f"cannot list workflowtemplates in {namespace} "
-        f"(VPN down, or wrong KUBECONFIG): {proc.stderr.strip()}"
-    )
+    if proc.returncode != 0:
+        raise CheckUnavailable(
+            f"cannot list workflowtemplates in {namespace} "
+            f"(VPN down, or wrong KUBECONFIG): {proc.stderr.strip()}"
+        )
+    if not proc.stdout.strip():
+        raise CheckUnavailable(
+            f"namespace {namespace!r} holds no WorkflowTemplates at all — wrong namespace, "
+            "or wrong kubeconfig context? Refusing to report five missing templates."
+        )
 
 
 def _fetch_live(obj: str, namespace: str) -> dict | None:
@@ -318,17 +414,30 @@ def _fetch_live(obj: str, namespace: str) -> dict | None:
 
     The version this replaced returned None on *any* non-zero exit, so an unreachable
     cluster was reported as five missing templates and exit 1 — a fabricated contract
-    violation. Only `NotFound` means absent.
+    violation. Only a `NotFound` means absent; in particular a success with an empty body
+    is *not* absence, and must not reuse the same sentinel.
+
+    `--` terminates the flag list, so the positional arguments follow it and every flag
+    precedes it. Measured 2026-09-22: `get workflowtemplate -- <obj> -n ns -o yaml` silently
+    ignores `-o yaml` and returns the table form, because `--` swallows the later flags too.
+    The object name comes from the vendored `Workflow`, which is copied from another GitHub
+    org, and without the terminator `kubectl` reads a leading dash as a flag — verified live,
+    a name of `--server=http://127.0.0.1:9/` was honoured and dialled. `--kubeconfig=`,
+    `--token=` and `--as=` are reachable the same way, which would send the operator's bearer
+    token somewhere the file chooses. `obj` is shape-checked by the caller as well.
     """
-    proc = _kubectl(["get", "workflowtemplate", obj, "-n", namespace, "-o", "yaml"])
+    proc = _kubectl(["get", "-n", namespace, "-o", "yaml", "--", "workflowtemplate", obj])
     if proc.returncode != 0:
         if "NotFound" in proc.stderr:
             return None
         raise CheckUnavailable(f"`kubectl get {obj}` failed: {proc.stderr.strip()}")
     try:
-        return yaml.safe_load(proc.stdout)
+        document = yaml.safe_load(proc.stdout)
     except yaml.YAMLError as exc:
         raise CheckUnavailable(f"`kubectl get {obj}` returned unparseable YAML: {exc}") from exc
+    if document is None:
+        raise CheckUnavailable(f"`kubectl get {obj}` exited 0 but returned no object")
+    return document
 
 
 # ---------------------------------------------------------------------------------------
@@ -380,9 +489,27 @@ def check_contract(
     unavailable: list[str] = []
 
     for task in tasks:
+        if not isinstance(task, dict):
+            unavailable.append(f"a DAG task is {type(task).__name__}, not a mapping")
+            continue
         ref = task.get("templateRef") or {}
-        obj, inner_name = ref.get("name"), ref.get("template")
+        obj = ref.get("name") if isinstance(ref, dict) else None
+        inner_name = ref.get("template") if isinstance(ref, dict) else None
         label = f"{obj} / {inner_name}"
+
+        # A task with no resolvable `templateRef` — an ordinary inline `template:` step, an
+        # onExit handler — is invisible to the expected-set guard, because discovery only
+        # collects well-formed refs. Without this it reached `_fetch_live(None, ...)`, and
+        # `subprocess.run` rejects a None argv element with an uncaught TypeError, exiting 1:
+        # the violation code, for something that is not a violation, discarding every result
+        # already collected. Exactly the collision this comparator was rewritten to remove.
+        if not _is_dns1123(obj) or not isinstance(inner_name, str) or not inner_name:
+            unavailable.append(
+                f"task {task.get('name')!r} has no resolvable templateRef "
+                f"(name={obj!r}, template={inner_name!r}) — this comparator only checks "
+                "tasks that reference a WorkflowTemplate"
+            )
+            continue
 
         try:
             document = _fetch_live(obj, namespace)
@@ -419,6 +546,12 @@ def check_contract(
             )
             continue
 
+        try:
+            _assert_inspectable(template, label)
+        except CheckUnavailable as exc:
+            unavailable.append(str(exc))
+            continue
+
         passed = task_parameters(task)
         declared_names = declared_inputs(template)
 
@@ -426,7 +559,17 @@ def check_contract(
             violations.append(
                 f"UNDECLARED PARAMETER {label} is passed {name!r}, which it does not declare"
             )
-        for name in sorted(required_inputs(template) - passed - globals_):
+        # NOT `- globals_`. A workflow-level `spec.arguments.parameters` entry is bound to the
+        # ENTRYPOINT template's inputs and is otherwise available only for
+        # `{{workflow.parameters.*}}` substitution; it is not auto-supplied to a template
+        # invoked through a DAG task's `templateRef`, which must pass its callee's
+        # non-defaulted inputs itself or the controller fails with
+        # `inputs.parameters.<name> was not supplied`. Subtracting the globals would exempt
+        # any required input whose name merely collided with a global — silently disabling
+        # the one assertion this design argues matters most. Inert today (`scan-ids` is the
+        # only global and no template requires an input by that name), which is exactly why
+        # it is cheap to get right now.
+        for name in sorted(required_inputs(template) - passed):
             violations.append(
                 f"MISSING PARAMETER    {label} requires {name!r} (no default) and nothing supplies it"
             )
@@ -494,7 +637,17 @@ def main() -> int:
         help="vendored Workflow to derive the contract from (default: the committed one)",
     )
     args = parser.parse_args()
-    return check_contract(args.workflow, args.namespace)
+    try:
+        return check_contract(args.workflow, args.namespace)
+    except Exception as exc:  # noqa: BLE001 — see below
+        # Deliberately broad, and the narrow alternative is worse. An uncaught exception
+        # leaves the interpreter exiting 1, which this script defines as "contract violated"
+        # — so any unanticipated input shape would masquerade as a real defect and send an
+        # operator hunting a cluster problem that does not exist. Whatever escapes, the
+        # honest report is "the check did not complete".
+        print(f"CHECK FAILED  unexpected {type(exc).__name__}: {exc}", file=sys.stderr)
+        _summarise(EXIT_UNAVAILABLE)
+        return EXIT_UNAVAILABLE
 
 
 if __name__ == "__main__":
