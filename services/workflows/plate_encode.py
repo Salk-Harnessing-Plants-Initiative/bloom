@@ -222,7 +222,10 @@ def _to_8bit_rgb(image: Image.Image) -> Image.Image:
                 "a %s frame peaks at %d, far short of the %d full scale it is "
                 "reduced from — it will render at %d/255. The source is "
                 "probably not full-scale 16-bit.",
-                image.mode, peak, DEEP_FULL_SCALE, peak >> 8,
+                image.mode,
+                peak,
+                DEEP_FULL_SCALE,
+                peak >> 8,
             )
         if data.dtype != np.uint16:
             # A negative value wraps round to a bright pixel on the way to
@@ -524,7 +527,9 @@ def publish_plate_video(
         # videos. Reporting success for a video the page cannot find is worse
         # than an error the caller can retry: the object is already stored, so
         # the next attempt overwrites it and records the row.
-        raise NotRecorded(f"{key} was stored but recording it failed: {exc}", key) from exc
+        raise NotRecorded(
+            f"{key} was stored but recording it failed: {exc}", key
+        ) from exc
 
     logger.info("recorded %s: %s frames", key, frame_count)
     return {k.removeprefix("p_"): v for k, v in recorded.items()}
