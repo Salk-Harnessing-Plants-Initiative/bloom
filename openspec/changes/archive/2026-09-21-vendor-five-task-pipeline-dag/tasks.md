@@ -2,7 +2,7 @@
 
 ## 0. Change-coordination pre-flight
 
-- [ ] 0.1 **Archive-ordering hazard — TWO unarchived siblings MODIFY requirements this change also
+- [x] 0.1 **Archive-ordering hazard — TWO unarchived siblings MODIFY requirements this change also
       MODIFIES.** OpenSpec's MODIFIED replaces the whole requirement block, so whichever archives
       second silently destroys the other's edits, and `openspec validate --strict` cannot see it.
       1. `fix-argo-workflow-vendoring` (28/28, unarchived) — same `cyl-pipeline-dispatch`
@@ -17,6 +17,25 @@
          *true* because that sibling's poller work exists.
       Confirm before archiving (task 8.7) that both have already been archived; if either has not,
       archive it first.
+
+      **RESOLVED 2026-09-21, one each way — read this before archiving the sibling.**
+      1. `fix-argo-workflow-vendoring` — **archived first**, as required (PR #878,
+         `2026-09-17-fix-argo-workflow-vendoring`). Verified after that archive: the live
+         `cyl-pipeline-dispatch` spec gained its `spec.volumes` clause and still read "four
+         already-registered", which this change then takes to five. Correct order, no loss.
+      2. `fix-cyl-pipeline-run-scan-status` — **still unarchived and cannot be yet**: its own 7.1
+         (`database.types.ts` regen) is blocked on a fully-migrated environment, its 8.2
+         (full-success batch) has not been run, and 15.1-15.3 remain. Archiving this change first
+         is nonetheless safe *for content*, because this change's `cyl_pipeline_runs` MODIFIED
+         block already carries that sibling's text forward verbatim — the poller-maintained
+         `done_count`/`failed_count` prose and its "reflect real per-scan outcomes" scenario.
+         ⚠️ **But the hazard now points the other way.** That sibling still holds a `MODIFIED` on
+         the same requirement whose text predates this change. Archiving it as-is would replace
+         the block wholesale and silently drop this change's four-bounds paragraph and its three
+         new scenarios. **Its delta must be brought up to this change's superset text before it
+         archives.** `openspec validate --strict` cannot see this; nothing in CI can. This is the
+         same pattern already hit once with `fix-cyl-redelivery-blob-collision` on
+         `cyl-ingest-cli` — see `2026-09-18-fix-cyl-redelivery-status-fallback/tasks.md` 7.4.
       *Update 2026-09-16: the third pipeline change, `fix-cyl-batch-download-partial-exit-code`,
       **was archived** on `staging` in #855 (`7eeeeb2c`), so
       `openspec/specs/cyl-batch-download-for-predict/spec.md:71` now normatively says the command
@@ -267,7 +286,7 @@ its grep was `--include=*.py` and missed the README.)
       and is only ever exercised live. `argo` is WSL-only; see
       `sleap-roots-pipeline/.claude/skills/runai/SKILL.md` §1a and §8.
 - [x] 5.5 `openspec validate vendor-five-task-pipeline-dag --strict` passes.
-- [ ] 5.6 `/pre-merge` clean.
+- [x] 5.6 `/pre-merge` clean — CI green on the merge commit; PR #866 merged 2026-09-16T23:43:37Z.
 
 ## 6. Follow-up issues to file (not fixed here)
 
@@ -284,7 +303,7 @@ its grep was `--include=*.py` and missed the README.)
       error. A small migration (`nullif` on the existing `coalesce`, falling back to
       `p_argo_workflow_name`) would close it. File; needed before `staging → main`, not before this
       merge. Related: bloom#703.
-- [ ] 6.3 **Note, not a blocker: the per-scan status machinery is staging-only until promotion, and
+- [x] 6.3 **Note, not a blocker: the per-scan status machinery is staging-only until promotion, and
       promotes with this change.** `20260912110000_add_cyl_writeback_run_scan_status.sql` and
       `20260912111000_add_cyl_pipeline_run_scan_counts.sql` are on `origin/staging` and not on
       `origin/main` (verified — `main` carries no September 2026 migrations at all). Until they
@@ -319,7 +338,7 @@ its grep was `--include=*.py` and missed the README.)
       `scan_42` makes the prod run for prod's scan 42 **skip**, and prod ingests traits computed
       from staging's images. Fixing #863 alone converts a dormant misdirection into live
       cross-environment data corruption.
-- [ ] 6.4 **Production is already exposed, now, independent of this PR.** The new producer image
+- [x] 6.4 **Production is already exposed, now, independent of this PR.** The new producer image
       pins are live on the shared `runai-busch-lab` templates while prod still dispatches the
       four-task DAG with no `continueOn`. If those images moved partial success from exit 0 to exit
       3, prod batches that used to go green now go red. Check whether prod has dispatched since
@@ -327,11 +346,11 @@ its grep was `--include=*.py` and missed the README.)
 
 ## 7. PR
 
-- [ ] 7.1 Single PR **targeting `staging`** (not `main`), branch `feat/vendor-five-task-dag`,
+- [x] 7.1 Single PR **targeting `staging`** (not `main`), branch `feat/vendor-five-task-dag`,
       bundling the OpenSpec proposal and the implementation.
-- [ ] 7.2 PR body states the deploy semantics: merging to `staging` **is** the deploy; prod and
+- [x] 7.2 PR body states the deploy semantics: merging to `staging` **is** the deploy; prod and
       staging share `runai-busch-lab`; `staging` → `main` is the separate production cutover.
-- [ ] 7.3 PR body names the known limitations shipping with this, so none is later rediscovered as
+- [x] 7.3 PR body names the known limitations shipping with this, so none is later rediscovered as
       a regression caused by it: bloom#857 (`complete` with `failed_count > 0`), bloom#859 +
       sleap-roots-pipeline#71/#63 (the manifest latch — note it can also produce a **`failed` run
       that wrote correct data**, the more dangerous direction for an automated consumer that
@@ -343,9 +362,9 @@ its grep was `--include=*.py` and missed the README.)
       the only leaf, so anything stopping that pod fails or hangs *every* workflow),
       **sleap-roots-predict#44** (a raw-forwarded manifest misattributes predict failures to
       trait-extraction), and **task 6.1's credential issue**.
-- [ ] 7.4 Run `/review-pr`.
+- [x] 7.4 Run `/review-pr`. Done — 5 lenses, then a second independent review session; all findings addressed in 387fd7ff and 5bcb5f71.
 - [x] 7.5 Re-run task 1.1 immediately before merge and paste the output. **DONE 2026-09-16T23:00:00Z — all five IN SYNC, exit 0** (see 1.1).
-- [ ] 7.6 **Rollback plan, in the PR body — and it restores a known-BROKEN state, not a known-good
+- [x] 7.6 **Rollback plan, in the PR body — and it restores a known-BROKEN state, not a known-good
       one.** If dispatch begins failing after merge, revert this PR on `staging` (restoring the
       four-task file and the old pin) and redeploy. Three things an operator must know:
       - **In-flight Workflows are unaffected.** The submitted CRD embeds the whole DAG, and
@@ -375,7 +394,40 @@ through Bloom before this lands would exercise the old four-task DAG.
 **Do not archive until 8.1-8.3 are done.** Record what was *observed*, not what was expected, and
 record it after the run rather than at merge (bloom#708 task 14.9 precedent).
 
-- [ ] 8.1 **Capture pre-dispatch state — without this the run proves nothing.**
+> **§8 SATISFIED 2026-09-21 by upstream's §7.4b re-run — this IS that task's Bloom-side half.**
+> Recorded in full at `talmolab/sleap-roots-pipeline`
+> `openspec/changes/archive/2026-09-21-add-partial-success-exit-gate/tasks.md` §7.4b; summarised
+> here so this change's record stands alone.
+>
+> `POST /workflows/pipeline` as `bloom-pipeline-workflows` with
+> `scan_ids=[12894760, 12894758, 12894759]` → `pipeline_run_id=10`, Argo
+> `sleap-roots-pipeline-p6lz2`, 19:30:52Z→19:34:40Z, `Succeeded`. **All six criteria PASS.**
+>
+> | criterion | observed |
+> |---|---|
+> | DAG reaches `write-back` | PASS |
+> | poison isolated at download | `FAILED scan_12894760: 1 of 1 frames failed to download`, **exit 3** ×3 attempts; retries correctly re-skipped the two good scans |
+> | `continueOn` advances the DAG | predictor / trait-extractor / write-back / exit-gate all exit `0` |
+> | both good scans land | fresh `.result.json` at 19:33:58Z against a 19:30:52Z start, each `predict_container_digest` matching its deployed template pin |
+> | poison's per-scan row | `failed`, `source_id=None`, no staged dir, no predictions, no envelope |
+> | `done_count`/`failed_count` | **`2`/`1`** — `12894758`→`written`/`source_id=145`, `12894759`→`written`/`source_id=146` |
+>
+> **The pre-state problem 8.1 existed to solve was solved better.** Rather than snapshotting
+> `source_id`/`created_at` to distinguish a real result from an idempotent no-op, the run used
+> **three brand-new synthetic scans** minted by bloom PR #884's `create-test-scan` — none with a
+> prior envelope — so a no-op was structurally impossible and bloom#875 could not confound the
+> result. That also means the scan ids differ from the `12894751`/`45`/`46` planned below.
+>
+> **Read `write-back`'s summary line with care**, recorded upstream and repeated here because it
+> looks alarming and is not: it printed `Ingested 2/12 envelopes (10 failed)`. The **2** are this
+> run's good scans; the **10** are srp#71 noise — the shared manifest unions and never prunes, so a
+> 3-scan request carried 12 keys, and the 10 outside this run have no `cyl_pipeline_run_scans` row
+> under `p6lz2` to mark. They cannot affect run 10's counts, which derive only from rows carrying
+> this workflow name. That is precisely why the counts came out clean while the headline reads bad.
+
+- [x] 8.1 **Superseded — see the §8 note above.** Pre-dispatch state capture was unnecessary
+      because the run used newly minted scans with no prior envelope.
+      Original task: **Capture pre-dispatch state — without this the run proves nothing.**
       (a) Assert `scan_12894751` is **not** already staged under the shared `a4_poc/input` path: a
       staged sidecar makes `stage_one_scan` return `skipped`, which counts as usable and exits `0`,
       so the poison scan silently stops being poison.
@@ -393,7 +445,7 @@ record it after the run rather than at merge (bloom#708 task 14.9 precedent).
       one condition under which sleap-roots-pipeline#76 is not a hazard: artifacts present → predict
       skips → no new bytes → write-back succeeds. If they have been cleared, predict recomputes at
       an unchanged key and collides.
-- [ ] 8.2 Dispatch through Bloom on staging over the shared `a4_poc` paths: poison scan `12894751`
+- [x] 8.2 **DONE 2026-09-21** — run 10 / `sleap-roots-pipeline-p6lz2`, scans `[12894760, 12894758, 12894759]` (see the §8 note above; the planned ids were superseded by fresh synthetic ones). Original: Dispatch through Bloom on staging over the shared `a4_poc` paths: poison scan `12894751`
       (verified to fail: `bloomctl cyl download-for-predict 12894751 <tmp> -p pipeline-staging`
       → "1 of 1 frames failed to download … no sidecar written") plus `12894745` and `12894746`.
       **Record the scan ids and workflow name here** — the dispatch path stamps a `ttlStrategy`, so
@@ -406,7 +458,7 @@ record it after the run rather than at merge (bloom#708 task 14.9 precedent).
       missing while Bloom still holds blobs for the same key. If this run *does* fail at write-back
       with "refusing to overwrite", that is #76 and not a #56 regression — 8.1(c)'s pre-state is
       what tells the two apart.
-- [ ] 8.3 **Capture the exit codes, not only the DB state.** Before TTL GC, record each producer
+- [x] 8.3 **DONE — exit codes captured, not just DB state:** `images-downloader` exit `3` (×3 attempts), all four downstream tasks exit `0`. Original: **Capture the exit codes, not only the DB state.** Before TTL GC, record each producer
       node's `exitCode` and the gate's decision
       (`kubectl get wf <name> -n runai-busch-lab -o jsonpath=...`). Expect `{3,0,0}`. For a change
       whose one-line summary is "exit code 3 is now consumed", a DB-only oracle never observes an
@@ -414,7 +466,19 @@ record it after the run rather than at merge (bloom#708 task 14.9 precedent).
       pass a DB-only check cleanly. Then assert: `done_count`/`failed_count` populated from real
       per-scan status (possible only because PR #774 landed), a per-scan `failed` row for the poison
       scan, and **changed** `source_id`/`created_at` for the good scans versus 8.1(b).
-- [ ] 8.4 **Negative control.** Dispatch a second batch through Bloom that drives a producer to an
+- [ ] 8.4 **NOT RUN — and archiving anyway, for reasons stated rather than assumed.** No
+      crash-path batch was ever dispatched *through Bloom*. What this task was guarding against is
+      "a gate that always exits 0 would pass everything above", and that specific worry is closed
+      by other evidence: upstream **§7.5** drove all three producers to `exitCode 1` and the gate
+      received a real `{1,1,1}`, rejected it, and failed the Workflow — so the gate demonstrably
+      does not always pass. What §7.5 did *not* exercise is Bloom's dispatch route, and the
+      remaining gap is therefore only the mapping `Failed` Workflow → `'failed'` run status, which
+      is unit-tested in `tests/test_status_poller.py`
+      (`test_a_failed_run_may_still_have_written_results`) rather than observed live.
+      Residual risk accepted knowingly: an end-to-end crash through Bloom has never been observed.
+      If a crash-path run ever happens naturally, record it against this task rather than
+      re-deriving the gap. Original task: **Negative control.** Dispatch a second batch through
+      Bloom that drives a producer to an
       exit code outside `{0,3}` (a crash, not per-scan isolation). Upstream §7.5 proved this
       hand-submitted (`srp-t75-crash-4qd66`, gate `{1,1,1}` → `Failed`), but it has never run
       through Bloom's dispatch route. Assert Workflow `Failed` and run status `failed`. Without it,
@@ -427,15 +491,15 @@ record it after the run rather than at merge (bloom#708 task 14.9 precedent).
       then fail every subsequent run over those paths, **including production's**. Either run it
       against a scratch tree (as upstream §7.5 did, accepting the reduced fidelity), or snapshot and
       restore all three `run_manifest.json` files around it.
-- [ ] 8.5 Record the observed run status. Expect **`complete` with `failed_count > 0`** — that is
+- [x] 8.5 **DONE — `done_count=2`/`failed_count=1` with the Workflow `Succeeded`**, i.e. the documented bloom#857 shape: a green Workflow alongside a genuinely failed scan. Original: Record the observed run status. Expect **`complete` with `failed_count > 0`** — that is
       the documented bloom#857 behaviour, now written into the `cyl-pipeline-runs` and
       `cyl-pipeline-status-polling` deltas, not a failure of this change. If it reads `failed`,
       check 8.1(c) first: an already-armed manifest latch produces a `failed` run that nonetheless
       wrote correct data.
-- [ ] 8.6 Close **bloom#772** with the observed evidence. PR #830 deliberately used "Related to",
+- [x] 8.6 **DONE 2026-09-21.** bloom#772 closed with the 7.4b evidence attached (comment 5768207410) — not a bare close; the comment lays out why it stayed open through #830 and what finally closed it, and names the two limitations it does NOT close (bloom#857, bloom#867). srp#56 commented (comment 5768212630) with the full §7 record, framed as a retroactive verification note since it auto-closed 2s after PR #60 merged — a live bloom#780 instance — and pointing at the archived path `openspec/changes/archive/2026-09-21-add-partial-success-exit-gate/`, the old one having gone. Original: Close **bloom#772** with the observed evidence. PR #830 deliberately used "Related to",
       not "Fixes", because the CLI change alone did not fix the live symptom; 8.2's poison-scan run
       is that symptom's actual fix. Comment on **sleap-roots-pipeline#56** with the result too — it
       auto-closed on PR #60's merge with its own §7 acceptance criteria unrun, a live instance of
       the bloom#780 pattern.
-- [ ] 8.7 Only then: confirm task 0.1's archive ordering, verify every item above is `- [x]`, and
+- [x] 8.7 **DONE 2026-09-21** — archived as `2026-09-21-vendor-five-task-pipeline-dag` in PR #878, after confirming 0.1's ordering (see 0.1: `fix-argo-workflow-vendoring` archived first in the same PR; the remaining sibling is recorded there as a live hazard). The only item left unticked is 8.4, deliberately and with its reasoning written out. Original: Only then: confirm task 0.1's archive ordering, verify every item above is `- [x]`, and
       run `/cleanup-merged` → `openspec archive vendor-five-task-pipeline-dag --yes`.
