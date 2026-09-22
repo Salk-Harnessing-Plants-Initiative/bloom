@@ -80,6 +80,12 @@ decision — deploy sequencing into a production-shared namespace — is covered
   2026-09-16T02:39:01Z — 18 minutes after PR #60 merged — and all five confirmed **in sync with the
   pin** by `scripts/check_registered_templates.py`. Upstream `main` agrees since PR #75 merged
   (task 7.2 `[x]`, roadmap "five DAG tasks live as of 2026-09-16").
+  <!-- Annotation, bloom#879 (2026-09-22): the 2026-09-16 observation above was sound at the time,
+       but "in sync with the pin" is no longer a meaningful property to assert — the pin is the
+       Workflow's, not the templates', and they advance independently of it by design. The script is
+       now scripts/check_template_contract.py and checks the vendored Workflow's contract instead. -->
+
+
 - **Update the DAG-shape tests.**
   `services/workflows/tests/test_k8s_client.py::test_build_workflow_body_dag_references_all_four_templates_in_order`
   hardcodes four `templateRef` names and a four-long dependency chain. It is renamed to
@@ -277,6 +283,13 @@ so vendoring fixes it completely.
   `scripts/check_vendored_workflow_drift.py` (the same encoding fix on the pin read — so the fix
   lands in **three** places, not two); `scripts/check_registered_templates.py` (new — makes
   `tasks.md` 1.1's pre-merge gate reproducible instead of prose);
+  <!-- Annotation, bloom#879 (2026-09-22): "reproducible" overstated it. The script shipped with no
+       test coverage, and its pinned-upstream premise made it report DRIFT on all five correct
+       templates from 2026-09-17, which corrupted one downstream verification record. Renamed to
+       scripts/check_template_contract.py, rewritten against the vendored Workflow's contract, and
+       now covered by tests/unit/test_check_template_contract.py. Note also that nothing automated
+       runs it: it is an operator gate in per-change task lists, not a CI job. -->
+
   `services/workflows/tests/test_k8s_client.py` and `tests/test_status_poller.py` (tests);
   `services/workflows/README.md` (consumer guidance, docs only); **`.pre-commit-config.yaml`**.
   That last one is easy to miss when reverting and has teeth: it excludes the vendored directory
