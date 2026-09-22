@@ -117,15 +117,21 @@ write-back, exit-gate). Nothing verifies that such a tag resolves to a bloom com
 behaviour bloom depends on — archived task 1.1 records that images-downloader must run a `bloomctl`
 containing PR #830 or exit `3` is never emitted at all, in which case every check passes and partial
 failures still fail whole runs. Spot-checked at authoring: `28034f6` does contain #830's
-`ctx.exit(0 if result.ok else 3)`. Not asserted here, and **to be filed as a follow-up before
-merge (task 6.6)** — written in the future tense deliberately, because this PR says `Closes #879`
-and an unfiled follow-up described in the past tense is buried the moment the issue auto-closes.
-The sharper framing, which the review surfaced: this is not merely an unverified precondition but
-a **structural hole in the recorded provenance**. `Provenance` carries only
-`predict_container_digest` and `traits_container_digest`, so the stages that select the inputs,
-commit the rows and decide the run's verdict have their code identity recorded nowhere in the
-envelope. No bloom-side check can close that; it needs a contracts field. What still pins the
-science is `predict_code_sha`/`traits_code_sha` — `bloomctl` computes no trait values. Note also that the upstream invariant this proposal leans on for image provenance is enforced
+`ctx.exit(0 if result.ok else 3)`. Not asserted here, and filed as
+**talmolab/sleap-roots-contracts#40** so it survives this PR's `Closes #879`.
+
+The review sharpened the framing, and investigating it to file the issue sharpened it again. It is
+not merely an unverified precondition but a hole in the recorded provenance: `Provenance` carries
+only `predict_container_digest` and `traits_container_digest`, so the three `bloomctl` stages'
+identity is recorded nowhere. But it is **not one missing field**, because the three stages differ
+by DAG position — `write-back` could only be recorded by breaking `ingest-result`'s deliberate
+verbatim passthrough (which preserves the producer's `idempotency_key` byte-exactly),
+`images-downloader` runs before the producers and never touches the envelope, and `exit-gate` runs
+*after* `write-back`, so it is structurally impossible for it to appear in a provenance record that
+is already committed. #40 poses that as a design question for the repo that owns the model rather
+than prescribing a field. What still pins the science either way is
+`predict_code_sha`/`traits_code_sha` — `bloomctl` computes no trait values, so this is a
+traceability gap in the orchestration layer, not a reproducibility gap in the traits. Note also that the upstream invariant this proposal leans on for image provenance is enforced
 by `sleap-roots-pipeline/scripts/check_manifests.py`, **manually** — that repo has no `.github/` and no
 CI at all — so "upstream checks it" means "a human runs a second script", not "a job enforces it".
 

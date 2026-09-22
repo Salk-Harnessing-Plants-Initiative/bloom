@@ -282,9 +282,23 @@ one test asserts the real `kubectl` argv and timeout because every other test mo
       Test count 53 → 74.
 - [ ] 6.4 `/pre-merge` green: lint + full suite + OpenSpec validation.
 - [ ] 6.5 PR into **`staging`**, bundling proposal + implementation, closing bloom#879.
-- [ ] 6.6 File the two follow-up issues named in the proposal's Impact: the `bloomctl`
-      tag-to-commit provenance gap, and a standing reference for the `_fetch_live` exit-code
-      conflation so it is not buried by #879's auto-close.
+- [x] 6.6 **Provenance gap filed as talmolab/sleap-roots-contracts#40** (2026-09-22), in the repo
+      that owns the `Provenance` model rather than in bloom — an earlier draft of this task had that
+      backwards. Investigating it to write the issue changed the ask: the obvious fix ("have
+      `write-back` stamp its own digest") is incompatible with `ingest-result` sending the *original
+      parsed JSON* so the producer's `idempotency_key` survives byte-exactly, and `exit-gate` runs
+      after the provenance record is committed, so it could never appear there under any design.
+      #40 therefore poses the design question — should the contract carry the *ingesting* agent's
+      identity at all, or does that belong on `cyl_trait_sources` where bloom owns the column —
+      rather than prescribing a field. My stated read there is that it should be declined and
+      recorded bloom-side, but the model's owner makes that call.
+      **The `_fetch_live` exit-code conflation was deliberately not filed.** It is already fixed in
+      this PR; an issue would be closed on arrival, and its only value was a paper trail. Decided
+      with the user 2026-09-22. The fix and its reasoning are in this change's §6.3 and in the PR
+      description, which is where someone looking for it would land.
+      **Not filed, deliberately:** whether `images-downloader`/`exit-gate` identity belongs on the
+      run record. That is a `cyl_pipeline_runs` design question, adjacent to the unresolved queue
+      thread on bloom#404, and not one to shape unilaterally — raise with Benfica instead.
 - [x] 6.7 **DONE 2026-09-22.** Review posted to PR #892 (verdict COMMENT — GitHub does not allow
       approving one's own PR), and the evidence comment posted to bloom#879
       (`issues/879#issuecomment-5784243915`): the 0.1/4.1 measurements, the divergence from #879's

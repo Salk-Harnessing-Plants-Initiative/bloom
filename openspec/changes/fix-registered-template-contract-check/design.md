@@ -134,9 +134,11 @@ the task explicitly forbids.
   merged, which is the evidence that it discriminates; cited rather than assumed.
 - **Post-change blind spots, listed so none is discovered later:** a stale template (by design); a
   conforming template with a wrong `command`/`args`; wrong `timeout`/`retryStrategy`/`resources`; a
-  `bloomctl` tag that does not resolve to a commit carrying the exit-3 contract (to be filed, task
-  6.6 — and the deeper version is that `Provenance` has no bloomctl field at all, so those three
-  stages' code identity is recorded nowhere); a registered template whose inner shape this
+  `bloomctl` tag that does not resolve to a commit carrying the exit-3 contract (filed as
+  talmolab/sleap-roots-contracts#40 — the deeper version being that `Provenance` has no field for
+  any of the three `bloomctl` stages, and that only one of the three could have one, since
+  `write-back` would require breaking `ingest-result`'s verbatim passthrough and `exit-gate` runs
+  after the record it would appear in is already committed); a registered template whose inner shape this
   comparator cannot inspect at all — now exit 2 rather than a silent pass, but still unverified;
   a **rogue or orphaned registered object**, since this comparator fetches only the five it expects
   and upstream's loops over its own *files*, so neither side enumerates the namespace; a gate whose
