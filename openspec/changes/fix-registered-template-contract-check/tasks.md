@@ -285,9 +285,12 @@ one test asserts the real `kubectl` argv and timeout because every other test mo
 - [ ] 6.6 File the two follow-up issues named in the proposal's Impact: the `bloomctl`
       tag-to-commit provenance gap, and a standing reference for the `_fetch_live` exit-code
       conflation so it is not buried by #879's auto-close.
-- [ ] 6.7 Comment on bloom#879 with the 0.1/4.1 evidence, the divergence from its suggested fix, and
-      the correction that the srp#78 digests did **not** address srp#72's tag-mutability half.
-      Authorized by the user on 2026-09-21 for this specific post; re-confirm before posting further.
+- [x] 6.7 **DONE 2026-09-22.** Review posted to PR #892 (verdict COMMENT — GitHub does not allow
+      approving one's own PR), and the evidence comment posted to bloom#879
+      (`issues/879#issuecomment-5784243915`): the 0.1/4.1 measurements, the divergence from #879's
+      suggested fix, the nine review findings, the known gaps, and the correction that the srp#78
+      digests did **not** address srp#72's tag-mutability half. Both authorized by the user for
+      these specific posts; re-confirm before posting anything further.
 - [ ] 6.8 Record the observation in `sleap-roots-pipeline` `docs/bloom-integration/roadmap.md` item A4
       — separate PR in the sibling repo, after the live runs are real rather than at merge time.
       Consider srp#58, the origin of upstream's comparator, as the more durable home for the
