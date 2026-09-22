@@ -43,6 +43,8 @@ def test_a_literal_traversal_is_refused(path):
 @pytest.mark.parametrize(
     "path",
     [
+        # Verified against the client: it parses the key as a URL, so each of
+        # these resolves to the same request the literal `..` makes.
         "%2e%2e/videos/1.mp4",
         "%2E%2E/videos/1.mp4",
         ".%2e/videos/1.mp4",
@@ -57,7 +59,10 @@ def test_an_encoded_traversal_is_refused(path):
     assert leaves_the_bucket(path) is True
 
 
-def test_an_escape_hidden_under_another_escape_is_refused():
+def test_a_doubly_encoded_escape_is_refused_defensively():
+    """This one does not reach outside the bucket today — the client decodes
+    once, so it arrives as a literal filename. It is refused anyway: no real key
+    looks like this, and the next client version may decode differently."""
     assert leaves_the_bucket("%252e%252e/videos/1.mp4") is True
 
 

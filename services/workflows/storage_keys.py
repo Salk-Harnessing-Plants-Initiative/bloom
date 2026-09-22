@@ -9,18 +9,22 @@ caller can download.
 
 from urllib.parse import unquote
 
-# Three passes is past anything legitimate: a real key carries at most one
-# escape sequence, and a key still decoding after three is only ever an attempt
-# to hide a `..` from this check.
+# One decode is what escapes the bucket today: the client parses the key as a
+# URL, which turns `%2e%2e` into `..`, and resolves it. Further passes are
+# defence rather than a known hole — a key that keeps decoding is refused
+# because nothing legitimate looks like that, not because storage would follow
+# it.
 MAX_KEY_DECODES = 3
 
 
 def leaves_the_bucket(path: str) -> bool:
     """Whether a key resolves outside the bucket, decoded as storage sees it.
 
-    The storage client percent-decodes before it resolves `..`, so a check that
-    reads only literal segments passes `%2e%2e` straight through. Every decoding
-    pass is checked, so the raw and the decoded forms both have to be confined.
+    The storage client parses the key as a URL before resolving it, which decodes
+    `%2e%2e` into `..` — so a check that reads only literal segments passes the
+    encoded form straight through, and the request leaves the bucket exactly as
+    the literal form does. Every decoding pass is checked, so the raw and the
+    decoded forms both have to be confined.
     """
     seen = path
     for _ in range(MAX_KEY_DECODES):
