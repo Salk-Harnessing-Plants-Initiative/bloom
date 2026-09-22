@@ -143,9 +143,9 @@ def test_retained_heavy_deps_are_each_imported():
         "matplotlib": "matplotlib",
     }
     unused = {dist for dist, mod in retained.items() if mod not in imported}
-    assert not unused, (
-        f"declared deps not imported by shipped code (prune them): {sorted(unused)}"
-    )
+    assert (
+        not unused
+    ), f"declared deps not imported by shipped code (prune them): {sorted(unused)}"
 
 
 def _pyproject() -> dict:

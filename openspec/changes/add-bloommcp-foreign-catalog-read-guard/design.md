@@ -236,7 +236,7 @@ raising=False)` so an ambient export can't flip it. The new var joins
   `test_package_baseline.py`'s env scrub list.
 - **The sticky flag is a real operational trap, accepted deliberately.** A
   developer who sets `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1` to inspect one
-  stale catalog silently loses the ability to commit *anything*, on any
+  stale catalog silently loses the ability to commit _anything_, on any
   experiment, for the life of that process — the refusal names the cause and
   the remedy (restart without the variable), but nothing warns them at the
   moment they enable the hatch. Accepted rather than softened: the narrower
