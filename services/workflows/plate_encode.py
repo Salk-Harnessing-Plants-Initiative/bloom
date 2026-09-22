@@ -26,6 +26,7 @@ from PIL import Image
 import plate_progress
 from plate_timelapse import PLATE_FPS, annotate, label_for
 from plate_video import first_capture, plan_render
+from storage_keys import leaves_the_bucket
 from plate_video_path import (
     GRAVISCAN_IMAGES_BUCKET,
     GRAVISCAN_VIDEOS_BUCKET,
@@ -384,12 +385,11 @@ def _fetch_frame(images, path: str, label: str) -> np.ndarray:
     """One object, downloaded and prepared, or a failure naming it.
 
     `path` is `gravi_images.object_path`, which the desktop writes and any
-    signed-in role may also write. The storage client resolves `..` before the
-    request leaves, so an unconfined key reaches other paths on the internal
-    gateway as this service. Only the shape is refused, not the naming: the
-    filename embeds a user-typed experiment name.
+    signed-in role may also write. An unconfined key reaches other paths on the
+    internal gateway as this service. Only the shape is refused, not the naming:
+    the filename embeds a user-typed experiment name.
     """
-    if path.startswith("/") or ".." in path.split("/"):
+    if leaves_the_bucket(path):
         raise FrameUnreadable(f"{path} is not a key in this bucket", path)
 
     try:

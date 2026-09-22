@@ -21,6 +21,7 @@ import numpy as np
 from PIL import Image
 from fastapi import HTTPException
 
+from storage_keys import leaves_the_bucket
 from supabase_client import app_client
 from video_writer import VideoWriter, VideoEncodeError
 
@@ -298,6 +299,16 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
         for image in images:
             object_path = image.get("object_path")
             if not object_path:
+                continue
+            if leaves_the_bucket(object_path):
+                # Same reason the plate renderer checks: cyl_images.object_path
+                # is writable by any signed-in role, and this download carries
+                # the workflows app user's privileges.
+                logger.warning(
+                    "scan %s: refusing a key outside the bucket: %r",
+                    scan_id,
+                    object_path,
+                )
                 continue
             try:
                 data = img_bucket.download(object_path)

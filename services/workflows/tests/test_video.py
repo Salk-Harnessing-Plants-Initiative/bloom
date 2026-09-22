@@ -1024,3 +1024,31 @@ def test_an_rgba_frame_is_piped_at_the_wrong_byte_count(ffmpeg):
     assert ffmpeg[0].cmd[ffmpeg[0].cmd.index("-s") + 1] == "8x8"
     assert len(ffmpeg[0].stdin.chunks[0]) == 8 * 8 * 4, "four channels, not three"
     assert client.uploads == 0, "a sheared encode must not reach the videos bucket"
+
+
+def test_a_frame_key_that_leaves_the_bucket_is_never_fetched(monkeypatch):
+    """cyl_images.object_path is writable by any signed-in role, and this
+    download carries the workflows app user's privileges — so the key is
+    checked before it is handed to storage, and the frame is skipped."""
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    monkeypatch.setattr(video, "scan_in_experiment", lambda *a, **k: True)
+    monkeypatch.setattr(video, "_record_video", lambda c, s, r: None)
+    images = [
+        {"object_path": "%2e%2e/videos/1.mp4", "frame_number": 0},
+        {"object_path": "o1", "frame_number": 1},
+    ]
+    client = _GenClient(images)
+    monkeypatch.setattr(video, "app_client", lambda: client)
+
+    fetched = []
+    original = _GenBucket.download
+    monkeypatch.setattr(
+        _GenBucket,
+        "download",
+        lambda self, path: (fetched.append(path), original(self, path))[1],
+    )
+
+    result = video.generate_experiment_scan_video(1, 5)
+
+    assert fetched == ["o1"], "the escaping key reached storage"
+    assert result["frames"] == 1

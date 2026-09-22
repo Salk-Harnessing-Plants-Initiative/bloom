@@ -1141,6 +1141,15 @@ def test_a_32_bit_frame_inside_the_full_scale_still_works():
         "a/../../../object/videos/1.mp4",
         "../../../../../rest/v1/users",
         "/storage/v1/object/videos/1.mp4",
+        # Percent-encoded, which the storage client decodes before it resolves
+        # the path -- so a check that reads only literal segments lets these by.
+        "%2e%2e/videos/1.mp4",
+        "%2E%2E/videos/1.mp4",
+        ".%2e/videos/1.mp4",
+        "%2e./videos/1.mp4",
+        "a/%2e%2e/%2e%2e/object/videos/1.mp4",
+        "%252e%252e/videos/1.mp4",
+        "%2Fstorage/v1/object/videos/1.mp4",
     ],
 )
 def test_a_key_that_leaves_the_bucket_is_refused_before_it_is_fetched(path):
@@ -1172,6 +1181,8 @@ def test_a_key_that_leaves_the_bucket_is_refused_before_it_is_fetched(path):
         "gravi-images/Root Study 2026_wave1_st_x_et_y_cy3_A01.tif",
         "gravi-images/expérience_wave2_cy10_B02.tif",
         "gravi-images/a..b_cy1.tif",
+        # A literal percent is not an escape sequence, and must still fetch.
+        "gravi-images/50%_growth_cy1.tif",
     ],
 )
 def test_a_real_key_is_not_refused(path):
