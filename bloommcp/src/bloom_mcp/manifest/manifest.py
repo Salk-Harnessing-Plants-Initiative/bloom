@@ -47,7 +47,9 @@ def _clamp_identity(identity: str) -> str:
     return identity[: _IDENTITY_CAP - 1] + "\u2026"
 
 
-def foreign_catalog_message(identity: str, recorded: str, active: str, action: str) -> str:
+def foreign_catalog_message(
+    identity: str, recorded: str, active: str, action: str
+) -> str:
     """The single foreign-catalog message template (#573).
 
     Shared by the read guard here and the write-path re-check in

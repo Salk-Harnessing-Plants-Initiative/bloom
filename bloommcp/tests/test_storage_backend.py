@@ -2504,7 +2504,9 @@ def test_unstamped_catalog_read_leaves_a_debug_trace(
         manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
 
     assert manifest is not None and manifest.latest == "v1"  # still served
-    traces = [r for r in caplog.records if "no storage_backend sentinel" in r.getMessage()]
+    traces = [
+        r for r in caplog.records if "no storage_backend sentinel" in r.getMessage()
+    ]
     assert len(traces) == 1 and traces[0].levelno == logging.DEBUG
     assert "qc_exp" in traces[0].getMessage()
 
