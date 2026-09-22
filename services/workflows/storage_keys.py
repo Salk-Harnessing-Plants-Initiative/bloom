@@ -5,33 +5,34 @@ renderers hand it to the storage client as the workflows app user. A key that
 resolves outside its bucket therefore reads other paths on the internal gateway
 with this service's privileges, and the bytes come back inside a video the
 caller can download.
+
+Reading the text cannot answer this. The client parses the key as a URL, and
+that both decodes `%2e%2e` into `..` and strips every tab, newline and carriage
+return — so `.<tab>./x` resolves to `../x` while no literal `..` ever appears in
+the string. A check written against the characters is wrong in both directions:
+it misses those, and it refuses a leading slash the client simply strips.
+
+So the key is resolved the way the client resolves it, and the result is what is
+checked.
 """
 
-from urllib.parse import unquote
+from storage3._sync.file_api import relative_path_to_parts
+from yarl import URL
 
-# One decode is what escapes the bucket today: the client parses the key as a
-# URL, which turns `%2e%2e` into `..`, and resolves it. Further passes are
-# defence rather than a known hole — a key that keeps decoding is refused
-# because nothing legitimate looks like that, not because storage would follow
-# it.
-MAX_KEY_DECODES = 3
+# Where a key lands depends only on the shape of the path, so resolving against
+# a stand-in base keeps this a pure function: the real host and bucket cannot
+# change whether a key climbs out of its own prefix.
+_BASE = URL("http://resolve.invalid/")
+_BUCKET = "bucket"
+_INSIDE = f"/object/{_BUCKET}/"
 
 
 def leaves_the_bucket(path: str) -> bool:
-    """Whether a key resolves outside the bucket, decoded as storage sees it.
-
-    The storage client parses the key as a URL before resolving it, which decodes
-    `%2e%2e` into `..` — so a check that reads only literal segments passes the
-    encoded form straight through, and the request leaves the bucket exactly as
-    the literal form does. Every decoding pass is checked, so the raw and the
-    decoded forms both have to be confined.
-    """
-    seen = path
-    for _ in range(MAX_KEY_DECODES):
-        if seen.startswith("/") or ".." in seen.split("/"):
-            return True
-        decoded = unquote(seen)
-        if decoded == seen:
-            return False
-        seen = decoded
-    return True
+    """Whether a key resolves outside its bucket, as the storage client sees it."""
+    try:
+        resolved = _BASE.joinpath("object", _BUCKET, *relative_path_to_parts(path))
+    except Exception:
+        # joinpath refuses a part that starts with "/", and anything else that
+        # cannot be resolved is not a key this service should send either.
+        return True
+    return not resolved.path.startswith(_INSIDE)

@@ -1026,7 +1026,8 @@ def test_an_rgba_frame_is_piped_at_the_wrong_byte_count(ffmpeg):
     assert client.uploads == 0, "a sheared encode must not reach the videos bucket"
 
 
-def test_a_frame_key_that_leaves_the_bucket_is_never_fetched(monkeypatch):
+@pytest.mark.parametrize("escaping", ["%2e%2e/videos/1.mp4", ".\t./videos/1.mp4"])
+def test_a_frame_key_that_leaves_the_bucket_is_never_fetched(monkeypatch, escaping):
     """cyl_images.object_path is writable by any signed-in role, and this
     download carries the workflows app user's privileges — so the key is
     checked before it is handed to storage, and the frame is skipped."""
@@ -1034,7 +1035,7 @@ def test_a_frame_key_that_leaves_the_bucket_is_never_fetched(monkeypatch):
     monkeypatch.setattr(video, "scan_in_experiment", lambda *a, **k: True)
     monkeypatch.setattr(video, "_record_video", lambda c, s, r: None)
     images = [
-        {"object_path": "%2e%2e/videos/1.mp4", "frame_number": 0},
+        {"object_path": escaping, "frame_number": 0},
         {"object_path": "o1", "frame_number": 1},
     ]
     client = _GenClient(images)

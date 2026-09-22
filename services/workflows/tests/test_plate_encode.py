@@ -1140,7 +1140,6 @@ def test_a_32_bit_frame_inside_the_full_scale_still_works():
         "../../videos/x.mp4",
         "a/../../../object/videos/1.mp4",
         "../../../../../rest/v1/users",
-        "/storage/v1/object/videos/1.mp4",
         # Percent-encoded, which the storage client decodes before it resolves
         # the path -- so a check that reads only literal segments lets these by.
         "%2e%2e/videos/1.mp4",
@@ -1148,8 +1147,14 @@ def test_a_32_bit_frame_inside_the_full_scale_still_works():
         ".%2e/videos/1.mp4",
         "%2e./videos/1.mp4",
         "a/%2e%2e/%2e%2e/object/videos/1.mp4",
-        "%252e%252e/videos/1.mp4",
         "%2Fstorage/v1/object/videos/1.mp4",
+        # Whitespace and control characters, which the client strips outright:
+        # `..` reappears in the request while never appearing in the string.
+        ".\t./videos/1.mp4",
+        ".\n./videos/1.mp4",
+        "\t../videos/1.mp4",
+        " ../videos/1.mp4",
+        "\x00../videos/1.mp4",
     ],
 )
 def test_a_key_that_leaves_the_bucket_is_refused_before_it_is_fetched(path):
@@ -1183,6 +1188,12 @@ def test_a_key_that_leaves_the_bucket_is_refused_before_it_is_fetched(path):
         "gravi-images/a..b_cy1.tif",
         # A literal percent is not an escape sequence, and must still fetch.
         "gravi-images/50%_growth_cy1.tif",
+        # The client strips a leading slash, so this names an object in the
+        # bucket. Refusing it would drop frames that render today.
+        "/gravi-images/P7_c1.tif",
+        # Encoded twice: the client decodes once, so this is an odd filename
+        # inside the bucket, not a climb out of it.
+        "%252e%252e/videos/1.mp4",
     ],
 )
 def test_a_real_key_is_not_refused(path):
