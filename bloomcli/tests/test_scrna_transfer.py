@@ -53,6 +53,8 @@ class FakeStorage:
         self.requests.append(request)
         path = request.url.path
         if request.method == "POST" and path == "/storage/v1/upload/resumable":
+            if self.expired:
+                return httpx.Response(401, json={"message": "jwt expired"})
             meta = dict(item.split(" ") for item in request.headers["upload-metadata"].split(","))
             name = "/".join(base64.b64decode(meta[k]).decode() for k in ("bucketName", "objectName"))
             if self.duplicate_creates or name in self.objects:
@@ -411,3 +413,10 @@ def test_an_object_stored_with_no_bytes_is_not_stored(http, storage):
     """Storage answers normally and says the length is zero; the file is still not there."""
     storage.objects["scrna/h5ad/a.h5ad.gz"] = b""
     assert tr.object_exists(http, EP, "scrna", "h5ad/a.h5ad.gz") is False
+
+
+def test_an_expired_session_when_starting_an_upload_says_so(http, storage):
+    """Otherwise it reads as storage refusing the name, with raw JSON as the reason."""
+    storage.expired = True
+    with pytest.raises(tr.SessionExpired):
+        tr.create_upload(http, EP, "scrna", "h5ad/a.h5ad.gz", 10)

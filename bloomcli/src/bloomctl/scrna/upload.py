@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +112,8 @@ def _stored(http, ep, bucket: str, path: str) -> bool | None:
         except (_transfer.TransferError, httpx.HTTPError):
             if attempt == 2:
                 return None
+            # A server that is overloaded needs a moment, not a second request at once.
+            time.sleep(_transfer.RETRY_PAUSE_SECONDS)
     return None
 
 

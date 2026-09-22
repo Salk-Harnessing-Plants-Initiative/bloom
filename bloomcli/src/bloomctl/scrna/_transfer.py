@@ -147,6 +147,7 @@ def create_upload(http: httpx.Client, ep: Endpoint, bucket: str, path: str, size
             "x-upsert": "false",
         }),
     )
+    _refuse_if_expired(response)
     if _duplicate(response):
         raise AlreadyStored(f"{bucket}/{path}")
     location = response.headers.get("location")
