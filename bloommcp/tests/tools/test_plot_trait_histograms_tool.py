@@ -118,8 +118,11 @@ def test_batches_above_threshold(monkeypatch):
     assert result.batched is True
     expected = _expected_pages(n_traits)
     assert result.n_pages == expected
-    assert len(result.outputs) == expected
-    assert len(result.output_links) == expected
+    # One figure per page PLUS the committed sample-size table (#748): the table is an
+    # output, not a page, so n_pages still counts only rendered figures.
+    assert len(result.outputs) == expected + 1
+    assert len(result.output_links) == expected + 1
+    assert len(result.page_traits) == expected
 
 
 def test_batched_commit_failing_partway_through_persists_nothing(monkeypatch):
@@ -640,3 +643,463 @@ def test_manifest_read_failure_surfaces_as_tool_error(injected_ports):
         _run()
     assert exc.value.code == "tool_error"
     assert "manifest read failure" in exc.value.message
+
+
+# ── sample-size + missingness disclosure (#748) ──────────────────────────────
+
+_CSV_NAME = "trait_sample_sizes.csv"
+
+
+def _captured_outputs(store, monkeypatch, suffix=".csv"):
+    """Capture committed files by name before ``commit`` rmtree's the staging dir.
+
+    ``FakeResultStore.commit`` deletes ``run.staging_dir`` on success and synthesizes
+    ``fake://`` links, so a committed CSV's bytes are unreachable afterwards — the same
+    commit-spy pattern ``test_pca_analysis_tool`` and ``test_viz_snapshot`` use. Filtered by
+    suffix so a bare ``read_text`` never hits a ``.png``.
+    """
+    captured: dict[str, str] = {}
+    real_commit = store.commit
+
+    def _spy(run, outputs):
+        for name in outputs:
+            if name.endswith(suffix):
+                captured[name] = (run.staging_dir / name).read_text(encoding="utf-8")
+        return real_commit(run, outputs)
+
+    monkeypatch.setattr(store, "commit", _spy)
+    return captured
+
+
+def _expected_trait_counts(df, trait_cols):
+    """Structurally different oracle: a Python loop, not production's own vectorized
+    expression (the anti-pattern ``test_page_traits_maps_each_page_to_its_actual_traits``
+    documents — checking a formula against itself)."""
+    return {c: int(len(df[c].dropna())) for c in trait_cols}
+
+
+def _gappy_experiment(reader):
+    """5 rows: one full trait, one gappy trait, one entirely null trait."""
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(5)],
+            "t_full": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "t_gappy": [1.0, None, None, None, 5.0],
+            # float("nan"), not None: a column of None is object dtype and would not be
+            # auto-detected as a numeric trait at all.
+            "t_empty": [float("nan")] * 5,
+        }
+    )
+    reader.add_experiment("gappy.csv", df)
+    return df
+
+
+def test_per_trait_plotted_n_and_missingness_reported(injected_ports):
+    reader, _store = injected_ports
+    df = _gappy_experiment(reader)
+    result = plot_trait_histograms(PlotTraitHistogramsParams(experiment="gappy.csv"))
+
+    # Hand-written expectations, not a recomputation of the production expression.
+    assert result.n_rows_read == 5
+    assert result.trait_n_min == 0
+    assert result.trait_n_max == 5
+    assert result.trait_n_median == pytest.approx(2.0)
+    assert result.max_nan_fraction == pytest.approx(1.0)
+    assert result.max_nan_fraction_trait == "t_empty"
+    assert _expected_trait_counts(df, result.resolved_trait_columns) == {
+        "t_full": 5,
+        "t_gappy": 2,
+        "t_empty": 0,
+    }
+
+
+def test_all_null_trait_is_named_with_zero_plotted_n(injected_ports):
+    """Today the "No data" panel is discoverable only by opening the image."""
+    reader, _store = injected_ports
+    _gappy_experiment(reader)
+    result = plot_trait_histograms(PlotTraitHistogramsParams(experiment="gappy.csv"))
+
+    flagged = {t.trait: t for t in result.low_sample_traits}
+    assert flagged["t_empty"].n_plotted == 0
+    assert flagged["t_empty"].nan_fraction == pytest.approx(1.0)
+    assert "t_gappy" in flagged  # 2 < MIN_PLOTTED_SAMPLES
+    assert "t_full" not in flagged
+    assert result.low_sample_trait_count == 2
+
+
+def test_low_sample_traits_ordered_capped_and_deterministic(injected_ports):
+    reader, _store = injected_ports
+    n_thin = _viz_shared.MAX_FLAGGED_REPORTED + 5
+    data = {"Barcode": [f"b{i}" for i in range(6)]}
+    for i in range(n_thin):
+        # Every thin trait ties at n=1: ordering must still be deterministic, which is only
+        # true if the tie-break is the trait name (design.md Decision 2).
+        data[f"thin_{i:02d}"] = [1.0] + [None] * 5
+    data["fat"] = [float(i) for i in range(6)]
+    reader.add_experiment("thin.csv", pd.DataFrame(data))
+
+    first = plot_trait_histograms(PlotTraitHistogramsParams(experiment="thin.csv"))
+    second = plot_trait_histograms(PlotTraitHistogramsParams(experiment="thin.csv"))
+
+    names = [t.trait for t in first.low_sample_traits]
+    assert len(names) == _viz_shared.MAX_FLAGGED_REPORTED
+    assert first.low_sample_trait_count == n_thin  # uncapped truth survives the cap
+    assert names == sorted(names)  # tie-break is the trait name
+    assert names == [t.trait for t in second.low_sample_traits]
+    # The summaries are computed over every trait, not the capped sample.
+    assert first.trait_n_min == 1
+    assert first.trait_n_max == 6
+
+
+def test_trait_sample_sizes_csv_is_committed_and_complete(injected_ports, monkeypatch):
+    reader, store = injected_ports
+    df = _gappy_experiment(reader)
+    captured = _captured_outputs(store, monkeypatch)
+    result = plot_trait_histograms(PlotTraitHistogramsParams(experiment="gappy.csv"))
+
+    assert _CSV_NAME in result.outputs
+    assert _CSV_NAME in result.output_links
+    assert _CSV_NAME not in result.page_traits  # a table is not a page
+    rows = {
+        r["trait"]: r
+        for r in pd.read_csv(pd.io.common.StringIO(captured[_CSV_NAME])).to_dict(
+            "records"
+        )
+    }
+    assert set(rows) == set(result.resolved_trait_columns)
+    for trait, expected in _expected_trait_counts(
+        df, result.resolved_trait_columns
+    ).items():
+        assert rows[trait]["n_plotted"] == expected
+        assert rows[trait]["n_missing"] == 5 - expected
+
+
+def test_new_histogram_fields_stamped_into_manifest_params(injected_ports):
+    _reader, store = injected_ports
+    result = _run()
+    stored = store.get_run(_EXPERIMENT, "trait_histograms", "latest")
+    params = stored.params
+    assert params["trait_n_min"] == result.trait_n_min
+    assert params["trait_n_max"] == result.trait_n_max
+    assert params["low_sample_trait_count"] == result.low_sample_trait_count
+    assert params["n_rows_read"] == result.n_rows_read
+    assert [t["trait"] for t in params["low_sample_traits"]] == [
+        t.trait for t in result.low_sample_traits
+    ]
+
+
+def test_manifest_params_are_native_json_types(injected_ports):
+    """np.int64/np.float64 in params raise PydanticSerializationError at the manifest write —
+    this tool is one of the first to stamp numeric aggregates (design.md Decision 9)."""
+    _reader, store = injected_ports
+    _run()
+    stored = store.get_run(_EXPERIMENT, "trait_histograms", "latest")
+    for key, value in stored.params.items():
+        assert (
+            type(value).__module__ == "builtins" or value is None
+        ), f"params[{key!r}] is {type(value)}, not a native type"
+
+
+def _reject(token):
+    raise AssertionError(f"non-finite JSON token in payload: {token}")
+
+
+def test_result_and_manifest_are_strict_json(injected_ports):
+    """This change reports fractions whose denominator can be zero and medians whose
+    population can be empty — a bare NaN/Infinity token would be written by
+    storage_backend._json_bytes (json.dumps defaults to allow_nan=True) and rejected by strict
+    readers."""
+    _reader, store = injected_ports
+    result = _run()
+    json.loads(result.model_dump_json(), parse_constant=_reject)
+    stored = store.get_run(_EXPERIMENT, "trait_histograms", "latest")
+    json.loads(json.dumps(stored.params), parse_constant=_reject)
+
+
+def test_zero_row_frame_completes_with_null_summaries(injected_ports):
+    """A zero-row frame is not excluded by resolve_trait_columns; min()/median() over an empty
+    population must not raise or produce NaN (design.md Decision 8)."""
+    reader, _store = injected_ports
+    reader.add_experiment(
+        "empty.csv",
+        pd.DataFrame({"Barcode": pd.Series(dtype=str), "t": pd.Series(dtype=float)}),
+    )
+    result = plot_trait_histograms(PlotTraitHistogramsParams(experiment="empty.csv"))
+    assert result.n_rows_read == 0
+    # Every resolved trait still gets a panel, so the summaries are defined (and zero) rather
+    # than null — unlike plot_trait_boxplots, where an absent cell is drawn as nothing at all.
+    assert result.trait_n_min == 0
+    assert result.trait_n_median == 0.0
+    assert result.trait_n_max == 0
+    assert result.max_nan_fraction == 0.0  # no rows means no missingness to report
+    json.loads(result.model_dump_json(), parse_constant=_reject)
+
+
+# ── non-finite values (#748) ────────────────────────────────────────────────
+
+
+def _inf_experiment(reader, name="inf.csv"):
+    reader.add_experiment(
+        name,
+        pd.DataFrame(
+            {
+                "Barcode": [f"b{i}" for i in range(6)],
+                "t_ok": [float(i) for i in range(6)],
+                "t_inf": [1.0, 2.0, float("inf"), 4.0, 5.0, 6.0],
+            }
+        ),
+    )
+
+
+def test_histogram_over_non_finite_trait_is_assumption_violated_naming_it(
+    injected_ports, monkeypatch
+):
+    """matplotlib cannot bin a non-finite range, so this run already fails today — with the
+    delegate's own ValueError, redacted into a message naming no trait and offering no remedy.
+    The RED assertions are the two spies: the guard must fire BEFORE the delegate is called and
+    BEFORE a run is created."""
+    reader, store = injected_ports
+    _inf_experiment(reader)
+    delegate_calls = {"n": 0}
+    real_delegate = plot_trait_histograms_tool.create_trait_histograms
+
+    def _delegate_spy(*a, **k):
+        delegate_calls["n"] += 1
+        return real_delegate(*a, **k)
+
+    monkeypatch.setattr(
+        plot_trait_histograms_tool, "create_trait_histograms", _delegate_spy
+    )
+    create_calls = {"n": 0}
+    real_create = store.create_run
+
+    def _create_spy(*a, **k):
+        create_calls["n"] += 1
+        return real_create(*a, **k)
+
+    monkeypatch.setattr(store, "create_run", _create_spy)
+
+    with pytest.raises(BloomMCPError) as exc:
+        plot_trait_histograms(PlotTraitHistogramsParams(experiment="inf.csv"))
+
+    assert exc.value.code == "assumption_violated"
+    assert "t_inf" in exc.value.message
+    assert "t_ok" not in exc.value.message
+    assert exc.value.remedy
+    assert delegate_calls["n"] == 0
+    assert create_calls["n"] == 0
+    assert store.list_runs("inf.csv", "trait_histograms") == []
+
+
+def test_histogram_non_finite_guard_fires_on_a_batched_selection_too(injected_ports):
+    reader, store = injected_ports
+    df = _wide_df(60)
+    df["trait_7"] = [float("-inf")] * len(df)
+    reader.add_experiment("wide_inf.csv", df)
+    with pytest.raises(BloomMCPError) as exc:
+        plot_trait_histograms(PlotTraitHistogramsParams(experiment="wide_inf.csv"))
+    assert exc.value.code == "assumption_violated"
+    assert "trait_7" in exc.value.message
+    assert store.list_runs("wide_inf.csv", "trait_histograms") == []
+
+
+def test_non_finite_guard_ignores_unselected_traits(injected_ports):
+    """The guard covers the RESOLVED selection only — an inf in a trait the caller did not ask
+    for is never rendered, so it must not fail the run."""
+    reader, _store = injected_ports
+    _inf_experiment(reader)
+    result = plot_trait_histograms(
+        PlotTraitHistogramsParams(experiment="inf.csv", trait_columns=["t_ok"])
+    )
+    assert result.resolved_trait_columns == ["t_ok"]
+
+
+# ── delegate-behavior pin (guards Decision 4) ───────────────────────────────
+
+
+def test_delegate_titles_each_panel_with_its_n(injected_ports, monkeypatch):
+    """plot_trait_histograms' image is deliberately NOT given a sample-size note because the
+    delegate already titles every panel f"{trait}\\n(n={count})". `_titled_traits` splits that
+    suffix off before asserting, so nothing else in this file fails if it disappears — this
+    pins it directly against the live delegate.
+
+    Note the delegate titles the BARE trait name for an all-NaN "No data" panel, so this
+    asserts the non-empty case.
+    """
+    reader, _store = injected_ports
+    df = _gappy_experiment(reader)
+    captured = {}
+    real = plot_trait_histograms_tool.create_trait_histograms
+
+    def _spy(*a, **k):
+        fig = real(*a, **k)
+        captured["fig"] = fig
+        return fig
+
+    monkeypatch.setattr(plot_trait_histograms_tool, "create_trait_histograms", _spy)
+    plot_trait_histograms(PlotTraitHistogramsParams(experiment="gappy.csv"))
+
+    titles = {
+        ax.get_title().split("\n")[0]: ax.get_title()
+        for ax in captured["fig"].axes
+        if ax.get_visible() and ax.get_title()
+    }
+    assert titles["t_full"] == f"t_full\n(n={len(df['t_full'].dropna())})"
+    assert titles["t_gappy"] == f"t_gappy\n(n={len(df['t_gappy'].dropna())})"
+
+
+def _hist_note_texts(fig):
+    """Figure-level texts that are OUR note — filtered, not counted: a batched histogram
+    carries the delegate's own suptitle in fig.texts."""
+    return [t.get_text() for t in fig.texts if "rows per panel" in t.get_text()]
+
+
+def _captured_hist_figure(monkeypatch, batched=False):
+    name = "create_trait_histograms_batched" if batched else "create_trait_histograms"
+    captured = {}
+    real = getattr(plot_trait_histograms_tool, name)
+
+    def _spy(*a, **k):
+        out = real(*a, **k)
+        captured["figs"] = list(out) if batched else [out]
+        return captured["figs"] if batched else out
+
+    monkeypatch.setattr(plot_trait_histograms_tool, name, _spy)
+    return captured
+
+
+def _missingness_experiment(reader, name="missingness.csv"):
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(120)],
+            "complete": [float(i) for i in range(120)],
+            "mostly_missing": [1.0] * 12 + [float("nan")] * 108,
+            "thin": [1.0, 2.0] + [float("nan")] * 118,
+        }
+    )
+    reader.add_experiment(name, df)
+    return df
+
+
+def test_histogram_note_is_drawn_on_every_render(injected_ports, monkeypatch):
+    """#748 review round 2: the delegate's per-panel (n=...) says what was BINNED, not what
+    was DROPPED — a reader seeing (n=12) cannot tell a trait measured on 12 plants from one
+    that lost 108 of its 120 measurements, which is the gap #748 opens with. The note closes
+    it in this tool's own unit (panels), matching plot_trait_boxplots' unconditional note.
+    """
+    reader, _store = injected_ports
+    reader.add_experiment(
+        "healthy.csv",
+        pd.DataFrame(
+            {
+                "Barcode": [f"b{i}" for i in range(20)],
+                "a": [float(i) for i in range(20)],
+                "b": [float(i) for i in range(20)],
+            }
+        ),
+    )
+    captured = _captured_hist_figure(monkeypatch)
+    result = plot_trait_histograms(PlotTraitHistogramsParams(experiment="healthy.csv"))
+
+    drawn = _hist_note_texts(captured["figs"][0])
+    assert len(drawn) == 1
+    assert "⚠" not in drawn[0]
+    assert "min=20" in drawn[0] and "20 row(s) read" in drawn[0]
+    # The unconditional tail: 30 fixed bins mean a panel above the floor can still mislead.
+    assert "fixed 30 bins" in drawn[0]
+    assert result.missingness_note == " ".join(drawn[0].split())
+
+
+def test_histogram_note_flags_missingness_the_panel_title_cannot_show(
+    injected_ports, monkeypatch
+):
+    """A panel titled (n=12) looks identical whether 12 plants were measured or 108 rows were
+    dropped. Flagging on FRACTION as well as count is what distinguishes them."""
+    reader, _store = injected_ports
+    _missingness_experiment(reader)
+    captured = _captured_hist_figure(monkeypatch)
+    result = plot_trait_histograms(
+        PlotTraitHistogramsParams(experiment="missingness.csv")
+    )
+
+    drawn = " ".join(_hist_note_texts(captured["figs"][0])[0].split())
+    assert "⚠" in drawn
+    assert "thin (n=2)" in drawn  # below the count floor
+    # ...and the one that CLEARS the floor while having dropped 90% of its rows.
+    assert "mostly_missing (90% missing)" in drawn
+    assert "trait_sample_sizes.csv" in drawn
+    assert result.missingness_note == drawn
+
+
+def test_histogram_notes_are_page_scoped(injected_ports, monkeypatch):
+    reader, store = injected_ports
+    n_traits = 20
+    data = {"Barcode": [f"b{i}" for i in range(20)]}
+    for t in range(n_traits):
+        data[f"trait_{t:02d}"] = [float(i) for i in range(20)]
+    df = pd.DataFrame(data)
+    df.loc[df.index[2:], "trait_17"] = float("nan")  # thin, on the second page only
+    reader.add_experiment("paged_hist.csv", df)
+
+    monkeypatch.setattr(_viz_shared, "TRAIT_BATCH_THRESHOLD", 8)
+    monkeypatch.setattr(plot_trait_histograms_tool, "TRAIT_BATCH_THRESHOLD", 8)
+    captured = _captured_hist_figure(monkeypatch, batched=True)
+    result = plot_trait_histograms(
+        PlotTraitHistogramsParams(experiment="paged_hist.csv")
+    )
+
+    assert result.batched is True
+    notes = [_hist_note_texts(fig)[0] for fig in captured["figs"]]
+    flagged = [i for i, note in enumerate(notes) if "⚠" in note]
+    assert len(flagged) == 1, notes
+    assert "trait_17" in notes[flagged[0]]
+    assert all("this page" in note for note in notes)
+    # Per-page strings are not stamped; the run-wide one is.
+    params = store.get_run("paged_hist.csv", "trait_histograms", "latest").params
+    assert params["missingness_note"] == result.missingness_note
+    assert "this page" not in result.missingness_note
+
+
+def test_histogram_note_never_overlaps_the_axes(injected_ports, monkeypatch):
+    reader, _store = injected_ports
+    data = {"Barcode": [f"b{i}" for i in range(40)]}
+    for t in range(9):
+        # Every trait thin AND heavily missing, with long names: a maximal note.
+        data[f"Total.Root.Length.Trait.Number.{t}.mm"] = [1.0, 2.0] + [
+            float("nan")
+        ] * 38
+    reader.add_experiment("maximal_hist.csv", pd.DataFrame(data))
+    captured = _captured_hist_figure(monkeypatch)
+    plot_trait_histograms(PlotTraitHistogramsParams(experiment="maximal_hist.csv"))
+
+    fig = captured["figs"][0]
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    note = next(t for t in fig.texts if "rows per panel" in t.get_text())
+    lowest = min(
+        a.get_tightbbox(renderer).y0
+        for a in fig.axes
+        if a.get_visible() and a.get_title()
+    )
+    assert note.get_window_extent(renderer).y1 <= lowest
+
+
+def test_histogram_note_is_not_parsed_as_mathtext(injected_ports, monkeypatch):
+    reader, _store = injected_ports
+    reader.add_experiment(
+        "hist_mathtext.csv",
+        pd.DataFrame(
+            {
+                "Barcode": [f"b{i}" for i in range(6)],
+                "cost_$_per_{unit}": [1.0, 2.0] + [float("nan")] * 4,
+                "yield_$_ok": [1.0, 2.0] + [float("nan")] * 4,
+            }
+        ),
+    )
+    captured = _captured_hist_figure(monkeypatch)
+    plot_trait_histograms(PlotTraitHistogramsParams(experiment="hist_mathtext.csv"))
+    note = next(
+        t for t in captured["figs"][0].texts if "rows per panel" in t.get_text()
+    )
+    assert note.get_parse_math() is False
+    captured["figs"][0].canvas.draw()

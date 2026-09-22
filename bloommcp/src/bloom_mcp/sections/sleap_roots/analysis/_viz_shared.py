@@ -3,9 +3,12 @@
 Single-sourced here (mirrors ``tools/_qc_shared.py``'s rationale) so the plot files can't
 silently desync on how a trait selection gets resolved or where the batching boundary sits.
 
-Only two things live here now: ``TRAIT_BATCH_THRESHOLD`` and :func:`resolve_trait_columns`,
-shared by the 3 tools #466 converged onto ``@as_mcp_tool`` (``plot_trait_histograms``,
-``plot_trait_boxplots``, ``plot_correlation_matrix``). The pre-#466 generation of helpers —
+``TRAIT_BATCH_THRESHOLD`` and :func:`resolve_trait_columns` are shared by the 3 tools #466
+converged onto ``@as_mcp_tool`` (``plot_trait_histograms``, ``plot_trait_boxplots``,
+``plot_correlation_matrix``). #748 added the sample-size disclosure helpers the two trait-plot
+tools share — ``MIN_PLOTTED_SAMPLES``, the two reporting caps, :func:`native`, and the two
+count tables — single-sourced for the same reason: the two tools must not drift on what counts
+as a plotted observation. The pre-#466 generation of helpers —
 ``save_plot``/``save_plot_or_plots`` (write a PNG to ``PLOTS_DIR`` and return a URL),
 ``parse_traits``, ``validate_filename`` — served only the bare-``mcp.tool()`` plot tools, and
 #462 deleted them together with the last two of those (``plot_heritability_bar``,
@@ -14,7 +17,12 @@ shared by the 3 tools #466 converged onto ``@as_mcp_tool`` (``plot_trait_histogr
 (static mount, env validation, compose bind-mount) is a separate retirement.
 """
 
+import math
+import textwrap
 from collections import Counter
+
+import numpy as np
+import pandas as pd
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.tools._qc_shared import _validate_trait_subset
@@ -99,3 +107,302 @@ def resolve_trait_columns(
             "explicitly.",
         )
     return trait_cols
+
+
+# Minimum observations below which a rendered box is flagged as too thin to describe a
+# distribution (#748). OWNED HERE, deliberately not an alias for
+# _qc_shared._CANONICAL_MIN_SAMPLES_PER_TRAIT (10) -- the same decoupling #784 makes for
+# plot_correlation_matrix's _MIN_CORR_OVERLAP, applied at birth rather than walked back later.
+# That constant answers "enough samples to KEEP A TRAIT during cleaning", a per-column
+# completeness convention; this one answers "enough points for a BOX to be made of data".
+# Aliasing would let a QC-side retune silently move which boxes these tools flag and what
+# their rendered note says.
+#
+# WHY 5. A box plot's five-number summary needs enough observations for its quartiles to BE
+# observations rather than interpolations. Below n=5, matplotlib's default linear-interpolation
+# quartiles are weighted blends of adjacent order statistics matching no measured plant: at n=2
+# on [1, 2] the box spans [1.25, 1.75], containing neither datum. n=5 is the smallest n>1 at
+# which Q1, the median and Q3 all land exactly on order statistics (x2, x3, x4) -- the first n
+# at which the drawn box is made of data. Pinned as a property by
+# test_five_is_the_first_sample_size_whose_quartiles_are_order_statistics.
+#
+# WHAT IT DOES NOT BUY YOU. It is a DEGENERACY floor, not a sufficiency threshold, and says
+# nothing about the whiskers or the flier dots. Measured (60k replicates per n, clean standard
+# normal, matplotlib's whis=1.5): no flier can be drawn at all below n=4, and at n=5 -- on the
+# CLEARING side of this floor -- a sample shows at least one spurious "outlier" dot 33% of the
+# time with 8.6% of its points flagged, against the ~0.7% asymptotic rate. The flagged fraction
+# falls with n (4.0% at 10, 1.8% at 30) but the probability of at least one spurious flier does
+# not: it is 21% at n=4, then sits between 26% and 34% at every n from 5 to 30. A flier is an
+# arithmetic artifact whether or not the box clears this floor.
+#
+# WHY NOT 10. Measured on tests/fixtures/turface_19_final_data.csv (19 genotypes, 7-9
+# replicates, 11 detected traits, no nulls): a floor of 10 flags 209 of 209 (trait, genotype)
+# cells; a floor of 5 flags none. A warning that fires on 100% of a healthy, complete
+# experiment is one callers learn to ignore.
+#
+# For plot_trait_histograms the same constant carries NO distributional claim -- a histogram
+# has no quartiles. There it is a bare "too few points for a shape to exist" floor.
+MIN_PLOTTED_SAMPLES = 5
+
+# Caps on the flagged-cell lists reported inline (#748). At cylinder scale (846 traits x ~19
+# genotypes = 16,074 cells) an uncapped list is a denial of service against the caller's
+# context, not a disclosure. Each list is ordered worst-first so the cap truncates the
+# best-supported end, and each carries an uncapped count; the complete table always ships as a
+# committed CSV output. 20 is chosen to match the per-pair caps arriving with #833 for
+# plot_correlation_matrix, so the family ends up with one number rather than two -- note that
+# on staging today that tool has no per-pair cap at all (only its own 10-name caveat cap), so
+# this is a forward-looking alignment, not a precedent already set.
+MAX_FLAGGED_REPORTED = 20
+# Names shown in the note drawn on the figure before it degrades to "+N more". Smaller than the
+# list cap because the note has to stay readable on the image itself.
+MAX_NOTE_NAMES = 10
+
+# Column order of group_sample_size_table's output. Also the committed CSV's header, so it is
+# named once rather than restated at each call site.
+GROUP_TABLE_COLUMNS = [
+    "trait",
+    "genotype",
+    "n_rows_in_group",
+    "n_plotted",
+    "n_finite",
+    "n_non_finite",
+    "n_missing",
+    "nan_fraction",
+]
+TRAIT_TABLE_COLUMNS = [
+    "trait",
+    "n_plotted",
+    "n_finite",
+    "n_non_finite",
+    "n_missing",
+    "nan_fraction",
+]
+
+
+def native(value):
+    """Coerce a numpy/pandas scalar to a JSON-safe native Python value (``None`` if not finite).
+
+    Not belt-and-braces (#748): every count here comes out of ``groupby().count()``,
+    ``np.median`` or ``isinf().sum()`` as ``np.int64``/``np.float64``, and ``manifest.py``'s
+    ``stamped.model_dump(mode="json")`` raises ``PydanticSerializationError: Unable to serialize
+    unknown type: <class 'numpy.int64'>`` on those — verified, not anticipated. These are the
+    first tools in the family to stamp numeric aggregates into a run's ``params``
+    (``plot_correlation_matrix`` stamps only strings and lists of strings; ``qc_inspect`` routes
+    its numerics through ``convert_to_json_serializable`` first).
+
+    Non-finite values become ``None`` rather than ``NaN``/``Infinity``: manifests are serialized
+    by ``storage_backend._json_bytes`` via ``json.dumps`` with the default ``allow_nan=True``,
+    which would emit a bare token strict JSON readers reject.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) else None
+
+
+def _non_finite_mask(df, trait_cols):
+    """Boolean (rows x traits) mask of ``+inf``/``-inf``.
+
+    ``na_value=np.nan`` is free insurance against a future nullable dtype (``Float64`` with
+    ``pd.NA``), on which a bare ``to_numpy(dtype="float64")`` raises — the same call shape
+    ``qc_inspect`` already uses.
+    """
+    return np.isinf(df[trait_cols].to_numpy(dtype="float64", na_value=np.nan))
+
+
+def trait_sample_size_table(df, trait_cols):
+    """Per-trait plotted/missing counts for ``plot_trait_histograms`` (#748).
+
+    ``n_plotted`` is ``pandas`` ``count()`` — non-null values, which **includes** ``+/-inf``,
+    matching ``isna``'s convention and the caveat ``qc_inspect`` documents for its own
+    missingness fields. ``n_non_finite`` is a SUBSET of it, not an addition, so
+    ``n_finite = n_plotted - n_non_finite``. Every flag is computed on ``n_finite``.
+    """
+    n_rows = len(df)
+    counts = df[trait_cols].count()
+    inf_counts = _non_finite_mask(df, trait_cols).sum(axis=0)
+    table = pd.DataFrame(
+        {
+            "trait": list(trait_cols),
+            "n_plotted": [int(counts[c]) for c in trait_cols],
+            "n_non_finite": [int(n) for n in inf_counts],
+        }
+    )
+    table["n_finite"] = table["n_plotted"] - table["n_non_finite"]
+    table["n_missing"] = n_rows - table["n_plotted"]
+    # A zero-row frame has no missingness to report rather than an undefined fraction.
+    table["nan_fraction"] = table["n_missing"] / n_rows if n_rows else 0.0
+    return table[TRAIT_TABLE_COLUMNS]
+
+
+# Upper bound on the (trait x genotype) grid this table may materialize. The caps elsewhere in
+# this change bound what reaches the CALLER's context; this one bounds what the SERVER builds.
+# Reachable without malice: GENOTYPE_PATTERNS matches on column NAME with no dtype or
+# cardinality check and includes "accession", so a per-plant accession column auto-detects as
+# the grouper. At 846 traits x 5,000 such values the table is 4.2M rows / ~660 MB, which
+# result_store then read_bytes() in full to hash -- and there is no rate limiting in front of
+# the MCP surface. Cylinder's real shape (846 x 19 = 16,074) sits three orders of magnitude
+# below this, and a genotype column with more than a few hundred levels is not a genotype
+# column; the error says so rather than silently grinding.
+MAX_GROUP_TABLE_CELLS = 250_000
+
+
+def group_sample_size_table(df, trait_cols, genotype_col):
+    """Per-(trait, genotype) counts for ``plot_trait_boxplots`` (#748).
+
+    One row per (resolved trait x observed genotype) cell, including cells with **no** data —
+    those are the boxes the delegate draws no tick for at all, and naming them is half the point
+    of the disclosure. Rows whose genotype value is null are excluded from every cell, matching
+    the delegate's own ``df[[trait, genotype_col]].dropna()`` (``groupby``'s default
+    ``dropna=True`` agrees with it cell-for-cell — verified).
+
+    Vectorized end to end: one ``groupby().count()`` plus one grouped ``isinf`` sum. A Python
+    loop over the (trait x genotype) grid is prohibitive at cylinder width; only the flagged
+    tail is ever materialized by the caller. Measured at 3,000 rows x 846 traits x 60
+    genotypes: 5 ms and 4 ms respectively.
+
+    Returns an EMPTY frame (with the full column set) when no genotype group survives — an
+    all-null genotype column is reachable today and renders successfully, so this must not raise
+    (see the tools' Optional summaries).
+    """
+    grouper = df[genotype_col]
+    # Guard BEFORE building anything: nunique() is one pass over a single column, whereas the
+    # groupby below allocates the whole (genotype x trait) grid.
+    n_groups = int(grouper.nunique(dropna=True))
+    n_cells = n_groups * len(trait_cols)
+    if n_cells > MAX_GROUP_TABLE_CELLS:
+        raise BloomMCPError(
+            code="assumption_violated",
+            message=f"Grouping {len(trait_cols)} trait(s) by {genotype_col!r} would produce "
+            f"{n_cells:,} (trait, genotype) cells across {n_groups:,} distinct values, above "
+            f"this tool's limit of {MAX_GROUP_TABLE_CELLS:,}.",
+            remedy=f"{genotype_col!r} looks like a per-sample identifier rather than a "
+            "genotype label. Narrow the selection with trait_columns, or use an experiment "
+            "whose genotype column has fewer distinct values.",
+        )
+    counts = df.groupby(grouper, sort=True)[trait_cols].count()
+    if counts.empty:
+        return pd.DataFrame(columns=GROUP_TABLE_COLUMNS)
+
+    counts.index.name = "genotype"
+    counts.columns.name = "trait"
+    inf_counts = (
+        pd.DataFrame(
+            _non_finite_mask(df, trait_cols), columns=trait_cols, index=df.index
+        )
+        .groupby(grouper, sort=True)
+        .sum()
+    )
+    inf_counts.index.name = "genotype"
+    inf_counts.columns.name = "trait"
+
+    table = counts.stack().rename("n_plotted").reset_index()
+    table["n_non_finite"] = (
+        inf_counts.stack().rename("n_non_finite").reset_index()["n_non_finite"]
+    )
+    table["n_finite"] = table["n_plotted"] - table["n_non_finite"]
+    table["n_rows_in_group"] = table["genotype"].map(grouper.value_counts()).astype(int)
+    table["n_missing"] = table["n_rows_in_group"] - table["n_plotted"]
+    table["nan_fraction"] = table["n_missing"] / table["n_rows_in_group"]
+    # Deterministic order: the committed CSV and every derived list read the same way twice.
+    table = table.sort_values(["trait", "genotype"], kind="stable").reset_index(
+        drop=True
+    )
+    return table[GROUP_TABLE_COLUMNS]
+
+
+# Character width a drawn note is wrapped to. Fixed rather than matplotlib's own wrap=True,
+# whose wrapping depends on the figure width at draw time and interacts badly with
+# bbox_inches="tight". Every figure these delegates build is at least 15in wide, so this
+# always fits without widening the canvas (measured).
+NOTE_WRAP_CHARS = 110
+# Geometry of the drawn note. The reserved strip is computed from these rather than from a
+# rendered text extent, which would cost a full canvas.draw() on each of cylinder's 53 pages.
+NOTE_FONTSIZE = 8
+# Matplotlib's default line spacing is 1.2x the font size; 1.4 leaves a little slack so a
+# descender on the last line cannot reach the axes.
+NOTE_LINE_SPACING = 1.4
+NOTE_PAD_INCHES = 0.2
+
+
+# ── the disclosure note drawn on a rendered figure (#748) ────────────────────
+# Shared by both trait-plot tools for the same reason as the count tables above: they must not
+# drift on how a disclosure reaches the image. Each tool builds its own note TEXT (the two
+# summarize different units -- boxes vs panels); the capping and the drawing are common.
+
+
+def flagged_names(entries, formatter):
+    """Cap a flagged list for the drawn note, summarizing the remainder as "+N more"."""
+    shown = [formatter(e) for e in entries[:MAX_NOTE_NAMES]]
+    remainder = len(entries) - len(shown)
+    return ", ".join(shown) + (f", +{remainder} more" if remainder else "")
+
+
+def draw_disclosure_note(fig, note, flagged):
+    """Draw the note below the axes, growing the figure so it cannot land on top of them.
+
+    A figure-level footnote, not a per-box annotation — the same choice
+    ``plot_correlation_matrix``'s ``heatmap_caveat`` makes, and for the same reason: anything
+    positioned against the delegate's own subplot geometry would mislabel a different box when
+    it got that geometry wrong. Per-box counts ride on the tick labels instead (see
+    ``plot_trait_boxplots._annotate_genotype_ticks``), which needs no geometry at all.
+
+    **The note is unbounded in height** — up to four clauses of ``MAX_NOTE_NAMES`` names each,
+    wrapped — so a fixed reservation cannot hold it. A flagged cylinder-scale note runs to ten
+    or more wrapped lines and, drawn at a fixed offset, overwrote the bottom row of boxes: the
+    figure grew under ``bbox_inches="tight"`` so nothing was *clipped*, but the axes did not
+    move, so the text sat on the data. That is why the space is measured and reserved here
+    rather than assumed, and why ``test_note_never_overlaps_the_axes`` asserts it as geometry
+    against a deliberately maximal note instead of eyeballing a baseline (the committed
+    snapshot fixture is unflagged by design, so its note is one line and could never catch it).
+
+    The reservation is computed from the wrapped line count rather than from a rendered extent:
+    a ``canvas.draw()`` per page is a full rasterization, and this runs on each of cylinder's 53
+    pages. Line height is the only quantity needed and it follows from the font size.
+
+    ``textwrap.fill`` rather than matplotlib's ``wrap=True``: the latter wraps against the
+    figure width at draw time and interacts badly with ``bbox_inches="tight"``.
+    """
+    wrapped = textwrap.fill(note, NOTE_WRAP_CHARS)
+    n_lines = wrapped.count("\n") + 1
+    needed_inches = n_lines * NOTE_FONTSIZE * NOTE_LINE_SPACING / 72.0 + NOTE_PAD_INCHES
+    width, height = fig.get_size_inches()
+    new_height = height + needed_inches
+    # Grow the canvas and TRANSLATE every axes upward by exactly the added strip, rather than
+    # squeezing the axes with subplots_adjust(bottom=...). Two reasons:
+    #   * the boxes keep the height the delegate sized for them (for the horizontal
+    #     orientation that scales with the genotype count and is already the minimum readable);
+    #   * subplots_adjust positions the AXES box, and each axes' tick labels and x-label hang
+    #     BELOW that box -- so reserving the strip that way still let the bottom row's axis
+    #     labels land on the note. Translating preserves each axes' absolute geometry, and its
+    #     decorations move with it.
+    fig.set_size_inches(width, new_height, forward=True)
+    scale = height / new_height
+    offset = needed_inches / new_height
+    for ax in fig.axes:
+        pos = ax.get_position()
+        ax.set_position(
+            [pos.x0, pos.y0 * scale + offset, pos.width, pos.height * scale]
+        )
+    fig.text(
+        0.5,
+        NOTE_PAD_INCHES / (2 * (height + needed_inches)),
+        wrapped,
+        ha="center",
+        va="bottom",
+        fontsize=NOTE_FONTSIZE,
+        color="darkred" if flagged else "#444444",
+        transform=fig.transFigure,
+        # parse_math=False: this is the first place the codebase concatenates up to 40
+        # data-derived trait/genotype names into ONE Text object, so two names each carrying a
+        # "$" pair up and matplotlib renders the disclosure as italicised mathtext -- or, with a
+        # "{" or backslash between them, raises ParseFatalException and fails the run after
+        # create_run. The delegate's own tick labels are separate Text objects and never had
+        # this exposure. (usetex is never enabled in this package, so a parse failure is the
+        # whole risk -- there is no shell-escape path.)
+        parse_math=False,
+    )
