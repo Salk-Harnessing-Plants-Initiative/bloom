@@ -427,7 +427,8 @@ realistic (43,375 strong pairs at 846 traits):
 | residual-NaN bucket | new | 0.005 |
 | strong-pair sort + cap | new | 0.010 |
 
-**+0.015 s on 0.387 s = 3.9%**, against the +0.006 s / 1.4% an earlier draft reported. Still
-negligible, and still the right call; the number is simply the honest one. Absolute seconds are
-machine-specific — they do not reproduce across machines and the benchmark now says so — but the
-ratio does.
+**+0.015 s on 0.387 s ≈ 4%**, against the +0.006 s / 1.4% an earlier draft reported. Still
+negligible, and still the right call; the number is simply the honest one. Repeat runs on the
+same machine land between 3.9% and 4.2%, so the figure is quoted as "about 4%" rather than to
+two significant figures — and absolute seconds do not reproduce across machines at all (the
+benchmark says so in its own header). The ratio is the part that carries.

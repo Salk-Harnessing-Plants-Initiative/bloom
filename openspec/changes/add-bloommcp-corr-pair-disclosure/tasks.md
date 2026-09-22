@@ -265,3 +265,47 @@ reproduced locally against the pinned pandas 3.0.2 / numpy 2.4.4 before being ac
       it carries four fields. Capping `low_overlap_trait_pairs` (uncapped, up to ~357k entries)
       is a behaviour change to an existing field and is left to #837, with the misleading
       "typically small" comment corrected in place.
+
+## 7. #833 review round 2 — applied
+
+One blocking item (the PR description, not the code), two "important", two suggestions.
+
+- [x] 7.1 **Blocking — the PR body was stale and, in one place, asserted something my own
+      commit message had already retracted.** It still read "Backward compatible — additive
+      fields only. No existing field changes value or meaning", still cited the deleted
+      400-frame fuzz, and still quoted +0.006s. Rewritten against current head. The reviewer
+      is right that this was the one that mattered: an approver reading that body would have
+      been approving a purely-additive change, when B1's fix moves
+      `strong_positive_correlations`/`strong_negative_correlations` — pre-existing fields —
+      on frames carrying non-finite or variance-overflowing traits.
+- [x] 7.2 **Important — semantic conflict with #840.** My prose said "#768 remains open"
+      immediately after a paragraph #840 rewrites to "#768, closed". Rather than leave a
+      note asking whoever merges second to reword (a convention that gets forgotten), the
+      sentence now makes **no status claim at all** about #768, so it reads correctly in
+      either merge order. Two corrections to my own investigation while doing this:
+      `git merge-tree` reported "0 conflict markers" — that was a false negative from
+      grepping for a marker format that command does not emit. A real test merge on a
+      throwaway branch **does** conflict, and loudly, because #840 branched before this
+      round's `heatmap_caveat` rewrite. So a first draft of the replacement prose asserting
+      "these two branches merge cleanly" was itself false and was removed before commit.
+- [x] 7.3 **Important — three missing boundary cases.** Added:
+      `test_strong_pair_boundary_at_min_periods` (9-vs-10 for the strong-pair/CI path, which
+      previously existed only for the sibling `low_overlap_trait_pairs` list — at the floor
+      the pair must be reported with an interval computed at that same n; one row below, it
+      must vanish from counts, list and summaries alike), `test_new_machinery_at_the_two_trait_
+      minimum` (the `np.where`/`lexsort`/slice pipeline at a one-cell upper triangle), and
+      `test_every_off_diagonal_cell_is_locally_constant` (the saturated case: the third
+      bucket explains every cell while the other two stay empty, and the `nunique()` label
+      check still holds for all of them). Mutation-checked: an off-by-one in the overlap
+      floor and a CI computed at n+1 are both caught by the new boundary test.
+- [x] 7.4 **Suggestion declined again, with the reason restated.**
+      `locally_constant_trait_pairs` stays `list[list[str]]`. Wrapping a pair of names in a
+      one-field model adds JSON verbosity and nothing else, and it would diverge from its
+      direct sibling `low_overlap_trait_pairs`, which callers already iterate as
+      `list[list[str]]` and which cannot change. `StrongCorrelationPair` is a model because
+      it carries four fields that need names. This is a considered asymmetry between
+      *name-lists* and *record-lists*, not an oversight.
+- [x] 7.5 **Suggestion taken — folded into #837.** Commented there noting this is now the
+      third uncapped name-list in the manifest, with the worst-case sizes and the reason a
+      fix should bound the manifest tier as a whole rather than this field alone. The code
+      comment at the stamping site says the same and points at #837.

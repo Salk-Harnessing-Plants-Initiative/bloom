@@ -1900,3 +1900,130 @@ def test_field_descriptions_record_the_taxonomy_they_promise():
 
     locally_constant = fields["locally_constant_trait_pairs"].description
     assert "arbitrary" in locally_constant.lower()
+
+
+@pytest.mark.parametrize("n_overlap, expect_reported", [(10, True), (9, False)])
+def test_strong_pair_boundary_at_min_periods(
+    injected_ports, n_overlap, expect_reported
+):
+    """#833 review round 2: the 9-vs-10 boundary was pinned only for the sibling
+    `low_overlap_trait_pairs` list, never for the strong-pair/CI path this change adds.
+
+    At exactly the floor the pair must be reported WITH a defined interval computed at that
+    same n; one row below it, pandas returns NaN and the pair must vanish from the counts,
+    the list and the summaries alike. An off-by-one here would publish a Fisher interval for
+    an overlap the tool's own floor rejects.
+    """
+    assert plot_correlation_matrix_tool._MIN_CORR_OVERLAP == 10
+    n = 24
+    # Perfectly-but-not-exactly collinear over the observed rows, so |r| clears the cutoff
+    # without hitting 1.0 (which would legitimately null the interval and mask the boundary).
+    df = pd.DataFrame(
+        {
+            **_meta(n),
+            "pair_a": [float(i) if i < n_overlap else None for i in range(n)],
+            "pair_b": [
+                float(i) * 2.0 + (0.3 if i % 3 == 0 else 0.0) if i < n_overlap else None
+                for i in range(n)
+            ],
+            "anchor_a": [float((i * 5) % 13) for i in range(n)],
+            "anchor_b": [float((i * 7) % 11) for i in range(n)],
+        }
+    )
+    result = _run_with_frame(df)
+
+    reported = {tuple(p.traits): p for p in result.strong_correlation_pairs}.get(
+        ("pair_a", "pair_b")
+    )
+    assert (reported is not None) is expect_reported
+
+    if expect_reported:
+        assert reported.overlap_n == n_overlap
+        expected = plot_correlation_matrix_tool._fisher_ci(reported.r, n_overlap)
+        assert (reported.ci_low, reported.ci_high) == expected
+        assert reported.ci_low is not None
+    else:
+        # Below the floor the pair is NaN, so it reaches neither count nor summary.
+        assert ["pair_a", "pair_b"] in result.low_overlap_trait_pairs
+
+
+def test_new_machinery_at_the_two_trait_minimum(injected_ports):
+    """#833 review round 2: the sort/CI/cap path was never exercised at the 2-column
+    minimum the tool accepts, where the upper triangle holds exactly one cell.
+
+    Degenerate shapes are where an `np.where` / `lexsort` / slice pipeline tends to break
+    (a scalar where an array is expected, an empty-axis reduction), and every list here is
+    length 0 or 1.
+    """
+    n = 20
+    df = pd.DataFrame(
+        {
+            **_meta(n),
+            "only_a": [float(i) for i in range(n)],
+            "only_b": [float(i) * 3.0 + (i % 4) for i in range(n)],
+        }
+    )
+    result = _run_with_frame(df)
+
+    assert len(result.resolved_trait_columns) == 2
+    assert result.strong_pair_count == (
+        result.strong_positive_correlations + result.strong_negative_correlations
+    )
+    assert result.strong_pair_count == 1
+    assert len(result.strong_correlation_pairs) == 1
+
+    only = result.strong_correlation_pairs[0]
+    assert only.traits == ["only_a", "only_b"]
+    assert only.overlap_n == n
+    # The three uncapped summaries must agree with the single pair they summarise.
+    assert (
+        result.strong_pair_overlap_min
+        == result.strong_pair_overlap_max
+        == only.overlap_n
+    )
+    assert result.strong_pair_overlap_median == float(only.overlap_n)
+    assert result.locally_constant_trait_pairs == []
+    assert result.locally_constant_pair_count == 0
+
+
+def test_every_off_diagonal_cell_is_locally_constant(injected_ports):
+    """#833 review round 2: no fixture drove the WHOLE off-diagonal matrix into the new
+    bucket, so the saturated case — where the taxonomy's third list explains every cell and
+    the other two are empty — went unexercised.
+
+    Every trait is observed only on the first half of the rows and takes a single value
+    there, while varying globally on the second half. So every pair clears the overlap floor,
+    no trait is globally constant, and every coefficient is NaN.
+    """
+    n = 30
+    half = n // 2
+    n_traits = 5
+    cols = {
+        f"sat_{k}": [float(k + 1)] * half
+        + [float(i * (k + 2)) for i in range(n - half)]
+        for k in range(n_traits)
+    }
+    # Each trait is observed everywhere, but pairwise they are constant across the first
+    # half; the differing tails are what keeps them globally non-constant.
+    for k in range(n_traits):
+        col = cols[f"sat_{k}"]
+        for i in range(half, n):
+            if i % n_traits != k:
+                col[i] = None
+    df = pd.DataFrame({**_meta(n), **cols})
+    result = _run_with_frame(df)
+
+    traits = result.resolved_trait_columns
+    expected_pairs = len(traits) * (len(traits) - 1) // 2
+    assert result.zero_variance_traits == []
+    assert result.low_overlap_trait_pairs == []
+    assert result.locally_constant_pair_count == expected_pairs
+    assert result.strong_pair_count == 0
+    assert result.strong_correlation_pairs == []
+    assert result.strong_pair_overlap_min is None
+    assert result.strong_pair_overlap_median is None
+    assert result.strong_pair_overlap_max is None
+    # And the label still holds for every one of them.
+    for a, b in result.locally_constant_trait_pairs:
+        shared = df[[a, b]][np.isfinite(df[a]) & np.isfinite(df[b])]
+        assert shared[a].nunique() == 1 or shared[b].nunique() == 1

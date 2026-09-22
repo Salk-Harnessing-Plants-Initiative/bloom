@@ -202,10 +202,13 @@ and ``openspec/changes/add-bloommcp-plot-snapshot-tests/design.md`` (Decisions 2
 full measurement and why this is a structural limit, not a TODO. Note this compounds the
 ``heatmap_caveat`` disclosure above: the rendered PNG's untrustworthy cells are caught by
 neither the vendored delegate's own masking (there is none, #747) nor the snapshot test.
-That issue's own remedy option 2 — a numeric assertion on the correlation values themselves,
-complementing the pixel check — is made materially easier by ``strong_correlation_pairs``
-(per-pair ``r`` and ``overlap_n``, in both the result and the manifest), though #768 remains
-open: nothing here asserts anything about the rendered image.
+What #784 contributes here, if anything: ``strong_correlation_pairs`` puts each counted pair's
+``r`` and ``overlap_n`` into both the result and the manifest, which is the numeric data a
+value-level assertion would otherwise have to recompute. It asserts nothing about the rendered
+image — this change does not touch the render path — so it narrows what a per-cell check has
+to do without being one. Deliberately written with no claim about whether #768 is still open:
+PR #840 lands a per-cell oracle that closes it and rewrites the paragraph above, so a status
+claim here would contradict that paragraph depending on which branch merged last.
 
 Persists a versioned run under its own tool class ``correlation_matrix`` (not the shared,
 unclaimed legacy ``viz`` slot — see ``openspec/changes/converge-bloommcp-viz-tools/design.md``
@@ -825,6 +828,13 @@ def plot_correlation_matrix(
                 # cost is two strings per pair (#784 review: stamping it capped inverted
                 # this file's own test-enforced precedent and left pairs 21..N recoverable
                 # from nowhere).
+                #
+                # This is the THIRD uncapped name-list in this manifest, so it doubles down
+                # on a pre-existing unbounded-payload pattern rather than introducing one.
+                # Bounding the manifest tier as a whole — all three lists together, not this
+                # one in isolation — is tracked in #837 alongside the result-side ceiling;
+                # doing it here would silently change what a stored run records for two
+                # fields that predate this change (#833 review round 2).
                 #
                 # strong_correlation_pairs is stamped CAPPED, and that asymmetry is
                 # deliberate: each entry is a four-field structured record, not a name, so
