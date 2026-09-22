@@ -50,8 +50,14 @@
       ("Measured against all five templates, 2026-09-16"); dropping that discipline is how a rewrite
       ships a second wrong invariant.
 
-## 1. Seam first — the tests have nothing to grip without it
+## 1. Rename and seam first — the tests have nothing to grip without them
 
+- [ ] 1.0 `git mv scripts/check_registered_templates.py scripts/check_template_contract.py`, as a
+      distinct commit before any content change so the rewrite's diff stays reviewable. Drift is
+      upstream's question and bloom has no standing to assert it; a name that keeps saying otherwise
+      keeps inviting the comparison that was wrong. The `DRIFT` banner is purged in 3.10 along with it.
+      Nothing automated references the old path (no CI job, no Makefile target), so the only breakage
+      is the archived task 1.1 invocation, which 5.2 annotates with the new one.
 - [ ] 1.1 Add `--workflow PATH` (defaulting to `services/workflows/vendored/sleap-roots-pipeline.yaml`)
       and factor the body into `check_contract(workflow_path: Path, namespace: str) -> int` that
       returns an exit code instead of calling `sys.exit`. Mirrors
@@ -61,7 +67,7 @@
 
 ## 2. RED — tests before the rewrite, all failing for the stated reason
 
-New file `tests/unit/test_check_registered_templates.py`. Conventions from
+New file `tests/unit/test_check_template_contract.py`. Conventions from
 `tests/unit/test_check_vendored_workflow_drift.py`: load via `importlib.util.spec_from_file_location`,
 patch **named module functions** (`_probe_cluster`, `_fetch_live`) rather than only `subprocess.run`,
 and add one test asserting the real `kubectl` argv so a typo cannot hide behind the mocks — the
@@ -157,7 +163,7 @@ pattern `tests/unit/test_check_uv_locks.py` uses for the same reason.
       `WORKFLOWS_K8S_NAMESPACE`; and point to upstream's `check_cluster_drift.sh` (staleness) and
       `check_manifests.py` (repo-internal image invariants, manual — that repo has no CI) for the
       questions this comparator deliberately does not answer.
-- [ ] 3.11 2.2–2.24 green. Run `uv run --extra test pytest tests/unit/test_check_registered_templates.py -v`
+- [ ] 3.11 2.2–2.24 green. Run `uv run --extra test pytest tests/unit/test_check_template_contract.py -v`
       and paste the summary. Scoped deliberately: a bare `pytest tests/unit/` cannot be green on this
       workstation — `tests/unit/test_weekly_backup.py` fails collection with
       `AttributeError: module 'os' has no attribute 'geteuid'`, pre-existing and unrelated. Full-suite

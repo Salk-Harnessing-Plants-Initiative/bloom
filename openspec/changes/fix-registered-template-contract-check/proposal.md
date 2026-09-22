@@ -83,6 +83,13 @@ trust; it has already been absorbed once, four days in.
 - **Add the tests it never had,** run without cluster or network access, plus a `--workflow` path
   override and a `check_contract(...) -> int` seam mirroring `check_drift(vendored, ref)` in the
   sibling script — without which the tests have nothing to grip and the negative control cannot run.
+- **Rename it, and purge the drift vocabulary.** `scripts/check_registered_templates.py` becomes
+  `scripts/check_template_contract.py`, and its output says `OK` / `CONTRACT VIOLATION` /
+  `CHECK FAILED` — the word `DRIFT` appears nowhere. This is not cosmetic. Drift is upstream's
+  question, its comparator answers it correctly, and bloom asserting a drift invariant it has no
+  standing to assert *is* bloom#879. Keeping the vocabulary would keep inviting the comparison that
+  was wrong, and it was the DRIFT banner specifically that trained an operator to wave the result
+  through. What remains is a cross-repo contract check, and the name should say so.
 - **Correct the records this defect corrupted** (see tasks 4.1–4.2).
 
 ### Divergence from bloom#879's suggested fix
@@ -119,8 +126,8 @@ CI at all — so "upstream checks it" means "a human runs a second script", not 
 
 - Affected specs: `cyl-pipeline-dispatch` (two ADDED requirements; the existing CI vendored-drift
   requirement at `spec.md` is a different check and is untouched)
-- Affected code: `scripts/check_registered_templates.py`,
-  `tests/unit/test_check_registered_templates.py` (new)
+- Affected code: `scripts/check_registered_templates.py` → `scripts/check_template_contract.py`
+  (renamed and rewritten), `tests/unit/test_check_template_contract.py` (new)
 - Affected records: `openspec/changes/fix-cyl-redelivery-blob-collision/tasks.md` (task 9.6),
   `openspec/changes/archive/2026-09-21-vendor-five-task-pipeline-dag/{tasks.md,proposal.md}` (the
   annotations in tasks 4.1–4.2)

@@ -150,7 +150,16 @@ the task explicitly forbids.
 
 No runtime component, schema or cluster object changes; nothing to roll back beyond reverting the
 script. The 0/1/2 exit-code contract and the `--namespace` default are preserved, and `--workflow` is
-additive with the vendored path as its default, so existing invocations keep working unchanged.
+additive with the vendored path as its default.
+
+The script is renamed `check_registered_templates.py` → `check_template_contract.py`, and its output
+vocabulary drops `DRIFT` for `OK` / `CONTRACT VIOLATION` / `CHECK FAILED`. That does break the path in
+the archived task 1.1 invocation — accepted deliberately, and cheap, because nothing automated
+references the script (no CI job, no Makefile target) so the only cost is muscle memory. The
+annotation task 5.2 already writes records the new path, so the one place that prints the old
+invocation gains a pointer to the new one. The rename is worth that cost: the drift framing is the
+defect, and a name and a banner that keep asserting it would keep inviting the comparison bloom has no
+standing to make. Anyone reaching for the old name finds the annotation.
 
 ## Open Questions
 
