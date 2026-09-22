@@ -948,20 +948,158 @@ def test_delegate_titles_each_panel_with_its_n(injected_ports, monkeypatch):
     assert titles["t_gappy"] == f"t_gappy\n(n={len(df['t_gappy'].dropna())})"
 
 
-def test_histogram_render_gains_no_note(injected_ports, monkeypatch):
-    """Characterization guard (green today, must stay green): the histogram image is left
-    alone. Filters rather than counts — a batched histogram carries its own suptitle in
-    fig.texts."""
-    reader, _store = injected_ports
-    _gappy_experiment(reader)
+def _hist_note_texts(fig):
+    """Figure-level texts that are OUR note — filtered, not counted: a batched histogram
+    carries the delegate's own suptitle in fig.texts."""
+    return [t.get_text() for t in fig.texts if "rows per panel" in t.get_text()]
+
+
+def _captured_hist_figure(monkeypatch, batched=False):
+    name = "create_trait_histograms_batched" if batched else "create_trait_histograms"
     captured = {}
-    real = plot_trait_histograms_tool.create_trait_histograms
+    real = getattr(plot_trait_histograms_tool, name)
 
     def _spy(*a, **k):
-        fig = real(*a, **k)
-        captured["fig"] = fig
-        return fig
+        out = real(*a, **k)
+        captured["figs"] = list(out) if batched else [out]
+        return captured["figs"] if batched else out
 
-    monkeypatch.setattr(plot_trait_histograms_tool, "create_trait_histograms", _spy)
-    plot_trait_histograms(PlotTraitHistogramsParams(experiment="gappy.csv"))
-    assert not [t for t in captured["fig"].texts if "n per box" in t.get_text().lower()]
+    monkeypatch.setattr(plot_trait_histograms_tool, name, _spy)
+    return captured
+
+
+def _missingness_experiment(reader, name="missingness.csv"):
+    df = pd.DataFrame(
+        {
+            "Barcode": [f"b{i}" for i in range(120)],
+            "complete": [float(i) for i in range(120)],
+            "mostly_missing": [1.0] * 12 + [float("nan")] * 108,
+            "thin": [1.0, 2.0] + [float("nan")] * 118,
+        }
+    )
+    reader.add_experiment(name, df)
+    return df
+
+
+def test_histogram_note_is_drawn_on_every_render(injected_ports, monkeypatch):
+    """#748 review round 2: the delegate's per-panel (n=...) says what was BINNED, not what
+    was DROPPED — a reader seeing (n=12) cannot tell a trait measured on 12 plants from one
+    that lost 108 of its 120 measurements, which is the gap #748 opens with. The note closes
+    it in this tool's own unit (panels), matching plot_trait_boxplots' unconditional note.
+    """
+    reader, _store = injected_ports
+    reader.add_experiment(
+        "healthy.csv",
+        pd.DataFrame(
+            {
+                "Barcode": [f"b{i}" for i in range(20)],
+                "a": [float(i) for i in range(20)],
+                "b": [float(i) for i in range(20)],
+            }
+        ),
+    )
+    captured = _captured_hist_figure(monkeypatch)
+    result = plot_trait_histograms(PlotTraitHistogramsParams(experiment="healthy.csv"))
+
+    drawn = _hist_note_texts(captured["figs"][0])
+    assert len(drawn) == 1
+    assert "⚠" not in drawn[0]
+    assert "min=20" in drawn[0] and "20 row(s) read" in drawn[0]
+    # The unconditional tail: 30 fixed bins mean a panel above the floor can still mislead.
+    assert "fixed 30 bins" in drawn[0]
+    assert result.missingness_note == " ".join(drawn[0].split())
+
+
+def test_histogram_note_flags_missingness_the_panel_title_cannot_show(
+    injected_ports, monkeypatch
+):
+    """A panel titled (n=12) looks identical whether 12 plants were measured or 108 rows were
+    dropped. Flagging on FRACTION as well as count is what distinguishes them."""
+    reader, _store = injected_ports
+    _missingness_experiment(reader)
+    captured = _captured_hist_figure(monkeypatch)
+    result = plot_trait_histograms(
+        PlotTraitHistogramsParams(experiment="missingness.csv")
+    )
+
+    drawn = " ".join(_hist_note_texts(captured["figs"][0])[0].split())
+    assert "⚠" in drawn
+    assert "thin (n=2)" in drawn  # below the count floor
+    # ...and the one that CLEARS the floor while having dropped 90% of its rows.
+    assert "mostly_missing (90% missing)" in drawn
+    assert "trait_sample_sizes.csv" in drawn
+    assert result.missingness_note == drawn
+
+
+def test_histogram_notes_are_page_scoped(injected_ports, monkeypatch):
+    reader, store = injected_ports
+    n_traits = 20
+    data = {"Barcode": [f"b{i}" for i in range(20)]}
+    for t in range(n_traits):
+        data[f"trait_{t:02d}"] = [float(i) for i in range(20)]
+    df = pd.DataFrame(data)
+    df.loc[df.index[2:], "trait_17"] = float("nan")  # thin, on the second page only
+    reader.add_experiment("paged_hist.csv", df)
+
+    monkeypatch.setattr(_viz_shared, "TRAIT_BATCH_THRESHOLD", 8)
+    monkeypatch.setattr(plot_trait_histograms_tool, "TRAIT_BATCH_THRESHOLD", 8)
+    captured = _captured_hist_figure(monkeypatch, batched=True)
+    result = plot_trait_histograms(
+        PlotTraitHistogramsParams(experiment="paged_hist.csv")
+    )
+
+    assert result.batched is True
+    notes = [_hist_note_texts(fig)[0] for fig in captured["figs"]]
+    flagged = [i for i, note in enumerate(notes) if "⚠" in note]
+    assert len(flagged) == 1, notes
+    assert "trait_17" in notes[flagged[0]]
+    assert all("this page" in note for note in notes)
+    # Per-page strings are not stamped; the run-wide one is.
+    params = store.get_run("paged_hist.csv", "trait_histograms", "latest").params
+    assert params["missingness_note"] == result.missingness_note
+    assert "this page" not in result.missingness_note
+
+
+def test_histogram_note_never_overlaps_the_axes(injected_ports, monkeypatch):
+    reader, _store = injected_ports
+    data = {"Barcode": [f"b{i}" for i in range(40)]}
+    for t in range(9):
+        # Every trait thin AND heavily missing, with long names: a maximal note.
+        data[f"Total.Root.Length.Trait.Number.{t}.mm"] = [1.0, 2.0] + [
+            float("nan")
+        ] * 38
+    reader.add_experiment("maximal_hist.csv", pd.DataFrame(data))
+    captured = _captured_hist_figure(monkeypatch)
+    plot_trait_histograms(PlotTraitHistogramsParams(experiment="maximal_hist.csv"))
+
+    fig = captured["figs"][0]
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    note = next(t for t in fig.texts if "rows per panel" in t.get_text())
+    lowest = min(
+        a.get_tightbbox(renderer).y0
+        for a in fig.axes
+        if a.get_visible() and a.get_title()
+    )
+    assert note.get_window_extent(renderer).y1 <= lowest
+
+
+def test_histogram_note_is_not_parsed_as_mathtext(injected_ports, monkeypatch):
+    reader, _store = injected_ports
+    reader.add_experiment(
+        "hist_mathtext.csv",
+        pd.DataFrame(
+            {
+                "Barcode": [f"b{i}" for i in range(6)],
+                "cost_$_per_{unit}": [1.0, 2.0] + [float("nan")] * 4,
+                "yield_$_ok": [1.0, 2.0] + [float("nan")] * 4,
+            }
+        ),
+    )
+    captured = _captured_hist_figure(monkeypatch)
+    plot_trait_histograms(PlotTraitHistogramsParams(experiment="hist_mathtext.csv"))
+    note = next(
+        t for t in captured["figs"][0].texts if "rows per panel" in t.get_text()
+    )
+    assert note.get_parse_math() is False
+    captured["figs"][0].canvas.draw()

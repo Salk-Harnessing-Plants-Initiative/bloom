@@ -93,7 +93,6 @@ unrecorded.
 
 from __future__ import annotations
 
-import textwrap
 from shutil import rmtree
 from typing import Optional
 
@@ -117,9 +116,10 @@ from bloom_mcp.tools._qc_shared import _validate_experiment_name
 
 from ._viz_shared import (
     MAX_FLAGGED_REPORTED,
-    MAX_NOTE_NAMES,
     MIN_PLOTTED_SAMPLES,
     TRAIT_BATCH_THRESHOLD,
+    draw_disclosure_note as _draw_sample_size_note,
+    flagged_names as _flagged_names,
     group_sample_size_table,
     native,
     resolve_trait_columns,
@@ -131,31 +131,12 @@ _PNG_STEM = "trait_boxplots"
 # A download, not a response field: at cylinder width (846 traits x ~19 genotypes = 16,074
 # cells) the table is ~3 MB. Mirrors qc_inspect's nan_samples.csv.
 _SAMPLE_SIZES_CSV = "group_sample_sizes.csv"
-# Character width the drawn note is wrapped to. Fixed rather than matplotlib's own
-# wrap=True, whose wrapping depends on the figure width at draw time and interacts badly
-# with bbox_inches="tight". Every boxplot figure the delegate builds is at least 15in wide,
-# so this always fits without widening the canvas (measured).
-_NOTE_WRAP_CHARS = 110
-# Geometry of the drawn note. The reserved strip is computed from these rather than from a
-# rendered text extent, which would cost a full canvas.draw() on each of cylinder's 53 pages.
-_NOTE_FONTSIZE = 8
-# Matplotlib's default line spacing is 1.2x the font size; 1.4 leaves a little slack so a
-# descender on the last line cannot reach the axes.
-_NOTE_LINE_SPACING = 1.4
-_NOTE_PAD_INCHES = 0.2
 # create_trait_boxplots_by_genotype_batched's own internal page size — independent of
 # TRAIT_BATCH_THRESHOLD (which only decides WHETHER to batch). Not overridden by this
 # tool's call, so it is safe to use for computing which trait landed on which page;
 # test_plot_trait_boxplots_tool.py pins this against the live delegate signature so a
 # future sleap-roots-analyze bump that changes it is caught, not silently desynced.
 _DELEGATE_BATCH_SIZE = 16
-
-
-def _flagged_names(entries, formatter):
-    """Cap a flagged list for the drawn note, summarizing the remainder as "+N more"."""
-    shown = [formatter(e) for e in entries[:MAX_NOTE_NAMES]]
-    remainder = len(entries) - len(shown)
-    return ", ".join(shown) + (f", +{remainder} more" if remainder else "")
 
 
 def _sample_size_note(
@@ -294,74 +275,6 @@ def _sample_size_note(
     )
 
 
-def _draw_sample_size_note(fig, note, flagged):
-    """Draw the note below the axes, growing the figure so it cannot land on top of them.
-
-    A figure-level footnote, not a per-box annotation — the same choice
-    ``plot_correlation_matrix``'s ``heatmap_caveat`` makes, and for the same reason: anything
-    positioned against the delegate's own subplot geometry would mislabel a different box when
-    it got that geometry wrong. Per-box counts ride on the tick labels instead (see
-    :func:`_annotate_genotype_ticks`), which needs no geometry at all.
-
-    **The note is unbounded in height** — up to four clauses of ``MAX_NOTE_NAMES`` names each,
-    wrapped — so a fixed reservation cannot hold it. A flagged cylinder-scale note runs to ten
-    or more wrapped lines and, drawn at a fixed offset, overwrote the bottom row of boxes: the
-    figure grew under ``bbox_inches="tight"`` so nothing was *clipped*, but the axes did not
-    move, so the text sat on the data. That is why the space is measured and reserved here
-    rather than assumed, and why ``test_note_never_overlaps_the_axes`` asserts it as geometry
-    against a deliberately maximal note instead of eyeballing a baseline (the committed
-    snapshot fixture is unflagged by design, so its note is one line and could never catch it).
-
-    The reservation is computed from the wrapped line count rather than from a rendered extent:
-    a ``canvas.draw()`` per page is a full rasterization, and this runs on each of cylinder's 53
-    pages. Line height is the only quantity needed and it follows from the font size.
-
-    ``textwrap.fill`` rather than matplotlib's ``wrap=True``: the latter wraps against the
-    figure width at draw time and interacts badly with ``bbox_inches="tight"``.
-    """
-    wrapped = textwrap.fill(note, _NOTE_WRAP_CHARS)
-    n_lines = wrapped.count("\n") + 1
-    needed_inches = (
-        n_lines * _NOTE_FONTSIZE * _NOTE_LINE_SPACING / 72.0 + _NOTE_PAD_INCHES
-    )
-    width, height = fig.get_size_inches()
-    new_height = height + needed_inches
-    # Grow the canvas and TRANSLATE every axes upward by exactly the added strip, rather than
-    # squeezing the axes with subplots_adjust(bottom=...). Two reasons:
-    #   * the boxes keep the height the delegate sized for them (for the horizontal
-    #     orientation that scales with the genotype count and is already the minimum readable);
-    #   * subplots_adjust positions the AXES box, and each axes' tick labels and x-label hang
-    #     BELOW that box -- so reserving the strip that way still let the bottom row's axis
-    #     labels land on the note. Translating preserves each axes' absolute geometry, and its
-    #     decorations move with it.
-    fig.set_size_inches(width, new_height, forward=True)
-    scale = height / new_height
-    offset = needed_inches / new_height
-    for ax in fig.axes:
-        pos = ax.get_position()
-        ax.set_position(
-            [pos.x0, pos.y0 * scale + offset, pos.width, pos.height * scale]
-        )
-    fig.text(
-        0.5,
-        _NOTE_PAD_INCHES / (2 * (height + needed_inches)),
-        wrapped,
-        ha="center",
-        va="bottom",
-        fontsize=_NOTE_FONTSIZE,
-        color="darkred" if flagged else "#444444",
-        transform=fig.transFigure,
-        # parse_math=False: this is the first place the codebase concatenates up to 40
-        # data-derived trait/genotype names into ONE Text object, so two names each carrying a
-        # "$" pair up and matplotlib renders the disclosure as italicised mathtext -- or, with a
-        # "{" or backslash between them, raises ParseFatalException and fails the run after
-        # create_run. The delegate's own tick labels are separate Text objects and never had
-        # this exposure. (usetex is never enabled in this package, so a parse failure is the
-        # whole risk -- there is no shell-escape path.)
-        parse_math=False,
-    )
-
-
 def _annotate_genotype_ticks(fig, finite_counts, plotted_genotypes, no_data_traits):
     """Append each box's own ``(n=…)`` to its genotype tick label; report whether it worked.
 
@@ -421,6 +334,13 @@ def _annotate_genotype_ticks(fig, finite_counts, plotted_genotypes, no_data_trai
             if not isinstance(axis.get_major_locator(), FixedLocator):
                 continue
             labels = [t.get_text() for t in axis.get_ticklabels()]
+            # Duplicate tick text means two DISTINCT groupby keys stringified the same way
+            # (integer 1 and string "1" are different groups but the same label), so the
+            # label -> count lookup is ambiguous and would confidently attach one group's
+            # count to the other's box. Set equality alone does not catch it: both sides
+            # collapse identically. Skip rather than guess.
+            if len(set(labels)) != len(labels):
+                continue
             if labels and set(labels) == expected:
                 candidates.append((axis, labels))
         if len(candidates) != 1:
@@ -428,7 +348,12 @@ def _annotate_genotype_ticks(fig, finite_counts, plotted_genotypes, no_data_trai
             continue
         axis, labels = candidates[0]
         axis.set_ticklabels(
-            [f"{label} (n={finite_counts[(title, label)]})" for label in labels]
+            [f"{label} (n={finite_counts[(title, label)]})" for label in labels],
+            # parse_math=False for the same reason the note carries it: a genotype named
+            # e.g. "$a__b$" is self-contained mathtext, and matplotlib raises at savefig --
+            # after create_run -- rather than rendering it literally. Verified: all three of
+            # "$\frac{1}$", "$a__b$" and "$\badcmd$" raise unguarded and render guarded.
+            parse_math=False,
         )
         annotated_any = True
     return annotated_any and all_matched

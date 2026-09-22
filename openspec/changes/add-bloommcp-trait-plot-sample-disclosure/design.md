@@ -68,7 +68,7 @@ in one vectorized pass, and it agrees cell-for-cell with what the delegate's own
 grid in Python; only the flagged tail is materialized.
 
 Measured at cylinder width (3,000 rows × 846 traits × 60 genotypes) by this change's
-`benchmarks/trait_plot_sample_disclosure_bench.py`: the whole table — both grouped passes and the
+`bloommcp/scripts/trait_plot_sample_disclosure_bench.py`: the whole table — both grouped passes and the
 long-form reshape — takes **14 ms for 50,760 cells**, and the committed CSV is **1.95 MB**. The
 cost is in the rendering, not here.
 
@@ -125,8 +125,9 @@ side of this floor — a sample carries at least one spurious "outlier" dot 33% 
 8.6% of its points are flagged**, against the ~0.7% asymptotic rate for normal data. The
 *fraction* of points flagged falls with n (8.6% at 5, 4.0% at 10, 1.8% at 30) but the probability
 that a box shows at least one spurious flier does **not**: it is 21% at n=4, then sits between
-27% and 34% at every n measured from 5 to 30 — it does not decay with sample size the way the
-flagged fraction does. A flier dot is an arithmetic artifact whether or not the box clears this
+26% and 34% at every n measured from 5 to 30 — it does not decay with sample size the way the
+flagged fraction does. (The committed benchmark asserts these figures rather than printing them;
+that is how the 27% originally written here was caught as wrong at n=8.) A flier dot is an arithmetic artifact whether or not the box clears this
 floor, and nothing in this change should be read as certifying otherwise.
 
 **Owned by `_viz_shared`, not aliased to `_qc_shared._CANONICAL_MIN_SAMPLES_PER_TRAIT` (10)** —
@@ -205,11 +206,18 @@ n per box (this page): min=7, median=8, max=9 across 209 box(es) — 19 genotype
 ⚠ 3 of 209 box(es) below n=5: Solidity x GH_7420 (n=2), ...; 1 group absent (no box drawn): ...; 1 trait carries non-finite values: Holes. See group_sample_sizes.csv for every group.
 ```
 
-Because a run-wide string matches no page on a batched render, the **exact text drawn on each
-page** is stamped into the persisted run's `params` as `page_sample_size_notes`. (The 5,000-char
-"links, not blobs" ceiling applies to result *fields*; 53 × ~200 chars in `params` sits beside a
-CSV output that is already far larger.) `sample_size_note` in the result carries the run-wide
-summary and is the exact drawn text in the common single-page case.
+`sample_size_note` in the result carries the run-wide summary, and is the exact drawn text in
+the common single-page case.
+
+**The per-page strings are deliberately NOT stamped into `params`** — reversing an earlier
+decision in this change, on measured grounds. At cylinder width that is 53 pages × ~2.5 KB of
+prose appended to every version of a `manifest.json` that `create_run` re-validates in full on
+every subsequent run for the same tool and experiment, so the cost compounds with run count.
+Each page's note is a pure function of `page_traits[page]`, the committed CSV,
+`MIN_PLOTTED_SAMPLES` and `MAX_NOTE_NAMES` — all of which the manifest or its outputs already
+carry — so stamping the rendered strings duplicates recoverable data rather than preserving
+anything. The earlier argument for stamping (a run-wide string matches no page) is real, but it
+is answered by reconstructibility, not by storage.
 
 **The warning clause will fire on every cylinder page, and that is not a false alarm.** Measured
 on the cylinder fixture (129 rows × 846 traits × 19 genotypes = 16,074 cells): box `n` runs
@@ -220,10 +228,21 @@ carrying information, which is why the clause reports the **fraction** (`846 of 
 rather than just the fact. A reader can calibrate severity from the number; they cannot from a
 symbol.
 
-**`plot_trait_histograms`'s render is unchanged**: `create_trait_histograms` already titles every
-panel `f"{trait}\n(n={count})"`, so the gap does not exist there. Tasks §1.6 pins that titling
-directly, because this decision depends on it and the existing `_titled_traits` helper splits the
-suffix off before asserting — nothing currently fails if it disappears.
+**`plot_trait_histograms` needs no per-panel labelling but does get a note** (revised in PR
+review round 2). `create_trait_histograms` already titles every panel `f"{trait}\n(n={count})"`,
+so the per-box half of this decision has no counterpart there — tasks §1.6 pins that titling
+directly, since the decision depends on it and the existing `_titled_traits` helper splits the
+suffix off before asserting.
+
+But `(n=…)` answers only the sample-size question. It is what was *binned*, not what was
+*dropped*: a panel reading `(n=12)` is identical whether twelve plants were measured or 108 of
+120 rows were lost — and "no 'N rows excluded' count, no per-trait missingness disclosure" is
+the sentence #748 opens with. The first version of this change left that gap open on the image
+and argued the asymmetry was principled; it was not, and the review was right to say the
+justification answered a different question than the one #748 asks. So the same unconditional
+note is drawn here in this tool's own unit (panels, not boxes), flagging on missing *fraction*
+as well as count, and carrying its own caveat: the delegate bins into a fixed 30 bins regardless
+of `n`, so a panel well above the floor can still be a single bar.
 
 ### Decision 5: Counts include `±inf`, so classification uses the *finite* count
 
@@ -277,9 +296,18 @@ healthy. At cylinder scale with disjoint missingness, zero cells routinely outnu
 
 So `box_n_min`/`_median`/`_max` are computed over cells with **at least one finite observation**,
 the count of those cells is reported as `n_boxes_summarized`, and absent/non-finite cells are
-carried completely by their own buckets and counts. The invariant
-`n_boxes_drawn + absent_genotype_group_count == n_traits_plotted × n_genotype_groups` is asserted
-by test, so nothing is lost by the exclusion.
+carried completely by their own buckets and counts. The identity is **three-termed**, because the absent count deliberately excludes the cells of a
+wholly-dead trait (those collapse into `no_data_traits`):
+
+    n_boxes_drawn + absent_genotype_group_count
+        + no_data_trait_count × n_genotype_groups
+        == n_traits_plotted × n_genotype_groups
+
+It is asserted by test in exactly that form, so nothing is lost by the exclusion. An earlier
+draft of this document and of the spec stated a two-term version, which is false whenever a
+trait is dead everywhere — worth recording rather than quietly correcting, because a delta
+becomes a living spec on archive and a future maintainer would "fix" correct code to satisfy
+it.
 
 ### Decision 8: Degenerate populations return `None`, never `NaN`
 
@@ -325,7 +353,21 @@ three by design). `test_viz_snapshot.py`'s docstring records a per-plot headroom
 instructs re-measurement after a layout change; tasks §3.5 does that rather than leaving the
 docstring describing a render that no longer exists.
 
-### Decision 11: Out of scope
+### Decision 11: Exclusive buckets keep a separate thinness count beside them
+
+The buckets are mutually exclusive and `non_finite` takes precedence over `small`, which leaves
+a gap: a cell with 4 finite values and 2 `inf`s is reported only as non-finite, so
+`small_sample_group_count` reads 0 while `box_n_min` reads 4 against a floor of 5. A caller
+gating on the former concludes "no thin boxes".
+
+Merging the two buckets would break the exactly-one-bucket property; reversing the precedence
+would file an all-`inf` cell (zero finite values) under "small" and lose the `inf` signal
+entirely. So the taxonomy stands and `thin_box_count` is reported beside it — every drawn box
+below the floor, whatever else is also wrong with it. The image says the same thing: the
+non-finite clause carries each cell's finite `n`, so a reader sees `(1 inf, n=4)` rather than
+being told only that the cell contains an infinity.
+
+### Decision 12: Out of scope
 
 - **#747** (heatmap not per-cell masked) and **#768** (snapshot can't catch a single-cell defect)
   are `plot_correlation_matrix` issues, untouched here.

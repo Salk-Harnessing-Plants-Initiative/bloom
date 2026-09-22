@@ -39,12 +39,12 @@ histogram error-path change, and a regenerated snapshot baseline. Two things dro
 both from the issue's own text — "consider whether per-group sample counts should also land in
 the rendered image itself", and "mirroring `qc_inspect`'s `per_trait_nan_fraction`/
 `per_trait_inf_count`", which cannot be done honestly without confronting that `count()` treats
-`±inf` as present. The severable pieces are named in `design.md` Decision 11 so a reviewer can
+`±inf` as present. The severable pieces are named in `design.md` Decision 12 so a reviewer can
 cut rather than guess.
 
 Sibling issues [#747](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/747) and
 [#768](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/768) are
-`plot_correlation_matrix`-only and stay out of scope (`design.md` Decision 11).
+`plot_correlation_matrix`-only and stay out of scope (`design.md` Decision 12).
 
 ## What Changes
 

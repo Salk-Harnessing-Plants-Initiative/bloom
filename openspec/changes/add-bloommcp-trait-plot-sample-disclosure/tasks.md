@@ -34,7 +34,9 @@ after `_run()`; §1.0.1 adds the commit-spy helper the CSV tests need.
 - [x] 1.1.5 `test_box_n_summaries_exclude_absent_cells` — the `design.md` Decision 7 frame where
       **every drawn box has n=6** and many cells are absent: `box_n_min == box_n_median == 6`
       (never 0), `n_boxes_summarized` equals the drawn count, and
-      `n_boxes_drawn + absent_genotype_group_count == n_traits × n_genotype_groups`.
+      `n_boxes_drawn + absent_genotype_group_count + no_data_trait_count × n_genotype_groups
+      == n_traits × n_genotype_groups` (three-termed: the absent count excludes the cells of a
+      wholly-dead trait, which collapse into `no_data_traits`).
 - [x] 1.1.6 `test_absent_group_is_its_own_bucket` — a genotype all-null for one trait only: in
       `absent_genotype_groups`, not in `small_sample_groups`, excluded from the summaries.
 - [x] 1.1.7 `test_all_null_trait_collapses_to_no_data_traits` — one dead trait over the 19-genotype
@@ -89,7 +91,9 @@ after `_run()`; §1.0.1 adds the commit-spy helper the CSV tests need.
 - [x] 1.2.7 `test_paginated_notes_are_page_scoped` — purpose-built wide frame with the only thin
       group on one page: that page's text names it, no other page's does, each page's statistics
       match a recount restricted to its `page_traits`, the text identifies itself as page-scoped,
-      and `params["page_sample_size_notes"]` carries the exact per-page strings.
+      and the per-page strings are NOT stamped into `params` (each is reconstructible from
+      `page_traits` + the committed CSV; stamping them appends tens of KB of prose per version
+      to a manifest re-validated on every subsequent run).
 - [x] 1.2.8 `test_sample_size_note_recoverable_from_result_and_manifest` — non-empty, matches a
       regex carrying min/median/max plus the box/genotype/trait denominators (an empty string must
       not satisfy this), and equals the drawn text on an unbatched render.
@@ -245,7 +249,7 @@ Listed separately because they do **not** fail against today's code; §1.0's gat
       untouched other two.
 - [x] 5.3 `cd bloommcp && uv run black --check src tests scripts && uv run ruff check src tests scripts`.
 - [x] 5.4 `openspec validate add-bloommcp-trait-plot-sample-disclosure --strict`.
-- [x] 5.5 Commit `benchmarks/trait_plot_sample_disclosure_bench.py` reproducing `design.md`'s
+- [x] 5.5 Commit `bloommcp/scripts/trait_plot_sample_disclosure_bench.py` reproducing `design.md`'s
       numbers (per-page render cost with/without relabelling and `tight_layout`, the cylinder-scale
       counting cost, the flier-artifact rates, and the quartile order-statistic table), so every
       figure in the design doc is re-checkable rather than asserted — the precedent PR #833 set.
@@ -294,6 +298,35 @@ Listed separately because they do **not** fail against today's code; §1.0's gat
       its unit, dead ``use_finite`` parameter dropped, n=5's non-monotonicity recorded, the
       21%/1.95MB measurement disagreements reconciled, the benchmark moved to
       ``bloommcp/scripts/`` (lint scope) and made Windows-safe, smoke assertions made None-safe.
+
+## 6b. PR #839 review round 2 (@eberrigan) — applied
+
+- [x] 6b.1 The three-term reconciliation identity was corrected in spec.md but NOT in design.md
+      or tasks.md, and the round-1 commit message claimed both were done. Root cause: an edit
+      script aborted midway and three design.md edits were silently lost. All three are now
+      applied and verified individually (identity, the page-notes reversal, and the
+      thin_box_count decision, which had never been written at all).
+- [x] 6b.2 Two genotype values that stringify alike (integer 1 vs string "1") are distinct
+      groupby keys with identical tick text, so the n=3 group was confidently labelled with the
+      n=7 group's count while reporting success — set equality does not catch it, because both
+      sides collapse. Now skipped, with the guarantee ("never mislabel, only decline to label")
+      enforced by test rather than argued. Not reachable via either ingestion path today.
+- [x] 6b.3 `plot_trait_histograms` now draws its own note. The round-1 argument ("the delegate
+      already titles each panel (n=…)") answered the sample-size question and left the
+      missingness one open: a panel reading (n=12) is identical whether twelve plants were
+      measured or 108 of 120 rows were lost — the sentence #748 opens with. Flags on missing
+      FRACTION as well as count, and carries its own caveat about the delegate's fixed 30 bins.
+- [x] 6b.4 The tick-label path now passes `parse_math=False`, like the note path. Verified that
+      "$\frac{1}$", "$a__b$" and "$\badcmd$" each raise at savefig unguarded.
+- [x] 6b.5 Suggestions: benchmark path corrected in design.md and tasks.md; the page-count
+      mismatch guard has a test; `_viz_shared`'s flier-probability comment matches the corrected
+      numbers; and the benchmark now ASSERTS the exact figures (33%, 8.6%, 21%) rather than
+      printing them — which immediately caught that the "27-34%" band in my own prose is wrong
+      at n=8 (0.266). Corrected to 26-34% in all three places.
+- [x] 6b.6 Filed **#891**: a genotype literally named NA/null/None is swallowed by pandas'
+      default missing-value parsing before any tool sees it, so `rows_missing_genotype` reports
+      it as "null genotype" — truthful-looking and materially misleading. Pre-existing, in the
+      read path.
 
 ## 7. Follow-up issues to file (not fixed here)
 

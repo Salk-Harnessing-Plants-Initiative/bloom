@@ -1711,3 +1711,93 @@ def test_high_cardinality_genotype_column_is_rejected_before_building_the_table(
     assert "accession" in exc.value.message
     assert exc.value.remedy
     assert store.list_runs("high_card.csv", "trait_boxplots") == []
+
+
+def test_genotypes_that_stringify_alike_are_not_mislabelled(
+    injected_ports, monkeypatch
+):
+    """Integer 1 and string "1" are DISTINCT groupby keys that render the same tick text, so
+    the label -> count lookup is ambiguous. Set equality alone does not catch it: both the tick
+    set and the expected set collapse identically, and the n=3 group was confidently labelled
+    with the n=7 group's count while reporting success.
+
+    Not reachable through either ingestion path today (both go through ``pd.read_csv``, which
+    produces type-uniform columns), but the guarantee this feature rests on is "never mislabel
+    a box, only decline to label it" — so it is enforced rather than argued.
+    """
+    reader, _store = injected_ports
+    reader.add_experiment(
+        "collide.csv",
+        pd.DataFrame(
+            {
+                "geno": [1] * 3 + ["1"] * 7 + [2] * 5,
+                "t": [1.0, 2, 3] + [1.0, 2, 3, 4, 5, 6, 7] + [1.0, 2, 3, 4, 5],
+            }
+        ),
+    )
+    captured = _captured_figure(monkeypatch)
+    result = plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="collide.csv"))
+
+    assert result.box_labels_annotated is False
+    ax = next(
+        a for a in captured["figs"][0].axes if a.get_visible() and a.get_title() == "t"
+    )
+    labels = [t.get_text() for t in ax.xaxis.get_ticklabels()]
+    assert not any("(n=" in label for label in labels), labels
+    # The note remains the authoritative on-image signal.
+    assert "rows per box" in result.sample_size_note
+
+
+def test_tick_labels_are_not_parsed_as_mathtext(injected_ports, monkeypatch):
+    """A genotype like "$a__b$" is self-contained mathtext: matplotlib raises at savefig — after
+    create_run — rather than rendering it literally. The note-drawing path was guarded; the
+    tick-label path was not."""
+    reader, _store = injected_ports
+    reader.add_experiment(
+        "mathtext_geno.csv",
+        pd.DataFrame(
+            {
+                "geno": ["$a__b$"] * 6 + ["plain"] * 6,
+                "t": [float(j) for j in range(6)] * 2,
+            }
+        ),
+    )
+    captured = _captured_figure(monkeypatch)
+    result = plot_trait_boxplots(
+        PlotTraitBoxplotsParams(experiment="mathtext_geno.csv")
+    )
+
+    assert result.box_labels_annotated is True
+    ax = next(
+        a for a in captured["figs"][0].axes if a.get_visible() and a.get_title() == "t"
+    )
+    ticks = [t for t in ax.xaxis.get_ticklabels()]
+    assert all(t.get_parse_math() is False for t in ticks)
+    assert any("$a__b$ (n=6)" == t.get_text() for t in ticks)
+    # The real proof: rendering must not raise.
+    captured["figs"][0].canvas.draw()
+
+
+def test_page_count_mismatch_fails_loudly(injected_ports, monkeypatch):
+    """page_traits and every per-page note are derived from the slicing formula BEFORE
+    rendering (they have to be — params are stamped at create_run). If the delegate's batch
+    size ever drifts, a page's note would describe a different set of traits than the page
+    shows, so this must fail rather than mislabel."""
+    reader, store = injected_ports
+    reader.add_experiment("drift.csv", _wide_df(60))
+    real = plot_trait_boxplots_tool.create_trait_boxplots_by_genotype_batched
+
+    def _one_page_short(*a, **k):
+        figs = list(real(*a, **k))
+        plt.close(figs.pop())  # delegate returns fewer pages than the formula predicts
+        return figs
+
+    monkeypatch.setattr(
+        plot_trait_boxplots_tool,
+        "create_trait_boxplots_by_genotype_batched",
+        _one_page_short,
+    )
+    with pytest.raises(BloomMCPError) as exc:
+        plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="drift.csv"))
+    assert exc.value.code == "internal_error"
+    assert store.list_runs("drift.csv", "trait_boxplots") == []

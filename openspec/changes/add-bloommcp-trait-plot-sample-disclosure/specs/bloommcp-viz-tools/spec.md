@@ -204,11 +204,18 @@ panel with that trait's own `(n=…)`.
   and the persisted run's `params` carries the run-wide note (not the per-page strings, which
   are reconstructible from `page_traits` and the committed table)
 
-#### Scenario: The histogram render is unchanged
+#### Scenario: The histogram image discloses what its panel titles cannot
 
 - **WHEN** `plot_trait_histograms` renders a figure
-- **THEN** no sample-size note is drawn onto it, and each panel's title still carries that trait's
-  own observation count from the delegate
+- **THEN** each panel's title still carries that trait's own binned count from the delegate, and
+  a note drawn below the axes reports those counts against the number of rows read
+
+#### Scenario: A heavily-missing panel is flagged even when its count clears the floor
+
+- **WHEN** a trait's binned count is at or above the minimum but under half its rows survived
+- **THEN** the note drawn on the figure is marked as a warning and names that trait with its
+  missing fraction — which its `(n=…)` panel title alone cannot distinguish from a small
+  experiment
 
 ### Requirement: Histogram Trait Sample Sizes And Missingness Are Disclosed
 

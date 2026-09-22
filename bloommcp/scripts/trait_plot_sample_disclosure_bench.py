@@ -81,9 +81,27 @@ def spurious_flier_rates(reps: int = 60_000) -> None:
         any_rate[n], frac[n] = out.any(axis=1).mean(), out.mean()
         print(f"  {n:<4} {any_rate[n]:<13.3f} {frac[n]:.4f}")
     _check("no flier is drawable below n=4", any_rate[3] == 0.0)
+    # The exact figures quoted in design.md and _viz_shared.py, asserted rather than printed:
+    # a benchmark that only prints them cannot stop them going stale at the next bump.
     _check(
-        "at n=5 -- just above the floor -- a spurious flier appears >30% of the time",
-        any_rate[5] > 0.30,
+        f"at n=5 a spurious flier appears ~33% of the time (measured {any_rate[5]:.3f})",
+        0.31 <= any_rate[5] <= 0.35,
+    )
+    _check(
+        f"at n=5 ~8.6% of points are flagged (measured {frac[5]:.4f}), against the ~0.7% "
+        "asymptotic rate",
+        0.080 <= frac[5] <= 0.092,
+    )
+    _check(
+        f"at n=4 the rate is ~21% (measured {any_rate[4]:.3f}) -- BELOW the 27-34% band, "
+        "which is why the prose names it separately",
+        0.19 <= any_rate[4] <= 0.23,
+    )
+    band = [any_rate[n] for n in (5, 6, 8, 10, 15, 30)]
+    _check(
+        f"P(>=1 flier) stays in 26-34% for every n from 5 to 30 "
+        f"(measured {min(band):.3f}-{max(band):.3f})",
+        all(0.26 <= rate <= 0.34 for rate in band),
     )
     _check(
         "the flagged FRACTION falls with n while P(>=1) does not",

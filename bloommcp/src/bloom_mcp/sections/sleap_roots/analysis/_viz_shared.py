@@ -18,6 +18,7 @@ as a plotted observation. The pre-#466 generation of helpers —
 """
 
 import math
+import textwrap
 from collections import Counter
 
 import numpy as np
@@ -131,7 +132,7 @@ def resolve_trait_columns(
 # CLEARING side of this floor -- a sample shows at least one spurious "outlier" dot 33% of the
 # time with 8.6% of its points flagged, against the ~0.7% asymptotic rate. The flagged fraction
 # falls with n (4.0% at 10, 1.8% at 30) but the probability of at least one spurious flier does
-# not: it sits between 27% and 34% at every n from 4 to 30. A flier on a thin box is an
+# not: it is 21% at n=4, then sits between 26% and 34% at every n from 5 to 30. A flier is an
 # arithmetic artifact whether or not the box clears this floor.
 #
 # WHY NOT 10. Measured on tests/fixtures/turface_19_final_data.csv (19 genotypes, 7-9
@@ -312,3 +313,96 @@ def group_sample_size_table(df, trait_cols, genotype_col):
         drop=True
     )
     return table[GROUP_TABLE_COLUMNS]
+
+
+# Character width a drawn note is wrapped to. Fixed rather than matplotlib's own wrap=True,
+# whose wrapping depends on the figure width at draw time and interacts badly with
+# bbox_inches="tight". Every figure these delegates build is at least 15in wide, so this
+# always fits without widening the canvas (measured).
+NOTE_WRAP_CHARS = 110
+# Geometry of the drawn note. The reserved strip is computed from these rather than from a
+# rendered text extent, which would cost a full canvas.draw() on each of cylinder's 53 pages.
+NOTE_FONTSIZE = 8
+# Matplotlib's default line spacing is 1.2x the font size; 1.4 leaves a little slack so a
+# descender on the last line cannot reach the axes.
+NOTE_LINE_SPACING = 1.4
+NOTE_PAD_INCHES = 0.2
+
+
+# ── the disclosure note drawn on a rendered figure (#748) ────────────────────
+# Shared by both trait-plot tools for the same reason as the count tables above: they must not
+# drift on how a disclosure reaches the image. Each tool builds its own note TEXT (the two
+# summarize different units -- boxes vs panels); the capping and the drawing are common.
+
+
+def flagged_names(entries, formatter):
+    """Cap a flagged list for the drawn note, summarizing the remainder as "+N more"."""
+    shown = [formatter(e) for e in entries[:MAX_NOTE_NAMES]]
+    remainder = len(entries) - len(shown)
+    return ", ".join(shown) + (f", +{remainder} more" if remainder else "")
+
+
+def draw_disclosure_note(fig, note, flagged):
+    """Draw the note below the axes, growing the figure so it cannot land on top of them.
+
+    A figure-level footnote, not a per-box annotation — the same choice
+    ``plot_correlation_matrix``'s ``heatmap_caveat`` makes, and for the same reason: anything
+    positioned against the delegate's own subplot geometry would mislabel a different box when
+    it got that geometry wrong. Per-box counts ride on the tick labels instead (see
+    ``plot_trait_boxplots._annotate_genotype_ticks``), which needs no geometry at all.
+
+    **The note is unbounded in height** — up to four clauses of ``MAX_NOTE_NAMES`` names each,
+    wrapped — so a fixed reservation cannot hold it. A flagged cylinder-scale note runs to ten
+    or more wrapped lines and, drawn at a fixed offset, overwrote the bottom row of boxes: the
+    figure grew under ``bbox_inches="tight"`` so nothing was *clipped*, but the axes did not
+    move, so the text sat on the data. That is why the space is measured and reserved here
+    rather than assumed, and why ``test_note_never_overlaps_the_axes`` asserts it as geometry
+    against a deliberately maximal note instead of eyeballing a baseline (the committed
+    snapshot fixture is unflagged by design, so its note is one line and could never catch it).
+
+    The reservation is computed from the wrapped line count rather than from a rendered extent:
+    a ``canvas.draw()`` per page is a full rasterization, and this runs on each of cylinder's 53
+    pages. Line height is the only quantity needed and it follows from the font size.
+
+    ``textwrap.fill`` rather than matplotlib's ``wrap=True``: the latter wraps against the
+    figure width at draw time and interacts badly with ``bbox_inches="tight"``.
+    """
+    wrapped = textwrap.fill(note, NOTE_WRAP_CHARS)
+    n_lines = wrapped.count("\n") + 1
+    needed_inches = n_lines * NOTE_FONTSIZE * NOTE_LINE_SPACING / 72.0 + NOTE_PAD_INCHES
+    width, height = fig.get_size_inches()
+    new_height = height + needed_inches
+    # Grow the canvas and TRANSLATE every axes upward by exactly the added strip, rather than
+    # squeezing the axes with subplots_adjust(bottom=...). Two reasons:
+    #   * the boxes keep the height the delegate sized for them (for the horizontal
+    #     orientation that scales with the genotype count and is already the minimum readable);
+    #   * subplots_adjust positions the AXES box, and each axes' tick labels and x-label hang
+    #     BELOW that box -- so reserving the strip that way still let the bottom row's axis
+    #     labels land on the note. Translating preserves each axes' absolute geometry, and its
+    #     decorations move with it.
+    fig.set_size_inches(width, new_height, forward=True)
+    scale = height / new_height
+    offset = needed_inches / new_height
+    for ax in fig.axes:
+        pos = ax.get_position()
+        ax.set_position(
+            [pos.x0, pos.y0 * scale + offset, pos.width, pos.height * scale]
+        )
+    fig.text(
+        0.5,
+        NOTE_PAD_INCHES / (2 * (height + needed_inches)),
+        wrapped,
+        ha="center",
+        va="bottom",
+        fontsize=NOTE_FONTSIZE,
+        color="darkred" if flagged else "#444444",
+        transform=fig.transFigure,
+        # parse_math=False: this is the first place the codebase concatenates up to 40
+        # data-derived trait/genotype names into ONE Text object, so two names each carrying a
+        # "$" pair up and matplotlib renders the disclosure as italicised mathtext -- or, with a
+        # "{" or backslash between them, raises ParseFatalException and fails the run after
+        # create_run. The delegate's own tick labels are separate Text objects and never had
+        # this exposure. (usetex is never enabled in this package, so a parse failure is the
+        # whole risk -- there is no shell-escape path.)
+        parse_math=False,
+    )
