@@ -11,6 +11,7 @@ by a workflow `paths:` filter stays pending and blocks the merge.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -183,6 +184,15 @@ def test_in_image_checks_pass_on_a_clean_app(tmp_path: Path):
 @pytest.mark.parametrize("shipped", [["copier_test.py"], ["conftest.py"]], ids=["test-module", "conftest"])
 def test_in_image_checks_fail_when_test_files_ship(tmp_path: Path, shipped: list[str]):
     assert _run_in_image_checks(tmp_path, shipped) != 0
+
+
+def test_the_compose_file_is_validated_with_every_credential_it_requires():
+    step = _step(_job(IMAGE_JOB), "Validate box-object-backup compose file")
+    compose = (REPO_ROOT / JOB_PATH / "compose.yml").read_text(encoding="utf-8")
+    required = set(re.findall(r"\$\{([A-Z_]+):\?", compose))
+    assert required, "compose.yml requires no credentials"
+    assert set(step["env"]) == required
+    assert step["run"] == f"docker compose -f {JOB_PATH}/compose.yml config --quiet"
 
 
 def test_shared_docker_build_job_does_not_build_it():

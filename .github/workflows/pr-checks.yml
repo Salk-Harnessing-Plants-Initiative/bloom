@@ -339,6 +339,14 @@ jobs:
           docker run --rm --entrypoint sh box-object-backup:ci -c \
             'rclone version && psql --version && test "$(id -u)" != 0 && ! ls /app/*_test.py 2>/dev/null && ! test -e /app/conftest.py'
 
+      # Placeholder credentials: `config` checks the file, not the server's paths.
+      - name: Validate box-object-backup compose file
+        env:
+          POSTGRES_PASSWORD: placeholder
+          MINIO_ROOT_USER: placeholder
+          MINIO_ROOT_PASSWORD: placeholder
+        run: docker compose -f scheduled-jobs/box-object-backup/compose.yml config --quiet
+
       - name: Scan box-object-backup image
         uses: aquasecurity/trivy-action@v0.35.0
         with:
