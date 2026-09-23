@@ -280,8 +280,25 @@ one test asserts the real `kubectl` argv and timeout because every other test mo
       guard fired first and the assertion was satisfied by the guard's own output — it was not
       testing precedence at all. Strengthening the assertion is what exposed it.
       Test count 53 → 74.
-- [ ] 6.4 `/pre-merge` green: lint + full suite + OpenSpec validation.
-- [ ] 6.5 PR into **`staging`**, bundling proposal + implementation, closing bloom#879.
+- [x] 6.4 **Green, though the `/pre-merge` skill itself was not invoked** — the checks it wraps were
+      run individually and are recorded above: `uvx ruff@0.9.9` clean on both files (3.11),
+      `pytest tests/unit/test_check_template_contract.py` 74 passed (3.11), `services/workflows`
+      657 passed / 1 skipped, the full `tests/unit/` suite compared against an unmodified
+      `origin/staging` worktree (49 failed / 1139 passed vs 49 failed / 1086 passed — identical
+      failure count, passes up by exactly the 53 then-added tests, all 49 pre-existing Windows
+      environment failures), and `openspec validate --strict` valid. CI then ran the authoritative
+      versions: **33 SUCCESS, 2 SKIPPED, 0 failures**, twice — once on the fix commit and again on
+      the `staging` merge commit. Recorded this way rather than ticked as "/pre-merge run", because
+      it was not.
+- [x] 6.5 **MERGED 2026-09-23T18:33:13Z** as `378b5456` into `staging` (PR #892), approved by
+      @blm3886 with no change requests. Branch was updated from `staging` first — the ruleset sets
+      `strict_required_status_checks_policy: true`, so BEHIND genuinely blocks — and the merge was
+      clean, with the PR's 13-file diff and its "No schema changes" declaration both unaffected.
+      **bloom#879 did NOT auto-close, and will not until the `staging`→`main` promotion.** GitHub's
+      closing keywords fire only on merge into the default branch, which is `main`. Several earlier
+      notes in this file and in the PR body asserted it would close on merge; that was wrong.
+      Benign in effect — the issue stays open as a live pointer to the recorded gaps — but it means
+      the "auto-close buries the follow-ups" argument does not apply to this merge.
 - [x] 6.6 **Provenance gap filed as talmolab/sleap-roots-contracts#40** (2026-09-22), in the repo
       that owns the `Provenance` model rather than in bloom — an earlier draft of this task had that
       backwards. Investigating it to write the issue changed the ask: the obvious fix ("have
@@ -305,7 +322,11 @@ one test asserts the real `kubectl` argv and timeout because every other test mo
       suggested fix, the nine review findings, the known gaps, and the correction that the srp#78
       digests did **not** address srp#72's tag-mutability half. Both authorized by the user for
       these specific posts; re-confirm before posting anything further.
-- [ ] 6.8 Record the observation in `sleap-roots-pipeline` `docs/bloom-integration/roadmap.md` item A4
-      — separate PR in the sibling repo, after the live runs are real rather than at merge time.
-      Consider srp#58, the origin of upstream's comparator, as the more durable home for the
-      two-comparators-answer-different-questions note.
+- [ ] 6.8 **NOT DONE — deliberately left unticked, archived in this state.** Record the observation
+      in `sleap-roots-pipeline` `docs/bloom-integration/roadmap.md` item A4: two comparators, one
+      cluster, opposite verdicts, and the coverage map showing that nothing else compares the
+      vendored `Workflow` to the cluster. It is a separate PR in a sibling repo, so it cannot land
+      with this change, and archiving is not worth delaying for it — but a quietly ticked box would
+      be worse than an open one. Consider srp#58 (the origin of upstream's comparator, closed) as a
+      more durable home than the roadmap, since that is where someone asking "why are there two of
+      these?" would look.
