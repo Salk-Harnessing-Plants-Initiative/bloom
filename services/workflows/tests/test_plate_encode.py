@@ -204,7 +204,7 @@ def test_a_negative_value_does_not_come_back_bright():
     assert picture.max() == 0, f"a negative value rendered as {picture.max()}"
 
 
-def test_a_deep_frame_reaches_the_reduction_through_the_decoder(): 
+def test_a_deep_frame_reaches_the_reduction_through_the_decoder():
     """The parametrised cases build an image directly, so this one proves the
     real path — bytes off storage — still lands in the deep branch."""
     ramp = np.linspace(0, 65535, 400 * 600, dtype=np.uint16).reshape(600, 400)
@@ -234,9 +234,10 @@ def test_the_downscale_resamples_rather_than_picking_pixels():
     picture = frame[: frame.shape[0] - LABEL_BAND_HEIGHT]
 
     assert picture.size, "the picture was empty, so nothing was measured"
-    assert set(np.unique(picture)) - {0, 255}, (
-        "every pixel is a source pixel, so the stripes were sampled, not resampled"
-    )
+    assert set(np.unique(picture)) - {
+        0,
+        255,
+    }, "every pixel is a source pixel, so the stripes were sampled, not resampled"
 
 
 def test_a_degenerately_small_source_still_produces_a_frame():
@@ -442,7 +443,10 @@ def ffmpeg(monkeypatch):
 
 def _frames(n, width=400, height=600):
     return [
-        {"object_path": f"12/wave-1/P7_{i}.tif", "capture_date": T0 + timedelta(minutes=7 * i)}
+        {
+            "object_path": f"12/wave-1/P7_{i}.tif",
+            "capture_date": T0 + timedelta(minutes=7 * i),
+        }
         for i in range(n)
     ]
 
@@ -466,10 +470,14 @@ def test_the_count_tracks_the_frames_as_they_download(monkeypatch, ffmpeg, tmp_p
     frames = _frames(4)
     seen = []
     monkeypatch.setattr(
-        plate_progress, "advance", lambda stage, done, total: seen.append((stage, done, total))
+        plate_progress,
+        "advance",
+        lambda stage, done, total: seen.append((stage, done, total)),
     )
 
-    pe.encode_plate_video(_EncodeClient(_payloads(frames)), frames, str(tmp_path / "o.mp4"))
+    pe.encode_plate_video(
+        _EncodeClient(_payloads(frames)), frames, str(tmp_path / "o.mp4")
+    )
 
     assert seen == [
         ("downloading", 1, 4),
@@ -483,9 +491,11 @@ def test_the_count_tracks_the_frames_as_they_download(monkeypatch, ffmpeg, tmp_p
 def test_progress_is_reported_from_the_moment_a_render_starts(monkeypatch, tmp_path):
     """A poll landing before the first frame still finds the render."""
     during = []
-    _wire(monkeypatch, [_plan()], on_encode=lambda: during.append(
-        plate_progress.current(12, "P7", 1)
-    ))
+    _wire(
+        monkeypatch,
+        [_plan()],
+        on_encode=lambda: during.append(plate_progress.current(12, "P7", 1)),
+    )
 
     pe.render_plate_video(object(), 12, "P7", 1)
 
@@ -506,7 +516,9 @@ def test_the_video_is_encoded_at_the_plate_frame_rate(ffmpeg, tmp_path):
     """The cyl call site never passes fps and inherits 30, which at one frame
     per seven minutes would be a blur."""
     frames = _frames(2)
-    pe.encode_plate_video(_EncodeClient(_payloads(frames)), frames, str(tmp_path / "o.mp4"))
+    pe.encode_plate_video(
+        _EncodeClient(_payloads(frames)), frames, str(tmp_path / "o.mp4")
+    )
 
     cmd = ffmpeg[0].cmd
     assert cmd[cmd.index("-r") + 1] == str(PLATE_FPS)
@@ -639,7 +651,9 @@ def test_no_frames_is_a_failure_not_an_empty_video(ffmpeg, tmp_path):
 def test_each_frame_carries_its_own_elapsed_label(ffmpeg, tmp_path):
     """The label counts from the first capture, so every frame differs."""
     frames = _frames(3)
-    pe.encode_plate_video(_EncodeClient(_payloads(frames)), frames, str(tmp_path / "o.mp4"))
+    pe.encode_plate_video(
+        _EncodeClient(_payloads(frames)), frames, str(tmp_path / "o.mp4")
+    )
 
     chunks = ffmpeg[0].stdin.chunks
     assert len(set(chunks)) == 3, "two frames carried the same label"
@@ -1035,7 +1049,9 @@ def test_the_upload_happens_before_the_row_is_written(tmp_path):
     with pytest.raises(pe.NotRecorded):
         _publish(client, tmp_path)
 
-    assert client.videos.uploaded, "the video was not stored before recording was attempted"
+    assert client.videos.uploaded, (
+        "the video was not stored before recording was attempted"
+    )
 
 
 def test_a_failed_recording_raises_rather_than_reporting_success(tmp_path):
@@ -1125,6 +1141,15 @@ def test_a_32_bit_frame_inside_the_full_scale_still_works():
         "a/../../../object/videos/1.mp4",
         "../../../../../rest/v1/users",
         "/storage/v1/object/videos/1.mp4",
+        # Percent-encoded, which the storage client decodes before it resolves
+        # the path -- so a check that reads only literal segments lets these by.
+        "%2e%2e/videos/1.mp4",
+        "%2E%2E/videos/1.mp4",
+        ".%2e/videos/1.mp4",
+        "%2e./videos/1.mp4",
+        "a/%2e%2e/%2e%2e/object/videos/1.mp4",
+        "%252e%252e/videos/1.mp4",
+        "%2Fstorage/v1/object/videos/1.mp4",
     ],
 )
 def test_a_key_that_leaves_the_bucket_is_refused_before_it_is_fetched(path):
@@ -1156,6 +1181,8 @@ def test_a_key_that_leaves_the_bucket_is_refused_before_it_is_fetched(path):
         "gravi-images/Root Study 2026_wave1_st_x_et_y_cy3_A01.tif",
         "gravi-images/expérience_wave2_cy10_B02.tif",
         "gravi-images/a..b_cy1.tif",
+        # A literal percent is not an escape sequence, and must still fetch.
+        "gravi-images/50%_growth_cy1.tif",
     ],
 )
 def test_a_real_key_is_not_refused(path):
@@ -1484,8 +1511,7 @@ def test_a_16_bit_value_reduces_to_a_known_8_bit_value(source, expected):
     reduced = np.asarray(pe._to_8bit_rgb(frame))
 
     assert reduced[0, 0, 0] == expected, (
-        f"{source} rendered as {reduced[0, 0, 0]}, expected {expected} "
-        f"({source} >> 8)"
+        f"{source} rendered as {reduced[0, 0, 0]}, expected {expected} ({source} >> 8)"
     )
 
 
@@ -1544,7 +1570,9 @@ def test_the_encoder_opts_into_the_stall_deadline(ffmpeg, tmp_path, monkeypatch)
 
     monkeypatch.setattr(pe, "VideoWriter", recording_writer)
     frames = _frames(2)
-    pe.encode_plate_video(_EncodeClient(_payloads(frames)), frames, str(tmp_path / "o.mp4"))
+    pe.encode_plate_video(
+        _EncodeClient(_payloads(frames)), frames, str(tmp_path / "o.mp4")
+    )
 
     assert built.get("deadline"), (
         "the encoder built its writer without a deadline, so a stalled ffmpeg "
@@ -1827,7 +1855,9 @@ def test_the_second_look_under_the_lock_turns_a_race_into_a_keep(monkeypatch):
     """Between deciding and holding the lock, another request may have rendered
     this plate. Re-encoding would overwrite a video identical to the one about
     to be made, so the second plan is what makes the first one safe."""
-    seen = _wire(monkeypatch, [_plan(), _plan(action="keep", reason="already covers 3")])
+    seen = _wire(
+        monkeypatch, [_plan(), _plan(action="keep", reason="already covers 3")]
+    )
 
     result = pe.render_plate_video(object(), 12, "P7", 1)
 
@@ -1851,7 +1881,9 @@ def test_both_guards_are_held_while_the_encode_runs(monkeypatch):
 
     pe.render_plate_video(object(), 12, "P7", 1)
 
-    assert seen["slot_held"] == [pe.MAX_CONCURRENT_ENCODES - 1], "no encode slot was taken"
+    assert seen["slot_held"] == [pe.MAX_CONCURRENT_ENCODES - 1], (
+        "no encode slot was taken"
+    )
     assert seen["lock_held"] == [True], "the plate was not locked while it rendered"
 
 
@@ -1928,7 +1960,9 @@ def test_the_output_name_never_comes_from_the_plate_id(monkeypatch):
     ],
     ids=["success", "keep-under-the-lock", "the-encode-raises"],
 )
-def test_the_slot_and_the_lock_are_handed_back_on_every_path(monkeypatch, plans, on_encode):
+def test_the_slot_and_the_lock_are_handed_back_on_every_path(
+    monkeypatch, plans, on_encode
+):
     """A slot leaked on any path takes a permanent bite out of capacity, and a
     plate whose lock is never released can never be rendered again."""
     _wire(monkeypatch, plans, on_encode=on_encode)
@@ -1951,7 +1985,9 @@ def test_the_slot_and_the_lock_are_handed_back_on_every_path(monkeypatch, plans,
     ],
     ids=["success", "the-encode-raises"],
 )
-def test_progress_is_cleared_whichever_way_the_render_ends(monkeypatch, plans, on_encode):
+def test_progress_is_cleared_whichever_way_the_render_ends(
+    monkeypatch, plans, on_encode
+):
     """A record left behind reports frames for a render that is over, and the
     page shows a count that never moves."""
     _wire(monkeypatch, plans, on_encode=on_encode)
