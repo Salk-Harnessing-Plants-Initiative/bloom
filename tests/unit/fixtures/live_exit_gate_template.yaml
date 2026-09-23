@@ -1,0 +1,64 @@
+# Captured live from `runai-busch-lab` on 2026-09-22 via
+#   kubectl get workflowtemplate sleap-roots-exit-gate-template -n runai-busch-lab -o yaml
+# Volatile metadata (creationTimestamp, generation, resourceVersion, uid) stripped;
+# everything else is verbatim, including the API server's own defaulting
+# (`arguments: {}`, `inputs: {}`, `outputs: {}`, `metadata: {}`, `name: ""`).
+#
+# The point of committing a REAL object rather than a hand-built one: the parser must
+# find `inputs.parameters`, `volumeMounts` and `templates[].name` where the server
+# actually puts them. Note `inputs: {}` -- present but empty, NOT absent, which is the
+# shape four of the five templates have.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  labels:
+    project: busch-lab
+  name: sleap-roots-exit-gate-template
+  namespace: runai-busch-lab
+spec:
+  arguments: {}
+  templates:
+  - container:
+      args:
+      - "set -u\nrc=0\nfail() {\n  echo \"exit-gate: stage '$1' reported exit code '$2' (expected 0 or 3)\" >&2\n  rc=1\n}\ncase \"${CODE_IMAGES_DOWNLOADER}\" in\n  0|3) ;;\n  *) fail images-downloader\
+        \ \"${CODE_IMAGES_DOWNLOADER}\" ;;\nesac\ncase \"${CODE_PREDICTOR}\" in\n  0|3) ;;\n  *) fail predictor \"${CODE_PREDICTOR}\" ;;\nesac\ncase \"${CODE_TRAIT_EXTRACTOR}\" in\n  0|3) ;;\n  *) fail\
+        \ trait-extractor \"${CODE_TRAIT_EXTRACTOR}\" ;;\nesac\nif [ \"$rc\" -eq 0 ]; then\n  echo \"exit-gate: all producers in {0,3}. Partial-success runs pass here by design:\"\n  echo \"exit-gate: a\
+        \ green Workflow does NOT mean every scan succeeded. Check\"\n  echo \"exit-gate: cyl_pipeline_runs.failed_count (see sleap-roots-pipeline#56).\"\nfi\nexit \"$rc\"\n# Note on the comparison: it\
+        \ is a string match, so a zero-padded \"03\" is REJECTED.\n# Deliberate: the producers emit bare \"0\"/\"3\", and anything else is unexpected input\n# that should be surfaced rather than silently\
+        \ normalised.\n"
+      command:
+      - /bin/sh
+      - -c
+      env:
+      - name: CODE_IMAGES_DOWNLOADER
+        value: '{{inputs.parameters.images-downloader-code}}'
+      - name: CODE_PREDICTOR
+        value: '{{inputs.parameters.predictor-code}}'
+      - name: CODE_TRAIT_EXTRACTOR
+        value: '{{inputs.parameters.trait-extractor-code}}'
+      image: ghcr.io/salk-harnessing-plants-initiative/bloomctl:sha-28034f6
+      imagePullPolicy: IfNotPresent
+      name: ''
+      resources:
+        limits:
+          cpu: 200m
+          memory: 128Mi
+        requests:
+          cpu: 50m
+          memory: 64Mi
+    inputs:
+      parameters:
+      - name: images-downloader-code
+      - name: predictor-code
+      - name: trait-extractor-code
+    metadata: {}
+    name: exit-gate
+    outputs: {}
+    priorityClassName: interactive-preemptible
+    retryStrategy:
+      backoff:
+        duration: 30s
+        factor: 2
+      limit: 2
+      retryPolicy: Always
+    timeout: 600s
